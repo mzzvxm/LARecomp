@@ -9,6 +9,8 @@ bool Patch_AspectRatio_822E5E68(PPCRegister& f12);
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 
 bool Patch_DisableDoF();
+void Patch_DofComposite(PPCRegister& r3);
+
 void Patch_ScaleTrafficLOD(PPCRegister& f0);
 
 void Patch_ScaleCityLOD(PPCRegister& f13);

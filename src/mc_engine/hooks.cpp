@@ -50,6 +50,8 @@ REXCVAR_DEFINE_BOOL(physics_noclip, true, "MCLA/Physics", "Disable CCD/Pairwise 
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_dof, false, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // BadassBaboon's Recomp Adjustments: Continuous exponential camera boom smoothing at 60 FPS
 REXCVAR_DEFINE_BOOL(smooth_chase_cam, true, "MCLA/Camera",
     "Fix: Smooth chase camera boom interpolation at 60 FPS using continuous-time exponential decay.")
@@ -328,6 +330,22 @@ bool Patch_DisableRubberBanding() {
 
 bool Patch_DisableDoF() {
     return REXCVAR_GET(disable_dof);
+}
+
+// Disable DoF at the composite. Hooked at sub_8260EBB8 entry where r3 = dofObj
+// (dword_829054A0). Zeroing the circle-of-confusion vector at dofObj+0xF0 collapses
+// the per-pixel blur to sharp with the scene fully intact — verified in gameplay,
+// menu AND freecam. The composite runs every frame DoF is drawn, so this covers
+// every state without touching the setters (blocking those left stale DoF in the
+// menu). The other composite inputs (+0x158/+0x128/+0x138/+0x1B0) are NOT safe to
+// zero — they white-out / desaturate the frame — so only +0xF0 is touched.
+void Patch_DofComposite(PPCRegister& r3) {
+    if (!REXCVAR_GET(disable_dof)) return;
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    uint32_t o = static_cast<uint32_t>(r3.u64);  // dofObj guest address
+    if (!o) return;
+    for (int i = 0; i < 16; ++i) base[o + 0xF0 + i] = 0;  // CoC vector = 0 -> no blur
 }
 
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {

@@ -25068,10 +25068,36 @@ registers = ["f13"]
 jump_address_on_true = 0x8223E5E4
 
 # Depth of Field (DoF) Hooks
+#
+# DEAD ENDS (do not retry):
+#  - sub_8260EBB8's `*(dofObj+0x13C)==2` block is the MAIN scene composite (DoF
+#    integrated), NOT a standalone blur. +0x13C is set to 2 ONCE by the post-FX
+#    ctor sub_823074B0 (it means "post-FX object initialised"), so gating it blacks
+#    out all 3D.
+#  - return_on_true on the applier sub_823078D8 entry skips sub_8260D8C8 RT init ->
+#    dofObj+88/+92 stay 0xCDCDCDCD -> "invalid function" crash.
+#
+# FIX: zero the circle-of-confusion vector at dofObj+0xF0 in the composite. This
+# is THE blur lever — verified empirically: zeroing +0xF0 removes DoF with the
+# scene fully intact in gameplay, menu AND freecam. Patch_DofComposite hooks the
+# composite entry sub_8260EBB8 (r3 = dofObj) and nulls +0xF0 every frame when the
+# disable_dof cvar is set. The other composite inputs (+0x158/+0x128/+0x138/+0x1B0)
+# white-out or desaturate the frame, so only +0xF0 is touched.
+#
+# We do NOT block the DoF setters anymore: blocking them froze the DoF state and
+# left the *menu* showing stale DoF. Letting the game drive its setters normally
+# keeps menus correct; the composite null handles the actual disable everywhere.
 [[midasm_hook]]
 address = 0x82307808 # PostProcessing_SetGameDof
 name = "Patch_DisableDoF"
 registers = []
+address = 0x8260EBB8 # DoF composite entry (r3=dofObj) — zero CoC vector +0xF0 when disable_dof
+name = "Patch_DofComposite"
+registers = ["r3"]
+
+# DoF setters (0x823076F8..0x82307C08) intentionally NOT hooked — blocking them
+# was the cause of the stale-DoF-in-menu bug.
+
 # City and Traffic LOD
 [[midasm_hook]]
 address = 0x827903E0
