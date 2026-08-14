@@ -30,7 +30,7 @@ REXCVAR_DEFINE_BOOL(fps_60, true, "MCLA/Patches", "Increases vsync target to 60 
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_BOOL(disable_imposter_shadows, false, "MCLA/Patches", "Performance Mode: Foliage won't cast shadows.")
+REXCVAR_DEFINE_BOOL(disable_imposter_shadows, true, "MCLA/Patches", "Performance Mode: Foliage won't cast shadows.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing (MSAA).")
@@ -49,6 +49,46 @@ REXCVAR_DEFINE_BOOL(physics_noclip, true, "MCLA/Physics", "Disable CCD/Pairwise 
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_dof, false, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
+// BadassBaboon's Recomp Adjustments: Continuous exponential camera boom smoothing at 60 FPS
+REXCVAR_DEFINE_BOOL(smooth_chase_cam, true, "MCLA/Camera",
+    "Fix: Smooth chase camera boom interpolation at 60 FPS using continuous-time exponential decay.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(chase_cam_smoothing_factor, 1.0, "MCLA/Camera",
+    "Chase camera boom smoothing factor multiplier (0.1 - 3.0).")
+    .range(0.1, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// BadassBaboon's Recomp Adjustments: Ambient traffic & pedestrian density tuning for city performance
+REXCVAR_DEFINE_BOOL(enable_ambient_tuning, true, "MCLA/Performance",
+    "Enable ambient traffic and pedestrian density tuning.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(traffic_unspawn_dist, 250.0, "MCLA/Performance",
+    "Traffic vehicle unspawn radius in meters (default 400.0, lower = higher FPS in city).")
+    .range(100.0, 600.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(ped_density_scale, 0.5, "MCLA/Performance",
+    "Pedestrian density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).")
+    .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(parked_car_scale, 0.5, "MCLA/Performance",
+    "Parked car density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).")
+    .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// BadassBaboon's Recomp Adjustments: Steering physics and frame rate limiter CVARs
+REXCVAR_DEFINE_BOOL(scale_steering_with_fps, true, "MCLA/Controls",
+    "Scale vehicle steering delta to maintain consistent handling response at 60 FPS.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(steering_sensitivity, 1.0, "MCLA/Controls",
+    "Vehicle steering sensitivity multiplier (0.2 = tighter, 1.0 = stock, 2.0 = faster).")
+    .range(0.2, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // 0 by default: the presenter's own vsync already paces the frame, and the
 // limiter's final wait is a busy spin. Set it only when running with vsync off.
 REXCVAR_DEFINE_INT32(fps_limit, 0, "MCLA/Performance",
@@ -155,6 +195,15 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
 bool Patch_DisableMSAA(PPCRegister& r11) {
     if (REXCVAR_GET(disable_msaa)) {
         r11.u64 = 1; // li r11, 1
+        return true;
+    }
+    return false;
+}
+
+// BadassBaboon's Recomp Adjustments: Foliage imposter shadow bypass
+bool Patch_DisableImposterShadows(PPCRegister& r11) {
+    if (REXCVAR_GET(disable_imposter_shadows)) {
+        r11.u64 = 0; // li r11, 0
         return true;
     }
     return false;
@@ -292,6 +341,165 @@ void Patch_DeltaTimePre() {
 // 0x827D754C and freeze physics.
 void Patch_DeltaTime(PPCRegister& r24) {
     (void)r24;
+}
+
+// BadassBaboon's Recomp Adjustments:
+// 0x823203D4, in sub_82320298 (mcPlayerCamera::Update).
+// Applies the 60 FPS exponential decay formula to the camera boom interpolation
+// constant before it is passed to matrix Lerp.
+void MCLACameraBoomSmoothing(PPCRegister& f1) {
+    if (!REXCVAR_GET(smooth_chase_cam)) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    // Read current frame dt (clock+0x08)
+    float dt = ReadGuestF32(base, 0x827D7508);
+    if (!(dt > 0.0f)) return;
+
+    double k = f1.f64;
+    if (k > 0.0 && k < 1.0) {
+        double factor = REXCVAR_GET(chase_cam_smoothing_factor);
+        f1.f64 = 1.0 - std::pow(1.0 - k, dt * 30.0 * factor);
+    }
+}
+
+// BadassBaboon's Recomp Adjustments: ambient traffic / pedestrian density.
+//
+// mcAmbientDensityTuning is not a separate object: sub_826F5CB0 calls its
+// constructor sub_826F5B18 with its OWN `this` (`sub_826F5B18(a1)`), so the
+// tuning fields are the base of the ~5936-byte ambient zone. The zone array is
+// built in sub_826D8E70 -- 31 zones, `v5 = manager + 56476`, stride 1484 dwords
+// -- and each one re-parses $/tune/ambients/density_tuning.xml through
+// sub_826F4CB8, whose r31 is that zone. r31 is therefore the tuning object,
+// and 31 hook firings per load is expected, one per zone.
+//
+// (The value passed as the parse's 4th argument is NOT the instance: it is the
+// shared class descriptor returned by vtable slot 1, identical across all 31
+// zones. Writing tuning fields through it corrupts a live RAGE structure.)
+//
+// The override has to land AFTER the parse -- hooking the constructor is
+// pointless because the parse overwrites every field it set.
+//
+// Per-zone originals are captured from what the parse left behind, and every
+// override is computed from those, so re-parsing a zone never compounds the
+// scale the way the original code did.
+struct DensityTuningValues {
+    float unspawn = 0.0f;
+    float ped = 0.0f;
+    float parked = 0.0f;
+};
+
+static std::mutex g_density_mutex;
+static std::map<uint32_t, DensityTuningValues> g_density_orig;  // zone address -> XML values
+
+// Last state pushed into guest memory, so the per-frame tick only writes when a
+// cvar actually moved.
+static bool g_density_applied_valid = false;
+static bool g_density_applied_enabled = false;
+static DensityTuningValues g_density_applied;
+
+// Writes one zone. Caller holds g_density_mutex.
+static void WriteDensityZone(uint8_t* base, uint32_t a, const DensityTuningValues& orig,
+                             bool enabled, const DensityTuningValues& want) {
+    if (!enabled) {
+        WriteGuestF32(base, a + 16, orig.unspawn);
+        WriteGuestF32(base, a + 92, orig.ped);
+        WriteGuestF32(base, a + 152, orig.parked);
+        return;
+    }
+    // Absolute metres, applied as given. The original code silently ignored any
+    // value above the stock 400, which made the upper half of the cvar's
+    // 100..600 range do nothing.
+    WriteGuestF32(base, a + 16, want.unspawn > 0.0f ? want.unspawn : orig.unspawn);
+    WriteGuestF32(base, a + 92, orig.ped * want.ped);
+    WriteGuestF32(base, a + 152, orig.parked * want.parked);
+}
+
+static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
+    enabled = REXCVAR_GET(enable_ambient_tuning);
+    want.unspawn = static_cast<float>(REXCVAR_GET(traffic_unspawn_dist));
+    want.ped = static_cast<float>(REXCVAR_GET(ped_density_scale));
+    want.parked = static_cast<float>(REXCVAR_GET(parked_car_scale));
+}
+
+// 0x826F4E3C, the instruction after the density_tuning.xml parse returns.
+// r31 is the ambient zone, i.e. the tuning object.
+void MCLAAmbientDensityTuning(PPCRegister& r31) {
+    const uint32_t a = static_cast<uint32_t>(r31.u64);
+    if (a == 0) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    bool enabled = false;
+    DensityTuningValues want;
+    ReadDensityCvars(enabled, want);
+
+    std::lock_guard<std::mutex> lock(g_density_mutex);
+
+    // The parse just restored this zone to its XML values, so re-reading here
+    // is what keeps the scale from compounding across reloads.
+    DensityTuningValues orig;
+    orig.unspawn = ReadGuestF32(base, a + 16);   // 400.0 stock
+    orig.ped = ReadGuestF32(base, a + 92);       // 0.007 stock
+    orig.parked = ReadGuestF32(base, a + 152);   // 0.25 stock
+    const bool first = g_density_orig.find(a) == g_density_orig.end();
+    g_density_orig[a] = orig;
+
+    WriteDensityZone(base, a, orig, enabled, want);
+
+    // One line per zone the first time it is seen; reloads are silent, since 31
+    // identical lines every district change is noise.
+    if (first) {
+        LARECOMP_APP_INFO(
+            "[Ambient Tuning] zone {} at 0x{:08X}: unspawn {:.1f} -> {:.1f}, "
+            "ped {:.4f} -> {:.4f}, parked {:.2f} -> {:.2f}",
+            g_density_orig.size(), a, orig.unspawn, ReadGuestF32(base, a + 16), orig.ped,
+            ReadGuestF32(base, a + 92), orig.parked, ReadGuestF32(base, a + 152));
+    }
+}
+
+// Per-frame, so the cvars behave as the kHotReload they are declared to be.
+// Costs a compare per frame and touches guest memory only when one moved.
+static void ApplyAmbientDensityTuning() {
+    bool enabled = false;
+    DensityTuningValues want;
+    ReadDensityCvars(enabled, want);
+
+    std::lock_guard<std::mutex> lock(g_density_mutex);
+    if (g_density_applied_valid && g_density_applied_enabled == enabled &&
+        g_density_applied.unspawn == want.unspawn && g_density_applied.ped == want.ped &&
+        g_density_applied.parked == want.parked) {
+        return;
+    }
+    g_density_applied_enabled = enabled;
+    g_density_applied = want;
+    g_density_applied_valid = true;
+
+    if (g_density_orig.empty()) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    for (const auto& [addr, orig] : g_density_orig) {
+        WriteDensityZone(base, addr, orig, enabled, want);
+    }
+    LARECOMP_APP_INFO("[Ambient Tuning] {} zones updated (enabled={}, unspawn={:.1f}, ped={:.2f}, parked={:.2f})",
+                      g_density_orig.size(), enabled, want.unspawn, want.ped, want.parked);
+}
+
+// BadassBaboon's Recomp Adjustments:
+// 0x822A2ED4 in sub_822A2988: `lfs f0, 0xC(r20)` with r20 = 0x827D7500, so f0
+// is the clock's inv_game_dt, and the next lines turn the steering delta into a
+// per-second rate with it. Halving it at 60 FPS reproduces the 30 FPS response
+// the handling was tuned against.
+void Patch_SteeringSensitivity(PPCRegister& f0) {
+    double sens = REXCVAR_GET(steering_sensitivity);
+    if (REXCVAR_GET(scale_steering_with_fps) && REXCVAR_GET(fps_60)) {
+        sens *= 0.5;
+    }
+    f0.f64 *= sens;
 }
 
 #else // REXGLUE_HAS_XEO3_TARGET

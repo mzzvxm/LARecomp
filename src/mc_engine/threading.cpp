@@ -71,6 +71,27 @@ u32 Sleep_hook(u32 ms) {
 }
 REX_HOOK(mc_Sleep, Sleep_hook);
 
+// BadassBaboon's Recomp Adjustments: hardware cache flush bypass.
+//
+// FlushDataCache (0x821D5510), signature (addr, size, flush): walks the range
+// one 128-byte line at a time issuing `dcbf 0, r11` (flush=1) or `dcbst 0, r11`
+// (flush=0), then `blr` with r3 untouched. Six callers, all in the streaming /
+// DMA paths (sub_821A1698, sub_821A1848, sub_821B8188, sub_821BC140 x2,
+// sub_82468800).
+//
+// Both instructions are pure hints and the recompiler emits NOTHING for them
+// (build_dcbf / build_dcbst in src/codegen/builders/system.cpp both return
+// without printing) -- x86_64 is cache-coherent, so there is nothing to do.
+// What is left is an empty size/128-iteration loop of recompiled guest code
+// running on every streamed resource, which is where the hitching comes from.
+// Returning the address immediately is exactly equivalent, minus the spin.
+u32 FlushDataCache_hook(u32 addr, u32 size, u32 flush) {
+    (void)size;
+    (void)flush;
+    return addr;  // r3 is the guest's own return value here
+}
+REX_HOOK(mc_FlushDataCache, FlushDataCache_hook);
+
 // ResumeThread (0x8244FE58)
 u32 ResumeThread_hook(u32 handle) {
     auto thread = REX_KERNEL_OBJECTS()->LookupObject<rex::system::XThread>(handle);

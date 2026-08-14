@@ -11,6 +11,17 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 bool Patch_DisableDoF();
 void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
+// BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning
+void MCLACameraBoomSmoothing(PPCRegister& f1);
+// Ambient density. Fires after the density_tuning.xml parse (hooking the
+// constructor is pointless -- the parse overwrites it), once per ambient zone;
+// r31 is the zone, whose base IS the mcAmbientDensityTuning.
+void MCLAAmbientDensityTuning(PPCRegister& r31);
+
+// BadassBaboon's Recomp Adjustments: Foliage imposter shadows and steering sensitivity
+bool Patch_DisableImposterShadows(PPCRegister& r11);
+void Patch_SteeringSensitivity(PPCRegister& f0);
+
 // BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
 void MCLAFrameDelta(PPCRegister& r8);
 // The two fixed-timestep substitution paths in sub_821BDA90. MCLAUseRealDelta
