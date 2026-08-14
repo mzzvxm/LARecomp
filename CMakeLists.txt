@@ -58,6 +58,46 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/system_link.cpp
     src/mc_engine/online/xbox_live.cpp
 
+    # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).
+    # Remove this line and the src/native_probe/ directory once the Native
+    # Graphics Runtime research is closed.
+    src/native_probe/mcla_gfx_probe.cpp
+
+    # MCLA Native Graphics Runtime (permanent). Incremental replacement of the
+    # Xenia-provided graphics backend; everything is inert until the
+    # mcla_native_gfx cvar exists and is enabled.
+    src/native_gfx/shader_identity.cpp
+    src/native_gfx/vertex_declaration.cpp
+    src/native_gfx/draw_slicing.cpp
+    src/native_gfx/native_gfx.cpp
+    src/native_gfx/hooks.cpp
+    src/native_gfx/telemetry.cpp
+    src/native_gfx/geometry.cpp
+    src/native_gfx/guest/guest_constants.cpp
+    src/native_gfx/guest/render_state.cpp
+    src/native_gfx/guest/sampler_state.cpp
+    src/native_gfx/guest/guest_resources.cpp
+    src/native_gfx/guest/texture_format.cpp
+    src/native_gfx/guest/vertex_fetch_decode.cpp
+    src/native_gfx/d3d12/constant_upload.cpp
+    src/native_gfx/d3d12/context.cpp
+    src/native_gfx/d3d12/first_draw.cpp
+    src/native_gfx/d3d12/frame_capture.cpp
+    src/native_gfx/d3d12/render_target_pool.cpp
+    src/native_gfx/d3d12/renderdoc_hook.cpp
+    src/native_gfx/d3d12/image_dump.cpp
+    src/native_gfx/d3d12/memory_census.cpp
+    src/native_gfx/d3d12/pipeline_cache.cpp
+    src/native_gfx/d3d12/presenter_output.cpp
+    src/native_gfx/d3d12/resource_cache.cpp
+    src/native_gfx/d3d12/shader_db.cpp
+    src/native_gfx/d3d12/texture_binding.cpp
+    src/native_gfx/d3d12/texture_cache.cpp
+    src/native_gfx/d3d12/topology_expand.cpp
+    src/native_gfx/d3d12/blit_pass.cpp
+    src/native_gfx/d3d12/tonemap_pass.cpp
+    src/native_gfx/d3d12/d3d12_smoke_triangle.cpp
+
     src/discord_rpc/discord_rpc.cpp
     src/discord_rpc/discord_hooks.cpp
 
@@ -80,7 +120,6 @@ if(REXGLUE_ENABLE_XEO3_TARGET)
         OUTPUT_NAME   "xeo3_545407F8"
     )
 else()
-    add_executable(larecomp ${LARECOMP_SOURCES})
     if(WIN32)
         # Compile the .rc so the app icon is embedded in the exe (not just copied
         # into assets/). The lowest-ID ICON in larecomp.rc is used by Explorer.
@@ -97,10 +136,18 @@ else()
 
     # rexglue 0.7.4
     if(WIN32)
+        # The native_gfx diagnostics use std::fopen on purpose (append-only text
+        # logs, no error path worth the fopen_s dance). MSVC's CRT marks it
+        # deprecated; the _s variants are not portable, so opt out project-wide.
+        target_compile_definitions(larecomp PRIVATE _CRT_SECURE_NO_WARNINGS)
 
         target_link_libraries(larecomp
             PRIVATE
             dxgi
+            # native_gfx D3D12 backend (D3D12SerializeRootSignature etc.)
+            d3d12
+            # native_gfx memory census (GetProcessMemoryInfo)
+            psapi
             # real-world weather fetch (mc_engine/real_weather.cpp)
             winhttp
             # custom MP3 radio (mc_engine/mp3custom): Media Foundation decode.
