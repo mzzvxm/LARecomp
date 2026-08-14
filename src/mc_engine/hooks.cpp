@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
+#include <rex/chrono/clock.h>
 #include <rex/ui/imgui_dialog.h>
 #include "imgui.h"
 #include "logging.h"
@@ -19,7 +23,8 @@
 REXCVAR_DEFINE_BOOL(skip_intro, false, "MCLA/Patches", "Skip the intro videos to prevent graphical issues.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_BOOL(fps_60, false, "MCLA/Patches", "Increases vsync target to 60 FPS and enables deltatime.")
+// BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
+REXCVAR_DEFINE_BOOL(fps_60, true, "MCLA/Patches", "Increases vsync target to 60 FPS and enables deltatime.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
@@ -44,6 +49,13 @@ REXCVAR_DEFINE_BOOL(physics_noclip, true, "MCLA/Physics", "Disable CCD/Pairwise 
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_dof, false, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
+// 0 by default: the presenter's own vsync already paces the frame, and the
+// limiter's final wait is a busy spin. Set it only when running with vsync off.
+REXCVAR_DEFINE_INT32(fps_limit, 0, "MCLA/Performance",
+    "Frame rate cap (0 = uncapped, 60 = 60 FPS, 120 = 120 FPS, 144 = 144 FPS).")
+    .range(0, 360)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches", "Screen Aspect Ratio")
@@ -169,7 +181,120 @@ bool OpenRexGraphicsFromGameOptions_826686D4(PPCRegister& r3) {
 
     // Skip the original Game Options block and fall through to the epilogue.
     return true;
-}#else // REXGLUE_HAS_XEO3_TARGET
+}static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
+    uint32_t be = (uint32_t(base[addr + 0]) << 24) | (uint32_t(base[addr + 1]) << 16) |
+                  (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
+    float val;
+    std::memcpy(&val, &be, sizeof(float));
+    return val;
+}
+
+static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
+    uint32_t be;
+    std::memcpy(&be, &val, sizeof(float));
+    base[addr + 0] = (be >> 24) & 0xFF;
+    base[addr + 1] = (be >> 16) & 0xFF;
+    base[addr + 2] = (be >> 8) & 0xFF;
+    base[addr + 3] = be & 0xFF;
+}
+
+// BadassBaboon's Recomp Adjustments: Precision frame rate limiter
+static void EnforceFrameLimit() {
+    int32_t limit = REXCVAR_GET(fps_limit);
+    if (limit <= 0) return;
+
+    using clock = std::chrono::steady_clock;
+    static auto last_frame_time = clock::now();
+
+    const auto target_duration = std::chrono::duration<double, std::micro>(1000000.0 / static_cast<double>(limit));
+    auto now = clock::now();
+    auto elapsed = now - last_frame_time;
+
+    if (elapsed < target_duration) {
+        auto sleep_time = target_duration - elapsed;
+        if (sleep_time > std::chrono::milliseconds(2)) {
+            std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(sleep_time - std::chrono::milliseconds(1)));
+        }
+        while (clock::now() - last_frame_time < target_duration) {
+#if defined(_M_X64) || defined(__x86_64__)
+            _mm_pause();
+#endif
+        }
+    }
+    last_frame_time = clock::now();
+}
+
+// BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
+// 0x821BDAB0: runs after subf r8,r10,r11 in sub_821BDA90.
+// Clamps max ticks and runs precision limiter.
+void MCLAFrameDelta(PPCRegister& r8) {
+    if (!REXCVAR_GET(fps_60)) return;
+    EnforceFrameLimit();
+    uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+    if (hz == 0) hz = 50000000;
+    uint64_t max_ticks = static_cast<uint64_t>(0.125 * static_cast<double>(hz));
+    if (r8.u64 > max_ticks) {
+        r8.u64 = max_ticks;
+    }
+}
+
+// BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
+//
+// By 0x821BDAF8 sub_821BDA90 has already stored the measured unscaled delta at
+// [r3+0x58] and the scaled one at [r3+0x08]. Two separate blocks downstream then
+// throw that away and substitute the fixed timestep at [r3+0x20]; both have to
+// be handled, and which one runs depends on [r3+0x3A] / [r3+0x3C]:
+//
+//   loc_821BDB58  reached when both are zero, after the +0x14 / +0x18
+//                 accumulator updates. Loads [r3+0x20], and if the real delta is
+//                 at least that big writes the FIXED value over +0x58 and +0x08
+//                 (0x821BDB84/0x821BDB88). Skipped wholesale by jumping to
+//                 loc_821BDC34 -- the accumulators are already updated by then,
+//                 so nothing else is lost.
+//   loc_821BDB90  reached from 0x821BDB1C / 0x821BDB28 when either flag is set.
+//                 Not covered by the jump above, since it sits before it in the
+//                 flow. Does the same substitution out of f11, so f11 is
+//                 rewritten with the real delta instead.
+//
+// Returns true to take the jump. Baboon's build jumped unconditionally; gating
+// it on fps_60 is the only change, and it makes the cvar actually turn the whole
+// thing off instead of leaving half of it live.
+bool MCLAUseRealDelta() {
+    return REXCVAR_GET(fps_60);
+}
+
+// 0x821BDB90, after `lfs f11, 0x20(r3)` has loaded the fixed timestep. f11 feeds
+// both `stfs f11, 0x58(r3)` and `fmuls f0, f11, f13` -> `stfs f0, 8(r3)`, so
+// replacing it with [r3+0x58] (the measured unscaled delta stored at 0x821BDAF8)
+// publishes the real frame time down this path too.
+void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
+    if (!REXCVAR_GET(fps_60)) return;
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    f11.f64 = static_cast<double>(ReadGuestF32(base, static_cast<uint32_t>(r3.u64) + 0x58));
+}
+
+// Fires at 0x822C22EC, right after the clock update (sub_821BDA90). The delta
+// time itself is delivered at the clock source (MCLAFrameDelta /
+// MCLAUseRealDelta / MCLAFixedStepPath) rather than overwritten late in the
+// frame, which is what caused traffic jitter and physics stutter. What is left
+// here is the per-frame housekeeping.
+void Patch_DeltaTimePre() {
+    TickVinylReadbackWindow();  // runs every frame regardless of fps_60
+    TickVinylShapeCapture();    // hands-free shape-catalog sweep, if requested
+    TickButtonPrompts();        // picks up a live button_prompts change
+    TickCustomMusic();          // custom radio: volume + end-of-track advance
+    ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
+}
+
+// Loop-entry anchor. r24 must NOT be modified: the game divides game_dt by it
+// on its own (sub_821BD910) and r24 = 0 would clear the sub-tick gate at
+// 0x827D754C and freeze physics.
+void Patch_DeltaTime(PPCRegister& r24) {
+    (void)r24;
+}
+
+#else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>

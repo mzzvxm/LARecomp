@@ -24941,6 +24941,37 @@ jump_address_on_true = 0x821F7FAC
 # address = 0x821BDB08
 # name = "Patch_60FPS_Jump"
 # jump_address_on_true = 0x821BDC34
+# BadassBaboon's Recomp Adjustments: Core 60 FPS Engine Timing Pipeline
+# 0x821BDAB0: subf r8,r10,r11 in sub_821BDA90 (elapsed frame ticks clamp & limiter)
+[[midasm_hook]]
+name = "MCLAFrameDelta"
+address = 0x821BDAB0
+after_instruction = true
+registers = ["r8"]
+
+# 0x821BDB58: `lis r11, flt_82000ED4@ha`, head of the fixed-timestep block. It
+# loads [r3+0x20] and, when the real delta is at least that big, writes the fixed
+# value over the unscaled delta at [r3+0x58] and game_dt at [r3+8]
+# (0x821BDB84/0x821BDB88). Jumping to loc_821BDC34 skips it; the +0x14/+0x18
+# accumulators were already updated before this point, so nothing else is lost.
+# Conditional on fps_60 rather than unconditional, so the cvar really turns it off.
+[[midasm_hook]]
+name = "MCLAUseRealDelta"
+address = 0x821BDB58
+jump_address_on_true = 0x821BDC34
+
+# 0x821BDB90 (loc_821BDB90): the OTHER fixed-timestep path, taken from
+# 0x821BDB1C / 0x821BDB28 when [r3+0x3A] or [r3+0x3C] is set. It sits before the
+# block above, so the jump there never covers it. Hooked after
+# `lfs f11, 0x20(r3)`; f11 then feeds `stfs f11, 0x58(r3)` and
+# `fmuls f0, f11, f13` -> `stfs f0, 8(r3)`, so swapping f11 for [r3+0x58]
+# publishes the measured delta down this path too.
+[[midasm_hook]]
+name = "MCLAFixedStepPath"
+address = 0x821BDB90
+after_instruction = true
+registers = ["r3", "f11"]
+
 [[midasm_hook]]
 address = 0x82419AA0
 name = "Patch_60FPS_Byte"
@@ -25025,6 +25056,25 @@ jump_address_on_true = 0x8223E5E4
 address = 0x82307808 # PostProcessing_SetGameDof
 name = "Patch_DisableDoF"
 registers = []
+# Per-frame tick point, right after the clock update (sub_821BDA90). The delta
+# time itself is now handled at the clock source (MCLAFrameDelta /
+# MCLAUseRealDelta / MCLAFixedStepPath above); this hook only carries the per-frame
+# housekeeping ticks (vinyl readback window, shape capture, button prompts,
+# ambient density), so it must fire once per frame regardless of fps_60.
+[[midasm_hook]]
+address = 0x822C22EC
+name = "Patch_DeltaTimePre"
+after_instruction = true
+
+# Loop-entry hook, kept as an anchor only. r24 must NOT be modified: the game
+# divides game_dt by it on its own (sub_821BD910) and r24 = 0 would clear the
+# sub-tick gate 0x827D754C and freeze physics.
+[[midasm_hook]]
+address = 0x822C2430
+name = "Patch_DeltaTime"
+registers = ["r24"]
+after_instruction = true
+
 return_on_true = true
 
 [[midasm_hook]]

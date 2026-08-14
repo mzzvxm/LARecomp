@@ -9,6 +9,16 @@ bool Patch_AspectRatio_822E5E68(PPCRegister& f12);
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 
 bool Patch_DisableDoF();
+void Patch_DeltaTimePre();
+void Patch_DeltaTime(PPCRegister& r24);
+// BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
+void MCLAFrameDelta(PPCRegister& r8);
+// The two fixed-timestep substitution paths in sub_821BDA90. MCLAUseRealDelta
+// jumps over loc_821BDB58 (0x821BDB58 -> loc_821BDC34) when fps_60 is on;
+// MCLAFixedStepPath rewrites f11 on the loc_821BDB90 path, which that jump does
+// not cover.
+bool MCLAUseRealDelta();
+void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11);
 
 inline double fpsCount;
 inline bool showfps;
