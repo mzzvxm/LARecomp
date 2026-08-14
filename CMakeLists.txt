@@ -36,6 +36,17 @@ set(LARECOMP_SOURCES
     src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp
 
+    # Modloader: models/<mod>/<asset>.obj -> xarchive_mods.rpf
+    src/mc_engine/modloader/aes256.cpp
+    src/mc_engine/modloader/rpf3.cpp
+    src/mc_engine/modloader/xcompress.cpp
+    src/mc_engine/modloader/lzx_encode.cpp
+    src/mc_engine/modloader/objmesh.cpp
+    src/mc_engine/modloader/gltf.cpp
+    src/mc_engine/modloader/rsc5.cpp
+    src/mc_engine/modloader/texture.cpp
+    src/mc_engine/modloader/modloader.cpp
+
     # Online (split out of hooks.cpp): tournament / System Link / Xbox LIVE
     src/mc_engine/online/online_common.cpp
     src/mc_engine/online/tournament.cpp

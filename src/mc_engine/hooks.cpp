@@ -47,6 +47,7 @@
 #include "graphics_button.h"
 #include "larecomp_log.h"
 #include "menu_camera.h"
+#include "modloader/modloader.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
 // CVAR DEFINITIONS (Will appear in F4 menu)
@@ -1217,6 +1218,10 @@ void ImportVinyl(const std::string& name_in) {
 }
 
 void InitHooks() {
+    // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
+    // reaches sub_822C4630 and mounts the archives.
+    mc::modloader::Init();
+
     ApplyAspectRatioPatch(REXCVAR_GET(aspect_ratio));
 
     rex::cvar::RegisterChangeCallback("aspect_ratio",
@@ -1678,6 +1683,29 @@ void Patch_DofComposite(PPCRegister& r3) {
 
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {
     f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
+}
+
+// Archive list injection for the modloader. sub_822C4630 mounts a ';'-separated
+// list of packfiles, all at "a:/archive/". Which list it uses is decided across
+// three branches (the caller's argument, the "audlo" fallback, the
+// dword_8288BA44 override) that merge at 0x822C4858, and 0x822C4860 copies the
+// winner into a 511-byte stack buffer at r1+0xD0. This hook sits on the
+// instruction right after that copy and appends to the buffer in place.
+//
+// Appending rather than repointing matters twice over: it keeps whichever list
+// the game picked, and it writes to the guest stack. Parking a string in the
+// dead stub region instead is not an option -- those pages belong to the XEX
+// image and are mapped read-only, so writing there faults.
+//
+// xarchive_mods.rpf ends up mounted last, and fiDevice::GetDevice
+// (sub_821CB488) searches a mount point's devices last-registered-first,
+// falling through when one does not hold the file -- so the mod archive
+// overrides per file and everything else still comes from the shipped ones.
+void Patch_ArchiveList(PPCRegister& r1) {
+    constexpr uint32_t kListBufferOffset = 0xD0;  // v43 in sub_822C4630's frame
+    constexpr size_t kListBufferSize = 512;       // copied with a 511-byte bound
+    mc::modloader::AppendModArchiveTo(static_cast<uint32_t>(r1.u64) + kListBufferOffset,
+                                      kListBufferSize);
 }
 
 // Ride height range. sub_82392F68 is the wheel-fit validator: with

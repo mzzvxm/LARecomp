@@ -25664,6 +25664,22 @@ address = 0x82354A1C
 name = "Hook_TireOffsetWheels"
 registers = ["r31"]
 
+# ── Modloader archive list — src/mc_engine/modloader/
+#
+# sub_822C4630 is the packfile mounter. It picks the ';'-separated archive list
+# from one of three sources (its own argument, the "audlo" fallback, or the
+# dword_8288BA44 override), then at 0x822C4860 copies the winner into a
+# 511-byte stack buffer at r1+0xD0. 0x822C4864 is the instruction right after
+# that copy, where the buffer holds the final list and the guest stack is
+# writable -- the hook appends xarchive_mods.rpf to it in place.
+# fiDevice::GetDevice (sub_821CB488) searches a mount point's devices
+# last-registered-first and falls through when one does not hold the file, so
+# the last archive in the list overrides per file.
+[[midasm_hook]]
+address = 0x822C4864
+name = "Patch_ArchiveList"
+registers = ["r1"]
+
 # BadassBaboon's Recomp Adjustments: Continuous-time exponential decay camera boom smoothing for 60 FPS
 # 0x823203D4 in sub_82320298 (mcPlayerCamera::Update), f1 = the interpolation
 # factor headed for Lerp.
