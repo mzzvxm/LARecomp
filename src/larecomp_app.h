@@ -72,18 +72,46 @@ class LarecompApp : public rex::ReXApp {
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
     const auto root = ExeDir();
-    const auto default_game_data = root / "assets";
+
+    // A bare default.xex is not enough to call a directory the game root: the
+    // ISO installer writes the xex first and the archives after, so a half-
+    // finished install would otherwise be accepted and then fail at boot.
+    // Requiring one of the archives next to it makes the probe honest.
+    auto is_valid_game_root = [](const std::filesystem::path& p) {
+      std::error_code ec;
+      if (!std::filesystem::exists(p / "default.xex", ec)) return false;
+      return std::filesystem::exists(p / "xarchive_cache.rpf", ec) ||
+             std::filesystem::exists(p / "xarchive_audio.rpf", ec) ||
+             std::filesystem::exists(p / "xarchive_audlo.rpf", ec);
+    };
 
     // If the user has manually passed --game_data_root and it is valid,
     // keeps the manual path.
-    if (!paths.game_data_root.empty() &&
-        std::filesystem::exists(paths.game_data_root / "default.xex")) {
+    if (!paths.game_data_root.empty() && is_valid_game_root(paths.game_data_root)) {
       return;
     }
 
-    paths.game_data_root = default_game_data;
+    // BadassBaboon's Recomp Adjustments: walk up from the exe looking for the
+    // game data, so a portable layout works without --game_data_root. Checked
+    // at every level, nearest first: MCLA_Game_Files/, game/, assets/, then the
+    // directory itself (exe dropped straight into the game folder).
+    for (std::filesystem::path dir = root; !dir.empty() && dir != dir.parent_path();
+         dir = dir.parent_path()) {
+      for (const char* sub : {"MCLA_Game_Files", "game", "assets"}) {
+        if (is_valid_game_root(dir / sub)) {
+          paths.game_data_root = dir / sub;
+          return;
+        }
+      }
+      if (is_valid_game_root(dir)) {
+        paths.game_data_root = dir;
+        return;
+      }
+    }
 
-    const auto update = root / "update";
+    // Nothing found: keep the historical default so IsGameInstalled fails there
+    // and OnFinalizePaths runs the ISO install wizard into it.
+    paths.game_data_root = root / "assets";
   }
 
   std::optional<rex::PathConfig> OnFinalizePaths(const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
