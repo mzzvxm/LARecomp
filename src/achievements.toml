@@ -1,0 +1,4757 @@
+[[achievements]]
+id = 18
+label = "Wanted Man"
+description = "Pull over while the police are in 'pull over' mode, then drive away during the ticketing cutscene."
+unachieved_description = "Pull over while the police are in 'pull over' mode, then drive away during the ticketing cutscene."
+
+  [achievements.Portuguese]
+  label = "Procurado"
+  description = "Encoste enquanto a polícia estiver no modo 'encostar', e depois fuja durante a cutscene da multa."
+  unachieved_description = "Encoste enquanto a polícia estiver no modo 'encostar', e depois fuja durante a cutscene da multa."
+
+  [achievements.Japanese]
+  label = "指名手配犯"
+  description = "警察が『停止』モードのときに車を止め、その後チケット作成のカットシーン中に逃げる。"
+  unachieved_description = "警察が『停止』モードのときに車を止め、その後チケット作成のカットシーン中に逃げる。"
+
+  [achievements.German]
+  label = "Gesuchter Mann"
+  description = "Fahren Sie an den Straßenrand, während die Polizei im 'Anhalten'-Modus ist, und fahren Sie dann während der Strafzettel-Zwischensequenz weg."
+  unachieved_description = "Fahren Sie an den Straßenrand, während die Polizei im 'Anhalten'-Modus ist, und fahren Sie dann während der Strafzettel-Zwischensequenz weg."
+
+  [achievements.French]
+  label = "Homme recherché"
+  description = "Rendez-vous sur le côté pendant que la police est en mode 'arrêt', puis repartez pendant la scène de contravention."
+  unachieved_description = "Rendez-vous sur le côté pendant que la police est en mode 'arrêt', puis repartez pendant la scène de contravention."
+
+  [achievements.Spanish]
+  label = "Hombre buscado"
+  description = "Detente mientras la policía está en modo 'detener', luego conduce mientras dura la escena de la multa."
+  unachieved_description = "Detente mientras la policía está en modo 'detener', luego conduce mientras dura la escena de la multa."
+
+  [achievements.Italian]
+  label = "Uomo ricercato"
+  description = "Accosta mentre la polizia è in modalità 'accosta', poi allontanati durante la scena del verbale."
+  unachieved_description = "Accosta mentre la polizia è in modalità 'accosta', poi allontanati durante la scena del verbale."
+
+  [achievements.Korean]
+  label = "지명 수배자"
+  description = "경찰이 '차를 세우라' 모드일 때 길가에 정차한 다음, 딱지 발급 컷신 동안 운전하여 도망가세요."
+  unachieved_description = "경찰이 '차를 세우라' 모드일 때 길가에 정차한 다음, 딱지 발급 컷신 동안 운전하여 도망가세요."
+
+  [achievements."Traditional Chinese"]
+  label = "通緝犯"
+  description = "當警察處於「靠邊停車」模式時靠邊停車，然後在售票過場動畫中開車離開。"
+  unachieved_description = "當警察處於「靠邊停車」模式時靠邊停車，然後在售票過場動畫中開車離開。"
+
+  [achievements.Polish]
+  label = "Poszukiwany mężczyzna"
+  description = "Zatrzymaj się na poboczu, gdy policja jest w trybie 'zatrzymaj się', a następnie odjedź podczas scenki wystawiania mandatu."
+  unachieved_description = "Zatrzymaj się na poboczu, gdy policja jest w trybie 'zatrzymaj się', a następnie odjedź podczas scenki wystawiania mandatu."
+
+  [achievements.Russian]
+  label = "Розыскиваемый человек"
+  description = "Съедьте на обочину, пока полиция в режиме «остановиться», а затем уезжайте во время сцены с выпиской штрафа."
+  unachieved_description = "Съедьте на обочину, пока полиция в режиме «остановиться», а затем уезжайте во время сцены с выпиской штрафа."
+
+  [achievements.Swedish]
+  label = "Efterlyst man"
+  description = "Kör åt sidan medan polisen är i 'stanna' läge, och kör sedan iväg under bötescutscenen."
+  unachieved_description = "Kör åt sidan medan polisen är i 'stanna' läge, och kör sedan iväg under bötescutscenen."
+
+  [achievements.Turkish]
+  label = "Aranan Adam"
+  description = "Polis 'durdurma' modundayken kenara çekilin, sonra ceza sahnesi sırasında sürerek uzaklaşın."
+  unachieved_description = "Polis 'durdurma' modundayken kenara çekilin, sonra ceza sahnesi sırasında sürerek uzaklaşın."
+
+  [achievements.Norwegian]
+  label = "Etterlyst mann"
+  description = """
+Stopp mens politiet er i "trekk over"-modus, og kjør deretter bort under billettscenen.
+"""
+  unachieved_description = """
+Stopp mens politiet er i "trekk over"-modus, og kjør deretter bort under billettscenen.
+"""
+
+  [achievements.Dutch]
+  label = "Gezochte man"
+  description = "Rij naar de kant terwijl de politie in 'stoppen' modus is, en rijd dan weg tijdens de boetescène."
+  unachieved_description = "Rij naar de kant terwijl de politie in 'stoppen' modus is, en rijd dan weg tijdens de boetescène."
+
+  [achievements."Simplified Chinese"]
+  label = "通缉男子"
+  description = "当警察处于“拦停”模式时靠边停车，然后在开罚单的过场动画中开走。"
+  unachieved_description = "当警察处于“拦停”模式时靠边停车，然后在开罚单的过场动画中开走。"
+
+[[achievements]]
+id = 19
+label = "Out On Bail"
+description = "Evade the police successfully when they are in pursuit."
+unachieved_description = "Evade the police successfully when they are in pursuit."
+
+  [achievements.Portuguese]
+  label = "Livre Sob Fiança"
+  description = "Fuja da polícia com sucesso quando estiverem te perseguindo."
+  unachieved_description = "Fuja da polícia com sucesso quando estiverem te perseguindo."
+
+  [achievements.Japanese]
+  label = "保釈中"
+  description = "警察に追跡されているときにうまく逃げ切る。"
+  unachieved_description = "警察に追跡されているときにうまく逃げ切る。"
+
+  [achievements.German]
+  label = "Auf Kaution draußen"
+  description = "Entkomme der Polizei erfolgreich, wenn sie dich verfolgen."
+  unachieved_description = "Entkomme der Polizei erfolgreich, wenn sie dich verfolgen."
+
+  [achievements.French]
+  label = "Libéré sous caution"
+  description = "Évitez la police avec succès lorsqu'elle est à vos trousses."
+  unachieved_description = "Évitez la police avec succès lorsqu'elle est à vos trousses."
+
+  [achievements.Spanish]
+  label = "En libertad bajo fianza"
+  description = "Evade a la policía con éxito cuando te estén persiguiendo."
+  unachieved_description = "Evade a la policía con éxito cuando te estén persiguiendo."
+
+  [achievements.Italian]
+  label = "In libertà su cauzione"
+  description = "Sfuggi con successo alla polizia quando ti inseguono."
+  unachieved_description = "Sfuggi con successo alla polizia quando ti inseguono."
+
+  [achievements.Korean]
+  label = "보석으로 석방됨"
+  description = "경찰이 추격할 때 성공적으로 피하십시오."
+  unachieved_description = "경찰이 추격할 때 성공적으로 피하십시오."
+
+  [achievements."Traditional Chinese"]
+  label = "保釋出獄"
+  description = "在警察追捕時成功躲避。"
+  unachieved_description = "在警察追捕時成功躲避。"
+
+  [achievements.Polish]
+  label = "Na wolności po kaucji"
+  description = "Ucieknij policji skutecznie, gdy cię ścigają."
+  unachieved_description = "Ucieknij policji skutecznie, gdy cię ścigają."
+
+  [achievements.Russian]
+  label = "Вышел под залог"
+  description = "Успешно ускользайте от полиции, когда она преследует вас."
+  unachieved_description = "Успешно ускользайте от полиции, когда она преследует вас."
+
+  [achievements.Swedish]
+  label = "Fri mot borgen"
+  description = "Undvik polisen framgångsrikt när de jagar dig."
+  unachieved_description = "Undvik polisen framgångsrikt när de jagar dig."
+
+  [achievements.Turkish]
+  label = "Teminatla Serbest"
+  description = "Polis sizi takip ederken onlardan başarıyla kaçın."
+  unachieved_description = "Polis sizi takip ederken onlardan başarıyla kaçın."
+
+  [achievements.Norwegian]
+  label = "Ute på kausjon"
+  description = "Unngå politiet med hell når de er i forfølgelse."
+  unachieved_description = "Unngå politiet med hell når de er i forfølgelse."
+
+  [achievements.Dutch]
+  label = "Op borgtocht vrij"
+  description = "Ontsnap succesvol aan de politie wanneer ze achter je aan zitten."
+  unachieved_description = "Ontsnap succesvol aan de politie wanneer ze achter je aan zitten."
+
+  [achievements."Simplified Chinese"]
+  label = "保释出狱"
+  description = "在警方追捕时成功逃脱。"
+  unachieved_description = "在警方追捕时成功逃脱。"
+
+[[achievements]]
+id = 20
+label = "Neither Bird nor Plane"
+description = "Travel 1020 feet in a single jump."
+unachieved_description = "Travel 1020 feet in a single jump."
+
+  [achievements.Portuguese]
+  label = "Nem Pássaro, Nem Avião"
+  description = "Viaje 1020 pés em um único salto."
+  unachieved_description = "Viaje 1020 pés em um único salto."
+
+  [achievements.Japanese]
+  label = "鳥でも飛行機でもない"
+  description = "一度のジャンプで1020フィート移動する。"
+  unachieved_description = "一度のジャンプで1020フィート移動する。"
+
+  [achievements.German]
+  label = "Weder Vogel noch Flugzeug"
+  description = "Reise 1020 Fuß in einem einzigen Sprung."
+  unachieved_description = "Reise 1020 Fuß in einem einzigen Sprung."
+
+  [achievements.French]
+  label = "Ni oiseau ni avion"
+  description = "Voyagez 1020 pieds en un seul saut."
+  unachieved_description = "Voyagez 1020 pieds en un seul saut."
+
+  [achievements.Spanish]
+  label = "Ni pájaro ni avión"
+  description = "Viaja 1020 pies en un solo salto."
+  unachieved_description = "Viaja 1020 pies en un solo salto."
+
+  [achievements.Italian]
+  label = "Ne uccello né aereo"
+  description = "Viaggia per 1020 piedi in un solo salto."
+  unachieved_description = "Viaggia per 1020 piedi in un solo salto."
+
+  [achievements.Korean]
+  label = "새도 아니고 비행기도 아니다"
+  description = "한 번 점프에서 1020피트 이동하세요."
+  unachieved_description = "한 번 점프에서 1020피트 이동하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "既不是鳥也不是飛機"
+  description = "單次跳躍可移動 1020 英尺。"
+  unachieved_description = "單次跳躍可移動 1020 英尺。"
+
+  [achievements.Polish]
+  label = "Ani ptak, ani samolot"
+  description = "Przemierz 1020 stóp w jednym skoku."
+  unachieved_description = "Przemierz 1020 stóp w jednym skoku."
+
+  [achievements.Russian]
+  label = "Ни птица, ни самолет"
+  description = "Пролетите 1020 футов за один прыжок."
+  unachieved_description = "Пролетите 1020 футов за один прыжок."
+
+  [achievements.Swedish]
+  label = "Varken fågel eller flygplan"
+  description = "Res 1020 fot på ett enda hopp."
+  unachieved_description = "Res 1020 fot på ett enda hopp."
+
+  [achievements.Turkish]
+  label = "Ne Kuş Ne Uçak"
+  description = "Tek bir zıplamada 1020 feet yol al."
+  unachieved_description = "Tek bir zıplamada 1020 feet yol al."
+
+  [achievements.Norwegian]
+  label = "Verken fugl eller fly"
+  description = "Reis 1020 fot i et enkelt hopp."
+  unachieved_description = "Reis 1020 fot i et enkelt hopp."
+
+  [achievements.Dutch]
+  label = "Noch Vogel noch Vliegtuig"
+  description = "Reis 1020 voet in één sprong."
+  unachieved_description = "Reis 1020 voet in één sprong."
+
+  [achievements."Simplified Chinese"]
+  label = "既不是鸟也不是飞机"
+  description = "一次跳跃飞行1020英尺。"
+  unachieved_description = "一次跳跃飞行1020英尺。"
+
+[[achievements]]
+id = 21
+label = "Jordan Jumpman"
+description = """
+Spend more than 10 minutes in the air.
+
+Brought to you by JORDAN BRAND.
+
+"""
+unachieved_description = """
+Spend more than 10 minutes in the air.
+
+Brought to you by JORDAN BRAND.
+
+"""
+
+  [achievements.Portuguese]
+  label = "Jordan Jumpman"
+  description = """
+Passe mais de 10 minutos no ar.
+
+Oferecimento: JORDAN BRAND.
+
+"""
+  unachieved_description = """
+Passe mais de 10 minutos no ar.
+
+Oferecimento: JORDAN BRAND.
+
+"""
+
+  [achievements.Japanese]
+  label = "ジョーダンジャンプマン"
+  description = """
+空中で10分以上過ごしてください。
+
+JORDAN BRANDがお届けします。
+"""
+  unachieved_description = """
+空中で10分以上過ごしてください。
+
+JORDAN BRANDがお届けします。
+"""
+
+  [achievements.German]
+  label = "Jordan Jumpman"
+  description = """
+Verbringen Sie mehr als 10 Minuten in der Luft.
+
+Präsentiert von JORDAN BRAND.
+"""
+  unachieved_description = """
+Verbringen Sie mehr als 10 Minuten in der Luft.
+
+Präsentiert von JORDAN BRAND.
+"""
+
+  [achievements.French]
+  label = "Jordan Jumpman"
+  description = """
+Passez plus de 10 minutes dans les airs.
+
+Présenté par JORDAN BRAND.
+"""
+  unachieved_description = """
+Passez plus de 10 minutes dans les airs.
+
+Présenté par JORDAN BRAND.
+"""
+
+  [achievements.Spanish]
+  label = "Jordan Jumpman"
+  description = """
+Pasa más de 10 minutos en el aire.
+
+Presentado por JORDAN BRAND.
+"""
+  unachieved_description = """
+Pasa más de 10 minutos en el aire.
+
+Presentado por JORDAN BRAND.
+"""
+
+  [achievements.Italian]
+  label = "Jordan Jumpman"
+  description = """
+Trascorri più di 10 minuti in aria.
+
+Offerto da JORDAN BRAND.
+"""
+  unachieved_description = """
+Trascorri più di 10 minuti in aria.
+
+Offerto da JORDAN BRAND.
+"""
+
+  [achievements.Korean]
+  label = "조던 점프맨"
+  description = """
+공중에서 10분 이상 시간을 보내세요.
+
+조던 브랜드가 제공합니다.
+"""
+  unachieved_description = """
+공중에서 10분 이상 시간을 보내세요.
+
+조던 브랜드가 제공합니다.
+"""
+
+  [achievements."Traditional Chinese"]
+  label = "Jordan Jumpman"
+  description = """
+Spend more than 10 minutes in the air.
+
+Brought to you by JORDAN BRAND.
+
+"""
+  unachieved_description = """
+Spend more than 10 minutes in the air.
+
+Brought to you by JORDAN BRAND.
+
+"""
+
+  [achievements.Polish]
+  label = "Jordan Jumpman"
+  description = """
+Spędź więcej niż 10 minut w powietrzu.
+
+Przedstawione przez MARKĘ JORDAN.
+"""
+  unachieved_description = """
+Spędź więcej niż 10 minut w powietrzu.
+
+Przedstawione przez MARKĘ JORDAN.
+"""
+
+  [achievements.Russian]
+  label = "Джордан Джампман"
+  description = """
+Проведите в воздухе более 10 минут.
+
+Представлено брендом JORDAN.
+"""
+  unachieved_description = """
+Проведите в воздухе более 10 минут.
+
+Представлено брендом JORDAN.
+"""
+
+  [achievements.Swedish]
+  label = "Jordan Jumpman"
+  description = """
+Tillbringa mer än 10 minuter i luften.
+
+Presenterat av JORDAN BRAND.
+"""
+  unachieved_description = """
+Tillbringa mer än 10 minuter i luften.
+
+Presenterat av JORDAN BRAND.
+"""
+
+  [achievements.Turkish]
+  label = "Jordan Jumpman"
+  description = """
+Havada 10 dakikadan fazla zaman geçirin.
+
+JORDAN MARKA tarafından sunulmuştur.
+"""
+  unachieved_description = """
+Havada 10 dakikadan fazla zaman geçirin.
+
+JORDAN MARKA tarafından sunulmuştur.
+"""
+
+  [achievements.Norwegian]
+  label = "Jordan Jumpman"
+  description = """
+Tilbring mer enn 10 minutter i luften. 
+
+Brakt til deg av JORDAN BRAND.
+"""
+  unachieved_description = """
+Tilbring mer enn 10 minutter i luften. 
+
+Brakt til deg av JORDAN BRAND.
+"""
+
+  [achievements.Dutch]
+  label = "Jordan Jumpman"
+  description = """
+Breng meer dan 10 minuten in de lucht door.
+
+Aangeboden door JORDAN BRAND.
+"""
+  unachieved_description = """
+Breng meer dan 10 minuten in de lucht door.
+
+Aangeboden door JORDAN BRAND.
+"""
+
+  [achievements."Simplified Chinese"]
+  label = "乔丹Jumpman"
+  description = """
+在空中停留超过10分钟。
+
+由乔丹品牌呈现。
+"""
+  unachieved_description = """
+在空中停留超过10分钟。
+
+由乔丹品牌呈现。
+"""
+
+[[achievements]]
+id = 22
+label = "Unicycle"
+description = "Drive a cumulative total of 50 miles while doing a wheelie on a motorcycle."
+unachieved_description = "Drive a cumulative total of 50 miles while doing a wheelie on a motorcycle."
+
+  [achievements.Portuguese]
+  label = "Monociclo"
+  description = "Dirija um total acumulado de 50 milhas empinando uma moto."
+  unachieved_description = "Dirija um total acumulado de 50 milhas empinando uma moto."
+
+  [achievements.Japanese]
+  label = "一輪車"
+  description = "オートバイでウィリーをしながら、合計50マイル走行する。"
+  unachieved_description = "オートバイでウィリーをしながら、合計50マイル走行する。"
+
+  [achievements.German]
+  label = "Einhornrad"
+  description = "Fahre insgesamt 50 Meilen, während du ein Rad auf einem Motorrad machst."
+  unachieved_description = "Fahre insgesamt 50 Meilen, während du ein Rad auf einem Motorrad machst."
+
+  [achievements.French]
+  label = "Monocycle"
+  description = "Conduisez un total cumulé de 50 miles tout en faisant un wheeling sur une moto."
+  unachieved_description = "Conduisez un total cumulé de 50 miles tout en faisant un wheeling sur une moto."
+
+  [achievements.Spanish]
+  label = "Monociclo"
+  description = "Conduce un total acumulado de 50 millas mientras haces un caballito en una motocicleta."
+  unachieved_description = "Conduce un total acumulado de 50 millas mientras haces un caballito en una motocicleta."
+
+  [achievements.Italian]
+  label = "Monociclo"
+  description = "Percorri un totale cumulativo di 50 miglia facendo una impennata su una motocicletta."
+  unachieved_description = "Percorri un totale cumulativo di 50 miglia facendo una impennata su una motocicletta."
+
+  [achievements.Korean]
+  label = "외발자전거"
+  description = "오토바이로 윌리(앞바퀴를 들고 달리기)를 하면서 총 50마일을 주행하세요."
+  unachieved_description = "오토바이로 윌리(앞바퀴를 들고 달리기)를 하면서 총 50마일을 주행하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "獨輪車"
+  description = "在摩托車上進行前輪離地時，累計行駛 50 英里。"
+  unachieved_description = "在摩托車上進行前輪離地時，累計行駛 50 英里。"
+
+  [achievements.Polish]
+  label = "Jedenkołowiec"
+  description = "Przejedź łącznie 50 mil wykonując jazdę na tylnym kole motocykla."
+  unachieved_description = "Przejedź łącznie 50 mil wykonując jazdę na tylnym kole motocykla."
+
+  [achievements.Russian]
+  label = "Одноколесный велосипед"
+  description = "Проехать в сумме 50 миль, выполняя колесо на мотоцикле."
+  unachieved_description = "Проехать в сумме 50 миль, выполняя колесо на мотоцикле."
+
+  [achievements.Swedish]
+  label = "Enhjuling"
+  description = "Kör en kumulativ total på 50 miles medan du gör en wheelie på en motorcykel."
+  unachieved_description = "Kör en kumulativ total på 50 miles medan du gör en wheelie på en motorcykel."
+
+  [achievements.Turkish]
+  label = "Tek tekerlekli bisiklet"
+  description = "Bir motosiklet üzerinde tekerlek kaldırarak toplam 50 mil sürün."
+  unachieved_description = "Bir motosiklet üzerinde tekerlek kaldırarak toplam 50 mil sürün."
+
+  [achievements.Norwegian]
+  label = "Enhjuling"
+  description = "Kjør totalt 50 miles mens du kjører en wheelie på en motorsykkel."
+  unachieved_description = "Kjør totalt 50 miles mens du kjører en wheelie på en motorsykkel."
+
+  [achievements.Dutch]
+  label = "Eenzame fiets"
+  description = "Rijd een cumulatief totaal van 50 mijl terwijl je een wheelie op een motorfiets doet."
+  unachieved_description = "Rijd een cumulatief totaal van 50 mijl terwijl je een wheelie op een motorfiets doet."
+
+  [achievements."Simplified Chinese"]
+  label = "独轮车"
+  description = "在摩托车上翘头骑时累计行驶50英里。"
+  unachieved_description = "在摩托车上翘头骑时累计行驶50英里。"
+
+[[achievements]]
+id = 23
+label = "Just Get A Motorcycle"
+description = "In a car, drive a cumulative total of 50 miles on 2 wheels."
+unachieved_description = "In a car, drive a cumulative total of 50 miles on 2 wheels."
+
+  [achievements.Portuguese]
+  label = "Compre Uma Moto"
+  description = "Em um carro, dirija um total acumulado de 50 milhas em apenas 2 rodas."
+  unachieved_description = "Em um carro, dirija um total acumulado de 50 milhas em apenas 2 rodas."
+
+  [achievements.Japanese]
+  label = "バイクを手に入れなさい"
+  description = "車で、2輪で合計50マイル運転する。"
+  unachieved_description = "車で、2輪で合計50マイル運転する。"
+
+  [achievements.German]
+  label = "Kauf dir einfach ein Motorrad"
+  description = "In einem Auto fahre insgesamt 50 Meilen auf 2 Rädern."
+  unachieved_description = "In einem Auto fahre insgesamt 50 Meilen auf 2 Rädern."
+
+  [achievements.French]
+  label = "Prends juste une moto"
+  description = "Dans une voiture, conduisez un total cumulé de 50 miles sur 2 roues."
+  unachieved_description = "Dans une voiture, conduisez un total cumulé de 50 miles sur 2 roues."
+
+  [achievements.Spanish]
+  label = "Solo consigue una motocicleta"
+  description = "En un coche, conduce un total acumulado de 50 millas sobre 2 ruedas."
+  unachieved_description = "En un coche, conduce un total acumulado de 50 millas sobre 2 ruedas."
+
+  [achievements.Italian]
+  label = "Prenditi semplicemente una motocicletta"
+  description = "In un'auto, percorri un totale cumulativo di 50 miglia su 2 ruote."
+  unachieved_description = "In un'auto, percorri un totale cumulativo di 50 miglia su 2 ruote."
+
+  [achievements.Korean]
+  label = "그냥 오토바이를 사라"
+  description = "자동차에서 2바퀴로 누적 총 50마일을 운전하세요."
+  unachieved_description = "자동차에서 2바퀴로 누적 총 50마일을 운전하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "只要買一輛摩托車"
+  description = "駕駛 2 個車輪的汽車累積行駛 50 英里。"
+  unachieved_description = "駕駛 2 個車輪的汽車累積行駛 50 英里。"
+
+  [achievements.Polish]
+  label = "Po prostu kup motocykl"
+  description = "W samochodzie przejedź łącznie 50 mil na 2 kołach."
+  unachieved_description = "W samochodzie przejedź łącznie 50 mil na 2 kołach."
+
+  [achievements.Russian]
+  label = "Просто купи мотоцикл"
+  description = "В машине проедьте в сумме 50 миль на двух колесах."
+  unachieved_description = "В машине проедьте в сумме 50 миль на двух колесах."
+
+  [achievements.Swedish]
+  label = "Skaffa bara en motorcykel"
+  description = "I en bil, kör en kumulativ total på 50 miles på 2 hjul."
+  unachieved_description = "I en bil, kör en kumulativ total på 50 miles på 2 hjul."
+
+  [achievements.Turkish]
+  label = "Sadece Bir Motosiklet Al"
+  description = "Bir arabada, 2 tekerlek üzerinde toplam 50 mil sürün."
+  unachieved_description = "Bir arabada, 2 tekerlek üzerinde toplam 50 mil sürün."
+
+  [achievements.Norwegian]
+  label = "Bare kjøp en motorsykkel"
+  description = "I en bil, kjør totalt 50 miles på 2 hjul."
+  unachieved_description = "I en bil, kjør totalt 50 miles på 2 hjul."
+
+  [achievements.Dutch]
+  label = "Koop gewoon een motor"
+  description = "Rijd in een auto een cumulatief totaal van 50 mijl op 2 wielen."
+  unachieved_description = "Rijd in een auto een cumulatief totaal van 50 mijl op 2 wielen."
+
+  [achievements."Simplified Chinese"]
+  label = "直接买一辆摩托车"
+  description = "在一辆车里，用两轮累计行驶50英里。"
+  unachieved_description = "在一辆车里，用两轮累计行驶50英里。"
+
+[[achievements]]
+id = 24
+label = "Hear me Roar!"
+description = "Unlock Level 3 ROAR."
+unachieved_description = "Unlock Level 3 ROAR."
+
+  [achievements.Portuguese]
+  label = "Ouça Meu Rugido!"
+  description = "Desbloqueie ROAR Nível 3."
+  unachieved_description = "Desbloqueie ROAR Nível 3."
+
+  [achievements.Japanese]
+  label = "私の咆哮を聞け！"
+  description = "レベル3のROARをアンロックする。"
+  unachieved_description = "レベル3のROARをアンロックする。"
+
+  [achievements.German]
+  label = "Hört mich brüllen!"
+  description = "Schalte Stufe 3 ROAR frei."
+  unachieved_description = "Schalte Stufe 3 ROAR frei."
+
+  [achievements.French]
+  label = "Entends-moi rugir !"
+  description = "Déverrouillez le niveau 3 ROAR."
+  unachieved_description = "Déverrouillez le niveau 3 ROAR."
+
+  [achievements.Spanish]
+  label = "¡Escúchame rugir!"
+  description = "Desbloquea el Nivel 3 ROAR."
+  unachieved_description = "Desbloquea el Nivel 3 ROAR."
+
+  [achievements.Italian]
+  label = "Ascoltami ruggire!"
+  description = "Sblocca il livello 3 RUGGITO."
+  unachieved_description = "Sblocca il livello 3 RUGGITO."
+
+  [achievements.Korean]
+  label = "내 외침을 들어라!"
+  description = "레벨 3 ROAR 잠금 해제"
+  unachieved_description = "레벨 3 ROAR 잠금 해제"
+
+  [achievements."Traditional Chinese"]
+  label = "聽我吼！"
+  description = "解鎖 3 級咆哮。"
+  unachieved_description = "解鎖 3 級咆哮。"
+
+  [achievements.Polish]
+  label = "Słysz mnie ryczeć!"
+  description = "Odblokuj Poziom 3 ROAR."
+  unachieved_description = "Odblokuj Poziom 3 ROAR."
+
+  [achievements.Russian]
+  label = "Слушай мой рёв!"
+  description = "Разблокируйте уровень 3 РЕВ."
+  unachieved_description = "Разблокируйте уровень 3 РЕВ."
+
+  [achievements.Swedish]
+  label = "Hör mig ryta!"
+  description = "Lås upp nivå 3 RYTA."
+  unachieved_description = "Lås upp nivå 3 RYTA."
+
+  [achievements.Turkish]
+  label = "Beni duy, kükremem!"
+  description = "Seviye 3 Kükremeyi Kilidini Aç."
+  unachieved_description = "Seviye 3 Kükremeyi Kilidini Aç."
+
+  [achievements.Norwegian]
+  label = "Hør meg Roar!"
+  description = "Lås opp nivå 3 ROAR."
+  unachieved_description = "Lås opp nivå 3 ROAR."
+
+  [achievements.Dutch]
+  label = "Hoor me brullen!"
+  description = "Ontgrendel Niveau 3 ROAR."
+  unachieved_description = "Ontgrendel Niveau 3 ROAR."
+
+  [achievements."Simplified Chinese"]
+  label = "听我咆哮！"
+  description = "解锁第3级咆哮。"
+  unachieved_description = "解锁第3级咆哮。"
+
+[[achievements]]
+id = 27
+label = "Anger Management"
+description = "Unlock Level 3 AGRO."
+unachieved_description = "Unlock Level 3 AGRO."
+
+  [achievements.Portuguese]
+  label = "Controle de Raiva"
+  description = "Desbloqueie AGRO Nível 3."
+  unachieved_description = "Desbloqueie AGRO Nível 3."
+
+  [achievements.Japanese]
+  label = "怒りの管理"
+  description = "レベル3 AGROのロックを解除する。"
+  unachieved_description = "レベル3 AGROのロックを解除する。"
+
+  [achievements.German]
+  label = "Wutbewältigung"
+  description = "Schalte Stufe 3 AGRO frei."
+  unachieved_description = "Schalte Stufe 3 AGRO frei."
+
+  [achievements.French]
+  label = "Gestion de la colère"
+  description = "Déverrouillez le niveau 3 AGRO."
+  unachieved_description = "Déverrouillez le niveau 3 AGRO."
+
+  [achievements.Spanish]
+  label = "Manejo de la ira"
+  description = "Desbloquear el Nivel 3 AGRO."
+  unachieved_description = "Desbloquear el Nivel 3 AGRO."
+
+  [achievements.Italian]
+  label = "Gestione della rabbia"
+  description = "Sblocca il livello 3 AGRO."
+  unachieved_description = "Sblocca il livello 3 AGRO."
+
+  [achievements.Korean]
+  label = "분노 조절"
+  description = "레벨 3 AGRO 잠금 해제"
+  unachieved_description = "레벨 3 AGRO 잠금 해제"
+
+  [achievements."Traditional Chinese"]
+  label = "憤怒管理"
+  description = "解鎖 3 級農業。"
+  unachieved_description = "解鎖 3 級農業。"
+
+  [achievements.Polish]
+  label = "Radzenie sobie ze złością"
+  description = "Odblokuj Poziom 3 AGRO."
+  unachieved_description = "Odblokuj Poziom 3 AGRO."
+
+  [achievements.Russian]
+  label = "Управление гневом"
+  description = "Разблокировать уровень 3 AGRO."
+  unachieved_description = "Разблокировать уровень 3 AGRO."
+
+  [achievements.Swedish]
+  label = "Ilskehantering"
+  description = "Lås upp nivå 3 AGRO."
+  unachieved_description = "Lås upp nivå 3 AGRO."
+
+  [achievements.Turkish]
+  label = "Öfke Yönetimi"
+  description = "Seviye 3 AGRO'nun kilidini aç."
+  unachieved_description = "Seviye 3 AGRO'nun kilidini aç."
+
+  [achievements.Norwegian]
+  label = "Anger Management"
+  description = "Lås opp nivå 3 AGRO."
+  unachieved_description = "Lås opp nivå 3 AGRO."
+
+  [achievements.Dutch]
+  label = "Woedebeheersing"
+  description = "Ontgrendel Niveau 3 AGRO."
+  unachieved_description = "Ontgrendel Niveau 3 AGRO."
+
+  [achievements."Simplified Chinese"]
+  label = "愤怒管理"
+  description = "解锁三级AGRO。"
+  unachieved_description = "解锁三级AGRO。"
+
+[[achievements]]
+id = 28
+label = "Set To Stun"
+description = "Unlock Level 3 EMP."
+unachieved_description = "Unlock Level 3 EMP."
+
+  [achievements.Portuguese]
+  label = "Pronto Para Atordoar"
+  description = "Desbloqueie EMP Nível 3."
+  unachieved_description = "Desbloqueie EMP Nível 3."
+
+  [achievements.Japanese]
+  label = "スタンに設定"
+  description = "レベル3 EMP をアンロックする。"
+  unachieved_description = "レベル3 EMP をアンロックする。"
+
+  [achievements.German]
+  label = "Auf Betäuben stellen"
+  description = "Schalte Level 3 EMP frei."
+  unachieved_description = "Schalte Level 3 EMP frei."
+
+  [achievements.French]
+  label = "Réglé sur étourdir"
+  description = "Déverrouiller le niveau 3 EMP."
+  unachieved_description = "Déverrouiller le niveau 3 EMP."
+
+  [achievements.Spanish]
+  label = "Ajustar a aturdir"
+  description = "Desbloquear el nivel 3 de EMP."
+  unachieved_description = "Desbloquear el nivel 3 de EMP."
+
+  [achievements.Italian]
+  label = "Imposta su Stordire"
+  description = "Sblocca il livello 3 EMP."
+  unachieved_description = "Sblocca il livello 3 EMP."
+
+  [achievements.Korean]
+  label = "기절 모드로 설정"
+  description = "3단계 EMP 잠금 해제"
+  unachieved_description = "3단계 EMP 잠금 해제"
+
+  [achievements."Traditional Chinese"]
+  label = "設定為擊暈"
+  description = "解鎖 3 級電磁脈衝。"
+  unachieved_description = "解鎖 3 級電磁脈衝。"
+
+  [achievements.Polish]
+  label = "Ustawić na ogłuszenie"
+  description = "Odblokuj poziom 3 EMP."
+  unachieved_description = "Odblokuj poziom 3 EMP."
+
+  [achievements.Russian]
+  label = "Установить на оглушение"
+  description = "Разблокировать Уровень 3 ЭМИ."
+  unachieved_description = "Разблокировать Уровень 3 ЭМИ."
+
+  [achievements.Swedish]
+  label = "Ställ in på bedövning"
+  description = "Lås upp nivå 3 EMP."
+  unachieved_description = "Lås upp nivå 3 EMP."
+
+  [achievements.Turkish]
+  label = "Sersemletmeye Ayarla"
+  description = "Seviye 3 EMP'nin kilidini aç."
+  unachieved_description = "Seviye 3 EMP'nin kilidini aç."
+
+  [achievements.Norwegian]
+  label = "Sett til å bedøve"
+  description = "Lås opp nivå 3 EMP."
+  unachieved_description = "Lås opp nivå 3 EMP."
+
+  [achievements.Dutch]
+  label = "Instellen op verdoven"
+  description = "Ontgrendel niveau 3 EMP."
+  unachieved_description = "Ontgrendel niveau 3 EMP."
+
+  [achievements."Simplified Chinese"]
+  label = "设置为眩晕"
+  description = "解锁三级电磁脉冲。"
+  unachieved_description = "解锁三级电磁脉冲。"
+
+[[achievements]]
+id = 29
+label = "Zoning Out"
+description = """
+Unlock Level 3 ZONE.
+
+
+
+"""
+unachieved_description = """
+Unlock Level 3 ZONE.
+
+
+
+"""
+
+  [achievements.Portuguese]
+  label = "Fora de Área"
+  description = "Desbloqueie ZONE Nível 3."
+  unachieved_description = "Desbloqueie ZONE Nível 3."
+
+  [achievements.Japanese]
+  label = "ぼんやりする"
+  description = "レベル3ゾーンのロックを解除する。"
+  unachieved_description = "レベル3ゾーンのロックを解除する。"
+
+  [achievements.German]
+  label = "Abschalten"
+  description = "Schalte Stufe 3 ZONE frei."
+  unachieved_description = "Schalte Stufe 3 ZONE frei."
+
+  [achievements.French]
+  label = "Se déconnecter"
+  description = "Déverrouiller la ZONE Niveau 3."
+  unachieved_description = "Déverrouiller la ZONE Niveau 3."
+
+  [achievements.Spanish]
+  label = "Distraerse"
+  description = "Desbloquear la ZONA de Nivel 3."
+  unachieved_description = "Desbloquear la ZONA de Nivel 3."
+
+  [achievements.Italian]
+  label = "Sognare ad occhi aperti"
+  description = "Sblocca la ZONA di Livello 3."
+  unachieved_description = "Sblocca la ZONA di Livello 3."
+
+  [achievements.Korean]
+  label = "멍 때리기"
+  description = "레벨 3 지역 잠금 해제"
+  unachieved_description = "레벨 3 지역 잠금 해제"
+
+  [achievements."Traditional Chinese"]
+  label = "分割區"
+  description = "解鎖 3 級區域。"
+  unachieved_description = "解鎖 3 級區域。"
+
+  [achievements.Polish]
+  label = "Odpływanie myślami"
+  description = "Odblokuj STREFĘ Poziom 3."
+  unachieved_description = "Odblokuj STREFĘ Poziom 3."
+
+  [achievements.Russian]
+  label = "Рассеянность"
+  description = "Разблокировать ЗОНУ Уровень 3."
+  unachieved_description = "Разблокировать ЗОНУ Уровень 3."
+
+  [achievements.Swedish]
+  label = "Dagdrömma"
+  description = "Lås upp nivå 3 ZON."
+  unachieved_description = "Lås upp nivå 3 ZON."
+
+  [achievements.Turkish]
+  label = "Dalmak"
+  description = "Seviye 3 BÖLGE'nin kilidini aç."
+  unachieved_description = "Seviye 3 BÖLGE'nin kilidini aç."
+
+  [achievements.Norwegian]
+  label = "Utsoning"
+  description = "Lås opp nivå 3 SONE."
+  unachieved_description = "Lås opp nivå 3 SONE."
+
+  [achievements.Dutch]
+  label = "Afwezig zijn"
+  description = "Ontgrendel Level 3 ZONE."
+  unachieved_description = "Ontgrendel Level 3 ZONE."
+
+  [achievements."Simplified Chinese"]
+  label = "发呆"
+  description = "解锁第3级区域。"
+  unachieved_description = "解锁第3级区域。"
+
+[[achievements]]
+id = 30
+label = "In the Lap of…"
+description = "Beat the Luxury Champ."
+unachieved_description = "Beat the Luxury Champ."
+
+  [achievements.Portuguese]
+  label = "No Colo de..."
+  description = "Derrote o Campeão de Luxo (Luxury)."
+  unachieved_description = "Derrote o Campeão de Luxo (Luxury)."
+
+  [achievements.Japanese]
+  label = "〜の膝の上で"
+  description = "ラグジュアリーチャンプに勝て。"
+  unachieved_description = "ラグジュアリーチャンプに勝て。"
+
+  [achievements.German]
+  label = "Im Schoß von…"
+  description = "Schlage den Luxus-Champion."
+  unachieved_description = "Schlage den Luxus-Champion."
+
+  [achievements.French]
+  label = "Dans le giron de…"
+  description = "Bats le champion du luxe."
+  unachieved_description = "Bats le champion du luxe."
+
+  [achievements.Spanish]
+  label = "En el regazo de…"
+  description = "Derrota al Campeón del Lujo."
+  unachieved_description = "Derrota al Campeón del Lujo."
+
+  [achievements.Italian]
+  label = "In grembo a…"
+  description = "Batti il campione del lusso."
+  unachieved_description = "Batti il campione del lusso."
+
+  [achievements.Korean]
+  label = "…의 품에"
+  description = "럭셔리 챔프를 이겨라."
+  unachieved_description = "럭셔리 챔프를 이겨라."
+
+  [achievements."Traditional Chinese"]
+  label = "在……的膝上"
+  description = "擊敗豪華冠軍。"
+  unachieved_description = "擊敗豪華冠軍。"
+
+  [achievements.Polish]
+  label = "W objęciach…"
+  description = "Pokonaj Luksusowego Mistrza."
+  unachieved_description = "Pokonaj Luksusowego Mistrza."
+
+  [achievements.Russian]
+  label = "На коленях у…"
+  description = "Победи Роскошного Чемпиона."
+  unachieved_description = "Победи Роскошного Чемпиона."
+
+  [achievements.Swedish]
+  label = "I famnen på…"
+  description = "Slå lyxmästaren."
+  unachieved_description = "Slå lyxmästaren."
+
+  [achievements.Turkish]
+  label = "Kucağında…"
+  description = "Lüks Şampiyonu Yen."
+  unachieved_description = "Lüks Şampiyonu Yen."
+
+  [achievements.Norwegian]
+  label = "I fanget til…"
+  description = "Slå luksusmesteren."
+  unachieved_description = "Slå luksusmesteren."
+
+  [achievements.Dutch]
+  label = "In de schoot van…"
+  description = "Versla de luxekampioen."
+  unachieved_description = "Versla de luxekampioen."
+
+  [achievements."Simplified Chinese"]
+  label = "在……的怀抱中"
+  description = "击败奢华冠军。"
+  unachieved_description = "击败奢华冠军。"
+
+[[achievements]]
+id = 31
+label = "Name that Tune ( r )"
+description = "Beat the Tuner Champ."
+unachieved_description = "Beat the Tuner Champ."
+
+  [achievements.Portuguese]
+  label = "Adivinhe a Música ( r )"
+  description = "Derrote o Campeão de Tuners."
+  unachieved_description = "Derrote o Campeão de Tuners."
+
+  [achievements.Japanese]
+  label = "ネーム・ザット・チューン (r)"
+  description = "チューナーチャンピオンを倒せ。"
+  unachieved_description = "チューナーチャンピオンを倒せ。"
+
+  [achievements.German]
+  label = "Nenne diese Melodie (r)"
+  description = "Schlag den Tuner-Champion."
+  unachieved_description = "Schlag den Tuner-Champion."
+
+  [achievements.French]
+  label = "Nommez ce morceau (r)"
+  description = "Bats le champion du tuner."
+  unachieved_description = "Bats le champion du tuner."
+
+  [achievements.Spanish]
+  label = "Nombra esa melodía (r)"
+  description = "Derrota al campeón afinador."
+  unachieved_description = "Derrota al campeón afinador."
+
+  [achievements.Italian]
+  label = "Indovina il Brano (r)"
+  description = "Batti il campione del sintonizzatore."
+  unachieved_description = "Batti il campione del sintonizzatore."
+
+  [achievements.Korean]
+  label = "그 노래 이름 맞히기 (r)"
+  description = "튜너 챔프를 이겨라."
+  unachieved_description = "튜너 챔프를 이겨라."
+
+  [achievements."Traditional Chinese"]
+  label = "命名該曲調 ( r )"
+  description = "擊敗調諧器冠軍。"
+  unachieved_description = "擊敗調諧器冠軍。"
+
+  [achievements.Polish]
+  label = "Zgadnij tę melodię (r)"
+  description = "Pokonaj mistrza strojeniowca."
+  unachieved_description = "Pokonaj mistrza strojeniowca."
+
+  [achievements.Russian]
+  label = "Назови эту мелодию (r)"
+  description = "Победите чемпиона-тюнера."
+  unachieved_description = "Победите чемпиона-тюнера."
+
+  [achievements.Swedish]
+  label = "Känn igen den låten (r)"
+  description = "Slå Tuner-mästaren."
+  unachieved_description = "Slå Tuner-mästaren."
+
+  [achievements.Turkish]
+  label = "O Şarkının Adını Söyle (r)"
+  description = "Tuner Şampiyonunu Yen."
+  unachieved_description = "Tuner Şampiyonunu Yen."
+
+  [achievements.Norwegian]
+  label = "Gi navnet den melodien ( r )"
+  description = "Slå Tuner-mesteren."
+  unachieved_description = "Slå Tuner-mesteren."
+
+  [achievements.Dutch]
+  label = "Noem die Toon ( r )"
+  description = "Versla de Tuner-kampioen."
+  unachieved_description = "Versla de Tuner-kampioen."
+
+  [achievements."Simplified Chinese"]
+  label = "猜那首曲子 (r)"
+  description = "击败调音冠军。"
+  unachieved_description = "击败调音冠军。"
+
+[[achievements]]
+id = 33
+label = "World's Strongest"
+description = "Beat the Muscle Champ."
+unachieved_description = "Beat the Muscle Champ."
+
+  [achievements.Portuguese]
+  label = "O Mais Forte do Mundo"
+  description = "Derrote o Campeão de Muscle."
+  unachieved_description = "Derrote o Campeão de Muscle."
+
+  [achievements.Japanese]
+  label = "世界最強"
+  description = "マッスルチャンプを倒せ。"
+  unachieved_description = "マッスルチャンプを倒せ。"
+
+  [achievements.German]
+  label = "Stärkste der Welt"
+  description = "Schlage den Muskel-Champion."
+  unachieved_description = "Schlage den Muskel-Champion."
+
+  [achievements.French]
+  label = "Le plus fort du monde"
+  description = "Bats le champion des muscles."
+  unachieved_description = "Bats le champion des muscles."
+
+  [achievements.Spanish]
+  label = "El más fuerte del mundo"
+  description = "Derrota al Campeón del Músculo."
+  unachieved_description = "Derrota al Campeón del Músculo."
+
+  [achievements.Italian]
+  label = "Il più forte del mondo"
+  description = "Batti il Campione dei Muscoli."
+  unachieved_description = "Batti il Campione dei Muscoli."
+
+  [achievements.Korean]
+  label = "세계에서 가장 강한"
+  description = "근육 챔피언을 이겨라."
+  unachieved_description = "근육 챔피언을 이겨라."
+
+  [achievements."Traditional Chinese"]
+  label = "世界最強"
+  description = "擊敗肌肉冠軍。"
+  unachieved_description = "擊敗肌肉冠軍。"
+
+  [achievements.Polish]
+  label = "Najsilniejszy na świecie"
+  description = "Pokonaj Mistrza Mięśni."
+  unachieved_description = "Pokonaj Mistrza Mięśni."
+
+  [achievements.Russian]
+  label = "Самый сильный в мире"
+  description = "Победи чемпиона по мышцам."
+  unachieved_description = "Победи чемпиона по мышцам."
+
+  [achievements.Swedish]
+  label = "Världens starkaste"
+  description = "Slå muskelmästaren."
+  unachieved_description = "Slå muskelmästaren."
+
+  [achievements.Turkish]
+  label = "Dünyanın En Güçlüsü"
+  description = "Kas Şampiyonunu Yen."
+  unachieved_description = "Kas Şampiyonunu Yen."
+
+  [achievements.Norwegian]
+  label = "Verdens sterkeste"
+  description = "Slå muskelmesteren."
+  unachieved_description = "Slå muskelmesteren."
+
+  [achievements.Dutch]
+  label = "Sterkste ter wereld"
+  description = "Versla de Spierkampioen."
+  unachieved_description = "Versla de Spierkampioen."
+
+  [achievements."Simplified Chinese"]
+  label = "世界上最强"
+  description = "击败肌肉冠军。"
+  unachieved_description = "击败肌肉冠军。"
+
+[[achievements]]
+id = 34
+label = "Two Wheels of Fury"
+description = "Beat the Motorcycle Champ."
+unachieved_description = "Beat the Motorcycle Champ."
+
+  [achievements.Portuguese]
+  label = "Duas Rodas de Fúria"
+  description = "Derrote o Campeão de Motos."
+  unachieved_description = "Derrote o Campeão de Motos."
+
+  [achievements.Japanese]
+  label = "怒りの二輪"
+  description = "オートバイチャンピオンに勝て。"
+  unachieved_description = "オートバイチャンピオンに勝て。"
+
+  [achievements.German]
+  label = "Zwei Räder des Zorns"
+  description = "Schlage den Motorrad-Champion."
+  unachieved_description = "Schlage den Motorrad-Champion."
+
+  [achievements.French]
+  label = "Deux roues de fureur"
+  description = "Bats le champion de moto."
+  unachieved_description = "Bats le champion de moto."
+
+  [achievements.Spanish]
+  label = "Dos Ruedas de Furia"
+  description = "Derrota al Campeón de Motociclismo."
+  unachieved_description = "Derrota al Campeón de Motociclismo."
+
+  [achievements.Italian]
+  label = "Due Ruote di Furia"
+  description = "Batti il campione di moto."
+  unachieved_description = "Batti il campione di moto."
+
+  [achievements.Korean]
+  label = "분노의 두 바퀴"
+  description = "모터사이클 챔피언을 이겨라."
+  unachieved_description = "모터사이클 챔피언을 이겨라."
+
+  [achievements."Traditional Chinese"]
+  label = "憤怒的兩輪"
+  description = "擊敗摩托車冠軍。"
+  unachieved_description = "擊敗摩托車冠軍。"
+
+  [achievements.Polish]
+  label = "Dwa Koła Wściekłości"
+  description = "Pokonaj Mistrza Motocykli."
+  unachieved_description = "Pokonaj Mistrza Motocykli."
+
+  [achievements.Russian]
+  label = "Два колеса ярости"
+  description = "Победи чемпиона по мотоциклу."
+  unachieved_description = "Победи чемпиона по мотоциклу."
+
+  [achievements.Swedish]
+  label = "Två hjul av vrede"
+  description = "Slå motorcykelmästaren."
+  unachieved_description = "Slå motorcykelmästaren."
+
+  [achievements.Turkish]
+  label = "Öfkenin İki Tekerleği"
+  description = "Motosiklet Şampiyonunu Yen."
+  unachieved_description = "Motosiklet Şampiyonunu Yen."
+
+  [achievements.Norwegian]
+  label = "To Wheels of Fury"
+  description = "Slå motorsykkelmesteren."
+  unachieved_description = "Slå motorsykkelmesteren."
+
+  [achievements.Dutch]
+  label = "Twee Wielen van Woede"
+  description = "Versla de Motorrijkampioen."
+  unachieved_description = "Versla de Motorrijkampioen."
+
+  [achievements."Simplified Chinese"]
+  label = "愤怒的双轮"
+  description = "击败摩托车冠军。"
+  unachieved_description = "击败摩托车冠军。"
+
+[[achievements]]
+id = 35
+label = "How Exotic"
+description = "Beat the Exotic Champ."
+unachieved_description = "Beat the Exotic Champ."
+
+  [achievements.Portuguese]
+  label = "Quão Exótico"
+  description = "Derrote o Campeão de Exóticos."
+  unachieved_description = "Derrote o Campeão de Exóticos."
+
+  [achievements.Japanese]
+  label = "どれほどエキゾチックか"
+  description = "エキゾチックチャンプを倒せ。"
+  unachieved_description = "エキゾチックチャンプを倒せ。"
+
+  [achievements.German]
+  label = "Wie exotisch"
+  description = "Schlage den exotischen Champion."
+  unachieved_description = "Schlage den exotischen Champion."
+
+  [achievements.French]
+  label = "Comme c'est exotique"
+  description = "Bats le champion exotique."
+  unachieved_description = "Bats le champion exotique."
+
+  [achievements.Spanish]
+  label = "Qué exótico"
+  description = "Derrota al Campeón Exótico."
+  unachieved_description = "Derrota al Campeón Exótico."
+
+  [achievements.Italian]
+  label = "Che esotico"
+  description = "Batti il Campione Esotico."
+  unachieved_description = "Batti il Campione Esotico."
+
+  [achievements.Korean]
+  label = "정말 이국적이다"
+  description = "이국적인 챔피언을 이겨라."
+  unachieved_description = "이국적인 챔피언을 이겨라."
+
+  [achievements."Traditional Chinese"]
+  label = "多麼奇異"
+  description = "擊敗異國冠軍。"
+  unachieved_description = "擊敗異國冠軍。"
+
+  [achievements.Polish]
+  label = "Jak egzotycznie"
+  description = "Pokonaj Egzotycznego Mistrza."
+  unachieved_description = "Pokonaj Egzotycznego Mistrza."
+
+  [achievements.Russian]
+  label = "Насколько экзотично"
+  description = "Победи Экзотического Чемпиона."
+  unachieved_description = "Победи Экзотического Чемпиона."
+
+  [achievements.Swedish]
+  label = "Hur exotiskt"
+  description = "Slå den exotiska mästaren."
+  unachieved_description = "Slå den exotiska mästaren."
+
+  [achievements.Turkish]
+  label = "Ne kadar Egzotik"
+  description = "Egzotik Şampiyonu Yen."
+  unachieved_description = "Egzotik Şampiyonu Yen."
+
+  [achievements.Norwegian]
+  label = "Hvor eksotisk"
+  description = "Slå den eksotiske mester."
+  unachieved_description = "Slå den eksotiske mester."
+
+  [achievements.Dutch]
+  label = "Hoe exotisch"
+  description = "Versla de Exotische Kampioen."
+  unachieved_description = "Versla de Exotische Kampioen."
+
+  [achievements."Simplified Chinese"]
+  label = "多么奇异"
+  description = "击败异国冠军。"
+  unachieved_description = "击败异国冠军。"
+
+[[achievements]]
+id = 36
+label = "The Basics"
+description = "Complete one of the missions you receive in the mission log."
+unachieved_description = "Complete one of the missions you receive in the mission log."
+
+  [achievements.Portuguese]
+  label = "O Básico"
+  description = "Complete uma das missões que você recebe no registro de missões."
+  unachieved_description = "Complete uma das missões que você recebe no registro de missões."
+
+  [achievements.Japanese]
+  label = "基本"
+  description = "ミッションログで受け取ったミッションのうちの1つを完了してください。"
+  unachieved_description = "ミッションログで受け取ったミッションのうちの1つを完了してください。"
+
+  [achievements.German]
+  label = "Die Grundlagen"
+  description = "Schließe eine der Missionen ab, die du im Missionsprotokoll erhältst."
+  unachieved_description = "Schließe eine der Missionen ab, die du im Missionsprotokoll erhältst."
+
+  [achievements.French]
+  label = "Les bases"
+  description = "Terminez l'une des missions que vous recevez dans le journal de missions."
+  unachieved_description = "Terminez l'une des missions que vous recevez dans le journal de missions."
+
+  [achievements.Spanish]
+  label = "Los conceptos básicos"
+  description = "Completa una de las misiones que recibas en el registro de misiones."
+  unachieved_description = "Completa una de las misiones que recibas en el registro de misiones."
+
+  [achievements.Italian]
+  label = "Le Basi"
+  description = "Completa una delle missioni che ricevi nel registro delle missioni."
+  unachieved_description = "Completa una delle missioni che ricevi nel registro delle missioni."
+
+  [achievements.Korean]
+  label = "기초"
+  description = "미션 로그에서 받은 미션 중 하나를 완료하세요."
+  unachieved_description = "미션 로그에서 받은 미션 중 하나를 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "基礎知識"
+  description = "完成任務日誌中收到的任務之一。"
+  unachieved_description = "完成任務日誌中收到的任務之一。"
+
+  [achievements.Polish]
+  label = "Podstawy"
+  description = "Wykonaj jedną z misji, które otrzymasz w dzienniku misji."
+  unachieved_description = "Wykonaj jedną z misji, które otrzymasz w dzienniku misji."
+
+  [achievements.Russian]
+  label = "Основы"
+  description = "Выполните одну из миссий, которые вы получили в журнале миссий."
+  unachieved_description = "Выполните одну из миссий, которые вы получили в журнале миссий."
+
+  [achievements.Swedish]
+  label = "Grunderna"
+  description = "Slutför en av de uppdrag du får i uppdragsloggen."
+  unachieved_description = "Slutför en av de uppdrag du får i uppdragsloggen."
+
+  [achievements.Turkish]
+  label = "Temeller"
+  description = "Görev günlüğünde aldığınız görevlerden birini tamamlayın."
+  unachieved_description = "Görev günlüğünde aldığınız görevlerden birini tamamlayın."
+
+  [achievements.Norwegian]
+  label = "Det grunnleggende"
+  description = "Fullfør ett av oppdragene du mottar i oppdragsloggen."
+  unachieved_description = "Fullfør ett av oppdragene du mottar i oppdragsloggen."
+
+  [achievements.Dutch]
+  label = "De basis"
+  description = "Voltooi een van de missies die je in het missielogboek ontvangt."
+  unachieved_description = "Voltooi een van de missies die je in het missielogboek ontvangt."
+
+  [achievements."Simplified Chinese"]
+  label = "基础"
+  description = "完成你在任务日志中收到的其中一项任务。"
+  unachieved_description = "完成你在任务日志中收到的其中一项任务。"
+
+[[achievements]]
+id = 37
+label = "What's a Speed Limit?"
+description = "Win 15 dynamic freeway races."
+unachieved_description = "Win 15 dynamic freeway races."
+
+  [achievements.Portuguese]
+  label = "O Que é Limite de Velocidade?"
+  description = "Vença 15 corridas dinâmicas na rodovia."
+  unachieved_description = "Vença 15 corridas dinâmicas na rodovia."
+
+  [achievements.Japanese]
+  label = "制限速度とは何ですか？"
+  description = "15のダイナミックな高速道路レースに勝つ。"
+  unachieved_description = "15のダイナミックな高速道路レースに勝つ。"
+
+  [achievements.German]
+  label = "Was ist eine Geschwindigkeitsbegrenzung?"
+  description = "Gewinne 15 dynamische Autobahnrennen."
+  unachieved_description = "Gewinne 15 dynamische Autobahnrennen."
+
+  [achievements.French]
+  label = "Qu'est-ce qu'une limite de vitesse ?"
+  description = "Gagnez 15 courses dynamiques sur l'autoroute."
+  unachieved_description = "Gagnez 15 courses dynamiques sur l'autoroute."
+
+  [achievements.Spanish]
+  label = "¿Qué es un límite de velocidad?"
+  description = "Gana 15 carreras dinámicas en la autopista."
+  unachieved_description = "Gana 15 carreras dinámicas en la autopista."
+
+  [achievements.Italian]
+  label = "Cos'è un limite di velocità?"
+  description = "Vinci 15 gare dinamiche in autostrada."
+  unachieved_description = "Vinci 15 gare dinamiche in autostrada."
+
+  [achievements.Korean]
+  label = "제한 속도가 무엇인가요?"
+  description = "다이나믹 고속도로 레이스 15회를 우승하세요."
+  unachieved_description = "다이나믹 고속도로 레이스 15회를 우승하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "什麼是速度限制？"
+  description = "贏得 15 場動態高速公路比賽。"
+  unachieved_description = "贏得 15 場動態高速公路比賽。"
+
+  [achievements.Polish]
+  label = "Co to jest ograniczenie prędkości?"
+  description = "Wygraj 15 dynamicznych wyścigów na autostradzie."
+  unachieved_description = "Wygraj 15 dynamicznych wyścigów na autostradzie."
+
+  [achievements.Russian]
+  label = "Что такое ограничение скорости?"
+  description = "Выиграйте 15 динамичных гонок на скоростных трассах."
+  unachieved_description = "Выиграйте 15 динамичных гонок на скоростных трассах."
+
+  [achievements.Swedish]
+  label = "Vad är en hastighetsgräns?"
+  description = "Vinn 15 dynamiska motorvägslopp."
+  unachieved_description = "Vinn 15 dynamiska motorvägslopp."
+
+  [achievements.Turkish]
+  label = "Hız Limiti Nedir?"
+  description = "15 dinamik otoyol yarışını kazanın."
+  unachieved_description = "15 dinamik otoyol yarışını kazanın."
+
+  [achievements.Norwegian]
+  label = "Hva er en fartsgrense?"
+  description = "Vinn 15 dynamiske motorveiløp."
+  unachieved_description = "Vinn 15 dynamiske motorveiløp."
+
+  [achievements.Dutch]
+  label = "Wat is een snelheidslimiet?"
+  description = "Win 15 dynamische snelwegraces."
+  unachieved_description = "Win 15 dynamische snelwegraces."
+
+  [achievements."Simplified Chinese"]
+  label = "什么是速度限制？"
+  description = "赢得15场动态高速公路赛。"
+  unachieved_description = "赢得15场动态高速公路赛。"
+
+[[achievements]]
+id = 38
+label = "Streaker"
+description = "Win 5 races in a row offline."
+unachieved_description = "Win 5 races in a row offline."
+
+  [achievements.Portuguese]
+  label = "Invicto"
+  description = "Vença 5 corridas seguidas offline."
+  unachieved_description = "Vença 5 corridas seguidas offline."
+
+  [achievements.Japanese]
+  label = "全裸で走る人"
+  description = "オフラインで5連勝する。"
+  unachieved_description = "オフラインで5連勝する。"
+
+  [achievements.German]
+  label = "Nacktläufer"
+  description = "Gewinne 5 Rennen hintereinander offline."
+  unachieved_description = "Gewinne 5 Rennen hintereinander offline."
+
+  [achievements.French]
+  label = "Nu(e) coureur(se)"
+  description = "Gagnez 5 courses d'affilée hors ligne."
+  unachieved_description = "Gagnez 5 courses d'affilée hors ligne."
+
+  [achievements.Spanish]
+  label = "Desnudo"
+  description = "Gana 5 carreras seguidas sin conexión."
+  unachieved_description = "Gana 5 carreras seguidas sin conexión."
+
+  [achievements.Italian]
+  label = "Corridore nudo"
+  description = "Vinci 5 gare consecutive offline."
+  unachieved_description = "Vinci 5 gare consecutive offline."
+
+  [achievements.Korean]
+  label = "스트리커"
+  description = "오프라인에서 연속으로 5번 경주에서 승리하세요."
+  unachieved_description = "오프라인에서 연속으로 5번 경주에서 승리하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "裸奔者"
+  description = "離線連續贏得 5 場比賽。"
+  unachieved_description = "離線連續贏得 5 場比賽。"
+
+  [achievements.Polish]
+  label = "Nagi biegacz"
+  description = "Wygraj 5 wyścigów z rzędu offline."
+  unachieved_description = "Wygraj 5 wyścigów z rzędu offline."
+
+  [achievements.Russian]
+  label = "Стриптизёр"
+  description = "Выиграйте 5 гонок подряд в офлайне."
+  unachieved_description = "Выиграйте 5 гонок подряд в офлайне."
+
+  [achievements.Swedish]
+  label = "Streaker"
+  description = "Vinn 5 lopp i rad offline."
+  unachieved_description = "Vinn 5 lopp i rad offline."
+
+  [achievements.Turkish]
+  label = "Çırılçıplak koşucu"
+  description = "Çevrimdışı olarak arka arkaya 5 yarış kazanın."
+  unachieved_description = "Çevrimdışı olarak arka arkaya 5 yarış kazanın."
+
+  [achievements.Norwegian]
+  label = "Streaker"
+  description = "Vinn 5 løp på rad offline."
+  unachieved_description = "Vinn 5 løp på rad offline."
+
+  [achievements.Dutch]
+  label = "Naaktloper"
+  description = "Win 5 races op rij offline."
+  unachieved_description = "Win 5 races op rij offline."
+
+  [achievements."Simplified Chinese"]
+  label = "裸奔者"
+  description = "在离线模式下连续赢得5场比赛。"
+  unachieved_description = "在离线模式下连续赢得5场比赛。"
+
+[[achievements]]
+id = 39
+label = "Winning With Less"
+description = "Win 10 races on a motorcycle."
+unachieved_description = "Win 10 races on a motorcycle."
+
+  [achievements.Portuguese]
+  label = "Vencendo com Menos"
+  description = "Vença 10 corridas em uma moto."
+  unachieved_description = "Vença 10 corridas em uma moto."
+
+  [achievements.Japanese]
+  label = "少なくして勝つ"
+  description = "バイクで10レースに勝つ。"
+  unachieved_description = "バイクで10レースに勝つ。"
+
+  [achievements.German]
+  label = "Gewinnen mit weniger"
+  description = "Gewinne 10 Rennen auf einem Motorrad."
+  unachieved_description = "Gewinne 10 Rennen auf einem Motorrad."
+
+  [achievements.French]
+  label = "Gagner Avec Moins"
+  description = "Gagne 10 courses à moto."
+  unachieved_description = "Gagne 10 courses à moto."
+
+  [achievements.Spanish]
+  label = "Ganar con menos"
+  description = "Gana 10 carreras en una motocicleta."
+  unachieved_description = "Gana 10 carreras en una motocicleta."
+
+  [achievements.Italian]
+  label = "Vincere Con Meno"
+  description = "Vinci 10 gare su una motocicletta."
+  unachieved_description = "Vinci 10 gare su una motocicletta."
+
+  [achievements.Korean]
+  label = "적게 가지고 승리하기"
+  description = "오토바이로 10번 경주에서 이기세요."
+  unachieved_description = "오토바이로 10번 경주에서 이기세요."
+
+  [achievements."Traditional Chinese"]
+  label = "以少勝多"
+  description = "駕駛摩托車贏得 10 場比賽。"
+  unachieved_description = "駕駛摩托車贏得 10 場比賽。"
+
+  [achievements.Polish]
+  label = "Wygrywanie z mniejszym"
+  description = "Wygraj 10 wyścigów na motocyklu."
+  unachieved_description = "Wygraj 10 wyścigów na motocyklu."
+
+  [achievements.Russian]
+  label = "Побеждая с меньшим"
+  description = "Выиграй 10 гонок на мотоцикле."
+  unachieved_description = "Выиграй 10 гонок на мотоцикле."
+
+  [achievements.Swedish]
+  label = "Vinna med mindre"
+  description = "Vinn 10 lopp på en motorcykel."
+  unachieved_description = "Vinn 10 lopp på en motorcykel."
+
+  [achievements.Turkish]
+  label = "Daha Azla Kazanmak"
+  description = "Bir motosikletle 10 yarış kazan."
+  unachieved_description = "Bir motosikletle 10 yarış kazan."
+
+  [achievements.Norwegian]
+  label = "Vinne med mindre"
+  description = "Vinn 10 løp på en motorsykkel."
+  unachieved_description = "Vinn 10 løp på en motorsykkel."
+
+  [achievements.Dutch]
+  label = "Winnen met minder"
+  description = "Win 10 races op een motorfiets."
+  unachieved_description = "Win 10 races op een motorfiets."
+
+  [achievements."Simplified Chinese"]
+  label = "以少胜多"
+  description = "在摩托车上赢得10场比赛。"
+  unachieved_description = "在摩托车上赢得10场比赛。"
+
+[[achievements]]
+id = 40
+label = "Go on Green"
+description = "Win 15 Red Light Races."
+unachieved_description = "Win 15 Red Light Races."
+
+  [achievements.Portuguese]
+  label = "Siga no Verde"
+  description = "Vença 15 Corridas de Semáforo vermelho (Red Light Races)."
+  unachieved_description = "Vença 15 Corridas de Semáforo vermelho (Red Light Races)."
+
+  [achievements.Japanese]
+  label = "進め、青信号"
+  description = "レッドライトレースで15勝する。"
+  unachieved_description = "レッドライトレースで15勝する。"
+
+  [achievements.German]
+  label = "Auf Grün gehen"
+  description = "Gewinne 15 Rotlicht-Rennen."
+  unachieved_description = "Gewinne 15 Rotlicht-Rennen."
+
+  [achievements.French]
+  label = "Allez au vert"
+  description = "Gagnez 15 courses de feu rouge."
+  unachieved_description = "Gagnez 15 courses de feu rouge."
+
+  [achievements.Spanish]
+  label = "Sigue en verde"
+  description = "Gana 15 carreras de semáforo en rojo."
+  unachieved_description = "Gana 15 carreras de semáforo en rojo."
+
+  [achievements.Italian]
+  label = "Vai sul verde"
+  description = "Vinci 15 gare al semaforo rosso."
+  unachieved_description = "Vinci 15 gare al semaforo rosso."
+
+  [achievements.Korean]
+  label = "초록불로 가세요"
+  description = "붉은 신호등 레이스 15회 우승하기."
+  unachieved_description = "붉은 신호등 레이스 15회 우승하기."
+
+  [achievements."Traditional Chinese"]
+  label = "繼續綠色"
+  description = "贏得 15 場紅燈比賽。"
+  unachieved_description = "贏得 15 場紅燈比賽。"
+
+  [achievements.Polish]
+  label = "Jedź na zielonym"
+  description = "Wygraj 15 wyścigów na czerwonym świetle."
+  unachieved_description = "Wygraj 15 wyścigów na czerwonym świetle."
+
+  [achievements.Russian]
+  label = "Идти на зелёный"
+  description = "Выиграйте 15 гонок на красный свет."
+  unachieved_description = "Выиграйте 15 гонок на красный свет."
+
+  [achievements.Swedish]
+  label = "Kör på grönt"
+  description = "Vinn 15 rödljuslopp."
+  unachieved_description = "Vinn 15 rödljuslopp."
+
+  [achievements.Turkish]
+  label = "Yeşile geç"
+  description = "15 Kırmızı Işık Yarışı Kazan."
+  unachieved_description = "15 Kırmızı Işık Yarışı Kazan."
+
+  [achievements.Norwegian]
+  label = "Gå på Green"
+  description = "Vinn 15 Red Light Races."
+  unachieved_description = "Vinn 15 Red Light Races."
+
+  [achievements.Dutch]
+  label = "Ga door op groen"
+  description = "Win 15 Races bij Rode Lichten."
+  unachieved_description = "Win 15 Races bij Rode Lichten."
+
+  [achievements."Simplified Chinese"]
+  label = "继续前进绿灯"
+  description = "赢得15场红灯比赛。"
+  unachieved_description = "赢得15场红灯比赛。"
+
+[[achievements]]
+id = 41
+label = "Destroyer of Worlds"
+description = "Successfully destroy 15 opponent vehicles using the Payback vehicle at the Beaches garage."
+unachieved_description = "Successfully destroy 15 opponent vehicles using the Payback vehicle at the Beaches garage."
+
+  [achievements.Portuguese]
+  label = "Destruidor de Mundos"
+  description = "Destrua com sucesso 15 veículos de oponentes usando o veículo de Payback na garagem de Beaches."
+  unachieved_description = "Destrua com sucesso 15 veículos de oponentes usando o veículo de Payback na garagem de Beaches."
+
+  [achievements.Japanese]
+  label = "世界の破壊者"
+  description = "ビーチズガレージでペイバック車両を使って相手の車両を15台撃破することに成功する。"
+  unachieved_description = "ビーチズガレージでペイバック車両を使って相手の車両を15台撃破することに成功する。"
+
+  [achievements.German]
+  label = "Zerstörer der Welten"
+  description = "Zerstöre erfolgreich 15 gegnerische Fahrzeuge mit dem Payback-Fahrzeug in der Werkstatt am Strand."
+  unachieved_description = "Zerstöre erfolgreich 15 gegnerische Fahrzeuge mit dem Payback-Fahrzeug in der Werkstatt am Strand."
+
+  [achievements.French]
+  label = "Destructeur de mondes"
+  description = "Détruisez avec succès 15 véhicules ennemis en utilisant le véhicule Payback au garage des Plages."
+  unachieved_description = "Détruisez avec succès 15 véhicules ennemis en utilisant le véhicule Payback au garage des Plages."
+
+  [achievements.Spanish]
+  label = "Destructor de Mundos"
+  description = "Destruye con éxito 15 vehículos enemigos usando el vehículo Payback en el garaje de las Playas."
+  unachieved_description = "Destruye con éxito 15 vehículos enemigos usando el vehículo Payback en el garaje de las Playas."
+
+  [achievements.Italian]
+  label = "Distruttore di Mondi"
+  description = "Distruggi con successo 15 veicoli avversari utilizzando il veicolo Payback al garage delle Spiagge."
+  unachieved_description = "Distruggi con successo 15 veicoli avversari utilizzando il veicolo Payback al garage delle Spiagge."
+
+  [achievements.Korean]
+  label = "세상의 파괴자"
+  description = "비치스 차고에서 페이백 차량을 사용하여 적 차량 15대를 성공적으로 파괴하세요."
+  unachieved_description = "비치스 차고에서 페이백 차량을 사용하여 적 차량 15대를 성공적으로 파괴하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "世界毀滅者"
+  description = "使用海灘車庫的回報車輛成功摧毀 15 輛對手車輛。"
+  unachieved_description = "使用海灘車庫的回報車輛成功摧毀 15 輛對手車輛。"
+
+  [achievements.Polish]
+  label = "Niszczyciel Światów"
+  description = "Pomyślnie zniszcz 15 pojazdów przeciwnika, używając pojazdu Payback w garażu na Plażach."
+  unachieved_description = "Pomyślnie zniszcz 15 pojazdów przeciwnika, używając pojazdu Payback w garażu na Plażach."
+
+  [achievements.Russian]
+  label = "Разрушитель миров"
+  description = "Успешно уничтожьте 15 транспортных средств противника, используя автомобиль Payback в гараже Beaches."
+  unachieved_description = "Успешно уничтожьте 15 транспортных средств противника, используя автомобиль Payback в гараже Beaches."
+
+  [achievements.Swedish]
+  label = "Världarnas Förstörare"
+  description = "Förstör framgångsrikt 15 motståndarfordon med Payback-fordonet på garaget vid stränderna."
+  unachieved_description = "Förstör framgångsrikt 15 motståndarfordon med Payback-fordonet på garaget vid stränderna."
+
+  [achievements.Turkish]
+  label = "Dünyaların Yıkıcısı"
+  description = "Beachler garajında Payback aracını kullanarak 15 rakip aracını başarıyla yok et."
+  unachieved_description = "Beachler garajında Payback aracını kullanarak 15 rakip aracını başarıyla yok et."
+
+  [achievements.Norwegian]
+  label = "Destroyer of Worlds"
+  description = "Ødelegg 15 motstanderkjøretøyer med Payback-kjøretøyet i Beaches-garasjen."
+  unachieved_description = "Ødelegg 15 motstanderkjøretøyer med Payback-kjøretøyet i Beaches-garasjen."
+
+  [achievements.Dutch]
+  label = "Vernietiger van Werelden"
+  description = "Vernietig succesvol 15 voertuigen van tegenstanders met het Payback-voertuig in de Beaches-garage."
+  unachieved_description = "Vernietig succesvol 15 voertuigen van tegenstanders met het Payback-voertuig in de Beaches-garage."
+
+  [achievements."Simplified Chinese"]
+  label = "世界的毁灭者"
+  description = "在海滩车库使用报复车辆成功摧毁15辆敌方车辆。"
+  unachieved_description = "在海滩车库使用报复车辆成功摧毁15辆敌方车辆。"
+
+[[achievements]]
+id = 42
+label = "Here for a Pickup"
+description = "Successfully deliver 15 vehicles out of the Hollywood garage."
+unachieved_description = "Successfully deliver 15 vehicles out of the Hollywood garage."
+
+  [achievements.Portuguese]
+  label = "Aqui Para Coleta"
+  description = "Entregue com sucesso 15 veículos saindo da garagem de Hollywood."
+  unachieved_description = "Entregue com sucesso 15 veículos saindo da garagem de Hollywood."
+
+  [achievements.Japanese]
+  label = "ピックアップのためにここにいます"
+  description = "ハリウッドのガレージから15台の車を無事に届ける。"
+  unachieved_description = "ハリウッドのガレージから15台の車を無事に届ける。"
+
+  [achievements.German]
+  label = "Hier zur Abholung"
+  description = "Liefern Sie erfolgreich 15 Fahrzeuge aus der Garage in Hollywood aus."
+  unachieved_description = "Liefern Sie erfolgreich 15 Fahrzeuge aus der Garage in Hollywood aus."
+
+  [achievements.French]
+  label = "Ici pour un ramassage"
+  description = "Livrez avec succès 15 véhicules depuis le garage de Hollywood."
+  unachieved_description = "Livrez avec succès 15 véhicules depuis le garage de Hollywood."
+
+  [achievements.Spanish]
+  label = "Aquí para una recogida"
+  description = "Entregar con éxito 15 vehículos desde el garaje de Hollywood."
+  unachieved_description = "Entregar con éxito 15 vehículos desde el garaje de Hollywood."
+
+  [achievements.Italian]
+  label = "Qui per un ritiro"
+  description = "Consegnare con successo 15 veicoli dal garage di Hollywood."
+  unachieved_description = "Consegnare con successo 15 veicoli dal garage di Hollywood."
+
+  [achievements.Korean]
+  label = "픽업하러 왔어요"
+  description = "할리우드 차고에서 차량 15대를 무사히 인도하세요."
+  unachieved_description = "할리우드 차고에서 차량 15대를 무사히 인도하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "在此取貨"
+  description = "成功將 15 輛車運出好萊塢車庫。"
+  unachieved_description = "成功將 15 輛車運出好萊塢車庫。"
+
+  [achievements.Polish]
+  label = "Tutaj po odbiór"
+  description = "Pomyślnie dostarcz 15 pojazdów z garażu w Hollywood."
+  unachieved_description = "Pomyślnie dostarcz 15 pojazdów z garażu w Hollywood."
+
+  [achievements.Russian]
+  label = "Здесь для самовывоза"
+  description = "Успешно доставьте 15 автомобилей из гаража в Голливуде."
+  unachieved_description = "Успешно доставьте 15 автомобилей из гаража в Голливуде."
+
+  [achievements.Swedish]
+  label = "Här för upphämtning"
+  description = "Leverera framgångsrikt 15 fordon från garaget i Hollywood."
+  unachieved_description = "Leverera framgångsrikt 15 fordon från garaget i Hollywood."
+
+  [achievements.Turkish]
+  label = "Pickup için buradayım"
+  description = "Hollywood garajından 15 aracı başarıyla teslim et."
+  unachieved_description = "Hollywood garajından 15 aracı başarıyla teslim et."
+
+  [achievements.Norwegian]
+  label = "Her for henting"
+  description = "Lever 15 biler ut av Hollywood-garasjen."
+  unachieved_description = "Lever 15 biler ut av Hollywood-garasjen."
+
+  [achievements.Dutch]
+  label = "Hier voor een afhaling"
+  description = "Bezorg succesvol 15 voertuigen uit de garage in Hollywood."
+  unachieved_description = "Bezorg succesvol 15 voertuigen uit de garage in Hollywood."
+
+  [achievements."Simplified Chinese"]
+  label = "来取货"
+  description = "成功从好莱坞车库交付15辆车辆。"
+  unachieved_description = "成功从好莱坞车库交付15辆车辆。"
+
+[[achievements]]
+id = 43
+label = "Father Time"
+description = "Completely unlock a time trial by completing all 3 missions."
+unachieved_description = "Completely unlock a time trial by completing all 3 missions."
+
+  [achievements.Portuguese]
+  label = "Pai Tempo"
+  description = "Desbloqueie completamente um Time Trial completando todas as 3 missões."
+  unachieved_description = "Desbloqueie completamente um Time Trial completando todas as 3 missões."
+
+  [achievements.Japanese]
+  label = "時の父"
+  description = "3つのミッションをすべてクリアして、タイムトライアルを完全にアンロックする。"
+  unachieved_description = "3つのミッションをすべてクリアして、タイムトライアルを完全にアンロックする。"
+
+  [achievements.German]
+  label = "Vater Zeit"
+  description = "Schalte einen Zeitlauf vollständig frei, indem du alle 3 Missionen abschließt."
+  unachieved_description = "Schalte einen Zeitlauf vollständig frei, indem du alle 3 Missionen abschließt."
+
+  [achievements.French]
+  label = "Le Père Temps"
+  description = "Débloquez complètement un contre-la-montre en complétant les 3 missions."
+  unachieved_description = "Débloquez complètement un contre-la-montre en complétant les 3 missions."
+
+  [achievements.Spanish]
+  label = "Padre Tiempo"
+  description = "Desbloquea completamente una prueba contrarreloj completando las 3 misiones."
+  unachieved_description = "Desbloquea completamente una prueba contrarreloj completando las 3 misiones."
+
+  [achievements.Italian]
+  label = "Padre Tempo"
+  description = "Sblocca completamente una prova a tempo completando tutte e 3 le missioni."
+  unachieved_description = "Sblocca completamente una prova a tempo completando tutte e 3 le missioni."
+
+  [achievements.Korean]
+  label = "시간의 아버지"
+  description = "세 가지 미션을 모두 완료하여 타임 트라이얼을 완전히 잠금 해제하세요."
+  unachieved_description = "세 가지 미션을 모두 완료하여 타임 트라이얼을 완전히 잠금 해제하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "父親時間"
+  description = "完成全部 3 個任務即可完全解鎖計時賽。"
+  unachieved_description = "完成全部 3 個任務即可完全解鎖計時賽。"
+
+  [achievements.Polish]
+  label = "Ojciec Czas"
+  description = "Całkowicie odblokuj próbę czasową, wykonując wszystkie 3 misje."
+  unachieved_description = "Całkowicie odblokuj próbę czasową, wykonując wszystkie 3 misje."
+
+  [achievements.Russian]
+  label = "Отец Время"
+  description = "Полностью откройте испытание на время, выполнив все 3 миссии."
+  unachieved_description = "Полностью откройте испытание на время, выполнив все 3 миссии."
+
+  [achievements.Swedish]
+  label = "Fader Tid"
+  description = "Lås helt upp ett tidsprov genom att slutföra alla 3 uppdrag."
+  unachieved_description = "Lås helt upp ett tidsprov genom att slutföra alla 3 uppdrag."
+
+  [achievements.Turkish]
+  label = "Zaman Baba"
+  description = "Tüm 3 görevi tamamlayarak bir zaman denemesinin kilidini tamamen açın."
+  unachieved_description = "Tüm 3 görevi tamamlayarak bir zaman denemesinin kilidini tamamen açın."
+
+  [achievements.Norwegian]
+  label = "Fader Tid"
+  description = "Lås opp en tidsprøve fullstendig ved å fullføre alle 3 oppdragene."
+  unachieved_description = "Lås opp en tidsprøve fullstendig ved å fullføre alle 3 oppdragene."
+
+  [achievements.Dutch]
+  label = "Vader Tijd"
+  description = "Ontgrendel een tijdrit volledig door alle 3 de missies te voltooien."
+  unachieved_description = "Ontgrendel een tijdrit volledig door alle 3 de missies te voltooien."
+
+  [achievements."Simplified Chinese"]
+  label = "时间老人"
+  description = "通过完成所有3个任务完全解锁计时赛。"
+  unachieved_description = "通过完成所有3个任务完全解锁计时赛。"
+
+[[achievements]]
+id = 44
+label = "Uncle Time"
+description = "Finish the first mission for each of the 4 time trials."
+unachieved_description = "Finish the first mission for each of the 4 time trials."
+
+  [achievements.Portuguese]
+  label = "Tio Tempo"
+  description = "Termine a primeira missão de cada um dos 4 Time Trials."
+  unachieved_description = "Termine a primeira missão de cada um dos 4 Time Trials."
+
+  [achievements.Japanese]
+  label = "おじさんタイム"
+  description = "4つのタイムトライアルのそれぞれの最初のミッションをクリアしてください。"
+  unachieved_description = "4つのタイムトライアルのそれぞれの最初のミッションをクリアしてください。"
+
+  [achievements.German]
+  label = "Onkel Zeit"
+  description = "Beende die erste Mission für jede der 4 Zeitprüfungen."
+  unachieved_description = "Beende die erste Mission für jede der 4 Zeitprüfungen."
+
+  [achievements.French]
+  label = "Oncle Temps"
+  description = "Terminez la première mission pour chacun des 4 essais chronométrés."
+  unachieved_description = "Terminez la première mission pour chacun des 4 essais chronométrés."
+
+  [achievements.Spanish]
+  label = "Tío Tiempo"
+  description = "Termina la primera misión de cada una de las 4 pruebas contrarreloj."
+  unachieved_description = "Termina la primera misión de cada una de las 4 pruebas contrarreloj."
+
+  [achievements.Italian]
+  label = "Zio Tempo"
+  description = "Completa la prima missione per ciascuna delle 4 prove a tempo."
+  unachieved_description = "Completa la prima missione per ciascuna delle 4 prove a tempo."
+
+  [achievements.Korean]
+  label = "시간 삼촌"
+  description = "4개의 시간 제한 각각에 대한 첫 번째 미션을 완료하세요."
+  unachieved_description = "4개의 시간 제한 각각에 대한 첫 번째 미션을 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "叔叔時間"
+  description = "完成 4 次計時賽中每一次的第一個任務。"
+  unachieved_description = "完成 4 次計時賽中每一次的第一個任務。"
+
+  [achievements.Polish]
+  label = "Wujek Czas"
+  description = "Ukończ pierwszą misję w każdym z 4 wyścigów na czas."
+  unachieved_description = "Ukończ pierwszą misję w każdym z 4 wyścigów na czas."
+
+  [achievements.Russian]
+  label = "Дядя Время"
+  description = "Завершите первую миссию для каждого из 4-х временных испытаний."
+  unachieved_description = "Завершите первую миссию для каждого из 4-х временных испытаний."
+
+  [achievements.Swedish]
+  label = "Farbror Tid"
+  description = "Slutför den första uppdraget för var och en av de 4 tidsbestämningarna."
+  unachieved_description = "Slutför den första uppdraget för var och en av de 4 tidsbestämningarna."
+
+  [achievements.Turkish]
+  label = "Amca Zaman"
+  description = "4 zaman denemesinin her biri için ilk görevi tamamlayın."
+  unachieved_description = "4 zaman denemesinin her biri için ilk görevi tamamlayın."
+
+  [achievements.Norwegian]
+  label = "Onkel Tid"
+  description = "Fullfør det første oppdraget for hver av de 4 tidsprøvene."
+  unachieved_description = "Fullfør det første oppdraget for hver av de 4 tidsprøvene."
+
+  [achievements.Dutch]
+  label = "Oom Tijd"
+  description = "Voltooi de eerste missie voor elk van de 4 tijdproeven."
+  unachieved_description = "Voltooi de eerste missie voor elk van de 4 tijdproeven."
+
+  [achievements."Simplified Chinese"]
+  label = "时间叔叔"
+  description = "完成每个四个时间挑战的第一项任务。"
+  unachieved_description = "完成每个四个时间挑战的第一项任务。"
+
+[[achievements]]
+id = 45
+label = "Competitive Glory"
+description = "Win each of the 4 tournaments at least one time."
+unachieved_description = "Win each of the 4 tournaments at least one time."
+
+  [achievements.Portuguese]
+  label = "Glória Competitiva"
+  description = "Vença cada um dos 4 torneios pelo menos uma vez."
+  unachieved_description = "Vença cada um dos 4 torneios pelo menos uma vez."
+
+  [achievements.Japanese]
+  label = "競争の栄光"
+  description = "4つのトーナメントそれぞれで少なくとも一度は勝つ。"
+  unachieved_description = "4つのトーナメントそれぞれで少なくとも一度は勝つ。"
+
+  [achievements.German]
+  label = "Wettbewerbsruhm"
+  description = "Gewinne jedes der 4 Turniere mindestens einmal."
+  unachieved_description = "Gewinne jedes der 4 Turniere mindestens einmal."
+
+  [achievements.French]
+  label = "Gloire compétitive"
+  description = "Gagner chacun des 4 tournois au moins une fois."
+  unachieved_description = "Gagner chacun des 4 tournois au moins une fois."
+
+  [achievements.Spanish]
+  label = "Gloria Competitiva"
+  description = "Gana cada uno de los 4 torneos al menos una vez."
+  unachieved_description = "Gana cada uno de los 4 torneos al menos una vez."
+
+  [achievements.Italian]
+  label = "Gloria Competitiva"
+  description = "Vinci ciascuno dei 4 tornei almeno una volta."
+  unachieved_description = "Vinci ciascuno dei 4 tornei almeno una volta."
+
+  [achievements.Korean]
+  label = "경쟁의 영광"
+  description = "4개의 토너먼트 각각을 최소 한 번씩 우승하세요."
+  unachieved_description = "4개의 토너먼트 각각을 최소 한 번씩 우승하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "競爭榮耀"
+  description = "4 場比賽每場至少獲勝一次。"
+  unachieved_description = "4 場比賽每場至少獲勝一次。"
+
+  [achievements.Polish]
+  label = "Chwała rywalizacji"
+  description = "Wygraj każdy z 4 turniejów przynajmniej raz."
+  unachieved_description = "Wygraj każdy z 4 turniejów przynajmniej raz."
+
+  [achievements.Russian]
+  label = "Соревновательная слава"
+  description = "Выиграйте каждый из 4 турниров хотя бы один раз."
+  unachieved_description = "Выиграйте каждый из 4 турниров хотя бы один раз."
+
+  [achievements.Swedish]
+  label = "Konkurrensmässig ära"
+  description = "Vinn var och en av de 4 turneringarna åtminstone en gång."
+  unachieved_description = "Vinn var och en av de 4 turneringarna åtminstone en gång."
+
+  [achievements.Turkish]
+  label = "Rekabetçi Zafer"
+  description = "Her 4 turnuvayı en az bir kez kazanın."
+  unachieved_description = "Her 4 turnuvayı en az bir kez kazanın."
+
+  [achievements.Norwegian]
+  label = "Konkurransedyktig herlighet"
+  description = "Vinn hver av de 4 turneringene minst én gang."
+  unachieved_description = "Vinn hver av de 4 turneringene minst én gang."
+
+  [achievements.Dutch]
+  label = "Competitieve Glorie"
+  description = "Win elk van de 4 toernooien minstens één keer."
+  unachieved_description = "Win elk van de 4 toernooien minstens één keer."
+
+  [achievements."Simplified Chinese"]
+  label = "竞争荣耀"
+  description = "至少赢得每个四项锦标赛一次。"
+  unachieved_description = "至少赢得每个四项锦标赛一次。"
+
+[[achievements]]
+id = 46
+label = "It's How You Play The Game"
+description = "Finish 300 offline races. Winning is not required."
+unachieved_description = "Finish 300 offline races. Winning is not required."
+
+  [achievements.Portuguese]
+  label = "O Importante é Competir"
+  description = "Termine 300 corridas offline. Não é necessário vencer."
+  unachieved_description = "Termine 300 corridas offline. Não é necessário vencer."
+
+  [achievements.Japanese]
+  label = "それはゲームの遊び方次第です"
+  description = "オフラインレースを300回完了してください。勝つ必要はありません。"
+  unachieved_description = "オフラインレースを300回完了してください。勝つ必要はありません。"
+
+  [achievements.German]
+  label = "Es kommt darauf an, wie man das Spiel spielt"
+  description = "Beende 300 Offline-Rennen. Gewinnen ist nicht erforderlich."
+  unachieved_description = "Beende 300 Offline-Rennen. Gewinnen ist nicht erforderlich."
+
+  [achievements.French]
+  label = "C'est la façon dont vous jouez le jeu"
+  description = "Terminez 300 courses hors ligne. Gagner n'est pas nécessaire."
+  unachieved_description = "Terminez 300 courses hors ligne. Gagner n'est pas nécessaire."
+
+  [achievements.Spanish]
+  label = "Es cómo juegas el juego"
+  description = "Termina 300 carreras sin conexión. No es necesario ganar."
+  unachieved_description = "Termina 300 carreras sin conexión. No es necesario ganar."
+
+  [achievements.Italian]
+  label = "È come giochi il gioco"
+  description = "Completa 300 gare offline. Non è necessario vincere."
+  unachieved_description = "Completa 300 gare offline. Non è necessario vincere."
+
+  [achievements.Korean]
+  label = "게임을 하는 방식이 중요하다"
+  description = "오프라인 레이스 300회를 완료하세요. 승리는 필요하지 않습니다."
+  unachieved_description = "오프라인 레이스 300회를 완료하세요. 승리는 필요하지 않습니다."
+
+  [achievements."Traditional Chinese"]
+  label = "這就是你玩遊戲的方式"
+  description = "完成 300 場離線比賽。 獲勝不是必需的。"
+  unachieved_description = "完成 300 場離線比賽。 獲勝不是必需的。"
+
+  [achievements.Polish]
+  label = "To, jak grasz w grę"
+  description = "Ukończ 300 wyścigów offline. Wygrana nie jest wymagana."
+  unachieved_description = "Ukończ 300 wyścigów offline. Wygrana nie jest wymagana."
+
+  [achievements.Russian]
+  label = "Это то, как ты играешь в игру"
+  description = "Пройдите 300 оффлайн гонок. Побеждать не обязательно."
+  unachieved_description = "Пройдите 300 оффлайн гонок. Побеждать не обязательно."
+
+  [achievements.Swedish]
+  label = "Det är hur du spelar spelet"
+  description = "Slutför 300 offline-tävlingar. Att vinna är inte nödvändigt."
+  unachieved_description = "Slutför 300 offline-tävlingar. Att vinna är inte nödvändigt."
+
+  [achievements.Turkish]
+  label = "Oyunu Nasıl Oynadığın Önemlidir"
+  description = "300 çevrimdışı yarışı tamamla. Kazanmak gerekli değildir."
+  unachieved_description = "300 çevrimdışı yarışı tamamla. Kazanmak gerekli değildir."
+
+  [achievements.Norwegian]
+  label = "Det er hvordan du spiller spillet"
+  description = "Fullfør 300 offline løp. Å vinne er ikke nødvendig."
+  unachieved_description = "Fullfør 300 offline løp. Å vinne er ikke nødvendig."
+
+  [achievements.Dutch]
+  label = "Het gaat om hoe je het spel speelt"
+  description = "Rond 300 offline races af. Winnen is niet vereist."
+  unachieved_description = "Rond 300 offline races af. Winnen is niet vereist."
+
+  [achievements."Simplified Chinese"]
+  label = "关键在于你怎么玩游戏"
+  description = "完成300场离线比赛。不要求获胜。"
+  unachieved_description = "完成300场离线比赛。不要求获胜。"
+
+[[achievements]]
+id = 47
+label = "The Winner"
+description = "Win 180 offline races."
+unachieved_description = "Win 180 offline races."
+
+  [achievements.Portuguese]
+  label = "O Vencedor"
+  description = "Vença 180 corridas offline."
+  unachieved_description = "Vença 180 corridas offline."
+
+  [achievements.Japanese]
+  label = "勝者"
+  description = "オフラインレースで180勝する。"
+  unachieved_description = "オフラインレースで180勝する。"
+
+  [achievements.German]
+  label = "Der Gewinner"
+  description = "Gewinne 180 Offline-Rennen."
+  unachieved_description = "Gewinne 180 Offline-Rennen."
+
+  [achievements.French]
+  label = "Le Gagnant"
+  description = "Gagnez 180 courses hors ligne."
+  unachieved_description = "Gagnez 180 courses hors ligne."
+
+  [achievements.Spanish]
+  label = "El Ganador"
+  description = "Gana 180 carreras sin conexión."
+  unachieved_description = "Gana 180 carreras sin conexión."
+
+  [achievements.Italian]
+  label = "Il Vincitore"
+  description = "Vinci 180 gare offline."
+  unachieved_description = "Vinci 180 gare offline."
+
+  [achievements.Korean]
+  label = "승자"
+  description = "오프라인 경기 180회에서 승리하세요."
+  unachieved_description = "오프라인 경기 180회에서 승리하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "獲勝者"
+  description = "贏得 180 場離線比賽。"
+  unachieved_description = "贏得 180 場離線比賽。"
+
+  [achievements.Polish]
+  label = "Zwycięzca"
+  description = "Wygraj 180 wyścigów offline."
+  unachieved_description = "Wygraj 180 wyścigów offline."
+
+  [achievements.Russian]
+  label = "Победитель"
+  description = "Выиграйте 180 гонок офлайн."
+  unachieved_description = "Выиграйте 180 гонок офлайн."
+
+  [achievements.Swedish]
+  label = "Vinnaren"
+  description = "Vinn 180 offline-lopp."
+  unachieved_description = "Vinn 180 offline-lopp."
+
+  [achievements.Turkish]
+  label = "Kazanan"
+  description = "180 çevrimdışı yarış kazan."
+  unachieved_description = "180 çevrimdışı yarış kazan."
+
+  [achievements.Norwegian]
+  label = "Vinneren"
+  description = "Vinn 180 offline løp."
+  unachieved_description = "Vinn 180 offline løp."
+
+  [achievements.Dutch]
+  label = "De winnaar"
+  description = "Win 180 offline races."
+  unachieved_description = "Win 180 offline races."
+
+  [achievements."Simplified Chinese"]
+  label = "获胜者"
+  description = "赢得180场离线比赛。"
+  unachieved_description = "赢得180场离线比赛。"
+
+[[achievements]]
+id = 48
+label = "Rags To Riches"
+description = "Have $1 million dollars in the bank while playing in Los Angeles."
+unachieved_description = "Have $1 million dollars in the bank while playing in Los Angeles."
+
+  [achievements.Portuguese]
+  label = "Do Lixo ao Luxo"
+  description = "Tenha $1 milhão de dólares no banco enquanto joga em Los Angeles."
+  unachieved_description = "Tenha $1 milhão de dólares no banco enquanto joga em Los Angeles."
+
+  [achievements.Japanese]
+  label = "どん底からの成り上がり"
+  description = "ロサンゼルスでプレーしながら、銀行に100万ドルを持つ。"
+  unachieved_description = "ロサンゼルスでプレーしながら、銀行に100万ドルを持つ。"
+
+  [achievements.German]
+  label = "Vom Tellerwäscher zum Millionär"
+  description = "Habe 1 Million Dollar auf der Bank, während du in Los Angeles spielst."
+  unachieved_description = "Habe 1 Million Dollar auf der Bank, während du in Los Angeles spielst."
+
+  [achievements.French]
+  label = "De la misère à la richesse"
+  description = "Avoir 1 million de dollars à la banque tout en jouant à Los Angeles."
+  unachieved_description = "Avoir 1 million de dollars à la banque tout en jouant à Los Angeles."
+
+  [achievements.Spanish]
+  label = "De la escasez a la riqueza"
+  description = "Tener 1 millón de dólares en el banco mientras juegas en Los Ángeles."
+  unachieved_description = "Tener 1 millón de dólares en el banco mientras juegas en Los Ángeles."
+
+  [achievements.Italian]
+  label = "Dalla povertà alla ricchezza"
+  description = "Avere 1 milione di dollari in banca mentre si gioca a Los Angeles."
+  unachieved_description = "Avere 1 milione di dollari in banca mentre si gioca a Los Angeles."
+
+  [achievements.Korean]
+  label = "빈털터리에서 부자로"
+  description = "로스앤젤레스에서 놀면서 은행에 100만 달러를 가지고 있다."
+  unachieved_description = "로스앤젤레스에서 놀면서 은행에 100만 달러를 가지고 있다."
+
+  [achievements."Traditional Chinese"]
+  label = "赤貧致富"
+  description = "在洛杉磯打球時，銀行有 100 萬美元。"
+  unachieved_description = "在洛杉磯打球時，銀行有 100 萬美元。"
+
+  [achievements.Polish]
+  label = "Od nędzy do bogactwa"
+  description = "Mieć milion dolarów w banku podczas gry w Los Angeles."
+  unachieved_description = "Mieć milion dolarów w banku podczas gry w Los Angeles."
+
+  [achievements.Russian]
+  label = "От нищеты к богатству"
+  description = "Иметь 1 миллион долларов в банке, играя в Лос-Анджелесе."
+  unachieved_description = "Иметь 1 миллион долларов в банке, играя в Лос-Анджелесе."
+
+  [achievements.Swedish]
+  label = "Från fattigdom till rikedom"
+  description = "Ha 1 miljon dollar på banken medan du spelar i Los Angeles."
+  unachieved_description = "Ha 1 miljon dollar på banken medan du spelar i Los Angeles."
+
+  [achievements.Turkish]
+  label = "Beş Paradan Zenginliğe"
+  description = "Los Angeles'ta oynarken bankada 1 milyon dolar bulundurmak."
+  unachieved_description = "Los Angeles'ta oynarken bankada 1 milyon dolar bulundurmak."
+
+  [achievements.Norwegian]
+  label = "Rags To Riches"
+  description = "Har 1 million dollar i banken mens du spiller i Los Angeles."
+  unachieved_description = "Har 1 million dollar i banken mens du spiller i Los Angeles."
+
+  [achievements.Dutch]
+  label = "Van armen tot rijk"
+  description = "Heb $1 miljoen dollar op de bank terwijl je in Los Angeles speelt."
+  unachieved_description = "Heb $1 miljoen dollar op de bank terwijl je in Los Angeles speelt."
+
+  [achievements."Simplified Chinese"]
+  label = "白手起家"
+  description = "在洛杉矶玩的时候，银行里有一百万美元。"
+  unachieved_description = "在洛杉矶玩的时候，银行里有一百万美元。"
+
+[[achievements]]
+id = 49
+label = "Have Car, Will Travel"
+description = "Drive a total of 5,000 miles, including any miles driven online or offline."
+unachieved_description = "Drive a total of 5,000 miles, including any miles driven online or offline."
+
+  [achievements.Portuguese]
+  label = "Com Carro, Vai Viajar"
+  description = "Dirija um total de 5.000 milhas, incluindo milhas online ou offline."
+  unachieved_description = "Dirija um total de 5.000 milhas, incluindo milhas online ou offline."
+
+  [achievements.Japanese]
+  label = "車があれば、旅に出られる"
+  description = "オンラインまたはオフラインで運転したマイルを含め、合計で5,000マイル運転してください。"
+  unachieved_description = "オンラインまたはオフラインで運転したマイルを含め、合計で5,000マイル運転してください。"
+
+  [achievements.German]
+  label = "Habe Auto, werde reisen"
+  description = "Fahre insgesamt 5.000 Meilen, einschließlich aller Meilen, die online oder offline gefahren wurden."
+  unachieved_description = "Fahre insgesamt 5.000 Meilen, einschließlich aller Meilen, die online oder offline gefahren wurden."
+
+  [achievements.French]
+  label = "Avoir une voiture, prêt à voyager"
+  description = "Conduisez un total de 5 000 miles, y compris tous les miles parcourus en ligne ou hors ligne."
+  unachieved_description = "Conduisez un total de 5 000 miles, y compris tous les miles parcourus en ligne ou hors ligne."
+
+  [achievements.Spanish]
+  label = "Tener coche, viajaré"
+  description = "Conduce un total de 5,000 millas, incluyendo cualquier milla recorrida en línea o fuera de línea."
+  unachieved_description = "Conduce un total de 5,000 millas, incluyendo cualquier milla recorrida en línea o fuera de línea."
+
+  [achievements.Italian]
+  label = "Ho la macchina, viaggerò"
+  description = "Percorri un totale di 5.000 miglia, comprese tutte le miglia percorse online o offline."
+  unachieved_description = "Percorri un totale di 5.000 miglia, comprese tutte le miglia percorse online o offline."
+
+  [achievements.Korean]
+  label = "차가 있으면 여행할 수 있다"
+  description = "온라인이나 오프라인에서 운전한 거리를 포함하여 총 5,000마일을 운전하세요."
+  unachieved_description = "온라인이나 오프라인에서 운전한 거리를 포함하여 총 5,000마일을 운전하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "有車，會旅遊"
+  description = "總共行駛 5,000 英里，包括在線或離線行駛的所有里程。"
+  unachieved_description = "總共行駛 5,000 英里，包括在線或離線行駛的所有里程。"
+
+  [achievements.Polish]
+  label = "Mam samochód, będę podróżować"
+  description = "Przejedź łącznie 5 000 mil, wliczając w to wszystkie mile przejechane online lub offline."
+  unachieved_description = "Przejedź łącznie 5 000 mil, wliczając w to wszystkie mile przejechane online lub offline."
+
+  [achievements.Russian]
+  label = "Есть машина, поеду куда угодно"
+  description = "Проехать в общей сложности 5000 миль, включая любые мили, пройденные онлайн или офлайн."
+  unachieved_description = "Проехать в общей сложности 5000 миль, включая любые мили, пройденные онлайн или офлайн."
+
+  [achievements.Swedish]
+  label = "Har bil, vill resa"
+  description = "Kör totalt 5 000 mil, inklusive alla mil som körts online eller offline."
+  unachieved_description = "Kör totalt 5 000 mil, inklusive alla mil som körts online eller offline."
+
+  [achievements.Turkish]
+  label = "Araba Var, Seyahat Ederim"
+  description = "Çevrimiçi veya çevrimdışı sürülen mesafeler de dahil olmak üzere toplam 5.000 mil sürün."
+  unachieved_description = "Çevrimiçi veya çevrimdışı sürülen mesafeler de dahil olmak üzere toplam 5.000 mil sürün."
+
+  [achievements.Norwegian]
+  label = "Har bil, vil reise"
+  description = "Kjør totalt 5000 miles, inkludert alle miles kjørt online eller offline."
+  unachieved_description = "Kjør totalt 5000 miles, inkludert alle miles kjørt online eller offline."
+
+  [achievements.Dutch]
+  label = "Heb Auto, Zal Reizen"
+  description = "Rijd in totaal 5.000 mijl, inclusief alle mijlen die online of offline zijn gereden."
+  unachieved_description = "Rijd in totaal 5.000 mijl, inclusief alle mijlen die online of offline zijn gereden."
+
+  [achievements."Simplified Chinese"]
+  label = "有车就能旅行"
+  description = "总共驾驶5,000英里，包括在线和离线驾驶的任何英里数。"
+  unachieved_description = "总共驾驶5,000英里，包括在线和离线驾驶的任何英里数。"
+
+[[achievements]]
+id = 50
+label = "Getting Off the Bench"
+description = "Enter an online cruise and join a proposed race."
+unachieved_description = "Enter an online cruise and join a proposed race."
+
+  [achievements.Portuguese]
+  label = "Saindo do Banco de Reservas"
+  description = "Entre em um Cruzeiro Online e participe de uma corrida proposta."
+  unachieved_description = "Entre em um Cruzeiro Online e participe de uma corrida proposta."
+
+  [achievements.Japanese]
+  label = "ベンチを降りる"
+  description = "オンラインクルーズに参加して、提案されたレースに参加してください。"
+  unachieved_description = "オンラインクルーズに参加して、提案されたレースに参加してください。"
+
+  [achievements.German]
+  label = "Vom Spielfeldrand herunterkommen"
+  description = "Tritt einer Online-Kreuzfahrt bei und nimm an einem vorgeschlagenen Rennen teil."
+  unachieved_description = "Tritt einer Online-Kreuzfahrt bei und nimm an einem vorgeschlagenen Rennen teil."
+
+  [achievements.French]
+  label = "Descendre du banc"
+  description = "Entrez dans une croisière en ligne et rejoignez une course proposée."
+  unachieved_description = "Entrez dans une croisière en ligne et rejoignez une course proposée."
+
+  [achievements.Spanish]
+  label = "Salir del banquillo"
+  description = "Entra en un crucero en línea y únete a una carrera propuesta."
+  unachieved_description = "Entra en un crucero en línea y únete a una carrera propuesta."
+
+  [achievements.Italian]
+  label = "Scendere dalla panchina"
+  description = "Entra in una crociera online e partecipa a una gara proposta."
+  unachieved_description = "Entra in una crociera online e partecipa a una gara proposta."
+
+  [achievements.Korean]
+  label = "벤치에서 내려오기"
+  description = "온라인 크루즈에 참가하여 제안된 경주에 참여하세요."
+  unachieved_description = "온라인 크루즈에 참가하여 제안된 경주에 참여하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "替補出場"
+  description = "參加線上巡遊並參加擬議的比賽。"
+  unachieved_description = "參加線上巡遊並參加擬議的比賽。"
+
+  [achievements.Polish]
+  label = "Schodząc z ławki"
+  description = "Wejdź na internetowy rejs i dołącz do proponowanego wyścigu."
+  unachieved_description = "Wejdź na internetowy rejs i dołącz do proponowanego wyścigu."
+
+  [achievements.Russian]
+  label = "Сход с скамейки"
+  description = "Войдите в онлайн-круиз и присоединитесь к предлагаемой гонке."
+  unachieved_description = "Войдите в онлайн-круиз и присоединитесь к предлагаемой гонке."
+
+  [achievements.Swedish]
+  label = "Kliva av bänken"
+  description = "Gå med i ett onlinekryssning och delta i ett föreslaget lopp."
+  unachieved_description = "Gå med i ett onlinekryssning och delta i ett föreslaget lopp."
+
+  [achievements.Turkish]
+  label = "Yedekten Kalkmak"
+  description = "Çevrimiçi bir kruvaziyere girin ve önerilen bir yarışa katılın."
+  unachieved_description = "Çevrimiçi bir kruvaziyere girin ve önerilen bir yarışa katılın."
+
+  [achievements.Norwegian]
+  label = "Å gå av benken"
+  description = "Gå inn på et online cruise og bli med på et foreslått løp."
+  unachieved_description = "Gå inn på et online cruise og bli med på et foreslått løp."
+
+  [achievements.Dutch]
+  label = "Van de bank afkomen"
+  description = "Neem deel aan een online cruise en doe mee aan een voorgestelde race."
+  unachieved_description = "Neem deel aan een online cruise en doe mee aan een voorgestelde race."
+
+  [achievements."Simplified Chinese"]
+  label = "下场"
+  description = "进入在线邮轮并参加提议的比赛。"
+  unachieved_description = "进入在线邮轮并参加提议的比赛。"
+
+[[achievements]]
+id = 51
+label = "Who Made This?"
+description = "Enter a Race Editor Race online."
+unachieved_description = "Enter a Race Editor Race online."
+
+  [achievements.Portuguese]
+  label = "Quem Fez Isso?"
+  description = "Entre em uma corrida do Race Editor online."
+  unachieved_description = "Entre em uma corrida do Race Editor online."
+
+  [achievements.Japanese]
+  label = "これを作ったのは誰ですか？"
+  description = "レースエディターのレースにオンラインで参加する。"
+  unachieved_description = "レースエディターのレースにオンラインで参加する。"
+
+  [achievements.German]
+  label = "Wer hat das gemacht?"
+  description = "Geben Sie ein Race Editor Race online ein."
+  unachieved_description = "Geben Sie ein Race Editor Race online ein."
+
+  [achievements.French]
+  label = "Qui a fait ça ?"
+  description = "Entrez une course d'éditeur de course en ligne."
+  unachieved_description = "Entrez une course d'éditeur de course en ligne."
+
+  [achievements.Spanish]
+  label = "¿Quién hizo esto?"
+  description = "Ingresa una carrera de Editor de Carreras en línea."
+  unachieved_description = "Ingresa una carrera de Editor de Carreras en línea."
+
+  [achievements.Italian]
+  label = "Chi ha fatto questo?"
+  description = "Entra in una Gara di Editor Gara online."
+  unachieved_description = "Entra in una Gara di Editor Gara online."
+
+  [achievements.Korean]
+  label = "누가 이것을 만들었나요?"
+  description = "온라인으로 레이스 편집기 레이스를 입력하세요."
+  unachieved_description = "온라인으로 레이스 편집기 레이스를 입력하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "誰做的？"
+  description = "線上參加比賽編輯器比賽。"
+  unachieved_description = "線上參加比賽編輯器比賽。"
+
+  [achievements.Polish]
+  label = "Kto to zrobił?"
+  description = "Wprowadź wyścig w Edytorze Wyścigów online."
+  unachieved_description = "Wprowadź wyścig w Edytorze Wyścigów online."
+
+  [achievements.Russian]
+  label = "Кто это сделал?"
+  description = "Введите гонку редактора гонок онлайн."
+  unachieved_description = "Введите гонку редактора гонок онлайн."
+
+  [achievements.Swedish]
+  label = "Vem gjorde det här?"
+  description = "Ange ett Race Editor Race online."
+  unachieved_description = "Ange ett Race Editor Race online."
+
+  [achievements.Turkish]
+  label = "Bunu Kim Yaptı?"
+  description = "Bir Yarış Editörü Yarışı çevrimiçi girin."
+  unachieved_description = "Bir Yarış Editörü Yarışı çevrimiçi girin."
+
+  [achievements.Norwegian]
+  label = "Hvem har laget dette?"
+  description = "Delta i et Race Editor Race online."
+  unachieved_description = "Delta i et Race Editor Race online."
+
+  [achievements.Dutch]
+  label = "Wie heeft dit gemaakt?"
+  description = "Voer een Race Editor-race online in."
+  unachieved_description = "Voer een Race Editor-race online in."
+
+  [achievements."Simplified Chinese"]
+  label = "这是谁做的？"
+  description = "在线输入一个赛跑编辑器的赛跑。"
+  unachieved_description = "在线输入一个赛跑编辑器的赛跑。"
+
+[[achievements]]
+id = 52
+label = "Saving Los Angeles"
+description = """
+Enter the Race Editor, create a race, and then save it.
+
+
+
+"""
+unachieved_description = """
+Enter the Race Editor, create a race, and then save it.
+
+
+
+"""
+
+  [achievements.Portuguese]
+  label = "Salvando Los Angeles"
+  description = "Entre no Race Editor, crie uma corrida e depois salve-a."
+  unachieved_description = "Entre no Race Editor, crie uma corrida e depois salve-a."
+
+  [achievements.Japanese]
+  label = "ロサンゼルスを救う"
+  description = "レースエディターに入り、レースを作成してから保存します。"
+  unachieved_description = "レースエディターに入り、レースを作成してから保存します。"
+
+  [achievements.German]
+  label = "Los Angeles retten"
+  description = "Öffne den Rassen-Editor, erstelle eine Rasse und speichere sie dann."
+  unachieved_description = "Öffne den Rassen-Editor, erstelle eine Rasse und speichere sie dann."
+
+  [achievements.French]
+  label = "Sauver Los Angeles"
+  description = "Entrez dans l'éditeur de races, créez une race, puis enregistrez-la."
+  unachieved_description = "Entrez dans l'éditeur de races, créez une race, puis enregistrez-la."
+
+  [achievements.Spanish]
+  label = "Salvando Los Ángeles"
+  description = "Entra en el Editor de Razas, crea una raza y luego guárdala."
+  unachieved_description = "Entra en el Editor de Razas, crea una raza y luego guárdala."
+
+  [achievements.Italian]
+  label = "Salvando Los Angeles"
+  description = "Entra nell'Editor di Razza, crea una razza, e poi salvala."
+  unachieved_description = "Entra nell'Editor di Razza, crea una razza, e poi salvala."
+
+  [achievements.Korean]
+  label = "로스앤젤레스 구하기"
+  description = "레이스 편집기에 들어가서 레이스를 만들고 저장하세요."
+  unachieved_description = "레이스 편집기에 들어가서 레이스를 만들고 저장하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "拯救洛杉磯"
+  description = "進入競賽編輯器，建立競賽，然後儲存。"
+  unachieved_description = "進入競賽編輯器，建立競賽，然後儲存。"
+
+  [achievements.Polish]
+  label = "Ocalenie Los Angeles"
+  description = "Wejdź do Edytora Ras, stwórz rasę, a następnie ją zapisz."
+  unachieved_description = "Wejdź do Edytora Ras, stwórz rasę, a następnie ją zapisz."
+
+  [achievements.Russian]
+  label = "Спасение Лос-Анджелеса"
+  description = "Введите редактор рас, создайте расу и затем сохраните её."
+  unachieved_description = "Введите редактор рас, создайте расу и затем сохраните её."
+
+  [achievements.Swedish]
+  label = "Rädda Los Angeles"
+  description = "Gå in i Rasredigeraren, skapa en ras och spara den sedan."
+  unachieved_description = "Gå in i Rasredigeraren, skapa en ras och spara den sedan."
+
+  [achievements.Turkish]
+  label = "Los Angeles'i Kurtarmak"
+  description = "Irk Düzenleyicisine girin, bir ırk oluşturun ve ardından kaydedin."
+  unachieved_description = "Irk Düzenleyicisine girin, bir ırk oluşturun ve ardından kaydedin."
+
+  [achievements.Norwegian]
+  label = "Redder Los Angeles"
+  description = "Gå inn i Race Editor, lag et løp og lagre det."
+  unachieved_description = "Gå inn i Race Editor, lag et løp og lagre det."
+
+  [achievements.Dutch]
+  label = "Los Angeles redden"
+  description = "Ga naar de Race-editor, maak een race aan en sla deze vervolgens op."
+  unachieved_description = "Ga naar de Race-editor, maak een race aan en sla deze vervolgens op."
+
+  [achievements."Simplified Chinese"]
+  label = "拯救洛杉矶"
+  description = "进入种族编辑器，创建一个种族，然后保存它。"
+  unachieved_description = "进入种族编辑器，创建一个种族，然后保存它。"
+
+[[achievements]]
+id = 53
+label = "Paparazzi"
+description = "Save 16 photos to your photo album."
+unachieved_description = "Save 16 photos to your photo album."
+
+  [achievements.Portuguese]
+  label = "Paparazzi"
+  description = "Salve 16 fotos no seu álbum de fotos."
+  unachieved_description = "Salve 16 fotos no seu álbum de fotos."
+
+  [achievements.Japanese]
+  label = "パパラッチ"
+  description = "16枚の写真をフォトアルバムに保存してください。"
+  unachieved_description = "16枚の写真をフォトアルバムに保存してください。"
+
+  [achievements.German]
+  label = "Paparazzi"
+  description = "Speichere 16 Fotos in deinem Fotoalbum."
+  unachieved_description = "Speichere 16 Fotos in deinem Fotoalbum."
+
+  [achievements.French]
+  label = "Paparazzi"
+  description = "Enregistrez 16 photos dans votre album photo."
+  unachieved_description = "Enregistrez 16 photos dans votre album photo."
+
+  [achievements.Spanish]
+  label = "Paparazzi"
+  description = "Guarda 16 fotos en tu álbum de fotos."
+  unachieved_description = "Guarda 16 fotos en tu álbum de fotos."
+
+  [achievements.Italian]
+  label = "Paparazzi"
+  description = "Salva 16 foto nel tuo album fotografico."
+  unachieved_description = "Salva 16 foto nel tuo album fotografico."
+
+  [achievements.Korean]
+  label = "파파라치"
+  description = "사진 앨범에 16장의 사진을 저장하세요."
+  unachieved_description = "사진 앨범에 16장의 사진을 저장하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "狗仔隊"
+  description = "將 16 張照片儲存到您的相簿中。"
+  unachieved_description = "將 16 張照片儲存到您的相簿中。"
+
+  [achievements.Polish]
+  label = "Paparazzi"
+  description = "Zapisz 16 zdjęć w swoim albumie fotograficznym."
+  unachieved_description = "Zapisz 16 zdjęć w swoim albumie fotograficznym."
+
+  [achievements.Russian]
+  label = "Папарацци"
+  description = "Сохраните 16 фотографий в свой фотоальбом."
+  unachieved_description = "Сохраните 16 фотографий в свой фотоальбом."
+
+  [achievements.Swedish]
+  label = "Paparazzi"
+  description = "Spara 16 bilder till ditt fotoalbum."
+  unachieved_description = "Spara 16 bilder till ditt fotoalbum."
+
+  [achievements.Turkish]
+  label = "Paparazzi"
+  description = "16 fotoğrafı fotoğraf albümüne kaydet."
+  unachieved_description = "16 fotoğrafı fotoğraf albümüne kaydet."
+
+  [achievements.Norwegian]
+  label = "Paparazzi"
+  description = "Lagre 16 bilder i fotoalbumet ditt."
+  unachieved_description = "Lagre 16 bilder i fotoalbumet ditt."
+
+  [achievements.Dutch]
+  label = "Paparazzi"
+  description = "Sla 16 foto’s op in je fotoalbum."
+  unachieved_description = "Sla 16 foto’s op in je fotoalbum."
+
+  [achievements."Simplified Chinese"]
+  label = "狗仔队"
+  description = "将16张照片保存到您的相册。"
+  unachieved_description = "将16张照片保存到您的相册。"
+
+[[achievements]]
+id = 55
+label = "T-Mobile myFaves"
+description = """
+Join an online game with 5 of your friends.
+
+Stay Connected with MyFaves from T-Mobile.
+
+"""
+unachieved_description = """
+Join an online game with 5 of your friends.
+
+Stay Connected with MyFaves from T-Mobile.
+
+"""
+
+  [achievements.Portuguese]
+  label = "T-Mobile myFaves"
+  description = """
+Junte-se a uma partida online com 5 amigos.
+
+Fique conectado com MyFaves da T-Mobile.
+
+"""
+  unachieved_description = """
+Junte-se a uma partida online com 5 amigos.
+
+Fique conectado com MyFaves da T-Mobile.
+
+"""
+
+  [achievements.Japanese]
+  label = "T-Mobile マイフェイブス"
+  description = """
+5人の友達と一緒にオンラインゲームに参加しましょう。
+
+T-MobileのMyFavesでつながり続けましょう。
+"""
+  unachieved_description = """
+5人の友達と一緒にオンラインゲームに参加しましょう。
+
+T-MobileのMyFavesでつながり続けましょう。
+"""
+
+  [achievements.German]
+  label = "T-Mobile myFaves"
+  description = """
+Spiele online mit 5 deiner Freunde.
+
+Bleib mit MyFaves von T-Mobile verbunden.
+"""
+  unachieved_description = """
+Spiele online mit 5 deiner Freunde.
+
+Bleib mit MyFaves von T-Mobile verbunden.
+"""
+
+  [achievements.French]
+  label = "T-Mobile mesFavoris"
+  description = """
+Rejoignez un jeu en ligne avec 5 de vos amis.
+
+Restez connecté avec MyFaves de T-Mobile.
+"""
+  unachieved_description = """
+Rejoignez un jeu en ligne avec 5 de vos amis.
+
+Restez connecté avec MyFaves de T-Mobile.
+"""
+
+  [achievements.Spanish]
+  label = "T-Mobile myFaves"
+  description = """
+Únete a un juego en línea con 5 de tus amigos.
+
+Mantente conectado con MyFaves de T-Mobile.
+"""
+  unachieved_description = """
+Únete a un juego en línea con 5 de tus amigos.
+
+Mantente conectado con MyFaves de T-Mobile.
+"""
+
+  [achievements.Italian]
+  label = "T-Mobile myFaves"
+  description = """
+Partecipa a un gioco online con 5 dei tuoi amici.
+
+Rimani connesso con MyFaves di T-Mobile.
+"""
+  unachieved_description = """
+Partecipa a un gioco online con 5 dei tuoi amici.
+
+Rimani connesso con MyFaves di T-Mobile.
+"""
+
+  [achievements.Korean]
+  label = "T-Mobile 마이페이브스"
+  description = """
+친구 5명과 함께 온라인 게임에 참여하세요.
+T-Mobile의 MyFaves로 연결 상태를 유지하세요.
+"""
+  unachieved_description = """
+친구 5명과 함께 온라인 게임에 참여하세요.
+T-Mobile의 MyFaves로 연결 상태를 유지하세요.
+"""
+
+  [achievements."Traditional Chinese"]
+  label = "T-Mobile myFaves"
+  description = """
+與 5 位朋友一起參加線上遊戲。 
+
+與 T-Mobile 的 MyFaves 保持聯繫。
+"""
+  unachieved_description = """
+與 5 位朋友一起參加線上遊戲。 
+
+與 T-Mobile 的 MyFaves 保持聯繫。
+"""
+
+  [achievements.Polish]
+  label = "T-Mobile myFaves"
+  description = """
+Dołącz do gry online z pięcioma przyjaciółmi.
+
+Pozostań w kontakcie dzięki MyFaves od T-Mobile.
+"""
+  unachieved_description = """
+Dołącz do gry online z pięcioma przyjaciółmi.
+
+Pozostań w kontakcie dzięki MyFaves od T-Mobile.
+"""
+
+  [achievements.Russian]
+  label = "T-Mobile myFaves"
+  description = """
+Присоединяйтесь к онлайн-игре с 5 вашими друзьями.
+Оставайтесь на связи с MyFaves от T-Mobile.
+"""
+  unachieved_description = """
+Присоединяйтесь к онлайн-игре с 5 вашими друзьями.
+Оставайтесь на связи с MyFaves от T-Mobile.
+"""
+
+  [achievements.Swedish]
+  label = "T-Mobile myFaves"
+  description = """
+Gå med i ett online-spel med 5 av dina vänner.
+
+Håll kontakten med MyFaves från T-Mobile.
+"""
+  unachieved_description = """
+Gå med i ett online-spel med 5 av dina vänner.
+
+Håll kontakten med MyFaves från T-Mobile.
+"""
+
+  [achievements.Turkish]
+  label = "T-Mobile myFaves"
+  description = """
+5 arkadaşınızla online bir oyuna katılın.
+T-Mobile'dan MyFaves ile bağlı kalın.
+"""
+  unachieved_description = """
+5 arkadaşınızla online bir oyuna katılın.
+T-Mobile'dan MyFaves ile bağlı kalın.
+"""
+
+  [achievements.Norwegian]
+  label = "T-Mobile myFaves"
+  description = """
+Bli med i et nettspill med 5 av vennene dine. 
+
+Hold kontakten med MyFaves fra T-Mobile.
+"""
+  unachieved_description = """
+Bli med i et nettspill med 5 av vennene dine. 
+
+Hold kontakten med MyFaves fra T-Mobile.
+"""
+
+  [achievements.Dutch]
+  label = "T-Mobile myFaves"
+  description = """
+Speel een online spel met 5 van je vrienden.
+
+Blijf verbonden met MyFaves van T-Mobile.
+"""
+  unachieved_description = """
+Speel een online spel met 5 van je vrienden.
+
+Blijf verbonden met MyFaves van T-Mobile.
+"""
+
+  [achievements."Simplified Chinese"]
+  label = "T-Mobile 我的最爱"
+  description = """
+与您的5个朋友一起加入在线游戏。
+通过T-Mobile的MyFaves保持连接。
+"""
+  unachieved_description = """
+与您的5个朋友一起加入在线游戏。
+通过T-Mobile的MyFaves保持连接。
+"""
+
+[[achievements]]
+id = 56
+label = "Turn in the Work"
+description = "Submit a vehicle to Rate My Ride."
+unachieved_description = "Submit a vehicle to Rate My Ride."
+
+  [achievements.Portuguese]
+  label = "Entregue o Trabalho"
+  description = "Envie um veículo para o Rate My Ride."
+  unachieved_description = "Envie um veículo para o Rate My Ride."
+
+  [achievements.Japanese]
+  label = "仕事を提出する"
+  description = "車を『Rate My Ride』に投稿してください。"
+  unachieved_description = "車を『Rate My Ride』に投稿してください。"
+
+  [achievements.German]
+  label = "Die Arbeit abgeben"
+  description = "Reiche ein Fahrzeug bei Rate My Ride ein."
+  unachieved_description = "Reiche ein Fahrzeug bei Rate My Ride ein."
+
+  [achievements.French]
+  label = "Remettez le travail"
+  description = "Soumettez un véhicule à Rate My Ride."
+  unachieved_description = "Soumettez un véhicule à Rate My Ride."
+
+  [achievements.Spanish]
+  label = "Entregar el trabajo"
+  description = "Envía un vehículo a Califica Mi Coche."
+  unachieved_description = "Envía un vehículo a Califica Mi Coche."
+
+  [achievements.Italian]
+  label = "Consegnare il lavoro"
+  description = "Invia un veicolo a Rate My Ride."
+  unachieved_description = "Invia un veicolo a Rate My Ride."
+
+  [achievements.Korean]
+  label = "과제를 제출하다"
+  description = "내 차 평가하기에 차량을 제출하세요."
+  unachieved_description = "내 차 평가하기에 차량을 제출하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "上交作業"
+  description = "提交車輛以評價我的行程。"
+  unachieved_description = "提交車輛以評價我的行程。"
+
+  [achievements.Polish]
+  label = "Oddaj pracę"
+  description = "Prześlij pojazd do Rate My Ride."
+  unachieved_description = "Prześlij pojazd do Rate My Ride."
+
+  [achievements.Russian]
+  label = "Сдать работу"
+  description = "Отправьте транспортное средство на Rate My Ride."
+  unachieved_description = "Отправьте транспортное средство на Rate My Ride."
+
+  [achievements.Swedish]
+  label = "Lämna in arbetet"
+  description = "Skicka in ett fordon till Rate My Ride."
+  unachieved_description = "Skicka in ett fordon till Rate My Ride."
+
+  [achievements.Turkish]
+  label = "İşi Teslim Et"
+  description = "Bir aracı Rate My Ride'a gönderin."
+  unachieved_description = "Bir aracı Rate My Ride'a gönderin."
+
+  [achievements.Norwegian]
+  label = "Lever inn arbeidet"
+  description = "Send inn et kjøretøy for å rangere min tur."
+  unachieved_description = "Send inn et kjøretøy for å rangere min tur."
+
+  [achievements.Dutch]
+  label = "Lever het werk in"
+  description = "Dien een voertuig in bij Rate My Ride."
+  unachieved_description = "Dien een voertuig in bij Rate My Ride."
+
+  [achievements."Simplified Chinese"]
+  label = "交作业"
+  description = "提交一辆车到“评价我的座驾”。"
+  unachieved_description = "提交一辆车到“评价我的座驾”。"
+
+[[achievements]]
+id = 57
+label = "Everyone's a Critic"
+description = "Rate 25 rides online."
+unachieved_description = "Rate 25 rides online."
+
+  [achievements.Portuguese]
+  label = "Todo Mundo é Crítico"
+  description = "Avalie 25 carros online."
+  unachieved_description = "Avalie 25 carros online."
+
+  [achievements.Japanese]
+  label = "誰もが評論家だ"
+  description = "オンラインで25回の乗車を評価する。"
+  unachieved_description = "オンラインで25回の乗車を評価する。"
+
+  [achievements.German]
+  label = "Jeder ist ein Kritiker"
+  description = "Bewerte 25 Fahrten online."
+  unachieved_description = "Bewerte 25 Fahrten online."
+
+  [achievements.French]
+  label = "Tout le monde est un critique"
+  description = "Évaluez 25 trajets en ligne."
+  unachieved_description = "Évaluez 25 trajets en ligne."
+
+  [achievements.Spanish]
+  label = "Todos son críticos"
+  description = "Califica 25 viajes en línea."
+  unachieved_description = "Califica 25 viajes en línea."
+
+  [achievements.Italian]
+  label = "Tutti sono critici"
+  description = "Valuta 25 corse online."
+  unachieved_description = "Valuta 25 corse online."
+
+  [achievements.Korean]
+  label = "모두가 비평가다"
+  description = "온라인에서 25개의 승차를 평가하세요."
+  unachieved_description = "온라인에서 25개의 승차를 평가하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "每個人都是批評家"
+  description = "線上評論 25 次遊樂設施。"
+  unachieved_description = "線上評論 25 次遊樂設施。"
+
+  [achievements.Polish]
+  label = "Każdy jest krytykiem"
+  description = "Oceń 25 przejazdów online."
+  unachieved_description = "Oceń 25 przejazdów online."
+
+  [achievements.Russian]
+  label = "Каждый критик"
+  description = "Оцените 25 поездок онлайн."
+  unachieved_description = "Оцените 25 поездок онлайн."
+
+  [achievements.Swedish]
+  label = "Alla är en kritiker"
+  description = "Betygsätt 25 resor online."
+  unachieved_description = "Betygsätt 25 resor online."
+
+  [achievements.Turkish]
+  label = "Herkes bir eleştirmen"
+  description = "25 yolculuğu çevrimiçi olarak değerlendirin."
+  unachieved_description = "25 yolculuğu çevrimiçi olarak değerlendirin."
+
+  [achievements.Norwegian]
+  label = "Alle er kritikere"
+  description = "Ranger 25 turer på nettet."
+  unachieved_description = "Ranger 25 turer på nettet."
+
+  [achievements.Dutch]
+  label = "Iedereen is een criticus"
+  description = "Beoordeel 25 ritten online."
+  unachieved_description = "Beoordeel 25 ritten online."
+
+  [achievements."Simplified Chinese"]
+  label = "人人都是评论家"
+  description = "在线评价25次乘车。"
+  unachieved_description = "在线评价25次乘车。"
+
+[[achievements]]
+id = 58
+label = "Crossing the Line"
+description = "Finish 50 races online."
+unachieved_description = "Finish 50 races online."
+
+  [achievements.Portuguese]
+  label = "Cruzando a Linha"
+  description = "Termine 50 corridas online."
+  unachieved_description = "Termine 50 corridas online."
+
+  [achievements.Japanese]
+  label = "境界を越える"
+  description = "オンラインで50レースを完了する。"
+  unachieved_description = "オンラインで50レースを完了する。"
+
+  [achievements.German]
+  label = "Die Linie überschreiten"
+  description = "Beende 50 Rennen online."
+  unachieved_description = "Beende 50 Rennen online."
+
+  [achievements.French]
+  label = "Franchir la ligne"
+  description = "Terminez 50 courses en ligne."
+  unachieved_description = "Terminez 50 courses en ligne."
+
+  [achievements.Spanish]
+  label = "Cruzando la línea"
+  description = "Termina 50 carreras en línea."
+  unachieved_description = "Termina 50 carreras en línea."
+
+  [achievements.Italian]
+  label = "Oltrepassare il limite"
+  description = "Completa 50 gare online."
+  unachieved_description = "Completa 50 gare online."
+
+  [achievements.Korean]
+  label = "선을 넘다"
+  description = "온라인에서 50경기 완료하기."
+  unachieved_description = "온라인에서 50경기 완료하기."
+
+  [achievements."Traditional Chinese"]
+  label = "越線"
+  description = "線上完成 50 場比賽。"
+  unachieved_description = "線上完成 50 場比賽。"
+
+  [achievements.Polish]
+  label = "Przekroczenie granicy"
+  description = "Ukończ 50 wyścigów online."
+  unachieved_description = "Ukończ 50 wyścigów online."
+
+  [achievements.Russian]
+  label = "Пересечение линии"
+  description = "Завершите 50 гонок онлайн."
+  unachieved_description = "Завершите 50 гонок онлайн."
+
+  [achievements.Swedish]
+  label = "Att korsa gränsen"
+  description = "Avsluta 50 lopp online."
+  unachieved_description = "Avsluta 50 lopp online."
+
+  [achievements.Turkish]
+  label = "Çizgiyi Geçmek"
+  description = "Çevrimiçi 50 yarış bitir."
+  unachieved_description = "Çevrimiçi 50 yarış bitir."
+
+  [achievements.Norwegian]
+  label = "Krysser linjen"
+  description = "Fullfør 50 løp online."
+  unachieved_description = "Fullfør 50 løp online."
+
+  [achievements.Dutch]
+  label = "De grens overschrijden"
+  description = "Voltooi 50 races online."
+  unachieved_description = "Voltooi 50 races online."
+
+  [achievements."Simplified Chinese"]
+  label = "越界"
+  description = "在线完成50场比赛。"
+  unachieved_description = "在线完成50场比赛。"
+
+[[achievements]]
+id = 59
+label = "Master Thief"
+description = "Steal 80 flags while playing Capture the Flag or other battle matches."
+unachieved_description = "Steal 80 flags while playing Capture the Flag or other battle matches."
+
+  [achievements.Portuguese]
+  label = "Ladrão Mestre"
+  description = "Roube 80 bandeiras jogando Capture the Flag ou outras partidas de batalha."
+  unachieved_description = "Roube 80 bandeiras jogando Capture the Flag ou outras partidas de batalha."
+
+  [achievements.Japanese]
+  label = "名人泥棒"
+  description = "キャプチャー・ザ・フラッグやその他のバトルマッチをプレイして、80枚の旗を奪いましょう。"
+  unachieved_description = "キャプチャー・ザ・フラッグやその他のバトルマッチをプレイして、80枚の旗を奪いましょう。"
+
+  [achievements.German]
+  label = "Meisterdieb"
+  description = "Stehle 80 Flaggen, während du Capture the Flag oder andere Kampfspiele spielst."
+  unachieved_description = "Stehle 80 Flaggen, während du Capture the Flag oder andere Kampfspiele spielst."
+
+  [achievements.French]
+  label = "Maître voleur"
+  description = "Volez 80 drapeaux en jouant à Capture du Drapeau ou à d'autres matchs de bataille."
+  unachieved_description = "Volez 80 drapeaux en jouant à Capture du Drapeau ou à d'autres matchs de bataille."
+
+  [achievements.Spanish]
+  label = "Maestro ladrón"
+  description = "Roba 80 banderas mientras juegas Captura la Bandera u otras partidas de batalla."
+  unachieved_description = "Roba 80 banderas mientras juegas Captura la Bandera u otras partidas de batalla."
+
+  [achievements.Italian]
+  label = "Maestro Ladro"
+  description = "Ruba 80 bandiere mentre giochi a Cattura la bandiera o ad altre partite di battaglia."
+  unachieved_description = "Ruba 80 bandiere mentre giochi a Cattura la bandiera o ad altre partite di battaglia."
+
+  [achievements.Korean]
+  label = "대도"
+  description = "깃발 뺏기나 다른 전투 경기에서 깃발 80개를 훔치세요."
+  unachieved_description = "깃발 뺏기나 다른 전투 경기에서 깃발 80개를 훔치세요."
+
+  [achievements."Traditional Chinese"]
+  label = "大盜"
+  description = "在玩「奪旗」或其他戰鬥比賽時竊取 80 個旗幟。"
+  unachieved_description = "在玩「奪旗」或其他戰鬥比賽時竊取 80 個旗幟。"
+
+  [achievements.Polish]
+  label = "Mistrz Złodziej"
+  description = "Zdobyj 80 flag podczas gry w Zdobądź Flagę lub innych meczach bitewnych."
+  unachieved_description = "Zdobyj 80 flag podczas gry w Zdobądź Flagę lub innych meczach bitewnych."
+
+  [achievements.Russian]
+  label = "Мастер-вор"
+  description = "Украдите 80 флагов, играя в Захват флага или других боевых матчах."
+  unachieved_description = "Украдите 80 флагов, играя в Захват флага или других боевых матчах."
+
+  [achievements.Swedish]
+  label = "Mästartjuv"
+  description = "Stjäl 80 flaggor medan du spelar Capture the Flag eller andra stridsmatcher."
+  unachieved_description = "Stjäl 80 flaggor medan du spelar Capture the Flag eller andra stridsmatcher."
+
+  [achievements.Turkish]
+  label = "Usta Hırsız"
+  description = "Bayrak Kapmaca veya diğer savaş maçlarını oynarken 80 bayrak çal."
+  unachieved_description = "Bayrak Kapmaca veya diğer savaş maçlarını oynarken 80 bayrak çal."
+
+  [achievements.Norwegian]
+  label = "Mestertyven"
+  description = "Stjel 80 flagg mens du spiller Capture the Flag eller andre kampkamper."
+  unachieved_description = "Stjel 80 flagg mens du spiller Capture the Flag eller andre kampkamper."
+
+  [achievements.Dutch]
+  label = "Meesterdief"
+  description = "Steel 80 vlaggen tijdens het spelen van Capture the Flag of andere gevechtswedstrijden."
+  unachieved_description = "Steel 80 vlaggen tijdens het spelen van Capture the Flag of andere gevechtswedstrijden."
+
+  [achievements."Simplified Chinese"]
+  label = "大盗"
+  description = "在玩夺旗赛或其他战斗比赛时偷取80面旗帜。"
+  unachieved_description = "在玩夺旗赛或其他战斗比赛时偷取80面旗帜。"
+
+[[achievements]]
+id = 60
+label = "Postman"
+description = "Deliver 100 flags in Capture the Flag or other battle matches."
+unachieved_description = "Deliver 100 flags in Capture the Flag or other battle matches."
+
+  [achievements.Portuguese]
+  label = "Carteiro"
+  description = "Entregue 100 bandeiras em Capture the Flag ou outras partidas de batalha."
+  unachieved_description = "Entregue 100 bandeiras em Capture the Flag ou outras partidas de batalha."
+
+  [achievements.Japanese]
+  label = "郵便配達人"
+  description = "キャプチャー・ザ・フラッグや他のバトルマッチで100枚の旗を届ける。"
+  unachieved_description = "キャプチャー・ザ・フラッグや他のバトルマッチで100枚の旗を届ける。"
+
+  [achievements.German]
+  label = "Briefträger"
+  description = "Liefern Sie 100 Fahnen in Capture the Flag oder anderen Kampfspielen."
+  unachieved_description = "Liefern Sie 100 Fahnen in Capture the Flag oder anderen Kampfspielen."
+
+  [achievements.French]
+  label = "Facteur"
+  description = "Livrez 100 drapeaux dans Capture the Flag ou d'autres matchs de bataille."
+  unachieved_description = "Livrez 100 drapeaux dans Capture the Flag ou d'autres matchs de bataille."
+
+  [achievements.Spanish]
+  label = "Cartero"
+  description = "Entrega 100 banderas en Captura la Bandera u otras partidas de batalla."
+  unachieved_description = "Entrega 100 banderas en Captura la Bandera u otras partidas de batalla."
+
+  [achievements.Italian]
+  label = "Postino"
+  description = "Consegna 100 bandiere in Cattura la Bandiera o in altre partite di battaglia."
+  unachieved_description = "Consegna 100 bandiere in Cattura la Bandiera o in altre partite di battaglia."
+
+  [achievements.Korean]
+  label = "우체부"
+  description = "깃발 잡기 또는 기타 전투 경기에서 100개의 깃발을 전달하세요."
+  unachieved_description = "깃발 잡기 또는 기타 전투 경기에서 100개의 깃발을 전달하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "郵差"
+  description = "在奪旗或其他戰鬥比賽中交付 100 面旗幟。"
+  unachieved_description = "在奪旗或其他戰鬥比賽中交付 100 面旗幟。"
+
+  [achievements.Polish]
+  label = "Listonosz"
+  description = "Dostarcz 100 flag w trybie Capture the Flag lub innych meczach bitewnych."
+  unachieved_description = "Dostarcz 100 flag w trybie Capture the Flag lub innych meczach bitewnych."
+
+  [achievements.Russian]
+  label = "Почтальон"
+  description = "Доставьте 100 флагов в режиме Захват флага или других боевых матчах."
+  unachieved_description = "Доставьте 100 флагов в режиме Захват флага или других боевых матчах."
+
+  [achievements.Swedish]
+  label = "Postbud"
+  description = "Leverera 100 flaggor i Capture the Flag eller andra stridsmatcher."
+  unachieved_description = "Leverera 100 flaggor i Capture the Flag eller andra stridsmatcher."
+
+  [achievements.Turkish]
+  label = "Postacı"
+  description = "Bayrak Yakalama veya diğer savaş maçlarında 100 bayrak teslim et."
+  unachieved_description = "Bayrak Yakalama veya diğer savaş maçlarında 100 bayrak teslim et."
+
+  [achievements.Norwegian]
+  label = "Postbud"
+  description = "Lever 100 flagg i Capture the Flag eller andre kamper."
+  unachieved_description = "Lever 100 flagg i Capture the Flag eller andre kamper."
+
+  [achievements.Dutch]
+  label = "Postbode"
+  description = "Bezorg 100 vlaggen in Capture the Flag of andere gevechtswedstrijden."
+  unachieved_description = "Bezorg 100 vlaggen in Capture the Flag of andere gevechtswedstrijden."
+
+  [achievements."Simplified Chinese"]
+  label = "邮递员"
+  description = "在夺旗或其他战斗比赛中交付100面旗帜。"
+  unachieved_description = "在夺旗或其他战斗比赛中交付100面旗帜。"
+
+[[achievements]]
+id = 61
+label = "Ranking Up"
+description = "Win 20 ranked matches online."
+unachieved_description = "Win 20 ranked matches online."
+
+  [achievements.Portuguese]
+  label = "Subindo de Nível"
+  description = "Vença 20 partidas ranqueadas online."
+  unachieved_description = "Vença 20 partidas ranqueadas online."
+
+  [achievements.Japanese]
+  label = "ランキングアップ"
+  description = "オンラインで20回ランクマッチに勝利する。"
+  unachieved_description = "オンラインで20回ランクマッチに勝利する。"
+
+  [achievements.German]
+  label = "Aufsteigen im Rang"
+  description = "Gewinne 20 Ranglistenspiele online."
+  unachieved_description = "Gewinne 20 Ranglistenspiele online."
+
+  [achievements.French]
+  label = "Monter en grade"
+  description = "Gagnez 20 matchs classés en ligne."
+  unachieved_description = "Gagnez 20 matchs classés en ligne."
+
+  [achievements.Spanish]
+  label = "Subiendo de rango"
+  description = "Gana 20 partidas clasificatorias en línea."
+  unachieved_description = "Gana 20 partidas clasificatorias en línea."
+
+  [achievements.Italian]
+  label = "Salire di grado"
+  description = "Vinci 20 partite classificate online."
+  unachieved_description = "Vinci 20 partite classificate online."
+
+  [achievements.Korean]
+  label = "순위 상승"
+  description = "온라인에서 랭크 매치 20승을 달성하세요."
+  unachieved_description = "온라인에서 랭크 매치 20승을 달성하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "Ranking Up"
+  description = "Win 20 ranked matches online."
+  unachieved_description = "Win 20 ranked matches online."
+
+  [achievements.Polish]
+  label = "Awansowanie"
+  description = "Wygraj 20 rankingowych meczów online."
+  unachieved_description = "Wygraj 20 rankingowych meczów online."
+
+  [achievements.Russian]
+  label = "Повышение ранга"
+  description = "Выиграйте 20 рейтинговых матчей онлайн."
+  unachieved_description = "Выиграйте 20 рейтинговых матчей онлайн."
+
+  [achievements.Swedish]
+  label = "Ranka upp"
+  description = "Vinn 20 rankade matcher online."
+  unachieved_description = "Vinn 20 rankade matcher online."
+
+  [achievements.Turkish]
+  label = "Sıralamada Yükselmek"
+  description = "Çevrimiçi 20 sıralamalı maç kazanın."
+  unachieved_description = "Çevrimiçi 20 sıralamalı maç kazanın."
+
+  [achievements.Norwegian]
+  label = "Rangering opp"
+  description = "Vinn 20 rangerte kamper online."
+  unachieved_description = "Vinn 20 rangerte kamper online."
+
+  [achievements.Dutch]
+  label = "Opklimmen in rang"
+  description = "Win 20 gerangschikte wedstrijden online."
+  unachieved_description = "Win 20 gerangschikte wedstrijden online."
+
+  [achievements."Simplified Chinese"]
+  label = "升级"
+  description = "在网上赢得20场排位赛。"
+  unachieved_description = "在网上赢得20场排位赛。"
+
+[[achievements]]
+id = 62
+label = "Where in the World?"
+description = "Find half of the collectables in Los Angeles."
+unachieved_description = "Find half of the collectables in Los Angeles."
+
+  [achievements.Portuguese]
+  label = "Onde no Mundo?"
+  description = "Encontre metade dos colecionáveis em Los Angeles."
+  unachieved_description = "Encontre metade dos colecionáveis em Los Angeles."
+
+  [achievements.Japanese]
+  label = "世界のどこ？"
+  description = "ロサンゼルスでコレクタブルの半分を見つけてください。"
+  unachieved_description = "ロサンゼルスでコレクタブルの半分を見つけてください。"
+
+  [achievements.German]
+  label = "Wo auf der Welt?"
+  description = "Finde die Hälfte der Sammlerstücke in Los Angeles."
+  unachieved_description = "Finde die Hälfte der Sammlerstücke in Los Angeles."
+
+  [achievements.French]
+  label = "Où dans le monde ?"
+  description = "Trouvez la moitié des objets à collectionner à Los Angeles."
+  unachieved_description = "Trouvez la moitié des objets à collectionner à Los Angeles."
+
+  [achievements.Spanish]
+  label = "¿Dónde en el mundo?"
+  description = "Encuentra la mitad de los coleccionables en Los Ángeles."
+  unachieved_description = "Encuentra la mitad de los coleccionables en Los Ángeles."
+
+  [achievements.Italian]
+  label = "Dove nel mondo?"
+  description = "Trova metà dei collezionabili a Los Angeles."
+  unachieved_description = "Trova metà dei collezionabili a Los Angeles."
+
+  [achievements.Korean]
+  label = "세계 어디?"
+  description = "로스앤젤레스에서 수집품의 절반을 찾으세요."
+  unachieved_description = "로스앤젤레스에서 수집품의 절반을 찾으세요."
+
+  [achievements."Traditional Chinese"]
+  label = "世界上哪裡？"
+  description = "找到洛杉磯一半的收藏品。"
+  unachieved_description = "找到洛杉磯一半的收藏品。"
+
+  [achievements.Polish]
+  label = "Gdzie na świecie?"
+  description = "Znajdź połowę kolekcjonerek w Los Angeles."
+  unachieved_description = "Znajdź połowę kolekcjonerek w Los Angeles."
+
+  [achievements.Russian]
+  label = "Где в мире?"
+  description = "Найдите половину коллекционных предметов в Лос-Анджелесе."
+  unachieved_description = "Найдите половину коллекционных предметов в Лос-Анджелесе."
+
+  [achievements.Swedish]
+  label = "Var i världen?"
+  description = "Hitta hälften av samlarföremålen i Los Angeles."
+  unachieved_description = "Hitta hälften av samlarföremålen i Los Angeles."
+
+  [achievements.Turkish]
+  label = "Dünyada Nerede?"
+  description = "Los Angeles'taki eşyaların yarısını bulun."
+  unachieved_description = "Los Angeles'taki eşyaların yarısını bulun."
+
+  [achievements.Norwegian]
+  label = "Hvor i verden?"
+  description = "Finn halvparten av samleobjektene i Los Angeles."
+  unachieved_description = "Finn halvparten av samleobjektene i Los Angeles."
+
+  [achievements.Dutch]
+  label = "Waar in de wereld?"
+  description = "Vind de helft van de verzamelobjecten in Los Angeles."
+  unachieved_description = "Vind de helft van de verzamelobjecten in Los Angeles."
+
+  [achievements."Simplified Chinese"]
+  label = "世界的哪里？"
+  description = "在洛杉矶找到一半的收藏品。"
+  unachieved_description = "在洛杉矶找到一半的收藏品。"
+
+[[achievements]]
+id = 64
+label = "Waldo's Still Missing"
+description = "Find all the collectables in Los Angeles."
+unachieved_description = "Find all the collectables in Los Angeles."
+
+  [achievements.Portuguese]
+  label = "O Wally Ainda Está Desaparecido"
+  description = "Encontre todos os colecionáveis em Los Angeles."
+  unachieved_description = "Encontre todos os colecionáveis em Los Angeles."
+
+  [achievements.Japanese]
+  label = "ウォルドはまだ行方不明です"
+  description = "ロサンゼルスで全てのコレクタブルを見つける。"
+  unachieved_description = "ロサンゼルスで全てのコレクタブルを見つける。"
+
+  [achievements.German]
+  label = "Waldo fehlt immer noch"
+  description = "Finde alle Sammelobjekte in Los Angeles."
+  unachieved_description = "Finde alle Sammelobjekte in Los Angeles."
+
+  [achievements.French]
+  label = "Waldo est toujours disparu"
+  description = "Trouvez tous les objets à collectionner à Los Angeles."
+  unachieved_description = "Trouvez tous les objets à collectionner à Los Angeles."
+
+  [achievements.Spanish]
+  label = "Waldo todavía está desaparecido"
+  description = "Encuentra todos los objetos coleccionables en Los Ángeles."
+  unachieved_description = "Encuentra todos los objetos coleccionables en Los Ángeles."
+
+  [achievements.Italian]
+  label = "Waldo è ancora scomparso"
+  description = "Trova tutti gli oggetti da collezione a Los Angeles."
+  unachieved_description = "Trova tutti gli oggetti da collezione a Los Angeles."
+
+  [achievements.Korean]
+  label = "월도가 아직도 실종되었다"
+  description = "로스앤젤레스에서 모든 수집품을 찾으세요."
+  unachieved_description = "로스앤젤레스에서 모든 수집품을 찾으세요."
+
+  [achievements."Traditional Chinese"]
+  label = "沃爾多仍然失踪"
+  description = "找到洛杉磯的所有收藏品。"
+  unachieved_description = "找到洛杉磯的所有收藏品。"
+
+  [achievements.Polish]
+  label = "Waldo wciąż zaginął"
+  description = "Znajdź wszystkie przedmioty kolekcjonerskie w Los Angeles."
+  unachieved_description = "Znajdź wszystkie przedmioty kolekcjonerskie w Los Angeles."
+
+  [achievements.Russian]
+  label = "Вальдо всё ещё отсутствует"
+  description = "Найдите все коллекционные предметы в Лос-Анджелесе."
+  unachieved_description = "Найдите все коллекционные предметы в Лос-Анджелесе."
+
+  [achievements.Swedish]
+  label = "Waldo saknas fortfarande"
+  description = "Hitta alla samlarföremål i Los Angeles."
+  unachieved_description = "Hitta alla samlarföremål i Los Angeles."
+
+  [achievements.Turkish]
+  label = "Waldo hâlâ kayıp"
+  description = "Los Angeles'taki tüm koleksiyon parçalarını bulun."
+  unachieved_description = "Los Angeles'taki tüm koleksiyon parçalarını bulun."
+
+  [achievements.Norwegian]
+  label = "Waldo er fortsatt savnet"
+  description = "Finn alle samleobjektene i Los Angeles."
+  unachieved_description = "Finn alle samleobjektene i Los Angeles."
+
+  [achievements.Dutch]
+  label = "Waldo is nog steeds vermist"
+  description = "Vind alle verzamelobjecten in Los Angeles."
+  unachieved_description = "Vind alle verzamelobjecten in Los Angeles."
+
+  [achievements."Simplified Chinese"]
+  label = "沃尔多仍然失踪"
+  description = "在洛杉矶找到所有收藏品。"
+  unachieved_description = "在洛杉矶找到所有收藏品。"
+
+[[achievements]]
+id = 65
+label = "Retire the Master"
+description = "Beat the City Champ."
+unachieved_description = "Beat the City Champ."
+
+  [achievements.Portuguese]
+  label = "Aposente o Mestre"
+  description = "Derrote o Campeão da Cidade."
+  unachieved_description = "Derrote o Campeão da Cidade."
+
+  [achievements.Japanese]
+  label = "マスターを引退させる"
+  description = "シティチャンプに勝て。"
+  unachieved_description = "シティチャンプに勝て。"
+
+  [achievements.German]
+  label = "Den Meister in den Ruhestand versetzen"
+  description = "Schlage den Stadtmeister."
+  unachieved_description = "Schlage den Stadtmeister."
+
+  [achievements.French]
+  label = "Retirer le Maître"
+  description = "Bats le champion de la ville."
+  unachieved_description = "Bats le champion de la ville."
+
+  [achievements.Spanish]
+  label = "Retire al Maestro"
+  description = "Derrota al campeón de la ciudad."
+  unachieved_description = "Derrota al campeón de la ciudad."
+
+  [achievements.Italian]
+  label = "Rimuovere il Master"
+  description = "Batti il campione della città."
+  unachieved_description = "Batti il campione della città."
+
+  [achievements.Korean]
+  label = "마스터를 은퇴시키다"
+  description = "도시 챔피언을 이겨라."
+  unachieved_description = "도시 챔피언을 이겨라."
+
+  [achievements."Traditional Chinese"]
+  label = "退休大師"
+  description = "擊敗城市冠軍。"
+  unachieved_description = "擊敗城市冠軍。"
+
+  [achievements.Polish]
+  label = "Wycofać Mistrza"
+  description = "Pokonaj Mistrza Miasta."
+  unachieved_description = "Pokonaj Mistrza Miasta."
+
+  [achievements.Russian]
+  label = "Отстранить Мастера"
+  description = "Победи чемпиона города."
+  unachieved_description = "Победи чемпиона города."
+
+  [achievements.Swedish]
+  label = "Pensionera mästaren"
+  description = "Slå stadsmästaren."
+  unachieved_description = "Slå stadsmästaren."
+
+  [achievements.Turkish]
+  label = "Ustayı Emekli Et"
+  description = "Şehir Şampiyonunu Yen."
+  unachieved_description = "Şehir Şampiyonunu Yen."
+
+  [achievements.Norwegian]
+  label = "Pensjoner Mesteren"
+  description = "Slå bymesteren."
+  unachieved_description = "Slå bymesteren."
+
+  [achievements.Dutch]
+  label = "Laat de Meester met pensioen gaan"
+  description = "Versla de stadskampioen."
+  unachieved_description = "Versla de stadskampioen."
+
+  [achievements."Simplified Chinese"]
+  label = "退休大师"
+  description = "击败城市冠军。"
+  unachieved_description = "击败城市冠军。"
+
+[[achievements]]
+id = 66
+label = "Mild Dedication"
+description = """
+In Goal Attack, complete every goal for one race.
+
+
+
+"""
+unachieved_description = """
+In Goal Attack, complete every goal for one race.
+
+
+
+"""
+
+  [achievements.Portuguese]
+  label = "Leve Dedicação"
+  description = "No Goal Attack, complete todos os objetivos para uma corrida."
+  unachieved_description = "No Goal Attack, complete todos os objetivos para uma corrida."
+
+  [achievements.Japanese]
+  label = "穏やかな献身"
+  description = "ゴールアタックでは、1レースのすべてのゴールを達成してください。"
+  unachieved_description = "ゴールアタックでは、1レースのすべてのゴールを達成してください。"
+
+  [achievements.German]
+  label = "Sanfte Hingabe"
+  description = "In Goal Attack, schließe jedes Ziel für ein Rennen ab."
+  unachieved_description = "In Goal Attack, schließe jedes Ziel für ein Rennen ab."
+
+  [achievements.French]
+  label = "Dévouement modéré"
+  description = "Dans Goal Attack, marquez tous les buts pour une course."
+  unachieved_description = "Dans Goal Attack, marquez tous les buts pour une course."
+
+  [achievements.Spanish]
+  label = "Dedicación Suave"
+  description = "En Ataque de Gol, completa cada gol para una carrera."
+  unachieved_description = "En Ataque de Gol, completa cada gol para una carrera."
+
+  [achievements.Italian]
+  label = "Dedicazione Moderata"
+  description = "In Goal Attack, completa ogni obiettivo per una razza."
+  unachieved_description = "In Goal Attack, completa ogni obiettivo per una razza."
+
+  [achievements.Korean]
+  label = "부드러운 헌신"
+  description = "골 어택에서 한 경주에 대한 모든 골을 완료하세요."
+  unachieved_description = "골 어택에서 한 경주에 대한 모든 골을 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "溫和的奉獻"
+  description = "在目標攻擊中，完成一場比賽的每個目標。"
+  unachieved_description = "在目標攻擊中，完成一場比賽的每個目標。"
+
+  [achievements.Polish]
+  label = "Łagodne oddanie"
+  description = "W celu ataku, ukończ każdy cel dla jednej rasy."
+  unachieved_description = "W celu ataku, ukończ każdy cel dla jednej rasy."
+
+  [achievements.Russian]
+  label = "Лёгкая преданность"
+  description = "В режиме Цель Атака выполните каждую цель для одной гонки."
+  unachieved_description = "В режиме Цель Атака выполните каждую цель для одной гонки."
+
+  [achievements.Swedish]
+  label = "Mild hängivenhet"
+  description = "I Goal Attack, slutför varje mål för ett lopp."
+  unachieved_description = "I Goal Attack, slutför varje mål för ett lopp."
+
+  [achievements.Turkish]
+  label = "Hafif Adanmışlık"
+  description = "Gol Atakta, bir yarış için her golü tamamlayın."
+  unachieved_description = "Gol Atakta, bir yarış için her golü tamamlayın."
+
+  [achievements.Norwegian]
+  label = "Mild dedikasjon"
+  description = "I Goal Attack, fullfør hvert mål for ett løp."
+  unachieved_description = "I Goal Attack, fullfør hvert mål for ett løp."
+
+  [achievements.Dutch]
+  label = "Milde Toewijding"
+  description = "In Goal Attack, voltooi elk doel voor één race."
+  unachieved_description = "In Goal Attack, voltooi elk doel voor één race."
+
+  [achievements."Simplified Chinese"]
+  label = "温和的奉献"
+  description = "在进球攻击中，为一场比赛完成每个进球。"
+  unachieved_description = "在进球攻击中，为一场比赛完成每个进球。"
+
+[[achievements]]
+id = 67
+label = "True Dedication"
+description = """
+All Goal attacks must be unlocked and every goal for every race completed.
+
+
+
+"""
+unachieved_description = """
+All Goal attacks must be unlocked and every goal for every race completed.
+
+
+
+"""
+
+  [achievements.Portuguese]
+  label = "Verdadeira Dedicação"
+  description = "Todos os Goal Attacks devem estar desbloqueados e todos os objetivos de cada corrida completados."
+  unachieved_description = "Todos os Goal Attacks devem estar desbloqueados e todos os objetivos de cada corrida completados."
+
+  [achievements.Japanese]
+  label = "真の献身"
+  description = "すべてのゴールアタックをアンロックし、すべてのレースのすべてのゴールを達成する必要があります。"
+  unachieved_description = "すべてのゴールアタックをアンロックし、すべてのレースのすべてのゴールを達成する必要があります。"
+
+  [achievements.German]
+  label = "Wahre Hingabe"
+  description = "Alle Torangriffe müssen freigeschaltet sein und jedes Tor für jedes Rennen abgeschlossen werden."
+  unachieved_description = "Alle Torangriffe müssen freigeschaltet sein und jedes Tor für jedes Rennen abgeschlossen werden."
+
+  [achievements.French]
+  label = "Véritable dévouement"
+  description = "Toutes les attaques de but doivent être débloquées et chaque but pour chaque course doit être complété."
+  unachieved_description = "Toutes les attaques de but doivent être débloquées et chaque but pour chaque course doit être complété."
+
+  [achievements.Spanish]
+  label = "Verdadera dedicación"
+  description = "Todos los ataques a la meta deben estar desbloqueados y se debe completar cada objetivo de cada carrera."
+  unachieved_description = "Todos los ataques a la meta deben estar desbloqueados y se debe completar cada objetivo de cada carrera."
+
+  [achievements.Italian]
+  label = "Vera dedizione"
+  description = "Tutti gli attacchi di Goal devono essere sbloccati e ogni goal per ogni gara completato."
+  unachieved_description = "Tutti gli attacchi di Goal devono essere sbloccati e ogni goal per ogni gara completato."
+
+  [achievements.Korean]
+  label = "진정한 헌신"
+  description = "모든 골 공격은 잠금 해제되어야 하며, 모든 경주에서 모든 목표가 완료되어야 합니다."
+  unachieved_description = "모든 골 공격은 잠금 해제되어야 하며, 모든 경주에서 모든 목표가 완료되어야 합니다."
+
+  [achievements."Traditional Chinese"]
+  label = "真正的奉獻"
+  description = "必須解鎖所有目標攻擊並完成每場比賽的每個目標。"
+  unachieved_description = "必須解鎖所有目標攻擊並完成每場比賽的每個目標。"
+
+  [achievements.Polish]
+  label = "Prawdziwe oddanie"
+  description = "Wszystkie ataki na bramkę muszą być odblokowane, a każdy cel dla każdej rasy musi być ukończony."
+  unachieved_description = "Wszystkie ataki na bramkę muszą być odblokowane, a każdy cel dla każdej rasy musi być ukończony."
+
+  [achievements.Russian]
+  label = "Истинная преданность"
+  description = "Все атаки на цели должны быть разблокированы, и каждая цель для каждой гонки должна быть выполнена."
+  unachieved_description = "Все атаки на цели должны быть разблокированы, и каждая цель для каждой гонки должна быть выполнена."
+
+  [achievements.Swedish]
+  label = "Sann hängivenhet"
+  description = "Alla målattacker måste låsas upp och varje mål för varje ras måste slutföras."
+  unachieved_description = "Alla målattacker måste låsas upp och varje mål för varje ras måste slutföras."
+
+  [achievements.Turkish]
+  label = "Gerçek Adanmışlık"
+  description = "Tüm Gol saldırıları kilidi açılmalı ve her ırk için tüm goller tamamlanmalıdır."
+  unachieved_description = "Tüm Gol saldırıları kilidi açılmalı ve her ırk için tüm goller tamamlanmalıdır."
+
+  [achievements.Norwegian]
+  label = "Ekte dedikasjon"
+  description = "Alle målangrep må låses opp og hvert mål for hvert løp må fullføres."
+  unachieved_description = "Alle målangrep må låses opp og hvert mål for hvert løp må fullføres."
+
+  [achievements.Dutch]
+  label = "Ware toewijding"
+  description = "Alle Doel-aanvallen moeten worden ontgrendeld en elk doel voor elke race voltooid."
+  unachieved_description = "Alle Doel-aanvallen moeten worden ontgrendeld en elk doel voor elke race voltooid."
+
+  [achievements."Simplified Chinese"]
+  label = "真正的奉献"
+  description = "所有目标攻击必须解锁，并完成每个种族的每个目标。"
+  unachieved_description = "所有目标攻击必须解锁，并完成每个种族的每个目标。"
+
+[[achievements]]
+id = 69
+label = "Goin' South"
+description = "Meet the South Central Mechanic."
+unachieved_description = "Meet the South Central Mechanic."
+
+  [achievements.Portuguese]
+  label = "Indo Para o Sul"
+  description = "Conheça o Mecânico de South Central."
+  unachieved_description = "Conheça o Mecânico de South Central."
+
+  [achievements.Japanese]
+  label = "南へ向かう"
+  description = "サウスセントラルの整備士に会おう。"
+  unachieved_description = "サウスセントラルの整備士に会おう。"
+
+  [achievements.German]
+  label = "Nach Süden gehen"
+  description = "Lernen Sie den Mechaniker aus Südzentral kennen."
+  unachieved_description = "Lernen Sie den Mechaniker aus Südzentral kennen."
+
+  [achievements.French]
+  label = "Aller vers le sud"
+  description = "Rencontrez le mécanicien du Sud-Central."
+  unachieved_description = "Rencontrez le mécanicien du Sud-Central."
+
+  [achievements.Spanish]
+  label = "Yendo al sur"
+  description = "Conoce al mecánico del centro-sur."
+  unachieved_description = "Conoce al mecánico del centro-sur."
+
+  [achievements.Italian]
+  label = "Andando a Sud"
+  description = "Incontra il meccanico del Sud Centrale."
+  unachieved_description = "Incontra il meccanico del Sud Centrale."
+
+  [achievements.Korean]
+  label = "남쪽으로 가는 중"
+  description = "사우스 센트럴 정비사를 만나보세요."
+  unachieved_description = "사우스 센트럴 정비사를 만나보세요."
+
+  [achievements."Traditional Chinese"]
+  label = "向南走"
+  description = "認識中南機械師。"
+  unachieved_description = "認識中南機械師。"
+
+  [achievements.Polish]
+  label = "Idąc na południe"
+  description = "Poznaj mechanika z Południowego Centrum."
+  unachieved_description = "Poznaj mechanika z Południowego Centrum."
+
+  [achievements.Russian]
+  label = "Еду на юг"
+  description = "Познакомьтесь с механиком из Южного Центра."
+  unachieved_description = "Познакомьтесь с механиком из Южного Центра."
+
+  [achievements.Swedish]
+  label = "På väg söderut"
+  description = "Möt den sydcentrala mekanikern."
+  unachieved_description = "Möt den sydcentrala mekanikern."
+
+  [achievements.Turkish]
+  label = "Güney'e Gitmek"
+  description = "Güney Merkez Teknisyeni ile tanışın."
+  unachieved_description = "Güney Merkez Teknisyeni ile tanışın."
+
+  [achievements.Norwegian]
+  label = "Går sørover"
+  description = "Møt South Central Mechanic."
+  unachieved_description = "Møt South Central Mechanic."
+
+  [achievements.Dutch]
+  label = "Waarheen Zuid"
+  description = "Maak kennis met de monteur uit South Central."
+  unachieved_description = "Maak kennis met de monteur uit South Central."
+
+  [achievements."Simplified Chinese"]
+  label = "往南走"
+  description = "认识一下中南部的机械师。"
+  unachieved_description = "认识一下中南部的机械师。"
+
+[[achievements]]
+id = 70
+label = "South Central Test Drive"
+description = "Take 1 South Central vehicle out for a test drive."
+unachieved_description = "Take 1 South Central vehicle out for a test drive."
+
+  [achievements.Portuguese]
+  label = "Test Drive em South Central"
+  description = "Faça um test drive com 1 veículo de South Central."
+  unachieved_description = "Faça um test drive com 1 veículo de South Central."
+
+  [achievements.Japanese]
+  label = "サウスセントラル試乗"
+  description = "サウスセントラルの車を1台、試乗に出してください。"
+  unachieved_description = "サウスセントラルの車を1台、試乗に出してください。"
+
+  [achievements.German]
+  label = "Südzentrum Testfahrt"
+  description = "Nehmen Sie 1 South Central Fahrzeug für eine Probefahrt heraus."
+  unachieved_description = "Nehmen Sie 1 South Central Fahrzeug für eine Probefahrt heraus."
+
+  [achievements.French]
+  label = "Essai routier du Sud-Central"
+  description = "Prenez un véhicule South Central pour un essai routier."
+  unachieved_description = "Prenez un véhicule South Central pour un essai routier."
+
+  [achievements.Spanish]
+  label = "Prueba de Manejo del Centro-Sur"
+  description = "Saque 1 vehículo de South Central para una prueba de manejo."
+  unachieved_description = "Saque 1 vehículo de South Central para una prueba de manejo."
+
+  [achievements.Italian]
+  label = "Test Drive del Sud Centrale"
+  description = "Porta fuori per un giro di prova 1 veicolo South Central."
+  unachieved_description = "Porta fuori per un giro di prova 1 veicolo South Central."
+
+  [achievements.Korean]
+  label = "사우스 센트럴 테스트 드라이브"
+  description = "South Central 차량 1대를 시운전해 보세요."
+  unachieved_description = "South Central 차량 1대를 시운전해 보세요."
+
+  [achievements."Traditional Chinese"]
+  label = "中南部試駕"
+  description = "取出 1 輛 South Central 車輛出去試駕。"
+  unachieved_description = "取出 1 輛 South Central 車輛出去試駕。"
+
+  [achievements.Polish]
+  label = "Południowo-Środkowy Test Jazdy"
+  description = "Weź jeden pojazd South Central na testową przejażdżkę."
+  unachieved_description = "Weź jeden pojazd South Central na testową przejażdżkę."
+
+  [achievements.Russian]
+  label = "Южно-Центральная тестовая поездка"
+  description = "Выехать на тест-драйв на одном автомобиле South Central."
+  unachieved_description = "Выехать на тест-драйв на одном автомобиле South Central."
+
+  [achievements.Swedish]
+  label = "Sydcentrala testkörningen"
+  description = "Ta ut 1 South Central-fordon för en provkörning."
+  unachieved_description = "Ta ut 1 South Central-fordon för en provkörning."
+
+  [achievements.Turkish]
+  label = "Güney Merkez Test Sürüşü"
+  description = "1 South Central aracını test sürüşüne çıkarın."
+  unachieved_description = "1 South Central aracını test sürüşüne çıkarın."
+
+  [achievements.Norwegian]
+  label = "South Central Test Drive"
+  description = "Ta 1 South Central-kjøretøy ut for en prøvetur."
+  unachieved_description = "Ta 1 South Central-kjøretøy ut for en prøvetur."
+
+  [achievements.Dutch]
+  label = "Zuid-Centrale Test Drive"
+  description = "Neem 1 South Central-voertuig mee voor een proefrit."
+  unachieved_description = "Neem 1 South Central-voertuig mee voor een proefrit."
+
+  [achievements."Simplified Chinese"]
+  label = "南中部试驾"
+  description = "开一辆南中部的车辆去试驾。"
+  unachieved_description = "开一辆南中部的车辆去试驾。"
+
+[[achievements]]
+id = 71
+label = "Big Ballin'"
+description = "Win 10 races in an SUV."
+unachieved_description = "Win 10 races in an SUV."
+
+  [achievements.Portuguese]
+  label = "Ostentação Grande"
+  description = "Vença 10 corridas em um SUV."
+  unachieved_description = "Vença 10 corridas em um SUV."
+
+  [achievements.Japanese]
+  label = "大きく稼ぐ"
+  description = "SUVで10レースに勝つ。"
+  unachieved_description = "SUVで10レースに勝つ。"
+
+  [achievements.German]
+  label = "Groß Aufspielen"
+  description = "Gewinne 10 Rennen in einem SUV."
+  unachieved_description = "Gewinne 10 Rennen in einem SUV."
+
+  [achievements.French]
+  label = "Gros Balleur"
+  description = "Gagnez 10 courses en SUV."
+  unachieved_description = "Gagnez 10 courses en SUV."
+
+  [achievements.Spanish]
+  label = "Gran Bola"
+  description = "Gana 10 carreras en un SUV."
+  unachieved_description = "Gana 10 carreras en un SUV."
+
+  [achievements.Italian]
+  label = "Grande Spaccatore"
+  description = "Vinci 10 gare in un SUV."
+  unachieved_description = "Vinci 10 gare in un SUV."
+
+  [achievements.Korean]
+  label = "큰 돈잡는"
+  description = "SUV로 10번의 경주에서 승리하세요."
+  unachieved_description = "SUV로 10번의 경주에서 승리하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "大球"
+  description = "駕駛 SUV 贏得 10 場比賽。"
+  unachieved_description = "駕駛 SUV 贏得 10 場比賽。"
+
+  [achievements.Polish]
+  label = "Wielkie Bicie"
+  description = "Wygraj 10 wyścigów SUV-em."
+  unachieved_description = "Wygraj 10 wyścigów SUV-em."
+
+  [achievements.Russian]
+  label = "Большой шар"
+  description = "Выиграй 10 гонок на внедорожнике."
+  unachieved_description = "Выиграй 10 гонок на внедорожнике."
+
+  [achievements.Swedish]
+  label = "Stort spelande"
+  description = "Vinner 10 lopp i en SUV."
+  unachieved_description = "Vinner 10 lopp i en SUV."
+
+  [achievements.Turkish]
+  label = "Büyük Oynayan"
+  description = "Bir SUV ile 10 yarış kazan."
+  unachieved_description = "Bir SUV ile 10 yarış kazan."
+
+  [achievements.Norwegian]
+  label = "Big Ballin'"
+  description = "Vinn 10 løp i en SUV."
+  unachieved_description = "Vinn 10 løp i en SUV."
+
+  [achievements.Dutch]
+  label = "Groot Bollen"
+  description = "Win 10 races in een SUV."
+  unachieved_description = "Win 10 races in een SUV."
+
+  [achievements."Simplified Chinese"]
+  label = "大手笔"
+  description = "用SUV赢得10场比赛。"
+  unachieved_description = "用SUV赢得10场比赛。"
+
+[[achievements]]
+id = 72
+label = "Low Ballin'"
+description = "Win 10 races in a Low Rider."
+unachieved_description = "Win 10 races in a Low Rider."
+
+  [achievements.Portuguese]
+  label = "Ostentação Baixa"
+  description = "Vença 10 corridas em um Low Rider."
+  unachieved_description = "Vença 10 corridas em um Low Rider."
+
+  [achievements.Japanese]
+  label = "低評価で売る"
+  description = "ローライダーで10レースに勝つ。"
+  unachieved_description = "ローライダーで10レースに勝つ。"
+
+  [achievements.German]
+  label = "Billig handeln"
+  description = "Gewinne 10 Rennen in einem Low Rider."
+  unachieved_description = "Gewinne 10 Rennen in einem Low Rider."
+
+  [achievements.French]
+  label = "Jouer la montre"
+  description = "Gagnez 10 courses dans une Low Rider."
+  unachieved_description = "Gagnez 10 courses dans une Low Rider."
+
+  [achievements.Spanish]
+  label = "Jugando bajo"
+  description = "Gana 10 carreras en un Low Rider."
+  unachieved_description = "Gana 10 carreras en un Low Rider."
+
+  [achievements.Italian]
+  label = "Prezzi Bassi"
+  description = "Vinci 10 gare in una Low Rider."
+  unachieved_description = "Vinci 10 gare in una Low Rider."
+
+  [achievements.Korean]
+  label = "로우 볼린"
+  description = "로우 라이더로 10번 경주에서 승리하세요."
+  unachieved_description = "로우 라이더로 10번 경주에서 승리하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "低球"
+  description = "駕駛 Low Rider 贏得 10 場比賽。"
+  unachieved_description = "駕駛 Low Rider 贏得 10 場比賽。"
+
+  [achievements.Polish]
+  label = "Niska stawka"
+  description = "Wygraj 10 wyścigów w Low Riderze."
+  unachieved_description = "Wygraj 10 wyścigów w Low Riderze."
+
+  [achievements.Russian]
+  label = "Лоу Боллин'"
+  description = "Выиграйте 10 гонок на Low Rider."
+  unachieved_description = "Выиграйте 10 гонок на Low Rider."
+
+  [achievements.Swedish]
+  label = "Lågt Bollar"
+  description = "Vinn 10 lopp i en Low Rider."
+  unachieved_description = "Vinn 10 lopp i en Low Rider."
+
+  [achievements.Turkish]
+  label = "Düşük Top Oynama"
+  description = "Bir Low Rider ile 10 yarış kazanın."
+  unachieved_description = "Bir Low Rider ile 10 yarış kazanın."
+
+  [achievements.Norwegian]
+  label = "Low Ballin'"
+  description = "Vinn 10 løp i en Low Rider."
+  unachieved_description = "Vinn 10 løp i en Low Rider."
+
+  [achievements.Dutch]
+  label = "Laag Ballen"
+  description = "Win 10 races in een Low Rider."
+  unachieved_description = "Win 10 races in een Low Rider."
+
+  [achievements."Simplified Chinese"]
+  label = "低调炫富"
+  description = "驾驶低底盘车赢得10场比赛。"
+  unachieved_description = "驾驶低底盘车赢得10场比赛。"
+
+[[achievements]]
+id = 73
+label = "Sign Here"
+description = "Complete 10 deliveries in South Central."
+unachieved_description = "Complete 10 deliveries in South Central."
+
+  [achievements.Portuguese]
+  label = "Assine Aqui"
+  description = "Complete 10 entregas em South Central."
+  unachieved_description = "Complete 10 entregas em South Central."
+
+  [achievements.Japanese]
+  label = "ここに署名してください"
+  description = "サウスセントラルで10件の配達を完了してください。"
+  unachieved_description = "サウスセントラルで10件の配達を完了してください。"
+
+  [achievements.German]
+  label = "Hier unterschreiben"
+  description = "Schließe 10 Lieferungen in South Central ab."
+  unachieved_description = "Schließe 10 Lieferungen in South Central ab."
+
+  [achievements.French]
+  label = "Signez ici"
+  description = "Effectuez 10 livraisons dans le Sud-Central."
+  unachieved_description = "Effectuez 10 livraisons dans le Sud-Central."
+
+  [achievements.Spanish]
+  label = "Firme aquí"
+  description = "Completa 10 entregas en South Central."
+  unachieved_description = "Completa 10 entregas en South Central."
+
+  [achievements.Italian]
+  label = "Firma qui"
+  description = "Completa 10 consegne a South Central."
+  unachieved_description = "Completa 10 consegne a South Central."
+
+  [achievements.Korean]
+  label = "여기에 서명"
+  description = "사우스 센트럴에서 배달 10건 완료하기."
+  unachieved_description = "사우스 센트럴에서 배달 10건 완료하기."
+
+  [achievements."Traditional Chinese"]
+  label = "在此簽名"
+  description = "在中南部完成 10 次交付。"
+  unachieved_description = "在中南部完成 10 次交付。"
+
+  [achievements.Polish]
+  label = "Podpisz tutaj"
+  description = "Wykonaj 10 dostaw w South Central."
+  unachieved_description = "Wykonaj 10 dostaw w South Central."
+
+  [achievements.Russian]
+  label = "Подпишите здесь"
+  description = "Выполните 10 доставок в Южном Централе."
+  unachieved_description = "Выполните 10 доставок в Южном Централе."
+
+  [achievements.Swedish]
+  label = "Skriv under här"
+  description = "Slutför 10 leveranser i South Central."
+  unachieved_description = "Slutför 10 leveranser i South Central."
+
+  [achievements.Turkish]
+  label = "Buraya İmza Atın"
+  description = "Güney Merkez'de 10 teslimatı tamamlayın."
+  unachieved_description = "Güney Merkez'de 10 teslimatı tamamlayın."
+
+  [achievements.Norwegian]
+  label = "Signer her"
+  description = "Fullfør 10 leveranser i South Central."
+  unachieved_description = "Fullfør 10 leveranser i South Central."
+
+  [achievements.Dutch]
+  label = "Hier tekenen"
+  description = "Voltooi 10 leveringen in South Central."
+  unachieved_description = "Voltooi 10 leveringen in South Central."
+
+  [achievements."Simplified Chinese"]
+  label = "在此签名"
+  description = "在南中区完成10次送货。"
+  unachieved_description = "在南中区完成10次送货。"
+
+[[achievements]]
+id = 74
+label = "Easier than the Hills"
+description = "Complete the South Central tournament."
+unachieved_description = "Complete the South Central tournament."
+
+  [achievements.Portuguese]
+  label = "Mais Fácil Que as Colinas"
+  description = "Complete o torneio de South Central."
+  unachieved_description = "Complete o torneio de South Central."
+
+  [achievements.Japanese]
+  label = "ヒルズより簡単"
+  description = "サウスセントラル大会を完了してください。"
+  unachieved_description = "サウスセントラル大会を完了してください。"
+
+  [achievements.German]
+  label = "Einfacher als die Hügel"
+  description = "Schließe das South Central-Turnier ab."
+  unachieved_description = "Schließe das South Central-Turnier ab."
+
+  [achievements.French]
+  label = "Plus facile que les collines"
+  description = "Terminez le tournoi du Sud-Central."
+  unachieved_description = "Terminez le tournoi du Sud-Central."
+
+  [achievements.Spanish]
+  label = "Más fácil que las colinas"
+  description = "Completa el torneo del Centro-Sur."
+  unachieved_description = "Completa el torneo del Centro-Sur."
+
+  [achievements.Italian]
+  label = "Più facile dei Colli"
+  description = "Completa il torneo del Sud Centrale."
+  unachieved_description = "Completa il torneo del Sud Centrale."
+
+  [achievements.Korean]
+  label = "힐스보다 더 쉬운"
+  description = "사우스 센트럴 토너먼트를 완료하세요."
+  unachieved_description = "사우스 센트럴 토너먼트를 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "比上山容易"
+  description = "完成中南部錦標賽。"
+  unachieved_description = "完成中南部錦標賽。"
+
+  [achievements.Polish]
+  label = "Łatwiejsze niż Wzgórza"
+  description = "Ukończ turniej South Central."
+  unachieved_description = "Ukończ turniej South Central."
+
+  [achievements.Russian]
+  label = "Проще, чем Холмы"
+  description = "Завершите турнир South Central."
+  unachieved_description = "Завершите турнир South Central."
+
+  [achievements.Swedish]
+  label = "Lättare än bergen"
+  description = "Slutför South Central-turneringen."
+  unachieved_description = "Slutför South Central-turneringen."
+
+  [achievements.Turkish]
+  label = "Tepelerden Daha Kolay"
+  description = "Güney Orta turnuvasını tamamlayın."
+  unachieved_description = "Güney Orta turnuvasını tamamlayın."
+
+  [achievements.Norwegian]
+  label = "Enklere enn Hills"
+  description = "Fullfør South Central-turneringen."
+  unachieved_description = "Fullfør South Central-turneringen."
+
+  [achievements.Dutch]
+  label = "Makkelijker dan de Heuvels"
+  description = "Voltooi het South Central-toernooi."
+  unachieved_description = "Voltooi het South Central-toernooi."
+
+  [achievements."Simplified Chinese"]
+  label = "比山更容易"
+  description = "完成南中部锦标赛。"
+  unachieved_description = "完成南中部锦标赛。"
+
+[[achievements]]
+id = 75
+label = "Money for nothing"
+description = "Complete the South Central Wager Mission."
+unachieved_description = "Complete the South Central Wager Mission."
+
+  [achievements.Portuguese]
+  label = "Dinheiro Por Nada"
+  description = "Complete a Missão de Aposta (Wager) em South Central."
+  unachieved_description = "Complete a Missão de Aposta (Wager) em South Central."
+
+  [achievements.Japanese]
+  label = "何もしないでお金"
+  description = "サウスセントラルの賭けミッションを完了してください。"
+  unachieved_description = "サウスセントラルの賭けミッションを完了してください。"
+
+  [achievements.German]
+  label = "Geld für nichts"
+  description = "Schließe die South Central Wager Mission ab."
+  unachieved_description = "Schließe die South Central Wager Mission ab."
+
+  [achievements.French]
+  label = "De l'argent pour rien"
+  description = "Terminez la mission Sud-Central Wager."
+  unachieved_description = "Terminez la mission Sud-Central Wager."
+
+  [achievements.Spanish]
+  label = "Dinero por nada"
+  description = "Completa la misión de la Apuesta del Sur Central."
+  unachieved_description = "Completa la misión de la Apuesta del Sur Central."
+
+  [achievements.Italian]
+  label = "Soldi per nulla"
+  description = "Completa la missione South Central Wager."
+  unachieved_description = "Completa la missione South Central Wager."
+
+  [achievements.Korean]
+  label = "공짜 돈"
+  description = "사우스 센트럴 내기 미션을 완료하세요."
+  unachieved_description = "사우스 센트럴 내기 미션을 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "有錢沒啥用"
+  description = "完成中南部投注任務。"
+  unachieved_description = "完成中南部投注任務。"
+
+  [achievements.Polish]
+  label = "Pieniądze za nic"
+  description = "Ukończ misję Zakład w Południowo-Centralnym."
+  unachieved_description = "Ukończ misję Zakład w Południowo-Centralnym."
+
+  [achievements.Russian]
+  label = "Деньги за просто так"
+  description = "Выполните миссию «Южно-Центральная ставка»."
+  unachieved_description = "Выполните миссию «Южно-Центральная ставка»."
+
+  [achievements.Swedish]
+  label = "Pengar för ingenting"
+  description = "Slutför South Central Wager-uppdraget."
+  unachieved_description = "Slutför South Central Wager-uppdraget."
+
+  [achievements.Turkish]
+  label = "Hiç para"
+  description = "Güney Merkez Bahis Görevini tamamla."
+  unachieved_description = "Güney Merkez Bahis Görevini tamamla."
+
+  [achievements.Norwegian]
+  label = "Penger for ingenting"
+  description = "Fullfør South Central Wager-oppdraget."
+  unachieved_description = "Fullfør South Central Wager-oppdraget."
+
+  [achievements.Dutch]
+  label = "Geld voor niets"
+  description = "Voltooi de South Central Wager-missie."
+  unachieved_description = "Voltooi de South Central Wager-missie."
+
+  [achievements."Simplified Chinese"]
+  label = "不劳而获的钱"
+  description = "完成南中赌注任务。"
+  unachieved_description = "完成南中赌注任务。"
+
+[[achievements]]
+id = 76
+label = "Brother Time"
+description = "Complete the 3 missions for the South Central time trial."
+unachieved_description = "Complete the 3 missions for the South Central time trial."
+
+  [achievements.Portuguese]
+  label = "Hora do Irmão"
+  description = "Complete as 3 missões do Time Trial de South Central."
+  unachieved_description = "Complete as 3 missões do Time Trial de South Central."
+
+  [achievements.Japanese]
+  label = "兄弟の時間"
+  description = "サウスセントラルのタイムトライアルの3つのミッションを完了してください。"
+  unachieved_description = "サウスセントラルのタイムトライアルの3つのミッションを完了してください。"
+
+  [achievements.German]
+  label = "Bruder Zeit"
+  description = "Schließe die 3 Missionen für das Zeitfahren in South Central ab."
+  unachieved_description = "Schließe die 3 Missionen für das Zeitfahren in South Central ab."
+
+  [achievements.French]
+  label = "Frère Temps"
+  description = "Terminez les 3 missions pour le contre-la-montre du centre-sud."
+  unachieved_description = "Terminez les 3 missions pour le contre-la-montre du centre-sud."
+
+  [achievements.Spanish]
+  label = "Hermano Tiempo"
+  description = "Completa las 3 misiones para la prueba contrarreloj de South Central."
+  unachieved_description = "Completa las 3 misiones para la prueba contrarreloj de South Central."
+
+  [achievements.Italian]
+  label = "Fratello Tempo"
+  description = "Completa le 3 missioni per la prova a tempo South Central."
+  unachieved_description = "Completa le 3 missioni per la prova a tempo South Central."
+
+  [achievements.Korean]
+  label = "형제 시간"
+  description = "사우스 센트럴 타임 트라이얼의 3가지 미션을 완료하세요."
+  unachieved_description = "사우스 센트럴 타임 트라이얼의 3가지 미션을 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "兄弟時間"
+  description = "完成中南部計時賽的 3 項任務。"
+  unachieved_description = "完成中南部計時賽的 3 項任務。"
+
+  [achievements.Polish]
+  label = "Brat Czas"
+  description = "Ukończ 3 misje w południowo-centralnym wyścigu na czas."
+  unachieved_description = "Ukończ 3 misje w południowo-centralnym wyścigu na czas."
+
+  [achievements.Russian]
+  label = "Брат Время"
+  description = "Выполните 3 миссии для испытания на время в Южном Центральном районе."
+  unachieved_description = "Выполните 3 миссии для испытания на время в Южном Центральном районе."
+
+  [achievements.Swedish]
+  label = "Bror Tid"
+  description = "Slutför de 3 uppdragen för South Central-tidsprövningen."
+  unachieved_description = "Slutför de 3 uppdragen för South Central-tidsprövningen."
+
+  [achievements.Turkish]
+  label = "Kardeş Zaman"
+  description = "Güney Merkez zaman denemesi için 3 görevi tamamlayın."
+  unachieved_description = "Güney Merkez zaman denemesi için 3 görevi tamamlayın."
+
+  [achievements.Norwegian]
+  label = "Brother Time"
+  description = "Complete the 3 missions for the South Central time trial."
+  unachieved_description = "Complete the 3 missions for the South Central time trial."
+
+  [achievements.Dutch]
+  label = "Broer Tijd"
+  description = "Voltooi de 3 missies voor de South Central tijdrit."
+  unachieved_description = "Voltooi de 3 missies voor de South Central tijdrit."
+
+  [achievements."Simplified Chinese"]
+  label = "时间兄弟"
+  description = "完成南中部计时赛的3个任务。"
+  unachieved_description = "完成南中部计时赛的3个任务。"
+
+[[achievements]]
+id = 77
+label = "Been there, Done that"
+description = "Finish the South Central career."
+unachieved_description = "Finish the South Central career."
+
+  [achievements.Portuguese]
+  label = "Estive Lá, Fiz Isso"
+  description = "Termine a carreira de South Central."
+  unachieved_description = "Termine a carreira de South Central."
+
+  [achievements.Japanese]
+  label = "そこに行ったことがある、それはもう経験済みだ"
+  description = "サウスセントラルでのキャリアを終える。"
+  unachieved_description = "サウスセントラルでのキャリアを終える。"
+
+  [achievements.German]
+  label = "Schon dort gewesen, schon das gemacht"
+  description = "Beende die South-Central-Karriere."
+  unachieved_description = "Beende die South-Central-Karriere."
+
+  [achievements.French]
+  label = "Déjà fait, déjà vu"
+  description = "Terminez la carrière de South Central."
+  unachieved_description = "Terminez la carrière de South Central."
+
+  [achievements.Spanish]
+  label = "He estado allí, he hecho eso"
+  description = "Termina la carrera en el centro-sur."
+  unachieved_description = "Termina la carrera en el centro-sur."
+
+  [achievements.Italian]
+  label = "Ci sono stato, l'ho fatto"
+  description = "Termina la carriera a South Central."
+  unachieved_description = "Termina la carriera a South Central."
+
+  [achievements.Korean]
+  label = "거기 가봤고, 해봤어"
+  description = "사우스 센트럴 경력을 마치세요."
+  unachieved_description = "사우스 센트럴 경력을 마치세요."
+
+  [achievements."Traditional Chinese"]
+  label = "去過那裡，做過那件事"
+  description = "完成中南生涯。"
+  unachieved_description = "完成中南生涯。"
+
+  [achievements.Polish]
+  label = "Byłem tam, zrobiłem to"
+  description = "Skończ karierę w South Central."
+  unachieved_description = "Skończ karierę w South Central."
+
+  [achievements.Russian]
+  label = "Было, делал"
+  description = "Завершите карьеру в Саут-Сентрал."
+  unachieved_description = "Завершите карьеру в Саут-Сентрал."
+
+  [achievements.Swedish]
+  label = "Har varit där, gjort det"
+  description = "Avsluta karriären i South Central."
+  unachieved_description = "Avsluta karriären i South Central."
+
+  [achievements.Turkish]
+  label = "Orada bulundum, bunu yaptım"
+  description = "Güney Merkez kariyerini bitir."
+  unachieved_description = "Güney Merkez kariyerini bitir."
+
+  [achievements.Norwegian]
+  label = "Vært der, gjort det"
+  description = "Avslutt South Central-karrieren."
+  unachieved_description = "Avslutt South Central-karrieren."
+
+  [achievements.Dutch]
+  label = "Daar geweest, dat gedaan"
+  description = "Rond de South Central-carrière af."
+  unachieved_description = "Rond de South Central-carrière af."
+
+  [achievements."Simplified Chinese"]
+  label = "去过那里，做过那件事"
+  description = "完成南中央的职业生涯。"
+  unachieved_description = "完成南中央的职业生涯。"
+
+[[achievements]]
+id = 78
+label = "GOOOOAAAAALLLLL!!!!!"
+description = "Finish all South Central Goal Attacks."
+unachieved_description = "Finish all South Central Goal Attacks."
+
+  [achievements.Portuguese]
+  label = "GOOOOAAAAALLLLL!!!!!"
+  description = "Termine todos os Goal Attacks de South Central."
+  unachieved_description = "Termine todos os Goal Attacks de South Central."
+
+  [achievements.Japanese]
+  label = "ゴオオオオオオォォォル！！！"
+  description = "サウスセントラルのゴール攻撃をすべて完了してください。"
+  unachieved_description = "サウスセントラルのゴール攻撃をすべて完了してください。"
+
+  [achievements.German]
+  label = "TOOOOORRRRR!!!!!"
+  description = "Beende alle Goal-Angriffe in South Central."
+  unachieved_description = "Beende alle Goal-Angriffe in South Central."
+
+  [achievements.French]
+  label = "GOOOOAAAAALLLLL!!!!!"
+  description = "Terminez toutes les attaques de but du Sud-Central."
+  unachieved_description = "Terminez toutes les attaques de but du Sud-Central."
+
+  [achievements.Spanish]
+  label = "¡¡¡¡¡¡GOL!!!!!!"
+  description = "Termina todos los ataques de gol del Sur Central."
+  unachieved_description = "Termina todos los ataques de gol del Sur Central."
+
+  [achievements.Italian]
+  label = "GOOOOAAAAALLLLL!!!!!"
+  description = "Completa tutti gli attacchi a obiettivo del South Central."
+  unachieved_description = "Completa tutti gli attacchi a obiettivo del South Central."
+
+  [achievements.Korean]
+  label = "골!!!!"
+  description = "사우스 센트럴 골 공격을 모두 완료하세요."
+  unachieved_description = "사우스 센트럴 골 공격을 모두 완료하세요."
+
+  [achievements."Traditional Chinese"]
+  label = "好啊啊啊啊！ ！ ！ ！ ！ ！"
+  description = "完成所有中南球門攻擊。"
+  unachieved_description = "完成所有中南球門攻擊。"
+
+  [achievements.Polish]
+  label = "GOOOOALLLLL!!!!!"
+  description = "Wykonaj wszystkie ataki celów w południowo-centralnej części."
+  unachieved_description = "Wykonaj wszystkie ataki celów w południowo-centralnej części."
+
+  [achievements.Russian]
+  label = "ГООООООЛЛЛЛЛ!!!!!"
+  description = "Завершите все атаки на цели Южного Центра."
+  unachieved_description = "Завершите все атаки на цели Южного Центра."
+
+  [achievements.Swedish]
+  label = "MÅÅÅÅÅL!!!!!"
+  description = "Avsluta alla målattacker i South Central."
+  unachieved_description = "Avsluta alla målattacker i South Central."
+
+  [achievements.Turkish]
+  label = "GOOOOALLLLL!!!!!"
+  description = "Tüm Güney Merkezi Gol Saldırımlarını tamamla."
+  unachieved_description = "Tüm Güney Merkezi Gol Saldırımlarını tamamla."
+
+  [achievements.Norwegian]
+  label = "GÅÅÅÅÅÅÅL!!!!!"
+  description = "Fullfør alle South Central målangrep."
+  unachieved_description = "Fullfør alle South Central målangrep."
+
+  [achievements.Dutch]
+  label = "GOOOOAAAAALLLLL!!!!!"
+  description = "Voltooi alle Zuid-Centrale Doelaanvallen."
+  unachieved_description = "Voltooi alle Zuid-Centrale Doelaanvallen."
+
+  [achievements."Simplified Chinese"]
+  label = "进球！！！！！！"
+  description = "完成所有南中区目标进攻。"
+  unachieved_description = "完成所有南中区目标进攻。"
+

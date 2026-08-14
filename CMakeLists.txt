@@ -51,6 +51,10 @@ if(REXGLUE_ENABLE_XEO3_TARGET)
 else()
     add_executable(larecomp ${LARECOMP_SOURCES})
     if(WIN32)
+        # Compile the .rc so the app icon is embedded in the exe (not just copied
+        # into assets/). The lowest-ID ICON in larecomp.rc is used by Explorer.
+        enable_language(RC)
+        add_executable(larecomp WIN32 ${LARECOMP_SOURCES} src/larecomp.rc)
     else()
         add_executable(larecomp ${LARECOMP_SOURCES})
     endif()
@@ -68,4 +72,10 @@ else()
             dxgi
         )
     endif()
+
+    add_custom_command(TARGET larecomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
+        "$<TARGET_FILE_DIR:larecomp>/assets"
+    )
 endif()

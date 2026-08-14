@@ -2,6 +2,7 @@
 
 #include <rex/rex_app.h>
 #include <rex/system/flags.h>
+#include <rex/system/achievement_manager.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
@@ -17,6 +18,18 @@
 #include <string_view>
 #include <filesystem>
 #include <cstdlib>
+#include <fstream>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 extern uint8_t* g_guest_mem;
 
@@ -83,11 +96,54 @@ class LarecompApp : public rex::ReXApp {
       std::_Exit(1);
     }
     return installed_paths;
+
+  void OnPostLoadXexImage() override {
+    // Load achievement metadata from the resource embedded in the exe instead of
+    // a loose assets/achievements.toml. Runs after the SDK has loaded the base
+    // achievements from the title's XDBF, so this layers labels/descriptions on
+    // top by matching achievement id.
+#ifdef _WIN32
+    HMODULE mod = GetModuleHandleW(nullptr);
+    HRSRC res = FindResourceA(mod, "ACHIEVEMENTS_TOML", RT_RCDATA);
+    if (res) {
+      HGLOBAL handle = LoadResource(mod, res);
+      DWORD size = SizeofResource(mod, res);
+      const char* bytes = handle ? static_cast<const char*>(LockResource(handle)) : nullptr;
+      if (bytes && size) {
+        achievements().LoadMetadataString(std::string_view(bytes, size),
+                                          "<embedded achievements.toml>");
+      } else {
+        LARECOMP_APP_ERROR("Embedded achievements.toml resource is empty");
+      }
+    } else {
+      LARECOMP_APP_ERROR("Embedded achievements.toml resource not found");
+    }
+#endif
   }
 
   void OnPostSetup() override {
     LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}",
                       reinterpret_cast<std::uintptr_t>(g_guest_mem));
+
+  window()->SetTitle("LARecomp");
+
+    std::filesystem::path src_dir = std::filesystem::path(__FILE__).parent_path();
+    std::string icon_path = (src_dir / "assets" / "mcla.ico").string();
+    
+    void* native_hwnd = window()->GetNativeWindowHandle();
+    if (native_hwnd) {
+#ifdef _WIN32
+      HICON hIcon = (HICON)LoadImageA(NULL, icon_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+      if (hIcon) {
+        SendMessageA((HWND)native_hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+        SendMessageA((HWND)native_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+      } else {
+        LARECOMP_APP_ERROR("Failed to load icon file with LoadImageA!");
+      }
+#endif
+    } else {
+      LARECOMP_APP_ERROR("Failed to get native window handle!");
+    }
 
     LARECOMP_Discord_Init();
     mc::ui::InitGraphicsButtonPatch();

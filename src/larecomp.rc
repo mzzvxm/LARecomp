@@ -1,0 +1,7 @@
+// Windows executable resources for larecomp.
+// The lowest-numbered ICON resource becomes the icon Explorer/taskbar shows.
+1 ICON "assets/mcla.ico"
+
+// Achievement metadata embedded in the exe (loaded at boot from the resource,
+// so it does not need to ship as a loose file under assets/).
+ACHIEVEMENTS_TOML RCDATA "achievements.toml"
