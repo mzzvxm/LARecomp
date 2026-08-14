@@ -48,6 +48,7 @@
 #include "larecomp_log.h"
 #include "menu_camera.h"
 #include "modloader/modloader.h"
+#include "mp3custom/mp3custom.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
 // CVAR DEFINITIONS (Will appear in F4 menu)
@@ -1221,6 +1222,10 @@ void InitHooks() {
     // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
     // reaches sub_822C4630 and mounts the archives.
     mc::modloader::Init();
+
+    // Scans <exe>/music and the User Music folder. The tracks are handed to
+    // mcMusicManager later, from the ctor hook MCLA_CustomMusic_Install.
+    InitCustomMusic();
 
     ApplyAspectRatioPatch(REXCVAR_GET(aspect_ratio));
 

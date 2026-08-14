@@ -3109,8 +3109,8 @@ out_directory_path = "generated"
 0x821EF020 = { name = "rex_sub_821EF020", size = 0x68 }
 0x821EF0A0 = { name = "rex_sub_821EF0A0", size = 0x1C }
 0x821EF0E8 = { name = "rex_sub_821EF0E8", size = 0x68 }
-0x821EF158 = { name = "rex_sub_821EF158", size = 0xA0 }
-0x821EF1F8 = { name = "rex_sub_821EF1F8", size = 0x118 }
+0x821EF158 = { name = "mcMusicManager_Pause", size = 0xA0 }
+0x821EF1F8 = { name = "mcMusicManager_Stop", size = 0x118 }
 0x821EF310 = { name = "rex_sub_821EF310", size = 0x13C }
 0x821EF450 = { name = "rex_sub_821EF450", size = 0x94 }
 0x821EF4E8 = { name = "rex_sub_821EF4E8", size = 0x5C }
@@ -25634,10 +25634,6 @@ name = "Hook_SquashWorldMatrix"
 registers = ["r4"]
 
 [[midasm_hook]]
-address = 0x82307BA0 # PostProcessing_SetCutsceneDofNear
-name = "Patch_DisableDoF"
-registers = []
-return_on_true = true
 address = 0x8235AA90          # sub_8235A628 pushes the wheel matrix (tyres)
 name = "Hook_SquashWorldMatrix"
 registers = ["r4"]
@@ -25723,6 +25719,56 @@ address = 0x822A2ED4
 after_instruction = true
 registers = ["f0"]
 
+# Custom MP3 radio (mc_engine/mp3custom).
+#
+# 0x821EFF4C: `bl sub_821EED18` (RebuildShuffle) at the tail of the
+# mcMusicManager ctor sub_821EFB98. r31 is the manager. Both AddSong passes
+# (sub_821EF450) have already filled the per-genre atArrays, and the shuffle
+# tables have not been built yet, so custom rows appended here are counted by
+# the shuffle exactly like the shipped ones.
+[[midasm_hook]]
+name = "MCLA_CustomMusic_Install"
+address = 0x821EFF4C
+registers = ["r31"]
+
+# 0x821EFB5C: `bl sub_821F4E78` inside mcMusicManager::StartCurrentSong
+# (sub_821EF950), the call that hands the current song's cue to the audio
+# engine. r31 is the manager, and mgr+68 is the song entry about to start.
+# Custom tracks have no cue in music.rpf, so for those rows the call is skipped
+# and the host player takes over; the jump target is loc_821EFB78, the same
+# tail the "music volume is off" path already falls through to, which still
+# writes the +376/+380 callback pair.
+[[midasm_hook]]
+name = "MCLA_CustomMusic_StartSong"
+address = 0x821EFB5C
+registers = ["r31"]
+jump_address_on_true = 0x821EFB78
+
+# 0x821F0600: mcMusicManager::GotoSong(this, index), entry. r3 is the manager.
+# Every song change goes through here, so it is where the "no cue" flag at
+# mgr+24 gets cleared again before StartCurrentSong decides what to do with the
+# newly selected row.
+[[midasm_hook]]
+name = "MCLA_CustomMusic_SelectSong"
+address = 0x821F0600
+registers = ["r3"]
+
+# 0x821EF1F8: mcMusicManager::Stop(this, fade), entry. r3 is the manager. This
+# is the single teardown for the radio -- the garage entry gets here through
+# sub_821F0C10, and the `*(this + 24) == 1` branch inside is where the manager
+# already expects to hand a stop to a non-RAGE music source.
+[[midasm_hook]]
+name = "MCLA_CustomMusic_Stop"
+address = 0x821EF1F8
+registers = ["r3"]
+
+# 0x821EF158: mcMusicManager::Pause(this, ...), entry. r3 is the manager. Same
+# story as Stop: it already has a `*(this + 24) == 1` branch for a non-RAGE
+# source. Resume comes back through StartCurrentSong.
+[[midasm_hook]]
+name = "MCLA_CustomMusic_Pause"
+address = 0x821EF158
+registers = ["r3"]
 
 [rexcrt]
 RtlAllocateHeap = 0x82134860

@@ -36,6 +36,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp
 
+    # Custom MP3 radio: <exe>/music/*.mp3 injected into mcMusicManager, decoded
+    # and played on the host (Media Foundation + XAudio2).
+    src/mc_engine/mp3custom/mp3custom.cpp
+    src/mc_engine/mp3custom/mp3_player.cpp
+
     # Modloader: models/<mod>/<asset>.obj -> xarchive_mods.rpf
     src/mc_engine/modloader/aes256.cpp
     src/mc_engine/modloader/rpf3.cpp
@@ -98,6 +103,12 @@ else()
             dxgi
             # real-world weather fetch (mc_engine/real_weather.cpp)
             winhttp
+            # custom MP3 radio (mc_engine/mp3custom): Media Foundation decode.
+            # XAudio2 itself is loaded by name at runtime, so it needs no lib.
+            mfplat
+            mfreadwrite
+            mfuuid
+            ole32
         )
     endif()
 
