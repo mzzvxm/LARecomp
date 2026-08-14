@@ -25186,6 +25186,61 @@ address = 0x822C0668
 name = "Patch_DebugCam"
 registers = ["r3"]
 
+# Speedometer units (mph -> km/h). sub_8238DDF0 is the game's unit formatter;
+# at 0x8238DE54 it loads the metric flag (dword_8288E5A0) into r11. Replace that
+# load with our forced value: r11=1 -> metric (km/h/km/m), r11=0 -> imperial.
+# Drives the game's own metric path, so both the number and the "mph"/"k/h"
+# label convert. Gated by the speed_units cvar.
+[[midasm_hook]]
+address = 0x8238DE54
+name = "Patch_SpeedUnits"
+registers = ["r11"]
+jump_address_on_true = 0x8238DE58
+
+# Button prompt glyphs, Xbox <-> PlayStation (button_prompts cvar). Every UI
+# movie ships both sets, and so does the texture dictionary the 360 build loads
+# (resources/ui/shared_latin.xtd: shared_13 circle, shared_15 square,
+# shared_24 cross, shared_36 triangle, next to the 360 art). The ActionScript
+# picks a strip with icon.gotoAndStop(iconID + platform * 49); native code only
+# passes an abstract iconID (sub_82637E68), so the whole switch is the
+# mcRegistry int "platform".
+#
+# mcUIManager's ctor (sub_821FDED8) creates that variant with a hard-coded 0 and
+# writes value (+0x58) and "%d" text (+0x5C) before stamping type=3. Hook fires
+# at 0x821FE230, one instruction after the text is formatted and while r27 still
+# holds the entry, and rewrites both fields. Void hook: the original `lis r6`
+# still runs. The same ctor loads raceeditor/garage/policecam/credits right
+# after, which is why this cannot wait for the per-frame tick.
+[[midasm_hook]]
+address = 0x821FE230
+name = "Hook_PlatformVarInit"
+registers = ["r27"]
+
+# Second writer: sub_821F8038 pushes aspect/lang/zone/platform into a movie as
+# it is created. Replaces the `li r5, 0` that feeds the platform push; returning
+# true skips it and resumes at 0x821F8164. Measured: sub_822C2EA8 only calls it
+# once at boot, for the intro movie.
+[[midasm_hook]]
+address = 0x821F8160
+name = "Patch_PlatformPush"
+registers = ["r5"]
+jump_address_on_true = 0x821F8164
+
+# Live switching. The UI movies read `platform` once, on their own frame 1, and
+# are never reloaded, so the registry value alone only lands on a fresh boot.
+# What their frame code evaluates every render is _global.platform itself, so
+# writing that variable in a running movie flips the glyphs on the spot.
+# sub_825EE970 is the AVM's action-buffer entry — it parks its argument in
+# dword_828FF970 while it runs, which makes r3 a context that is live by
+# definition. Hook sits after the prologue at 0x825EE980, where r3 is still the
+# argument; the handler pushes only into the context it is handed, and only when
+# that context's last known value differs, so nothing is ever cached to be
+# written later.
+[[midasm_hook]]
+address = 0x825EE980
+name = "Hook_SwfContextEnter"
+registers = ["r3"]
+
 # Options > Controller key dispatch (sub_8264D0D8, r3 = screen, r4 = key).
 # Hook_ListViewPopulate appends a "PLAYSTATION BUTTONS" row to that screen's
 # own list, reusing one of the eleven checkbox rows its ctor (sub_8264DF48)

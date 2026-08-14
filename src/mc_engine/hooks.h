@@ -26,6 +26,21 @@ bool Patch_EdramLimit(PPCRegister& r11);
 bool Patch_DebugCamGate();
 void Patch_DebugCam(PPCRegister& r3);
 
+bool Patch_SpeedUnits(PPCRegister& r11);
+
+// Button prompt glyphs (button_prompts cvar). The UI movies carry both the 360
+// and the PS3 art and choose with the mcRegistry int "platform"; these own that
+// flag. Hook_PlatformVarInit captures the registry entry as mcUIManager builds
+// it, Patch_PlatformPush feeds the per-movie push in sub_821F8038, and
+// TickButtonPrompts (called from Patch_DeltaTimePre) applies live cvar changes.
+void TickButtonPrompts();
+void Hook_PlatformVarInit(PPCRegister& r27);
+bool Patch_PlatformPush(PPCRegister& r5);
+// AVM action-buffer entry (sub_825EE970, r3 = swf context). Pushes
+// _global.platform into each live movie so the glyph set can change without a
+// reboot — the movies only read the registry value on their own frame 1.
+void Hook_SwfContextEnter(PPCRegister& r3);
+
 // BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning
 void MCLACameraBoomSmoothing(PPCRegister& f1);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the
