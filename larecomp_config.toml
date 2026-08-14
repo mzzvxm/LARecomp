@@ -25109,6 +25109,13 @@ address = 0x822D5BC4
 name = "Patch_ScaleCityLOD"
 registers = ["f13"]
 
+# FOV Scale — hook after FOV is loaded into f1 in the main camera update (sub_822C0320)
+# r24 = camera rig index (1 = POV/cockpit, 2 = static, other = chase/3rd person)
+[[midasm_hook]]
+address = 0x822C08E0
+name = "Patch_FOVScale"
+registers = ["f1", "r24"]
+after_instruction = true
 
 # Single-tile predicated tiling — grcDevice::BeginTiledRendering convergence
 # point (0x8217A700): tile dims in r7/r8, screen dims in r28/r25. Forcing tile
@@ -25130,6 +25137,25 @@ address = 0x82410E34
 name = "Patch_EdramLimit"
 registers = ["r11"]
 jump_address_on_true = 0x82410E48
+
+# RAGE debug camera selector — camera update (sub_822C0320) loads the dcam
+# manager from camsys+0x33C into r3 (null-checked at 0x822C0660) and calls its
+# per-frame update (sub_82502E18) at 0x822C0668. Hook fires right before the
+# call with r3 = manager; forces active camera index (+0) and blend (+860)
+# from the debug_cam cvar.
+# Free-fly camera gate bypass — in gameplay r29 = 1 (valid camera source), so
+# the dcam block requires the photo-mode-active byte. When debug_cam = free,
+# jump straight to the manager block at 0x822C065C so the camera runs during
+# live gameplay. Untouched (original gate) when debug_cam = off.
+[[midasm_hook]]
+address = 0x822C0644
+name = "Patch_DebugCamGate"
+jump_address_on_true = 0x822C065C
+
+[[midasm_hook]]
+address = 0x822C0668
+name = "Patch_DebugCam"
+registers = ["r3"]
 
 # Intro pacing — sub_821F9918 advances the intro SWF a hardcoded 1/60s per
 # call and runs twice per frame; at 60 FPS that is 2x speed. Hook fires at the
@@ -25159,13 +25185,32 @@ name = "Patch_DeltaTime"
 registers = ["r24"]
 after_instruction = true
 
+# Front-end (boot/menu) camera. See src/mc_engine/menu_camera.cpp for the RE map.
+#
+# sub_82654960 entry: the setMenuCam slot picker. r3 = pointer to the index the
+# UI asked for; the body then probes the shot and may swap it for slot+10 or 0.
+# Returning true skips all of that, so menu_cam_slot locks the shot.
+[[midasm_hook]]
+address = 0x82654960
+name = "Hook_MenuCameraPick"
+registers = ["r3"]
 return_on_true = true
 
+# Front-end camera: loc_822C0868 in sub_822C0320, where all four camera-producing
+# branches converge, one instruction before the result is copied and handed to the
+# renderer. r1 = stack pointer (fov at +0x50, matrix rows at +0x60/+0x70/+0x80,
+# world position at +0x90), r24 = camera mode id (6 = a UI/menu camera is driving).
+# Hooking a single producer does not work: the boot menu does not take the
+# mcUILogic::UpdateCamera branch (measured with menu_cam_diag).
 [[midasm_hook]]
 address = 0x823077E8 # PostProcessing_SetGarageDof
 name = "Patch_DisableDoF"
 registers = []
 return_on_true = true
+address = 0x822C0868
+name = "Hook_MenuCameraFinal"
+registers = ["r1", "r24"]
+
 
 [[midasm_hook]]
 address = 0x823077C8 # PostProcessing_SetCutsceneDof
