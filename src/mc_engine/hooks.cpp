@@ -105,6 +105,10 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade 
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches", "Screen Aspect Ratio")
+    .allowed({"16:9", "16:10", "21:9", "32:9"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
     "Render the scene in a single predicated-tiling tile instead of two. Halves draw calls "
     "and state traffic with MSAA on. Requires the enlarged virtual EDRAM (SDK >= this build).")
@@ -127,7 +131,9 @@ static void ApplyAspectRatioPatch(std::string_view ratio) {
         ratio, patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
     
     uint32_t val = 0x3FE38E39; // 16:9 Default (1.777777f)
-    if (ratio == "21:9") {
+    if (ratio == "16:10") {
+        val = 0x3FCCCCCD; // 16:10 (1.600000f) -> Adicionado aqui
+    } else if (ratio == "21:9") {
         val = 0x40155555; // 21:9 (2.333333f)
     } else if (ratio == "32:9") {
         val = 0x40638E39; // 32:9 (3.555555f)
@@ -146,7 +152,7 @@ static void ApplyAspectRatioPatch(std::string_view ratio) {
 void InitHooks() {
     ApplyAspectRatioPatch(REXCVAR_GET(aspect_ratio));
 
-    rex::cvar::RegisterChangeCallback("aspect_ratio", 
+    rex::cvar::RegisterChangeCallback("aspect_ratio",
         [](std::string_view name, std::string_view new_value) {
             ApplyAspectRatioPatch(new_value);
         }
@@ -161,7 +167,13 @@ bool SkipIntro() {
 
 static bool GetAspectRatio(double& out_val) {
     std::string ratio = REXCVAR_GET(aspect_ratio);
-    if (ratio == "21:9") {
+    if (ratio == "4:3") {
+        out_val = 1.3333333;
+        return true;
+    } else if (ratio == "16:10") {
+        out_val = 1.6000000;
+        return true;
+    } else if (ratio == "21:9") {
         out_val = 2.3333333;
         return true;
     } else if (ratio == "32:9") {
@@ -170,6 +182,7 @@ static bool GetAspectRatio(double& out_val) {
     }
     return false;
 }
+
 
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0) {
     return GetAspectRatio(f0.f64);
