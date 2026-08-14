@@ -9,8 +9,15 @@ bool Patch_AspectRatio_822E5E68(PPCRegister& f12);
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 
 bool Patch_DisableDoF();
+void Patch_ScaleTrafficLOD(PPCRegister& f0);
+
+void Patch_ScaleCityLOD(PPCRegister& f13);
+void UpdateCityLODMemory();
+
 void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28);
+bool Patch_EdramLimit(PPCRegister& r11);
 // BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning
 void MCLACameraBoomSmoothing(PPCRegister& f1);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the

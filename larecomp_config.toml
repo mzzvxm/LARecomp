@@ -25067,6 +25067,39 @@ jump_address_on_true = 0x8223E5E4
 address = 0x82307808 # PostProcessing_SetGameDof
 name = "Patch_DisableDoF"
 registers = []
+# City and Traffic LOD
+[[midasm_hook]]
+address = 0x827903E0
+name = "Patch_ScaleTrafficLOD"
+registers = ["f0"]
+
+[[midasm_hook]]
+address = 0x822D5BC4
+name = "Patch_ScaleCityLOD"
+registers = ["f13"]
+
+
+# Single-tile predicated tiling — grcDevice::BeginTiledRendering convergence
+# point (0x8217A700): tile dims in r7/r8, screen dims in r28/r25. Forcing tile
+# = screen makes tile count 1 so the scene is submitted once (halves draws and
+# state traffic with MSAA). Tile count global 0x827D42A4 is rewritten in the
+# hook for the resolve path.
+[[midasm_hook]]
+address = 0x8217A700
+name = "Patch_SingleTile"
+registers = ["r7", "r8", "r25", "r28"]
+
+# EDRAM capacity bypass for single-tile mode — sub_82410D70 (CreateSurface)
+# rejects allocations past 0x800 tiles (real console EDRAM) at 0x82410E34;
+# single-tile 720p 2xMSAA needs 2880. Host virtual EDRAM is 4096 tiles and the
+# surface header base fields are 12-bit, so up to 4096 is safe. r11 holds
+# base + size; true jumps to the success branch at 0x82410E48.
+[[midasm_hook]]
+address = 0x82410E34
+name = "Patch_EdramLimit"
+registers = ["r11"]
+jump_address_on_true = 0x82410E48
+
 # Per-frame tick point, right after the clock update (sub_821BDA90). The delta
 # time itself is now handled at the clock source (MCLAFrameDelta /
 # MCLAUseRealDelta / MCLAFixedStepPath above); this hook only carries the per-frame

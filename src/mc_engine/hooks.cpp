@@ -10,6 +10,7 @@
 #include <immintrin.h>
 #endif
 #include <rex/chrono/clock.h>
+#include <rex/runtime.h>
 #include <rex/ui/imgui_dialog.h>
 #include "imgui.h"
 #include "logging.h"
@@ -96,6 +97,19 @@ REXCVAR_DEFINE_INT32(fps_limit, 0, "MCLA/Performance",
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD", "Escala de LOD do Tráfego (0.1 - 10.0)")
+    .range(0.1, 10.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade (0.1 - 10.0)")
+    .range(0.1, 10.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
+    "Render the scene in a single predicated-tiling tile instead of two. Halves draw calls "
+    "and state traffic with MSAA on. Requires the enlarged virtual EDRAM (SDK >= this build).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches", "Screen Aspect Ratio")
@@ -175,6 +189,45 @@ bool Patch_60FPS_Jump() {
 }
 
 // 8-bit 60FPS patch. Assumes 'r3' by default, check in IDA.
+// Single-tile predicated tiling — hook at 0x8217A700 in
+// grcDevice::BeginTiledRendering (sub_8217A470), the convergence point right
+// after the per-orientation tile size math and before the tile rect loop.
+// r7 = tile width, r8 = tile height (both feed the 160/32-aligned dimensions,
+// the tile rect array and the PredictedTile RT allocation); r28/r25 = screen
+// width/height. Forcing tile size = screen size makes the tile count land on
+// 1, so the scene is submitted once instead of once per tile. Tile count is
+// also stored at 0x827D42A4 before this point — overwrite it to 1 for the
+// resolve/end path that reads the global. Needs the SDK's enlarged virtual
+// EDRAM (720p 2xMSAA color+depth = 2880 tiles > the real 2048).
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {
+    if (!REXCVAR_GET(single_tile)) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    r7.u64 = r28.u64;  // tile width  = screen width
+    r8.u64 = r25.u64;  // tile height = screen height
+
+    // dword_827D42A4 = tile count (already computed and stored) -> 1
+    base[0x827D42A4 + 0] = 0;
+    base[0x827D42A4 + 1] = 0;
+    base[0x827D42A4 + 2] = 0;
+    base[0x827D42A4 + 3] = 1;
+}
+
+// EDRAM capacity check bypass — sub_82410D70 (guest D3D CreateSurface,
+// auto-allocation path) validates alloc_base + size_in_tiles <= 0x800 (2048,
+// the real console EDRAM) at 0x82410E34 and destroys the surface / returns
+// NULL past it. Single-tile 720p 2xMSAA needs 2880 tiles, so every render
+// target fails and the screen collapses into aliased EDRAM bands. The SDK's
+// virtual EDRAM is 4096 tiles and the guest surface header keeps 12-bit base
+// fields (max 4095), so allocations up to 4096 are safe. r11 = base + size;
+// returning true jumps to the success branch (0x82410E48).
+bool Patch_EdramLimit(PPCRegister& r11) {
+    if (!REXCVAR_GET(single_tile)) return false;
+    return r11.u64 <= 4096;
+}
+
 bool Patch_60FPS_Byte(PPCRegister& r11) {
     if (REXCVAR_GET(fps_60)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
@@ -220,6 +273,34 @@ bool Patch_DisableRubberBanding() {
 
 bool Patch_DisableDoF() {
     return REXCVAR_GET(disable_dof);
+}
+
+void Patch_ScaleTrafficLOD(PPCRegister& f0) {
+    f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
+}
+
+void UpdateCityLODMemory() {
+    extern uint8_t* g_guest_mem;
+    if (!g_guest_mem) return;
+
+    float scale = static_cast<float>(REXCVAR_GET(lod_city_scale));
+    float final_lod = scale * 300.0f;
+
+    uint32_t int_val;
+    std::memcpy(&int_val, &final_lod, sizeof(float));
+
+    uint32_t city_lod_addr = 0x827E0DE0; 
+    
+    // Injeção Big-Endian segura
+    g_guest_mem[city_lod_addr + 0] = (int_val >> 24) & 0xFF;
+    g_guest_mem[city_lod_addr + 1] = (int_val >> 16) & 0xFF;
+    g_guest_mem[city_lod_addr + 2] = (int_val >> 8)  & 0xFF;
+    g_guest_mem[city_lod_addr + 3] = int_val         & 0xFF;
+}
+
+void Patch_ScaleCityLOD(PPCRegister& f13) {
+    // Multiplicamos o valor que a engine acabou de ler da memória pelo nosso slider
+    f13.f64 = f13.f64 * REXCVAR_GET(lod_city_scale);
 }
 
 bool OpenRexGraphicsFromGameOptions_826686D4(PPCRegister& r3) {
