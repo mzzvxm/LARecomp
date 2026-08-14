@@ -12,6 +12,7 @@
 #include "crash_handler.h"
 #include "mc_engine/hooks.h"
 #include "isoinstaller/larecomp_iso_installer.h"
+#include "saveporter/larecomp_save_porter.h"
 
 #include <cstdint>
 #include <memory>
@@ -115,15 +116,24 @@ class LarecompApp : public rex::ReXApp {
   }
 
   std::optional<rex::PathConfig> OnFinalizePaths(const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
-    if (larecomp::IsGameInstalled(defaults.game_data_root)) {
-      return defaults;
+    rex::PathConfig paths = defaults;
+
+    if (!larecomp::IsGameInstalled(paths.game_data_root)) {
+      rex::PathConfig installed_paths;
+      if (!larecomp::RunRexglueIsoInstallWizardBlocking(app_context(), window(), imgui_drawer(), paths, installed_paths)) {
+        std::_Exit(1);
+      }
+      paths = installed_paths;
     }
 
-    rex::PathConfig installed_paths;
-    if (!larecomp::RunRexglueIsoInstallWizardBlocking(app_context(), window(), imgui_drawer(), defaults, installed_paths)) {
-      std::_Exit(1);
+    // First launch with no save: offer to import one from Xenia / RPCS3.
+    // Skipping is fine -- the game creates a new save on its own.
+    if (!larecomp::SaveAlreadyPresent(paths.user_data_root)) {
+      larecomp::RunSaveImportWizardBlocking(app_context(), window(), imgui_drawer(), paths);
     }
-    return installed_paths;
+
+    return paths;
+  }
 
   void OnPostLoadXexImage() override {
     // Load achievement metadata from the resource embedded in the exe instead of

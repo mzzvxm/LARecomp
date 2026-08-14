@@ -32,6 +32,7 @@ set(LARECOMP_SOURCES
     src/discord_rpc/discord_hooks.cpp
 
     src/isoinstaller/larecomp_iso_installer.cpp
+    src/saveporter/larecomp_save_porter.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
