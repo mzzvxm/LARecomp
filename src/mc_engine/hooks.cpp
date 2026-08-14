@@ -2029,6 +2029,30 @@ void Patch_DeltaTime(PPCRegister& r24) {
     (void)r24;
 }
 
+void Patch_BypassVehicleDLC(PPCRegister& r30) {
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    uint32_t struct_addr = static_cast<uint32_t>(r30.u64);
+    if (struct_addr == 0) return;
+
+    uint8_t* ptr = base + struct_addr;
+
+    // Preço em offset 0x2C, big-endian
+    uint32_t price = (uint32_t(ptr[0x2C]) << 24) | (uint32_t(ptr[0x2D]) << 16) |
+                     (uint32_t(ptr[0x2E]) << 8)  | uint32_t(ptr[0x2F]);
+
+    if (price == 118000) {
+        LARECOMP_APP_INFO("[Audi R8] Restaurando ContentFlags/PortalRewardIdx para valores padrão");
+
+        // ContentDownloadFlags (0x30) = 1, ContentFlags (0x34) = 1 — big-endian
+        ptr[0x30] = 0; ptr[0x31] = 0; ptr[0x32] = 0; ptr[0x33] = 1;
+        ptr[0x34] = 0; ptr[0x35] = 0; ptr[0x36] = 0; ptr[0x37] = 1;
+        // PortalRewardIdx (0x38) = -1 (0xFFFFFFFF)
+        ptr[0x38] = 0xFF; ptr[0x39] = 0xFF; ptr[0x3A] = 0xFF; ptr[0x3B] = 0xFF;
+    }
+}
+
 // BadassBaboon's Recomp Adjustments:
 // 0x823203D4, in sub_82320298 (mcPlayerCamera::Update).
 // Applies the 60 FPS exponential decay formula to the camera boom interpolation

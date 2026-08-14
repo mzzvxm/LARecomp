@@ -33,6 +33,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/menu_camera.cpp
     src/mc_engine/time_of_day.cpp
     src/mc_engine/real_weather.cpp
+    src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp
 
     src/discord_rpc/discord_rpc.cpp

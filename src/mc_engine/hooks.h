@@ -33,6 +33,8 @@ bool Patch_EdramLimit(PPCRegister& r11);
 bool Patch_DebugCamGate();
 void Patch_DebugCam(PPCRegister& r3);
 
+void Patch_BypassVehicleDLC(PPCRegister& r30);
+
 bool Patch_SpeedUnits(PPCRegister& r11);
 
 // Button prompt glyphs (button_prompts cvar). The UI movies carry both the 360

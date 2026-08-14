@@ -25144,6 +25144,13 @@ address = 0x822D5BC4
 name = "Patch_ScaleCityLOD"
 registers = ["f13"]
 
+# Audi R8 — hook no epílogo de sub_823964C0 (parser de veículos)
+[[midasm_hook]]
+address = 0x82396D10
+name = "Patch_BypassVehicleDLC"
+registers = ["r30"]
+after_instruction = false
+
 
 # Pause Menu: capture PauseTab address from PM_Continue's parent
 [[midasm_hook]]
@@ -25425,10 +25432,6 @@ registers = ["r1", "r27", "r31"]
 jump_address_on_true = 0x8235DF04
 
 [[midasm_hook]]
-address = 0x823077C8 # PostProcessing_SetCutsceneDof
-name = "Patch_DisableDoF"
-registers = []
-return_on_true = true
 address = 0x8235E038
 name = "Hook_CarbonPartPop"
 registers = ["r1", "r27", "r31"]
@@ -25474,18 +25477,65 @@ name = "Hook_CarbonToggle"
 registers = ["r11"]
 jump_address_on_true = 0x826AE258
 
+# ── Squash & stretch ("Why's This Dealer?") — src/mc_engine/squash_stretch.cpp
+#
+# sub_82360518 is the vehicle render dispatch (r3 = vehicle). Every draw path
+# for a car goes through it — world, garage, reflection — so it is the one place
+# that can tell the player's car (dword_8288DCF8) from traffic before anything
+# is submitted.
+[[midasm_hook]]
+address = 0x82360518
+name = "Hook_SquashSelectVehicle"
+registers = ["r3"]
+
+# sub_823236C8 builds the skinning palette that sub_823788C8 uploads to the
+# "gCarMtxBuffer" vertex constants. Its 4th argument (r6) is an extra transform
+# the engine folds into every bone matrix (result = bone · extra, world space);
+# retail passes 0 for the skinned path. The hook fills it with the squash
+# matrix, so no guest state is written and physics never sees the effect.
+# r4 = bone matrix array (Matrix44, stride 0x40).
+[[midasm_hook]]
+address = 0x823236C8
+name = "Hook_SquashInjectMatrix"
+registers = ["r4", "r6"]
+
+# Rigid geometry never reaches gCarMtxBuffer — it gets a CPU world matrix. That
+# is the tyres (sub_8235A628, per-wheel matrix copied into the drawable by
+# sub_82323250) and the exhaust pipes (sub_82359C10, part slots 23/24): both
+# submit through sub_823252B8 with a palette buffer of 0, so sub_82325040 takes
+# its a26==0 branch and pushes the bone matrix itself.
+#
+# r4 = Matrix44 at all three sites. The identity world matrices the skinned path
+# sets (0x8235D6DC, 0x82359E64, 0x8235FE74) are deliberately left alone —
+# scaling those would apply the squash twice on the body.
+[[midasm_hook]]
+address = 0x82322A10          # set-world-if-changed, called by sub_82325040
+name = "Hook_SquashWorldMatrix"
+registers = ["r4"]
 
 [[midasm_hook]]
-address = 0x82307BD0 # PostProcessing_SetCutsceneDofFar
-name = "Patch_DisableDoF"
-registers = []
-return_on_true = true
+address = 0x82324148          # sub_823240B8 non-skinned branch -> sub_8217C088
+name = "Hook_SquashWorldMatrix"
+registers = ["r4"]
 
 [[midasm_hook]]
 address = 0x82307BA0 # PostProcessing_SetCutsceneDofNear
 name = "Patch_DisableDoF"
 registers = []
 return_on_true = true
+address = 0x8235AA90          # sub_8235A628 pushes the wheel matrix (tyres)
+name = "Hook_SquashWorldMatrix"
+registers = ["r4"]
+
+# Exhaust pipes take a third route entirely: sub_82359C10 calls sub_82378B40,
+# which transposes ONE Matrix44 and uploads it straight into gCarMtxBuffer
+# (count = 1) — no palette, no CPU world matrix, so neither of the other hooks
+# sees it. sub_82359C10 is its only caller. r4 = Matrix44.
+[[midasm_hook]]
+address = 0x82378B40
+name = "Hook_SquashWorldMatrix"
+registers = ["r4"]
+
 # ── Tire offset — src/mc_engine/tire_offset.cpp
 #
 # sub_82354230 rebuilds every per-wheel matrix of an mcCarModel once per frame
