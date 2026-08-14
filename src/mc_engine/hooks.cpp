@@ -213,6 +213,11 @@ REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
     .allowed({"xbox", "playstation"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(lzx_stats, false, "MCLA/Debug",
+    "Measure pgStreamer LZX decompression (XMemDecompressStream): per-2s window stats "
+    "appended to <exe>/lzx_stats.txt. For diagnosing streaming stutter (South Central).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(extra_vinyl_layers, false, "MCLA/Garage",
     "Raise the front/rear BUMPER vinyl caps from 16 to 31 layers each "
     "(64/64/64/31/31). Top and side caps stay at 64 because MCLA's vinyl "
@@ -1218,6 +1223,118 @@ void ImportVinyl(const std::string& name_in) {
                       written, dropped, file.filename().string(), src_car, paint, psrc);
 }
 
+// =============================================================================
+// Debug/dev command-line options (reactivated)
+// -----------------------------------------------------------------------------
+// MCLA retail keeps ~540 dev options (unlockall, timeofday, noshadows, money…)
+// registered as dead stubs at 0x827A76E0..0x827B8598 that branch to the list
+// registrar 0x821C06C8. Each stub owns a node; node+4 is the "value" slot: a
+// guest char* to an ASCII value string. The stripped retail parser never fills
+// it, so every consumer's guard (`if (node+4) …`) is false and the getter
+// sub_821C0750 (which derefs node+4 and atois it) is never reached.
+//
+// Consumers read node+4 exactly once, at init/level-load (verified in IDA:
+// timeofday -> mcLightingManager ctor sub_822F3498; money -> profile
+// deserializer sub_826BACF0; showframerate -> render init sub_822D68F8). An
+// external process that writes after boot is always too late — which is why
+// post-boot injection changed nothing. InitHooks runs at startup, before those
+// consumers, so populating node+4 here is equivalent to the dev command line.
+//
+// A pointer to "1" satisfies both consumer shapes: bool guards see nonzero, and
+// the atoi getter parses the string. Value strings are parked in the dead stub
+// region itself (mapped, never executed after the strip).
+struct DebugOption {
+    const char* name;
+    uint32_t value_addr;  // guest address of node+4
+};
+#include "debug_options_table.inc"
+
+// Dead registration-stub bytes double as scratch for the value strings.
+static constexpr uint32_t kDbgScratchStart = 0x827A76E0u;
+static constexpr uint32_t kDbgScratchEnd   = 0x827B8500u;
+
+static const DebugOption* FindDebugOption(const std::string& name) {
+    for (const auto& opt : kDebugOptions)
+        if (name == opt.name) return &opt;
+    return nullptr;
+}
+
+// Reads <exe dir>/debug_options.txt: one `name` or `name=value` per line,
+// '#'/';' comments and blank lines ignored. Bare name means value "1".
+void ApplyDebugOptions() {
+    std::error_code ec;
+    std::filesystem::path file = std::filesystem::current_path(ec) / "debug_options.txt";
+    if (ec || !std::filesystem::exists(file, ec)) return;
+
+    std::ifstream in(file);
+    if (!in) {
+        LARECOMP_APP_ERROR("[DbgOpt] cannot open {}", file.string());
+        return;
+    }
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) {
+        LARECOMP_APP_ERROR("[DbgOpt] no guest membase");
+        return;
+    }
+
+    uint32_t cursor = kDbgScratchStart;
+    int applied = 0, unknown = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        // strip whitespace + inline comments
+        auto cut = line.find_first_of("#;");
+        if (cut != std::string::npos) line.erase(cut);
+        auto b = line.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) continue;
+        auto e = line.find_last_not_of(" \t\r\n");
+        line = line.substr(b, e - b + 1);
+        if (line.empty()) continue;
+
+        std::string name = line, value = "1";
+        auto eq = line.find('=');
+        if (eq != std::string::npos) {
+            name = line.substr(0, eq);
+            value = line.substr(eq + 1);
+            auto nb = name.find_last_not_of(" \t");
+            if (nb != std::string::npos) name.erase(nb + 1);
+            auto vb = value.find_first_not_of(" \t");
+            value = (vb == std::string::npos) ? std::string() : value.substr(vb);
+        }
+        if (name.empty()) continue;
+
+        const DebugOption* opt = FindDebugOption(name);
+        if (!opt) {
+            LARECOMP_APP_ERROR("[DbgOpt] unknown option '{}'", name);
+            ++unknown;
+            continue;
+        }
+        if (value.empty()) value = "1";
+
+        uint32_t need = static_cast<uint32_t>(value.size()) + 1;
+        if (cursor + need > kDbgScratchEnd) {
+            LARECOMP_APP_ERROR("[DbgOpt] scratch full, dropping '{}'", name);
+            continue;
+        }
+
+        // Write the ASCII value string into guest scratch.
+        for (size_t i = 0; i < value.size(); ++i)
+            base[cursor + i] = static_cast<uint8_t>(value[i]);
+        base[cursor + value.size()] = 0;
+
+        // Write node+4 = big-endian guest pointer to that string.
+        base[opt->value_addr + 0] = static_cast<uint8_t>(cursor >> 24);
+        base[opt->value_addr + 1] = static_cast<uint8_t>(cursor >> 16);
+        base[opt->value_addr + 2] = static_cast<uint8_t>(cursor >> 8);
+        base[opt->value_addr + 3] = static_cast<uint8_t>(cursor);
+
+        cursor += (need + 3u) & ~3u;
+        ++applied;
+        LARECOMP_APP_INFO("[DbgOpt] {} = {} (node+4 @ 0x{:08X})", name, value, opt->value_addr);
+    }
+    LARECOMP_APP_INFO("[DbgOpt] applied {} option(s), {} unknown", applied, unknown);
+}
+
 void InitHooks() {
     // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
     // reaches sub_822C4630 and mounts the archives.
@@ -1279,6 +1396,10 @@ void InitHooks() {
             }
         }
     );
+
+    // Reactivate the game's dev command-line options from <exe>/debug_options.txt.
+    // Must run before the game's option consumers (all init/level-load reads).
+    ApplyDebugOptions();
 }
 
 // HOOK FUNCTIONS (Called in the middle of translated Assembly execution)
@@ -1952,9 +2073,7 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
     }
 }
 
-    // Skip the original Game Options block and fall through to the epilogue.
-    return true;
-}static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
+static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
     uint32_t be = (uint32_t(base[addr + 0]) << 24) | (uint32_t(base[addr + 1]) << 16) |
                   (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
     float val;
@@ -2263,6 +2382,139 @@ void Hook_CaptureDistrict(PPCRegister& r3) {
     RpcOnDistrictChanged(idx);
 }
 
+
+// LZX streaming decompression probe. pgStreamer worker threads decompress
+// world resources through zlibInflater::InflateBegin (sub_821D5E10), which
+// wraps the statically linked XMemDecompressStream (sub_8244FF20, XCompress
+// LZX, 128KB window) — all of it recompiled guest code. The pair of hooks
+// brackets that call: Pre fires at 0x821D5EB4 (just before the bl), Post at
+// 0x821D5EBC (first instruction after it). The wrapper keeps its in/out sizes
+// in stack slots: [r1+0x50] holds the source bytes offered (consumed after the
+// call) and [r1+0x54] the destination capacity (bytes produced after the
+// call). Two worker threads run this concurrently, hence thread_local pairing
+// and atomic totals. Results append to <exe>/lzx_stats.txt every 2 seconds
+// while the lzx_stats cvar is on.
+namespace {
+
+struct LzxWindow {
+    uint64_t calls = 0;
+    uint64_t ns = 0;
+    uint64_t src_bytes = 0;
+    uint64_t dst_bytes = 0;
+    uint64_t errors = 0;
+};
+
+std::atomic<uint64_t> g_lzx_calls{0};
+std::atomic<uint64_t> g_lzx_ns{0};
+std::atomic<uint64_t> g_lzx_src_bytes{0};
+std::atomic<uint64_t> g_lzx_dst_bytes{0};
+std::atomic<uint64_t> g_lzx_max_ns{0};
+std::atomic<uint64_t> g_lzx_errors{0};
+std::atomic<int64_t> g_lzx_last_dump_ns{0};
+std::mutex g_lzx_dump_mutex;
+LzxWindow g_lzx_prev;
+
+thread_local int64_t tl_lzx_start_ns = 0;
+
+int64_t LzxNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+void LzxDump(int64_t now_ns, int64_t prev_dump_ns) {
+    std::lock_guard<std::mutex> lock(g_lzx_dump_mutex);
+
+    LzxWindow cur;
+    cur.calls = g_lzx_calls.load(std::memory_order_relaxed);
+    cur.ns = g_lzx_ns.load(std::memory_order_relaxed);
+    cur.src_bytes = g_lzx_src_bytes.load(std::memory_order_relaxed);
+    cur.dst_bytes = g_lzx_dst_bytes.load(std::memory_order_relaxed);
+    cur.errors = g_lzx_errors.load(std::memory_order_relaxed);
+    uint64_t max_ns = g_lzx_max_ns.exchange(0, std::memory_order_relaxed);
+
+    double wall_ms = double(now_ns - prev_dump_ns) / 1e6;
+    double busy_ms = double(cur.ns - g_lzx_prev.ns) / 1e6;
+    double out_mb = double(cur.dst_bytes - g_lzx_prev.dst_bytes) / (1024.0 * 1024.0);
+    double in_mb = double(cur.src_bytes - g_lzx_prev.src_bytes) / (1024.0 * 1024.0);
+    uint64_t calls = cur.calls - g_lzx_prev.calls;
+    uint64_t errors = cur.errors - g_lzx_prev.errors;
+
+    std::error_code ec;
+    std::filesystem::path file = std::filesystem::current_path(ec) / "lzx_stats.txt";
+    if (ec) return;
+    std::ofstream out(file, std::ios::app);
+    if (!out) return;
+
+    char line[320];
+    std::snprintf(line, sizeof(line),
+                  "wall=%.0fms calls=%llu busy=%.2fms busy_pct=%.1f%% in=%.2fMB out=%.2fMB "
+                  "out_rate=%.1fMB/s max_call=%.0fus errors=%llu | total: calls=%llu busy=%.0fms "
+                  "out=%.1fMB\n",
+                  wall_ms, static_cast<unsigned long long>(calls), busy_ms,
+                  wall_ms > 0.0 ? busy_ms * 100.0 / wall_ms : 0.0, in_mb, out_mb,
+                  wall_ms > 0.0 ? out_mb * 1000.0 / wall_ms : 0.0, double(max_ns) / 1e3,
+                  static_cast<unsigned long long>(errors),
+                  static_cast<unsigned long long>(cur.calls), double(cur.ns) / 1e6,
+                  double(cur.dst_bytes) / (1024.0 * 1024.0));
+    out << line;
+
+    g_lzx_prev = cur;
+}
+
+}  // namespace
+
+void Hook_LzxDecompressPre(PPCRegister& r1) {
+    (void)r1;
+    if (!REXCVAR_GET(lzx_stats)) {
+        tl_lzx_start_ns = 0;
+        return;
+    }
+    tl_lzx_start_ns = LzxNowNs();
+}
+
+void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {
+    if (!tl_lzx_start_ns) return;
+    int64_t now = LzxNowNs();
+    uint64_t dur = uint64_t(now - tl_lzx_start_ns);
+    tl_lzx_start_ns = 0;
+
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+
+    uint32_t sp = static_cast<uint32_t>(r1.u64);
+    // After XMemDecompressStream returns: [sp+0x50] = source bytes consumed,
+    // [sp+0x54] = destination bytes produced (the wrapper advances its
+    // pointers by exactly these values right after the call).
+    uint32_t consumed = GuestRead32(mem, sp + 0x50);
+    uint32_t produced = GuestRead32(mem, sp + 0x54);
+
+    g_lzx_calls.fetch_add(1, std::memory_order_relaxed);
+    g_lzx_ns.fetch_add(dur, std::memory_order_relaxed);
+    g_lzx_src_bytes.fetch_add(consumed, std::memory_order_relaxed);
+    g_lzx_dst_bytes.fetch_add(produced, std::memory_order_relaxed);
+
+    uint64_t prev_max = g_lzx_max_ns.load(std::memory_order_relaxed);
+    while (dur > prev_max &&
+           !g_lzx_max_ns.compare_exchange_weak(prev_max, dur, std::memory_order_relaxed)) {
+    }
+
+    // 0x81DE2001 is the "needs more input" status the game itself tolerates.
+    int32_t status = static_cast<int32_t>(r3.u64);
+    if (status < 0 && status != int32_t(0x81DE2001)) {
+        g_lzx_errors.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    int64_t last = g_lzx_last_dump_ns.load(std::memory_order_relaxed);
+    if (now - last >= 2'000'000'000 &&
+        g_lzx_last_dump_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+        // First window after enabling has no baseline timestamp — skip the dump,
+        // the totals still carry into the next one.
+        if (last != 0) LzxDump(now, last);
+    }
+}
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 

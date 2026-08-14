@@ -60,6 +60,11 @@ bool Patch_PlatformPush(PPCRegister& r5);
 // reboot — the movies only read the registry value on their own frame 1.
 void Hook_SwfContextEnter(PPCRegister& r3);
 
+// LZX streaming decompression probe (lzx_stats cvar): brackets the
+// XMemDecompressStream call inside zlibInflater::InflateBegin (sub_821D5E10).
+void Hook_LzxDecompressPre(PPCRegister& r1);
+void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3);
+
 // Vinyl importer/exporter: cache the current car's vinyl regen args at the
 // sub_8236D850 entry (r3=work-area, r4=paint, r5=tex, r6=player index) so the
 // export/import can reach the layer block and replay a regen.

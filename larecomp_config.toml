@@ -25104,9 +25104,6 @@ jump_address_on_true = 0x8223E5E4
 # left the *menu* showing stale DoF. Letting the game drive its setters normally
 # keeps menus correct; the composite null handles the actual disable everywhere.
 [[midasm_hook]]
-address = 0x82307808 # PostProcessing_SetGameDof
-name = "Patch_DisableDoF"
-registers = []
 address = 0x8260EBB8 # DoF composite entry (r3=dofObj) — zero CoC vector +0xF0 when disable_dof
 name = "Patch_DofComposite"
 registers = ["r3"]
@@ -25493,6 +25490,24 @@ address = 0x82630A14
 name = "Hook_MenuKeyDispatch"
 registers = ["r31", "r28", "r27"]
 jump_address_on_true = 0x82630A98
+
+# LZX streaming decompression probe (lzx_stats cvar). Brackets the
+# XMemDecompressStream call (bl sub_8244FF20 at 0x821D5EB8) inside
+# zlibInflater::InflateBegin (sub_821D5E10), which runs on the two
+# "[RAGE] pgStreamer::Worker" threads. Pre fires just before the call setup
+# finishes (0x821D5EB4), Post on the first instruction after the call returns
+# (0x821D5EBC, mr r4, r3 — r3 still holds the XMem status). The wrapper's
+# stack slots [r1+0x50]/[r1+0x54] hold src-consumed/dst-produced after the
+# call. Both hooks are pure observers (void, no jump).
+[[midasm_hook]]
+address = 0x821D5EB4
+name = "Hook_LzxDecompressPre"
+registers = ["r1"]
+
+[[midasm_hook]]
+address = 0x821D5EBC
+name = "Hook_LzxDecompressPost"
+registers = ["r1", "r3"]
 
 # Front-end (boot/menu) camera. See src/mc_engine/menu_camera.cpp for the RE map.
 #
