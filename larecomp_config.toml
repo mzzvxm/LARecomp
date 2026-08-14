@@ -25109,6 +25109,35 @@ address = 0x822D5BC4
 name = "Patch_ScaleCityLOD"
 registers = ["f13"]
 
+
+# Pause Menu: capture PauseTab address from PM_Continue's parent
+[[midasm_hook]]
+address = 0x82660644
+name = "Hook_CapturePMContinue"
+registers = ["r3"]
+
+# Pause Menu: enable PM_Save (change disable arg 0→1) and append to PauseTab
+[[midasm_hook]]
+address = 0x82660C2C
+name = "Hook_EnablePMSave"
+registers = ["r3", "r4"]
+jump_address_on_true = 0x82660C30
+
+# Pause Menu: enable PM_TestMovie as "Teste" button and append to PauseTab
+[[midasm_hook]]
+address = 0x82660C6C
+name = "Hook_EnablePMTeste"
+registers = ["r3", "r4"]
+jump_address_on_true = 0x82660C70
+
+# Pause Menu: intercept button-click dispatch to handle PM_LodTraffic
+# r31 = pause menu controller (a1 of sub_82660310), needed for display rebuild
+[[midasm_hook]]
+address = 0x826686B8
+name = "Hook_PMLodTrafficClick"
+registers = ["r3", "r31"]
+jump_address_on_true = 0x82668704
+
 # FOV Scale — hook after FOV is loaded into f1 in the main camera update (sub_822C0320)
 # r24 = camera rig index (1 = POV/cockpit, 2 = static, other = chase/3rd person)
 [[midasm_hook]]
@@ -25157,6 +25186,20 @@ address = 0x822C0668
 name = "Patch_DebugCam"
 registers = ["r3"]
 
+# Options > Controller key dispatch (sub_8264D0D8, r3 = screen, r4 = key).
+# Hook_ListViewPopulate appends a "PLAYSTATION BUTTONS" row to that screen's
+# own list, reusing one of the eleven checkbox rows its ctor (sub_8264DF48)
+# builds but never registers. Keys 55 (accept) and 63 (customise) index the
+# control-scheme table by the highlighted row, which our row has no entry in,
+# so this hook takes them over when it is the selected one. Placed after the
+# prologue at 0x8264D0E4 (r3/r4 still the arguments, frame already pushed);
+# returning true jumps to loc_8264D2B4, the function's own `li r3, 1` exit.
+[[midasm_hook]]
+address = 0x8264D0E4
+name = "Hook_ControllerMenuKey"
+registers = ["r3", "r4"]
+jump_address_on_true = 0x8264D2B4
+
 # Intro pacing — sub_821F9918 advances the intro SWF a hardcoded 1/60s per
 # call and runs twice per frame; at 60 FPS that is 2x speed. Hook fires at the
 # start of the advance block (0x821F99DC) and skips every other call by
@@ -25184,6 +25227,60 @@ address = 0x822C2430
 name = "Patch_DeltaTime"
 registers = ["r24"]
 after_instruction = true
+
+# Pause Menu: intercept cancel_pressed to handle RexGlue submenu back navigation
+# r31 = pause menu controller (first arg of dispatch fn sub_82668660)
+# When in RexGlue submenu, pops the VHSM stack and returns to settings tab
+[[midasm_hook]]
+address = 0x82669864
+name = "Hook_RexGlueCancel"
+registers = ["r31"]
+jump_address_on_true = 0x826698AC
+
+# Hook sub_82220308 (Flash element populate) after prologue
+# When in RexGlue submenu and r3 == SettingsMenu, redirect r3 to RexGlueMenu
+# Always returns false (modifies r3 in-place, continues execution)
+[[midasm_hook]]
+address = 0x82220314
+name = "Hook_PopulateRedirect"
+registers = ["r3"]
+jump_address_on_true = 0x82220318
+
+# Hook sub_82220FE0 (FlashNavigator command dispatcher) after prologue.
+# Diagnostic: logs every command the Flash actionscript sends to the game
+# (type + decoded args). Always returns false.
+[[midasm_hook]]
+address = 0x82220FF0
+name = "Hook_FlashCommandLog"
+registers = ["r5"]
+jump_address_on_true = 0x82220FF4
+
+# Hook sub_82631FD0 (mcListViewFixed::populate — writes headers/elements/
+# select of the pause menu Flash list). Captures the list instance and, while
+# the RexGlue submenu is open, installs our native row array at list+176 and
+# carries any value the player just stepped through to its cvar. Always
+# returns false.
+[[midasm_hook]]
+address = 0x82631FDC
+name = "Hook_ListViewPopulate"
+registers = ["r3"]
+jump_address_on_true = 0x82631FE0
+
+# Hook sub_826309E0 (container key dispatch — walks the children at +68 and
+# stops at the first whose vfunc32 consumes the key). Per sub_82667D88 the
+# pause screen holds { screen+2192, screen+176 } at +68, the tab strip at
+# screen+176 holds its tabs at +180, and the list we drive hangs off
+# pause_tab_settings' own +68. The tab strip therefore sees left/right first
+# and eats them, so the selected row never gets a chance; the game's own
+# Options > Game screen has no tab strip in front of its list, which is why
+# its `< >` rows work. Placed after the prologue, where r31 = container,
+# r28 = key, r27 = dispatch arg. Returning true jumps to loc_82630A98, the
+# "consumed" exit (li r3, 1).
+[[midasm_hook]]
+address = 0x82630A14
+name = "Hook_MenuKeyDispatch"
+registers = ["r31", "r28", "r27"]
+jump_address_on_true = 0x82630A98
 
 # Front-end (boot/menu) camera. See src/mc_engine/menu_camera.cpp for the RE map.
 #

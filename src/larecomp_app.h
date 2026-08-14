@@ -11,6 +11,8 @@
 #include "larecomp_log.h"
 #include "crash_handler.h"
 #include "mc_engine/hooks.h"
+#include "mc_engine/pause_menu.h"
+#include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
 
@@ -185,6 +187,8 @@ class LarecompApp : public rex::ReXApp {
 
     LARECOMP_Discord_Init();
     mc::ui::InitGraphicsButtonPatch();
+    InitPauseMenuHooks();
+    InitStringTableTools();
     InitHooks();
   }
 };

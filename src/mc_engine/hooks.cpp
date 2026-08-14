@@ -132,6 +132,10 @@ REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches", "Screen Aspect Ratio
     .allowed({"16:9", "16:10", "21:9", "32:9"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(rexglue_settings_in_gameoptions, false, "MCLA/Settings",
+    "Replace Game Options with ReXGlue Settings overlay (F4)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
     "Render the scene in a single predicated-tiling tile instead of two. Halves draw calls "
     "and state traffic with MSAA on. Requires the enlarged virtual EDRAM (SDK >= this build).")
@@ -641,7 +645,13 @@ void Patch_ScaleCityLOD(PPCRegister& f13) {
 }
 
 bool OpenRexGraphicsFromGameOptions_826686D4(PPCRegister& r3) {
+    if (!REXCVAR_GET(rexglue_settings_in_gameoptions)) {
+        return false;
+    }
     mc::ui::RequestOpenRexGraphicsMenu();
+    r3.u64 = 1;
+    return true;
+}
 
 void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
     int cam_idx = static_cast<int>(r24.u64);
