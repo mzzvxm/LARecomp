@@ -48,6 +48,12 @@ bool Patch_PlatformPush(PPCRegister& r5);
 // reboot — the movies only read the registry value on their own frame 1.
 void Hook_SwfContextEnter(PPCRegister& r3);
 
+// Vinyl importer/exporter: cache the current car's vinyl regen args at the
+// sub_8236D850 entry (r3=work-area, r4=paint, r5=tex, r6=player index) so the
+// export/import can reach the layer block and replay a regen.
+void Hook_CacheVinylPaint(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6);
+void Hook_PhotoModeCapture(PPCRegister& r3);
+
 // BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning
 void MCLACameraBoomSmoothing(PPCRegister& f1);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the

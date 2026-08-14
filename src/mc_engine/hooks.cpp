@@ -2,15 +2,31 @@
 #include <rex/cvar.h>
 #include <rex/ppc.h>
 #include <rex/system/kernel_state.h>
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
 #endif
 #include <rex/chrono/clock.h>
 #include <rex/runtime.h>
+#include <rex/system/xmemory.h>
+#include <rex/graphics/xenos.h>
+#include <rex/graphics/pipeline/texture/info.h>
+#include <rex/graphics/pipeline/texture/replacement.h>
 #include <rex/input/input.h>
 #include <rex/input/input_system.h>
 #include <rex/ui/imgui_dialog.h>
@@ -190,10 +206,66 @@ REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
     .allowed({"xbox", "playstation"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(extra_vinyl_layers, false, "MCLA/Garage",
+    "Raise the front/rear BUMPER vinyl caps from 16 to 31 layers each "
+    "(64/64/64/31/31). Top and side caps stay at 64 because MCLA's vinyl "
+    "composite pipeline hard-caps a single surface at 64 layers (fixed-64 "
+    "work-area buffers; >64 overflows and crashes). Bumpers stay <=64 and keep "
+    "their 5-bit save field, so existing garage/online cars are 100% compatible.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches", "Screen Aspect Ratio")
-    .allowed({"16:9", "21:9", "32:9"})
+REXCVAR_DEFINE_BOOL(export_vinyl, false, "MCLA/Garage",
+    "Export the current car's vinyl layers to a .vgp file in <exe dir>/vinyls/ "
+    "(auto-named vinyl_<car>_<timestamp>.vgp). Toggle ON while in the garage with "
+    "a car loaded; it fires once and flips back OFF. Share the file; import later.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(import_vinyl, "", "MCLA/Garage",
+    "Import a .vgp vinyl package onto the current car. Type the file name (found "
+    "in <exe dir>/vinyls/, with or without the .vgp extension) and press Enter "
+    "while in the garage with a car loaded. It overwrites the car's current vinyl "
+    "layers and re-composites, then clears the field. Layers past the active "
+    "per-surface cap are dropped (enable extra_vinyl_layers first for 31 bumper "
+    "slots).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(vinyl_auto_readback, true, "MCLA/Garage",
+    "Fix: car vinyls only load outside the Vinyl Editor when GPU readback is on "
+    "(the game builds the decal texture on the CPU from a GPU composite). This "
+    "briefly enables d3d12_readback_resolve for ~1.5s around each vinyl "
+    "(re)composite (garage entry / edits) so decals appear everywhere, while "
+    "keeping readback OFF during racing for full performance. Leave ON.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(photo_auto_readback, true, "MCLA/PhotoMode",
+    "Fix: photo mode previews show an old frame or garbage. The game takes its "
+    "picture on the CPU, by locking the front buffer and JPEG-encoding it, so it "
+    "needs the GPU resolve copied back to guest memory. This asks for a readback "
+    "of just the two front buffers for a few frames around each shot, instead of "
+    "the global readback_resolve cvar which stalls every resolve of every frame. "
+    "Leave ON.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
+    "Diagnostics for photo_auto_readback: logs the photo album state machine's "
+    "phase transitions and the front buffer addresses the readback is armed for. "
+    "Pair with the GPU-side gpu_log_resolve_readback_misses to see whether the "
+    "resolve that fills the front buffer actually lands in the armed range.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(dump_vinyl_shapes, false, "MCLA/Garage",
+    "Dump the vinyl shape catalog (every ShapeIdx -> source bitmap filename + "
+    "texture header) to <exe dir>/vinyls/vinyl_shapes.json. Enter the Vinyl editor "
+    "once so the shape library loads, then toggle ON; it fires once and flips back "
+    "OFF. Used to build the image->vinyl decomposer's brush set.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(capture_vinyl_shapes, false, "MCLA/Garage",
+    "Hands-free: force-load every vinyl shape a few at a time, hash each, and "
+    "build the full ShapeIdx->hash map in vinyls/vinyl_shape_hashes.txt (+ .json) "
+    "— no manual browsing. Enter the Vinyl editor (main menu, not a picker grid), "
+    "then toggle ON; it sweeps all ~894 shapes over a few seconds and logs when "
+    "done. Join the hashes to the DDS the texture dumper already wrote.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Function to apply/revert the Aspect Ratio patch in GPU memory
@@ -225,12 +297,971 @@ static void ApplyAspectRatioPatch(std::string_view ratio) {
         patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
 }
 
+// Vinyl (decal) layer caps. MCLA stores car decals in a fixed 288-slot layer
+// array (each layer = 20 bytes) partitioned across 5 surfaces by two parallel
+// 5-entry tables in guest .data/.rdata:
+//   dword_820510B0 @ 0x820510B0 = per-surface capacity  {64,64,64,16,16}
+//   dword_827E9770 @ 0x827E9770 = per-surface start slot {0,64,128,192,208}
+// with start[i+1] = start[i] + cap[i]. Every accessor (sub_82393118 &c.) reads
+// these live, and the work-area ctor (sub_82370C38) copies the caps + allocates
+// per-surface used-buffers of cap[i] bytes ONCE at garage init — so this patch
+// must land before the garage is entered (InitHooks, at startup) and requires a
+// restart to take effect.
+//
+// New layout 85/85/86/16/16 (offsets 0/85/170/256/272) sums to exactly 288, so
+// it fills the existing array without any reallocation or struct growth. The
+// per-surface save COUNT is serialized in bit-width(cap) bits (sub_82395A50 /
+// sub_823955C8): 85/86 keep the 7-bit field of 64, and the bumpers stay 16 (5
+// bits), so the save/online bitstream layout is byte-identical -> existing
+// garage cars still load. Only the raw "UserVinylData" package blob is stored by
+// absolute slot; saved packages read shifted until re-saved (garage cars are fine).
+static void ApplyVinylLayerCaps() {
+    if (!REXCVAR_GET(extra_vinyl_layers)) return;
+
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+
+    // dword_820510B0 (the capacity table) lives in the XEX read-only data
+    // section — the loader maps XEX_SECTION_READONLY_DATA read-only
+    // (xex_module.cpp), so a raw store there faults (0xC0000005). Flip the
+    // containing page to read/write first. dword_827E9770 is in .data and
+    // already writable; unprotecting it too is a harmless no-op. (Switching the
+    // base pointer does NOT help — the fault is page protection, not the base.)
+    auto make_writable = [&](uint32_t addr) {
+        if (auto* heap = mem->LookupHeap(addr)) {
+            heap->Protect(addr, 5 * sizeof(uint32_t),
+                          rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+        }
+    };
+
+    auto write_table = [&](uint32_t addr, const uint32_t (&vals)[5]) {
+        auto* p = mem->TranslateVirtual<uint8_t*>(addr);
+        for (int i = 0; i < 5; ++i) {
+            uint32_t v = vals[i];
+            p[i * 4 + 0] = (v >> 24) & 0xFF;  // guest memory is big-endian
+            p[i * 4 + 1] = (v >> 16) & 0xFF;
+            p[i * 4 + 2] = (v >> 8) & 0xFF;
+            p[i * 4 + 3] = v & 0xFF;
+        }
+    };
+
+    // Per-surface caps. IMPORTANT: MCLA's vinyl COMPOSITE pipeline has a hard
+    // 64-layers-per-surface limit — the work-area buffers at wa+48 (malloc 256 =
+    // 64 dwords) and wa+52 (malloc 64) are fixed-64 and indexed by layer up to
+    // cap[surf] (sub_8236EA38), so any surface with cap > 64 overflows them and
+    // crashes on the vinyl-layer menu / regen. So top/sides stay at 64. Bumpers
+    // (surfaces 3,4) go 16 -> 31: still <= 64 (composite-safe) and still 5-bit
+    // (16..31), so the save bitstream stays identical -> fully compatible.
+    static constexpr uint32_t kCaps[5]    = {64, 64, 64, 31, 31};   // dword_820510B0
+    static constexpr uint32_t kOffsets[5] = {0, 64, 128, 192, 223}; // dword_827E9770
+
+    make_writable(0x820510B0);
+    make_writable(0x827E9770);
+    write_table(0x820510B0, kCaps);
+    write_table(0x827E9770, kOffsets);
+
+    LARECOMP_APP_INFO(
+        "[Vinyl] Raised bumper layer caps to 64/64/64/31/31 (composite-safe, save-compatible).");
+}
+
+// ===========================================================================
+// Vinyl exporter (phase 1 of custom-package import/export)
+// ===========================================================================
+//
+// Layout (verified in IDA, default.xex): the current car's vinyl layers live in
+// a heap "config block" = *(paint + 132); container = block + 64; the layer
+// array starts at container + 2244. 5 surfaces (top, side1, side2, front bumper,
+// rear bumper). Per-surface capacity table dword_820510B0 @ 0x820510B0, start-
+// offset table dword_827E9770 @ 0x827E9770. Layer slot = array + 20*(offset[s]
+// + localIdx); a slot is USED when its u16 shape-id at +16 != 0xFFFF. Each layer
+// is a fixed 20-byte struct (half-float pos/scale/rot/skew + packed RGBA + flags)
+// — copied verbatim, so export/import is lossless within the same game build.
+
+// Current car's vinyl regen args, cached by Hook_CacheVinylPaint at the regen
+// entry (sub_8236D850): work-area, paint object, composite texture, player index.
+static std::atomic<uint32_t> g_vinyl_wa{0};
+static std::atomic<uint32_t> g_vinyl_paint{0};
+static std::atomic<uint32_t> g_vinyl_tex{0};
+static std::atomic<uint32_t> g_vinyl_player{0};
+
+// Windowed GPU readback around vinyl (re)composites. MCLA builds the car's decal
+// texture on the CPU from a GPU composite; without readback the CPU reads stale
+// physical RAM, so vinyls only show inside the Vinyl Editor. We flip
+// d3d12_readback_resolve on for ~1.5s around each regen (the composite + CPU copy
+// finish well within that), then off again — so racing keeps full performance.
+static std::atomic<int64_t> g_vinyl_rb_deadline_ns{0};
+static std::atomic_bool g_vinyl_rb_forced{false};
+
+static int64_t NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// Returns whether the guest vinyl composite is still running. The per-frame
+// driver sub_8235AC78 advances a state machine on the car-model flags
+// (+604/+605/+606/+607/+608/+6486) until they all clear = done, and each stage
+// waits on the work-area "stage pending" byte wa+248. The full composite of all
+// surfaces/layers spans many frames, so we hold readback until it's actually
+// idle instead of a fixed guess. Self-contained (direct guest reads).
+static bool VinylCompositeBusy() {
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return false;
+    auto* mem = rt->memory();
+    if (!mem) return false;
+    auto rd8 = [&](uint32_t a) -> uint8_t { return *mem->TranslateVirtual<const uint8_t*>(a); };
+    auto is_ptr = [](uint32_t ea) { return ea >= 0x10000u && ea < 0xFFFF0000u; };
+
+    uint32_t wa = g_vinyl_wa.load(std::memory_order_relaxed);
+    // wa+248 = a regen stage's GPU work pending; wa+1696 = the composite-busy
+    // byte the driver itself gates stages on (sub_8236DB68).
+    if (is_ptr(wa) && (rd8(wa + 248) || rd8(wa + 1696))) return true;
+
+    const auto* p = mem->TranslateVirtual<const uint8_t*>(0x8288DCF8);  // current mcCarModel
+    uint32_t car = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+    if (!is_ptr(car)) return false;
+    // Pipeline-stage flags (sub_8235AC78): full +608/+604/+605/+607/+6486 and the
+    // partial-update path +606 (sub_8236D2A0, which we don't hook) — polling here
+    // catches every composite trigger, including the last surface / rear bumper.
+    return rd8(car + 604) || rd8(car + 605) || rd8(car + 606) || rd8(car + 607) ||
+           rd8(car + 608) || rd8(car + 6486);
+}
+
+// Called from the regen hook: (re)arm the readback window. Only manages the cvar
+// when the user hasn't already turned global readback on themselves.
+static void ArmVinylReadbackWindow() {
+    if (!REXCVAR_GET(vinyl_auto_readback)) return;
+    if (!g_vinyl_rb_forced.load(std::memory_order_relaxed)) {
+        if (rex::cvar::GetFlagByName("d3d12_readback_resolve") == "true") return;  // user's choice
+        rex::cvar::SetFlagByName("d3d12_readback_resolve", "true");
+        g_vinyl_rb_forced.store(true, std::memory_order_relaxed);
+    }
+    // Generous bridge until the state machine spins up; TickVinylReadbackWindow
+    // then keeps it alive for as long as the composite actually runs.
+    g_vinyl_rb_deadline_ns.store(NowNs() + 2'000'000'000LL, std::memory_order_relaxed);  // +2s
+}
+
+// Called every frame from Patch_DeltaTimePre. Runs regardless of how the
+// composite was triggered: whenever the guest state machine is busy it (re)opens
+// the readback window; it closes ~1.5s after the composite goes idle. This
+// catches partial updates and late/last-surface composites (e.g. rear bumper)
+// that the sub_8236D850 hook alone can miss, without leaving readback on during
+// racing (flags stay 0 when no vinyl work is queued).
+static void TickVinylReadbackWindow() {
+    if (VinylCompositeBusy() && REXCVAR_GET(vinyl_auto_readback)) {
+        if (!g_vinyl_rb_forced.load(std::memory_order_relaxed) &&
+            rex::cvar::GetFlagByName("d3d12_readback_resolve") != "true") {
+            rex::cvar::SetFlagByName("d3d12_readback_resolve", "true");
+            g_vinyl_rb_forced.store(true, std::memory_order_relaxed);
+        }
+        g_vinyl_rb_deadline_ns.store(NowNs() + 1'500'000'000LL, std::memory_order_relaxed);
+    }
+    if (g_vinyl_rb_forced.load(std::memory_order_relaxed) &&
+        NowNs() >= g_vinyl_rb_deadline_ns.load(std::memory_order_relaxed)) {
+        rex::cvar::SetFlagByName("d3d12_readback_resolve", "false");
+        g_vinyl_rb_forced.store(false, std::memory_order_relaxed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Photo mode: front buffer readback
+// ---------------------------------------------------------------------------
+// Photo mode never touches the GPU for its picture. sub_82178B20 locks the front
+// buffer texture dword_828393AC[dword_82839374] with LockRect, untiles it with
+// XGUntileSurface, endian-swaps it, and hands the raw pixels to libjpeg
+// (sub_8263C728, quality 85). Both the discard/save preview and the saved slot
+// are decoded back from that one JPEG, so if the locked guest memory is stale
+// the preview shows an old frame or garbage.
+//
+// The front buffer is only ever filled by the end-of-frame EDRAM resolve in
+// sub_8217B7B0, which the emulator keeps GPU-side. Instead of turning on the
+// global readback_resolve cvar (every resolve, every frame, full GPU drain), arm
+// an address-scoped request for just the two front buffers while the photo state
+// machine winds up to the capture.
+
+// Reads the base address out of a guest D3DTexture's GPU fetch constant, the
+// same field sub_82410440 feeds to LockRect: dword 1 of the fetch constant
+// (texture + 32), whose top 20 bits are the base address in 4 KB pages.
+//
+// That address lives in the 0xE0000000 physical alias window, not in the
+// physical space the resolve reports, so it still has to go through
+// GetPhysicalAddress: 0xE7C47000 -> 0x07C48000 (mask to 0x1FFFFFFF plus the
+// 0x1000 offset the 0xE0 heap is mapped at). Returns 0 if the pointer isn't a
+// plausible object or the address isn't in a physical heap.
+static uint32_t GuestTextureBaseAddress(uint32_t texture_ea) {
+    if (texture_ea < 0x10000u || texture_ea >= 0xFFFF0000u) return 0;
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return 0;
+    auto* mem = rt->memory();
+    if (!mem) return 0;
+    const auto* p = mem->TranslateVirtual<const uint8_t*>(texture_ea + 32);
+    if (!p) return 0;
+    uint32_t fetch_dword =
+        (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+    uint32_t base_ea = fetch_dword & 0xFFFFF000u;
+    if (!base_ea) return 0;
+    uint32_t physical = mem->GetPhysicalAddress(base_ea);
+    return physical == UINT32_MAX ? 0 : physical;
+}
+
+// Arms readback for both entries of the front buffer array. The game alternates
+// dword_82839374 on every swap and the capture locks whichever is current, so
+// covering only one of them would be a coin flip.
+static void ArmPhotoFrontBufferReadback() {
+    if (!REXCVAR_GET(photo_auto_readback)) return;
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    auto* gfx = rt->graphics_system();
+    if (!mem || !gfx) return;
+
+    const auto* array = mem->TranslateVirtual<const uint8_t*>(0x828393ACu);  // front buffers[2]
+    if (!array) return;
+
+    // 1280x720 at 32 bpp tiled is 3768320 bytes (the resolve length the GPU
+    // reports); 4 MB covers it without decoding the pitch out of the fetch
+    // constant. The slack matters: MCLA resolves each frame as three tiled
+    // bands into the same buffer (predicated tiling, sub_8241C308), so the
+    // request has to span all three, not just the base one.
+    constexpr uint32_t kFrontBufferSpan = 4u * 1024u * 1024u;
+    // The grab fires a few frames after the phase we arm on, and the resolve
+    // that fills the buffer happened the frame before that.
+    constexpr uint32_t kArmedFrames = 8;
+
+    uint32_t bases[2] = {0, 0};
+    for (int i = 0; i < 2; ++i) {
+        const uint8_t* e = array + i * 4;
+        uint32_t texture_ea =
+            (uint32_t(e[0]) << 24) | (uint32_t(e[1]) << 16) | (uint32_t(e[2]) << 8) | e[3];
+        bases[i] = GuestTextureBaseAddress(texture_ea);
+        if (bases[i]) {
+            gfx->RequestResolveReadback(bases[i], kFrontBufferSpan, kArmedFrames);
+        }
+    }
+    if (REXCVAR_GET(photo_readback_debug)) {
+        static uint32_t last_logged[2] = {0, 0};
+        if (bases[0] != last_logged[0] || bases[1] != last_logged[1]) {
+            last_logged[0] = bases[0];
+            last_logged[1] = bases[1];
+            MC_INFO("photo: armed front buffer readback, base0={:08X} base1={:08X} span={} KB",
+                    bases[0], bases[1], kFrontBufferSpan >> 10);
+        }
+    }
+}
+
+// Entry hook on sub_8263CB78, the photo album vhsm update. r3 is the state
+// object (photo album object + 456); its phase lives at +132:
+//   3 = capture pipeline running (substate 9 grabs, 12 encodes, 10 finishes)
+//   4 = decode the fresh JPEG into the PreviewPicture texture
+//   5/6 = fade/settle frames before the grab is triggered
+// Arming from 3/5/6 puts the readback window several frames ahead of the
+// LockRect in sub_82178B20, which is what the front buffer resolve needs.
+void Hook_PhotoModeCapture(PPCRegister& r3) {
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+    uint32_t state_ea = static_cast<uint32_t>(r3.u64);
+    if (state_ea < 0x10000u || state_ea >= 0xFFFF0000u) return;
+    const auto* p = mem->TranslateVirtual<const uint8_t*>(state_ea + 132);
+    if (!p) return;
+    uint32_t phase = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+    if (REXCVAR_GET(photo_readback_debug)) {
+        static uint32_t last_phase = 0xFFFFFFFFu;
+        if (phase != last_phase) {
+            last_phase = phase;
+            const auto* s = mem->TranslateVirtual<const uint8_t*>(state_ea + 136);
+            uint32_t substate =
+                s ? ((uint32_t(s[0]) << 24) | (uint32_t(s[1]) << 16) | (uint32_t(s[2]) << 8) | s[3])
+                  : 0;
+            MC_INFO("photo: vhsm phase={} substate={} (state={:08X})", phase, substate, state_ea);
+        }
+    }
+    // Arm across the whole snapshot approach, not just the phase that grabs.
+    // The grab in phase 3 substate 9 runs inside this very call, so a request
+    // armed there is already too late for it - only the resolves of earlier
+    // frames can still fill the buffer it locks.
+    if (phase >= 2 && phase <= 6) {
+        ArmPhotoFrontBufferReadback();
+    }
+}
+
+void Hook_CacheVinylPaint(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
+    g_vinyl_wa.store(static_cast<uint32_t>(r3.u64), std::memory_order_relaxed);
+    g_vinyl_paint.store(static_cast<uint32_t>(r4.u64), std::memory_order_relaxed);
+    g_vinyl_tex.store(static_cast<uint32_t>(r5.u64), std::memory_order_relaxed);
+    g_vinyl_player.store(static_cast<uint32_t>(r6.u64), std::memory_order_relaxed);
+    ArmVinylReadbackWindow();
+    static std::atomic_bool logged{false};
+    if (!logged.exchange(true)) {
+        LARECOMP_APP_INFO("[Vinyl] regen hook fired, wa=0x{:08X} paint=0x{:08X} tex=0x{:08X} player={}",
+                          static_cast<uint32_t>(r3.u64), static_cast<uint32_t>(r4.u64),
+                          static_cast<uint32_t>(r5.u64), static_cast<uint32_t>(r6.u64));
+    }
+}
+
+namespace {
+
+constexpr uint32_t kVgpMagic = 0x47565852;  // "RXVG"
+constexpr uint32_t kVgpVersion = 1;
+constexpr uint32_t kVinylSurfaces = 5;
+constexpr uint32_t kLayerStride = 20;
+constexpr uint32_t kCapsTable = 0x820510B0;
+constexpr uint32_t kOffsetsTable = 0x827E9770;
+
+// mcCarVinylShapeLibrary (dword_8288DFC4) + its shape database (dword_828CD0F8).
+// Per raster category cat (0..22): count = lib[3+cat] (dword @ lib+12+4*cat),
+// descriptor table = lib[26+cat] (16 bytes/entry: +0 shapeObj, +8 flags), source
+// filename = names[local] where names = *(db + 96 + 8*cat). ShapeIdx = cat*1000+local.
+constexpr uint32_t kShapeLib = 0x8288DFC4;
+constexpr uint32_t kShapeDb = 0x828CD0F8;
+constexpr uint32_t kShapeCats = 23;
+
+// The guest-memory helpers (IsGuestPtr, GuestRead/Write*, GuestCStr) moved to
+// online/online_common.cpp so the online translation units can link them too;
+// online_common.h (included above) declares them. They keep external linkage.
+
+// Resolves the current garage car's paint object: the hook-cached value first,
+// else the live mcCarModel global (dword_8288DCF8; carModel+20 = paint). Returns
+// 0 if no car is loaded. `src` (optional) is set to which source succeeded.
+uint32_t ResolveCurrentPaint(rex::memory::Memory* mem, const char** src = nullptr) {
+    uint32_t paint = g_vinyl_paint.load(std::memory_order_relaxed);
+    if (IsGuestPtr(paint)) { if (src) *src = "hook"; return paint; }
+    uint32_t car_model = GuestRead32(mem, 0x8288DCF8);
+    if (IsGuestPtr(car_model)) {
+        paint = GuestRead32(mem, car_model + 20);
+        if (IsGuestPtr(paint)) { if (src) *src = "carmodel"; return paint; }
+    }
+    return 0;
+}
+
+// Reads the car name C-string at *(paint+76)+8; sanitizes to a filename token.
+std::string ReadCarName(rex::memory::Memory* mem, uint32_t paint) {
+    std::string name;
+    uint32_t p76 = GuestRead32(mem, paint + 76);
+    if (IsGuestPtr(p76)) {
+        uint32_t str_addr = p76 + 8;
+        const auto* s = mem->TranslateVirtual<const char*>(str_addr);
+        for (int i = 0; i < 48 && s[i]; ++i) {
+            char c = s[i];
+            name += (std::isalnum(static_cast<unsigned char>(c))) ? c : '_';
+        }
+    }
+    return name.empty() ? "car" : name;
+}
+
+std::string TimestampToken() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+    return buf;
+}
+
+}  // namespace
+
+void ExportVinyl() {
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+
+    // Prefer the paint cached by the regen hook; fall back to the current
+    // mcCarModel global (dword_8288DCF8, set every frame while the car renders;
+    // carModel+20 = paint) so export works even if the hook hasn't fired.
+    uint32_t paint = g_vinyl_paint.load(std::memory_order_relaxed);
+    const char* src = "hook";
+    if (!IsGuestPtr(paint)) {
+        uint32_t car_model = GuestRead32(mem, 0x8288DCF8);
+        if (IsGuestPtr(car_model)) {
+            paint = GuestRead32(mem, car_model + 20);
+            src = "carmodel";
+        }
+    }
+    if (!IsGuestPtr(paint)) {
+        LARECOMP_APP_ERROR("[Vinyl] Export: no car found (hook cache & mcCarModel both empty) "
+                           "— be in the garage with the car visible.");
+        return;
+    }
+    LARECOMP_APP_INFO("[Vinyl] Export: paint=0x{:08X} (via {})", paint, src);
+    uint32_t block = GuestRead32(mem, paint + 132);
+    if (!IsGuestPtr(block)) {
+        LARECOMP_APP_ERROR("[Vinyl] Export: invalid vinyl block (0x{:08X}).", block);
+        return;
+    }
+    uint32_t array = block + 64 + 2244;
+
+    // Serialize: magic, version, carname, then per surface {cap, usedCount,
+    // [localIdx u32 + 20 raw layer bytes]...}. Layer bytes are copied verbatim
+    // (already big-endian in guest memory) for lossless round-trip.
+    std::vector<uint8_t> out;
+    auto put32 = [&](uint32_t v) {
+        out.push_back(v & 0xFF); out.push_back((v >> 8) & 0xFF);
+        out.push_back((v >> 16) & 0xFF); out.push_back((v >> 24) & 0xFF);
+    };
+
+    std::string car = ReadCarName(mem, paint);
+    put32(kVgpMagic);
+    put32(kVgpVersion);
+    put32(static_cast<uint32_t>(car.size()));
+    out.insert(out.end(), car.begin(), car.end());
+    put32(kVinylSurfaces);
+
+    uint32_t total_layers = 0;
+    for (uint32_t s = 0; s < kVinylSurfaces; ++s) {
+        uint32_t cap = GuestRead32(mem, kCapsTable + s * 4);
+        uint32_t off = GuestRead32(mem, kOffsetsTable + s * 4);
+        if (cap > 4096) cap = 0;  // sanity guard
+
+        // Collect used slots first (shape-id != 0xFFFF).
+        std::vector<uint32_t> used;
+        for (uint32_t k = 0; k < cap; ++k) {
+            uint32_t slot = array + kLayerStride * (off + k);
+            if (GuestRead16(mem, slot + 16) != 0xFFFF) used.push_back(k);
+        }
+
+        put32(cap);
+        put32(static_cast<uint32_t>(used.size()));
+        for (uint32_t k : used) {
+            uint32_t slot = array + kLayerStride * (off + k);
+            const auto* p = mem->TranslateVirtual<const uint8_t*>(slot);
+            put32(k);
+            out.insert(out.end(), p, p + kLayerStride);
+            ++total_layers;
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::current_path(ec) / "vinyls";
+    std::filesystem::create_directories(dir, ec);
+    std::filesystem::path file = dir / ("vinyl_" + car + "_" + TimestampToken() + ".vgp");
+
+    std::ofstream f(file, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        LARECOMP_APP_ERROR("[Vinyl] Export: cannot open {} for writing.", file.string());
+        return;
+    }
+    f.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    LARECOMP_APP_INFO("[Vinyl] Exported {} layers to {}", total_layers, file.string());
+}
+
+// ===========================================================================
+// Vinyl shape catalog dump (ShapeIdx -> source name + content hash of the GPU
+// texture, matching the SDK texture dumper so the DDS files can be joined).
+// Verified in IDA (default.xex, sub_8236E400 / sub_82371368):
+//   lib = mcCarVinylShapeLibrary* @ kShapeLib; db = shape DB @ kShapeDb.
+//   count[cat]     = lib[3+cat]   (dword @ lib + 12 + 4*cat)
+//   descTable[cat] = lib[26+cat]  (16 bytes/entry: +0 shapeObj, +8 flags)
+//   refcount[cat]  = *(lib[49+cat]); request-load count per shape at +4*local
+//   names[cat]     = *(db + 96 + 8*cat); filename = names[local] (char*)
+//   shapeObj+8     = engine tex wrapper; wrapper+0x1C -> D3DTexture; fetch @ +0x1C
+// A descriptor is "loaded" when (flags & 0x30000000) == 0x30000000.
+// ===========================================================================
+
+struct ShapeRec {
+    uint64_t hash = 0;
+    uint32_t w = 0, h = 0;
+    std::string fmt;
+};
+
+// Resident-shape probe: parse the shape's texture and content-hash its guest
+// texels exactly like the SDK dumper. hash == 0 if not loaded / not decodable.
+struct ShapeProbe {
+    bool loaded = false;
+    uint32_t w = 0, h = 0, base = 0, size = 0, pitch = 0;
+    bool tiled = false;
+    std::string fmt;
+    rex::graphics::xenos::TextureFormat format{};
+    rex::graphics::xenos::Endian endian{};
+    uint64_t hash = 0;
+};
+
+static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t cat, uint32_t local) {
+    ShapeProbe p;
+    uint32_t desc_table = GuestRead32(mem, lib + 4 * (26 + cat));
+    if (!IsGuestPtr(desc_table)) return p;
+    uint32_t desc = desc_table + 16 * local;
+    uint32_t shape_obj = GuestRead32(mem, desc + 0);
+    uint32_t flags = GuestRead32(mem, desc + 8);
+    p.loaded = (flags & 0x30000000u) == 0x30000000u;
+    if (!p.loaded || !IsGuestPtr(shape_obj)) return p;
+    uint32_t tex = GuestRead32(mem, shape_obj + 8);
+    if (!IsGuestPtr(tex)) return p;
+    // wrapper+0x20 = real dims (hi16 = width, lo16 = height); the D3DTexture fetch
+    // reports width/height minus 1, so use the wrapper's for the DDS name/decode
+    // (matches what the SDK dumper wrote for the already-browsed shapes).
+    uint32_t dims = GuestRead32(mem, tex + 0x20);
+    uint32_t d3dtex = GuestRead32(mem, tex + 0x1C);
+    if (!IsGuestPtr(d3dtex)) return p;
+    rex::graphics::xenos::xe_gpu_texture_fetch_t fetch{};
+    fetch.dword_0 = GuestRead32(mem, d3dtex + 0x1C);
+    fetch.dword_1 = GuestRead32(mem, d3dtex + 0x20);
+    fetch.dword_2 = GuestRead32(mem, d3dtex + 0x24);
+    fetch.dword_3 = GuestRead32(mem, d3dtex + 0x28);
+    fetch.dword_4 = GuestRead32(mem, d3dtex + 0x2C);
+    fetch.dword_5 = GuestRead32(mem, d3dtex + 0x30);
+    rex::graphics::TextureInfo ti{};
+    if (rex::graphics::TextureInfo::Prepare(fetch, &ti) && ti.width >= 1 && ti.width <= 4096 &&
+        ti.height >= 1 && ti.height <= 4096) {
+        p.w = dims >> 16;
+        p.h = dims & 0xFFFF;
+        if (p.w < 1 || p.w > 4096 || p.h < 1 || p.h > 4096) {
+            p.w = ti.width;
+            p.h = ti.height;
+        }
+        p.base = ti.memory.base_address;
+        p.size = ti.memory.base_size;
+        p.pitch = fetch.pitch;
+        p.tiled = ti.is_tiled;
+        p.format = ti.format;
+        p.endian = ti.endianness;
+        const auto* finfo = ti.format_info();
+        if (finfo && finfo->name) p.fmt = finfo->name;
+        const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
+        if (bytes && p.size)
+            p.hash = rex::graphics::TextureReplacement::HashGuestData(bytes, p.size);
+    }
+    return p;
+}
+
+static std::string ShapeName(rex::memory::Memory* mem, uint32_t db, uint32_t cat, uint32_t local) {
+    uint32_t names = GuestRead32(mem, db + 96 + 8 * cat);
+    if (!IsGuestPtr(names)) return {};
+    return GuestCStr(mem, GuestRead32(mem, names + 4 * local), 128);
+}
+
+static std::filesystem::path VinylDir() {
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::current_path(ec) / "vinyls";
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+static std::map<uint32_t, ShapeRec> LoadShapeRecs(const std::filesystem::path& dir) {
+    std::map<uint32_t, ShapeRec> recs;
+    std::ifstream mf(dir / "vinyl_shape_hashes.txt");
+    uint32_t midx = 0, mw = 0, mh = 0;
+    uint64_t mhash = 0;
+    std::string mfmt;
+    while (mf >> midx >> std::hex >> mhash >> std::dec >> mw >> mh >> mfmt) {
+        if (mhash) recs[midx] = ShapeRec{mhash, mw, mh, mfmt};
+    }
+    return recs;
+}
+
+// Writes vinyl_shape_hashes.txt (accumulated ShapeIdx->hash map) and
+// vinyl_shapes.json (the full catalog joined to whatever hashes exist so far).
+static void SaveShapeManifest(rex::memory::Memory* mem, uint32_t lib, uint32_t db,
+                              const std::map<uint32_t, ShapeRec>& recs,
+                              const std::filesystem::path& dir) {
+    auto esc = [](const std::string& s) {
+        std::string o;
+        for (char c : s) {
+            if (c == '"' || c == '\\') o.push_back('\\');
+            o.push_back(c);
+        }
+        return o;
+    };
+    std::string json = "{\n  \"shapes\": [\n";
+    uint32_t total = 0;
+    bool first = true;
+    for (uint32_t cat = 0; cat < kShapeCats; ++cat) {
+        uint32_t count = GuestRead32(mem, lib + 12 + 4 * cat);
+        if (count > 100000) continue;
+        for (uint32_t local = 0; local < count; ++local) {
+            uint32_t idx = cat * 1000 + local;
+            std::string name = ShapeName(mem, db, cat, local);
+            auto it = recs.find(idx);
+            uint64_t hash = it != recs.end() ? it->second.hash : 0;
+            uint32_t w = it != recs.end() ? it->second.w : 0;
+            uint32_t h = it != recs.end() ? it->second.h : 0;
+            std::string fmt = it != recs.end() ? it->second.fmt : std::string();
+            char hbuf[19];
+            std::snprintf(hbuf, sizeof(hbuf), "0x%016llX", static_cast<unsigned long long>(hash));
+            if (!first) json += ",\n";
+            first = false;
+            json += "    {\"idx\": " + std::to_string(idx) + ", \"cat\": " + std::to_string(cat) +
+                    ", \"local\": " + std::to_string(local) + ", \"name\": \"" + esc(name) +
+                    "\", \"w\": " + std::to_string(w) + ", \"h\": " + std::to_string(h) +
+                    ", \"fmt\": \"" + fmt + "\", \"hash\": \"" + std::string(hbuf) + "\"}";
+            ++total;
+        }
+    }
+    json += "\n  ],\n  \"total\": " + std::to_string(total) +
+            ",\n  \"mapped\": " + std::to_string(static_cast<uint32_t>(recs.size())) + "\n}\n";
+
+    {
+        std::ofstream mf(dir / "vinyl_shape_hashes.txt", std::ios::trunc);
+        for (const auto& [rid, r] : recs) {
+            char hb[17];
+            std::snprintf(hb, sizeof(hb), "%016llx", static_cast<unsigned long long>(r.hash));
+            mf << rid << ' ' << hb << ' ' << r.w << ' ' << r.h << ' ' << r.fmt << '\n';
+        }
+    }
+    std::ofstream f(dir / "vinyl_shapes.json", std::ios::binary | std::ios::trunc);
+    if (f) f.write(json.data(), static_cast<std::streamsize>(json.size()));
+}
+
+// Single-pass dump: hash every currently-resident shape, merge into the
+// persistent map, rewrite the manifest. Use after browsing categories.
+void DumpVinylShapes() {
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+    uint32_t lib = GuestRead32(mem, kShapeLib);
+    uint32_t db = GuestRead32(mem, kShapeDb);
+    if (!IsGuestPtr(lib) || !IsGuestPtr(db)) {
+        LARECOMP_APP_ERROR("[Vinyl] Shape dump: catalog not ready (lib=0x{:08X} db=0x{:08X}) "
+                           "— enter the Vinyl editor once, then retry.", lib, db);
+        return;
+    }
+    std::filesystem::path dir = VinylDir();
+    auto recs = LoadShapeRecs(dir);
+    uint32_t resident = 0;
+    for (uint32_t cat = 0; cat < kShapeCats; ++cat) {
+        uint32_t count = GuestRead32(mem, lib + 12 + 4 * cat);
+        if (count > 100000) continue;
+        for (uint32_t local = 0; local < count; ++local) {
+            ShapeProbe p = ProbeShape(mem, lib, cat, local);
+            if (p.loaded && p.hash) {
+                recs[cat * 1000 + local] = ShapeRec{p.hash, p.w, p.h, p.fmt};
+                ++resident;
+            }
+        }
+    }
+    SaveShapeManifest(mem, lib, db, recs, dir);
+    LARECOMP_APP_INFO("[Vinyl] Shapes: {} mapped total ({} resident this pass).", recs.size(),
+                      resident);
+}
+
+// ---------------------------------------------------------------------------
+// Hands-free capture: force-load every shape a few at a time via the game's own
+// request-refcount (lib[49+cat][local]), hash it while resident, release it,
+// advance. Runs off Patch_DeltaTimePre so async loads have frames to complete.
+// Bounds memory to a small sliding window; the hash matches the DDS the SDK
+// dumper already wrote, so no re-browsing / re-dumping is needed.
+// ---------------------------------------------------------------------------
+static std::atomic_bool g_scap_request{false};  // set by cvar callback (any thread)
+static bool g_scap_active = false;               // tick-thread only below
+static std::vector<std::pair<uint32_t, uint32_t>> g_scap_list;
+static std::map<uint32_t, ShapeRec> g_scap_recs;
+static size_t g_scap_cursor = 0;
+static size_t g_scap_requested = 0;
+static int g_scap_wait = 0;
+static uint32_t g_scap_captured = 0;
+static constexpr size_t kScapWindow = 6;   // max shapes we hold resident at once
+static constexpr int kScapMaxWait = 120;   // frames to await one load before skip
+
+void RequestVinylShapeCapture() { g_scap_request.store(true, std::memory_order_relaxed); }
+
+// Adjust a shape's request-refcount by delta (big-endian RMW). +1 asks the
+// per-frame loader to load it; -1 lets it be released. Increment (not set) so we
+// never clobber the game's own reference for shapes it currently wants.
+static void ShapeRefAdjust(rex::memory::Memory* mem, uint32_t lib, uint32_t cat, uint32_t local,
+                           int delta) {
+    uint32_t arr = GuestRead32(mem, lib + 4 * (49 + cat));
+    if (!IsGuestPtr(arr)) return;
+    uint32_t a = arr + 4 * local;
+    int64_t v = static_cast<int32_t>(GuestRead32(mem, a));
+    v += delta;
+    if (v < 0) v = 0;
+    GuestWrite32(mem, a, static_cast<uint32_t>(v));
+}
+
+void TickVinylShapeCapture() {
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+    uint32_t lib = GuestRead32(mem, kShapeLib);
+    uint32_t db = GuestRead32(mem, kShapeDb);
+
+    if (g_scap_request.exchange(false, std::memory_order_relaxed)) {
+        if (!IsGuestPtr(lib) || !IsGuestPtr(db)) {
+            LARECOMP_APP_ERROR("[Vinyl] Capture: catalog not ready — enter the Vinyl editor first.");
+        } else if (!g_scap_active) {
+            g_scap_list.clear();
+            for (uint32_t cat = 0; cat < kShapeCats; ++cat) {
+                uint32_t count = GuestRead32(mem, lib + 12 + 4 * cat);
+                if (count > 100000) continue;
+                for (uint32_t local = 0; local < count; ++local)
+                    g_scap_list.emplace_back(cat, local);
+            }
+            g_scap_recs = LoadShapeRecs(VinylDir());
+            g_scap_cursor = 0;
+            g_scap_requested = 0;
+            g_scap_wait = 0;
+            g_scap_captured = 0;
+            g_scap_active = true;
+            LARECOMP_APP_INFO("[Vinyl] Capture: sweeping {} shapes...", g_scap_list.size());
+        }
+    }
+
+    if (!g_scap_active) return;
+    if (!IsGuestPtr(lib) || !IsGuestPtr(db)) return;  // catalog gone; pause this frame
+
+    // Keep a sliding window of load requests ahead of the cursor.
+    size_t want = std::min(g_scap_cursor + kScapWindow, g_scap_list.size());
+    while (g_scap_requested < want) {
+        auto [c, l] = g_scap_list[g_scap_requested];
+        ShapeRefAdjust(mem, lib, c, l, +1);
+        ++g_scap_requested;
+    }
+
+    if (g_scap_cursor < g_scap_list.size()) {
+        auto [c, l] = g_scap_list[g_scap_cursor];
+        ShapeProbe p = ProbeShape(mem, lib, c, l);
+        if (p.loaded && p.hash) {
+            g_scap_recs[c * 1000 + l] = ShapeRec{p.hash, p.w, p.h, p.fmt};
+            // Force-loaded shapes are never drawn, so the SDK dump-on-sample path
+            // misses them. Write the DDS ourselves via the SDK's own (proven)
+            // dumper — same dump/<hash>_<w>x<h>_<fmt>.dds naming, and it skips any
+            // file that already exists (already dumped while browsing).
+            static rex::graphics::TextureReplacement s_repl([] {
+                std::string tf = rex::cvar::GetFlagByName("texture_folder");
+                return std::filesystem::path(tf.empty() ? std::string("textures") : tf);
+            }());
+            const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
+            if (bytes && p.size)
+                s_repl.DumpTexture(p.hash, p.w, p.h, p.pitch, p.tiled, p.format, p.endian, bytes,
+                                   p.size);
+            ++g_scap_captured;
+            ShapeRefAdjust(mem, lib, c, l, -1);
+            ++g_scap_cursor;
+            g_scap_wait = 0;
+        } else if (++g_scap_wait > kScapMaxWait) {
+            ShapeRefAdjust(mem, lib, c, l, -1);  // give up on this one
+            ++g_scap_cursor;
+            g_scap_wait = 0;
+        }
+        return;
+    }
+
+    SaveShapeManifest(mem, lib, db, g_scap_recs, VinylDir());
+    LARECOMP_APP_INFO("[Vinyl] Capture done: {} shapes mapped ({} newly captured this run).",
+                      g_scap_recs.size(), g_scap_captured);
+    g_scap_active = false;
+    g_scap_list.clear();
+    g_scap_recs.clear();
+}
+
+// Imports a .vgp package (from <exe dir>/vinyls/) onto the current garage car,
+// mirroring the game's own package loader (sub_826A2520): for each surface,
+// begin-edit (write container+2072=surf, +8004=1), empty every cap slot, drop in
+// the imported layers verbatim, end-edit (container+2072=-1); then trigger one
+// full regen by replicating sub_8236D850's work-area writes. All pure guest-
+// memory writes (the block is a writable heap object) — no guest calls, so this
+// is safe to run from the F4/cvar-callback thread.
+void ImportVinyl(const std::string& name_in) {
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+
+    // Trim surrounding whitespace/quotes from the typed name.
+    std::string name = name_in;
+    auto trim = [](std::string& s) {
+        auto notspace = [](unsigned char c) { return !std::isspace(c) && c != '"'; };
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), notspace));
+        s.erase(std::find_if(s.rbegin(), s.rend(), notspace).base(), s.end());
+    };
+    trim(name);
+    if (name.empty()) return;
+
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::current_path(ec) / "vinyls";
+    std::filesystem::path file = dir / name;
+    if (!std::filesystem::exists(file, ec))
+        if (std::filesystem::exists(dir / (name + ".vgp"), ec)) file = dir / (name + ".vgp");
+    if (!std::filesystem::exists(file, ec)) {
+        LARECOMP_APP_ERROR("[Vinyl] Import: '{}' not found in {}.", name, dir.string());
+        for (auto it = std::filesystem::directory_iterator(dir, ec);
+             !ec && it != std::filesystem::directory_iterator(); ++it)
+            if (it->path().extension() == ".vgp")
+                LARECOMP_APP_INFO("[Vinyl]   available: {}", it->path().filename().string());
+        return;
+    }
+
+    std::ifstream in(file, std::ios::binary);
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    size_t o = 0;
+    auto rd32 = [&](uint32_t& v) -> bool {
+        if (o + 4 > buf.size()) return false;
+        v = uint32_t(buf[o]) | (uint32_t(buf[o + 1]) << 8) | (uint32_t(buf[o + 2]) << 16) |
+            (uint32_t(buf[o + 3]) << 24);
+        o += 4;
+        return true;
+    };
+
+    uint32_t magic = 0, ver = 0, nlen = 0, nsurf = 0;
+    if (!rd32(magic) || magic != kVgpMagic) {
+        LARECOMP_APP_ERROR("[Vinyl] Import: {} is not a RexGlue .vgp (bad magic).",
+                           file.filename().string());
+        return;
+    }
+    rd32(ver);
+    if (ver != kVgpVersion)
+        LARECOMP_APP_INFO("[Vinyl] Import: file format v{} (importer is v{}); reading anyway.",
+                          ver, kVgpVersion);
+    if (!rd32(nlen) || o + nlen > buf.size()) {
+        LARECOMP_APP_ERROR("[Vinyl] Import: {} is truncated.", file.filename().string());
+        return;
+    }
+    std::string src_car(reinterpret_cast<const char*>(buf.data() + o), nlen);
+    o += nlen;
+    if (!rd32(nsurf) || nsurf != kVinylSurfaces) {
+        LARECOMP_APP_ERROR("[Vinyl] Import: unexpected surface count ({}).", nsurf);
+        return;
+    }
+
+    // Parse per-surface used layers: {cap, used, [localIdx u32 + 20 raw bytes]...}.
+    struct Layer { uint32_t idx; uint8_t bytes[kLayerStride]; };
+    std::vector<std::vector<Layer>> surf_layers(kVinylSurfaces);
+    for (uint32_t s = 0; s < nsurf; ++s) {
+        uint32_t fcap = 0, used = 0;
+        if (!rd32(fcap) || !rd32(used)) {
+            LARECOMP_APP_ERROR("[Vinyl] Import: truncated surface {}.", s);
+            return;
+        }
+        (void)fcap;  // layers are placed by live caps, not the file's
+        for (uint32_t i = 0; i < used; ++i) {
+            uint32_t idx = 0;
+            if (!rd32(idx) || o + kLayerStride > buf.size()) {
+                LARECOMP_APP_ERROR("[Vinyl] Import: truncated layer data (surface {}).", s);
+                return;
+            }
+            Layer L;
+            L.idx = idx;
+            std::memcpy(L.bytes, buf.data() + o, kLayerStride);
+            o += kLayerStride;
+            surf_layers[s].push_back(L);
+        }
+    }
+
+    // Resolve the current car and its writable vinyl block.
+    const char* psrc = "?";
+    uint32_t paint = ResolveCurrentPaint(mem, &psrc);
+    if (!paint) {
+        LARECOMP_APP_ERROR("[Vinyl] Import: no car loaded — be in the garage with the car visible.");
+        return;
+    }
+    uint32_t block = GuestRead32(mem, paint + 132);
+    if (!IsGuestPtr(block)) {
+        LARECOMP_APP_ERROR("[Vinyl] Import: invalid vinyl block (0x{:08X}).", block);
+        return;
+    }
+    uint32_t container = block + 64;
+    uint32_t array = container + 2244;
+
+    uint32_t written = 0, dropped = 0;
+    for (uint32_t s = 0; s < kVinylSurfaces; ++s) {
+        uint32_t cap = GuestRead32(mem, kCapsTable + s * 4);
+        uint32_t off = GuestRead32(mem, kOffsetsTable + s * 4);
+        if (cap > 4096) cap = 0;  // sanity guard
+
+        GuestWrite32(mem, container + 2072, s);  // sub_82392538: begin surface edit
+        GuestWrite8(mem, container + 8004, 1);
+
+        for (uint32_t k = 0; k < cap; ++k)  // empty every slot first
+            GuestWrite16(mem, array + kLayerStride * (off + k) + 16, 0xFFFF);
+
+        for (const auto& L : surf_layers[s]) {
+            if (L.idx >= cap) { ++dropped; continue; }  // past the active cap
+            auto* p = mem->TranslateVirtual<uint8_t*>(array + kLayerStride * (off + L.idx));
+            std::memcpy(p, L.bytes, kLayerStride);
+            ++written;
+        }
+
+        GuestWrite32(mem, container + 2072, 0xFFFFFFFFu);  // sub_82392548: end surface edit
+    }
+
+    // Trigger a full vinyl regen by replicating sub_8236D850(wa, paint, tex,
+    // player) with plain memory writes. Work-area comes from the global
+    // dword_8288DFC0 (fall back to the hook-cached r3); tex/player are the values
+    // the hook captured at the last regen for this car.
+    uint32_t wa = GuestRead32(mem, 0x8288DFC0);
+    if (!IsGuestPtr(wa)) wa = g_vinyl_wa.load(std::memory_order_relaxed);
+    uint32_t tex = g_vinyl_tex.load(std::memory_order_relaxed);
+    uint32_t player = g_vinyl_player.load(std::memory_order_relaxed);
+    if (IsGuestPtr(wa)) {
+        GuestWrite32(mem, wa + 256, tex);     // a3: composite target texture
+        GuestWrite8(mem, wa + 248, 1);
+        GuestWrite32(mem, wa + 244, paint);   // a2: paint object
+        GuestWrite32(mem, wa + 220, 0);
+        GuestWrite32(mem, wa + 224, 0);
+        GuestWrite8(mem, wa + 20, 1);
+        GuestWrite8(mem, wa + 21, 1);
+        GuestWrite8(mem, wa + 251, 1);
+        GuestWrite32(mem, wa + 16, player);   // a4: player index
+    } else {
+        LARECOMP_APP_ERROR("[Vinyl] Import: work-area not ready — layers written but not "
+                           "re-composited. Nudge a vinyl edit or re-enter the garage.");
+    }
+
+    LARECOMP_APP_INFO("[Vinyl] Imported {} layers ({} over-cap dropped) from '{}' (made for '{}') "
+                      "onto car paint=0x{:08X} via {}.",
+                      written, dropped, file.filename().string(), src_car, paint, psrc);
+}
+
 void InitHooks() {
     ApplyAspectRatioPatch(REXCVAR_GET(aspect_ratio));
 
     rex::cvar::RegisterChangeCallback("aspect_ratio",
         [](std::string_view name, std::string_view new_value) {
             ApplyAspectRatioPatch(new_value);
+        }
+    );
+
+    ApplyVinylLayerCaps();
+
+    // export_vinyl acts as a button: toggling it ON runs the export, then it
+    // flips back OFF so it can be triggered again.
+    rex::cvar::RegisterChangeCallback("export_vinyl",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value == "true" || new_value == "1") {
+                ExportVinyl();
+                rex::cvar::SetFlagByName("export_vinyl", "false");
+            }
+        }
+    );
+
+    // import_vinyl: type a .vgp file name + Enter to apply it, then the field
+    // clears itself. The empty write re-fires this callback, hence the guard.
+    rex::cvar::RegisterChangeCallback("import_vinyl",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value.empty()) return;
+            ImportVinyl(std::string(new_value));
+            rex::cvar::SetFlagByName("import_vinyl", "");
+        }
+    );
+
+    // dump_vinyl_shapes: button — toggling ON writes the shape catalog manifest,
+    // then flips back OFF so it can be triggered again.
+    rex::cvar::RegisterChangeCallback("dump_vinyl_shapes",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value == "true" || new_value == "1") {
+                DumpVinylShapes();
+                rex::cvar::SetFlagByName("dump_vinyl_shapes", "false");
+            }
+        }
+    );
+
+    // capture_vinyl_shapes: button — starts the hands-free sweep, which runs on
+    // the per-frame tick (Patch_DeltaTimePre) and finalizes itself.
+    rex::cvar::RegisterChangeCallback("capture_vinyl_shapes",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value == "true" || new_value == "1") {
+                RequestVinylShapeCapture();
+                rex::cvar::SetFlagByName("capture_vinyl_shapes", "false");
+            }
         }
     );
 }

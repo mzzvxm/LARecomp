@@ -25038,10 +25038,25 @@ address = 0x8238F608
 name = "RpcHook_GarageTransitionNative_8238F608"
 registers = [] # confirmed
 
+# Vinyl importer/exporter: cache the current car's vinyl regen args. sub_8236D850
+# is the regen setup: r3 = work-area, r4 = paint (block = *(paint+132)), r5 = tex,
+# r6 = player index. Fires on garage entry and every vinyl edit, so the cached
+# values always describe the current car — the importer replays them to force a
+# re-composite after writing new layers.
 [[midasm_hook]]
-address = 0x822729A8
-name = "RpcHook_RaceResults_822729A8"
-registers = []
+address = 0x8236D850
+name = "Hook_CacheVinylPaint"
+registers = ["r3", "r4", "r5", "r6"]
+
+# Photo mode preview: sub_8263CB78 is the photo album vhsm update. r3 = state
+# object (photo album + 456), phase at +132. The capture (substate 9 -> 12 -> 10)
+# locks the front buffer on the CPU in sub_82178B20 and JPEG-encodes it, so the
+# resolve that filled that buffer has to be read back to guest memory first. The
+# hook arms an address-scoped readback a few frames ahead of the grab.
+[[midasm_hook]]
+address = 0x8263CB78
+name = "Hook_PhotoModeCapture"
+registers = ["r3"]
 
 [[midasm_hook]]
 address = 0x82233EB4
