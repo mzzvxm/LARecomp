@@ -28,6 +28,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks.cpp
     src/mc_engine/graphics_button.cpp
     src/mc_engine/menu_camera.cpp
+    src/mc_engine/time_of_day.cpp
+    src/mc_engine/real_weather.cpp
 
     src/discord_rpc/discord_rpc.cpp
     src/discord_rpc/discord_hooks.cpp
@@ -72,6 +74,8 @@ else()
         target_link_libraries(larecomp
             PRIVATE
             dxgi
+            # real-world weather fetch (mc_engine/real_weather.cpp)
+            winhttp
         )
     endif()
 

@@ -25203,14 +25203,39 @@ return_on_true = true
 # Hooking a single producer does not work: the boot menu does not take the
 # mcUILogic::UpdateCamera branch (measured with menu_cam_diag).
 [[midasm_hook]]
-address = 0x823077E8 # PostProcessing_SetGarageDof
-name = "Patch_DisableDoF"
-registers = []
-return_on_true = true
 address = 0x822C0868
 name = "Hook_MenuCameraFinal"
 registers = ["r1", "r24"]
 
+# Live time of day. sub_822F1DB0 is mcLightingManager's per-frame time-of-day
+# update (r3 = manager). Fields: +14540 current hour, +14545 auto-advance byte,
+# +14548 rate (hours/sec), +14552 warp-in-progress byte, +14556 warp target.
+# The hook sets them and lets the original body publish the hour, so lighting,
+# sky and shadows all follow the game's own path.
+[[midasm_hook]]
+address = 0x822F1DB0
+name = "Hook_TimeOfDay"
+registers = ["r3"]
+
+# Extended carbon fiber parts. Carbon is a forced technique group
+# ("carbonfiberhood", id resolved into dword_827E7614 by sub_82377950), not a
+# separate model — the only reason it is hood-only is the hardcoded slot test
+# in the part draw loop sub_8235D500:
+#
+#   8235DED0  cmpwi r27, 2 / cmpwi r27, 0x28   ; slots "hood" / "hood_wide"
+#   8235DEE4  lbz   r10, 0x898(r11)            ; CustomData carbon flag
+#   8235DF00  bl    sub_82377C30               ; force group
+#   8235E068  bl    sub_82377C50               ; restore (-1)
+#
+# Both hooks swallow the whole original block (jump to the join label) and
+# redo the decision natively against a per-part bitmask stored in that same
+# 0x898 byte. r27 = part slot index, r1 = stack (CustomData at +0x64, the
+# caller's "carbon allowed" byte at +0x66F).
+[[midasm_hook]]
+address = 0x8235DED0
+name = "Hook_CarbonPartPush"
+registers = ["r1", "r27", "r31"]
+jump_address_on_true = 0x8235DF04
 
 [[midasm_hook]]
 address = 0x823077C8 # PostProcessing_SetCutsceneDof
