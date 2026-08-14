@@ -46,6 +46,7 @@
 #include "graphics_button.h"
 #include "larecomp_log.h"
 #include "menu_camera.h"
+#include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
 // CVAR DEFINITIONS (Will appear in F4 menu)
 // The '.lifecycle(kRequiresRestart)' forces the user to restart the game if they change the value.
@@ -65,6 +66,9 @@ REXCVAR_DEFINE_BOOL(disable_imposter_shadows, true, "MCLA/Patches", "Performance
 
 REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing (MSAA).")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// NOTE: the online cvars (online_ignore_content_check, online_diag) moved to
+// src/mc_engine/online/system_link.cpp along with the hooks that use them.
 
 REXCVAR_DEFINE_BOOL(break_pairwise_collision, false, "MCLA/Patches", "Disables pairwise collision resolution.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);

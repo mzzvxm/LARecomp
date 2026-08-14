@@ -35,6 +35,10 @@ void Patch_DebugCam(PPCRegister& r3);
 
 void Patch_BypassVehicleDLC(PPCRegister& r30);
 
+// NOTE: the online hooks (tournament, System Link content gate, Xbox LIVE) moved
+// out of hooks.cpp into src/mc_engine/online/. The recompiler declares each
+// midasm hook itself, so they need no declaration here.
+
 bool Patch_SpeedUnits(PPCRegister& r11);
 
 // Button prompt glyphs (button_prompts cvar). The UI movies carry both the 360

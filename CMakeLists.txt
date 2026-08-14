@@ -36,6 +36,12 @@ set(LARECOMP_SOURCES
     src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp
 
+    # Online (split out of hooks.cpp): tournament / System Link / Xbox LIVE
+    src/mc_engine/online/online_common.cpp
+    src/mc_engine/online/tournament.cpp
+    src/mc_engine/online/system_link.cpp
+    src/mc_engine/online/xbox_live.cpp
+
     src/discord_rpc/discord_rpc.cpp
     src/discord_rpc/discord_hooks.cpp
 

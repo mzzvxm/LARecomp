@@ -25151,6 +25151,112 @@ name = "Patch_BypassVehicleDLC"
 registers = ["r30"]
 after_instruction = false
 
+# Online: gate de compatibilidade de conteúdo (DLC) da sessão.
+#
+# sub_8238B7E0 (caminho de join/host) reconstrói uma máscara de 8 bits a partir
+# das propriedades Content0..Content7 da sessão remota (IDs 0x1000002D..
+# 0x10000034, em sub_823880E0) e chama sub_823882B8 duas vezes:
+#   teste A: minha máscara ⊇ máscara deles   -> falha = mensagem 38
+#   teste B: máscara deles ⊇ minha máscara   -> falha = mensagem 39
+# O teste é SIMÉTRICO: falha por divergência, não por "falta DLC".
+#
+# sub_82388848 semeia a máscara local com `*(u32*)0x827E9170 |= 0x13F`, sem
+# checar DLC nenhuma, então o byte baixo é sempre 0x3F. Quando o blob remoto
+# chega sem as propriedades Content (XNetQosListen descarta data/data_size e
+# XNetQosLookup é stub), a máscara remota lê 0, o teste B vira (0 & 0x3F)==0x3F
+# = falso, e o jogo exige uma DLC que ninguém tem. Bit 2 = South Central
+# (sub_821EF310 libera as músicas "SC_" pelo mesmo bit).
+#
+# Força sub_823882B8 a responder "compatível": r3=1 e pula direto pro blr em
+# 0x823882E4. Só é alcançada por sub_8238B7E0, então não afeta o singleplayer.
+# Fix definitivo é transportar o payload de QoS de verdade.
+[[midasm_hook]]
+address = 0x823882B8
+name = "Patch_BypassContentCheck"
+registers = ["r3", "r4", "r5"]
+jump_address_on_true = 0x823882E4
+
+# Diagnóstico: dump do blob de settings que o join content check lê.
+# sub_8238B7E0(r3=obj, r4=blob) lê MaxPlayers e content do blob r4. Hook na
+# entrada pra ver o conteúdo cru (count + 96 bytes). Read-only, gated online_diag.
+[[midasm_hook]]
+address = 0x8238B7E0
+name = "Hook_DumpJoinBlob"
+registers = ["r4"]
+after_instruction = false
+
+# Online Tournament: short-circuit the mcOnlineTournament state machine
+# (sub_82740958) at entry. r3 = the state object. The real read hits a dead
+# Rockstar LSP socket (confirmed: state 8 status=2 -> state 11 "server not
+# available"), so at states 7/8 the hook writes a synthetic tournament into the
+# sake struct and jumps to state 10 ("found"). Returns true to skip the original
+# body only when it has forced the result.
+[[midasm_hook]]
+address = 0x82740958
+name = "Hook_TournamentInject"
+registers = ["r3"]
+return_on_true = true
+after_instruction = false
+
+# Online Tournament: resolve the synthetic tournament's sentinel race id to a
+# real race in the current city. sub_82389668 is the city race-table lookup the
+# eligibility check runs; r3 = race manager, r4 = race id. The hook only acts on
+# our sentinel (0x544F5552), swapping r4 for a real race key so the original
+# lookup succeeds — the game's own race lookups pass through untouched.
+[[midasm_hook]]
+address = 0x82389668
+name = "Hook_TournamentRaceLookup"
+registers = ["r3", "r4"]
+after_instruction = false
+
+# Null-brain guard for the Scaleform "BrainRacing_Reset" native command
+# (sub_822BC658). A tournament race can run a scripted race whose AI brain was
+# never created standalone, so args[0] (the brain) is null and brain->vtable[7]()
+# crashes every frame. r3 = native-call context; the hook returns true to skip
+# the command when the brain is null, and lets it run when the brain is valid.
+[[midasm_hook]]
+address = 0x822BC658
+name = "Patch_BrainRacingResetNullGuard"
+registers = ["r3"]
+return_on_true = true
+after_instruction = false
+
+# [invite-probe] Log online session net-event ids (guest sub_8226D8F8). The
+# in-cruise race invite prompt fires on event id 13; if it never appears when the
+# other player challenges, the invite is lost upstream (XInviteSend no-op).
+# r4 = event source, r5 = event id. Read-only.
+[[midasm_hook]]
+address = 0x8226D8F8
+name = "Hook_InviteReceiveProbe"
+registers = ["r4", "r5"]
+after_instruction = false
+
+# [invite-probe] SEND side: sub_8228B4A0 is the race-invite send handler (calls
+# sub_82486A58 with "ol_invite_request_msg"). Confirms whether challenging a
+# player actually triggers an invite send. r3 = handler obj, r4 = target player.
+[[midasm_hook]]
+address = 0x8228B4A0
+name = "Hook_InviteSendProbe"
+registers = ["r3", "r4"]
+after_instruction = false
+
+# [invite-probe] Receiver challenge gates in guest sub_82282EB8 (event 24). The
+# "Propose a Challenge" signal is session property 3 = challenger identity; the
+# prompt shows only if it is present AND challenger identity > local identity.
+#   0x82282F14: r3 = property-3-present result (0 = challenge signal not here)
+#   0x82282F68: r3 = &challenger id, r4 = &local id (equal ids block the prompt)
+[[midasm_hook]]
+address = 0x82282F14
+name = "Hook_InviteGateProp3"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282F68
+name = "Hook_InviteGateIdentity"
+registers = ["r3", "r4"]
+after_instruction = false
+
 
 # Pause Menu: capture PauseTab address from PM_Continue's parent
 [[midasm_hook]]
