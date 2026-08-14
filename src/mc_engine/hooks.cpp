@@ -59,6 +59,12 @@ REXCVAR_DEFINE_BOOL(disable_rubberbanding, false, "MCLA/Patches", "Disables the 
 REXCVAR_DEFINE_BOOL(dbg_print, false, "MCLA/Patches", "Enable DbgPrint console outputs.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(unlock_ride_height, false, "MCLA/Patches", "Allow the full stock ride-height table in the shop (down to rh_800 / -8).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(unlock_wheel_fit, false, "MCLA/Patches", "Allow every stock rim size, tire profile, tire width and ride height regardless of the car's clearance metrics.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(physics_noclip, true, "MCLA/Physics", "Disable CCD/Pairwise Collision (Noclip)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -636,6 +642,34 @@ void Patch_DofComposite(PPCRegister& r3) {
 
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {
     f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
+}
+
+// Ride height range. sub_82392F68 is the wheel-fit validator: with
+//   f31 = TireRadius, f30 = RideHeight (negative = lowered)
+// it rejects a setup when f31 + f30 < AxleToFloorboards ("ride too low
+// (grinding floor)", result 1) or f31 - f30 > AxleToWheelwell ("tire too big
+// (hitting wheel well)", result 2). Both AxleTo* values are per-car floats, so
+// every car stops lowering at a different notch — typically -2 (rh_200), even
+// though the stock table at off_820511C4/unk_820511F4 runs all the way to
+// rh_800 (-0.15 m, i.e. -8) and the stepper sub_8269EED8 already clamps to
+// 0..11. Zeroing f30 right after it is loaded (0x82392FF0) takes ride height
+// out of both comparisons while leaving the rim/tire size checks - which only
+// depend on f31 - exactly as shipped.
+void Patch_RideHeightFit(PPCRegister& f30) {
+    if (REXCVAR_GET(unlock_ride_height)) f30.f64 = 0.0;
+}
+
+// Wheel sizing range. The same validator gates all four wheel mods: the shop
+// writes the picked byte (rim +2046, profile +2048, width +2044, ride +2042),
+// calls sub_8269EFE0, and on a bad fit puts all four bytes back - which is why a
+// car refuses larger rims or fatter tires long before the stock tables run out
+// (RimSize 12..28, TireProfile 0..13, TireWidth 0..16, RideHeight 0..11). The
+// three comparisons in sub_82392F68 start at 0x82392FFC; jumping straight to
+// the "fits" tail at 0x823930FC reports success for every combination, so the
+// menus expose their full stock lists. Cosmetic only - no geometry is created,
+// the tires just clip the arches at the extremes.
+bool Patch_WheelFitBypass() {
+    return REXCVAR_GET(unlock_wheel_fit);
 }
 
 // Speedometer / distance units. sub_8238DDF0 is the game's unit formatter; at

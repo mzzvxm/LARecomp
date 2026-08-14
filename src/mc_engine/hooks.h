@@ -13,6 +13,13 @@ void Patch_DofComposite(PPCRegister& r3);
 
 void Patch_ScaleTrafficLOD(PPCRegister& f0);
 
+// Removes ride height from the wheel-fit validator sub_82392F68 so the shop can
+// reach the full stock table (rh+300 .. rh_800, i.e. +3 .. -8). See hooks.cpp.
+void Patch_RideHeightFit(PPCRegister& f30);
+
+// Skips the whole sub_82392F68 fit test, unlocking every stock rim size, tire
+// profile, tire width and ride height. Supersedes Patch_RideHeightFit.
+bool Patch_WheelFitBypass();
 void Patch_ScaleCityLOD(PPCRegister& f13);
 void UpdateCityLODMemory();
 

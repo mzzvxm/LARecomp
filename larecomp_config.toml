@@ -25098,6 +25098,26 @@ registers = ["r3"]
 # DoF setters (0x823076F8..0x82307C08) intentionally NOT hooked — blocking them
 # was the cause of the stale-DoF-in-menu bug.
 
+# Ride height range. sub_82392F68 validates a wheel setup against the car's
+# AxleToFloorboards / AxleToWheelwell metrics; both comparisons include f30, the
+# ride-height offset loaded at 0x82392FF0 from unk_820511F4. Hooking the next
+# instruction lets us zero f30 so ride height stops gating the fit test and the
+# shop can walk the whole stock table down to rh_800 (-8). Rim/tire checks are
+# untouched - they only read f31 (tire radius).
+[[midasm_hook]]
+address = 0x82392FF4
+name = "Patch_RideHeightFit"
+registers = ["f30"]
+
+# Full wheel sizing range. 0x82392FFC is the first of the three fit comparisons
+# in sub_82392F68; 0x823930FC is its "fits" tail (li r3, 0). Jumping there makes
+# every rim size / tire profile / tire width / ride height combination pass, so
+# the shop stops reverting the pick and shows the complete stock tables.
+[[midasm_hook]]
+address = 0x82392FFC
+name = "Patch_WheelFitBypass"
+jump_address_on_true = 0x823930FC
+
 # City and Traffic LOD
 [[midasm_hook]]
 address = 0x827903E0
@@ -25394,6 +25414,51 @@ address = 0x823077C8 # PostProcessing_SetCutsceneDof
 name = "Patch_DisableDoF"
 registers = []
 return_on_true = true
+address = 0x8235E038
+name = "Hook_CarbonPartPop"
+registers = ["r1", "r27", "r31"]
+jump_address_on_true = 0x8235E06C
+
+# Garage paint screen refresh (garage action case 90). sub_826A5528 enables or
+# disables the menu item named "Hood" from the car's carbon flag — proof that
+# the paint screen still carries a carbon item, only unreachable while the flag
+# is 0. Probe hook: dumps that item's parent state and its siblings once, which
+# is what a real garage-side carbon submenu has to attach to.
+[[midasm_hook]]
+address = 0x826A5528
+name = "Hook_CarbonGarageProbe"
+registers = ["r3"]
+
+# Front-end per-frame update (sub_821FC588, called from the menu update
+# sub_822C1FA8). Used as the tick that reads A/B off the pad for the garage
+# carbon submenu: an injected menu state emits no command, so the garage never
+# routes a press from it anywhere. The tick early-outs unless the paint screen
+# is up and the highlight is on the carbon row.
+[[midasm_hook]]
+address = 0x821FC588
+name = "Hook_CarbonUiTick"
+registers = ["r3"]
+
+# Garage command dispatcher. It switches on the halfword at +2 of its third
+# argument (`lhz r11, 2(r5)`), so r5 is the command object — same layout the
+# flash-command logger walks. Observation only; nothing is consumed.
+[[midasm_hook]]
+address = 0x826AB520
+name = "Hook_CarbonGarageSelect"
+registers = ["r3", "r4", "r5", "r6"]
+
+# Garage carbon button — case 147 of the action jumptable at 0x826AB588.
+# The action survived into retail but the menu entry that fires it did not, so
+# this hook is dormant unless the UI node is revived. Kept because it costs
+# nothing and it is the right place to cycle presets once the entry exists.
+# Vanilla is a plain `flag = !flag` on CustomData+0x40+0x858; the hook cycles
+# the byte through part presets instead. r11 = CustomData + 0x40.
+[[midasm_hook]]
+address = 0x826AE248
+name = "Hook_CarbonToggle"
+registers = ["r11"]
+jump_address_on_true = 0x826AE258
+
 
 [[midasm_hook]]
 address = 0x82307BD0 # PostProcessing_SetCutsceneDofFar
@@ -25406,6 +25471,19 @@ address = 0x82307BA0 # PostProcessing_SetCutsceneDofNear
 name = "Patch_DisableDoF"
 registers = []
 return_on_true = true
+# ── Tire offset — src/mc_engine/tire_offset.cpp
+#
+# sub_82354230 rebuilds every per-wheel matrix of an mcCarModel once per frame
+# from the wheel/hub bones and the rim/tire dimensions. 0x82354A1C is the first
+# instruction after its `while (wheel < 4)` loop closes and before the epilogue
+# restores anything, so r31 is still the model and all four wheels are final.
+# Shifting them here is idempotent — the next frame rebuilds from the untouched
+# bones — and invisible to physics, which never reads these.
+[[midasm_hook]]
+address = 0x82354A1C
+name = "Hook_TireOffsetWheels"
+registers = ["r31"]
+
 # BadassBaboon's Recomp Adjustments: Continuous-time exponential decay camera boom smoothing for 60 FPS
 # 0x823203D4 in sub_82320298 (mcPlayerCamera::Update), f1 = the interpolation
 # factor headed for Lerp.
