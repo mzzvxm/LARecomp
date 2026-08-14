@@ -24934,13 +24934,18 @@ out_directory_path = "generated"
 0x822B88B8 = { name = "OpponentManager_LoadOpponentByCarConfig", size = 0x10 }
 
 [[midasm_hook]]
-address = 0x821F7F64
+address = 0x822C2F08
 name = "SkipIntro"
-jump_address_on_true = 0x821F7FAC
-# [[midasm_hook]]
-# address = 0x821BDB08
-# name = "Patch_60FPS_Jump"
-# jump_address_on_true = 0x821BDC34
+jump_address_on_true = 0x822C2F7C
+
+# 0x821315E4: `bl sub_822E5B00` in sub_82131508, reached with r4 = -1 when there is
+# no legals object. -1 sets bit 24 of the render pass mask at mgr+364, which every
+# other caller (sub_821F9918, sub_821FCED8) leaves clear via 0xFEFFFFFF. The extra
+# pass draws with an unprepared stage and corrupts the frame. See hooks.cpp.
+[[midasm_hook]]
+address = 0x821315E4
+name = "MCLA_SkipIntroRenderPassMask"
+registers = ["r4"]
 # BadassBaboon's Recomp Adjustments: Core 60 FPS Engine Timing Pipeline
 # 0x821BDAB0: subf r8,r10,r11 in sub_821BDA90 (elapsed frame ticks clamp & limiter)
 [[midasm_hook]]
@@ -25099,6 +25104,15 @@ address = 0x82410E34
 name = "Patch_EdramLimit"
 registers = ["r11"]
 jump_address_on_true = 0x82410E48
+
+# Intro pacing — sub_821F9918 advances the intro SWF a hardcoded 1/60s per
+# call and runs twice per frame; at 60 FPS that is 2x speed. Hook fires at the
+# start of the advance block (0x821F99DC) and skips every other call by
+# jumping to the function epilogue (0x821F9A00).
+[[midasm_hook]]
+address = 0x821F99DC
+name = "Hook_IntroHalfRate"
+jump_address_on_true = 0x821F9A00
 
 # Per-frame tick point, right after the clock update (sub_821BDA90). The delta
 # time itself is now handled at the clock source (MCLAFrameDelta /

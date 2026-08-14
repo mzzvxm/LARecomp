@@ -16,6 +16,7 @@ void UpdateCityLODMemory();
 
 void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
+bool Hook_IntroHalfRate();
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28);
 bool Patch_EdramLimit(PPCRegister& r11);
 // BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning

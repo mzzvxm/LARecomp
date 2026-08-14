@@ -165,6 +165,32 @@ bool SkipIntro() {
     return REXCVAR_GET(skip_intro);
 }
 
+// 0x821315E4 in sub_82131508, the branch taken when dword_82830B14 (the legals
+// screen object) is null:
+//
+//     if (dword_82830B14) { ...ordered teardown... }
+//     else                  sub_822E5B00(dword_8287E064, -1);
+//
+// sub_822E5B00 ORs its argument into *(mgr + 424), which sub_822E5B60 folds into
+// *(mgr + 364) on the next frame. That word is the render pass bitmask that
+// sub_822E6408 walks bit by bit (v12 = 1; ...; v12 *= 2; while v12 != 0x40000000),
+// dispatching the 13 renderers of every set bit.
+//
+// Every normal caller ORs 0xFEFFFFFF instead: sub_821F9918 (0x821F99BC) and
+// sub_821FCED8 (0x821FCF10). Bit 24 is deliberately excluded and the game never
+// sets it anywhere else. This branch's -1 does set it, so skipping the intro
+// enables a pass whose stage (mgr[24]) was never prepared, and it draws with
+// uninitialised state - corrupt geometry and shading across the frame.
+//
+// Rewrite the argument to the same mask the rest of the engine uses. Applies to
+// any way of reaching a null legals object, so it is independent of which
+// SkipIntro hook is active.
+void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {
+    if (REXCVAR_GET(skip_intro)) {
+        r4.u32 = 0xFEFFFFFFu;
+    }
+}
+
 static bool GetAspectRatio(double& out_val) {
     std::string ratio = REXCVAR_GET(aspect_ratio);
     if (ratio == "4:3") {
@@ -241,6 +267,22 @@ bool Patch_EdramLimit(PPCRegister& r11) {
     return r11.u64 <= 4096;
 }
 
+// Intro/legals pacing at 60 FPS. The intro SWF is advanced by sub_821F9918
+// with a HARDCODED 1/60s per call (immune to any dt patch), and that function
+// runs twice per frame (present callback sub_821FC008 + main tick
+// sub_821FC588). At the console's 30 Hz that totals real time; at 60 Hz it's
+// exactly 2x. Skipping every other advance (jump to the 0x821F9A00 epilogue)
+// restores the original rate.
+bool Hook_IntroHalfRate() {
+    if (!REXCVAR_GET(fps_60)) return false;
+    static uint32_t call_count = 0;
+    return (call_count++ & 1) != 0;  // true = skip this advance
+}
+
+// Swap-interval patch at 0x82419AA0 ("li r11, 2"): the game always requests
+// D3D interval TWO (30 FPS); replacing with 1 requests 60 Hz. Note the current
+// RexGlue command processor ignores the guest swap interval (host vblank is a
+// fixed 60 Hz timer), so this is kept only for correctness of the swap packet.
 bool Patch_60FPS_Byte(PPCRegister& r11) {
     if (REXCVAR_GET(fps_60)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
