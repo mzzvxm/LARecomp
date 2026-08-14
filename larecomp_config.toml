@@ -25032,11 +25032,12 @@ name = "OpenRexGraphicsFromGameOptions_826686D4"
 registers = ["r3"]
 jump_address_on_true = 0x82668704
 
-# DiscordRPC Hooks
+# DiscordRPC: core vhsmState activation — fires for every SCXML state change
+# r31 = state object being activated; hook reads state name from guest memory
 [[midasm_hook]]
-address = 0x8238F608
-name = "RpcHook_GarageTransitionNative_8238F608"
-registers = [] # confirmed
+address = 0x8268DDD8
+name = "RpcHook_StateActivate"
+registers = ["r31"]
 
 # Vinyl importer/exporter: cache the current car's vinyl regen args. sub_8236D850
 # is the regen setup: r3 = work-area, r4 = paint (block = *(paint+132)), r5 = tex,
@@ -25183,6 +25184,14 @@ jump_address_on_true = 0x823882E4
 address = 0x8238B7E0
 name = "Hook_DumpJoinBlob"
 registers = ["r4"]
+after_instruction = false
+
+# Discord RPC: cache the current district. r3 holds mc::LookupDistrict's return
+# right after the bl inside Racer_GetCurrentDistrict (sub_822ADEC0). Read-only.
+[[midasm_hook]]
+address = 0x822ADEE0
+name = "Hook_CaptureDistrict"
+registers = ["r3"]
 after_instruction = false
 
 # Online Tournament: short-circuit the mcOnlineTournament state machine

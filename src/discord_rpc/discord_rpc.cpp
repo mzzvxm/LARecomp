@@ -1,3 +1,4 @@
+#ifndef REXGLUE_HAS_XEO3_TARGET
 #include "discord_rpc/discord_rpc.h"
 
 #include <atomic>
@@ -6,6 +7,7 @@
 
 #include <rex/cvar.h>
 #include <rex/discord_rpc.h>
+#include <rex/system/flags.h>  // user_language cvar (game language)
 
 // -----------------------------------------------------------------------------
 // Notes
@@ -39,6 +41,81 @@ REXCVAR_DEFINE_STRING(larecomp_discord_large_image, "mcla_logo", "Discord",
                       "Discord RPC large image key.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_STRING(larecomp_discord_rpc_language, "auto", "Discord",
+                      "Rich Presence language. 'auto' follows the game (user_language); or force "
+                      "en / pt / es. Discord itself does not translate presence text.")
+    .allowed({"auto", "en", "pt", "es"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// Localization table. Columns: EN, PT, ES (fallback EN). Add a language by
+// appending a column here + a case in the resolver + a value in RpcStr use.
+const char* RpcTr(RpcStr key) {
+  enum { EN = 0, PT = 1, ES = 2, LANGS = 3 };
+  static const char* const T[static_cast<int>(RpcStr::Count)][LANGS] = {
+      /* DrivingFmt       */ {"Driving: %s", "Dirigindo: %s", "Conduciendo: %s"},
+      /* FreeRoamGeneric  */ {"Cruising Los Angeles", "Passeando por Los Angeles", "Paseando por Los Angeles"},
+      /* FreeRoamState    */ {"Cruise / Free Roam", "Cruise / Free Roam", "Cruise / Free Roam"},
+      /* FreeRoamAreaFmt  */ {"Free Roam \xC2\xB7 %s", "Free Roam \xC2\xB7 %s", "Free Roam \xC2\xB7 %s"},
+      /* RacingFmt        */ {"Racing: %s", "Em Corrida: %s", "En Carrera: %s"},
+      /* RaceStateGeneric */ {"In a race", "Corrida ativa", "Carrera activa"},
+      /* RaceAreaFmt      */ {"Racing \xC2\xB7 %s", "Corrida ativa \xC2\xB7 %s", "Carrera activa \xC2\xB7 %s"},
+      /* RaceGeneric      */ {"Racing", "Em corrida", "En carrera"},
+      /* CustomizingFmt   */ {"Customizing: %s", "Customizando: %s", "Personalizando: %s"},
+      /* InGarage         */ {"In the garage", "Na garagem", "En el garaje"},
+      /* RaceStreet       */ {"Street Race", "Corrida de Rua", "Carrera Callejera"},
+      /* RaceMission      */ {"Mission Race", "Corrida de Miss\xC3\xA3o", "Carrera de Misi\xC3\xB3n"},
+      /* RaceSeries       */ {"Series", "S\xC3\xA9rie", "Serie"},
+      /* RaceTournament   */ {"Tournament", "Torneio", "Torneo"},
+      /* RaceWager        */ {"Wager", "Aposta", "Apuesta"},
+      /* RaceTimeTrial    */ {"Time Trial", "Contra-Rel\xC3\xB3gio", "Contrarreloj"},
+      /* RaceDelivery     */ {"Delivery", "Entrega", "Entrega"},
+      /* RacePayback      */ {"Payback", "Payback", "Payback"},
+      /* RaceRedLight     */ {"Red Light", "Sinal Vermelho", "Sem\xC3\xA1""foro en Rojo"},
+      /* RaceFreeway      */ {"Freeway", "Rodovia", "Autopista"},
+      /* RaceBeatMeThere  */ {"Beat Me There", "Chega Primeiro", "Llega Primero"},
+      /* RaceOnline       */ {"Online", "Online", "Online"},
+      /* DetBoot          */ {"Starting up", "Inicializando", "Iniciando"},
+      /* DetLoading       */ {"Loading", "Carregando", "Cargando"},
+      /* DetMainMenu      */ {"In the main menu", "No menu principal", "En el men\xC3\xBA principal"},
+      /* DetGarage        */ {"In the garage", "Na garagem", "En el garaje"},
+      /* DetFreeRoam      */ {"Cruising Los Angeles", "Passeando por Los Angeles", "Paseando por Los Angeles"},
+      /* DetRace          */ {"In a race", "Em corrida", "En carrera"},
+      /* DetPause         */ {"Paused", "Pausado", "En pausa"},
+      /* DetCredits       */ {"Watching the credits", "Vendo os cr\xC3\xA9""ditos", "Viendo los cr\xC3\xA9""ditos"},
+      /* DetDefault       */ {"Playing", "Jogando", "Jugando"},
+      /* TxtBoot          */ {"Opening LA Recomp", "Abrindo LA Recomp", "Abriendo LA Recomp"},
+      /* TxtLoading       */ {"Loading session", "Carregando sess\xC3\xA3o", "Cargando sesi\xC3\xB3n"},
+      /* TxtMainMenu      */ {"Choosing a game mode", "Escolhendo modo de jogo", "Eligiendo modo de juego"},
+      /* TxtGarage        */ {"Customizing the car", "Customizando o carro", "Personalizando el coche"},
+      /* TxtFreeRoam      */ {"Cruise / Free Roam", "Cruise / Free Roam", "Cruise / Free Roam"},
+      /* TxtRace          */ {"Race in progress", "Corrida ativa", "Carrera activa"},
+      /* TxtPause         */ {"Pause menu", "Menu de pausa", "Men\xC3\xBA de pausa"},
+      /* TxtCredits       */ {"Credits", "Credits", "Cr\xC3\xA9""ditos"},
+      /* TxtDefault       */ {"LA Recomp", "LA Recomp", "LA Recomp"},
+  };
+
+  int lang = EN;
+  std::string sel = REXCVAR_GET(larecomp_discord_rpc_language);
+  if (sel == "pt") {
+    lang = PT;
+  } else if (sel == "es") {
+    lang = ES;
+  } else if (sel == "en") {
+    lang = EN;
+  } else {
+    // auto: follow the game language (user_language). English + anything not
+    // translated yet falls back to English.
+    std::string game = REXCVAR_GET(user_language);
+    if (game == "Portuguese") lang = PT;
+    else if (game == "Spanish") lang = ES;
+    else lang = EN;
+  }
+
+  int k = static_cast<int>(key);
+  if (k < 0 || k >= static_cast<int>(RpcStr::Count)) return "";
+  return T[k][lang];
+}
+
 namespace {
 
 std::mutex g_rpc_mutex;
@@ -52,47 +129,29 @@ constexpr const char* kDiscordApplicationId = "1503923771264729309";
 
 const char* DetailsForState(LarecompDiscordState state) {
   switch (state) {
-    case LarecompDiscordState::Boot:
-      return "Inicializando";
-    case LarecompDiscordState::Loading:
-      return "Carregando";
-    case LarecompDiscordState::MainMenu:
-      return "No menu principal";
-    case LarecompDiscordState::Garage:
-      return "Na garagem";
-    case LarecompDiscordState::FreeRoam:
-      return "Passeando por Los Angeles";
-    case LarecompDiscordState::Race:
-      return "Em corrida";
-    case LarecompDiscordState::Pause:
-      return "Pausado";
-    case LarecompDiscordState::Credits:
-      return "Vendo os créditos";
-    default:
-      return "Jogando";
+    case LarecompDiscordState::Boot: return RpcTr(RpcStr::DetBoot);
+    case LarecompDiscordState::Loading: return RpcTr(RpcStr::DetLoading);
+    case LarecompDiscordState::MainMenu: return RpcTr(RpcStr::DetMainMenu);
+    case LarecompDiscordState::Garage: return RpcTr(RpcStr::DetGarage);
+    case LarecompDiscordState::FreeRoam: return RpcTr(RpcStr::DetFreeRoam);
+    case LarecompDiscordState::Race: return RpcTr(RpcStr::DetRace);
+    case LarecompDiscordState::Pause: return RpcTr(RpcStr::DetPause);
+    case LarecompDiscordState::Credits: return RpcTr(RpcStr::DetCredits);
+    default: return RpcTr(RpcStr::DetDefault);
   }
 }
 
 const char* StateTextForState(LarecompDiscordState state) {
   switch (state) {
-    case LarecompDiscordState::Boot:
-      return "Abrindo LA Recomp";
-    case LarecompDiscordState::Loading:
-      return "Carregando sessão";
-    case LarecompDiscordState::MainMenu:
-      return "Escolhendo modo de jogo";
-    case LarecompDiscordState::Garage:
-      return "Customizando o carro";
-    case LarecompDiscordState::FreeRoam:
-      return "Cruise / Free Roam";
-    case LarecompDiscordState::Race:
-      return "Corrida ativa";
-    case LarecompDiscordState::Pause:
-      return "Menu de pausa";
-    case LarecompDiscordState::Credits:
-      return "Credits";
-    default:
-      return "LA Recomp";
+    case LarecompDiscordState::Boot: return RpcTr(RpcStr::TxtBoot);
+    case LarecompDiscordState::Loading: return RpcTr(RpcStr::TxtLoading);
+    case LarecompDiscordState::MainMenu: return RpcTr(RpcStr::TxtMainMenu);
+    case LarecompDiscordState::Garage: return RpcTr(RpcStr::TxtGarage);
+    case LarecompDiscordState::FreeRoam: return RpcTr(RpcStr::TxtFreeRoam);
+    case LarecompDiscordState::Race: return RpcTr(RpcStr::TxtRace);
+    case LarecompDiscordState::Pause: return RpcTr(RpcStr::TxtPause);
+    case LarecompDiscordState::Credits: return RpcTr(RpcStr::TxtCredits);
+    default: return RpcTr(RpcStr::TxtDefault);
   }
 }
 
@@ -216,3 +275,5 @@ void LARECOMP_Discord_SetPause() {
 void LARECOMP_Discord_SetCredits() {
   LARECOMP_Discord_SetState(LarecompDiscordState::Credits);
 }
+
+#endif // REXGLUE_HAS_XEO3_TARGET

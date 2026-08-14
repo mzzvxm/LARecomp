@@ -39,6 +39,12 @@ void Patch_BypassVehicleDLC(PPCRegister& r30);
 // out of hooks.cpp into src/mc_engine/online/. The recompiler declares each
 // midasm hook itself, so they need no declaration here.
 
+// Forwards the player's current district index (r3 = return of mc::LookupDistrict
+// via Racer_GetCurrentDistrict, hooked after the bl at 0x822ADEE0) to the Discord
+// RPC, which updates the presence live while driving. Fires on the game's own
+// district queries, so no separate tick is needed.
+void Hook_CaptureDistrict(PPCRegister& r3);
+
 bool Patch_SpeedUnits(PPCRegister& r11);
 
 // Button prompt glyphs (button_prompts cvar). The UI movies carry both the 360
