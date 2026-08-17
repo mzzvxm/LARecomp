@@ -25823,6 +25823,51 @@ name = "MCLA_CustomMusic_Pause"
 address = 0x821EF158
 registers = ["r3"]
 
+# Traffic (va_) vehicles used as player cars. A vp_ vehicle's bound is a
+# phBoundComposite (type 12) holding the chassis geometry plus four wheel bounds; a
+# va_ vehicle's is a bare phBoundGeometry (type 4). The car code reads
+# *(root + 0x80) as the composite's child array with no type check, so on a geometry
+# it picks up m_Vertices and the deform pass faults in sub_8259FF88. These three
+# sites are every place that does it; they substitute the root when it is not a
+# composite, and are a no-op for stock player cars. See hooks.cpp.
+
+# 0x8232D048 in sub_8232CFF0, before `addi r6, r11, 0x10`. r9 = root + 0x80.
+[[midasm_hook]]
+name = "MCLA_TrafficChassisBound_8232D048"
+address = 0x8232D048
+registers = ["r9", "r11"]
+
+# 0x8232D900 in sub_8232D8C8 (hull-index search), after `lwz r11, 0(r11)`.
+[[midasm_hook]]
+name = "MCLA_TrafficChassisBound_8232D900"
+address = 0x8232D900
+registers = ["r3", "r11"]
+
+# 0x8232E274 in sub_8232E238 (suspension deform), after `lwz r31, 0(r10)`. This is
+# the site that crashed on purchase.
+[[midasm_hook]]
+name = "MCLA_TrafficChassisBound_8232E274"
+address = 0x8232E274
+registers = ["r3", "r31"]
+
+# 0x8259AA40, entry of sub_8259AA28 = phBoundComposite::ReleaseChildren. Both call
+# sites (~mcCarSim at sub_8232CDA8 and sub_8232CEB0) call it on the bound without a
+# type check, so a traffic car's bare geometry gets its vertex data walked as a child
+# pointer array. Jumping to the epilogue skips the loop; a non-composite has no
+# children to release.
+[[midasm_hook]]
+name = "MCLA_TrafficBoundRelease_8259AA40"
+address = 0x8259AA40
+registers = ["r30"]
+jump_address_on_true = 0x8259AA90
+
+# sub_824DF200(owner, type, name, &field, ...) -- every tune field registration.
+# Diagnostic, gated on the tune_field_probe cvar (off by default).
+[[midasm_hook]]
+name = "MCLA_TuneFieldProbe"
+address = 0x824DF200
+registers = ["r3", "r4", "r5", "r6"]
+
 [rexcrt]
 RtlAllocateHeap = 0x82134860
 RtlFreeHeap = 0x82135150

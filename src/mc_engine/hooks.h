@@ -80,6 +80,16 @@ void MCLACameraBoomSmoothing(PPCRegister& f1);
 // r31 is the zone, whose base IS the mcAmbientDensityTuning.
 void MCLAAmbientDensityTuning(PPCRegister& r31);
 
+// Traffic (va_) vehicles used as player cars: the chassis-bound substitution. See
+// hooks.cpp for the full story; the register pairs are (root-carrying reg, child reg).
+void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11);
+void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11);
+void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31);
+// Diagnostic (tune_field_probe cvar): logs every tune field as it registers.
+void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6);
+// Entry guard for phBoundComposite::ReleaseChildren; true skips the whole loop.
+bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30);
+
 // BadassBaboon's Recomp Adjustments: Foliage imposter shadows and steering sensitivity
 bool Patch_DisableImposterShadows(PPCRegister& r11);
 void Patch_SteeringSensitivity(PPCRegister& f0);

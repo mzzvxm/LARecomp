@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -391,6 +392,13 @@ struct VehicleMod {
     std::string mod_name;
 };
 
+// A file the mod ships as-is, and the archive path it has to land on.
+struct RawFile {
+    std::string archive_path;       // e.g. tune/vehicle/vehicle0003.lst
+    std::filesystem::path source;
+    std::string mod_name;
+};
+
 // Name a mesh this and it stands in for every character -- or, in the rims
 // folder, for every wheel -- in the game.
 constexpr const char* kEveryAsset = "all";
@@ -428,6 +436,43 @@ constexpr const char* kRimFolder = "rims";
 // swap possible -- MCLA's Skyline has five spoiler slots and a BMW has no
 // spoiler at all.
 constexpr const char* kVehicleFolder = "vehicles";
+
+// Files that are not meshes at all, copied into the mod archive byte for byte
+// under the path they already have:
+//
+//   models/<mod>/files/tune/vehicle/vehicle0003.lst
+//     -> tune/vehicle/vehicle0003.lst
+//
+// The archive is mounted last, so anything here wins over the shipped copy, and
+// a path the game has never seen is simply a new file. This is what lets a mod
+// add a car to the showroom -- the roster is read from tune/vehicle/vehicle.lst
+// plus vehicle0001.lst..vehicle0008.lst, and only 0001 and 0002 are taken.
+//
+// They go in uncompressed. The shipped archive holds 1718 entries like that and
+// the rule they follow is that the flag word IS the size, with the compressed
+// and resource bits clear, so nothing has to be encoded to add one.
+constexpr const char* kFilesFolder = "files";
+
+// Enough of the RSC5 header to tell a resource from a plain file and read the
+// two words that describe it. rsc5.cpp keeps its own copies of these; they are
+// four lines and duplicating them is cheaper than widening that header for one
+// caller.
+constexpr uint32_t kRsc5Magic = 0x05435352u;
+constexpr size_t kRsc5HeaderSize = 16;
+
+// 'LARC' -- a mod shipping an archive entry exactly as some other archive holds
+// it: the bytes, its flag and its resource type, with nothing interpreted.
+//
+// This exists because most of what a mod wants to clone cannot be rebuilt. A
+// per-car CarCfg, for one: all 401 of them are LZX-compressed with the framing
+// used for plain files, which no host-side decoder here can read, so the only
+// way to give a new car a config is to hand it another car's bytes untouched.
+constexpr uint32_t kLarcMagic = 0x4C415243u;  // 'LARC'
+
+uint32_t LoadBE32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
 constexpr const char* kVehiclePartsFile = "parts.txt";
 
 // The part of the car every other part is measured against. One scale factor is
@@ -517,8 +562,36 @@ void ScanFolder(const std::filesystem::path& folder, const std::string& mod_name
     }
 }
 
+// Collects everything under `files_dir`, keeping the folder structure as the
+// archive path. Empty files are skipped: an entry of size zero would take the
+// shipped file's place and give the game nothing.
+void ScanRawFiles(const std::filesystem::path& files_dir, const std::string& mod_name,
+                  std::vector<RawFile>& out) {
+    std::error_code ec;
+    for (const auto& file : std::filesystem::recursive_directory_iterator(files_dir, ec)) {
+        if (ec) break;
+        if (!file.is_regular_file()) continue;
+
+        std::error_code rel_ec;
+        const std::filesystem::path relative =
+            std::filesystem::relative(file.path(), files_dir, rel_ec);
+        if (rel_ec || relative.empty()) continue;
+
+        std::string archive_path = relative.generic_string();
+        if (archive_path.empty() || archive_path.front() == '.') continue;
+
+        if (std::filesystem::file_size(file.path(), rel_ec) == 0 || rel_ec) {
+            LARECOMP_APP_ERROR("[mods] {}/files/{}: empty, skipped", mod_name, archive_path);
+            continue;
+        }
+
+        out.push_back(RawFile{std::move(archive_path), file.path(), mod_name});
+    }
+}
+
 void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& characters,
-              std::vector<ModEntry>& rims, std::vector<VehicleMod>& vehicles) {
+              std::vector<ModEntry>& rims, std::vector<VehicleMod>& vehicles,
+              std::vector<RawFile>& raw_files) {
     std::error_code ec;
 
     for (const auto& mod_dir : std::filesystem::directory_iterator(models_dir, ec)) {
@@ -536,6 +609,10 @@ void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& ch
         std::error_code sub_ec;
         const std::filesystem::path rim_dir = mod_dir.path() / kRimFolder;
         if (std::filesystem::is_directory(rim_dir, sub_ec)) ScanFolder(rim_dir, mod_name, rims);
+
+        const std::filesystem::path files_dir = mod_dir.path() / kFilesFolder;
+        if (std::filesystem::is_directory(files_dir, sub_ec))
+            ScanRawFiles(files_dir, mod_name, raw_files);
 
         const std::filesystem::path vehicle_dir = mod_dir.path() / kVehicleFolder;
         if (!std::filesystem::is_directory(vehicle_dir, sub_ec)) continue;
@@ -1195,20 +1272,25 @@ void Init() {
 
     std::vector<ModEntry> mods, rim_mods;
     std::vector<VehicleMod> car_mods;
-    ScanMods(models_dir, mods, rim_mods, car_mods);
-    if (mods.empty() && rim_mods.empty() && car_mods.empty()) {
+    std::vector<RawFile> raw_files;
+    ScanMods(models_dir, mods, rim_mods, car_mods, raw_files);
+    if (mods.empty() && rim_mods.empty() && car_mods.empty() && raw_files.empty()) {
         std::filesystem::remove(game_root / kModArchiveName, ec);
         return;
     }
+    const bool has_meshes = !mods.empty() || !rim_mods.empty() || !car_mods.empty();
 
+    // A mesh mod needs the shipped archive as its template and xcompress32.dll to
+    // read it. A raw file needs neither -- it is already the finished bytes -- so
+    // neither of those is allowed to sink a mod that only carries files.
     const std::filesystem::path source_archive = game_root / kSourceArchiveName;
     if (!std::filesystem::exists(source_archive, ec)) {
-        LARECOMP_APP_ERROR("[mods] {} not found, model replacement disabled",
-                           source_archive.string());
-        return;
+        LARECOMP_APP_ERROR("[mods] {} not found, {}", source_archive.string(),
+                           has_meshes ? "model replacement disabled" : "meshes unavailable");
+        if (has_meshes) return;
     }
 
-    if (!XCompressAvailable(exe_dir)) {
+    if (has_meshes && !XCompressAvailable(exe_dir)) {
         LARECOMP_APP_ERROR(
             "[mods] xcompress32.dll missing next to the executable -- it is needed to read the "
             "original models. {} mod(s) skipped.",
@@ -1217,7 +1299,7 @@ void Init() {
     }
 
     Rpf3Reader archive;
-    if (!archive.Open(source_archive)) {
+    if (has_meshes && !archive.Open(source_archive)) {
         LARECOMP_APP_ERROR("[mods] cannot open {}", source_archive.string());
         return;
     }
@@ -1256,6 +1338,117 @@ void Init() {
 
     Rpf3Writer writer;
     const std::filesystem::path cache_dir = models_dir / ".cache";
+
+    // Rpf3Writer::Write refuses an archive that names the same path twice, and
+    // it refuses the whole thing rather than the offending entry -- so a second
+    // mod shipping the same file would take every other mod down with it. Drop
+    // the repeat here instead. Paths are compared lowercased because RageHash
+    // folds case and the archive would collide even when the strings differ.
+    //
+    // The same trap is still open between a raw file and a mesh mod: name a
+    // file after a resource some mesh also builds and nothing gets built at
+    // all. Nothing checks for that, because a mod has no reason to do it.
+    std::vector<std::string> taken_paths;
+    for (const RawFile& file : raw_files) {
+        std::string key = file.archive_path;
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (std::find(taken_paths.begin(), taken_paths.end(), key) != taken_paths.end()) {
+            LARECOMP_APP_ERROR("[mods] {}/files/{}: already shipped by another mod, skipped",
+                               file.mod_name, file.archive_path);
+            continue;
+        }
+
+        std::error_code read_ec;
+        const auto size = std::filesystem::file_size(file.source, read_ec);
+        std::vector<uint8_t> bytes;
+        if (!read_ec && size <= 0x3FFFFFFFull) {
+            std::ifstream input(file.source, std::ios::binary);
+            bytes.assign(std::istreambuf_iterator<char>(input),
+                         std::istreambuf_iterator<char>());
+        }
+        if (bytes.empty() || bytes.size() != static_cast<size_t>(size)) {
+            LARECOMP_APP_ERROR("[mods] {}/files/{}: cannot read", file.mod_name,
+                               file.archive_path);
+            continue;
+        }
+
+        // Plain file or resource?
+        //
+        // A plain file goes in with the flag word equal to its size and nothing
+        // else, which is the shape every uncompressed file in the shipped
+        // archive has. A resource cannot: the engine reads its segment sizes out
+        // of that same word, so it has to carry the real flag and its type.
+        //
+        // Both arrive here as a file starting with the RSC5 magic, and the
+        // compression bit says which is which:
+        //
+        //   bit30 set   - a resource straight out of an archive, header and LZX
+        //                 stream intact. It is already exactly what the engine
+        //                 streams, so it goes through untouched.
+        //   bit30 clear - segments the mod built itself, behind a 16-byte header
+        //                 that only exists to name the type and flag. Those are
+        //                 packed here into a real RSC5 file.
+        //
+        // The segments cannot simply be stored as they are. Every resource in
+        // the shipped archives is an RSC5 container -- header, XCompress marker,
+        // LZX stream -- and the streamer reads it as one; handing it bare
+        // segments instead loads nothing, which is a black showroom picture
+        // rather than an error.
+        uint32_t flag = static_cast<uint32_t>(bytes.size());
+        uint32_t resource_type = 0;
+
+        if (bytes.size() > kRsc5HeaderSize && LoadBE32(bytes.data()) == kLarcMagic) {
+            resource_type = LoadBE32(bytes.data() + 4);
+            flag = LoadBE32(bytes.data() + 8);
+            bytes.erase(bytes.begin(), bytes.begin() + kRsc5HeaderSize);
+        } else if (bytes.size() > kRsc5HeaderSize && LoadBE32(bytes.data()) == kRsc5Magic) {
+            resource_type = LoadBE32(bytes.data() + 4);
+            flag = LoadBE32(bytes.data() + 8);
+
+            if ((flag & 0x40000000u) == 0) {
+                Rsc5Resource resource;
+                resource.type = resource_type;
+                resource.flag = flag;
+                resource.virtual_size = (flag & 0x7FFu) << (((flag >> 11) & 0xFu) + 8);
+                resource.physical_size = ((flag >> 15) & 0x7FFu) << (((flag >> 26) & 0xFu) + 8);
+
+                const size_t expected = kRsc5HeaderSize +
+                                        static_cast<size_t>(resource.virtual_size) +
+                                        resource.physical_size;
+                if (bytes.size() != expected) {
+                    LARECOMP_APP_ERROR("[mods] {}/files/{}: flag {:#010x} wants {} bytes of "
+                                       "segments, the file carries {}",
+                                       file.mod_name, file.archive_path, flag,
+                                       expected - kRsc5HeaderSize,
+                                       bytes.size() - kRsc5HeaderSize);
+                    continue;
+                }
+
+                resource.data.assign(bytes.begin() + kRsc5HeaderSize, bytes.end());
+                std::vector<uint8_t> packed;
+                std::string pack_error;
+                if (!BuildRsc5File(resource, packed, flag, pack_error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/files/{}: cannot pack resource: {}",
+                                       file.mod_name, file.archive_path, pack_error);
+                    continue;
+                }
+                bytes = std::move(packed);
+            }
+        }
+
+        const size_t stored = bytes.size();
+        writer.Add(file.archive_path, std::move(bytes), flag, resource_type);
+        taken_paths.push_back(std::move(key));
+        if (resource_type) {
+            LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, resource type {}, flag {:#010x}, {})",
+                              file.mod_name, file.archive_path, stored, resource_type, flag,
+                              (flag & 0x40000000u) ? "compressed" : "uncompressed");
+        } else {
+            LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, verbatim)", file.mod_name,
+                              file.archive_path, stored);
+        }
+    }
 
     const bool passthrough = REXCVAR_GET(model_mods_passthrough);
     if (passthrough) {

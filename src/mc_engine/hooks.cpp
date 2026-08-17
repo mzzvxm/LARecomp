@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -68,6 +69,13 @@ REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion 
 
 REXCVAR_DEFINE_BOOL(disable_imposter_shadows, true, "MCLA/Patches", "Performance Mode: Foliage won't cast shadows.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// Diagnostic: dumps every tune field as it registers. Off by default -- it fires for
+// every tune in the game (about 1100 unique names across ~28 classes) -- but it is the
+// only way to see a tune's live layout, so it stays.
+REXCVAR_DEFINE_BOOL(tune_field_probe, false, "MCLA/Diagnostics",
+                    "Log every tune field name as it registers.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing (MSAA).")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -2157,6 +2165,93 @@ bool Patch_DisableMSAA(PPCRegister& r11) {
     return false;
 }
 
+// Traffic (va_) vehicles turned into player cars: chassis-bound substitution.
+//
+// A vp_ vehicle's physics bound is a phBoundComposite (type 12) whose five children are
+// the chassis phBoundGeometry plus the four wheels. A va_ vehicle's bound is a bare
+// phBoundGeometry (type 4) with no composite around it -- the split is total: none of
+// the 41 va_ cars has a composite, all 65 vp_/vpd_ cars do. The bound lives in the
+// car's .xtl/.xtp, not the .xct.
+//
+// The player-vehicle code reads *(root + 0x80) as the composite's child array without
+// checking the type. On a geometry, +0x80 is m_Vertices, so the first float4 of vertex
+// data is used as a phBound*; the resulting garbage object reports a polygon count > 0
+// with a NULL polygon array and sub_8259FF88 faults at 0x8.
+//
+// Substituting the root itself when it is not a composite makes the deform pass work on
+// the traffic car's own 16-vertex hull. It is a no-op for every shipped player car,
+// which is why it is unconditional rather than cvar-gated.
+static void SubstituteChassisBound(uint32_t root, PPCRegister& child) {
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base || root == 0) return;
+    if (base[root + 4] != 12) child.u64 = root;
+}
+
+// 0x8232D048 in sub_8232CFF0, before `addi r6, r11, 0x10`. r9 holds root + 0x80.
+void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {
+    SubstituteChassisBound(static_cast<uint32_t>(r9.u64) - 0x80u, r11);
+}
+
+// 0x8232D900 in sub_8232D8C8 (hull-index search), after `lwz r11, 0(r11)`. r3 is
+// still the root bound returned by sub_8255B9A8.
+void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {
+    SubstituteChassisBound(static_cast<uint32_t>(r3.u64), r11);
+}
+
+// 0x8232E274 in sub_8232E238 (suspension deform), after `lwz r31, 0(r10)`. r3 is
+// still the root bound. This is the site that actually crashed.
+void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {
+    SubstituteChassisBound(static_cast<uint32_t>(r3.u64), r31);
+}
+
+// 0x8259AA40, entry of sub_8259AA28 = phBoundComposite::ReleaseChildren, before
+// `lhz r11, 0x92(r30)`. mcCarSim's destructor (sub_8232CDA8) calls it on the bound
+// unconditionally, and sub_8232CEB0 does the same before re-attaching one. On a
+// traffic car's bare geometry, +146 lands in the middle of the quantum-offset float
+// and +128 is m_Vertices, so it walks vertex data as a child pointer array. Returning
+// true jumps to the epilogue at 0x8259AA90, which is exactly right: a non-composite
+// has no children to release.
+bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) {
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto bound = static_cast<uint32_t>(r30.u64);
+    if (!base) return false;
+    return bound == 0 || base[bound + 4] != 12;
+}
+
+// Tune field registration probe. sub_824DF200(owner, type, name, &field, ...).
+//
+// `owner` is the class descriptor for a top-level field, but a field of type 13 is a
+// nested sub-object and everything registered after it reports that sub-object as its
+// owner -- so owner/field together give the tree, not a flat list.
+//
+// Known limit: the vehicle handling tune does NOT come through here. A full capture
+// (boot through gameplay) yields ~1100 fields across cameras, HUD, effects, AI, input
+// and cop lights, and no vehicle physics class at all -- no SteeringLimit, TurnBias,
+// SlidingFric or OptSlipPercent. Do not spend another session looking for them here.
+void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
+    if (!REXCVAR_GET(tune_field_probe)) return;
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto name_addr = static_cast<uint32_t>(r5.u64);
+    if (!base || !name_addr) return;
+
+    char name[64];
+    size_t n = 0;
+    while (n < sizeof(name) - 1) {
+        const char c = static_cast<char>(base[name_addr + n]);
+        if (!c) break;
+        name[n++] = c;
+    }
+    name[n] = '\0';
+    if (n == 0) return;
+
+    static std::set<std::string> seen;
+    if (!seen.insert(name).second) return;
+
+    LARECOMP_APP_INFO("[TuneField] {:<26} type={} owner={:#010x} field={:#010x}", name,
+                      static_cast<uint32_t>(r4.u64), static_cast<uint32_t>(r3.u64),
+                      static_cast<uint32_t>(r6.u64));
+}
+
 // BadassBaboon's Recomp Adjustments: Foliage imposter shadow bypass
 bool Patch_DisableImposterShadows(PPCRegister& r11) {
     if (REXCVAR_GET(disable_imposter_shadows)) {
@@ -3552,6 +3647,11 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {}
 void MCLACameraBoomSmoothing(PPCRegister& f1) {}
 void MCLAAmbientDensityTuning(PPCRegister& r31) {}
 bool Patch_DisableImposterShadows(PPCRegister& r11) { return false; }
+void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}
+void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}
+void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {}
+bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
+void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
 void Patch_SteeringSensitivity(PPCRegister& f0) {}
 void MCLAFrameDelta(PPCRegister& r8) {}
 bool MCLAUseRealDelta() { return false; }
