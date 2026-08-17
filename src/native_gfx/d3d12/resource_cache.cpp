@@ -141,6 +141,15 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                           uint32_t guest_address, uint32_t size, BufferSwap swap,
                           BufferBinding& out) {
   out = BufferBinding{};
+  // Guest buffer addresses arrive spelled two different ways: a vertex
+  // stream's comes from the fetch constant and is already physical
+  // (0x10F13E40), while an index buffer's comes from the D3D object and still
+  // carries its physical-heap window (0xB0710270). The write watch reports
+  // physical addresses, so a region keyed by the windowed spelling never
+  // matched an invalidation: its contents were uploaded once and then frozen
+  // for the rest of the run. Normalising here is also what keeps the same
+  // memory from living in two host regions under two keys.
+  guest_address &= 0x1FFFFFFFu;
   stats_.last_failure = nullptr;
   stats_.last_failure_addr = guest_address;
   stats_.last_failure_size = size;
@@ -314,11 +323,14 @@ void BufferCache::Census(size_t& count, uint64_t& bytes) const {
 }
 
 void BufferCache::InvalidateRange(uint32_t guest_address, uint32_t size) {
-  const uint64_t lo = guest_address;
-  const uint64_t hi = uint64_t(guest_address) + size;
+  // Both sides compared in physical space: the watch reports physical
+  // addresses, and Resolve keys every region the same way.
+  const uint64_t lo = guest_address & 0x1FFFFFFFu;
+  const uint64_t hi = lo + size;
   for (RegionMap& map : regions_) {
     for (auto& [base, r] : map) {
-      if (uint64_t(r.base) < hi && lo < uint64_t(r.base) + r.size) {
+      if (uint64_t(r.base & 0x1FFFFFFFu) < hi &&
+          lo < uint64_t(r.base & 0x1FFFFFFFu) + r.size) {
         r.dirty = true;
       }
     }

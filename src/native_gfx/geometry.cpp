@@ -115,6 +115,92 @@ const char* UsageToSemantic(uint32_t usage) {
   }
 }
 
+// Diagnostic for the wedges over the map: a draw whose indices reach past the
+// vertices its fetch constant covers. Reads the guest memory the fetch points
+// at, at draw time, and reports what is actually there at the first vertex the
+// index buffer asks for and the fetch does not cover. Two outcomes, two
+// different bugs:
+//   uninitialised fill (0xCDCDCDCD) -> the vertex buffer really is that small
+//     and the INDEX buffer is stale, left over from a bigger mesh;
+//   plausible coordinates -> the vertices exist and the fetch constant (or the
+//     address it carries) is the stale side.
+// Only runs on the draws that already look wrong, so it costs nothing on the
+// normal path, and reports each distinct stream address once, up to a cap.
+void ProbeIndexRangeAgainstStream(const GeometrySnapshot& s, uint32_t element_count,
+                                  uint32_t start_element) {
+  static uint32_t reports = 0;
+  static std::set<uint32_t> seen;
+  constexpr uint32_t kMaxReports = 64;
+  if (!s.indexed || s.index_32bit || reports >= kMaxReports || s.streams.empty()) {
+    return;
+  }
+  const VertexStream& stream = s.streams[0];
+  if (!stream.stride || stream.zero_fill) {
+    return;
+  }
+  const uint32_t have = stream.guest_size / stream.stride;
+  if (uint64_t(element_count) * stream.stride <= stream.guest_size) {
+    return;  // cannot reach past the view no matter what the indices say
+  }
+  const uint8_t* ib = TranslatePhysicalGuest(s.index_guest_base);
+  const uint8_t* vb = TranslatePhysicalGuest(stream.guest_base);
+  if (!ib || !vb) {
+    return;
+  }
+  // The draw starts at start_element, and 16-bit indices come byte-swapped
+  // under k8in16 (endian 1) but dword-swapped under k8in32 (endian 2), where
+  // the two halves of every pair also trade places. Reading them the wrong way
+  // is what produced the first round of nonsense maxima (0xC000, 0xFFF3).
+  const uint32_t endian = s.index_endian;
+  uint32_t imax = 0;
+  uint32_t restarts = 0;
+  for (uint32_t i = 0; i < element_count; ++i) {
+    const uint32_t slot = start_element + i;
+    size_t byte = size_t(slot) * 2;
+    if (endian == 2) {
+      byte = (size_t(slot ^ 1)) * 2;  // 8in32 also swaps the pair
+    }
+    uint16_t idx;
+    std::memcpy(&idx, ib + byte, 2);
+    if (endian == 1 || endian == 2) {
+      idx = uint16_t((idx >> 8) | (idx << 8));
+    }
+    if (idx == 0xFFFFu) {
+      ++restarts;  // primitive restart, not a vertex
+      continue;
+    }
+    if (idx > imax) {
+      imax = idx;
+    }
+  }
+  if (imax < have) {
+    return;
+  }
+  if (!seen.insert(stream.guest_base).second) {
+    return;
+  }
+  ++reports;
+  // First vertex the fetch does not cover, read straight from guest memory.
+  const uint32_t probe_vertex = have;
+  uint32_t words[3] = {0, 0, 0};
+  float pos[3] = {0.0f, 0.0f, 0.0f};
+  bool readable = IsPhysicalRangeReadable(stream.guest_base + probe_vertex * stream.stride, 12);
+  if (readable) {
+    std::memcpy(words, vb + size_t(probe_vertex) * stream.stride, 12);
+    for (uint32_t i = 0; i < 3; ++i) {
+      words[i] = __builtin_bswap32(words[i]);
+      std::memcpy(&pos[i], &words[i], 4);
+    }
+  }
+  REXLOG_WARN(
+      "[native_gfx] index range past fetch: base={:#010x} size={} stride={} have={} imax={} "
+      "elements={} start={} ib={:#010x} ib_endian={} restarts={} | vertex[{}] readable={} "
+      "raw={:#010x},{:#010x},{:#010x} pos=({}, {}, {})",
+      stream.guest_base, stream.guest_size, stream.stride, have, imax, element_count, start_element,
+      s.index_guest_base, endian, restarts, probe_vertex, readable, words[0], words[1], words[2],
+      pos[0], pos[1], pos[2]);
+}
+
 }  // namespace
 
 uint32_t PrimitiveTypeToTopology(uint32_t primitive_type) {
@@ -529,6 +615,18 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
         stream.resolved = true;
         continue;
       }
+      // The fetch constant's size is authoritative here, and widening the view
+      // to cover the index range is NOT the fix for the wedges over the map.
+      //
+      // Measured in "sem2d+mapglitch.rdc", draw 62374 (the map's road overlay,
+      // stride 32, baseVertex 0): the fetch says 3232 bytes = 101 vertices,
+      // the index buffer is a clean quad list reaching vertex 403. Reading the
+      // uploaded region past those 101 vertices gives 0xCDCDCDCD, so the
+      // vertices the indices ask for were never written -- the vertex buffer
+      // is current and the INDEX buffer is stale, left over from a larger
+      // mesh. Its region was keyed by the windowed address (0xB0710270) while
+      // the write watch reports physical ones, so it was uploaded once and
+      // never invalidated again; see BufferCache::Resolve.
       BufferBinding b;
       if (!buffers->Resolve(*context, cl, stream.guest_base, stream.guest_size,
                             SwapForEndian(stream.endian), b)) {
@@ -550,6 +648,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
       }
       s.index_gpu_address = b.gpu_address;
     }
+    ProbeIndexRangeAgainstStream(s, element_count, start_element);
   }
 
   s.complete = true;

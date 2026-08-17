@@ -109,7 +109,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, false, "MCLA/NativeGfx",
                     "host swizzle (the piece Xenia composes with the guest one) is worked out.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, false, "MCLA/NativeGfx",
                     "Feed SharedConstants.g_AlphaThreshold from RB_ALPHA_REF and RB_COLORCONTROL "
                     "instead of the fixed 0.5 the bring-up used. The ALPHA lines the diagnostic "
                     "asked for came back, and they settle it: every (func, ref) pair MCLA uses is "

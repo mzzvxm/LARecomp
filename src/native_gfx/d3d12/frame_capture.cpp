@@ -1499,9 +1499,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       }
     }
   }
-  // The register-driven threshold is the default now. The fixed 0.5 the bring-up
-  // used is not a value the game ever asks for (measured refs top out at
-  // 0.015686) and it discarded the whole car body; see mcla_native_gfx_alpha_ref.
+  // The bring-up's fixed 0.5 stays the default: see mcla_native_gfx_alpha_ref.
   shared_values.alpha_threshold = REXCVAR_GET(mcla_native_gfx_alpha_ref)
                                       ? AlphaTestThreshold(rs)
                                       : (rs.alpha_test_enable ? 0.5f : 0.0f);
