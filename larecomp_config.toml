@@ -25170,6 +25170,23 @@ name = "Patch_DevOptionRegistered"
 registers = ["r3"]
 after_instruction = false
 
+# 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
+#
+# sub_8230D988 hunts for the next impostor to refresh with two nested loops that
+# have no iteration bound, and the caller only checks the array exists with a
+# non-zero count — not that any entry is refreshable. Turn on notrees or
+# noimpostors and the array is allocated but never filled, so the first daylight
+# frame spins there forever. Confirmed by the freeze watchdog: stalled at phase
+# 0x00000020, at 09:00, with the phase mask completely untouched.
+#
+# jump_address_on_true is 0x823126A8, which is exactly where the game's own
+# `beq cr6` at 0x8231268C goes when the manager pointer is null.
+[[midasm_hook]]
+address = 0x823126A4
+name = "Patch_ImpostorShadowGuard"
+registers = ["r3"]
+jump_address_on_true = 0x823126A8
+
 # Online: gate de compatibilidade de conteúdo (DLC) da sessão.
 #
 # sub_8238B7E0 (caminho de join/host) reconstrói uma máscara de 8 bits a partir

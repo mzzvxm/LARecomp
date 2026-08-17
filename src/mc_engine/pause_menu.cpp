@@ -649,6 +649,10 @@ struct ItemDef {
     int nvals;                  // kStrCycle / kDblCycle count
     const double* dvals;        // kDblCycle values
     const char* dfmt;           // kDblCycle value format, e.g. "%.1fX"
+    // kDblCycle: label to show instead of the formatted number when the value
+    // is 0. Lets a numeric row carry an "off / leave it alone" entry without
+    // rendering it as a bare "0". Null = format 0 like any other value.
+    const char* zero_label;
 };
 
 constexpr ItemDef Bool(const char* key, const char* cvar, const char* prefix,
@@ -666,9 +670,9 @@ constexpr ItemDef Str(const char* key, const char* cvar, const char* prefix,
 
 constexpr ItemDef Dbl(const char* key, const char* cvar, const char* prefix,
                       const double* vals, int n, const char* fmt,
-                      const char* suffix = "") {
+                      const char* suffix = "", const char* zero_label = nullptr) {
     return {key, ItemKind::kDblCycle, cvar, prefix, suffix, false,
-            nullptr, nullptr, n, vals, fmt};
+            nullptr, nullptr, n, vals, fmt, zero_label};
 }
 
 constexpr ItemDef Save(const char* key) {
@@ -709,6 +713,31 @@ constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
 constexpr double kLodValues[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0};
 
+// Performance. Traffic/ped/parked mirror the ranges the cvars declare; the
+// fragment-tune tables bracket the two values the engine itself uses — 250 is
+// the fragTuneStruct constructor default and 3000 is what the shipped tune file
+// loads. 0 is "leave the tune file alone" and renders as STOCK.
+constexpr double kUnspawnVals[]      = {100.0, 150.0, 200.0, 250.0, 300.0,
+                                        400.0, 500.0, 600.0};
+constexpr double kDensityVals[]      = {0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
+constexpr double kFragDrawDistVals[] = {0.0, 250.0, 500.0, 1000.0, 1500.0,
+                                        2000.0, 3000.0, 4000.0};
+constexpr double kBreakFpsVals[]     = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
+
+// Which render phase bits SHADOWS clears.
+//
+// STOCK is what the game's own `noshadows` switch clears: the sun cascade
+// phases 0x20/0x40/0x80/0x100 plus 0x2000/0x4000. Measured at midnight those
+// are not even in renderer+364, so clearing them does nothing — the shadow that
+// is actually drawn comes from phase 0x400, which sub_823112C0 routes to the
+// shadowNight / shadowFastBlend technique group and which `noshadows` leaves
+// alone. Hence BLEND.
+//
+// ALL also takes 0x10/0x200/0x800, which are live passes unrelated to shadows;
+// it corrupts the frame and is only useful for narrowing a phase down.
+constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
+constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
+
 // Time of day. The four the game's own TodMenu uses (sunrise 6.0, afternoon
 // 16.75, sunset 17.4, night 23.5) plus round hours to fill the day out.
 constexpr double kTodValues[] = {0.0, 3.0, 6.0, 9.0, 12.0, 14.0,
@@ -742,11 +771,50 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
-    Bool("PM_RxAmbientTune", "enable_ambient_tuning",    "CITY AMBIENT CULLING: "),
     Bool("PM_RxSteerFps",    "scale_steering_with_fps",  "60FPS STEERING FIX: "),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
     Save("PM_RxSaveRecomp"),
+};
+
+// Everything that trades image quality for framerate, in one place.
+//
+// The four SHADOWS/IMPOSTORS/FOLIAGE/SCREEN BLUR toggles reactivate the game's
+// own dev switches (noshadows, noimpostors, notrees, nofsblur). They are read
+// once, during renderer init, so they only take effect on a restart — the
+// suffix says so on the row.
+//
+// PROP DRAW DIST and BREAK FPS FLOOR patch rage::fragTuneStruct in place after
+// the game has parsed $/tune/types/fragments, so they apply live. "Prop" here
+// means a breakable fragment (pole, sign, fence, barrier), not the whole world.
+const ItemDef kPerfItems[] = {
+    Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
+    Str ("PM_RxShadowBits",  "perf_shadow_phase_bits",    "SHADOW PHASES: ",
+         kShadowBitVals, kShadowBitNames, 4),
+    Bool("PM_RxFastVehShad", "perf_fast_vehicle_shadows", "CHEAP CAR SHADOW: ", false, " (RESTART)"),
+    // Load-time switches: noimpostors skips allocating the impostor render
+    // targets, notrees skips the prop parse. node+4 is kept in sync with the
+    // cvar every frame, so a change lands the next time that system loads —
+    // a district change — rather than needing the process restarted.
+    Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (ON RELOAD)"),
+    Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
+    Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
+    Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
+    // BadassBaboon's Recomp Adjustments: city ambient density.
+    Bool("PM_RxAmbientTune", "enable_ambient_tuning",     "CITY AMBIENT CULLING: "),
+    Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
+         kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
+    Dbl ("PM_RxPedDensity",  "ped_density_scale",    "PEDESTRIANS: ",
+         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+    Dbl ("PM_RxParkedCars",  "parked_car_scale",     "PARKED CARS: ",
+         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+    Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
+         kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
+         "%gM", "", "STOCK"),
+    Dbl ("PM_RxBreakFps",    "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
+         kBreakFpsVals, int(sizeof(kBreakFpsVals) / sizeof(kBreakFpsVals[0])),
+         "%g", "", "STOCK"),
+    Save("PM_RxSavePerf"),
 };
 
 const ItemDef kFfxItems[] = {
@@ -819,6 +887,8 @@ const MenuDef kMenus[] = {
      kVideoItems,  int(sizeof(kVideoItems)  / sizeof(kVideoItems[0]))},
     {"PM_RxTabRecomp", "RECOMP SETTINGS",  "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
+    {"PM_RxTabPerf",   "PERFORMANCE",      "RxPerfMenu",
+     kPerfItems,   int(sizeof(kPerfItems)   / sizeof(kPerfItems[0]))},
     {"PM_RxTabFfx",    "FIDELITY FX",      "RxFfxMenu",
      kFfxItems,    int(sizeof(kFfxItems)    / sizeof(kFfxItems[0]))},
     {"PM_RxTabCam",    "DEBUG CAMERA",     "RxCamMenu",
@@ -894,6 +964,7 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
     case ItemKind::kCarbonBit: return i ? "CARBON" : "PAINT";
     case ItemKind::kStrCycle:  return it.slabels[i];
     case ItemKind::kDblCycle: {
+        if (it.zero_label && it.dvals[i] == 0.0) return it.zero_label;
         char buf[48];
         std::snprintf(buf, sizeof(buf), it.dfmt, it.dvals[i]);
         return buf;

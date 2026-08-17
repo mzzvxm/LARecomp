@@ -35,6 +35,7 @@ void Patch_DebugCam(PPCRegister& r3);
 
 void Patch_BypassVehicleDLC(PPCRegister& r30);
 void Patch_DevOptionRegistered(PPCRegister& r3);
+bool Patch_ImpostorShadowGuard(PPCRegister& r3);
 
 // NOTE: the online hooks (tournament, System Link content gate, Xbox LIVE) moved
 // out of hooks.cpp into src/mc_engine/online/. The recompiler declares each

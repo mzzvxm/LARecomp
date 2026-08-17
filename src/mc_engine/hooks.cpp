@@ -9,10 +9,12 @@
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <string>
@@ -130,6 +132,95 @@ REXCVAR_DEFINE_DOUBLE(ped_density_scale, 0.5, "MCLA/Performance",
 REXCVAR_DEFINE_DOUBLE(parked_car_scale, 0.5, "MCLA/Performance",
     "Parked car density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).")
     .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// ── Render phase culling ────────────────────────────────────────────────────
+// These reactivate the game's own dev command-line switches (see the debug
+// option block further down). They are not new code paths: the retail renderer
+// still contains every branch, only the switch that reaches it was stripped.
+//
+// perf_no_shadows is the big one. sub_822E47E0 (the renderer ctor) reacts to it
+// with `phase_mask &= 0xFFFF9E1F`, clearing render phase bits 0x20 0x40 0x80
+// 0x100 0x2000 0x4000 in the enable mask at renderer+448. The phase loop in
+// sub_822E6408 only dispatches a phase's draw lists when its bit is set, so
+// those passes stop existing entirely: no shadow-map traversal, no
+// shadowDepth/shadowAlphaDepth/shadowBlend technique draws, no shadow render
+// targets. Restart-only because the mask is computed once, at renderer init.
+REXCVAR_DEFINE_BOOL(perf_no_shadows, false, "MCLA/Performance",
+    "Drop every real-time shadow render phase. Largest single framerate win; the world "
+    "loses cast shadows. Applied straight to the renderer's phase enable mask, so it "
+    "takes effect immediately.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// Which render phase bits perf_no_shadows clears.
+//
+// The game's own `noshadows` clears 0x61E0 (0x20 0x40 0x80 0x100 0x2000 0x4000)
+// — the sun cascade phases. Measured with the clock held at midnight, none of
+// those appear in renderer+364 at all, so clearing them changes nothing. The
+// shadow that is actually drawn comes from phase 0x400: sub_823120C8's case 4
+// runs when `(mask & 0x20)` OR `((mask & 0x400) && night)`, and sub_823112C0
+// routes 0x400 to shadowNight / shadowFastBlend. `noshadows` never touches it.
+//
+// Default is therefore 0x65E0 = the stock set plus 0x400, so one setting covers
+// both the day (cascade) and night (blend) path.
+//   0x61E0  stock noshadows — sun cascades only
+//   0x400   the night/blend shadow phase only
+//   0x65E0  both
+//   0x7DF0  everything sub_823120C8 dispatches on; also takes 0x10/0x200/0x800,
+//           which are unrelated live passes, so it corrupts the frame
+static constexpr uint32_t kShadowPhaseBitsDefault = 0x65E0u;
+
+REXCVAR_DEFINE_STRING(perf_shadow_phase_bits, "0x65E0", "MCLA/Performance",
+    "Render phase bits perf_no_shadows clears in renderer+448 (hex). 0x65E0 = sun cascades "
+    "(0x61E0, what the game's own 'noshadows' clears) plus the night/blend shadow phase "
+    "0x400 that it misses. 0x400 alone isolates the night path.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(perf_no_race_shadows, false, "MCLA/Performance",
+    "Drop the shadow pass during races only (dev switch 'noraceshadows').")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(perf_fast_vehicle_shadows, false, "MCLA/Performance",
+    "Cheap blob shadow under vehicles instead of the real-time one (dev switch "
+    "'fastVehShadows'). Use instead of perf_no_shadows to keep world shadows.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /
+// ShadowImpostor / ImpostorColor / ImpostorNormal render targets. node+4 is kept
+// in sync with this cvar every frame, so the change lands the next time the
+// impostor system loads rather than needing a process restart.
+REXCVAR_DEFINE_BOOL(perf_no_impostors, false, "MCLA/Performance",
+    "Do not allocate the foliage impostor render targets (dev switch 'noimpostors'). "
+    "Distant trees lose their billboards. Applies on the next load of that system.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// Same shape: sub_82310478 skips the prop parse for $/city/<district> entirely.
+REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
+    "Skip loading the prop/foliage set (dev switch 'notrees'). Last resort. Applies on "
+    "the next district load.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(perf_no_fullscreen_blur, false, "MCLA/Performance",
+    "Skip the full-screen blur pass (dev switch 'nofsblur').")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// ── rage::fragTuneStruct overrides ──────────────────────────────────────────
+// Both values live in the fragment tune the game parses out of
+// $/tune/types/fragments (fragment = breakable prop: poles, signs, fences,
+// barriers). They are patched in the parsed struct at runtime, so no RPF edit
+// and no decryption is involved. 0 keeps whatever the tune file loaded.
+REXCVAR_DEFINE_DOUBLE(global_max_draw_distance, 0.0, "MCLA/Performance",
+    "fragTuneStruct::GlobalMaxDrawingDistance — draw distance for breakable props "
+    "(poles, signs, fences). 0 = keep the tune file's value (3000); the engine's own "
+    "constructor default is 250.")
+    .range(0.0, 6000.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(breaking_frame_rate_limit, 0.0, "MCLA/Performance",
+    "fragTuneStruct::BreakingFrameRateLimit — framerate floor under which the engine "
+    "stops spawning new fragment breaks. 0 = keep the tune file's value (10); the "
+    "engine's own constructor default is 30.")
+    .range(0.0, 120.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // BadassBaboon's Recomp Adjustments: Steering physics and frame rate limiter CVARs
@@ -1410,6 +1501,77 @@ static void QueueDebugOption(const std::string& name, const std::string& value) 
     LARECOMP_APP_INFO("[DbgOpt] queued {} = {} (node+4 @ 0x{:08X})", name, v, opt->value_addr);
 }
 
+// The MCLA/Performance cvars backed by a dev switch. perf_no_shadows is NOT
+// here: its only effect is a mask edit the renderer does once, at construction,
+// so it is applied directly and per-frame in ApplyRenderPhaseMask() instead —
+// which also makes it take hold without a restart.
+struct PerfDebugOption {
+    const char* cvar;
+    const char* option;
+};
+
+static constexpr PerfDebugOption kPerfDebugOptions[] = {
+    {"perf_no_race_shadows",      "noraceshadows"},
+    {"perf_fast_vehicle_shadows", "fastVehShadows"},
+    {"perf_no_impostors",         "noimpostors"},
+    {"perf_no_trees",             "notrees"},
+    {"perf_no_fullscreen_blur",   "nofsblur"},
+};
+
+static void ApplyPerfDebugOptions() {
+    for (const auto& p : kPerfDebugOptions) {
+        if (rex::cvar::GetFlagByName(p.cvar) != "true") continue;
+        QueueDebugOption(p.option, "1");
+    }
+}
+
+// These switches are load-time, not per-frame state: noimpostors skips creating
+// the ImpostorDepth/ShadowImpostor/ImpostorColor/ImpostorNormal render targets
+// in sub_8230B778, and notrees skips the whole prop parse in sub_82310478. The
+// game has no path to build or tear those down while running, so they cannot be
+// toggled instantly.
+//
+// What this does buy: node+4 is kept in sync with the cvar every frame, so the
+// consumers pick the new value up the next time their system loads — a district
+// change or a world reload — instead of needing the process restarted.
+//
+// The scratch pointer for "1" is allocated once per option and reused, so
+// flipping a switch repeatedly does not walk the bump allocator forward.
+static void ApplyLoadTimeDevOptions() {
+    static bool primed = false;
+    static bool last[std::size(kPerfDebugOptions)] = {};
+    static uint32_t value_ptr[std::size(kPerfDebugOptions)] = {};
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    for (size_t i = 0; i < std::size(kPerfDebugOptions); ++i) {
+        const auto& p = kPerfDebugOptions[i];
+        const bool want = rex::cvar::GetFlagByName(p.cvar) == "true";
+        if (primed && want == last[i]) continue;
+        last[i] = want;
+
+        const DebugOption* opt = FindDebugOption(p.option);
+        if (!opt) continue;
+
+        if (!want) {
+            WriteGuestU32(base, opt->value_addr, 0);  // exactly what the registrar leaves
+        } else {
+            if (value_ptr[i] == 0) {
+                if (!SetDebugOptionValue(opt->value_addr, "1")) continue;
+                value_ptr[i] = ReadGuestU32(base, opt->value_addr);
+            } else {
+                WriteGuestU32(base, opt->value_addr, value_ptr[i]);
+            }
+        }
+        if (primed) {
+            LARECOMP_APP_INFO("[DbgOpt] {} -> {} (applies on next load of that system)",
+                              p.option, want ? "on" : "off");
+        }
+    }
+    primed = true;
+}
+
 // Reads <exe dir>/debug_options.txt: one `name` or `name=value` per line,
 // '#'/';' comments and blank lines ignored. Bare name means value "1".
 void ApplyDebugOptions() {
@@ -1458,6 +1620,7 @@ void ApplyDebugOptions() {
     LARECOMP_APP_INFO("[DbgOpt] queued {} option(s) from file, {} unknown", applied, unknown);
 }
 
+static void StartFreezeWatchdog();
 
 void InitHooks() {
     // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
@@ -1524,6 +1687,13 @@ void InitHooks() {
     // Reactivate the game's dev command-line options from <exe>/debug_options.txt.
     // Must run before the game's option consumers (all init/level-load reads).
     ApplyDebugOptions();
+
+    // The MCLA/Performance cvars that map onto those same dev switches. Runs
+    // after the file, so a cvar that is on overrides the same name coming from
+    // debug_options.txt; a cvar that is off leaves the file's value alone.
+    ApplyPerfDebugOptions();
+
+    StartFreezeWatchdog();
 }
 
 // HOOK FUNCTIONS (Called in the middle of translated Assembly execution)
@@ -1636,6 +1806,13 @@ bool Patch_EdramLimit(PPCRegister& r11) {
 static float ReadGuestF32(const uint8_t* base, uint32_t addr);
 static void WriteGuestF32(uint8_t* base, uint32_t addr, float val);
 static void ApplyAmbientDensityTuning();
+static void ApplyFragTuneOverrides();
+static void ApplyRenderPhaseMask();
+static void LogRenderPhaseMaskOnce();
+static void StartFreezeWatchdog();
+
+// Bumped once per frame from Patch_DeltaTimePre; read by the freeze watchdog.
+static std::atomic<uint64_t> g_frame_heartbeat{0};
 
 // Free-fly camera host state (see Patch_DebugCam). Angles are seeded from the
 // camera on activation, then integrated from the right stick each frame. The
@@ -2301,6 +2478,11 @@ void Patch_DeltaTimePre() {
     TickButtonPrompts();        // picks up a live button_prompts change
     TickCustomMusic();          // custom radio: volume + end-of-track advance
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
+    ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
+    ApplyRenderPhaseMask();       // perf_no_shadows, live
+    ApplyLoadTimeDevOptions();    // keeps node+4 in sync for the load-time switches
+    LogRenderPhaseMaskOnce();     // a few samples of the real per-frame masks
+    g_frame_heartbeat.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Loop-entry anchor. r24 must NOT be modified: the game divides game_dt by it
@@ -2309,6 +2491,55 @@ void Patch_DeltaTimePre() {
 void Patch_DeltaTime(PPCRegister& r24) {
     (void)r24;
 }
+
+// 0x823126A4: `bl sub_8230D988` inside the sun-cascade shadow phase (phase bit
+// 0x20) of sub_823120C8, with r3 already loaded from dword_8288D0A0.
+//
+// sub_8230D988 picks the next impostor to refresh with an unbounded round-robin
+// search:
+//
+//   do { do { v6 = (v6 + 1) % count; } while (!entry[v6].f168); } while (!entry[v6].f196);
+//
+// Neither loop has an iteration bound, and the caller only checks that the array
+// exists and count != 0 — not that any entry qualifies. With notrees or
+// noimpostors on, the array is allocated with a non-zero count but nothing is
+// ever filled in, so the search spins forever the first time the phase runs.
+// That only happens in daylight, since the call sits behind `mask & 0x20`.
+//
+// Returning true jumps to 0x823126A8, which is the exact target of the game's
+// own `beq` at 0x8231268C for the null-manager case — not a made-up exit.
+//
+// Gated on the array's real contents rather than on the cvars, so it covers any
+// other way of ending up with an empty impostor pool.
+bool Patch_ImpostorShadowGuard(PPCRegister& r3) {
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return false;
+
+    const uint32_t mgr = static_cast<uint32_t>(r3.u64);
+    if (mgr == 0) return true;
+
+    const uint32_t arr = ReadGuestU32(base, mgr + 16);
+    if (arr == 0) return true;
+
+    const uint32_t count = (uint32_t(base[arr + 12]) << 8) | uint32_t(base[arr + 13]);
+    const uint32_t entries = ReadGuestU32(base, arr + 8);
+    if (count == 0 || entries == 0) return true;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t e = entries + i * 224u;
+        if (ReadGuestU32(base, e + 168) && ReadGuestU32(base, e + 196)) return false;
+    }
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        LARECOMP_APP_INFO(
+            "[Impostor] no refreshable entry in {} slot(s) — skipping sub_8230D988, which "
+            "would search for one forever", count);
+    }
+    return true;
+}
+
 // 0x821C06EC, the blr of the dev-option registrar sub_821C06C8. r3 still holds
 // the node the game just finished building, and the instruction right before us
 // (`stw r9, 4(r3)`) has already cleared node+4 — so this is the first and only
@@ -2497,6 +2728,260 @@ static void ApplyAmbientDensityTuning() {
     LARECOMP_APP_INFO("[Ambient Tuning] {} zones updated (enabled={}, unspawn={:.1f}, ped={:.2f}, parked={:.2f})",
                       g_density_orig.size(), enabled, want.unspawn, want.ped, want.parked);
 }
+
+// ── rage::fragTuneStruct overrides ──────────────────────────────────────────
+//
+// sub_82729B10 allocates the 1448-byte singleton and parks the pointer in
+// dword_828D4CE4; sub_8275E518 is its constructor. The field offsets come from
+// the parser registration in sub_8275E308, which writes each parMember's offset
+// slot: the record naming "GlobalMaxDrawingDistance" (0x8282F370) gets 8 and the
+// one naming "BreakingFrameRateLimit" (0x8282F400) gets 32. Both line up with
+// the constructor defaults (+8 = 250.0f, +32 = 30.0f).
+//
+// The game overwrites both from $/tune/types/fragments after construction, so
+// this runs per-frame and re-asserts the override on top of whatever the tune
+// file loaded — no RPF edit, no decryption. A cvar left at 0 writes nothing and
+// instead keeps re-reading the guest value, so switching back to 0 restores
+// exactly what the tune file had.
+static constexpr uint32_t kFragTunePtr        = 0x828D4CE4u;  // rage::fragTuneStruct*
+static constexpr uint32_t kFragTuneDrawDist   = 8u;           // GlobalMaxDrawingDistance
+static constexpr uint32_t kFragTuneBreakLimit = 32u;          // BreakingFrameRateLimit
+
+struct FragTuneField {
+    uint32_t offset;
+    const char* cvar;
+    const char* label;
+    float stock = 0.0f;   // last value seen while the cvar was 0
+    bool have_stock = false;
+    float applied = 0.0f;
+    bool have_applied = false;
+};
+
+static FragTuneField g_frag_tune[] = {
+    {kFragTuneDrawDist,   "global_max_draw_distance",  "GlobalMaxDrawingDistance"},
+    {kFragTuneBreakLimit, "breaking_frame_rate_limit", "BreakingFrameRateLimit"},
+};
+
+static void ApplyFragTuneOverrides() {
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    const uint32_t obj = ReadGuestU32(base, kFragTunePtr);
+    if (obj == 0) return;
+
+    for (auto& f : g_frag_tune) {
+        const double want = std::strtod(rex::cvar::GetFlagByName(f.cvar).c_str(), nullptr);
+
+        if (!(want > 0.0)) {
+            // Auto: track whatever the tune file left there, and put it back once
+            // if we had been overriding.
+            if (f.have_applied) {
+                if (f.have_stock) {
+                    WriteGuestF32(base, obj + f.offset, f.stock);
+                    LARECOMP_APP_INFO("[FragTune] {} restored to {:.1f}", f.label, f.stock);
+                }
+                f.have_applied = false;
+            }
+            f.stock = ReadGuestF32(base, obj + f.offset);
+            f.have_stock = true;
+            continue;
+        }
+
+        const float v = static_cast<float>(want);
+        const float cur = ReadGuestF32(base, obj + f.offset);
+        if (f.have_applied && f.applied == v && cur == v) continue;
+
+        // If the field moved out from under us the game wrote it itself — the
+        // tune file landing after construction — so that is the real stock
+        // value, not whatever was in the struct before the parse.
+        if (!f.have_stock || (f.have_applied && cur != f.applied)) {
+            f.stock = cur;
+            f.have_stock = true;
+        }
+        WriteGuestF32(base, obj + f.offset, v);
+        if (!f.have_applied || f.applied != v) {
+            LARECOMP_APP_INFO("[FragTune] {} {:.1f} -> {:.1f} (fragTuneStruct 0x{:08X}+{})",
+                              f.label, f.stock, v, obj, f.offset);
+        }
+        f.applied = v;
+        f.have_applied = true;
+    }
+}
+
+// ── Render phase enable mask ────────────────────────────────────────────────
+//
+// perf_no_shadows reproduces what the game's own `noshadows` switch does inside
+// the renderer constructor sub_822E47E0:
+//
+//   822e49c8  lwz    r11, 0x1C0(r31)
+//   822e49cc  rlwinm r10, r11, 0,27,22   ; clears 0x20 0x40 0x80 0x100
+//   822e49d0  rlwinm r10, r10, 0,19,16   ; clears 0x2000 0x4000
+//   822e49d4  stw    r10, 0x1C0(r31)
+//
+// Doing it here instead of through the dev switch means it does not depend on
+// hitting the one instant between the node being registered and the constructor
+// reading it, and it applies without a restart. sub_822E6408 re-reads
+// renderer+448 every frame, and the only other writers are that constructor and
+// the runtime setter at 0x822E51F8, so re-asserting per frame is idempotent and
+// heals itself if the game turns the phases back on.
+static constexpr uint32_t kRendererPtr = 0x8287E064u;
+static constexpr uint32_t kPhaseEnableMask = 448u;   // enable mask, written by the ctor
+static constexpr uint32_t kPhaseRequested = 364u;    // phases asked for this frame
+static constexpr uint32_t kPhaseEffective = 360u;    // requested & enable, what consumers read
+
+static uint32_t ShadowPhaseBits() {
+    const std::string s = rex::cvar::GetFlagByName("perf_shadow_phase_bits");
+    if (s.empty()) return kShadowPhaseBitsDefault;
+    const uint32_t v = uint32_t(std::strtoul(s.c_str(), nullptr, 0));
+    return v ? v : kShadowPhaseBitsDefault;
+}
+
+static void ApplyRenderPhaseMask() {
+    static bool was_applied = false;
+    static uint32_t applied_bits = 0;
+    static uint32_t stock_bits = 0;  // of applied_bits, which were set before we touched them
+    static bool have_stock = false;
+
+    const bool want = rex::cvar::GetFlagByName("perf_no_shadows") == "true";
+    const uint32_t bits = ShadowPhaseBits();
+    if (!want && !was_applied) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
+    if (renderer == 0) return;
+
+    const uint32_t cur = ReadGuestU32(base, renderer + kPhaseEnableMask);
+
+    // Turning off, or the bit set changed under us: put back what we took before
+    // taking anything else, so the restore is never wider than the capture.
+    if (was_applied && (!want || bits != applied_bits)) {
+        const uint32_t restored = (cur & ~applied_bits) | stock_bits;
+        if (restored != cur) WriteGuestU32(base, renderer + kPhaseEnableMask, restored);
+        LARECOMP_APP_INFO("[PhaseMask] restored 0x{:08X}: renderer+448 0x{:08X} -> 0x{:08X}",
+                          applied_bits, cur, restored);
+        was_applied = false;
+        have_stock = false;
+        if (!want) return;
+    }
+
+    const uint32_t now = ReadGuestU32(base, renderer + kPhaseEnableMask);
+    if (!have_stock) {
+        stock_bits = now & bits;
+        applied_bits = bits;
+        have_stock = true;
+    }
+
+    const uint32_t next = now & ~bits;
+    if (next != now) {
+        WriteGuestU32(base, renderer + kPhaseEnableMask, next);
+        if (!was_applied) {
+            LARECOMP_APP_INFO("[PhaseMask] clearing 0x{:08X}: renderer+448 0x{:08X} -> 0x{:08X}",
+                              bits, now, next);
+        }
+    }
+    was_applied = true;
+}
+
+// One-shot probe for the render phase switches. Prints, the first frame the
+// renderer exists, whether our dev-option writes survived to that point and what
+// the phase enable mask actually ended up as.
+//
+//   node+4 != 0            -> sub_822E47E0 saw the switch
+//   mask & 0x61E0 == 0     -> noshadows took (bits 20/40/80/100/2000/4000)
+//
+// renderer = dword_8287E064, +448 enable mask, +364 requested, +360 effective.
+// ── Freeze watchdog ─────────────────────────────────────────────────────────
+//
+// A hang leaves nothing in the log: no exception, no crash handler, just the
+// last line before it stopped. This bumps a counter every frame and a host
+// thread reports the guest's render state when the counter stalls, so the next
+// freeze says which render phase it died in instead of nothing at all.
+//
+// renderer+356 is the phase bit sub_822E6408 was on when it stopped advancing.
+static constexpr uint32_t kPhaseCurrent = 356u;
+
+static void StartFreezeWatchdog() {
+    std::thread([] {
+        uint64_t last = 0;
+        int stalled = 0;
+        bool reported = false;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            const uint64_t now = g_frame_heartbeat.load(std::memory_order_relaxed);
+            if (now != last) {
+                last = now;
+                stalled = 0;
+                reported = false;
+                continue;
+            }
+            if (now == 0) continue;  // not running yet
+            if (++stalled < 5 || reported) continue;
+            reported = true;
+
+            auto* base = rex::Runtime::instance()->virtual_membase();
+            if (!base) {
+                LARECOMP_APP_ERROR("[Watchdog] frame stalled {}s, no guest membase", stalled);
+                continue;
+            }
+            const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
+            if (renderer == 0) {
+                LARECOMP_APP_ERROR("[Watchdog] frame stalled {}s, renderer null", stalled);
+                continue;
+            }
+            LARECOMP_APP_ERROR(
+                "[Watchdog] frame stalled {}s at phase 0x{:08X} | enable=0x{:08X} "
+                "requested=0x{:08X} effective=0x{:08X}",
+                stalled, ReadGuestU32(base, renderer + kPhaseCurrent),
+                ReadGuestU32(base, renderer + kPhaseEnableMask),
+                ReadGuestU32(base, renderer + kPhaseRequested),
+                ReadGuestU32(base, renderer + kPhaseEffective));
+            LARECOMP_APP_ERROR("[Watchdog] perf_no_shadows={} bits={} no_trees={} no_impostors={}",
+                               rex::cvar::GetFlagByName("perf_no_shadows"),
+                               rex::cvar::GetFlagByName("perf_shadow_phase_bits"),
+                               rex::cvar::GetFlagByName("perf_no_trees"),
+                               rex::cvar::GetFlagByName("perf_no_impostors"));
+        }
+    }).detach();
+}
+
+static void LogRenderPhaseMaskOnce() {
+    // The one-shot version read renderer+360 before the first RenderPhases call
+    // and got 0xCDCDCDCD (uninitialised heap fill), which said nothing. Sample a
+    // handful of real frames instead: +364 is what the frame asked for and +360
+    // is what actually reached the consumers.
+    static int samples = 0;
+    static int frame = 0;
+    static uint32_t last_effective = 0xFFFFFFFFu;
+    if (samples >= 8) return;
+    if (++frame % 60) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
+    if (renderer == 0) return;
+
+    const uint32_t effective = ReadGuestU32(base, renderer + kPhaseEffective);
+    if (effective == last_effective) return;
+    last_effective = effective;
+    ++samples;
+
+    const uint32_t bits = ShadowPhaseBits();
+    LARECOMP_APP_INFO(
+        "[PhaseMask] enable=0x{:08X} requested=0x{:08X} effective=0x{:08X} | 0x{:X} in effective: "
+        "0x{:X}",
+        ReadGuestU32(base, renderer + kPhaseEnableMask),
+        ReadGuestU32(base, renderer + kPhaseRequested), effective, bits, effective & bits);
+
+    if (samples == 1) {
+        LARECOMP_APP_INFO(
+            "[PhaseMask] node+4: noimpostors(0x8288D0DC)=0x{:08X} notrees(0x8288D0F0)=0x{:08X} "
+            "nofsblur(0x8288BA84)=0x{:08X}",
+            ReadGuestU32(base, 0x8288D0DCu), ReadGuestU32(base, 0x8288D0F0u),
+            ReadGuestU32(base, 0x8288BA84u));
+    }
+}
+
 
 // BadassBaboon's Recomp Adjustments:
 // 0x822A2ED4 in sub_822A2988: `lfs f0, 0xC(r20)` with r20 = 0x827D7500, so f0
@@ -2705,6 +3190,7 @@ void Patch_DeltaTimePre() {}
 void Patch_DeltaTime(PPCRegister& r24) {}
 void Patch_BypassVehicleDLC(PPCRegister& r30) {}
 void Patch_DevOptionRegistered(PPCRegister& r3) {}
+bool Patch_ImpostorShadowGuard(PPCRegister& r3) { return false; }
 void Hook_CaptureDistrict(PPCRegister& r3) {}
 void Hook_LzxDecompressPre(PPCRegister& r1) {}
 void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {}
