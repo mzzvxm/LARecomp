@@ -25806,6 +25806,21 @@ name = "MCLA_CustomMusic_SelectSong"
 address = 0x821F0600
 registers = ["r3"]
 
+# 0x821F06F0: the tail of the same GotoSong, at its own `bl nullsub_1` for
+# "[mcMusicManager] Current Song: \"%s\"". By here mgr+68 already holds the new
+# song and r4 is that song's name field (entry[2], a string-table key) -- the
+# game loaded it for the log it no longer prints.
+#
+# This is where the song name gets pushed to the HUD info strip, rather than from
+# the per-frame tick: the strip is UI, and writing UI from the tick's thread
+# while another thread builds the movies crashes intermittently inside
+# sub_827250A8 (a failed "lights" lookup handed to sub_825EF9F0 unchecked).
+# Here we are on whichever thread the game itself changed songs on.
+[[midasm_hook]]
+name = "MCLA_CustomMusic_Announce"
+address = 0x821F06F0
+registers = ["r4"]
+
 # 0x82146030, audStreamingWaveSlot::RequestLoad (sub_82145F28): the `stw r3,
 # 0x30(r31)` that stores the result of the file open. r3 is the handle (-1 when
 # the bank could not be opened) and r31 is the slot, whose +0x42 holds the bank

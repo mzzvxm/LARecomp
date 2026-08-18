@@ -33,6 +33,21 @@ REXCVAR_DEFINE_BOOL(custom_music, true, "MCLA/Audio",
     "tracks are decoded on the host; the guest radio only carries the row.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(custom_music_announce, true, "MCLA/Audio",
+    "Print the song name on the HUD info strip (the bar under the speedometer "
+    "that normally carries the district name) whenever the radio moves to a new "
+    "track. Uses the game's own message channel, so it looks like any other line "
+    "the game puts there; applies to the shipped radio as well as custom MP3s.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(custom_music_announce_seconds, 15.0, "MCLA/Audio",
+    "How long the song name stays on the HUD info strip. The game's own uses of "
+    "that channel are short (3 s for MUSIC OFF, 5 s for a district name), but a "
+    "track title is worth reading, so this defaults longer. Anything the game "
+    "itself puts on the strip replaces it before the time is up.")
+    .range(1.0, 60.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(custom_music_volume, 0.5, "MCLA/Audio",
     "Trim applied on top of the in-game music slider for custom MP3 tracks. "
     "The shipped radio goes through the RAGE mixer and its ducking curves, "
@@ -76,6 +91,41 @@ constexpr uint32_t kGuestMallocFn      = 0x82130528;  // sysMemAllocator::Alloca
 constexpr uint32_t kArrayAppendFn      = 0x8262E420;  // atArray::Append(this, grow)
 constexpr uint32_t kGotoSongFn         = 0x821F0600;  // mcMusicManager::GotoSong(idx)
 constexpr uint32_t kPlayFn             = 0x821F0108;  // mcMusicManager::Play(flags)
+
+// ── The HUD info strip ────────────────────────────────────────────────
+//
+// The bar under the speedometer. hud.xsf drives it from one GFx string:
+//
+//     this.info.slot0.slot.text = _global.d_selectedlevel_longname
+//
+// and the game already has a public way to write it:
+//
+//   sub_82208930(mcUILogic, text, a3, a4, seconds)
+//       a3 < 0 || a4 < 0  ->  `text` is used RAW
+//       otherwise         ->  `text` is a string-table key, and a tMTP subtitle
+//                             event carrying (a3<<8)+a4 is fired as well
+//   sub_8220CBF0(text, a3, a4)  ->  the same, with mcUILogic looked up and 5 s
+//
+// mcMusicManager's song entry holds a string-table KEY at +8, not display text
+// (our own custom rows are registered under their own title, so the key and the
+// text coincide there). Resolving it here and passing the result raw keeps one
+// code path for shipped and custom songs, and avoids firing a subtitle event
+// with a message id we made up.
+//
+// Proof this is the intended channel: sub_8264FDD0, mcHUDForm's radio handler,
+// does exactly sub_82208930(uiLogic, str("MUSIC_OFF"), -1, -1, 3.0) when the
+// player turns the music off.
+// sub_8220CBF0 hardcodes 5 s, so the duration goes through sub_82208930 itself.
+// Its fifth argument is a float in f1; the SDK routes precise types to the FPRs
+// by ordinal, so a plain 5-argument call lands r3..r6 + f1 correctly.
+constexpr uint32_t kInfoStripFn        = 0x82208930;  // (uiLogic, text, a3, a4, seconds)
+constexpr uint32_t kUILogicGlobal      = 0x8286D8D4;  // mcUILogic, alloc in sub_8220ED58
+constexpr uint32_t kStringLookupFn     = 0x82218310;  // (table, key) -> char*
+constexpr const char* kNowPlaying      = "NOW PLAYING: ";
+// The strip measures the text and centres itself, but the string table copies
+// into a 132-byte buffer and sub_82208930 into a 128-byte one, so keep it well
+// inside both.
+constexpr size_t kNotifyMax            = 96;
 
 // mcMusicManager layout, all confirmed against sub_821F0600 / sub_821EF950 /
 // sub_821EED18.
@@ -219,6 +269,30 @@ uint32_t CallGuest2(uint32_t fn_addr, uint32_t a0, uint32_t a1) {
     PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
     if (!fn) return 0;
     return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1);
+}
+
+// sub_82208930(uiLogic, text, a3, a4, seconds). Separate from the CallGuestN
+// helpers because the last argument has to reach f1, not a GPR.
+void CallInfoStrip(uint32_t ui_logic, uint32_t text, float seconds) {
+    auto* rt = rex::Runtime::instance();
+    if (!rt || !rt->function_dispatcher()) return;
+    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kInfoStripFn);
+    if (!fn) return;
+    rex::ppc::GuestToHostFunction<uint32_t>(fn, ui_logic, text, uint32_t(-1), uint32_t(-1),
+                                           seconds);
+}
+
+// Reads a NUL-terminated guest string, bounded.
+std::string ReadGuestCString(uint32_t ea, size_t max_len) {
+    uint8_t* base = GetMembase();
+    if (!base || !ea) return {};
+    std::string out;
+    for (size_t i = 0; i < max_len; ++i) {
+        char c = static_cast<char>(base[ea + i]);
+        if (!c) break;
+        out.push_back(c);
+    }
+    return out;
 }
 
 uint32_t AllocGuestString(const std::string& text) {
@@ -595,6 +669,76 @@ int TrackForEntry(uint32_t entry_ea) {
     return -1;
 }
 
+// ── "NOW PLAYING" on the info strip ───────────────────────────────────
+
+uint32_t g_notify_buf = 0;       // one reusable guest buffer, never freed
+uint32_t g_notified_key = 0;     // song name key the strip last showed
+bool     g_notify_primed = false;  // first song seen, deliberately not announced
+
+// Shows a song's name, driven by the hook at the tail of GotoSong (0x821F06F0).
+//
+// Two earlier attempts are worth not repeating. Hanging it off
+// MCLA_CustomMusic_StartSong never fired: sub_821EF950 gates the whole cue-start
+// block at 0x821EFA5C on `music category dB > -95.0`, so with the music volume
+// at silence the `bl` that hook sits on is skipped entirely (which is also why
+// custom MP3s stay silent in that state -- the host player starts from there).
+// Polling it from TickCustomMusic did fire, but wrote UI from the tick's thread
+// while another thread was still building the movies, which crashes
+// intermittently in sub_827250A8: a failed "lights" lookup handed to
+// sub_825EF9F0, which does a bare `a1[2] == 5`.
+//
+// GotoSong is the one place that moves mgr+68, from the radio UI, the shuffle
+// and our own end-of-track advance alike, and at its tail the game had already
+// loaded this very string for a log call it no longer prints.
+void AnnounceSongByKey(uint32_t key_ea) {
+    if (!REXCVAR_GET(custom_music_announce)) return;
+    if (!IsGuestPtr(key_ea) || key_ea == g_notified_key) return;
+
+    // The boot-time selection is recorded, not shown: nobody is looking at the
+    // HUD yet, and it is the one call that lands while the UI is still coming up.
+    if (!g_notify_primed) {
+        g_notify_primed = true;
+        g_notified_key = key_ea;
+        return;
+    }
+
+    uint32_t ui_logic = ReadGuestBE32(kUILogicGlobal);
+    if (!IsGuestPtr(ui_logic)) return;
+
+    // entry[2] is a string-table key, not display text. A miss leaves the key,
+    // which still beats nothing.
+    uint32_t table = ReadGuestBE32(kStringTableGlobal);
+    uint32_t text_ea = 0;
+    if (IsGuestPtr(table)) text_ea = CallGuest2(kStringLookupFn, table, key_ea);
+    if (!IsGuestPtr(text_ea)) text_ea = key_ea;
+
+    std::string title = ReadGuestCString(text_ea, kNotifyMax);
+    if (title.empty()) return;
+
+    std::string line = std::string(kNowPlaying) + title;
+    if (line.size() > kNotifyMax) line.resize(kNotifyMax);
+
+    if (!g_notify_buf) {
+        g_notify_buf = CallGuest1(kGuestMallocFn, uint32_t(kNotifyMax) + 1);
+        if (!IsGuestPtr(g_notify_buf)) {
+            g_notify_buf = 0;
+            return;
+        }
+    }
+
+    uint8_t* base = GetMembase();
+    if (!base) return;
+    std::memcpy(base + g_notify_buf, line.c_str(), line.size() + 1);
+
+    g_notified_key = key_ea;
+
+    double secs = REXCVAR_GET(custom_music_announce_seconds);
+    if (!(secs > 0.0)) secs = 15.0;
+
+    CallInfoStrip(ui_logic, g_notify_buf, static_cast<float>(secs));
+    MC_INFO("[mp3custom] info strip ({:.0f}s): {}", secs, line);
+}
+
 }  // namespace
 
 // ── Public entry points ───────────────────────────────────────────────
@@ -768,6 +912,12 @@ void MCLA_CustomMusic_Pause(PPCRegister& r3) {
     mp3custom::PlayerPause(true);
 }
 
+// 0x821F06F0, the `bl nullsub_1` at the tail of mcMusicManager::GotoSong. r4 is
+// the newly selected song's name field (entry[2]); mgr+68 already points at it.
+void MCLA_CustomMusic_Announce(PPCRegister& r4) {
+    AnnounceSongByKey(static_cast<uint32_t>(r4.u32));
+}
+
 // 0x821F0600, mcMusicManager::GotoSong(this, index): the one place that moves
 // mgr+68 to a new song, from the UI, the shuffle and our own end-of-track
 // advance alike. Clearing the flag here means a shipped song picked right after
@@ -786,6 +936,7 @@ void TickCustomMusic() {}
 void MCLA_CustomMusic_Install(PPCRegister&) {}
 bool MCLA_CustomMusic_StartSong(PPCRegister&) { return false; }
 void MCLA_CustomMusic_SelectSong(PPCRegister&) {}
+void MCLA_CustomMusic_Announce(PPCRegister&) {}
 void MCLA_CustomMusic_Stop(PPCRegister&) {}
 void MCLA_CustomMusic_Pause(PPCRegister&) {}
 void MCLA_Audio_BankOpened(PPCRegister&, PPCRegister&) {}
