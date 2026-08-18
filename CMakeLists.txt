@@ -41,6 +41,12 @@ set(LARECOMP_SOURCES
     src/mc_engine/mp3custom/mp3custom.cpp
     src/mc_engine/mp3custom/mp3_player.cpp
 
+    # Native custom music: <exe>/music/*.mp3 -> real radio entries, real cues and
+    # real streaming wave banks, packed into the mod archive.
+    src/mc_engine/music/audio_dat.cpp
+    src/mc_engine/music/wave_bank.cpp
+    src/mc_engine/music/custom_music.cpp
+
     # Modloader: models/<mod>/<asset>.obj -> xarchive_mods.rpf
     src/mc_engine/modloader/aes256.cpp
     src/mc_engine/modloader/rpf3.cpp

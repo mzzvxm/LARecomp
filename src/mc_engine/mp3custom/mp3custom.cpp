@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mp3custom.h"
+#include "mc_engine/music/custom_music.h"
 #include "mp3_player.h"
 
 #include "../logging.h"
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -36,6 +38,21 @@ REXCVAR_DEFINE_DOUBLE(custom_music_volume, 0.5, "MCLA/Audio",
     "The shipped radio goes through the RAGE mixer and its ducking curves, "
     "which the host player does not, so 1.0 comes out noticeably louder.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(music_bank_log, false, "MCLA/Audio",
+    "Log every streaming wave bank the audio engine opens: the bank id (an index "
+    "into the sounds.dat string table) and whether the file was found. Use it "
+    "when a song plays silently -- it separates 'the bank was never asked for' "
+    "from 'the bank was opened and decoded to nothing'.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(music_list, false, "MCLA/Audio",
+    "Log the whole radio once, right after mcMusicManager finishes building it: "
+    "every genre bucket with each song's hash code and title. This is how you "
+    "tell whether a song added through the audio metadata (a rebuilt game.dat "
+    "plus its wave bank) actually reached AddSong, since the game's own log "
+    "line for that was compiled out.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
 
@@ -171,6 +188,16 @@ void WriteGuestU8(uint32_t ea, uint8_t v) {
     base[ea] = v;
 }
 
+// Deliberately not gated on IsGuestPtr: this also reads buffers that live on a
+// guest stack, which sits below the 0x82000000 the code segment starts at.
+std::string ReadGuestString(uint32_t ea, size_t limit = 128) {
+    uint8_t* base = GetMembase();
+    if (!base || ea < 0x1000u) return {};
+    std::string out;
+    for (size_t i = 0; i < limit && base[ea + i]; ++i) out.push_back(char(base[ea + i]));
+    return out;
+}
+
 float ReadGuestBEFloat(uint32_t ea) {
     uint32_t bits = ReadGuestBE32(ea);
     float    out;
@@ -280,6 +307,9 @@ void ScanFolder(const std::filesystem::path& dir) {
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](wchar_t c) { return wchar_t(::towlower(c)); });
         if (ext != L".mp3") continue;
+        // Already a real radio entry through the native pipeline; listing it
+        // here too would put the same song on the radio twice.
+        if (::mc::music::Claimed(e.path())) continue;
 
         Track t;
         t.path  = e.path().wstring();
@@ -290,6 +320,95 @@ void ScanFolder(const std::filesystem::path& dir) {
         if (t.title.size() > 100) t.title.resize(100);
         g_tracks.push_back(std::move(t));
     }
+}
+
+// ── Titles for songs added through the audio metadata ─────────────────
+//
+// A song entry's [2] is a string-table KEY, not display text: AddSong copies the
+// internal name off the game object and the UI resolves it later. A key the
+// shipped table does not carry comes back wrapped in "!!", which is the game's
+// own marker for a missing string -- so a song declared in a rebuilt game.dat
+// shows up as "!!Music_Rock_Whatever!!" until its title is registered.
+//
+// Registering it is the same map insert the MP3 rows already use. The text is
+// host-side data, so it rides along outside the mod's files/ folder, where the
+// modloader will not pack it into the archive:
+//
+//   <exe>/models/<mod>/music_titles.txt
+//   Music_Rock_MyBand_MySong = My Band - My Song
+std::vector<std::pair<std::string, std::string>> g_native_titles;
+bool g_native_titles_registered = false;
+
+void ScanTitlesFile(const std::filesystem::path& file) {
+    std::ifstream input(file);
+    if (!input) return;
+
+    std::string line;
+    while (std::getline(input, line)) {
+        const size_t split = line.find('=');
+        if (split == std::string::npos) continue;
+        std::string key = line.substr(0, split);
+        std::string text = line.substr(split + 1);
+        const auto trim = [](std::string& v) {
+            const size_t first = v.find_first_not_of(" \t\r\n");
+            const size_t last = v.find_last_not_of(" \t\r\n");
+            v = (first == std::string::npos) ? std::string{} : v.substr(first, last - first + 1);
+        };
+        trim(key);
+        trim(text);
+        if (key.empty() || text.empty() || key[0] == '#') continue;
+        // Same 132-byte guest buffer the radio rows go through.
+        if (text.size() > 100) text.resize(100);
+        g_native_titles.emplace_back(std::move(key), std::move(text));
+    }
+}
+
+void CollectNativeTitles() {
+    std::error_code ec;
+    std::filesystem::path models;
+#if defined(_WIN32)
+    wchar_t exe[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
+    models = std::filesystem::path(exe).parent_path() / L"models";
+#else
+    models = std::filesystem::current_path(ec) / "models";
+#endif
+    if (!std::filesystem::is_directory(models, ec)) return;
+
+    for (const auto& mod : std::filesystem::directory_iterator(models, ec)) {
+        if (!mod.is_directory()) continue;
+        ScanTitlesFile(mod.path() / "music_titles.txt");
+    }
+
+    // Tracks the native pipeline built this boot hand their titles over
+    // directly; only hand-made mods need the file.
+    for (const auto& [key, text] : ::mc::music::Titles()) {
+        g_native_titles.emplace_back(key, text.size() > 100 ? text.substr(0, 100) : text);
+    }
+    if (!g_native_titles.empty()) {
+        MC_INFO("[mp3custom] {} title(s) declared for metadata songs",
+                g_native_titles.size());
+    }
+}
+
+// Runs every tick until the string table is up, then once. Independent of the
+// MP3 list: a mod can add songs through the metadata without shipping any.
+void RegisterNativeTitles() {
+    if (g_native_titles_registered || g_native_titles.empty()) return;
+
+    uint32_t table = ReadGuestBE32(kStringTableGlobal);
+    if (!IsGuestPtr(table)) return;
+
+    uint32_t done = 0;
+    for (const auto& [key, text] : g_native_titles) {
+        uint32_t text_ea = AllocGuestString(text);
+        if (!text_ea) continue;
+        if (InsertHashMapEntry(table + 16, MCLAHashString(key.c_str()), text_ea)) ++done;
+    }
+    if (!done) return;
+
+    g_native_titles_registered = true;
+    MC_INFO("[mp3custom] {} metadata song title(s) registered", done);
 }
 
 void CollectTracks() {
@@ -325,6 +444,37 @@ bool AppendToGenre(uint32_t mgr, uint32_t genre, uint32_t entry_ea) {
     if (!IsGuestPtr(slot)) return false;
     WriteGuestBE32(slot, entry_ea);
     return true;
+}
+
+// Logs the radio exactly as mcMusicManager just built it. One atArray of song
+// entry pointers lives at mgr+88+8*g per genre, with MUSIC_GENRE_ALL at g == 7,
+// and an entry is { game object, hash code, char* title }. AddSong's own log
+// call is a nullsub in the shipped XEX, so this is the only way to see whether
+// a song declared in the audio metadata was picked up.
+void DumpRadio(uint32_t mgr) {
+    static bool done = false;
+    if (done || !REXCVAR_GET(music_list) || !IsGuestPtr(mgr)) return;
+    done = true;
+
+    // Order comes from the name table at off_827DA540.
+    static const char* const kGenreNames[] = {
+        "ECLECTIC", "ELECTRONIC", "HARDROCK", "HIPHOP",
+        "ROCK",     "TECHNO",     "WEST_RAP", "ALL",
+    };
+
+    for (uint32_t g = 0; g < 8; ++g) {
+        const uint32_t arr   = ReadGuestBE32(GenreArray(mgr, g));
+        const uint16_t count = ReadGuestBE16(GenreArray(mgr, g) + 4);
+        MC_INFO("[radio] genre {} {}: {} song(s)", g, kGenreNames[g], count);
+        if (!IsGuestPtr(arr)) continue;
+        for (uint16_t i = 0; i < count; ++i) {
+            const uint32_t entry = ReadGuestBE32(arr + 4u * i);
+            if (!IsGuestPtr(entry)) continue;
+            MC_INFO("[radio]   {:3} hash {:08X} obj {:08X} {}", i,
+                    ReadGuestBE32(entry + 4), ReadGuestBE32(entry),
+                    ReadGuestString(ReadGuestBE32(entry + 8)));
+        }
+    }
 }
 
 // Installs every scanned track into `mgr`. Called from the ctor, just before
@@ -450,6 +600,10 @@ int TrackForEntry(uint32_t entry_ea) {
 // ── Public entry points ───────────────────────────────────────────────
 
 void InitCustomMusic() {
+    // Independent of the MP3 feature: a mod can add songs through the audio
+    // metadata and ship no .mp3 at all.
+    CollectNativeTitles();
+
     if (!REXCVAR_GET(custom_music)) return;
 
     CollectTracks();
@@ -468,10 +622,12 @@ void InitCustomMusic() {
 }
 
 void TickCustomMusic() {
-    if (g_tracks.empty()) return;
-
     uint32_t mgr = ReadGuestBE32(kMusicManagerGlobal);
     if (!IsGuestPtr(mgr)) return;
+
+    RegisterNativeTitles();  // no-op once the table has taken them
+
+    if (g_tracks.empty()) return;
 
     RegisterStrings();  // no-op once the string table has taken the titles
 
@@ -504,6 +660,7 @@ void TickCustomMusic() {
 // 0x821EFF4C, `bl sub_821EED18` at the tail of the mcMusicManager ctor. r31 is
 // the manager; both AddSong passes have already run, RebuildShuffle has not.
 void MCLA_CustomMusic_Install(PPCRegister& r31) {
+    DumpRadio(static_cast<uint32_t>(r31.u32));
     InstallTracks(static_cast<uint32_t>(r31.u32));
 }
 
@@ -548,6 +705,49 @@ bool MCLA_CustomMusic_StartSong(PPCRegister& r31) {
     return true;
 }
 
+// 0x82146030, the store of the file handle in audStreamingWaveSlot::RequestLoad
+// (sub_82145F28). r3 is the handle, -1 when the open failed; r31 is the slot,
+// and its +0x42 carries the bank id the request was made with. The id is the
+// index of the bank's path inside the sounds.dat string table -- the same value
+// fixup B wrote into the type 12 wave leaf.
+//
+// Nothing here calls back into the guest: reading the name would mean running
+// sub_821372D8 from inside a hook, and the id is enough to identify the bank
+// against the file.
+void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
+    if (!REXCVAR_GET(music_bank_log)) return;
+    const uint32_t slot = static_cast<uint32_t>(r31.u32);
+    if (!IsGuestPtr(slot)) return;
+    const int32_t handle = static_cast<int32_t>(r3.u32);
+    const uint32_t id = ReadGuestBE16(slot + 0x42);
+
+    // A streaming bank is re-requested for every chunk, so the same id comes
+    // through thousands of times a minute. Each outcome is worth seeing once.
+    static std::vector<uint32_t> seen;
+    const uint32_t key = (id << 1) | (handle == -1 ? 1u : 0u);
+    if (std::find(seen.begin(), seen.end(), key) != seen.end()) return;
+    seen.push_back(key);
+
+    MC_INFO("[bank] id {} -> {}", id, handle == -1 ? "OPEN FAILED" : "opened");
+}
+
+// 0x821461F4, RequestLoad's failure tail. r4 is the assembled "Sfx/<BANK>" path,
+// so this is the one place the bank is named in full.
+void MCLA_Audio_BankError(PPCRegister& r4, PPCRegister& r31) {
+    if (!REXCVAR_GET(music_bank_log)) return;
+    const uint32_t slot = static_cast<uint32_t>(r31.u32);
+    const uint32_t id = IsGuestPtr(slot) ? ReadGuestBE16(slot + 0x42) : 0;
+
+    // Retried for as long as whatever wanted the bank keeps wanting it, which
+    // for a missing ambience stream is every few frames forever.
+    static std::vector<uint32_t> seen;
+    if (std::find(seen.begin(), seen.end(), id) != seen.end()) return;
+    seen.push_back(id);
+
+    MC_WARN("[bank] load failed: id {} '{}'", id,
+            ReadGuestString(static_cast<uint32_t>(r4.u32)));
+}
+
 // 0x821EF1F8, mcMusicManager::Stop(this, fade). Every teardown of the radio
 // funnels through here -- the garage entry reaches it via sub_821F0C10, and it
 // is also where the manager would hand a stop to audMusicXenon when mgr+24 is
@@ -588,5 +788,7 @@ bool MCLA_CustomMusic_StartSong(PPCRegister&) { return false; }
 void MCLA_CustomMusic_SelectSong(PPCRegister&) {}
 void MCLA_CustomMusic_Stop(PPCRegister&) {}
 void MCLA_CustomMusic_Pause(PPCRegister&) {}
+void MCLA_Audio_BankOpened(PPCRegister&, PPCRegister&) {}
+void MCLA_Audio_BankError(PPCRegister&, PPCRegister&) {}
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

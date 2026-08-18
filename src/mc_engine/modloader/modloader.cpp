@@ -28,6 +28,7 @@
 #include "rsc5.h"
 #include "texture.h"
 #include "xcompress.h"
+#include "mc_engine/music/custom_music.h"
 
 REXCVAR_DEFINE_BOOL(model_mods, true, "MCLA/Mods",
     "Load model replacements from <exe>/models/<mod>/<asset>.obj. Each .obj is "
@@ -1274,6 +1275,15 @@ void Init() {
     std::vector<VehicleMod> car_mods;
     std::vector<RawFile> raw_files;
     ScanMods(models_dir, mods, rim_mods, car_mods, raw_files);
+
+    // Native custom music builds its three files (the .dat pair and one bank per
+    // track) into a cache folder and rides in as raw files, so it inherits the
+    // dedup, the resource sniffing and the logging below for free.
+    for (music::GeneratedFile& generated : music::Build(exe_dir, game_root)) {
+        raw_files.push_back(RawFile{std::move(generated.archive_path),
+                                    std::move(generated.source), "music"});
+    }
+
     if (mods.empty() && rim_mods.empty() && car_mods.empty() && raw_files.empty()) {
         std::filesystem::remove(game_root / kModArchiveName, ec);
         return;

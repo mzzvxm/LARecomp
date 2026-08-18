@@ -25806,6 +25806,24 @@ name = "MCLA_CustomMusic_SelectSong"
 address = 0x821F0600
 registers = ["r3"]
 
+# 0x82146030, audStreamingWaveSlot::RequestLoad (sub_82145F28): the `stw r3,
+# 0x30(r31)` that stores the result of the file open. r3 is the handle (-1 when
+# the bank could not be opened) and r31 is the slot, whose +0x42 holds the bank
+# id -- an index into the sounds.dat string table. The game's own logging for
+# this is a nullsub, so a custom bank that never gets opened, or that opens and
+# then decodes to silence, is otherwise indistinguishable.
+[[midasm_hook]]
+name = "MCLA_Audio_BankOpened"
+address = 0x82146030
+registers = ["r3", "r31"]
+
+# 0x821461F4, the `bl nullsub_1` on RequestLoad's failure tail ("Error loading
+# Wave Bank %s"). r4 already points at the assembled "Sfx/<BANK>" path.
+[[midasm_hook]]
+name = "MCLA_Audio_BankError"
+address = 0x821461F4
+registers = ["r4", "r31"]
+
 # 0x821EF1F8: mcMusicManager::Stop(this, fade), entry. r3 is the manager. This
 # is the single teardown for the radio -- the garage entry gets here through
 # sub_821F0C10, and the `*(this + 24) == 1` branch inside is where the manager
