@@ -2136,6 +2136,43 @@ bool Hook_IntroHalfRate() {
     return (call_count++ & 1) != 0;  // true = skip this advance
 }
 
+// 0x82725100, in sub_827250A8's per-movie lighting pass. The game asks the movie
+// for its "lights" node and then uses the answer without checking it:
+//
+//   827250FC  bl sub_825ED480      r3 = the member, 0 when the movie has none
+//   82725100  bl sub_825EF9F0      `return a1[2] == 5 ? *a1 : 0`  -- reads a1[2]
+//   82725104  mr r26, r3
+//   82725108  lwz r10, 0(r26)      -- and reads r26[0]
+//
+// Either read faults on a null. sub_825ED480 returns 0 while the movie's member
+// table at +128 is still null, which is the state a movie is in before it has
+// finished being built; on the 360 the lighting pass never runs that early, but
+// under the recomp's thread timing it sometimes does. That is the intermittent
+// "read of guest 0x00000008 in sub_825EF9F0" crash, and it is a null check the
+// game simply does not have.
+//
+// So answer the question sub_825EF9F0 would have answered, and when the answer
+// is null skip the block it feeds -- the hook jumps to 0x82725144, the `li r3, 1`
+// that closes the scope. A movie with no lights node has nothing to light.
+bool MCLA_UI_SkipMissingLights(PPCRegister& r3) {
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const uint32_t node = static_cast<uint32_t>(r3.u32);
+    if (base && node) {
+        const uint8_t* p = base + node + 8;
+        const uint32_t kind =
+            (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+        if (kind == 5) return false;  // a real lights node: let the game run
+    }
+
+    static uint32_t skipped = 0;
+    if (++skipped <= 4) {
+        MC_WARN("[ui] movie has no lights node yet (r3={:#010x}), skipping the "
+                "lighting pass this frame; the game would have dereferenced it",
+                node);
+    }
+    return true;
+}
+
 // Swap-interval patch at 0x82419AA0 ("li r11, 2"): the game always requests
 // D3D interval TWO (30 FPS); replacing with 1 requests 60 Hz. Note the current
 // RexGlue command processor ignores the guest swap interval (host vblank is a
@@ -3617,6 +3654,7 @@ bool Patch_EdramLimit(PPCRegister& r11) { return false; }
 bool Patch_DebugCamGate() { return false; }
 void Patch_DebugCam(PPCRegister& r3) {}
 bool Hook_IntroHalfRate() { return false; }
+bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
 bool Patch_60FPS_Byte(PPCRegister& r11) { return false; }
 bool Patch_DisableMotionBlur(PPCRegister& r3) { return false; }
 bool Patch_DisableMSAA(PPCRegister& r11) { return false; }

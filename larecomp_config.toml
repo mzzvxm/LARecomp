@@ -25839,6 +25839,34 @@ name = "MCLA_Audio_BankError"
 address = 0x821461F4
 registers = ["r4", "r31"]
 
+# 0x82725100, the `bl sub_825EF9F0` inside sub_827250A8, the per-movie lighting
+# pass (mode 6, reached from the scene loop in sub_821FB1C8). The game looks the
+# "lights" node up and then uses the result with no check at all:
+#
+#   827250FC  bl sub_825ED480      r3 = movie member "lights", 0 if absent
+#   82725100  bl sub_825EF9F0      reads r3[2]            <- faults on 0
+#   82725104  mr r26, r3
+#   82725108  lwz r10, 0(r26)      reads r26[0]           <- faults on 0 as well
+#
+# sub_825EF9F0 is `return a1[2] == 5 ? *a1 : 0`, so there are two ways to reach a
+# null here: the movie has no "lights" member yet (sub_825ED480 returns 0 when
+# the movie's member table at +128 is still null), or it has one of another type.
+# Both crash. On the 360 the movie is always built by the time this pass runs;
+# under the recomp's thread timing it sometimes is not, which is the intermittent
+# `read of guest 0x00000008` in sub_825EF9F0.
+#
+# The hook answers the same question sub_825EF9F0 would and skips the lighting
+# block when the answer is null, landing on the `li r3, 1` that feeds the
+# sub_8217D928 call closing the scope. Nothing in the tail reads what the block
+# produced: r26/r25 are dead after it, r30 still carries the string the
+# "__hud_map" compare wants, and the stack object built at 0x82725124 is
+# destroyed at 0x82725140, both inside the skipped range.
+[[midasm_hook]]
+name = "MCLA_UI_SkipMissingLights"
+address = 0x82725100
+registers = ["r3"]
+jump_address_on_true = 0x82725144
+
 # 0x821EF1F8: mcMusicManager::Stop(this, fade), entry. r3 is the manager. This
 # is the single teardown for the radio -- the garage entry gets here through
 # sub_821F0C10, and the `*(this + 24) == 1` branch inside is where the manager
