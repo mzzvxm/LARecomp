@@ -750,6 +750,20 @@ constexpr const char* kWeatherVals[]  = {"game", "real", "nice", "cloudy",
 constexpr const char* kWeatherNames[] = {"GAME", "REAL (LIVE)", "NICE", "CLOUDY",
                                          "STORMY", "FOGGY"};
 
+// Speed / distance units. "game" leaves the console profile's own choice (mph
+// on NTSC). Both halves of this are covered: the game's metric formatter
+// (sub_8238DDF0) handles menus and distances on its own, and hud_units.cpp
+// rewrites the m/s->mph constant the HUD movie's ActionScript carries, since the
+// live speedometer never goes through that formatter.
+// No slash in the label: the value's display text is also the name of the Flash
+// element the row creates for it, and AS1 slash syntax makes '/' a path
+// separator -- "KM/H" is looked up as a path, the lookup returns null, and
+// sub_827250A8 hands that null straight to sub_825EF9F0 (which does a bare
+// `a1[2] == 5`). That is a read of guest 0x8 during UI setup, i.e. a boot crash.
+// Every row the game ships stays inside A-Z, 0-9, space, '+', '.', parens.
+constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
+constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
+
 // ── Menu contents ──────────────────────────────────────────────────────
 
 const ItemDef kVideoItems[] = {
@@ -774,6 +788,8 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxSteerFps",    "scale_steering_with_fps",  "60FPS STEERING FIX: "),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
+    Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
+         kSpeedUnitVals, kSpeedUnitNames, 3),
     Save("PM_RxSaveRecomp"),
 };
 

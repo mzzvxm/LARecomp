@@ -52,6 +52,7 @@
 #include "menu_camera.h"
 #include "modloader/modloader.h"
 #include "mp3custom/mp3custom.h"
+#include "hud_units.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
 // CVAR DEFINITIONS (Will appear in F4 menu)
@@ -370,7 +371,12 @@ REXCVAR_DEFINE_STRING(speed_units, "kmh", "MCLA/HUD",
     "Speedometer / distance units. Drives the game's own metric formatter "
     "(sub_8238DDF0): game = console profile default (mph on NTSC), kmh = metric "
     "(km/h, km, m), mph = imperial (mph, miles, ft). Converts both the number and "
-    "the unit label; the analog dial tick art stays as authored.")
+    "the unit label; the analog dial tick art stays as authored.\n"
+    "kmh also converts the live HUD speedometer, which does NOT go through that "
+    "formatter: the HUD movie multiplies m/s by 2.237 in its own ActionScript, so "
+    "hud_units.cpp rewrites that constant (and the per-glyph unit label) in guest "
+    "memory. The radar detector's speed-limit sign stays in mph -- its number comes "
+    "from the guest and the game's metric branch for it is dead code.")
     .allowed({"game", "kmh", "mph"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -2696,6 +2702,7 @@ void Patch_DeltaTimePre() {
     TickVinylShapeCapture();    // hands-free shape-catalog sweep, if requested
     TickButtonPrompts();        // picks up a live button_prompts change
     TickCustomMusic();          // custom radio: volume + end-of-track advance
+    TickHudUnits();             // hud_speed_units: mph -> km/h, live
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
     ApplyRenderPhaseMask();       // perf_no_shadows, live
