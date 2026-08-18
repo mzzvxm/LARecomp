@@ -96,6 +96,42 @@ constexpr uint32_t kGenreOnTheFly  = 8;  // MUSIC_GENRE_ON_THE_FLY -> "Custom Pl
 //   [0] music game object   [1] hash code   [2] char* display name
 constexpr uint32_t kEntrySize = 12;
 
+// ── The music game object ─────────────────────────────────────────────
+//
+// A real one is a record inside the audio metadata blob: sub_82144A20 hashes a
+// name and binary-searches a sorted {offset, nameHash} table (sub_8214D6B8),
+// returning blobBase + offset. AddSong reads exactly four fields out of it:
+//
+//   +10  u8    genre index (MUSIC_GENRE_*)
+//   +11  u32   hash code -- UNALIGNED, and this is the song's identity
+//   +19  u8    name length
+//   +20  char  name, not NUL-terminated
+//
+// Sharing one borrowed object across every custom track was the original
+// shortcut, and it is why the game could not tell custom tracks apart from each
+// other or from the shipped song the object belonged to: the identity of "what
+// is playing" is read off the OBJECT, not off the entry --
+//
+//   sub_821EEF08   *(*(mgr+68) + 11)     what is playing
+//   sub_821EF1F8   *(*(mgr+68) + 11)     which cue to stop
+//   sub_821F0700   entry[0] == resolved  find a song by name
+//
+// Those four (with AddSong) are the whole set of readers in the music path;
+// nothing derives an index from the pointer and nothing checks that it lies
+// inside the blob, so a plain guest allocation works. The playlist does not
+// care either way -- sub_821EF5E0 stores ENTRY pointers at mgr+152, and the
+// shuffle table at mgr+352 stores plain indices.
+//
+// The id we invent is never a real cue. That is strictly safer than the donor
+// was: the paths that would start or stop a cue with it now ask for something
+// that does not exist instead of asking for the donor song's cue.
+constexpr uint32_t kObjSize    = 64;  // generous; the real record is larger
+constexpr uint32_t kObjGenre   = 10;  // u8
+constexpr uint32_t kObjHash    = 11;  // u32, unaligned
+constexpr uint32_t kObjNameLen = 19;  // u8
+constexpr uint32_t kObjName    = 20;  // char[]
+constexpr uint32_t kObjNameMax = kObjSize - kObjName - 1;
+
 // ── Guest memory helpers ──────────────────────────────────────────────
 
 uint8_t* GetMembase() {
@@ -127,6 +163,12 @@ void WriteGuestBE32(uint32_t ea, uint32_t v) {
     p[1] = uint8_t(v >> 16);
     p[2] = uint8_t(v >> 8);
     p[3] = uint8_t(v);
+}
+
+void WriteGuestU8(uint32_t ea, uint8_t v) {
+    uint8_t* base = GetMembase();
+    if (!base || !ea) return;
+    base[ea] = v;
 }
 
 float ReadGuestBEFloat(uint32_t ea) {
@@ -206,6 +248,7 @@ struct Track {
     std::string  title;         // filename stem, shown in the radio list
     uint32_t     entry_ea = 0;  // guest song entry once installed
     uint32_t     title_ea = 0;  // guest copy of the title (song entry [2])
+    uint32_t     object_ea = 0; // synthetic music game object (song entry [0])
 };
 
 std::vector<Track> g_tracks;
@@ -290,20 +333,12 @@ bool AppendToGenre(uint32_t mgr, uint32_t genre, uint32_t entry_ea) {
 void InstallTracks(uint32_t mgr) {
     if (g_installed || g_tracks.empty() || !IsGuestPtr(mgr)) return;
 
-    // Every entry needs a music game object for the paths we do not intercept
-    // (sub_821EEF08 reads its +11 hash code). Borrow the first shipped song's
-    // object: the cue it names is never started for our rows, because the hook
-    // at 0x821EFB5C skips the play, but the pointer stays valid.
+    // Sanity only: the shipped rows have to be in by now, because the shuffle
+    // tables are rebuilt right after this and they count what is in the arrays.
     uint32_t all_ptr   = ReadGuestBE32(GenreArray(mgr, kGenreAll));
     uint16_t all_count = ReadGuestBE16(GenreArray(mgr, kGenreAll) + 4);
     if (!IsGuestPtr(all_ptr) || all_count == 0) {
         MC_WARN("[mp3custom] genre ALL is empty at install time, skipping");
-        return;
-    }
-    uint32_t donor_entry = ReadGuestBE32(all_ptr);
-    uint32_t donor_obj   = ReadGuestBE32(donor_entry);
-    if (!IsGuestPtr(donor_obj)) {
-        MC_WARN("[mp3custom] no donor game object, skipping");
         return;
     }
 
@@ -314,20 +349,33 @@ void InstallTracks(uint32_t mgr) {
 
         uint32_t title_ea = AllocGuestString(t.title);
         uint32_t entry_ea = CallGuest1(kGuestMallocFn, kEntrySize);
-        if (!IsGuestPtr(title_ea) || !IsGuestPtr(entry_ea)) {
+        uint32_t obj_ea   = CallGuest1(kGuestMallocFn, kObjSize);
+        if (!IsGuestPtr(title_ea) || !IsGuestPtr(entry_ea) || !IsGuestPtr(obj_ea)) {
             MC_WARN("[mp3custom] guest allocation failed for '{}'", t.title);
             break;
         }
 
-        // A hash code the shipped songs cannot collide with; the playlist
-        // add/remove path (sub_821EF700 / sub_821EEFD8) keys off this value.
+        // An id the shipped songs cannot collide with. It is the song's identity
+        // everywhere the game asks "what is playing" (sub_821EEF08), so it has to
+        // be unique per track -- one shared object was the old bug.
         const uint32_t hash_code = 0xC0DE0000u + static_cast<uint32_t>(i);
 
-        WriteGuestBE32(entry_ea + 0, donor_obj);
+        // Its own music game object, laid out the way AddSong reads one.
+        uint8_t* base = GetMembase();
+        if (base) std::memset(base + obj_ea, 0, kObjSize);
+        WriteGuestU8(obj_ea + kObjGenre, uint8_t(kGenreOnTheFly));
+        WriteGuestBE32(obj_ea + kObjHash, hash_code);
+        std::string obj_name = t.title;
+        if (obj_name.size() > kObjNameMax) obj_name.resize(kObjNameMax);
+        WriteGuestU8(obj_ea + kObjNameLen, uint8_t(obj_name.size()));
+        if (base) std::memcpy(base + obj_ea + kObjName, obj_name.data(), obj_name.size());
+
+        WriteGuestBE32(entry_ea + 0, obj_ea);
         WriteGuestBE32(entry_ea + 4, hash_code);
         WriteGuestBE32(entry_ea + 8, title_ea);
         t.entry_ea = entry_ea;
         t.title_ea = title_ea;
+        t.object_ea = obj_ea;
 
         if (!AppendToGenre(mgr, kGenreAll, entry_ea) ||
             !AppendToGenre(mgr, kGenreOnTheFly, entry_ea)) {
@@ -336,7 +384,8 @@ void InstallTracks(uint32_t mgr) {
         }
 
         ++added;
-        MC_INFO("[mp3custom] installed '{}' entry=0x{:08X}", t.title, entry_ea);
+        MC_INFO("[mp3custom] installed '{}' entry=0x{:08X} obj=0x{:08X} id=0x{:08X}",
+                t.title, entry_ea, obj_ea, hash_code);
     }
 
     g_installed = true;
