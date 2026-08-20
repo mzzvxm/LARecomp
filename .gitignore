@@ -5,7 +5,6 @@ bin/
 obj/
 generated/
 generated_xeo3/
-assets/
 tools/
 
 # Codegen & diagnostic logs
