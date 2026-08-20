@@ -24959,7 +24959,7 @@ registers = ["r8"]
 # value over the unscaled delta at [r3+0x58] and game_dt at [r3+8]
 # (0x821BDB84/0x821BDB88). Jumping to loc_821BDC34 skips it; the +0x14/+0x18
 # accumulators were already updated before this point, so nothing else is lost.
-# Conditional on fps_60 rather than unconditional, so the cvar really turns it off.
+# Conditional on real_frame_delta rather than unconditional, so the cvar really turns it off.
 [[midasm_hook]]
 name = "MCLAUseRealDelta"
 address = 0x821BDB58
@@ -25451,7 +25451,7 @@ jump_address_on_true = 0x8264D2B4
 # time itself is now handled at the clock source (MCLAFrameDelta /
 # MCLAUseRealDelta / MCLAFixedStepPath above); this hook only carries the per-frame
 # housekeeping ticks (vinyl readback window, shape capture, button prompts,
-# ambient density), so it must fire once per frame regardless of fps_60.
+# ambient density), so it must fire once per frame regardless of real_frame_delta.
 [[midasm_hook]]
 address = 0x822C22EC
 name = "Patch_DeltaTimePre"

@@ -1864,10 +1864,6 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
     return GetAspectRatio(f13.f64);
 }
 
-bool Patch_60FPS_Jump() {
-    return REXCVAR_GET(real_frame_delta);
-}
-
 // Single-tile predicated tiling — hook at 0x8217A700 in
 // grcDevice::BeginTiledRendering (sub_8217A470), the convergence point right
 // after the per-orientation tile size math and before the tile rect loop.
@@ -2619,10 +2615,13 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
 
 // BadassBaboon's Recomp Adjustments: Rock-solid thread-pinned frame rate limiter
 static void EnforceFrameLimit() {
-    int32_t limit = REXCVAR_GET(fps_limit);
-    if (const char* cap_env = std::getenv("MCLA_FPS_CAP")) {
-        limit = std::atoi(cap_env);
-    }
+    // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
+    // change after process start, and this runs on every single frame.
+    static const int32_t env_limit = [] {
+        if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
+        return -1;
+    }();
+    const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
     if (limit <= 0) return;
 
     const double period_us = 1000000.0 / static_cast<double>(limit);
@@ -3733,7 +3732,6 @@ bool Patch_AspectRatio_82233EB4(PPCRegister& f0) { return false; }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12) { return false; }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) { return false; }
-bool Patch_60FPS_Jump() { return false; }
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {}
 bool Patch_EdramLimit(PPCRegister& r11) { return false; }
 bool Patch_DebugCamGate() { return false; }

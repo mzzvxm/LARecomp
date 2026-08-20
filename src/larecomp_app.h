@@ -114,12 +114,19 @@ class LarecompApp : public rex::ReXApp {
       // cvars, but the dump still advertised them, so anyone debugging would set
       // MCLA_LOD_CITY_SCALE, see it listed here, and get no effect. That is the
       // "documented but not implemented" trap this file exists to prevent.
+      //
+      // MCLA_RESOLVE_SYMBOLS and MCLA_STRINGS_FILE are deliberately absent for
+      // the same reason. getenv() does appear for both, but only inside
+      // SymbolResolver's constructor, and nothing constructs one - the resolver
+      // in mcla_symbol_resolver.h currently has no call sites. It is kept as a
+      // debugging aid (header-only, so unused inlines cost nothing in the
+      // binary), but until something calls it, setting either variable has no
+      // effect and listing them here would be misleading.
       fprintf(f, "\n=== env overrides (only vars this build reads) ===\n");
-      for (const char* e : {"MCLA_FPS_CAP", "MCLA_MAX_FRAME_MS",
+      for (const char* e : {"MCLA_GAME_DATA", "MCLA_FPS_CAP", "MCLA_MAX_FRAME_MS",
                             "MCLA_TEX_SOFT", "MCLA_TEX_HARD", "MCLA_TEX_RTT",
                             "MCLA_VSYNC", "MCLA_REFRESH_RATE",
                             "MCLA_ALLOW_INVALID_FETCH", "MCLA_NO_STUB_SWEEP",
-                            "MCLA_STRINGS_FILE", "MCLA_RESOLVE_SYMBOLS",
                             "REX_LOG_LEVEL", "LARECOMP_LOG_FILE"}) {
         const char* v = getenv(e);
         fprintf(f, "%-46s = %s\n", e, v ? v : "<not set>");
@@ -218,6 +225,26 @@ class LarecompApp : public rex::ReXApp {
     // keeps the manual path.
     if (!paths.game_data_root.empty() && is_valid_game_root(paths.game_data_root)) {
       return;
+    }
+
+    // MCLA_GAME_DATA overrides auto-detection (parity with the midnightclub
+    // fork). The --game_data_root flag still wins, so an explicit command line
+    // beats a stale environment variable. An invalid value is reported rather
+    // than silently ignored, otherwise a typo looks like a missing install.
+    if (const char* env = std::getenv("MCLA_GAME_DATA")) {
+      if (*env) {
+        std::filesystem::path p(env);
+        if (is_valid_game_root(p)) {
+          paths.game_data_root = std::move(p);
+          return;
+        }
+        // Runs before logging is initialized, so this goes to stderr.
+        fprintf(stderr,
+                "[MCLA] MCLA_GAME_DATA is set to '%s' but that directory has no "
+                "default.xex plus xarchive_*.rpf - ignoring it and "
+                "auto-detecting instead.\n",
+                env);
+      }
     }
 
     // BadassBaboon's Recomp Adjustments: walk up from the exe looking for the

@@ -38,7 +38,7 @@ The simulation timestep, chase camera lag, suspension travel, and ground-depth d
 ### In-Game Pause Menu
 
 Press Start or Escape, navigate to **Options**, and select the ReXGlue / Recomp settings rows to adjust parameters live:
-- **60 FPS**: Toggles real frame delta injection versus stock 30 Hz fixed timestep.
+- **REAL FRAME DELTA**: Feeds the simulation the measured frame time instead of the stock 30 Hz fixed timestep. Required for correct physics, camera, and traffic above 30 FPS. This is not a frame rate cap - see FPS LIMIT below.
 - **FPS LIMIT**: Sets the wall-clock frame cap (0 = uncapped, 30, 60, 120, 144, 240).
 - **SUSPENSION FIX**: Enables continuous-time chassis depth and suspension damping.
 - **DEPTH OF FIELD**: Toggles full-screen DoF blur (disabled by default for clarity and performance).
