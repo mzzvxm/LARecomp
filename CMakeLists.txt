@@ -171,4 +171,12 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
         "$<TARGET_FILE_DIR:larecomp>/assets"
     )
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt")
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt"
+                    "$<TARGET_FILE_DIR:larecomp>/gamecontrollerdb.txt"
+            COMMENT "Copying gamecontrollerdb.txt next to larecomp.exe")
+    endif()
 endif()
