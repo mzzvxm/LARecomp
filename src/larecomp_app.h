@@ -124,6 +124,7 @@ class LarecompApp : public rex::ReXApp {
       // effect and listing them here would be misleading.
       fprintf(f, "\n=== env overrides (only vars this build reads) ===\n");
       for (const char* e : {"MCLA_GAME_DATA", "MCLA_FPS_CAP", "MCLA_MAX_FRAME_MS",
+                            "MCLA_TIMING_LOG",
                             "MCLA_TEX_SOFT", "MCLA_TEX_HARD", "MCLA_TEX_RTT",
                             "MCLA_VSYNC", "MCLA_REFRESH_RATE",
                             "MCLA_ALLOW_INVALID_FETCH", "MCLA_NO_STUB_SWEEP",

@@ -134,10 +134,34 @@ E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecom
 - Crash diagnostics: the SEH / SIGABRT handler in `crash_handler.cpp` writes the
   resolved call stack into the **normal log file**, not a separate file.
 
-> **No frame-time instrumentation.** Unlike the midnightclub fork, this build has
-> no `MCLA_TIMING_LOG`, frame-time histogram, or SIM RATE check. A performance
-> collapse therefore leaves nothing in the log to diagnose it. Porting that
-> instrumentation across is tracked as an outstanding task.
+- **`logs/timing_<date>_<time>_cap<N>.log`**: Written when `MCLA_TIMING_LOG=1`.
+  Off by default, costing one already-resolved bool test per frame.
+
+### Frame-time instrumentation
+
+```powershell
+$env:MCLA_TIMING_LOG="1"; Start-Process larecomp.exe
+```
+
+Once per second it records measured vs engine frame time (a `ratio` far from
+1.00 means the simulation and the wall clock disagree), spike counts, a GPU
+time breakdown, texture and pipeline cache hit/miss, thread and stall counters,
+and the engine's accumulated-time totals with a `<-- FROZEN` marker if they
+stop advancing. Every 30 seconds it emits a 1 ms-resolution frame-time
+histogram with empty buckets omitted, so clustering is obvious at a glance.
+
+A healthy 60 FPS baseline looks like this - one dominant bucket, thin tails:
+
+```
+--- frame-time histogram | window 0.0s..30.0s | 1720 frames | mean 17.44 ms ---
+   16 ms |   1625 ################################################
+   17 ms |     32 #
+```
+
+The GPU counters are single-frame samples taken at the report boundary, not
+per-second totals, so treat one line as a spot check and the trend across lines
+as the signal. `substep r24` is a rate-invariance check: it must NOT change
+with `fps_limit`.
 
 ---
 

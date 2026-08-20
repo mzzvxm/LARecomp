@@ -639,12 +639,12 @@ void CvarSetDouble(const char* name, double v) {
 // cycles the item's cvar to its next value; labels are rebuilt from the live
 // cvar value on every render, so F4-side changes show up too.
 
-enum class ItemKind { kBool, kStrCycle, kDblCycle, kSave, kCarbonBit };
+enum class ItemKind { kBool, kStrCycle, kDblCycle, kCarbonBit };
 
 struct ItemDef {
     const char* key;      // guest state name + string-table key (unique!)
     ItemKind kind;
-    const char* cvar;     // ignored for kSave
+    const char* cvar;     // ignored for kCarbonBit
     const char* prefix;   // label prefix, e.g. "FULLSCREEN: "
     const char* suffix;   // e.g. " (RESTART)"
     bool inverted;        // kBool: cvar true renders as OFF (disable_* cvars)
@@ -677,11 +677,6 @@ constexpr ItemDef Dbl(const char* key, const char* cvar, const char* prefix,
                       const char* suffix = "", const char* zero_label = nullptr) {
     return {key, ItemKind::kDblCycle, cvar, prefix, suffix, false,
             nullptr, nullptr, n, vals, fmt, zero_label};
-}
-
-constexpr ItemDef Save(const char* key) {
-    return {key, ItemKind::kSave, nullptr, "", "", false,
-            nullptr, nullptr, 0, nullptr, nullptr};
 }
 
 // Carbon fiber part group. Unlike every other item here this one is NOT
@@ -974,7 +969,6 @@ int ItemValueCount(const ItemDef& it) {
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kStrCycle:
     case ItemKind::kDblCycle:  return it.nvals;
-    case ItemKind::kSave:      return 0;
     }
     return 0;
 }
@@ -990,7 +984,6 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
         std::snprintf(buf, sizeof(buf), it.dfmt, it.dvals[i]);
         return buf;
     }
-    case ItemKind::kSave: break;
     }
     return "";
 }
@@ -1009,7 +1002,6 @@ int ItemValueIndex(const ItemDef& it) {
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle:
         return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
-    case ItemKind::kSave: break;
     }
     return 0;
 }
@@ -1040,18 +1032,12 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         if (CarbonHaveCar() && (CarbonHasGroup(uint8_t(it.nvals)) ? 1 : 0) != i)
             CarbonToggleGroup(uint8_t(it.nvals));
         break;
-    case ItemKind::kSave:
-        break;
     }
 }
 
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
 std::string ItemRowLabel(const ItemDef& it) {
-    if (it.kind == ItemKind::kSave)
-        return g_settings_saved.load(std::memory_order_relaxed)
-                   ? "SETTINGS SAVED!" : "SAVE SETTINGS";
-
     std::string label = it.prefix;
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
@@ -1087,14 +1073,6 @@ void ApplyItem(const ItemDef& it, int dir) {
         // save carries it, so there is nothing to write to larecomp.toml.
         CarbonToggleGroup(uint8_t(it.nvals));
         break;
-    case ItemKind::kSave: {
-        auto config_path =
-            rex::filesystem::GetExecutableFolder() / "larecomp.toml";
-        rex::cvar::SaveConfig(config_path);
-        g_settings_saved.store(true, std::memory_order_relaxed);
-        MC_INFO("[pause-menu] settings saved to {}", config_path.string());
-        break;
-    }
     }
 }
 
@@ -1214,11 +1192,7 @@ bool BuildNativeRows(int m) {
         if (!name || !row) return false;
         std::memset(base + row, 0, kRowObjectSize);
 
-        if (it.kind == ItemKind::kSave) {
-            // No value list: a plain label row (0x8208DACC), which renders
-            // through sub_82631C08 and draws no arrows.
-            CallGuestFn3(kLabelRowCtorFn, row, name, 0);
-        } else if (ItemIsToggle(it)) {
+        if (ItemIsToggle(it)) {
             CallGuestFn3(kLabelRowCtorFn, row, name, 0);
             WriteGuestBE32(row, kToggleRowVtable);
             WriteGuestU8(row + kRowChecked, uint8_t(ItemValueIndex(it)));
@@ -1235,7 +1209,7 @@ bool BuildNativeRows(int m) {
         nr.name[i]       = name;
         nr.last_index[i] = ItemIsToggle(it) ? ItemValueIndex(it) : 0;
         nr.last_label[i] = label;
-        if (it.kind != ItemKind::kSave && !ItemIsToggle(it))
+        if (!ItemIsToggle(it))
             CentreRowWindow(nr, i, it, ItemValueIndex(it));
         WriteGuestBE32(arr + uint32_t(4 * i), row);
     }
@@ -1289,8 +1263,6 @@ void SyncNativeRowsFromCvars(int m) {
         const ItemDef& it = md.items[i];
         RelabelRow(nr, i, it);
 
-        if (it.kind == ItemKind::kSave) continue;
-
         const int idx = ItemValueIndex(it);
         if (ItemIsToggle(it)) {
             nr.last_index[i] = idx;
@@ -1312,11 +1284,10 @@ void PollNativeRows(int m) {
     for (int i = 0; i < nr.count && i < md.num_items; ++i) {
         const ItemDef& it = md.items[i];
 
-        // SAVE tracks g_settings_saved, carbon tracks whether there is a car
-        // to edit — both change without the row being touched.
-        if (it.kind == ItemKind::kSave || it.kind == ItemKind::kCarbonBit)
+        // Carbon tracks whether there is a car to edit, which changes
+        // without the row being touched.
+        if (it.kind == ItemKind::kCarbonBit)
             RelabelRow(nr, i, it);
-        if (it.kind == ItemKind::kSave) continue;
 
         const int n = ItemValueCount(it);
         if (n <= 0) continue;

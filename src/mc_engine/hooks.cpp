@@ -26,6 +26,7 @@
 #endif
 #include <rex/chrono/clock.h>
 #include <rex/runtime.h>
+#include <rex/perf/counter.h>
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -2668,6 +2669,216 @@ static void EnforceFrameLimit() {
     if (next_us < after) next_us = after + static_cast<uint64_t>(period_us);
 }
 
+// ── Frame-time instrumentation ─────────────────────────────────────────
+//
+// Off unless MCLA_TIMING_LOG=1, so normal play pays one already-resolved bool
+// test per frame. Ported from the midnightclub fork, which had it while this
+// build did not - a performance collapse here previously left nothing in the
+// log to diagnose it.
+//
+// Accumulates into counters and touches the filesystem at most once per
+// second, never from inside a frame that is already late.
+//
+// The guest timer object is at 0x827D7500, so its struct offsets map onto
+// absolute addresses. [r3+8] is the published frame delta, already used by the
+// camera and chassis hooks.
+constexpr uint32_t kGuestFrameDelta  = 0x827D7508;  // [r3+8]
+constexpr uint32_t kGuestFrameRate   = 0x827D750C;  // [r3+12]
+constexpr uint32_t kGuestAccumA      = 0x827D7514;  // [r3+20]
+constexpr uint32_t kGuestAccumB      = 0x827D7518;  // [r3+24]
+constexpr uint32_t kGuestTimeScale   = 0x827D7554;  // [r3+84]
+
+// 1 ms buckets; the last bucket is everything at or above it.
+constexpr int kHistBuckets = 121;
+constexpr double kHistogramWindowSec = 30.0;
+
+bool TimingLogEnabled() {
+    static const bool enabled = [] {
+        const char* e = std::getenv("MCLA_TIMING_LOG");
+        return e && *e == '1';
+    }();
+    return enabled;
+}
+
+// Substep count, published by Patch_DeltaTime. The loop makes r24+1 passes.
+std::atomic<int32_t> g_substep_last{-999};
+// How often the loc_821BDB90 fixed-step path ran; published by MCLAFixedStepPath.
+std::atomic<uint64_t> g_fixedstep_hits{0};
+
+void RecordFrameTime() {
+    if (!TimingLogEnabled()) return;
+
+    // Every static below is non-atomic, so confine the bookkeeping to the
+    // thread that first got here rather than racing across callers.
+    static const std::thread::id owner = std::this_thread::get_id();
+    if (std::this_thread::get_id() != owner) return;
+
+    // One file per run: a fixed name opened with "w" would destroy the
+    // previous capture on the next launch.
+    static std::FILE* log = [] () -> std::FILE* {
+        std::error_code ec;
+        std::filesystem::create_directories("logs", ec);
+        std::time_t t = std::time(nullptr);
+        std::tm tm{};
+        localtime_s(&tm, &t);
+        char name[160];
+        std::snprintf(name, sizeof(name),
+                      "logs/timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
+                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                      tm.tm_hour, tm.tm_min, tm.tm_sec,
+                      int(REXCVAR_GET(fps_limit)));
+        return std::fopen(name, "w");
+    }();
+    if (!log) return;
+
+    static uint64_t last = 0, frames = 0, last_report = 0;
+    static uint64_t start = 0, last_hist = 0;
+    static uint32_t spikes[4] = {};
+    static uint32_t hist[kHistBuckets] = {};
+    static uint64_t hist_frames = 0, hist_total_us = 0;
+    static float prev_accum_a = 0.0f, prev_accum_b = 0.0f;
+
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    if (last != 0) {
+        const uint64_t d = now - last;
+        if (d > 100000) spikes[3]++;
+        else if (d > 50000) spikes[2]++;
+        else if (d > 33000) spikes[1]++;
+        else if (d > 20000) spikes[0]++;
+
+        int bucket = static_cast<int>(d / 1000);
+        if (bucket >= kHistBuckets) bucket = kHistBuckets - 1;
+        hist[bucket]++;
+        hist_frames++;
+        hist_total_us += d;
+    }
+    last = now;
+    if (start == 0) { start = now; last_hist = now; last_report = now; }
+
+    bool wrote = false;
+    frames++;
+
+    if (now - last_report >= 1000000) {
+        wrote = true;
+        auto* membase = rex::Runtime::instance()->virtual_membase();
+
+        // Use the ACTUAL elapsed interval, not an assumed 1000 ms: the report
+        // fires on the first frame at or past the boundary, so the real window
+        // is typically 1000-1035 ms and assuming 1000 biases the mean low.
+        const double window_ms = (now - last_report) / 1000.0;
+        const double measured_dt_ms = frames ? window_ms / frames : 0.0;
+        const float engine_dt  = membase ? ReadGuestF32(membase, kGuestFrameDelta) : 0.0f;
+        const float engine_fps = membase ? ReadGuestF32(membase, kGuestFrameRate) : 0.0f;
+
+        std::fprintf(log,
+            "[%6.1fs] fps=%llu  spikes: >20ms=%u >33ms=%u >50ms=%u >100ms=%u"
+            "  | measured_dt=%.2fms  engine_dt=%.2fms (%.1f fps)  ratio=%.2f\n",
+            (now - start) / 1e6, static_cast<unsigned long long>(frames),
+            spikes[0], spikes[1], spikes[2], spikes[3],
+            measured_dt_ms, engine_dt * 1000.0f, engine_fps,
+            (engine_dt > 0.0f) ? (measured_dt_ms / (engine_dt * 1000.0f)) : 0.0);
+
+        // Where the frame actually went. These separate a GPU-bound collapse
+        // (fence wait, submit), a shader/pipeline stall (pipeline create), and
+        // streaming thrash (texture upload, cache misses) from a guest-CPU
+        // bottleneck - which is the point of having this file at all.
+        {
+            using rex::perf::CounterId;
+            using rex::perf::GetCounter;
+            std::fprintf(log,
+                "           gpu us: submit=%lld draw=%lld fencewait=%lld resolve=%lld"
+                " pipeline=%lld (create %lld us x%lld)  texupload=%lld us x%lld\n",
+                (long long)GetCounter(CounterId::kGpuSubmitTimeUs),
+                (long long)GetCounter(CounterId::kGpuDrawTimeUs),
+                (long long)GetCounter(CounterId::kGpuFenceWaitTimeUs),
+                (long long)GetCounter(CounterId::kGpuResolveTimeUs),
+                (long long)GetCounter(CounterId::kGpuPipelineTimeUs),
+                (long long)GetCounter(CounterId::kGpuPipelineCreateTimeUs),
+                (long long)GetCounter(CounterId::kGpuPipelineCreateCount),
+                (long long)GetCounter(CounterId::kGpuTextureUploadTimeUs),
+                (long long)GetCounter(CounterId::kGpuTextureUploadCount));
+            std::fprintf(log,
+                "           cache: tex hit=%lld miss=%lld | pipeline hit=%lld miss=%lld"
+                " | draws=%lld verts=%lld\n",
+                (long long)GetCounter(CounterId::kTextureCacheHits),
+                (long long)GetCounter(CounterId::kTextureCacheMisses),
+                (long long)GetCounter(CounterId::kPipelineCacheHits),
+                (long long)GetCounter(CounterId::kPipelineCacheMisses),
+                (long long)GetCounter(CounterId::kDrawCalls),
+                (long long)GetCounter(CounterId::kVerticesProcessed));
+            std::fprintf(log,
+                "           sys: cmdbuf_stalls=%lld crit_contentions=%lld apc_depth=%lld"
+                " threads=%lld | xma=%lld audio_lat_us=%lld qdepth=%lld\n",
+                (long long)GetCounter(CounterId::kCommandBufferStalls),
+                (long long)GetCounter(CounterId::kCriticalRegionContentions),
+                (long long)GetCounter(CounterId::kApcQueueDepth),
+                (long long)GetCounter(CounterId::kActiveThreads),
+                (long long)GetCounter(CounterId::kXmaFramesDecoded),
+                (long long)GetCounter(CounterId::kAudioFrameLatencyUs),
+                (long long)GetCounter(CounterId::kBufferQueueDepth));
+        }
+
+        // Do the engine's accumulated-time totals still advance? A NEGATIVE
+        // delta means the engine reset them at a level or race transition, not
+        // that they stalled - so only flag near-zero-with-no-change.
+        const float accum_a = membase ? ReadGuestF32(membase, kGuestAccumA) : 0.0f;
+        const float accum_b = membase ? ReadGuestF32(membase, kGuestAccumB) : 0.0f;
+        const float da = accum_a - prev_accum_a;
+        const int32_t sub = g_substep_last.load(std::memory_order_relaxed);
+        std::fprintf(log,
+            "           ACCUM [r3+20]=%.4f (+%.4f/s)  [r3+24]=%.4f (+%.4f/s)"
+            "  timescale=%.3f  substep r24=%d (%d passes)  fixedstep=%llu  %s\n",
+            accum_a, da, accum_b, accum_b - prev_accum_b,
+            membase ? ReadGuestF32(membase, kGuestTimeScale) : 0.0f,
+            sub, sub >= 0 ? sub + 1 : -1,
+            static_cast<unsigned long long>(
+                g_fixedstep_hits.exchange(0, std::memory_order_relaxed)),
+            (da >= -0.001f && da < 0.001f) ? "<-- FROZEN" : "");
+
+        prev_accum_a = accum_a;
+        prev_accum_b = accum_b;
+        frames = 0;
+        last_report = now;
+        spikes[0] = spikes[1] = spikes[2] = spikes[3] = 0;
+    }
+
+    if (now - last_hist >= kHistogramWindowSec * 1000000) {
+        wrote = true;
+        uint32_t peak = 1;
+        for (int i = 0; i < kHistBuckets; ++i)
+            if (hist[i] > peak) peak = hist[i];
+
+        std::fprintf(log,
+            "\n--- frame-time histogram | window %.1fs..%.1fs | %llu frames | mean %.2f ms ---\n",
+            (last_hist - start) / 1e6, (now - start) / 1e6,
+            static_cast<unsigned long long>(hist_frames),
+            hist_frames ? (hist_total_us / 1000.0 / hist_frames) : 0.0);
+
+        for (int i = 0; i < kHistBuckets; ++i) {
+            if (!hist[i]) continue;  // omit empty buckets so clustering shows
+            int bar = static_cast<int>(48.0 * hist[i] / peak);
+            if (bar < 1) bar = 1;
+            std::fprintf(log, "%s%3d ms | %6u %.*s\n",
+                         i == kHistBuckets - 1 ? ">=" : "  ", i, hist[i],
+                         bar, "################################################");
+        }
+        std::fprintf(log, "\n");
+
+        for (int i = 0; i < kHistBuckets; ++i) hist[i] = 0;
+        hist_frames = 0;
+        hist_total_us = 0;
+        last_hist = now;
+    }
+
+    // Flush only on frames that actually wrote. Flushing every frame would put
+    // a blocking disk write in the hot path - the bug this was rewritten to
+    // avoid in the midnightclub fork.
+    if (wrote) std::fflush(log);
+}
+
 // BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
 // 0x821BDAB0: runs after subf r8,r10,r11 in sub_821BDA90.
 // Clamps max ticks and runs precision limiter.
@@ -2715,6 +2926,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // midnightclub fork calls both unconditionally for the same reason.
     EnforceFrameLimit();
     UpdateCityLODMemory();
+    RecordFrameTime();
 }
 
 // BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
@@ -2748,6 +2960,8 @@ bool MCLAUseRealDelta() {
 // publishes the real frame time down this path too.
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
     if (!REXCVAR_GET(real_frame_delta)) return;
+    if (TimingLogEnabled())
+        g_fixedstep_hits.fetch_add(1, std::memory_order_relaxed);
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     f11.f64 = static_cast<double>(ReadGuestF32(base, static_cast<uint32_t>(r3.u64) + 0x58));
@@ -2778,7 +2992,11 @@ void Patch_DeltaTimePre() {
 // on its own (sub_821BD910) and r24 = 0 would clear the sub-tick gate at
 // 0x827D754C and freeze physics.
 void Patch_DeltaTime(PPCRegister& r24) {
-    (void)r24;
+    // Read-only: r24 must NOT be modified (see above). Publishing it costs
+    // nothing and lets the timing log report the substep pass count, which is
+    // the rate-invariance check - the value must not change with fps_limit.
+    if (TimingLogEnabled())
+        g_substep_last.store(static_cast<int32_t>(r24.s32), std::memory_order_relaxed);
 }
 
 // 0x823126A4: `bl sub_8230D988` inside the sun-cascade shadow phase (phase bit
@@ -2886,7 +3104,7 @@ static void ApplyCameraSmoothing(PPCRegister& reg) {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    const float dt = ReadGuestF32(base, 0x827D7508);
+    const float dt = ReadGuestF32(base, kGuestFrameDelta);
     const double raw_k = reg.f64;
     if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
 
@@ -2912,7 +3130,7 @@ void MCLAChassisDepthSmoothing(PPCRegister& f0) {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    const float dt = ReadGuestF32(base, 0x827D7508);
+    const float dt = ReadGuestF32(base, kGuestFrameDelta);
     if (dt > 0.0f) {
         f0.f64 = 1.0 - std::pow(0.90, static_cast<double>(dt) * 30.0);
     }
