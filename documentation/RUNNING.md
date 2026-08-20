@@ -29,9 +29,11 @@ Those first two are different things and the pause menu lists them separately:
 | **FPS LIMIT** (`fps_limit`) | The actual frame rate cap - 30 / 60 / 120 / 144 / uncapped. A wall-clock limiter, so frame times stay evenly spaced. |
 
 Turning REAL FRAME DELTA off returns the engine to its original 30 Hz fixed
-timestep. The per-frame hitch clamp stays active either way - it is deliberately
-not tied to this option, since an unbounded delta after a streaming stall can
-reach the physics and audio clocks at any frame rate.
+timestep. Three things stay active either way, because they are independent of
+it: the per-frame hitch clamp (an unbounded delta after a streaming stall can
+reach the physics and audio clocks at any frame rate), the FPS LIMIT cap, and
+the CITY LOD scale. Earlier builds gated all three behind this option, so
+turning it off silently disabled the frame cap and the LOD slider as well.
 
 The simulation timestep, chase camera lag, suspension travel, and ground-depth damping use continuous-time exponential decay calibrated to the 30 FPS console reference curve. Vehicle handling and camera behaviour remain consistent at 30, 60, 120, and 144 FPS.
 
@@ -39,7 +41,7 @@ The simulation timestep, chase camera lag, suspension travel, and ground-depth d
 
 Press Start or Escape, navigate to **Options**, and select the ReXGlue / Recomp settings rows to adjust parameters live:
 - **REAL FRAME DELTA**: Feeds the simulation the measured frame time instead of the stock 30 Hz fixed timestep. Required for correct physics, camera, and traffic above 30 FPS. This is not a frame rate cap - see FPS LIMIT below.
-- **FPS LIMIT**: Sets the wall-clock frame cap (0 = uncapped, 30, 60, 120, 144, 240).
+- **FPS LIMIT**: Sets the wall-clock frame cap. Selectable values are 30, 60, 120, 144, and UNCAPPED.
 - **SUSPENSION FIX**: Enables continuous-time chassis depth and suspension damping.
 - **DEPTH OF FIELD**: Toggles full-screen DoF blur (disabled by default for clarity and performance).
 - **CITY / TRAFFIC LOD**: Adjusts geometry and vehicle draw distance multipliers.
@@ -56,12 +58,19 @@ $env:MCLA_FPS_CAP="60"; Start-Process larecomp.exe
 # Force stock 30 FPS console behavior
 $env:MCLA_FPS_CAP="30"; Start-Process larecomp.exe
 
-# Override city building LOD scale (0.1 to 10.0)
-$env:MCLA_LOD_CITY_SCALE="0.75"; Start-Process larecomp.exe
+# Point at a specific game data directory
+$env:MCLA_GAME_DATA="E:\MCLA\MCLA_Game_Files"; Start-Process larecomp.exe
 
-# Override camera smoothing scale multiplier
-$env:MCLA_CAMERA_SMOOTH_SCALE="1.0"; Start-Process larecomp.exe
+# Raise or lower the per-frame hitch clamp, in ms (clamped to 16-1000)
+$env:MCLA_MAX_FRAME_MS="125"; Start-Process larecomp.exe
 ```
+
+City LOD scale and camera smoothing are **cvars, not environment variables** -
+set them from the pause menu (`lod_city_scale`, `chase_cam_smoothing_factor`).
+The full list of variables this build actually reads is written to
+`logs/effective_config.txt` on every launch, under
+`=== env overrides (only vars this build reads) ===`, with the cvar-only
+settings listed separately below it.
 
 The internal frame limiter uses thread-pinned wall-clock accumulation with 1 ms timer precision (`timeBeginPeriod(1)`), coarse sleep, and yield-spinning. This avoids the 15.625 ms quantization grid inherent to vblank synchronization.
 
@@ -112,7 +121,7 @@ E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecom
 
 - **`assets/` or `MCLA_Game_Files/`**: Game archive files (`default.xex`, `xarchive_cache.rpf`, `xarchive_audio.rpf`).
 - **`user_data/`**: Stores save profiles and player progression. Delete the profile folder here to reset save data.
-- **`logs/`**: Rolling log files (`logs/larecomp_001.log`, up to 10 rotated 20MB files), `logs/effective_config.txt`, and timing logs.
+- **`logs/`**: Rolling log files (`logs/larecomp_001.log`, up to 10 rotated 20MB files) and `logs/effective_config.txt`.
 - **`stubs.txt`**: Records calls to unmapped guest functions for diagnostic triage.
 
 ---
@@ -120,10 +129,15 @@ E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecom
 ## Diagnostic Logs
 
 - **`logs/larecomp_NNN.log`**: Standard game log output with sequential index rolling.
-- **`logs/effective_config.txt`**: Dumps active CVAR values, GPU limits, and environment variable states sampled during `OnPostSetup`.
-- **`logs/timing_<date>_<time>_cap<N>.log`**: Generated when `MCLA_TIMING_LOG=1`. Contains frame time distributions, spike counters, and simulated time rate verification.
-- **`stubs.txt`**: Deduplicated record of unregistered guest function addresses hit at runtime.
-- **`crash_stack.txt`**: Call stack recorded by the crash handler on abnormal termination.
+- **`logs/effective_config.txt`**: Dumps active cvar values, GPU flag results (each marked `ok` or `FAIL`), and environment variable states, written during `OnPostSetup`.
+- **`stubs.txt`**: Deduplicated record of unregistered guest function addresses hit at runtime. An empty file means nothing was missed.
+- Crash diagnostics: the SEH / SIGABRT handler in `crash_handler.cpp` writes the
+  resolved call stack into the **normal log file**, not a separate file.
+
+> **No frame-time instrumentation.** Unlike the midnightclub fork, this build has
+> no `MCLA_TIMING_LOG`, frame-time histogram, or SIM RATE check. A performance
+> collapse therefore leaves nothing in the log to diagnose it. Porting that
+> instrumentation across is tracked as an outstanding task.
 
 ---
 
@@ -146,7 +160,7 @@ E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecom
 | 2x game speed at 60 FPS | Engine timer overwriting measured delta with 30 Hz constant | Hook `MCLAUseRealDelta` at `0x821BDB58` (jump to `0x821BDC34`) and `MCLAFixedStepPath` at `0x821BDB90` (`[r3+0x58]`) |
 | Frozen accumulated time | Bypassing the entire timer block froze `[r3+20]` / `[r3+24]` accumulators | Narrowed hook entry to `0x821BDB58` so time accumulator increments run normally |
 | Frame time jitter and racing | Timer function called concurrently across worker threads | Thread-pinned cadence accumulator (`EnforceFrameLimit`) bound to primary thread id |
-| Frame burst after streaming pause | Time accumulator building large delta during background load | Bound per-frame tick delta to 125 ms maximum via `MCLAFrameDelta` at `0x821BDAB0` |
+| Frame burst after streaming pause | Time accumulator building large delta during background load | Bound per-frame tick delta via `MCLAFrameDelta` at `0x821BDAB0` (125 ms default, `MCLA_MAX_FRAME_MS`, clamped to 16-1000 ms) |
 | Chase camera snapping at 60 FPS | Camera chase step using per-frame factor instead of continuous time | Continuous-time exponential decay `1.0 - pow(1.0 - k30, dt * 30.0 * scale)` at `0x82320468` and `0x823204F4` |
 | Suspension jitter on sharp turns | Ground depth filter stepping discrete alpha at variable frame rates | Continuous-time depth decay `1.0 - pow(0.90, dt * 30.0)` at `0x82563720` |
 | Donut animation skipping | Artificial steering sensitivity divisor applied on top of real delta | Removed redundant `Patch_SteeringSensitivity` hook |
@@ -157,6 +171,6 @@ E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecom
 | :--- | :--- | :--- |
 | Excessive DoF blur | Full-screen blur pass active during gameplay and photo mode | Zero Circle-of-Confusion vector at `dofObj + 0xF0` in `Patch_DofComposite` (`0x8260EBB8`). Defaulted to disabled |
 | Downtown FPS drops | High draw call count and geometry density in city core | Base LOD distance scaled dynamically via `UpdateCityLODMemory` at `0x827E0DE0` |
-| Pedestrian / traffic crowding | Hardcoded spawn caps causing entity queue pressure at 60 FPS | Ambient density tuning hook at `0x826F4E3C` scaling spawn, unspawn, cull, and pedestrian densities |
+| Pedestrian / traffic crowding | Hardcoded spawn caps causing entity queue pressure at 60 FPS | Ambient density tuning hook at `0x826F5CA0` (mcAmbientDensityTuning constructor epilogue, `r3`) scaling spawn, unspawn, cull, pedestrian and parked-car densities across all 32 zones |
 | Audio crackle on multicore hosts | Cache flush loop (`FlushDataCache`, `0x821D5510`) skipping memory barrier | Replace 540,000 emulated `dcbf`/`dcbst` loop iterations with a single `std::atomic_thread_fence(memory_order_seq_cst)` |
 | Texture cache eviction during driving | Default GPU cache budgets too low for high-resolution rendering | Texture limits increased to 1536MB soft / 2048MB hard in `OnPostSetup` |
