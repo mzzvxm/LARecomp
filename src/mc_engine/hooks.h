@@ -79,7 +79,7 @@ void MCLAChassisDepthSmoothing(PPCRegister& f0);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the
 // constructor is pointless -- the parse overwrites it), once per ambient zone;
 // r31 is the zone, whose base IS the mcAmbientDensityTuning.
-void MCLAAmbientDensityTuning(PPCRegister& r31);
+void MCLAAmbientDensityTuning(PPCRegister& r3);
 
 // Traffic (va_) vehicles used as player cars: the chassis-bound substitution. See
 // hooks.cpp for the full story; the register pairs are (root-carrying reg, child reg).

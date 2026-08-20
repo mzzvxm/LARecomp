@@ -2621,8 +2621,18 @@ static void EnforceFrameLimit() {
         if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
         return -1;
     }();
+    // The pacing deadline. File-scope-static across calls, so it has to be
+    // reset when pacing is off - otherwise switching FPS LIMIT to UNCAPPED and
+    // back leaves a deadline minutes in the past. The catch-up clause at the
+    // bottom does recover from that in one frame, but relying on it means the
+    // stale value is load-bearing; clearing it here keeps the invariant simple.
+    static uint64_t next_us = 0;
+
     const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
-    if (limit <= 0) return;
+    if (limit <= 0) {
+        next_us = 0;
+        return;
+    }
 
     const double period_us = 1000000.0 / static_cast<double>(limit);
 
@@ -2630,7 +2640,6 @@ static void EnforceFrameLimit() {
     static const std::thread::id owner = std::this_thread::get_id();
     if (std::this_thread::get_id() != owner) return;
 
-    static uint64_t next_us = 0;
     auto now_us = [] {
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2698,8 +2707,12 @@ void MCLAFrameDelta(PPCRegister& r8) {
         r8.u64 = cap;
     }
 
-    // The rest is the high-frame-rate path and stays gated.
-    if (!REXCVAR_GET(real_frame_delta)) return;
+    // EnforceFrameLimit and UpdateCityLODMemory are NOT gated on
+    // real_frame_delta: they are independent settings that happen to be driven
+    // from this per-frame hook. Gating them meant turning REAL FRAME DELTA off
+    // also silently disabled the FPS LIMIT row and the CITY LOD slider, which
+    // is the cross-setting confusion this option was renamed to avoid. The
+    // midnightclub fork calls both unconditionally for the same reason.
     EnforceFrameLimit();
     UpdateCityLODMemory();
 }
@@ -2978,10 +2991,12 @@ static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
     want.parked = static_cast<float>(REXCVAR_GET(parked_car_scale));
 }
 
-// 0x826F4E3C, the instruction after the density_tuning.xml parse returns.
-// r31 is the ambient zone, i.e. the tuning object.
-void MCLAAmbientDensityTuning(PPCRegister& r31) {
-    const uint32_t a = static_cast<uint32_t>(r31.u64);
+// 0x826F5CA0, in the epilogue of the mcAmbientDensityTuning constructor
+// sub_826F5B18, after the last field write. r3 holds the ambient zone, i.e.
+// the tuning object. See larecomp_config.toml for why this is NOT hooked at
+// the density_tuning.xml parse - that path never executes.
+void MCLAAmbientDensityTuning(PPCRegister& r3) {
+    const uint32_t a = static_cast<uint32_t>(r3.u64);
     if (a == 0) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
@@ -3767,7 +3782,7 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {}
 void MCLACameraPosSmoothing(PPCRegister& f13) {}
 void MCLACameraLookAtSmoothing(PPCRegister& f0) {}
 void MCLAChassisDepthSmoothing(PPCRegister& f0) {}
-void MCLAAmbientDensityTuning(PPCRegister& r31) {}
+void MCLAAmbientDensityTuning(PPCRegister& r3) {}
 bool Patch_DisableImposterShadows(PPCRegister& r11) { return false; }
 void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}
