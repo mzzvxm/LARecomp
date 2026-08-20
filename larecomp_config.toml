@@ -25466,6 +25466,30 @@ name = "Patch_DeltaTime"
 registers = ["r24"]
 after_instruction = true
 
+# Pause Menu: null-guard for the list table adapter.
+#
+# sub_82661210 loads the list's table-source pointer from [list+0xC0] and
+# immediately dereferences it at +0xC with no null check:
+#
+#   0x82661268  lwz r30, 0xC0(r31)
+#   0x8266126C  mr  r3, r31
+#   0x82661270  lwz r29, 0xC(r30)     <-- faults when r30 == 0
+#
+# While a RexGlue submenu is open the native rows are installed by clearing
+# both higher-priority row sources (+0xC0 table, +0xC4 vhsm state) so the
+# renderer falls through to the widget array. That leaves +0xC0 legitimately
+# null, and this per-frame menu update path then crashes on it - observed as
+# "read of guest 0x0000000C" with sub_82661210 at the top of the stack.
+#
+# 0x82661290 is the function's OWN `li r3, 0` early-out, taken when nothing is
+# selected. Jumping there is the same "nothing to do" exit the game already
+# uses, and the stack frame is intact because the prologue has run.
+[[midasm_hook]]
+name = "MCLA_MenuListNullTableGuard"
+address = 0x8266126C
+registers = ["r30"]
+jump_address_on_true = 0x82661290
+
 # Pause Menu: intercept cancel_pressed to handle RexGlue submenu back navigation
 # r31 = pause menu controller (first arg of dispatch fn sub_82668660)
 # When in RexGlue submenu, pops the VHSM stack and returns to settings tab
@@ -25746,22 +25770,26 @@ registers = ["f0"]
 # BadassBaboon's Recomp Adjustments: Dynamic ambient traffic and pedestrian density tuning
 # mcAmbientDensityTuning is the BASE of the ambient zone, not a separate object:
 # sub_826F5CB0 calls its constructor as `sub_826F5B18(a1)` with its own `this`.
-# sub_826D8E70 builds 31 such zones (manager + 56476, stride 1484 dwords) and
-# each re-parses density_tuning.xml through sub_826F4CB8, so r31 there IS the
-# tuning object and 31 firings per load is expected.
+# sub_826D8E70 builds the 31 zones (manager + 56476, stride 1484 dwords) by
+# calling sub_826F5CB0 per zone, so the constructor is the per-zone entry point.
 #
-# The value the parse takes as its 4th argument is the shared class descriptor
-# from vtable slot 1 -- identical for all 31 zones -- NOT the instance. Writing
-# tuning fields through it corrupts a live RAGE structure.
+# This hook used to sit at 0x826F4E3C (`mr r3, r29`, just after the
+# density_tuning.xml parse in sub_826F4CB8) on the theory that the parse
+# overwrites whatever the constructor set. IDA disproves it: sub_826F4CB8 is
+# reached only from sub_826D89F0, NOT from sub_826D8E70, and sub_826F5CB0
+# contains no parse call at all. The old site never executed -- a 3 minute
+# gameplay session logged zero firings, while the midnightclub fork, which
+# hooks the constructor, reports real values every run.
 #
-# 0x826F4E3C: `mr r3, r29`, the instruction right after the parse returns. The
-# override must land here; hooking the constructor (sub_826F5B18) instead is
-# pointless because this parse overwrites every field it set.
+# 0x826F5CA0 is in the epilogue of sub_826F5B18, after `mr r3, r31` at
+# 0x826F5C80 has put the object in r3 and after the last field write
+# (`stfs f0, 0x98(r31)` at 0x826F5C90). __restfpr_25 touches only FPRs and
+# `ld r31` comes later, so r3 still holds the instance here.
 [[midasm_hook]]
 name = "MCLAAmbientDensityTuning"
-address = 0x826F4E3C
+address = 0x826F5CA0
 after_instruction = true
-registers = ["r31"]
+registers = ["r3"]
 
 
 # Custom MP3 radio (mc_engine/mp3custom).
