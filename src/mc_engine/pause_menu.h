@@ -9,6 +9,7 @@ bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4);
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4);
 bool Hook_PMLodTrafficClick(PPCRegister& r3, PPCRegister& r31);
 bool Hook_PopulateRedirect(PPCRegister& r3);
+bool MCLA_MenuListNullTableGuard(PPCRegister& r30);
 bool Hook_RexGlueCancel(PPCRegister& r31);
 bool Hook_FlashCommandLog(PPCRegister& r5);
 bool Hook_ListViewPopulate(PPCRegister& r3);

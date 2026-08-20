@@ -258,8 +258,12 @@ bool PatchStringTableEntry(const char* key, const char* text) {
     uint32_t hash = MCLAHashString(key);
     uint32_t buf  = HashMapLookup(table + 16, hash);
     if (!buf) {
-        MC_WARN("[pause-menu] entry '{}' not found (hash 0x{:08X}, table 0x{:08X})",
-                key, hash, table);
+        // Not a warning: the only real caller is EnsureStringTableText, which
+        // treats a miss as "create it instead". Logging an expected branch at
+        // warning level produced ~180 warnings per session and buried the ones
+        // that mattered. A null table (above) IS unexpected and still warns.
+        MC_DEBUG("[pause-menu] entry '{}' absent, will create (hash 0x{:08X}, table 0x{:08X})",
+                 key, hash, table);
         return false;
     }
 
@@ -775,7 +779,6 @@ const ItemDef kVideoItems[] = {
          kResVals, kResNames, 5, " (RESTART)"),
     Dbl ("PM_RxResScale",   "resolution_scale", "RES SCALE: ",
          kResScaleVals, 4, "%gX", " (RESTART)"),
-    Save("PM_RxSaveVideo"),
 };
 
 const ItemDef kRecompItems[] = {
@@ -793,7 +796,6 @@ const ItemDef kRecompItems[] = {
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
-    Save("PM_RxSaveRecomp"),
 };
 
 // Everything that trades image quality for framerate, in one place.
@@ -833,7 +835,6 @@ const ItemDef kPerfItems[] = {
     Dbl ("PM_RxBreakFps",    "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
          kBreakFpsVals, int(sizeof(kBreakFpsVals) / sizeof(kBreakFpsVals[0])),
          "%g", "", "STOCK"),
-    Save("PM_RxSavePerf"),
 };
 
 const ItemDef kFfxItems[] = {
@@ -845,7 +846,6 @@ const ItemDef kFfxItems[] = {
          "CAS SHARPNESS: ", kCasSharpVals, 5, "%g"),
     Dbl ("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
          "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g"),
-    Save("PM_RxSaveFfx"),
 };
 
 const ItemDef kCamItems[] = {
@@ -856,7 +856,6 @@ const ItemDef kCamItems[] = {
     Dbl ("PM_RxFov3P",        "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
     Str ("PM_RxFreecam",      "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
     Dbl ("PM_RxCamSpeed",     "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
-    Save("PM_RxSaveCam"),
 };
 
 const ItemDef kTodItems[] = {
@@ -871,7 +870,6 @@ const ItemDef kTodItems[] = {
     Str ("PM_RxWeather",  "weather", "WEATHER: ",
          kWeatherVals, kWeatherNames,
          int(sizeof(kWeatherVals) / sizeof(kWeatherVals[0]))),
-    Save("PM_RxSaveTod"),
 };
 
 // Carbon fiber parts. The retail game shipped the carbon code but not the
@@ -931,7 +929,10 @@ uint32_t g_pm_seen[64] = {};
 int g_pm_seen_count = 0;
 std::atomic<int>  g_active_menu{-1};                   // -1 = not in any submenu
 std::atomic<bool> g_menus_created{false};
-std::atomic<bool> g_settings_saved{false};             // "SETTINGS SAVED!" label state
+// False means a cvar moved since the last write, i.e. larecomp.toml is stale.
+// Starts clean: entering and leaving a submenu without touching anything
+// must not rewrite the file.
+std::atomic<bool> g_settings_saved{true};
 
 // ── Labels & clicks ────────────────────────────────────────────────────
 
@@ -2967,6 +2968,15 @@ bool Hook_PopulateRedirect(PPCRegister& r3) {
     return false;
 }
 
+// Null-guard for sub_82661210, which loads the list table-source pointer from
+// [list+0xC0] and dereferences it at +0xC with no null check. Our native rows
+// deliberately clear that field (see InstallNativeRows), so it is legitimately
+// null while a RexGlue submenu is open. Returning true jumps to 0x82661290,
+// the function's own `li r3, 0` early-out.
+bool MCLA_MenuListNullTableGuard(PPCRegister& r30) {
+    return r30.u32 == 0;
+}
+
 bool Hook_RexGlueCancel(PPCRegister& r31) {
     if (g_active_menu.load(std::memory_order_relaxed) < 0)
         return false;
@@ -2976,6 +2986,22 @@ bool Hook_RexGlueCancel(PPCRegister& r31) {
 
     uint32_t controller = static_cast<uint32_t>(r31.u64);
     RestoreTabDisplay(controller);
+
+    // Settings persist on the way out instead of through a SAVE SETTINGS row.
+    //
+    // Every cvar here already applies the instant it changes - the row only
+    // ever controlled whether larecomp.toml was rewritten, which is not a
+    // distinction worth a menu entry. Writing on each change was the other
+    // option and is worse: SaveConfig rewrites the whole file, and scrubbing a
+    // slider moves a value several times a second, so it would put a full file
+    // write in the middle of gameplay. Saving once per submenu visit, and only
+    // when something actually moved, costs one write and no menu row.
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) {
+        auto config_path =
+            rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+        rex::cvar::SaveConfig(config_path);
+        MC_INFO("[pause-menu] settings saved to {}", config_path.string());
+    }
 
     MC_INFO("[pause-menu] left RexGlue submenu");
     return true;
@@ -3001,5 +3027,6 @@ void Hook_CarbonUiTick(PPCRegister& r3) {}
 void CarbonOnStateActivate(const char* name, uint32_t state) {}
 bool Hook_FlashCommandLog(PPCRegister& r5) { return false; }
 bool Hook_PopulateRedirect(PPCRegister& r3) { return false; }
+bool MCLA_MenuListNullTableGuard(PPCRegister& r30) { return false; }
 bool Hook_RexGlueCancel(PPCRegister& r31) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET
