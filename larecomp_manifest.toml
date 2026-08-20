@@ -3,7 +3,7 @@ sdk_version = "0.10.0"
 name = "larecomp"
 
 [entrypoint]
-file_path = "out/build/win-amd64-release/assets/default.xex"
+file_path = "../MCLA_Game_Files/default.xex"
 out_directory_path = "generated"
 includes = [
   "larecomp_config.toml",
