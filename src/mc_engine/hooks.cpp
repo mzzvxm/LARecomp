@@ -452,29 +452,38 @@ REXCVAR_DEFINE_BOOL(capture_vinyl_shapes, false, "MCLA/Garage",
 
 // Function to apply/revert the Aspect Ratio patch in GPU memory
 static void ApplyAspectRatioPatch(std::string_view ratio) {
-    extern uint8_t* g_guest_mem;
-    if (!g_guest_mem) return;
-    
-    uint8_t* patch_ptr = g_guest_mem + 0x8201E7EC;
-    
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+
+    constexpr uint32_t addr = 0x8201E7EC;
+    if (auto* heap = mem->LookupHeap(addr)) {
+        heap->Protect(addr, sizeof(uint32_t),
+                      rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+    }
+
+    auto* patch_ptr = mem->TranslateVirtual<uint8_t*>(addr);
+    if (!patch_ptr) return;
+
     LARECOMP_APP_INFO("ApplyAspectRatioPatch called! Ratio: {}, Memory Before: {:02X} {:02X} {:02X} {:02X}", 
         ratio, patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
-    
+
     uint32_t val = 0x3FE38E39; // 16:9 Default (1.777777f)
     if (ratio == "16:10") {
-        val = 0x3FCCCCCD; // 16:10 (1.600000f) -> Adicionado aqui
+        val = 0x3FCCCCCD; // 16:10 (1.600000f)
     } else if (ratio == "21:9") {
         val = 0x40155555; // 21:9 (2.333333f)
     } else if (ratio == "32:9") {
         val = 0x40638E39; // 32:9 (3.555555f)
     }
-    
+
     // Write the 4 bytes in Big-Endian at the correct address
     patch_ptr[0] = (val >> 24) & 0xFF; // MSB
     patch_ptr[1] = (val >> 16) & 0xFF;
     patch_ptr[2] = (val >> 8)  & 0xFF;
     patch_ptr[3] = val         & 0xFF; // LSB
-    
+
     LARECOMP_APP_INFO("Memory After: {:02X} {:02X} {:02X} {:02X}", 
         patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
 }
