@@ -2621,7 +2621,7 @@ static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
     base[addr + 3] = be & 0xFF;
 }
 
-// BadassBaboon's Recomp Adjustments: Precision frame rate limiter
+// BadassBaboon's Recomp Adjustments: Rock-solid thread-pinned frame rate limiter
 static void EnforceFrameLimit() {
     int32_t limit = REXCVAR_GET(fps_limit);
     if (const char* cap_env = std::getenv("MCLA_FPS_CAP")) {
@@ -2629,25 +2629,39 @@ static void EnforceFrameLimit() {
     }
     if (limit <= 0) return;
 
-    using clock = std::chrono::steady_clock;
-    static auto last_frame_time = clock::now();
+    const double period_us = 1000000.0 / static_cast<double>(limit);
 
-    const auto target_duration = std::chrono::duration<double, std::micro>(1000000.0 / static_cast<double>(limit));
-    auto now = clock::now();
-    auto elapsed = now - last_frame_time;
+    // sub_821BDA90 has multiple callers across threads; bind limiter to main thread
+    static const std::thread::id owner = std::this_thread::get_id();
+    if (std::this_thread::get_id() != owner) return;
 
-    if (elapsed < target_duration) {
-        auto sleep_time = target_duration - elapsed;
-        if (sleep_time > std::chrono::milliseconds(2)) {
-            std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(sleep_time - std::chrono::milliseconds(1)));
+    static uint64_t next_us = 0;
+    auto now_us = [] {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+
+    uint64_t now = now_us();
+    if (next_us == 0) {
+        next_us = now + static_cast<uint64_t>(period_us);
+        return;
+    }
+
+    if (now < next_us) {
+        uint64_t remaining = next_us - now;
+        if (remaining > 1500) {
+            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1500));
         }
-        while (clock::now() - last_frame_time < target_duration) {
-#if defined(_M_X64) || defined(__x86_64__)
-            _mm_pause();
-#endif
+        while (now_us() < next_us) {
+            std::this_thread::yield();
         }
     }
-    last_frame_time = clock::now();
+
+    uint64_t after = now_us();
+    next_us += static_cast<uint64_t>(period_us);
+    if (next_us < after) next_us = after + static_cast<uint64_t>(period_us);
 }
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
@@ -2834,10 +2848,11 @@ static void ApplyCameraSmoothing(PPCRegister& reg) {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    const float dt = ReadGuestF32(base, 0x827D7508);
+    const float raw_dt = ReadGuestF32(base, 0x827D7508);
     const double raw_k = reg.f64;
-    if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
+    if (raw_k <= 0.0 || raw_k >= 1.0 || raw_dt <= 0.0f) return;
 
+    const float dt = std::clamp(raw_dt, 0.001f, 0.05f);
     const double k30 = 0.5 * raw_k;
     const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
     reg.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0 * scale);
@@ -2860,8 +2875,9 @@ void MCLAChassisDepthSmoothing(PPCRegister& f0) {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    const float dt = ReadGuestF32(base, 0x827D7508);
-    if (dt > 0.0f) {
+    const float raw_dt = ReadGuestF32(base, 0x827D7508);
+    if (raw_dt > 0.0f) {
+        const float dt = std::clamp(raw_dt, 0.001f, 0.05f);
         f0.f64 = 1.0 - std::pow(0.90, static_cast<double>(dt) * 30.0);
     }
 }
@@ -2887,7 +2903,9 @@ void MCLAChassisDepthSmoothing(PPCRegister& f0) {
 // override is computed from those, so re-parsing a zone never compounds the
 // scale the way the original code did.
 struct DensityTuningValues {
+    float spawn = 0.0f;
     float unspawn = 0.0f;
+    float cull = 0.0f;
     float ped = 0.0f;
     float parked = 0.0f;
 };
@@ -2902,19 +2920,31 @@ static bool g_density_applied_enabled = false;
 static DensityTuningValues g_density_applied;
 
 // Writes one zone. Caller holds g_density_mutex.
+// Offsets verified via rage::mcAmbientDensityTuning in mcla_rage_types.h:
+//   +0x08 = spawn_max
+//   +0x10 = unspawn_max
+//   +0x14 = cull_max
+//   +0x60 = ped_density (96)
+//   +0x98 = parked_factor (152)
 static void WriteDensityZone(uint8_t* base, uint32_t a, const DensityTuningValues& orig,
                              bool enabled, const DensityTuningValues& want) {
     if (!enabled) {
+        WriteGuestF32(base, a + 8, orig.spawn);
         WriteGuestF32(base, a + 16, orig.unspawn);
-        WriteGuestF32(base, a + 92, orig.ped);
+        WriteGuestF32(base, a + 20, orig.cull);
+        WriteGuestF32(base, a + 96, orig.ped);
         WriteGuestF32(base, a + 152, orig.parked);
         return;
     }
-    // Absolute metres, applied as given. The original code silently ignored any
-    // value above the stock 400, which made the upper half of the cvar's
-    // 100..600 range do nothing.
-    WriteGuestF32(base, a + 16, want.unspawn > 0.0f ? want.unspawn : orig.unspawn);
-    WriteGuestF32(base, a + 92, orig.ped * want.ped);
+    float unspawn_val = want.unspawn > 0.0f ? want.unspawn : orig.unspawn;
+    WriteGuestF32(base, a + 16, unspawn_val);
+    if (orig.spawn > 0.0f) {
+        WriteGuestF32(base, a + 8, orig.spawn * 0.75f);
+    }
+    if (orig.cull > 0.0f) {
+        WriteGuestF32(base, a + 20, orig.cull * 0.75f);
+    }
+    WriteGuestF32(base, a + 96, orig.ped * want.ped);
     WriteGuestF32(base, a + 152, orig.parked * want.parked);
 }
 
@@ -2943,8 +2973,10 @@ void MCLAAmbientDensityTuning(PPCRegister& r31) {
     // The parse just restored this zone to its XML values, so re-reading here
     // is what keeps the scale from compounding across reloads.
     DensityTuningValues orig;
+    orig.spawn = ReadGuestF32(base, a + 8);
     orig.unspawn = ReadGuestF32(base, a + 16);   // 400.0 stock
-    orig.ped = ReadGuestF32(base, a + 92);       // 0.007 stock
+    orig.cull = ReadGuestF32(base, a + 20);
+    orig.ped = ReadGuestF32(base, a + 96);       // 15.0 / XML stock
     orig.parked = ReadGuestF32(base, a + 152);   // 0.25 stock
     const bool first = g_density_orig.find(a) == g_density_orig.end();
     g_density_orig[a] = orig;
@@ -2958,7 +2990,7 @@ void MCLAAmbientDensityTuning(PPCRegister& r31) {
             "[Ambient Tuning] zone {} at 0x{:08X}: unspawn {:.1f} -> {:.1f}, "
             "ped {:.4f} -> {:.4f}, parked {:.2f} -> {:.2f}",
             g_density_orig.size(), a, orig.unspawn, ReadGuestF32(base, a + 16), orig.ped,
-            ReadGuestF32(base, a + 92), orig.parked, ReadGuestF32(base, a + 152));
+            ReadGuestF32(base, a + 96), orig.parked, ReadGuestF32(base, a + 152));
     }
 }
 
