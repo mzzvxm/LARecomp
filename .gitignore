@@ -1,17 +1,70 @@
-assets/
+# Build outputs
+out/
+build/
+bin/
+obj/
 generated/
 generated_xeo3/
-out/
+assets/
 tools/
-named_functions_ida.toml
+
+# Codegen & diagnostic logs
+codegen_err.txt
 debug_mcla.txt
 debug_la.txt
+stubs.txt
+crash_stack.txt
+stderr.txt
+stdout.txt
+timing_*.log
+effective_config*.txt
+*.log
+
+# Local runtime data & caches
+user_data/
+cache/
+logs/
+scratch/
+
+# Local configs & executables
 x360ce.exe
+named_functions_ida.toml
 larecomp_config-graine.toml
 
 # Local scratch: editor backups, archives, generated asset packs.
 *.bak
 *.rar
+.patch_backup/
+
+# IDA artefacts. The database lives outside this repo, but keep these patterns
+# in case anyone drops one in. .i64 in particular is ~100 MB.
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.idb
+
+# Game data — never commit copyrighted assets. You supply your own dump.
+*.xex
+*.rpf
+*.bik
+MCLA_Game_Files/
+
+# IDE & Editor files
+.vs/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+*.user
+*.suo
+*.userosv
+*.sln.docstates
+
+# OS generated files
+.DS_Store
+Thumbs.db
 
 # src/assets/ is source, not build output — the .rc embeds the icon from it.
 # The shader pack next to it is generated and far too big to version.
