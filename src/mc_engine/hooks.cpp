@@ -319,9 +319,9 @@ REXCVAR_DEFINE_DOUBLE(steering_sensitivity, 1.0, "MCLA/Controls",
     .range(0.2, 2.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// 0 by default: the presenter's own vsync already paces the frame, and the
-// limiter's final wait is a busy spin. Set it only when running with vsync off.
-REXCVAR_DEFINE_INT32(fps_limit, 0, "MCLA/Performance",
+// Default to 60 FPS: with vsync=false for low input lag and fast pacing,
+// the precision frame limiter caps to 60 FPS out-of-the-box.
+REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
     "Frame rate cap (0 = uncapped, 60 = 60 FPS, 120 = 120 FPS, 144 = 144 FPS).")
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -2624,6 +2624,9 @@ static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
 // BadassBaboon's Recomp Adjustments: Precision frame rate limiter
 static void EnforceFrameLimit() {
     int32_t limit = REXCVAR_GET(fps_limit);
+    if (const char* cap_env = std::getenv("MCLA_FPS_CAP")) {
+        limit = std::atoi(cap_env);
+    }
     if (limit <= 0) return;
 
     using clock = std::chrono::steady_clock;

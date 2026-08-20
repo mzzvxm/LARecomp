@@ -142,6 +142,9 @@ class LarecompApp : public rex::ReXApp {
     // BadassBaboon's Recomp Adjustments: vsync is false by default for maximum throughput (~30% higher framerate, eliminating 15.625ms quantization grid).
     const char* vs = getenv("MCLA_VSYNC");
     SetFlag("vsync", (vs && *vs) ? vs : "false");
+
+    const char* rr = getenv("MCLA_REFRESH_RATE");
+    SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
