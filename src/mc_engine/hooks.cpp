@@ -62,7 +62,11 @@ REXCVAR_DEFINE_BOOL(skip_intro, false, "MCLA/Patches", "Skip the intro videos to
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
-REXCVAR_DEFINE_BOOL(fps_60, true, "MCLA/Patches", "Increases vsync target to 60 FPS and enables deltatime.")
+REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
+    "Feeds the simulation the measured frame time instead of the engine's fixed "
+    "30 Hz timestep, and unlocks presentation from every-other-vblank. Required "
+    "for correct physics, camera and traffic above 30 FPS. This is NOT a frame "
+    "rate cap - see fps_limit for that.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
@@ -1861,7 +1865,7 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
 }
 
 bool Patch_60FPS_Jump() {
-    return REXCVAR_GET(fps_60);
+    return REXCVAR_GET(real_frame_delta);
 }
 
 // Single-tile predicated tiling — hook at 0x8217A700 in
@@ -2132,17 +2136,18 @@ void Patch_DebugCam(PPCRegister& r3) {
     MenuCam_NoteFreecam(px, py, pz, g_freecam_yaw, g_freecam_pitch);
 }
 
-// Intro/legals pacing at 60 FPS. The intro SWF is advanced by sub_821F9918
-// with a HARDCODED 1/60s per call (immune to any dt patch), and that function
-// runs twice per frame (present callback sub_821FC008 + main tick
-// sub_821FC588). At the console's 30 Hz that totals real time; at 60 Hz it's
-// exactly 2x. Skipping every other advance (jump to the 0x821F9A00 epilogue)
-// restores the original rate.
-bool Hook_IntroHalfRate() {
-    if (!REXCVAR_GET(fps_60)) return false;
-    static uint32_t call_count = 0;
-    return (call_count++ & 1) != 0;  // true = skip this advance
-}
+// Intro/legals pacing - deliberately NOT patched here.
+//
+// The previous Hook_IntroHalfRate skipped every other SWF advance, which is
+// only correct at exactly 60 FPS. With a configurable fps_limit (30 / 60 / 120 /
+// 144 / uncapped) it is wrong at every other setting: at 120 it still runs 2x
+// fast, at 30 it runs at half speed. It was removed from the midnightclub fork
+// for the same reason and is not being reintroduced.
+//
+// Playback pacing above 30 FPS is inherent to unlocking the engine's 30 Hz
+// design point. Verified in midnightclub by testing hard caps at 30, 45 and 60:
+// the movie speed is identical at all three, so it is not tied to present rate
+// and no frame-rate-based correction can fix it. Supported answer is skip_intro.
 
 // 0x82725100, in sub_827250A8's per-movie lighting pass. The game asks the movie
 // for its "lights" node and then uses the answer without checking it:
@@ -2186,7 +2191,7 @@ bool MCLA_UI_SkipMissingLights(PPCRegister& r3) {
 // RexGlue command processor ignores the guest swap interval (host vblank is a
 // fixed 60 Hz timer), so this is kept only for correctness of the swap packet.
 bool Patch_60FPS_Byte(PPCRegister& r11) {
-    if (REXCVAR_GET(fps_60)) {
+    if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
     }
@@ -2658,16 +2663,46 @@ static void EnforceFrameLimit() {
 // BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
 // 0x821BDAB0: runs after subf r8,r10,r11 in sub_821BDA90.
 // Clamps max ticks and runs precision limiter.
+// Upper bound on a single frame's delta, in guest timebase ticks.
+//
+// Tunable via MCLA_MAX_FRAME_MS, clamped to [16, 1000] ms. Previously hardcoded
+// to 125 ms while the env var was advertised in effective_config.txt but never
+// read.
+static uint64_t MaxFrameTicks() {
+    static const uint64_t ticks = [] {
+        double ms = 125.0;
+        if (const char* e = std::getenv("MCLA_MAX_FRAME_MS")) {
+            double v = std::atof(e);
+            if (v > 0.0) ms = v;
+        }
+        if (ms < 16.0) ms = 16.0;
+        if (ms > 1000.0) ms = 1000.0;
+        uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+        if (hz == 0) hz = 50000000;
+        return static_cast<uint64_t>(ms * 0.001 * static_cast<double>(hz));
+    }();
+    return ticks;
+}
+
 void MCLAFrameDelta(PPCRegister& r8) {
-    if (!REXCVAR_GET(fps_60)) return;
+    // The hitch clamp runs UNCONDITIONALLY, before any cvar check.
+    //
+    // It is the last line of defence against an unbounded delta reaching the
+    // physics and audio clocks after a streaming stall. In the midnightclub
+    // fork, removing it produced a very loud audio blowout, which is why it is
+    // deliberately not switchable there. Gating it behind real_frame_delta
+    // meant turning that option off also silently removed crash protection -
+    // the clamp is correct at 30 Hz too, since the guest's own fixed timestep
+    // never exceeds it.
+    const uint64_t cap = MaxFrameTicks();
+    if (r8.u64 > cap) {
+        r8.u64 = cap;
+    }
+
+    // The rest is the high-frame-rate path and stays gated.
+    if (!REXCVAR_GET(real_frame_delta)) return;
     EnforceFrameLimit();
     UpdateCityLODMemory();
-    uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
-    if (hz == 0) hz = 50000000;
-    uint64_t max_ticks = static_cast<uint64_t>(0.125 * static_cast<double>(hz));
-    if (r8.u64 > max_ticks) {
-        r8.u64 = max_ticks;
-    }
 }
 
 // BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
@@ -2689,10 +2724,10 @@ void MCLAFrameDelta(PPCRegister& r8) {
 //                 rewritten with the real delta instead.
 //
 // Returns true to take the jump. Baboon's build jumped unconditionally; gating
-// it on fps_60 is the only change, and it makes the cvar actually turn the whole
+// it on real_frame_delta is the only change, and it makes the cvar actually turn the whole
 // thing off instead of leaving half of it live.
 bool MCLAUseRealDelta() {
-    return REXCVAR_GET(fps_60);
+    return REXCVAR_GET(real_frame_delta);
 }
 
 // 0x821BDB90, after `lfs f11, 0x20(r3)` has loaded the fixed timestep. f11 feeds
@@ -2700,7 +2735,7 @@ bool MCLAUseRealDelta() {
 // replacing it with [r3+0x58] (the measured unscaled delta stored at 0x821BDAF8)
 // publishes the real frame time down this path too.
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
-    if (!REXCVAR_GET(fps_60)) return;
+    if (!REXCVAR_GET(real_frame_delta)) return;
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     f11.f64 = static_cast<double>(ReadGuestF32(base, static_cast<uint32_t>(r3.u64) + 0x58));
@@ -2712,7 +2747,7 @@ void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
 // frame, which is what caused traffic jitter and physics stutter. What is left
 // here is the per-frame housekeeping.
 void Patch_DeltaTimePre() {
-    TickVinylReadbackWindow();  // runs every frame regardless of fps_60
+    TickVinylReadbackWindow();  // runs every frame regardless of real_frame_delta
     TickVinylShapeCapture();    // hands-free shape-catalog sweep, if requested
     TickButtonPrompts();        // picks up a live button_prompts change
     TickCustomMusic();          // custom radio: volume + end-of-track advance
@@ -3703,7 +3738,6 @@ void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCReg
 bool Patch_EdramLimit(PPCRegister& r11) { return false; }
 bool Patch_DebugCamGate() { return false; }
 void Patch_DebugCam(PPCRegister& r3) {}
-bool Hook_IntroHalfRate() { return false; }
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
 bool Patch_60FPS_Byte(PPCRegister& r11) { return false; }
 bool Patch_DisableMotionBlur(PPCRegister& r3) { return false; }

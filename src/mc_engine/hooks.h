@@ -27,7 +27,6 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24);
 
 void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
-bool Hook_IntroHalfRate();
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28);
 bool Patch_EdramLimit(PPCRegister& r11);
 bool Patch_DebugCamGate();
@@ -98,7 +97,7 @@ bool Patch_DisableImposterShadows(PPCRegister& r11);
 // BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
 void MCLAFrameDelta(PPCRegister& r8);
 // The two fixed-timestep substitution paths in sub_821BDA90. MCLAUseRealDelta
-// jumps over loc_821BDB58 (0x821BDB58 -> loc_821BDC34) when fps_60 is on;
+// jumps over loc_821BDB58 (0x821BDB58 -> loc_821BDC34) when real_frame_delta is on;
 // MCLAFixedStepPath rewrites f11 on the loc_821BDB90 path, which that jump does
 // not cover.
 bool MCLAUseRealDelta();

@@ -25447,15 +25447,6 @@ name = "Hook_ControllerMenuKey"
 registers = ["r3", "r4"]
 jump_address_on_true = 0x8264D2B4
 
-# Intro pacing — sub_821F9918 advances the intro SWF a hardcoded 1/60s per
-# call and runs twice per frame; at 60 FPS that is 2x speed. Hook fires at the
-# start of the advance block (0x821F99DC) and skips every other call by
-# jumping to the function epilogue (0x821F9A00).
-[[midasm_hook]]
-address = 0x821F99DC
-name = "Hook_IntroHalfRate"
-jump_address_on_true = 0x821F9A00
-
 # Per-frame tick point, right after the clock update (sub_821BDA90). The delta
 # time itself is now handled at the clock source (MCLAFrameDelta /
 # MCLAUseRealDelta / MCLAFixedStepPath above); this hook only carries the per-frame

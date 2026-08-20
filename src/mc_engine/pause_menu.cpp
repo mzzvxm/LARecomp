@@ -783,7 +783,7 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
-    Bool("PM_RxFps60",       "fps_60",                   "60 FPS: "),
+    Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),

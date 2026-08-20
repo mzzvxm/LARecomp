@@ -19,7 +19,19 @@ On first launch, the game presents an ISO installation wizard if assets are miss
 
 ## Frame Rate and Timing Controls
 
-LARecomp runs at 60 FPS by default out of the box (`fps_60 = true`, `fps_limit = 60`, `vsync = false`).
+LARecomp runs at 60 FPS by default out of the box (`real_frame_delta = true`, `fps_limit = 60`, `vsync = false`).
+
+Those first two are different things and the pause menu lists them separately:
+
+| Setting | What it does |
+|---|---|
+| **REAL FRAME DELTA** (`real_frame_delta`) | Feeds the simulation the measured frame time instead of the engine's fixed 30 Hz timestep, and unlocks presentation from every-other-vblank. This is what makes physics, camera and traffic correct above 30 FPS. It is **not** a frame rate setting. |
+| **FPS LIMIT** (`fps_limit`) | The actual frame rate cap - 30 / 60 / 120 / 144 / uncapped. A wall-clock limiter, so frame times stay evenly spaced. |
+
+Turning REAL FRAME DELTA off returns the engine to its original 30 Hz fixed
+timestep. The per-frame hitch clamp stays active either way - it is deliberately
+not tied to this option, since an unbounded delta after a streaming stall can
+reach the physics and audio clocks at any frame rate.
 
 The simulation timestep, chase camera lag, suspension travel, and ground-depth damping use continuous-time exponential decay calibrated to the 30 FPS console reference curve. Vehicle handling and camera behaviour remain consistent at 30, 60, 120, and 144 FPS.
 

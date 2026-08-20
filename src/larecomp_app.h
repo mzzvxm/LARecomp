@@ -68,9 +68,25 @@ class LarecompApp : public rex::ReXApp {
         new LarecompApp(ctx, "larecomp", PPCImageConfig));
   }
 
-  static void SetFlag(const char* name, const char* value) {
-    rex::cvar::SetFlagByName(name, value);
+  // Record of every SetFlag attempt. SetFlagByName returns false for names that
+  // were never registered - and cvars living in a runtime-loaded plugin are not
+  // registered until that plugin loads, so a correctly spelled flag set at the
+  // wrong phase fails exactly like a typo.
+  //
+  // Discarding this return value is how the midnightclub fork silently ran its
+  // entire GPU configuration unapplied for months, vsync included. It matters
+  // more here, not less: this project targets rexglue 0.10.0, so a cvar renamed
+  // or moved between SDK versions would otherwise fail in complete silence.
+  static inline std::vector<std::string>& FlagLog() {
+    static std::vector<std::string> log;
+    return log;
   }
+
+  static void SetFlag(const char* name, const char* value) {
+    const bool ok = rex::cvar::SetFlagByName(name, value);
+    FlagLog().push_back(std::string(ok ? "  ok   " : "  FAIL ") + name + " = " + value);
+  }
+
 
   void DumpEffectiveConfig() {
     static const char* kWatched[] = {
@@ -93,24 +109,41 @@ class LarecompApp : public rex::ReXApp {
         std::string v = rex::cvar::GetFlagByName(name);
         fprintf(f, "%-46s = %s\n", name, v.empty() ? "<empty/unset>" : v.c_str());
       }
-      fprintf(f, "\n=== env overrides ===\n");
-      for (const char* e : {"MCLA_REFRESH_RATE", "MCLA_MAX_FRAME_MS",
-                            "MCLA_TIMING_LOG", "MCLA_NO_TIMER_RES", "MCLA_VSYNC", "MCLA_PRESENT_INTERVAL", "MCLA_FPS_CAP",
-                            "MCLA_ALLOW_INVALID_FETCH", "MCLA_SUBSTEPS",
-                            "MCLA_RT_PATH", "MCLA_RESOLUTION_SCALE",
-                            "MCLA_TEX_SOFT", "MCLA_TEX_HARD", "MCLA_TEX_RTT", "MCLA_TILED_SHARED",
-                            "MCLA_SKIP_INTRO", "MCLA_LOD_CITY_SCALE",
-                            "MCLA_CAMERA_SMOOTH_SCALE",
-                            "MCLA_TRAFFIC_DENSITY_SCALE", "MCLA_PED_DENSITY_SCALE",
-                            "MCLA_PARKED_CAR_SCALE", "MCLA_TRAFFIC_UNSPAWN_MAX",
-                            "MCLA_DISABLE_DOF", "MCLA_DISABLE_MSAA",
-                            "MCLA_DISABLE_MOTION_BLUR", "MCLA_DISABLE_IMPOSTER_SHADOWS",
-                            "MCLA_RESOLVE_SYMBOLS", "MCLA_GAME_DATA",
-                            "MCLA_STRINGS_FILE", "MCLA_NO_STUB_SWEEP", "MCLA_CACHE_FENCE",
-                            "MCLA_AUDIO_QFRAMES",
+      // Only variables this build actually reads. The list previously carried
+      // 22 names that were never passed to getenv() - most had been migrated to
+      // cvars, but the dump still advertised them, so anyone debugging would set
+      // MCLA_LOD_CITY_SCALE, see it listed here, and get no effect. That is the
+      // "documented but not implemented" trap this file exists to prevent.
+      fprintf(f, "\n=== env overrides (only vars this build reads) ===\n");
+      for (const char* e : {"MCLA_FPS_CAP", "MCLA_MAX_FRAME_MS",
+                            "MCLA_TEX_SOFT", "MCLA_TEX_HARD", "MCLA_TEX_RTT",
+                            "MCLA_VSYNC", "MCLA_REFRESH_RATE",
+                            "MCLA_ALLOW_INVALID_FETCH", "MCLA_NO_STUB_SWEEP",
+                            "MCLA_STRINGS_FILE", "MCLA_RESOLVE_SYMBOLS",
                             "REX_LOG_LEVEL", "LARECOMP_LOG_FILE"}) {
         const char* v = getenv(e);
         fprintf(f, "%-46s = %s\n", e, v ? v : "<not set>");
+      }
+
+      // Everything else moved to cvars, which is the better home - they are
+      // settable live from the pause menu instead of needing a relaunch. Listed
+      // by cvar name so the mapping stays discoverable.
+      fprintf(f, "\n=== settings that are cvars, not env vars ===\n");
+      for (const char* c : {"real_frame_delta", "fps_limit", "lod_city_scale",
+                            "lod_traffic_scale", "skip_intro", "disable_dof",
+                            "disable_msaa", "disable_motion_blur",
+                            "disable_imposter_shadows", "disable_rubberbanding",
+                            "smooth_chassis_depth", "smooth_chase_cam",
+                            "chase_cam_smoothing_factor", "enable_ambient_tuning",
+                            "traffic_unspawn_dist", "ped_density_scale",
+                            "parked_car_scale", "speed_units"}) {
+        std::string v = rex::cvar::GetFlagByName(c);
+        fprintf(f, "%-46s = %s\n", c, v.empty() ? "<empty/unset>" : v.c_str());
+      }
+
+      fprintf(f, "\n=== SetFlagByName results ===\n");
+      for (const std::string& line : FlagLog()) {
+        fprintf(f, "%s\n", line.c_str());
       }
       fclose(f);
     }
