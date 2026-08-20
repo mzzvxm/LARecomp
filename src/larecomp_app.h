@@ -269,6 +269,7 @@ class LarecompApp : public rex::ReXApp {
 
     auto* fd = rex::Runtime::instance()->function_dispatcher();
     uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    g_guest_mem = base;
 
     if (fd && base) {
       // Deduplicating stub safety net logger

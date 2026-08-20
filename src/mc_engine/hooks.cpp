@@ -2551,23 +2551,34 @@ void Hook_SwfContextEnter(PPCRegister& r3) {
     g_swf_ctx[slot].value = want;
 }
 
+static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
+    uint32_t be = (uint32_t(base[addr + 0]) << 24) | (uint32_t(base[addr + 1]) << 16) |
+                  (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
+    float val;
+    std::memcpy(&val, &be, sizeof(float));
+    return val;
+}
+
+static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
+    uint32_t be;
+    std::memcpy(&be, &val, sizeof(float));
+    base[addr + 0] = (be >> 24) & 0xFF;
+    base[addr + 1] = (be >> 16) & 0xFF;
+    base[addr + 2] = (be >> 8) & 0xFF;
+    base[addr + 3] = be & 0xFF;
+}
+
 void UpdateCityLODMemory() {
-    extern uint8_t* g_guest_mem;
-    if (!g_guest_mem) return;
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
 
     float scale = static_cast<float>(REXCVAR_GET(lod_city_scale));
     float final_lod = scale * 300.0f;
 
-    uint32_t int_val;
-    std::memcpy(&int_val, &final_lod, sizeof(float));
-
-    uint32_t city_lod_addr = 0x827E0DE0; 
-    
-    // Injeção Big-Endian segura
-    g_guest_mem[city_lod_addr + 0] = (int_val >> 24) & 0xFF;
-    g_guest_mem[city_lod_addr + 1] = (int_val >> 16) & 0xFF;
-    g_guest_mem[city_lod_addr + 2] = (int_val >> 8)  & 0xFF;
-    g_guest_mem[city_lod_addr + 3] = int_val         & 0xFF;
+    constexpr uint32_t city_lod_addr = 0x827E0DE0;
+    if (ReadGuestF32(base, city_lod_addr) != final_lod) {
+        WriteGuestF32(base, city_lod_addr, final_lod);
+    }
 }
 
 void Patch_ScaleCityLOD(PPCRegister& f13) {
@@ -2590,23 +2601,6 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
     if (scale != 1.0) {
         f1.f64 = f1.f64 * scale;
     }
-}
-
-static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
-    uint32_t be = (uint32_t(base[addr + 0]) << 24) | (uint32_t(base[addr + 1]) << 16) |
-                  (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
-    float val;
-    std::memcpy(&val, &be, sizeof(float));
-    return val;
-}
-
-static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
-    uint32_t be;
-    std::memcpy(&be, &val, sizeof(float));
-    base[addr + 0] = (be >> 24) & 0xFF;
-    base[addr + 1] = (be >> 16) & 0xFF;
-    base[addr + 2] = (be >> 8) & 0xFF;
-    base[addr + 3] = be & 0xFF;
 }
 
 // BadassBaboon's Recomp Adjustments: Rock-solid thread-pinned frame rate limiter
