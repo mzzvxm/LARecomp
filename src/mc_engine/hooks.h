@@ -92,9 +92,8 @@ void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCR
 // Entry guard for phBoundComposite::ReleaseChildren; true skips the whole loop.
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30);
 
-// BadassBaboon's Recomp Adjustments: Foliage imposter shadows and steering sensitivity
+// BadassBaboon's Recomp Adjustments: Foliage imposter shadows
 bool Patch_DisableImposterShadows(PPCRegister& r11);
-void Patch_SteeringSensitivity(PPCRegister& f0);
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
 void MCLAFrameDelta(PPCRegister& r8);

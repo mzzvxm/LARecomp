@@ -171,10 +171,7 @@ REXCVAR_DEFINE_BOOL(unlock_ride_height, false, "MCLA/Patches", "Allow the full s
 REXCVAR_DEFINE_BOOL(unlock_wheel_fit, false, "MCLA/Patches", "Allow every stock rim size, tire profile, tire width and ride height regardless of the car's clearance metrics.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(physics_noclip, true, "MCLA/Physics", "Disable CCD/Pairwise Collision (Noclip)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(disable_dof, false, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
+REXCVAR_DEFINE_BOOL(disable_dof, true, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(fov_1p_scale, 1.0, "MCLA/Camera", "FOV scale — 1st person / cockpit (0.5 = narrower, 2.0 = wider)")
@@ -309,15 +306,6 @@ REXCVAR_DEFINE_DOUBLE(breaking_frame_rate_limit, 0.0, "MCLA/Performance",
     .range(0.0, 120.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// BadassBaboon's Recomp Adjustments: Steering physics and frame rate limiter CVARs
-REXCVAR_DEFINE_BOOL(scale_steering_with_fps, true, "MCLA/Controls",
-    "Scale vehicle steering delta to maintain consistent handling response at 60 FPS.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(steering_sensitivity, 1.0, "MCLA/Controls",
-    "Vehicle steering sensitivity multiplier (0.2 = tighter, 1.0 = stock, 2.0 = faster).")
-    .range(0.2, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Default to 60 FPS: with vsync=false for low input lag and fast pacing,
 // the precision frame limiter caps to 60 FPS out-of-the-box.
@@ -2848,11 +2836,10 @@ static void ApplyCameraSmoothing(PPCRegister& reg) {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    const float raw_dt = ReadGuestF32(base, 0x827D7508);
+    const float dt = ReadGuestF32(base, 0x827D7508);
     const double raw_k = reg.f64;
-    if (raw_k <= 0.0 || raw_k >= 1.0 || raw_dt <= 0.0f) return;
+    if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
 
-    const float dt = std::clamp(raw_dt, 0.001f, 0.05f);
     const double k30 = 0.5 * raw_k;
     const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
     reg.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0 * scale);
@@ -2875,9 +2862,8 @@ void MCLAChassisDepthSmoothing(PPCRegister& f0) {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    const float raw_dt = ReadGuestF32(base, 0x827D7508);
-    if (raw_dt > 0.0f) {
-        const float dt = std::clamp(raw_dt, 0.001f, 0.05f);
+    const float dt = ReadGuestF32(base, 0x827D7508);
+    if (dt > 0.0f) {
         f0.f64 = 1.0 - std::pow(0.90, static_cast<double>(dt) * 30.0);
     }
 }
@@ -3543,18 +3529,6 @@ static void ApplyRubberBandScales() {
     was_scaled = true;
 }
 
-// BadassBaboon's Recomp Adjustments:
-// 0x822A2ED4 in sub_822A2988: `lfs f0, 0xC(r20)` with r20 = 0x827D7500, so f0
-// is the clock's inv_game_dt, and the next lines turn the steering delta into a
-// per-second rate with it. Halving it at 60 FPS reproduces the 30 FPS response
-// the handling was tuned against.
-void Patch_SteeringSensitivity(PPCRegister& f0) {
-    double sens = REXCVAR_GET(steering_sensitivity);
-    if (REXCVAR_GET(scale_steering_with_fps) && REXCVAR_GET(fps_60)) {
-        sens *= 0.5;
-    }
-    f0.f64 *= sens;
-}
 
 // The player's current district (return of Racer_GetCurrentDistrict). Fires on
 // the game's own district queries -> the RPC updates the area live while driving.
@@ -3765,7 +3739,6 @@ void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {}
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
-void Patch_SteeringSensitivity(PPCRegister& f0) {}
 void MCLAFrameDelta(PPCRegister& r8) {}
 bool MCLAUseRealDelta() { return false; }
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {}

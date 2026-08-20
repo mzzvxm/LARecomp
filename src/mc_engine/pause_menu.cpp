@@ -788,7 +788,6 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
-    Bool("PM_RxSteerFps",    "scale_steering_with_fps",  "60FPS STEERING FIX: "),
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),

@@ -25772,16 +25772,6 @@ address = 0x826F4E3C
 after_instruction = true
 registers = ["r31"]
 
-# BadassBaboon's Recomp Adjustments: Steering physics timestep and sensitivity scaling
-# 0x822A2ED4 in sub_822A2988: `lfs f0, 0xC(r20)` with r20 = 0x827D7500, i.e. f0
-# is the clock's inv_game_dt. The next lines turn the steering delta into a
-# per-second rate with it (fmuls f26, f2, f0), so scaling f0 scales the steering
-# response rate.
-[[midasm_hook]]
-name = "Patch_SteeringSensitivity"
-address = 0x822A2ED4
-after_instruction = true
-registers = ["f0"]
 
 # Custom MP3 radio (mc_engine/mp3custom).
 #
