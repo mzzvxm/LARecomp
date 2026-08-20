@@ -195,6 +195,11 @@ REXCVAR_DEFINE_DOUBLE(chase_cam_smoothing_factor, 1.0, "MCLA/Camera",
     .range(0.1, 3.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth continuous filter
+REXCVAR_DEFINE_BOOL(smooth_chassis_depth, true, "MCLA/Physics",
+    "Fix: Smooth vehicle chassis suspension and ground depth damping at 60 FPS.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // BadassBaboon's Recomp Adjustments: Ambient traffic & pedestrian density tuning for city performance
 REXCVAR_DEFINE_BOOL(enable_ambient_tuning, true, "MCLA/Performance",
     "Enable ambient traffic and pedestrian density tuning.")
@@ -2648,6 +2653,7 @@ static void EnforceFrameLimit() {
 void MCLAFrameDelta(PPCRegister& r8) {
     if (!REXCVAR_GET(fps_60)) return;
     EnforceFrameLimit();
+    UpdateCityLODMemory();
     uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
     if (hz == 0) hz = 50000000;
     uint64_t max_ticks = static_cast<uint64_t>(0.125 * static_cast<double>(hz));
@@ -2812,23 +2818,48 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {
 }
 
 // BadassBaboon's Recomp Adjustments:
-// 0x823203D4, in sub_82320298 (mcPlayerCamera::Update).
-// Applies the 60 FPS exponential decay formula to the camera boom interpolation
-// constant before it is passed to matrix Lerp.
-void MCLACameraBoomSmoothing(PPCRegister& f1) {
+// Continuous-time exponential decay for chase camera smoothing factors.
+// In sub_82320298 (mcPlayerCamera::Update):
+//   0x82320468 - f13 is the camera position chase/lag factor S1
+//   0x823204F4 - f0  is the camera look-at / orientation factor S2
+//
+// On 30 FPS console the engine multiplied the raw profile factor by 0.5 and stepped once per update:
+//   S(dt) = 1 - (1 - 0.5 * S_raw) ^ (30 * dt * scale)
+static void ApplyCameraSmoothing(PPCRegister& reg) {
     if (!REXCVAR_GET(smooth_chase_cam)) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    // Read current frame dt (clock+0x08)
-    float dt = ReadGuestF32(base, 0x827D7508);
-    if (!(dt > 0.0f)) return;
+    const float dt = ReadGuestF32(base, 0x827D7508);
+    const double raw_k = reg.f64;
+    if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
 
-    double k = f1.f64;
-    if (k > 0.0 && k < 1.0) {
-        double factor = REXCVAR_GET(chase_cam_smoothing_factor);
-        f1.f64 = 1.0 - std::pow(1.0 - k, dt * 30.0 * factor);
+    const double k30 = 0.5 * raw_k;
+    const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
+    reg.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0 * scale);
+}
+
+void MCLACameraPosSmoothing(PPCRegister& f13) {
+    ApplyCameraSmoothing(f13);
+}
+
+void MCLACameraLookAtSmoothing(PPCRegister& f0) {
+    ApplyCameraSmoothing(f0);
+}
+
+// BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth filter continuous-time scaling
+// 0x82563720: lis r11, flt_82001D14@ha in sub_82563298.
+// f0 is the chassis ground depth filter coefficient alpha (0.10 at 30 FPS, 0.05 at 60 FPS).
+void MCLAChassisDepthSmoothing(PPCRegister& f0) {
+    if (!REXCVAR_GET(smooth_chassis_depth)) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    const float dt = ReadGuestF32(base, 0x827D7508);
+    if (dt > 0.0f) {
+        f0.f64 = 1.0 - std::pow(0.90, static_cast<double>(dt) * 30.0);
     }
 }
 
@@ -3689,7 +3720,9 @@ bool Patch_ImpostorShadowGuard(PPCRegister& r3) { return false; }
 void Hook_CaptureDistrict(PPCRegister& r3) {}
 void Hook_LzxDecompressPre(PPCRegister& r1) {}
 void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {}
-void MCLACameraBoomSmoothing(PPCRegister& f1) {}
+void MCLACameraPosSmoothing(PPCRegister& f13) {}
+void MCLACameraLookAtSmoothing(PPCRegister& f0) {}
+void MCLAChassisDepthSmoothing(PPCRegister& f0) {}
 void MCLAAmbientDensityTuning(PPCRegister& r31) {}
 bool Patch_DisableImposterShadows(PPCRegister& r11) { return false; }
 void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}

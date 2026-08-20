@@ -708,6 +708,7 @@ constexpr double kFsrSharpVals[] = {0.0, 0.2, 0.5, 1.0, 2.0};
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
 constexpr double kCamSpeedVals[] = {10.0, 20.0, 40.0, 80.0, 150.0, 300.0};
+constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
@@ -786,6 +787,7 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSteerFps",    "scale_steering_with_fps",  "60FPS STEERING FIX: "),
+    Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
@@ -847,11 +849,12 @@ const ItemDef kFfxItems[] = {
 
 const ItemDef kCamItems[] = {
     // BadassBaboon's Recomp Adjustments: in-game pause menu smooth chase camera toggle
-    Bool("PM_RxSmoothCam", "smooth_chase_cam", "SMOOTH CHASE CAM: "),
-    Dbl ("PM_RxFov1P",    "fov_1p_scale", "1P FOV: ", kFovValues, 13, "%.1fX"),
-    Dbl ("PM_RxFov3P",    "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
-    Str ("PM_RxFreecam",  "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
-    Dbl ("PM_RxCamSpeed", "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
+    Bool("PM_RxSmoothCam",    "smooth_chase_cam", "SMOOTH CHASE CAM: "),
+    Dbl ("PM_RxSmoothFactor", "chase_cam_smoothing_factor", "CAM SMOOTH FACTOR: ", kCamSmoothVals, 7, "%.1fX"),
+    Dbl ("PM_RxFov1P",        "fov_1p_scale", "1P FOV: ", kFovValues, 13, "%.1fX"),
+    Dbl ("PM_RxFov3P",        "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
+    Str ("PM_RxFreecam",      "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
+    Dbl ("PM_RxCamSpeed",     "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
     Save("PM_RxSaveCam"),
 };
 

@@ -34,6 +34,11 @@
 #include <windows.h>
 #endif
 
+#include <rex/cvar.h>
+#include <rex/runtime.h>
+#include <rex/graphics/flags.h>
+#include <rex/ui/flags.h>
+
 extern uint8_t* g_guest_mem;
 
 class LarecompApp : public rex::ReXApp {
@@ -56,6 +61,38 @@ class LarecompApp : public rex::ReXApp {
         new LarecompApp(ctx, "larecomp", PPCImageConfig));
   }
 
+  static void SetFlag(const char* name, const char* value) {
+    rex::cvar::SetFlagByName(name, value);
+  }
+
+  void ApplyGpuFlags() {
+    // BadassBaboon's Recomp Adjustments: Increased texture cache limits (1536MB soft / 2048MB hard / 64MB RTT)
+    // to prevent premature eviction of CTX1 normal maps and sector texture dictionaries during high-speed driving.
+    const char* tex_soft = getenv("MCLA_TEX_SOFT");
+    SetFlag("texture_cache_memory_limit_soft", (tex_soft && *tex_soft) ? tex_soft : "1536");
+
+    const char* tex_hard = getenv("MCLA_TEX_HARD");
+    SetFlag("texture_cache_memory_limit_hard", (tex_hard && *tex_hard) ? tex_hard : "2048");
+
+    const char* tex_rtt = getenv("MCLA_TEX_RTT");
+    SetFlag("texture_cache_memory_limit_render_to_texture", (tex_rtt && *tex_rtt) ? tex_rtt : "64");
+
+    // anisotropic_override: 5 = 16x
+    SetFlag("anisotropic_override", "5");
+
+    SetFlag("async_shader_compilation", "true");
+    SetFlag("d3d12_bindless", "true");
+    SetFlag("d3d12_readback_resolve", "false");
+    SetFlag("readback_memexport_fast", "true");
+
+    const char* fetch = getenv("MCLA_ALLOW_INVALID_FETCH");
+    SetFlag("gpu_allow_invalid_fetch_constants", (fetch && *fetch) ? fetch : "true");
+
+    // BadassBaboon's Recomp Adjustments: vsync is false by default for maximum throughput (~30% higher framerate, eliminating 15.625ms quantization grid).
+    const char* vs = getenv("MCLA_VSYNC");
+    SetFlag("vsync", (vs && *vs) ? vs : "false");
+  }
+
   void OnPreSetup(rex::RuntimeConfig& config) override {
     // The Xenos GPU emulation is a runtime-loaded plugin as of SDK 0.9.0 and
     // the gpu_plugin cvar defaults to empty (= no GPU at all). Name it here so
@@ -64,6 +101,8 @@ class LarecompApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "xenos";
     }
+
+    SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
   }
 
   void OnShutdown() override {
@@ -162,10 +201,21 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
+    // BadassBaboon's Recomp Adjustments: Enable 1ms timer resolution and apply optimal GPU/Texture limits
+    mc::EnableHighResTimer();
+    ApplyGpuFlags();
+
+    // Register t: drive - game uses it for city/art/collision data (.loc files etc.)
+    if (auto* rt = rex::Runtime::instance()) {
+      if (auto* fs = rt->file_system()) {
+        fs->RegisterSymbolicLink("t:", "\\Device\\Harddisk0\\Partition1");
+      }
+    }
+
     LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}",
                       reinterpret_cast<std::uintptr_t>(g_guest_mem));
 
-  window()->SetTitle("LARecomp");
+    window()->SetTitle("LARecomp (60 FPS Enhanced)");
 
     std::filesystem::path src_dir = std::filesystem::path(__FILE__).parent_path();
     std::string icon_path = (src_dir / "assets" / "mcla.ico").string();

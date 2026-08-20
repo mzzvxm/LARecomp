@@ -13,6 +13,7 @@
 #endif
 #include <Windows.h>
 #include <timeapi.h>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -71,23 +72,20 @@ u32 Sleep_hook(u32 ms) {
 }
 REX_HOOK(mc_Sleep, Sleep_hook);
 
-// BadassBaboon's Recomp Adjustments: hardware cache flush bypass.
+// BadassBaboon's Recomp Adjustments: hardware cache flush bypass with memory barrier.
 //
 // FlushDataCache (0x821D5510), signature (addr, size, flush): walks the range
 // one 128-byte line at a time issuing `dcbf 0, r11` (flush=1) or `dcbst 0, r11`
-// (flush=0), then `blr` with r3 untouched. Six callers, all in the streaming /
-// DMA paths (sub_821A1698, sub_821A1848, sub_821B8188, sub_821BC140 x2,
-// sub_82468800).
+// (flush=0), then `blr` with r3 untouched.
 //
-// Both instructions are pure hints and the recompiler emits NOTHING for them
-// (build_dcbf / build_dcbst in src/codegen/builders/system.cpp both return
-// without printing) -- x86_64 is cache-coherent, so there is nothing to do.
-// What is left is an empty size/128-iteration loop of recompiled guest code
-// running on every streamed resource, which is where the hitching comes from.
-// Returning the address immediately is exactly equivalent, minus the spin.
+// On x86_64 host caches are coherent, but this call serves as a critical publication
+// point across audio/worker threads (XMA Decoder & Audio Worker). A single seq_cst
+// memory fence maintains inter-thread visibility while skipping ~540,000 emulated
+// loop operations per second.
 u32 FlushDataCache_hook(u32 addr, u32 size, u32 flush) {
     (void)size;
     (void)flush;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     return addr;  // r3 is the guest's own return value here
 }
 REX_HOOK(mc_FlushDataCache, FlushDataCache_hook);

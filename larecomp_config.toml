@@ -25729,17 +25729,28 @@ address = 0x822C4864
 name = "Patch_ArchiveList"
 registers = ["r1"]
 
-# BadassBaboon's Recomp Adjustments: Continuous-time exponential decay camera boom smoothing for 60 FPS
-# 0x823203D4 in sub_82320298 (mcPlayerCamera::Update), f1 = the interpolation
-# factor headed for Lerp.
-#
-# Kept as the baboon build shipped it. The alternative tried here -- stabilizing
-# the discrete FPS decision at 0x82320408 by feeding it clock+0x1C instead of
-# inv_game_dt -- did steady the camera but broke traffic timing, so it is gone.
+# BadassBaboon's Recomp Adjustments: Continuous-time exponential decay camera smoothing
+# 0x82320468: addi r9, r1, 0x50 in sub_82320298 (mcPlayerCamera::Update).
+# f13 is the camera position chase/lag smoothing factor S1 right before storage.
 [[midasm_hook]]
-name = "MCLACameraBoomSmoothing"
-address = 0x823203D4
-registers = ["f1"]
+name = "MCLACameraPosSmoothing"
+address = 0x82320468
+registers = ["f13"]
+
+# 0x823204F4: li r9, 0x120 in sub_82320298 (mcPlayerCamera::Update).
+# f0 is the camera look-at / orientation smoothing factor S2 right before storage.
+[[midasm_hook]]
+name = "MCLACameraLookAtSmoothing"
+address = 0x823204F4
+registers = ["f0"]
+
+# BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth filter continuous-time scaling
+# 0x82563720: lis r11, flt_82001D14@ha in sub_82563298.
+# f0 is the chassis ground depth filter coefficient alpha (0.10 at 30 FPS, 0.05 at 60 FPS).
+[[midasm_hook]]
+name = "MCLAChassisDepthSmoothing"
+address = 0x82563720
+registers = ["f0"]
 
 # BadassBaboon's Recomp Adjustments: Dynamic ambient traffic and pedestrian density tuning
 # mcAmbientDensityTuning is the BASE of the ambient zone, not a separate object:

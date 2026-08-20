@@ -73,8 +73,10 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3);
 void Hook_CacheVinylPaint(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6);
 void Hook_PhotoModeCapture(PPCRegister& r3);
 
-// BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning
-void MCLACameraBoomSmoothing(PPCRegister& f1);
+// BadassBaboon's Recomp Adjustments: Continuous-time exponential camera smoothing & suspension damping
+void MCLACameraPosSmoothing(PPCRegister& f13);
+void MCLACameraLookAtSmoothing(PPCRegister& f0);
+void MCLAChassisDepthSmoothing(PPCRegister& f0);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the
 // constructor is pointless -- the parse overwrites it), once per ambient zone;
 // r31 is the zone, whose base IS the mcAmbientDensityTuning.
