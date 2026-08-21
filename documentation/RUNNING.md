@@ -1,156 +1,119 @@
-# Running LARecomp (Midnight Club Los Angeles Recompiled)
+# Running and debugging LARecomp
 
-## Quick Start
+Setup and build instructions are in the [README](../README.md). This file covers running the game and reading what it writes.
+
+---
+
+## Quick start
 
 ```powershell
 cd out\build\win-amd64-relwithdebinfo
 $env:REX_LOG_LEVEL="warn"; Start-Process larecomp.exe
 ```
 
-The executable locates game data automatically, sets a 60 FPS target with low-latency presentation by default, and maintains simulation accuracy across all frame rates.
+**Set `REX_LOG_LEVEL=warn`.** Non-Release builds default to `trace`, which is about 7,500 log lines and 1.4 MB of synchronous disk writes per second during gameplay. That is enough to cause stutter by itself.
 
-**Set `REX_LOG_LEVEL=warn`.** Non-Release builds default to `trace`, which generates roughly 7,500 log lines per second and 1.4 MB/s of synchronous disk writes during gameplay. That disk traffic causes frame stutter.
+Launching from Visual Studio does not set it, so those runs log at trace level.
 
-On first launch, the game presents an ISO installation wizard if assets are missing, and offers to import existing save files from Xenia or RPCS3.
+On first launch, an ISO install wizard appears if the game data is missing, and there is an option to import saves from Xenia or RPCS3.
 
-**Visual Studio:** Open the repository folder, select **Windows AMD64 RelWithDebInfo**, and start debugging. Note that launching directly from Visual Studio does not set `REX_LOG_LEVEL`, resulting in trace-level logging.
+### If the frame rate collapses after a long session
+
+Add `--clock_no_scaling=true`:
+
+```powershell
+$env:REX_LOG_LEVEL="warn"; Start-Process larecomp.exe -ArgumentList "--clock_no_scaling=true"
+```
+
+This works around an unsigned underflow in the SDK's vblank timer that dispatches guest interrupts continuously once triggered. A 33 minute test run with the flag never dropped below 24 FPS; the run before it collapsed to 6 FPS after 715 seconds. Details in [`TECHNICAL_NOTES.md`](TECHNICAL_NOTES.md#4-the-long-session-frame-rate-collapse).
 
 ---
 
-## Frame Rate and Timing Controls
+## Settings
 
-LARecomp runs at 60 FPS by default out of the box (`real_frame_delta = true`, `fps_limit = 60`, `vsync = false`).
+Defaults out of the box are `real_frame_delta = true`, `fps_limit = 60`, `vsync = false`.
 
-Those first two are different things and the pause menu lists them separately:
+Set anything from the pause menu, on the command line as `--name=value`, or in `larecomp.toml` next to the executable. Menu changes apply immediately and save when you leave the submenu.
+
+Two rows sound similar and are not:
 
 | Setting | What it does |
 |---|---|
-| **REAL FRAME DELTA** (`real_frame_delta`) | Feeds the simulation the measured frame time instead of the engine's fixed 30 Hz timestep, and unlocks presentation from every-other-vblank. This is what makes physics, camera and traffic correct above 30 FPS. It is **not** a frame rate setting. |
-| **FPS LIMIT** (`fps_limit`) | The actual frame rate cap - 30 / 60 / 120 / 144 / uncapped. A wall-clock limiter, so frame times stay evenly spaced. |
+| **REAL FRAME DELTA** (`real_frame_delta`) | Feeds the simulation the measured frame time instead of the fixed 30 Hz timestep, and unlocks presentation from every-other-vblank. This is what makes physics, camera and traffic correct above 30 FPS. It is not a frame rate cap. |
+| **FPS LIMIT** (`fps_limit`) | The cap itself: 30, 60, 120, 144 or UNCAPPED. A wall-clock limiter, so frame times stay evenly spaced. |
 
-Turning REAL FRAME DELTA off returns the engine to its original 30 Hz fixed
-timestep. Three things stay active either way, because they are independent of
-it: the per-frame hitch clamp (an unbounded delta after a streaming stall can
-reach the physics and audio clocks at any frame rate), the FPS LIMIT cap, and
-the CITY LOD scale. Earlier builds gated all three behind this option, so
-turning it off silently disabled the frame cap and the LOD slider as well.
+Turning REAL FRAME DELTA off puts the engine back on its original 30 Hz timestep. The hitch clamp, the FPS cap and the city LOD scale keep working either way; earlier builds gated all three behind it, so switching it off silently disabled the cap and the LOD slider too.
 
-The simulation timestep, chase camera lag, suspension travel, and ground-depth damping use continuous-time exponential decay calibrated to the 30 FPS console reference curve. Vehicle handling and camera behaviour remain consistent at 30, 60, 120, and 144 FPS.
+### Pause menu
 
-### In-Game Pause Menu
+Press Start or Escape and open **Options**. Seven tabs:
 
-Press Start or Escape, navigate to **Options**, and select the ReXGlue / Recomp settings rows to adjust parameters live:
-- **REAL FRAME DELTA**: Feeds the simulation the measured frame time instead of the stock 30 Hz fixed timestep. Required for correct physics, camera, and traffic above 30 FPS. This is not a frame rate cap - see FPS LIMIT below.
-- **FPS LIMIT**: Sets the wall-clock frame cap. Selectable values are 30, 60, 120, 144, and UNCAPPED.
-- **SUSPENSION FIX**: Enables continuous-time chassis depth and suspension damping.
-- **DEPTH OF FIELD**: Toggles full-screen DoF blur (disabled by default for clarity and performance).
-- **CITY / TRAFFIC LOD**: Adjusts geometry and vehicle draw distance multipliers.
-- **CITY AMBIENT CULLING**: Adjusts pedestrian, parked car, and active traffic density limits.
+| Tab | Contents |
+|---|---|
+| ReXGlue Settings | Fullscreen, vsync, resolution, resolution scale |
+| Recomp Settings | Real frame delta, FPS limit, MSAA, foliage shadows, AI rubberband, extra vinyl layers, depth of field, motion blur, suspension fix, traffic and city LOD, speed units |
+| Performance | Shadows, shadow phases, cheap car shadow, tree impostors, foliage, screen blur, single tile, ambient culling, traffic range, pedestrians, parked cars, prop draw distance, break FPS floor |
+| Fidelity FX | Upscaler, FSR quality, CAS sharpness, FSR sharpness reduction |
+| Debug Camera | Smooth chase cam, camera smoothing factor, freecam, camera speed |
+| Time of Day | Real clock, hold time, time, day speed, weather |
+| Carbon Fiber | Per-car carbon part toggles |
 
-Press **F4** at any time during gameplay to toggle the ReXGlue developer overlay.
+**F4** toggles the ReXGlue developer overlay.
 
-### Environment Variable Overrides
+### Environment variables
 
-```powershell
-# Cap frame rate via environment variable
-$env:MCLA_FPS_CAP="60"; Start-Process larecomp.exe
+Only these are read. Everything else is a cvar.
 
-# Force stock 30 FPS console behavior
-$env:MCLA_FPS_CAP="30"; Start-Process larecomp.exe
+| Variable | Default | Purpose |
+|---|---|---|
+| `REX_LOG_LEVEL` | `trace` on non-Release | Set to `warn`. |
+| `MCLA_GAME_DATA` | auto-detect | Folder holding `default.xex`. An invalid path warns and falls back to auto-detection. |
+| `MCLA_FPS_CAP` | unset | Overrides the `fps_limit` cvar. |
+| `MCLA_MAX_FRAME_MS` | `125` | Caps how far one frame can advance the clock. Clamped to 16-1000 ms; cannot be turned off. |
+| `MCLA_TIMING_LOG` | off | `1` writes the timing log described below. |
+| `MCLA_TEX_SOFT` / `MCLA_TEX_HARD` / `MCLA_TEX_RTT` | `1536` / `2048` / `64` | Texture cache limits in MB. |
+| `MCLA_VSYNC` | `false` | On costs about 30% throughput. |
+| `MCLA_REFRESH_RATE` | `60` | Guest video mode refresh rate. |
+| `MCLA_ALLOW_INVALID_FETCH` | `true` | Set `false` if HUD or minimap glitches appear. |
+| `MCLA_NO_STUB_SWEEP` | `0` | `1` skips the startup stub sweep, saving about 400 ms. Only safe while `stubs.txt` stays empty. |
+| `LARECOMP_LOG_FILE` | auto | Log file path. |
 
-# Point at a specific game data directory
-$env:MCLA_GAME_DATA="E:\MCLA\MCLA_Game_Files"; Start-Process larecomp.exe
-
-# Raise or lower the per-frame hitch clamp, in ms (clamped to 16-1000)
-$env:MCLA_MAX_FRAME_MS="125"; Start-Process larecomp.exe
-```
-
-City LOD scale and camera smoothing are **cvars, not environment variables** -
-set them from the pause menu (`lod_city_scale`, `chase_cam_smoothing_factor`).
-The full list of variables this build actually reads is written to
-`logs/effective_config.txt` on every launch, under
-`=== env overrides (only vars this build reads) ===`, with the cvar-only
-settings listed separately below it.
-
-The internal frame limiter uses thread-pinned wall-clock accumulation with 1 ms timer precision (`timeBeginPeriod(1)`), coarse sleep, and yield-spinning. This avoids the 15.625 ms quantization grid inherent to vblank synchronization.
+`REX_LOG_LEVEL` has to be an environment variable. Setting the level from `OnPostInitLogging()` does not work, because the runtime has already printed its startup banner.
 
 ---
 
-## Building from Source
+## What the game writes
 
-### Prerequisites
+| File | Contents |
+|---|---|
+| `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. |
+| `logs/effective_config.txt` | Written every launch: active cvar values, an `ok` or `FAIL` line per GPU flag, the env vars this build reads, and the cvar-only settings listed separately. **Check this first when a setting appears to do nothing.** |
+| `logs/timing_<date>_<time>_cap<N>.log` | Frame timing, when `MCLA_TIMING_LOG=1`. |
+| `stubs.txt` | Unregistered guest addresses hit at runtime. Empty means nothing was missed. |
+| `larecomp.toml` | Saved settings, written when you leave a pause submenu with a changed value. |
 
-- Visual Studio 2022 (MSVC v143 x64 toolset)
-- Clang / LLVM toolchain
-- CMake 3.25 or newer
-- ReXGlue SDK 0.10.0 (located in `E:\MCLA\rexglue-sdk-0.10.0`)
-
-### Build Command
-
-From the repository root:
-
-```powershell
-cmd.exe /c 'call "F:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" && set "PATH=E:\MCLA\llvm\bin;F:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;%PATH%" && cmake --build out/build/win-amd64-relwithdebinfo'
-```
-
-To reconfigure CMake presets:
-
-```powershell
-cmake --preset win-amd64-relwithdebinfo .
-cmake --build out/build/win-amd64-relwithdebinfo
-```
+Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT handler in `crash_handler.cpp` resolves and writes the call stack there.
 
 ---
 
-## Code Generation Pipeline (`rexglue codegen`)
-
-When updating function declarations, mid-asm hooks, or recompiled regions:
-
-```powershell
-E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
-```
-
-**Important rules:**
-1. Pass `larecomp_manifest.toml` to codegen, not the config file. The manifest includes `larecomp_config.toml` and establishes module dependency graphs.
-2. **Never edit files in `generated/`.** The codegen step overwrites the entire directory.
-3. All gameplay, physics, camera, and render patches are declared under `[[midasm_hook]]` in `larecomp_config.toml` and implemented in `src/mc_engine/hooks.cpp`.
-
----
-
-## Directory Structure and Save Files
-
-- **`assets/` or `MCLA_Game_Files/`**: Game archive files (`default.xex`, `xarchive_cache.rpf`, `xarchive_audio.rpf`).
-- **`user_data/`**: Stores save profiles and player progression. Delete the profile folder here to reset save data.
-- **`logs/`**: Rolling log files (`logs/larecomp_001.log`, up to 10 rotated 20MB files) and `logs/effective_config.txt`.
-- **`stubs.txt`**: Records calls to unmapped guest functions for diagnostic triage.
-
----
-
-## Diagnostic Logs
-
-- **`logs/larecomp_NNN.log`**: Standard game log output with sequential index rolling.
-- **`logs/effective_config.txt`**: Dumps active cvar values, GPU flag results (each marked `ok` or `FAIL`), and environment variable states, written during `OnPostSetup`.
-- **`stubs.txt`**: Deduplicated record of unregistered guest function addresses hit at runtime. An empty file means nothing was missed.
-- Crash diagnostics: the SEH / SIGABRT handler in `crash_handler.cpp` writes the
-  resolved call stack into the **normal log file**, not a separate file.
-
-- **`logs/timing_<date>_<time>_cap<N>.log`**: Written when `MCLA_TIMING_LOG=1`.
-  Off by default, costing one already-resolved bool test per frame.
-
-### Frame-time instrumentation
+## Frame timing instrumentation
 
 ```powershell
 $env:MCLA_TIMING_LOG="1"; Start-Process larecomp.exe
 ```
 
-Once per second it records measured vs engine frame time (a `ratio` far from
-1.00 means the simulation and the wall clock disagree), spike counts, a GPU
-time breakdown, texture and pipeline cache hit/miss, thread and stall counters,
-and the engine's accumulated-time totals with a `<-- FROZEN` marker if they
-stop advancing. Every 30 seconds it emits a 1 ms-resolution frame-time
-histogram with empty buckets omitted, so clustering is obvious at a glance.
+Off by default, costing one already-resolved bool test per frame.
 
-A healthy 60 FPS baseline looks like this - one dominant bucket, thin tails:
+Once per second it records:
+
+- Measured against engine frame time. A `ratio` far from 1.00 means the simulation and the wall clock disagree.
+- Spike counts at 20, 33, 50 and 100 ms.
+- A GPU time breakdown: submit, draw, fence wait, resolve, pipeline creation, texture upload.
+- Texture and pipeline cache hits and misses, draw calls, vertices.
+- Interrupt counts split into `vblank`, `cpu` and `poison`.
+- The engine's accumulated-time totals, with `<-- FROZEN` if they stop advancing.
+
+Every 30 seconds it writes a 1 ms histogram with empty buckets omitted. A healthy 60 FPS run looks like one dominant bucket with thin tails:
 
 ```
 --- frame-time histogram | window 0.0s..30.0s | 1720 frames | mean 17.44 ms ---
@@ -158,43 +121,31 @@ A healthy 60 FPS baseline looks like this - one dominant bucket, thin tails:
    17 ms |     32 #
 ```
 
-The GPU counters are single-frame samples taken at the report boundary, not
-per-second totals, so treat one line as a spot check and the trend across lines
-as the signal. `substep r24` is a rate-invariance check: it must NOT change
-with `fps_limit`.
+### Reading it
+
+`substep r24` is a rate-invariance check. It must not change with `fps_limit`.
+
+`dt clamp=[0.0001..0.1000]` is the engine's own delta floor and ceiling. An `engine_dt` pinned at exactly 100.00 ms means frames really are that slow and the ceiling saturated, not that the timer broke.
+
+The `interrupts` split is what diagnoses a frame rate collapse:
+
+| Pattern | Meaning |
+|---|---|
+| `vblank` in the millions | The SDK vblank underflow. Use `--clock_no_scaling=true`. |
+| `cpu` climbing, `poison` above 0 | Corrupt command buffer, by the game's own check. |
+| Everything flat while fps falls | Guest CPU. Compare `dispatched` against the GPU counters. |
+
+The GPU counters are accumulated per frame and reported per second. The sampling point sits in `MCLAFrameDelta`, and where the runtime's own per-frame reset lands relative to it is not pinned down, so trust relative change across an event rather than absolute totals.
 
 ---
 
-## Technical Fixes Reference
+## Regenerating code
 
-### Boot and Platform Initialization
+```powershell
+E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
+cmake --build out/build/win-amd64-relwithdebinfo
+```
 
-| Problem | Root Cause | Implemented Solution |
-| :--- | :--- | :--- |
-| Static initializer crash | Static constructors calling unregistered function addresses | Scan static tables (`0x82770010` to `0x827713F0`) and stub unmapped entries in `OnPostSetup` |
-| "Dirty Disc" error dialog | Retail disc integrity check in `sub_82130678` | Bypass `0x82130678` with a direct return |
-| Unmapped indirect dispatch | Guest script VM using indirect branches (`bctr`/`bctrl`) | Full scan of code region `0x82130000` to `0x827CD054` stubbing unmapped targets; 540+ script natives registered in TOML |
-| Missing `t:` drive mapping | Game engine mounting city and art packages to `t:` partition | Register symbolic link `t:` -> `\Device\Harddisk0\Partition1` in VFS |
-| Unhandled crash termination | `abort()` terminating without logging guest register state | Dedicated Windows SEH and SIGABRT exception logger in `crash_handler.cpp` |
+Pass the manifest, not the config: the manifest includes `larecomp_config.toml` and sets up the module dependency graph.
 
-### Clock Pipeline, Physics, and Camera
-
-| Problem | Root Cause | Implemented Solution |
-| :--- | :--- | :--- |
-| 2x game speed at 60 FPS | Engine timer overwriting measured delta with 30 Hz constant | Hook `MCLAUseRealDelta` at `0x821BDB58` (jump to `0x821BDC34`) and `MCLAFixedStepPath` at `0x821BDB90` (`[r3+0x58]`) |
-| Frozen accumulated time | Bypassing the entire timer block froze `[r3+20]` / `[r3+24]` accumulators | Narrowed hook entry to `0x821BDB58` so time accumulator increments run normally |
-| Frame time jitter and racing | Timer function called concurrently across worker threads | Thread-pinned cadence accumulator (`EnforceFrameLimit`) bound to primary thread id |
-| Frame burst after streaming pause | Time accumulator building large delta during background load | Bound per-frame tick delta via `MCLAFrameDelta` at `0x821BDAB0` (125 ms default, `MCLA_MAX_FRAME_MS`, clamped to 16-1000 ms) |
-| Chase camera snapping at 60 FPS | Camera chase step using per-frame factor instead of continuous time | Continuous-time exponential decay `1.0 - pow(1.0 - k30, dt * 30.0 * scale)` at `0x82320468` and `0x823204F4` |
-| Suspension jitter on sharp turns | Ground depth filter stepping discrete alpha at variable frame rates | Continuous-time depth decay `1.0 - pow(0.90, dt * 30.0)` at `0x82563720` |
-| Donut animation skipping | Artificial steering sensitivity divisor applied on top of real delta | Removed redundant `Patch_SteeringSensitivity` hook |
-
-### Graphics, Memory, and Ambient Density
-
-| Problem | Root Cause | Implemented Solution |
-| :--- | :--- | :--- |
-| Excessive DoF blur | Full-screen blur pass active during gameplay and photo mode | Zero Circle-of-Confusion vector at `dofObj + 0xF0` in `Patch_DofComposite` (`0x8260EBB8`). Defaulted to disabled |
-| Downtown FPS drops | High draw call count and geometry density in city core | Base LOD distance scaled dynamically via `UpdateCityLODMemory` at `0x827E0DE0` |
-| Pedestrian / traffic crowding | Hardcoded spawn caps causing entity queue pressure at 60 FPS | Ambient density tuning hook at `0x826F5CA0` (mcAmbientDensityTuning constructor epilogue, `r3`) scaling spawn, unspawn, cull, pedestrian and parked-car densities across all 32 zones |
-| Audio crackle on multicore hosts | Cache flush loop (`FlushDataCache`, `0x821D5510`) skipping memory barrier | Replace 540,000 emulated `dcbf`/`dcbst` loop iterations with a single `std::atomic_thread_fence(memory_order_seq_cst)` |
-| Texture cache eviction during driving | Default GPU cache budgets too low for high-resolution rendering | Texture limits increased to 1536MB soft / 2048MB hard in `OnPostSetup` |
+**Nothing under `generated/` is hand-edited.** Codegen rewrites the whole directory. Engine patches live as `[[midasm_hook]]` entries in the config with implementations in `src/mc_engine/hooks.cpp`, so they survive regeneration.
