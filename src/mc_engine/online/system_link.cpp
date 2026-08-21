@@ -14,6 +14,8 @@
 
 #include "online_common.h"
 
+#include <cstring>
+
 #include <rex/cvar.h>
 
 REXCVAR_DEFINE_BOOL(online_ignore_content_check, true, "MCLA/Multiplayer",
@@ -152,36 +154,248 @@ void Hook_InviteSendPrimitiveProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister
                       xlo);
 }
 
-// [invite-probe] Receiver challenge gate A (guest sub_82282EB8 @0x82282F14). The
-// in-cruise "Propose a Challenge" is signalled by session property 3 = the
-// challenger's identity, which must replicate to this peer. r3 = the result of
-// sub_822952B0(challengeObj, 3): 0 means property 3 never arrived here (the
-// challenge signal isn't replicating). This event (24) fires, so if this logs 0
-// the signal is lost upstream; if non-zero, the identity gate below decides.
-void Hook_InviteGateProp3(PPCRegister& r3) {
-    static int last = -1;
-    int v = static_cast<int>(r3.u64 & 0xFF);
-    if (v != last) {
-        last = v;
-        LARECOMP_APP_INFO("[invite-probe] receiver gate: property-3(challenge) present = {}", v);
-    }
+// ---------------------------------------------------------------------------
+// [challenge-probe] "Propose a Challenge" gates.
+//
+// Verified flow (IDA, MCLA default.xex):
+//   sub_82280E38  builds the signal as a DEADLINE on the *local* network clock:
+//                 now = sub_8226B2F0(netmgr) -> deadline = now + timeout (5..35s)
+//   sub_8227B770  publishes it directly if we own broadcast-data group 0
+//                 (sub_8227E750), otherwise messages the owner, who republishes.
+//   sub_822837B8  the owner writes the group-0 broadcast properties
+//                 (0=type 1=race 2=1 3=DEADLINE 5=index 7=challenger gamer id).
+//   sub_82282EB8  every peer gets net event 24 and decides whether to raise the
+//                 phone prompt "ol_accept_challenge" (via sub_82282C38).
+//
+// The prompt is gated on the RAGE network clock in four places. The player-list
+// status is not - it rides the per-player netPlayer props (sub_82274120) - which
+// is exactly why the other players see "in a race" but never get the invite.
+//
+// Gate order inside sub_82282EB8, every one a silent beq:
+//   0x82282EFC  sub_8226B2A0  clock started (+92 & 0x80) AND synced (& 0x40)
+//   0x82282F1C  sub_822952B0  property 3 replicated to this peer
+//   0x82282F74  sub_82293EB0  deadline > my network time
+//   0x82282FB0  sub_8227E670  challenger resolved from property 7
+// plus the same deadline test on the owner before it republishes (0x82283850).
+//
+// The previous probes sat at 0x82282F14 / 0x82282F68, i.e. *after* the clock
+// gate's branch: if the clock gate is the one failing they can never fire, which
+// is why the earlier two-machine runs logged nothing conclusive. The set below
+// covers the clock gate itself and prints the two times actually being compared.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Challenge timestamps are rage netTime: {int32 seconds, float fraction}.
+struct ChallengeTime {
+    uint32_t sec = 0;
+    float frac = 0.0f;
+    double value() const { return static_cast<double>(static_cast<int32_t>(sec)) + frac; }
+};
+
+bool ReadChallengeTime(rex::memory::Memory* mem, uint32_t ea, ChallengeTime& out) {
+    if (!mem || !IsGuestPtr(ea)) return false;
+    out.sec = GuestRead32(mem, ea + 0);
+    uint32_t raw = GuestRead32(mem, ea + 4);
+    std::memcpy(&out.frac, &raw, sizeof(out.frac));
+    return true;
 }
 
-// [invite-probe] Receiver challenge gate B (before sub_82293EB0 @0x82282F68). The
-// tie-breaker only shows the prompt when challenger > local identity, so equal
-// identities (a shared/default gamer handle) block it on BOTH peers. r3 =
-// &challenger identity, r4 = &local identity; each is {u32@0, f32@4}. Log both.
-void Hook_InviteGateIdentity(PPCRegister& r3, PPCRegister& r4) {
+// mcNetManager (dword_8286F1D8) +8 = the network clock (mcNetworkClock, a
+// rage netTimeSync subclass). There is no GuestRead8 helper, so the flag byte at
+// +92 is taken from the top of the big-endian dword there.
+struct ClockState {
+    bool valid = false;
+    uint32_t flags = 0;      // +92: 0x80 = started, 0x40 = has a synced time
+    uint32_t offset_ms = 0;  // +16: netTimeSync offset applied to the raw timer
+    uint32_t high_ms = 0;    // +84: monotonic high-water mark of the reported time
+};
+
+ClockState ReadClock(rex::memory::Memory* mem) {
+    ClockState st;
+    if (!mem) return st;
+    uint32_t netmgr = GuestRead32(mem, 0x8286F1D8);
+    if (!IsGuestPtr(netmgr)) return st;
+    uint32_t clock = GuestRead32(mem, netmgr + 8);
+    if (!IsGuestPtr(clock)) return st;
+    st.flags = GuestRead32(mem, clock + 92) >> 24;
+    st.offset_ms = GuestRead32(mem, clock + 16);
+    st.high_ms = GuestRead32(mem, clock + 84);
+    st.valid = true;
+    return st;
+}
+
+}  // namespace
+
+// Gate 1, receiver (0x82282EF4): r3 = sub_8226B2A0() = clock started AND synced.
+// 0 here means this peer's network clock is unusable and NO challenge prompt can
+// ever appear, no matter who sends it. The flag dump separates the two causes:
+//   started=0            -> sub_8226D120 never resolved the group-0 owner, so the
+//                           clock was never started in client mode (rec+11780 /
+//                           sub_82482560 path).
+//   started=1 synced=0   -> the netTimeSync request/response on connection
+//                           channel 10 is not completing against the host.
+void Hook_ChallengeClockGate(PPCRegister& r3) {
+    static int last_ok = -1;
+    static uint32_t last_flags = 0xFFFFFFFFu;
+    int ok = static_cast<int>(r3.u64 & 0xFF);
+    auto* rt = rex::Runtime::instance();
+    ClockState st = ReadClock(rt ? rt->memory() : nullptr);
+    if (ok == last_ok && st.flags == last_flags) return;
+    last_ok = ok;
+    last_flags = st.flags;
+    LARECOMP_APP_INFO(
+        "[challenge-probe] receiver clock gate = {} (started={} synced={} offset={}ms now={}ms)",
+        ok, (st.flags & 0x80) ? 1 : 0, (st.flags & 0x40) ? 1 : 0,
+        static_cast<int32_t>(st.offset_ms), st.high_ms);
+}
+
+// Gate 2, receiver (0x82282F14): r3 = sub_822952B0(challengeObj, 3) = did the
+// group-0 broadcast property 3 (the deadline) replicate to this peer at all.
+// 0 means the challenge never arrived here; non-zero means the time gate below
+// decides.
+void Hook_ChallengeProp3Gate(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[challenge-probe] receiver property-3 (deadline) present = {}", v);
+}
+
+// Gate 3, receiver (0x82282F68): sub_82293EB0(deadline, now) - the prompt only
+// shows while the challenge has not expired. r3 = &deadline (produced on the
+// SENDER's clock), r4 = &now (this peer's clock). A negative delta larger than
+// the challenge window (5..35s) means the two clocks are in different domains,
+// i.e. netTimeSync never aligned them.
+void Hook_ChallengeTimeGate(PPCRegister& r3, PPCRegister& r4) {
     auto* rt = rex::Runtime::instance();
     auto* mem = rt ? rt->memory() : nullptr;
-    uint32_t cp = static_cast<uint32_t>(r3.u64);
-    uint32_t lp = static_cast<uint32_t>(r4.u64);
-    if (!mem || !IsGuestPtr(cp) || !IsGuestPtr(lp)) return;
-    uint32_t c0 = GuestRead32(mem, cp + 0), c4 = GuestRead32(mem, cp + 4);
-    uint32_t l0 = GuestRead32(mem, lp + 0), l4 = GuestRead32(mem, lp + 4);
+    ChallengeTime deadline, now;
+    if (!ReadChallengeTime(mem, static_cast<uint32_t>(r3.u64), deadline)) return;
+    if (!ReadChallengeTime(mem, static_cast<uint32_t>(r4.u64), now)) return;
     LARECOMP_APP_INFO(
-        "[invite-probe] receiver identity gate: challenger={:08X}:{:08X} local={:08X}:{:08X} equal={}",
-        c0, c4, l0, l4, (c0 == l0 && c4 == l4) ? 1 : 0);
+        "[challenge-probe] receiver time gate: deadline={:.3f}s now={:.3f}s delta={:+.3f}s pass={}",
+        deadline.value(), now.value(), deadline.value() - now.value(),
+        deadline.value() > now.value() ? 1 : 0);
+}
+
+// Sender/owner side (0x82283818): r3 = sub_8227E750() = do I own broadcast group
+// 0. sub_822837B8 only publishes the challenge when this is 1; a guest's
+// "Propose a Challenge" is messaged to the owner, which republishes. If this logs
+// 1 on more than one machine the group ownership is ambiguous.
+void Hook_ChallengeIsGroupHost(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[challenge-probe] publish: am I the group-0 owner = {}", v);
+}
+
+// Sender/owner side (0x82283850): the same deadline test, run by the owner before
+// it writes the properties. r3 = &deadline (from the requesting peer), r4 = &now
+// (owner's clock). If this fails, nothing is published and NOBODY sees the invite
+// while the requester's own player state has already flipped to "challenging" -
+// the exact symptom being chased.
+void Hook_ChallengeHostPublishGate(PPCRegister& r3, PPCRegister& r4) {
+    auto* rt = rex::Runtime::instance();
+    auto* mem = rt ? rt->memory() : nullptr;
+    ChallengeTime deadline, now;
+    if (!ReadChallengeTime(mem, static_cast<uint32_t>(r3.u64), deadline)) return;
+    if (!ReadChallengeTime(mem, static_cast<uint32_t>(r4.u64), now)) return;
+    LARECOMP_APP_INFO(
+        "[challenge-probe] publish time gate: deadline={:.3f}s now={:.3f}s delta={:+.3f}s pass={}",
+        deadline.value(), now.value(), deadline.value() - now.value(),
+        deadline.value() > now.value() ? 1 : 0);
+}
+
+// Gate 4, receiver (0x82282FAC): r3 = sub_8227E670(mgr, &gamerId) with the gamer
+// id taken from broadcast property 7. 0 = the challenger could not be resolved to
+// a live player on this machine, and sub_82282C38 (the prompt) is never called.
+// The gamer id is 8 bytes derived from abEnet ^ hash32(gamertag), NOT the XUID.
+void Hook_ChallengeResolveChallenger(PPCRegister& r3) {
+    static uint32_t last = 0xFFFFFFFFu;
+    uint32_t v = static_cast<uint32_t>(r3.u64);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[challenge-probe] challenger resolved from property 7 = 0x{:08X}", v);
+}
+
+// Everything below is inside sub_82282C38, the function that actually raises the
+// phone prompt. It has four more gates after the ones in sub_82282EB8, and any of
+// them silently swallows the challenge (the requester's player state has already
+// flipped to "challenging", which is the reported symptom).
+
+// 0x82282C78: r11 = *(mgr+0x10) = challenge state, must not be 4. Also dumps the
+// global "a challenge prompt is already pending" byte at 0x82873D94, which blocks
+// a second prompt until sub_82291508 clears it.
+void Hook_PromptEntryGate(PPCRegister& r11) {
+    static uint32_t last_state = 0xFFFFFFFFu;
+    static uint32_t last_pending = 0xFFFFFFFFu;
+    auto* rt = rex::Runtime::instance();
+    auto* mem = rt ? rt->memory() : nullptr;
+    uint32_t state = static_cast<uint32_t>(r11.u64);
+    uint32_t pending = mem ? (GuestRead32(mem, 0x82873D94) >> 24) : 0xFFFFFFFFu;
+    if (state == last_state && pending == last_pending) return;
+    last_state = state;
+    last_pending = pending;
+    LARECOMP_APP_INFO("[challenge-probe] prompt entry: state={} (4 blocks) pending_flag={}", state,
+                      pending);
+}
+
+// 0x82282C9C: r3 = sub_82293EB0(deadline, now) again, this time on the prompt path.
+void Hook_PromptTimeGate(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[challenge-probe] prompt time gate pass = {}", v);
+}
+
+// 0x82282DB0: r11 = *(mgr+0x10) once more, this time it must be exactly 0 or the
+// prompt is replaced by sub_8268EE10(*mgr, 20, 3, -1) - no popup, no error.
+void Hook_PromptStateIdle(PPCRegister& r11) {
+    static uint32_t last = 0xFFFFFFFFu;
+    uint32_t v = static_cast<uint32_t>(r11.u64);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[challenge-probe] prompt state-idle gate: state={} (needs 0)", v);
+}
+
+// 0x82282DC8: r3 = sub_822090B8() = the "Invisible" or "Tutorial" flow state
+// reports done (vfunc 0x138). 0 here means the game considers the player not ready
+// to be prompted.
+void Hook_PromptFlowGate(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[challenge-probe] prompt flow gate (Invisible/Tutorial) = {}", v);
+}
+
+// 0x82282DE4: r3 = sub_821E80F8(dword_82874374, idx) - a bounds + non-null lookup
+// in a table, with idx = *(challenger+0x88) carried in r25. 0 means the entry for
+// this challenger is missing on the receiver, and the prompt is dropped.
+void Hook_PromptTableGate(PPCRegister& r3, PPCRegister& r25) {
+    static int last = -1;
+    static uint32_t last_idx = 0xFFFFFFFFu;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    uint32_t idx = static_cast<uint32_t>(r25.u64);
+    if (v == last && idx == last_idx) return;
+    last = v;
+    last_idx = idx;
+    LARECOMP_APP_INFO("[challenge-probe] prompt table gate = {} (index={})", v,
+                      static_cast<int32_t>(idx));
+}
+
+// 0x82282E8C: sub_8264F2F8 - the phone prompt is going up right now.
+void Hook_PromptRaised() {
+    LARECOMP_APP_INFO("[challenge-probe] PROMPT RAISED (ol_accept_challenge)");
+}
+
+// 0x82282EA8: the fallback taken whenever one of the three gates above fails -
+// sub_8268EE10(*mgr, 20, 3, -1) instead of the popup.
+void Hook_PromptDropped() {
+    LARECOMP_APP_INFO("[challenge-probe] prompt DROPPED (fallback path, no popup)");
 }
 
 #else // REXGLUE_HAS_XEO3_TARGET
@@ -194,6 +408,17 @@ void Hook_DumpJoinBlob(PPCRegister& r4) {}
 void Hook_InviteReceiveProbe(PPCRegister& r4, PPCRegister& r5) {}
 void Hook_InviteSendProbe(PPCRegister& r3, PPCRegister& r4) {}
 void Hook_InviteSendPrimitiveProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {}
-void Hook_InviteGateProp3(PPCRegister& r3) {}
-void Hook_InviteGateIdentity(PPCRegister& r3, PPCRegister& r4) {}
+void Hook_ChallengeClockGate(PPCRegister& r3) {}
+void Hook_ChallengeProp3Gate(PPCRegister& r3) {}
+void Hook_ChallengeTimeGate(PPCRegister& r3, PPCRegister& r4) {}
+void Hook_ChallengeIsGroupHost(PPCRegister& r3) {}
+void Hook_ChallengeHostPublishGate(PPCRegister& r3, PPCRegister& r4) {}
+void Hook_ChallengeResolveChallenger(PPCRegister& r3) {}
+void Hook_PromptEntryGate(PPCRegister& r11) {}
+void Hook_PromptTimeGate(PPCRegister& r3) {}
+void Hook_PromptStateIdle(PPCRegister& r11) {}
+void Hook_PromptFlowGate(PPCRegister& r3) {}
+void Hook_PromptTableGate(PPCRegister& r3, PPCRegister& r25) {}
+void Hook_PromptRaised() {}
+void Hook_PromptDropped() {}
 #endif // REXGLUE_HAS_XEO3_TARGET

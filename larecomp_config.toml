@@ -25284,20 +25284,46 @@ name = "Hook_InviteSendProbe"
 registers = ["r3", "r4"]
 after_instruction = false
 
-# [invite-probe] Receiver challenge gates in guest sub_82282EB8 (event 24). The
-# "Propose a Challenge" signal is session property 3 = challenger identity; the
-# prompt shows only if it is present AND challenger identity > local identity.
-#   0x82282F14: r3 = property-3-present result (0 = challenge signal not here)
-#   0x82282F68: r3 = &challenger id, r4 = &local id (equal ids block the prompt)
+# [challenge-probe] "Propose a Challenge" gates. The signal is broadcast-data
+# group 0 property 3 = a DEADLINE on the sender's network clock; the prompt only
+# shows while that deadline is still in the future on the receiver's clock. The
+# player-list status rides the netPlayer props instead and has no clock gate,
+# which is why the other players see "in a race" but never get the invite.
+#
+# Receiver, guest sub_82282EB8 (net event 24), in gate order:
+#   0x82282EF4: r3 = sub_8226B2A0()  clock started AND synced (blocks everything)
+#   0x82282F14: r3 = property-3 (deadline) replicated to this peer
+#   0x82282F68: r3 = &deadline, r4 = &now   deadline > now
+# Owner/publisher, guest sub_822837B8:
+#   0x82283818: r3 = sub_8227E750()  do I own broadcast group 0
+#   0x82283850: r3 = &deadline, r4 = &now   same test before publishing
+[[midasm_hook]]
+address = 0x82282EF4
+name = "Hook_ChallengeClockGate"
+registers = ["r3"]
+after_instruction = false
+
 [[midasm_hook]]
 address = 0x82282F14
-name = "Hook_InviteGateProp3"
+name = "Hook_ChallengeProp3Gate"
 registers = ["r3"]
 after_instruction = false
 
 [[midasm_hook]]
 address = 0x82282F68
-name = "Hook_InviteGateIdentity"
+name = "Hook_ChallengeTimeGate"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82283818
+name = "Hook_ChallengeIsGroupHost"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82283850
+name = "Hook_ChallengeHostPublishGate"
 registers = ["r3", "r4"]
 after_instruction = false
 
@@ -25934,3 +25960,63 @@ RtlAllocateHeap = 0x82134860
 RtlFreeHeap = 0x82135150
 RtlSizeHeap = 0x82133B00
 RtlReAllocateHeap = 0x82135440
+# [challenge-probe] second half of the chain. sub_82282EB8 hands off to
+# sub_82282C38, which is what actually raises the phone prompt, and that function
+# has four more silent gates. Any of them sends the challenge to
+# sub_8268EE10(*mgr, 20, 3, -1) instead of the popup - no message, no error, while
+# the requester already shows as "challenging" in everyone's player list.
+#   0x82282FAC: r3  = challenger resolved from broadcast property 7 (gamer id)
+#   0x82282C78: r11 = challenge state, 4 blocks; hook also dumps byte_82873D94
+#   0x82282C9C: r3  = deadline still in the future, prompt-path copy of the test
+#   0x82282DB0: r11 = challenge state, here it must be exactly 0
+#   0x82282DC8: r3  = sub_822090B8() "Invisible"/"Tutorial" flow state is done
+#   0x82282DE4: r3  = table lookup for the challenger, r25 = index (*(player+0x88))
+#   0x82282E8C: the popup call itself (sub_8264F2F8)
+#   0x82282EA8: the fallback taken when a gate above fails
+[[midasm_hook]]
+address = 0x82282FAC
+name = "Hook_ChallengeResolveChallenger"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282C78
+name = "Hook_PromptEntryGate"
+registers = ["r11"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282C9C
+name = "Hook_PromptTimeGate"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282DB0
+name = "Hook_PromptStateIdle"
+registers = ["r11"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282DC8
+name = "Hook_PromptFlowGate"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282DE4
+name = "Hook_PromptTableGate"
+registers = ["r3", "r25"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282E8C
+name = "Hook_PromptRaised"
+registers = []
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82282EA8
+name = "Hook_PromptDropped"
+registers = []
+after_instruction = false
