@@ -34,6 +34,18 @@
 #include <windows.h>
 #endif
 
+#include <rex/cvar.h>
+#include <rex/runtime.h>
+#include <rex/graphics/flags.h>
+#include <rex/ui/flags.h>
+#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/context.h>
+
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <unordered_map>
+
 extern uint8_t* g_guest_mem;
 
 class LarecompApp : public rex::ReXApp {
@@ -56,6 +68,126 @@ class LarecompApp : public rex::ReXApp {
         new LarecompApp(ctx, "larecomp", PPCImageConfig));
   }
 
+  // Record of every SetFlag attempt. SetFlagByName returns false for names that
+  // were never registered - and cvars living in a runtime-loaded plugin are not
+  // registered until that plugin loads, so a correctly spelled flag set at the
+  // wrong phase fails exactly like a typo.
+  //
+  // Discarding this return value is how the midnightclub fork silently ran its
+  // entire GPU configuration unapplied for months, vsync included. It matters
+  // more here, not less: this project targets rexglue 0.10.0, so a cvar renamed
+  // or moved between SDK versions would otherwise fail in complete silence.
+  static inline std::vector<std::string>& FlagLog() {
+    static std::vector<std::string> log;
+    return log;
+  }
+
+  static void SetFlag(const char* name, const char* value) {
+    const bool ok = rex::cvar::SetFlagByName(name, value);
+    FlagLog().push_back(std::string(ok ? "  ok   " : "  FAIL ") + name + " = " + value);
+  }
+
+
+  void DumpEffectiveConfig() {
+    static const char* kWatched[] = {
+        "video_mode_refresh_rate", "video_mode_width", "video_mode_height",
+        "vsync", "fullscreen", "window_width", "window_height",
+        "resolution_scale", "async_shader_compilation", "clear_memory_page_state",
+        "d3d12_bindless", "d3d12_readback_resolve", "readback_resolve",
+        "readback_memexport_fast", "d3d12_pipeline_creation_threads",
+        "d3d12_allow_variable_refresh_rate_and_tearing", "d3d12_tiled_shared_memory",
+        "render_target_path_d3d12", "texture_cache_memory_limit_soft",
+        "texture_cache_memory_limit_hard",
+        "texture_cache_memory_limit_render_to_texture",
+        "anisotropic_override", "gpu_allow_invalid_fetch_constants", "log_level",
+        "audio_maxqframes", "audio_mute",
+    };
+    std::filesystem::create_directories("logs");
+    if (FILE* f = fopen("logs/effective_config.txt", "w")) {
+      fprintf(f, "=== effective cvar values (sampled in OnPostSetup, after all flags applied) ===\n");
+      for (const char* name : kWatched) {
+        std::string v = rex::cvar::GetFlagByName(name);
+        fprintf(f, "%-46s = %s\n", name, v.empty() ? "<empty/unset>" : v.c_str());
+      }
+      // Only variables this build actually reads. The list previously carried
+      // 22 names that were never passed to getenv() - most had been migrated to
+      // cvars, but the dump still advertised them, so anyone debugging would set
+      // MCLA_LOD_CITY_SCALE, see it listed here, and get no effect. That is the
+      // "documented but not implemented" trap this file exists to prevent.
+      //
+      // MCLA_RESOLVE_SYMBOLS and MCLA_STRINGS_FILE are deliberately absent for
+      // the same reason. getenv() does appear for both, but only inside
+      // SymbolResolver's constructor, and nothing constructs one - the resolver
+      // in mcla_symbol_resolver.h currently has no call sites. It is kept as a
+      // debugging aid (header-only, so unused inlines cost nothing in the
+      // binary), but until something calls it, setting either variable has no
+      // effect and listing them here would be misleading.
+      fprintf(f, "\n=== env overrides (only vars this build reads) ===\n");
+      for (const char* e : {"MCLA_GAME_DATA", "MCLA_FPS_CAP", "MCLA_MAX_FRAME_MS",
+                            "MCLA_TIMING_LOG",
+                            "MCLA_TEX_SOFT", "MCLA_TEX_HARD", "MCLA_TEX_RTT",
+                            "MCLA_VSYNC", "MCLA_REFRESH_RATE",
+                            "MCLA_ALLOW_INVALID_FETCH", "MCLA_NO_STUB_SWEEP",
+                            "REX_LOG_LEVEL", "LARECOMP_LOG_FILE"}) {
+        const char* v = getenv(e);
+        fprintf(f, "%-46s = %s\n", e, v ? v : "<not set>");
+      }
+
+      // Everything else moved to cvars, which is the better home - they are
+      // settable live from the pause menu instead of needing a relaunch. Listed
+      // by cvar name so the mapping stays discoverable.
+      fprintf(f, "\n=== settings that are cvars, not env vars ===\n");
+      for (const char* c : {"real_frame_delta", "fps_limit", "lod_city_scale",
+                            "lod_traffic_scale", "skip_intro", "disable_dof",
+                            "disable_msaa", "disable_motion_blur",
+                            "disable_imposter_shadows", "disable_rubberbanding",
+                            "smooth_chassis_depth", "smooth_chase_cam",
+                            "chase_cam_smoothing_factor", "enable_ambient_tuning",
+                            "traffic_unspawn_dist", "ped_density_scale",
+                            "parked_car_scale", "speed_units"}) {
+        std::string v = rex::cvar::GetFlagByName(c);
+        fprintf(f, "%-46s = %s\n", c, v.empty() ? "<empty/unset>" : v.c_str());
+      }
+
+      fprintf(f, "\n=== SetFlagByName results ===\n");
+      for (const std::string& line : FlagLog()) {
+        fprintf(f, "%s\n", line.c_str());
+      }
+      fclose(f);
+    }
+  }
+
+  void ApplyGpuFlags() {
+    // BadassBaboon's Recomp Adjustments: Increased texture cache limits (1536MB soft / 2048MB hard / 64MB RTT)
+    // to prevent premature eviction of CTX1 normal maps and sector texture dictionaries during high-speed driving.
+    const char* tex_soft = getenv("MCLA_TEX_SOFT");
+    SetFlag("texture_cache_memory_limit_soft", (tex_soft && *tex_soft) ? tex_soft : "1536");
+
+    const char* tex_hard = getenv("MCLA_TEX_HARD");
+    SetFlag("texture_cache_memory_limit_hard", (tex_hard && *tex_hard) ? tex_hard : "2048");
+
+    const char* tex_rtt = getenv("MCLA_TEX_RTT");
+    SetFlag("texture_cache_memory_limit_render_to_texture", (tex_rtt && *tex_rtt) ? tex_rtt : "64");
+
+    // anisotropic_override: 5 = 16x
+    SetFlag("anisotropic_override", "5");
+
+    SetFlag("async_shader_compilation", "true");
+    SetFlag("d3d12_bindless", "true");
+    SetFlag("d3d12_readback_resolve", "false");
+    SetFlag("readback_memexport_fast", "true");
+
+    const char* fetch = getenv("MCLA_ALLOW_INVALID_FETCH");
+    SetFlag("gpu_allow_invalid_fetch_constants", (fetch && *fetch) ? fetch : "true");
+
+    // BadassBaboon's Recomp Adjustments: vsync is false by default for maximum throughput (~30% higher framerate, eliminating 15.625ms quantization grid).
+    const char* vs = getenv("MCLA_VSYNC");
+    SetFlag("vsync", (vs && *vs) ? vs : "false");
+
+    const char* rr = getenv("MCLA_REFRESH_RATE");
+    SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
+  }
+
   void OnPreSetup(rex::RuntimeConfig& config) override {
     // The Xenos GPU emulation is a runtime-loaded plugin as of SDK 0.9.0 and
     // the gpu_plugin cvar defaults to empty (= no GPU at all). Name it here so
@@ -64,6 +196,8 @@ class LarecompApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "xenos";
     }
+
+    SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
   }
 
   void OnShutdown() override {
@@ -92,6 +226,26 @@ class LarecompApp : public rex::ReXApp {
     // keeps the manual path.
     if (!paths.game_data_root.empty() && is_valid_game_root(paths.game_data_root)) {
       return;
+    }
+
+    // MCLA_GAME_DATA overrides auto-detection (parity with the midnightclub
+    // fork). The --game_data_root flag still wins, so an explicit command line
+    // beats a stale environment variable. An invalid value is reported rather
+    // than silently ignored, otherwise a typo looks like a missing install.
+    if (const char* env = std::getenv("MCLA_GAME_DATA")) {
+      if (*env) {
+        std::filesystem::path p(env);
+        if (is_valid_game_root(p)) {
+          paths.game_data_root = std::move(p);
+          return;
+        }
+        // Runs before logging is initialized, so this goes to stderr.
+        fprintf(stderr,
+                "[MCLA] MCLA_GAME_DATA is set to '%s' but that directory has no "
+                "default.xex plus xarchive_*.rpf - ignoring it and "
+                "auto-detecting instead.\n",
+                env);
+      }
     }
 
     // BadassBaboon's Recomp Adjustments: walk up from the exe looking for the
@@ -162,10 +316,114 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
+    // BadassBaboon's Recomp Adjustments: Enable 1ms timer resolution and apply optimal GPU/Texture limits
+    mc::EnableHighResTimer();
+    ApplyGpuFlags();
+    DumpEffectiveConfig();
+
+    // Register t: drive - game uses it for city/art/collision data (.loc files etc.)
+    if (auto* rt = rex::Runtime::instance()) {
+      if (auto* fs = rt->file_system()) {
+        fs->RegisterSymbolicLink("t:", "\\Device\\Harddisk0\\Partition1");
+      }
+    }
+
+    auto* fd = rex::Runtime::instance()->function_dispatcher();
+    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    g_guest_mem = base;
+
+    if (fd && base) {
+      // Deduplicating stub safety net logger
+      struct StubEntry {
+        uint32_t r3, r4, r5, r6;
+        std::atomic<uint32_t> count{0};
+      };
+      static FILE* stub_log = fopen("stubs.txt", "w");
+      static std::mutex stub_mutex;
+      static std::unordered_map<uint64_t, StubEntry> stub_map;
+
+      static PPCFunc* stub = [](PPCContext& ctx, uint8_t*) noexcept {
+        uint32_t addr = ctx.ctr.u32;
+        uint32_t lr   = ctx.lr;
+        uint64_t key  = (uint64_t(addr) << 32) | lr;
+
+        std::lock_guard<std::mutex> lock(stub_mutex);
+        auto [it, inserted] = stub_map.emplace(
+            std::piecewise_construct, std::forward_as_tuple(key), std::forward_as_tuple());
+
+        if (inserted) {
+          it->second.r3 = ctx.r3.u32;
+          it->second.r4 = ctx.r4.u32;
+          it->second.r5 = ctx.r5.u32;
+          it->second.r6 = ctx.r6.u32;
+          it->second.count.store(1);
+          if (stub_log) {
+            fprintf(stub_log,
+                    "[stub] addr=0x%08X LR=0x%08X  r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X\n",
+                    addr, lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+            fflush(stub_log);
+          }
+        } else {
+          uint32_t n = it->second.count.fetch_add(1) + 1;
+          if ((n & (n - 1)) == 0 && stub_log) {
+            fprintf(stub_log,
+                    "[stub] addr=0x%08X LR=0x%08X  (x%u)\n", addr, lr, n);
+            fflush(stub_log);
+          }
+        }
+      };
+
+      // Pass 1: scan static initializer tables (base = 0x82770000).
+      static constexpr uint32_t kTables[][2] = {
+          {0x82770010, 0x827713E0},
+          {0x827713E4, 0x827713F0},
+      };
+      static constexpr uint32_t kXexBase = 0x82000000;
+      static constexpr uint32_t kXexEnd  = 0x829E0000;
+
+      for (auto& [start, end] : kTables) {
+        for (uint32_t addr = start; addr < end; addr += 4) {
+          uint32_t fn = __builtin_bswap32(*reinterpret_cast<uint32_t*>(base + addr));
+          if (fn < kXexBase || fn >= kXexEnd) continue;
+          if (!fd->GetFunction(fn)) {
+            fd->SetFunction(fn, stub);
+          }
+        }
+      }
+
+      // Bypass disc error handler: sub_82130678
+      static PPCFunc* disc_error_bypass = [](PPCContext&, uint8_t*) noexcept {};
+      fd->SetFunction(0x82130678, disc_error_bypass);
+
+      // Pass 2: walk the full XEX code region and stub unmapped targets
+      if (const char* e = getenv("MCLA_NO_STUB_SWEEP"); !(e && *e == '1')) {
+        static constexpr uint32_t kCodeBase = 0x82130000;
+        static constexpr uint32_t kCodeEnd  = 0x827CD054;
+
+        auto t0 = std::chrono::steady_clock::now();
+        uint32_t stubbed = 0;
+        for (uint32_t addr = kCodeBase; addr < kCodeEnd; addr += 4) {
+          if (!fd->GetFunction(addr)) {
+            fd->SetFunction(addr, stub);
+            ++stubbed;
+          }
+        }
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0).count();
+
+        if (FILE* f = fopen("logs/effective_config.txt", "a")) {
+          fprintf(f, "\n=== stub sweep ===\n");
+          fprintf(f, "scanned %u addresses, stubbed %u, took %lld ms\n",
+                  (kCodeEnd - kCodeBase) / 4, stubbed, (long long)ms);
+          fclose(f);
+        }
+      }
+    }
+
     LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}",
                       reinterpret_cast<std::uintptr_t>(g_guest_mem));
 
-  window()->SetTitle("LARecomp");
+    window()->SetTitle("LARecomp (60 FPS Enhanced)");
 
     std::filesystem::path src_dir = std::filesystem::path(__FILE__).parent_path();
     std::string icon_path = (src_dir / "assets" / "mcla.ico").string();

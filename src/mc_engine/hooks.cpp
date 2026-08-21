@@ -26,6 +26,7 @@
 #endif
 #include <rex/chrono/clock.h>
 #include <rex/runtime.h>
+#include <rex/perf/counter.h>
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -62,7 +63,11 @@ REXCVAR_DEFINE_BOOL(skip_intro, false, "MCLA/Patches", "Skip the intro videos to
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
-REXCVAR_DEFINE_BOOL(fps_60, true, "MCLA/Patches", "Increases vsync target to 60 FPS and enables deltatime.")
+REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
+    "Feeds the simulation the measured frame time instead of the engine's fixed "
+    "30 Hz timestep, and unlocks presentation from every-other-vblank. Required "
+    "for correct physics, camera and traffic above 30 FPS. This is NOT a frame "
+    "rate cap - see fps_limit for that.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
@@ -171,10 +176,7 @@ REXCVAR_DEFINE_BOOL(unlock_ride_height, false, "MCLA/Patches", "Allow the full s
 REXCVAR_DEFINE_BOOL(unlock_wheel_fit, false, "MCLA/Patches", "Allow every stock rim size, tire profile, tire width and ride height regardless of the car's clearance metrics.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(physics_noclip, true, "MCLA/Physics", "Disable CCD/Pairwise Collision (Noclip)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(disable_dof, false, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
+REXCVAR_DEFINE_BOOL(disable_dof, true, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(fov_1p_scale, 1.0, "MCLA/Camera", "FOV scale — 1st person / cockpit (0.5 = narrower, 2.0 = wider)")
@@ -193,6 +195,11 @@ REXCVAR_DEFINE_BOOL(smooth_chase_cam, true, "MCLA/Camera",
 REXCVAR_DEFINE_DOUBLE(chase_cam_smoothing_factor, 1.0, "MCLA/Camera",
     "Chase camera boom smoothing factor multiplier (0.1 - 3.0).")
     .range(0.1, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth continuous filter
+REXCVAR_DEFINE_BOOL(smooth_chassis_depth, true, "MCLA/Physics",
+    "Fix: Smooth vehicle chassis suspension and ground depth damping at 60 FPS.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // BadassBaboon's Recomp Adjustments: Ambient traffic & pedestrian density tuning for city performance
@@ -304,19 +311,10 @@ REXCVAR_DEFINE_DOUBLE(breaking_frame_rate_limit, 0.0, "MCLA/Performance",
     .range(0.0, 120.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// BadassBaboon's Recomp Adjustments: Steering physics and frame rate limiter CVARs
-REXCVAR_DEFINE_BOOL(scale_steering_with_fps, true, "MCLA/Controls",
-    "Scale vehicle steering delta to maintain consistent handling response at 60 FPS.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(steering_sensitivity, 1.0, "MCLA/Controls",
-    "Vehicle steering sensitivity multiplier (0.2 = tighter, 1.0 = stock, 2.0 = faster).")
-    .range(0.2, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// 0 by default: the presenter's own vsync already paces the frame, and the
-// limiter's final wait is a busy spin. Set it only when running with vsync off.
-REXCVAR_DEFINE_INT32(fps_limit, 0, "MCLA/Performance",
+// Default to 60 FPS: with vsync=false for low input lag and fast pacing,
+// the precision frame limiter caps to 60 FPS out-of-the-box.
+REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
     "Frame rate cap (0 = uncapped, 60 = 60 FPS, 120 = 120 FPS, 144 = 144 FPS).")
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -480,29 +478,38 @@ REXCVAR_DEFINE_BOOL(capture_vinyl_shapes, false, "MCLA/Garage",
 
 // Function to apply/revert the Aspect Ratio patch in GPU memory
 static void ApplyAspectRatioPatch(std::string_view ratio) {
-    extern uint8_t* g_guest_mem;
-    if (!g_guest_mem) return;
-    
-    uint8_t* patch_ptr = g_guest_mem + 0x8201E7EC;
-    
+    auto* rt = rex::Runtime::instance();
+    if (!rt) return;
+    auto* mem = rt->memory();
+    if (!mem) return;
+
+    constexpr uint32_t addr = 0x8201E7EC;
+    if (auto* heap = mem->LookupHeap(addr)) {
+        heap->Protect(addr, sizeof(uint32_t),
+                      rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+    }
+
+    auto* patch_ptr = mem->TranslateVirtual<uint8_t*>(addr);
+    if (!patch_ptr) return;
+
     LARECOMP_APP_INFO("ApplyAspectRatioPatch called! Ratio: {}, Memory Before: {:02X} {:02X} {:02X} {:02X}", 
         ratio, patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
-    
+
     uint32_t val = 0x3FE38E39; // 16:9 Default (1.777777f)
     if (ratio == "16:10") {
-        val = 0x3FCCCCCD; // 16:10 (1.600000f) -> Adicionado aqui
+        val = 0x3FCCCCCD; // 16:10 (1.600000f)
     } else if (ratio == "21:9") {
         val = 0x40155555; // 21:9 (2.333333f)
     } else if (ratio == "32:9") {
         val = 0x40638E39; // 32:9 (3.555555f)
     }
-    
+
     // Write the 4 bytes in Big-Endian at the correct address
     patch_ptr[0] = (val >> 24) & 0xFF; // MSB
     patch_ptr[1] = (val >> 16) & 0xFF;
     patch_ptr[2] = (val >> 8)  & 0xFF;
     patch_ptr[3] = val         & 0xFF; // LSB
-    
+
     LARECOMP_APP_INFO("Memory After: {:02X} {:02X} {:02X} {:02X}", 
         patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
 }
@@ -1879,10 +1886,6 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
     return GetAspectRatio(f13.f64);
 }
 
-bool Patch_60FPS_Jump() {
-    return REXCVAR_GET(fps_60);
-}
-
 // Single-tile predicated tiling — hook at 0x8217A700 in
 // grcDevice::BeginTiledRendering (sub_8217A470), the convergence point right
 // after the per-orientation tile size math and before the tile rect loop.
@@ -2151,17 +2154,18 @@ void Patch_DebugCam(PPCRegister& r3) {
     MenuCam_NoteFreecam(px, py, pz, g_freecam_yaw, g_freecam_pitch);
 }
 
-// Intro/legals pacing at 60 FPS. The intro SWF is advanced by sub_821F9918
-// with a HARDCODED 1/60s per call (immune to any dt patch), and that function
-// runs twice per frame (present callback sub_821FC008 + main tick
-// sub_821FC588). At the console's 30 Hz that totals real time; at 60 Hz it's
-// exactly 2x. Skipping every other advance (jump to the 0x821F9A00 epilogue)
-// restores the original rate.
-bool Hook_IntroHalfRate() {
-    if (!REXCVAR_GET(fps_60)) return false;
-    static uint32_t call_count = 0;
-    return (call_count++ & 1) != 0;  // true = skip this advance
-}
+// Intro/legals pacing - deliberately NOT patched here.
+//
+// The previous Hook_IntroHalfRate skipped every other SWF advance, which is
+// only correct at exactly 60 FPS. With a configurable fps_limit (30 / 60 / 120 /
+// 144 / uncapped) it is wrong at every other setting: at 120 it still runs 2x
+// fast, at 30 it runs at half speed. It was removed from the midnightclub fork
+// for the same reason and is not being reintroduced.
+//
+// Playback pacing above 30 FPS is inherent to unlocking the engine's 30 Hz
+// design point. Verified in midnightclub by testing hard caps at 30, 45 and 60:
+// the movie speed is identical at all three, so it is not tied to present rate
+// and no frame-rate-based correction can fix it. Supported answer is skip_intro.
 
 // 0x82725100, in sub_827250A8's per-movie lighting pass. The game asks the movie
 // for its "lights" node and then uses the answer without checking it:
@@ -2205,7 +2209,7 @@ bool MCLA_UI_SkipMissingLights(PPCRegister& r3) {
 // RexGlue command processor ignores the guest swap interval (host vblank is a
 // fixed 60 Hz timer), so this is kept only for correctness of the swap packet.
 bool Patch_60FPS_Byte(PPCRegister& r11) {
-    if (REXCVAR_GET(fps_60)) {
+    if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
     }
@@ -2579,23 +2583,34 @@ void Hook_SwfContextEnter(PPCRegister& r3) {
     g_swf_ctx[slot].value = want;
 }
 
+static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
+    uint32_t be = (uint32_t(base[addr + 0]) << 24) | (uint32_t(base[addr + 1]) << 16) |
+                  (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
+    float val;
+    std::memcpy(&val, &be, sizeof(float));
+    return val;
+}
+
+static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
+    uint32_t be;
+    std::memcpy(&be, &val, sizeof(float));
+    base[addr + 0] = (be >> 24) & 0xFF;
+    base[addr + 1] = (be >> 16) & 0xFF;
+    base[addr + 2] = (be >> 8) & 0xFF;
+    base[addr + 3] = be & 0xFF;
+}
+
 void UpdateCityLODMemory() {
-    extern uint8_t* g_guest_mem;
-    if (!g_guest_mem) return;
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
 
     float scale = static_cast<float>(REXCVAR_GET(lod_city_scale));
     float final_lod = scale * 300.0f;
 
-    uint32_t int_val;
-    std::memcpy(&int_val, &final_lod, sizeof(float));
-
-    uint32_t city_lod_addr = 0x827E0DE0; 
-    
-    // Injeção Big-Endian segura
-    g_guest_mem[city_lod_addr + 0] = (int_val >> 24) & 0xFF;
-    g_guest_mem[city_lod_addr + 1] = (int_val >> 16) & 0xFF;
-    g_guest_mem[city_lod_addr + 2] = (int_val >> 8)  & 0xFF;
-    g_guest_mem[city_lod_addr + 3] = int_val         & 0xFF;
+    constexpr uint32_t city_lod_addr = 0x827E0DE0;
+    if (ReadGuestF32(base, city_lod_addr) != final_lod) {
+        WriteGuestF32(base, city_lod_addr, final_lod);
+    }
 }
 
 void Patch_ScaleCityLOD(PPCRegister& f13) {
@@ -2620,61 +2635,425 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
     }
 }
 
-static float ReadGuestF32(const uint8_t* base, uint32_t addr) {
-    uint32_t be = (uint32_t(base[addr + 0]) << 24) | (uint32_t(base[addr + 1]) << 16) |
-                  (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
-    float val;
-    std::memcpy(&val, &be, sizeof(float));
-    return val;
-}
-
-static void WriteGuestF32(uint8_t* base, uint32_t addr, float val) {
-    uint32_t be;
-    std::memcpy(&be, &val, sizeof(float));
-    base[addr + 0] = (be >> 24) & 0xFF;
-    base[addr + 1] = (be >> 16) & 0xFF;
-    base[addr + 2] = (be >> 8) & 0xFF;
-    base[addr + 3] = be & 0xFF;
-}
-
-// BadassBaboon's Recomp Adjustments: Precision frame rate limiter
+// BadassBaboon's Recomp Adjustments: Rock-solid thread-pinned frame rate limiter
 static void EnforceFrameLimit() {
-    int32_t limit = REXCVAR_GET(fps_limit);
-    if (limit <= 0) return;
+    // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
+    // change after process start, and this runs on every single frame.
+    static const int32_t env_limit = [] {
+        if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
+        return -1;
+    }();
+    // The pacing deadline. File-scope-static across calls, so it has to be
+    // reset when pacing is off - otherwise switching FPS LIMIT to UNCAPPED and
+    // back leaves a deadline minutes in the past. The catch-up clause at the
+    // bottom does recover from that in one frame, but relying on it means the
+    // stale value is load-bearing; clearing it here keeps the invariant simple.
+    static uint64_t next_us = 0;
 
-    using clock = std::chrono::steady_clock;
-    static auto last_frame_time = clock::now();
+    const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
+    if (limit <= 0) {
+        next_us = 0;
+        return;
+    }
 
-    const auto target_duration = std::chrono::duration<double, std::micro>(1000000.0 / static_cast<double>(limit));
-    auto now = clock::now();
-    auto elapsed = now - last_frame_time;
+    const double period_us = 1000000.0 / static_cast<double>(limit);
 
-    if (elapsed < target_duration) {
-        auto sleep_time = target_duration - elapsed;
-        if (sleep_time > std::chrono::milliseconds(2)) {
-            std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(sleep_time - std::chrono::milliseconds(1)));
+    // sub_821BDA90 has multiple callers across threads; bind limiter to main thread
+    static const std::thread::id owner = std::this_thread::get_id();
+    if (std::this_thread::get_id() != owner) return;
+
+    auto now_us = [] {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+
+    uint64_t now = now_us();
+    if (next_us == 0) {
+        next_us = now + static_cast<uint64_t>(period_us);
+        return;
+    }
+
+    if (now < next_us) {
+        uint64_t remaining = next_us - now;
+        if (remaining > 1500) {
+            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1500));
         }
-        while (clock::now() - last_frame_time < target_duration) {
-#if defined(_M_X64) || defined(__x86_64__)
-            _mm_pause();
-#endif
+        while (now_us() < next_us) {
+            std::this_thread::yield();
         }
     }
-    last_frame_time = clock::now();
+
+    uint64_t after = now_us();
+    next_us += static_cast<uint64_t>(period_us);
+    if (next_us < after) next_us = after + static_cast<uint64_t>(period_us);
+}
+
+// ── Frame-time instrumentation ─────────────────────────────────────────
+//
+// Off unless MCLA_TIMING_LOG=1, so normal play pays one already-resolved bool
+// test per frame. Ported from the midnightclub fork, which had it while this
+// build did not - a performance collapse here previously left nothing in the
+// log to diagnose it.
+//
+// Accumulates into counters and touches the filesystem at most once per
+// second, never from inside a frame that is already late.
+//
+// The guest timer object is at 0x827D7500, so its struct offsets map onto
+// absolute addresses. [r3+8] is the published frame delta, already used by the
+// camera and chassis hooks.
+constexpr uint32_t kGuestFrameDelta  = 0x827D7508;  // [r3+8]
+constexpr uint32_t kGuestFrameRate   = 0x827D750C;  // [r3+12]
+constexpr uint32_t kGuestAccumA      = 0x827D7514;  // [r3+20]
+constexpr uint32_t kGuestAccumB      = 0x827D7518;  // [r3+24]
+constexpr uint32_t kGuestTimeScale   = 0x827D7554;  // [r3+84]
+// The guest's OWN delta clamp, applied by the fsel pairs at 0x821BDC78 and
+// 0x821BDC88 at the end of sub_821BDA90: [r3+40] is a floor and [r3+36] a
+// ceiling on both [r3+8] and [r3+88]. An engine_dt pinned to exactly the
+// ceiling means real frames are at or past it - a symptom of slow frames, not
+// a cause. Logged so that is visible rather than inferred.
+constexpr uint32_t kGuestDtMax      = 0x827D7524;  // [r3+36]
+constexpr uint32_t kGuestDtMin      = 0x827D7528;  // [r3+40]
+
+// 1 ms buckets; the last bucket is everything at or above it.
+constexpr int kHistBuckets = 121;
+constexpr double kHistogramWindowSec = 30.0;
+
+bool TimingLogEnabled() {
+    static const bool enabled = [] {
+        const char* e = std::getenv("MCLA_TIMING_LOG");
+        return e && *e == '1';
+    }();
+    return enabled;
+}
+
+// Substep count, published by Patch_DeltaTime. The loop makes r24+1 passes.
+std::atomic<int32_t> g_substep_last{-999};
+// How often the loc_821BDB90 fixed-step path ran; published by MCLAFixedStepPath.
+std::atomic<uint64_t> g_fixedstep_hits{0};
+
+// Per-second accumulation of the runtime perf counters.
+//
+// The runtime resets these every frame, so a single read at the report
+// boundary describes one arbitrary frame, not the second. SampleCounters()
+// runs once per frame (only when the timing log is on) and sums them, which is
+// what makes "draws per second" mean what it says.
+struct CounterAccum {
+    uint64_t gpu_submit_us, gpu_draw_us, gpu_fencewait_us, gpu_resolve_us;
+    uint64_t gpu_pipeline_us, gpu_pipeline_create_us, gpu_pipeline_create_n;
+    uint64_t gpu_texupload_us, gpu_texupload_n;
+    uint64_t gpu_waitregmem_us, gpu_waitregmem_n, gpu_cmdwait_us;
+    uint64_t dispatched, interrupts;
+    uint64_t tex_hit, tex_miss, pipe_hit, pipe_miss, draws, verts;
+    uint64_t cmdbuf_stalls, crit_contentions;
+};
+CounterAccum g_ctr{};
+
+#define CTR(field) static_cast<unsigned long long>(g_ctr.field)
+
+void SampleCounters() {
+    using rex::perf::CounterId;
+    using rex::perf::GetCounter;
+    auto add = [](uint64_t& dst, CounterId id) {
+        const int64_t v = GetCounter(id);
+        if (v > 0) dst += static_cast<uint64_t>(v);
+    };
+    add(g_ctr.gpu_submit_us,          CounterId::kGpuSubmitTimeUs);
+    add(g_ctr.gpu_draw_us,            CounterId::kGpuDrawTimeUs);
+    add(g_ctr.gpu_fencewait_us,       CounterId::kGpuFenceWaitTimeUs);
+    add(g_ctr.gpu_resolve_us,         CounterId::kGpuResolveTimeUs);
+    add(g_ctr.gpu_pipeline_us,        CounterId::kGpuPipelineTimeUs);
+    add(g_ctr.gpu_pipeline_create_us, CounterId::kGpuPipelineCreateTimeUs);
+    add(g_ctr.gpu_pipeline_create_n,  CounterId::kGpuPipelineCreateCount);
+    add(g_ctr.gpu_texupload_us,       CounterId::kGpuTextureUploadTimeUs);
+    add(g_ctr.gpu_texupload_n,        CounterId::kGpuTextureUploadCount);
+    // The guest CPU blocking on the GPU. If frame time is unaccounted for and
+    // nothing is being drawn, this is where to look first.
+    add(g_ctr.gpu_waitregmem_us,      CounterId::kGpuWaitRegMemTimeUs);
+    add(g_ctr.gpu_waitregmem_n,       CounterId::kGpuWaitRegMemCount);
+    add(g_ctr.gpu_cmdwait_us,         CounterId::kGpuCommandWaitTimeUs);
+    // Raw guest CPU churn: a collapse with flat GPU counters and a rising
+    // dispatch count is guest code, not the emulator.
+    add(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
+    add(g_ctr.interrupts,             CounterId::kInterruptDispatches);
+    add(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
+    add(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
+    add(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
+    add(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
+    add(g_ctr.draws,                  CounterId::kDrawCalls);
+    add(g_ctr.verts,                  CounterId::kVerticesProcessed);
+    add(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
+    add(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+}
+
+// GPU interrupt probe. Diagnostic only: everything below is gated on the timing
+// log, so a normal run pays one already-resolved bool test per interrupt.
+//
+// source 0 = vblank (the runtime's vsync worker), source 1 = a PM4
+// PACKET3_INTERRUPT in the guest command stream. Splitting them is what
+// distinguishes a runaway vblank catch-up loop from a corrupt command buffer.
+//
+// g_int_poison counts the game's OWN corruption verdict: its handler compares
+// [[user_data+0x2A94]+0x10] against 0x0BADF00D and, on a match, prints
+// "Unanticipated CPU_INTERRUPT.  Sign of a corrupt command buffer?" (string at
+// 0x82061AB8, referenced from 0x824114AC).
+std::atomic<uint64_t> g_int_vblank{0};
+std::atomic<uint64_t> g_int_cpu{0};
+std::atomic<uint64_t> g_int_poison{0};
+
+void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {
+    if (!TimingLogEnabled()) return;
+
+    if (static_cast<uint32_t>(r3.u32) != 1) {
+        g_int_vblank.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_int_cpu.fetch_add(1, std::memory_order_relaxed);
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    const uint32_t user_data = static_cast<uint32_t>(r31.u32);
+    if (!user_data) return;
+    const uint32_t ctx = ReadGuestU32(base, user_data + 0x2A94);
+    if (!ctx) return;
+    if (ReadGuestU32(base, ctx + 0x10) == 0x0BADF00Du)
+        g_int_poison.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordFrameTime() {
+    if (!TimingLogEnabled()) return;
+
+    // Every static below is non-atomic, so confine the bookkeeping to the
+    // thread that first got here rather than racing across callers.
+    static const std::thread::id owner = std::this_thread::get_id();
+    if (std::this_thread::get_id() != owner) return;
+
+    // One file per run: a fixed name opened with "w" would destroy the
+    // previous capture on the next launch.
+    static std::FILE* log = [] () -> std::FILE* {
+        std::error_code ec;
+        std::filesystem::create_directories("logs", ec);
+        std::time_t t = std::time(nullptr);
+        std::tm tm{};
+        localtime_s(&tm, &t);
+        char name[160];
+        std::snprintf(name, sizeof(name),
+                      "logs/timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
+                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                      tm.tm_hour, tm.tm_min, tm.tm_sec,
+                      int(REXCVAR_GET(fps_limit)));
+        return std::fopen(name, "w");
+    }();
+    if (!log) return;
+
+    SampleCounters();
+
+    static uint64_t last = 0, frames = 0, last_report = 0;
+    static uint64_t start = 0, last_hist = 0;
+    static uint32_t spikes[4] = {};
+    static uint32_t hist[kHistBuckets] = {};
+    static uint64_t hist_frames = 0, hist_total_us = 0;
+    static float prev_accum_a = 0.0f, prev_accum_b = 0.0f;
+
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    if (last != 0) {
+        const uint64_t d = now - last;
+        if (d > 100000) spikes[3]++;
+        else if (d > 50000) spikes[2]++;
+        else if (d > 33000) spikes[1]++;
+        else if (d > 20000) spikes[0]++;
+
+        int bucket = static_cast<int>(d / 1000);
+        if (bucket >= kHistBuckets) bucket = kHistBuckets - 1;
+        hist[bucket]++;
+        hist_frames++;
+        hist_total_us += d;
+    }
+    last = now;
+    if (start == 0) { start = now; last_hist = now; last_report = now; }
+
+    bool wrote = false;
+    frames++;
+
+    if (now - last_report >= 1000000) {
+        wrote = true;
+        auto* membase = rex::Runtime::instance()->virtual_membase();
+
+        // Use the ACTUAL elapsed interval, not an assumed 1000 ms: the report
+        // fires on the first frame at or past the boundary, so the real window
+        // is typically 1000-1035 ms and assuming 1000 biases the mean low.
+        const double window_ms = (now - last_report) / 1000.0;
+        const double measured_dt_ms = frames ? window_ms / frames : 0.0;
+        const float engine_dt  = membase ? ReadGuestF32(membase, kGuestFrameDelta) : 0.0f;
+        const float engine_fps = membase ? ReadGuestF32(membase, kGuestFrameRate) : 0.0f;
+
+        std::fprintf(log,
+            "[%6.1fs] fps=%llu  spikes: >20ms=%u >33ms=%u >50ms=%u >100ms=%u"
+            "  | measured_dt=%.2fms  engine_dt=%.2fms (%.1f fps)  ratio=%.2f\n",
+            (now - start) / 1e6, static_cast<unsigned long long>(frames),
+            spikes[0], spikes[1], spikes[2], spikes[3],
+            measured_dt_ms, engine_dt * 1000.0f, engine_fps,
+            (engine_dt > 0.0f) ? (measured_dt_ms / (engine_dt * 1000.0f)) : 0.0);
+
+        // Where the frame actually went. Totals are PER SECOND, accumulated in
+        // SampleCounters() every frame, because the counters are reset each
+        // frame by the runtime - reading them once at the report boundary gave
+        // a single-frame spot check that read `draws=0` on healthy 61 fps
+        // seconds purely because the sample landed on an idle frame.
+        //
+        // These separate a GPU-bound collapse (fencewait, submit), a
+        // shader/pipeline stall (pipeline create), streaming thrash (texupload,
+        // cache misses), the guest CPU blocking on a GPU register wait
+        // (waitregmem, cmdwait), and raw guest CPU churn (dispatched).
+        {
+            std::fprintf(log,
+                "           gpu us/s: submit=%llu draw=%llu fencewait=%llu resolve=%llu"
+                " pipeline=%llu (create %llu us x%llu)  texupload=%llu us x%llu\n",
+                CTR(gpu_submit_us), CTR(gpu_draw_us), CTR(gpu_fencewait_us),
+                CTR(gpu_resolve_us), CTR(gpu_pipeline_us),
+                CTR(gpu_pipeline_create_us), CTR(gpu_pipeline_create_n),
+                CTR(gpu_texupload_us), CTR(gpu_texupload_n));
+            std::fprintf(log,
+                "           wait/s: waitregmem=%llu us x%llu  cmdwait=%llu us"
+                "  | guest: dispatched=%llu interrupts=%llu"
+                " (vblank=%llu cpu=%llu poison=%llu)\n",
+                CTR(gpu_waitregmem_us), CTR(gpu_waitregmem_n),
+                CTR(gpu_cmdwait_us), CTR(dispatched), CTR(interrupts),
+                static_cast<unsigned long long>(
+                    g_int_vblank.exchange(0, std::memory_order_relaxed)),
+                static_cast<unsigned long long>(
+                    g_int_cpu.exchange(0, std::memory_order_relaxed)),
+                static_cast<unsigned long long>(
+                    g_int_poison.exchange(0, std::memory_order_relaxed)));
+            std::fprintf(log,
+                "           cache/s: tex hit=%llu miss=%llu | pipeline hit=%llu miss=%llu"
+                " | draws=%llu verts=%llu\n",
+                CTR(tex_hit), CTR(tex_miss), CTR(pipe_hit), CTR(pipe_miss),
+                CTR(draws), CTR(verts));
+            std::fprintf(log,
+                "           sys: cmdbuf_stalls=%llu crit_contentions=%llu"
+                " | now: apc_depth=%lld threads=%lld qdepth=%lld audio_lat_us=%lld\n",
+                CTR(cmdbuf_stalls), CTR(crit_contentions),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kApcQueueDepth),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kActiveThreads),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kBufferQueueDepth),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kAudioFrameLatencyUs));
+            g_ctr = {};
+        }
+
+        // Do the engine's accumulated-time totals still advance? A NEGATIVE
+        // delta means the engine reset them at a level or race transition, not
+        // that they stalled - so only flag near-zero-with-no-change.
+        const float accum_a = membase ? ReadGuestF32(membase, kGuestAccumA) : 0.0f;
+        const float accum_b = membase ? ReadGuestF32(membase, kGuestAccumB) : 0.0f;
+        const float da = accum_a - prev_accum_a;
+        const int32_t sub = g_substep_last.load(std::memory_order_relaxed);
+        std::fprintf(log,
+            "           ACCUM [r3+20]=%.4f (+%.4f/s)  [r3+24]=%.4f (+%.4f/s)"
+            "  timescale=%.3f  dt clamp=[%.4f..%.4f]  substep r24=%d (%d passes)"
+            "  fixedstep=%llu  %s\n",
+            accum_a, da, accum_b, accum_b - prev_accum_b,
+            membase ? ReadGuestF32(membase, kGuestTimeScale) : 0.0f,
+            membase ? ReadGuestF32(membase, kGuestDtMin) : 0.0f,
+            membase ? ReadGuestF32(membase, kGuestDtMax) : 0.0f,
+            sub, sub >= 0 ? sub + 1 : -1,
+            static_cast<unsigned long long>(
+                g_fixedstep_hits.exchange(0, std::memory_order_relaxed)),
+            (da >= -0.001f && da < 0.001f) ? "<-- FROZEN" : "");
+
+        prev_accum_a = accum_a;
+        prev_accum_b = accum_b;
+        frames = 0;
+        last_report = now;
+        spikes[0] = spikes[1] = spikes[2] = spikes[3] = 0;
+    }
+
+    if (now - last_hist >= kHistogramWindowSec * 1000000) {
+        wrote = true;
+        uint32_t peak = 1;
+        for (int i = 0; i < kHistBuckets; ++i)
+            if (hist[i] > peak) peak = hist[i];
+
+        std::fprintf(log,
+            "\n--- frame-time histogram | window %.1fs..%.1fs | %llu frames | mean %.2f ms ---\n",
+            (last_hist - start) / 1e6, (now - start) / 1e6,
+            static_cast<unsigned long long>(hist_frames),
+            hist_frames ? (hist_total_us / 1000.0 / hist_frames) : 0.0);
+
+        for (int i = 0; i < kHistBuckets; ++i) {
+            if (!hist[i]) continue;  // omit empty buckets so clustering shows
+            int bar = static_cast<int>(48.0 * hist[i] / peak);
+            if (bar < 1) bar = 1;
+            std::fprintf(log, "%s%3d ms | %6u %.*s\n",
+                         i == kHistBuckets - 1 ? ">=" : "  ", i, hist[i],
+                         bar, "################################################");
+        }
+        std::fprintf(log, "\n");
+
+        for (int i = 0; i < kHistBuckets; ++i) hist[i] = 0;
+        hist_frames = 0;
+        hist_total_us = 0;
+        last_hist = now;
+    }
+
+    // Flush only on frames that actually wrote. Flushing every frame would put
+    // a blocking disk write in the hot path - the bug this was rewritten to
+    // avoid in the midnightclub fork.
+    if (wrote) std::fflush(log);
 }
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
 // 0x821BDAB0: runs after subf r8,r10,r11 in sub_821BDA90.
 // Clamps max ticks and runs precision limiter.
+// Upper bound on a single frame's delta, in guest timebase ticks.
+//
+// Tunable via MCLA_MAX_FRAME_MS, clamped to [16, 1000] ms. Previously hardcoded
+// to 125 ms while the env var was advertised in effective_config.txt but never
+// read.
+static uint64_t MaxFrameTicks() {
+    static const uint64_t ticks = [] {
+        double ms = 125.0;
+        if (const char* e = std::getenv("MCLA_MAX_FRAME_MS")) {
+            double v = std::atof(e);
+            if (v > 0.0) ms = v;
+        }
+        if (ms < 16.0) ms = 16.0;
+        if (ms > 1000.0) ms = 1000.0;
+        uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+        if (hz == 0) hz = 50000000;
+        return static_cast<uint64_t>(ms * 0.001 * static_cast<double>(hz));
+    }();
+    return ticks;
+}
+
 void MCLAFrameDelta(PPCRegister& r8) {
-    if (!REXCVAR_GET(fps_60)) return;
-    EnforceFrameLimit();
-    uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
-    if (hz == 0) hz = 50000000;
-    uint64_t max_ticks = static_cast<uint64_t>(0.125 * static_cast<double>(hz));
-    if (r8.u64 > max_ticks) {
-        r8.u64 = max_ticks;
+    // The hitch clamp runs UNCONDITIONALLY, before any cvar check.
+    //
+    // It is the last line of defence against an unbounded delta reaching the
+    // physics and audio clocks after a streaming stall. In the midnightclub
+    // fork, removing it produced a very loud audio blowout, which is why it is
+    // deliberately not switchable there. Gating it behind real_frame_delta
+    // meant turning that option off also silently removed crash protection -
+    // the clamp is correct at 30 Hz too, since the guest's own fixed timestep
+    // never exceeds it.
+    const uint64_t cap = MaxFrameTicks();
+    if (r8.u64 > cap) {
+        r8.u64 = cap;
     }
+
+    // EnforceFrameLimit and UpdateCityLODMemory are NOT gated on
+    // real_frame_delta: they are independent settings that happen to be driven
+    // from this per-frame hook. Gating them meant turning REAL FRAME DELTA off
+    // also silently disabled the FPS LIMIT row and the CITY LOD slider, which
+    // is the cross-setting confusion this option was renamed to avoid. The
+    // midnightclub fork calls both unconditionally for the same reason.
+    EnforceFrameLimit();
+    UpdateCityLODMemory();
+    RecordFrameTime();
 }
 
 // BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
@@ -2696,10 +3075,10 @@ void MCLAFrameDelta(PPCRegister& r8) {
 //                 rewritten with the real delta instead.
 //
 // Returns true to take the jump. Baboon's build jumped unconditionally; gating
-// it on fps_60 is the only change, and it makes the cvar actually turn the whole
+// it on real_frame_delta is the only change, and it makes the cvar actually turn the whole
 // thing off instead of leaving half of it live.
 bool MCLAUseRealDelta() {
-    return REXCVAR_GET(fps_60);
+    return REXCVAR_GET(real_frame_delta);
 }
 
 // 0x821BDB90, after `lfs f11, 0x20(r3)` has loaded the fixed timestep. f11 feeds
@@ -2707,7 +3086,9 @@ bool MCLAUseRealDelta() {
 // replacing it with [r3+0x58] (the measured unscaled delta stored at 0x821BDAF8)
 // publishes the real frame time down this path too.
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
-    if (!REXCVAR_GET(fps_60)) return;
+    if (!REXCVAR_GET(real_frame_delta)) return;
+    if (TimingLogEnabled())
+        g_fixedstep_hits.fetch_add(1, std::memory_order_relaxed);
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     f11.f64 = static_cast<double>(ReadGuestF32(base, static_cast<uint32_t>(r3.u64) + 0x58));
@@ -2719,7 +3100,7 @@ void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
 // frame, which is what caused traffic jitter and physics stutter. What is left
 // here is the per-frame housekeeping.
 void Patch_DeltaTimePre() {
-    TickVinylReadbackWindow();  // runs every frame regardless of fps_60
+    TickVinylReadbackWindow();  // runs every frame regardless of real_frame_delta
     TickVinylShapeCapture();    // hands-free shape-catalog sweep, if requested
     TickButtonPrompts();        // picks up a live button_prompts change
     TickCustomMusic();          // custom radio: volume + end-of-track advance
@@ -2738,7 +3119,11 @@ void Patch_DeltaTimePre() {
 // on its own (sub_821BD910) and r24 = 0 would clear the sub-tick gate at
 // 0x827D754C and freeze physics.
 void Patch_DeltaTime(PPCRegister& r24) {
-    (void)r24;
+    // Read-only: r24 must NOT be modified (see above). Publishing it costs
+    // nothing and lets the timing log report the substep pass count, which is
+    // the rate-invariance check - the value must not change with fps_limit.
+    if (TimingLogEnabled())
+        g_substep_last.store(static_cast<int32_t>(r24.s32), std::memory_order_relaxed);
 }
 
 // 0x823126A4: `bl sub_8230D988` inside the sun-cascade shadow phase (phase bit
@@ -2833,23 +3218,48 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {
 }
 
 // BadassBaboon's Recomp Adjustments:
-// 0x823203D4, in sub_82320298 (mcPlayerCamera::Update).
-// Applies the 60 FPS exponential decay formula to the camera boom interpolation
-// constant before it is passed to matrix Lerp.
-void MCLACameraBoomSmoothing(PPCRegister& f1) {
+// Continuous-time exponential decay for chase camera smoothing factors.
+// In sub_82320298 (mcPlayerCamera::Update):
+//   0x82320468 - f13 is the camera position chase/lag factor S1
+//   0x823204F4 - f0  is the camera look-at / orientation factor S2
+//
+// On 30 FPS console the engine multiplied the raw profile factor by 0.5 and stepped once per update:
+//   S(dt) = 1 - (1 - 0.5 * S_raw) ^ (30 * dt * scale)
+static void ApplyCameraSmoothing(PPCRegister& reg) {
     if (!REXCVAR_GET(smooth_chase_cam)) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    // Read current frame dt (clock+0x08)
-    float dt = ReadGuestF32(base, 0x827D7508);
-    if (!(dt > 0.0f)) return;
+    const float dt = ReadGuestF32(base, kGuestFrameDelta);
+    const double raw_k = reg.f64;
+    if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
 
-    double k = f1.f64;
-    if (k > 0.0 && k < 1.0) {
-        double factor = REXCVAR_GET(chase_cam_smoothing_factor);
-        f1.f64 = 1.0 - std::pow(1.0 - k, dt * 30.0 * factor);
+    const double k30 = 0.5 * raw_k;
+    const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
+    reg.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0 * scale);
+}
+
+void MCLACameraPosSmoothing(PPCRegister& f13) {
+    ApplyCameraSmoothing(f13);
+}
+
+void MCLACameraLookAtSmoothing(PPCRegister& f0) {
+    ApplyCameraSmoothing(f0);
+}
+
+// BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth filter continuous-time scaling
+// 0x82563720: lis r11, flt_82001D14@ha in sub_82563298.
+// f0 is the chassis ground depth filter coefficient alpha (0.10 at 30 FPS, 0.05 at 60 FPS).
+void MCLAChassisDepthSmoothing(PPCRegister& f0) {
+    if (!REXCVAR_GET(smooth_chassis_depth)) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    const float dt = ReadGuestF32(base, kGuestFrameDelta);
+    if (dt > 0.0f) {
+        f0.f64 = 1.0 - std::pow(0.90, static_cast<double>(dt) * 30.0);
     }
 }
 
@@ -2874,7 +3284,9 @@ void MCLACameraBoomSmoothing(PPCRegister& f1) {
 // override is computed from those, so re-parsing a zone never compounds the
 // scale the way the original code did.
 struct DensityTuningValues {
+    float spawn = 0.0f;
     float unspawn = 0.0f;
+    float cull = 0.0f;
     float ped = 0.0f;
     float parked = 0.0f;
 };
@@ -2889,19 +3301,31 @@ static bool g_density_applied_enabled = false;
 static DensityTuningValues g_density_applied;
 
 // Writes one zone. Caller holds g_density_mutex.
+// Offsets verified via rage::mcAmbientDensityTuning in mcla_rage_types.h:
+//   +0x08 = spawn_max
+//   +0x10 = unspawn_max
+//   +0x14 = cull_max
+//   +0x60 = ped_density (96)
+//   +0x98 = parked_factor (152)
 static void WriteDensityZone(uint8_t* base, uint32_t a, const DensityTuningValues& orig,
                              bool enabled, const DensityTuningValues& want) {
     if (!enabled) {
+        WriteGuestF32(base, a + 8, orig.spawn);
         WriteGuestF32(base, a + 16, orig.unspawn);
-        WriteGuestF32(base, a + 92, orig.ped);
+        WriteGuestF32(base, a + 20, orig.cull);
+        WriteGuestF32(base, a + 96, orig.ped);
         WriteGuestF32(base, a + 152, orig.parked);
         return;
     }
-    // Absolute metres, applied as given. The original code silently ignored any
-    // value above the stock 400, which made the upper half of the cvar's
-    // 100..600 range do nothing.
-    WriteGuestF32(base, a + 16, want.unspawn > 0.0f ? want.unspawn : orig.unspawn);
-    WriteGuestF32(base, a + 92, orig.ped * want.ped);
+    float unspawn_val = want.unspawn > 0.0f ? want.unspawn : orig.unspawn;
+    WriteGuestF32(base, a + 16, unspawn_val);
+    if (orig.spawn > 0.0f) {
+        WriteGuestF32(base, a + 8, orig.spawn * 0.75f);
+    }
+    if (orig.cull > 0.0f) {
+        WriteGuestF32(base, a + 20, orig.cull * 0.75f);
+    }
+    WriteGuestF32(base, a + 96, orig.ped * want.ped);
     WriteGuestF32(base, a + 152, orig.parked * want.parked);
 }
 
@@ -2912,10 +3336,12 @@ static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
     want.parked = static_cast<float>(REXCVAR_GET(parked_car_scale));
 }
 
-// 0x826F4E3C, the instruction after the density_tuning.xml parse returns.
-// r31 is the ambient zone, i.e. the tuning object.
-void MCLAAmbientDensityTuning(PPCRegister& r31) {
-    const uint32_t a = static_cast<uint32_t>(r31.u64);
+// 0x826F5CA0, in the epilogue of the mcAmbientDensityTuning constructor
+// sub_826F5B18, after the last field write. r3 holds the ambient zone, i.e.
+// the tuning object. See larecomp_config.toml for why this is NOT hooked at
+// the density_tuning.xml parse - that path never executes.
+void MCLAAmbientDensityTuning(PPCRegister& r3) {
+    const uint32_t a = static_cast<uint32_t>(r3.u64);
     if (a == 0) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
@@ -2930,8 +3356,10 @@ void MCLAAmbientDensityTuning(PPCRegister& r31) {
     // The parse just restored this zone to its XML values, so re-reading here
     // is what keeps the scale from compounding across reloads.
     DensityTuningValues orig;
+    orig.spawn = ReadGuestF32(base, a + 8);
     orig.unspawn = ReadGuestF32(base, a + 16);   // 400.0 stock
-    orig.ped = ReadGuestF32(base, a + 92);       // 0.007 stock
+    orig.cull = ReadGuestF32(base, a + 20);
+    orig.ped = ReadGuestF32(base, a + 96);       // 15.0 / XML stock
     orig.parked = ReadGuestF32(base, a + 152);   // 0.25 stock
     const bool first = g_density_orig.find(a) == g_density_orig.end();
     g_density_orig[a] = orig;
@@ -2945,7 +3373,7 @@ void MCLAAmbientDensityTuning(PPCRegister& r31) {
             "[Ambient Tuning] zone {} at 0x{:08X}: unspawn {:.1f} -> {:.1f}, "
             "ped {:.4f} -> {:.4f}, parked {:.2f} -> {:.2f}",
             g_density_orig.size(), a, orig.unspawn, ReadGuestF32(base, a + 16), orig.ped,
-            ReadGuestF32(base, a + 92), orig.parked, ReadGuestF32(base, a + 152));
+            ReadGuestF32(base, a + 96), orig.parked, ReadGuestF32(base, a + 152));
     }
 }
 
@@ -3498,18 +3926,6 @@ static void ApplyRubberBandScales() {
     was_scaled = true;
 }
 
-// BadassBaboon's Recomp Adjustments:
-// 0x822A2ED4 in sub_822A2988: `lfs f0, 0xC(r20)` with r20 = 0x827D7500, so f0
-// is the clock's inv_game_dt, and the next lines turn the steering delta into a
-// per-second rate with it. Halving it at 60 FPS reproduces the 30 FPS response
-// the handling was tuned against.
-void Patch_SteeringSensitivity(PPCRegister& f0) {
-    double sens = REXCVAR_GET(steering_sensitivity);
-    if (REXCVAR_GET(scale_steering_with_fps) && REXCVAR_GET(fps_60)) {
-        sens *= 0.5;
-    }
-    f0.f64 *= sens;
-}
 
 // The player's current district (return of Racer_GetCurrentDistrict). Fires on
 // the game's own district queries -> the RPC updates the area live while driving.
@@ -3676,12 +4092,10 @@ bool Patch_AspectRatio_82233EB4(PPCRegister& f0) { return false; }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12) { return false; }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) { return false; }
-bool Patch_60FPS_Jump() { return false; }
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {}
 bool Patch_EdramLimit(PPCRegister& r11) { return false; }
 bool Patch_DebugCamGate() { return false; }
 void Patch_DebugCam(PPCRegister& r3) {}
-bool Hook_IntroHalfRate() { return false; }
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
 bool Patch_60FPS_Byte(PPCRegister& r11) { return false; }
 bool Patch_DisableMotionBlur(PPCRegister& r3) { return false; }
@@ -3710,16 +4124,18 @@ bool Patch_ImpostorShadowGuard(PPCRegister& r3) { return false; }
 void Hook_CaptureDistrict(PPCRegister& r3) {}
 void Hook_LzxDecompressPre(PPCRegister& r1) {}
 void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {}
-void MCLACameraBoomSmoothing(PPCRegister& f1) {}
-void MCLAAmbientDensityTuning(PPCRegister& r31) {}
+void MCLACameraPosSmoothing(PPCRegister& f13) {}
+void MCLACameraLookAtSmoothing(PPCRegister& f0) {}
+void MCLAChassisDepthSmoothing(PPCRegister& f0) {}
+void MCLAAmbientDensityTuning(PPCRegister& r3) {}
 bool Patch_DisableImposterShadows(PPCRegister& r11) { return false; }
 void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {}
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
-void Patch_SteeringSensitivity(PPCRegister& f0) {}
 void MCLAFrameDelta(PPCRegister& r8) {}
+void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {}
 bool MCLAUseRealDelta() { return false; }
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {}
 #endif // REXGLUE_HAS_XEO3_TARGET

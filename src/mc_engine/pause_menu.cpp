@@ -259,8 +259,12 @@ bool PatchStringTableEntry(const char* key, const char* text) {
     uint32_t hash = MCLAHashString(key);
     uint32_t buf  = HashMapLookup(table + 16, hash);
     if (!buf) {
-        MC_WARN("[pause-menu] entry '{}' not found (hash 0x{:08X}, table 0x{:08X})",
-                key, hash, table);
+        // Not a warning: the only real caller is EnsureStringTableText, which
+        // treats a miss as "create it instead". Logging an expected branch at
+        // warning level produced ~180 warnings per session and buried the ones
+        // that mattered. A null table (above) IS unexpected and still warns.
+        MC_DEBUG("[pause-menu] entry '{}' absent, will create (hash 0x{:08X}, table 0x{:08X})",
+                 key, hash, table);
         return false;
     }
 
@@ -724,12 +728,12 @@ int ResolveLanguageIndex() {
 // cycles the item's cvar to its next value; labels are rebuilt from the live
 // cvar value on every render, so F4-side changes show up too.
 
-enum class ItemKind { kBool, kStrCycle, kDblCycle, kSave, kCarbonBit };
+enum class ItemKind { kBool, kStrCycle, kDblCycle, kCarbonBit };
 
 struct ItemDef {
     const char* key;      // guest state name + string-table key (unique!)
     ItemKind kind;
-    const char* cvar;     // ignored for kSave
+    const char* cvar;     // ignored for kCarbonBit
     const char* prefix;   // label prefix, e.g. "FULLSCREEN: "
     const char* suffix;   // e.g. " (RESTART)"
     bool inverted;        // kBool: cvar true renders as OFF (disable_* cvars)
@@ -764,11 +768,6 @@ constexpr ItemDef Dbl(const char* key, const char* cvar, const char* prefix,
             nullptr, nullptr, n, vals, fmt, zero_label};
 }
 
-constexpr ItemDef Save(const char* key) {
-    return {key, ItemKind::kSave, nullptr, "", "", false,
-            nullptr, nullptr, 0, nullptr, nullptr};
-}
-
 // Carbon fiber part group. Unlike every other item here this one is NOT
 // backed by a cvar: it flips a bit in the customization data of the car the
 // player is driving, so each car carries its own selection and it persists
@@ -797,10 +796,12 @@ constexpr double kFsrSharpVals[] = {0.0, 0.2, 0.5, 1.0, 2.0};
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
 constexpr double kCamSpeedVals[] = {10.0, 20.0, 40.0, 80.0, 150.0, 300.0};
+constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
 constexpr double kLodValues[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0};
+constexpr double kFpsCapVals[] = {30.0, 60.0, 120.0, 144.0, 0.0};
 
 // Performance. Traffic/ped/parked mirror the ranges the cvars declare; the
 // fragment-tune tables bracket the two values the engine itself uses — 250 is
@@ -862,7 +863,6 @@ const ItemDef kVideoItems[] = {
          kResVals, kResNames, 5, " (RESTART)"),
     Dbl ("PM_RxResScale",   "resolution_scale", "RES SCALE: ",
          kResScaleVals, 4, "%gX", " (RESTART)"),
-    Save("PM_RxSaveVideo"),
 };
 
 const ItemDef kRecompItems[] = {
@@ -870,16 +870,16 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
-    Bool("PM_RxFps60",       "fps_60",                   "60 FPS: "),
+    Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
+    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
-    Bool("PM_RxSteerFps",    "scale_steering_with_fps",  "60FPS STEERING FIX: "),
+    Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
-    Save("PM_RxSaveRecomp"),
 };
 
 // Everything that trades image quality for framerate, in one place.
@@ -919,7 +919,6 @@ const ItemDef kPerfItems[] = {
     Dbl ("PM_RxBreakFps",    "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
          kBreakFpsVals, int(sizeof(kBreakFpsVals) / sizeof(kBreakFpsVals[0])),
          "%g", "", "STOCK"),
-    Save("PM_RxSavePerf"),
 };
 
 const ItemDef kFfxItems[] = {
@@ -931,17 +930,16 @@ const ItemDef kFfxItems[] = {
          "CAS SHARPNESS: ", kCasSharpVals, 5, "%g"),
     Dbl ("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
          "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g"),
-    Save("PM_RxSaveFfx"),
 };
 
 const ItemDef kCamItems[] = {
     // BadassBaboon's Recomp Adjustments: in-game pause menu smooth chase camera toggle
-    Bool("PM_RxSmoothCam", "smooth_chase_cam", "SMOOTH CHASE CAM: "),
-    Dbl ("PM_RxFov1P",    "fov_1p_scale", "1P FOV: ", kFovValues, 13, "%.1fX"),
-    Dbl ("PM_RxFov3P",    "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
-    Str ("PM_RxFreecam",  "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
-    Dbl ("PM_RxCamSpeed", "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
-    Save("PM_RxSaveCam"),
+    Bool("PM_RxSmoothCam",    "smooth_chase_cam", "SMOOTH CHASE CAM: "),
+    Dbl ("PM_RxSmoothFactor", "chase_cam_smoothing_factor", "CAM SMOOTH FACTOR: ", kCamSmoothVals, 7, "%.1fX"),
+    Dbl ("PM_RxFov1P",        "fov_1p_scale", "1P FOV: ", kFovValues, 13, "%.1fX"),
+    Dbl ("PM_RxFov3P",        "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
+    Str ("PM_RxFreecam",      "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
+    Dbl ("PM_RxCamSpeed",     "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
 };
 
 const ItemDef kTodItems[] = {
@@ -956,7 +954,6 @@ const ItemDef kTodItems[] = {
     Str ("PM_RxWeather",  "weather", "WEATHER: ",
          kWeatherVals, kWeatherNames,
          int(sizeof(kWeatherVals) / sizeof(kWeatherVals[0]))),
-    Save("PM_RxSaveTod"),
 };
 
 // Carbon fiber parts. The retail game shipped the carbon code but not the
@@ -985,7 +982,6 @@ const ItemDef kCarbonItems[] = {
 const ItemDef kLangItems[] = {
     Str ("PM_RxLanguage", "language", "LANGUAGE: ",
          kLangVals, kLangNames, kNumLangs),
-    Save("PM_RxSaveLang"),
 };
 
 struct MenuDef {
@@ -1027,7 +1023,10 @@ uint32_t g_pm_seen[64] = {};
 int g_pm_seen_count = 0;
 std::atomic<int>  g_active_menu{-1};                   // -1 = not in any submenu
 std::atomic<bool> g_menus_created{false};
-std::atomic<bool> g_settings_saved{false};             // "SETTINGS SAVED!" label state
+// False means a cvar moved since the last write, i.e. larecomp.toml is stale.
+// Starts clean: entering and leaving a submenu without touching anything
+// must not rewrite the file.
+std::atomic<bool> g_settings_saved{true};
 
 // ── Labels & clicks ────────────────────────────────────────────────────
 
@@ -1069,7 +1068,6 @@ int ItemValueCount(const ItemDef& it) {
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kStrCycle:
     case ItemKind::kDblCycle:  return it.nvals;
-    case ItemKind::kSave:      return 0;
     }
     return 0;
 }
@@ -1085,7 +1083,6 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
         std::snprintf(buf, sizeof(buf), it.dfmt, it.dvals[i]);
         return buf;
     }
-    case ItemKind::kSave: break;
     }
     return "";
 }
@@ -1104,7 +1101,6 @@ int ItemValueIndex(const ItemDef& it) {
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle:
         return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
-    case ItemKind::kSave: break;
     }
     return 0;
 }
@@ -1135,18 +1131,12 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         if (CarbonHaveCar() && (CarbonHasGroup(uint8_t(it.nvals)) ? 1 : 0) != i)
             CarbonToggleGroup(uint8_t(it.nvals));
         break;
-    case ItemKind::kSave:
-        break;
     }
 }
 
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
 std::string ItemRowLabel(const ItemDef& it) {
-    if (it.kind == ItemKind::kSave)
-        return g_settings_saved.load(std::memory_order_relaxed)
-                   ? "SETTINGS SAVED!" : "SAVE SETTINGS";
-
     std::string label = it.prefix;
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
@@ -1182,14 +1172,6 @@ void ApplyItem(const ItemDef& it, int dir) {
         // save carries it, so there is nothing to write to larecomp.toml.
         CarbonToggleGroup(uint8_t(it.nvals));
         break;
-    case ItemKind::kSave: {
-        auto config_path =
-            rex::filesystem::GetExecutableFolder() / "larecomp.toml";
-        rex::cvar::SaveConfig(config_path);
-        g_settings_saved.store(true, std::memory_order_relaxed);
-        MC_INFO("[pause-menu] settings saved to {}", config_path.string());
-        break;
-    }
     }
 }
 
@@ -1309,11 +1291,7 @@ bool BuildNativeRows(int m) {
         if (!name || !row) return false;
         std::memset(base + row, 0, kRowObjectSize);
 
-        if (it.kind == ItemKind::kSave) {
-            // No value list: a plain label row (0x8208DACC), which renders
-            // through sub_82631C08 and draws no arrows.
-            CallGuestFn3(kLabelRowCtorFn, row, name, 0);
-        } else if (ItemIsToggle(it)) {
+        if (ItemIsToggle(it)) {
             CallGuestFn3(kLabelRowCtorFn, row, name, 0);
             WriteGuestBE32(row, kToggleRowVtable);
             WriteGuestU8(row + kRowChecked, uint8_t(ItemValueIndex(it)));
@@ -1330,7 +1308,7 @@ bool BuildNativeRows(int m) {
         nr.name[i]       = name;
         nr.last_index[i] = ItemIsToggle(it) ? ItemValueIndex(it) : 0;
         nr.last_label[i] = label;
-        if (it.kind != ItemKind::kSave && !ItemIsToggle(it))
+        if (!ItemIsToggle(it))
             CentreRowWindow(nr, i, it, ItemValueIndex(it));
         WriteGuestBE32(arr + uint32_t(4 * i), row);
     }
@@ -1391,8 +1369,6 @@ void SyncNativeRowsFromCvars(int m) {
         const ItemDef& it = md.items[i];
         RelabelRow(nr, i, it);
 
-        if (it.kind == ItemKind::kSave) continue;
-
         const int idx = ItemValueIndex(it);
         if (ItemIsToggle(it)) {
             nr.last_index[i] = idx;
@@ -1414,11 +1390,10 @@ void PollNativeRows(int m) {
     for (int i = 0; i < nr.count && i < md.num_items; ++i) {
         const ItemDef& it = md.items[i];
 
-        // SAVE tracks g_settings_saved, carbon tracks whether there is a car
-        // to edit — both change without the row being touched.
-        if (it.kind == ItemKind::kSave || it.kind == ItemKind::kCarbonBit)
+        // Carbon tracks whether there is a car to edit, which changes
+        // without the row being touched.
+        if (it.kind == ItemKind::kCarbonBit)
             RelabelRow(nr, i, it);
-        if (it.kind == ItemKind::kSave) continue;
 
         const int n = ItemValueCount(it);
         if (n <= 0) continue;
@@ -3100,6 +3075,15 @@ bool Hook_PopulateRedirect(PPCRegister& r3) {
     return false;
 }
 
+// Null-guard for sub_82661210, which loads the list table-source pointer from
+// [list+0xC0] and dereferences it at +0xC with no null check. Our native rows
+// deliberately clear that field (see InstallNativeRows), so it is legitimately
+// null while a RexGlue submenu is open. Returning true jumps to 0x82661290,
+// the function's own `li r3, 0` early-out.
+bool MCLA_MenuListNullTableGuard(PPCRegister& r30) {
+    return r30.u32 == 0;
+}
+
 bool Hook_RexGlueCancel(PPCRegister& r31) {
     if (g_active_menu.load(std::memory_order_relaxed) < 0)
         return false;
@@ -3109,6 +3093,22 @@ bool Hook_RexGlueCancel(PPCRegister& r31) {
 
     uint32_t controller = static_cast<uint32_t>(r31.u64);
     RestoreTabDisplay(controller);
+
+    // Settings persist on the way out instead of through a SAVE SETTINGS row.
+    //
+    // Every cvar here already applies the instant it changes - the row only
+    // ever controlled whether larecomp.toml was rewritten, which is not a
+    // distinction worth a menu entry. Writing on each change was the other
+    // option and is worse: SaveConfig rewrites the whole file, and scrubbing a
+    // slider moves a value several times a second, so it would put a full file
+    // write in the middle of gameplay. Saving once per submenu visit, and only
+    // when something actually moved, costs one write and no menu row.
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) {
+        auto config_path =
+            rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+        rex::cvar::SaveConfig(config_path);
+        MC_INFO("[pause-menu] settings saved to {}", config_path.string());
+    }
 
     MC_INFO("[pause-menu] left RexGlue submenu");
     return true;
@@ -3134,6 +3134,7 @@ void Hook_CarbonUiTick(PPCRegister& r3) {}
 void CarbonOnStateActivate(const char* name, uint32_t state) {}
 bool Hook_FlashCommandLog(PPCRegister& r5) { return false; }
 bool Hook_PopulateRedirect(PPCRegister& r3) { return false; }
+bool MCLA_MenuListNullTableGuard(PPCRegister& r30) { return false; }
 bool Hook_RexGlueCancel(PPCRegister& r31) { return false; }
 bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

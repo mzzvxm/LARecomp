@@ -32,6 +32,7 @@
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
+#include <rex/ui/windowed_app_context_sdl.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -712,46 +713,19 @@ void RunSaveImportWizardBlocking(rex::ui::WindowedAppContext& app_context, rex::
   new SaveImportDialog(drawer, user_data_root, xenia, rpcs3,
                        [done]() { done->store(true, std::memory_order_release); });
 
-#if defined(_WIN32)
-  // The concrete window type is the SDL3 backend now; the native handle is the
-  // portable way to reach the HWND.
-  HWND hwnd = window ? static_cast<HWND>(window->GetNativeWindowHandle()) : nullptr;
-#endif
-
   REXLOG_INFO("Entering save import pump");
   while (!done->load(std::memory_order_acquire) && !app_context.HasQuitFromUIThread()) {
     app_context.ExecutePendingFunctionsFromUIThread();
 
-#if defined(_WIN32)
-    MSG message;
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-      if (message.message == WM_QUIT) {
-        app_context.QuitFromUIThread();
-        break;
-      }
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
-    }
+    app_context.PumpEvents();
+
     if (app_context.HasQuitFromUIThread()) {
       break;
     }
     if (window) {
       window->RequestPaint();
     }
-    if (hwnd) {
-      RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-    }
-#else
-    if (window) {
-      window->RequestPaint();
-    }
-#if !defined(__APPLE__)
-    while (gtk_events_pending()) {
-      gtk_main_iteration_do(FALSE);
-    }
-#endif
-#endif
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
   }
 
   // Closing the window during the wizard tears the surface down. Booting the

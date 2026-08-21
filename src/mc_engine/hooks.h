@@ -27,7 +27,6 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24);
 
 void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
-bool Hook_IntroHalfRate();
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28);
 bool Patch_EdramLimit(PPCRegister& r11);
 bool Patch_DebugCamGate();
@@ -73,12 +72,14 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3);
 void Hook_CacheVinylPaint(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6);
 void Hook_PhotoModeCapture(PPCRegister& r3);
 
-// BadassBaboon's Recomp Adjustments: Continuous-time exponential camera boom smoothing & ambient density tuning
-void MCLACameraBoomSmoothing(PPCRegister& f1);
+// BadassBaboon's Recomp Adjustments: Continuous-time exponential camera smoothing & suspension damping
+void MCLACameraPosSmoothing(PPCRegister& f13);
+void MCLACameraLookAtSmoothing(PPCRegister& f0);
+void MCLAChassisDepthSmoothing(PPCRegister& f0);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the
 // constructor is pointless -- the parse overwrites it), once per ambient zone;
 // r31 is the zone, whose base IS the mcAmbientDensityTuning.
-void MCLAAmbientDensityTuning(PPCRegister& r31);
+void MCLAAmbientDensityTuning(PPCRegister& r3);
 
 // Traffic (va_) vehicles used as player cars: the chassis-bound substitution. See
 // hooks.cpp for the full story; the register pairs are (root-carrying reg, child reg).
@@ -90,14 +91,14 @@ void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCR
 // Entry guard for phBoundComposite::ReleaseChildren; true skips the whole loop.
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30);
 
-// BadassBaboon's Recomp Adjustments: Foliage imposter shadows and steering sensitivity
+// BadassBaboon's Recomp Adjustments: Foliage imposter shadows
 bool Patch_DisableImposterShadows(PPCRegister& r11);
-void Patch_SteeringSensitivity(PPCRegister& f0);
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
 void MCLAFrameDelta(PPCRegister& r8);
+void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31);
 // The two fixed-timestep substitution paths in sub_821BDA90. MCLAUseRealDelta
-// jumps over loc_821BDB58 (0x821BDB58 -> loc_821BDC34) when fps_60 is on;
+// jumps over loc_821BDB58 (0x821BDB58 -> loc_821BDC34) when real_frame_delta is on;
 // MCLAFixedStepPath rewrites f11 on the loc_821BDB90 path, which that jump does
 // not cover.
 bool MCLAUseRealDelta();

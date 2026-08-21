@@ -130,6 +130,20 @@ else()
     if(WIN32)
         # Compile the .rc so the app icon is embedded in the exe (not just copied
         # into assets/). The lowest-ID ICON in larecomp.rc is used by Explorer.
+        #
+        # Microsoft's rc.exe cannot parse the `# <line> "file"` markers that
+        # clang -E emits, so CMake's cmake_llvm_rc wrapper fails a clean build
+        # with "RC2019: expected preprocessor command, found '1'". llvm-rc
+        # understands them, so prefer it when it sits beside the clang in use.
+        # Must be set before enable_language(RC), and it is cached - delete the
+        # build directory if switching toolchains.
+        if(NOT CMAKE_RC_COMPILER)
+            get_filename_component(_larecomp_llvm_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+            find_program(LLVM_RC_EXECUTABLE NAMES llvm-rc HINTS "${_larecomp_llvm_bin}")
+            if(LLVM_RC_EXECUTABLE)
+                set(CMAKE_RC_COMPILER "${LLVM_RC_EXECUTABLE}" CACHE FILEPATH "" FORCE)
+            endif()
+        endif()
         enable_language(RC)
         add_executable(larecomp WIN32 ${LARECOMP_SOURCES} src/larecomp.rc)
     else()
@@ -171,4 +185,12 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
         "$<TARGET_FILE_DIR:larecomp>/assets"
     )
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt")
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt"
+                    "$<TARGET_FILE_DIR:larecomp>/gamecontrollerdb.txt"
+            COMMENT "Copying gamecontrollerdb.txt next to larecomp.exe")
+    endif()
 endif()
