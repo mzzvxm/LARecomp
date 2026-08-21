@@ -22,11 +22,11 @@ The game boots to the menu, free roam and races work, and saves load. On top of 
 
 **Camera and suspension that do not break at high frame rates.** Chase camera lag, chassis roll and the ground depth filter step with continuous-time exponential decay calibrated against the 30 FPS console curve, so they behave identically at any frame rate.
 
-**A settings menu inside the game.** Press Start, open Options, and there are seven tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day and Carbon Fiber. Changes apply immediately and save when you leave the submenu.
+**A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
 
-**Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, and a speedometer that switches between mph and km/h.
+**Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker that reaches the German and Italian translations the retail NTSC/U build region-gates out.
 
-Under the hood there are 100 mid-asm hooks, 60 settings, and 24,927 named function hints driving codegen.
+Under the hood there are 112 mid-asm hooks, 155 settings, and 24,927 named function hints driving codegen.
 
 ## Known issues
 
@@ -193,11 +193,9 @@ larecomp/
 
 ## Credits & Acknowledgments
 
-**[mzzvxm](https://github.com/mzzvxm)**, maintainer of **[LARecomp](https://github.com/mzzvxm/larecomp)**. This repository is the LARecomp project: the ReXGlue port, the in-game pause menu and settings system, the ISO install wizard, save porting from Xenia and RPCS3, custom music, Discord Rich Presence, the mod loader, and the bulk of the engine hook work.
+**[mzzvxm](https://github.com/mzzvxm)**, author and maintainer of **[LARecomp](https://github.com/mzzvxm/larecomp)**, the original static recompilation of Midnight Club: Los Angeles, in development since 2025. This repository is the LARecomp project: the ReXGlue port, the in-game pause menu and settings system, the ISO install wizard, save porting from Xenia and RPCS3, custom music, Discord Rich Presence, the mod loader, and the bulk of the engine hook work.
 
 Also the custom ReXGlue build LARecomp is developed against, which is not published yet. Its rendering fixes are what removed the broken car body reflections and the intermittent HUD glitches, leaving dithered alpha as the only rendering issue outstanding.
-
-**[zarif98](https://github.com/zarif98/midnightclub)**, author of the original Midnight Club: Los Angeles static recompilation. Every later project, this one included, is built on that groundwork.
 
 **[BadassBaboon](https://github.com/BadassBaboon)** and the **[midnightclub fork](https://github.com/BadassBaboon/midnightclub)**.
 
