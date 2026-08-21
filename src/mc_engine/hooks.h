@@ -96,6 +96,7 @@ bool Patch_DisableImposterShadows(PPCRegister& r11);
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
 void MCLAFrameDelta(PPCRegister& r8);
+void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31);
 // The two fixed-timestep substitution paths in sub_821BDA90. MCLAUseRealDelta
 // jumps over loc_821BDB58 (0x821BDB58 -> loc_821BDC34) when real_frame_delta is on;
 // MCLAFixedStepPath rewrites f11 on the loc_821BDB90 path, which that jump does

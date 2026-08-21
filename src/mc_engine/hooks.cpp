@@ -2687,6 +2687,13 @@ constexpr uint32_t kGuestFrameRate   = 0x827D750C;  // [r3+12]
 constexpr uint32_t kGuestAccumA      = 0x827D7514;  // [r3+20]
 constexpr uint32_t kGuestAccumB      = 0x827D7518;  // [r3+24]
 constexpr uint32_t kGuestTimeScale   = 0x827D7554;  // [r3+84]
+// The guest's OWN delta clamp, applied by the fsel pairs at 0x821BDC78 and
+// 0x821BDC88 at the end of sub_821BDA90: [r3+40] is a floor and [r3+36] a
+// ceiling on both [r3+8] and [r3+88]. An engine_dt pinned to exactly the
+// ceiling means real frames are at or past it - a symptom of slow frames, not
+// a cause. Logged so that is visible rather than inferred.
+constexpr uint32_t kGuestDtMax      = 0x827D7524;  // [r3+36]
+constexpr uint32_t kGuestDtMin      = 0x827D7528;  // [r3+40]
 
 // 1 ms buckets; the last bucket is everything at or above it.
 constexpr int kHistBuckets = 121;
@@ -2704,6 +2711,94 @@ bool TimingLogEnabled() {
 std::atomic<int32_t> g_substep_last{-999};
 // How often the loc_821BDB90 fixed-step path ran; published by MCLAFixedStepPath.
 std::atomic<uint64_t> g_fixedstep_hits{0};
+
+// Per-second accumulation of the runtime perf counters.
+//
+// The runtime resets these every frame, so a single read at the report
+// boundary describes one arbitrary frame, not the second. SampleCounters()
+// runs once per frame (only when the timing log is on) and sums them, which is
+// what makes "draws per second" mean what it says.
+struct CounterAccum {
+    uint64_t gpu_submit_us, gpu_draw_us, gpu_fencewait_us, gpu_resolve_us;
+    uint64_t gpu_pipeline_us, gpu_pipeline_create_us, gpu_pipeline_create_n;
+    uint64_t gpu_texupload_us, gpu_texupload_n;
+    uint64_t gpu_waitregmem_us, gpu_waitregmem_n, gpu_cmdwait_us;
+    uint64_t dispatched, interrupts;
+    uint64_t tex_hit, tex_miss, pipe_hit, pipe_miss, draws, verts;
+    uint64_t cmdbuf_stalls, crit_contentions;
+};
+CounterAccum g_ctr{};
+
+#define CTR(field) static_cast<unsigned long long>(g_ctr.field)
+
+void SampleCounters() {
+    using rex::perf::CounterId;
+    using rex::perf::GetCounter;
+    auto add = [](uint64_t& dst, CounterId id) {
+        const int64_t v = GetCounter(id);
+        if (v > 0) dst += static_cast<uint64_t>(v);
+    };
+    add(g_ctr.gpu_submit_us,          CounterId::kGpuSubmitTimeUs);
+    add(g_ctr.gpu_draw_us,            CounterId::kGpuDrawTimeUs);
+    add(g_ctr.gpu_fencewait_us,       CounterId::kGpuFenceWaitTimeUs);
+    add(g_ctr.gpu_resolve_us,         CounterId::kGpuResolveTimeUs);
+    add(g_ctr.gpu_pipeline_us,        CounterId::kGpuPipelineTimeUs);
+    add(g_ctr.gpu_pipeline_create_us, CounterId::kGpuPipelineCreateTimeUs);
+    add(g_ctr.gpu_pipeline_create_n,  CounterId::kGpuPipelineCreateCount);
+    add(g_ctr.gpu_texupload_us,       CounterId::kGpuTextureUploadTimeUs);
+    add(g_ctr.gpu_texupload_n,        CounterId::kGpuTextureUploadCount);
+    // The guest CPU blocking on the GPU. If frame time is unaccounted for and
+    // nothing is being drawn, this is where to look first.
+    add(g_ctr.gpu_waitregmem_us,      CounterId::kGpuWaitRegMemTimeUs);
+    add(g_ctr.gpu_waitregmem_n,       CounterId::kGpuWaitRegMemCount);
+    add(g_ctr.gpu_cmdwait_us,         CounterId::kGpuCommandWaitTimeUs);
+    // Raw guest CPU churn: a collapse with flat GPU counters and a rising
+    // dispatch count is guest code, not the emulator.
+    add(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
+    add(g_ctr.interrupts,             CounterId::kInterruptDispatches);
+    add(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
+    add(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
+    add(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
+    add(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
+    add(g_ctr.draws,                  CounterId::kDrawCalls);
+    add(g_ctr.verts,                  CounterId::kVerticesProcessed);
+    add(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
+    add(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+}
+
+// GPU interrupt probe. Diagnostic only: everything below is gated on the timing
+// log, so a normal run pays one already-resolved bool test per interrupt.
+//
+// source 0 = vblank (the runtime's vsync worker), source 1 = a PM4
+// PACKET3_INTERRUPT in the guest command stream. Splitting them is what
+// distinguishes a runaway vblank catch-up loop from a corrupt command buffer.
+//
+// g_int_poison counts the game's OWN corruption verdict: its handler compares
+// [[user_data+0x2A94]+0x10] against 0x0BADF00D and, on a match, prints
+// "Unanticipated CPU_INTERRUPT.  Sign of a corrupt command buffer?" (string at
+// 0x82061AB8, referenced from 0x824114AC).
+std::atomic<uint64_t> g_int_vblank{0};
+std::atomic<uint64_t> g_int_cpu{0};
+std::atomic<uint64_t> g_int_poison{0};
+
+void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {
+    if (!TimingLogEnabled()) return;
+
+    if (static_cast<uint32_t>(r3.u32) != 1) {
+        g_int_vblank.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_int_cpu.fetch_add(1, std::memory_order_relaxed);
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    const uint32_t user_data = static_cast<uint32_t>(r31.u32);
+    if (!user_data) return;
+    const uint32_t ctx = ReadGuestU32(base, user_data + 0x2A94);
+    if (!ctx) return;
+    if (ReadGuestU32(base, ctx + 0x10) == 0x0BADF00Du)
+        g_int_poison.fetch_add(1, std::memory_order_relaxed);
+}
 
 void RecordFrameTime() {
     if (!TimingLogEnabled()) return;
@@ -2730,6 +2825,8 @@ void RecordFrameTime() {
         return std::fopen(name, "w");
     }();
     if (!log) return;
+
+    SampleCounters();
 
     static uint64_t last = 0, frames = 0, last_report = 0;
     static uint64_t start = 0, last_hist = 0;
@@ -2781,44 +2878,50 @@ void RecordFrameTime() {
             measured_dt_ms, engine_dt * 1000.0f, engine_fps,
             (engine_dt > 0.0f) ? (measured_dt_ms / (engine_dt * 1000.0f)) : 0.0);
 
-        // Where the frame actually went. These separate a GPU-bound collapse
-        // (fence wait, submit), a shader/pipeline stall (pipeline create), and
-        // streaming thrash (texture upload, cache misses) from a guest-CPU
-        // bottleneck - which is the point of having this file at all.
+        // Where the frame actually went. Totals are PER SECOND, accumulated in
+        // SampleCounters() every frame, because the counters are reset each
+        // frame by the runtime - reading them once at the report boundary gave
+        // a single-frame spot check that read `draws=0` on healthy 61 fps
+        // seconds purely because the sample landed on an idle frame.
+        //
+        // These separate a GPU-bound collapse (fencewait, submit), a
+        // shader/pipeline stall (pipeline create), streaming thrash (texupload,
+        // cache misses), the guest CPU blocking on a GPU register wait
+        // (waitregmem, cmdwait), and raw guest CPU churn (dispatched).
         {
-            using rex::perf::CounterId;
-            using rex::perf::GetCounter;
             std::fprintf(log,
-                "           gpu us: submit=%lld draw=%lld fencewait=%lld resolve=%lld"
-                " pipeline=%lld (create %lld us x%lld)  texupload=%lld us x%lld\n",
-                (long long)GetCounter(CounterId::kGpuSubmitTimeUs),
-                (long long)GetCounter(CounterId::kGpuDrawTimeUs),
-                (long long)GetCounter(CounterId::kGpuFenceWaitTimeUs),
-                (long long)GetCounter(CounterId::kGpuResolveTimeUs),
-                (long long)GetCounter(CounterId::kGpuPipelineTimeUs),
-                (long long)GetCounter(CounterId::kGpuPipelineCreateTimeUs),
-                (long long)GetCounter(CounterId::kGpuPipelineCreateCount),
-                (long long)GetCounter(CounterId::kGpuTextureUploadTimeUs),
-                (long long)GetCounter(CounterId::kGpuTextureUploadCount));
+                "           gpu us/s: submit=%llu draw=%llu fencewait=%llu resolve=%llu"
+                " pipeline=%llu (create %llu us x%llu)  texupload=%llu us x%llu\n",
+                CTR(gpu_submit_us), CTR(gpu_draw_us), CTR(gpu_fencewait_us),
+                CTR(gpu_resolve_us), CTR(gpu_pipeline_us),
+                CTR(gpu_pipeline_create_us), CTR(gpu_pipeline_create_n),
+                CTR(gpu_texupload_us), CTR(gpu_texupload_n));
             std::fprintf(log,
-                "           cache: tex hit=%lld miss=%lld | pipeline hit=%lld miss=%lld"
-                " | draws=%lld verts=%lld\n",
-                (long long)GetCounter(CounterId::kTextureCacheHits),
-                (long long)GetCounter(CounterId::kTextureCacheMisses),
-                (long long)GetCounter(CounterId::kPipelineCacheHits),
-                (long long)GetCounter(CounterId::kPipelineCacheMisses),
-                (long long)GetCounter(CounterId::kDrawCalls),
-                (long long)GetCounter(CounterId::kVerticesProcessed));
+                "           wait/s: waitregmem=%llu us x%llu  cmdwait=%llu us"
+                "  | guest: dispatched=%llu interrupts=%llu"
+                " (vblank=%llu cpu=%llu poison=%llu)\n",
+                CTR(gpu_waitregmem_us), CTR(gpu_waitregmem_n),
+                CTR(gpu_cmdwait_us), CTR(dispatched), CTR(interrupts),
+                static_cast<unsigned long long>(
+                    g_int_vblank.exchange(0, std::memory_order_relaxed)),
+                static_cast<unsigned long long>(
+                    g_int_cpu.exchange(0, std::memory_order_relaxed)),
+                static_cast<unsigned long long>(
+                    g_int_poison.exchange(0, std::memory_order_relaxed)));
             std::fprintf(log,
-                "           sys: cmdbuf_stalls=%lld crit_contentions=%lld apc_depth=%lld"
-                " threads=%lld | xma=%lld audio_lat_us=%lld qdepth=%lld\n",
-                (long long)GetCounter(CounterId::kCommandBufferStalls),
-                (long long)GetCounter(CounterId::kCriticalRegionContentions),
-                (long long)GetCounter(CounterId::kApcQueueDepth),
-                (long long)GetCounter(CounterId::kActiveThreads),
-                (long long)GetCounter(CounterId::kXmaFramesDecoded),
-                (long long)GetCounter(CounterId::kAudioFrameLatencyUs),
-                (long long)GetCounter(CounterId::kBufferQueueDepth));
+                "           cache/s: tex hit=%llu miss=%llu | pipeline hit=%llu miss=%llu"
+                " | draws=%llu verts=%llu\n",
+                CTR(tex_hit), CTR(tex_miss), CTR(pipe_hit), CTR(pipe_miss),
+                CTR(draws), CTR(verts));
+            std::fprintf(log,
+                "           sys: cmdbuf_stalls=%llu crit_contentions=%llu"
+                " | now: apc_depth=%lld threads=%lld qdepth=%lld audio_lat_us=%lld\n",
+                CTR(cmdbuf_stalls), CTR(crit_contentions),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kApcQueueDepth),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kActiveThreads),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kBufferQueueDepth),
+                (long long)rex::perf::GetCounter(rex::perf::CounterId::kAudioFrameLatencyUs));
+            g_ctr = {};
         }
 
         // Do the engine's accumulated-time totals still advance? A NEGATIVE
@@ -2830,9 +2933,12 @@ void RecordFrameTime() {
         const int32_t sub = g_substep_last.load(std::memory_order_relaxed);
         std::fprintf(log,
             "           ACCUM [r3+20]=%.4f (+%.4f/s)  [r3+24]=%.4f (+%.4f/s)"
-            "  timescale=%.3f  substep r24=%d (%d passes)  fixedstep=%llu  %s\n",
+            "  timescale=%.3f  dt clamp=[%.4f..%.4f]  substep r24=%d (%d passes)"
+            "  fixedstep=%llu  %s\n",
             accum_a, da, accum_b, accum_b - prev_accum_b,
             membase ? ReadGuestF32(membase, kGuestTimeScale) : 0.0f,
+            membase ? ReadGuestF32(membase, kGuestDtMin) : 0.0f,
+            membase ? ReadGuestF32(membase, kGuestDtMax) : 0.0f,
             sub, sub >= 0 ? sub + 1 : -1,
             static_cast<unsigned long long>(
                 g_fixedstep_hits.exchange(0, std::memory_order_relaxed)),
@@ -4008,6 +4114,7 @@ void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {}
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
 void MCLAFrameDelta(PPCRegister& r8) {}
+void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {}
 bool MCLAUseRealDelta() { return false; }
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {}
 #endif // REXGLUE_HAS_XEO3_TARGET

@@ -25466,6 +25466,30 @@ name = "Patch_DeltaTime"
 registers = ["r24"]
 after_instruction = true
 
+# Guest GPU interrupt probe (diagnostic, timing-log only).
+#
+# sub_82411478 is the callback the runtime hands to SetInterruptCallback, so it
+# runs for every GPU interrupt: r3 is the source (0 = vblank from the vsync
+# worker, 1 = a PM4 PACKET3_INTERRUPT in the command stream) and r4 is the
+# user_data pointer.
+#
+# The game's own handler treats source 1 specially: it reads
+# [[user_data+0x2A94]+0x10] and, when that slot holds the poison value
+# 0x0BADF00D, prints "ERR[D3D]: Unanticipated CPU_INTERRUPT.  Sign of a corrupt
+# command buffer?" (string at 0x82061AB8, referenced from 0x824114AC).
+#
+# Counting the split here is what separates a runaway vblank catch-up from a
+# corrupt command buffer, and the poison count is the game's own corruption
+# verdict - without routing DbgPrint, which at the observed 160k interrupts per
+# second would bury the log.
+#
+# Hooked after `mr r31, r4` so r31 already holds user_data.
+[[midasm_hook]]
+name = "MCLA_GuestInterruptProbe"
+address = 0x82411484
+after_instruction = true
+registers = ["r3", "r31"]
+
 # Pause Menu: null-guard for the list table adapter.
 #
 # sub_82661210 loads the list's table-source pointer from [list+0xC0] and
