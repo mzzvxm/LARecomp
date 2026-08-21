@@ -13,6 +13,12 @@ bool Hook_RexGlueCancel(PPCRegister& r31);
 bool Hook_FlashCommandLog(PPCRegister& r5);
 bool Hook_ListViewPopulate(PPCRegister& r3);
 
+// sub_82218A38 (string table SetLanguage, r4 = index into the .strtbl language
+// table). Overrides the index the game derived from the console profile with
+// whatever the `language` cvar asks for, so the boot load already comes up in
+// the right language.
+bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4);
+
 // Options > Controller key dispatch (sub_8264D0D8). Handles accept/customise
 // on the extra "PLAYSTATION BUTTONS" row that Hook_ListViewPopulate appends to
 // that screen, so the game never applies a control preset for it.

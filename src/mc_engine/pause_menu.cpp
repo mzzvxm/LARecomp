@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -474,6 +475,73 @@ void EnsureStringTableText(const char* key, const char* text) {
         CreateStringTableEntry(key, text);
 }
 
+// -- Language ----------------------------------------------------------
+//
+// The .strtbl files carry eleven language blocks in the order of the engine's
+// own name table (off_8281B908): en es fr de it pt jp cht chs ko no. MCLA
+// filled six of them -- en/es/fr/de/it and jp -- and left pt and the rest at
+// zero length. sub_82218A38 is the only thing that ever sets the loaded one:
+// it takes the index in r4, stores it at mgr+28, and re-runs the loader.
+//
+// Only three of the five latin languages are reachable on a retail NTSC/U
+// build. sub_82387928 maps the console's XConfig language to the index, and
+// both its German and its Italian arms fall through to English when
+// XGetGameRegion() & 0xFF00 is zero, which is exactly the Americas. Nothing
+// is missing from the data -- de and it hold 4018 translated strings each,
+// same as the languages that do come through.
+//
+// jp is left out: sub_821FE648 only loads ui/jp_fonts + shared_jp when the
+// mapper returns 6, which it never does, and neither asset is in this build.
+constexpr uint32_t kSetLanguageFn = 0x82218A38;  // (mgr, langIndex)
+
+constexpr const char* kLangVals[]  = {"auto", "en", "es", "fr", "de", "it",
+                                      "pt"};
+constexpr const char* kLangNames[] = {"AUTO", "ENGLISH", "ESPANOL", "FRANCAIS",
+                                      "DEUTSCH", "ITALIANO", "PORTUGUES"};
+// Index into the .strtbl language table, parallel to kLangVals. -1 = leave the
+// game's own choice alone. 5 (pt) is empty in the shipped files -- it only
+// has text when a mod archive supplies a .strtbl that fills it.
+constexpr int kLangIndex[] = {-1, 0, 1, 2, 3, 4, 5};
+constexpr int kNumLangs = int(sizeof(kLangVals) / sizeof(kLangVals[0]));
+
+// Reload the string table in place.
+//
+// Safe to call with the game running because sub_82218A38 opens with
+// sub_825F2188(mgr+4), which overwrites the table pointer with a fresh, empty
+// hash map *before* anything is freed -- the destructor that follows
+// (sub_825F2D88) then tears down that empty one, so the outgoing language's
+// entries and text buffers are never released. That matters: on a cache miss
+// sub_82218268 hands out the string buffer itself (entry+8), so widgets do
+// hold raw pointers into the old table. Leaking it (~200 KB a switch) is what
+// keeps every one of them readable.
+//
+// What does not update is anything that resolved its text once and kept the
+// pointer -- a row's label is cached at +48 by its constructor. Those keep the
+// previous language until the screen is rebuilt.
+bool ApplyLanguageNow(int idx) {
+    if (idx < 0) return false;
+    uint32_t mgr = ReadGuestBE32(kStringTableGlobal);
+    if (!mgr) return false;
+
+    MC_INFO("[language] reloading string table as index {}", idx);
+    CallGuestFn2(kSetLanguageFn, mgr, uint32_t(idx));
+
+    // The display cache at mgr+16 survives the reload untouched, so the
+    // entries we injected there are still live -- but re-assert them anyway,
+    // since they are the only strings in the game with no .strtbl entry to
+    // fall back on.
+    return true;
+}
+
+// Set from the cvar change callback (which runs under the cvar registry lock)
+// and drained on the guest thread, where calling into guest code is safe.
+std::atomic<int> g_pending_language{-1};
+
+// The index sub_82218A38 was called with the first time, i.e. the one the
+// console profile and the region gate produced. Kept so AUTO is a real value
+// the live switch can go back to, not just "whatever loaded at boot".
+std::atomic<int> g_boot_language{-1};
+
 // ── Allocate a new vhsmState via the engine factory ───────────────────
 
 uint32_t CreateNewMenuState(const char* name) {
@@ -618,14 +686,35 @@ double CvarGetDouble(const char* name) {
 }
 
 void CvarSet(const char* name, const char* value) {
-    rex::cvar::SetFlagByName(name, value);
+    // Logged before the write, not after: a cvar's change callbacks run
+    // synchronously on this (guest) thread with the cvar registry mutex held,
+    // so an apply that hangs used to leave no trace at all -- the last line in
+    // the log was whatever came before the click.
     MC_INFO("[pause-menu] cvar '{}' -> '{}'", name, value);
+    rex::cvar::SetFlagByName(name, value);
+    MC_INFO("[pause-menu] cvar '{}' applied", name);
 }
 
 void CvarSetDouble(const char* name, double v) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%g", v);
     CvarSet(name, buf);
+}
+
+// Which .strtbl language block the `language` cvar asks for. -1 = auto, i.e.
+// leave whatever sub_82387928 derived from the console profile.
+int LanguageIndexFromCvar() {
+    std::string v = CvarGet("language");
+    for (int i = 0; i < kNumLangs; ++i)
+        if (v == kLangVals[i]) return kLangIndex[i];
+    return -1;
+}
+
+// Same, but with AUTO resolved to the index the game itself derived. -1 only
+// if that has not been seen yet, which cannot happen after boot.
+int ResolveLanguageIndex() {
+    const int idx = LanguageIndexFromCvar();
+    return idx >= 0 ? idx : g_boot_language.load(std::memory_order_relaxed);
 }
 
 // ── Item / menu tables ─────────────────────────────────────────────────
@@ -890,6 +979,15 @@ const ItemDef kCarbonItems[] = {
     Carbon("PM_RxCarbonExtras",  kCarbonExtras,  "GRILL & INTERCOOLER: "),
 };
 
+// The five latin languages MCLA actually shipped strings for. AUTO is the
+// game's own pick; the other four are the ones region-gated out of a retail
+// NTSC/U build, plus the two that were never gated.
+const ItemDef kLangItems[] = {
+    Str ("PM_RxLanguage", "language", "LANGUAGE: ",
+         kLangVals, kLangNames, kNumLangs),
+    Save("PM_RxSaveLang"),
+};
+
 struct MenuDef {
     const char* btn_key;   // button state name + its string-table key
     const char* label;     // button label AND submenu title
@@ -913,6 +1011,8 @@ const MenuDef kMenus[] = {
      kTodItems,    int(sizeof(kTodItems)    / sizeof(kTodItems[0]))},
     {"PM_RxTabCarbon", "CARBON FIBER",     "RxCarbonMenu",
      kCarbonItems, int(sizeof(kCarbonItems) / sizeof(kCarbonItems[0]))},
+    {"PM_RxTabLang",   "LANGUAGES",        "RxLangMenu",
+     kLangItems,   int(sizeof(kLangItems)   / sizeof(kLangItems[0]))},
 };
 constexpr int kNumMenus = int(sizeof(kMenus) / sizeof(kMenus[0]));
 
@@ -1280,6 +1380,13 @@ void SyncNativeRowsFromCvars(int m) {
     NativeRows& nr = g_rows[m];
     const MenuDef& md = kMenus[m];
 
+    // Drained here rather than in the cvar callback: that one runs with the
+    // registry lock held, and the reload calls back into guest code. This
+    // point is on the guest thread with nothing of ours held, and it also
+    // catches a `language` set from the console, not just from the row.
+    const int lang = g_pending_language.exchange(-1, std::memory_order_relaxed);
+    if (lang >= 0) ApplyLanguageNow(lang);
+
     for (int i = 0; i < nr.count && i < md.num_items; ++i) {
         const ItemDef& it = md.items[i];
         RelabelRow(nr, i, it);
@@ -1557,7 +1664,31 @@ void EnsureControllerButtonRow(uint32_t list) {
 // ── Public API ──────────────────────────────────────────────────────────
 
 void InitPauseMenuHooks() {
+    rex::cvar::RegisterChangeCallback(
+        "language", [](std::string_view, std::string_view) {
+            const int idx = ResolveLanguageIndex();
+            if (idx >= 0)
+                g_pending_language.store(idx, std::memory_order_relaxed);
+        });
     MC_INFO("[pause-menu] hooks registered");
+}
+
+// sub_82218A38(mgr, langIndex) -- the one place the string table's language is
+// ever set. Hooked one instruction past the prologue, before `mr r29, r4`
+// copies the index off, so overriding r4 here is enough to make the game load
+// a different language at boot with no reload at all.
+bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4) {
+    (void)r3;
+    int expected = -1;
+    g_boot_language.compare_exchange_strong(expected, int(uint32_t(r4.u64)),
+                                            std::memory_order_relaxed);
+
+    const int idx = LanguageIndexFromCvar();
+    if (idx >= 0) {
+        MC_INFO("[language] boot language {} -> {}", uint32_t(r4.u64), idx);
+        r4.u64 = uint32_t(idx);
+    }
+    return false;
 }
 
 void Hook_CapturePMContinue(PPCRegister& r3) {
@@ -1587,6 +1718,12 @@ bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) {
     }
 
     EnsureSubmenus();
+
+    {
+        const int lang =
+            g_pending_language.exchange(-1, std::memory_order_relaxed);
+        if (lang >= 0) ApplyLanguageNow(lang);
+    }
 
     // This only runs with the pause menu on screen, which makes it the right
     // place to arm the probe — state names cannot do it, the whole tree
@@ -2998,4 +3135,5 @@ void CarbonOnStateActivate(const char* name, uint32_t state) {}
 bool Hook_FlashCommandLog(PPCRegister& r5) { return false; }
 bool Hook_PopulateRedirect(PPCRegister& r3) { return false; }
 bool Hook_RexGlueCancel(PPCRegister& r31) { return false; }
+bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

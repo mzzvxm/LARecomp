@@ -18,3 +18,4 @@ larecomp_config-graine.toml
 !src/assets/
 src/assets/*
 !src/assets/mcla.ico
+translations/

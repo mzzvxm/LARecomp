@@ -25519,6 +25519,17 @@ name = "Hook_PopulateRedirect"
 registers = ["r3"]
 jump_address_on_true = 0x82220318
 
+# Hook sub_82218A38 (string table SetLanguage) one instruction past the
+# prologue -- at 0x82218A44 r4 still holds the language index, and the copy
+# that takes it out of r4 (mr r29, r4) is the very next instruction. Rewrites
+# r4 from the `language` cvar so the boot load already picks the right block
+# out of ui/mc4stringtable*.strtbl. Always returns false.
+[[midasm_hook]]
+address = 0x82218A44
+name = "Hook_StringTableLanguage"
+registers = ["r3", "r4"]
+jump_address_on_true = 0x82218A48
+
 # Hook sub_82220FE0 (FlashNavigator command dispatcher) after prologue.
 # Diagnostic: logs every command the Flash actionscript sends to the game
 # (type + decoded args). Always returns false.
