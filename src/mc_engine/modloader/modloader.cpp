@@ -315,6 +315,32 @@ REXCVAR_DEFINE_INT32(model_mods_weight_smoothing, 4, "MCLA/Mods",
     "a seam it changes nothing.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_UINT32(model_mods_grow_slack, 65536, "MCLA/Mods",
+    "Room left unused at the end of a resource `model_mods_grow` has enlarged. "
+    "The tail of a grown segment does not arrive intact, and this is what keeps "
+    "the mesh out of it -- measured on a wheel: buffers ending 16 KB short of "
+    "the segment's end came back with holes, and ending 82 KB short came back "
+    "clean. Where between those two the boundary sits has not been pinned down, "
+    "so the default is the distance that was measured to work rather than the "
+    "smallest that might. 0 restores the old behaviour and the holes with it.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_INT32(model_mods_grow_probe, 0, "MCLA/Mods",
+    "With `model_mods_grow` on: 1 grows the resource and stops there, the segment "
+    "gets bigger and nothing else changes -- no buffer moves, no pointer is "
+    "rewritten, no count is touched, and the mesh is decimated into the buffers "
+    "the template already owned. Growing and repointing have only ever been "
+    "tried together, so the first attempt could be written off without saying "
+    "which of the two was at fault. If this renders, a resource can be made "
+    "larger safely and the fault is in the repointing; if it does not, growth "
+    "alone is the fault and the rest never mattered. 2 goes one rung further: "
+    "the buffers are put in the new space and repointed, but the counts are "
+    "left alone, so the mesh is still decimated to what the template shipped. "
+    "That is what says whether the bytes written into the grown space actually "
+    "arrive and can be fetched from -- 1 never reads them. Only when both pass "
+    "is a changed count worth trying.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(model_mods_diag, false, "MCLA/Mods",
     "Write a `models/.diag` folder beside the mods: one .txt per rebuilt asset "
     "holding the template's submesh table, both rigs with the joint-to-bone "
@@ -1065,6 +1091,8 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                 offset.uniform_shade = true;
                 offset.whole_models = true;
                 offset.grow_buffers = REXCVAR_GET(model_mods_grow);
+                offset.grow_probe = REXCVAR_GET(model_mods_grow_probe);
+                offset.grow_slack = REXCVAR_GET(model_mods_grow_slack);
                 offset.decimate = REXCVAR_GET(model_mods_decimate);
                 offset.submeshes = REXCVAR_GET(model_mods_submeshes);
                 offset.diagnose = REXCVAR_GET(model_mods_diag);
@@ -1235,6 +1263,8 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         offset.decimate = REXCVAR_GET(model_mods_decimate);
         offset.submeshes = REXCVAR_GET(model_mods_submeshes);
         offset.diagnose = REXCVAR_GET(model_mods_diag);
+        offset.grow_probe = REXCVAR_GET(model_mods_grow_probe);
+        offset.grow_slack = REXCVAR_GET(model_mods_grow_slack);
 
         RewriteStats stats;
         // Bone 0 explicitly: a wheel's skeleton is one bone, so there is nothing
@@ -1597,6 +1627,8 @@ void Init() {
             offset.weight_smoothing = REXCVAR_GET(model_mods_weight_smoothing);
             offset.anchor_bones = REXCVAR_GET(model_mods_anchor_bones);
             offset.grow_buffers = REXCVAR_GET(model_mods_grow);
+            offset.grow_probe = REXCVAR_GET(model_mods_grow_probe);
+            offset.grow_slack = REXCVAR_GET(model_mods_grow_slack);
             offset.diagnose = REXCVAR_GET(model_mods_diag);
             if (!passthrough &&
                 !RewriteDrawableGeometry(resource, mesh, bone, offset, error, &stats)) {

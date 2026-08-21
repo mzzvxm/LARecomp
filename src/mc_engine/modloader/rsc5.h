@@ -53,6 +53,12 @@ bool ParseRsc5Header(const std::vector<uint8_t>& file, Rsc5Resource& out,
 // always a whole number of 2048-byte sectors. `preferred_shift` is tried first,
 // which lets a grown segment keep the page class the original resource used
 // instead of silently switching to a finer one.
+// A mantissa is a page count, and there was a moment where that looked like a
+// budget: sub_821BC140 walks a chunk array at +8 of the request with its count
+// at +1540, twelve bytes an entry, which reads as a ceiling of 127. It is not
+// one, and the shipped data says so -- the driver's own resource declares 26
+// virtual pages and 207 physical, 233 chunks, and loads. Whatever +1540 counts,
+// it is not one entry per page, so nothing here caps the page count.
 bool EncodeSegmentSize(uint32_t size, uint32_t& mantissa, uint32_t& shift,
                        uint32_t preferred_shift = 0);
 
@@ -291,6 +297,28 @@ struct MeshOffset {
     // starts, and no measurement here can say how that reads in motion -- which
     // is the whole reason this is a switch and not a decision.
     bool anchor_bones = true;
+
+    // Grow the resource and stop there: no buffer is moved, no pointer is
+    // rewritten, no count changes, and the mesh is decimated into the
+    // buffers the template already owned. Growing and repointing have only
+    // ever been tried together, so a failure could not be pinned on either;
+    // this holds back the second half so the first can be judged alone.
+    // 0 off. 1 grows the resource and stops: no buffer moves, no pointer is
+    // rewritten, no count changes. 2 also puts the buffers in the new space and
+    // repoints them, but leaves the counts alone, so the mesh is still decimated
+    // to what the template shipped.
+    //
+    // Growing and repointing have only ever been tried together, so a failure
+    // could not be pinned on either. 1 says whether a resource may be made
+    // larger at all; 2 says whether the bytes in the new space actually arrive
+    // and can be fetched from. Only after both is a changed count worth trying.
+    int grow_probe = 0;
+
+    // Extra bytes asked for beyond what the buffers need, so they stop well
+    // short of the segment's end. The mesh a probe writes lands within a few
+    // kilobytes of that end, and what breaks breaks there; slack says whether
+    // the tail of a grown segment is what fails to arrive.
+    uint32_t grow_slack = 65536;
 
     // Fill RewriteStats::report and the two .obj bodies. Off by default: the
     // report walks both rigs and the .obj text is the whole mesh again, so it is

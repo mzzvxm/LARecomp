@@ -1466,6 +1466,9 @@ bool EncodeSegmentSize(uint32_t size, uint32_t& mantissa, uint32_t& shift,
         return true;
     };
 
+    // The page class the resource already uses first, so a grown segment keeps
+    // the geometry the loader was given it in; then the finest page that fits,
+    // which wastes the least.
     if (preferred_shift != 0 && try_shift(preferred_shift)) return true;
     for (uint32_t candidate = 3; candidate <= 15; ++candidate) {
         if (try_shift(candidate)) return true;
@@ -2459,7 +2462,15 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     // 65535 is a real ceiling and stays: a submesh states its vertex count in
     // sixteen bits and indexes into it with sixteen more. It is far above what
     // any slot shipped with -- the wheel this was built for holds 3,701.
-    if (offset.grow_buffers && !geometries.empty() && !retargeted) {
+    // A retargeted character used to be held out of this, from when growing a
+    // resource was believed not to work at all and the probe that said otherwise
+    // could only be run on something simpler. It works: a wheel came back with
+    // 6177 vertices and 9318 triangles in a slot that shipped room for 5673 and
+    // 6436, welded nowhere. What a character still cannot grow is its bone
+    // palette -- that is a separate allocation and the biggest submesh names 28
+    // bones -- so a rig needing more than that still has its triangles dealt
+    // across the other slots rather than crammed into one.
+    if (offset.grow_buffers && !geometries.empty()) {
         GeometryRef& target = geometries.front();
 
         // The probe moves the shipped geometry and nothing else, so it asks for
@@ -2482,8 +2493,15 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             const bool physical = (existing & 0xF0000000u) == kPhysicalBase;
             const uint32_t segment = physical ? resource.physical_size : resource.virtual_size;
 
-            const uint32_t vertex_bytes = want_vertices * target.layout.stride;
-            const uint32_t index_bytes = want_indices * 2;
+            // Probe 2 relocates what the template already holds rather than
+            // making room for the mod, so the only thing being tested is
+            // whether the new space can be written to and fetched from.
+            const uint32_t place_vertices =
+                offset.grow_probe == 2 ? target.vertex_count : want_vertices;
+            const uint32_t place_indices =
+                offset.grow_probe == 2 ? target.index_count : want_indices;
+            const uint32_t vertex_bytes = place_vertices * target.layout.stride;
+            const uint32_t index_bytes = place_indices * 2;
             constexpr uint32_t kAlign = 256;
 
             const bool in_place = false;
@@ -2499,7 +2517,7 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                 }
             } else {
                 std::string grow_error;
-                const uint32_t grow_by = index_at + index_bytes - segment;
+                const uint32_t grow_by = index_at + index_bytes + offset.grow_slack - segment;
                 const bool grown = physical ? GrowPhysicalSegment(resource, grow_by, grow_error)
                                             : GrowVirtualSegment(resource, grow_by, grow_error);
                 if (!grown) {
@@ -2508,7 +2526,31 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                 }
             }
 
+            // Probe: grow and stop.
+            //
+            // Growing and repointing have always been tried together, which is
+            // why the first attempt could be written off without saying which
+            // of the two was at fault. Here the segment gets bigger and nothing
+            // else changes -- no buffer moves, no pointer is rewritten, no count
+            // is touched, and the mesh goes on to be decimated into the buffers
+            // the template already owned. If that renders, a resource can be
+            // made larger safely and the fault is in the repointing. If it does
+            // not, growth alone is the fault and the rest never mattered.
+            if (diagnose) page_note("grown ");
+            if (offset.grow_probe) {
+                say("grow probe " + std::to_string(offset.grow_probe) +
+                    ": segment grown by " +
+                    std::to_string(index_at + index_bytes + offset.grow_slack - segment) +
+                    " bytes (" + std::to_string(offset.grow_slack) + " of it slack)" +
+                    (offset.grow_probe == 1 ? ", nothing repointed, counts untouched"
+                                            : ", buffers repointed, counts untouched"));
+            }
+
             const uint32_t space = physical ? kPhysicalBase : kVirtualBase;
+            if (offset.grow_probe == 1) {
+                // Probe 1 holds back the whole second half of the change.
+                (void)space;
+            } else {
             const uint32_t vertex_address = space | vertex_at;
             const uint32_t index_address = space | index_at;
 
@@ -2528,9 +2570,11 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                 return false;
             }
 
-            target.vertex_count = want_vertices;
-            target.index_count = want_indices;
-
+            if (offset.grow_probe != 2) {
+                target.vertex_count = want_vertices;
+                target.index_count = want_indices;
+            }
+            }
         }
     }
 
