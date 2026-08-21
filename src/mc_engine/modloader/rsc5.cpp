@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -822,6 +823,128 @@ bool BuildJointMapping(const Rig& source, const Rig& target, std::vector<int>& m
     return true;
 }
 
+// Spreads each vertex's influences over its neighbours, a few rings deep.
+//
+// This is what stops a retargeted character coming apart, and the reason is in
+// how the models being fed to it are weighted. A GTA-era character is RIGIDLY
+// weighted: every vertex is 1.0 on a single bone and 0 on all the rest. That is
+// fine while the rig it was built for is the rig it is played on, because two
+// neighbouring vertices on either side of a joint move with two bones that were
+// never going to disagree by much.
+//
+// The repose is not that. It hands every joint its own rigid transform, built
+// from a skeleton with different bone lengths and a different bind pose, and two
+// adjacent vertices bound hard to different joints then get two unrelated
+// transforms. The edge between them is torn: measured on the driver mod, edges
+// were coming out seven and a half times their own length, and a torn strip of
+// triangles stretched across half a body is exactly the flat blade that was
+// hanging off that character's back.
+//
+// Smoothing gives the vertices at a seam a share of both bones, so the seam
+// bends instead of ripping. Away from a seam every neighbour already carries the
+// same influences and this changes nothing, so it is only ever paid for where it
+// is needed. On the same model it takes the worst edge from 7.6x to 2.1x.
+//
+// The averaging runs over WELDED positions, not over the vertex array. A model
+// carries a duplicate vertex on each side of every UV and material seam -- 457
+// of that character's 1669 -- and those duplicates are not neighbours in the
+// triangle list, so smoothing them independently gives two vertices standing in
+// the same place two different answers and opens a crack along every seam. They
+// are one point on the surface and they have to be smoothed as one.
+void SmoothSkinWeights(Mesh& mesh, int rounds) {
+    if (rounds <= 0 || !mesh.skinned() || mesh.skin.size() != mesh.vertices.size()) return;
+
+    const size_t count = mesh.vertices.size();
+
+    // Weld: everything standing in the same place, to a hundredth of a
+    // millimetre, is one point.
+    std::map<std::array<int64_t, 3>, uint32_t> lookup;
+    std::vector<uint32_t> node(count, 0);
+    for (size_t i = 0; i < count; ++i) {
+        const MeshVertex& vertex = mesh.vertices[i];
+        const std::array<int64_t, 3> key = {
+            static_cast<int64_t>(std::llround(vertex.px * 100000.0)),
+            static_cast<int64_t>(std::llround(vertex.py * 100000.0)),
+            static_cast<int64_t>(std::llround(vertex.pz * 100000.0))};
+        auto [entry, inserted] = lookup.emplace(key, static_cast<uint32_t>(lookup.size()));
+        node[i] = entry->second;
+    }
+    const size_t nodes = lookup.size();
+
+    std::vector<std::vector<uint32_t>> neighbours(nodes);
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        for (int a = 0; a < 3; ++a) {
+            for (int b = 0; b < 3; ++b) {
+                if (a == b) continue;
+                const uint32_t from = node[mesh.indices[i + a]];
+                const uint32_t to = node[mesh.indices[i + b]];
+                if (from != to) neighbours[from].push_back(to);
+            }
+        }
+    }
+    for (auto& list : neighbours) {
+        std::sort(list.begin(), list.end());
+        list.erase(std::unique(list.begin(), list.end()), list.end());
+    }
+
+    std::vector<std::map<uint16_t, float>> weights(nodes);
+    for (size_t i = 0; i < count; ++i) {
+        for (int c = 0; c < 4; ++c) {
+            if (mesh.skin[i].weight[c] > 0.0f)
+                weights[node[i]][mesh.skin[i].joint[c]] += mesh.skin[i].weight[c];
+        }
+    }
+    auto normalise = [](std::map<uint16_t, float>& entry) {
+        float total = 0.0f;
+        for (const auto& [joint, weight] : entry) total += weight;
+        if (total <= 0.0f) return;
+        for (auto& [joint, weight] : entry) weight /= total;
+    };
+    for (auto& entry : weights) normalise(entry);
+
+    for (int round = 0; round < rounds; ++round) {
+        std::vector<std::map<uint16_t, float>> next(nodes);
+        for (size_t n = 0; n < nodes; ++n) {
+            // Half its own, half the average of what surrounds it.
+            for (const auto& [joint, weight] : weights[n]) next[n][joint] += weight * 0.5f;
+            if (!neighbours[n].empty()) {
+                const float share = 0.5f / static_cast<float>(neighbours[n].size());
+                for (uint32_t other : neighbours[n]) {
+                    for (const auto& [joint, weight] : weights[other])
+                        next[n][joint] += weight * share;
+                }
+            }
+            normalise(next[n]);
+            if (next[n].empty()) next[n] = weights[n];
+        }
+        weights.swap(next);
+    }
+
+    // Back onto the vertices, keeping the three influences the game's vertex
+    // format has room for -- the same three the writer would have kept anyway,
+    // so the pose baked into the positions and the weights shipped beside them
+    // are built from one set of numbers rather than two.
+    for (size_t i = 0; i < count; ++i) {
+        std::vector<std::pair<float, uint16_t>> ranked;
+        ranked.reserve(weights[node[i]].size());
+        for (const auto& [joint, weight] : weights[node[i]]) ranked.emplace_back(weight, joint);
+        if (ranked.empty()) continue;
+        std::sort(ranked.begin(), ranked.end(), std::greater<>());
+        if (ranked.size() > 3) ranked.resize(3);
+
+        float total = 0.0f;
+        for (const auto& [weight, joint] : ranked) total += weight;
+        if (total <= 0.0f) continue;
+
+        MeshSkin& skin = mesh.skin[i];
+        skin = MeshSkin{};
+        for (size_t c = 0; c < ranked.size(); ++c) {
+            skin.joint[c] = ranked[c].second;
+            skin.weight[c] = ranked[c].first / total;
+        }
+    }
+}
+
 // Carries the mesh out of its own bind pose and into the driver's.
 //
 // Skinning only ever applies the delta between a bone's bind pose and where it
@@ -841,8 +964,33 @@ bool BuildJointMapping(const Rig& source, const Rig& target, std::vector<int>& m
 // and simply ride the parent's rotation.
 void ReposeMesh(Mesh& mesh, const Rig& source, const Rig& target,
                 const std::vector<int>& mapping, const Landmarks& source_marks,
-                float proportions) {
+                float proportions, bool anchor_bones) {
     const size_t joints = source.size();
+
+    // How short a bone has to be before its direction stops meaning anything.
+    //
+    // A joint's rotation is read off the segment that leaves it, and that is
+    // only an honest reading when the segment is long enough to have a
+    // direction. The driver's pelvis and its first spine bone are 2 cm apart; a
+    // model's are 2.8 cm apart and tilted back, and lining one up with the other
+    // asks for a 42 degree turn -- which is then applied to every vertex the
+    // pelvis drives, i.e. the whole hip. Two centimetres of nub cannot say which
+    // way a hip faces. A joint whose segment is below this keeps the rotation it
+    // inherited, which is the honest answer: nothing was measured.
+    float rig_height = 0.0f;
+    {
+        float low = 0.0f, high = 0.0f;
+        bool first = true;
+        for (size_t i = 0; i < joints; ++i) {
+            if (!source.real[i]) continue;
+            const float y = source.position[i].y;
+            if (first) { low = high = y; first = false; continue; }
+            low = std::min(low, y);
+            high = std::max(high, y);
+        }
+        rig_height = high - low;
+    }
+    const float shortest_meaningful = std::max(1e-6f, rig_height * 0.02f);
 
     // The repose is anchored at the pelvis and spreads outward along the chains,
     // not along the raw hierarchy: the hub joints a rig keeps at the origin sit
@@ -899,8 +1047,8 @@ void ReposeMesh(Mesh& mesh, const Rig& source, const Rig& target,
         Mat3 inherited;
         if (up < 0 || up == joint) {
             placed[static_cast<size_t>(joint)] =
-                bone >= 0 ? target.position[static_cast<size_t>(bone)]
-                          : source.position[static_cast<size_t>(joint)];
+                (anchor_bones && bone >= 0) ? target.position[static_cast<size_t>(bone)]
+                                            : source.position[static_cast<size_t>(joint)];
         } else {
             resolve(up);
             inherited = rotation[static_cast<size_t>(up)];
@@ -908,7 +1056,7 @@ void ReposeMesh(Mesh& mesh, const Rig& source, const Rig& target,
             const Vec3 segment = source.position[static_cast<size_t>(joint)] -
                                  source.position[static_cast<size_t>(up)];
             const int parent_bone = mapping[static_cast<size_t>(up)];
-            if (bone >= 0 && parent_bone >= 0 && bone != parent_bone) {
+            if (anchor_bones && bone >= 0 && parent_bone >= 0 && bone != parent_bone) {
                 // The direction always comes from the skeleton; how far along it
                 // the joint lands is a choice between the skeleton's spacing and
                 // the model's own.
@@ -946,6 +1094,7 @@ void ReposeMesh(Mesh& mesh, const Rig& source, const Rig& target,
                             target.position[static_cast<size_t>(bone)];
         const float turned_length = Length(turned);
         const float wanted_length = Length(wanted);
+        if (turned_length < shortest_meaningful || wanted_length < shortest_meaningful) return;
         if (turned_length > 1e-6f && wanted_length > 1e-6f) {
             rotation[static_cast<size_t>(joint)] =
                 RotationBetween(turned * (1.0f / turned_length),
@@ -1731,6 +1880,97 @@ void AlignMeshToAxle(Mesh& mesh, float target_min_x) {
     for (auto& vertex : mesh.vertices) vertex.px += shift;
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostics.
+//
+// None of this runs unless MeshOffset::diagnose is set. What it exists for: the
+// rewrite has three places a character can be ruined -- the retarget can put a
+// joint on the wrong bone, the dealing can refuse triangles or split them across
+// palettes, and a submesh the writer cannot describe is silently left drawing
+// whatever the template shipped. All three arrive on screen looking the same
+// (a mangled character) and none of them says anything in the log, so they are
+// written out instead and read afterwards.
+
+std::string Number(float value) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.4f", value);
+    return text;
+}
+
+std::string Hex(uint32_t value) {
+    char text[16];
+    std::snprintf(text, sizeof(text), "0x%08X", value);
+    return text;
+}
+
+std::string Point(const Vec3& p) {
+    return "(" + Number(p.x) + ", " + Number(p.y) + ", " + Number(p.z) + ")";
+}
+
+// The mesh as Wavefront .obj, so it can be opened in anything. Positions,
+// normals and UVs only -- the point is the shape.
+std::string MeshToObj(const Mesh& mesh) {
+    std::string out;
+    out.reserve(mesh.vertices.size() * 64);
+    for (const MeshVertex& vertex : mesh.vertices) {
+        out += "v " + Number(vertex.px) + " " + Number(vertex.py) + " " + Number(vertex.pz) + "\n";
+    }
+    for (const MeshVertex& vertex : mesh.vertices)
+        out += "vt " + Number(vertex.u) + " " + Number(1.0f - vertex.v) + "\n";
+    for (const MeshVertex& vertex : mesh.vertices) {
+        out += "vn " + Number(vertex.nx) + " " + Number(vertex.ny) + " " + Number(vertex.nz) + "\n";
+    }
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        out += "f";
+        for (int c = 0; c < 3; ++c) {
+            const std::string n = std::to_string(mesh.indices[i + c] + 1);
+            out += " " + n + "/" + n + "/" + n;
+        }
+        out += "\n";
+    }
+    return out;
+}
+
+// A rig written out as a tree, deepest last, with each joint's bone and where
+// that bone stands. Reading the two columns against each other is what shows a
+// limb mapped onto the wrong chain.
+std::string RigReport(const Rig& source, const Rig& target, const std::vector<int>& mapping,
+                      const std::vector<std::string>& names, const Landmarks& marks) {
+    auto label = [&](int joint) {
+        if (joint < 0) return std::string("-");
+        std::string text = std::to_string(joint);
+        if (static_cast<size_t>(joint) < names.size() && !names[static_cast<size_t>(joint)].empty())
+            text += " " + names[static_cast<size_t>(joint)];
+        return text;
+    };
+
+    std::string out;
+    out += "  landmarks: pelvis=" + label(marks.pelvis) + " chest=" + label(marks.chest) +
+           " head=" + label(marks.head) + "\n";
+    for (int side = 0; side < 2; ++side) {
+        out += std::string("    side ") + (side ? "+x" : "-x") +
+               ": shoulder=" + label(marks.shoulder[side]) + " wrist=" + label(marks.wrist[side]) +
+               " hip=" + label(marks.hip[side]) + " foot=" + label(marks.foot[side]) + "\n";
+    }
+    out += "  joint -> bone (source position, target position, gap)\n";
+    for (size_t joint = 0; joint < source.size(); ++joint) {
+        const int bone = joint < mapping.size() ? mapping[joint] : -1;
+        out += "    " + label(static_cast<int>(joint)) +
+               " parent=" + std::to_string(source.parent[joint]) +
+               (source.real[joint] ? "" : " (no bind)") + " at " + Point(source.position[joint]) +
+               " -> ";
+        if (bone < 0 || static_cast<size_t>(bone) >= target.size()) {
+            out += "UNMAPPED\n";
+            continue;
+        }
+        const Vec3 gap = target.position[static_cast<size_t>(bone)] - source.position[joint];
+        out += "bone " + std::to_string(bone) + " at " +
+               Point(target.position[static_cast<size_t>(bone)]) + " gap " + Number(Length(gap)) +
+               "\n";
+    }
+    return out;
+}
+
 }  // namespace
 
 bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
@@ -1747,11 +1987,40 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     // being rejected on its way to a slot with room for 3,700.
     Rsc5View view(resource.data, resource.virtual_size);
 
+    const bool diagnose = offset.diagnose && stats != nullptr;
+    std::string report;
+    auto say = [&](const std::string& line) {
+        if (diagnose) report += line + "\n";
+    };
+
     DrawableLayout drawable;
     if (!ResolveDrawable(view, resource.type, drawable)) {
         error = "no drawable in resource";
         return false;
     }
+    // The flag is the page geometry, and the page geometry is a budget: the
+    // loader builds one chunk per page and its map holds 127 of them. A mantissa
+    // IS the page count, so a segment re-encoded onto a smaller page can need
+    // more chunks than the map can hold -- which is not a size the encoder was
+    // ever checking.
+    auto page_note = [&](const char* when) {
+        const uint32_t vm = resource.flag & 0x7FFu, vs = (resource.flag >> 11) & 0xFu;
+        const uint32_t pm = (resource.flag >> 15) & 0x7FFu, ps = (resource.flag >> 26) & 0xFu;
+        say(std::string(when) + " flag " + Hex(resource.flag) + ": virtual " +
+            std::to_string(vm) + " page(s) of " + std::to_string(1u << (vs + 8)) + " = " +
+            std::to_string(vm << (vs + 8)) + ", physical " + std::to_string(pm) +
+            " page(s) of " + std::to_string(1u << (ps + 8)) + " = " +
+            std::to_string(pm << (ps + 8)) + ", " + std::to_string(vm + pm) +
+            " chunk(s)");
+    };
+    say("resource type " + std::to_string(resource.type) + ", drawable at " +
+        Hex(drawable.drawable) + ", virtual " + std::to_string(resource.virtual_size) +
+        " bytes, physical " + std::to_string(resource.physical_size));
+    if (diagnose) page_note("shipped");
+    say("source mesh: " + std::to_string(mesh.vertices.size()) + " vertices, " +
+        std::to_string(mesh.indices.size() / 3) + " triangles, " +
+        std::to_string(mesh.joint_count()) + " joints, " + std::to_string(mesh.parts.size()) +
+        " part(s)");
 
     // Fit the mesh inside the drawable's own bounding box so every bound,
     // radius and LOD distance in the template stays correct. A root that keeps
@@ -1779,6 +2048,15 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         FitMeshToBox(mesh, box_min, box_max);
         if (offset.align_axle) AlignMeshToAxle(mesh, box_min[0]);
     }
+    if (diagnose) {
+        float min[3], max[3];
+        mesh.Bounds(min, max);
+        say("template box " + Point(Vec3{box_min[0], box_min[1], box_min[2]}) + " .. " +
+            Point(Vec3{box_max[0], box_max[1], box_max[2]}));
+        say("mesh after fit " + Point(Vec3{min[0], min[1], min[2]}) + " .. " +
+            Point(Vec3{max[0], max[1], max[2]}));
+        stats->obj_before = MeshToObj(mesh);
+    }
 
     // Retarget and repose before anything reorders the vertices: the mod's rig
     // is matched to the driver's limb by limb, and the mesh is rebuilt in the
@@ -1788,6 +2066,11 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     std::vector<uint32_t> bone_parent;
     std::vector<int> joint_to_bone;
     bool retargeted = false;
+    if (mesh.skinned() && bone == kAutomaticBone && offset.weight_smoothing > 0) {
+        SmoothSkinWeights(mesh, offset.weight_smoothing);
+        say("skin weights smoothed " + std::to_string(offset.weight_smoothing) +
+            " round(s) over the welded surface");
+    }
     if (mesh.skinned() && bone == kAutomaticBone &&
         ReadSkeletonBindPose(view, drawable, bones, bone_parent) && !bones.empty()) {
         const Rig target = RigFromSkeleton(bones, bone_parent);
@@ -1795,9 +2078,25 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         Landmarks source_marks, target_marks;
         if (BuildJointMapping(source, target, joint_to_bone, source_marks, target_marks)) {
             ReposeMesh(mesh, source, target, joint_to_bone, source_marks,
-                       std::clamp(offset.proportions, 0.0f, 1.0f));
+                       std::clamp(offset.proportions, 0.0f, 1.0f), offset.anchor_bones);
             retargeted = true;
+            if (diagnose) {
+                say("");
+                say("retarget: " + std::to_string(source.size()) + " source joints onto " +
+                    std::to_string(target.size()) + " bones, proportions " +
+                    Number(std::clamp(offset.proportions, 0.0f, 1.0f)));
+                say("source rig");
+                report += RigReport(source, target, joint_to_bone, mesh.joint_name, source_marks);
+                say("target rig (the driver's own skeleton)");
+                std::vector<int> identity(target.size());
+                for (size_t i = 0; i < identity.size(); ++i) identity[i] = static_cast<int>(i);
+                report += RigReport(target, target, identity, {}, target_marks);
+            }
         } else {
+            say("retarget REFUSED: the landmarks do not read as a humanoid on one of the two "
+                "rigs; the mesh keeps its authored pose");
+        }
+        if (!retargeted) {
             // A rig that does not read as a humanoid -- a prop, a partial
             // skeleton -- keeps its own pose rather than being folded into a
             // shape the landmarks could not describe.
@@ -1831,6 +2130,8 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     }
 
     std::vector<GeometryRef> geometries;
+    say("");
+    say("template LOD 0: " + std::to_string(model_count) + " model(s)");
     for (uint16_t m = 0; m < model_count; ++m) {
         uint32_t model = 0;
         if (!view.U32(model_array + m * 4, model) || model == 0) continue;
@@ -1868,7 +2169,41 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             ref.model = m;
             // A submesh whose layout cannot be written is simply not offered as
             // a slot; the rest of the character still gets replaced.
-            if (!ReadVertexLayout(view, ref.vertex_buffer, ref.layout)) continue;
+            const bool writable = ReadVertexLayout(view, ref.vertex_buffer, ref.layout);
+            if (diagnose) say("  submesh model " + std::to_string(m) + " slot " + std::to_string(g) + " at " +
+                Hex(geometry) + ": " + std::to_string(ref.vertex_count) + " vertices, " +
+                std::to_string(ref.index_count) + " indices, " + std::to_string(ref.bone_count) +
+                " palette entries, shader " + std::to_string(ref.shader) +
+                (writable ? ", layout stride " + std::to_string(ref.layout.stride)
+                          : ", LAYOUT REJECTED -- neither written nor silenced"));
+            if (diagnose) {
+                // What the buffers say about where their data is, in all four
+                // places it is stated. The software pointers at +8 and +24 are
+                // resource-relative (0x5.. virtual, 0x6.. physical); whether
+                // word 6 of the GPU descriptor is the same kind of address is
+                // exactly what the grow path assumes and nothing has ever
+                // checked -- and a fetch pointed at the wrong memory is spikes.
+                uint32_t vb8 = 0, vb24 = 0, vgpu = 0, vw6 = 0, vw7 = 0;
+                uint32_t ib8 = 0, igpu = 0, iw6 = 0, iw7 = 0;
+                view.U32(ref.vertex_buffer + 8, vb8);
+                view.U32(ref.vertex_buffer + 24, vb24);
+                view.U32(ref.vertex_buffer + 28, vgpu);
+                if (vgpu) {
+                    view.U32(vgpu + kGpuHeaderAddressWord, vw6);
+                    view.U32(vgpu + kGpuHeaderSizeWord, vw7);
+                }
+                view.U32(ref.index_buffer + 8, ib8);
+                view.U32(ref.index_buffer + 12, igpu);
+                if (igpu) {
+                    view.U32(igpu + kGpuHeaderAddressWord, iw6);
+                    view.U32(igpu + kGpuHeaderSizeWord, iw7);
+                }
+                say("      vertex buffer +8=" + Hex(vb8) + " +24=" + Hex(vb24) + " gpu@" +
+                    Hex(vgpu) + " word6=" + Hex(vw6) + " word7=" + Hex(vw7));
+                say("      index  buffer +8=" + Hex(ib8) + " gpu@" + Hex(igpu) + " word6=" +
+                    Hex(iw6) + " word7=" + Hex(iw7));
+            }
+            if (!writable) continue;
             geometries.push_back(ref);
         }
     }
@@ -1987,6 +2322,23 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         }
     }
 
+    // The template's own vertices, as a point cloud.
+    //
+    // Where the game's flesh sits relative to the game's bones is the one thing
+    // the rewrite has never been able to see, and it is what says whether a
+    // joint belongs where the skeleton puts it. The driver's spine bones stand
+    // 9 cm behind the middle of a model's own spine bones, so planting one on
+    // the other drags the belly in; whether that is wrong, and by how much,
+    // is a question only the shipped body can answer.
+    if (diagnose) {
+        std::string cloud;
+        cloud.reserve(shipped.size() * 40);
+        for (const Shade& entry : shipped) {
+            cloud += "v " + Number(entry.x) + " " + Number(entry.y) + " " + Number(entry.z) + "\n";
+        }
+        stats->obj_template = std::move(cloud);
+    }
+
     // Every submesh is a slot the mod can be written into, not just the biggest.
     //
     // The resource cannot grow -- that was tried, and even relocating the
@@ -2057,6 +2409,38 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     // knows. The caller looks it up there and says so.
     if (offset.force_shader >= 0) render_shader = static_cast<uint32_t>(offset.force_shader);
     if (stats) stats->shader = render_shader;
+
+    // Every texture the chosen shader samples, not just the one that gets
+    // replaced. Only the first is written over, so the rest are the SHIPPED
+    // character's -- and a normal map belonging to another head, lit across
+    // this one, is a face full of somebody else's creases and a specular that
+    // answers to nothing on the surface. Naming them is the first step to
+    // deciding which of them may be left alone.
+    if (diagnose) {
+        uint32_t group = 0, array = 0, shader = 0;
+        uint16_t count = 0;
+        if (ShaderGroupOf(view, drawable, group, array, count) && render_shader < count &&
+            view.U32(array + render_shader * 4u, shader) && shader != 0) {
+            say("");
+            say("shader " + std::to_string(render_shader) + " (" + ShaderName(view, shader) +
+                ") samples:");
+            const std::vector<uint32_t> parameters = ShaderTextureParams(view, shader);
+            for (size_t i = 0; i < parameters.size(); ++i) {
+                TextureRef texture;
+                if (!ReadTexture(view, parameters[i], texture)) {
+                    say("  [" + std::to_string(i) + "] parameter " + Hex(parameters[i]) +
+                        ": not a texture this can read");
+                    continue;
+                }
+                say("  [" + std::to_string(i) + "] " +
+                    (texture.name.empty() ? std::string("<unnamed>") : texture.name) + " " +
+                    std::to_string(texture.width) + "x" + std::to_string(texture.height) +
+                    " format " + std::to_string(static_cast<int>(texture.format)) +
+                    (texture.supported ? "" : " (unsupported)") + " base " + Hex(texture.base) +
+                    " mip " + Hex(texture.mip) + (i == 0 ? "   <- the one replaced" : ""));
+            }
+        }
+    }
 
     // The diagnostic paths write one palette entry by hand and only make sense
     // against a single submesh.
@@ -2373,6 +2757,49 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             stats->bones = static_cast<uint32_t>(widest);
             stats->first_bone = chunks.front().palette.empty() ? 0 : chunks.front().palette[0];
         }
+    }
+
+    if (diagnose) {
+        say("");
+        say("dealt into " + std::to_string(chunks.size()) + " of " +
+            std::to_string(geometries.size()) + " writable submesh(es), " +
+            std::to_string(mesh.vertices.size()) + " vertices / " +
+            std::to_string(mesh.indices.size() / 3) + " triangles after " +
+            (mesh.vertices.size() != before ? "welding" : "no welding") +
+            (skinned ? ", skinned" : ", rigid on bone " + std::to_string(rigid_bone)));
+        for (const Chunk& chunk : chunks) {
+            const GeometryRef& target = geometries[chunk.slot];
+            std::string palette;
+            for (uint16_t id : chunk.palette) palette += (palette.empty() ? "" : ",") +
+                                                         std::to_string(id);
+            say("  slot " + std::to_string(chunk.slot) + " (" + Hex(target.address) + ", holds " +
+                std::to_string(target.vertex_count) + "v/" + std::to_string(target.index_count) +
+                "i/" + std::to_string(target.bone_count) + "b): " +
+                std::to_string(chunk.vertices.size()) + " vertices, " +
+                std::to_string(chunk.indices.size() / 3) + " triangles, palette [" + palette + "]");
+        }
+
+        // The mesh exactly as it is about to be written, one .obj group per
+        // submesh, so a chunk that took the wrong triangles shows up as a group
+        // scattered across the body rather than a body part.
+        std::string obj;
+        size_t emitted = 0;
+        for (const Chunk& chunk : chunks) {
+            for (uint32_t id : chunk.vertices) {
+                const MeshVertex& vertex = mesh.vertices[id];
+                obj += "v " + Number(vertex.px) + " " + Number(vertex.py) + " " +
+                       Number(vertex.pz) + "\n";
+            }
+            obj += "g slot" + std::to_string(chunk.slot) + "\n";
+            for (size_t i = 0; i + 2 < chunk.indices.size(); i += 3) {
+                obj += "f";
+                for (int c = 0; c < 3; ++c)
+                    obj += " " + std::to_string(emitted + chunk.indices[i + c] + 1);
+                obj += "\n";
+            }
+            emitted += chunk.vertices.size();
+        }
+        stats->obj_after = std::move(obj);
     }
 
     // Tangents and shade are per vertex of the whole mesh, so they are worked out
@@ -2737,7 +3164,10 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         patched.SetU16(other.address + 52, 0);
         if (other.index_buffer) patched.SetU32(other.index_buffer + 4, 0);
         if (other.vertex_buffer) patched.SetU16(other.vertex_buffer + 4, 0);
+        say("  silenced slot " + std::to_string(i) + " (" + Hex(other.address) + ")");
     }
+
+    if (diagnose) stats->report = std::move(report);
 
     // The flag and both segment sizes are deliberately untouched: the resource
     // that comes out is the same shape as the one that went in.

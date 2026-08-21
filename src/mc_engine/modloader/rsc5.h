@@ -104,6 +104,18 @@ struct RewriteStats {
     // Which shader of the group ends up drawing the mesh -- the texture swap
     // needs it to know whose diffuse map to overwrite.
     uint32_t shader = 0xFFFFFFFFu;
+
+    // Filled only when MeshOffset::diagnose is set. `report` is a written
+    // account of the template's submeshes, both rigs, the joint mapping and how
+    // the mesh was dealt out; the two .obj bodies are the mesh as it stood
+    // before the retarget and as it was written, so a deformation can be told
+    // from a dealing mistake by opening them side by side.
+    std::string report;
+    std::string obj_before;
+    std::string obj_after;
+    // The template's own vertices, as a point cloud: where the game puts its
+    // flesh around the bones the mod is being fitted onto.
+    std::string obj_template;
 };
 
 // Pass as `bone` to let a skinned mesh keep its own weights; any real bone
@@ -248,6 +260,42 @@ struct MeshOffset {
     // both far too small to be worth filling and the one surface that reads the
     // wheel's texture. Ignored if it would claim every submesh there is.
     int32_t reserve_shader = -1;
+
+    // How many rounds to spread each vertex's influences over its neighbours
+    // before the mesh is reposed. 0 leaves the weights exactly as authored.
+    //
+    // The models people bring are rigidly weighted -- one bone per vertex at
+    // full strength -- and a retarget hands neighbouring bones unrelated rigid
+    // transforms, so a rigidly weighted seam is torn apart rather than bent. See
+    // SmoothSkinWeights.
+    int weight_smoothing = 4;
+
+    // Whether each joint is planted on the bone it was matched to.
+    //
+    // On, the repose puts every joint exactly where the skeleton says, and a
+    // hand therefore lands exactly on the bone the game drives a hand with. It
+    // also drags the body: a model's chest joint sits at 73% of its height and
+    // the driver's chest bone at 77.5%, so the chest is hauled up 78 mm and back
+    // 70 mm while the collarbone moves 24 mm, and the flesh between them takes
+    // the difference -- 21 mm of shape lost at the shoulder, a crease across the
+    // chest, and a belly pulled in behind a spine bone that lives at the back of
+    // a torso where the model's lives down the middle.
+    //
+    // Off, nothing is planted: the joints keep the offsets they were authored
+    // with and only turn, so the body arrives with the shape the fit gave it.
+    // Measured on the driver mod that halves the distortion, 5.7 mm to 2.8 mm
+    // averaged over every bone. The cost is at the far end of a limb, which now
+    // reaches as far as the MODEL's arm does rather than as far as the game's:
+    // 38 mm at the wrist and 96 mm at the foot on that same model. A hand that
+    // far from the bone driving it swings on the wrong lever once animation
+    // starts, and no measurement here can say how that reads in motion -- which
+    // is the whole reason this is a switch and not a decision.
+    bool anchor_bones = true;
+
+    // Fill RewriteStats::report and the two .obj bodies. Off by default: the
+    // report walks both rigs and the .obj text is the whole mesh again, so it is
+    // paid for only when someone is looking.
+    bool diagnose = false;
 };
 
 // The box the template's geometry occupies, in the drawable's own space. What

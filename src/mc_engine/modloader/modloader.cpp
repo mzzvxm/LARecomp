@@ -284,6 +284,47 @@ REXCVAR_DEFINE_BOOL(model_mods_passthrough, false, "MCLA/Mods",
     "is at fault.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(model_mods_anchor_bones, true, "MCLA/Mods",
+    "Whether the repose plants each of the mod's joints on the bone it was "
+    "matched to. On (the default) a hand lands exactly on the bone the game "
+    "drives a hand with, and the body pays for it: a model's chest joint sits "
+    "lower than the driver's chest bone, so the chest is hauled up and back "
+    "while the collarbone barely moves, and the flesh between them loses 21 mm "
+    "of shape -- the crease across the chest, the angular shoulder, and the "
+    "belly pulled in behind a spine bone that sits at the back of a torso where "
+    "the model's sits down the middle. Off, joints keep the offsets they were "
+    "authored with and only turn: measured on the driver mod that halves the "
+    "distortion, 5.7 mm to 2.8 mm averaged over every bone, at the cost of the "
+    "wrist landing 38 mm and the foot 96 mm off their bones, which swings them "
+    "on the wrong lever once animation starts. Standing still, off looks "
+    "better; in motion is what only the game can answer.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_INT32(model_mods_weight_smoothing, 4, "MCLA/Mods",
+    "How many rounds of neighbour averaging the mod's skin weights get before "
+    "the model is reposed onto the driver's skeleton. 0 keeps them exactly as "
+    "authored. The models people bring are rigidly weighted -- a GTA-era "
+    "character puts every vertex at full strength on one bone and zero on the "
+    "rest -- and the repose hands each bone its own rigid transform, built from "
+    "a skeleton with different bone lengths. Two neighbouring vertices bound "
+    "hard to different bones then get two unrelated transforms and the edge "
+    "between them is torn: measured on the driver mod, edges came out at 7.6x "
+    "their own length, which is the flat blade that was hanging off that "
+    "character's back. Smoothing gives a seam vertex a share of both bones so "
+    "the seam bends instead. Four rounds took the worst edge to 2.1x; away from "
+    "a seam it changes nothing.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(model_mods_diag, false, "MCLA/Mods",
+    "Write a `models/.diag` folder beside the mods: one .txt per rebuilt asset "
+    "holding the template's submesh table, both rigs with the joint-to-bone "
+    "mapping, and how the mesh was dealt across the submeshes -- plus the mesh "
+    "itself as .obj before and after the retarget. A character that comes out "
+    "mangled is one of three things (a joint on the wrong bone, a bad deal, or "
+    "a submesh the writer could not describe and therefore left drawing what it "
+    "shipped) and they all look alike on screen; this tells them apart.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace mc::modloader {
 
 namespace {
@@ -561,6 +602,29 @@ void ScanFolder(const std::filesystem::path& folder, const std::string& mod_name
         if (!file.is_regular_file() || !IsMeshFile(file.path())) continue;
         out.push_back(ModEntry{file.path().stem().string(), file.path(), mod_name});
     }
+}
+
+// Diagnostics land beside the cache, in a folder the mod scan skips for
+// starting with a dot -- which matters, because one of the three files written
+// per asset is an .obj and would otherwise be picked up as a mod of its own.
+void WriteDiagnostics(const std::filesystem::path& cache_dir, const std::string& mod_name,
+                      const std::string& variant, const RewriteStats& stats) {
+    if (stats.report.empty() && stats.obj_after.empty()) return;
+
+    const std::filesystem::path folder = cache_dir.parent_path() / ".diag";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+
+    const std::string stem = mod_name + "__" + variant;
+    auto put = [&](const char* suffix, const std::string& body) {
+        if (body.empty()) return;
+        std::ofstream out(folder / (stem + suffix), std::ios::binary);
+        out.write(body.data(), static_cast<std::streamsize>(body.size()));
+    };
+    put(".txt", stats.report);
+    put("_before.obj", stats.obj_before);
+    put("_after.obj", stats.obj_after);
+    put("_template.obj", stats.obj_template);
 }
 
 // Collects everything under `files_dir`, keeping the folder structure as the
@@ -1003,6 +1067,7 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                 offset.grow_buffers = REXCVAR_GET(model_mods_grow);
                 offset.decimate = REXCVAR_GET(model_mods_decimate);
                 offset.submeshes = REXCVAR_GET(model_mods_submeshes);
+                offset.diagnose = REXCVAR_GET(model_mods_diag);
 
                 RewriteStats stats;
                 if (!passthrough &&
@@ -1011,6 +1076,10 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                                        vehicle.car, mapping.slot, error);
                     continue;
                 }
+                WriteDiagnostics(cache_dir, vehicle.mod_name,
+                                 vehicle.car + "_" + mapping.slot + "_lod" +
+                                     std::to_string(lod),
+                                 stats);
 
                 std::vector<uint8_t> file;
                 uint32_t flag = 0;
@@ -1165,6 +1234,7 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         offset.scale = static_cast<float>(REXCVAR_GET(model_mods_rim_scale));
         offset.decimate = REXCVAR_GET(model_mods_decimate);
         offset.submeshes = REXCVAR_GET(model_mods_submeshes);
+        offset.diagnose = REXCVAR_GET(model_mods_diag);
 
         RewriteStats stats;
         // Bone 0 explicitly: a wheel's skeleton is one bone, so there is nothing
@@ -1175,6 +1245,7 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
             LARECOMP_APP_ERROR("[mods] {}/rims/{}: {}", mod.mod_name, mod.asset, error);
             continue;
         }
+        WriteDiagnostics(cache_dir, mod.mod_name, "rim_" + mod.asset, stats);
 
         std::vector<uint8_t> file;
         uint32_t flag = 0;
@@ -1523,11 +1594,16 @@ void Init() {
             offset.proportions = static_cast<float>(REXCVAR_GET(model_mods_proportions));
             offset.decimate = REXCVAR_GET(model_mods_decimate);
             offset.submeshes = REXCVAR_GET(model_mods_submeshes);
+            offset.weight_smoothing = REXCVAR_GET(model_mods_weight_smoothing);
+            offset.anchor_bones = REXCVAR_GET(model_mods_anchor_bones);
+            offset.grow_buffers = REXCVAR_GET(model_mods_grow);
+            offset.diagnose = REXCVAR_GET(model_mods_diag);
             if (!passthrough &&
                 !RewriteDrawableGeometry(resource, mesh, bone, offset, error, &stats)) {
                 LARECOMP_APP_ERROR("[mods] {}/{}: {}", mod.mod_name, variant, error);
                 continue;
             }
+            WriteDiagnostics(cache_dir, mod.mod_name, variant, stats);
             if (!atlas.empty() && stats.shader != 0xFFFFFFFFu) {
                 TextureStats texture;
                 if (ReplaceShaderDiffuse(resource, stats.shader, atlas, error, &texture)) {

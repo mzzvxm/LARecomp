@@ -63,6 +63,10 @@ struct Mesh {
     // wrist and an A-posed forearm sit in the same place -- so the retarget
     // walks the hierarchy instead of measuring distances.
     std::vector<int> joint_parent;
+    // What the source file called each joint. Nothing reads it to decide
+    // anything -- the retarget is deliberately name-blind, because rigs do not
+    // agree on names -- but a diagnostic dump is unreadable without it.
+    std::vector<std::string> joint_name;
 
     bool skinned() const { return !skin.empty() && !joint_bind.empty(); }
     size_t joint_count() const { return joint_bind.size() / 3; }

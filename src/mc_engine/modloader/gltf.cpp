@@ -733,6 +733,17 @@ bool LoadGltf(const std::filesystem::path& path, Mesh& out, std::string& error) 
             for (size_t j = 0; j < joint_count; ++j)
                 joint_of_node.emplace(joint_list->items[j].Int(-1), static_cast<int>(j));
 
+            out.joint_name.assign(joint_count, std::string());
+            if (const Json* nodes = gltf.root.Find("nodes")) {
+                for (size_t j = 0; j < joint_count; ++j) {
+                    const int node_index = joint_list->items[j].Int(-1);
+                    const Json* node =
+                        node_index >= 0 ? nodes->At(static_cast<size_t>(node_index)) : nullptr;
+                    if (const Json* name = node ? node->Find("name") : nullptr)
+                        out.joint_name[j] = name->text;
+                }
+            }
+
             out.joint_parent.assign(joint_count, -1);
             if (const Json* nodes = gltf.root.Find("nodes")) {
                 for (size_t n = 0; n < nodes->items.size(); ++n) {
