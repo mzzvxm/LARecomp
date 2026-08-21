@@ -487,8 +487,23 @@ bool BuildMeshAtlas(Mesh& mesh, uint32_t cell_size, Image& atlas, std::string& e
         break;
     }
 
+    // The grid is a power of two, and that is not tidiness.
+    //
+    // The atlas does not stay the size it is built at: it is resampled onto the
+    // texture the template shipped, which is a power of two. Nine cells in a
+    // three by three grid make a 768-pixel atlas, and 768 onto 512 is two
+    // thirds -- so a cell boundary lands at 170.67 texels and every one of them
+    // bleeds into its neighbour, which on a face is pieces of a shoe and a
+    // jacket showing through the skin. Four cells in a two by two grid resample
+    // one to one and never showed it, which is why this hid until a model
+    // arrived with more than four materials.
+    //
+    // A power-of-two grid keeps the ratio a power of two, so a boundary stays on
+    // a whole texel at every mip. It costs resolution -- nine cells take a four
+    // by four grid and use a quarter of the sheet each instead of a third -- and
+    // that is the cheaper half of the trade.
     uint32_t columns = 1;
-    while (static_cast<size_t>(columns) * columns < cells.size()) ++columns;
+    while (static_cast<size_t>(columns) * columns < cells.size()) columns *= 2;
     if (out_cells) *out_cells = static_cast<uint32_t>(cells.size());
 
     atlas.width = cell_size * columns;
@@ -520,8 +535,10 @@ bool BuildMeshAtlas(Mesh& mesh, uint32_t cell_size, Image& atlas, std::string& e
     // each side so bilinear filtering at a cell edge cannot reach into the
     // neighbour -- which at the atlas's mip levels is what smears a shoe across
     // a face.
-    const float inset_u = 0.5f / static_cast<float>(atlas.width);
-    const float inset_v = 0.5f / static_cast<float>(atlas.height);
+    // A whole texel, not half: what is half a texel here is less than that
+    // once the sheet has been resampled down onto the shipped texture.
+    const float inset_u = 1.0f / static_cast<float>(atlas.width);
+    const float inset_v = 1.0f / static_cast<float>(atlas.height);
     const float span = 1.0f / static_cast<float>(columns);
 
     for (const MeshPart& part : mesh.parts) {
