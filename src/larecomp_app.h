@@ -11,6 +11,7 @@
 #include "larecomp_log.h"
 #include "crash_handler.h"
 #include "mc_engine/hooks.h"
+#include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -124,7 +125,7 @@ class LarecompApp : public rex::ReXApp {
       // effect and listing them here would be misleading.
       fprintf(f, "\n=== env overrides (only vars this build reads) ===\n");
       for (const char* e : {"MCLA_GAME_DATA", "MCLA_FPS_CAP", "MCLA_MAX_FRAME_MS",
-                            "MCLA_TIMING_LOG",
+                            "MCLA_TIMING_LOG", "MCLA_PROFILE",
                             "MCLA_TEX_SOFT", "MCLA_TEX_HARD", "MCLA_TEX_RTT",
                             "MCLA_VSYNC", "MCLA_REFRESH_RATE",
                             "MCLA_ALLOW_INVALID_FETCH", "MCLA_NO_STUB_SWEEP",
@@ -202,6 +203,7 @@ class LarecompApp : public rex::ReXApp {
 
   void OnShutdown() override {
     LARECOMP_Discord_Shutdown();
+    mc::profiler::Shutdown();
     mc::DisableHighResTimer();
     ShutdownLarecompLogging();
     std::_Exit(0);

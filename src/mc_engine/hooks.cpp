@@ -27,6 +27,7 @@
 #include <rex/chrono/clock.h>
 #include <rex/runtime.h>
 #include <rex/perf/counter.h>
+#include "guest_profiler.h"
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -3030,6 +3031,19 @@ static uint64_t MaxFrameTicks() {
     return ticks;
 }
 
+// Feeds the sampling profiler the real wall-clock frame time. Called after the
+// limiter has slept, so the value is the frame the player actually saw. Costs
+// one already-resolved bool test when MCLA_PROFILE is not set.
+static void TickGuestProfiler() {
+    if (!mc::profiler::Enabled()) return;
+    static uint64_t last = 0;
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (last != 0) mc::profiler::Tick(double(now - last) / 1000.0);
+    last = now;
+}
+
 void MCLAFrameDelta(PPCRegister& r8) {
     // The hitch clamp runs UNCONDITIONALLY, before any cvar check.
     //
@@ -3054,6 +3068,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     EnforceFrameLimit();
     UpdateCityLODMemory();
     RecordFrameTime();
+    TickGuestProfiler();
 }
 
 // BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
