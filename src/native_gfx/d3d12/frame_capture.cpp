@@ -84,6 +84,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_msaa);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
+REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
 REXCVAR_DECLARE(bool, mcla_native_gfx_half_pixel);
 REXCVAR_DECLARE(bool, mcla_native_gfx_swapped_texcoords);
 
@@ -108,6 +109,10 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
 // Everything that has to match for two draws to belong to the same pass.
 struct TargetConfig {
   uint32_t rt_format = 0;
+  // What the guest asked for, as opposed to what the pool allocates. See
+  // RenderTargetKey.
+  uint32_t guest_msaa = 0;
+  uint32_t surface_pitch = 0;
   // Second colour target's DXGI format, 0 when the pass writes only oC0. The
   // impostor bake is the one pass in MCLA that sets it; see kDevRegColorInfo1.
   uint32_t rt1_format = 0;
@@ -116,8 +121,10 @@ struct TargetConfig {
   uint32_t width = 0;
   uint32_t height = 0;
   bool operator==(const TargetConfig& o) const {
-    return rt_format == o.rt_format && ds_format == o.ds_format &&
-           sample_count == o.sample_count && width == o.width && height == o.height;
+    return rt_format == o.rt_format && rt1_format == o.rt1_format &&
+           guest_msaa == o.guest_msaa && surface_pitch == o.surface_pitch &&
+           ds_format == o.ds_format && sample_count == o.sample_count && width == o.width &&
+           height == o.height;
   }
 };
 
@@ -695,6 +702,8 @@ uint32_t PooledSampleCount(const TargetConfig& cfg) {
 RenderTargetKey PooledKey(const TargetConfig& cfg) {
   RenderTargetKey k;
   k.rt_format = cfg.rt_format;
+  k.guest_msaa = cfg.guest_msaa;
+  k.surface_pitch = cfg.surface_pitch;
   k.ds_format = cfg.ds_format;
   k.sample_count = PooledSampleCount(cfg);
   k.width = cfg.width;
@@ -1211,11 +1220,19 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   const HostViewport hv = ComputeHostViewport(rs);
   TargetConfig cfg;
   cfg.rt_format = ColorRenderTargetFormatToDxgi(rs.color_format);
+  if (REXCVAR_GET(mcla_native_gfx_surface_key)) {
+    cfg.guest_msaa = rs.msaa_samples;
+    cfg.surface_pitch = rs.surface_info & 0x3FFFu;
+  }
+  // Second colour target, only when RB_COLOR_MASK write-enables it. Left at 0
+  // otherwise so single-target passes keep the pool key they already had.
+  cfg.rt1_format = (rs.mrt && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x2u))
+                       ? ColorRenderTargetFormatToDxgi(rs.color1_format)
+                       : 0u;
   cfg.ds_format = DepthRenderTargetFormatToDxgi(rs.depth_format);
   cfg.sample_count = SampleCountFromMsaa(rs.msaa_samples);
   cfg.width = uint32_t(hv.top_left_x + hv.width + 0.5f);
   cfg.height = uint32_t(hv.top_left_y + hv.height + 0.5f);
-
   // NOT sized from the scissor yet, deliberately. "brokenbuildings.rdc" shows
   // draws whose D3D12 viewport is 16384x16384 -- a guard-band viewport, where
   // the Xenos lets the viewport dwarf the surface and leaves the scissor to
@@ -1378,9 +1395,26 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   {
     const float aspect = hv.height > 0.0f ? hv.width / hv.height : 0.0f;
     if (hv.width >= 1024.0f && aspect >= 1.5f && aspect <= 2.0f && (rs.color_mask & 0xFu) != 0) {
-      g_cap.readback_key = PooledKey(cfg);
-      g_cap.readback_config = cfg;
-      g_cap.has_readback = true;
+      // "Last display-shaped pass that writes colour" was enough while every
+      // surface of that shape shared one pooled target. Once the key tells
+      // them apart, several screen-sized targets exist at once -- the composite
+      // the game displays, the UI surface the pause panel is drawn into, the
+      // multisampled HDR scene -- and taking the last one is a coin toss.
+      // Taking the UI surface presented the pause panel on a black field;
+      // taking the HDR scene had the display slot build an R8G8B8A8 UAV and a
+      // non-multisampled SRV over a multisampled R16G16B16A16_FLOAT resource,
+      // and the device was removed with DXGI_ERROR_INVALID_CALL.
+      //
+      // What reaches the screen is always the single-sampled composite. Prefer
+      // that; recency only decides among equals. With the surface key off,
+      // guest_msaa is 0 everywhere and this is exactly the old rule.
+      const bool single_sampled = cfg.guest_msaa == 0u;
+      const bool have_single = g_cap.has_readback && g_cap.readback_config.guest_msaa == 0u;
+      if (single_sampled || !have_single) {
+        g_cap.readback_key = PooledKey(cfg);
+        g_cap.readback_config = cfg;
+        g_cap.has_readback = true;
+      }
     }
   }
 

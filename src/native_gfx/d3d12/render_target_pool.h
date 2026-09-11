@@ -59,6 +59,15 @@ struct ResolveRegion {
 struct RenderTargetKey {
   uint32_t rt_format = 0;  // DXGI
   uint32_t ds_format = 0;  // DXGI
+  // The surface pitch and the sample count the GUEST asked for. Shape alone is
+  // not an identity: measured on the pause menu, two different 1280x720/rt=28
+  // surfaces shared one pooled target, so whatever the second drew landed in
+  // the first's texture and never reached the screen. What separates them is
+  // what the guest requested -- one pass asks for 1 sample, the other for 4 --
+  // which `sample_count` cannot carry, because that field holds what the pool
+  // ALLOCATES and both of those collapse to one.
+  uint32_t guest_msaa = 0;
+  uint32_t surface_pitch = 0;
   uint32_t sample_count = 1;
   uint32_t width = 0;
   uint32_t height = 0;

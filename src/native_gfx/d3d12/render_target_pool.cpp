@@ -231,6 +231,7 @@ void RenderTargetPool::DumpResolved(D3D12Context& context,
 
 bool RenderTargetKey::operator==(const RenderTargetKey& o) const {
   return rt_format == o.rt_format && ds_format == o.ds_format &&
+         guest_msaa == o.guest_msaa && surface_pitch == o.surface_pitch &&
          sample_count == o.sample_count && width == o.width && height == o.height;
 }
 
@@ -239,6 +240,8 @@ bool RenderTargetKey::operator<(const RenderTargetKey& o) const {
   if (height != o.height) return height < o.height;
   if (rt_format != o.rt_format) return rt_format < o.rt_format;
   if (ds_format != o.ds_format) return ds_format < o.ds_format;
+  if (guest_msaa != o.guest_msaa) return guest_msaa < o.guest_msaa;
+  if (surface_pitch != o.surface_pitch) return surface_pitch < o.surface_pitch;
   return sample_count < o.sample_count;
 }
 

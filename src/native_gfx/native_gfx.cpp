@@ -175,6 +175,19 @@ REXCVAR_DEFINE_BOOL(
     "Turn off to get the pre-fix behaviour back while bisecting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_surface_key, false, "MCLA/NativeGfx",
+    "Include what the guest asked for -- its requested sample count and surface pitch -- in the "
+    "render target pool's key, so two guest surfaces of the same shape stop sharing one pooled "
+    "target.\n"
+    "\n"
+    "OFF BY DEFAULT BECAUSE IT MEASURED WORSE. The HUD is drawn spread across TWO 1280x720 "
+    "R8G8B8A8 surfaces, and merging them by shape is what lands all of it in the target that "
+    "gets displayed -- with this on, the whole 2D layer disappears, HUD included. The merge is "
+    "load-bearing: it stands in for the composition the native runtime deliberately does not "
+    "model. Kept as a bisection switch, not as a fix.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_UINT32(
     mcla_native_gfx_mrt, 0x3F, "MCLA/NativeGfx",
     "Second render target support, as a bitmask -- one bit per piece, so a fault can be\n"
@@ -615,6 +628,12 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
   const HostViewport hv = ComputeHostViewport(rs);
   RenderTargetKey key;
   key.rt_format = ColorRenderTargetFormatToDxgi(rs.color_format);
+  // The same two fields the draw path keys on, or the resolve looks up a target
+  // the draws never rendered into.
+  if (REXCVAR_GET(mcla_native_gfx_surface_key)) {
+    key.guest_msaa = rs.msaa_samples;
+    key.surface_pitch = rs.surface_info & 0x3FFFu;
+  }
   key.ds_format = DepthRenderTargetFormatToDxgi(rs.depth_format);
   key.width = uint32_t(hv.top_left_x + hv.width + 0.5f);
   key.height = uint32_t(hv.top_left_y + hv.height + 0.5f);
