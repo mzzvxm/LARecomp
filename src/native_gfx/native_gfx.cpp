@@ -113,6 +113,27 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_continuous, false, "MCLA/NativeGfx",
                     "underneath. Requires mcla_native_gfx.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
+                      "Transient upload ring per in-flight frame, in MiB. 0 uses the built-in "
+                      "default. Geometry region uploads share this ring with constants and "
+                      "textures; at the old fixed 16 MiB the ring was exhausted by geometry on "
+                      "every frame, so no draw was ever recorded and the native runtime only "
+                      "published a frame when the geometry happened to fit. Raise it if the "
+                      "exhaustion report still fires, lower it to save host memory "
+                      "(the buffer is committed once per in-flight frame).\n"
+                      "\n"
+                      "Was 32, which silently halved the 64 the built-in default and its comment "
+                      "in context.cpp argue for. Raised because the report fired on the frame the "
+                      "HUD first loads: 21 texture uploads had taken 30952 KiB of the 32 MiB ring "
+                      "and the 22nd -- the 1024x1024 minimap mask atlas, 4 MiB -- did not fit. "
+                      "That is not a cosmetic loss: the mask falls back to the neutral 1x1 white, "
+                      "and xAlphaModulate__PS_Textured computes `1 - mask` for a "
+                      "One/One/ReversedSubtract punch, so a white mask subtracts nothing and the "
+                      "minimap keeps its square corners instead of being clipped to a circle. "
+                      "Intermittent by nature -- it only bites on a frame where the burst leaves "
+                      "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, false, "MCLA/NativeGfx",
                     "Apply the fetch constant's 12-bit swizzle to the SRV's "
                     "Shader4ComponentMapping instead of the D3D12 default. The two encodings "

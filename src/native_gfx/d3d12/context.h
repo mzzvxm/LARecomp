@@ -69,7 +69,20 @@ class D3D12Context {
     ID3D12Resource* buffer = nullptr;
     uint64_t offset = 0;
   };
-  bool AllocateUpload(uint64_t size, uint64_t alignment, UploadAlloc& out);
+  // `tag` names the caller so an exhaustion report can say WHICH cache filled
+  // the ring. The ring is shared by constants, textures, geometry and the
+  // capture path, and without this the error only gives a size.
+  enum class UploadTag : uint32_t {
+    kConstants = 0,
+    kTexture = 1,
+    kGeometry = 2,
+    kCapture = 3,
+    kOther = 4,
+    kCount = 5,
+  };
+  bool AllocateUpload(uint64_t size, uint64_t alignment, UploadAlloc& out,
+                      UploadTag tag = UploadTag::kOther);
+  static void ResetUploadAccounting();
 
   // Queues a resource for release once the GPU has finished with it. Takes over
   // one reference. The resource is held UNTAGGED until EndFrameReleases() stamps

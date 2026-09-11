@@ -1546,7 +1546,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // through EnsureFrame and re-establishes all of that anyway (every draw
     // already re-binds unconditionally), against an empty ring.
     const auto upload_or_flush = [&](uint64_t size) -> bool {
-      if (context.AllocateUpload(size, 256, a)) {
+      if (context.AllocateUpload(size, 256, a, D3D12Context::UploadTag::kConstants)) {
         return true;
       }
       ++g_cap.fail_constants;

@@ -100,7 +100,7 @@ BufferCache::Region* BufferCache::FindContaining(RegionMap& map, uint32_t addres
 bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                                Region& region, BufferSwap swap) {
   D3D12Context::UploadAlloc staging;
-  if (!context.AllocateUpload(region.size, 4, staging)) {
+  if (!context.AllocateUpload(region.size, 4, staging, D3D12Context::UploadTag::kGeometry)) {
     stats_.last_failure = "upload ring allocation failed";
     ++stats_.upload_failures;
     return false;

@@ -7,16 +7,56 @@
 
 #include <chrono>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ui/d3d12/d3d12_provider.h>
 #include <rex/ui/d3d12/d3d12_util.h>
 
+// Defined at global scope in native_gfx.cpp, so the declaration has to sit
+// outside the namespace too: the macro builds the storage accessor from the
+// enclosing scope, and declaring it inside mcla::native_gfx asks the linker
+// for a symbol nobody defines.
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_upload_mb);
+
 namespace mcla::native_gfx {
 
 namespace {
-// 16 MB of transient upload space per in-flight frame. Sized for constants
-// and small per-draw uploads; bulk resource uploads use their own staging.
-constexpr uint64_t kUploadCapacity = 16ull << 20;
+// Transient upload space per in-flight frame.
+//
+// This used to be a fixed 16 MB, with the comment "sized for constants and
+// small per-draw uploads; bulk resource uploads use their own staging". That
+// assumption was wrong: BufferCache::UploadRegion allocates whole geometry
+// regions here, and measurement put that at ~16 MiB in ~93 allocations EVERY
+// frame -- the ring died during geometry, so constants and textures never got
+// a turn and not a single draw was ever recorded (0 constant uploads across
+// 17778 frames). The native runtime published a frame only when the geometry
+// happened to fit, which is why it appeared roughly once every ten seconds and
+// Xenia drew the rest.
+//
+// The re-uploads behind that are legitimate work -- dynamic geometry the game
+// rewrote -- so the ring has to be big enough to hold a frame of them rather
+// than failing. Reducing how much gets dirtied is a separate fix (the region
+// merge coalesces dynamic writes into large static regions).
+constexpr uint64_t kUploadCapacityDefaultMiB = 64;
+
+// D3D12Provider::DirectQueueSubmitMutex() is a fork-local addition: it exists
+// so the native runtime can serialize its submissions against the emulated
+// command processor, which submits to the same direct queue from its own
+// thread. A stock RexGlue SDK has no such accessor -- and in nocp mode there is
+// no command processor to race with in the first place -- so detect it instead
+// of requiring it at compile time.
+//
+// Where the accessor exists this returns exactly the pointer the code always
+// took, so behaviour on this tree is unchanged; where it does not, the null
+// result feeds the `if (submit_mutex_)` guard that Submit() already has.
+template <typename Provider>
+std::mutex* DirectQueueSubmitMutexOrNull(const Provider& provider) {
+  if constexpr (requires { provider.DirectQueueSubmitMutex(); }) {
+    return &provider.DirectQueueSubmitMutex();
+  } else {
+    return nullptr;
+  }
+}
 }  // namespace
 
 D3D12Context::~D3D12Context() { Shutdown(); }
@@ -27,7 +67,7 @@ bool D3D12Context::Initialize(const rex::ui::d3d12::D3D12Provider& provider) {
   }
   device_ = provider.GetDevice();
   queue_ = provider.GetDirectQueue();
-  submit_mutex_ = &provider.DirectQueueSubmitMutex();
+  submit_mutex_ = DirectQueueSubmitMutexOrNull(provider);
   if (!device_ || !queue_) {
     REXLOG_ERROR("[native_gfx] D3D12 provider has no device/queue");
     return false;
@@ -62,10 +102,14 @@ bool D3D12Context::Initialize(const rex::ui::d3d12::D3D12Provider& provider) {
     return false;
   }
 
+  // Read once: the ring size and the buffers that back it must not disagree.
+  const uint64_t requested_mib = REXCVAR_GET(mcla_native_gfx_upload_mb);
+  upload_capacity_ = (requested_mib ? requested_mib : kUploadCapacityDefaultMiB) << 20;
+
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     D3D12_RESOURCE_DESC desc = {};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Width = kUploadCapacity;
+    desc.Width = upload_capacity_;
     desc.Height = 1;
     desc.DepthOrArraySize = 1;
     desc.MipLevels = 1;
@@ -87,8 +131,8 @@ bool D3D12Context::Initialize(const rex::ui::d3d12::D3D12Provider& provider) {
     }
     upload_mapped_[i] = static_cast<uint8_t*>(mapped);
   }
-  upload_capacity_ = kUploadCapacity;
-
+  REXLOG_INFO("[native_gfx] upload ring: {} MiB x {} frames in flight",
+              upload_capacity_ >> 20, kFramesInFlight);
   initialized_ = true;
   return true;
 }
@@ -114,6 +158,7 @@ ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
     return nullptr;
   }
   upload_offset_[slot] = 0;
+  ResetUploadAccounting();
   frame_open_ = true;
   return command_list_.Get();
 }
@@ -379,17 +424,57 @@ void D3D12Context::ClearDebugMessages() {
   }
 }
 
-bool D3D12Context::AllocateUpload(uint64_t size, uint64_t alignment, UploadAlloc& out) {
+namespace {
+// Per-frame accounting of who consumed the upload ring, reset at BeginFrame.
+constexpr size_t kUploadTagCount = size_t(D3D12Context::UploadTag::kCount);
+uint64_t g_upload_bytes[kUploadTagCount] = {};
+uint32_t g_upload_calls[kUploadTagCount] = {};
+bool g_upload_reported = false;
+
+const char* UploadTagName(D3D12Context::UploadTag t) {
+  switch (t) {
+    case D3D12Context::UploadTag::kConstants: return "constants";
+    case D3D12Context::UploadTag::kTexture:   return "texture";
+    case D3D12Context::UploadTag::kGeometry:  return "geometry";
+    case D3D12Context::UploadTag::kCapture:   return "capture";
+    default:                                  return "other";
+  }
+}
+}  // namespace
+
+void D3D12Context::ResetUploadAccounting() {
+  for (size_t i = 0; i < kUploadTagCount; ++i) {
+    g_upload_bytes[i] = 0;
+    g_upload_calls[i] = 0;
+  }
+  g_upload_reported = false;
+}
+
+bool D3D12Context::AllocateUpload(uint64_t size, uint64_t alignment, UploadAlloc& out,
+                                  UploadTag tag) {
   if (!frame_open_ || size == 0) {
     return false;
   }
   const uint32_t slot = uint32_t(frame_index_ % kFramesInFlight);
   const uint64_t offset = (upload_offset_[slot] + alignment - 1) & ~(alignment - 1);
   if (offset + size > upload_capacity_) {
-    REXLOG_ERROR("[native_gfx] upload ring exhausted ({} + {} > {})", offset, size,
-                 upload_capacity_);
+    // One breakdown per frame, not one line per failed allocation: the old
+    // message fired thousands of times and never said who filled the ring.
+    if (!g_upload_reported) {
+      g_upload_reported = true;
+      REXLOG_ERROR(
+          "[native_gfx] upload ring exhausted at {}/{} bytes, {} request by {}. This frame: "
+          "constants {} KiB/{} allocs, texture {} KiB/{}, geometry {} KiB/{}, capture {} KiB/{}, "
+          "other {} KiB/{}",
+          offset, upload_capacity_, size, UploadTagName(tag),
+          g_upload_bytes[0] >> 10, g_upload_calls[0], g_upload_bytes[1] >> 10, g_upload_calls[1],
+          g_upload_bytes[2] >> 10, g_upload_calls[2], g_upload_bytes[3] >> 10, g_upload_calls[3],
+          g_upload_bytes[4] >> 10, g_upload_calls[4]);
+    }
     return false;
   }
+  g_upload_bytes[size_t(tag)] += size;
+  ++g_upload_calls[size_t(tag)];
   upload_offset_[slot] = offset + size;
   out.cpu = upload_mapped_[slot] + offset;
   out.gpu = upload_buffers_[slot]->GetGPUVirtualAddress() + offset;
