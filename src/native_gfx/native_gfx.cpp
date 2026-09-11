@@ -22,7 +22,6 @@
 #include <rex/ui/d3d12/d3d12_provider.h>
 #include <rex/ui/keybinds.h>
 
-#include <rex/graphics/native_guest_renderer.h>
 #include <rex/ui/d3d12/d3d12_presenter.h>
 
 #include "d3d12/blit_pass.h"
@@ -30,6 +29,7 @@
 #include "d3d12/d3d12_smoke_triangle.h"
 #include "d3d12/context.h"
 #include "d3d12/first_draw.h"
+#include "d3d12/external_blit.h"
 #include "d3d12/frame_capture.h"
 #include "d3d12/memory_census.h"
 #include "guest/occlusion.h"
@@ -505,6 +505,21 @@ PresenterOutput g_present_output;
 BlitPass g_blit;
 bool g_present_ready = false;
 
+// TEMP DIAG (remove after): why the continuous present does or does not reach
+// the guest output. The only thing this path logs today is the blit pipeline,
+// and it logs once, so "the swap hook never fired", "the takeover was off" and
+// "the refresh failed" all look identical in the log -- an absent line. These
+// counters separate them; they are reported with the frame-boundary line.
+std::atomic<uint32_t> g_swap_hook_calls{0};
+std::atomic<uint32_t> g_present_calls{0};
+std::atomic<uint32_t> g_present_ok{0};
+std::atomic<uint32_t> g_present_no_takeover{0};
+std::atomic<uint32_t> g_present_no_presenter{0};
+std::atomic<uint32_t> g_present_no_display{0};
+std::atomic<uint32_t> g_present_refresh_false{0};
+std::atomic<uint32_t> g_present_no_cmdlist{0};
+std::atomic<uint32_t> g_present_blit_false{0};
+
 // One-time lazy setup: resolve the SDK graphics system, require the D3D12
 // backend, initialize the smoke-test renderer. Any failure latches kFailed
 // and logs once; the guest swap then proceeds normally.
@@ -610,6 +625,9 @@ bool TryInitialize() {
 
 }  // namespace
 
+// Defined near the bottom of the file; the frame boundary above calls it.
+bool PresentContinuousDisplay();
+
 bool Active() {
   if (!REXCVAR_GET(mcla_native_gfx)) {
     return false;
@@ -629,49 +647,6 @@ bool Active() {
   return ok;
 }
 
-// Registered with the command processor via SetNativeGuestOutputRenderer. Runs
-// on the CP thread at swap. Blits the display target the guest thread published
-// (PrepareContinuousDisplay) into the guest output through the SDK's external
-// blit, which records on the CP's own command list. Returns true when it served
-// the frame -- which is what keeps the emulated-draw suppression engaged.
-bool NativeGuestOutputCallback(const rex::graphics::NativeGuestOutputRenderContext& ctx,
-                               void* /*user*/) {
-  uint32_t fmt = 0, w = 0, h = 0;
-  auto* display = static_cast<ID3D12Resource*>(GetContinuousDisplayResource(&fmt, &w, &h));
-  static int cb = 0;
-  if (cb < 4) {
-    REXLOG_INFO("[native_gfx] callback#{} display={}", cb++, (void*)display);
-  }
-  // TEMP DIAG (remove after): ground-truth whether the swap callback fires and
-  // whether the guest thread ever published a display, since the logger is blind
-  // on non-TTY stdout.
-  {
-    static unsigned total = 0, null_cnt = 0, ok_cnt = 0;
-    ++total;
-    if (display) ++ok_cnt; else ++null_cnt;
-    if (total <= 10u || (total % 60u) == 0u) {
-      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
-        std::fprintf(f, "callback total=%u display_ok=%u display_null=%u last=%ux%u fmt=%u\n",
-                     total, ok_cnt, null_cnt, w, h, fmt);
-        std::fflush(f);
-        std::fclose(f);
-      }
-    }
-  }
-  // Always claim the frame once continuous mode is on. Returning false here
-  // falls through to the emulated gamma/FXAA blit -- but the command processor
-  // already wrapped the guest output for us (NativeRhiBeginFrame), and that
-  // emulated path then runs against a guest output in the wrong state and
-  // faults. When there is no display yet (the first frames, before the guest
-  // thread has published one) we simply present the untouched output.
-  if (display) {
-    // Through the RHI device: the blit implementation lives in the rexgpu-xenos
-    // plugin, which this executable never links.
-    ctx.device->BlitExternalToGuestOutput(ctx.guest_output, display, fmt, ctx.guest_output_width,
-                                          ctx.guest_output_height);
-  }
-  return true;
-}
 
 void TryFirstDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                   uint32_t element_count, uint32_t start_element, int32_t base_vertex,
@@ -721,16 +696,16 @@ void TryFirstDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
     }
     g_draw_ready = true;
 
-    // Continuous mode registers a native guest-output renderer with the
-    // command processor (Skate 3 model). At swap, the CP calls our callback to
-    // paint the guest output, and suppresses the emulated draws we replace
-    // (native_render_suppress_* cvars). One producer, in the CP's own frame --
-    // no separate present, no race, no TDR.
+    // Continuous mode takes the swap over: the guest swap is suppressed and the
+    // composite is presented straight through rex::ui::Presenter. It has to be
+    // a takeover rather than a second refresh after the guest swap, because the
+    // Presenter's guest output is single-producer -- refreshing it from this
+    // thread while the command processor refreshes it from its own inside
+    // IssueSwap is a data race on the mailbox.
     if (REXCVAR_GET(mcla_native_gfx_continuous)) {
-      rex::graphics::SetNativeGuestOutputRenderer(&NativeGuestOutputCallback, nullptr);
       g_present_ready = true;
       SetContinuousMode(true);
-      REXLOG_INFO("[native_gfx] continuous mode active (native guest-output renderer registered)");
+      REXLOG_INFO("[native_gfx] continuous mode active (presenting at the guest swap)");
     }
   }
   // Continuous mode has no draw limit (the finish-on-limit path is gated off in
@@ -1200,7 +1175,31 @@ void NotifyFrameBoundary() {
   // happens in the CP's swap (NativeGuestOutputCallback), not here.
   if (ContinuousMode()) {
     if (g_present_ready && g_draw_ready) {
-      PrepareContinuousDisplay(g_draw_context, g_render_targets);
+      const bool prepared = PrepareContinuousDisplay(g_draw_context, g_render_targets);
+      // Present HERE, not from the swap hook.
+      //
+      // The guest swap is issued from INSIDE rage::grcDevice::EndFrame
+      // (generated/larecomp_recomp.66.cpp:1798, in the body of
+      // DEFINE_REX_FUNC(grcDevice_EndFrame)), so the swap hook runs while the
+      // original is still on the stack -- before this boundary hook, which runs
+      // after it returns. At that moment the frame's last draw batch is still
+      // open on the runtime's command list, and D3D12Context::BeginFrame
+      // refuses to open a second one:
+      //
+      //   if (!initialized_ || frame_open_) return nullptr;
+      //
+      // so the present failed silently and the hook fell through to the guest
+      // swap, letting the command processor paint the guest output. The only
+      // frames the native runtime ever presented were the ones where the draw
+      // count happened to land exactly on a batch flush, leaving the list
+      // closed -- the one-frame flashes.
+      //
+      // PrepareContinuousDisplay ends with EndFrame(), so here the list is
+      // always closed. This also keeps the blit inside the RenderDoc bracket
+      // below and ahead of stamp_releases(), whose fence value must cover it.
+      if (prepared) {
+        PresentContinuousDisplay();
+      }
       // Programmatic RenderDoc capture of one native frame. The native present
       // bypasses the swapchain, so RenderDoc's Present-driven frame delimiter
       // (and its overlay) stop working once native_gfx takes over -- but the
@@ -1285,14 +1284,128 @@ void RequestRenderDocCapture() {
   REXLOG_INFO("[native_gfx] RenderDoc capture requested");
 }
 
-// Legacy no-op: continuous present moved into the command processor's native
-// guest-output callback. Kept so the swap hook still links.
-void PresentContinuousAtSwap() {}
+// Continuous-mode present. Called from the guest swap hook AFTER the guest swap
+// ran, so the command processor has already closed its submission (skipping it
+// leaves that submission open and the GPU eventually TDRs) and painted its own,
+// suppressed, guest output. Writing ours last makes the native frame the one
+// the vsync worker shows.
+//
+// This drives rex::ui::Presenter directly instead of going through a renderer
+// registered with the command processor: the whole point of that callback was
+// to reach a blit implementation living inside the rexgpu-xenos plugin, and
+// that blit is now recorded here on the runtime's own command list.
+// Presents the display target the guest thread published, by driving
+// rex::ui::Presenter directly.
+//
+// Presenter::RefreshGuestOutput is single-producer by design (it mutates
+// guest_output_mailbox_writable_ and the properties array without
+// synchronization; only the consumer handoff is atomic). So this may only run
+// when the command processor is NOT also refreshing -- which is why continuous
+// mode suppresses the guest swap instead of running after it.
+bool PresentContinuousDisplay() {
+  g_present_calls.fetch_add(1, std::memory_order_relaxed);
+  if (!g_presenter || !g_draw_context.initialized()) {
+    g_present_no_presenter.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  uint32_t fmt = 0, w = 0, h = 0;
+  auto* display = static_cast<ID3D12Resource*>(GetContinuousDisplayResource(&fmt, &w, &h));
+  if (display == nullptr || w == 0 || h == 0) {
+    // Nothing published yet (the first frames, before the guest thread has
+    // produced a display). Let the normal swap path run this frame.
+    g_present_no_display.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
 
-bool PresentTakeover() { return Active() && REXCVAR_GET(mcla_native_gfx_present); }
+  const bool ok = g_presenter->RefreshGuestOutput(
+      w, h, w, h, [&](rex::ui::Presenter::GuestOutputRefreshContext& refresh) -> bool {
+        auto& ctx =
+            static_cast<rex::ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(refresh);
+        ID3D12GraphicsCommandList* cl = g_draw_context.BeginFrame();
+        if (cl == nullptr) {
+          // BeginFrame returns null without logging when a frame is already
+          // open. That is what made this failure invisible for three sessions.
+          g_present_no_cmdlist.fetch_add(1, std::memory_order_relaxed);
+          static bool logged = false;
+          if (!logged) {
+            logged = true;
+            REXLOG_ERROR(
+                "[native_gfx] continuous present: no command list (a frame is already open); "
+                "the guest swap will paint instead");
+          }
+          return false;
+        }
+        if (!RecordExternalBlitToGuestOutput(
+                g_draw_context.device(), cl, ctx.resource_uav_capable(), display, fmt, w, h,
+                rex::ui::d3d12::D3D12Presenter::kGuestOutputInternalState)) {
+          g_present_blit_false.fetch_add(1, std::memory_order_relaxed);
+          g_draw_context.EndFrame();
+          return false;
+        }
+        return g_draw_context.EndFrame();
+      });
+  if (ok) {
+    g_present_ok.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_present_refresh_false.fetch_add(1, std::memory_order_relaxed);
+  }
+  return ok;
+}
+
+bool PresentTakeover() {
+  return Active() &&
+         (REXCVAR_GET(mcla_native_gfx_present) || REXCVAR_GET(mcla_native_gfx_continuous));
+}
+
+void NoteSwapHook() {
+  g_swap_hook_calls.fetch_add(1, std::memory_order_relaxed);
+  // Emulated path only. RenderDoc's own Present boundary holds nothing there
+  // but the presenter blit -- two captures of a scene the native runtime draws
+  // with ~1700 draws came back with 1 each -- because the game's work runs on
+  // the command processor thread, outside those boundaries. Bracketing
+  // swap-to-swap here puts a whole guest frame inside one capture, which is
+  // what makes a draw-by-draw comparison against the native runtime possible.
+  // Same trigger file as the native path, so the tooling does not change; the
+  // native path has its own bracket at the frame boundary and is left alone.
+  if (REXCVAR_GET(mcla_native_gfx)) {
+    return;
+  }
+  static bool emu_capturing = false;
+  if (emu_capturing) {
+    emu_capturing = false;
+    // Null device: the capture spans every device in the process, which is what
+    // this needs -- the D3D12 device doing the work belongs to the command
+    // processor, not to anything this runtime holds a pointer to.
+    RenderDocEndCapture(nullptr);
+    return;
+  }
+  const bool key_request = g_rdc_capture_request.exchange(false, std::memory_order_acq_rel);
+  const bool file_request = std::remove("native_gfx_rdc_trigger") == 0;
+  if ((key_request || file_request) && RenderDocBeginCapture(nullptr)) {
+    emu_capturing = true;
+  }
+}
 
 bool PresentFrame() {
   if (!PresentTakeover()) {
+    g_present_no_takeover.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  // Continuous mode NEVER suppresses the guest swap, and that is the whole
+  // point. The swap packet is what makes the command processor end its frame,
+  // and ending the frame is what recycles its per-frame pools -- view and
+  // sampler descriptor heaps, the constant-buffer pool, shared memory, the
+  // render-target cache (D3D12CommandProcessor::EndSubmission(is_swap), which
+  // calls EndFrame and ClearCache on each). Swallowing the swap call left that
+  // frame open forever: measured at about a gigabyte of host private memory
+  // per thousand frames, ending in "no free bindless view descriptors" and a
+  // removed device a couple of minutes into gameplay.
+  //
+  // So the guest swap runs, the command processor closes its frame, and it
+  // also presents its own image over the native one. That is the honest state
+  // of the hybrid path with the SDK untouched, and the reason it is being
+  // replaced rather than tuned.
+  if (REXCVAR_GET(mcla_native_gfx_continuous)) {
     return false;
   }
   return g_triangle.Present(g_presenter);
