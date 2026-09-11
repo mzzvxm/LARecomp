@@ -1505,7 +1505,8 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                                       const_cast<uint8_t*>(base), psr.guest_address)),
                                   psr.size_bytes);
   const uint32_t ps_spec = rs.alpha_test_enable ? 2u : 0u;
-  const ShaderBytecode vs_code = shaders.Lookup(vs_id, 0, /*is_pixel=*/false);
+  const uint32_t vs_spec = 1u;
+  const ShaderBytecode vs_code = shaders.Lookup(vs_id, vs_spec, /*is_pixel=*/false);
   const ShaderBytecode ps_code =
       depth_only ? ShaderBytecode{} : shaders.Lookup(ps_id, ps_spec, /*is_pixel=*/true);
   ProfileAdd(g_profile.shader_us, t_shader);
@@ -1779,10 +1780,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   ProfileAdd(g_profile.const_us, t_const);
 
   const auto t_pso = ProfileClock::now();
-  PsoKey key = PipelineCache::MakeKey(bound, rs, vs_id, ps_id, 0, ps_spec);
-  // Pooled targets are single-sampled; a PSO whose sample count disagrees with
-  // the bound target is rejected outright.
-  key.sample_count = 1;
+  PsoKey key = PipelineCache::MakeKey(bound, rs, vs_id, ps_id, vs_spec, ps_spec);
   // A PSO whose sample count disagrees with the bound target is rejected
   // outright, so this has to follow the same rule the pool key does. Same for
   // the render-target count: a PSO declaring one target cannot be used with two

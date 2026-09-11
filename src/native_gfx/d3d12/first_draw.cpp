@@ -254,7 +254,11 @@ bool TryFirstRealDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type
           rex::memory::GuestPtr(const_cast<uint8_t*>(base), psr.guest_address)),
       psr.size_bytes);
   const uint32_t ps_spec = rs.alpha_test_enable ? 2u : 0u;
-  const ShaderBytecode vs_code = shaders.Lookup(vs_id, 0, /*is_pixel=*/false);
+  // See frame_capture.cpp for why this is 1: spec bit 0 is the packed
+  // normal/tangent unpack, and asking for 0 hands every such shader a
+  // zero normal. A shader without one ships only variant 0 and falls back.
+  const uint32_t vs_spec = 1u;
+  const ShaderBytecode vs_code = shaders.Lookup(vs_id, vs_spec, /*is_pixel=*/false);
   const ShaderBytecode ps_code = shaders.Lookup(ps_id, ps_spec, /*is_pixel=*/true);
   if (!vs_code.valid() || !ps_code.valid()) {
     return false;
@@ -502,7 +506,7 @@ bool TryFirstRealDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type
   }
 
   // --- PSO, one per bisection variant.
-  passes[0].key = PipelineCache::MakeKey(bound, rs, vs_id, ps_id, 0, ps_spec);
+  passes[0].key = PipelineCache::MakeKey(bound, rs, vs_id, ps_id, vs_spec, ps_spec);
   // PA_SU_SC_MODE_CNTL bits 0/1 are cull_front / cull_back.
   passes[1].key = passes[0].key;
   passes[1].key.pa_su_sc_mode_cntl &= ~0x3u;

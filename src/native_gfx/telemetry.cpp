@@ -821,7 +821,7 @@ void TelemetryRecordGeometry(const uint8_t* base, uint32_t dev, uint32_t primiti
     // Spec variants come from the render state: alpha test for PS, and the
     // R11G11B10 normal path for VS (declared by the shader itself).
     const uint32_t ps_spec = rs.alpha_test_enable ? 2u : 0u;
-    const PsoKey key = PipelineCache::MakeKey(s, rs, vs_id, ps_id, 0, ps_spec);
+    const PsoKey key = PipelineCache::MakeKey(s, rs, vs_id, ps_id, 1, ps_spec);
     const size_t h = PsoKeyHash{}(key);
     auto it = g_pso_keys.find(h);
     if (it == g_pso_keys.end()) {
