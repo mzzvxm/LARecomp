@@ -260,7 +260,7 @@ REXCVAR_DEFINE_BOOL(
     "nessas superficies, por isso o default e off.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, true, "MCLA/NativeGfx",
                     "Apply the fetch constant's 12-bit swizzle to the SRV's "
                     "Shader4ComponentMapping instead of the D3D12 default. The two encodings "
                     "match one-for-one (0..3 component, 4 = zero, 5 = one), and 34 of MCLA's "

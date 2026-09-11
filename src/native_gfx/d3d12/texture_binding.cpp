@@ -5,6 +5,7 @@
 #include "texture_binding.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 
@@ -157,35 +158,84 @@ uint32_t SrvFormatForResource(ID3D12Resource* resource, uint32_t guest_format) {
 // draws, because they are the colour-grading LUTs bound on every draw. The
 // single-channel masks use 0xB68 = (X,1,1,1) and 0xA00 = (X,X,X,1).
 //
-// Handing the register straight over is NOT correct on its own, though.
-// Measured in-game: it turns the night sky dome brick red, and the sky's
-// colour comes from those very LUTs, so red and blue ended up swapped where
-// they were right before.
+// The fetch swizzle alone is NOT the answer to hand D3D12. It selects among
+// the components as the GUEST stores them, and it has to be composed with a
+// second swizzle that says where this runtime's own decode put each of those
+// components -- exactly what the SDK does (GuestToHostSwizzle fed by
+// GetHostFormatSwizzle, src/graphics/pipeline/texture/cache.cpp). Our decode
+// only untiles, so the host half follows straight from the DXGI format picked
+// in TextureFormatToDxgi:
 //
-// The SDK's own (Xenia-derived) cache composes the guest swizzle with a
-// PER-FORMAT host swizzle -- src/graphics/pipeline/texture/cache.cpp
-// GuestToHostSwizzle, fed by D3D12TextureCache::GetHostFormatSwizzle -- and
-// for k_8_8_8_8 that host half is the identity, so there the guest swizzle
-// does apply verbatim. What differs here is the SOURCE: a resource handed back
-// by the render-target bridge was rendered by this runtime and is already in
-// host channel order, so a guest swizzle authored for Xenos-ordered memory
-// must not be applied to it. Only a texture decoded out of guest memory can
-// want it. That is the split this applies, and it is still behind
-// mcla_native_gfx_texture_swizzle (default off) until it is checked against a
-// known-good frame rather than reasoned about.
-uint32_t ShaderComponentMappingForSwizzle(uint32_t swizzle, TextureSource source) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_swizzle) ||
-      source != TextureSource::kGuestDecode) {
+//   k_8_8_8_8 -> R8G8B8A8, a plain copy, host half is the identity, so a
+//   0x60A = (Z,Y,X,W) fetch lands verbatim. That is the night city: ColorT1
+//   (slot 7) and the light-index grid (slot 11) both carry 0x60A, and dropping
+//   it made every lit surface read its light colour with red and blue
+//   exchanged.
+//
+//   k_1_5_5_5 -> B5G5R5A1, and here the format itself already exchanges red
+//   and blue, because the SDK does that conversion in its load shader
+//   (kLoadShaderIndexR5G5B5A1ToB5G5R5A1) and we do not. So OUR host half is
+//   (Z,Y,X,W), and composing it with a 0x60A fetch cancels to the identity.
+//   That is the day sky: applying 0x60A raw to it put 82% too much red in the
+//   sky region (0.09303 against the emulated 0.05107).
+//
+// Composing gets both, which raw application cannot: measured HDR, native
+// against emulated, cam 13 by day and cam 21 at 22:00.
+//
+// Single-channel formats take RRRR, same as the SDK, so a (X,1,1,1) or
+// (X,X,X,1) mask keeps reading the one channel that exists.
+// Where this runtime's decode leaves each guest component, per guest format.
+// Encoded like the fetch swizzle: three bits per component, 0..3 pick a source
+// component, 4 is 0 and 5 is 1.
+uint32_t HostFormatSwizzle(uint32_t guest_format, bool tiled) {
+  constexpr uint32_t kRgba = 0x688u;  // (X,Y,Z,W)
+  constexpr uint32_t kRrrr = 0x000u;  // (X,X,X,X)
+  constexpr uint32_t kBgra = 0x60Au;  // (Z,Y,X,W)
+  switch (GuestTextureFormat(guest_format)) {
+    case GuestTextureFormat::k_1_5_5_5:
+      // B5G5R5A1_UNORM over an unconverted R5G5B5A1 payload.
+      return kBgra;
+    case GuestTextureFormat::k_8_8_8_8:
+      // Measured discriminator, cause not yet understood: every k_8_8_8_8 in
+      // this game arrives end=2 with the same 0x60A fetch swizzle, but only the
+      // LINEAR ones want it applied. Those are the light data tables the
+      // multi-light shaders index (ColorT 128x256, light-index grid 512x640);
+      // applying it there is what makes the night and dusk city match the
+      // emulated. The TILED ones -- the noise and grading surfaces -- come out
+      // of the decode already in host order, and applying it again reddens the
+      // sky. Composing kBgra with a 0x60A fetch cancels to the identity.
+      return tiled ? kBgra : kRgba;
+    case GuestTextureFormat::k_8:
+    case GuestTextureFormat::k_32_FLOAT:
+      return kRrrr;
+    default:
+      // Everything else this runtime binds is a straight component-for-
+      // component DXGI match; depth arrives through the render-target path and
+      // is sampled as a single channel, which kRrrr would also give.
+      return kRgba;
+  }
+}
+
+uint32_t ShaderComponentMappingForSwizzle(uint32_t guest_swizzle, uint32_t guest_format,
+                                         bool tiled) {
+  if (!REXCVAR_GET(mcla_native_gfx_texture_swizzle)) {
     return D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   }
+  const uint32_t host_format_swizzle = HostFormatSwizzle(guest_format, tiled);
+  uint32_t mapping = 0;
   for (uint32_t i = 0; i < 4; ++i) {
-    if (((swizzle >> (i * 3)) & 0x7u) > 5u) {
-      // 6 and 7 are reserved; a fetch constant that carries them is not
-      // something to guess at.
-      return D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    const uint32_t guest_component = (guest_swizzle >> (3u * i)) & 0x7u;
+    uint32_t component;
+    if (guest_component >= 4u) {
+      // 6 and 7 are reserved; fold them onto 4 (zero) and 5 (one) rather than
+      // handing the driver something undefined, same as the SDK.
+      component = guest_component & 0x5u;
+    } else {
+      component = (host_format_swizzle >> (3u * guest_component)) & 0x7u;
     }
+    mapping |= component << (3u * i);
   }
-  return (swizzle & 0xFFFu) | (1u << 12);
+  return mapping | (1u << 12);
 }
 
 }  // namespace
@@ -222,8 +272,14 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   // built from the guest format would not match it.
   desc.Format = DXGI_FORMAT(SrvFormatForResource(resource, fetch.format));
   desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-  desc.Shader4ComponentMapping = ShaderComponentMappingForSwizzle(fetch.swizzle, source);
-  desc.Texture2D.MipLevels = 1;
+  desc.Shader4ComponentMapping = ShaderComponentMappingForSwizzle(fetch.swizzle, fetch.format, fetch.tiled);
+  // Every level the resource has, not just the top one. Pinning this to 1
+  // hides the mip chain the texture cache now uploads: the sampler would still
+  // have a mip filter and a LOD range, but nothing below level 0 to read, so
+  // distant surfaces would keep aliasing. -1 means "all levels from
+  // MostDetailedMip" and is equally correct for the single-level resources the
+  // render-target bridge hands back.
+  desc.Texture2D.MipLevels = UINT(-1);
   D3D12_CPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
   handle.ptr += SIZE_T(index) * srv_increment_;
   context.device()->CreateShaderResourceView(resource, &desc, handle);
