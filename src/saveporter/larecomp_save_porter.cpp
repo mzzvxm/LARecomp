@@ -23,6 +23,7 @@
 
 #include <imgui.h>
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/filesystem/devices/stfs_container_device.h>
 #include <rex/logging.h>
@@ -48,6 +49,12 @@
 #else
 #include <gtk/gtk.h>
 #endif
+
+REXCVAR_DEFINE_BOOL(skip_save_import, false, "MCLA",
+    "Skip the save import wizard shown on first launch and start with no save. "
+    "The wizard is skipped automatically anyway when no Xenia or RPCS3 save is "
+    "found on the machine.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace larecomp {
 
@@ -704,9 +711,22 @@ void RunSaveImportWizardBlocking(rex::ui::WindowedAppContext& app_context, rex::
                                  rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths) {
   const fs::path user_data_root = paths.user_data_root;
 
+  if (REXCVAR_GET(skip_save_import)) {
+    REXLOG_INFO("Save import: skipped (skip_save_import)");
+    return;
+  }
+
   const fs::path xenia = FindXeniaSave();
   const fs::path rpcs3 = FindRpcs3Save();
   REXLOG_INFO("Save import: xenia='{}' rpcs3='{}'", xenia.string(), rpcs3.string());
+
+  // With no emulator save on the machine the wizard has nothing to offer but a
+  // file browser, and the game creates its own save anyway - so it is a wall
+  // between a first-time player and the title. Skip it.
+  if (xenia.empty() && rpcs3.empty()) {
+    REXLOG_INFO("Save import: nothing found to import, starting without a save");
+    return;
+  }
 
   auto done = std::make_shared<std::atomic<bool>>(false);
   // Self-deletes on Close(); the completion callback releases the pump below.
@@ -714,17 +734,28 @@ void RunSaveImportWizardBlocking(rex::ui::WindowedAppContext& app_context, rex::
                        [done]() { done->store(true, std::memory_order_release); });
 
   REXLOG_INFO("Entering save import pump");
+  // Step tracing for the first ticks only: the pump is the first thing that
+  // runs after the profile name is accepted, and a death in here leaves a log
+  // that just stops. INFO is flushed per line, so the last one printed names
+  // the statement that died.
+  int tick = 0;
   while (!done->load(std::memory_order_acquire) && !app_context.HasQuitFromUIThread()) {
+    const bool trace = tick < 5;
+    if (trace) REXLOG_INFO("Save pump tick {}: pending functions", tick);
     app_context.ExecutePendingFunctionsFromUIThread();
 
+    if (trace) REXLOG_INFO("Save pump tick {}: pump events", tick);
     app_context.PumpEvents();
 
     if (app_context.HasQuitFromUIThread()) {
       break;
     }
     if (window) {
+      if (trace) REXLOG_INFO("Save pump tick {}: request paint", tick);
       window->RequestPaint();
     }
+    if (trace) REXLOG_INFO("Save pump tick {}: done", tick);
+    ++tick;
     std::this_thread::sleep_for(std::chrono::milliseconds(8));
   }
 
