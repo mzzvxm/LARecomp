@@ -81,6 +81,10 @@ class BufferCache {
     uint64_t hits = 0;
     uint64_t uploads = 0;        // first-use uploads (expected, not errors)
     uint64_t reuploads = 0;      // invalidation-driven
+    // How many of those the guest told us about itself, against the page
+    // write watch. The unlock range is exact and costs no fault, so the more
+    // of the total it accounts for, the less the watch is earning.
+    uint64_t unlock_invalidations = 0;
     uint64_t merges = 0;         // regions coalesced by an overlapping request
     uint64_t merge_declined = 0; // merge refused: union would exceed the cap
     uint64_t upload_failures = 0;  // real errors
@@ -132,6 +136,19 @@ class BufferCache {
   // Marks every region intersecting the range dirty; they re-upload on the
   // next Resolve.
   void InvalidateRange(uint32_t guest_address, uint32_t size);
+
+  // The guest's OWN dirty range, from D3DResource_Unlock. Queued rather than
+  // applied: InvalidateRange walks regions_, which the render thread mutates,
+  // and this runs on whichever guest thread did the unlock. The queue is
+  // drained at the top of Resolve, exactly where the write watch's is.
+  //
+  // This is the range the resource has been accumulating in BaseFlush (+0x14),
+  // packed 16.16 in 128-byte units -- exact bytes, no page-protection fault,
+  // and it arrives when the guest itself considers the data final. Measured on
+  // MCLA: vertex buffers are locked ~3600 times per 30 s (resource type 1)
+  // while textures are locked only at load, so this is where that signal is
+  // worth anything.
+  void NoteGuestWrite(uint32_t guest_address, uint32_t size);
 
   // Starts watching guest writes so InvalidateRange fires by itself. Without
   // this nothing ever marked a region dirty, so a guest range uploaded once was

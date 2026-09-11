@@ -47,10 +47,23 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags,
 // Called from the rage::grcDevice::EndFrame hook.
 void NotifyFrameBoundary();
 
-// Called from the D3DDevice_Swap hook AFTER the guest swap, in continuous mode:
-// presents the native frame last so it wins the shared guest output, and
-// advances to the next frame. No-op outside continuous mode.
-void PresentContinuousAtSwap();
+// D3DResource_Lock (sub_82421CA0), the funnel every lock reaches.
+// Observation only: the lock is where the guest waits on the resource fence,
+// which is the machinery a future ownership step has to take over.
+void NoteResourceLocked(const uint8_t* base, uint32_t resource_va);
+
+// D3DResource_Unlock (sub_82421F38), BEFORE the original -- it resets the two
+// flush words it is read for and decrements the lock count.
+//
+// Hooked at the funnel rather than at the texture thunk: xref says exactly
+// three thunks reach it (texture, vertex buffer, index buffer) and nothing
+// else in the binary unlocks anything, so this one hook sees every unlock of
+// every type. The vertex and index buffer locks are virtual methods
+// (grcVertexBufferD3D's vtable at off_820106BC, slots 1 and 2), so no amount
+// of static analysis finds their callers -- counting them at runtime is the
+// only way to know whether anything is locked per frame.
+void NoteResourceUnlocked(const uint8_t* base, uint32_t resource_va, uint32_t base_address,
+                          uint32_t mip_address);
 
 // D3DDevice_CreateTexture (sub_82410C50), AFTER the original, which returns
 // the new D3DTexture in r3 (0 on failure). This is the road that ALLOCATES:

@@ -98,9 +98,40 @@ std::pair<uint32_t, uint32_t> TextureCache::InvalidationThunk(void* context_ptr,
   auto* self = static_cast<TextureCache*>(context_ptr);
   if (self && length) {
     std::lock_guard<std::mutex> lock(self->invalidation_mutex_);
-    self->pending_invalidations_.emplace_back(physical_address_start, length);
+    self->pending_invalidations_.push_back(
+        PendingInvalidation{physical_address_start, length, /*from_unlock=*/false});
   }
   return std::make_pair(physical_address_start, length);
+}
+
+void TextureCache::NoteGuestWrite(uint32_t guest_address, uint32_t length) {
+  if (!length) {
+    return;
+  }
+  // Runs on whichever guest thread unlocked, possibly long before the first
+  // native draw. Only the queue and this one counter are touched -- the counter
+  // is written here and nowhere else, so it does not race the render thread's
+  // own Stats fields.
+  std::lock_guard<std::mutex> lock(invalidation_mutex_);
+  // The queue is drained by Resolve. If Resolve is not running at all (the
+  // runtime is on but not drawing), it would otherwise grow without bound on
+  // the game's thread. Stop appending rather than drop the oldest: a lost
+  // invalidation is a texture that stays wrong for the session, which is the
+  // bug this exists to fix.
+  constexpr size_t kMaxPending = 65536;
+  if (pending_invalidations_.size() >= kMaxPending) {
+    if (!pending_overflow_logged_) {
+      pending_overflow_logged_ = true;
+      REXLOG_ERROR(
+          "[native_gfx] texture invalidation queue full ({} entries): nothing is draining it, so "
+          "guest writes are being dropped and cached textures will go stale",
+          kMaxPending);
+    }
+    return;
+  }
+  pending_invalidations_.push_back(
+      PendingInvalidation{guest_address, length, /*from_unlock=*/true});
+  ++stats_.unlock_ranges;
 }
 
 bool TextureCache::StartWatchingGuestWrites() {
@@ -147,7 +178,7 @@ void TextureCache::WatchEntry(const Entry& entry) {
 }
 
 void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
-  std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  std::vector<PendingInvalidation> ranges;
   {
     std::lock_guard<std::mutex> lock(invalidation_mutex_);
     if (pending_invalidations_.empty()) {
@@ -160,9 +191,10 @@ void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
   // The release is fence-gated, so a command list still referencing the old
   // resource stays valid, and TextureBinder rebuilds its SRVs every frame
   // (the descriptor heap halves flip), so no stale pointer-keyed view survives.
-  for (const auto& [start, length] : ranges) {
-    const uint64_t lo = start & 0x1FFFFFFFu;
-    const uint64_t hi = lo + length;
+  for (const PendingInvalidation& range : ranges) {
+    const uint64_t lo = range.address & 0x1FFFFFFFu;
+    const uint64_t hi = lo + range.length;
+    uint64_t dropped_here = 0;
     for (auto it = entries_.begin(); it != entries_.end();) {
       Entry& e = it->second;
       const uint64_t e_lo = e.guest_base & 0x1FFFFFFFu;
@@ -173,10 +205,19 @@ void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
         }
         stats_.live_bytes -= (e.bytes <= stats_.live_bytes) ? e.bytes : stats_.live_bytes;
         ++stats_.invalidated;
+        ++dropped_here;
         it = entries_.erase(it);
       } else {
         ++it;
       }
+    }
+    if (range.from_unlock) {
+      stats_.invalidated_by_unlock += dropped_here;
+      if (!dropped_here) {
+        ++stats_.unlock_ranges_no_hit;
+      }
+    } else {
+      stats_.invalidated_by_watch += dropped_here;
     }
   }
 }

@@ -53,6 +53,7 @@
 
 #include "../native_probe/mcla_gfx_probe.h"
 #include "guest/guest_constants.h"
+#include "guest/guest_resources.h"
 #include "guest/guest_fence.h"
 #include "guest/texture_ownership.h"
 #include "guest/vblank_probe.h"
@@ -253,6 +254,74 @@ extern "C" REX_FUNC(D3DDevice_CreateTexture) {
 //
 // Observation only for now. This is where the guest blocks on the resource
 // fence, through sub_82411E98, which is the machinery an ownership step has to
+// take over before it can serve a lock itself.
+extern "C" REX_FUNC(D3DResource_Lock) {
+  mcla::native_gfx::nocp::NoteHook("D3DResource_Lock");
+  if (REXCVAR_GET(mcla_native_gfx)) {
+    mcla::native_gfx::NoteResourceLocked(base, ctx.r3.u32);
+    // TEMP DIAG (LOCKADDR): which guest addresses the CPU actually locks. The
+    // native runtime keeps a resolve on the GPU and bridges it by address; it
+    // never writes the pixels back into guest memory, the way the emulated path
+    // does through SharedMemory::RangeWrittenByGpu. That difference only bites
+    // if the guest READS the resolved surface, so this says whether it does.
+    {
+      const uint32_t res = ctx.r3.u32;
+      if (res >= 0x1000u) {
+        uint32_t raw;
+        std::memcpy(&raw, rex::memory::GuestPtr(const_cast<uint8_t*>(base), res + 0x20), 4);
+        const uint32_t addr = __builtin_bswap32(raw) & ~0xFFFu;
+        // Only the surfaces the GPU produced. Logging every lock filled the
+        // budget with ordinary texture streaming in the 0xE5..0xE7 window and
+        // never reached the question, which is whether the CPU touches a
+        // RESOLVE DESTINATION -- the UI panel at 0x06C5D000 and the minimap
+        // art around 0x0FA20000, in the low half of the 0xE0000000 window.
+        const uint32_t low = addr & 0x1FFFFFFFu;
+        const bool interesting = (low >= 0x02000000u && low < 0x08000000u) ||
+                                 (low >= 0x0F800000u && low < 0x10000000u);
+        static uint32_t seen[128];
+        static uint32_t seen_n = 0;
+        bool fresh = addr != 0 && interesting;
+        for (uint32_t i = 0; i < seen_n && fresh; ++i) {
+          if (seen[i] == addr) fresh = false;
+        }
+        if (fresh && seen_n < 128u) {
+          seen[seen_n++] = addr;
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f, "LOCKADDR res=0x%08X data=0x%08X\n", res, addr);
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+    }
+  }
+  __imp__D3DResource_Lock(ctx, base);
+}
+
+// D3DResource_Unlock(resource, base_address, mip_address) -- sub_82421F38.
+//
+// THE funnel. Xref says exactly three thunks reach it and nothing else in the
+// binary unlocks anything:
+//   sub_8240F220  texture       r4 = tex+0x20 & ~0xFFF, r5 = tex+0x30 & ~0xFFF
+//   sub_82422370  vertex buffer r4 = vb+0x18 & ~3,      r5 = 0
+//   0x82422478    index buffer  (the chunk right after D3DIndexBuffer_Lock)
+// All three tail-call, so r3/r4/r5 arrive here unchanged.
+//
+// Hooked here rather than at the texture thunk for two reasons. It sees every
+// resource type, which is the open question -- the vertex and index buffer
+// locks are virtual methods (grcVertexBufferD3D vtable off_820106BC, slots 1
+// and 2), so no static analysis reaches their callers. And hooking both the
+// thunk and the funnel would count textures twice.
+//
+// Observed BEFORE the original, and it has to be: the original resets the two
+// flush words and decrements the lock count this reads.
+extern "C" REX_FUNC(rex_sub_82421F38) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_82421F38");
+  if (REXCVAR_GET(mcla_native_gfx)) {
+    mcla::native_gfx::NoteResourceUnlocked(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+  }
+  __imp__rex_sub_82421F38(ctx, base);
+}
 
 // --- draws -----------------------------------------------------------------
 

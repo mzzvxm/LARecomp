@@ -540,6 +540,16 @@ void BufferCache::InvalidateRange(uint32_t guest_address, uint32_t size) {
   }
 }
 
+void BufferCache::NoteGuestWrite(uint32_t guest_address, uint32_t size) {
+  if (!size) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(invalidation_mutex_);
+  pending_invalidations_.emplace_back(guest_address, size);
+  ++stats_.unlock_invalidations;
+  stats_.unlock_bytes += size;
+}
+
 std::pair<uint32_t, uint32_t> BufferCache::InvalidationThunk(void* context_ptr,
                                                              uint32_t physical_address_start,
                                                              uint32_t length, bool exact_range) {

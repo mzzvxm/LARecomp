@@ -34,6 +34,7 @@
 #include "d3d12/memory_census.h"
 #include "guest/occlusion.h"
 #include "guest/render_state.h"
+#include "guest/resource_lock.h"
 #include "guest/texture_ownership.h"
 #include "guest/vblank_probe.h"
 #include "nocp/nocp_app.h"
@@ -67,6 +68,17 @@ REXCVAR_DEFINE_UINT32(
     "it is 4 and the quad draws are misread somewhere else.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_unlock_invalidate, false, "MCLA/NativeGfx",
+    "Invalidate cached textures from the guest's own unlock instead of waiting for the page "
+    "write watch to fault. D3DResource_Unlock flushes a dirty range the resource has been "
+    "accumulating (BaseFlush at +0x14, MipFlush at +0x18, packed 16.16 in 128-byte units), and "
+    "reading it costs two loads. Exact bytes instead of whole pages, no page-protection fault, "
+    "and it fires when the guest considers the data final rather than on the next touch. "
+    "Does NOT replace the write watch: writes that never go through a lock (streaming straight "
+    "into resource memory) are only caught by the watch. Off by default until the counters show "
+    "the ranges are sane -- see the lock line in the periodic report.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
                     "MCLA Native Graphics Runtime. OFF (default): the game renders through the "
@@ -1177,6 +1189,62 @@ void NoteEndVertices(const uint8_t* base, uint32_t dev) {
 }
 
 bool ShouldDumpRenderTargets() { return REXCVAR_GET(mcla_native_gfx_dumprt); }
+
+void NoteResourceLocked(const uint8_t* base, uint32_t resource_va) {
+  NoteResourceLock(base, resource_va);
+}
+
+void NoteResourceUnlocked(const uint8_t* base, uint32_t resource_va, uint32_t base_address,
+                          uint32_t mip_address) {
+  const ResourceUnlock unlock = ReadResourceUnlock(base, resource_va, base_address, mip_address);
+  NoteResourceUnlock(unlock);
+  if (!unlock.last || !REXCVAR_GET(mcla_native_gfx_unlock_invalidate)) {
+    return;
+  }
+  if (!IsTextureUnlock(unlock)) {
+    // Everything that is not a texture goes to the buffer cache, and measured,
+    // that is where this signal is worth something: resource type 1 (vertex
+    // buffers) is locked thousands of times per minute while textures are
+    // locked only at load. The re-upload traffic it attacks was 126k per 600
+    // frames, about 210 per frame.
+    if (unlock.base_range.valid) {
+      g_buffers.NoteGuestWrite(unlock.base_range.address, unlock.base_range.size);
+    }
+    return;
+  }
+  const GuestFlushRange& base_range = unlock.base_range;
+  const GuestFlushRange& mip_range = unlock.mip_range;
+  // Deliberately NOT gated on g_draw_ready. Measured at boot: all 388 unlocks
+  // of a session's first frame happen before the first native draw, so gating
+  // on it threw away exactly the writes that matter -- the streaming uploads
+  // that land while a texture is being decoded, which is the half-decoded-tile
+  // bug this signal exists to fix.
+  //
+  // Safe this early: NoteGuestWrite only pushes a pair of integers onto a
+  // vector under a mutex, on an object that is valid from static
+  // initialization. Queued, not applied -- dropping an entry needs the context
+  // for the fence-gated release, so the queue is drained at the top of the next
+  // Resolve, exactly like the write watch's.
+  if (base_range.valid) {
+    g_textures.NoteGuestWrite(base_range.address, base_range.size);
+  }
+  if (mip_range.valid) {
+    g_textures.NoteGuestWrite(mip_range.address, mip_range.size);
+  }
+  // The periodic line is 600 boundaries apart and the interesting part happens
+  // during loading, so say it once as soon as it actually works.
+  static bool first_logged = false;
+  if (!first_logged) {
+    first_logged = true;
+    REXLOG_INFO("[native_gfx] unlock invalidation live: first range {:#010x}+{}",
+                base_range.valid ? base_range.address : mip_range.address,
+                base_range.valid ? base_range.size : mip_range.size);
+  }
+}
+
+void NoteD3DTextureCreated(const uint8_t* base, uint32_t d3d_texture_va) {
+  NoteTextureCreate(base, d3d_texture_va);
+}
 
 void NotifyFrameBoundary() {
   // TEMP DIAG (remove after): is the frame-boundary hook firing, and do the

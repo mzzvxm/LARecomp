@@ -88,6 +88,7 @@ set(LARECOMP_SOURCES
     src/native_gfx/guest/occlusion.cpp
     src/native_gfx/guest/texture_registry.cpp
     src/native_gfx/guest/texture_ownership.cpp
+    src/native_gfx/guest/resource_lock.cpp
     src/native_gfx/guest/vblank_probe.cpp
     src/native_gfx/nocp/guest_gpu.cpp
     src/native_gfx/nocp/nocp_app.cpp

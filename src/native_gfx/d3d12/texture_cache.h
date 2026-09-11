@@ -119,6 +119,15 @@ class TextureCache {
     // texture streamed in over several frames shows up here; a zero here with
     // half-decoded textures on screen means the watch never armed.
     uint64_t invalidated = 0;
+    // Split by SOURCE, in the same unit as `invalidated` (entries dropped), so
+    // the two are comparable. `unlock_ranges` is a different unit on purpose --
+    // ranges queued, not entries dropped -- and the gap between it and
+    // `invalidated_by_unlock` is the fraction of the guest's writes that landed
+    // on memory nothing had decoded yet, which at boot is most of them.
+    uint64_t invalidated_by_unlock = 0;
+    uint64_t invalidated_by_watch = 0;
+    uint64_t unlock_ranges = 0;
+    uint64_t unlock_ranges_no_hit = 0;
     uint64_t live_bytes = 0;     // sum of the resident entries' resource sizes
   };
 
@@ -153,6 +162,18 @@ class TextureCache {
   // A failure only means textures keep the old never-invalidate behaviour.
   bool StartWatchingGuestWrites();
   void StopWatchingGuestWrites();
+
+  // An exact write the GUEST told us about, from D3DTexture_UnlockRect: the
+  // resource carries a dirty range it flushes on the last unlock (see
+  // guest/resource_lock.h). Queued into the same list the write watch feeds,
+  // so it drops entries through the same fence-gated path in Resolve.
+  //
+  // Strictly better than the watch where it applies: exact bytes instead of
+  // whole pages, no page-protection fault, and it arrives at the moment the
+  // guest itself considers the data final rather than on the next touch. It
+  // does NOT replace the watch -- the watch also catches writes that never go
+  // through a lock at all (streaming straight into resource memory).
+  void NoteGuestWrite(uint32_t guest_address, uint32_t length);
 
  private:
   struct Entry {
@@ -215,8 +236,16 @@ class TextureCache {
   std::unordered_map<uint64_t, Entry> entries_;
   RenderTargetLookup* rt_lookup_ = nullptr;
   std::mutex invalidation_mutex_;
-  std::vector<std::pair<uint32_t, uint32_t>> pending_invalidations_;
+  // A queued write, tagged with where it came from so a dropped entry can be
+  // attributed. Both sources feed this one list and are drained together.
+  struct PendingInvalidation {
+    uint32_t address = 0;
+    uint32_t length = 0;
+    bool from_unlock = false;
+  };
+  std::vector<PendingInvalidation> pending_invalidations_;
   void* invalidation_handle_ = nullptr;
+  bool pending_overflow_logged_ = false;
   Stats stats_;
 };
 
