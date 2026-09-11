@@ -25327,6 +25327,57 @@ name = "Hook_ChallengeHostPublishGate"
 registers = ["r3", "r4"]
 after_instruction = false
 
+# [clock-probe] Why mcNetworkClock never starts. sub_8226D120 is the only
+# starter and runs every tick; a guest that never reaches 0x8226D21C keeps
+# started=0, and sub_82282EB8 then bails at its first gate so no challenge can
+# ever raise the phone prompt.
+#   0x8226D134: r3  = sub_8226BE68()          session up
+#   0x8226D15C: r3  = sub_8227E750()          am I the owner (1=SERVER clock)
+#   0x8226D1C0: r31 = *(sessionRec + 0x2E04)  the owner's peer record
+#   0x8226D1FC: r3  = sub_82482560(...)       owner address resolved
+#   0x8226D21C: r5  = clock mode (1 server / 2 client), r7 = channel
+[[midasm_hook]]
+address = 0x8226D134
+name = "Hook_ClockSessionReady"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8226D15C
+name = "Hook_ClockAmOwner"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8226D1C0
+name = "Hook_ClockOwnerRecord"
+registers = ["r31"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8226D1FC
+name = "Hook_ClockResolveOwner"
+registers = ["r3"]
+after_instruction = false
+
+# after_instruction so r7 already holds the `li r7, 0xA` (channel 10); reading it
+# before the instruction printed a stale register.
+[[midasm_hook]]
+address = 0x8226D21C
+name = "Hook_ClockStarting"
+registers = ["r5", "r7"]
+after_instruction = true
+
+# [challenge-probe] sub_8227B770 @0x8227B79C: the fork "Propose a Challenge"
+# takes. owner=1 publishes the group-0 broadcast directly; owner=0 sends a
+# request to the owner, who republishes. If this never logs, the proposal never
+# left the UI at all.
+[[midasm_hook]]
+address = 0x8227B79C
+name = "Hook_ChallengeProposeRoute"
+registers = ["r3", "r29"]
+after_instruction = false
+
 
 # Pause Menu: capture PauseTab address from PM_Continue's parent
 [[midasm_hook]]

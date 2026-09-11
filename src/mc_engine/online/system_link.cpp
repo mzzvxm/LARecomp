@@ -392,6 +392,91 @@ void Hook_PromptRaised() {
     LARECOMP_APP_INFO("[challenge-probe] PROMPT RAISED (ol_accept_challenge)");
 }
 
+// ---------------------------------------------------------------------------
+// [clock-probe] Why the network clock never starts.
+//
+// sub_8226D120 is the only thing that ever starts mcNetworkClock, and it runs
+// every tick. Layout (verified in IDA):
+//
+//   0x8226D134  r3  = sub_8226BE68()   session up at all
+//   0x8226D14C  r10 = clock->flags(+92), bit 0x80 = already started -> bail
+//   0x8226D15C  r3  = sub_8227E750()   am I the session owner
+//                     1 -> SERVER mode straight away
+//                     0 -> the CLIENT branch below, which has four more gates
+//   0x8226D1C0  r31 = *(sessionRec + 0x2E04)   the owner's peer record
+//   0x8226D1FC  r3  = sub_82482560(...)        owner address resolved
+//   0x8226D21C  r5  = mode about to be passed to sub_82294BB8 (1 = server,
+//                     2 = client), r7 = connection channel (10)
+//
+// A guest that never reaches 0x8226D21C keeps started=0 forever, which is
+// exactly what larecomp_025 shows, and with started=0 the challenge receiver
+// (sub_82282EB8) bails at its very first gate.
+// ---------------------------------------------------------------------------
+
+// 0x8226D134
+void Hook_ClockSessionReady(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[clock-probe] session ready (sub_8226BE68) = {}", v);
+}
+
+// 0x8226D15C. Unlike the publish-side probe this runs every tick, so it tracks
+// host/guest continuously instead of only when someone proposes a challenge.
+void Hook_ClockAmOwner(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[clock-probe] am I the session owner = {} ({})", v,
+                      v ? "SERVER clock" : "CLIENT clock, must resolve the host");
+}
+
+// 0x8226D1C0: r31 = *(sessionRec + 0x2E04), the owner's peer record. 0 here
+// means nobody has been recorded as the owner (sub_82297B68 never matched the
+// host's XNADDR), so a guest can never start its clock.
+void Hook_ClockOwnerRecord(PPCRegister& r31) {
+    static uint32_t last = 0xFFFFFFFFu;
+    uint32_t v = static_cast<uint32_t>(r31.u64);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[clock-probe] owner peer record (+0x2E04) = 0x{:08X}", v);
+}
+
+// 0x8226D1FC: r3 = sub_82482560(session, ownerPeerId, &out) - resolve the owner
+// to a sendable address.
+void Hook_ClockResolveOwner(PPCRegister& r3) {
+    static int last = -1;
+    int v = static_cast<int>(r3.u64 & 0xFF);
+    if (v == last) return;
+    last = v;
+    LARECOMP_APP_INFO("[clock-probe] resolve owner address (sub_82482560) = {}", v);
+}
+
+// 0x8226D21C: about to call sub_82294BB8(clock, msgId, mode, addr, channel).
+void Hook_ClockStarting(PPCRegister& r5, PPCRegister& r7) {
+    static uint32_t last = 0xFFFFFFFFu;
+    uint32_t mode = static_cast<uint32_t>(r5.u64);
+    if (mode == last) return;
+    last = mode;
+    LARECOMP_APP_INFO("[clock-probe] STARTING clock mode={} ({}) channel={}", mode,
+                      mode == 1 ? "SERVER" : "CLIENT", static_cast<uint32_t>(r7.u64));
+}
+
+// 0x8227B79C, inside sub_8227B770: r3 = sub_8227E750(). This is the fork the
+// challenge takes when the player hits "Propose a Challenge":
+//   1 -> publish the group-0 broadcast right here (sub_822837B8)
+//   0 -> send a request to the owner instead, who republishes
+// r29 carries the a4 argument, which picks which of the two guest message
+// shapes is used (sub_8227B070 vs sub_8227B0E8).
+void Hook_ChallengeProposeRoute(PPCRegister& r3, PPCRegister& r29) {
+    int owner = static_cast<int>(r3.u64 & 0xFF);
+    LARECOMP_APP_INFO("[challenge-probe] propose route: owner={} -> {} (a4=0x{:08X})", owner,
+                      owner ? "publish locally" : "message the owner",
+                      static_cast<uint32_t>(r29.u64));
+}
+
 // 0x82282EA8: the fallback taken whenever one of the three gates above fails -
 // sub_8268EE10(*mgr, 20, 3, -1) instead of the popup.
 void Hook_PromptDropped() {
@@ -421,4 +506,10 @@ void Hook_PromptFlowGate(PPCRegister& r3) {}
 void Hook_PromptTableGate(PPCRegister& r3, PPCRegister& r25) {}
 void Hook_PromptRaised() {}
 void Hook_PromptDropped() {}
+void Hook_ClockSessionReady(PPCRegister& r3) {}
+void Hook_ClockAmOwner(PPCRegister& r3) {}
+void Hook_ClockOwnerRecord(PPCRegister& r31) {}
+void Hook_ClockResolveOwner(PPCRegister& r3) {}
+void Hook_ClockStarting(PPCRegister& r5, PPCRegister& r7) {}
+void Hook_ChallengeProposeRoute(PPCRegister& r3, PPCRegister& r29) {}
 #endif // REXGLUE_HAS_XEO3_TARGET
