@@ -260,6 +260,9 @@ REXCVAR_DEFINE_BOOL(
     "nessas superficies, por isso o default e off.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_gamma_ramp, true, "MCLA/NativeGfx",
+                    "Apply the guest display gamma ramp at present, which is what the "
+                    "emulated path does as the DC_LUT and the no-CP path never did.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, true, "MCLA/NativeGfx",
                     "Apply the fetch constant's 12-bit swizzle to the SRV's "
                     "Shader4ComponentMapping instead of the D3D12 default. The two encodings "

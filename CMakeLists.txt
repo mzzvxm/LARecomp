@@ -116,6 +116,7 @@ set(LARECOMP_SOURCES
     src/native_gfx/d3d12/topology_expand.cpp
     src/native_gfx/d3d12/blit_pass.cpp
     src/native_gfx/d3d12/fxaa_pass.cpp
+    src/native_gfx/d3d12/gamma_pass.cpp
     src/native_gfx/d3d12/tonemap_pass.cpp
     src/native_gfx/d3d12/d3d12_smoke_triangle.cpp
 

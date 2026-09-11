@@ -45,6 +45,7 @@
 #include <rex/runtime.h>
 
 #include "fxaa_pass.h"
+#include "gamma_pass.h"
 #include "tonemap_pass.h"
 #include "topology_expand.h"
 #include "blit_pass.h"
@@ -72,6 +73,13 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_fxaa, false, "MCLA/NativeGfx",
 
 // TEMP DIAG helper for the rim probe: IEEE half -> float. first_draw.cpp has one
 // but it is not exported, and this is scaffolding that leaves with the probe.
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_fxaa_dump, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: write this many pre/post TGA pairs of the FXAA pass "
+                      "(native_gfx_fxaa_pre_N.tga / _post_N.tga). Both come from the same "
+                      "frame and the same submission, so the difference between them is the "
+                      "filter and nothing else.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_threshold, 0.125, "MCLA/NativeGfx",
                       "FXAA edge threshold: the minimum local luma contrast, as a fraction of "
                       "the brighter luma, before a pixel is filtered at all. Lower catches "
@@ -120,6 +128,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_reclear);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_msaa);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
+REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
 REXCVAR_DECLARE(bool, mcla_native_gfx_half_pixel);
 REXCVAR_DECLARE(bool, mcla_native_gfx_swapped_texcoords);
 
@@ -2941,6 +2950,7 @@ constexpr uint32_t kOwnedDisplayCount = 3;
 OwnedDisplayBuffer g_owned_display[kOwnedDisplayCount];
 uint32_t g_owned_display_index = 0;
 TonemapPass g_tonemap;
+GammaPass g_gamma;
 FxaaPass g_fxaa;
 // FXAA writes here and the ramp/copy below reads it instead of the pooled
 // composite. One buffer, not a ring: unlike g_owned_display this is never
@@ -3125,8 +3135,11 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   const bool tonemap = want_tonemap && g_tonemap.initialized();
   const DXGI_FORMAT slot_format =
       tonemap ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT(display->key.rt_format);
+  // The ramp is a compute pass, so the slot it writes has to carry a UAV even
+  // on the plain-copy path.
+  const bool want_ramp = !tonemap && REXCVAR_GET(mcla_native_gfx_gamma_ramp);
   if (!EnsureOwnedDisplay(context.device(), slot, display->key.width, display->key.height,
-                          slot_format, tonemap)) {
+                          slot_format, tonemap || want_ramp)) {
     return false;
   }
   ID3D12GraphicsCommandList* cl = context.BeginFrame();
@@ -3254,7 +3267,49 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     if (pre_count) {
       cl->ResourceBarrier(pre_count, pre);
     }
-    cl->CopyResource(slot.tex.Get(), display->color.Get());
+    // The guest's display gamma ramp goes on here, which is where the
+    // emulated path applies it (the command processor's present, as the
+    // DC_LUT). Without it every dark tone presents lifted: measured on the
+    // night canopy, 58% of the emulated's pixels sit below 0.01 and ours had
+    // 0.7%. The ramp is plain guest memory, so this needs no command
+    // processor -- see gamma_pass.h. Falls back to the plain copy while the
+    // title has not built the table yet, and whenever the cvar is off.
+    bool ramped = false;
+    if (REXCVAR_GET(mcla_native_gfx_gamma_ramp) && slot.uav) {
+      if (!g_gamma.initialized()) {
+        g_gamma.Initialize(context);
+      }
+      const uint8_t* guest_base = rex::Runtime::instance()
+                                     ? rex::Runtime::instance()->virtual_membase()
+                                     : nullptr;
+      if (g_gamma.initialized() && g_gamma.UpdateRamp(context, cl, guest_base)) {
+        // The compute pass wants the source readable and the slot writable,
+        // which is not the COPY_SOURCE/COPY_DEST pair set up above.
+        D3D12_RESOURCE_BARRIER swap[2] = {};
+        swap[0].Transition.pResource = src_tex;
+        swap[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        swap[0].Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        swap[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        swap[1].Transition.pResource = slot.tex.Get();
+        swap[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        swap[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        swap[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(2, swap);
+        g_gamma.Record(context, cl, src_tex, src_fmt, slot.tex.Get(), display->key.width,
+                       display->key.height);
+        D3D12_RESOURCE_BARRIER back = {};
+        back.Transition.pResource = slot.tex.Get();
+        back.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        back.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        back.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &back);
+        *src_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        ramped = true;
+      }
+    }
+    if (!ramped) {
+      cl->CopyResource(slot.tex.Get(), src_tex);
+    }
     // Owned slot -> readable for the compute blit.
     D3D12_RESOURCE_BARRIER post = {};
     post.Transition.pResource = slot.tex.Get();
@@ -3266,7 +3321,38 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     slot.state = kReadable;
     // The pooled composite is left in COPY_SOURCE; the pool restores it to
     // RENDER_TARGET on its next PrepareForRendering, which reads color_state.
-    display->color_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    if (!ramped) {
+      *src_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    }
+    {  // TEMP DIAG (FXAADUMP): the composite and its FXAA output, SAME frame.
+      // Same frame matters: comparing two runs, or two frames, mixes the
+      // filter's effect with whatever the scene animated in between.
+      // Frame gate, learned the hard way: the first frames that publish a
+      // display still have nothing streamed in -- black silhouettes, no
+      // textures -- so a pair taken there measures a scene that never reaches
+      // the player. Wait for a settled frame, then every 900.
+      static uint32_t frames = 0;
+      static uint32_t taken = 0;
+      ++frames;
+      const bool settled = frames >= 300u && (frames % 300u) == 0u;
+      if (want_fxaa && src_is_fxaa && settled &&
+          taken < REXCVAR_GET(mcla_native_gfx_fxaa_dump)) {
+        char pre_path[64], post_path[64];
+        std::snprintf(pre_path, sizeof(pre_path), "native_gfx_fxaa_pre_%u.tga", taken);
+        std::snprintf(post_path, sizeof(post_path), "native_gfx_fxaa_post_%u.tga", taken);
+        ++taken;
+        RenderTarget fx_tmp;
+        fx_tmp.color = g_fxaa_buffer.tex;
+        fx_tmp.color_state = g_fxaa_buffer.state;
+        fx_tmp.key.width = display->key.width;
+        fx_tmp.key.height = display->key.height;
+        fx_tmp.key.rt_format = uint32_t(slot_format);
+        fx_tmp.key.sample_count = 1;
+        ReadbackTargetToTga(context, context.device(), *display, pre_path, "fxaa pre");
+        ReadbackTargetToTga(context, context.device(), fx_tmp, post_path, "fxaa post");
+        g_fxaa_buffer.state = fx_tmp.color_state;
+      }
+    }
   }
   // With d3d12_debug on, drain the shared device's debug-layer queue every
   // frame. The continuous-mode crash is a device removal (FatalError 0xC0000409
