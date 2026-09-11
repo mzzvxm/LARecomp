@@ -16,9 +16,13 @@
 #include <dbghelp.h>
 #include <spdlog/spdlog.h>
 
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
+#include <string>
 
 #pragma comment(lib, "dbghelp.lib")
 
@@ -139,6 +143,76 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+namespace {
+
+void FlushLogs() {
+    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
+        if (logger) logger->flush();
+    });
+}
+
+// Stack trace for deaths that carry no EXCEPTION_POINTERS: std::terminate,
+// abort(), a CRT invalid parameter, a pure virtual call. SetUnhandledException
+// Filter never sees these - the process is gone before any exception is raised,
+// which is what "it crashed and left no log" looks like.
+void LogCurrentStack(const char* reason, const char* detail = nullptr) {
+    std::lock_guard<std::mutex> lock(g_sym_mtx);
+    LARECOMP_CRASH_ERROR("!!! ABORT DETECTED !!! ({})", reason);
+    if (detail && *detail) {
+        LARECOMP_CRASH_ERROR("Detalhe: {}", detail);
+    }
+    LARECOMP_CRASH_ERROR("Stack trace:");
+    void* frames[48] = {};
+    const USHORT captured = RtlCaptureStackBackTrace(0, 48, frames, nullptr);
+    for (USHORT i = 0; i < captured; ++i) {
+        char lbl[8];
+        std::snprintf(lbl, sizeof(lbl), "#%02d", int(i));
+        LogAddr(lbl, reinterpret_cast<DWORD64>(frames[i]));
+    }
+    FlushLogs();
+}
+
+void OnTerminate() {
+    std::string detail;
+    // An uncaught C++ exception is the usual reason terminate runs; recover its
+    // message by rethrowing inside the handler, which is legal here.
+    if (std::current_exception()) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& e) {
+            detail = std::string("uncaught std::exception: ") + e.what();
+        } catch (...) {
+            detail = "uncaught non-std exception";
+        }
+    }
+    LogCurrentStack("std::terminate", detail.c_str());
+    // Exit without running the default terminate handler, which would abort
+    // into Windows Error Reporting and can hang on a machine with no debugger.
+    std::_Exit(3);
+}
+
+void OnAbortSignal(int) {
+    LogCurrentStack("abort()");
+    std::_Exit(3);
+}
+
+void OnInvalidParameter(const wchar_t* expression, const wchar_t* function, const wchar_t* file,
+                        unsigned int line, uintptr_t) {
+    char detail[512];
+    std::snprintf(detail, sizeof(detail), "%ls in %ls (%ls:%u)",
+                  expression ? expression : L"<no expression>", function ? function : L"<unknown>",
+                  file ? file : L"<no file>", line);
+    LogCurrentStack("CRT invalid parameter", detail);
+    std::_Exit(3);
+}
+
+void OnPureCall() {
+    LogCurrentStack("pure virtual call");
+    std::_Exit(3);
+}
+
+}  // namespace
+
 void InstallCrashLogger() {
     static bool installed = false;
     if (installed) return;
@@ -148,6 +222,24 @@ void InstallCrashLogger() {
     SymInitialize(GetCurrentProcess(), nullptr, TRUE);
 
     SetUnhandledExceptionFilter(&CrashHandler);
+
+    // The paths above kill the process without ever raising an exception, so
+    // without these the log just stops mid-line with no reason recorded.
+    std::set_terminate(&OnTerminate);
+    std::signal(SIGABRT, &OnAbortSignal);
+    // Keep abort() on the signal path instead of letting the CRT fast-fail
+    // straight into Windows Error Reporting, and drop the modal abort message.
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    _set_invalid_parameter_handler(&OnInvalidParameter);
+    _set_purecall_handler(&OnPureCall);
+
+    // Separates "the process crashed" from "the process exited on purpose":
+    // std::_Exit (used by the shutdown paths) skips this, a normal exit does
+    // not, and a crash reaches neither.
+    std::atexit([]() {
+        LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
+        FlushLogs();
+    });
 }
 
 std::filesystem::path ExeDir() {
