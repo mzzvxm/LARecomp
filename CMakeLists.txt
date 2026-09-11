@@ -114,6 +114,7 @@ set(LARECOMP_SOURCES
     src/native_gfx/d3d12/tonemap_pass.cpp
     src/native_gfx/d3d12/d3d12_smoke_triangle.cpp
 
+    src/discord_rpc/rpc_client.cpp
     src/discord_rpc/discord_rpc.cpp
     src/discord_rpc/discord_hooks.cpp
 

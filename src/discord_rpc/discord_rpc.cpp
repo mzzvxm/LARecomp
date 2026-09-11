@@ -6,26 +6,16 @@
 #include <string>
 
 #include <rex/cvar.h>
-#include <rex/discord_rpc.h>
-#include <rex/system/flags.h>  // user_language cvar (game language)
+#include "discord_rpc/rpc_client.h"
 
 // -----------------------------------------------------------------------------
 // Notes
 // -----------------------------------------------------------------------------
 //
-// This module assumes your ReXGlue SDK has the Discord RPC PR API:
-//
-//   rex::discord_rpc::Presence
-//   rex::discord_rpc::Start(application_id, presence)
-//   rex::discord_rpc::SetDetails(text)
-//   rex::discord_rpc::SetState(text)
-//   rex::discord_rpc::Stop()
-//
-// If your local copy of the PR uses slightly different names, keep this module
-// and only adapt the calls inside:
-//   LARECOMP_Discord_Init()
-//   LARECOMP_Discord_Shutdown()
-//   LARECOMP_Discord_SetStateText()
+// The IPC client lives in rpc_client.cpp, vendored from the ReXGlue SDK so this
+// builds against the stock SDK (which has no rex/discord_rpc.h). Everything
+// below is the game-side mapping: which state the game is in, and how it reads
+// in each language.
 //
 // -----------------------------------------------------------------------------
 
@@ -103,11 +93,14 @@ const char* RpcTr(RpcStr key) {
   } else if (sel == "en") {
     lang = EN;
   } else {
-    // auto: follow the game language (user_language). English + anything not
-    // translated yet falls back to English.
-    std::string game = REXCVAR_GET(user_language);
-    if (game == "Portuguese") lang = PT;
-    else if (game == "Spanish") lang = ES;
+    // auto: follow the game language. Read through the registry rather than
+    // REXCVAR_GET because user_language is a uint32_t on the stock SDK and a
+    // std::string on our fork; GetFlagByName gives text either way, so accept
+    // the name as well as the raw Xbox language id (5 = Spanish, 9 =
+    // Portuguese). Anything not translated yet falls back to English.
+    const std::string game = rex::cvar::GetFlagByName("user_language");
+    if (game == "Portuguese" || game == "9") lang = PT;
+    else if (game == "Spanish" || game == "5") lang = ES;
     else lang = EN;
   }
 
@@ -180,14 +173,14 @@ void LARECOMP_Discord_Init() {
     return;
   }
 
-  rex::discord_rpc::Presence rpc;
+  larecomp::discord_rpc::Presence rpc;
 
   rpc.details_ = "";
   rpc.state_ = "";
   rpc.large_image_key_ = REXCVAR_GET(larecomp_discord_large_image);
   rpc.large_image_text_ = "LARecomp";
 
-  rex::discord_rpc::Start(kDiscordApplicationId, rpc);
+  larecomp::discord_rpc::Start(kDiscordApplicationId, rpc);
 
   g_rpc_started.store(true);
   g_current_state = LarecompDiscordState::Boot;
@@ -203,7 +196,7 @@ void LARECOMP_Discord_Shutdown() {
   }
 
   // If your SDK copy does not expose Stop(), comment this line.
-  rex::discord_rpc::Stop();
+  larecomp::discord_rpc::Stop();
 
   g_rpc_started.store(false);
 }
@@ -235,8 +228,8 @@ void LARECOMP_Discord_SetStateText(LarecompDiscordState state,
   g_current_details = new_details;
   g_current_state_text = new_state_text;
 
-  rex::discord_rpc::SetDetails(g_current_details);
-  rex::discord_rpc::SetState(g_current_state_text);
+  larecomp::discord_rpc::SetDetails(g_current_details);
+  larecomp::discord_rpc::SetState(g_current_state_text);
 
   LogStateChange(g_current_details, g_current_state_text);
 }
