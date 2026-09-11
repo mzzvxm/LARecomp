@@ -32,6 +32,7 @@
 #include "d3d12/first_draw.h"
 #include "d3d12/frame_capture.h"
 #include "d3d12/memory_census.h"
+#include "guest/occlusion.h"
 #include "guest/render_state.h"
 #include "guest/texture_ownership.h"
 #include "guest/vblank_probe.h"
