@@ -57,6 +57,11 @@
 #include <rex/cvar.h>
 #include <rex/ppc/context.h>
 #include <rex/runtime.h>
+#include <rex/system/xmemory.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include <array>
 #include <chrono>
@@ -81,6 +86,19 @@ REXCVAR_DEFINE_BOOL(menu_cam_lock, false, "MCLA/Menu Camera",
     "game picks (setMenuCam plus its own visibility probes) and menu_cam_slot is "
     "ignored; on = menu_cam_slot every time. This is the on/off switch — the "
     "slot number by itself never locks anything.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_exposure_log, 0, "MCLA/NativeGfx",
+    "TEMP DIAG: log the guest auto-exposure value this many times, one sample every "
+    "120 front-end camera updates. Runs on a GUEST hook, so it works with the native "
+    "runtime on OR off -- which is the point: the native path renders menu camera 53 "
+    "a uniform 1.8x brighter than the emulated one, and the emulated exposure has "
+    "never been read.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_exposure_log_addr, 0x02D6C000, "MCLA/NativeGfx",
+    "TEMP DIAG: physical guest address mcla_exposure_log reads (the 1x1 luminance "
+    "target).")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(menu_cam_slot, 0, "MCLA/Menu Camera",
@@ -638,7 +656,80 @@ bool Hook_MenuCameraPick(PPCRegister& r3) {
 // Writing the source slots here beats hooking any single producer, which is what
 // the two earlier attempts got wrong: the boot menu does not take the
 // mcUILogic::UpdateCamera branch.
+// TEMP DIAG: the game's auto-exposure value, read from GUEST memory.
+//
+// Lives here because this hook runs on the guest camera path, so it ticks in the
+// NATIVE and the EMULATED runtime alike -- the graphics-side probe
+// (mcla_native_gfx_exposure_probe) only exists when mcla_native_gfx is on, and
+// the whole question is what the emulated path computes.
+//
+// Why the question: on menu camera 53 the native frame is a uniform ~1.8x
+// brighter than the emulated one and then clips (11.61% of the frame at 255
+// against 2.63%). The ratio holds from the shadows through the midtones and only
+// falls where the native saturates, which is a multiply, not a gamma. If the
+// post-process divides by the average luminance, the native's measured 0.117
+// predicts ~0.21 on the emulated side.
+//
+// The address is PHYSICAL and reachable through three virtual aliases, each with
+// its own page table, and an uncommitted page is a hard fault -- the first
+// version of this probe read TranslatePhysical's pointer blind and crashed the
+// game inside this hook. Every candidate is checked with VirtualQuery before it
+// is touched.
+static bool HostRangeCommitted(const void* p, size_t n) {
+#if defined(_WIN32)
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!p || VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return false;
+    const uintptr_t end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    return reinterpret_cast<uintptr_t>(p) + n <= end;
+#else
+    return p != nullptr;
+#endif
+}
+
+static void LogExposureSample() {
+    const uint32_t want = REXCVAR_GET(mcla_exposure_log);
+    if (!want) return;
+    static uint32_t taken = 0;
+    static uint32_t tick = 0;
+    if (taken >= want || (++tick % 120u) != 0u) return;
+    auto* runtime = rex::Runtime::instance();
+    if (!runtime) return;
+    auto* base = runtime->virtual_membase();
+    if (!base) return;
+    const uint32_t phys = static_cast<uint32_t>(REXCVAR_GET(mcla_exposure_log_addr)) & 0x1FFFFFFFu;
+    static constexpr uint32_t kAliases[] = {0xE0000000u, 0xC0000000u, 0xA0000000u};
+    for (uint32_t alias : kAliases) {
+        const uint8_t* p = base + (alias | phys);
+        if (!HostRangeCommitted(p, 4)) continue;
+        uint32_t le = 0;
+        std::memcpy(&le, p, 4);
+        const uint32_t be = __builtin_bswap32(le);
+        float fle = 0.0f, fbe = 0.0f;
+        std::memcpy(&fle, &le, 4);
+        std::memcpy(&fbe, &be, 4);
+        ++taken;
+        if (FILE* f = std::fopen("exposure_log.txt", "ab")) {
+            // Both endian readings on purpose: the native number is already known
+            // (0.1172), so whichever column matches identifies the right one, and
+            // the same column is then read for the emulated run.
+            std::fprintf(f, "EXPO alias=%08X phys=%08X raw=%08X le=%.6f be=%.6f\n",
+                         alias, phys, le, fle, fbe);
+            std::fflush(f);
+            std::fclose(f);
+        }
+        return;
+    }
+    ++taken;
+    if (FILE* f = std::fopen("exposure_log.txt", "ab")) {
+        std::fprintf(f, "EXPO phys=%08X sem alias commitado\n", phys);
+        std::fclose(f);
+    }
+}
+
 void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
+    LogExposureSample();
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     uint32_t sp = static_cast<uint32_t>(r1.u64);
