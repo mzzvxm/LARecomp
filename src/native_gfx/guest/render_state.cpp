@@ -42,6 +42,7 @@ GuestRenderState ReadRenderState(const uint8_t* base, uint32_t dev) {
 
   s.msaa_samples = (s.surface_info >> 16) & 0x3u;
   s.color_format = (s.color_info >> 16) & 0xFu;
+  s.color_exp_bias = ColorExpBiasFromColorInfo(s.color_info);
   s.depth_format = (s.depth_info >> 16) & 0x1u;
 
   s.stencil_enable = (s.depth_control & 0x1u) != 0;
@@ -179,6 +180,13 @@ float AlphaTestThreshold(const GuestRenderState& s) {
     default:
       return 0.0f;
   }
+}
+
+int32_t ReadColorExpBias(const uint8_t* base, uint32_t dev) {
+  if (!base) {
+    return 0;
+  }
+  return ColorExpBiasFromColorInfo(R32(base, dev + kDevRegColorInfo));
 }
 
 uint32_t ColorRenderTargetFormatToDxgi(uint32_t color_format) {

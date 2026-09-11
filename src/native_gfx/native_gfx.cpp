@@ -86,6 +86,10 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_auxstage, 0, "MCLA/NativeGfx",
                       "A single auxiliary draw hangs the GPU, so this bisects which "
                       "stage does it: resource creation, binding, or the draw itself.");
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
+                    "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
+                    "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
+                    "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_dumprt, false, "MCLA/NativeGfx",
                     "Diagnostic: write every large resolve destination to a .tga at the end "
                     "of the capture. Counting a fetch as resolved only proves a resource was "
@@ -119,6 +123,29 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, false, "MCLA/NativeGfx",
                     "8-in-32 endian swap already puts the channels in host order for at least "
                     "some of them and the swizzle is then applied twice. OFF until a per-format "
                     "host swizzle (the piece Xenia composes with the guest one) is worked out.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_color_exp_bias, true, "MCLA/NativeGfx",
+    "Fold the bound render target's colour exponent bias back into "
+    "gInvColorExpBias (constant register c27.x) on upload, for both shader "
+    "banks. The bias is read from RB_COLOR_INFO in the device's register "
+    "shadow, so this needs no command processor, no PM4 and no EDRAM. "
+    "Xenos biases a render target's colour exponent to keep precision in EDRAM's "
+    "fixed-point formats; the game uploads the reciprocal and its shaders "
+    "pre-divide, because the output merger multiplies it back on write. A D3D12 "
+    "R16G16B16A16_FLOAT target applies no such bias, so the division survives and "
+    "nothing undoes it. Measured on the car body: gInvColorExpBias.x = 0.0625, "
+    "exactly 1/16, with gLightAmbient.w = 1.0, so PS_CarPaint's "
+    "oC0.w = gInvColorExpBias.x * gLightAmbient.w hands the blend 0.0625 -- pixel "
+    "history confirms it -- and the paint blends SrcAlpha/InvSrcAlpha, painting "
+    "the body at six percent opacity. 178 shaders read this constant, 12 of them "
+    "straight into oC0.w. Positionally safe: c27 is gInvColorExpBias in all 165 "
+    "shaders that declare it and nothing else ever occupies c27, and only .x is "
+    "ever read. A target the game gave no bias is left untouched, and a bias "
+    "that changes between targets within a frame stays correct because the "
+    "register is read per draw rather than assumed. "
+    "Turn off to get the pre-fix behaviour back while bisecting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, false, "MCLA/NativeGfx",

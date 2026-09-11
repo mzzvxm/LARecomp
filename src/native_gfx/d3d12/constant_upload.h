@@ -59,4 +59,23 @@ struct SharedConstantValues {
 bool UploadConstants(D3D12Context& context, const void* vs_bank, const void* ps_bank,
                      const SharedConstantValues& shared, ConstantBindings& out);
 
+// Folds the bound render target's colour exponent bias back into the constant
+// bank's gInvColorExpBias, in place. Call it on each bank right after reading it
+// from the guest, before the bank is uploaded or mirrored, so every consumer
+// sees the same bytes.
+//
+// Xenos biases a render target's colour exponent for precision in EDRAM's
+// fixed-point formats: the output merger scales by 2^bias on write, the resolve
+// undoes it, and the game uploads 2^-bias so its shaders can pre-divide. A D3D12
+// float target does neither, so the shader's division survives with nothing to
+// undo it -- measured as gInvColorExpBias.x = 0.0625 against a bias of 4,
+// leaving the car body at six percent alpha.
+//
+// The bias comes from RB_COLOR_INFO in the device's own register shadow, so
+// this needs no command processor, no PM4 parsing and no EDRAM emulation, and
+// it stays right when the bias differs between targets in a frame. A target
+// with no bias is left untouched. Gated by
+// mcla_native_gfx_color_exp_bias.
+void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev);
+
 }  // namespace mcla::native_gfx

@@ -31,6 +31,23 @@ namespace mcla::native_gfx {
 inline constexpr uint32_t kDevRegSurfaceInfo = 10368;   // RB_SURFACE_INFO   0x2000
 inline constexpr uint32_t kDevRegColorInfo = 10372;     // RB_COLOR_INFO     0x2001
 inline constexpr uint32_t kDevRegDepthInfo = 10376;     // RB_DEPTH_INFO     0x2002
+// RB_COLOR_INFO bits 20..25 are the render target's colour exponent bias, and
+// the field is SIGNED, so a negative bias must sign-extend rather than read as
+// a large positive. The bias exists because EDRAM's colour formats are fixed
+// point: the output merger scales a shader's result by 2^bias on write and the
+// resolve undoes it, which buys precision without a wider format. The game
+// therefore uploads 2^-bias to its shaders (gInvColorExpBias) so they can
+// pre-divide. Nothing in a D3D12 float render target does either half, so the
+// runtime has to fold the scale back in -- see ApplyColorExpBias.
+inline constexpr int32_t ColorExpBiasFromColorInfo(uint32_t color_info) {
+  const uint32_t field = (color_info >> 20) & 0x3Fu;
+  return int32_t(field << 26) >> 26;
+}
+
+// The bound target's bias on its own, for callers that need it without reading
+// the whole render state. Kept here so there is one implementation of the guest
+// read rather than a second copy beside the constant upload.
+int32_t ReadColorExpBias(const uint8_t* base, uint32_t dev);
 // PA_SC_SCREEN_SCISSOR_TL / _BR (0x200E / 0x200F) live in the SAME shadow block
 // as RB_SURFACE_INFO, which spans 0x2000..0x2012 at dev+10368, so unlike
 // PA_SC_WINDOW_SCISSOR (0x2081, in a block the draw builder never flushes) they
@@ -103,6 +120,7 @@ struct GuestRenderState {
   // --- decoded
   uint32_t msaa_samples = 0;          // RB_SURFACE_INFO +16, 0 = 1x
   uint32_t color_format = 0;          // xenos::ColorRenderTargetFormat
+  int32_t color_exp_bias = 0;         // RB_COLOR_INFO bits 20..25, signed
   uint32_t depth_format = 0;          // xenos::DepthRenderTargetFormat
   bool depth_enable = false;
   bool depth_write = false;
