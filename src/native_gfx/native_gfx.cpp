@@ -169,7 +169,7 @@ REXCVAR_DEFINE_BOOL(
     "Turn off to get the pre-fix behaviour back while bisecting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
                     "Feed SharedConstants.g_AlphaThreshold from RB_ALPHA_REF and RB_COLORCONTROL "
                     "instead of the fixed 0.5 the bring-up used. The ALPHA lines the diagnostic "
                     "asked for came back, and they settle it: every (func, ref) pair MCLA uses is "

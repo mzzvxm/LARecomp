@@ -1483,27 +1483,13 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   if (REXCVAR_GET(mcla_native_gfx_swapped_texcoords)) {
     shared_values.swapped_texcoords = bound.swapped_texcoords;
   }
-  // TEMP DIAG (remove once the alpha test is settled): every distinct
-  // (RB_COLORCONTROL, RB_ALPHA_REF) pair, once each. The register-driven
-  // threshold is right on paper and wrong on screen -- alpha-tested foliage
-  // stops cutting out with it on -- and this names the (func, ref) pairs the
-  // game actually uses, which is the one thing the .rdc could not show.
-  if (rs.alpha_test_enable) {
-    static std::set<uint64_t> seen_alpha;
-    uint32_t ref_bits;
-    std::memcpy(&ref_bits, &rs.alpha_ref, 4);
-    const uint64_t id = (uint64_t(rs.color_control) << 32) | ref_bits;
-    if (seen_alpha.insert(id).second) {
-      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
-        std::fprintf(f, "ALPHA colorctl=0x%08X func=%u ref=%.6f (bits 0x%08X) chosen=%.6f\n",
-                     rs.color_control, rs.alpha_func, double(rs.alpha_ref), ref_bits,
-                     double(AlphaTestThreshold(rs)));
-        std::fflush(f);
-        std::fclose(f);
-      }
-    }
-  }
-  // The bring-up's fixed 0.5 stays the default: see mcla_native_gfx_alpha_ref.
+  // The register-driven threshold is the default. It reads RB_ALPHA_REF and
+  // steps to the next representable float above it, because the guest compares
+  // with > and the shader clips with >=. That step has to skip the denormals:
+  // the game does use a ref of zero, and next-above-zero is 1.4e-45, which the
+  // shader's flush-to-zero turns back into 0 and nothing gets clipped -- that
+  // was the green squares on tree foliage. mcla_native_gfx_alpha_ref off falls
+  // back to the bring-up's fixed 0.5, which made alpha-tested cars invisible.
   shared_values.alpha_threshold = REXCVAR_GET(mcla_native_gfx_alpha_ref)
                                       ? AlphaTestThreshold(rs)
                                       : (rs.alpha_test_enable ? 0.5f : 0.0f);

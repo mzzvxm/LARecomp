@@ -159,6 +159,24 @@ float AlphaTestThreshold(const GuestRenderState& s) {
     }
     float out;
     std::memcpy(&out, &bits, 4);
+    // One ULP above zero is a DENORMAL, and a denormal is not a usable
+    // threshold: the shader's `clip(alpha - t)` runs with denormals flushed to
+    // zero, so t becomes 0 and the test stops rejecting anything at all --
+    // including alpha exactly 0. Step up to the smallest NORMAL float, which
+    // still excludes only alpha == 0 and survives the flush.
+    //
+    // Measured on foliage: the game draws leaves with (func=kGreater, ref=0.0)
+    // -- RB_ALPHA_REF really is 0x00000000 -- so this path decided every leaf
+    // card. The leaf texture has 58% of its texels at alpha 0, yet the cards
+    // came out 100% filled, which is only possible if nothing was discarded.
+    // Forcing the bring-up's fixed 0.5 made the palms cut out correctly, which
+    // is what pointed here.
+    constexpr float kSmallestNormal = 1.17549435e-38f;
+    if (out > 0.0f && out < kSmallestNormal) {
+      out = kSmallestNormal;
+    } else if (out < 0.0f && out > -kSmallestNormal) {
+      out = -kSmallestNormal;
+    }
     return out;
   };
   switch (s.alpha_func) {
