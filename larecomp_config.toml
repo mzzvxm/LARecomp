@@ -26171,3 +26171,116 @@ name = "MCLA_MapCursorSweepNullGuard"
 registers = ["r31", "r30", "r26"]
 jump_address_on_true = 0x826253F4
 
+# Gameplay camera: anchor the probe on a function that provably runs.
+#
+# Two earlier attempts were aimed at what looked like the gameplay camera and
+# neither fired once, though both were emitted into generated/ and verified
+# there: sub_82320298 ("mcPlayerCamera::Update", whose only cross-reference is
+# a vtable slot at 0x8210E680) and sub_82316148 (the camera preset switcher).
+# The whole 0x8231xxxx camera family appears to be dead in this build.
+#
+# Worth knowing separately: the two camera-smoothing hooks that already live
+# inside sub_82320298 -- MCLACameraPosSmoothing @0x82320468 and
+# MCLACameraLookAtSmoothing @0x823204F4 -- are in exactly the same position and
+# have therefore probably never done anything. Re-check before trusting them.
+#
+# sub_822C0320 is the camera system tick, and it certainly executes: it is
+# where Patch_DebugCamGate (0x822C0644) and Patch_DebugCam (0x822C0668) live,
+# and the free-fly camera works. `mr r20, r3` at 0x822C0338 makes r20 the
+# camera system for the rest of the function.
+#
+# 0x822C0614 is loc_822C0614, the join both sides of the branch above it fall
+# into, one instruction after `mr r24, r11`. r20 is the camera system and r24
+# is the camera rig the system settled on this frame.
+[[midasm_hook]]
+address = 0x822C0614
+name = "Hook_CameraSystem"
+registers = ["r20", "r24"]
+
+# Gameplay camera: apply the free look to the finished camera matrix.
+#
+# 0x822C0970 is sub_822C0320's single epilogue -- `addi r1, r1, 0x190` before
+# the register restores -- so the camera tick has done all of its work and r20
+# is still the camera system.
+#
+# It has to be here rather than at the top of the tick. Writing the angle into
+# the camera object before the update was measured with a read-back and the
+# game had put 0.0000 back every frame regardless of what went in: the look at
+# +140 is something the camera computes from its own input, not something it
+# reads. Turning the finished matrix needs none of that state.
+[[midasm_hook]]
+address = 0x822C0970
+name = "Hook_CameraPostUpdate"
+registers = ["r20"]
+
+# Gameplay camera: the earlier of the two free-look apply sites.
+#
+# 0x822C0790 sits in the gameplay path of sub_822C0320 (the branch through
+# loc_822C076C), immediately before the `bl sub_8220AA68` at 0x822C07A4 that is
+# handed five stack out-params. That call comes right after the camera update
+# and has the shape of whatever reads the finished camera out, which makes it
+# the best candidate for the consumer that beats a write at the epilogue.
+#
+# r20 is the camera system throughout the function; it is callee-saved and set
+# by `mr r20, r3` in the prologue.
+#
+# Which of the two sites actually applies is chosen at runtime by
+# cam_look_phase, so this and Hook_CameraPostUpdate are both always emitted.
+[[midasm_hook]]
+address = 0x822C0790
+name = "Hook_CameraPrePublish"
+registers = ["r20"]
+
+# Gameplay camera: turn the view, on the matrix that is actually the view.
+#
+# sub_8220AA68 receives the frame's camera matrix in r4 and `mr r30, r4` at
+# 0x8220AA84 parks it in r30. 0x8220AA88 is the next instruction, before any of
+# it has been read.
+#
+# Three earlier sites all wrote to the object at camsys+0x35C, which a field
+# probe had picked out as the only thing in 25k floats whose basis rotated when
+# the player looked around. It rotates because it is a COPY: sub_823CC2E8 is a
+# setter -- `obj+96..+156 = src[0..63]; obj+160 = fov` -- fed from this very
+# matrix, for the cine director. Writing to it changed a mirror.
+#
+# From here sub_8220AA68 saves the matrix to dword_8286D804+4208, applies the
+# cutscene, spectator and shake blending, and publishes to
+# dword_8286D804+4272, unk_8286D900 and flt_8286D8FC, so a rotation applied at
+# the door composes with all of it instead of fighting any of it.
+[[midasm_hook]]
+address = 0x8220AA88
+name = "Hook_CameraMatrixPublish"
+registers = ["r30"]
+
+# Gameplay camera: turn the view BEFORE the game collides it.
+#
+# sub_8231CE30 is the shared body of the camera-state update -- mcTrackCS and
+# vehTrackCS both reach it from vtable slot 10 -- and it runs, in order:
+#
+#     sub_8231C4F8(cs)                        builds the position and the basis
+#     sub_8231B368(cs)
+#     sub_823228F0(cs)
+#     if (cs+480) sub_8231B4E0(cs, old_matrix)
+#     if (cs+464) sub_8231B740(cs, cs+64)     the camera collision
+#
+# sub_8231B740 is the collision: sphere test on the target with sub_82574CA0,
+# segment test target -> camera with sub_82574C38, both against the physics
+# world at dword_828DA464, then the camera position is rewritten as
+# `target + dir * d` with d shortened to the hit. The tune fields that drive it
+# are named in the .rdata block beside the vtable -- CollideType,
+# CollideMinDist, CollideFudge, CollideHeight.
+#
+# 0x8231CEB0 is `lwz r7, 0x1E0(r31)`, the first instruction after the
+# `bl sub_823228F0` and before either of those two passes, with r31 = the camera
+# state (`mr r31, r3` in the prologue, callee-saved). Rotating there is the
+# whole reason free look stops walking through walls: Hook_CameraMatrixPublish
+# turns the finished matrix, which is downstream of all of this.
+#
+# NOTE this is not the family that was written off as dead. sub_82320298 and
+# sub_82316148 have a single xref each and it is a .pdata entry, not a vtable
+# slot -- they really are unreachable. sub_8231CE30 has a real vtable slot at
+# 0x82044A04 and a real caller in sub_8231CF48.
+[[midasm_hook]]
+address = 0x8231CEB0
+name = "Hook_CameraStateUpdate"
+registers = ["r31"]

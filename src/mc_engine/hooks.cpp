@@ -54,6 +54,7 @@
 #include "mp3custom/mp3custom.h"
 #include "hud_units.h"
 #include "map_mouse.h"
+#include "camera_look.h"
 #include "texture_dump.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
@@ -264,6 +265,13 @@ REXCVAR_DEFINE_STRING(perf_shadow_phase_bits, "0x65E0", "MCLA/Performance",
     "(0x61E0, what the game's own 'noshadows' clears) plus the night/blend shadow phase "
     "0x400 that it misses. 0x400 alone isolates the night path.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+
+
+
+
+
+
 
 REXCVAR_DEFINE_BOOL(perf_no_race_shadows, false, "MCLA/Performance",
     "Drop the shadow pass during races only (dev switch 'noraceshadows').")
@@ -1765,6 +1773,39 @@ void InitHooks() {
         }
     );
 
+    // cam_probe_mark / cam_probe_dump: buttons — snapshot the gameplay camera
+    // and diff it, to find what the look-around actually moves. Same
+    // flip-back-off shape as the dumps below.
+    rex::cvar::RegisterChangeCallback("cam_probe_mark",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value == "true" || new_value == "1") {
+                CameraProbeMark();
+                rex::cvar::SetFlagByName("cam_probe_mark", "false");
+            }
+        }
+    );
+
+    rex::cvar::RegisterChangeCallback("cam_probe_dump",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value == "true" || new_value == "1") {
+                CameraProbeDump();
+                rex::cvar::SetFlagByName("cam_probe_dump", "false");
+            }
+        }
+    );
+
+    // The one that is actually usable: arms both samples on a timer, because
+    // opening this overlay to press a button is itself enough to take the game
+    // out of the camera state being measured.
+    rex::cvar::RegisterChangeCallback("cam_probe_run",
+        [](std::string_view name, std::string_view new_value) {
+            if (new_value == "true" || new_value == "1") {
+                CameraProbeRun();
+                rex::cvar::SetFlagByName("cam_probe_run", "false");
+            }
+        }
+    );
+
     // rubberband_dump: button — writes the 11 parsed tune entries out and flips
     // itself back off so it can be triggered again.
     rex::cvar::RegisterChangeCallback("rubberband_dump",
@@ -2295,7 +2336,6 @@ bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) {
 // and cop lights, and no vehicle physics class at all -- no SteeringLimit, TurnBias,
 // SlidingFric or OptSlipPercent. Do not spend another session looking for them here.
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
-    if (!REXCVAR_GET(tune_field_probe)) return;
     const auto* base = rex::Runtime::instance()->virtual_membase();
     const auto name_addr = static_cast<uint32_t>(r5.u64);
     if (!base || !name_addr) return;
@@ -2309,6 +2349,16 @@ void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCR
     }
     name[n] = '\0';
     if (n == 0) return;
+
+    // r6 is the address the field will live at, which is the only thing that
+    // makes a tune writable from here without hardcoding an offset into one
+    // instance of it. The camera free look listens for its own field names on
+    // the way past; this runs whether or not the diagnostic below is on,
+    // because the addresses are only announced once, at load.
+    CameraLookOnTuneField(name, static_cast<uint32_t>(r3.u64),
+                          static_cast<uint32_t>(r6.u64));
+
+    if (!REXCVAR_GET(tune_field_probe)) return;
 
     static std::set<std::string> seen;
     if (!seen.insert(name).second) return;
@@ -3104,6 +3154,7 @@ void Patch_DeltaTimePre() {
     TickCustomMusic();          // custom radio: volume + end-of-track advance
     TickHudUnits();             // hud_speed_units: mph -> km/h, live
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
+    TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
     ApplyRenderPhaseMask();       // perf_no_shadows, live

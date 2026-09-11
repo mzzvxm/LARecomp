@@ -1,6 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "pause_menu.h"
 #include "carbon_parts.h"
+#include "camera_look.h"
 #include "menu_items.h"
 #include "logging.h"
 
@@ -992,8 +993,11 @@ const MenuDef kMenus[] = {
      kPerfItems,   int(sizeof(kPerfItems)   / sizeof(kPerfItems[0]))},
     {"PM_RxTabFfx",    "FIDELITY FX",      "RxFfxMenu",
      kFfxItems,    int(sizeof(kFfxItems)    / sizeof(kFfxItems[0]))},
+    // The free-look rows come from camera_look.cpp, next to the code that
+    // reads them.
     {"PM_RxTabCam",    "DEBUG CAMERA",     "RxCamMenu",
-     kCamItems,    int(sizeof(kCamItems)    / sizeof(kCamItems[0]))},
+     kCamItems,    int(sizeof(kCamItems)    / sizeof(kCamItems[0])),
+     CameraLookMenuItems},
     {"PM_RxTabTod",    "TIME OF DAY",      "RxTodMenu",
      kTodItems,    int(sizeof(kTodItems)    / sizeof(kTodItems[0]))},
     {"PM_RxTabCarbon", "CARBON FIBER",     "RxCarbonMenu",
