@@ -53,6 +53,7 @@
 
 #include "../native_probe/mcla_gfx_probe.h"
 #include "guest/guest_constants.h"
+#include "guest/guest_fence.h"
 #include "native_gfx.h"
 #include "telemetry.h"
 
@@ -102,6 +103,9 @@ extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/1, /*is_up=*/false);
   }
   if (mcla::native_gfx::Active()) {
+    // Read-only, self-throttled, stops after a handful of lines. Proves the
+    // fence offsets before the resource handover is built on them.
+    mcla::native_gfx::ProbeFenceState(base, dev);
     mcla::native_gfx::NoteGuestDraw(0);
     mcla::native_gfx::TelemetryRecordDraw(base, dev, prim, count, /*indexed=*/true);
     mcla::native_gfx::TelemetryRecordGeometry(base, dev, prim, count, start_index,

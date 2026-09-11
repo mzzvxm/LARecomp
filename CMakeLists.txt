@@ -80,6 +80,7 @@ set(LARECOMP_SOURCES
     src/native_gfx/hooks.cpp
     src/native_gfx/telemetry.cpp
     src/native_gfx/geometry.cpp
+    src/native_gfx/guest/guest_fence.cpp
     src/native_gfx/guest/guest_constants.cpp
     src/native_gfx/guest/render_state.cpp
     src/native_gfx/guest/sampler_state.cpp
