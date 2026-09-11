@@ -1116,10 +1116,10 @@ void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, Render
     D3D12_RESOURCE_BARRIER b = {};
     b.Transition.pResource = target.depth.Get();
     b.Transition.StateBefore = target.depth_state;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    b.Transition.StateAfter = want_depth;
     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &b);
-    target.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    target.depth_state = want_depth;
   }
 }
 
@@ -1197,6 +1197,13 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
   t.rtv_descriptor_size =
       device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   h.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+  // Two descriptors: slot 0 writes depth, slot 1 is read-only. A pass that
+  // SAMPLES the depth buffer it is rendering with -- the distance-fog pass does
+  // exactly that -- cannot use a writable view: D3D12 has no state that is both
+  // DEPTH_WRITE and shader-readable, so the fetch read undefined data. It came
+  // back as zero, which drives the fog shader's density to zero and made the
+  // whole pass a no-op (measured: it changed 0 pixels).
+  h.NumDescriptors = 2;
   device->CreateDescriptorHeap(&h, IID_PPV_ARGS(&t.dsv_heap));
   device->CreateRenderTargetView(t.color.Get(), nullptr,
                                  t.rtv_heap->GetCPUDescriptorHandleForHeapStart());
@@ -1205,8 +1212,15 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
   dsv.Format = DXGI_FORMAT(key.ds_format);
   dsv.ViewDimension = key.sample_count > 1 ? D3D12_DSV_DIMENSION_TEXTURE2DMS
                                            : D3D12_DSV_DIMENSION_TEXTURE2D;
-  device->CreateDepthStencilView(t.depth.Get(), &dsv,
-                                 t.dsv_heap->GetCPUDescriptorHandleForHeapStart());
+  const UINT dsv_stride = device->GetDescriptorHandleIncrementSize(
+      D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = t.dsv_heap->GetCPUDescriptorHandleForHeapStart();
+  device->CreateDepthStencilView(t.depth.Get(), &dsv, dsv_handle);
+  D3D12_DEPTH_STENCIL_VIEW_DESC dsv_ro = dsv;
+  dsv_ro.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+  dsv_handle.ptr += dsv_stride;
+  device->CreateDepthStencilView(t.depth.Get(), &dsv_ro, dsv_handle);
+  t.dsv_descriptor_size = dsv_stride;
   t.depth_shader_format = ShaderFormatForDepth(key.ds_format);
 
   ++stats_.targets_created;

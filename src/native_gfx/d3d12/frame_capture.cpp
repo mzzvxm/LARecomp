@@ -1969,9 +1969,23 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   }
   render_targets.FlushPendingCopies(context, cl);
   render_targets.FlushPendingTransitions(cl);
-  render_targets.PrepareForRendering(cl, *target);
+  // A draw that SAMPLES the depth buffer it renders with -- the distance-fog
+  // pass reads the scene depth to turn it into a distance -- cannot have that
+  // resource in DEPTH_WRITE, and D3D12 has no state that is both writable and
+  // shader-readable. Give it the read-only depth view and the matching state.
+  bool samples_own_depth = false;
+  for (uint32_t i = 0; i < bound_tex_count; ++i) {
+    if (target->depth && bound_tex[i].resource == target->depth.Get()) {
+      samples_own_depth = true;
+      break;
+    }
+  }
+  render_targets.PrepareForRendering(cl, *target, samples_own_depth);
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = target->rtv_heap->GetCPUDescriptorHandleForHeapStart();
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = target->dsv_heap->GetCPUDescriptorHandleForHeapStart();
+  if (samples_own_depth) {
+    dsv.ptr += target->dsv_descriptor_size;
+  }
   // Both colour targets when the pass declares two. The RTVs are slots 0 and 1
   // of the same heap, so a single handle plus RTsSingleHandleToDescriptorRange
   // covers them.

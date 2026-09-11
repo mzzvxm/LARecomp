@@ -101,6 +101,8 @@ struct RenderTarget {
   Microsoft::WRL::ComPtr<ID3D12Resource> depth;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtv_heap;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsv_heap;
+  // Slot 0 of dsv_heap writes depth; slot 1 is the read-only view.
+  uint32_t dsv_descriptor_size = 0;
   RenderTargetKey key;
   // Readable view of the typeless depth resource; the DSV format cannot be
   // used for an SRV, so this is what a shader must bind it with.
