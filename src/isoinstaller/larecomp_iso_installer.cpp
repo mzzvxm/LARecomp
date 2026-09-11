@@ -423,7 +423,25 @@ class XboxIsoReader {
 }  // namespace
 
 bool IsGameInstalled(const std::filesystem::path& game_root) {
-  return std::filesystem::is_regular_file(game_root / std::string(kDefaultXex));
+  // default.xex alone is not enough. A half-copied install passes that check,
+  // boots, and then the guest traps deep inside startup on the first archive it
+  // cannot open (0x80000003 from a PowerPC trap, with only an [NtCreateFile]
+  // FAILED line above it), which reads like an emulator bug and is not one.
+  static constexpr std::string_view kRequiredFiles[] = {
+      kDefaultXex,
+      "xarchive_audio.rpf",
+      "xarchive_audlo.rpf",
+      "xarchive_cache.rpf",
+  };
+
+  bool complete = true;
+  for (std::string_view name : kRequiredFiles) {
+    if (!std::filesystem::is_regular_file(game_root / std::string(name))) {
+      REXLOG_WARN("Game install incomplete: missing '{}' in {}", name, game_root.string());
+      complete = false;
+    }
+  }
+  return complete;
 }
 
 void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig runtime_paths,
@@ -441,7 +459,7 @@ void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig r
       return false;
     }
     if (!IsGameInstalled(game_root)) {
-      error = "Installation completed, but default.xex was not found in the install directory.";
+      error = "Installation completed, but game files are missing from the install directory (see the log for which).";
       return false;
     }
     return true;
@@ -482,7 +500,7 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
       return false;
     }
     if (!IsGameInstalled(game_root)) {
-      error = "Installation completed, but default.xex was not found in the install directory.";
+      error = "Installation completed, but game files are missing from the install directory (see the log for which).";
       return false;
     }
     return true;
