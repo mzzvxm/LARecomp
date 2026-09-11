@@ -298,6 +298,19 @@ REXCVAR_DEFINE_BOOL(
     "Turn off to get the pre-fix behaviour back while bisecting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_bind_memo, true, "MCLA/NativeGfx",
+                    "Reuse the previous draw's texture binding when its 32 fetch constants are "
+                    "byte-identical and nothing has moved under them. Texture binding measured at "
+                    "22ms of a 95ms frame -- about 63000 slot binds per frame at 350ns each -- and "
+                    "the per-slot work was already correct, so the only thing left to remove was "
+                    "doing it twice. Measured in the MENU it does not pay: 15.7% hit rate, every "
+                    "single miss a genuine key mismatch (guard invalidations: zero), and bind went "
+                    "22.5ms -> 21.8ms, which is noise. That scene is 4200 mostly-distinct draws; "
+                    "GAMEPLAY repeats far more (traffic is one model drawn many times) and has not "
+                    "been measured yet. Kept behind this cvar for exactly that A/B -- turn it off "
+                    "to get the unconditional rebind back.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_INT32(
     mcla_native_gfx_aniso, -1, "MCLA/NativeGfx",
     "Anisotropic filtering override, with the same numbering as the emulated path's\n"

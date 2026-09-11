@@ -22,7 +22,10 @@
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_texture_swizzle);
 
+REXCVAR_DECLARE(bool, mcla_native_gfx_bind_memo);
+
 namespace mcla::native_gfx {
+
 
 namespace {
 
@@ -121,6 +124,9 @@ void TextureBinder::BeginFrame() {
   sampler_cache_.clear();
   srv_warned_ = false;
   sampler_warned_ = false;
+  // Descriptor indices are allocated out of THIS frame's half, so every index
+  // the memo holds names a descriptor that is about to be overwritten.
+  memo_valid_ = false;
   // The fallback texture persists, but its descriptor lives in the heap and must
   // be re-created in this frame's half; force a re-alloc on next FallbackSrv.
   fallback_srv_valid_ = false;
@@ -307,6 +313,7 @@ uint32_t TextureBinder::AcquireSampler(D3D12Context& context, const SamplerDescr
   const uint32_t index = sampler_next_++;
   D3D12_SAMPLER_DESC desc = {};
   BuildD3D12SamplerDesc(s, &desc);
+
   D3D12_CPU_DESCRIPTOR_HANDLE handle = sampler_heap_->GetCPUDescriptorHandleForHeapStart();
   handle.ptr += SIZE_T(index) * sampler_increment_;
   context.device()->CreateSampler(&desc, handle);
@@ -393,17 +400,60 @@ uint32_t TextureBinder::FallbackSrv(D3D12Context& context, ID3D12GraphicsCommand
 void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                             const uint8_t* base, uint32_t dev, TextureCache& textures,
                             uint8_t* shared_bytes, BoundTexture* out, uint32_t* out_count,
-                            uint32_t out_capacity) {
+                            uint32_t out_capacity, uint64_t volatile_guard) {
   if (out_count) {
     *out_count = 0;
   }
   const uint32_t shadow = dev + kDevFetchShadowOffset;
-  for (uint32_t slot = 0; slot < kFetchConstantSlotCount; ++slot) {
-    const uint32_t ea = shadow + slot * kFetchGroupDwords * 4;
-    uint32_t d[6];
-    for (uint32_t i = 0; i < 6; ++i) {
-      d[i] = R32(base, ea + 4 * i);
+
+  // Read the whole fetch shadow up front. This is not extra work: the per-slot
+  // loop below reads exactly these dwords anyway, so hoisting them only moves
+  // the reads -- and it gives the memo its key for free. See the memo notes in
+  // texture_binding.h for why the key is the raw shadow rather than the decoded
+  // fetches: two different shadows can decode to the same TextureFetch, and
+  // comparing raw bytes cannot be fooled by a field the decoder ignores today.
+  uint32_t shadow_dwords[kMemoShadowDwords];
+  for (uint32_t i = 0; i < kMemoShadowDwords; ++i) {
+    shadow_dwords[i] = R32(base, shadow + 4 * i);
+  }
+
+  // Anything that can move a resource out from under an unchanged fetch
+  // constant has to break the memo. Contents changing is fine -- the SRV still
+  // names the same resource and the GPU sees the new data -- so only the
+  // counters that mean "a different resource now backs this address" are here.
+  const TextureCache::Stats& tc = textures.stats();
+  const uint64_t guard = tc.uploads + tc.evictions + tc.bridge_refusals +
+                         tc.stale_gpu_addresses + tc.decode_failures +
+                         tc.unsupported_format + volatile_guard;
+
+  const bool memo_enabled = REXCVAR_GET(mcla_native_gfx_bind_memo);
+  if (memo_enabled && memo_valid_ && memo_dev_ == dev && memo_guard_ == guard &&
+      std::memcmp(memo_shadow_, shadow_dwords, sizeof(shadow_dwords)) == 0) {
+    if (shared_bytes) {
+      std::memcpy(shared_bytes, memo_shared_, kMemoSharedBytes);
     }
+    if (out && out_count) {
+      const uint32_t n = memo_out_count_ < out_capacity ? memo_out_count_ : out_capacity;
+      for (uint32_t i = 0; i < n; ++i) {
+        out[i] = memo_out_[i];
+      }
+      *out_count = n;
+    }
+    ++stats_.memo_hits;
+    return;
+  }
+  ++stats_.memo_misses;
+  if (memo_valid_ && memo_dev_ == dev &&
+      std::memcmp(memo_shadow_, shadow_dwords, sizeof(shadow_dwords)) == 0) {
+    ++stats_.memo_miss_guard;  // same textures, but something moved under them
+  } else {
+    ++stats_.memo_miss_key;
+  }
+  // Refuse to store a result that contains a resource the bridge can replace.
+  bool memo_storable = true;
+
+  for (uint32_t slot = 0; slot < kFetchConstantSlotCount; ++slot) {
+    const uint32_t* d = shadow_dwords + slot * kFetchGroupDwords;
     if ((d[0] & 0x3u) != 2u) {
       continue;  // not a texture fetch constant
     }
@@ -438,6 +488,11 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
     ID3D12Resource* resource = textures.Resolve(context, cl, base, fetch, &source);
     if (!resource) {
       ++stats_.unresolved;
+      // The neutral white stand-in is a placeholder for a bind that failed.
+      // Reusing it for a later draw would keep serving white after the texture
+      // became resolvable, so a frame that recovers would never show it.
+      memo_storable = false;
+      ++stats_.memo_refused_fallback;
       // TEMP DIAG (remove after): every distinct fetch that ends up on the
       // neutral white texture, once each. The [comp] dump is capped at 40 lines
       // for the whole session, so it only ever shows the first frames -- it
@@ -482,6 +537,12 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
     }
     const uint32_t srv_index = AcquireSrv(context, resource, fetch, source);
     const uint32_t sampler_index = AcquireSampler(context, sampler);
+    if (source == TextureSource::kRenderTargetBridge) {
+      // Counted, not refused: see the memo notes in texture_binding.h. The
+      // resource behind a bridge bind can change, but only when the pool
+      // creates or resolves a target, and that rides in `volatile_guard`.
+      ++stats_.memo_bridge_binds;
+    }
 
     // Write the indices where the shader reads them. `slot` here is already
     // the slot the shader addresses: pixel shaders use 0..15 and vertex
@@ -509,6 +570,25 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
       b.resource = resource;
       b.resolved = true;
       b.source = source;
+    }
+  }
+
+  if (memo_enabled && memo_storable && shared_bytes && out && out_count) {
+    memo_valid_ = true;
+    memo_dev_ = dev;
+    memo_guard_ = guard;
+    std::memcpy(memo_shadow_, shadow_dwords, sizeof(shadow_dwords));
+    std::memcpy(memo_shared_, shared_bytes, kMemoSharedBytes);
+    memo_out_count_ = *out_count < kFetchConstantSlotCount ? *out_count : kFetchConstantSlotCount;
+    for (uint32_t i = 0; i < memo_out_count_; ++i) {
+      memo_out_[i] = out[i];
+    }
+  } else {
+    // Do not merely skip the store: leaving the PREVIOUS memo in place would
+    // let a draw two steps back be reused across this one.
+    memo_valid_ = false;
+    if (!memo_storable) {
+      ++stats_.memo_refused_volatile;
     }
   }
 }

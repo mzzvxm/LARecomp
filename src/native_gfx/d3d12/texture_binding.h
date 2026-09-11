@@ -36,6 +36,7 @@
 
 #include "../guest/sampler_state.h"
 #include "../guest/texture_format.h"
+#include "../guest/guest_resources.h"  // kFetchGroupDwords
 #include "texture_cache.h"  // TextureSource
 
 namespace mcla::native_gfx {
@@ -92,6 +93,31 @@ class TextureBinder {
     // "wrong texture" unnoticed.
     uint64_t srv_exhausted = 0;
     uint64_t sampler_exhausted = 0;
+    // Consecutive draws that bound byte-identical fetch constants and reused
+    // the previous draw's whole result instead of re-resolving 32 slots.
+    uint64_t memo_hits = 0;
+    uint64_t memo_misses = 0;
+    // A result that was correct but deliberately NOT memoised, and why. A
+    // render-target-sourced or fallback bind is refused because the resource
+    // behind it can be replaced between two draws whose fetch constants never
+    // change, which the byte comparison alone would not notice.
+    uint64_t memo_refused_volatile = 0;
+    // Split of the above, because "every draw is volatile" names two very
+    // different problems: a bind the cache could not serve at all, and a bind
+    // served by the render-target bridge.
+    uint64_t memo_refused_fallback = 0;
+    // Not a refusal any more, kept as a tally: measured at 11919 per frame with
+    // EVERY draw binding at least one, which is what killed the first version
+    // of the memo (it refused any result containing one, so it never stored a
+    // single entry). Almost certainly the shadow atlas, which every material
+    // shader samples. These are covered by `volatile_guard` instead.
+    uint64_t memo_bridge_binds = 0;
+    // Split of memo_misses. A miss because the GUARD moved is a pool resolve
+    // or texture upload invalidating the memo; a miss because the KEY differs
+    // is simply the next draw binding other textures. The two point at
+    // opposite fixes, and only the first one is ours to tune.
+    uint64_t memo_miss_guard = 0;
+    uint64_t memo_miss_key = 0;
   };
 
   bool Initialize(D3D12Context& context);
@@ -103,9 +129,15 @@ class TextureBinder {
   // Resolves every texture fetch constant the device has bound, fills the
   // SharedConstants tables in `shared_bytes` (kSharedConstantsBytes) and
   // returns what was bound for diagnosis.
+  // `volatile_guard` is any monotone counter from OUTSIDE the binder whose
+  // change means a resource may have moved under an unchanged fetch constant.
+  // The caller passes the render target pool's creation/resolve tallies: the
+  // bridge hands back whatever resource currently backs a guest address, and a
+  // resolve mid-frame can replace it while the fetch constants never move.
   void BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl, const uint8_t* base,
                uint32_t dev, TextureCache& textures, uint8_t* shared_bytes,
-               BoundTexture* out, uint32_t* out_count, uint32_t out_capacity);
+               BoundTexture* out, uint32_t* out_count, uint32_t out_capacity,
+               uint64_t volatile_guard);
 
   const Stats& stats() const { return stats_; }
 
@@ -151,6 +183,44 @@ class TextureBinder {
   // Guest identity -> descriptor index.
   std::unordered_map<uint64_t, uint32_t> srv_cache_;
   std::unordered_map<uint64_t, uint32_t> sampler_cache_;
+
+  // ---- One-draw memo -------------------------------------------------------
+  // Measured baseline: ~15 bound slots x ~4200 draws = ~63000 slot binds per
+  // frame at ~350ns each, which was 22ms of a 95ms frame. The per-slot work was
+  // already correct -- the cost was doing it again for consecutive draws that
+  // bind exactly the same textures, which in a pass is most of them.
+  //
+  // The memo keys on the RAW fetch constant shadow, all 32 slots, byte for
+  // byte. That is the same memory the loop reads anyway, so taking the key
+  // costs nothing extra. `dev` is part of the key because two devices have
+  // separate shadows.
+  //
+  // Validity is the delicate part, and three things bound it:
+  //   * BeginFrame() drops it. Descriptor indices live in one half of a
+  //     double-buffered heap and are re-allocated each frame, so an index from
+  //     the previous frame names a descriptor that no longer holds this view.
+  //   * The texture cache's mutation counters are part of the guard. An upload,
+  //     eviction or decode failure between two draws can change which resource
+  //     a fetch resolves to while the fetch constants stay identical.
+  //   * A result containing a FALLBACK texture is never stored: white is a
+  //     placeholder for a bind that failed, and reusing it would keep serving
+  //     white after the texture became resolvable.
+  // A render-target-sourced bind is NOT refused, though it is the same hazard:
+  // refusing measured out at 100% of draws (every one binds at least one, very
+  // likely the shadow atlas), so the memo never stored anything. The pool's
+  // creation/resolve tallies ride in `volatile_guard` instead, which breaks the
+  // memo exactly when a target is created or resolved and not otherwise.
+  static constexpr uint32_t kMemoShadowDwords = kFetchConstantSlotCount * kFetchGroupDwords;
+  static constexpr uint32_t kMemoSharedBytes = kSharedSamplerTableByteOffset +
+                                               kFetchConstantSlotCount * 4;
+  bool memo_valid_ = false;
+  uint32_t memo_dev_ = 0;
+  uint64_t memo_guard_ = 0;
+  uint32_t memo_shadow_[kMemoShadowDwords] = {};
+  uint8_t memo_shared_[kMemoSharedBytes] = {};
+  BoundTexture memo_out_[kFetchConstantSlotCount] = {};
+  uint32_t memo_out_count_ = 0;
+
   Stats stats_;
 };
 

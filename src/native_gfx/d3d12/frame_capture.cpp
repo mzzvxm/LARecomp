@@ -1657,7 +1657,14 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   BoundTexture bound_tex[32];
   uint32_t bound_tex_count = 0;
   const auto t_bind = ProfileClock::now();
-  binder.BindAll(context, cl, base, dev, textures, shared.data(), bound_tex, &bound_tex_count, 32);
+  // Everything the pool can do that swaps the resource behind a guest address.
+  // Contents changing is deliberately absent: the SRV still names the same
+  // resource and the GPU sees the new data without any rebind.
+  const RenderTargetPool::Stats& rts = render_targets.stats();
+  const uint64_t rt_guard = rts.targets_created + rts.resolves + rts.resolves_depth +
+                            rts.resolve_copies_created + rts.resolves_without_target;
+  binder.BindAll(context, cl, base, dev, textures, shared.data(), bound_tex, &bound_tex_count, 32,
+                 rt_guard);
   ProfileAdd(g_profile.bind_us, t_bind);
   g_binder_stats_for_report = binder.stats();
   uint32_t resolved_tex = 0;

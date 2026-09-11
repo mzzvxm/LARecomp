@@ -451,8 +451,10 @@ bool TryFirstRealDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type
   std::vector<uint8_t> shared(kSharedConstantsBytes, 0);
   BoundTexture bound_tex[16];
   uint32_t bound_tex_count = 0;
+  // 0: this is the one-shot first-draw dump, outside the frame loop, and it
+  // wants a fresh bind rather than anything the memo may be holding.
   binder.BindAll(context, cl, base, dev, textures, shared.data(), bound_tex, &bound_tex_count,
-                 16);
+                 16, 0);
   LOGF("\nTextures + Samplers (%u bound):\n", bound_tex_count);
   for (uint32_t i = 0; i < bound_tex_count; ++i) {
     const BoundTexture& b = bound_tex[i];
