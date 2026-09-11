@@ -51,6 +51,13 @@ void NotifyFrameBoundary();
 // advances to the next frame. No-op outside continuous mode.
 void PresentContinuousAtSwap();
 
+// D3DDevice_CreateTexture (sub_82410C50), AFTER the original, which returns
+// the new D3DTexture in r3 (0 on failure). This is the road that ALLOCATES:
+// header, base pixels and mip pixels are three separate guest allocations, and
+// the pages land in the fetch constant at +32 and +48. The site pixel
+// ownership would take over.
+void NoteD3DTextureCreated(const uint8_t* base, uint32_t d3d_texture_va);
+
 // Whether the capture should write out the resolve destinations.
 bool ShouldDumpRenderTargets();
 

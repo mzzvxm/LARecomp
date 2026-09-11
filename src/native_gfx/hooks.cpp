@@ -57,6 +57,7 @@
 #include "guest/texture_ownership.h"
 #include "guest/vblank_probe.h"
 #include "nocp/nocp_app.h"
+#include "guest/texture_registry.h"
 #include "native_gfx.h"
 #include "telemetry.h"
 
@@ -86,6 +87,82 @@ REX_EXTERN(__imp__rex_sub_82421F38);
 REX_EXTERN(__imp__rex_sub_824195E8);
 REX_EXTERN(__imp__D3DDevice_CreateTexture);
 REX_EXTERN(__imp__grcTextureXenon_dtor);
+
+// --- texture identity ------------------------------------------------------
+
+// grcTextureXenon::Init(this, const char* name, image, flags)
+//
+// The funnel both texture creation roads pass through -- the placed one, which
+// binds a header over memory a streamed resource already owns, and the
+// allocated one, which goes to D3DDevice_CreateTexture. Observed AFTER the
+// original: the D3DTexture at this+28 does not exist until it returns.
+//
+// This is the site resource ownership will take over. For now it only reads.
+extern "C" REX_FUNC(grcTextureXenon_Init) {
+  mcla::native_gfx::nocp::NoteHook("grcTextureXenon_Init");
+  const uint32_t grc_texture = ctx.r3.u32;
+  const uint32_t name = ctx.r4.u32;
+  __imp__grcTextureXenon_Init(ctx, base);
+  // Ownership first: it can move the D3DTexture into the runtime's own
+  // guest-visible heap, and the registry has to record the address the game
+  // will actually be using from here on.
+  mcla::native_gfx::AdoptInitTexture(base, grc_texture);
+  mcla::native_gfx::NoteTextureCreated(base, grc_texture, name);
+}
+
+// grcTextureXenon::grcTextureXenon(datResource&) -- sub_82184458.
+//
+// The road every STREAMED texture takes. Nothing is created here: the object
+// arrives inside the resource block and the constructor only re-points it at
+// where the block actually landed. It writes the vtable, adds the resource
+// base to grc+24 (name) and grc+28 (the D3DTexture), then patches the two page
+// fields inside the fetch constant itself -- D3DTexture+32 (base) and +48
+// (mip) -- through the same fixup table that reports "Invalid fixup, address
+// is neither virtual nor physical" when a page is neither.
+//
+// Observed AFTER the original, because before it the pointers are still file
+// offsets. This is the hook that was missing while the registry sat frozen at
+// the 111 textures Init builds during boot.
+extern "C" REX_FUNC(grcTextureXenon_ResourceCtor) {
+  mcla::native_gfx::nocp::NoteHook("grcTextureXenon_ResourceCtor");
+  const uint32_t grc_texture = ctx.r3.u32;
+  __imp__grcTextureXenon_ResourceCtor(ctx, base);
+  // No Active() gate here, deliberately. Active() lazily initializes the whole
+  // runtime and LATCHES failure, and a streamed texture can be deserialized
+  // long before the graphics system is up -- one early call would disable
+  // native_gfx for the rest of the session. The registry gates itself on its
+  // own cvar, exactly as the Init hook above does.
+  mcla::native_gfx::NoteTextureFromResource(base, grc_texture);
+}
+
+// grcTextureFactoryXenon::DestroyTexture(D3DTexture** ppTexture) -- sub_82177CB0.
+//
+// Takes the ADDRESS of the field holding the pointer, not the pointer: it
+// reads *ppTexture, frees it (D3DResource_Release when Common & 0x100000, the
+// raw allocator otherwise) and writes 0 back. Every teardown route ends here,
+// which makes it the one place that can guarantee the guest allocator is only
+// ever handed blocks it produced.
+//
+// Observed BEFORE the original: afterwards the slot is zero and the block is
+// gone.
+extern "C" REX_FUNC(grcTextureFactoryXenon_DestroyTexture) {
+  mcla::native_gfx::nocp::NoteHook("grcTextureFactoryXenon_DestroyTexture");
+  mcla::native_gfx::ReleaseOwnedTextureSlot(base, ctx.r3.u32);
+  __imp__grcTextureFactoryXenon_DestroyTexture(ctx, base);
+}
+
+// grcTextureXenon::~grcTextureXenon(this, deleting). Observed BEFORE the
+// original, which is the last moment this+28 still points at the D3DTexture.
+extern "C" REX_FUNC(grcTextureXenon_dtor) {
+  mcla::native_gfx::nocp::NoteHook("grcTextureXenon_dtor");
+  mcla::native_gfx::NoteTextureDestroyed(base, ctx.r3.u32);
+  // Hand the header back BEFORE the original runs: DestroyTexture frees the
+  // block through the guest allocator that produced it, and that allocator
+  // knows nothing about the runtime's heap.
+  mcla::native_gfx::ReleaseOwnedTexture(base, ctx.r3.u32);
+  __imp__grcTextureXenon_dtor(ctx, base);
+}
+
 // --- vblank / flip ---------------------------------------------------------
 
 // D3DDevice_InitializeEngines(device) -- sub_82426468. Registers the guest's
@@ -130,6 +207,35 @@ extern "C" REX_FUNC(D3DDevice_BlockUntilIdle) {
   __imp__D3DDevice_BlockUntilIdle(ctx, base);
 }
 
+// --- texture memory --------------------------------------------------------
+
+// These three run on the game's own threads at whatever rate it locks
+// textures, so they are gated on the cvar rather than on Active(): Active()
+// lazily initializes the whole runtime and LATCHES failure, and a texture lock
+// can happen long before the graphics system exists.
+
+// D3DDevice_CreateTexture(w, h, depth, levels, usage, format, pool, type)
+// -- sub_82410C50. THREE guest allocations: the 52-byte header, the base pixel
+// chain and, when there is one, the mip chain; the last two are written into
+// the fetch constant as pages at +32 and +48. Returns the header in r3, or 0,
+// which the caller turns into E_OUTOFMEMORY.
+//
+// Observed AFTER the original: before it there is no object to look at.
+extern "C" REX_FUNC(D3DDevice_CreateTexture) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_CreateTexture");
+  __imp__D3DDevice_CreateTexture(ctx, base);
+  if (REXCVAR_GET(mcla_native_gfx)) {
+    mcla::native_gfx::NoteD3DTextureCreated(base, ctx.r3.u32);
+  }
+}
+
+// D3DResource_Lock -- sub_82421CA0, the funnel on the way in. Same three entry
+// points as the unlock side and nothing else: D3DTexture_LockRectBody
+// (sub_82410440), D3DVertexBuffer_Lock (sub_82422320) and D3DIndexBuffer_Lock
+// (sub_82422430). r3 is the resource.
+//
+// Observation only for now. This is where the guest blocks on the resource
+// fence, through sub_82411E98, which is the machinery an ownership step has to
 
 // --- draws -----------------------------------------------------------------
 
@@ -308,6 +414,7 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
   }
   if (mcla::native_gfx::Active()) {
     mcla::native_gfx::TelemetryOnFrameEnd();
+    mcla::native_gfx::DumpTextureRegistry();
     // A frame boundary is the only point from which the WHOLE frame can be
     // observed. Starting a capture at the first main-scene draw misses every
     // pass that runs earlier -- notably the shadow map, whose 640x640 cascades
