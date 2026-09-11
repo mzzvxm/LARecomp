@@ -1526,7 +1526,27 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   std::memcpy(shared.data() + kSharedSwappedTexcoordsByteOffset, &shared_values.swapped_texcoords,
               4);
   std::memcpy(shared.data() + kSharedHalfPixelOffsetByteOffset, shared_values.half_pixel_offset, 8);
+  // Xenos applies the source blend factor before a MIN/MAX blend op; D3D12
+  // ignores the factors for those ops, so the pixel shader folds the factor into
+  // its own output and these say which factor to fold. Left at zero -- the
+  // shader's "leave it alone" mode -- for every draw that does not hit the case,
+  // which is nearly all of them. Colour and alpha are independent equations, so
+  // they get independent modes.
+  {
+    const uint32_t bc = rs.blend_control0;
+    shared_values.blend_premult_rgb = uint32_t(BlendPremultFor(
+        (bc >> 5) & 0x7u, bc & 0x1Fu, (bc >> 8) & 0x1Fu));
+    shared_values.blend_premult_a = uint32_t(BlendPremultFor(
+        (bc >> 21) & 0x7u, (bc >> 16) & 0x1Fu, (bc >> 24) & 0x1Fu));
+    // The CONSTANT_COLOR / CONSTANT_ALPHA modes read this; it is the same value
+    // OMSetBlendFactor gets, so the two halves cannot disagree.
+    std::memcpy(shared_values.blend_premult_constant, rs.blend_constant, 16);
+  }
   std::memcpy(shared.data() + kSharedAlphaThresholdByteOffset, &shared_values.alpha_threshold, 4);
+  std::memcpy(shared.data() + kSharedBlendPremultRgbByteOffset, &shared_values.blend_premult_rgb, 4);
+  std::memcpy(shared.data() + kSharedBlendPremultAByteOffset, &shared_values.blend_premult_a, 4);
+  std::memcpy(shared.data() + kSharedBlendPremultConstByteOffset,
+              shared_values.blend_premult_constant, 16);
 
   ConstantBindings cbv;
   const auto t_const = ProfileClock::now();

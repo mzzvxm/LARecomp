@@ -400,6 +400,22 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
   rt0.SrcBlendAlpha = BlendFactorAlpha((key.blend_control0 >> 16) & 0x1Fu);
   rt0.BlendOpAlpha = BlendOp((key.blend_control0 >> 21) & 0x7u);
   rt0.DestBlendAlpha = BlendFactorAlpha((key.blend_control0 >> 24) & 0x1Fu);
+
+  // D3D12 ignores the blend factors for MIN and MAX, so whatever is written
+  // above is already inert for those ops -- but the Xenos does NOT ignore them,
+  // and the pixel shader has folded the source factor into its own output
+  // (BlendPremultFor / applyBlendPremult). Stating ONE here makes the pipeline
+  // describe what actually happens instead of carrying factors that no longer
+  // mean anything, and keeps a driver that does honour them from applying the
+  // source factor a second time.
+  if (rt0.BlendOp == D3D12_BLEND_OP_MIN || rt0.BlendOp == D3D12_BLEND_OP_MAX) {
+    rt0.SrcBlend = D3D12_BLEND_ONE;
+    rt0.DestBlend = D3D12_BLEND_ONE;
+  }
+  if (rt0.BlendOpAlpha == D3D12_BLEND_OP_MIN || rt0.BlendOpAlpha == D3D12_BLEND_OP_MAX) {
+    rt0.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt0.DestBlendAlpha = D3D12_BLEND_ONE;
+  }
   // RB_COLOR_MASK holds one nibble per render target.
   rt0.RenderTargetWriteMask = UINT8(key.color_mask & 0xFu);
 

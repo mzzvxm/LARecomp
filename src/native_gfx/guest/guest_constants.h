@@ -52,11 +52,18 @@ inline constexpr uint32_t kDevPsConstantDirtyOffset = 8;
 
 // The shared constant buffer the translated shaders expect at b2: 32 float4
 // of descriptor-index tables (c0..c31) followed by scalars at c32/c33.
-inline constexpr uint32_t kSharedConstantsBytes = 34 * 16;
+inline constexpr uint32_t kSharedConstantsBytes = 35 * 16;
 inline constexpr uint32_t kSharedBooleansByteOffset = 512;       // c32.x
 inline constexpr uint32_t kSharedSwappedTexcoordsByteOffset = 516;  // c32.y
 inline constexpr uint32_t kSharedHalfPixelOffsetByteOffset = 520;   // c32.z/.w
 inline constexpr uint32_t kSharedAlphaThresholdByteOffset = 528;    // c33.x
+// Xenos applies the source blend factor before a MIN/MAX blend op while D3D12
+// ignores the factors there, so the factor is folded into the pixel shader's
+// own output. These carry which factor, per equation, plus the blend constant
+// the CONSTANT_COLOR / CONSTANT_ALPHA modes read.
+inline constexpr uint32_t kSharedBlendPremultRgbByteOffset = 532;   // c33.y
+inline constexpr uint32_t kSharedBlendPremultAByteOffset = 536;     // c33.z
+inline constexpr uint32_t kSharedBlendPremultConstByteOffset = 544; // c34
 
 // The dirty masks as they were BEFORE the guest draw consumed them.
 struct ConstantDirtyMasks {

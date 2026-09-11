@@ -50,7 +50,38 @@ struct SharedConstantValues {
   uint32_t swapped_texcoords = 0;
   float half_pixel_offset[2] = {0.0f, 0.0f};
   float alpha_threshold = 0.0f;
+  // MIN/MAX blend factor premultiplication; 0 = leave the output alone, which
+  // is what every draw that does not hit the case uses. See BlendPremultMode.
+  uint32_t blend_premult_rgb = 0;
+  uint32_t blend_premult_a = 0;
+  float blend_premult_constant[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
+
+// Which source blend factor the pixel shader has to fold into its own output,
+// per equation. Must stay in step with blendPremultRgb/blendPremultAlpha in
+// XenosRecomp's shader_common.h -- the shader switches on these numbers.
+enum class BlendPremultMode : uint32_t {
+  kNone = 0,  // factor is ONE, or the case does not apply
+  kZero = 1,
+  kSrcColor = 2,
+  kOneMinusSrcColor = 3,
+  kSrcAlpha = 4,
+  kOneMinusSrcAlpha = 5,
+  kConstantColor = 6,
+  kOneMinusConstantColor = 7,
+  kConstantAlpha = 8,
+  kOneMinusConstantAlpha = 9,
+};
+
+// The mode for one equation, or kNone when this draw does not need it.
+//
+// Only MIN and MAX need it at all, and only with a destination factor of ONE:
+// the destination term is not the shader's to scale, so any other destination
+// factor is left unemulated rather than emulated wrong. Source factors that
+// depend on the destination (DST_*, SRC_ALPHA_SATURATE) cannot be folded in
+// either, and also return kNone.
+BlendPremultMode BlendPremultFor(uint32_t blend_op, uint32_t src_factor,
+                                 uint32_t dest_factor);
 
 // Copies both banks (already host-order) and the shared values into the
 // frame's upload ring and returns their GPU addresses. `vs_bank` and

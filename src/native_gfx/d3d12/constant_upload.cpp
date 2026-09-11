@@ -64,6 +64,53 @@ void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev) {
   std::memcpy(static_cast<uint8_t*>(bank) + kInvColorExpBiasByteOffset, &scaled, sizeof(scaled));
 }
 
+// Xenos blend factor ids, as they appear in RB_BLENDCONTROL. Named here rather
+// than shared with pipeline_cache.cpp's D3D12 tables because those map to host
+// enums and this maps to the shader's own switch.
+namespace xenos_factor {
+constexpr uint32_t kZero = 0;
+constexpr uint32_t kOne = 1;
+constexpr uint32_t kSrcColor = 4;
+constexpr uint32_t kOneMinusSrcColor = 5;
+constexpr uint32_t kSrcAlpha = 6;
+constexpr uint32_t kOneMinusSrcAlpha = 7;
+constexpr uint32_t kConstantColor = 12;
+constexpr uint32_t kOneMinusConstantColor = 13;
+constexpr uint32_t kConstantAlpha = 14;
+constexpr uint32_t kOneMinusConstantAlpha = 15;
+}  // namespace xenos_factor
+
+constexpr uint32_t kXenosBlendOpMin = 2;
+constexpr uint32_t kXenosBlendOpMax = 3;
+
+BlendPremultMode BlendPremultFor(uint32_t blend_op, uint32_t src_factor,
+                                 uint32_t dest_factor) {
+  if (blend_op != kXenosBlendOpMin && blend_op != kXenosBlendOpMax) {
+    return BlendPremultMode::kNone;  // ADD/SUB apply the factors on their own
+  }
+  if (dest_factor != xenos_factor::kOne) {
+    // The destination term is not the shader's to scale. Emulating this half
+    // wrong would be worse than leaving it: bail instead.
+    return BlendPremultMode::kNone;
+  }
+  switch (src_factor) {
+    case xenos_factor::kOne:                  return BlendPremultMode::kNone;
+    case xenos_factor::kZero:                 return BlendPremultMode::kZero;
+    case xenos_factor::kSrcColor:             return BlendPremultMode::kSrcColor;
+    case xenos_factor::kOneMinusSrcColor:     return BlendPremultMode::kOneMinusSrcColor;
+    case xenos_factor::kSrcAlpha:             return BlendPremultMode::kSrcAlpha;
+    case xenos_factor::kOneMinusSrcAlpha:     return BlendPremultMode::kOneMinusSrcAlpha;
+    case xenos_factor::kConstantColor:        return BlendPremultMode::kConstantColor;
+    case xenos_factor::kOneMinusConstantColor:return BlendPremultMode::kOneMinusConstantColor;
+    case xenos_factor::kConstantAlpha:        return BlendPremultMode::kConstantAlpha;
+    case xenos_factor::kOneMinusConstantAlpha:return BlendPremultMode::kOneMinusConstantAlpha;
+    default:
+      // DST_*, SRC_ALPHA_SATURATE: need the destination, which the shader has
+      // no access to.
+      return BlendPremultMode::kNone;
+  }
+}
+
 bool UploadConstants(D3D12Context& context, const void* vs_bank, const void* ps_bank,
                      const SharedConstantValues& shared, ConstantBindings& out) {
   out = ConstantBindings{};
@@ -98,6 +145,9 @@ bool UploadConstants(D3D12Context& context, const void* vs_bank, const void* ps_
   std::memcpy(bytes + kSharedSwappedTexcoordsByteOffset, &shared.swapped_texcoords, 4);
   std::memcpy(bytes + kSharedHalfPixelOffsetByteOffset, shared.half_pixel_offset, 8);
   std::memcpy(bytes + kSharedAlphaThresholdByteOffset, &shared.alpha_threshold, 4);
+  std::memcpy(bytes + kSharedBlendPremultRgbByteOffset, &shared.blend_premult_rgb, 4);
+  std::memcpy(bytes + kSharedBlendPremultAByteOffset, &shared.blend_premult_a, 4);
+  std::memcpy(bytes + kSharedBlendPremultConstByteOffset, shared.blend_premult_constant, 16);
   out.shared = alloc.gpu;
   return true;
 }
