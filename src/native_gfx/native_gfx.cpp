@@ -53,6 +53,20 @@ REXCVAR_DECLARE(uint32_t, mcla_native_gfx_own_textures);
 // Defined in guest/vblank_probe.cpp.
 REXCVAR_DECLARE(bool, mcla_native_gfx_vblank_probe);
 
+REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_fetch_size_unit, 4, "MCLA/NativeGfx",
+    "Bytes per unit of the vertex fetch constant's 24-bit size field. 0 uses the built-in 4. "
+    "4 is what BeginVertices' own packet implies -- it writes dword1 = (4*dwords) | endian with "
+    "dwords = (count*stride)/4, so the field IS a dword count. "
+    "16 is what the bound-stream kQuadList draws measure: the field times sixteen equals "
+    "element_count * stride exactly, on eight of eight draws from 384 to 12928 bytes, while times "
+    "four leaves the vertex view a quarter short -- which is how a quad gets one real corner and "
+    "three at the origin, and why huge black shards cross the map. "
+    "Both cannot be right about the same field. Run once with 16: if the shards go and nothing "
+    "else regresses, the unit is 16; if geometry that works today starts reading past its buffer, "
+    "it is 4 and the quad draws are misread somewhere else.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
                     "MCLA Native Graphics Runtime. OFF (default): the game renders through the "

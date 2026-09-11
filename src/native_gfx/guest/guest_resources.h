@@ -82,6 +82,36 @@ GuestIndexBuffer DecodeIndexBuffer(uint32_t dword0, uint32_t addr);
 inline constexpr uint32_t kDevIndexBufferOffset = 12436;
 inline constexpr uint32_t kIndexBufferObjAddrOffset = 24;
 
+// The guest's own virtual-to-physical conversion, copied from the draw builder
+// (sub_8241D620):
+//
+//   phys = (addr & 0x1FFFFFFF) + (((addr >> 20) + 512) & 0x1000)
+//
+// It is NOT a plain mask. The second term adds one page for an address in the
+// 0xE0000000 window -- the same page the SDK's PhysicalHostOffset adds for
+// anything at or above 0xE0000000 -- and is a no-op for an address that is
+// already physical (0x038F8000 >> 20 = 56, 56 + 512 = 568, 568 & 0x1000 = 0).
+//
+// It matters for exactly one thing today: a vertex buffer address comes from
+// the fetch constant and is already physical, while an INDEX buffer address
+// comes from the D3D object at +24 and arrives windowed. Masking it instead of
+// converting it lands one page early, which is where the index data's
+// neighbouring VERTEX data lives -- measured, the "indices" decoded as clean
+// big-endian floats (-0.25, 0.7070, 0.9238) and the draws came out as huge
+// stretched shards.
+//
+// Every conversion of this shape in the decompilation uses this expression:
+// D3DResource_Unlock, SetRingBufferParameters, D3DDevice_Swap, the draw
+// builder. Anywhere a D3D OBJECT hands over an address, this is the conversion.
+// Bytes per unit of the vertex fetch constant's 24-bit size field. 4 (the
+// field as a dword count) is what BeginVertices' own packet implies; 16 is what
+// the bound-stream quad draws measure. See DecodeVertexFetch.
+uint32_t VertexFetchSizeUnit();
+
+inline constexpr uint32_t GuestAddressToPhysical(uint32_t address) {
+  return (address & 0x1FFFFFFFu) + (((address >> 20) + 512u) & 0x1000u);
+}
+
 // --- D3D vertex buffer object ---------------------------------------------
 
 // Offsets inside the D3D vertex buffer object (baked fetch constant pair).
