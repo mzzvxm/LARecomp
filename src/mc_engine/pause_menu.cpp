@@ -1,6 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "pause_menu.h"
 #include "carbon_parts.h"
+#include "menu_items.h"
 #include "logging.h"
 
 #include <atomic>
@@ -728,55 +729,19 @@ int ResolveLanguageIndex() {
 // cycles the item's cvar to its next value; labels are rebuilt from the live
 // cvar value on every render, so F4-side changes show up too.
 
-enum class ItemKind { kBool, kStrCycle, kDblCycle, kCarbonBit };
-
-struct ItemDef {
-    const char* key;      // guest state name + string-table key (unique!)
-    ItemKind kind;
-    const char* cvar;     // ignored for kCarbonBit
-    const char* prefix;   // label prefix, e.g. "FULLSCREEN: "
-    const char* suffix;   // e.g. " (RESTART)"
-    bool inverted;        // kBool: cvar true renders as OFF (disable_* cvars)
-    const char* const* svals;   // kStrCycle: cvar values
-    const char* const* slabels; // kStrCycle: display labels (parallel)
-    int nvals;                  // kStrCycle / kDblCycle count
-    const double* dvals;        // kDblCycle values
-    const char* dfmt;           // kDblCycle value format, e.g. "%.1fX"
-    // kDblCycle: label to show instead of the formatted number when the value
-    // is 0. Lets a numeric row carry an "off / leave it alone" entry without
-    // rendering it as a bare "0". Null = format 0 like any other value.
-    const char* zero_label;
-};
-
-constexpr ItemDef Bool(const char* key, const char* cvar, const char* prefix,
-                       bool inverted = false, const char* suffix = "") {
-    return {key, ItemKind::kBool, cvar, prefix, suffix, inverted,
-            nullptr, nullptr, 0, nullptr, nullptr};
-}
-
-constexpr ItemDef Str(const char* key, const char* cvar, const char* prefix,
-                      const char* const* vals, const char* const* labels, int n,
-                      const char* suffix = "") {
-    return {key, ItemKind::kStrCycle, cvar, prefix, suffix, false,
-            vals, labels, n, nullptr, nullptr};
-}
-
-constexpr ItemDef Dbl(const char* key, const char* cvar, const char* prefix,
-                      const double* vals, int n, const char* fmt,
-                      const char* suffix = "", const char* zero_label = nullptr) {
-    return {key, ItemKind::kDblCycle, cvar, prefix, suffix, false,
-            nullptr, nullptr, n, vals, fmt, zero_label};
-}
-
-// Carbon fiber part group. Unlike every other item here this one is NOT
-// backed by a cvar: it flips a bit in the customization data of the car the
-// player is driving, so each car carries its own selection and it persists
-// in the save on its own. `nvals` carries the group bit.
-constexpr ItemDef Carbon(const char* key, uint8_t group, const char* prefix,
-                         const char* suffix = "") {
-    return {key, ItemKind::kCarbonBit, nullptr, prefix, suffix, false,
-            nullptr, nullptr, group, nullptr, nullptr};
-}
+// The row description and its constructors now live in menu_items.h, so a
+// feature can ship its own rows from its own translation unit -- see
+// CameraLookMenuItems() in camera_look.cpp, which fills out the rest of the
+// DEBUG CAMERA tab from where the camera code actually is.
+using mcla_menu::Action;
+using mcla_menu::ActionId;
+using mcla_menu::Bool;
+using mcla_menu::Carbon;
+using mcla_menu::Dbl;
+using mcla_menu::ItemDef;
+using mcla_menu::ItemKind;
+using mcla_menu::kActionPlayCutscene;
+using mcla_menu::Str;
 
 // ── Value tables ───────────────────────────────────────────────────────
 
@@ -990,7 +955,33 @@ struct MenuDef {
     const char* menu_key;  // UIMenu state name
     const ItemDef* items;
     int num_items;
+    // Rows contributed by the feature's own translation unit, appended after
+    // `items`. Null for a tab that is entirely described here. A function
+    // rather than a pointer so nothing depends on static initialisation order
+    // between two translation units.
+    const ItemDef* (*extra)(int& count);
 };
+
+// A submenu's rows are `items` followed by whatever `extra` returns. These two
+// are the only way the rest of the file is allowed to reach either, so a tab
+// with contributed rows behaves exactly like one without.
+int MenuItemCount(const MenuDef& md) {
+    int extra = 0;
+    if (md.extra) md.extra(extra);
+    return md.num_items + extra;
+}
+
+const ItemDef& MenuItemAt(const MenuDef& md, int i) {
+    if (i < md.num_items) return md.items[i];
+    int extra = 0;
+    const ItemDef* tail = md.extra ? md.extra(extra) : nullptr;
+    // Callers all bound i by MenuItemCount, but a row table that shrank between
+    // the two calls would be a crash rather than a wrong label, so clamp.
+    int at = i - md.num_items;
+    if (!tail || extra <= 0) return md.items[0];
+    if (at >= extra) at = extra - 1;
+    return tail[at];
+}
 
 const MenuDef kMenus[] = {
     {"PM_RxTabVideo",  "REXGLUE SETTINGS", "RxVideoMenu",
@@ -1062,12 +1053,19 @@ int FindStringIndex(const std::string& value, const char* const* vals, int count
 // per-part control is already working that way.
 bool ItemIsToggle(const ItemDef& it) { return it.kind == ItemKind::kBool; }
 
+// Rows with no value list at all: they render as a plain label and a click
+// runs them rather than stepping anything.
+bool ItemIsLabelOnly(const ItemDef& it) {
+    return it.kind == ItemKind::kAction;
+}
+
 int ItemValueCount(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kStrCycle:
     case ItemKind::kDblCycle:  return it.nvals;
+    case ItemKind::kAction:    return 0;
     }
     return 0;
 }
@@ -1083,6 +1081,7 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
         std::snprintf(buf, sizeof(buf), it.dfmt, it.dvals[i]);
         return buf;
     }
+    case ItemKind::kAction:    break;
     }
     return "";
 }
@@ -1101,6 +1100,7 @@ int ItemValueIndex(const ItemDef& it) {
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle:
         return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
+    case ItemKind::kAction:    break;
     }
     return 0;
 }
@@ -1130,6 +1130,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         // source of truth — only touch it when it actually disagrees.
         if (CarbonHaveCar() && (CarbonHasGroup(uint8_t(it.nvals)) ? 1 : 0) != i)
             CarbonToggleGroup(uint8_t(it.nvals));
+        break;
+    case ItemKind::kAction:
         break;
     }
 }
@@ -1268,18 +1270,18 @@ bool BuildNativeRows(int m) {
     if (nr.array) return true;
 
     const MenuDef& md = kMenus[m];
-    if (md.num_items > kMaxRowsPerMenu) {
+    if (MenuItemCount(md) > kMaxRowsPerMenu) {
         MC_WARN("[pause-menu] '{}' has {} items, over the {} row cap",
-                md.label, md.num_items, kMaxRowsPerMenu);
+                md.label, MenuItemCount(md), kMaxRowsPerMenu);
         return false;
     }
 
     uint8_t* base = GetMembase();
-    uint32_t arr = CallGuestFn1(kGuestMallocFn, uint32_t(4 * md.num_items));
+    uint32_t arr = CallGuestFn1(kGuestMallocFn, uint32_t(4 * MenuItemCount(md)));
     if (!base || !arr) return false;
 
-    for (int i = 0; i < md.num_items; ++i) {
-        const ItemDef& it = md.items[i];
+    for (int i = 0; i < MenuItemCount(md); ++i) {
+        const ItemDef& it = MenuItemAt(md, i);
 
         // The ctor resolves the label through the string table once and
         // caches it at +48, so the text has to be registered first.
@@ -1291,7 +1293,11 @@ bool BuildNativeRows(int m) {
         if (!name || !row) return false;
         std::memset(base + row, 0, kRowObjectSize);
 
-        if (ItemIsToggle(it)) {
+        if (ItemIsLabelOnly(it)) {
+            // No value list: a plain label row (0x8208DACC), which renders
+            // through sub_82631C08 and draws no arrows.
+            CallGuestFn3(kLabelRowCtorFn, row, name, 0);
+        } else if (ItemIsToggle(it)) {
             CallGuestFn3(kLabelRowCtorFn, row, name, 0);
             WriteGuestBE32(row, kToggleRowVtable);
             WriteGuestU8(row + kRowChecked, uint8_t(ItemValueIndex(it)));
@@ -1308,12 +1314,12 @@ bool BuildNativeRows(int m) {
         nr.name[i]       = name;
         nr.last_index[i] = ItemIsToggle(it) ? ItemValueIndex(it) : 0;
         nr.last_label[i] = label;
-        if (!ItemIsToggle(it))
+        if (!ItemIsLabelOnly(it) && !ItemIsToggle(it))
             CentreRowWindow(nr, i, it, ItemValueIndex(it));
         WriteGuestBE32(arr + uint32_t(4 * i), row);
     }
 
-    nr.count = md.num_items;
+    nr.count = MenuItemCount(md);
     nr.array = arr;
     MC_INFO("[pause-menu] '{}' native rows built ({} rows)",
             md.label, nr.count);
@@ -1365,9 +1371,11 @@ void SyncNativeRowsFromCvars(int m) {
     const int lang = g_pending_language.exchange(-1, std::memory_order_relaxed);
     if (lang >= 0) ApplyLanguageNow(lang);
 
-    for (int i = 0; i < nr.count && i < md.num_items; ++i) {
-        const ItemDef& it = md.items[i];
+    for (int i = 0; i < nr.count && i < MenuItemCount(md); ++i) {
+        const ItemDef& it = MenuItemAt(md, i);
         RelabelRow(nr, i, it);
+
+        if (ItemIsLabelOnly(it)) continue;
 
         const int idx = ItemValueIndex(it);
         if (ItemIsToggle(it)) {
@@ -1387,13 +1395,15 @@ void PollNativeRows(int m) {
     NativeRows& nr = g_rows[m];
     const MenuDef& md = kMenus[m];
 
-    for (int i = 0; i < nr.count && i < md.num_items; ++i) {
-        const ItemDef& it = md.items[i];
+    for (int i = 0; i < nr.count && i < MenuItemCount(md); ++i) {
+        const ItemDef& it = MenuItemAt(md, i);
 
-        // Carbon tracks whether there is a car to edit, which changes
-        // without the row being touched.
-        if (it.kind == ItemKind::kCarbonBit)
+        // An action row's label tracks whether the scene is playing, carbon
+        // tracks whether there is a car to edit -- both change without the row
+        // being touched.
+        if (ItemIsLabelOnly(it) || it.kind == ItemKind::kCarbonBit)
             RelabelRow(nr, i, it);
+        if (ItemIsLabelOnly(it)) continue;
 
         const int n = ItemValueCount(it);
         if (n <= 0) continue;
@@ -1502,8 +1512,8 @@ void EnsureSubmenus() {
         // the native rows are — but the submenu is entered through the state
         // stack and Hook_PopulateRedirect still resolves against them, so the
         // tree stays the shape the engine expects.
-        for (int i = 0; i < md.num_items; ++i) {
-            const ItemDef& it = md.items[i];
+        for (int i = 0; i < MenuItemCount(md); ++i) {
+            const ItemDef& it = MenuItemAt(md, i);
             uint32_t st = CreateNewMenuState(it.key);
             if (!st) continue;
             GuestAppendMenuItem(sub, st);
@@ -1514,7 +1524,7 @@ void EnsureSubmenus() {
         BuildNativeRows(m);
 
         MC_INFO("[pause-menu] submenu '{}' created ({} items)",
-                md.label, md.num_items);
+                md.label, MenuItemCount(md));
     }
 
     g_menus_created.store(true, std::memory_order_relaxed);
@@ -1526,11 +1536,11 @@ bool HandleSubmenuIndexClick(uint32_t idx) {
     int m = g_active_menu.load(std::memory_order_relaxed);
     if (m < 0) return false;
     const MenuDef& md = kMenus[m];
-    if (idx >= uint32_t(md.num_items)) return false;
+    if (idx >= uint32_t(MenuItemCount(md))) return false;
 
     // A steps the value forward, the same as right. The row holds the select
     // itself, so the cvar move has to be mirrored back into it.
-    ClickItem(md.items[idx]);
+    ClickItem(MenuItemAt(md, int(idx)));
     SyncNativeRowsFromCvars(m);
     PopulateSubmenuFlash();
     return true;
@@ -1898,8 +1908,8 @@ bool Hook_ListViewPopulate(PPCRegister& r3) {
         if (CvarGetBool("carbon_menu_diag")) {
             const NativeRows& nr = g_rows[m];
             const MenuDef& md = kMenus[m];
-            for (int i = 0; i < nr.count && i < md.num_items; ++i) {
-                const ItemDef& it = md.items[i];
+            for (int i = 0; i < nr.count && i < MenuItemCount(md); ++i) {
+                const ItemDef& it = MenuItemAt(md, i);
                 const int n = ItemValueCount(it);
                 const int idx = nr.last_index[i];
                 if (ItemIsToggle(it)) {
