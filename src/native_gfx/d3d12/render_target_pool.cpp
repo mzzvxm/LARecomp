@@ -19,11 +19,56 @@
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_depth_cs);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
+REXCVAR_DECLARE(bool, mcla_native_gfx_depth_reclear_infer);
+REXCVAR_DECLARE(bool, mcla_native_gfx_reclear_probe);
+
 namespace mcla::native_gfx {
+
+// TEMP DIAG (RECLEAR): see the header. One line per distinct site/shape, then a
+// running tally, so a frame's worth of cascade resolves does not drown the one
+// scene-sized arm that matters.
+void NoteReclearArmed(const char* site, uint32_t width, uint32_t height) {
+  if (!REXCVAR_GET(mcla_native_gfx_reclear_probe)) {
+    return;
+  }
+  static std::map<std::string, uint64_t> seen;
+  char label[96];
+  std::snprintf(label, sizeof(label), "%s %ux%u", site, width, height);
+  auto [it, is_new] = seen.try_emplace(label, 0u);
+  ++it->second;
+  static uint64_t total = 0;
+  ++total;
+  if (!is_new && (total % 4000ull) != 0ull) {
+    return;
+  }
+  if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+    if (is_new) {
+      std::fprintf(f, "RECLEAR novo: %s\n", label);
+    } else {
+      std::fprintf(f, "RECLEAR tally (total=%llu):\n", (unsigned long long)total);
+      for (const auto& [k, n] : seen) {
+        std::fprintf(f, "   %-40s %llu\n", k.c_str(), (unsigned long long)n);
+      }
+    }
+    std::fflush(f);
+    std::fclose(f);
+  }
+}
 
 namespace {
 
-constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 1.0f};
+// Alpha ZERO, deliberately. This is the runtime's stand-in for a guest clear it
+// never sees, and it lands on every pooled colour target -- including the one the
+// Flash/vhsm UI renders into, which is then composited over the scene with
+// straight alpha blending. Measured on the pause menu: 60.7% of that 960x640
+// target was still exactly this clear value, and with alpha 1.0 the untouched
+// padding composited as an opaque dark rectangle around the menu box. Alpha 0
+// makes untouched area contribute nothing, which is what a cleared overlay is.
+// The RGB is kept: with straight alpha blending it cannot show through, and the
+// image-dump coverage counters identify "never drawn" by matching this exact
+// value. The optimized D3D12_CLEAR_VALUE in render_target_pool.cpp must stay
+// identical to this, or the clear is not the fast path.
+constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 0.0f};
 
 // A depth resource cannot carry both a DSV and an SRV through the same
 // format: the resource has to be TYPELESS, with the depth format on the view
@@ -319,6 +364,39 @@ RenderTarget* RenderTargetPool::Find(const RenderTargetKey& key) {
   return it == targets_.end() ? nullptr : &it->second;
 }
 
+RenderTarget* RenderTargetPool::FindByShape(uint32_t width, uint32_t height,
+                                            uint32_t ds_format, uint32_t sample_count) {
+  RenderTarget* best = nullptr;
+  for (auto& entry : targets_) {
+    RenderTarget& t = entry.second;
+    if (!t.color || t.key.width != width || t.key.height != height) {
+      continue;
+    }
+    if (t.key.sample_count != sample_count) {
+      continue;
+    }
+    // Prefer a matching depth shape; take any as a last resort, since the
+    // question this answers is "which pass drew at this size".
+    if (t.key.ds_format == ds_format) {
+      return &t;
+    }
+    if (!best) {
+      best = &t;
+    }
+  }
+  return best;
+}
+
+void RenderTargetPool::RequestClearOnlyFill(RenderTarget& target, const float rgba[4]) {
+  target.pending_guest_clear = true;
+  for (uint32_t i = 0; i < 4; ++i) {
+    target.pending_clear_rgba[i] = rgba[i];
+  }
+  // The surface now has defined contents as far as the pass is concerned, so
+  // the policy clear must not run over it if a draw does arrive later.
+  target.cleared = true;
+}
+
 void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
                                    uint32_t dest_address, uint32_t dest_width,
                                    uint32_t dest_height, const ResolveRegion& region,
@@ -334,7 +412,50 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
   if (from_depth) {
     ++stats_.resolves_depth;
   }
-  ID3D12Resource* src = from_depth ? source.depth.Get() : source.color.Get();
+  // A full-source depth resolve ends that surface's pass; the next draw into it
+  // starts a new one and must not inherit the depth. See needs_depth_reclear.
+  //
+  // This is an INFERENCE about intent from the SHAPE of the resolve, and it is
+  // not always right. It is right for the shadow atlas, which renders four
+  // cascades into one 640x640 surface and resolves each into its own quadrant.
+  // It is wrong for the scene target, where the game resolves the full depth so
+  // the ambient-occlusion pass can SAMPLE it and then keeps rendering into the
+  // same buffer: measured on a parked car, the reclear wiped 1280x720 depth to
+  // the far plane, and xAmbientOcclusionShadows -- a black quad, alpha 0.813,
+  // depth GREATER_EQUAL under reverse-Z -- then passed on every pixel it covered
+  // and multiplied the car's lower body to 18.7%.
+  //
+  // The guest states the intent itself: NotifyResolve arms the same flag from
+  // the resolve's own clear-depth request (the console's D3DRESOLVE_CLEARDEPTH-
+  // STENCIL). Suppressing this path entirely fixed the car but changed the
+  // daytime shadows, so the cascades do lean on it -- trading one bug for the
+  // other is not a fix.
+  //
+  // What separates the two cases is WHERE the resolve lands. The cascades write
+  // into an ATLAS: a 640x640 surface resolved into a 1280x1280 destination, one
+  // quadrant each, so the destination is strictly larger than the source. The
+  // scene's depth read-back lands in a destination the same size as the source,
+  // because it is a copy for sampling, not a page in an atlas.
+  //
+  // So the inference is kept, but narrowed to atlas-shaped resolves. Both bugs
+  // stay closed; nothing has to be traded.
+  const bool full_source = from_depth && region.src_x == 0 && region.src_y == 0 &&
+                           region.width == source.key.width &&
+                           region.height == source.key.height;
+  if (full_source) {
+    const bool into_atlas =
+        dest_width > source.key.width || dest_height > source.key.height;
+    char site[64];
+    std::snprintf(site, sizeof(site), "inferido%s dest %ux%u",
+                  into_atlas ? "" : "-ESTREITADO", dest_width, dest_height);
+    if (into_atlas && REXCVAR_GET(mcla_native_gfx_depth_reclear_infer)) {
+      source.needs_depth_reclear = true;
+    }
+    NoteReclearArmed(site, source.key.width, source.key.height);
+  }
+  ID3D12Resource* src = from_depth ? source.depth.Get()
+                                   : (color_index == 1 ? source.color1.Get()
+                                                       : source.color.Get());
   // TEMP DIAG (remove after): the composite's exposure input at 0x02D6C000 misses
   // the RT lookup; trace every resolve targeting it (or failing to).
   // TEMP DIAG (remove after): every DISTINCT resolve destination, once each.
@@ -682,6 +803,23 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     bool used_scratch = false;
     if (from_color1 && pc.source->key.sample_count > 1) {
       continue;
+    }
+    // Clear-only pass: fill the surface here, because no draw ever will. Colour
+    // only -- a depth resolve of a pass with no draws has nothing to say.
+    if (pc.source->pending_guest_clear && !pc.from_depth && pc.source->color &&
+        pc.source->rtv_heap) {
+      if (pc.source->color_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Transition.pResource = pc.source->color.Get();
+        b.Transition.StateBefore = pc.source->color_state;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &b);
+        pc.source->color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      }
+      cl->ClearRenderTargetView(pc.source->rtv_heap->GetCPUDescriptorHandleForHeapStart(),
+                                pc.source->pending_clear_rgba, 0, nullptr);
+      pc.source->pending_guest_clear = false;
     }
     if (pc.source->key.sample_count > 1) {
       ID3D12Resource* scratch = ResolveMsaaToScratch(context, cl, *pc.source, pc.from_depth,
@@ -1234,6 +1372,36 @@ void RenderTargetPool::RegisterDirect(uint32_t dest_address, ID3D12Resource* res
   c.height = height;
   c.dxgi_format = shader_format;
   c.state = state;
+}
+
+bool RenderTargetPool::AliasMissedColourResolve(uint32_t dest_address, uint32_t width,
+                                               uint32_t height) {
+  if (!dest_address || !width || !height) {
+    return false;
+  }
+  // The newest owned colour copy: whatever the guest resolved last is the best
+  // guess at what it is about to sample. Wrong content is fine -- the question
+  // this answers is whether ANY draw reads this address.
+  ResolvedCopy* best = nullptr;
+  for (auto& [addr, c] : resolved_) {
+    if (!c.resource || c.from_depth || !c.owned) continue;
+    if (addr == dest_address) continue;
+    best = &c;
+  }
+  if (!best) {
+    return false;
+  }
+  ResolvedCopy& c = resolved_[dest_address];
+  if (!c.resource) {
+    ++stats_.resolve_copies_created;
+  }
+  c.resource = best->resource;
+  c.owned = false;
+  c.width = width;
+  c.height = height;
+  c.dxgi_format = best->dxgi_format;
+  c.state = best->state;
+  return true;
 }
 
 ID3D12Resource* RenderTargetPool::FindResolvedTarget(uint32_t guest_address, uint32_t width,

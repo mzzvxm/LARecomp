@@ -40,7 +40,7 @@ constexpr uint32_t kWidth = 1280;
 constexpr uint32_t kHeight = 720;
 // Must match the CreateCommittedResource optimized clear value exactly, or
 // D3D12 warns and drops the fast clear path.
-constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 1.0f};
+constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 0.0f};
 bool g_done = false;
 FILE* g_log = nullptr;
 

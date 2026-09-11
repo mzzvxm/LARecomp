@@ -30,6 +30,7 @@
 #include "../guest/guest_constants.h"
 #include "../guest/guest_resources.h"
 #include "../guest/render_state.h"
+#include "../native_gfx.h"
 #include "../shader_identity.h"
 #include "constant_upload.h"
 #include "context.h"
@@ -83,6 +84,8 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
                     "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.");
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
+REXCVAR_DECLARE(bool, mcla_native_gfx_guest_clear);
+REXCVAR_DECLARE(bool, mcla_native_gfx_reclear);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_msaa);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
@@ -93,7 +96,7 @@ namespace mcla::native_gfx {
 
 namespace {
 
-constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 1.0f};
+constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 0.0f};
 // The guest viewport decides the target size; this only bounds a nonsensical
 // register read so a bad value cannot ask for a gigabyte of render target.
 constexpr uint32_t kMaxTargetDimension = 4096;
@@ -1899,18 +1902,91 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   render_targets.PrepareForRendering(cl, *target);
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = target->rtv_heap->GetCPUDescriptorHandleForHeapStart();
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = target->dsv_heap->GetCPUDescriptorHandleForHeapStart();
-  cl->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+  // Both colour targets when the pass declares two. The RTVs are slots 0 and 1
+  // of the same heap, so a single handle plus RTsSingleHandleToDescriptorRange
+  // covers them.
+  const UINT rtv_count =
+      (have_second_target && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x20u)) ? 2u : 1u;
+  cl->OMSetRenderTargets(rtv_count, &rtv, rtv_count > 1 ? TRUE : FALSE, &dsv);
+  if (target->cleared && target->needs_depth_reclear) {
+    // A full-source depth resolve since the last draw ended this surface's
+    // pass. The shadow map reuses ONE 640x640 surface for four cascades and
+    // resolves each into its own atlas quadrant, so "cleared once per frame"
+    // made cascades 1..3 render against cascade 0's depth. Depth only: the
+    // colour latch below is a different rule with a different blast radius.
+    target->needs_depth_reclear = false;
+    cl->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+                              target->clear_depth, 0, 0, nullptr);
+  }
+  // Consume the guest's pending clear ONCE, here, so both branches below see
+  // the same request: the first-draw policy clear and the mid-frame re-clear.
+  GuestClearRequest guest_clear;
+  const bool have_guest_clear =
+      REXCVAR_GET(mcla_native_gfx_guest_clear) && TakeGuestClear(&guest_clear);
   if (!target->cleared) {
     // Cleared once per target: every later draw of that pass accumulates into
     // it, which is what makes the shadow atlas and the scene build up.
     target->cleared = true;
-    cl->ClearRenderTargetView(rtv, kClearColor, 0, nullptr);
+    target->needs_depth_reclear = false;
+    // The guest's own clear for this pass never reaches the runtime -- it goes
+    // to EDRAM through the command processor, which no-CP mode does not run --
+    // so kClearColor stands in for it. That is wrong wherever the pass does not
+    // cover the whole surface: the ShadowBlend target keeps the debug colour
+    // over the 80% of the screen no ShadowBlend draw touches, and that reads as
+    // full shadow. TakeGuestClear hands back the colour D3DDevice_Clear was
+    // called with instead. See mcla_native_gfx_guest_clear.
+    float clear_rgba[4] = {kClearColor[0], kClearColor[1], kClearColor[2], kClearColor[3]};
+    const bool from_guest = have_guest_clear && guest_clear.color;
+    if (from_guest) {
+      std::memcpy(clear_rgba, guest_clear.rgba, sizeof(clear_rgba));
+    }
+    (void)from_guest;
+    cl->ClearRenderTargetView(rtv, clear_rgba, 0, nullptr);
+    if (target->color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x4u)) {
+      // Target 1 is cleared with target 0's colour: the guest issues one
+      // D3DDevice_Clear for the pass, and on the console it wipes every bound
+      // surface. Leaving it dirty would let the previous species' normals show
+      // through the holes in this one's silhouette, which is the same class of
+      // bug the impostor atlas re-clear fixed for colour.
+      D3D12_CPU_DESCRIPTOR_HANDLE rtv1 = rtv;
+      rtv1.ptr += target->rtv_descriptor_size;
+      cl->ClearRenderTargetView(rtv1, clear_rgba, 0, nullptr);
+    }
     cl->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
                               target->clear_depth, 0, 0, nullptr);
-    // TEMP SKYPROBE: whichever draw first touches the anchor decides its depth
-    // clear. If that draw is not reverse-Z the anchor depth clears to 1.0 and
-    // the reverse-Z sky (z=0, GEQUAL, depth_wr=0) is rejected everywhere.
-    if (cfg == g_cap.config) {
+  } else if (have_guest_clear && REXCVAR_GET(mcla_native_gfx_reclear)) {
+    // One pooled target serves every pass of the same shape, so "cleared once
+    // per frame" hands the second pass of a frame the first pass's pixels. The
+    // guest clears before each pass; honour that clear here, restricted to the
+    // pass's own viewport, which is what D3DDevice_Clear does on the console.
+    // Scissoring is what makes this safe for the shadow atlas, whose quadrants
+    // are separate passes into one surface: each clear only wipes its quadrant.
+    const D3D12_RECT rect = {LONG(hv.top_left_x), LONG(hv.top_left_y),
+                             LONG(hv.top_left_x + hv.width),
+                             LONG(hv.top_left_y + hv.height)};
+    if (rect.right > rect.left && rect.bottom > rect.top && guest_clear.color) {
+      cl->ClearRenderTargetView(rtv, guest_clear.rgba, 1, &rect);
+      if (target->color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x4u)) {
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv1 = rtv;
+        rtv1.ptr += target->rtv_descriptor_size;
+        cl->ClearRenderTargetView(rtv1, guest_clear.rgba, 1, &rect);
+      }
+    }
+    // Colour only. Depth already has its own rule, needs_depth_reclear above,
+    // driven by a full-source resolve -- which is the exact moment a pass ends.
+    // Clearing depth here as well fired mid-pass on the anchor and the shadow
+    // atlas (measured: 9 and 27 full-surface depth clears per capture) for no
+    // gain, since the resolve-driven rule had already covered both.
+  }
+
+  // TEMP DIAG (KEYMISMATCH): the pool's key against the resource it actually
+  // holds. The scissor comes from the key and the RTV from the resource, so if
+  // the two ever disagree a draw rasterises through one rectangle into a
+  // surface of another size -- measured once on the pause menu composite, whose
+  // scissor read 960x640 while the bound RTV was the 1280x720 composite.
+  if (target->color) {
+    const D3D12_RESOURCE_DESC rd = target->color->GetDesc();
+    if (uint32_t(rd.Width) != target->key.width || rd.Height != target->key.height) {
       static uint32_t n = 0;
       if (n++ < 8) {
         REXLOG_INFO("[SKYCLEAR] anchor first-draw cleardepth={:.1f} vpz={:.3f}..{:.3f} "
@@ -1920,7 +1996,6 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       }
     }
   }
-
   D3D12_VIEWPORT vp = {hv.top_left_x, hv.top_left_y, hv.width,
                        hv.height,     hv.min_depth,  hv.max_depth};
   // Scissor from THIS draw's target, not from the anchor's. Using the anchor

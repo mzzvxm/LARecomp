@@ -40,8 +40,9 @@ void TryFirstDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
 // Called from the D3DDevice_Resolve hook. Ties the guest address a resolve
 // writes to the native render target that produced it, so a later texture
 // fetch at that address finds a real resource instead of stale guest memory.
-void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t dest_texture,
-                   uint32_t source_rect, uint32_t dest_point);
+void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags,
+                   uint32_t dest_texture, uint32_t source_rect, uint32_t dest_point,
+                   uint32_t clear_color_ptr);
 
 // Called from the rage::grcDevice::EndFrame hook.
 void NotifyFrameBoundary();
@@ -77,6 +78,46 @@ void NoteBeginVertices(uint32_t dev, uint32_t primitive_type, uint32_t vertex_co
 
 // D3DDevice_EndVertices: the inline vertices are complete here.
 void NoteEndVertices(const uint8_t* base, uint32_t dev);
+
+// D3DDevice_Clear (sub_824195E8), the one funnel every guest clear reaches:
+// grcDevice::Clear (sub_82178370) builds the flags -- 0xF colour, 0x10 depth,
+// 0x20 stencil -- and forwards colour in r7 as D3DCOLOR (0xAARRGGBB).
+//
+// The runtime never sees this clear otherwise: it lands in EDRAM through the
+// command processor, which no-CP mode does not run, so the pool's own policy
+// clear paints kClearColor over a surface the game asked to be something else.
+// Measured in "cap_capture.rdc": the ShadowBlend target starts 100% at
+// kClearColor and only 18% of it is ever drawn, so the far 80% reads as full
+// shadow -- the "lighting turns off at distance". The shadow driver's own
+// clear of that surface is 0xFF7F7F7F, i.e. exactly the 0.5 neutral its draws
+// write.
+void NoteGuestClear(uint32_t flags, uint32_t color, float z, uint32_t stencil);
+
+// Consumes the last guest colour clear, if one arrived since the previous
+// call, writing it as linear RGBA. The pool's policy clear calls this so the
+// surface starts at the colour the game asked for.
+bool TakeGuestClearColor(float rgba[4]);
+
+// The same pending slot, but reporting WHICH buffers the guest asked to clear
+// and the depth value it asked for. A guest clear that arrives after a target
+// was already cleared this frame still has to be honoured: one pooled target
+// is shared by every pass of the same shape, so the second pass of a frame
+// (impostor atlas generation renders one tree species per pass into the same
+// 256x256 target) would otherwise inherit the previous pass's pixels. Measured:
+// the foliage impostor atlases came back with the previous species smeared over
+// the background instead of black, which puts every texel above the shadow
+// shader's 10/255 cut and turns every tree shadow into a square.
+struct GuestClearRequest {
+  bool color = false;
+  bool depth = false;
+  float rgba[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float z = 0.0f;
+};
+bool TakeGuestClear(GuestClearRequest* out);
+
+// A resolve that also clears its source (RB_COPY_CONTROL colour/depth clear
+// bits) arms the same pending slot D3DDevice_Clear uses.
+void SetPendingResolveClear(const float rgba[4]);
 
 // Arms a RenderDoc capture of the next whole guest frame. Callable from any
 // thread; the request is consumed at the next frame boundary, which is where

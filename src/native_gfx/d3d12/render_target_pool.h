@@ -46,6 +46,16 @@ namespace mcla::native_gfx {
 
 class D3D12Context;
 
+// TEMP DIAG (RECLEAR): which path armed needs_depth_reclear, and on what shape.
+//
+// Two places arm it and they disagree about intent: NoteResolve INFERS a pass
+// end from the shape of a full-source depth resolve, while NotifyResolve reads
+// the clear-depth request the guest actually sent. They are indistinguishable
+// once the flag is set, so attributing a wrong reclear to one of them needs
+// this. Writes distinct site/shape combinations to native_gfx_diag.txt behind
+// mcla_native_gfx_reclear_probe.
+void NoteReclearArmed(const char* site, uint32_t width, uint32_t height);
+
 // Where a resolve reads from and where it writes to. The shadow map resolves
 // four 640x640 cascades into one 1280x1280 atlas, so a resolve is a sub-rect
 // copy, not a whole-surface one.
@@ -109,7 +119,28 @@ struct RenderTarget {
   D3D12_RESOURCE_STATES color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   D3D12_RESOURCE_STATES color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   uint32_t rtv_descriptor_size = 0;
+  // A pass the guest only CLEARED and then resolved, with no draws. Nothing
+  // calls PrepareForRendering for such a pass, so the colour surface would be
+  // copied out undefined; FlushPendingCopies performs this clear itself right
+  // before the copy. See RequestClearOnlyFill.
+  bool pending_guest_clear = false;
+  float pending_clear_rgba[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   bool cleared = false;  // cleared once, then accumulated into
+  // A depth resolve that covers the WHOLE source ends that surface's pass: on
+  // Xenos the depth lives in EDRAM, which the next pass starts from scratch.
+  // Without this the shadow map's 640x640 surface, reused by four consecutive
+  // cascades and resolved into four atlas quadrants, kept cascade 0's depth
+  // for all four -- cascade 2's 191 draws were rejected outright and its
+  // quadrant came out BIT-IDENTICAL to cascade 1's, which is what left the sun
+  // valid only inside a straight-edged box around the player.
+  //
+  // Scoped to depth and to a full-source resolve deliberately. Measured over
+  // four frames: the only full-source depth resolves in the game are the four
+  // shadow cascades; the main scene's depth resolves are banded tiles
+  // (1280x512 + 1280x208) and must keep accumulating. Colour is untouched --
+  // 144 of its resolves are full-source and re-clearing those would be a
+  // different change with a different blast radius.
+  bool needs_depth_reclear = false;
 };
 
 class RenderTargetPool : public RenderTargetLookup {
@@ -143,6 +174,24 @@ class RenderTargetPool : public RenderTargetLookup {
   // trusting it as one allocates a target per bogus viewport until the GPU
   // runs out of memory (observed: every later resource creation failing).
   RenderTarget* Find(const RenderTargetKey& key);
+
+  // Same shape, ANY colour format. A resolve builds its key from the viewport
+  // registers plus rs.color_format, and MCLA has two 320x180 post-process passes
+  // -- one HDR (rt_format 10), one LDR (28) -- so the LDR key misses a pool that
+  // only ever rendered the HDR one, every frame. Measured: `RESOLVE_MISS
+  // dest=0x02DE6000 320x180 rt_fmt=28 count=600` while `RESOLVE_DEST
+  // dest=0x02D6E000 320x180 src_fmt=10` succeeds, and the tonemap then samples a
+  // BLACK 320x180 (mean 0.0004) where the emulated path has real data.
+  //
+  // Deliberately NOT part of Find(): it is a fallback for a resolve that already
+  // missed, never a lookup a draw can take.
+  RenderTarget* FindByShape(uint32_t width, uint32_t height, uint32_t ds_format,
+                            uint32_t sample_count);
+
+  // TEMP DIAG: every pooled target of one colour format, written to the diag
+  // file. A resolve that misses says nothing on its own -- the question is
+  // whether the image it wanted is sitting in the pool under another shape.
+  void LogTargetsForFormat(uint32_t rt_format, const char* why);
 
   // Marks every pooled target as un-cleared so the next frame re-clears it on
   // its first draw. Continuous mode re-renders the whole scene each frame; the
@@ -209,8 +258,22 @@ class RenderTargetPool : public RenderTargetLookup {
   // produce the contents yet.
   void NoteDestination(uint32_t dest_address, uint32_t width, uint32_t height);
 
+  // Arms the clear a CLEAR-ONLY pass needs: the guest cleared this surface and
+  // resolved it without issuing a single draw, so the pool's usual policy clear
+  // (which runs on a pass's first draw) never happens. FlushPendingCopies does
+  // it just before reading the surface.
+  void RequestClearOnlyFill(RenderTarget& target, const float rgba[4]);
+
   void RegisterDirect(uint32_t dest_address, ID3D12Resource* resource, uint32_t width,
                       uint32_t height, uint32_t shader_format, D3D12_RESOURCE_STATES state);
+
+  // EXPERIMENT: a colour resolve the pool has no source for is currently
+  // dropped. The emulated path cannot drop one -- it resolves out of EDRAM by
+  // address, so it always produces something. This aliases a missed colour
+  // resolve onto the most recent successful colour copy, purely to find out
+  // whether anything actually SAMPLES that destination. Returns true if an
+  // alias was registered.
+  bool AliasMissedColourResolve(uint32_t dest_address, uint32_t width, uint32_t height);
 
   // Writes every registered resolve destination to a .tga next to the report.
   // Counting a fetch as "resolved" only proves a resource was handed back; it

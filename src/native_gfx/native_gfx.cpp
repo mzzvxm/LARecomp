@@ -92,6 +92,32 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_depth_cs, true, "MCLA/NativeGfx",
                     "distance fog, the per-object contact shadow under vehicles and the depth of "
                     "field's circle of confusion at the same time. Diagnostic only.");
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth_reclear_infer, true, "MCLA/NativeGfx",
+                    "Let an ATLAS-shaped full-source depth resolve arm the depth re-clear on its "
+                    "own, on top of the clear the guest's resolve asked for. The inference "
+                    "exists for the shadow cascades: four of them share ONE 640x640 surface, "
+                    "each resolved into its own quadrant of the 1280x1280 atlas, and without a "
+                    "re-clear cascades 1..3 render against cascade 0's depth. It used to fire on "
+                    "ANY full-source depth resolve, which also caught the scene target -- there "
+                    "the game resolves its full depth so the ambient-occlusion pass can SAMPLE "
+                    "it and then keeps drawing into the same buffer, so the re-clear wiped "
+                    "1280x720 depth to the far plane and xAmbientOcclusionShadows (black quad, "
+                    "alpha 0.813, depth GREATER_EQUAL under reverse-Z) passed on every pixel it "
+                    "covered, multiplying a car's lower body to 18.7% (0.02278 -> 0.00426, exact "
+                    "in three channels). Suppressing the inference entirely fixed the car but "
+                    "moved the daytime shadows, so it is narrowed instead: only a resolve whose "
+                    "DESTINATION is larger than the source is an atlas page. Off leaves only the "
+                    "guest's declared clear, which is the shape that showed the shadow change.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear_probe, false, "MCLA/NativeGfx",
+                    "TEMP DIAG: log which path armed needs_depth_reclear and on what surface "
+                    "shape. Two places arm the same flag -- the shape inference in "
+                    "RenderTargetPool::NoteResolve and the guest's own clear request in "
+                    "NotifyResolve -- and once it is set they are indistinguishable, so "
+                    "attributing a wrong re-clear needs this.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_INT32(mcla_native_gfx_shadow_bias, 16, "MCLA/NativeGfx",
                      "Depth bias, in D24 quanta, added to the 640x640 shadow pass. Measured "
                      "against the emulated path on the same camera and hour: the native shadow "
@@ -121,6 +147,15 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
                     "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.");
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear, true, "MCLA/NativeGfx",
+                    "Honour a guest clear that arrives after the target was already cleared "
+                    "this frame, restricted to the pass's viewport. One pooled target is "
+                    "shared by every pass of the same shape, so without this the second pass "
+                    "of a frame inherits the first one's pixels: the foliage impostor atlases "
+                    "came back with other species smeared over the background, which put every "
+                    "texel above the shadow shader's 10/255 cut and made every tree shadow a "
+                    "square.");
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_dumprt, false, "MCLA/NativeGfx",
                     "Diagnostic: write every large resolve destination to a .tga at the end "
                     "of the capture. Counting a fetch as resolved only proves a resource was "
@@ -164,6 +199,34 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
                       "Intermittent by nature -- it only bites on a frame where the burst leaves "
                       "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_resolve_shape_fallback, true, "MCLA/NativeGfx",
+    "When a colour resolve misses, retry the pool by SHAPE alone (same size, same "
+    "depth format, same sample count) instead of also demanding the colour format the "
+    "resolve-time registers name. MCLA has two 320x180 post-process passes, one HDR and "
+    "one LDR, and the LDR resolve at 0x02DE6000 misses every frame against a pool that "
+    "only ever rendered the HDR one -- so the tonemap samples a BLACK 320x180 where the "
+    "emulated path has real data. Measured on menu camera 53: the native frame comes out "
+    "a uniform 1.8x brighter than the emulated one and clips 11.6% of the screen against "
+    "2.6%, with the HDR SCENE target identical between the paths (0.0312 against 0.0327), "
+    "so the gain enters at this stage. Turn off to get the dropped resolve back.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_clear_only_resolve, true, "MCLA/NativeGfx",
+    "Satisfy a colour resolve whose source pass was only CLEARED, never drawn into. "
+    "Such a pass never asks the pool for a target, so the resolve is dropped and the "
+    "destination keeps whatever guest memory held -- zero. MCLA does this for its small "
+    "shadow collectors (8x8 at 0x0329C000 and 0x0329D000, cleared to 0xFF7F7F7F once at "
+    "load), which the character eye material samples on its NIGHT path and multiplies "
+    "into its light as saturate(-0.25 + s): reading zero paints every eye black after "
+    "dark, while day worked because the day path samples the 256x256 collector that a "
+    "real pass renders. Gated to a small surface whose fetch, viewport key and resolve "
+    "rect all agree AND whose guest clear is still pending -- the draw path consumes a "
+    "pending clear on a pass's first draw, so it surviving until the resolve is the "
+    "no-draw signal. Turn off to get the dropped resolve back while bisecting.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
     mcla_native_gfx_gen_mips, false, "MCLA/NativeGfx",
@@ -229,6 +292,15 @@ REXCVAR_DEFINE_INT32(
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_alias_missed_resolve, false, "MCLA/NativeGfx",
+    "EXPERIMENT. A colour resolve with no matching pooled source is dropped; the emulated path "
+    "cannot drop one, because it resolves out of EDRAM by address and always produces something. "
+    "With this on, a missed colour resolve is aliased onto the most recent colour copy so the "
+    "question 'does anything sample that destination' can be answered by looking at the screen. "
+    "The content is deliberately wrong; this is a probe, not a fix.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
     mcla_native_gfx_surface_key, false, "MCLA/NativeGfx",
     "Include what the guest asked for -- its requested sample count and surface pitch -- in the "
     "render target pool's key, so two guest surfaces of the same shape stop sharing one pooled "
@@ -285,6 +357,21 @@ REXCVAR_DEFINE_UINT32(
     "Measured at 4x on the menu camera: silhouette transitions widened 34-39% against the\n"
     "same scene at 1x, with zero validation errors.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_guest_clear, true, "MCLA/NativeGfx",
+                    "Start a render target at the colour the GUEST asked for (D3DDevice_Clear, "
+                    "sub_824195E8) instead of the runtime's kClearColor {0.02,0.02,0.04}. The "
+                    "guest clear reaches EDRAM through the command processor, which no-CP mode "
+                    "does not run, so today every fresh target is painted the debug colour. "
+                    "Measured in \"cap_capture.rdc\": the ShadowBlend target is 100% kClearColor "
+                    "before the pass and still 80.6% after it -- only 18% of the screen gets a "
+                    "ShadowBlend draw, and the rest reads as full shadow, which is the sun "
+                    "switching off past a distance. That surface's own guest clear is 0xFF7F7F7F "
+                    "= 0.498, exactly the neutral its draws write. On by default since the user "
+                    "confirmed in game that it brings the distant sun back; the single global "
+                    "pending slot is the part still to be checked, since a clear that belongs to "
+                    "one surface would then be handed to whichever pass draws next.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
                     "Feed SharedConstants.g_AlphaThreshold from RB_ALPHA_REF and RB_COLORCONTROL "
@@ -650,8 +737,14 @@ void TryFirstDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
 }
 
 
+// Upper bound on a surface the clear-only path is allowed to allocate. The
+// collectors this exists for are 8x8; a full-screen resolve miss is a real
+// dropped pass and has to keep reporting itself rather than be filled with a
+// clear colour.
+constexpr uint32_t kClearOnlyResolveMaxDimension = 64u;
+
 void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t dest_texture,
-                   uint32_t source_rect, uint32_t dest_point) {
+                   uint32_t source_rect, uint32_t dest_point, uint32_t clear_color_ptr) {
   if (!Active() || !dest_texture) {
     return;
   }
@@ -718,8 +811,145 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
     return;
   }
   RenderTarget* source = g_render_targets.Find(key);
+  // Same shape, different colour format. MCLA has two 320x180 post-process
+  // passes -- HDR (rt_format 10) and LDR (28) -- and the key built here takes
+  // rs.color_format, so the LDR resolve misses a pool that only rendered the HDR
+  // one. Measured: `RESOLVE_MISS dest=0x02DE6000 320x180 rt_fmt=28 count=600`
+  // every frame, and the tonemap then samples a BLACK 320x180 (mean 0.0004)
+  // where the emulated path has real data -- while the HDR scene target itself
+  // matches between the two paths (0.0312 emulated against 0.0327 native), so
+  // the divergence is at this stage and not in scene rendering.
+  //
+  // Only after the exact lookup has already failed, and only for a shape the
+  // pool really rendered: this is not a lookup a draw can take.
+  if (!source && !from_depth && REXCVAR_GET(mcla_native_gfx_resolve_shape_fallback)) {
+    source = g_render_targets.FindByShape(key.width, key.height, key.ds_format,
+                                          key.sample_count);
+    if (source) {
+      static uint32_t n = 0;
+      if (n++ < 12u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "RESOLVE_SHAPE dest=0x%08X %ux%u pediu fmt=%u achou fmt=%u\n", dest,
+                       key.width, key.height, key.rt_format, source->key.rt_format);
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+  }
+  // The resolve's own source rectangle, read here rather than after the miss
+  // check: when the lookup fails it is the only thing that says what shape the
+  // guest was actually copying out, and the viewport registers at resolve time
+  // have already been shown to disagree with the one the draws used.
+  const auto read_be32_early = [&](uint32_t ea) -> int32_t {
+    if (ea < 0x1000u) return 0;
+    uint32_t v;
+    std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+    return int32_t(__builtin_bswap32(v));
+  };
+  if (source) {
+    // RB_COPY_CONTROL rides in `flags`: bit 8 clears colour, bit 9 clears
+    // depth, as part of the same resolve. That is how the guest separates one
+    // pass from the next on a surface it reuses -- impostor atlas generation
+    // bakes one tree species, resolves it, and expects the tile to come back
+    // empty for the next species. Dropping this made the silhouettes the union
+    // of every species baked that frame: a palm and two trees came out as two
+    // solid bushes.
+    const bool clear_color = (flags & 0x100u) != 0u;
+    const bool clear_depth = (flags & 0x200u) != 0u;
+    if (clear_color) {
+      float rgba[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+      if (clear_color_ptr >= 0x1000u) {
+        for (uint32_t i = 0; i < 4; ++i) {
+          uint32_t v;
+          std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base),
+                                                clear_color_ptr + 4 * i),
+                      4);
+          v = __builtin_bswap32(v);
+          std::memcpy(&rgba[i], &v, 4);
+          if (!std::isfinite(rgba[i])) {
+            rgba[i] = 0.0f;
+          }
+        }
+      }
+      SetPendingResolveClear(rgba);
+      source->cleared = false;
+    }
+    if (clear_depth) {
+      // The DECLARED path: the guest's own resolve asked for the depth to be
+      // cleared (D3DRESOLVE_CLEARDEPTHSTENCIL on the console). Unlike the shape
+      // inference in RenderTargetPool::NoteResolve this is intent, not a guess,
+      // so it is never suppressed.
+      source->needs_depth_reclear = true;
+      NoteReclearArmed("guest", source->key.width, source->key.height);
+    }
+  }
+  if (!source && !from_depth && REXCVAR_GET(mcla_native_gfx_clear_only_resolve)) {
+    // CLEAR-ONLY PASS.
+    //
+    // The guest sets a small surface, clears it, and resolves it WITHOUT
+    // issuing a single draw. Nothing ever asks the pool for that target, so
+    // Find() cannot answer and the resolve is dropped -- guest memory at the
+    // destination stays whatever it was, which is zero.
+    //
+    // Measured case: MCLA's small shadow collectors, 8x8 R8G8B8A8 resolved to
+    // 0x0329C000 and 0x0329D000 once at load, cleared to 0xFF7F7F7F. The
+    // character eye material (Character_eyes_normalmap) samples that collector
+    // on its NIGHT path and scales its light by `saturate(-0.25 + s)`, so a
+    // zero there paints the eyes black -- day worked because the day path hits
+    // the 256x256 collector at 0x0329E000, which a real pass does render.
+    //
+    // Deliberately narrow, because Find()'s own comment is right: a resolve is
+    // not an allocation request, and trusting one as such allocates a target
+    // per bogus viewport until the GPU runs out. Three conditions together mean
+    // "a cleared surface nobody drew into":
+    //   * a guest clear is still PENDING -- the draw path consumes it on a
+    //     pass's first draw, so it surviving to the resolve IS the no-draw
+    //     signal;
+    //   * the fetch, the viewport key and the resolve rect all agree;
+    //   * the surface is small. A full-screen miss is a real dropped pass and
+    //     must keep reporting itself, not be papered over with a clear.
+    const bool shape_agrees = key.width == fetch.width && key.height == fetch.height;
+    // NOT named `small`: rpcndr.h, pulled in through the Windows headers,
+    // #defines that to `char`.
+    const bool is_small = key.width <= kClearOnlyResolveMaxDimension &&
+                          key.height <= kClearOnlyResolveMaxDimension;
+    if (shape_agrees && is_small) {
+      GuestClearRequest clear;
+      if (TakeGuestClear(&clear) && clear.color) {
+        RenderTarget* created = g_render_targets.Acquire(g_draw_context, key, clear.z);
+        if (created && created->color) {
+          g_render_targets.RequestClearOnlyFill(*created, clear.rgba);
+          source = created;
+          static uint32_t n = 0;
+          if (n++ < 16u) {
+            if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+              std::fprintf(f,
+                           "CLEARONLY dest=0x%08X %ux%u rgba=%.3f,%.3f,%.3f,%.3f\n", dest,
+                           key.width, key.height, clear.rgba[0], clear.rgba[1], clear.rgba[2],
+                           clear.rgba[3]);
+              std::fflush(f);
+              std::fclose(f);
+            }
+          }
+        }
+      }
+    }
+  }
   if (!source) {
     // A pass we never rendered; nothing to hand to the destination.
+    if (!from_depth && REXCVAR_GET(mcla_native_gfx_alias_missed_resolve)) {
+      if (g_render_targets.AliasMissedColourResolve(dest, fetch.width, fetch.height)) {
+        static uint32_t n = 0;
+        if (n++ < 8u) {
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f, "RESALIAS dest=0x%08X %ux%u\n", dest, fetch.width, fetch.height);
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+    }
     NoteFrameCaptureResolveMiss(dest, fetch.width, fetch.height, key.width, key.height,
                                 key.rt_format, key.ds_format);
     return;
@@ -770,6 +1000,88 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
 }
 
 void NoteGuestDraw(int kind) { NoteFrameCaptureGuestDraw(kind); }
+
+namespace {
+// One slot is enough: the guest clears a surface immediately before the pass
+// that renders into it, on the same thread that issues the draws, so the pool's
+// policy clear for that pass's first draw is the very next consumer.
+std::atomic<bool> g_guest_clear_pending{false};
+std::atomic<uint32_t> g_guest_clear_color{0};
+std::atomic<uint32_t> g_guest_clear_flags{0};
+std::atomic<float> g_guest_clear_z{0.0f};
+std::atomic<uint32_t> g_guest_clear_calls{0};
+}  // namespace
+
+void NoteGuestClear(uint32_t flags, uint32_t color, float z, uint32_t stencil) {
+  const uint32_t n = g_guest_clear_calls.fetch_add(1, std::memory_order_relaxed);
+  // TEMP DIAG: the point of the first build is to see WHICH clears arrive and
+  // in what order relative to the policy clear, not just to apply them.
+  if (n < 96u || (n % 512u) == 0u) {
+    // native_gfx_diag.txt, not REXLOG: under RenderDoc the game is launched by
+    // ExecuteAndInject and its stdout goes nowhere this session can read.
+    if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+      std::fprintf(f, "GUESTCLEAR #%u flags=0x%X color=0x%08X z=%.4f stencil=%u\n", n, flags, color,
+                   static_cast<double>(z), stencil);
+      std::fclose(f);
+    }
+  }
+  // Depth-only clears used to return here. They are kept now because the
+  // re-clear path below needs them: a pass that re-uses a shared pooled target
+  // must get its depth back too, or the second species is depth-tested against
+  // the first one still sitting in the buffer.
+  g_guest_clear_color.store(color, std::memory_order_relaxed);
+  g_guest_clear_flags.store(flags, std::memory_order_relaxed);
+  g_guest_clear_z.store(z, std::memory_order_relaxed);
+  g_guest_clear_pending.store(true, std::memory_order_release);
+}
+
+void SetPendingResolveClear(const float rgba[4]) {
+  // Same one-slot mechanism D3DDevice_Clear uses: the next draw into the
+  // surface consumes it. A resolve that clears is always followed immediately
+  // by the pass that renders into the wiped surface, so one slot is enough.
+  uint32_t c = 0;
+  for (uint32_t i = 0; i < 4; ++i) {
+    const float v = rgba[i] < 0.0f ? 0.0f : (rgba[i] > 1.0f ? 1.0f : rgba[i]);
+    const uint32_t byte = uint32_t(v * 255.0f + 0.5f);
+    // D3DCOLOR order, matching what NoteGuestClear stores: 0xAARRGGBB.
+    const uint32_t shift = i == 0 ? 16 : (i == 1 ? 8 : (i == 2 ? 0 : 24));
+    c |= byte << shift;
+  }
+  g_guest_clear_color.store(c, std::memory_order_relaxed);
+  g_guest_clear_flags.store(0xFu, std::memory_order_relaxed);
+  g_guest_clear_pending.store(true, std::memory_order_release);
+}
+
+bool TakeGuestClear(GuestClearRequest* out) {
+  if (!g_guest_clear_pending.exchange(false, std::memory_order_acquire)) {
+    return false;
+  }
+  const uint32_t flags = g_guest_clear_flags.load(std::memory_order_relaxed);
+  const uint32_t c = g_guest_clear_color.load(std::memory_order_relaxed);
+  if (out) {
+    out->color = (flags & 0xFu) != 0u;
+    out->depth = (flags & 0x30u) != 0u;
+    out->rgba[0] = static_cast<float>((c >> 16) & 0xFFu) / 255.0f;
+    out->rgba[1] = static_cast<float>((c >> 8) & 0xFFu) / 255.0f;
+    out->rgba[2] = static_cast<float>(c & 0xFFu) / 255.0f;
+    out->rgba[3] = static_cast<float>((c >> 24) & 0xFFu) / 255.0f;
+    out->z = g_guest_clear_z.load(std::memory_order_relaxed);
+  }
+  return true;
+}
+
+bool TakeGuestClearColor(float rgba[4]) {
+  GuestClearRequest req;
+  if (!TakeGuestClear(&req) || !req.color) {
+    return false;
+  }
+  const uint32_t c = g_guest_clear_color.load(std::memory_order_relaxed);
+  rgba[0] = static_cast<float>((c >> 16) & 0xFFu) / 255.0f;
+  rgba[1] = static_cast<float>((c >> 8) & 0xFFu) / 255.0f;
+  rgba[2] = static_cast<float>(c & 0xFFu) / 255.0f;
+  rgba[3] = static_cast<float>((c >> 24) & 0xFFu) / 255.0f;
+  return true;
+}
 
 namespace {
 // Begin/EndVertices are strictly paired on the guest draw thread, so one

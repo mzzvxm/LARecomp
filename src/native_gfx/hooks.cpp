@@ -88,6 +88,23 @@ REX_EXTERN(__imp__rex_sub_824195E8);
 REX_EXTERN(__imp__D3DDevice_CreateTexture);
 REX_EXTERN(__imp__grcTextureXenon_dtor);
 
+// D3DDevice_Clear(dev, Count, pRects, Flags, Color, Z, Stencil, ...) --
+// sub_824195E8, the single funnel every guest clear reaches. grcDevice::Clear
+// (sub_82178370) is the only caller and it builds Flags itself: 0xF for the
+// four colour targets, 0x10 depth, 0x20 stencil, with Colour a D3DCOLOR in r7.
+// Z rides in fp1, so its GPR slot (r8) is reserved and carries nothing.
+//
+// Observed BEFORE the original: in no-CP mode the original writes a clear into
+// a command stream nothing consumes, so there is no ordering to preserve here.
+extern "C" REX_FUNC(rex_sub_824195E8) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_824195E8");
+  if (REXCVAR_GET(mcla_native_gfx)) {
+    mcla::native_gfx::NoteGuestClear(ctx.r6.u32, ctx.r7.u32, static_cast<float>(ctx.f1.f64),
+                                     ctx.r9.u32);
+  }
+  __imp__rex_sub_824195E8(ctx, base);
+}
+
 // --- texture identity ------------------------------------------------------
 
 // grcTextureXenon::Init(this, const char* name, image, flags)
@@ -394,7 +411,7 @@ extern "C" REX_FUNC(D3DDevice_EndTiling) {
   // NotifyResolve dereferences the destination without a readability check.
   if (dest_texture >= 0x1000u && dest_texture < 0x40000000u && mcla::native_gfx::Active()) {
     mcla::native_gfx::NotifyResolve(base, dev, flags, dest_texture, /*source_rect=*/0,
-                                    /*dest_point=*/0);
+                                    /*dest_point=*/0, /*clear_color_ptr=*/0);
   }
 }
 
@@ -482,9 +499,18 @@ extern "C" REX_FUNC(D3DDevice_Resolve) {
   const uint32_t source_rect = ctx.r5.u32;   // a3: x0, y0, x1, y1
   const uint32_t dest_texture = ctx.r6.u32;  // a4
   const uint32_t dest_point = ctx.r7.u32;    // a5: x, y
+  // a8: pClearColor. On the console a resolve can CLEAR the surface it just
+  // copied out of, which is how the guest separates one impostor bake from the
+  // next: it renders a species, resolves it to that species' atlas, and the
+  // resolve wipes the tile for the following one. Ignoring it made every bake
+  // accumulate on top of the last -- measured, one 256x256 target took 1 clear
+  // and then 29 draws -- so each atlas ended up holding the union of several
+  // trees and every distant tree rendered as one solid bush.
+  const uint32_t clear_color_ptr = ctx.r10.u32;
   __imp__D3DDevice_Resolve(ctx, base);
   if (mcla::native_gfx::Active()) {
-    mcla::native_gfx::NotifyResolve(base, dev, flags, dest_texture, source_rect, dest_point);
+    mcla::native_gfx::NotifyResolve(base, dev, flags, dest_texture, source_rect, dest_point,
+                                    clear_color_ptr);
   }
 }
 
