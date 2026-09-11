@@ -5,6 +5,8 @@
 #include "texture_cache.h"
 
 #include <algorithm>
+#include <set>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -185,6 +187,29 @@ void TextureCache::EvictToBudget(D3D12Context& context, uint64_t current_frame) 
     entries_.erase(it);
   }
 }
+
+namespace {
+// TEMP DIAG (remove after): a fetch that cannot be resolved falls back to the
+// neutral 1x1 white, and the counter only says "decode_failures" -- which names
+// six different sites. This says WHICH one, once per (address, reason), and it
+// exists because the square minimap traced to exactly this: the circular mask
+// in xAlphaModulate__PS_Textured samples fetch slot 0 and computes 1 - mask, so
+// a mask that falls back to white subtracts nothing and the corners survive.
+void NoteResolveFailure(const TextureFetch& fetch, const char* why) {
+  static std::set<uint64_t> seen;
+  const uint64_t sig = (uint64_t(fetch.base_address) << 8) ^ uint64_t(why[0]) ^
+                       (uint64_t(fetch.format) << 1);
+  if (!seen.insert(sig).second) {
+    return;
+  }
+  if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+    std::fprintf(f, "TEXFAIL 0x%08X %ux%u fmt=%u tiled=%d pitch=%u -> %s\n", fetch.base_address,
+                 fetch.width, fetch.height, fetch.format, fetch.tiled ? 1 : 0, fetch.pitch, why);
+    std::fflush(f);
+    std::fclose(f);
+  }
+}
+}  // namespace
 
 ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                                       const uint8_t* base, const TextureFetch& fetch,
