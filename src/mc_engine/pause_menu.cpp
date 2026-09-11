@@ -3135,6 +3135,32 @@ bool MCLA_MenuListNullTableGuard(PPCRegister& r30) {
     return r30.u32 == 0;
 }
 
+// Guard for sub_8265F008 at 0x8265F0F0, which does
+//
+//     r10 = *(r31 + 0);            // the list's vtable
+//     r9  = *(r10 + 648);          // vfunc 162
+//     bctrl                        // vfunc(list, index)
+//
+// with no check. r31 is a menu list -- it is read at +184, the selected index,
+// a few instructions earlier. Measured after a cutscene replay: that vtable is
+// ZERO, so activating PauseMenu (which walks its children, SettingsMenu among
+// them) calls through a dead object and takes the process down with a read at
+// 0x288. Skipping the call costs one list not being refreshed; making it costs
+// the game. Returning true jumps past the bctrl, to 0x8265F108, where r3 is
+// reloaded from r28 anyway so nothing downstream reads the missing result.
+//
+// The address is logged once because the object identity is still unexplained:
+// something is destroying a list the pause menu tree still points at.
+bool MCLA_PauseListVtableGuard(PPCRegister& r31) {
+    const uint32_t list = r31.u32;
+    if (!list || ReadGuestBE32(list) != 0) return false;
+    static std::atomic<bool> told{false};
+    if (!told.exchange(true))
+        MC_WARN("[pause-menu] list 0x{:08X} has a null vtable -- skipping the "
+                "refresh call that would have crashed. Something freed a list "
+                "the menu tree still references.", list);
+    return true;
+}
 
 bool PauseMenuPopStack() {
     return GuestStackPop();
@@ -3220,6 +3246,7 @@ void CarbonOnStateActivate(const char* name, uint32_t state) {}
 bool Hook_FlashCommandLog(PPCRegister& r5) { return false; }
 bool Hook_PopulateRedirect(PPCRegister& r3) { return false; }
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30) { return false; }
+bool MCLA_PauseListVtableGuard(PPCRegister&) { return false; }
 bool Hook_RexGlueCancel(PPCRegister& r31) { return false; }
 bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

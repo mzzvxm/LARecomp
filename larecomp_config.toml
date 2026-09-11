@@ -26171,6 +26171,15 @@ registers = ["r4"]
 #   0x823D2570  r4  = the "<name><suffix>" the entity is looked up by
 #   0x823D2578  r31 = the entity sub_822E6A80 returned
 #   0x823D25C8  r11 = whether sub_823D1F48 bound the animation
+# sub_8265F008 calls vfunc 162 through a menu list's vtable with no null check.
+# After a cutscene replay that vtable is zero and reopening the pause menu dies
+# there; true jumps past the call, to the instruction after the bctrl.
+[[midasm_hook]]
+address = 0x8265F0F0
+name = "MCLA_PauseListVtableGuard"
+registers = ["r31"]
+jump_address_on_true = 0x8265F108
+
 [[midasm_hook]]
 name = "MCLA_CineActorName"
 address = 0x823D2570

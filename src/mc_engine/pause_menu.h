@@ -20,6 +20,11 @@ bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4);
 bool Hook_PMLodTrafficClick(PPCRegister& r3, PPCRegister& r31);
 bool Hook_PopulateRedirect(PPCRegister& r3);
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30);
+
+// Skip a vfunc call through a menu list whose vtable is null -- see the comment
+// on the definition. Guards the crash that took the game down when the pause
+// menu was reopened after a cutscene replay.
+bool MCLA_PauseListVtableGuard(PPCRegister& r31);
 bool Hook_RexGlueCancel(PPCRegister& r31);
 bool Hook_FlashCommandLog(PPCRegister& r5);
 bool Hook_ListViewPopulate(PPCRegister& r3);
