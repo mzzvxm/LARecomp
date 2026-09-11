@@ -595,6 +595,34 @@ bool Hook_MenuCameraPick(PPCRegister& r3) {
         return false;
     }
 
+    // Whether this module is going to place the shot ITSELF this frame. When it
+    // is, the guest index does not need forcing at all: ResolveEntry reads
+    // menu_cam_slot directly while locked and never looks at the guest value,
+    // and Hook_MenuCameraFinal overwrites the camera the game produced anyway.
+    bool placed_here = false;
+    if (REXCVAR_GET(menu_cam_custom)) {
+        std::lock_guard<std::mutex> lock(g_table_mutex);
+        RefreshTableLocked();
+        const CamEntry& e = g_table[static_cast<size_t>(slot)];
+        placed_here = e.used && !e.stock;
+    }
+    // Writing a slot the GAME does not own is a crash, not a cosmetic miss.
+    // sub_82654960 indexes its tables straight off this value with no bounds
+    // check (dword_8286D8D4 + 16*(slot + 4897) and + 16*(slot + 4907), the two
+    // groups its own `slot += 10` steps between), and the pause menu's camera
+    // compare (sub_82653450) looks the index up in "camera_coord", gets null
+    // back and calls a vfunc through it. Reported with menu_cam_slot = 51 and
+    // menu_cam_custom turned OFF: "Unhandled guest access violation: read of
+    // guest 0x00000000", inside sub_82653450 -> sub_8265F190 -> the pause menu
+    // open path. With custom off nothing placed the shot, so the forced 51 went
+    // straight into the game's own camera code.
+    constexpr int32_t kMaxGuestSlot = 19;
+    if (placed_here || slot > kMaxGuestSlot) {
+        std::lock_guard<std::mutex> lock(g_sample_mutex);
+        g_last_pick = slot;
+        return false;  // let the game pick its own valid slot
+    }
+
     WriteU32(base, p, static_cast<uint32_t>(slot));
     {
         std::lock_guard<std::mutex> lock(g_sample_mutex);
