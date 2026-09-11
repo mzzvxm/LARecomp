@@ -31,6 +31,23 @@ namespace mcla::native_gfx {
 inline constexpr uint32_t kDevRegSurfaceInfo = 10368;   // RB_SURFACE_INFO   0x2000
 inline constexpr uint32_t kDevRegColorInfo = 10372;     // RB_COLOR_INFO     0x2001
 inline constexpr uint32_t kDevRegDepthInfo = 10376;     // RB_DEPTH_INFO     0x2002
+// RB_COLOR1_INFO (0x2003) shares the 0x2000 shadow block with RB_COLOR_INFO, so
+// it is two dwords past it. MCLA does use a second render target: the impostor
+// bake (xPropFoliage__PSGenerateImposterNight) writes oC0 -- the tree's colour
+// tile -- and oC1 -- the same tree's packed normal, n*0.5+0.5 -- and comes in
+// with RB_COLOR_MASK = 0x000000FF, both targets fully write-enabled.
+//
+// Binding only target 0 loses oC1 outright, and the guest's resolve of target 1
+// then hands target 0's pixels to the normal atlas's address. Measured on cam
+// 44: all 59 of the 128x128 tiles in one frame reduce to 29 distinct images,
+// each present twice, and the impostor shader's NormalSampler and DiffuseSampler
+// sample byte-identical textures. Its unpack -- normalize(sample.zyx * 2 - 1) --
+// then produces one constant direction for the whole canopy, which is the flat,
+// uniformly lit foliage.
+inline constexpr uint32_t kDevRegColorInfo1 = 10380;    // RB_COLOR1_INFO    0x2003
+inline constexpr uint32_t kDevRegColorInfo2 = 10384;    // RB_COLOR2_INFO    0x2004
+inline constexpr uint32_t kDevRegColorInfo3 = 10388;    // RB_COLOR3_INFO    0x2005
+
 // RB_COLOR_INFO bits 20..25 are the render target's colour exponent bias, and
 // the field is SIGNED, so a negative bias must sign-extend rather than read as
 // a large positive. The bias exists because EDRAM's colour formats are fixed
@@ -63,6 +80,7 @@ inline constexpr uint32_t kDevRegScreenScissorBr = 10428;  // 0x200F
 inline constexpr uint32_t kDevRegColorMask = 10460;     // RB_COLOR_MASK     0x2104
 inline constexpr uint32_t kDevRegDepthControl = 10548;  // RB_DEPTHCONTROL   0x2200
 inline constexpr uint32_t kDevRegBlendControl0 = 10552; // RB_BLENDCONTROL0  0x2201
+inline constexpr uint32_t kDevRegBlendControl1 = 10584; // RB_BLENDCONTROL1  0x2209
 inline constexpr uint32_t kDevRegColorControl = 10556;  // RB_COLORCONTROL   0x2202
 inline constexpr uint32_t kDevRegModeControl = 10580;   // RB_MODECONTROL    0x2208
 inline constexpr uint32_t kDevRegPaSuScModeCntl = 10568;  // PA_SU_SC_MODE_CNTL 0x2205
@@ -114,6 +132,10 @@ struct GuestRenderState {
   uint32_t depth_control = 0;
   uint32_t blend_control0 = 0;
   uint32_t color_control = 0;
+  uint32_t color1_info = 0;
+  // RB_BLENDCONTROL1 is 0x2209, in the 0x2200 block whose shadow base is
+  // dev+10548: 10548 + (0x2209 - 0x2200) * 4.
+  uint32_t blend_control1 = 0;
   // RB_COLORCONTROL bit 4. Xenos resolves alpha into the coverage mask, which is
   // how the game gets feathered foliage edges instead of a hard cutout. It only
   // means anything on a multisampled target (see mcla_native_gfx_msaa).
@@ -124,6 +146,10 @@ struct GuestRenderState {
   // --- decoded
   uint32_t msaa_samples = 0;          // RB_SURFACE_INFO +16, 0 = 1x
   uint32_t color_format = 0;          // xenos::ColorRenderTargetFormat
+  uint32_t color1_format = 0;         // RB_COLOR1_INFO +16, only when mrt is set
+  // RB_COLOR_MASK carries one write-enable nibble per target; anything above
+  // 0xF means the guest asked for a second colour target on this draw.
+  bool mrt = false;
   int32_t color_exp_bias = 0;         // RB_COLOR_INFO bits 20..25, signed
   uint32_t depth_format = 0;          // xenos::DepthRenderTargetFormat
   bool depth_enable = false;

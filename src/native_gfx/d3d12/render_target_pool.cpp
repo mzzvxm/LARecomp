@@ -14,6 +14,7 @@
 #include "context.h"
 #include "image_dump.h"
 
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 namespace mcla::native_gfx {
 
 namespace {
@@ -227,6 +228,7 @@ bool RenderTargetKey::operator<(const RenderTargetKey& o) const {
 void RenderTargetPool::Shutdown(D3D12Context& context) {
   for (auto& [key, t] : targets_) {
     if (t.color) context.DeferRelease(t.color.Detach());
+    if (t.color1) context.DeferRelease(t.color1.Detach());
     if (t.depth) context.DeferRelease(t.depth.Detach());
   }
   targets_.clear();
@@ -295,7 +297,15 @@ RenderTarget* RenderTargetPool::Find(const RenderTargetKey& key) {
 
 void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
                                    uint32_t dest_address, uint32_t dest_width,
-                                   uint32_t dest_height, const ResolveRegion& region) {
+                                   uint32_t dest_height, const ResolveRegion& region,
+                                   uint32_t color_index) {
+  // Target 1 only exists on a pass that declared it. A resolve naming it on a
+  // pass that has one surface would otherwise fall through to target 0 and
+  // duplicate it, which is the bug this parameter exists to stop.
+  if (color_index == 1 && !source.color1) {
+    ++stats_.resolves;
+    return;
+  }
   ++stats_.resolves;
   if (from_depth) {
     ++stats_.resolves_depth;
@@ -345,7 +355,9 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
   // resource made for the first format makes CopyTextureRegion fail with
   // "source and destination resource formats are incompatible", which aborts
   // the whole command list. Continuous mode, running many frames, hits this.
-  const uint32_t want_format = from_depth ? source.depth_shader_format : source.key.rt_format;
+  const uint32_t want_format =
+      from_depth ? source.depth_shader_format
+                 : (color_index == 1 ? source.rt1_format : source.key.rt_format);
   auto it = resolved_.find(dest_address);
   if (it == resolved_.end() || it->second.width != dest_width ||
       it->second.height != dest_height || it->second.from_depth != from_depth ||
@@ -364,7 +376,7 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
     ResolvedCopy copy;
     copy.width = dest_width;
     copy.height = dest_height;
-    copy.dxgi_format = from_depth ? source.depth_shader_format : source.key.rt_format;
+    copy.dxgi_format = want_format;
     copy.state = D3D12_RESOURCE_STATE_COPY_DEST;
     copy.owned = true;
     copy.from_depth = from_depth;
@@ -398,8 +410,11 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     if (it == resolved_.end() || !pc.source) {
       continue;
     }
-    ID3D12Resource* src_res =
-        pc.from_depth ? pc.source->depth.Get() : pc.source->color.Get();
+    const bool from_color1 = !pc.from_depth && pc.color_index == 1 && pc.source->color1 &&
+                             (REXCVAR_GET(mcla_native_gfx_mrt) & 0x10u);
+    ID3D12Resource* src_res = pc.from_depth ? pc.source->depth.Get()
+                                            : (from_color1 ? pc.source->color1.Get()
+                                                           : pc.source->color.Get());
     if (!src_res) {
       continue;
     }
@@ -557,7 +572,55 @@ void RenderTargetPool::MarkAllUncleared() {
   }
 }
 
-void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, RenderTarget& target) {
+bool RenderTargetPool::EnsureSecondTarget(D3D12Context& context, RenderTarget& target,
+                                          uint32_t dxgi_format) {
+  if (dxgi_format == 0) {
+    return false;
+  }
+  if (target.color1 && target.rt1_format == dxgi_format) {
+    return true;
+  }
+  if (target.color1) {
+    // The guest reused this shape with a different second format. Retire the
+    // old surface through the fence-gated queue rather than dropping it while a
+    // submitted copy may still read it.
+    context.DeferRelease(target.color1.Detach());
+  }
+  D3D12_RESOURCE_DESC d = {};
+  d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  d.Width = target.key.width;
+  d.Height = target.key.height;
+  d.DepthOrArraySize = 1;
+  d.MipLevels = 1;
+  d.Format = DXGI_FORMAT(dxgi_format);
+  d.SampleDesc.Count = target.key.sample_count;
+  d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  D3D12_CLEAR_VALUE cv = {};
+  cv.Format = d.Format;
+  std::memcpy(cv.Color, kClearColor, sizeof(cv.Color));
+  const HRESULT hr = context.device()->CreateCommittedResource(
+      &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &d,
+      D3D12_RESOURCE_STATE_RENDER_TARGET, &cv, IID_PPV_ARGS(&target.color1));
+  if (FAILED(hr)) {
+    context.ReportCreateFailure("pooled render target 1", hr);
+    REXLOG_ERROR("[native_gfx] second render target creation failed ({}x{} fmt {})",
+                 target.key.width, target.key.height, dxgi_format);
+    target.rt1_format = 0;
+    return false;
+  }
+  target.rt1_format = dxgi_format;
+  target.color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv1 = target.rtv_heap->GetCPUDescriptorHandleForHeapStart();
+  rtv1.ptr += target.rtv_descriptor_size;
+  context.device()->CreateRenderTargetView(target.color1.Get(), nullptr, rtv1);
+  // A freshly attached surface has never been cleared; make the next draw of
+  // this pass run the clear path so it does not start from driver garbage.
+  target.cleared = false;
+  return true;
+}
+
+void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, RenderTarget& target,
+                                           bool depth_read_only) {
   if (!cl) {
     return;
   }
@@ -592,8 +655,26 @@ void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, Render
     cl->ResourceBarrier(1, &c);
     target.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   }
-  // Depth back to DEPTH_WRITE (unchanged behaviour).
-  if (target.depth && target.depth_state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+  // Target 1 is bound as an RTV in the same call as target 0, so it needs the
+  // same state; a resolve leaves it in COPY_SOURCE.
+  if (target.color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x8u) &&
+      target.color1_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+    D3D12_RESOURCE_BARRIER c1 = {};
+    c1.Transition.pResource = target.color1.Get();
+    c1.Transition.StateBefore = target.color1_state;
+    c1.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    c1.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cl->ResourceBarrier(1, &c1);
+    target.color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  }
+  // A pass that samples this same depth buffer needs a state that is readable
+  // from a shader, which DEPTH_WRITE is not. DEPTH_READ|ALL_SHADER_RESOURCE is,
+  // and it pairs with the read-only DSV the caller binds in that case.
+  const D3D12_RESOURCE_STATES want_depth =
+      depth_read_only ? (D3D12_RESOURCE_STATE_DEPTH_READ |
+                         D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE)
+                      : D3D12_RESOURCE_STATE_DEPTH_WRITE;
+  if (target.depth && target.depth_state != want_depth) {
     D3D12_RESOURCE_BARRIER b = {};
     b.Transition.pResource = target.depth.Get();
     b.Transition.StateBefore = target.depth_state;
@@ -671,8 +752,12 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
 
   D3D12_DESCRIPTOR_HEAP_DESC h = {};
   h.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-  h.NumDescriptors = 1;
+  // Slot 1 is reserved for the second colour target, which EnsureSecondTarget
+  // attaches later; one spare RTV descriptor per pooled target is free.
+  h.NumDescriptors = 2;
   device->CreateDescriptorHeap(&h, IID_PPV_ARGS(&t.rtv_heap));
+  t.rtv_descriptor_size =
+      device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   h.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
   device->CreateDescriptorHeap(&h, IID_PPV_ARGS(&t.dsv_heap));
   device->CreateRenderTargetView(t.color.Get(), nullptr,

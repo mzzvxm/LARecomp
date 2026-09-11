@@ -79,6 +79,10 @@ struct PsoKey {
   uint32_t ps_spec_mask = 0;
   uint32_t topology_type = 0;  // D3D12_PRIMITIVE_TOPOLOGY_TYPE
   uint32_t rt_format = 0;      // DXGI
+  // Second render target's DXGI format, 0 when the draw writes only oC0. The
+  // PSO's render-target count has to match the bound set exactly.
+  uint32_t rt1_format = 0;
+  uint32_t blend_control1 = 0;  // RB_BLENDCONTROL1, target 1's own equation
   uint32_t ds_format = 0;      // DXGI
   uint32_t sample_count = 1;
   // Raw guest registers that drive blend / raster / depth. Kept raw so the

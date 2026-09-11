@@ -70,6 +70,15 @@ struct RenderTargetKey {
 // One colour + depth pair plus its view heaps.
 struct RenderTarget {
   Microsoft::WRL::ComPtr<ID3D12Resource> color;
+  // Second colour target, attached on demand by EnsureSecondTarget when a draw
+  // writes oC1. Its RTV is slot 1 of rtv_heap, so the two are contiguous and
+  // OMSetRenderTargets takes them as one range. NOT part of the pool key: on
+  // Xenos both targets of a pass come out of the same EDRAM allocation, so a
+  // pass that mixes MRT and single-target draws -- an impostor tile whose trunk
+  // and leaves use different shaders -- has to land on ONE surface set, or the
+  // resolve takes whichever half the last draw happened to use.
+  Microsoft::WRL::ComPtr<ID3D12Resource> color1;
+  uint32_t rt1_format = 0;  // DXGI format of color1, 0 while unattached
   Microsoft::WRL::ComPtr<ID3D12Resource> depth;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtv_heap;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsv_heap;
@@ -89,6 +98,8 @@ struct RenderTarget {
   // Tracked for the same reason as the depth: a colour resolve has to take
   // the target out of RENDER_TARGET to copy from it, and put it back.
   D3D12_RESOURCE_STATES color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  D3D12_RESOURCE_STATES color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  uint32_t rtv_descriptor_size = 0;
   bool cleared = false;  // cleared once, then accumulated into
 };
 
@@ -134,7 +145,13 @@ class RenderTargetPool : public RenderTargetLookup {
 
   // Puts a target's depth back into DEPTH_WRITE before it is bound as a DSV
   // again, undoing the transition RecordResolve made to let it be sampled.
-  void PrepareForRendering(ID3D12GraphicsCommandList* cl, RenderTarget& target);
+  void PrepareForRendering(ID3D12GraphicsCommandList* cl, RenderTarget& target,
+                           bool depth_read_only = false);
+
+  // Attaches (or re-creates) the pass's second colour target. Cheap and
+  // idempotent once the format matches; returns false only if creation failed,
+  // in which case the caller must bind one target rather than two.
+  bool EnsureSecondTarget(D3D12Context& context, RenderTarget& target, uint32_t dxgi_format);
 
   // Registers a DEPTH resolve without touching a command list. A resolve must
   // not submit work: the guest performs hundreds per frame, and opening and
@@ -143,8 +160,12 @@ class RenderTargetPool : public RenderTargetLookup {
   // DXGI_ERROR_DEVICE_HUNG 0x887A0001. The state transition the depth
   // resource needs is queued instead and issued by FlushPendingTransitions on
   // the next draw's command list.
+  // `color_index` is RB_COPY_CONTROL.copy_src_select: which of the guest's
+  // colour targets this resolve reads. Ignoring it is what handed target 0's
+  // pixels to target 1's destination address.
   void NoteResolve(RenderTarget& source, bool from_depth, uint32_t dest_address,
-                   uint32_t dest_width, uint32_t dest_height, const ResolveRegion& region);
+                   uint32_t dest_width, uint32_t dest_height, const ResolveRegion& region,
+                   uint32_t color_index = 0);
 
   // Issues the barriers queued by NoteDepthResolve.
   void FlushPendingTransitions(ID3D12GraphicsCommandList* cl);
@@ -258,6 +279,7 @@ class RenderTargetPool : public RenderTargetLookup {
     uint32_t dest_address = 0;
     ResolveRegion region;
     bool from_depth = false;
+    uint32_t color_index = 0;
   };
   std::vector<PendingCopy> pending_copies_;
   // Resolve-destination resources retired when the guest reuses a destination

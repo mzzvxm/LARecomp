@@ -169,6 +169,27 @@ REXCVAR_DEFINE_BOOL(
     "Turn off to get the pre-fix behaviour back while bisecting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_mrt, 0x3F, "MCLA/NativeGfx",
+    "Second render target support, as a bitmask -- one bit per piece, so a fault can be\n"
+    "bisected without a rebuild. 0 is exactly what the runtime did before; 0x3F is the lot.\n"
+    "\n"
+    "  0x01  the resolve honours RB_COPY_CONTROL.copy_src_select instead of always\n"
+    "        reading colour target 0.\n"
+    "  0x02  RB_COLOR1_INFO attaches a second colour surface to the pass's target.\n"
+    "  0x04  the pass's clear wipes that second surface too.\n"
+    "  0x08  it is transitioned back to RENDER_TARGET with target 0.\n"
+    "  0x10  a resolve naming target 1 copies FROM it.\n"
+    "  0x20  both targets are bound and the PSO declares two, with RB_BLENDCONTROL1 as\n"
+    "        target 1's equation.\n"
+    "\n"
+    "MCLA needs this for the impostor bake: xPropFoliage__PSGenerateImposterNight writes the\n"
+    "tree's colour to oC0 and its packed normal to oC1, and the game resolves the two into\n"
+    "different addresses. With one target bound, both resolves copied target 0, the impostor\n"
+    "shader read the colour atlas as its normal atlas, and normalize(colour*2-1) came out a\n"
+    "constant -- a flat, uniformly lit canopy.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
                     "Feed SharedConstants.g_AlphaThreshold from RB_ALPHA_REF and RB_COLORCONTROL "
                     "instead of the fixed 0.5 the bring-up used. The ALPHA lines the diagnostic "
@@ -606,8 +627,13 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
     region.dst_x = read_be32(dest_point);
     region.dst_y = read_be32(dest_point + 4);
   }
-  g_render_targets.NoteResolve(*source, from_depth, dest, fetch.width, fetch.height,
-                               region);
+  // RB_COPY_CONTROL.copy_src_select rides in `flags`: 0..3 name a colour
+  // target, 4 names depth. Passing it on is what keeps the impostor bake's two
+  // resolves apart -- measured on cam 44, the pair arrives as idx=1 into the
+  // normal atlas and idx=0 into the colour atlas, and collapsing both onto
+  // target 0 is what made the two byte-identical.
+  g_render_targets.NoteResolve(*source, from_depth, dest, fetch.width, fetch.height, region,
+                               (REXCVAR_GET(mcla_native_gfx_mrt) & 0x1u) ? (flags & 7u) : 0u);
   // Marked GPU-produced only now, once the copy is actually on its way. Marking
   // it up front — before the `g_draw_ready` guard above — condemned every
   // address we cannot bridge to the neutral fallback forever: resolves that

@@ -37,11 +37,17 @@ GuestRenderState ReadRenderState(const uint8_t* base, uint32_t dev) {
   s.depth_control = R32(base, dev + kDevRegDepthControl);
   s.blend_control0 = R32(base, dev + kDevRegBlendControl0);
   s.color_control = R32(base, dev + kDevRegColorControl);
+  s.color1_info = R32(base, dev + kDevRegColorInfo1);
+  s.blend_control1 = R32(base, dev + kDevRegBlendControl1);
   s.mode_control = R32(base, dev + kDevRegModeControl);
   s.pa_su_sc_mode_cntl = R32(base, dev + kDevRegPaSuScModeCntl);
 
   s.msaa_samples = (s.surface_info >> 16) & 0x3u;
   s.color_format = (s.color_info >> 16) & 0xFu;
+  // Only trust RB_COLOR1_INFO when the write mask says target 1 is live: the
+  // register keeps whatever the last MRT pass left in it.
+  s.mrt = ((s.color_mask >> 4) & 0xFu) != 0u;
+  s.color1_format = s.mrt ? ((s.color1_info >> 16) & 0xFu) : 0u;
   s.color_exp_bias = ColorExpBiasFromColorInfo(s.color_info);
   s.depth_format = (s.depth_info >> 16) & 0x1u;
 

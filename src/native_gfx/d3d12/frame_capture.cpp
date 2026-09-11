@@ -82,6 +82,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
                     "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.");
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_half_pixel);
 REXCVAR_DECLARE(bool, mcla_native_gfx_swapped_texcoords);
 
@@ -106,6 +107,9 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
 // Everything that has to match for two draws to belong to the same pass.
 struct TargetConfig {
   uint32_t rt_format = 0;
+  // Second colour target's DXGI format, 0 when the pass writes only oC0. The
+  // impostor bake is the one pass in MCLA that sets it; see kDevRegColorInfo1.
+  uint32_t rt1_format = 0;
   uint32_t ds_format = 0;
   uint32_t sample_count = 1;
   uint32_t width = 0;
@@ -1645,6 +1649,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // clearing it to 0 would reject every fragment.
   const float clear_depth = hv.min_depth > hv.max_depth ? 0.0f : 1.0f;
   RenderTarget* target = render_targets.Acquire(context, PooledKey(cfg), clear_depth);
+  // A draw that writes oC1 needs the pass's second surface attached before it
+  // is bound. Kept out of the pool key on purpose -- see EnsureSecondTarget.
+  bool have_second_target = false;
+  if (target && cfg.rt1_format != 0) {
+    have_second_target = render_targets.EnsureSecondTarget(context, *target, cfg.rt1_format);
+  }
   // TEMP INSTRUMENTATION: accumulated per pass, not sampled from one draw.
   // Sampling the first draw was misleading: it is a depth prepass with the
   // colour mask at zero, which looks identical to a pass that never writes.

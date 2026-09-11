@@ -181,6 +181,7 @@ bool PsoKey::operator==(const PsoKey& o) const {
   return vs_identity == o.vs_identity && ps_identity == o.ps_identity &&
          vs_spec_mask == o.vs_spec_mask && ps_spec_mask == o.ps_spec_mask &&
          topology_type == o.topology_type && rt_format == o.rt_format &&
+         rt1_format == o.rt1_format && blend_control1 == o.blend_control1 &&
          ds_format == o.ds_format && sample_count == o.sample_count &&
          blend_control0 == o.blend_control0 && color_control == o.color_control &&
          color_mask == o.color_mask && depth_control == o.depth_control &&
@@ -197,6 +198,7 @@ size_t PsoKeyHash::operator()(const PsoKey& k) const {
   HashCombine(h, (uint64_t(k.vs_spec_mask) << 32) | k.ps_spec_mask);
   HashCombine(h, (uint64_t(k.topology_type) << 32) | k.sample_count);
   HashCombine(h, (uint64_t(k.rt_format) << 32) | k.ds_format);
+  HashCombine(h, (uint64_t(k.rt1_format) << 32) | k.blend_control1);
   HashCombine(h, (uint64_t(k.blend_control0) << 32) | k.color_control);
   HashCombine(h, (uint64_t(k.color_mask) << 32) | k.depth_control);
   HashCombine(h, (uint64_t(k.pa_su_sc_mode_cntl) << 32) | k.stencil_ref_mask);
@@ -241,6 +243,9 @@ PsoKey PipelineCache::MakeKey(const GeometrySnapshot& geometry,
   k.ds_format = DepthRenderTargetFormatToDxgi(render_state.depth_format);
   k.sample_count = SampleCountFromMsaa(render_state.msaa_samples);
   k.blend_control0 = render_state.blend_control0;
+  // rt1_format is filled by the caller, which is the only place that knows the
+  // pooled target set; the blend equation for it comes straight from the guest.
+  k.blend_control1 = render_state.blend_control1;
   k.color_control = render_state.color_control;
   k.color_mask = render_state.color_mask;
   k.depth_control = render_state.depth_control;
@@ -481,6 +486,32 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
   if (key.rt_format != DXGI_FORMAT_UNKNOWN) {
     desc.NumRenderTargets = 1;
     desc.RTVFormats[0] = DXGI_FORMAT(key.rt_format);
+    if (key.rt1_format != 0) {
+      // Two targets. RB_COLOR_MASK's second nibble is target 1's write mask,
+      // and RB_BLENDCONTROL1 is its own blend equation -- independent blending
+      // has to be on for either to be honoured. The impostor bake writes both
+      // opaquely, so this is the general shape rather than a special case.
+      desc.NumRenderTargets = 2;
+      desc.RTVFormats[1] = DXGI_FORMAT(key.rt1_format);
+      desc.BlendState.IndependentBlendEnable = TRUE;
+      auto& rt1 = desc.BlendState.RenderTarget[1];
+      rt1.BlendEnable = BlendIsIdentity(key.blend_control1) ? FALSE : TRUE;
+      rt1.SrcBlend = BlendFactor(key.blend_control1 & 0x1Fu);
+      rt1.BlendOp = BlendOp((key.blend_control1 >> 5) & 0x7u);
+      rt1.DestBlend = BlendFactor((key.blend_control1 >> 8) & 0x1Fu);
+      rt1.SrcBlendAlpha = BlendFactorAlpha((key.blend_control1 >> 16) & 0x1Fu);
+      rt1.BlendOpAlpha = BlendOp((key.blend_control1 >> 21) & 0x7u);
+      rt1.DestBlendAlpha = BlendFactorAlpha((key.blend_control1 >> 24) & 0x1Fu);
+      if (rt1.BlendOp == D3D12_BLEND_OP_MIN || rt1.BlendOp == D3D12_BLEND_OP_MAX) {
+        rt1.SrcBlend = D3D12_BLEND_ONE;
+        rt1.DestBlend = D3D12_BLEND_ONE;
+      }
+      if (rt1.BlendOpAlpha == D3D12_BLEND_OP_MIN || rt1.BlendOpAlpha == D3D12_BLEND_OP_MAX) {
+        rt1.SrcBlendAlpha = D3D12_BLEND_ONE;
+        rt1.DestBlendAlpha = D3D12_BLEND_ONE;
+      }
+      rt1.RenderTargetWriteMask = UINT8((key.color_mask >> 4) & 0xFu);
+    }
   }
   desc.DSVFormat = DXGI_FORMAT(key.ds_format);
 
