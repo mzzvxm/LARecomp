@@ -55,6 +55,7 @@
 #include "guest/guest_constants.h"
 #include "guest/guest_fence.h"
 #include "guest/vblank_probe.h"
+#include "nocp/nocp_app.h"
 #include "native_gfx.h"
 #include "telemetry.h"
 
@@ -84,11 +85,56 @@ REX_EXTERN(__imp__rex_sub_82421F38);
 REX_EXTERN(__imp__rex_sub_824195E8);
 REX_EXTERN(__imp__D3DDevice_CreateTexture);
 REX_EXTERN(__imp__grcTextureXenon_dtor);
+// --- vblank / flip ---------------------------------------------------------
+
+// D3DDevice_InitializeEngines(device) -- sub_82426468. Registers the guest's
+// graphics interrupt handler:
+//
+//   VdInitializeEngines(0x1B540000, sub_82425D78, 0, ...)
+//   VdSetGraphicsInterruptCallback(sub_82411478, device)
+//
+// so the callback is a constant and the device is r3. Both are what a runtime
+// with no command processor has to drive itself: with config.graphics =
+// nullptr the SDK's Vd export drops the registration on the floor and no
+// vblank is ever delivered.
+//
+// Observed AFTER the original, read-only.
+extern "C" REX_FUNC(D3DDevice_InitializeEngines) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_InitializeEngines");
+  const uint32_t device = ctx.r3.u32;
+  __imp__D3DDevice_InitializeEngines(ctx, base);
+  mcla::native_gfx::NoteGraphicsEnginesInitialized(base, device);
+}
+
+// D3DDevice_BlockUntilIdle -- sub_82412990. Waits for everything submitted to
+// finish:
+//
+//   BlockOnFence(dev, dev[10908], 4, 0, 0);   // the issued fence
+//   while ( dev[11008] ) ;                    // then a raw spin, no sleep
+//
+// The fence half is satisfied by the vblank thread retiring fences. The spin
+// is not: dev+11008 is cleared by the GPU side, and in this mode there is no
+// GPU side. Measured: the title released from the fence, ran a little further
+// (ring kicks 4 -> 8, 63 fences issued) and then stopped dead with the fence
+// pair fully caught up -- which is exactly this spin.
+//
+// With no command processor, "block until the GPU is idle" is trivially true:
+// nothing was ever handed to a GPU. So the whole call goes away. This is the
+// same answer reblue reached (REX_STUB(D3DDevice_BlockUntilIdle)).
+extern "C" REX_FUNC(D3DDevice_BlockUntilIdle) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_BlockUntilIdle");
+  if (mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+    return;
+  }
+  __imp__D3DDevice_BlockUntilIdle(ctx, base);
+}
+
 
 // --- draws -----------------------------------------------------------------
 
 // D3DDevice_DrawIndexedVertices(dev, primType, baseVertexIndex, startIndex, indexCount)
 extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_DrawIndexedVertices");
   const uint32_t dev = ctx.r3.u32;
   const uint32_t prim = ctx.r4.u32;
   const uint32_t count = ctx.r7.u32;
@@ -119,6 +165,7 @@ extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
 
 // D3DDevice_DrawVertices(dev, primType, startVertex, vertexCount)
 extern "C" REX_FUNC(D3DDevice_DrawVertices) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_DrawVertices");
   const uint32_t dev = ctx.r3.u32;
   const uint32_t prim = ctx.r4.u32;
   const uint32_t count = ctx.r6.u32;
@@ -151,6 +198,7 @@ extern "C" REX_FUNC(D3DDevice_DrawVertices) {
 // then calls EndVertices. So this hook only records the shape of the pending
 // draw; the data is read at EndVertices.
 extern "C" REX_FUNC(D3DDevice_BeginVertices) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_BeginVertices");
   const uint32_t dev = ctx.r3.u32;
   const uint32_t prim = ctx.r4.u32;
   const uint32_t count = ctx.r5.u32;
@@ -169,6 +217,7 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
 // D3DDevice_EndVertices(dev). The vertices written since BeginVertices are now
 // complete, so this is where an inline-geometry draw can actually be issued.
 extern "C" REX_FUNC(D3DDevice_EndVertices) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_EndVertices");
   const uint32_t dev = ctx.r3.u32;
   __imp__D3DDevice_EndVertices(ctx, base);
   if (mcla::native_gfx::Active()) {
@@ -180,6 +229,7 @@ extern "C" REX_FUNC(D3DDevice_EndVertices) {
 
 // rage::grcDevice::BeginTiledRendering(rt, ds, clearParams, fmtSel, flags, overlap)
 extern "C" REX_FUNC(grcDevice_BeginTiledRendering) {
+  mcla::native_gfx::nocp::NoteHook("grcDevice_BeginTiledRendering");
   const uint32_t fmt_sel = ctx.r6.u32;
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::OpenBracket(/*caller_marker=*/0xA470u, fmt_sel);
@@ -189,6 +239,7 @@ extern "C" REX_FUNC(grcDevice_BeginTiledRendering) {
 
 // D3DDevice_BeginTiling(dev, flags, tileCount, rects, clearColor, clearZ)
 extern "C" REX_FUNC(D3DDevice_BeginTiling) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_BeginTiling");
   const uint32_t tiles = ctx.r5.u32;
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::SetBracketTiles(tiles);
@@ -199,6 +250,7 @@ extern "C" REX_FUNC(D3DDevice_BeginTiling) {
 // rage::grcDevice::EndTiledRendering — per-tile predication loop, then
 // D3DDevice_EndTiling, then tiling off (dword_827D42A4 = -1).
 extern "C" REX_FUNC(grcDevice_EndTiledRendering) {
+  mcla::native_gfx::nocp::NoteHook("grcDevice_EndTiledRendering");
   __imp__grcDevice_EndTiledRendering(ctx, base);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::CloseBracket();
@@ -222,6 +274,7 @@ extern "C" REX_FUNC(grcDevice_EndTiledRendering) {
 // source_rect/dest_point are absent here -- a tiled resolve covers the whole
 // surface -- and NotifyResolve reads 0 as "full source extent at origin".
 extern "C" REX_FUNC(D3DDevice_EndTiling) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_EndTiling");
   const uint32_t dev = ctx.r3.u32;
   const uint32_t flags = ctx.r4.u32;
   const uint32_t dest_texture = ctx.r6.u32;
@@ -242,6 +295,8 @@ extern "C" REX_FUNC(D3DDevice_EndTiling) {
 
 // rage::grcDevice::EndFrame.
 extern "C" REX_FUNC(grcDevice_EndFrame) {
+  mcla::native_gfx::nocp::NoteHook("grcDevice_EndFrame");
+  mcla::native_gfx::nocp::NoteFrameEnd();
   const bool probe_was_enabled = mcla::gfx_probe::Enabled();
   __imp__grcDevice_EndFrame(ctx, base);
   if (probe_was_enabled) {
@@ -264,19 +319,28 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
 
 // D3DDevice_Swap.
 //
-// The takeover REQUIRES that the game's draws are not reaching the Xenia
-// command processor anymore: the CP closes its D3D12 submission on the swap
-// packet, so draws-without-swaps accumulate into one giant submission and
-// the GPU TDRs (observed: DEVICE_HUNG 0x887A0006). During bring-up stages
-// (telemetry, cache validation) the swap therefore always passes through.
+// CONTINUOUS MODE PASSES THROUGH, ALWAYS. The packet this call writes is what
+// makes the command processor end its frame, and ending the frame is the only
+// thing that recycles its per-frame pools: EndSubmission(is_swap) calls
+// EndFrame on the texture cache and primitive processor and ClearCache on the
+// view, sampler, constant-buffer, render-target and shared-memory pools.
+// Swallowing the call kept that frame open forever -- host private memory grew
+// about a gigabyte per thousand frames until allocation failed ("no free
+// bindless view descriptors", "Failed to create a D3D12 upload buffer") and
+// the device was removed a couple of minutes into gameplay.
 //
-// Accepted consequences while suppressed (native-present stage):
-//  - swap-submit counter and frame-throttle loop skipped -> guest free-runs
-//    (same behavior as vsync=false);
-//  - the end-of-frame kick/fence (sub_824161E0) is skipped. Per-draw kicks
-//    still happen whenever the command buffer fills (sub_82412710), so
-//    resource Lock fences keep advancing.
-extern "C" REX_FUNC(rex_sub_82419E98) {
+// Which leaves the command processor presenting its own image over the native
+// one. Taking presentation away from it needed an edit to the SDK, and that
+// edit was reverted: a runtime that requires the command processor to be
+// changed is not a native runtime, it is a tuned emulator. The replacement is
+// to not have a command processor at all -- see src/native_gfx/nocp/.
+//
+// The smoke-test stage (mcla_native_gfx_present without continuous) still
+// suppresses: it presents a triangle and has no command processor frame to
+// care about.
+extern "C" REX_FUNC(D3DDevice_Swap) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_Swap");
+  mcla::native_gfx::nocp::NoteSwapCall();
   if (mcla::native_gfx::PresentTakeover()) {
     if (mcla::native_gfx::PresentFrame()) {
       ctx.r3.u64 = 0;  // fence value the caller would have received
@@ -304,6 +368,7 @@ extern "C" REX_FUNC(rex_sub_82419E98) {
 // The resolve is notified AFTER the original runs, so the guest has already
 // programmed RB_COPY_DEST_BASE and the source surface is complete.
 extern "C" REX_FUNC(D3DDevice_Resolve) {
+  mcla::native_gfx::nocp::NoteHook("D3DDevice_Resolve");
   const uint32_t dev = ctx.r3.u32;
   const uint32_t flags = ctx.r4.u32;
   const uint32_t source_rect = ctx.r5.u32;   // a3: x0, y0, x1, y1

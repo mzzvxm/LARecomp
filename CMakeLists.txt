@@ -82,6 +82,8 @@ set(LARECOMP_SOURCES
     src/native_gfx/geometry.cpp
     src/native_gfx/guest/guest_fence.cpp
     src/native_gfx/guest/vblank_probe.cpp
+    src/native_gfx/nocp/guest_gpu.cpp
+    src/native_gfx/nocp/nocp_app.cpp
     src/native_gfx/guest/guest_constants.cpp
     src/native_gfx/guest/render_state.cpp
     src/native_gfx/guest/sampler_state.cpp

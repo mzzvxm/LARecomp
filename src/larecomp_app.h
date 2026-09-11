@@ -11,6 +11,7 @@
 #include "larecomp_log.h"
 #include "crash_handler.h"
 #include "mc_engine/hooks.h"
+#include "native_gfx/nocp/nocp_app.h"
 #include "mc_engine/pause_menu.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -189,15 +190,53 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
-    // The Xenos GPU emulation is a runtime-loaded plugin as of SDK 0.9.0 and
-    // the gpu_plugin cvar defaults to empty (= no GPU at all). Name it here so
-    // the game works without anything in larecomp.toml; an explicit cvar still
-    // wins because this only fills in the blank.
-    if (config.gpu_plugin.empty()) {
+    // The one line that decides whether this process contains an emulated GPU
+    // at all. ReXApp::SetupPresentation only calls LoadGpuPlugin when
+    // gpu_plugin is non-empty, so leaving it empty means rexgpu-xenos is never
+    // loaded -- not disabled, absent: no command processor, no PM4 parser, no
+    // register file, no EDRAM, no shader translator. The kernel's Vd* exports
+    // already have a designed path for that ("no GPU emulation loaded").
+    if (mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      config.gpu_plugin.clear();
+    } else if (config.gpu_plugin.empty()) {
+      // The Xenos GPU emulation is a runtime-loaded plugin as of SDK 0.9.0 and
+      // the gpu_plugin cvar defaults to empty (= no GPU at all). Name it here
+      // so the game works without anything in larecomp.toml; an explicit cvar
+      // still wins because this only fills in the blank.
       config.gpu_plugin = "xenos";
     }
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
+  }
+
+  // Detached mode's hook: with no graphics system, ReXApp asks the app for the
+  // drawer that paints the overlays. Creating the provider here rather than in
+  // SetupPresentation is forced by the order -- the base calls this from
+  // inside SetupPresentation, before the override below gets to run.
+  std::unique_ptr<rex::ui::ImmediateDrawer> OnCreateImmediateDrawer() override {
+    if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      return nullptr;
+    }
+    return mcla::native_gfx::nocp::CreateImmediateDrawer();
+  }
+
+  // The base opens the window and, with no graphics system, takes its detached
+  // branch: overlays wired to the drawer above, and no presenter, because in
+  // that mode the app owns the surface. So the app supplies one here.
+  //
+  // Nothing about this reaches into the SDK's graphics module: D3D12Provider
+  // and D3D12Presenter live in src/ui/d3d12 -- swapchain, descriptor pools,
+  // upload buffers, submission tracking. There is no PM4, EDRAM or register
+  // file anywhere in that directory.
+  bool SetupPresentation() override {
+    if (!rex::ReXApp::SetupPresentation()) {
+      return false;
+    }
+    if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      return true;
+    }
+    return mcla::native_gfx::nocp::AttachPresentation(window(), imgui_drawer(),
+                                                      immediate_drawer());
   }
 
   void OnShutdown() override {
@@ -320,6 +359,14 @@ class LarecompApp : public rex::ReXApp {
     mc::EnableHighResTimer();
     ApplyGpuFlags();
     DumpEffectiveConfig();
+
+    // The guest GPU can only be installed here. ReXApp::Run calls
+    // SetupPresentation (rex_app.cpp:117) BEFORE ConstructRuntime (:159), and
+    // the memory system and kernel state that an MMIO mapping needs are created
+    // inside runtime_->Setup. This is the first point where both exist.
+    if (mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      mcla::native_gfx::nocp::InstallGuestGpu();
+    }
 
     // Register t: drive - game uses it for city/art/collision data (.loc files etc.)
     if (auto* rt = rex::Runtime::instance()) {

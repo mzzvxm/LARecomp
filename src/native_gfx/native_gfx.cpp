@@ -34,6 +34,7 @@
 #include "d3d12/memory_census.h"
 #include "guest/render_state.h"
 #include "guest/vblank_probe.h"
+#include "nocp/nocp_app.h"
 #include "guest/texture_format.h"
 #include "d3d12/pipeline_cache.h"
 #include "d3d12/render_target_pool.h"
@@ -211,19 +212,46 @@ bool TryInitialize() {
     REXLOG_ERROR("[native_gfx] no Runtime instance");
     return false;
   }
-  // The concrete GraphicsSystem lives inside the rexgpu-xenos plugin, which
-  // consumers never link; provider() and presenter() are on the interface.
-  auto* graphics = runtime->graphics_system();
-  if (!graphics || !graphics->has_presentation()) {
-    REXLOG_ERROR("[native_gfx] graphics system has no presentation, cannot attach");
+  // Where the D3D12 provider and presenter come from, and the difference is
+  // the whole point of the no-command-processor mode.
+  //
+  // Normally they come from the graphics system -- which lives in the
+  // rexgpu-xenos plugin, so asking for it is asking for the emulator. In nocp
+  // mode there is no graphics system at all; the app created the provider and
+  // presenter itself out of rex::ui::d3d12 (a swapchain and descriptor pools,
+  // no PM4, no EDRAM, no register file). Attaching to those makes this runtime
+  // the ONLY thing drawing, instead of the second renderer beside an emulator.
+  const bool nocp_mode = nocp::WantNoCommandProcessor();
+  rex::system::IGraphicsSystem* graphics = nullptr;
+  if (!nocp_mode) {
+    // The concrete GraphicsSystem lives inside the rexgpu-xenos plugin, which
+    // consumers never link; provider() and presenter() are on the interface.
+    graphics = runtime->graphics_system();
+    if (!graphics || !graphics->has_presentation()) {
+      REXLOG_ERROR("[native_gfx] graphics system has no presentation, cannot attach");
+      return false;
+    }
+  } else if (!nocp::Provider() || !nocp::PresenterPtr()) {
+    REXLOG_ERROR("[native_gfx] nocp mode has no provider/presenter yet, cannot attach");
     return false;
   }
-  const std::string backend = REXCVAR_QUERY(std::string, graphics_backend);
-  if (backend != "auto" && backend != "d3d12") {
-    REXLOG_ERROR("[native_gfx] graphics_backend is '{}', native runtime needs d3d12", backend);
-    return false;
+  // `graphics_backend` is a fork-local cvar. REXCVAR_QUERY looks it up by
+  // STRING, so against a stock SDK this compiles and then quietly answers ""
+  // ("value-initialized T when the cvar is missing"), which fails both
+  // comparisons and refuses to attach for a backend nobody ever selected.
+  // Ask whether the flag exists before believing its value: where there is no
+  // backend selector there is nothing to disagree with, and the provider cast
+  // below is the real check either way. A registered flag still refuses, so
+  // behaviour on this tree is unchanged.
+  if (rex::cvar::GetFlagInfo("graphics_backend")) {
+    const std::string backend = REXCVAR_QUERY(std::string, graphics_backend);
+    if (backend != "auto" && backend != "d3d12") {
+      REXLOG_ERROR("[native_gfx] graphics_backend is '{}', native runtime needs d3d12", backend);
+      return false;
+    }
   }
-  auto* provider = static_cast<rex::ui::d3d12::D3D12Provider*>(graphics->provider());
+  auto* provider = nocp_mode ? nocp::Provider()
+                             : static_cast<rex::ui::d3d12::D3D12Provider*>(graphics->provider());
   if (!provider) {
     REXLOG_ERROR("[native_gfx] no graphics provider");
     return false;
@@ -232,7 +260,7 @@ bool TryInitialize() {
   if (!g_triangle.Initialize(*provider)) {
     return false;
   }
-  g_presenter = graphics->presenter();
+  g_presenter = nocp_mode ? nocp::PresenterPtr() : graphics->presenter();
   if (g_presenter == nullptr) {
     return false;
   }
