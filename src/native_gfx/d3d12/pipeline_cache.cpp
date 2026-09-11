@@ -392,6 +392,17 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
   desc.SampleDesc.Count = key.sample_count;
 
   // Blend.
+  // RB_COLORCONTROL bit 4 is alpha_to_mask_enable: Xenos turns the alpha into a
+  // coverage mask, which is what gives foliage a feathered edge instead of a
+  // hard cutout. MCLA asks for it on the scene pass -- measured, colour control
+  // 0x8700001C (with alpha test) and 0x87000014 (without) on the 1280x720
+  // target -- and the runtime ignored the bit entirely, which is why the same
+  // palm has 43 hard steps along its fronds against 1 in the emulated path.
+  // It only does anything on a multisampled target; at one sample D3D12
+  // coverage is binary and the flag is a no-op, so it is tied to
+  // mcla_native_gfx_msaa by construction rather than by a condition.
+  desc.BlendState.AlphaToCoverageEnable =
+      (key.sample_count > 1 && (key.color_control & 0x10u) != 0) ? TRUE : FALSE;
   auto& rt0 = desc.BlendState.RenderTarget[0];
   rt0.BlendEnable = BlendIsIdentity(key.blend_control0) ? FALSE : TRUE;
   rt0.SrcBlend = BlendFactor(key.blend_control0 & 0x1Fu);

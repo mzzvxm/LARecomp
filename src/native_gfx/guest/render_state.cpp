@@ -65,6 +65,7 @@ GuestRenderState ReadRenderState(const uint8_t* base, uint32_t dev) {
 
   s.alpha_func = s.color_control & 0x7u;
   s.alpha_test_enable = (s.color_control & 0x8u) != 0;
+  s.alpha_to_mask_enable = (s.color_control & 0x10u) != 0;
 
   s.cull_front = (s.pa_su_sc_mode_cntl & 0x1u) != 0;
   s.cull_back = (s.pa_su_sc_mode_cntl & 0x2u) != 0;

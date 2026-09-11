@@ -114,6 +114,10 @@ struct GuestRenderState {
   uint32_t depth_control = 0;
   uint32_t blend_control0 = 0;
   uint32_t color_control = 0;
+  // RB_COLORCONTROL bit 4. Xenos resolves alpha into the coverage mask, which is
+  // how the game gets feathered foliage edges instead of a hard cutout. It only
+  // means anything on a multisampled target (see mcla_native_gfx_msaa).
+  bool alpha_to_mask_enable = false;
   uint32_t mode_control = 0;
   uint32_t pa_su_sc_mode_cntl = 0;
 
