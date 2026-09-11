@@ -123,9 +123,19 @@ uint32_t VertexFormatToDxgi(uint32_t format, bool signed_format, bool is_float) 
   switch (format) {
     case 6:  // k_8_8_8_8
       return signed_format ? DXGI_FORMAT_R8G8B8A8_SNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
-    case 7:  // k_2_10_10_10 — no SNORM equivalent in DXGI; shaders decode the
-             // packed value themselves (XenosRecomp emits uint4 inputs).
-      return DXGI_FORMAT_R10G10B10A2_UINT;
+    case 7:  // k_2_10_10_10 -- no SNORM equivalent in DXGI, so it reaches the
+             // shader as a raw dword and tfetchR11G11B10() unpacks the three
+             // signed 10-bit components.
+             //
+             // R10G10B10A2_UINT was wrong here even though the bit widths line
+             // up: it makes the input assembler SPLIT the dword into four
+             // components, so the shader's value.x holds only the low 10 bits
+             // and the unpack has nothing left to shift. With the spec constant
+             // off the shader then ran asfloat() over that small integer, which
+             // is a denormal indistinguishable from zero -- measured as a zero
+             // normal on 2148 of 2158 normal/tangent attributes in one frame,
+             // i.e. the whole game shaded without normals.
+      return DXGI_FORMAT_R32_UINT;
     case 16:  // k_10_11_11
     case 17:  // k_11_11_10
       // No direct DXGI equivalent; delivered as a raw dword and unpacked in

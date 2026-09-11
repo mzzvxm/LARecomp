@@ -147,6 +147,12 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
                     "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.");
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_decl_float, true, "MCLA/NativeGfx",
+                    "Read the two 32-bit float vertex declaration types at their measured "
+                    "width: 0x002C23A5 is FLOAT2 and 0x001A23A6 is FLOAT4, not FLOAT1 and "
+                    "FLOAT2. Off restores the previous (short) reading, for A/B. Measured "
+                    "with DECLGAP, which counts the bytes an element actually occupies: "
+                    "0x001A23A6 spans 16 bytes across 7170 samples, 0x002C23A5 spans 8.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear, true, "MCLA/NativeGfx",
                     "Honour a guest clear that arrives after the target was already cleared "
                     "this frame, restricted to the pass's viewport. One pooled target is "

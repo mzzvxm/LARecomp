@@ -6,6 +6,10 @@
 
 #include <dxgiformat.h>
 
+#include <rex/cvar.h>
+
+REXCVAR_DECLARE(bool, mcla_native_gfx_decl_float);
+
 namespace mcla::native_gfx {
 
 namespace {
@@ -21,12 +25,46 @@ DXGI_FORMAT TranslateType(uint32_t packed) {
   switch (packed) {
     case 0x002C235F: return DXGI_FORMAT_R16G16_FLOAT;
     case 0x001A2360: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    case 0x002C23A5: return DXGI_FORMAT_R32_FLOAT;
-    case 0x001A23A6: return DXGI_FORMAT_R32G32_FLOAT;
+    // The two 32-bit float rows were each one component SHORT, and the packed
+    // type's own format field says so: masking the low byte with 0x3F gives the
+    // Xenos vertex format, and the rows that were always right agree with it --
+    // 0xB9 -> 57 k_32_32_32_FLOAT, 0x86 -> 6 k_8_8_8_8, 0x87 -> 7 k_2_10_10_10.
+    // Under the same mask 0xA5 is 37 (k_32_32_FLOAT) and 0xA6 is 38
+    // (k_32_32_32_32_FLOAT), not one and two floats.
+    //
+    // Measured rather than derived, because a hand-written table can only be
+    // checked against the game: DECLGAP counts the bytes between an element's
+    // offset and the next one in its stream (or the stream stride, for the
+    // last). 0x001A23A6 spans 16 bytes in all 7170 samples and 0x002C23A5
+    // spans 8 -- FLOAT4 and FLOAT2. Every other row measured exactly what it
+    // already claimed.
+    //
+    // What it cost: the pause menu's panel is a lit 3D card whose TEXCOORD0 is
+    // 0x002C23A5. Bound as one float, the input assembler handed the shader
+    // v = 0, so xGloss sampled row 0 of the 960x640 panel across the whole
+    // card -- the panel itself renders and resolves correctly, which is why
+    // every earlier search downstream of it found nothing wrong.
+    case 0x002C23A5:
+      return REXCVAR_GET(mcla_native_gfx_decl_float) ? DXGI_FORMAT_R32G32_FLOAT
+                                                     : DXGI_FORMAT_R32_FLOAT;
+    case 0x001A23A6:
+      return REXCVAR_GET(mcla_native_gfx_decl_float) ? DXGI_FORMAT_R32G32B32A32_FLOAT
+                                                     : DXGI_FORMAT_R32G32_FLOAT;
     case 0x002A23B9: return DXGI_FORMAT_R32G32B32_FLOAT;
     case 0x001A2286: return DXGI_FORMAT_R8G8B8A8_UINT;
     case 0x00182886: return DXGI_FORMAT_B8G8R8A8_UNORM;
-    case 0x001A2187: return DXGI_FORMAT_R10G10B10A2_UINT;
+    // k_2_10_10_10: three signed 10-bit components packed in one dword, which
+    // the shader unpacks itself (tfetchR11G11B10 under
+    // SPEC_CONSTANT_R11G11B10_NORMAL). It must arrive as ONE 32-bit value.
+    //
+    // R10G10B10A2_UINT was the obvious-looking choice and is wrong: the bit
+    // widths match, but it makes the input assembler SPLIT the dword into four
+    // components, so the shader's value.x holds only the low 10 bits and the
+    // unpack has nothing left to shift. Every lit surface in the game was then
+    // shaded with a zero normal -- measured on 2148 of 2158 normal/tangent
+    // attributes in one frame. The raw dword 0x00000201 unpacks to exactly
+    // (-1, 0, 0), length 1.000, only when read whole.
+    case 0x001A2187: return DXGI_FORMAT_R32_UINT;
     default: return DXGI_FORMAT_UNKNOWN;
   }
 }
