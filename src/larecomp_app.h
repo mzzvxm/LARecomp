@@ -14,6 +14,7 @@
 #include "mc_engine/hooks.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "mc_engine/pause_menu.h"
+#include "mc_engine/map_mouse.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
@@ -515,6 +516,7 @@ class LarecompApp : public rex::ReXApp {
     LARECOMP_Discord_Init();
     mc::ui::InitGraphicsButtonPatch();
     InitPauseMenuHooks();
+    InitMapMouse();
     InitStringTableTools();
     InitHooks();
   }

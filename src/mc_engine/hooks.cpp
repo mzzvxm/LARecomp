@@ -53,6 +53,7 @@
 #include "modloader/modloader.h"
 #include "mp3custom/mp3custom.h"
 #include "hud_units.h"
+#include "map_mouse.h"
 #include "texture_dump.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
@@ -3102,6 +3103,7 @@ void Patch_DeltaTimePre() {
     TickButtonPrompts();        // picks up a live button_prompts change
     TickCustomMusic();          // custom radio: volume + end-of-track advance
     TickHudUnits();             // hud_speed_units: mph -> km/h, live
+    TickMapMouse();             // full map: notices the screen closed, frees the cursor
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
     ApplyRenderPhaseMask();       // perf_no_shadows, live

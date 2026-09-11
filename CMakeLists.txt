@@ -31,6 +31,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/pause_menu.cpp
     src/mc_engine/string_table.cpp
     src/mc_engine/menu_camera.cpp
+    src/mc_engine/map_mouse.cpp
     src/mc_engine/time_of_day.cpp
     src/mc_engine/real_weather.cpp
     src/mc_engine/squash_stretch.cpp

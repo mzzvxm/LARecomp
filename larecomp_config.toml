@@ -26075,3 +26075,99 @@ address = 0x82282EA8
 name = "Hook_PromptDropped"
 registers = []
 after_instruction = false
+# Full map: absolute mouse cursor.
+#
+# sub_8262A688 is the map screen's input tick -- it reads the raw pad block at
+# 0x82905388 + 64 * padIndex (bytes 18/19 are the cursor stick, 0..255 around
+# 127.5), applies the deadzone and hands the result to sub_82629910, which
+# moves the cursor, and sub_82629BA0, which pans the view.
+#
+# Hooked at 0x8262A6AC, which is after the prologue and the `mr r31, r3` that
+# parks the screen in r31, and one instruction before `lbz r11, 0x593(r31)` --
+# so the input-enabled flag has not been tested yet and the hook still runs on
+# the frames where the map is fading. That matters: the hook is also what tells
+# the OS-cursor handling that the map is on screen at all.
+#
+# Running BEFORE the game reads the pad is deliberate. A stick inside its
+# deadzone never reaches sub_82629910, so the position the mouse just set
+# stands; a stick outside it overwrites us for that frame and the pad wins.
+# Nothing has to arbitrate.
+#
+# f1 is still the frame delta here -- the prologue's `fmr f27, f1` at
+# 0x8262A6A0 has copied it but not consumed it -- and the cursor step is sized
+# from it (see StepCursorTowards).
+[[midasm_hook]]
+address = 0x8262A6AC
+name = "Hook_MapInputTick"
+registers = ["r31", "f1"]
+
+# Full map: suppress the cursor magnet while a mouse is driving.
+#
+# 0x8262A90C opens the block
+#
+#   bl   sub_82387A18                ; mode gate
+#   beq  loc_8262A95C
+#   lbz  r11, 0x275(r31)             ; screen+629, an icon is selected
+#   beq  loc_8262A95C
+#   lwz  r3,  0x258(r31)             ; screen+600, the icon
+#   beq  loc_8262A95C
+#   ...  vfunc548(icon) -> position
+#   bl   sub_826263C0                ; snap the cursor onto it
+#
+# which runs every frame an icon is selected. With a stick that is welcome
+# stickiness; with a pointer it means the first waypoint the mouse brushes
+# captures the cursor and never gives it back, because this runs after the
+# hook that placed it.
+#
+# 0x8262A95C is the block's own skip target, the one all three guards above
+# branch to, so taking it is a path the function already takes whenever
+# nothing is selected. Nothing else in the block has run at that point.
+[[midasm_hook]]
+address = 0x8262A90C
+name = "MCLA_MapCursorMagnetGuard"
+jump_address_on_true = 0x8262A95C
+
+# The second magnet, on the selection path itself. sub_826290C0 is "select this
+# icon": it parks the icon in screen+600, raises the selection with
+# sub_8261F970(screen, 1) and then, at 0x826291F0, snaps the cursor onto the
+# icon's own position.
+#
+# Suppressing only the per-frame magnet above is not enough, because the pick
+# in sub_826281E8 routes through here and would re-snap on every selection.
+# 0x826291F4 is the instruction after the call; it reloads r3 from r30, so
+# nothing downstream reads a result of the skipped call.
+#
+# Same predicate, so a stick still gets its stickiness and only a cursor a
+# mouse is actually driving loses it.
+[[midasm_hook]]
+address = 0x826291F0
+name = "MCLA_MapCursorMagnetGuard"
+jump_address_on_true = 0x826291F4
+
+# Full map: null guard for the cursor's boundary sweep.
+#
+# sub_82624EC8(boundary, from, to, &node, &neighbour) always writes the node
+# but reaches its final `return` without writing the neighbour when neither
+# sub_82621FF8 test resolves which side of the node the segment crosses. The
+# caller initialises that pointer to zero and never rechecks it:
+#
+#   0x82625418  bl   sub_82624EC8
+#   0x8262541C  lwz  r25, 0x50(r1)      ; node
+#   0x82625420  lwz  r31, 0x54(r1)      ; neighbour -- may still be 0
+#   0x82625448  lvx128 v53, r0, r31     ; read of guest 0
+#
+# The stick cannot hit it, because it moves the cursor by velocity * dt and
+# every segment is short and starts on the walk. A mouse can, and did.
+#
+# 0x826253F4 is the function's own epilogue -- `addi r1, r1, 0xF0`, restore
+# v127, `b __restgprlr_24` -- reached from the "the two positions are equal"
+# early-out just above. Jumping there is safe after the call in a way jumping
+# to that early-out's store is not: the store reads v62, which the call is free
+# to have clobbered. The handler does that store itself, out of r30/r26, which
+# are the same requested-position and output pointers the function uses.
+[[midasm_hook]]
+address = 0x82625424
+name = "MCLA_MapCursorSweepNullGuard"
+registers = ["r31", "r30", "r26"]
+jump_address_on_true = 0x826253F4
+
