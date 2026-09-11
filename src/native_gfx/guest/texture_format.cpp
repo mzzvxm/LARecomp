@@ -43,6 +43,11 @@ TextureFetch DecodeTextureFetch(const uint32_t d[6]) {
 
   t.swizzle = (d[3] >> 1) & 0xFFFu;
 
+
+  // Colour components share one sign field in practice; x decides.
+  t.gamma = ((d[0] >> 2) & 0x3u) == 3u;
+
+
   t.dimension = (d[5] >> 9) & 0x3u;
   t.mip_address = ((d[5] >> 12) & 0xFFFFFu) << 12;
   return t;

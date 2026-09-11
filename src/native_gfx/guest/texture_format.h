@@ -53,10 +53,20 @@ struct TextureFetch {
   uint32_t dimension = 0;  // 1 == 2D
   bool tiled = false;
   bool type_valid = false;  // fetch constant type bits == 2
+  // The fetch constant's four 2-bit sign fields (dword 0, bits 2..9) say how
+  // the hardware interprets each component on read; value 3 is GAMMA, i.e. an
+  // sRGB->linear conversion in the texture unit. MCLA flags its albedo with
+  // 3,3,3,0 -- gamma on colour, linear on alpha. The conversion is NOT done
+  // with a DXGI _SRGB format: the Xenos curve is piecewise linear and differs
+  // from sRGB by up to 69% in the deep darks, so the shader applies the real
+  // curve instead. Measured over 64 distinct textures in one frame:
+  // 55 carry 3,3,3,0, six are 0,0,0,0 (render targets and data maps) and three
+  // are 1,1,1,1 (signed normal maps).
+  bool gamma = false;
   bool operator==(const TextureFetch& o) const {
     return base_address == o.base_address && width == o.width && height == o.height &&
            format == o.format && tiled == o.tiled && pitch == o.pitch &&
-           endianness == o.endianness && swizzle == o.swizzle;
+           endianness == o.endianness && swizzle == o.swizzle && gamma == o.gamma;
   }
 };
 

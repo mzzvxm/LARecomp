@@ -351,6 +351,27 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
     if ((d[0] & 0x3u) != 2u) {
       continue;  // not a texture fetch constant
     }
+    // The fetch constant's four 2-bit sign fields and its exponent bias were
+    // measured over 40.6 million slot decodes of MCLA, and the result is why
+    // only ONE of the three gaps against the emulated path is worth code:
+    //   3,3,3,0 gamma      32.1%   handled
+    //   0,0,0,0 unsigned   55.7%   handled
+    //   1,1,1,1 kSigned    12.2%   inert, see below
+    //   anything else       0.0%
+    //   exponent bias      always 0, so ignoring it costs nothing here
+    // So the per-component decode below is safe in this title: all four fields
+    // always agree.
+    //
+    // kSigned looked like a real gap -- TextureFormatToDxgi never sees the
+    // sign, so a signed fetch would read as UNORM [0,1] where the hardware
+    // gives [-1,1] -- until the FORMATS behind it were measured. Every kSigned
+    // fetch in MCLA uses exactly one of:
+    //   29 k_16_16_16_16_EXPAND -> R16G16B16A16_SNORM   already signed
+    //   32 k_16_16_16_16_FLOAT  -> R16G16B16A16_FLOAT   signed by nature
+    //   36 k_32_FLOAT           -> R32_FLOAT            signed by nature
+    // None lands on a UNORM host format, so there is nothing to correct. The
+    // emulated path arrives at the same place: it does not handle kSigned in
+    // the shader either, only through host format choice.
     const TextureFetch fetch = DecodeTextureFetch(d);
     if (!fetch.type_valid || fetch.width == 0 || fetch.height == 0) {
       continue;
@@ -412,7 +433,13 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
     // +16 offset is inherent to the slot and must NOT be added again.
     if (shared_bytes) {
       const uint32_t dimension = 0;  // 100% of MCLA's fetches are 2D
-      std::memcpy(shared_bytes + SharedTextureIndexByteOffset(dimension, slot), &srv_index, 4);
+      // Bit 31 of the descriptor index carries the fetch constant's GAMMA sign
+      // to the shader, which applies the Xenos piecewise-linear curve after
+      // sampling. Riding on the index costs nothing and needs no change to the
+      // generated tfetch call sites; a descriptor heap index never comes close
+      // to 2^31, and shader_common.h masks the bit off before indexing.
+      const uint32_t table_index = srv_index | (fetch.gamma ? 0x80000000u : 0u);
+      std::memcpy(shared_bytes + SharedTextureIndexByteOffset(dimension, slot), &table_index, 4);
       std::memcpy(shared_bytes + SharedSamplerIndexByteOffset(slot), &sampler_index, 4);
     }
 
