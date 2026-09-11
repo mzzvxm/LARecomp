@@ -42,6 +42,9 @@
 #include "shader_db.h"
 #include "texture_binding.h"
 #include "texture_cache.h"
+#include <rex/runtime.h>
+
+#include "fxaa_pass.h"
 #include "tonemap_pass.h"
 #include "topology_expand.h"
 #include "blit_pass.h"
@@ -54,6 +57,34 @@ REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_exposure, 8.0, "MCLA/NativeGfx",
                       "LDR). The raw scene target is very dark (linear, unconverged exposure); "
                       "this lifts it before the ACES curve and gamma. Only used when "
                       "mcla_native_gfx_present_anchor is on.");
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_fxaa, false, "MCLA/NativeGfx",
+                    "Run NVIDIA FXAA over the composite at present. The console had no "
+                    "anti-aliasing to inherit here -- the game renders unresolved -- so this "
+                    "is an addition, not a fidelity fix, and it is a whole-frame filter that "
+                    "deserves its own A/B. It goes before the display gamma ramp, which is "
+                    "where the console's own ramp sits (the DC_LUT is scanout, after "
+                    "everything the GPU drew). Independent of mcla_native_gfx_msaa: MSAA "
+                    "resolves geometry edges only, FXAA also catches shader and alpha-test "
+                    "edges, and the two compose. Ignored on the present_anchor path, whose "
+                    "source is the raw HDR scene target.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// TEMP DIAG helper for the rim probe: IEEE half -> float. first_draw.cpp has one
+// but it is not exported, and this is scaffolding that leaves with the probe.
+REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_threshold, 0.125, "MCLA/NativeGfx",
+                      "FXAA edge threshold: the minimum local luma contrast, as a fraction of "
+                      "the brighter luma, before a pixel is filtered at all. Lower catches "
+                      "more edges and softens more of the frame; 0.333 is NVIDIA's fastest "
+                      "preset, 0.125 the default quality one, 0.063 the most aggressive.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_subpixel, 0.75, "MCLA/NativeGfx",
+                      "How much of FXAA's sub-pixel term is allowed through. That term is what "
+                      "handles thin features and lone pixels the edge walk cannot resolve -- "
+                      "wires, railings, distant lamp posts -- and it is also the part that "
+                      "blurs. 0 turns it off and keeps the image sharpest, 1 is the softest.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_present_anchor, false, "MCLA/NativeGfx",
                     "Continuous mode: present the anchor (raw scene target) instead of the "
@@ -2910,6 +2941,11 @@ constexpr uint32_t kOwnedDisplayCount = 3;
 OwnedDisplayBuffer g_owned_display[kOwnedDisplayCount];
 uint32_t g_owned_display_index = 0;
 TonemapPass g_tonemap;
+FxaaPass g_fxaa;
+// FXAA writes here and the ramp/copy below reads it instead of the pooled
+// composite. One buffer, not a ring: unlike g_owned_display this is never
+// published, so nothing outside this frame's command list ever samples it.
+OwnedDisplayBuffer g_fxaa_buffer;
 // Fase-A TDR timing: wall-clock start of the current continuous frame's native
 // work, set when the previous frame is published/reset.
 std::chrono::steady_clock::time_point g_frame_start = std::chrono::steady_clock::now();
@@ -3134,12 +3170,75 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // PrepareForRendering (which reads color_state).
     display->color_state = kReadable;
   } else {
+    // FXAA first, before anything else touches the composite. It writes its own
+    // buffer and everything downstream (the gamma ramp, or the plain copy) then
+    // reads THAT in place of the pooled target, which is what src_tex/src_state
+    // below select. It ends in COPY_SOURCE so the rest of this branch, written
+    // for the pooled composite, needs no other change.
+    ID3D12Resource* src_tex = display->color.Get();
+    uint32_t src_fmt = display->key.rt_format;
+    D3D12_RESOURCE_STATES* src_state = &display->color_state;
+    bool src_is_fxaa = false;
+    // The UAV the shader writes is typed as the slot format, so restrict this
+    // to the two formats that view: an unexpected composite format falls
+    // through to the untouched copy rather than presenting garbage.
+    const bool want_fxaa = REXCVAR_GET(mcla_native_gfx_fxaa) &&
+                           display->key.sample_count <= 1 &&
+                           (slot_format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+                            slot_format == DXGI_FORMAT_B8G8R8A8_UNORM);
+    if (want_fxaa) {
+      if (!g_fxaa.initialized()) {
+        g_fxaa.Initialize(context);
+      }
+      if (g_fxaa.initialized() &&
+          EnsureOwnedDisplay(context.device(), g_fxaa_buffer, display->key.width,
+                             display->key.height, slot_format, true)) {
+        D3D12_RESOURCE_BARRIER pre_fx[2] = {};
+        uint32_t fx_count = 0;
+        if (display->color_state != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE) {
+          pre_fx[fx_count].Transition.pResource = display->color.Get();
+          pre_fx[fx_count].Transition.StateBefore = display->color_state;
+          pre_fx[fx_count].Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+          pre_fx[fx_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          ++fx_count;
+        }
+        if (g_fxaa_buffer.state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+          pre_fx[fx_count].Transition.pResource = g_fxaa_buffer.tex.Get();
+          pre_fx[fx_count].Transition.StateBefore = g_fxaa_buffer.state;
+          pre_fx[fx_count].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+          pre_fx[fx_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          ++fx_count;
+        }
+        if (fx_count) {
+          cl->ResourceBarrier(fx_count, pre_fx);
+        }
+        g_fxaa.Record(context, cl, display->color.Get(), display->key.rt_format,
+                      g_fxaa_buffer.tex.Get(), uint32_t(slot_format), display->key.width,
+                      display->key.height,
+                      float(REXCVAR_GET(mcla_native_gfx_fxaa_threshold)),
+                      float(REXCVAR_GET(mcla_native_gfx_fxaa_subpixel)));
+        D3D12_RESOURCE_BARRIER post_fx = {};
+        post_fx.Transition.pResource = g_fxaa_buffer.tex.Get();
+        post_fx.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        post_fx.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        post_fx.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &post_fx);
+        g_fxaa_buffer.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        // The pool restores the composite to RENDER_TARGET from color_state.
+        display->color_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        src_tex = g_fxaa_buffer.tex.Get();
+        src_fmt = uint32_t(slot_format);
+        src_state = &g_fxaa_buffer.state;
+        src_is_fxaa = true;
+      }
+    }
+
     D3D12_RESOURCE_BARRIER pre[2] = {};
     uint32_t pre_count = 0;
-    // Source: pooled composite -> COPY_SOURCE.
-    if (display->color_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
-      pre[pre_count].Transition.pResource = display->color.Get();
-      pre[pre_count].Transition.StateBefore = display->color_state;
+    // Source (composite, or the FXAA buffer) -> COPY_SOURCE.
+    if (*src_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+      pre[pre_count].Transition.pResource = src_tex;
+      pre[pre_count].Transition.StateBefore = *src_state;
       pre[pre_count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
       pre[pre_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       ++pre_count;
