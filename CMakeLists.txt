@@ -84,6 +84,8 @@ set(LARECOMP_SOURCES
     src/native_gfx/guest/vblank_probe.cpp
     src/native_gfx/nocp/guest_gpu.cpp
     src/native_gfx/nocp/nocp_app.cpp
+    src/native_gfx/guest/host_heap.cpp
+    src/native_gfx/guest/host_resource_heap.cpp
     src/native_gfx/guest/guest_constants.cpp
     src/native_gfx/guest/render_state.cpp
     src/native_gfx/guest/sampler_state.cpp
@@ -168,6 +170,9 @@ else()
 
         target_link_libraries(larecomp
             PRIVATE
+            # native_gfx guest-visible object allocator (guest/host_heap.cpp):
+            # coalescing heap over a block of guest physical memory.
+            rex::o1heap
             dxgi
             # native_gfx D3D12 backend (D3D12SerializeRootSignature etc.)
             d3d12
