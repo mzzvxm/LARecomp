@@ -167,6 +167,14 @@ struct GeometrySnapshot {
 // mode before the draw pipeline exists.
 // `inline_geometry` non-null replaces the fetch constant for every stream with
 // command-buffer-resident data; see InlineGeometry.
+// TEMP INSTRUMENTATION: five cumulative microsecond counters for the phases of
+// BuildGeometrySnapshot, in this order:
+//   ucode, decl, match, index, resolve
+// Returns a pointer to the first; they are contiguous. geom measured 25ms a
+// frame with only 1.8ms inside UploadRegion, so the build itself is the cost
+// and this says which part of it.
+const double* GeometryPhaseMicroseconds();
+
 GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                                        uint32_t element_count, uint32_t start_element,
                                        int32_t base_vertex, bool indexed, ShaderDatabase& shaders,

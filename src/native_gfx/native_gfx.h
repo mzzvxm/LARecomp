@@ -77,6 +77,10 @@ bool ShouldDumpRenderTargets();
 
 bool PresentFrame();
 
+// TEMP DIAG: counts entries into the guest swap hook, so a present that never
+// runs can be told apart from one that runs and fails.
+void NoteSwapHook();
+
 // TEMP INSTRUMENTATION: which entry point the guest used to issue a draw.
 // Only DrawIndexedVertices ever reached the renderer — DrawVertices was
 // telemetry-only and DrawVerticesUP was not handled at all — so everything the

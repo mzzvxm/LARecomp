@@ -5,6 +5,8 @@
 #include "geometry.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -216,12 +218,27 @@ uint32_t PrimitiveTypeToTopology(uint32_t primitive_type) {
   }
 }
 
+// TEMP INSTRUMENTATION: cumulative microseconds per phase of
+// BuildGeometrySnapshot, in the order ucode, decl, match, index, resolve.
+// Early returns simply stop marking, so a bailed-out draw charges only the
+// phases it actually reached.
+static double g_geometry_phase_us[5] = {};
+
+const double* GeometryPhaseMicroseconds() { return g_geometry_phase_us; }
+
 GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                                        uint32_t element_count, uint32_t start_element,
                                        int32_t base_vertex, bool indexed, ShaderDatabase& shaders,
                                        BufferCache* buffers, D3D12Context* context,
                                        ID3D12GraphicsCommandList* cl,
                                        const InlineGeometry* inline_geometry) {
+  auto phase_prev = std::chrono::steady_clock::now();
+  const auto phase_mark = [&phase_prev](int slot) {
+    const auto now = std::chrono::steady_clock::now();
+    g_geometry_phase_us[slot] += std::chrono::duration<double, std::micro>(now - phase_prev).count();
+    phase_prev = now;
+  };
+
   GeometrySnapshot s;
   s.primitive_type = primitive_type;
   s.element_count = element_count;
@@ -252,6 +269,8 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
     s.failure = "vertex shader has no vertex element table in the pack";
     return s;
   }
+
+  phase_mark(0);
 
   // --- the bound vertex declaration is the authoritative layout source.
   // Reading it back out of the patched microcode is NOT reliable: when the
@@ -331,6 +350,8 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
   }
 
   const uint32_t shadow = dev + kDevFetchShadowOffset;
+  phase_mark(1);
+
   for (uint32_t i = 0; i < velem_count; ++i) {
     const ShaderDatabase::VertexElementRef& ve = velems[i];
     const char* semantic = UsageToSemantic(ve.usage);
@@ -572,6 +593,8 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
     s.input_layout.push_back(e);
   }
 
+  phase_mark(2);
+
   // --- index buffer
   if (indexed) {
     const uint32_t ib_obj = R32(base, dev + kDevIndexBufferOffset);
@@ -592,6 +615,8 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
     const uint32_t index_size = ib.indices_32bit ? 4u : 2u;
     s.index_buffer_bytes = (start_element + element_count) * index_size;
   }
+
+  phase_mark(3);
 
   // --- resolve to native resources (skipped in guest-only diagnostic mode)
   if (buffers && context && cl) {
@@ -650,6 +675,8 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
     }
     ProbeIndexRangeAgainstStream(s, element_count, start_element);
   }
+
+  phase_mark(4);
 
   s.complete = true;
   return s;

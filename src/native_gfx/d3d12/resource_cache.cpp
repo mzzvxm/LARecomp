@@ -5,6 +5,7 @@
 #include "resource_cache.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include <rex/ui/d3d12/d3d12_util.h>
 
 #include "../guest/guest_resources.h"
+#include "frame_capture.h"
 #include "context.h"
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
@@ -193,6 +195,7 @@ BufferCache::Region* BufferCache::FindContaining(RegionMap& map, uint32_t addres
 
 bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                                Region& region, BufferSwap swap) {
+  const auto upload_begin = std::chrono::steady_clock::now();
   D3D12Context::UploadAlloc staging;
   if (!context.AllocateUpload(region.size, 4, staging, D3D12Context::UploadTag::kGeometry)) {
     stats_.last_failure = "upload ring allocation failed";
@@ -237,6 +240,9 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
     cl->ResourceBarrier(1, &barrier);
   }
   cl->CopyBufferRegion(region.resource.Get(), 0, staging.buffer, staging.offset, region.size);
+  stats_.upload_us +=
+      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - upload_begin)
+          .count();
   D3D12_RESOURCE_BARRIER barrier = {};
   barrier.Transition.pResource = region.resource.Get();
   barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -351,6 +357,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       return false;
     }
     ++stats_.reuploads;
+    stats_.reupload_bytes += region->size;
   } else {
     if (!readable()) {
       return false;
@@ -467,6 +474,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       return false;
     }
     ++stats_.uploads;
+    stats_.upload_bytes += region->size;
   }
 
   out.resource = region->resource.Get();
@@ -514,6 +522,45 @@ D3D12_GPU_VIRTUAL_ADDRESS BufferCache::ZeroStreamAddress(D3D12Context& context) 
   return zero_stream_->GetGPUVirtualAddress();
 }
 
+void BufferCache::ReportPeriodic() {
+  ++frame_;
+  // Geometry is what fills the upload ring, and the split below is what says
+  // why: a steady stream of `uploads` means regions are being built fresh every
+  // frame, `reuploads` means they persist but something dirties them. The two
+  // have completely different fixes, and the exhaustion report cannot tell
+  // them apart.
+  constexpr uint64_t kEveryFrames = 600;
+  static uint64_t frames = 0;
+  static Stats prev{};
+  if ((frames++ % kEveryFrames) != 0) {
+    return;
+  }
+  size_t regions = 0;
+  uint64_t bytes = 0;
+  Census(regions, bytes);
+  REXLOG_INFO(
+      "[native_gfx] BufferCache @frame {}: regions={} bytes={} KiB | verify: regions={} "
+      "MB={} CAUGHT={} | since last: hits={} "
+      "uploads={} reuploads={} (from unlock={}) merges={} declined={} failures={} "
+      "unreadable={} | {}",
+      frames, regions, bytes >> 10, stats_.verify_regions - prev.verify_regions,
+      (stats_.verify_bytes - prev.verify_bytes) >> 20, stats_.verify_catches - prev.verify_catches,
+      stats_.hits - prev.hits, stats_.uploads - prev.uploads,
+      stats_.reuploads - prev.reuploads,
+      stats_.unlock_invalidations - prev.unlock_invalidations, stats_.merges - prev.merges,
+      stats_.merge_declined - prev.merge_declined,
+      stats_.upload_failures - prev.upload_failures, stats_.unreadable - prev.unreadable,
+      DrawRejectionSummary());
+  // The rejection counters are the only thing that says WHICH gate closed on a
+  // frame that recorded nothing, and REXLOG only reaches stdout -- which is
+  // unreadable when the game is launched by RenderDoc's ExecuteAndInject.
+  if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+    std::fprintf(f, "REJECT %s\n", DrawRejectionSummary().c_str());
+    std::fclose(f);
+  }
+  prev = stats_;
+}
+
 void BufferCache::Census(size_t& count, uint64_t& bytes) const {
   count = 0;
   bytes = 0;
@@ -531,9 +578,13 @@ void BufferCache::InvalidateRange(uint32_t guest_address, uint32_t size) {
   const uint64_t lo = guest_address & 0x1FFFFFFFu;
   const uint64_t hi = lo + size;
   for (RegionMap& map : regions_) {
+    stats_.inval_scan_steps += map.size();
     for (auto& [base, r] : map) {
       if (uint64_t(r.base & 0x1FFFFFFFu) < hi &&
           lo < uint64_t(r.base & 0x1FFFFFFFu) + r.size) {
+        if (!r.dirty) {
+          ++stats_.regions_dirtied;
+        }
         r.dirty = true;
       }
     }
@@ -562,6 +613,8 @@ std::pair<uint32_t, uint32_t> BufferCache::InvalidationThunk(void* context_ptr,
     // this only records the range; Resolve applies it.
     std::lock_guard<std::mutex> lock(self->invalidation_mutex_);
     self->pending_invalidations_.emplace_back(physical_address_start, length);
+    ++self->stats_.thunk_ranges;
+    self->stats_.thunk_bytes += length;
   }
   // Nothing to keep watched beyond the range that fired.
   return std::make_pair(physical_address_start, length);
@@ -612,6 +665,7 @@ void BufferCache::WatchRegion(const Region& region) {
 }
 
 void BufferCache::ApplyPendingInvalidations() {
+  stats_.region_count = regions_[0].size() + regions_[1].size();
   std::vector<std::pair<uint32_t, uint32_t>> ranges;
   {
     std::lock_guard<std::mutex> lock(invalidation_mutex_);

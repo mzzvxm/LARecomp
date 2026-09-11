@@ -1,4 +1,6 @@
 #pragma once
+
+#include <string>
 // ===========================================================================
 // MCLA Native Graphics Runtime — multi-draw frame capture
 // ===========================================================================
@@ -117,6 +119,9 @@ void NoteFrameCaptureResolveMiss(uint32_t dest_address, uint32_t dest_width,
                                  uint32_t dest_height, uint32_t src_width,
                                  uint32_t src_height, uint32_t rt_format,
                                  uint32_t ds_format);
+
+// One line of offered/accepted/rejected draw counts, for the periodic log.
+std::string DrawRejectionSummary();
 
 // The sample count the pooled target for this shape will have. Anything that
 // builds a RenderTargetKey outside the pool has to use it, or its lookup

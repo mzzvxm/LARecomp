@@ -1247,6 +1247,67 @@ void NoteD3DTextureCreated(const uint8_t* base, uint32_t d3d_texture_va) {
 }
 
 void NotifyFrameBoundary() {
+  // Geometry is what exhausts the upload ring (measured: ~16 MiB in ~93
+  // allocations every frame, while constants and textures never get a turn).
+  // This split says whether those are fresh regions or re-uploads of dirtied
+  // ones -- different bugs, different fixes.
+  g_buffers.ReportPeriodic();
+
+  // Ownership counters, on the same cadence as the registry dump. Reported
+  // here too because ownership does not depend on the registry cvar, and the
+  // numbers that matter (validate_failed, orphaned) have to be visible without
+  // turning a second diagnostic on.
+  if (REXCVAR_GET(mcla_native_gfx_own_textures) != 0) {
+    static uint64_t own_report = 0;
+    if ((own_report++ % 600u) == 0u) {
+      REXLOG_INFO("[native_gfx] texture {}", TextureOwnershipSummary());
+    }
+  }
+
+  // Occlusion queries cannot run without a command processor, and MCLA gates a
+  // vehicle's body on one. Selecting the guest's own no-occlusion path every
+  // boundary is what keeps the body submitted; see guest/occlusion.h for the
+  // slot-refresh mechanism that makes it permanent rather than intermittent.
+  DisableGuestOcclusionQueries(rex::Runtime::instance()
+                                   ? rex::Runtime::instance()->virtual_membase()
+                                   : nullptr);
+  {
+    static uint64_t occ_report = 0;
+    if ((occ_report++ % 600u) == 0u) {
+      REXLOG_INFO("[native_gfx] {}", OcclusionSummary());
+    }
+  }
+
+  // Vblank/flip machinery, for the no-command-processor port. Sampled every
+  // boundary (two loads) and reported on the same cadence as the rest.
+  ProbeVblankState(rex::Runtime::instance() ? rex::Runtime::instance()->virtual_membase()
+                                            : nullptr);
+  {
+    static uint64_t vb_report = 0;
+    if (REXCVAR_GET(mcla_native_gfx_vblank_probe) && (vb_report++ % 600u) == 0u) {
+      REXLOG_INFO("[native_gfx] vblank {}", VblankProbeSummary());
+    }
+  }
+
+  // The lock/unlock traffic is worth reporting whatever ownership is doing:
+  // it is what says whether the guest's own dirty ranges can replace the page
+  // write watch.
+  {
+    static uint64_t lock_report = 0;
+    if ((lock_report++ % 600u) == 0u) {
+      // Reported together with the cache's own invalidation split: the number
+      // that matters is how much of `invalidated` the unlock signal accounts
+      // for. If it covers nearly all of it, the page write watch is paying for
+      // faults it no longer needs to take.
+      const TextureCache::Stats& ts = g_textures.stats();
+      REXLOG_INFO(
+          "[native_gfx] resource {} | tex dropped={} (unlock={} watch={}) unlock_ranges={} "
+          "(no_hit={})",
+          ResourceLockSummary(), ts.invalidated, ts.invalidated_by_unlock,
+          ts.invalidated_by_watch, ts.unlock_ranges, ts.unlock_ranges_no_hit);
+    }
+  }
+
   // TEMP DIAG (remove after): is the frame-boundary hook firing, and do the
   // continuous gates pass?
   {

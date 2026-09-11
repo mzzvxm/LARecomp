@@ -127,6 +127,9 @@ class BufferCache {
 
   void Shutdown(D3D12Context& context);
 
+  // Logs the hits/uploads/reuploads split every 600 calls. Call once per frame.
+  void ReportPeriodic();
+
   // Resolves [guest_address, guest_address + size) to a native resource plus
   // the offset of that range inside it. Records any upload on the current
   // frame's command list. Returns false on failure (diagnosed via stats).

@@ -218,6 +218,10 @@ struct Capture {
 
   uint32_t limit = 0;
   uint32_t offered = 0;
+  // Draws the bisection filter removed this frame. Reset per frame like
+  // `offered` and `accepted`, unlike the rej_* counters below, which are
+  // cumulative for the session.
+  uint32_t skipped_by_range = 0;
   // Quad-expanded draws whose vertex buffer was rebuilt one-source-vertex-per-
   // quad-corner, and the ones where that could not be done (guest range not
   // committed, or the upload ring full). A failure here is the black wedge
@@ -245,6 +249,11 @@ struct Capture {
   uint32_t rej_no_shader = 0;
   uint32_t rej_geometry = 0;
   uint32_t rej_unsupplied = 0;
+  // Draws thrown away between `offered` and any rejection reason. Measured:
+  // offered=3723 accepted=3337 with every rej_* counter at zero, so 386 draws
+  // per report were vanishing with nothing to say where. That gap is the only
+  // place a missing-geometry artefact can hide from the log.
+  uint32_t rej_not_armed = 0;
   // Expanded draws whose indices would read past the vertex fetch. See the
   // rejection site for why drawing them is worse than not.
   uint32_t rej_outruns_fetch = 0;
@@ -274,6 +283,13 @@ struct Capture {
 // scope, and descriptor exhaustion is exactly the failure that must not stay
 // invisible while the draw cap is being raised.
 TextureBinder::Stats g_binder_stats_for_report;
+// TEMP INSTRUMENTATION: the per-frame CPU line names WHERE the time goes
+// (geom/bind) but not WHY. These carry the two caches' counters to the report
+// site, which sees neither object, so a frame can say whether geom is paying
+// for real first-use uploads, for invalidation-driven re-uploads, or for cache
+// hits that are simply slow.
+BufferCache::Stats g_buffer_stats_for_report;
+TextureCache::Stats g_texture_stats_for_report;
 
 Capture g_cap;
 
@@ -1340,6 +1356,11 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   if (!g_cap.armed) {
     // Before the first frame boundary the frame is already half-consumed;
     // starting here would miss the earlier passes again.
+    //
+    // But `armed` also goes false mid-frame whenever Finish() runs, and in
+    // continuous mode only the next frame boundary re-arms it. Every draw
+    // after that point in the frame is dropped, silently until now.
+    ++g_cap.rej_not_armed;
     return;
   }
   // Starting to record and choosing which pass to read back are separate
@@ -2832,6 +2853,31 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   }
 }
 
+// Compact "offered vs accepted, and where the rest went" line. The rejection
+// counters already existed but only reached the one-shot capture report, so a
+// continuous-mode session could run for hours with zero draws recorded and the
+// log never said which gate was closing.
+std::string DrawRejectionSummary() {
+  char buf[448];
+  std::snprintf(buf, sizeof(buf),
+                "draws offered=%u accepted=%u skipped=%u quadrep=%u/%u(sz=%u rd=%u al=%u ns=%u) expstart=%u | rej: notarmed=%u notidx=%u topo=%u noshader=%u "
+                "geom=%u unsup=%u outruns=%u cfg=%u(target=%u budget=%u) packmiss=%u | fail: "
+                "bind=%u pso=%u "
+                "const=%u",
+                g_cap.offered, g_cap.accepted, g_cap.skipped_by_range, g_cap.quad_replicated,
+                g_cap.quad_replicate_failed, g_cap.quad_fail_size, g_cap.quad_fail_read,
+                g_cap.quad_fail_alloc, g_cap.quad_fail_nostream, g_cap.expanded_nonzero_start,
+                g_cap.rej_not_armed,
+                g_cap.rej_not_indexed,
+                g_cap.rej_topology,
+                g_cap.rej_no_shader, g_cap.rej_geometry, g_cap.rej_unsupplied,
+                g_cap.rej_outruns_fetch, g_cap.rej_config,
+                g_cap.rej_cfg_target, g_cap.rej_cfg_budget, g_cap.rej_shader_missing,
+                g_cap.fail_bind, g_cap.fail_pso, g_cap.fail_constants);
+  return std::string(buf);
+}
+
+
 void CaptureDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                  uint32_t element_count, uint32_t start_element, int32_t base_vertex, bool indexed,
                  uint32_t draw_limit, D3D12Context& context, ShaderDatabase& shaders,
@@ -3041,16 +3087,32 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     const double gpu_wait_ms = context.TakeGpuWaitUs() / 1000.0;
     g_frame_start = std::chrono::steady_clock::now();
     if (total <= 10u || (total % 60u) == 0u) {
+      static BufferCache::Stats prev_buf;
+      static TextureCache::Stats prev_tex;
+      static TextureBinder::Stats prev_bind;
+      const double* gp = GeometryPhaseMicroseconds();
+      static double prev_gp[5] = {};
+      auto D = [](uint64_t now, uint64_t before) {
+        return (unsigned long long)(now - before);
+      };
       if (FILE* fd = std::fopen("native_gfx_diag.txt", "ab")) {
         std::fprintf(fd,
                      "prepare total=%u published=%u no_display=%u | anchor=%d readback=%d "
                      "rb=%ux%u/fmt%u | offered=%u acc=%u acc_aux=%u acc_comp=%u | "
                      "rej_cfg=%u (target=%u budget=%u patho=%u) rej_geo=%u rej_shader=%u "
-                     "rej_unsup=%u (display=%u) rej_notidx=%u rej_topo=%u "
+                     "rej_unsup=%u (display=%u) rej_notarmed=%u rej_notidx=%u rej_topo=%u "
                      "rej_nosh=%u | fail_bind=%u fail_pso=%u fail_cb=%u ringflush=%u "
                      "| peak_aux=%u peak_comp=%u srv_exh=%llu smp_exh=%llu "
                      "| wall=%.1fms gpu_wait=%.1fms "
-                     "| cpu state=%.1f shader=%.1f geom=%.1f bind=%.1f const=%.1f pso=%.1f ms\n",
+                     "| cpu state=%.1f shader=%.1f geom=%.1f bind=%.1f const=%.1f pso=%.1f ms"
+                     "| buf hit=%llu up=%llu reup=%llu unlock=%llu merge=%llu"
+                     "| geom up_ms=%.1f up_MB=%.1f reup_MB=%.1f same=%llu"
+                     "| inval thunk=%llu/%lluKB unlockKB=%llu dirtied=%llu"
+                     "| geomphase ucode=%.1f decl=%.1f match=%.1f idx=%.1f res=%.1f ms"
+                     "| invscan steps=%llu regions=%llu"
+                     "| tex hit=%llu up=%llu rt=%llu evict=%llu verify=%llu CAUGHT=%llu"
+                     "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
+                     "| memo hit=%llu miss=%llu (guard=%llu key=%llu) bridge=%llu\n",
                      total, ok, no_disp, g_cap.has_anchor ? 1 : 0, g_cap.has_readback ? 1 : 0,
                      display ? display->key.width : 0, display ? display->key.height : 0,
                      display ? display->key.rt_format : 0,
@@ -3061,7 +3123,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      // only report that printed it is CLOGF, a no-op there. A draw whose shader
                      // declares an attribute the vertex declaration does not supply (measured:
                      // TEXCOORD1) is dropped outright at frame_capture.cpp:1188.
-                     g_cap.rej_unsupplied, g_cap.rej_unsup_display, g_cap.rej_not_indexed,
+                     g_cap.rej_unsupplied, g_cap.rej_unsup_display, g_cap.rej_not_armed,
+                     g_cap.rej_not_indexed,
                      g_cap.rej_topology,
                      g_cap.rej_no_shader, g_cap.fail_bind, g_cap.fail_pso, g_cap.fail_constants,
                      g_cap.ring_flushes, g_cap.peak_aux, g_cap.peak_composite,
@@ -3070,7 +3133,57 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      wall_ms, gpu_wait_ms, g_profile.state_us / 1000.0,
                      g_profile.shader_us / 1000.0, g_profile.geom_us / 1000.0,
                      g_profile.bind_us / 1000.0, g_profile.const_us / 1000.0,
-                     g_profile.pso_us / 1000.0);
+                     g_profile.pso_us / 1000.0,
+                     // Deltas, not totals: a ratio over the whole run hides a cache that
+                     // only started thrashing once the city loaded.
+                     D(g_buffer_stats_for_report.hits, prev_buf.hits),
+                     D(g_buffer_stats_for_report.uploads, prev_buf.uploads),
+                     D(g_buffer_stats_for_report.reuploads, prev_buf.reuploads),
+                     D(g_buffer_stats_for_report.unlock_invalidations,
+                       prev_buf.unlock_invalidations),
+                     D(g_buffer_stats_for_report.merges, prev_buf.merges),
+                     g_buffer_stats_for_report.upload_us / 1000.0 - prev_buf.upload_us / 1000.0,
+                     double(D(g_buffer_stats_for_report.upload_bytes, prev_buf.upload_bytes)) / 1048576.0,
+                     double(D(g_buffer_stats_for_report.reupload_bytes, prev_buf.reupload_bytes)) / 1048576.0,
+                     D(g_buffer_stats_for_report.reuploads_identical, prev_buf.reuploads_identical),
+                     D(g_buffer_stats_for_report.thunk_ranges, prev_buf.thunk_ranges),
+                     D(g_buffer_stats_for_report.thunk_bytes, prev_buf.thunk_bytes) / 1024,
+                     D(g_buffer_stats_for_report.unlock_bytes, prev_buf.unlock_bytes) / 1024,
+                     D(g_buffer_stats_for_report.regions_dirtied, prev_buf.regions_dirtied),
+                     gp[0] / 1000.0 - prev_gp[0] / 1000.0, gp[1] / 1000.0 - prev_gp[1] / 1000.0,
+                     gp[2] / 1000.0 - prev_gp[2] / 1000.0, gp[3] / 1000.0 - prev_gp[3] / 1000.0,
+                     gp[4] / 1000.0 - prev_gp[4] / 1000.0,
+                     D(g_buffer_stats_for_report.inval_scan_steps, prev_buf.inval_scan_steps),
+                     (unsigned long long)g_buffer_stats_for_report.region_count,
+                     D(g_texture_stats_for_report.hits, prev_tex.hits),
+                     D(g_texture_stats_for_report.uploads, prev_tex.uploads),
+                     D(g_texture_stats_for_report.render_target_hits,
+                       prev_tex.render_target_hits),
+                     D(g_texture_stats_for_report.evictions, prev_tex.evictions),
+                     // The sampled-hash backstop. A non-zero CAUGHT is a lost
+                     // invalidation happening right now: the cache was about to
+                     // serve bytes the guest had already overwritten. That is the
+                     // shape of a transient wrong-looking block in gameplay.
+                     D(g_texture_stats_for_report.verify_checks, prev_tex.verify_checks),
+                     D(g_texture_stats_for_report.verify_catches, prev_tex.verify_catches),
+                     D(g_binder_stats_for_report.srv_hits, prev_bind.srv_hits),
+                     D(g_binder_stats_for_report.srv_misses, prev_bind.srv_misses),
+                     D(g_binder_stats_for_report.sampler_hits, prev_bind.sampler_hits),
+                     D(g_binder_stats_for_report.sampler_misses, prev_bind.sampler_misses),
+                     // Slots that resolved to nothing and were pointed at the
+                     // neutral white stand-in. Non-zero mid-session is a draw
+                     // sampling the WRONG texture for that frame, which is the
+                     // shape of a block that appears and vanishes.
+                     D(g_binder_stats_for_report.unresolved, prev_bind.unresolved),
+                     D(g_binder_stats_for_report.memo_hits, prev_bind.memo_hits),
+                     D(g_binder_stats_for_report.memo_misses, prev_bind.memo_misses),
+                     D(g_binder_stats_for_report.memo_miss_guard, prev_bind.memo_miss_guard),
+                     D(g_binder_stats_for_report.memo_miss_key, prev_bind.memo_miss_key),
+                     D(g_binder_stats_for_report.memo_bridge_binds, prev_bind.memo_bridge_binds));
+        prev_buf = g_buffer_stats_for_report;
+        prev_tex = g_texture_stats_for_report;
+        prev_bind = g_binder_stats_for_report;
+        for (int gi = 0; gi < 5; ++gi) prev_gp[gi] = gp[gi];
         std::fflush(fd);
         std::fclose(fd);
       }
