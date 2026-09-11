@@ -92,6 +92,24 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_depth_cs, true, "MCLA/NativeGfx",
                     "distance fog, the per-object contact shadow under vehicles and the depth of "
                     "field's circle of confusion at the same time. Diagnostic only.");
 
+REXCVAR_DEFINE_INT32(mcla_native_gfx_shadow_bias, 16, "MCLA/NativeGfx",
+                     "Depth bias, in D24 quanta, added to the 640x640 shadow pass. Measured "
+                     "against the emulated path on the same camera and hour: the native shadow "
+                     "atlas comes out 7..17 quanta BELOW the emulated one in all four cascades "
+                     "(0.0% of texels within one quantum), while run-to-run drift between two "
+                     "native captures is only +-4. __PS_ShadowBlend compares four PCF taps "
+                     "against a receiver depth the shader computes in float, so an atlas that "
+                     "low makes lit ground shadow itself: the whole ground plane sat at 2 of 4 "
+                     "taps and only 68.5% of the frame was fully lit. At 16 that is 92.5%, and "
+                     "every probe point matches the emulated HDR to 3-4 decimals (sunlit "
+                     "pavement 0.1694 vs 0.1699, shaded asphalt 0.1255 vs 0.1260, sky "
+                     "unchanged). The auto-exposure then stops compensating, which is what the "
+                     "washed-out look was. WHY the rasterised depth lands low is not explained: "
+                     "the viewport is [0,1], ZSCALE/ZOFFSET are neutral, the guest programs no "
+                     "polygon offset (the registers read zero and the enable bits are set), and "
+                     "the resolve into the atlas is bit-exact against the 640x640 target. 0 "
+                     "restores the unbiased behaviour.");
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_rectlist_nocull, true, "MCLA/NativeGfx",
                     "Disable face culling for kRectangleList draws. The Xenos rect primitive "
                     "describes an AREA and generates its own triangles; synthesising the fourth "
@@ -289,6 +307,27 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
                     "fix, i.e. with transposed UVs, so the foliage was sampling the wrong texels "
                     "and its alpha mask meant nothing -- it has to be re-measured. ON by default "
                     "now; the switch stays so the fixed 0.5 can be put back while bisecting.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth32, false, "MCLA/NativeGfx",
+                    "Give a guest kD24S8 depth surface a D32_FLOAT_S8X24 host format instead of "
+                    "the literal D24_UNORM_S8. The shadow atlas is why: each 640x640 cascade "
+                    "occupies 1449..6300 of the 16777215 D24 levels, because the light projection "
+                    "spans the city and a cascade is a sliver of it. Adjacent stored values differ "
+                    "by one quantum, so nothing is mis-quantised -- there is just no headroom, and "
+                    "__PS_ShadowBlend's four PCF taps straddle the receiver depth by about three "
+                    "quanta, making the comparison a coin flip per texel. Measured near the camera: "
+                    "63.6% of pixels on intermediate PCF steps, 8.0% fully lit, and the 0.75 pixels "
+                    "cohere with their neighbours 48.7% of the time against a 40.7% base rate, "
+                    "which is noise rather than penumbra. Costs 8 bytes per texel instead of 4. "
+                    "Turn off to get the literal mapping back while bisecting.\n"
+                    "\n"
+                    "DEFAULT IS OFF. It was turned ON on a hypothesis about shadow acne and never "
+                    "verified -- the guest asks for kD24S8, which is what the 360 had, so forcing float "
+                    "may move us AWAY from the hardware rather than toward it. It also changes the depth "
+                    "format of EVERY kD24S8 target, not just the shadow atlas, which changes render target "
+                    "keys and pool behaviour globally. Shadow artefacts and missing geometry were reported "
+                    "with it on; it goes back off until someone measures a frame with and without.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_half_pixel, true, "MCLA/NativeGfx",

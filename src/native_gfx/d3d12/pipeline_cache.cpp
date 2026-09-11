@@ -12,6 +12,8 @@
 #include "../geometry.h"
 #include "context.h"
 #include "shader_db.h"
+
+REXCVAR_DECLARE(int32_t, mcla_native_gfx_shadow_bias);
 REXCVAR_DECLARE(bool, mcla_native_gfx_rectlist_nocull);
 
 namespace mcla::native_gfx {
@@ -279,6 +281,19 @@ PsoKey PipelineCache::MakeKey(const GeometrySnapshot& geometry,
                                &poly_offset_scale, &poly_offset);
     k.depth_bias = IntegerPolygonOffset(render_state.depth_format, poly_offset);
     k.slope_scaled_depth_bias = poly_offset_scale * kPolygonOffsetScaleSubpixelUnit;
+    // O atlas de sombra nativo sai
+    // 7..17 quanta de D24 ABAIXO do emulado na mesma cena, e o ShadowBlend
+    // compara os quatro taps do PCF contra uma profundidade de receptor
+    // calculada em float no shader -- entao um atlas baixo demais faz a
+    // superficie se sombrear sozinha -- medido: o plano do chao inteiro em 2/4
+    // taps, 68.5% do quadro iluminado contra 92.5% com o bias. Ver o texto do
+    // cvar para o que a medicao cobre e o que ficou sem explicacao.
+    if (int32_t extra = REXCVAR_GET(mcla_native_gfx_shadow_bias)) {
+      const HostViewport shadow_vp = ComputeHostViewport(render_state);
+      if (shadow_vp.width == 640.0f && shadow_vp.height == 640.0f) {
+        k.depth_bias += extra;
+      }
+    }
   }
 
   k.input_layout.reserve(geometry.input_layout.size());

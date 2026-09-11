@@ -8,7 +8,10 @@
 
 #include <dxgiformat.h>
 
+#include <rex/cvar.h>
 #include <rex/system/xmemory.h>
+
+REXCVAR_DECLARE(bool, mcla_native_gfx_depth32);
 
 namespace mcla::native_gfx {
 
@@ -248,8 +251,29 @@ uint32_t ColorRenderTargetFormatToDxgi(uint32_t color_format) {
 uint32_t DepthRenderTargetFormatToDxgi(uint32_t depth_format) {
   // kD24S8 = 0, kD24FS8 = 1. D24FS8 has no direct equivalent; D32_FLOAT_S8
   // preserves the float depth range without losing stencil.
-  return depth_format == 0 ? DXGI_FORMAT_D24_UNORM_S8_UINT
-                           : DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+  //
+  // kD24S8 maps to unorm24 by default because that is literally what the guest
+  // asked for, but the shadow atlas shows why the literal mapping is not free:
+  // measured in a native capture, each 640x640 cascade occupies only 1449..6300
+  // of the 16777215 D24 levels (0.01%..0.04%) -- the light projection is
+  // orthographic over the whole city, so a cascade's slab is a sliver of its
+  // range. Steps between adjacent stored values are 1 quantum, so nothing is
+  // mis-quantised; there is simply no headroom. __PS_ShadowBlend then compares
+  // four PCF taps against a receiver depth computed at full float precision in
+  // the shader, and the taps straddle it by ~2e-7 = about 3 quanta, so the
+  // comparison is a coin flip per texel. That is shadow acne, and it measures
+  // exactly like one: near the camera 63.6% of pixels land on intermediate PCF
+  // steps, only 8.0% are fully lit, and the spatial coherence of the 0.75
+  // pixels is 48.7% against a 40.7% base rate -- noise, not penumbra.
+  //
+  // Turning this on rasterises and resolves kD24S8 through D32_FLOAT_S8X24,
+  // which costs 8 bytes per texel instead of 4 and buys ~24 bits of mantissa
+  // where the guest had 24 bits of absolute range. It changes no guest-visible
+  // semantics: the shader still samples a normalised depth.
+  if (depth_format == 0 && !REXCVAR_GET(mcla_native_gfx_depth32)) {
+    return DXGI_FORMAT_D24_UNORM_S8_UINT;
+  }
+  return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
 }
 
 }  // namespace mcla::native_gfx
