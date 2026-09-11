@@ -2471,13 +2471,72 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     // bones -- so a rig needing more than that still has its triangles dealt
     // across the other slots rather than crammed into one.
     if (offset.grow_buffers && !geometries.empty()) {
-        GeometryRef& target = geometries.front();
+      // Growing one slot is not always enough any more.
+      //
+      // It was while a slot could be asked for the whole mesh. With the
+      // sixteen-bit draw ceiling below, the biggest slot tops out at 21,845
+      // triangles, and a character carrying more than that needs a second slot
+      // made big enough to take the remainder rather than being decimated down
+      // to whatever the other slots happened to ship with. Slots are grown in
+      // capacity order until the room covers the mesh; a probe still moves only
+      // the first, since it is measuring one relocation.
+      size_t have_vertices = 0, have_indices = 0;
+      for (const GeometryRef& slot : geometries) {
+          have_vertices += slot.vertex_count;
+          have_indices += slot.index_count;
+      }
+      const size_t slots_to_grow = offset.grow_probe ? size_t(1) : geometries.size();
+      for (size_t growing = 0; growing < slots_to_grow; ++growing) {
+        if (have_vertices >= mesh.vertices.size() && have_indices >= mesh.indices.size()) break;
+        GeometryRef& target = geometries[growing];
+        const uint32_t had_vertices = target.vertex_count;
+        const uint32_t had_indices = target.index_count;
 
-        // The probe moves the shipped geometry and nothing else, so it asks for
-        // exactly the room that geometry already occupies.
-        const uint32_t want_vertices =
-            static_cast<uint32_t>(std::min<size_t>(mesh.vertices.size(), 0xFFFFu));
-        const uint32_t want_indices = static_cast<uint32_t>(mesh.indices.size());
+        // What this slot is asked to hold.
+        //
+        // The first slot is asked for the whole mesh, as it always was. A slot
+        // opened after it is only there for what the ceiling left over, so it
+        // asks for the shortfall and not a byte more -- a second slot sized for
+        // the whole character would be most of a megabyte nothing ever draws.
+        // Vertices are sized against the leftover INDICES, since a triangle
+        // dealt to another slot brings its vertices with it and, worst case,
+        // shares none of them.
+        const size_t indices_short =
+            mesh.indices.size() > have_indices ? mesh.indices.size() - have_indices : 0;
+        const uint32_t want_vertices = static_cast<uint32_t>(std::min<size_t>(
+            growing == 0 ? mesh.vertices.size() : target.vertex_count + indices_short,
+            0xFFFFu));
+        // Indices have a ceiling of their own, and it is not the buffer's.
+        //
+        // A submesh is drawn by one PM4 draw, and that packet states how many
+        // indices it draws in VGT_DRAW_INITIATOR.num_indices -- sixteen bits.
+        // Room in the index buffer is therefore not permission to fill it: a
+        // slot asked for more than 65535 indices cannot have that count stated:
+        // it is truncated on the way into the packet, and the half that does not
+        // fit lands wherever the geometry's own count field ends.
+        //
+        // The character that crossed it -- 80,874 indices asked of one slot --
+        // came back as spikes across the screen the moment animation moved a
+        // bone, and drew whole under `forceidentitypose`, which asks nothing of
+        // the bone matrices. Which of the two halves of the overflow does that
+        // was not chased further: a count over the ceiling cannot be described
+        // to the hardware at all, so there is nothing above it to keep.
+        //
+        // The wheel this path was built on never crossed it (27,954 indices at
+        // its widest), which is why growing worked there and only a
+        // 26,958-triangle character showed the fault.
+        //
+        // 65535 is a whole number of triangles, 21845, so the cap costs nothing
+        // beyond the triangles it leaves for the other slots.
+        constexpr uint32_t kMaxDrawIndices = 65535;
+        const uint32_t want_indices = static_cast<uint32_t>(std::min<size_t>(
+            growing == 0 ? mesh.indices.size() : target.index_count + indices_short,
+            kMaxDrawIndices));
+        if (growing == 0 && mesh.indices.size() > kMaxDrawIndices) {
+            say("the mesh states " + std::to_string(mesh.indices.size()) +
+                " indices; one submesh can be asked for at most " +
+                std::to_string(kMaxDrawIndices) + ", so the rest is dealt to the other slots");
+        }
 
 
         if (want_vertices > target.vertex_count || want_indices > target.index_count) {
@@ -2576,6 +2635,9 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             }
             }
         }
+        have_vertices += target.vertex_count - had_vertices;
+        have_indices += target.index_count - had_indices;
+      }
     }
 
     size_t vertex_budget = 0, index_budget = 0;
