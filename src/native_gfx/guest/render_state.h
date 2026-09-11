@@ -84,6 +84,21 @@ inline constexpr uint32_t kDevRegBlendControl1 = 10584; // RB_BLENDCONTROL1  0x2
 inline constexpr uint32_t kDevRegColorControl = 10556;  // RB_COLORCONTROL   0x2202
 inline constexpr uint32_t kDevRegModeControl = 10580;   // RB_MODECONTROL    0x2208
 inline constexpr uint32_t kDevRegPaSuScModeCntl = 10568;  // PA_SU_SC_MODE_CNTL 0x2205
+// PA_SU_VTX_CNTL 0x2302, in the 0x2300 block whose shadow base is dev+10680:
+// 10680 + (0x2302 - 0x2300) * 4. Bit 0 is pix_center -- 0 = kD3DZero, the
+// Direct3D 9 convention where the pixel centre sits on integer vertex
+// positions, which is what the half-pixel offset exists to emulate. The
+// emulated path applies that offset ONLY when this bit is 0
+// (src/graphics/util/draw.cpp), and the native path applying it to every draw
+// unconditionally is why flipping its sign compounded into a whole pixel.
+inline constexpr uint32_t kDevRegPaSuVtxCntl = 10688;   // PA_SU_VTX_CNTL 0x2302
+// PA_SU_VTX_CNTL::pix_center, bit 0. 0 = kD3DZero (pixel centre on integer
+// vertex positions, the Direct3D 9 convention the half-pixel offset emulates);
+// 1 = kOGLHalf, a pass already in screen space. MCLA uses BOTH: measured, the
+// 3D passes read 0x4 (pix_center 0) and the whole post-process chain --
+// 1280x720 composite, 640x360, 320x180, 128x128, 64x64, 16x16, 4x4, 1x1 --
+// reads 0x5 (pix_center 1).
+inline constexpr uint32_t xenos_pix_center_d3d_zero = 0;
 // Offsets inside the 0x2100 block, whose shadow base is dev+10444:
 // address = 10444 + (reg - 0x2100) * 4. RB_COLOR_MASK (0x2104) landing on
 // 10460 is the check that pins the base.
@@ -142,6 +157,7 @@ struct GuestRenderState {
   bool alpha_to_mask_enable = false;
   uint32_t mode_control = 0;
   uint32_t pa_su_sc_mode_cntl = 0;
+  uint32_t pa_su_vtx_cntl = 0;        // bit 0 = pix_center
 
   // --- decoded
   uint32_t msaa_samples = 0;          // RB_SURFACE_INFO +16, 0 = 1x

@@ -1658,11 +1658,81 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // out soft or one pixel wide.
   //
   // screen_x = ndc_x * (W/2) + (X + W/2) and screen_y = ndc_y * (-H/2) + ...,
-  // so shifting the sample point by half a pixel is -1/W in x and +1/H in y,
-  // measured against the VIEWPORT, not the target.
-  if (REXCVAR_GET(mcla_native_gfx_half_pixel) && hv.width > 0.0f && hv.height > 0.0f) {
-    shared_values.half_pixel_offset[0] = -1.0f / hv.width;
-    shared_values.half_pixel_offset[1] = 1.0f / hv.height;
+  // so half a pixel is 1/W in x and 1/H in y, measured against the VIEWPORT,
+  // not the target. The signs below give -0.5 screen pixels on both axes.
+  //
+  // KNOWN DEFECT, and the obvious repair was measured and REJECTED. At -0.5 the
+  // right and bottom edges of a full-target quad land exactly on the centre of
+  // the last pixel, and D3D's top-left fill rule excludes a centre sitting on a
+  // right or bottom edge, so the last row and column are never rasterised. In
+  // the 1280x720 composite dump, row 719 came out as ONE distinct value, mean
+  // 6.667 = kClearColor {0.02, 0.02, 0.04} as 8-bit [5, 5, 10]; on screen a
+  // two-pixel dark band along the bottom and right, two because 1280x720 is
+  // upscaled 1.5x to 1920x1080.
+  //
+  // Flipping to +0.5 -- which is what the emulated path adds, in
+  // src/graphics/util/draw.cpp -- removes the band and makes it WORSE. Measured
+  // by correlating the composite dump against the anchor dump of the same
+  // frame, over offsets -2..+2:
+  //
+  //     half_pixel off   X peak +0 (0.8465)   Y peak +0 (0.8614)   no band
+  //     half_pixel +0.5  X peak +1 (0.4864)   Y peak +1 (0.6548)   row 0 == row 1
+  //
+  // The whole image moves a full pixel and the first row and column become
+  // bit-identical duplicates. The reason is that this offset is applied to
+  // EVERY draw: the scene is shifted once when it is rendered into the anchor,
+  // and the fullscreen composite quad is shifted again when it samples that
+  // anchor, so the two compound into one pixel. No sign fixes that.
+  //
+  // The real repair is the condition the emulated path has and this does not:
+  // it applies the offset only when PA_SU_VTX_CNTL.pix_center == kD3DZero, so a
+  // pass whose quad is already in screen space is left alone. That needs the
+  // register's offset in the guest device shadow, which has not been reverse
+  // engineered yet. Until then this stays at -0.5: it keeps the alignment the
+  // 2D pass was tuned against and costs one row and one column at the edge.
+  // mcla_native_gfx_half_pixel=false removes the band and measures as the best
+  // aligned of the three, but gives up the pixel-grid alignment the offset was
+  // added for -- check UI sharpness before trusting it.
+  // +0.5 SCREEN pixels on both axes, and ONLY for a pass that asks for the
+  // Direct3D 9 convention. Xenos samples at integer positions and D3D12 at
+  // k + 0.5, so the geometry has to move FORWARD half a pixel for the host
+  // sample to land where the guest's did -- which is exactly what the emulated
+  // path adds (src/graphics/util/draw.cpp: offset_add_xy += 0.5f, guarded by
+  // pix_center == kD3DZero). NDC x is +1/W for half a pixel right; NDC y is
+  // -1/H because NDC y points up while screen y points down.
+  const bool pix_center_zero =
+      (rs.pa_su_vtx_cntl & uint32_t(1)) == xenos_pix_center_d3d_zero;
+  if (REXCVAR_GET(mcla_native_gfx_half_pixel) && pix_center_zero && hv.width > 0.0f &&
+      hv.height > 0.0f) {
+  {  // TEMP DIAG (A2M): quem pede alpha-to-mask, e com que referencia de alpha.
+    static std::set<uint64_t> seen_a2m;
+    const uint64_t combo = (uint64_t(cfg.width) << 40) | (uint64_t(cfg.height) << 16) |
+                           (rs.color_control & 0x1Fu);
+    if (seen_a2m.size() < 40u && seen_a2m.insert(combo).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "A2M target=%ux%u colorcontrol=0x%08X a2m=%d alphatest=%d func=%u\n",
+                     cfg.width, cfg.height, rs.color_control,
+                     rs.alpha_to_mask_enable ? 1 : 0, rs.alpha_test_enable ? 1 : 0,
+                     rs.alpha_func);
+        std::fclose(f);
+      }
+    }
+  }
+    {  // TEMP DIAG (PIXCENTER): distribution of PA_SU_VTX_CNTL per pass.
+      static std::set<uint64_t> seen;
+      const uint64_t combo = (uint64_t(cfg.width) << 40) | (uint64_t(cfg.height) << 16) |
+                             (rs.pa_su_vtx_cntl & 0xFFFFu);
+      if (seen.size() < 40u && seen.insert(combo).second) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "PIXCENTER raw=0x%08X pix_center=%u target=%ux%u vp=%.1fx%.1f\n",
+                       rs.pa_su_vtx_cntl, rs.pa_su_vtx_cntl & 1u, cfg.width, cfg.height,
+                       hv.width, hv.height);
+          std::fclose(f);
+        }
+      }
+    }
+    shared_values.half_pixel_offset[0] = 1.0f / hv.width;
+    shared_values.half_pixel_offset[1] = -1.0f / hv.height;
   }
   std::memcpy(shared.data() + kSharedBooleansByteOffset, &shared_values.booleans, 4);
   std::memcpy(shared.data() + kSharedSwappedTexcoordsByteOffset, &shared_values.swapped_texcoords,

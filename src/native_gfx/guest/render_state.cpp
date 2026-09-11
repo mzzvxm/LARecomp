@@ -44,6 +44,7 @@ GuestRenderState ReadRenderState(const uint8_t* base, uint32_t dev) {
   s.blend_control1 = R32(base, dev + kDevRegBlendControl1);
   s.mode_control = R32(base, dev + kDevRegModeControl);
   s.pa_su_sc_mode_cntl = R32(base, dev + kDevRegPaSuScModeCntl);
+  s.pa_su_vtx_cntl = R32(base, dev + kDevRegPaSuVtxCntl);
 
   s.msaa_samples = (s.surface_info >> 16) & 0x3u;
   s.color_format = (s.color_info >> 16) & 0xFu;
