@@ -36,6 +36,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp
     src/mc_engine/hud_units.cpp
+    src/mc_engine/texture_dump.cpp
 
     # Custom MP3 radio: <exe>/music/*.mp3 injected into mcMusicManager, decoded
     # and played on the host (Media Foundation + XAudio2).

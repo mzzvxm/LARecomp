@@ -30,7 +30,6 @@
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/replacement.h>
 #include <rex/input/input.h>
 #include <rex/input/input_system.h>
 #include <rex/ui/imgui_dialog.h>
@@ -54,6 +53,7 @@
 #include "modloader/modloader.h"
 #include "mp3custom/mp3custom.h"
 #include "hud_units.h"
+#include "texture_dump.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
 // CVAR DEFINITIONS (Will appear in F4 menu)
@@ -1043,7 +1043,7 @@ static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t ca
         if (finfo && finfo->name) p.fmt = finfo->name;
         const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
         if (bytes && p.size)
-            p.hash = rex::graphics::TextureReplacement::HashGuestData(bytes, p.size);
+            p.hash = mcla::HashGuestTexture(bytes, p.size);
     }
     return p;
 }
@@ -1239,17 +1239,14 @@ void TickVinylShapeCapture() {
         if (p.loaded && p.hash) {
             g_scap_recs[c * 1000 + l] = ShapeRec{p.hash, p.w, p.h, p.fmt};
             // Force-loaded shapes are never drawn, so the SDK dump-on-sample path
-            // misses them. Write the DDS ourselves via the SDK's own (proven)
-            // dumper — same dump/<hash>_<w>x<h>_<fmt>.dds naming, and it skips any
-            // file that already exists (already dumped while browsing).
-            static rex::graphics::TextureReplacement s_repl([] {
-                std::string tf = rex::cvar::GetFlagByName("texture_folder");
-                return std::filesystem::path(tf.empty() ? std::string("textures") : tf);
-            }());
+            // misses them. Write the DDS ourselves — same
+            // dump/<hash>_<w>x<h>_<fmt>.dds naming, and it skips any file that
+            // already exists (already dumped while browsing).
+            static const std::filesystem::path s_dump_dir = mcla::TextureDumpDir();
             const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
             if (bytes && p.size)
-                s_repl.DumpTexture(p.hash, p.w, p.h, p.pitch, p.tiled, p.format, p.endian, bytes,
-                                   p.size);
+                mcla::DumpGuestTexture(s_dump_dir, p.hash, p.w, p.h, p.pitch, p.tiled, p.format,
+                                       p.endian, bytes, p.size);
             ++g_scap_captured;
             ShapeRefAdjust(mem, lib, c, l, -1);
             ++g_scap_cursor;
