@@ -220,6 +220,17 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
                       "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_region_kb, 128, "MCLA/NativeGfx",
+                      "Ceiling on a merged geometry region, in KiB. 0 uses the built-in "
+                      "default. The buffer cache merges a request with every region it "
+                      "overlaps, and that union only grows -- one request bridging two regions "
+                      "swallows everything between them, which makes the result overlap the "
+                      "next request, and so on. A region is re-uploaded whole whenever any byte "
+                      "in it is dirtied, so runaway merging turns small dynamic writes into "
+                      "tens of MiB of re-upload per frame. Lower this if the exhaustion report "
+                      "still shows geometry filling the ring.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(
     mcla_native_gfx_resolve_shape_fallback, true, "MCLA/NativeGfx",
     "When a colour resolve misses, retry the pool by SHAPE alone (same size, same "

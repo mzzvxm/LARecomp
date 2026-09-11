@@ -4,9 +4,11 @@
 
 #include "resource_cache.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -15,6 +17,8 @@
 #include "../guest/guest_resources.h"
 #include "context.h"
 
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
+
 namespace mcla::native_gfx {
 
 namespace {
@@ -22,6 +26,22 @@ namespace {
 // suballocated fetches inside one pool coalesce into a single resource
 // instead of producing thousands of tiny ones.
 constexpr uint32_t kRegionGranularity = 4096;
+
+// Ceiling on a merged region.
+//
+// The merge takes the union of the request and every region it overlaps, and
+// a union only grows: one request touching two regions bridges them plus
+// everything between, and the result is more likely to overlap the next
+// request, so it merges again. Measured runaway: the average geometry upload
+// grew from 170 KB to 650 KB purely by giving the ring more room, and
+// re-uploads went from 38 to 245 per frame -- a region only has to be dirtied
+// anywhere to be re-sent whole.
+//
+// Past this size the merge is declined and the request gets a region of its
+// own. Duplicating bytes across two regions is harmless here: the data is
+// read-only to the GPU, and invalidation is by address range, so both copies
+// are dirtied by the same guest write.
+constexpr uint32_t kMaxRegionBytesDefault = 128u << 10;
 
 inline uint32_t AlignDown(uint32_t v, uint32_t a) { return v & ~(a - 1); }
 inline uint32_t AlignUp(uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); }
@@ -207,13 +227,25 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     // same bytes never live in two resources.
     uint32_t lo = AlignDown(guest_address, kRegionGranularity);
     uint32_t hi = AlignUp(uint32_t(uint64_t(guest_address) + size), kRegionGranularity);
+    const uint32_t max_region = REXCVAR_GET(mcla_native_gfx_region_kb)
+                                    ? uint32_t(REXCVAR_GET(mcla_native_gfx_region_kb)) << 10
+                                    : kMaxRegionBytesDefault;
     std::vector<uint32_t> merged;
     for (auto it = map.begin(); it != map.end();) {
       const uint32_t r_lo = it->second.base;
       const uint32_t r_hi = it->second.base + it->second.size;
       if (r_lo < hi && lo < r_hi) {
-        lo = r_lo < lo ? r_lo : lo;
-        hi = r_hi > hi ? r_hi : hi;
+        const uint32_t new_lo = r_lo < lo ? r_lo : lo;
+        const uint32_t new_hi = r_hi > hi ? r_hi : hi;
+        if (new_hi - new_lo > max_region) {
+          // Declining keeps this request's own region small. The overlapping
+          // region stays as it is and keeps serving whoever it already covers.
+          ++stats_.merge_declined;
+          ++it;
+          continue;
+        }
+        lo = new_lo;
+        hi = new_hi;
         merged.push_back(r_lo);
         ++it;
       } else if (r_lo >= hi) {
@@ -229,6 +261,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
           context.DeferRelease(it->second.resource.Detach());
         }
         map.erase(it);
+        region_index_stale_ = true;
         ++stats_.merges;
       }
     }
@@ -240,6 +273,28 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       // guest's; view_offset absorbs the difference.
       lo = AlignDown(guest_address, 4);
       hi = AlignUp(uint32_t(uint64_t(guest_address) + size), 4);
+    }
+
+    // A declined merge leaves overlapping regions in the map, and one of them
+    // can share this exact base -- map::emplace would then keep the OLD,
+    // smaller region and hand it back as if it were the new one, so the view
+    // built for the request runs past its end ("buffer view out of range").
+    // Anything the new extent fully covers is redundant, so drop it first;
+    // regions that stick out beyond the extent are left alone, which is the
+    // whole point of declining.
+    for (auto it = map.lower_bound(lo); it != map.end() && it->second.base < hi;) {
+      const uint32_t r_lo = it->second.base;
+      const uint32_t r_hi = r_lo + it->second.size;
+      if (r_lo >= lo && r_hi <= hi) {
+        if (it->second.resource) {
+          context.DeferRelease(it->second.resource.Detach());
+        }
+        it = map.erase(it);
+        region_index_stale_ = true;
+        ++stats_.merges;
+      } else {
+        ++it;
+      }
     }
 
     Region fresh;
@@ -264,6 +319,17 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     }
     fresh.state = D3D12_RESOURCE_STATE_COPY_DEST;
     auto [it, inserted] = map.emplace(fresh.base, std::move(fresh));
+    if (!inserted) {
+      // Should be unreachable after the sweep above, but silently reusing a
+      // region that does not cover the request is exactly the failure this
+      // path just fixed, so refuse instead of rendering from the wrong bytes.
+      REXLOG_ERROR("[native_gfx] region {:#010x}+{} already present, cannot cover {:#010x}+{}",
+                   it->second.base, it->second.size, guest_address, size);
+      stats_.last_failure = "region base collision";
+      ++stats_.upload_failures;
+      return false;
+    }
+    region_index_stale_ = true;
     region = &it->second;
     if (!UploadRegion(context, cl, *region, swap)) {
       return false;
@@ -412,9 +478,74 @@ void BufferCache::ApplyPendingInvalidations() {
     }
     ranges.swap(pending_invalidations_);
   }
+
+  // This used to be `for (range) InvalidateRange(range)`, and InvalidateRange
+  // walks EVERY region. Measured: 1141 live regions and ~1300 pending ranges a
+  // frame = 1.49 MILLION red-black-tree node visits per frame, about 22ms --
+  // which is essentially all of the 25.5ms that BufferCache::Resolve cost, and
+  // it was hiding inside a counter that only said "geom is slow". The uploads
+  // it was blamed on are 1.8ms.
+  //
+  // Coalescing first turns it into ONE pass: sort the ranges, merge the ones
+  // that touch, then visit each region once and binary-search it against the
+  // merged list. Deliberately makes no assumption about how region keys order
+  // against physical addresses -- the map is keyed by guest base while the
+  // comparison is physical, and guest->physical is not a plain mask, so using
+  // the map's own ordering to narrow the walk would be wrong.
+  std::vector<std::pair<uint64_t, uint64_t>> merged;
+  merged.reserve(ranges.size());
   for (const auto& [start, length] : ranges) {
-    InvalidateRange(start, length);
+    const uint64_t lo = start & 0x1FFFFFFFu;
+    merged.emplace_back(lo, lo + length);
   }
+  std::sort(merged.begin(), merged.end());
+  size_t w = 0;
+  for (size_t i = 0; i < merged.size(); ++i) {
+    if (w != 0 && merged[i].first <= merged[w - 1].second) {
+      if (merged[i].second > merged[w - 1].second) {
+        merged[w - 1].second = merged[i].second;
+      }
+    } else {
+      merged[w++] = merged[i];
+    }
+  }
+  merged.resize(w);
+
+  if (region_index_stale_) {
+    RebuildRegionIndex();
+  }
+  // Walk the RANGES and binary-search the regions, not the other way round.
+  // Regions are disjoint and sorted by physical start, so for each range the
+  // candidates are a contiguous run: the first entry that can reach into it,
+  // then forward while the next one still starts before the range ends.
+  for (const auto& [lo, hi] : merged) {
+    auto it = std::lower_bound(region_index_.begin(), region_index_.end(), lo,
+                               [](const RegionIndexEntry& e, uint64_t v) {
+                                 return e.physical_hi <= v;
+                               });
+    for (; it != region_index_.end() && it->physical_lo < hi; ++it) {
+      ++stats_.inval_scan_steps;
+      if (!it->region->dirty) {
+        ++stats_.regions_dirtied;
+      }
+      it->region->dirty = true;
+    }
+  }
+}
+
+void BufferCache::RebuildRegionIndex() {
+  region_index_.clear();
+  for (RegionMap& map : regions_) {
+    for (auto& [base, r] : map) {
+      const uint64_t lo = r.base & 0x1FFFFFFFu;
+      region_index_.push_back({lo, lo + r.size, &r});
+    }
+  }
+  std::sort(region_index_.begin(), region_index_.end(),
+            [](const RegionIndexEntry& a, const RegionIndexEntry& b) {
+              return a.physical_lo < b.physical_lo;
+            });
+  region_index_stale_ = false;
 }
 
 }  // namespace mcla::native_gfx

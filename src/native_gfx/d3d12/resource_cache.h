@@ -82,7 +82,31 @@ class BufferCache {
     uint64_t uploads = 0;        // first-use uploads (expected, not errors)
     uint64_t reuploads = 0;      // invalidation-driven
     uint64_t merges = 0;         // regions coalesced by an overlapping request
+    uint64_t merge_declined = 0; // merge refused: union would exceed the cap
     uint64_t upload_failures = 0;  // real errors
+    // ---- TEMP INSTRUMENTATION: where the geom milliseconds go ----------------
+    // Baseline says geom = 25ms/frame with 437 re-uploads and only 2 exact
+    // unlock notifications, so the page write watch is driving almost all of
+    // them. These answer the three questions that decide whether that is
+    // removable, before anything is changed:
+    //   1. is the time really the uploads, or the lookups?      -> upload_us
+    //   2. which source dirties the regions?    -> thunk_ranges / unlock ranges
+    //   3. do the re-uploaded BYTES actually differ, or is the
+    //      region being re-sent unchanged?               -> reuploads_identical
+    double upload_us = 0;             // wall time inside UploadRegion
+    uint64_t upload_bytes = 0;        // bytes copied by first-use uploads
+    uint64_t reupload_bytes = 0;      // bytes copied by invalidation re-uploads
+    uint64_t reuploads_identical = 0; // re-upload whose content hash was unchanged
+    uint64_t thunk_ranges = 0;        // invalidation ranges from the page watch
+    uint64_t thunk_bytes = 0;
+    uint64_t unlock_bytes = 0;        // bytes covered by exact unlock ranges
+    uint64_t regions_dirtied = 0;     // regions actually flipped to dirty
+    // InvalidateRange walks EVERY region for EVERY pending range. If the
+    // region count is in the thousands and the watch fires hundreds of times a
+    // frame, this is a quadratic scan sitting in the middle of the draw path,
+    // and it would look exactly like "geom is slow" without naming itself.
+    uint64_t inval_scan_steps = 0;
+    uint64_t region_count = 0;  // live regions, both swaps
     uint64_t unreadable = 0;       // guest range not committed
     // Why the most recent Resolve failed. Without this a failure is just
     // "could not be resolved", which names five different causes.
@@ -145,6 +169,25 @@ class BufferCache {
   using RegionMap = std::map<uint32_t, Region>;
 
   Region* FindContaining(RegionMap& map, uint32_t address, uint32_t size);
+
+  // Regions sorted by PHYSICAL start, which is the space invalidation works in.
+  // Without it, marking one written range dirty walked every region: measured
+  // at 1141 live regions and ~991 non-empty drains a frame, that was 1.49
+  // MILLION tree-node visits per frame (~22ms), and it accounted for nearly all
+  // of BufferCache::Resolve's 25.5ms. The uploads it was blamed for are 1.8ms.
+  //
+  // Rebuilt lazily, and that is cheap because regions are almost static: first
+  // -use uploads measure 0.5 per frame. Region pointers come from a std::map,
+  // whose nodes are stable, so an entry stays valid until its region is erased
+  // -- every insert and erase sets the stale flag.
+  struct RegionIndexEntry {
+    uint64_t physical_lo = 0;
+    uint64_t physical_hi = 0;
+    Region* region = nullptr;
+  };
+  std::vector<RegionIndexEntry> region_index_;
+  bool region_index_stale_ = true;
+  void RebuildRegionIndex();
   bool UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList* cl, Region& region,
                     BufferSwap swap);
   // Re-arms the write watch over a region. The watch is consumed when it fires,
