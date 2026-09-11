@@ -10,6 +10,7 @@
 #include "spdlog_console.h"
 #include "larecomp_log.h"
 #include "crash_handler.h"
+#include "achievement_metadata.h"
 #include "mc_engine/hooks.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "mc_engine/pause_menu.h"
@@ -343,7 +344,7 @@ class LarecompApp : public rex::ReXApp {
       DWORD size = SizeofResource(mod, res);
       const char* bytes = handle ? static_cast<const char*>(LockResource(handle)) : nullptr;
       if (bytes && size) {
-        achievements().LoadMetadataString(std::string_view(bytes, size),
+        larecomp::LoadAchievementMetadata(achievements(), std::string_view(bytes, size),
                                           "<embedded achievements.toml>");
       } else {
         LARECOMP_APP_ERROR("Embedded achievements.toml resource is empty");
