@@ -33,6 +33,7 @@
 #include "d3d12/frame_capture.h"
 #include "d3d12/memory_census.h"
 #include "guest/render_state.h"
+#include "guest/texture_ownership.h"
 #include "guest/vblank_probe.h"
 #include "nocp/nocp_app.h"
 #include "guest/texture_format.h"
@@ -43,6 +44,10 @@
 #include "d3d12/shader_db.h"
 #include "d3d12/texture_binding.h"
 #include "d3d12/texture_cache.h"
+
+// Defined in guest/texture_ownership.cpp, read here for bring-up and for the
+// periodic report. Same global-scope rule as the declaration above.
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_own_textures);
 
 // Defined in guest/vblank_probe.cpp.
 REXCVAR_DECLARE(bool, mcla_native_gfx_vblank_probe);
@@ -279,6 +284,30 @@ bool TryInitialize() {
   rex::ui::RegisterBind("bind_native_gfx_renderdoc", "F11",
                         "Capture the next guest frame with RenderDoc (native runtime)",
                         [] { RequestRenderDocCapture(); });
+
+  // Resource ownership: reserve the guest-visible heap up front so its one
+  // "HostHeap ready" line lands in the log next to the rest of bring-up rather
+  // than in the middle of a texture create. Only when ownership is actually
+  // wanted -- the reservation is 32 MiB of the guest's physical window, which
+  // is not free on a title this tight on memory.
+  if (REXCVAR_GET(mcla_native_gfx_own_textures) != 0) {
+    InitTextureOwnership();
+  }
+
+  // Continuous mode is the HYBRID path, and it is deprecated. It renders next
+  // to the command processor and cannot stop it from presenting without an
+  // edit to the SDK -- which was made and then reverted, because a runtime
+  // that needs the command processor changed to work is not a native runtime.
+  // The replacement is nocp/: no graphics system at all.
+  // Only true when there IS a command processor. In nocp mode this runtime is
+  // the only thing drawing, which is the whole point, and saying otherwise
+  // would be a stale claim in the log.
+  if (REXCVAR_GET(mcla_native_gfx_continuous) && !nocp_mode) {
+    REXLOG_WARN(
+        "[native_gfx] continuous mode renders alongside the command processor, which also "
+        "presents -- expect the emulated frame on screen. Superseded by the no-command-processor "
+        "path (src/native_gfx/nocp/).");
+  }
   return true;
 }
 

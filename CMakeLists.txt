@@ -81,6 +81,7 @@ set(LARECOMP_SOURCES
     src/native_gfx/telemetry.cpp
     src/native_gfx/geometry.cpp
     src/native_gfx/guest/guest_fence.cpp
+    src/native_gfx/guest/texture_ownership.cpp
     src/native_gfx/guest/vblank_probe.cpp
     src/native_gfx/nocp/guest_gpu.cpp
     src/native_gfx/nocp/nocp_app.cpp
