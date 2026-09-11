@@ -288,6 +288,29 @@ class RenderTargetPool : public RenderTargetLookup {
   // (which has the context) drains it through the fence-gated DeferRelease. This
   // replaces the previous Detach()-and-leak, which grew VRAM unbounded.
   std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> orphaned_resources_;
+
+  // Single-sampled stand-ins for a multisampled target, so a sub-rect resolve
+  // still has something CopyTextureRegion can read: D3D12 refuses a copy whose
+  // source is multisampled. Created on demand, one per (target, kind), and
+  // kept for the life of the pool -- the scene target is the only surface that
+  // is ever multisampled (mcla_native_gfx_msaa) and it is long-lived.
+  struct MsaaScratch {
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t dxgi_format = 0;
+  };
+  std::map<std::pair<const RenderTarget*, bool>, MsaaScratch> msaa_scratch_;
+
+  // Resolves the whole multisampled surface into its scratch and returns it,
+  // or nullptr when that cannot be done. Colour goes through
+  // ResolveSubresource; depth needs ResolveSubresourceRegion, which lives on
+  // ID3D12GraphicsCommandList1.
+  ID3D12Resource* ResolveMsaaToScratch(D3D12Context& context, ID3D12GraphicsCommandList* cl,
+                                       RenderTarget& source, bool from_depth,
+                                       D3D12_RESOURCE_STATES final_state);
+
   Stats stats_;
 };
 

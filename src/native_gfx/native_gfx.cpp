@@ -86,6 +86,12 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_auxstage, 0, "MCLA/NativeGfx",
                       "A single auxiliary draw hangs the GPU, so this bisects which "
                       "stage does it: resource creation, binding, or the draw itself.");
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_depth_cs, true, "MCLA/NativeGfx",
+                    "Resolve a multisampled depth surface with the compute pass. Off restores "
+                    "the shipped behaviour, an all-zero depth copy, which is what killed the "
+                    "distance fog, the per-object contact shadow under vehicles and the depth of "
+                    "field's circle of confusion at the same time. Diagnostic only.");
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
@@ -188,6 +194,30 @@ REXCVAR_DEFINE_UINT32(
     "different addresses. With one target bound, both resolves copied target 0, the impostor\n"
     "shader read the colour atlas as its normal atlas, and normalize(colour*2-1) came out a\n"
     "constant -- a flat, uniformly lit canopy.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_msaa, 0, "MCLA/NativeGfx",
+    "Multisample count for the HDR scene target: 2, 4 or 8. Anything else (including the "
+    "default) keeps every target single-sampled, which is what the runtime did unconditionally "
+    "and why the native path has no antialiasing while the emulated one does -- measured, all "
+    "2737 textures of a native capture are msSamp=1 against six at 2x and sixteen at 4x in an "
+    "emulated capture of the same game. Scoped to the scene: the LDR composite is read back for "
+    "presentation and the aux passes (shadow 640x640, minimap 220x220) are left alone. Costs "
+    "memory and bandwidth in proportion to the count.\n"
+    "\n"
+    "Working since 2026-09-03. Four things had to agree with the sample count, and each one\n"
+    "was found by measurement, not by reading: the pooled target and the PSO (the two that\n"
+    "hardcoded 1), the RESOLVE key in native_gfx.cpp (its Find() asked for one sample and\n"
+    "missed the target, so the scene resolved 1200 times into nothing and every fetch of it\n"
+    "took the neutral white fallback -- a white screen), and every readback of a pooled\n"
+    "target (CopyTextureRegion refuses a multisampled source, and that single error killed\n"
+    "the command list for the rest of the session: Close failed, then every Reset failed).\n"
+    "\n"
+    "Depth is resolved with ResolveSubresourceRegion in MAX mode -- D3D12 has no sample-0\n"
+    "depth resolve, and MAX keeps the nearest surface under the reverse-Z main pass.\n"
+    "Measured at 4x on the menu camera: silhouette transitions widened 34-39% against the\n"
+    "same scene at 1x, with zero validation errors.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
@@ -586,9 +616,11 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
   RenderTargetKey key;
   key.rt_format = ColorRenderTargetFormatToDxgi(rs.color_format);
   key.ds_format = DepthRenderTargetFormatToDxgi(rs.depth_format);
-  key.sample_count = 1;  // pooled targets are single-sampled; see PooledKey
   key.width = uint32_t(hv.top_left_x + hv.width + 0.5f);
   key.height = uint32_t(hv.top_left_y + hv.height + 0.5f);
+  // AFTER width: the rule reads it, and computing this first made every lookup
+  // ask for one sample and miss the multisampled target.
+  key.sample_count = PooledSampleCountForShape(key.rt_format, key.ds_format, key.width);
   if (key.rt_format == 0 || key.width == 0 || key.height == 0) {
     return;
   }

@@ -118,4 +118,9 @@ void NoteFrameCaptureResolveMiss(uint32_t dest_address, uint32_t dest_width,
                                  uint32_t src_height, uint32_t rt_format,
                                  uint32_t ds_format);
 
+// The sample count the pooled target for this shape will have. Anything that
+// builds a RenderTargetKey outside the pool has to use it, or its lookup
+// silently misses an MSAA target (see mcla_native_gfx_msaa).
+uint32_t PooledSampleCountForShape(uint32_t rt_format, uint32_t ds_format, uint32_t width);
+
 }  // namespace mcla::native_gfx

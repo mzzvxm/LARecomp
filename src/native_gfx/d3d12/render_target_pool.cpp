@@ -5,6 +5,7 @@
 #include "render_target_pool.h"
 
 #include <cstring>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -14,6 +15,9 @@
 #include "context.h"
 #include "image_dump.h"
 
+#include "depth_msaa_resolve_dxil.inc"
+
+REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_depth_cs);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 namespace mcla::native_gfx {
 
@@ -47,6 +51,19 @@ uint32_t TypelessForDepth(uint32_t ds_dxgi) {
 }
 
 // The shader-readable view of that typeless depth.
+// The single-plane, fully typed format a multisampled depth surface resolves
+// into. D3D12 supports MIN/MAX resolves only for these; anything else has to
+// stay single-sampled. 0 means "not resolvable".
+uint32_t DepthResolvePlaneFormat(uint32_t ds_dxgi) {
+  switch (ds_dxgi) {
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_D32_FLOAT:
+      return DXGI_FORMAT_R32_FLOAT;
+    default:
+      return 0;
+  }
+}
+
 uint32_t ShaderFormatForDepth(uint32_t ds_dxgi) {
   switch (ds_dxgi) {
     case DXGI_FORMAT_D24_UNORM_S8_UINT:
@@ -242,6 +259,10 @@ void RenderTargetPool::Shutdown(D3D12Context& context) {
     }
   }
   resolved_.clear();
+  for (auto& [key, s] : msaa_scratch_) {
+    if (s.resource) context.DeferRelease(s.resource.Detach());
+  }
+  msaa_scratch_.clear();
 }
 
 RenderTargetPool::Census RenderTargetPool::TakeCensus(ID3D12Device* device) const {
@@ -388,7 +409,234 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
   // A resolve must not submit work (hundreds per frame, on the queue shared
   // with the Xenia command processor), so the copy is queued and issued on the
   // next draw's command list.
-  pending_copies_.push_back(PendingCopy{&source, dest_address, region, from_depth});
+  pending_copies_.push_back(PendingCopy{&source, dest_address, region, from_depth, color_index});
+}
+
+// CopyTextureRegion refuses a multisampled source outright, and every guest
+// resolve in this file goes through one. With mcla_native_gfx_msaa on, the
+// scene target is multisampled, so its resolves have to pass through a
+// single-sampled stand-in first. Colour takes ResolveSubresource; depth has no
+// such call and needs ResolveSubresourceRegion, which lives on
+// ID3D12GraphicsCommandList1 and only offers MIN/MAX -- neither is the "sample
+// 0" the guest's own resolve would have taken, and MAX is the conservative
+// choice for the reverse-Z main pass (it keeps the nearest surface).
+namespace {
+
+// Compute resolve for multisampled DEPTH. D3D12's ResolveSubresourceRegion
+// refuses this surface: it is a two-plane R32G8X24_TYPELESS, and every fully
+// typed format that could name its depth plane was rejected -- measured, three
+// variants each made command list Close fail and every later draw was dropped
+// (accepted=0). A compute pass reads the samples directly and needs no format
+// negotiation.
+struct DepthResolveCs {
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+  uint32_t inc = 0;
+  uint32_t next = 0;      // ring over kSlots pairs of descriptors
+  bool tried = false;
+  bool ok = false;
+  static constexpr uint32_t kSlots = 16;
+};
+DepthResolveCs g_depth_cs;
+
+bool EnsureDepthResolveCs(ID3D12Device* device) {
+  if (g_depth_cs.tried) {
+    return g_depth_cs.ok;
+  }
+  g_depth_cs.tried = true;
+  D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+  ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  ranges[0].NumDescriptors = 1;
+  ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+  ranges[1].NumDescriptors = 1;
+  ranges[1].OffsetInDescriptorsFromTableStart = 1;
+  D3D12_ROOT_PARAMETER params[2] = {};
+  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  params[0].DescriptorTable.NumDescriptorRanges = 2;
+  params[0].DescriptorTable.pDescriptorRanges = ranges;
+  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  params[1].Constants.Num32BitValues = 4;
+  D3D12_ROOT_SIGNATURE_DESC rs = {};
+  rs.NumParameters = 2;
+  rs.pParameters = params;
+  Microsoft::WRL::ComPtr<ID3DBlob> blob, err;
+  if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) {
+    REXLOG_ERROR("[native_gfx] depth resolve root signature serialize failed");
+    return false;
+  }
+  if (FAILED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                         IID_PPV_ARGS(&g_depth_cs.root)))) {
+    REXLOG_ERROR("[native_gfx] depth resolve CreateRootSignature failed");
+    return false;
+  }
+  D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+  pd.pRootSignature = g_depth_cs.root.Get();
+  pd.CS = {kDepthMsaaResolveCsDxil, kDepthMsaaResolveCsDxilLen};
+  if (FAILED(device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_depth_cs.pso)))) {
+    REXLOG_ERROR("[native_gfx] depth resolve PSO failed");
+    return false;
+  }
+  D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  hd.NumDescriptors = DepthResolveCs::kSlots * 2;
+  hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_depth_cs.heap)))) {
+    REXLOG_ERROR("[native_gfx] depth resolve descriptor heap failed");
+    return false;
+  }
+  g_depth_cs.inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  g_depth_cs.ok = true;
+  REXLOG_INFO("[native_gfx] multisampled depth resolve (compute) ready");
+  return true;
+}
+
+}  // namespace
+
+ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
+                                                       ID3D12GraphicsCommandList* cl,
+                                                       RenderTarget& source, bool from_depth,
+                                                       D3D12_RESOURCE_STATES final_state) {
+  ID3D12Resource* src = from_depth ? source.depth.Get() : source.color.Get();
+  if (!src || !cl) {
+    return nullptr;
+  }
+  // A multisampled DEPTH resolve is not the same operation as a colour one.
+  // D3D12 only does MIN/MAX depth resolves into a single-plane, fully typed
+  // destination -- R32_FLOAT for a D32_FLOAT_S8X24 source. Asking for
+  // R32_FLOAT_X8X24_TYPELESS into an R32G8X24_TYPELESS scratch, which is what
+  // this did, is not a legal combination: the resolve did nothing and the
+  // scratch stayed at its cleared value. Measured: the depth texture the
+  // distance-fog pass samples came back 100% zero, which drives that shader's
+  // density to zero, so the whole fog pass changed no pixels while MSAA was on.
+  // Depth resolves go through the compute pass, so the scratch is the plain
+  // single-plane float the fog (and anything else reading resolved depth) wants.
+  const uint32_t typeless =
+      from_depth ? uint32_t(DXGI_FORMAT_R32_FLOAT) : source.key.rt_format;
+  const auto key = std::make_pair(static_cast<const RenderTarget*>(&source), from_depth);
+  auto it = msaa_scratch_.find(key);
+  if (it != msaa_scratch_.end() &&
+      (it->second.width != source.key.width || it->second.height != source.key.height ||
+       it->second.dxgi_format != typeless)) {
+    context.DeferRelease(it->second.resource.Detach());
+    msaa_scratch_.erase(it);
+    it = msaa_scratch_.end();
+  }
+  if (it == msaa_scratch_.end()) {
+    MsaaScratch s;
+    s.width = source.key.width;
+    s.height = source.key.height;
+    s.dxgi_format = typeless;
+    D3D12_RESOURCE_DESC d = {};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    d.Width = s.width;
+    d.Height = s.height;
+    d.DepthOrArraySize = 1;
+    d.MipLevels = 1;
+    d.Format = DXGI_FORMAT(typeless);
+    d.SampleDesc.Count = 1;
+    d.Flags = from_depth ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+                         : D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_RESOURCE_STATES initial = from_depth
+                                              ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                                              : D3D12_RESOURCE_STATE_RESOLVE_DEST;
+    if (FAILED(context.device()->CreateCommittedResource(
+            &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &d, initial,
+            nullptr, IID_PPV_ARGS(&s.resource)))) {
+      REXLOG_ERROR("[native_gfx] MSAA scratch creation failed ({}x{} fmt {} depth={})", s.width,
+                   s.height, typeless, from_depth ? 1 : 0);
+      return nullptr;
+    }
+    s.state = initial;
+    it = msaa_scratch_.emplace(key, std::move(s)).first;
+  }
+  MsaaScratch& scratch = it->second;
+
+  const D3D12_RESOURCE_STATES want_src = from_depth
+                                            ? D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE
+                                            : D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+  const D3D12_RESOURCE_STATES want_dst = from_depth
+                                             ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                                             : D3D12_RESOURCE_STATE_RESOLVE_DEST;
+  D3D12_RESOURCE_BARRIER barriers[2] = {};
+  uint32_t n = 0;
+  const D3D12_RESOURCE_STATES src_state = from_depth ? source.depth_state : source.color_state;
+  if (src_state != want_src) {
+    barriers[n].Transition.pResource = src;
+    barriers[n].Transition.StateBefore = src_state;
+    barriers[n].Transition.StateAfter = want_src;
+    barriers[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ++n;
+  }
+  if (scratch.state != want_dst) {
+    barriers[n].Transition.pResource = scratch.resource.Get();
+    barriers[n].Transition.StateBefore = scratch.state;
+    barriers[n].Transition.StateAfter = want_dst;
+    barriers[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ++n;
+  }
+  if (n) {
+    cl->ResourceBarrier(n, barriers);
+  }
+  if (from_depth) {
+    source.depth_state = want_src;
+  } else {
+    source.color_state = want_src;
+  }
+  scratch.state = want_dst;
+
+  if (from_depth) {
+    // Compute resolve. See EnsureDepthResolveCs: D3D12's own depth resolve
+    // refuses this surface's format pairing, and going through a shader means
+    // no format has to be negotiated at all.
+    ID3D12Device* device = context.device();
+    if (!REXCVAR_GET(mcla_native_gfx_msaa_depth_cs)) {
+      // Diagnostic: skip the dispatch and leave the scratch as it was. This is
+      // what shipped before -- an all-zero depth copy -- and it is how the fog,
+      // the per-object contact shadow and the DoF circle of confusion can be
+      // shown to depend on this one resolve.
+      return scratch.resource.Get();
+    }
+    if (!EnsureDepthResolveCs(device)) {
+      return nullptr;
+    }
+    const uint32_t slot = g_depth_cs.next;
+    g_depth_cs.next = (g_depth_cs.next + 1) % DepthResolveCs::kSlots;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_depth_cs.heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += SIZE_T(slot) * 2 * g_depth_cs.inc;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = DXGI_FORMAT(ShaderFormatForDepth(source.key.ds_format));
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    device->CreateShaderResourceView(src, &srv, cpu);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_uav = cpu;
+    cpu_uav.ptr += g_depth_cs.inc;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+    uav.Format = DXGI_FORMAT_R32_FLOAT;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    device->CreateUnorderedAccessView(scratch.resource.Get(), nullptr, &uav, cpu_uav);
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = g_depth_cs.heap->GetGPUDescriptorHandleForHeapStart();
+    gpu.ptr += UINT64(slot) * 2 * g_depth_cs.inc;
+    ID3D12DescriptorHeap* heaps[] = {g_depth_cs.heap.Get()};
+    cl->SetDescriptorHeaps(1, heaps);
+    cl->SetComputeRootSignature(g_depth_cs.root.Get());
+    cl->SetPipelineState(g_depth_cs.pso.Get());
+    cl->SetComputeRootDescriptorTable(0, gpu);
+    const uint32_t consts[4] = {source.key.width, source.key.height, source.key.sample_count, 0};
+    cl->SetComputeRoot32BitConstants(1, 4, consts, 0);
+    cl->Dispatch((source.key.width + 7) / 8, (source.key.height + 7) / 8, 1);
+  } else {
+    cl->ResolveSubresource(scratch.resource.Get(), 0, src, 0, DXGI_FORMAT(source.key.rt_format));
+  }
+
+  D3D12_RESOURCE_BARRIER to_copy = {};
+  to_copy.Transition.pResource = scratch.resource.Get();
+  to_copy.Transition.StateBefore = want_dst;
+  to_copy.Transition.StateAfter = final_state;
+  to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cl->ResourceBarrier(1, &to_copy);
+  scratch.state = final_state;
+  return scratch.resource.Get();
 }
 
 void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
@@ -418,6 +666,29 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     if (!src_res) {
       continue;
     }
+    // A multisampled target cannot be a copy source. Resolve the whole surface
+    // into its single-sampled stand-in and take the sub-rect out of that; the
+    // stand-in comes back already in COPY_SOURCE, so the source-side barriers
+    // below are skipped for it.
+    // ResolveMsaaToScratch only knows target 0 and the depth surface. No pass
+    // in MCLA is both multisampled and MRT -- PooledSampleCountFields forces a
+    // count only onto the 1280x720 R16G16B16A16 scene target, and the only MRT
+    // pass is the 128x128 impostor bake -- so this is a guard, not a gap being
+    // papered over. If it ever fires, the copy is skipped rather than taking
+    // target 0's pixels.
+    bool used_scratch = false;
+    if (from_color1 && pc.source->key.sample_count > 1) {
+      continue;
+    }
+    if (pc.source->key.sample_count > 1) {
+      ID3D12Resource* scratch = ResolveMsaaToScratch(context, cl, *pc.source, pc.from_depth,
+                                                 D3D12_RESOURCE_STATE_COPY_SOURCE);
+      if (!scratch) {
+        continue;
+      }
+      src_res = scratch;
+      used_scratch = true;
+    }
     ResolvedCopy& dst = it->second;
 
     // A different-format resolve may have targeted this SAME address earlier in
@@ -428,8 +699,9 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     // aborts Close() and permanently freezes the capture. If the existing
     // resource's format no longer matches this copy's source, retire it
     // (fence-gated; the earlier copy still references it) and recreate below.
-    const uint32_t want_dxgi = pc.from_depth ? TypelessForDepth(pc.source->key.ds_format)
-                                             : pc.source->key.rt_format;
+    const uint32_t want_dxgi =
+        pc.from_depth ? TypelessForDepth(pc.source->key.ds_format)
+                      : (from_color1 ? pc.source->rt1_format : pc.source->key.rt_format);
     if (dst.resource && dst.resource->GetDesc().Format != DXGI_FORMAT(want_dxgi)) {
       context.DeferRelease(dst.resource.Detach());
       dst.dxgi_format = want_dxgi;
@@ -445,8 +717,7 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       // The destination must be format-compatible with the source or the copy
       // is rejected: the same typeless family for depth, the identical colour
       // format otherwise.
-      d.Format = DXGI_FORMAT(pc.from_depth ? TypelessForDepth(pc.source->key.ds_format)
-                                           : pc.source->key.rt_format);
+      d.Format = DXGI_FORMAT(want_dxgi);
       d.SampleDesc.Count = 1;
       if (FAILED(context.device()->CreateCommittedResource(
               &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &d,
@@ -467,8 +738,9 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     D3D12_RESOURCE_BARRIER barriers[2] = {};
     uint32_t barrier_count = 0;
     const D3D12_RESOURCE_STATES src_state =
-        pc.from_depth ? pc.source->depth_state : pc.source->color_state;
-    if (src_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        pc.from_depth ? pc.source->depth_state
+                      : (from_color1 ? pc.source->color1_state : pc.source->color_state);
+    if (!used_scratch && src_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
       barriers[barrier_count].Transition.pResource = src_res;
       barriers[barrier_count].Transition.StateBefore = src_state;
       barriers[barrier_count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -485,10 +757,14 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     if (barrier_count) {
       cl->ResourceBarrier(barrier_count, barriers);
     }
-    if (pc.from_depth) {
-      pc.source->depth_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    } else {
-      pc.source->color_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    if (!used_scratch) {
+      if (pc.from_depth) {
+        pc.source->depth_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      } else if (from_color1) {
+        pc.source->color1_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      } else {
+        pc.source->color_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      }
     }
     dst.state = D3D12_RESOURCE_STATE_COPY_DEST;
 
@@ -535,13 +811,34 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     // to go back to RENDER_TARGET; leaving it in COPY_SOURCE would be an
     // invalid bind. Depth is restored by PrepareForRendering instead.
     if (!pc.from_depth) {
-      D3D12_RESOURCE_BARRIER back = {};
-      back.Transition.pResource = src_res;
-      back.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      back.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-      back.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      cl->ResourceBarrier(1, &back);
-      pc.source->color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      // With a scratch in play the copy source was the stand-in, and it is the
+      // POOLED colour target that has to go back -- it is sitting in
+      // RESOLVE_SOURCE, not COPY_SOURCE.
+      //
+      // The resource and the state it is tracked by have to be the SAME target.
+      // This block took its resource from `src_res` and its state from
+      // `color_state`, which agreed while there was only one colour target and
+      // stopped agreeing the moment a resolve could read target 1: the barrier
+      // named color1 while reading target 0's state, which is RENDER_TARGET,
+      // and D3D12 rejected `RENDER_TARGET -> RENDER_TARGET` ("Before and after
+      // states must be different") -- the whole command list then failed to
+      // close, so every draw of the frame was dropped and the runtime never
+      // recovered. It also left color1_state stuck at COPY_SOURCE, which made
+      // the next PrepareForRendering barrier disagree in the other direction.
+      const bool back_is_color1 = !used_scratch && from_color1;
+      ID3D12Resource* back_res =
+          back_is_color1 ? pc.source->color1.Get() : pc.source->color.Get();
+      D3D12_RESOURCE_STATES& back_state =
+          back_is_color1 ? pc.source->color1_state : pc.source->color_state;
+      if (back_res && back_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+        D3D12_RESOURCE_BARRIER back = {};
+        back.Transition.pResource = back_res;
+        back.Transition.StateBefore = back_state;
+        back.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        back.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &back);
+        back_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      }
     }
   }
   pending_copies_.clear();
@@ -805,6 +1102,26 @@ void RenderTargetPool::RecordResolve(D3D12Context& context, ID3D12GraphicsComman
       b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       cl->ResourceBarrier(1, &b);
       source.depth_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+    }
+    // A depth resolve normally registers the POOLED depth resource itself as
+    // the sampleable image -- a typeless depth IS what the fetch wants. That
+    // cannot be done for a multisampled target: a Texture2D SRV over it is
+    // invalid. Resolve into the single-sampled stand-in and register that.
+    if (source.key.sample_count > 1) {
+      ID3D12Resource* scratch = ResolveMsaaToScratch(context, cl, source, /*from_depth=*/true,
+                                                     D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+      if (!scratch) {
+        return;
+      }
+      // The scratch's own format decides how the bridge reads it back: variant 1
+      // makes it a single-plane R32_FLOAT, which is not what the multisampled
+      // surface's shader format describes.
+      // The compute resolve writes a plain single-plane float, so that -- not the
+      // multisampled surface's shader format -- is how the bridge reads it back.
+      RegisterDirect(dest_address, scratch, source.key.width, source.key.height,
+                     uint32_t(DXGI_FORMAT_R32_FLOAT),
+                     D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+      return;
     }
     RegisterDirect(dest_address, src, source.key.width, source.key.height,
                    source.depth_shader_format, source.depth_state);

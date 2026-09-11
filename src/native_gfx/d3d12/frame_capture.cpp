@@ -82,6 +82,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
                     "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.");
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_msaa);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_half_pixel);
 REXCVAR_DECLARE(bool, mcla_native_gfx_swapped_texcoords);
@@ -607,17 +608,95 @@ void NoteRejectedConfig(const TargetConfig& cfg) {
 void ReadbackTargetToTga(D3D12Context& context, ID3D12Device* device, RenderTarget& target,
                          const std::filesystem::path& path, const char* label);
 
-// Pooled targets are SINGLE-SAMPLED regardless of what the guest asks for.
-// A multisampled depth surface cannot be viewed as a Texture2D, and D3D12 has
-// neither a depth resolve nor a depth-to-colour copy, so an MSAA shadow map
-// could never be sampled. The guest's own resolve always lands a
-// single-sampled image in main memory — MSAA only ever exists inside EDRAM —
-// so this simplifies the intermediate, not the result.
+// CopyTextureRegion refuses a multisampled source outright -- the debug layer
+// says "the destination resource multisampling properties must equal the source
+// resource" -- and that one error kills the command list for the whole session:
+// Close() fails, and every Reset() after it fails too, so no draw is ever
+// recorded again. Measured with mcla_native_gfx_msaa=4: accepted=0 with
+// fail_bind climbing without bound. Any readback of a pooled target therefore
+// has to resolve into a single-sampled temporary first.
+//
+// Returns the resource to copy FROM, leaves it in COPY_SOURCE via `entry_state`,
+// and parks the temporary in `keep_alive` so it outlives the caller's
+// WaitForIdle. Returns nullptr when the temporary cannot be made -- copying the
+// multisampled source anyway is what has to be avoided.
+ID3D12Resource* ResolveForReadback(D3D12Context& context, ID3D12GraphicsCommandList* cl,
+                                   RenderTarget& target, D3D12_RESOURCE_STATES& entry_state,
+                                   Microsoft::WRL::ComPtr<ID3D12Resource>& keep_alive) {
+  ID3D12Resource* src = target.color.Get();
+  if (!src || target.key.sample_count <= 1) {
+    return src;
+  }
+  D3D12_RESOURCE_DESC d = {};
+  d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  d.Width = target.key.width;
+  d.Height = target.key.height;
+  d.DepthOrArraySize = 1;
+  d.MipLevels = 1;
+  d.Format = DXGI_FORMAT(target.key.rt_format);
+  d.SampleDesc.Count = 1;
+  if (FAILED(context.device()->CreateCommittedResource(
+          &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &d,
+          D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr, IID_PPV_ARGS(&keep_alive)))) {
+    return nullptr;
+  }
+  D3D12_RESOURCE_BARRIER b = {};
+  b.Transition.pResource = src;
+  b.Transition.StateBefore = entry_state;
+  b.Transition.StateAfter = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  if (entry_state != D3D12_RESOURCE_STATE_RESOLVE_SOURCE) {
+    cl->ResourceBarrier(1, &b);
+  }
+  cl->ResolveSubresource(keep_alive.Get(), 0, src, 0, DXGI_FORMAT(target.key.rt_format));
+  if (entry_state != D3D12_RESOURCE_STATE_RESOLVE_SOURCE) {
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+    b.Transition.StateAfter = entry_state;
+    cl->ResourceBarrier(1, &b);
+  }
+  D3D12_RESOURCE_BARRIER t = {};
+  t.Transition.pResource = keep_alive.Get();
+  t.Transition.StateBefore = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+  t.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  t.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cl->ResourceBarrier(1, &t);
+  entry_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  return keep_alive.Get();
+}
+
+// Pooled targets were SINGLE-SAMPLED regardless of what the guest asked for.
+// The reasoning was that MSAA only ever exists inside EDRAM on Xenos and the
+// guest's own resolve lands a single-sampled image in main memory, so the
+// intermediate could be simplified without changing the result. That is true
+// of the RESULT and false of the IMAGE: the resolve is where the antialiasing
+// happens, and skipping it is why the native path has no antialiasing at all.
+// Measured: every one of the 2737 textures in "cap_city2.rdc" is msSamp=1,
+// while the emulated capture of the same game has six at 2x and sixteen at 4x.
+//
+// The forced count applies to the HDR scene target only -- the one pass whose
+// edges are visible, and the one whose resolves the pool knows how to route
+// through a resolve step. The LDR composite is read back for presentation, and
+// the aux passes (shadow 640x640, minimap 220x220) are left alone.
+uint32_t PooledSampleCountFields(uint32_t rt_format, uint32_t ds_format, uint32_t width) {
+  const uint32_t forced = REXCVAR_GET(mcla_native_gfx_msaa);
+  if (forced != 2u && forced != 4u && forced != 8u) {
+    return 1u;
+  }
+  if (rt_format != uint32_t(DXGI_FORMAT_R16G16B16A16_FLOAT) || ds_format == 0 || width < 1024u) {
+    return 1u;
+  }
+  return forced;
+}
+
+uint32_t PooledSampleCount(const TargetConfig& cfg) {
+  return PooledSampleCountFields(cfg.rt_format, cfg.ds_format, cfg.width);
+}
+
 RenderTargetKey PooledKey(const TargetConfig& cfg) {
   RenderTargetKey k;
   k.rt_format = cfg.rt_format;
   k.ds_format = cfg.ds_format;
-  k.sample_count = 1;
+  k.sample_count = PooledSampleCount(cfg);
   k.width = cfg.width;
   k.height = cfg.height;
   return k;
@@ -694,12 +773,19 @@ void Finish(D3D12Context& context, PipelineCache& pipelines, BufferCache& buffer
   }
 
   Microsoft::WRL::ComPtr<ID3D12Resource> readback;
-  ID3D12Resource* src = anchor->color.Get();
-  // Pooled targets are single-sampled, so this is a straight copy.
+  Microsoft::WRL::ComPtr<ID3D12Resource> msaa_temp;
+  // The source may be multisampled (mcla_native_gfx_msaa); ResolveForReadback
+  // hands back a single-sampled stand-in when it is.
   // The state has to come from the target, not be assumed: the composite pass
   // is left in COPY_SOURCE by its own resolve, and declaring RENDER_TARGET here
   // would be a lie to the runtime.
-  const D3D12_RESOURCE_STATES entry_state = anchor->color_state;
+  D3D12_RESOURCE_STATES entry_state = anchor->color_state;
+  ID3D12Resource* src = ResolveForReadback(context, cl, *anchor, entry_state, msaa_temp);
+  if (!src) {
+    CLOGF("\nFAILED: could not resolve the multisampled anchor for readback\n");
+    context.EndFrame();
+    return;
+  }
   D3D12_RESOURCE_BARRIER b = {};
   b.Transition.pResource = src;
   b.Transition.StateBefore = entry_state;
@@ -996,8 +1082,15 @@ void ReadbackTargetToTga(D3D12Context& context, ID3D12Device* device, RenderTarg
   if (!cl || !target.color) {
     return;
   }
-  ID3D12Resource* src = target.color.Get();
-  const D3D12_RESOURCE_STATES entry_state = target.color_state;
+  Microsoft::WRL::ComPtr<ID3D12Resource> msaa_temp;
+  D3D12_RESOURCE_STATES entry_state = target.color_state;
+  // Same rule as the Finish readback: a multisampled pooled target cannot be a
+  // copy source, and trying kills the command list for good.
+  ID3D12Resource* src = ResolveForReadback(context, cl, target, entry_state, msaa_temp);
+  if (!src) {
+    context.EndFrame();
+    return;
+  }
   D3D12_RESOURCE_BARRIER b = {};
   b.Transition.pResource = src;
   b.Transition.StateBefore = entry_state;
@@ -1635,6 +1728,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // Pooled targets are single-sampled; a PSO whose sample count disagrees with
   // the bound target is rejected outright.
   key.sample_count = 1;
+  // A PSO whose sample count disagrees with the bound target is rejected
+  // outright, so this has to follow the same rule the pool key does. Same for
+  // the render-target count: a PSO declaring one target cannot be used with two
+  // bound, and the guest's own oC1 write would be dropped.
+  key.sample_count = PooledSampleCount(cfg);
+  key.rt1_format = (REXCVAR_GET(mcla_native_gfx_mrt) & 0x20u) ? cfg.rt1_format : 0u;
   ID3D12PipelineState* pso = pipelines.GetOrCreate(context, key, vs_code, ps_code, bound);
   ProfileAdd(g_profile.pso_us, t_pso);
   if (!pso) {
@@ -2672,6 +2771,16 @@ void CaptureInlineDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_typ
                   pipelines, render_targets, aux_stage, &geom);
 }
 
+
+// The sample count the pool will use for a target of this shape. The resolve
+// path builds its own RenderTargetKey and has to agree with the pool, or its
+// Find() misses the target completely: with MSAA on and a hardcoded 1 there,
+// the scene resolve missed 1200 times per report, no resolved copy was ever
+// produced, and every fetch of the scene fell back to the neutral white
+// texture -- a white screen.
+uint32_t PooledSampleCountForShape(uint32_t rt_format, uint32_t ds_format, uint32_t width) {
+  return PooledSampleCountFields(rt_format, ds_format, width);
+}
 }  // namespace mcla::native_gfx
 
 #endif // REXGLUE_HAS_XEO3_TARGET
