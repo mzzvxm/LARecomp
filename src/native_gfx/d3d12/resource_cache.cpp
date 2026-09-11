@@ -65,6 +65,11 @@ void SwapCopy(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap swap) 
 }
 }  // namespace
 
+void SwapCopyBytes(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap swap) {
+  SwapCopy(dst, src, size, swap);
+}
+
+
 void BufferCache::Shutdown(D3D12Context& context) {
   StopWatchingGuestWrites();
   for (RegionMap& map : regions_) {

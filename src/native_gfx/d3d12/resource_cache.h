@@ -59,6 +59,12 @@ enum class BufferSwap : uint32_t {
   kCount = 3,
 };
 
+// Endian-swapping copy, exported for callers that have to build a vertex
+// buffer themselves instead of resolving one. The swap has to match what the
+// cache would have applied, or the same bytes reach the GPU two different ways
+// in the same draw.
+void SwapCopyBytes(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap swap);
+
 // What a draw needs to build a vertex/index buffer view.
 struct BufferBinding {
   ID3D12Resource* resource = nullptr;

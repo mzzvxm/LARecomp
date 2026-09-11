@@ -92,6 +92,13 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_depth_cs, true, "MCLA/NativeGfx",
                     "distance fog, the per-object contact shadow under vehicles and the depth of "
                     "field's circle of confusion at the same time. Diagnostic only.");
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_rectlist_nocull, true, "MCLA/NativeGfx",
+                    "Disable face culling for kRectangleList draws. The Xenos rect primitive "
+                    "describes an AREA and generates its own triangles; synthesising the fourth "
+                    "corner on the CPU gives them a winding the guest never chose. Measured on "
+                    "the minimap: the circular punch came out clockwise on a Y-down target "
+                    "against cull_back with CCW-front, so every fragment was culled and the map "
+                    "kept its square corners. Off restores the old behaviour, for A/B.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "

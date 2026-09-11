@@ -48,19 +48,12 @@ struct ExecRef {
   uint32_t sequence;  // 2 bits per instruction, bit0 = fetch
 };
 
-}  // namespace
-
-size_t NormalizeVertexFetches(uint8_t* ucode, size_t size) {
-  const size_t n = size / 4;
-  if (n < 3) {
-    return 0;
-  }
-
-  // Pass 1: walk the CF section (two 48-bit instructions per 3 dwords),
-  // collecting exec blocks and shrinking the CF limit to the first
-  // instruction block, exactly like the offline generator.
+// Walk the CF section (two 48-bit instructions per 3 dwords), collecting exec
+// blocks and shrinking the CF limit to the first instruction block, exactly
+// like the offline generator. `limit` shrinking inside the loop condition is
+// part of that behaviour, not an accident -- keep it.
+void CollectExecBlocks(const uint8_t* ucode, size_t n, std::vector<ExecRef>& execs) {
   size_t limit = n;
-  std::vector<ExecRef> execs;
   for (size_t i = 0; i + 2 < limit; i += 3) {
     const uint32_t d0 = LoadBe32(ucode + 4 * i);
     const uint32_t d1 = LoadBe32(ucode + 4 * (i + 1));
@@ -82,6 +75,54 @@ size_t NormalizeVertexFetches(uint8_t* ucode, size_t size) {
       }
     }
   }
+}
+
+// True if any vertex fetch reads its index from a register component other
+// than r0.x. Word 0 of a fetch instruction is
+//   opcode:5 | srcRegister:6 | srcRegisterAm:1 | dstRegister:6 |
+//   dstRegisterAam:1 | mustBeOne:1 | constIndex:5 | constIndexSelect:2 |
+//   prefetchCount:3 | srcSwizzle:2
+// (XenosRecomp shader_code.h, struct VertexFetchInstruction). Runs on the
+// ORIGINAL bytes: NormalizeVertexFetches keeps only the opcode, so a
+// normalized copy has no source register left to read.
+bool ProbeComputedFetchIndex(const uint8_t* ucode, size_t size) {
+  const size_t n = size / 4;
+  if (n < 3) {
+    return false;
+  }
+  std::vector<ExecRef> execs;
+  CollectExecBlocks(ucode, n, execs);
+  for (const ExecRef& e : execs) {
+    const uint32_t cap = e.count < 6 ? e.count : 6;
+    for (uint32_t k = 0; k < cap; ++k) {
+      if (((e.sequence >> (2 * k)) & 1u) == 0) {
+        continue;  // ALU instruction
+      }
+      const size_t base = (size_t(e.address) + k) * 3;
+      if (base + 2 >= n) {
+        continue;
+      }
+      const uint32_t f0 = LoadBe32(ucode + 4 * base);
+      if ((f0 & 0x1Fu) != 0) {
+        continue;  // texture fetch (kVertexFetch == 0)
+      }
+      if (((f0 >> 5) & 0x3Fu) != 0 || ((f0 >> 30) & 0x3u) != 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+size_t NormalizeVertexFetches(uint8_t* ucode, size_t size) {
+  const size_t n = size / 4;
+  if (n < 3) {
+    return 0;
+  }
+  std::vector<ExecRef> execs;
+  CollectExecBlocks(ucode, n, execs);
 
   // Pass 2: zero the payload of every vertex fetch. The sequence field only
   // covers 6 instructions (12 bits); larger blocks continue into the next CF
@@ -128,6 +169,10 @@ struct IdentityEntry {
   uint32_t first = 0;
   uint32_t last = 0;
   uint64_t identity = 0;
+  // Whether any vfetch reads its index from something other than r0.x. Cached
+  // beside the identity because both are pure functions of the same bytes and
+  // every draw asks for both.
+  bool computed_fetch_index = false;
   bool valid = false;
 };
 
@@ -136,10 +181,13 @@ IdentityEntry g_identity_cache[kIdentityCacheSize];
 
 }  // namespace
 
-uint64_t ShaderIdentity(const uint8_t* ucode, size_t size) {
-  if (ucode == nullptr || size == 0 || size > kMaxUcodeBytes) {
-    return 0;
-  }
+namespace {
+
+bool UsableUcode(const uint8_t* ucode, size_t size) {
+  return ucode != nullptr && size != 0 && size <= kMaxUcodeBytes;
+}
+
+const IdentityEntry& Resolve(const uint8_t* ucode, size_t size) {
   const uint32_t first = size >= 4 ? LoadBe32(ucode) : 0;
   const uint32_t last = size >= 8 ? LoadBe32(ucode + size - 4) : 0;
   const uint64_t mix = (uint64_t(reinterpret_cast<uintptr_t>(ucode)) >> 4) ^ (uint64_t(size) << 20)
@@ -147,13 +195,30 @@ uint64_t ShaderIdentity(const uint8_t* ucode, size_t size) {
   IdentityEntry& slot = g_identity_cache[size_t(mix) & (kIdentityCacheSize - 1)];
   if (slot.valid && slot.ucode == ucode && slot.size == size && slot.first == first &&
       slot.last == last) {
-    return slot.identity;
+    return slot;
   }
   std::vector<uint8_t> copy(ucode, ucode + size);
   NormalizeVertexFetches(copy.data(), copy.size());
   const uint64_t identity = Fnv1a64(copy.data(), copy.size());
-  slot = IdentityEntry{ucode, size, first, last, identity, true};
-  return identity;
+  slot = IdentityEntry{ucode, size, first, last, identity, ProbeComputedFetchIndex(ucode, size),
+                       true};
+  return slot;
+}
+
+}  // namespace
+
+uint64_t ShaderIdentity(const uint8_t* ucode, size_t size) {
+  if (!UsableUcode(ucode, size)) {
+    return 0;
+  }
+  return Resolve(ucode, size).identity;
+}
+
+bool HasComputedVertexFetchIndex(const uint8_t* ucode, size_t size) {
+  if (!UsableUcode(ucode, size)) {
+    return false;
+  }
+  return Resolve(ucode, size).computed_fetch_index;
 }
 
 }  // namespace mcla::native_gfx

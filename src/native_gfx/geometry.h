@@ -41,6 +41,24 @@ struct VertexStream {
   uint32_t guest_size = 0;
   uint32_t stride = 0;
   uint32_t endian = 0;  // xenos::Endian from the fetch constant
+  // The two raw fetch-constant dwords, kept so a size that disagrees with the
+  // draw can be checked against what the guest actually wrote instead of
+  // against our decode of it.
+  uint32_t fetch_dword0 = 0;
+  uint32_t fetch_dword1 = 0;
+  // Which declaration stream this came from, and the raw stride-table byte for
+  // it. The stride is table_byte * 4, so these say whether a wrong stride is a
+  // wrong TABLE ENTRY or the wrong STREAM being looked up.
+  uint32_t decl_stream = 0;
+  uint32_t stride_table_byte = 0;
+  // The stride the vfetch patcher last actually patched the shader with
+  // (device+11832), against the live table (device+12528). SetStreamSource
+  // raises a dirty bit when they differ and a repatch is scheduled, so between
+  // those two moments the shader in flight still fetches with the MIRROR while
+  // the table already holds the new value. Binding the table's stride to a draw
+  // the shader was patched for with the mirror's would misread the whole
+  // vertex buffer.
+  uint32_t stride_mirror_byte = 0;
   // Resolved against the BufferCache.
   uint32_t resource_base = 0;  // guest base of the cached region
   uint32_t resource_size = 0;

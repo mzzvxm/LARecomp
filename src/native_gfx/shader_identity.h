@@ -41,6 +41,25 @@ uint64_t Fnv1a64(const uint8_t* data, size_t size);
 // does not decode as expected is left untouched.
 size_t NormalizeVertexFetches(uint8_t* ucode, size_t size);
 
+// True when any vertex-fetch instruction in `ucode` takes its index from a
+// register component other than r0.x -- the component the hardware preloads
+// with the vertex index (rexglue's own translator does it at
+// DxbcShaderTranslator::StartVertexShader_LoadVertexIndex, which writes the
+// index to GPR 0.x and zeroes every other register). Such a shader computes
+// its own fetch index, so the attribute the input assembler hands it at index
+// i is NOT the one the hardware would have fetched.
+//
+// Measured over all 1279 shipped vertex shaders: 4 do this
+// (xPropFoliageImpostor x3 and xrain_system__ParticleRenderVS), every one
+// multiplying the index by 0.25 -- four corners folded onto one source vertex.
+// Every other vfetch in the game reads r0.x straight.
+//
+// Safe on the RUNTIME microcode, not just the shipped copy: the D3D vfetch
+// patcher (sub_82423A38) rebuilds word 0 as `(slot bits & 0x7F00000) | (old &
+// 0xC00FFFFF)`, and that mask preserves both srcRegister (bits 5-10) and
+// srcSwizzle (bits 30-31). Only constIndex/constIndexSelect are rewritten.
+bool HasComputedVertexFetchIndex(const uint8_t* ucode, size_t size);
+
 // The runtime shader identity: copy, normalize, hash. `ucode` is the raw
 // big-endian microcode as read from guest memory (D3D shader object).
 // Returns 0 for degenerate input (null/empty/oversized).

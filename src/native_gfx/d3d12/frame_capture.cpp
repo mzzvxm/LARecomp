@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <algorithm>
 #include <set>
 #include <vector>
 
@@ -174,6 +175,21 @@ struct Capture {
 
   uint32_t limit = 0;
   uint32_t offered = 0;
+  // Quad-expanded draws whose vertex buffer was rebuilt one-source-vertex-per-
+  // quad-corner, and the ones where that could not be done (guest range not
+  // committed, or the upload ring full). A failure here is the black wedge
+  // coming back for that draw, so the two are counted apart.
+  uint32_t quad_replicated = 0;
+  uint32_t quad_replicate_failed = 0;
+  // Expanded draws whose guest start vertex is not zero -- the offset the
+  // expanded path currently drops. Diagnostic only.
+  uint32_t expanded_nonzero_start = 0;
+  // Why a fold rebuild gave up: source range past the fetch size, guest range
+  // unreadable, upload ring refused, no foldable stream at all.
+  uint32_t quad_fail_size = 0;
+  uint32_t quad_fail_read = 0;
+  uint32_t quad_fail_alloc = 0;
+  uint32_t quad_fail_nostream = 0;
   uint32_t accepted = 0;          // anchor pass; drives the limit
   uint32_t accepted_aux = 0;      // shadow/effect auxiliary passes, shared budget
   uint32_t accepted_composite = 0;  // display-shaped LDR composite/UI pass, own budget
@@ -186,6 +202,9 @@ struct Capture {
   uint32_t rej_no_shader = 0;
   uint32_t rej_geometry = 0;
   uint32_t rej_unsupplied = 0;
+  // Expanded draws whose indices would read past the vertex fetch. See the
+  // rejection site for why drawing them is worse than not.
+  uint32_t rej_outruns_fetch = 0;
   uint32_t rej_config = 0;
   // rej_config lumps three unrelated causes together, which hid that the aux
   // budget alone accounts for most of it. Split so each can be judged.
@@ -1474,10 +1493,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     ++g_cap.rej_shader_missing;
     return;
   }
-  const uint64_t vs_id = ShaderIdentity(
-      reinterpret_cast<const uint8_t*>(
-          rex::memory::GuestPtr(const_cast<uint8_t*>(base), vsr.guest_address)),
-      vsr.size_bytes);
+  const uint8_t* const vs_ucode = reinterpret_cast<const uint8_t*>(
+      rex::memory::GuestPtr(const_cast<uint8_t*>(base), vsr.guest_address));
+  const uint64_t vs_id = ShaderIdentity(vs_ucode, vsr.size_bytes);
+  // Whether this shader derives its own vertex-fetch index rather than using
+  // the one the hardware preloads into r0.x. Drives the vertex rebuild below.
+  const bool vs_folds_fetch_index = HasComputedVertexFetchIndex(vs_ucode, vsr.size_bytes);
   const uint64_t ps_id =
       depth_only ? 0
                  : ShaderIdentity(reinterpret_cast<const uint8_t*>(rex::memory::GuestPtr(
@@ -2072,7 +2093,282 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     v.StrideInBytes = stream.stride;
     vbvs.push_back(v);
   }
+  // Rebuilding the vertex data for a shader that computes its own fetch index.
+  //
+  // On the Xenos a vfetch takes its index from a REGISTER, and r0.x arrives at
+  // the vertex shader preloaded with the vertex index (rexglue's own translator
+  // does exactly that, DxbcShaderTranslator::StartVertexShader_LoadVertexIndex).
+  // Four of MCLA's shaders exploit it to expand a point into a quad:
+  //   corner      = r0.x % 4        -> one of uvs[4], a quad's UV/sign pairs
+  //   fetch index = trunc(r0.x / 4) -> which prop this quad belongs to
+  // so the hardware runs four vertices per source vertex and the shader folds
+  // them back onto one. HasComputedVertexFetchIndex finds them in the microcode
+  // -- xPropFoliageImpostor x3 and xrain_system__ParticleRenderVS, and no
+  // others out of 1279 vertex shaders.
+  //
+  // XenosRecomp cannot express that: recompile(VertexFetchInstruction) discards
+  // instr.srcRegister and emits a plain input-assembler attribute, fetched at
+  // the IA index. So the four corners of a quad read four DIFFERENT props and
+  // the quad spans all four -- the black shards. XenosRecomp now declares
+  // SV_VertexID and seeds r0.x with it, which restores the corner; this
+  // restores the fetch, by putting source vertex i/4 at entry i.
+  //
+  // Measured on mapblacklines.rdc by replaying the shader's own arithmetic
+  // against the captured constants (transcription verified against the captured
+  // post-VS output to 0.0011 in ~9000): 1518 draws in one frame use
+  // VSPropInstanceFoliage, 70081 quads, of which 7936 are wider than a tenth of
+  // the screen and 412 read past the bound view. Under this rebuild: zero and
+  // zero, every quad between 0.0045 and 0.031 NDC.
+  //
+  // Keyed on the shader, not on the shape of the draw. An earlier version
+  // triggered on the fetch running off the end of the view, which is what the
+  // menu capture showed; the map capture then showed the same shader with room
+  // to spare (EID 37128: 56 vertices asked of a 454-vertex view), reading real
+  // but wrong vertices instead of overrunning. Only the microcode says which
+  // draws need this.
+  if (expand_topology && vs_folds_fetch_index && primitive_type == 13 /* kQuadList */ &&
+      !inline_geom && !bound.streams.empty() && vbvs.size() == bound.streams.size()) {
+    // Four vertices per quad is the hardware relationship, and it agrees with
+    // what all four shaders actually compute (each multiplies the index by
+    // 0.25). Other expandable primitives are left alone and counted.
+    const uint32_t sources = (element_count + 3u) / 4u;
+    // The expanded draw is issued as DrawIndexedInstanced(..., StartIndex 0)
+    // over zero-based generated indices, so entry i of the rebuilt stream has
+    // to already hold what guest vertex start_element + i would have fetched.
+    // Dropping start_element made every one of these draws read the same head
+    // of the buffer. Measured in "cap_city2.rdc": 211 foliage impostor draws,
+    // 220 on-screen vertices out of ~14000 sampled, every draw landing in the
+    // same off-screen band at ndc x in [0.8, 2.1], y ~ 1.0 -- one wrong cluster
+    // of trees drawn 211 times instead of the city's trees. The positions
+    // themselves were sane and the matrix was byte-identical to the city
+    // draws', which is what ruled out the shader, the fold and the constants.
+    //
+    // This is NOT the wider "fold start_element into BaseVertexLocation" change
+    // the counter below tracks: that one moves every expanded draw. The fold
+    // builds its own vertex buffer, so it is the one place that can take the
+    // right slice without touching anything else.
+    const uint32_t first_source = start_element / 4u;
+    const uint32_t last_source =
+        element_count != 0 ? (start_element + element_count - 1u) / 4u : first_source;
+    bool rebuilt = sources != 0;
+    uint32_t rebuilt_streams = 0;
+    for (size_t i = 0; rebuilt && i < bound.streams.size(); ++i) {
+      const VertexStream& st = bound.streams[i];
+      // A zero-fill stream stands in for an attribute the declaration does not
+      // supply: stride 0, every vertex reading the same zeros off the shared
+      // zero buffer. Folding it is meaningless and it has no guest memory to
+      // read, so it is skipped, not failed. Failing on it is what made this
+      // rebuild report 0 successes out of 130 attempts per frame -- these draws
+      // very nearly always carry one.
+      if (st.zero_fill || st.stride == 0) {
+        continue;
+      }
+      const uint64_t src_bytes = (uint64_t(last_source) + 1u) * st.stride;
+      if (src_bytes > st.guest_size) {
+        ++g_cap.quad_fail_size;
+        if (g_cap.quad_fail_size <= 4) {
+          REXLOG_WARN(
+              "[native_gfx] fold: source range past fetch size -- elements={} sources={} "
+              "stride={} need={} guest_size={} base={:#010x} streams={}",
+              element_count, sources, st.stride, uint32_t(src_bytes), st.guest_size, st.guest_base,
+              uint32_t(bound.streams.size()));
+        }
+        rebuilt = false;
+        break;
+      }
+      // Vertex streams are PHYSICAL addresses out of the fetch constant, not
+      // guest virtual ones: reading them through the virtual membase lands on
+      // unmapped pages (see TranslatePhysicalGuest in guest_resources.h). Using
+      // the virtual pair here is what made every one of ~184 rebuild attempts
+      // per frame fail the readability check.
+      const uint8_t* src = TranslatePhysicalGuest(st.guest_base);
+      if (!src || !IsPhysicalRangeReadable(st.guest_base, src_bytes)) {
+        ++g_cap.quad_fail_read;
+        rebuilt = false;
+        break;
+      }
+      const uint64_t bytes = uint64_t(element_count) * st.stride;
+      D3D12Context::UploadAlloc alloc;
+      if (!context.AllocateUpload(bytes, 16, alloc, D3D12Context::UploadTag::kGeometry)) {
+        ++g_cap.quad_fail_alloc;
+        rebuilt = false;
+        break;
+      }
+      const BufferSwap swap = st.endian == 2   ? BufferSwap::k8in32
+                              : st.endian == 1 ? BufferSwap::k8in16
+                                               : BufferSwap::kNone;
+      uint8_t* dst = static_cast<uint8_t*>(alloc.cpu);
+      for (uint32_t v = 0; v < element_count; ++v) {
+        SwapCopyBytes(dst + uint64_t(v) * st.stride,
+                      src + (uint64_t(start_element) + v) / 4u * st.stride, st.stride, swap);
+      }
+      vbvs[i].BufferLocation = alloc.gpu;
+      vbvs[i].SizeInBytes = UINT(bytes);
+      vbvs[i].StrideInBytes = st.stride;
+      ++rebuilt_streams;
+    }
+    if (rebuilt && rebuilt_streams == 0) {
+      ++g_cap.quad_fail_nostream;
+      rebuilt = false;
+    }
+    if (rebuilt) {
+      ++g_cap.quad_replicated;
+    } else {
+      ++g_cap.quad_replicate_failed;
+    }
+    // TEMP DIAG (FOLDDIAG): whether start_element is actually non-zero for
+    // these draws is the whole premise of taking it into account above, and the
+    // capture cannot show it.
+    {
+      static uint32_t fold_lines = 0;
+      if (fold_lines++ < 48u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f,
+                       "FOLDDIAG rebuilt=%d elements=%u start=%u sources=%u first=%u last=%u "
+                       "streams=%u base=0x%08X stride=%u size=%u\n",
+                       rebuilt ? 1 : 0, element_count, start_element, sources, first_source,
+                       last_source, rebuilt_streams,
+                       bound.streams.empty() ? 0u : bound.streams[0].guest_base,
+                       bound.streams.empty() ? 0u : bound.streams[0].stride,
+                       bound.streams.empty() ? 0u : bound.streams[0].guest_size);
+          std::fclose(f);
+        }
+      }
+    }
+  }
+  // An expanded draw is non-indexed, so the guest's first vertex is
+  // start_element -- and the expanded path drops it, because the generated
+  // indices are zero-based and D3D12's indexed draw has no start-vertex
+  // parameter. Folding it into BaseVertexLocation was tried and shipped
+  // together with two other changes, and the frame got worse; it is not going
+  // back in on a guess. This counts how often it could matter at all.
+  if (expand_topology && start_element != 0) {
+    ++g_cap.expanded_nonzero_start;
+  }
   cl->IASetVertexBuffers(0, UINT(vbvs.size()), vbvs.data());
+  // A draw the GPU cannot satisfy: the expanded index count needs more vertices
+  // than the bound view holds. D3D12 returns ZERO for an out-of-bounds vertex
+  // fetch, so those vertices land at the origin and drag long thin triangles
+  // across the frame -- the black shards over the map.
+  //
+  // Measured in blacklines.rdc: 22 draws where the expanded index count is
+  // exactly 6x the vertices the view holds, at stride 32. Quad expansion is
+  // (vertex_count / 4) * 6, so a ratio of 6 means the expansion was fed four
+  // times the vertices the view covers. The same 4.0-exact ratio was seen once
+  // before and written off as coincidence; across sizes 3, 11, 20, 37, 38, 39
+  // and 101 it is not.
+  //
+  // The capture only shows the result. This prints the inputs -- which
+  // primitive, how many vertices the guest asked for, how big the view is and
+  // where it came from -- which is what separates "the view is too small" from
+  // "the vertex count is too large".
+  if (expand_topology && !vbvs.empty() && vbvs[0].StrideInBytes) {
+    const uint32_t view_verts = vbvs[0].SizeInBytes / vbvs[0].StrideInBytes;
+    const uint32_t expanded_indices = expansion.size_bytes / 4u;
+    if (view_verts && expanded_indices > view_verts * 3u) {
+      // Do not record the draw. Every piece of guest state agrees here --
+      // stride 32 and its patcher mirror, fetch slot 95 - stream, the size
+      // field as a dword count (proved by A/B: reading it as 16-byte units
+      // erases half the map) -- and the guest memory past the fetch is
+      // garbage, so the vertices this draw asks for genuinely do not exist.
+      //
+      // What does exist is exactly one quarter of them: element_count is 4x the
+      // vertices the fetch covers, on every one of these draws. kQuadList
+      // consumes four vertices per quad, so the guest is describing 37 quads
+      // built from 37 vertices -- one vertex per quad, with the Xenos fetching
+      // vertex = index/4 and using index%4 to pick the corner. The vfetch
+      // instruction takes its index from a REGISTER the shader computes.
+      //
+      // XenosRecomp cannot express that: it turns vfetch into a declared input
+      // attribute fetched by the input-assembler index, and emits SV_VertexID
+      // only under UNLEASHED_RECOMP. So the shader has no index to divide, and
+      // binding the buffer by IA index makes corner 1..3 of every quad read off
+      // the end -- D3D12 returns zero, the corner lands at the world origin,
+      // and one enormous black shard is drawn per quad.
+      //
+      // Dropping loses a small overlay effect. Drawing paints shards across the
+      // whole map. Until the shader can compute its own fetch index, not
+      // drawing is the honest option, and the counter says what it costs.
+      // NOT rejected any more. Dropping these was tried and measured: 10375
+      // draws per report left the frame and the shards stayed exactly as they
+      // were, so they were never the source -- and losing that much real
+      // geometry is worse than the artefact. The counter and the one-line
+      // report stay: the 4x relationship they measure is real and still
+      // unexplained. The amputation does not.
+      ++g_cap.rej_outruns_fetch;
+      static std::set<uint64_t> seen_short;
+      const uint64_t sig = (uint64_t(primitive_type) << 48) ^ (uint64_t(view_verts) << 24) ^
+                           uint64_t(expanded_indices);
+      if (seen_short.size() < 32 && seen_short.insert(sig).second) {
+        REXLOG_WARN(
+            "[native_gfx] expanded draw outruns its vertex view: prim={} vertex_count={} "
+            "expanded_indices={} view_bytes={} stride={} view_verts={} ratio={:.1f} "
+            "inline={} guest_base={:#010x} fetch0={:#010x} fetch1={:#010x} need_bytes={} "
+            "decl_stream={} stride_byte={} mirror_byte={} streams={} attrs=[{}] pos:{}",
+            primitive_type, element_count, expanded_indices, vbvs[0].SizeInBytes,
+            vbvs[0].StrideInBytes, view_verts, double(expanded_indices) / double(view_verts),
+            inline_geom ? 1 : 0, bound.streams.empty() ? 0u : bound.streams[0].guest_base,
+            bound.streams.empty() ? 0u : bound.streams[0].fetch_dword0,
+            bound.streams.empty() ? 0u : bound.streams[0].fetch_dword1,
+            element_count * vbvs[0].StrideInBytes,
+            bound.streams.empty() ? 0u : bound.streams[0].decl_stream,
+            bound.streams.empty() ? 0u : bound.streams[0].stride_table_byte,
+            bound.streams.empty() ? 0u : bound.streams[0].stride_mirror_byte,
+            uint32_t(bound.streams.size()), [&] {
+              // Where the attributes actually END inside the vertex. If nothing
+              // reaches past byte 8 the data really is 8 bytes per vertex and a
+              // 32-byte stride is four times too wide; if they spread to ~32 the
+              // stride is right and the primitive's vertex count is what is
+              // being misread.
+              std::string a;
+              char one[48];
+              for (const InputElement& e : bound.input_layout) {
+                std::snprintf(one, sizeof(one), "%s%s%u@%u:fmt%u", a.empty() ? "" : " ",
+                              e.semantic_name ? e.semantic_name : "?", e.semantic_index,
+                              e.aligned_byte_offset, e.dxgi_format);
+                a += one;
+              }
+              return a;
+            }(),
+            [&] {
+              // The guest data itself, past where the fetch constant says the
+              // buffer ends. Every piece of DEVICE state now agrees -- stride
+              // 32, mirror 32, slot 95, size unit 4 -- and they cannot all be
+              // right while a 148-vertex draw has a 37-vertex fetch. So the
+              // question is no longer what the state says but what is actually
+              // in memory: if the vertices the draw asks for are there, the
+              // fetch size is the thing lying; if they are zeros, the guest
+              // really did ask for vertices that do not exist and the console
+              // must be discarding them somewhere this runtime is not.
+              if (bound.streams.empty()) {
+                return std::string("(no stream)");
+              }
+              const VertexStream& st = bound.streams[0];
+              std::string a;
+              char one[80];
+              for (uint32_t v : {0u, view_verts, element_count - 1u}) {
+                const uint32_t ea = st.guest_base + v * st.stride;
+                if (!IsPhysicalRangeReadable(ea, 12)) {
+                  std::snprintf(one, sizeof(one), " v%u=UNREADABLE", v);
+                  a += one;
+                  continue;
+                }
+                const uint8_t* p = TranslatePhysicalGuest(ea);
+                float f[3] = {};
+                for (uint32_t i = 0; i < 3; ++i) {
+                  uint32_t w;
+                  std::memcpy(&w, p + i * 4, 4);
+                  w = __builtin_bswap32(w);
+                  std::memcpy(&f[i], &w, 4);
+                }
+                std::snprintf(one, sizeof(one), " v%u=(%.2f,%.2f,%.2f)", v, f[0], f[1], f[2]);
+                a += one;
+              }
+              return a;
+            }());
+      }
+    }
+  }
   // A non-indexed draw has no index buffer to describe. Binding a zeroed view
   // would leave a stale one from the previous draw bound instead.
   if (expand_topology) {
@@ -2768,6 +3064,13 @@ void ResetContinuousFrame(RenderTargetPool& render_targets) {
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
   g_cap.offered = 0;
+  g_cap.quad_replicated = 0;
+  g_cap.quad_replicate_failed = 0;
+  g_cap.expanded_nonzero_start = 0;
+  g_cap.quad_fail_size = 0;
+  g_cap.quad_fail_read = 0;
+  g_cap.quad_fail_alloc = 0;
+  g_cap.quad_fail_nostream = 0;
   g_cap.accepted = 0;
   g_cap.accepted_aux = 0;
   g_cap.accepted_composite = 0;

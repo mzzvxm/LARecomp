@@ -12,6 +12,7 @@
 #include "../geometry.h"
 #include "context.h"
 #include "shader_db.h"
+REXCVAR_DECLARE(bool, mcla_native_gfx_rectlist_nocull);
 
 namespace mcla::native_gfx {
 
@@ -252,6 +253,23 @@ PsoKey PipelineCache::MakeKey(const GeometrySnapshot& geometry,
   k.stencil_ref_mask = (render_state.stencil_ref) | (render_state.stencil_read_mask << 8) |
                        (render_state.stencil_write_mask << 16);
   k.pa_su_sc_mode_cntl = render_state.pa_su_sc_mode_cntl;
+  // kRectangleList has no orientation to cull against. The Xenos generates the
+  // rect's two triangles itself; the three vertices describe an AREA, not a
+  // wound triangle, so the guest's cull state was never about them. Synthesising
+  // the fourth corner on the CPU turns that area into ordinary triangles, and
+  // those do get a winding -- one the guest never chose and cannot have meant.
+  //
+  // Measured on the minimap: the circular punch is a rect list whose corners
+  // are (-0.5,-0.5) (255.5,-0.5) (-0.5,255.5) in a Y-down target, which comes
+  // out CLOCKWISE on screen, while the draw carries cull_back=1 with
+  // counter-clockwise as front. Every fragment was culled. The draw issued, the
+  // mask on the GPU was the correct circle, the descriptor, the UVs, the blend
+  // and the write mask all measured right, and the target changed by 0.1 of an
+  // alpha level between punch-on and punch-off -- which is what a fully culled
+  // draw looks like from every diagnostic that does not ask the rasterizer.
+  if (geometry.primitive_type == 8u && REXCVAR_GET(mcla_native_gfx_rectlist_nocull)) {
+    k.pa_su_sc_mode_cntl &= ~0x3u;  // clear cull_front | cull_back
+  }
   k.y_flipped = ComputeHostViewport(render_state).y_flipped ? 1u : 0u;
 
   {
