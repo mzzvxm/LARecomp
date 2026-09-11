@@ -264,8 +264,17 @@ class LarecompApp : public rex::ReXApp {
 
     // If the user has manually passed --game_data_root and it is valid,
     // keeps the manual path.
-    if (!paths.game_data_root.empty() && is_valid_game_root(paths.game_data_root)) {
-      return;
+    if (!paths.game_data_root.empty()) {
+      if (is_valid_game_root(paths.game_data_root)) {
+        return;
+      }
+      // Rejecting a configured path without a word is how you end up staring
+      // at an install wizard pointed somewhere you never named. Logging is not
+      // up yet here, so keep the note and print it in OnPostInitLogging.
+      path_notes_.push_back(
+          "game_data_root is set to '" + paths.game_data_root.string() +
+          "' but that directory has no default.xex plus xarchive_*.rpf; ignoring it and "
+          "auto-detecting instead");
     }
 
     // MCLA_GAME_DATA overrides auto-detection (parity with the midnightclub
@@ -309,7 +318,19 @@ class LarecompApp : public rex::ReXApp {
     // Nothing found: keep the historical default so IsGameInstalled fails there
     // and OnFinalizePaths runs the ISO install wizard into it.
     paths.game_data_root = root / "assets";
+    path_notes_.push_back("no game data found from the executable directory (" + root.string() +
+                          "); falling back to '" + paths.game_data_root.string() + "'");
   }
+
+  void OnPostInitLogging() override {
+    for (const auto& note : path_notes_) {
+      LARECOMP_APP_WARN("Game data: {}", note);
+    }
+    path_notes_.clear();
+  }
+
+  // Filled by OnConfigurePaths, which runs before logging exists.
+  std::vector<std::string> path_notes_;
 
   std::optional<rex::PathConfig> OnFinalizePaths(const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
     rex::PathConfig paths = defaults;
