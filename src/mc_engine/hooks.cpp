@@ -27,6 +27,7 @@
 #include <rex/chrono/clock.h>
 #include <rex/runtime.h>
 #include <rex/perf/counter.h>
+#include "guest_profiler.h"
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -3079,6 +3080,19 @@ static uint64_t MaxFrameTicks() {
     return ticks;
 }
 
+// Feeds the sampling profiler the real wall-clock frame time. Called after the
+// limiter has slept, so the value is the frame the player actually saw. Costs
+// one already-resolved bool test when MCLA_PROFILE is not set.
+static void TickGuestProfiler() {
+    if (!mc::profiler::Enabled()) return;
+    static uint64_t last = 0;
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (last != 0) mc::profiler::Tick(double(now - last) / 1000.0);
+    last = now;
+}
+
 void MCLAFrameDelta(PPCRegister& r8) {
     // The hitch clamp runs UNCONDITIONALLY, before any cvar check.
     //
@@ -3103,6 +3117,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     EnforceFrameLimit();
     UpdateCityLODMemory();
     RecordFrameTime();
+    TickGuestProfiler();
 }
 
 // BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
@@ -3277,6 +3292,31 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {
 //
 // On 30 FPS console the engine multiplied the raw profile factor by 0.5 and stepped once per update:
 //   S(dt) = 1 - (1 - 0.5 * S_raw) ^ (30 * dt * scale)
+// The engine ALREADY halves this factor itself when the frame rate is under
+// 60, at 0x82320460:
+//
+//   82320454  cmpwi cr6, r11, 0x3C     ; r11 = round(1/dt), the frame rate
+//   8232045c  lfs   f13, 0xE0(r11)     ; f13 = the raw tune value
+//   82320460  bge   cr6, loc_82320468  ; >= 60 fps? leave it alone
+//   82320464  fmuls f13, f13, f30      ; else f13 = tune * 0.5
+//   82320468  <-- both camera hooks land here
+//
+// So the value arriving in the hook is the raw tune above 60 fps and half the
+// tune below it. Multiplying by 0.5 unconditionally therefore quartered the
+// factor whenever the measured rate dipped under 60, and doubled it back the
+// moment it recovered. Around the 60 fps boundary that flips every frame,
+// which is the camera jitter seen while drifting, sliding and doing donuts:
+// exactly the moments where the frame rate wobbles across the threshold.
+//
+// Halving only when the engine did not reproduces the console reference curve
+// continuously across the boundary.
+static bool EngineAlreadyHalvedCameraFactor(const uint8_t* base) {
+    const float fps = ReadGuestF32(base, kGuestFrameRate);
+    // fctiwz after the +/- 0.5 bias is round-half-away-from-zero.
+    const int fps_i = static_cast<int>(fps >= 0.0f ? fps + 0.5f : fps - 0.5f);
+    return fps_i < 60;
+}
+
 static void ApplyCameraSmoothing(PPCRegister& reg) {
     if (!REXCVAR_GET(smooth_chase_cam)) return;
 
@@ -3287,7 +3327,7 @@ static void ApplyCameraSmoothing(PPCRegister& reg) {
     const double raw_k = reg.f64;
     if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
 
-    const double k30 = 0.5 * raw_k;
+    const double k30 = EngineAlreadyHalvedCameraFactor(base) ? raw_k : 0.5 * raw_k;
     const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
     reg.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0 * scale);
 }
