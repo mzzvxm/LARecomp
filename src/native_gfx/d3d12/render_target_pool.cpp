@@ -4,9 +4,11 @@
 
 #include "render_target_pool.h"
 
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 #include <rex/logging.h>
@@ -357,6 +359,23 @@ void RenderTargetPool::NoteDestination(uint32_t dest_address, uint32_t width,
   if (dest_address && width && height) {
     gpu_produced_[dest_address & 0x1FFFFFFFu] = ProducedExtent{width, height};
   }
+}
+
+void RenderTargetPool::LogTargetsForFormat(uint32_t rt_format, const char* why) {
+  static uint32_t lines = 0;
+  if (lines >= 40u) return;
+  FILE* f = std::fopen("native_gfx_diag.txt", "ab");
+  if (!f) return;
+  std::fprintf(f, "POOLCAND %s rt_fmt=%u | ", why, rt_format);
+  for (const auto& [k, t] : targets_) {
+    if (k.rt_format != rt_format) continue;
+    std::fprintf(f, "%ux%u/ds%u/s%u%s ", k.width, k.height, k.ds_format, k.sample_count,
+                 t.cleared ? "*" : "");
+  }
+  std::fprintf(f, "\n");
+  ++lines;
+  std::fflush(f);
+  std::fclose(f);
 }
 
 RenderTarget* RenderTargetPool::Find(const RenderTargetKey& key) {

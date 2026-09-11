@@ -332,6 +332,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   }
   if (!fetch.type_valid || fetch.width == 0 || fetch.height == 0) {
     ++stats_.decode_failures;
+      NoteResolveFailure(fetch, "fetch not valid / zero size");
     return nullptr;
   }
 
@@ -383,6 +384,15 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     // which is pass-through for a multiplicative input and the correct
     // degradation on the frames before the first resolve registers.
     ++stats_.bridge_refusals;
+    // TEMP DIAG (remove after): WHICH half of the guard fired, and what the
+    // bridge thinks it knows. The square minimap traced here: the circular mask
+    // sampled by xAlphaModulate__PS_Textured falls back to the neutral white,
+    // so `1 - mask` is 0 and the subtract erases nothing.
+    NoteResolveFailure(fetch,
+                       (rt_lookup_ && rt_lookup_->IsGpuProduced(fetch.base_address, fetch.width,
+                                                                fetch.height))
+                           ? "bridge: IsGpuProduced but no matching resolved target"
+                           : "bridge: render-target-sourced format, no entry");
     return nullptr;
   }
 
@@ -487,6 +497,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
                                            : src_pitch);
   if (!IsPhysicalRangeReadable(fetch.base_address, src_size)) {
     ++stats_.decode_failures;
+    NoteResolveFailure(fetch, "guest range not readable");
     return nullptr;
   }
   const uint32_t upload_pitch = Align(src_pitch, kUploadRowAlignment);
@@ -666,6 +677,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
                    fetch.height, fetch.format);
       entries_.erase(key);
       ++stats_.decode_failures;
+      NoteResolveFailure(fetch, "D3D12 texture creation failed");
       return nullptr;
     }
     e.state = D3D12_RESOURCE_STATE_COPY_DEST;

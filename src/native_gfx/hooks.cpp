@@ -52,6 +52,8 @@
 #include <rex/ppc.h>
 
 #include "../native_probe/mcla_gfx_probe.h"
+#include <cstdio>
+
 #include "guest/guest_constants.h"
 #include "guest/guest_resources.h"
 #include "guest/guest_fence.h"
@@ -498,6 +500,54 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
       mcla::gfx_probe::WriteReport();
     }
   }
+  // TEMP DIAG (remove after): the minimap circular mask lives at 0x074AA000 and
+  // reads back as 100% 0xFF on the native path, which makes `1 - mask` zero and
+  // the REV_SUBTRACT punch a no-op -- the square minimap. The emulated path
+  // clips it correctly with the SAME guest code, so something writes that
+  // memory there and not here. This probe sits OUTSIDE the Active() gate on
+  // purpose: grcDevice_EndFrame runs on both paths, so the same build can
+  // answer "is it white on emulated too" with only a cvar flip.
+  //
+  // It is not a resolve: NoteFrameCaptureResolve logs every destination and
+  // 0x074AA000 never appears among them.
+  {
+    static uint32_t tick = 0;
+    if ((tick++ % 600u) == 0u) {
+      // Two candidates, because the first conclusion was drawn from the wrong
+      // one. 0x074AA000 (32x32) reads 100% 0xFF on BOTH paths, yet the emulated
+      // path clips the circle correctly -- so that texture is a white
+      // placeholder, not the mask. 0x02D64000 (256x256 DXT1) is the other
+      // texture seen in fetch slot 0 of a REV_SUBTRACT draw, and is the size a
+      // mask for a 220x220 target would actually be.
+      constexpr uint32_t kAddrs[2] = {0x074AA000u, 0x02D64000u};
+      constexpr uint32_t kProbe = 4096u;
+      for (uint32_t ai = 0; ai < 2; ++ai) {
+      const uint32_t kMaskAddr = kAddrs[ai];
+      const uint8_t* g = mcla::native_gfx::IsPhysicalRangeReadable(kMaskAddr, kProbe)
+                             ? mcla::native_gfx::TranslatePhysicalGuest(kMaskAddr)
+                             : nullptr;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        if (!g) {
+          std::fprintf(f, "MASKPROBE 0x%08X nao legivel (native=%d)\n", kMaskAddr,
+                       mcla::native_gfx::Active() ? 1 : 0);
+        } else {
+          uint32_t ones = 0, zeros = 0, other = 0;
+          for (uint32_t k = 0; k < kProbe; ++k) {
+            if (g[k] == 0xFFu) ++ones; else if (g[k] == 0x00u) ++zeros; else ++other;
+          }
+          uint32_t head[4];
+          for (uint32_t k = 0; k < 4; ++k) std::memcpy(&head[k], g + k * 4, 4);
+          std::fprintf(f, "MASKPROBE 0x%08X native=%d | 0xFF=%.1f%% 0x00=%.1f%% outros=%.1f%% | head %08X %08X %08X %08X\n",
+                       kMaskAddr, mcla::native_gfx::Active() ? 1 : 0,
+                       100.0 * ones / kProbe, 100.0 * zeros / kProbe, 100.0 * other / kProbe,
+                       head[0], head[1], head[2], head[3]);
+        }
+        std::fflush(f);
+        std::fclose(f);
+      }
+      }
+    }
+  }
   if (mcla::native_gfx::Active()) {
     mcla::native_gfx::TelemetryOnFrameEnd();
     mcla::native_gfx::DumpTextureRegistry();
@@ -535,6 +585,7 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
 extern "C" REX_FUNC(D3DDevice_Swap) {
   mcla::native_gfx::nocp::NoteHook("D3DDevice_Swap");
   mcla::native_gfx::nocp::NoteSwapCall();
+  mcla::native_gfx::NoteSwapHook();
   if (mcla::native_gfx::PresentTakeover()) {
     if (mcla::native_gfx::PresentFrame()) {
       ctx.r3.u64 = 0;  // fence value the caller would have received

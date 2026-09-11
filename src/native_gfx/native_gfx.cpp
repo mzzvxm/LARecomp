@@ -55,6 +55,36 @@ REXCVAR_DECLARE(uint32_t, mcla_native_gfx_own_textures);
 REXCVAR_DECLARE(bool, mcla_native_gfx_vblank_probe);
 
 REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_skip_draw_first, 0, "MCLA/NativeGfx",
+    "Bisection: first per-frame draw number to skip. The number is the draw's position within the "
+    "frame, the same counter the report calls `offered`, and it restarts every frame. Inert until "
+    "mcla_native_gfx_skip_draw_last is non-zero.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_skip_draw_last, 0, "MCLA/NativeGfx",
+    "Bisection: last per-frame draw number to skip; 0 disables skipping entirely. "
+    "Set a range, look at the screen, halve the range that still shows the artefact. Eleven runs "
+    "isolate one draw out of two thousand, and unlike a hypothesis it cannot be wrong -- which is "
+    "why it exists after nine guesses failed on the black shards.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_dump_draw_first, 0, "MCLA/NativeGfx",
+    "First per-frame draw number to dump to native_gfx_draws.txt. Same numbering as the skip "
+    "range, so a range narrowed by bisection can be pasted straight in. Inert until "
+    "mcla_native_gfx_dump_draw_last is non-zero.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_native_gfx_dump_draw_last, 0, "MCLA/NativeGfx",
+    "Last per-frame draw number to dump; 0 disables. Writes shader ids, primitive type, render "
+    "target, every vertex stream's guest base and stride, and the world-view-projection -- the "
+    "fields that have actually explained artefacts on this path. The file is appended to and grows "
+    "fast: narrow the range with the skip cvars first.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(
     mcla_native_gfx_fetch_size_unit, 4, "MCLA/NativeGfx",
     "Bytes per unit of the vertex fetch constant's 24-bit size field. 0 uses the built-in 4. "
     "4 is what BeginVertices' own packet implies -- it writes dword1 = (4*dwords) | endian with "
@@ -66,6 +96,19 @@ REXCVAR_DEFINE_UINT32(
     "Both cannot be right about the same field. Run once with 16: if the shards go and nothing "
     "else regresses, the unit is 16; if geometry that works today starts reading past its buffer, "
     "it is 4 and the quad draws are misread somewhere else.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_unsupplied_drop, false, "MCLA/NativeGfx",
+    "Bisect switch: drop a draw whose shader declares a vertex attribute the vertex declaration "
+    "does not supply, instead of binding a zero stream for it. "
+    "The zero stream is the normal behaviour and the better one -- dropping loses real geometry, "
+    "measured at 9243 display-shaped draws gutted per report when this was the default. But the "
+    "zero stream rests on the assumption that an unpatched vfetch reads zeros on hardware, and it "
+    "is one of the few things that can produce vertices collapsed toward the origin: a shader "
+    "blending POSITION0 with a zeroed POSITION1 gives exactly the long stretched triangles seen "
+    "across the scene. Turn this on for one run: if an artefact disappears, the zero stream is "
+    "producing it; if it stays, this branch is eliminated.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -173,6 +216,14 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
                     "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.");
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_skip_water, 0, "MCLA/NativeGfx",
+                      "Diagnostico: pula draws de agua por familia, para saber qual pinta a "
+                      "faixa branca. Bitmask: 1 = xCityOceanShore, 2 = xCityOceanWater, "
+                      "4 = xCityOceanWaterLOD, 8 = xCityPondWater.");
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_skip_punch, false, "MCLA/NativeGfx",
+                    "Diagnostic: drop the minimap's circular punch draw. On, the 220x220 "
+                    "target should keep its square corners; if it looks identical with the "
+                    "punch on, the punch is changing no pixel at all.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_textures, true, "MCLA/NativeGfx",
                     "Re-check a cached TEXTURE against the guest memory it was decoded from, "
                     "once per entry per frame, and drop it when they differ. Same lost-invalidation "
@@ -832,6 +883,30 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
   const uint32_t dest = (((raw >> 20) + 512u) & 0x1000u) + (raw & 0x1FFFFFFFu);
   // flags & 7 == 4 selects the depth buffer as the source; 0..3 are colour.
   const bool from_depth = (flags & 7u) == 4u;
+  // TEMP DIAG (remove after): WHICH colour target the guest is resolving.
+  // `flags & 7` is the source index: 0..3 pick a colour target, 4 picks depth.
+  // Everything below ignores the index and resolves the ONE colour surface the
+  // pool holds for this shape, so a resolve of target 1 hands target 0's pixels
+  // to target 1's destination address.
+  {
+    const uint32_t rt_index = flags & 7u;
+    static uint32_t seen[32];
+    static uint32_t seen_n = 0;
+    const uint32_t sig = dest ^ (rt_index << 28);
+    bool fresh = true;
+    for (uint32_t i = 0; i < seen_n; ++i) {
+      if (seen[i] == sig) { fresh = false; break; }
+    }
+    if (fresh && seen_n < 32) {
+      seen[seen_n++] = sig;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "RESOLVE_SRCIDX idx=%u dest=0x%08X %ux%u flags=0x%08X\n", rt_index, dest,
+                     fetch.width, fetch.height, flags);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
   // Every destination, colour included: the address is what marks the data as
   // GPU-produced, and a colour target is invisible to a format-based test.
   NoteFrameCaptureResolve(dest, fetch.width, fetch.height, from_depth);
@@ -988,6 +1063,42 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
     }
   }
   if (!source) {
+    // TEMP DIAG (remove after): a colour resolve with no source. Print the key
+    // built from the viewport registers, the fetch the destination carries, and
+    // the resolve's OWN rectangle -- then ask the pool what it does hold in that
+    // format. The pause menu panel is produced into a 960x640 target and
+    // resolved with a 1024x1024 key, so the three disagree.
+    if (!from_depth) {
+      // Once per destination address, not a global cap: the post-process chain
+      // misses hundreds of times a frame at one address and used to spend the
+      // whole budget before the interesting one (the UI surface) ever printed.
+      static uint32_t seen_miss[64];
+      static uint32_t seen_miss_n = 0;
+      bool fresh = true;
+      for (uint32_t i = 0; i < seen_miss_n; ++i) {
+        if (seen_miss[i] == dest) { fresh = false; break; }
+      }
+      if (fresh && seen_miss_n < 64u) {
+        seen_miss[seen_miss_n++] = dest;
+        const int32_t rx0 = source_rect ? read_be32_early(source_rect) : 0;
+        const int32_t ry0 = source_rect ? read_be32_early(source_rect + 4) : 0;
+        const int32_t rx1 = source_rect ? read_be32_early(source_rect + 8) : 0;
+        const int32_t ry1 = source_rect ? read_be32_early(source_rect + 12) : 0;
+        const int32_t dx = dest_point ? read_be32_early(dest_point) : 0;
+        const int32_t dy = dest_point ? read_be32_early(dest_point + 4) : 0;
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f,
+                       "RESMISS dest=0x%08X fetch=%ux%u key=%ux%u/fmt%u/ds%u/s%u "
+                       "rect=(%d,%d..%d,%d) at (%d,%d) flags=0x%08X pitch=%u vp=%.0fx%.0f\n",
+                       dest, fetch.width, fetch.height, key.width, key.height, key.rt_format,
+                       key.ds_format, key.sample_count, rx0, ry0, rx1, ry1, dx, dy, flags,
+                       rs.surface_info & 0x3FFFu, hv.width, hv.height);
+          std::fflush(f);
+          std::fclose(f);
+        }
+        g_render_targets.LogTargetsForFormat(key.rt_format, "resolve-miss");
+      }
+    }
     // A pass we never rendered; nothing to hand to the destination.
     if (!from_depth && REXCVAR_GET(mcla_native_gfx_alias_missed_resolve)) {
       if (g_render_targets.AliasMissedColourResolve(dest, fetch.width, fetch.height)) {
@@ -1315,8 +1426,20 @@ void NotifyFrameBoundary() {
     ++fb;
     if (fb <= 10u || (fb % 60u) == 0u) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
-        std::fprintf(f, "frameboundary#%u continuous=%d present_ready=%d draw_ready=%d\n", fb,
-                     ContinuousMode() ? 1 : 0, g_present_ready ? 1 : 0, g_draw_ready ? 1 : 0);
+        std::fprintf(f,
+                     "frameboundary#%u continuous=%d present_ready=%d draw_ready=%d | swap_hook=%u "
+                     "present=%u ok=%u no_takeover=%u no_presenter=%u no_display=%u "
+                     "refresh_false=%u no_cmdlist=%u blit_false=%u\n",
+                     fb, ContinuousMode() ? 1 : 0, g_present_ready ? 1 : 0, g_draw_ready ? 1 : 0,
+                     g_swap_hook_calls.load(std::memory_order_relaxed),
+                     g_present_calls.load(std::memory_order_relaxed),
+                     g_present_ok.load(std::memory_order_relaxed),
+                     g_present_no_takeover.load(std::memory_order_relaxed),
+                     g_present_no_presenter.load(std::memory_order_relaxed),
+                     g_present_no_display.load(std::memory_order_relaxed),
+                     g_present_refresh_false.load(std::memory_order_relaxed),
+                     g_present_no_cmdlist.load(std::memory_order_relaxed),
+                     g_present_blit_false.load(std::memory_order_relaxed));
         std::fflush(f);
         std::fclose(f);
       }

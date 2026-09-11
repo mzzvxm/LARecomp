@@ -257,6 +257,21 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   } id = {uint64_t(reinterpret_cast<uintptr_t>(resource)), fetch.format, fetch.width,
           fetch.height, fetch.swizzle,      uint32_t(source)};
   const uint64_t key = Hash64(&id, sizeof(id));
+  {  // TEMP DIAG (SWIZ): quais swizzles chegam, e de que tipo de origem. O
+     // swizzle so e aplicado a textura decodificada do guest; se um alvo de
+     // render trouxer swizzle nao-identidade, o canal que o shader le esta
+     // errado (o PS da sombra de folhagem corta por .x).
+    static std::set<uint32_t> seen_sw;
+    const uint32_t combo = (uint32_t(source) << 16) | (fetch.swizzle & 0xFFFu);
+    if (seen_sw.size() < 24u && seen_sw.insert(combo).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "SWIZ source=%u swizzle=0x%03X fmt=%u %ux%u\n",
+                     uint32_t(source), fetch.swizzle & 0xFFFu, fetch.format, fetch.width,
+                     fetch.height);
+        std::fclose(f);
+      }
+    }
+  }
   auto it = srv_cache_.find(key);
   if (it != srv_cache_.end()) {
     ++stats_.srv_hits;
@@ -504,8 +519,14 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
                             (uint64_t(fetch.format) << 8) ^ uint64_t(slot);
         if (seen.insert(id).second) {
           if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
-            std::fprintf(f, "FALLBACK slot=%u 0x%08X %ux%u f%u\n", slot, fetch.base_address,
-                         fetch.width, fetch.height, fetch.format);
+            // The bind count is the clock: a FALLBACK at bind 300 is boot, one
+            // at bind 40 million is something that went missing while playing,
+            // which is the difference between "not loaded yet" and "a texture
+            // the runtime lost". Transient blocks in gameplay live in the
+            // second group.
+            std::fprintf(f, "FALLBACK slot=%u 0x%08X %ux%u f%u after=%llu binds\n", slot,
+                         fetch.base_address, fetch.width, fetch.height, fetch.format,
+                         (unsigned long long)(stats_.srv_hits + stats_.srv_misses));
             std::fflush(f);
             std::fclose(f);
           }

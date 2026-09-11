@@ -73,6 +73,100 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_fxaa, false, "MCLA/NativeGfx",
 
 // TEMP DIAG helper for the rim probe: IEEE half -> float. first_draw.cpp has one
 // but it is not exported, and this is scaffolding that leaves with the probe.
+static float RimHalfToFloat(uint16_t h) {
+  const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+  const uint32_t exp = (h >> 10) & 0x1Fu;
+  const uint32_t man = h & 0x3FFu;
+  uint32_t bits;
+  if (exp == 0) {
+    if (man == 0) {
+      bits = sign;
+    } else {
+      int e = -1;
+      uint32_t m = man;
+      do {
+        ++e;
+        m <<= 1;
+      } while ((m & 0x400u) == 0);
+      bits = sign | uint32_t(127 - 15 - e) << 23 | (m & 0x3FFu) << 13;
+    }
+  } else if (exp == 31) {
+    bits = sign | 0x7F800000u | (man << 13);
+  } else {
+    bits = sign | (exp + 127 - 15) << 23 | (man << 13);
+  }
+  float out;
+  std::memcpy(&out, &bits, 4);
+  return out;
+}
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_shadow_quads, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: check this many times whether the four 640x640 quadrants of "
+                      "the resolved shadow atlas (0x06E65000) are distinct, one check every 180 "
+                      "published frames. Two identical quadrants mean a cascade inherited the "
+                      "previous cascade depth and rejected every fragment -- the 'sun only "
+                      "inside a box' failure, which on the GPS map (the 3D city at low LOD) "
+                      "reads as a whole map with no sun. Reads the RESOLVED copy: a pooled "
+                      "1280x1280 hands back its clear colour through recycling and would read "
+                      "as a false negative.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_exposure_probe, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: read back the auto-exposure targets (1x1 at 0x02D6C000 and "
+                      "4x4 at 0x02D6D000) this many times, one every 200 published frames, as "
+                      "raw floats. The native path renders cam 53 with its midtones +84 and "
+                      "11.6% of the frame clipped white against the emulated path's 2.6%, with "
+                      "matching shadows -- the shape of a gain before the tonemap.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_addr, 0x02DE6000, "MCLA/NativeGfx",
+                      "TEMP DIAG: guest address mcla_native_gfx_lowres_dump reads.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_w, 320, "MCLA/NativeGfx",
+                      "TEMP DIAG: width for mcla_native_gfx_lowres_dump.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_h, 180, "MCLA/NativeGfx",
+                      "TEMP DIAG: height for mcla_native_gfx_lowres_dump.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_dump, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: dump this many raw copies of the guest memory behind the "
+                      "320x180 post-process buffer at 0x02DE6000, one every 300 published "
+                      "frames. That buffer's resolve misses every frame (the key asks for "
+                      "R8G8B8A8, the only 320x180 pass in the pool is the HDR one), so a fetch "
+                      "of it reads whatever the title left in memory.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_rim_probe, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: report this many xRimMain draws -- the vertex declaration, "
+                      "TEXCOORD0 of the first vertices, and VS constants 206..215 (tintColors). "
+                      "The wheel picks its paint slot with a0 = trunc(TEXCOORD0.z), so a wrong "
+                      "third component reads a neighbouring part's colour.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_aniso_census, false, "MCLA/NativeGfx",
+                    "TEMP DIAG: count texture binds by whether the sampler is eligible for "
+                    "anisotropy and whether the texture actually has a mip chain to filter "
+                    "down. Anisotropy picks a finer level along the major axis, so a "
+                    "single-level texture makes a correct 16x sampler change nothing.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_ps_census, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: every distinct pixel shader the scene runs -- draw count, the "
+                      "vertex declaration's COLOR0 format and offset, and the first bound "
+                      "textures -- dumped every N draws. The runtime's shader identity is NOT "
+                      "the identity column of shader_report.tsv; translate these with "
+                      "build_shader_pack.collect_shaders(). This is what NAMES an unknown "
+                      "material: run the scene that shows the bug and read the list.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_eye_probe, 0, "MCLA/NativeGfx",
+                      "TEMP DIAG: report this many draws of the character eye/teeth material "
+                      "(xCharacter_teeth_normalmap) with its tintColor constant and its bound "
+                      "textures. Chasing eyes that render black in the native path and normal "
+                      "in the emulated one.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_fxaa_dump, 0, "MCLA/NativeGfx",
                       "TEMP DIAG: write this many pre/post TGA pairs of the FXAA pass "
                       "(native_gfx_fxaa_pre_N.tga / _post_N.tga). Both come from the same "
@@ -125,10 +219,17 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
 REXCVAR_DECLARE(bool, mcla_native_gfx_guest_clear);
 REXCVAR_DECLARE(bool, mcla_native_gfx_reclear);
+REXCVAR_DECLARE(bool, mcla_native_gfx_skip_punch);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_water);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_msaa);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
+REXCVAR_DECLARE(bool, mcla_native_gfx_unsupplied_drop);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_first);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_last);
 REXCVAR_DECLARE(bool, mcla_native_gfx_half_pixel);
 REXCVAR_DECLARE(bool, mcla_native_gfx_swapped_texcoords);
 
@@ -283,6 +384,8 @@ struct Capture {
 // scope, and descriptor exhaustion is exactly the failure that must not stay
 // invisible while the draw cap is being raised.
 TextureBinder::Stats g_binder_stats_for_report;
+RenderTargetKey g_minimap_key;
+bool g_minimap_seen = false;
 // TEMP INSTRUMENTATION: the per-frame CPU line names WHERE the time goes
 // (geom/bind) but not WHY. These carry the two caches' counters to the report
 // site, which sees neither object, so a frame can say whether geom is paying
@@ -1258,6 +1361,23 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     return;
   }
   ++g_cap.offered;
+  // Visual bisection. g_cap.offered restarts every frame, so it is a stable
+  // per-frame draw number: skip a half, look at the screen, halve again. Eleven
+  // runs find one draw out of two thousand.
+  //
+  // This exists because guessing which draw makes an artefact has now failed
+  // nine times in a row on the black shards, while every guess cost a build and
+  // a run. Bisection cannot guess wrong.
+  {
+    const uint32_t skip_last = REXCVAR_GET(mcla_native_gfx_skip_draw_last);
+    if (skip_last != 0) {
+      const uint32_t skip_first = REXCVAR_GET(mcla_native_gfx_skip_draw_first);
+      if (g_cap.offered >= skip_first && g_cap.offered <= skip_last) {
+        ++g_cap.skipped_by_range;
+        return;
+      }
+    }
+  }
 
   if (element_count == 0) {
     ++g_cap.rej_not_indexed;
@@ -1541,6 +1661,27 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
         }
       }
     }
+    // Bisect switch for the zero stream itself.
+    //
+    // The comment above assumes an unpatched vfetch delivers zeros. That is an
+    // assumption, not a measurement: on Xenos the D3D runtime patches the
+    // shader's vfetch instructions from the vertex declaration, and an
+    // unpatched one reads whatever fetch constant the microcode names -- which
+    // may hold a stale but VALID binding, not zeros.
+    //
+    // It matters for POSITION1, which is one of the attributes measured
+    // missing here. A shader blending POSITION0 with POSITION1 that gets zeros
+    // drags vertices toward the origin, and long stretched triangles across
+    // the scene is exactly what that looks like.
+    //
+    // Dropping the draw instead is not a fix -- it loses real geometry, which
+    // is why the zero stream replaced it. It is a bisect: if an artefact
+    // disappears with this on, the zero stream is producing it, and the fix
+    // belongs in geometry.cpp. If the artefact stays, this whole branch is
+    // eliminated and the cause is elsewhere.
+    if (REXCVAR_GET(mcla_native_gfx_unsupplied_drop)) {
+      return;
+    }
     // Deliberately falls through: the zero stream makes the draw renderable.
   }
 
@@ -1569,6 +1710,40 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                                       const_cast<uint8_t*>(base), psr.guest_address)),
                                   psr.size_bytes);
   const uint32_t ps_spec = rs.alpha_test_enable ? 2u : 0u;
+  // TEMP DIAG (remove after): MULTIPLE RENDER TARGETS.
+  //
+  // This runtime binds exactly one RTV -- OMSetRenderTargets(1, ...) here and
+  // NumRenderTargets = 1 in pipeline_cache -- so a guest draw that writes oC1
+  // silently loses it. RB_COLOR_MASK carries one write-enable nibble per
+  // target, so any bit above 0xF says the guest asked for a second one.
+  // xPropFoliage__PSGenerateImposterNight writes oC0 (impostor colour) AND oC1
+  // (the packed normal the impostor shader later unpacks with *2-1), which is
+  // exactly the atlas the flat canopy would come from.
+  if ((rs.color_mask >> 4) != 0u) {
+    static std::set<uint64_t> seen_mrt;
+    const uint64_t sig = ps_id ^ (uint64_t(rs.color_mask) << 40);
+    if (seen_mrt.size() < 64 && seen_mrt.insert(sig).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        // RB_COLOR1/2/3_INFO are 0x2003..0x2005, in the same shadow block as
+        // RB_COLOR_INFO (0x2001 at dev+10372), so each is four bytes on.
+        std::fprintf(f,
+                     "MRT ps=%016llX mask=0x%08X color0=0x%08X color1=0x%08X color2=0x%08X "
+                     "color3=0x%08X target=%ux%u\n",
+                     (unsigned long long)ps_id, rs.color_mask, rs.color_info,
+                     R32(base, dev + kDevRegColorInfo + 8), R32(base, dev + kDevRegColorInfo + 12),
+                     R32(base, dev + kDevRegColorInfo + 16), cfg.width, cfg.height);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  // The VS spec variant. Bit 0 is SPEC_CONSTANT_R11G11B10_NORMAL, which turns
+  // tfetchR11G11B10() from a bit-preserving asfloat() pass-through into the
+  // real unpack of a packed normal/tangent. Asking for 0 here -- which this did
+  // -- always selected the pass-through, so every shader with a packed normal
+  // ran asfloat() over a small integer and got a denormal: a zero normal on
+  // 2148 of 2158 normal/tangent attributes in a frame. A shader that has no
+  // packed normal ships only variant 0, and Lookup falls back to it.
   const uint32_t vs_spec = 1u;
   const ShaderBytecode vs_code = shaders.Lookup(vs_id, vs_spec, /*is_pixel=*/false);
   const ShaderBytecode ps_code =
@@ -1588,6 +1763,15 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // indistinguishable from a geometry failure in the tally.
     CLOGF("      no command list: %ux%u rt=%u prim=%u verts=%u\n", cfg.width, cfg.height,
           cfg.rt_format, primitive_type, element_count);
+    {  // TEMP DIAG (BINDFAIL)
+      static uint32_t n = 0;
+      if (n++ < 24u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "BINDFAIL site=no_command_list %ux%u\n", cfg.width, cfg.height);
+          std::fclose(f);
+        }
+      }
+    }
     ++g_cap.fail_bind;
     return;
   }
@@ -1636,13 +1820,59 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       BuildGeometrySnapshot(base, dev, primitive_type, element_count, start_element, base_vertex,
                             indexed, shaders, &buffers, &context, cl, inline_geom);
   ProfileAdd(g_profile.geom_us, t_geom);
+  // TEMP DIAG (remove after): every draw into the 220x220 minimap target, with
+  // the vertex layout it actually got. The circular punch there is
+  // xAlphaModulate__PS_Textured, which samples the mask at iTexCoord0.xy
+  // clamped to [0.05, 0.95] and outputs 1 - mask for a One/One/ReversedSubtract
+  // alpha blend. If TEXCOORD0 arrives with only .x supplied -- the exact defect
+  // that made the menus black earlier -- the .y is 0, the fetch reads a thin
+  // strip at the top of the mask instead of the circle, and a mask of 1 makes
+  // the subtract erase nothing: the map keeps its square corners.
+  if (cfg.width == 220 && cfg.height == 220) {
+    static std::set<uint64_t> seen_mm;
+    uint64_t sig = uint64_t(bound.input_layout.size());
+    for (const InputElement& e : bound.input_layout) {
+      sig = sig * 1099511628211ull ^ (uint64_t(e.dxgi_format) << 8) ^ uint64_t(e.semantic_index) ^
+            uint64_t(e.semantic_name ? e.semantic_name[0] : 0);
+    }
+    if (seen_mm.insert(sig).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "MINIMAP layout (%zu elements):", bound.input_layout.size());
+        for (const InputElement& e : bound.input_layout) {
+          std::fprintf(f, " %s%u=fmt%u@slot%u+%u", e.semantic_name ? e.semantic_name : "?",
+                       e.semantic_index, e.dxgi_format, e.input_slot, e.aligned_byte_offset);
+        }
+        std::fprintf(f, " | unsupplied=%zu\n", bound.unsupplied.size());
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
   if (buffers.stats().upload_failures != buffer_upload_failures_before) {
     ++g_cap.ring_flushes;
     FlushBatch(context);
+    {  // TEMP DIAG (BINDFAIL)
+      static uint32_t n = 0;
+      if (n++ < 24u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "BINDFAIL site=upload_failure %ux%u\n", cfg.width, cfg.height);
+          std::fclose(f);
+        }
+      }
+    }
     ++g_cap.fail_bind;
     return;
   }
   if (!bound.complete) {
+    {  // TEMP DIAG (BINDFAIL)
+      static uint32_t n = 0;
+      if (n++ < 24u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "BINDFAIL site=geometry %ux%u reason=%s\n", cfg.width, cfg.height, bound.failure ? bound.failure : "?");
+          std::fclose(f);
+        }
+      }
+    }
     ++g_cap.fail_bind;
     CLOGF("%-5u %-6u %016llX %016llX %-8u geometry: %s\n", g_cap.accepted, element_count,
           (unsigned long long)vs_id, (unsigned long long)ps_id, primitive_type,
@@ -1687,7 +1917,1097 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   binder.BindAll(context, cl, base, dev, textures, shared.data(), bound_tex, &bound_tex_count, 32,
                  rt_guard);
   ProfileAdd(g_profile.bind_us, t_bind);
+  {  // TEMP DIAG (EYE): the eye/teeth material.
+    //
+    // The character .xrsc names its materials: drv_mp_01_set has ten grmShader
+    // blocks and exactly one is `Character_eyes_normalmap`, whose base shader is
+    // `xCharacter_teeth_normalmap`. So the eye is its OWN material with its own
+    // pixel shader, and the identities below are that shader's -- PS is the lit
+    // pass, PS_ShadowBlend the one the night path uses.
+    //
+    // What it prints, and why each field is here: `tint` is c101, which this
+    // shader (and only five others in the whole pack) multiplies straight into
+    // the diffuse -- `r6.yzw = r6.yzw * tintColor.xyz` -- so a zero there paints
+    // the eye black on its own. The texture list is next because the same line
+    // goes black if the diffuse fetch resolves to nothing.
+    // ANISOCENSUS: why anisotropic filtering has no visible effect.
+    //
+    // Anisotropy only exists to pick a FINER mip level along the major axis. A
+    // texture with a single level has nothing to pick, so a sampler can be a
+    // perfectly formed D3D12_FILTER_ANISOTROPIC with MaxAnisotropy 16 and still
+    // change no pixel. Earlier notes measured 150 of 300 binds >= 512x512 with
+    // mip_max_level == 0 and the other 150 on kBaseMap, i.e. ZERO eligible with
+    // a chain -- but that was before the packed-mip-tail fix, so it is re-measured
+    // here rather than trusted.
+    //
+    // Eligibility is the same rule the sampler builder uses: not base-map
+    // (mip_filter != 2) and both min and mag linear.
+    if (REXCVAR_GET(mcla_native_gfx_aniso_census)) {
+      static uint64_t big = 0, big_elig = 0, big_elig_mips = 0, big_basemap = 0, big_nomips = 0;
+      static uint64_t big_basemap_mips = 0;
+      static uint64_t big_basemap_fmt[64] = {};
+      static uint64_t all = 0, all_elig = 0, all_elig_mips = 0;
+      static uint64_t draws_seen = 0;
+      for (uint32_t i = 0; i < bound_tex_count; ++i) {
+        const BoundTexture& b = bound_tex[i];
+        if (!b.fetch.type_valid || !b.fetch.width) {
+          continue;
+        }
+        const bool eligible = b.sampler.mip_filter != 2u && b.sampler.min_filter == 1u &&
+                              b.sampler.mag_filter == 1u;
+        const bool has_mips = b.fetch.mip_address != 0u && b.fetch.mip_max_level != 0u;
+        ++all;
+        if (eligible) {
+          ++all_elig;
+          if (has_mips) ++all_elig_mips;
+        }
+        if (b.fetch.width >= 512u && b.fetch.height >= 512u) {
+          ++big;
+          if (b.sampler.mip_filter == 2u) {
+            ++big_basemap;
+            // Os base-map sao a maior fatia dos binds grandes e sao justamente
+            // os que ficam de fora da anisotropia. Se ELES tiverem cadeia de
+            // mip, um override estilo driver (forcar aniso e soltar o MaxLOD)
+            // teria o que filtrar; se nao tiverem, nao tem.
+            if (has_mips) ++big_basemap_mips;
+            // Histograma de formato dessa populacao: decide se gerar mip no host
+            // e um box filter trivial (formato sem compressao) ou exige
+            // decodificar e recomprimir BC.
+            if (b.fetch.format < 64u) ++big_basemap_fmt[b.fetch.format];
+          }
+          if (!has_mips) ++big_nomips;
+          if (eligible) {
+            ++big_elig;
+            if (has_mips) ++big_elig_mips;
+          }
+        }
+      }
+      if ((++draws_seen % 20000ull) == 0ull) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f,
+                       "ANISOCENSUS binds=%llu elegiveis=%llu elegiveis_com_mip=%llu | "
+                       ">=512: %llu basemap=%llu (com_mip=%llu) sem_mip=%llu elegiveis=%llu "
+                       "elegiveis_com_mip=%llu\n",
+                       (unsigned long long)all, (unsigned long long)all_elig,
+                       (unsigned long long)all_elig_mips, (unsigned long long)big,
+                       (unsigned long long)big_basemap, (unsigned long long)big_basemap_mips,
+                       (unsigned long long)big_nomips,
+                       (unsigned long long)big_elig, (unsigned long long)big_elig_mips);
+          std::fprintf(f, "ANISOFMT basemap>=512 por formato:");
+          for (uint32_t k = 0; k < 64u; ++k) {
+            if (big_basemap_fmt[k]) {
+              std::fprintf(f, " f%u=%llu", k, (unsigned long long)big_basemap_fmt[k]);
+            }
+          }
+          std::fprintf(f, "\n");
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+    // Census kept because it is what FOUND the identity: the number in
+    // shader_report.tsv's identity column is NOT the runtime's key. The pack key
+    // is the one build_shader_pack.collect_shaders() returns, and for this shader
+    // the two differ (report 6F13A15EB1C89968, pack 5E41952680F1F209). The census
+    // prints every pixel shader the scene runs with a draw count, and the names
+    // come from the pack map offline.
+    if (const uint32_t census_every = REXCVAR_GET(mcla_native_gfx_ps_census)) {
+      constexpr uint32_t kCensus = 256;
+      struct CensusRow {
+        uint64_t ps = 0;
+        uint64_t vs = 0;
+        uint32_t count = 0;
+        uint32_t color0_format = 0;  // DXGI of the declaration's COLOR0, 0 = none
+        uint32_t color0_offset = 0;
+        uint32_t tex_addr[3] = {0, 0, 0};
+        uint32_t tex_w[3] = {0, 0, 0};
+        uint32_t tex_h[3] = {0, 0, 0};
+        uint32_t tex_fmt[3] = {0, 0, 0};
+        uint32_t tex_src[3] = {0, 0, 0};
+      };
+      static CensusRow rows[kCensus];
+      static uint64_t draws_seen = 0;
+      const uint32_t start_slot = uint32_t((ps_id ^ (ps_id >> 32)) % kCensus);
+      for (uint32_t probe = 0; probe < kCensus; ++probe) {
+        CensusRow& r = rows[(start_slot + probe) % kCensus];
+        if (r.count && r.ps != ps_id) {
+          continue;
+        }
+        if (!r.count) {
+          // First sighting: record everything that identifies the material, so
+          // ONE run answers "which shader is this and what does it read".
+          r.ps = ps_id;
+          r.vs = vs_id;
+          for (const auto& el : bound.input_layout) {
+            if (el.semantic_name && el.semantic_index == 0 &&
+                std::strcmp(el.semantic_name, "COLOR") == 0) {
+              r.color0_format = el.dxgi_format;
+              r.color0_offset = el.aligned_byte_offset;
+              break;
+            }
+          }
+          for (uint32_t i = 0; i < bound_tex_count && i < 3u; ++i) {
+            r.tex_addr[i] = bound_tex[i].fetch.base_address;
+            r.tex_w[i] = bound_tex[i].fetch.width;
+            r.tex_h[i] = bound_tex[i].fetch.height;
+            r.tex_fmt[i] = bound_tex[i].fetch.format;
+            r.tex_src[i] = uint32_t(bound_tex[i].source);
+          }
+        }
+        ++r.count;
+        break;
+      }
+      if ((++draws_seen % uint64_t(census_every)) == 0ull) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "PSCENSUS after %llu draws\n", (unsigned long long)draws_seen);
+          for (const CensusRow& r : rows) {
+            if (!r.count) {
+              continue;
+            }
+            std::fprintf(f, "  PS %016llX vs %016llX n=%u col0=fmt%u@%u tex",
+                         (unsigned long long)r.ps, (unsigned long long)r.vs, r.count,
+                         r.color0_format, r.color0_offset);
+            for (uint32_t i = 0; i < 3u; ++i) {
+              if (r.tex_addr[i]) {
+                std::fprintf(f, " 0x%08X/%ux%u/f%u/s%u", r.tex_addr[i], r.tex_w[i], r.tex_h[i],
+                             r.tex_fmt[i], r.tex_src[i]);
+              }
+            }
+            std::fprintf(f, "\n");
+          }
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+    {  // TEMP DIAG (RIM): where the wheel's paint colour comes from.
+      //
+      // xRimMain__VS_Common does not read a paint constant directly. It reads
+      // the tint INDEX out of the vertex:
+      //
+      //   r0.yzw = tfetchTexcoord(g_SwappedTexcoords, iTexCoord0, 0).xyz;
+      //   ps = trunc(r0.w);                       // TEXCOORD0's third component
+      //   a0 = (int)clamp(floor(ps + 0.5), -256, 255);
+      //   oTexCoord4.xy = tintColors(0 + a0).xy;  // = VS constant 206 + a0
+      //
+      // So SPOKE A, SPOKE B and LIP are the same shader picking different
+      // `tintColors` slots, and the slot number is baked into TEXCOORD0.z of
+      // each vertex. A wrong .z -- a declaration one component short, or the
+      // texcoord swap applied to the wrong stream -- reads a NEIGHBOURING part's
+      // colour, which is exactly "I set black and got blue".
+      //
+      // Prints the declaration, the first vertices' TEXCOORD0, and the tint
+      // registers, so the index the mesh asks for can be compared against the
+      // colour that sits there.
+      static uint32_t rim_taken = 0;
+      if (vs_id == 0x0824D18D088E17E8ull && rim_taken < REXCVAR_GET(mcla_native_gfx_rim_probe)) {
+        ++rim_taken;
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "RIM#%u vs=%016llX ps=%016llX swapped_tc=%u elems=%u\n", rim_taken,
+                       (unsigned long long)vs_id, (unsigned long long)ps_id,
+                       REXCVAR_GET(mcla_native_gfx_swapped_texcoords) ? 1u : 0u,
+                       uint32_t(bound.input_layout.size()));
+          uint32_t tc0_off = 0xFFFFFFFFu, tc0_fmt = 0, tc0_slot = 0;
+          for (const auto& el : bound.input_layout) {
+            if (el.semantic_name && el.semantic_index == 0 &&
+                std::strcmp(el.semantic_name, "TEXCOORD") == 0) {
+              tc0_off = el.aligned_byte_offset;
+              tc0_fmt = el.dxgi_format;
+              tc0_slot = el.input_slot;
+            }
+            std::fprintf(f, "  RIMDECL %s%u stream=%u off=%u dxgi=%u\n", el.semantic_name,
+                         el.semantic_index, el.input_slot, el.aligned_byte_offset,
+                         el.dxgi_format);
+          }
+          // The tint table: VS constant registers 206..215 = tintColors(0..9).
+          for (uint32_t i = 0; i < 10u; ++i) {
+            float v[4];
+            const uint32_t ea = dev + kDevVsConstantBankOffset + (206u + i) * 16u;
+            for (uint32_t c = 0; c < 4; ++c) {
+              const uint32_t bits = R32(base, ea + c * 4u);
+              std::memcpy(&v[c], &bits, 4);
+            }
+            std::fprintf(f, "  RIMTINT[%u] c%u %.4f %.4f %.4f %.4f\n", i, 206u + i, v[0], v[1],
+                         v[2], v[3]);
+          }
+          // And TEXCOORD0 of the first vertices, straight out of the bound
+          // stream. The fetch base of a bound stream is PHYSICAL.
+          const VertexStream* st = nullptr;
+          for (const auto& vst : bound.streams) {
+            if (vst.fetch_slot == FetchSlotForStream(tc0_slot)) { st = &vst; break; }
+          }
+          if (!st && tc0_slot < bound.streams.size()) st = &bound.streams[tc0_slot];
+          if (tc0_off != 0xFFFFFFFFu && st && st->guest_base && st->stride) {
+            const uint8_t* phys = TranslatePhysicalGuest(st->guest_base);
+            const uint64_t need = uint64_t(st->stride) * 4ull;
+            if (phys && IsPhysicalRangeReadable(st->guest_base, need)) {
+              for (uint32_t vtx = 0; vtx < 4u; ++vtx) {
+                uint32_t d[4] = {0, 0, 0, 0};
+                for (uint32_t c = 0; c < 4u; ++c) {
+                  if (tc0_off + c * 4u + 4u > st->stride) break;
+                  std::memcpy(&d[c], phys + vtx * st->stride + tc0_off + c * 4u, 4);
+                  d[c] = __builtin_bswap32(d[c]);
+                }
+                float fv[4];
+                for (uint32_t c = 0; c < 4u; ++c) std::memcpy(&fv[c], &d[c], 4);
+                (void)fv;
+                // TEXCOORD0 here is R16G16B16A16_FLOAT: four halfs, big-endian
+                // in guest memory. Decoding it as two byte-swapped dwords
+                // scrambles the pairs, so read the halfs one at a time.
+                float h[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                for (uint32_t c = 0; c < 4u; ++c) {
+                  if (tc0_off + c * 2u + 2u > st->stride) break;
+                  const uint8_t* q = phys + vtx * st->stride + tc0_off + c * 2u;
+                  const uint16_t bits = uint16_t((uint16_t(q[0]) << 8) | q[1]);
+                  h[c] = RimHalfToFloat(bits);
+                }
+                // tfetchTexcoord swaps to .yxwz when the semantic's bit is set,
+                // and the shader takes its tint index from the THIRD component
+                // of the result -- so the swap decides between the vertex's own
+                // .z and its .w. Print the slot each choice lands on.
+                const int a0_swapped = int(std::floor(h[3] + 0.5f));
+                const int a0_plain = int(std::floor(h[2] + 0.5f));
+                std::fprintf(f,
+                             "  RIMVTX%u raw %08X %08X  tc0=%.3f %.3f %.3f %.3f "
+                             "a0_swapped=%d a0_plain=%d\n",
+                             vtx, d[0], d[1], h[0], h[1], h[2], h[3], a0_swapped, a0_plain);
+              }
+            } else {
+              std::fprintf(f, "  RIMVTX unreadable base=0x%08X stride=%u\n", st->guest_base,
+                           st->stride);
+            }
+          }
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+    static uint32_t taken = 0;
+    const bool is_eye = ps_id == 0x5E41952680F1F209ull ||   // __PS, the lit pass
+                        ps_id == 0xD7BA99C168F84D73ull;    // __PS_ShadowBlend
+    if (is_eye && taken < REXCVAR_GET(mcla_native_gfx_eye_probe)) {
+      ++taken;
+      auto psreg = [&](uint32_t reg, float* out) {
+        const uint32_t ea = dev + kDevPsConstantBankOffset + reg * 16u;
+        for (uint32_t i = 0; i < 4; ++i) {
+          const uint32_t bits = R32(base, ea + i * 4u);
+          std::memcpy(&out[i], &bits, 4);
+        }
+      };
+      float tint[4];
+      psreg(101, tint);
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f,
+                     "EYE#%u ps=%016llX vs=%016llX tint=%.4f,%.4f,%.4f,%.4f "
+                     "alpha_test=%d blend0=%08X tex=%u\n",
+                     taken, (unsigned long long)ps_id, (unsigned long long)vs_id, tint[0], tint[1],
+                     tint[2], tint[3], rs.alpha_test_enable ? 1 : 0, rs.blend_control0,
+                     bound_tex_count);
+        for (uint32_t i = 0; i < bound_tex_count; ++i) {
+          const BoundTexture& b = bound_tex[i];
+          std::fprintf(f,
+                       "  EYETEX slot=%u addr=0x%08X %ux%u fmt=%u gamma=%d swz=0x%03X "
+                       "resolved=%d source=%u srv=%u\n",
+                       b.fetch_slot, b.fetch.base_address, b.fetch.width, b.fetch.height,
+                       b.fetch.format, b.fetch.gamma ? 1 : 0, b.fetch.swizzle,
+                       b.resolved ? 1 : 0, uint32_t(b.source), b.srv_descriptor_index);
+          // Slot 13 is the shadow collector, and the whole night path of this
+          // shader is gated on one sample of it: world XZ / 256 + 0.5, then
+          // `saturate(-0.25 + s)` scales the light. A zero there kills the eye
+          // outright. Print what guest memory actually holds -- the fetch
+          // address is PHYSICAL, so it needs the physical translation, not R32.
+          if (b.fetch_slot == 13 && b.fetch.width && b.fetch.height) {
+            const uint64_t bytes = uint64_t(b.fetch.width) * b.fetch.height * 4ull;
+            const uint8_t* phys = TranslatePhysicalGuest(b.fetch.base_address);
+            if (phys && IsPhysicalRangeReadable(b.fetch.base_address, bytes)) {
+              uint32_t lo = 0xFFFFFFFFu, hi = 0, first[4] = {0, 0, 0, 0};
+              const uint32_t n = uint32_t(bytes / 4ull);
+              for (uint32_t t = 0; t < n; ++t) {
+                uint32_t d = 0;
+                std::memcpy(&d, phys + t * 4u, 4);
+                d = ((d & 0xFFu) << 24) | ((d & 0xFF00u) << 8) | ((d >> 8) & 0xFF00u) |
+                    ((d >> 24) & 0xFFu);
+                if (d < lo) lo = d;
+                if (d > hi) hi = d;
+                if (t < 4) first[t] = d;
+              }
+              std::fprintf(f,
+                           "  EYECOLL guest %u texels min=%08X max=%08X first=%08X %08X %08X "
+                           "%08X\n",
+                           n, lo, hi, first[0], first[1], first[2], first[3]);
+            } else {
+              std::fprintf(f, "  EYECOLL guest UNREADABLE at 0x%08X\n", b.fetch.base_address);
+            }
+            // And the other half of the question: does the POOL know this
+            // address? `gpu_produced` = a host target exists at exactly this
+            // address and extent; `stale` = the address is a known resolve
+            // destination but the extent differs, which is the keying failure
+            // that would make the binder fall back to decoding guest memory.
+            D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COMMON;
+            const bool has_res = render_targets.FindResolvedTarget(
+                                     b.fetch.base_address, b.fetch.width, b.fetch.height,
+                                     /*want_depth=*/false, &st) != nullptr;
+            std::fprintf(f, "  EYECOLL pool gpu_produced=%d stale=%d resolved_target=%d\n",
+                         render_targets.IsGpuProduced(b.fetch.base_address, b.fetch.width,
+                                                      b.fetch.height)
+                             ? 1
+                             : 0,
+                         render_targets.IsStaleGpuAddress(b.fetch.base_address, b.fetch.width,
+                                                          b.fetch.height)
+                             ? 1
+                             : 0,
+                         has_res ? 1 : 0);
+          }
+        }
+        // Every constant this shader declares, so a day run and a night run can be
+        // diffed register for register. c63 ShaderGlobals is the one the shader
+        // branches on (`ShaderGlobals.z >= 8.0`), which is why it is here even
+        // though nothing else reads it.
+        static const struct { uint32_t reg; const char* name; } kRegs[] = {
+            {26, "gLightAmbient"}, {27, "gInvColorExpBias"}, {39, "gLightColor0"},
+            {40, "gLightColor1"},  {63, "ShaderGlobals"},    {100, "normalMapMod"},
+            {102, "diffuseMod"},   {103, "envMod"},          {104, "metallic"},
+            {105, "fresnelExp"},   {106, "fresnelMin"},      {107, "fresnelMax"},
+            {108, "SpecExp"},      {109, "SpecIntensity"},   {110, "wrapAmount"},
+        };
+        for (const auto& r : kRegs) {
+          float v[4];
+          psreg(r.reg, v);
+          std::fprintf(f, "  EYEC c%-3u %-17s %.4f %.4f %.4f %.4f\n", r.reg, r.name, v[0], v[1],
+                       v[2], v[3]);
+        }
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  // TEMP DIAG (MESHCHK): does GUEST memory, right now, at this draw's fetch
+  // address, decode as the mesh the draw declares?
+  //
+  // corruptnpc.rdc has two xPed draws whose bound bytes are not ped vertices at
+  // ANY stride or alignment -- the packed NORMAL at +20 is a unit vector in 100%
+  // of a healthy ped's vertices and in 37% (chance) of theirs. That splits three
+  // ways and the capture cannot tell them apart:
+  //
+  //   guest bytes ARE a valid mesh  -> we uploaded stale bytes; BufferCache lost
+  //                                    an invalidation
+  //   guest bytes are garbage too   -> the fetch address is wrong, or the mesh
+  //                                    is simply not loaded yet; the cache is
+  //                                    innocent and the hunt moves
+  //
+  // Read-only, deduplicated by fetch address, and it never touches the GPU --
+  // the point is precisely to compare against what the GPU was given.
+  if (!inline_geom && !bound.streams.empty()) {
+    // The declaration's own NORMAL slot. Hardcoding +20 would only be right for
+    // xPed; asking the layout makes this work for every skinned draw.
+    uint32_t norm_off = 0xFFFFFFFFu, norm_slot = 0;
+    bool skinned = false;
+    for (const auto& el : bound.input_layout) {
+      if (!el.semantic_name || el.semantic_index != 0) continue;
+      if (std::strcmp(el.semantic_name, "NORMAL") == 0 && el.dxgi_format == 42u) {
+        norm_off = el.aligned_byte_offset;
+        norm_slot = el.input_slot;
+      } else if (std::strcmp(el.semantic_name, "BLENDINDICES") == 0) {
+        skinned = true;
+      }
+    }
+    // SKINNED only. The first pass filled a 256-entry table with world geometry
+    // (all 100%) before a single pedestrian was drawn, so the one draw family
+    // this exists for never got a slot.
+    if (!skinned) norm_off = 0xFFFFFFFFu;
+    const VertexStream* st = nullptr;
+    for (const auto& s : bound.streams) {
+      if (s.fetch_slot == FetchSlotForStream(norm_slot)) { st = &s; break; }
+    }
+    if (!st && norm_slot < bound.streams.size()) st = &bound.streams[norm_slot];
+    if (norm_off != 0xFFFFFFFFu && st && st->stride >= norm_off + 4u && st->guest_base &&
+        st->guest_size >= st->stride) {
+      // Deduplicated only AFTER the verdict, and only for the failures, so a
+      // healthy mesh never spends a slot and the table cannot fill before the
+      // corrupt pedestrian walks into frame.
+      static uint32_t seen_bad[512];
+      static uint32_t seen_bad_n = 0;
+      static uint64_t n_ok = 0, n_bad = 0, n_unreadable = 0, n_stale = 0;
+      {
+        const uint32_t nv = std::min<uint32_t>(st->guest_size / st->stride, 256u);
+        // The stream base out of a fetch constant is PHYSICAL; reading it
+        // through the virtual membase lands on unmapped pages.
+        const uint8_t* p = TranslatePhysicalGuest(st->guest_base);
+        const bool readable =
+            p != nullptr && IsPhysicalRangeReadable(st->guest_base, uint64_t(nv) * st->stride);
+        uint32_t unit = 0;
+        if (readable) {
+          for (uint32_t v = 0; v < nv; ++v) {
+            uint32_t d;
+            std::memcpy(&d, p + v * st->stride + norm_off, 4);
+            d = __builtin_bswap32(d);  // guest vertex data is big-endian
+            // k_2_10_10_10, three signed 10-bit components over 511.
+            const auto comp = [](uint32_t raw) {
+              const int32_t c = int32_t(raw & 0x3FFu);
+              return float(c & 0x200 ? c - 1024 : c) / 511.0f;
+            };
+            const float x = comp(d), y = comp(d >> 10), z = comp(d >> 20);
+            const float len = std::sqrt(x * x + y * y + z * z);
+            if (len >= 0.85f && len <= 1.15f) ++unit;
+          }
+        }
+        const uint32_t pct = nv ? unit * 100u / nv : 0u;
+        if (!readable) {
+          ++n_unreadable;
+        } else if (pct >= 60u) {
+          ++n_ok;
+        } else {
+          ++n_bad;
+          bool fresh = true;
+          for (uint32_t k = 0; k < seen_bad_n; ++k) {
+            if (seen_bad[k] == st->guest_base) { fresh = false; break; }
+          }
+          if (fresh && seen_bad_n < 512u) {
+            seen_bad[seen_bad_n++] = st->guest_base;
+            if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+              std::fprintf(f,
+                           "MESHBAD vs=%016llX base=0x%08X stride=%u size=%u nv=%u "
+                           "unit_normal=%u%% | region=0x%08X+%u size=%u resolved=%d\n",
+                           (unsigned long long)vs_id, st->guest_base, st->stride, st->guest_size,
+                           nv, pct, st->resource_base, st->view_offset, st->resource_size,
+                           st->resolved ? 1 : 0);
+              // The first vertices as the GUEST holds them, big-endian, so a
+              // bad verdict can be read by eye against a good one.
+              for (uint32_t v = 0; v < 3u && v < nv; ++v) {
+                char line[256];
+                int c = std::snprintf(line, sizeof(line), "MESHBAD   guest v%u", v);
+                for (uint32_t o = 0; o + 4 <= st->stride && c < 220; o += 4) {
+                  uint32_t d;
+                  std::memcpy(&d, p + v * st->stride + o, 4);
+                  c += std::snprintf(line + c, sizeof(line) - size_t(c), " %08X",
+                                     __builtin_bswap32(d));
+                }
+                std::fprintf(f, "%s\n", line);
+              }
+              std::fflush(f);
+              std::fclose(f);
+            }
+          }
+        }
+        // The other half, and the one that does not need luck: is the GPU's
+        // copy of this range still the guest's bytes? A missed invalidation
+        // shows up here the frame it happens, whether or not it has yet
+        // deformed anything visible.
+        {
+          // PERSISTENCE, not a single sample. A one-off mismatch proves nothing:
+          // the guest can be writing the range at this instant and the watch's
+          // invalidation is drained at the top of the next Resolve, which would
+          // fix it a frame later. A mismatch that survives many observations of
+          // the SAME uploaded hash cannot be that -- the re-upload never came.
+          struct StaleEntry {
+            uint32_t base = 0;
+            uint64_t uploaded = 0;
+            uint32_t hits = 0;
+            bool reported = false;
+          };
+          static StaleEntry stale[256];
+          static uint32_t stale_n = 0;
+          constexpr uint32_t kPersist = 200;
+          const BufferSwap swap = st->endian == 2   ? BufferSwap::k8in32
+                                  : st->endian == 1 ? BufferSwap::k8in16
+                                                    : BufferSwap::kNone;
+          uint32_t rbase = 0, rsize = 0;
+          uint64_t up = 0, live = 0;
+          if (buffers.VerifyRegion(st->guest_base, st->guest_size, swap, &rbase, &rsize, &up,
+                                   &live) &&
+              up != live) {
+            ++n_stale;
+            StaleEntry* e = nullptr;
+            for (uint32_t k = 0; k < stale_n; ++k) {
+              if (stale[k].base == rbase) { e = &stale[k]; break; }
+            }
+            if (!e && stale_n < 256u) {
+              e = &stale[stale_n++];
+              e->base = rbase;
+            }
+            if (e) {
+              // A re-upload changes the stored hash; that is the region being
+              // fixed, so the count starts over rather than accumulating across
+              // two different staleness episodes.
+              if (e->uploaded != up) {
+                e->uploaded = up;
+                e->hits = 0;
+                e->reported = false;
+              }
+              if (++e->hits >= kPersist && !e->reported) {
+                e->reported = true;
+                if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+                  std::fprintf(f,
+                               "MESHSTALE vs=%016llX base=0x%08X size=%u | region=0x%08X size=%u "
+                               "swap=%u uploaded=%016llX live=%016llX unit_normal=%u%% "
+                               "persistiu=%u\n",
+                               (unsigned long long)vs_id, st->guest_base, st->guest_size, rbase,
+                               rsize, uint32_t(swap), (unsigned long long)up,
+                               (unsigned long long)live, pct, e->hits);
+                  std::fflush(f);
+                  std::fclose(f);
+                }
+              }
+            }
+          }
+        }
+        // Heartbeat, so "no MESHBAD lines" can be told apart from "the probe
+        // never ran".
+        static uint64_t tick = 0;
+        if ((++tick % 20000u) == 0u) {
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f, "MESHCHK skinned draws: ok=%llu bad=%llu unreadable=%llu distintos_ruins=%u\n",
+                         (unsigned long long)n_ok, (unsigned long long)n_bad,
+                         (unsigned long long)n_unreadable, seen_bad_n);
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+    }
+  }
+  // TEMP DIAG (PASSBIAS): the colour exponent bias of every 256x256 HDR pass.
+  //
+  // The water's reflection target (0x05AC3000, R16G16B16A16_FLOAT) comes out
+  // ~33x brighter at the near camera than at the far one (mean RGB 0.99 vs
+  // 0.03, alpha 11.9 vs 1.45). 33 is about 2^5, which is what an unapplied
+  // RB_COLOR_INFO exponent bias looks like -- the Xenos pre-divides by 2^bias
+  // on write and the resolve undoes it. Same class as
+  // project-mcla-color-exp-bias.
+  if (cfg.width == 256u && cfg.height == 256u && cfg.rt_format != 28u) {
+    static std::set<uint64_t> seen_bias;
+    const int32_t bias = ReadColorExpBias(base, dev);
+    const uint64_t sig = (uint64_t(uint32_t(bias)) << 32) ^ cfg.rt_format ^ ps_id;
+    if (seen_bias.size() < 24u && seen_bias.insert(sig).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        float inv[4];
+        std::memcpy(inv, ps_bank.data() + 27u * 16u, 16);
+        std::fprintf(f,
+                     "PASSBIAS 256x256 rt_format=%u color_exp_bias=%d color_info=0x%08X "
+                     "gInvColorExpBias=%.5f ps=%016llX\n",
+                     cfg.rt_format, bias, rs.color_info, inv[0], (unsigned long long)ps_id);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  // TEMP DIAG (WATER): every ocean/pond water draw, with the textures it binds.
+  //
+  // The sea is correctly dark from far away and blows out to white up close.
+  // `xCityOceanWater__PSCityOceanWater` and its LOD twin are byte-identical in
+  // their output path, so the difference is not the code -- it is what they are
+  // fed. Both sample ReflectionSampler and WaveFoamSampler; a reflection target
+  // that comes back white is the shape of the symptom.
+  {
+    const bool is_water = ps_id == 0x35F41762995C91B9ull ||   // seed do reflexo
+                          ps_id == 0xC5C95CAE57E0D1C4ull ||   // xCityOceanWater
+                          ps_id == 0x3E5818BE5A70E06Bull ||   // xCityOceanWaterLOD
+                          ps_id == 0x18821F3A51B6E4DEull ||   // xCityOceanShore
+                          ps_id == 0x2EB9178258B7EBDAull;     // xCityPondWater
+    if (is_water) {
+      static std::set<uint64_t> seen_water;
+      uint64_t sig = ps_id ^ (uint64_t(bound_tex_count) << 56);
+      for (uint32_t i = 0; i < bound_tex_count; ++i) {
+        sig ^= (uint64_t(bound_tex[i].fetch.base_address) << 3) ^ bound_tex[i].fetch_slot;
+      }
+      // O passe que semeia o alvo de reflexo. Pular ele derruba o reflexo de
+      // p50 0.8562 para 0.0064, entao e ele que enche o buffer de claro. Ele e
+      // glow de luz: amostra LightGlowTexSampler e multiplica por StreakParams.y
+      // e pela cor do vertice -- os tres candidatos estao nesta linha.
+      if (ps_id == 0x35F41762995C91B9ull) {
+        static bool seed_done = false;
+        if (!seed_done) {
+          seed_done = true;
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            float sp[4];
+            std::memcpy(sp, ps_bank.data() + 64u * 16u, 16);
+            std::fprintf(f, "SEEDRT StreakParams=%.5f %.5f %.5f %.5f into=%ux%u ntex=%u elems=%u",
+                         sp[0], sp[1], sp[2], sp[3], cfg.width, cfg.height, bound_tex_count,
+                         element_count);
+            for (uint32_t i = 0; i < bound_tex_count && i < 6u; ++i) {
+              const BoundTexture& b = bound_tex[i];
+              std::fprintf(f, " | s%u=0x%08X %ux%u f%u src=%c", b.fetch_slot,
+                           b.fetch.base_address, b.fetch.width, b.fetch.height, b.fetch.format,
+                           TextureSourceTag(b.source));
+            }
+            std::fprintf(f, "\n");
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+      // As constantes que o shader realmente recebe, DEPOIS de ApplyColorExpBias.
+      // O mesmo shader desenha escuro na camera 50 e estourado na 51, com o
+      // mesmo codigo e a mesma textura de reflexo, entao a diferenca esta aqui
+      // ou no conteudo do reflexo. c_N fica no byte N*16 do banco.
+      if (ps_id == 0xC5C95CAE57E0D1C4ull) {
+        static bool wc_done = false;
+        if (!wc_done) {
+          wc_done = true;
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            const auto cst = [&](uint32_t n, const char* name) {
+              float v[4];
+              std::memcpy(v, ps_bank.data() + size_t(n) * 16u, 16);
+              std::fprintf(f, "WATERCONST c%-3u %-18s %12.5f %12.5f %12.5f %12.5f\n", n,
+                           name, v[0], v[1], v[2], v[3]);
+            };
+            cst(12, "gViewInverse0"); cst(13, "gViewInverse1");
+            cst(14, "gViewInverse2"); cst(15, "gViewInverse3");
+            cst(16, "gLightPosDir");  cst(26, "gLightAmbient");
+            cst(27, "gInvColorExpBias"); cst(39, "gLightColor");
+            cst(63, "ShaderGlobals");
+            std::fprintf(f, "WATERCONST scene_bias=%d color_info=0x%08X into=%ux%u\n",
+                         ReadColorExpBias(base, dev), rs.color_info, cfg.width, cfg.height);
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+      if (seen_water.size() < 48u && seen_water.insert(sig).second) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "WATER ps=%016llX vs=%016llX into=%ux%u ntex=%u elems=%u",
+                       (unsigned long long)ps_id, (unsigned long long)vs_id, cfg.width,
+                       cfg.height, bound_tex_count, element_count);
+          for (uint32_t i = 0; i < bound_tex_count && i < 8u; ++i) {
+            const BoundTexture& b = bound_tex[i];
+            std::fprintf(f, " | s%u=0x%08X %ux%u f%u src=%c", b.fetch_slot, b.fetch.base_address,
+                         b.fetch.width, b.fetch.height, b.fetch.format,
+                         TextureSourceTag(b.source));
+          }
+          std::fprintf(f, "\n");
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+  }
+  // TEMP DIAG (PANEL): every draw that SAMPLES the 960x640 Flash/vhsm UI surface,
+  // whatever it renders into. RenderDoc cannot answer this -- its
+  // GetReadOnlyResources does not enumerate a bindless bind, so a capture shows
+  // these draws with no texture at all. The runtime knows the fetch, so it can.
+  for (uint32_t i = 0; i < bound_tex_count; ++i) {
+    const BoundTexture& b = bound_tex[i];
+    if (b.fetch.width != 960u || b.fetch.height != 640u) continue;
+    static uint32_t seen_panel[64];
+    static uint32_t seen_panel_n = 0;
+    // The vertex COLOR alpha over time, throttled. The panel composites at
+    // alpha 7/255, which is either a fade-in that never advances or a value the
+    // game really means. One sample cannot tell the two apart; a series can.
+    if (inline_geom && inline_geom->address && inline_geom->stride >= 28u) {
+      static uint32_t tick = 0;
+      if ((tick++ % 120u) == 0u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "PANELFADE ps=%016llX color=%08X uv0=%08X\n",
+                       (unsigned long long)ps_id, R32(base, inline_geom->address + 24),
+                       R32(base, inline_geom->address + 28));
+          std::fflush(f); std::fclose(f);
+        }
+      }
+    }
+    // Every instance, not one per shader: the composite and the sprites inside
+    // the panel share xrage_im__PS_Textured, so deduplicating by ps_id showed
+    // one arbitrary quad and hid the one that matters. Capped by count instead.
+    if (seen_panel_n >= 40u) continue;
+    ++seen_panel_n;
+    if (inline_geom && inline_geom->address && inline_geom->stride >= 32u) {
+      // Offsets from THIS draw's own declaration. Hardcoding 0/4/24 read
+      // whatever happened to sit there: the colours came out with a top byte
+      // wandering between 0x00 and 0x17 and the rectangles landed in a corner
+      // the menu never occupies, which is the signature of reading a shifted
+      // field, not of a game drawing at 3% alpha.
+      const uint32_t st = inline_geom->stride;
+      uint32_t pos_off = 0xFFFFFFFFu, col_off = 0xFFFFFFFFu, uv_off = 0xFFFFFFFFu;
+      for (const auto& el : bound.input_layout) {
+        if (!el.semantic_name) continue;
+        if (el.semantic_index == 0 && std::strcmp(el.semantic_name, "POSITION") == 0)
+          pos_off = el.aligned_byte_offset;
+        else if (el.semantic_index == 0 && std::strcmp(el.semantic_name, "COLOR") == 0)
+          col_off = el.aligned_byte_offset;
+        else if (el.semantic_index == 0 && std::strcmp(el.semantic_name, "TEXCOORD") == 0)
+          uv_off = el.aligned_byte_offset;
+      }
+      const uint32_t nv = std::min<uint32_t>(inline_geom->size_bytes / st, 6u);
+      float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+      uint32_t col = 0;
+      if (pos_off != 0xFFFFFFFFu) {
+        for (uint32_t v = 0; v < nv; ++v) {
+          const uint32_t at = inline_geom->address + v * st;
+          uint32_t rx = R32(base, at + pos_off), ry = R32(base, at + pos_off + 4);
+          float fx, fy;
+          std::memcpy(&fx, &rx, 4);
+          std::memcpy(&fy, &ry, 4);
+          if (fx < x0) x0 = fx;
+          if (fx > x1) x1 = fx;
+          if (fy < y0) y0 = fy;
+          if (fy > y1) y1 = fy;
+          if (col_off != 0xFFFFFFFFu) col = R32(base, at + col_off);
+        }
+      }
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f,
+                     "PANELQUAD ps=%016llX rect=(%.0f,%.0f..%.0f,%.0f) color=%08X into=%ux%u "
+                     "vp=%.0fx%.0f stride=%u off(p/c/uv)=%u/%u/%u\n",
+                     (unsigned long long)ps_id, x0, y0, x1, y1, col, cfg.width, cfg.height,
+                     hv.width, hv.height, st, pos_off, col_off, uv_off);
+        std::fflush(f); std::fclose(f);
+      }
+    }
+    const uint32_t sig = uint32_t(ps_id) ^ (b.fetch.base_address << 1);
+    bool fresh = true;
+    for (uint32_t k = 0; k < 0u; ++k) if (seen_panel[k] == sig) { fresh = false; break; }
+    if (!fresh) continue;
+    if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+      std::fprintf(f,
+                   "PANELREAD ps=%016llX slot=%u addr=0x%08X %ux%u src=%c into=%ux%u "
+                   "alphatest=%d func=%u ref=0x%08X blend0=0x%08X mask=0x%X\n",
+                   (unsigned long long)ps_id, b.fetch_slot, b.fetch.base_address, b.fetch.width,
+                   b.fetch.height, TextureSourceTag(b.source), cfg.width, cfg.height,
+                   rs.alpha_test_enable ? 1 : 0, rs.alpha_func, R32(base, dev + kDevRegAlphaRef),
+                   rs.blend_control0, rs.color_mask);
+      // The vertex layout too: this shader multiplies the texture by the vertex
+      // COLOR (oC0 = tex * iColor0), so a COLOR attribute read at the wrong
+      // offset or format makes the whole panel come out with alpha zero, which
+      // is exactly what the pixel history shows.
+      for (const auto& el : bound.input_layout) {
+        std::fprintf(f, "PANELVTX   attr %s[%u] fmt=%u slot=%u off=%u\n",
+                     el.semantic_name ? el.semantic_name : "?", el.semantic_index,
+                     el.dxgi_format, el.input_slot, el.aligned_byte_offset);
+      }
+      for (size_t si = 0; si < bound.streams.size(); ++si) {
+        std::fprintf(f, "PANELVTX   stream%zu stride=%u guest_size=%u endian=%u inline=%d\n",
+                     si, bound.streams[si].stride, bound.streams[si].guest_size,
+                     bound.streams[si].endian, inline_geom ? 1 : 0);
+      }
+      // The vertices themselves. oC0 = tfetch2D(...) * iColor0, the texture's
+      // alpha is 255 across the menu box, and the draw comes out with alpha 0 --
+      // so either the vertex COLOR carries alpha 0 or the UV lands on a
+      // transparent texel. Both answers live in this buffer.
+      // NOT inline-only. The draw that actually composites the panel --
+      // xGloss__PS_TexturedGloss, a lit 3D card -- comes through an ordinary
+      // vertex buffer, so every earlier dump here printed nothing for it and
+      // the one draw that matters was the one never measured. Its bound stream
+      // is read the same way, behind the readability check guest addresses out
+      // of a fetch constant always need.
+      const uint32_t vin_base =
+          inline_geom ? inline_geom->address
+                      : (bound.streams.empty() ? 0u : bound.streams[0].guest_base);
+      const uint32_t vin_stride =
+          inline_geom ? inline_geom->stride
+                      : (bound.streams.empty() ? 0u : bound.streams[0].stride);
+      const uint32_t vin_size =
+          inline_geom ? inline_geom->size_bytes
+                      : (bound.streams.empty() ? 0u : bound.streams[0].guest_size);
+      std::fprintf(f, "PANELVTX   vs=%016llX streams=%zu vin=0x%08X stride=%u size=%u\n",
+                   (unsigned long long)vs_id, bound.streams.size(), vin_base, vin_stride,
+                   vin_size);
+      // An inline draw's vertices sit in the command buffer at a VIRTUAL
+      // address; a bound stream's base comes out of the fetch constant and is
+      // PHYSICAL. Reading the second one through the virtual membase lands on
+      // unmapped pages -- which is why the first attempt printed the header
+      // line and no vertices at all for the one draw being chased.
+      const uint8_t* phys = inline_geom ? nullptr : TranslatePhysicalGuest(vin_base);
+      const bool vin_ok =
+          vin_base && vin_stride &&
+          (inline_geom
+               ? IsGuestRangeReadable(vin_base, std::min<uint32_t>(vin_size, 6u * vin_stride))
+               : (phys != nullptr &&
+                  IsPhysicalRangeReadable(vin_base, std::min<uint32_t>(vin_size, 6u * vin_stride))));
+      if (vin_ok) {
+        const uint32_t stride = vin_stride;
+        const uint32_t nv = std::min<uint32_t>(vin_size / stride, 6u);
+        for (uint32_t v = 0; v < nv; ++v) {
+          const uint32_t at = vin_base + v * stride;
+          char line[256];
+          int n = std::snprintf(line, sizeof(line), "PANELVTX   v%u", v);
+          for (uint32_t off = 0; off + 4 <= stride && n < 220; off += 4) {
+            uint32_t raw;
+            if (phys) {
+              std::memcpy(&raw, phys + (v * stride) + off, 4);
+              raw = __builtin_bswap32(raw);
+            } else {
+              raw = R32(base, at + off);
+            }
+            float fv;
+            std::memcpy(&fv, &raw, 4);
+            n += std::snprintf(line + n, sizeof(line) - size_t(n), " [%u]=%08X/%.3f", off, raw, fv);
+          }
+          std::fprintf(f, "%s\n", line);
+        }
+      }
+      std::fflush(f); std::fclose(f);
+    }
+  }
+  // TEMP DIAG (UIQUAD): every inline 2D quad that lands on a display-sized
+  // colour target, with its screen rectangle, its vertex colour and the texture
+  // it samples. Scoping the earlier dump to draws that sample the 960x640
+  // surface showed only the HUD speedometer -- the menu never appeared in it,
+  // which is the question this answers directly.
+  // NOT inline-only. Every quad dump before this one required inline_geom, so a
+  // menu composite issued as an ordinary DrawVertices/DrawIndexedVertices was
+  // invisible to all of them -- which is how "the geometry is never emitted"
+  // got concluded from a filter that could not have seen it.
+  const uint32_t vtx_base =
+      inline_geom ? inline_geom->address
+                  : (bound.streams.empty() ? 0u : bound.streams[0].guest_base);
+  const uint32_t vtx_stride =
+      inline_geom ? inline_geom->stride
+                  : (bound.streams.empty() ? 0u : bound.streams[0].stride);
+  const uint32_t vtx_size =
+      inline_geom ? inline_geom->size_bytes
+                  : (bound.streams.empty() ? 0u : bound.streams[0].guest_size);
+  // The guest base of a non-inline stream comes straight out of the fetch
+  // constant and is NOT guaranteed readable by the CPU -- reading it blind
+  // segfaulted the process on the first try. Everything else in this file that
+  // touches guest memory by address goes through this check first.
+  // The `cfg.width >= 1024` this used to carry was the blind spot: RenderDoc
+  // reports the menu's composite draw with viewport/scissor 960x640 and the
+  // 1280x720 surface as its RTV, and the runtime derives the pass shape from
+  // the VIEWPORT -- so that draw was excluded from the very census that
+  // concluded "the geometry is never emitted". Any colour pass now, with the
+  // pass shape and the guest's surface pitch printed alongside.
+  if (vtx_base && vtx_stride >= 16u && vtx_size >= vtx_stride &&
+      IsGuestRangeReadable(vtx_base, std::min<uint32_t>(vtx_size, 6u * vtx_stride)) &&
+      cfg.rt_format == 28u) {
+    // Deduplicated by rectangle and texture, not capped by count: the HUD
+    // repeats the same handful of quads every frame and a plain counter was
+    // spent long before the pause menu could be opened.
+    static uint32_t uq_seen[512];
+    static uint32_t uq_n = 0;
+    if (uq_n < 512u) {
+      uint32_t pos_off = 0xFFFFFFFFu, col_off = 0xFFFFFFFFu;
+      for (const auto& el : bound.input_layout) {
+        if (!el.semantic_name || el.semantic_index != 0) continue;
+        if (std::strcmp(el.semantic_name, "POSITION") == 0) pos_off = el.aligned_byte_offset;
+        else if (std::strcmp(el.semantic_name, "COLOR") == 0) col_off = el.aligned_byte_offset;
+      }
+      if (pos_off != 0xFFFFFFFFu) {
+        const uint32_t st = vtx_stride;
+        const uint32_t nv = std::min<uint32_t>(vtx_size / st, 6u);
+        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        uint32_t col = 0;
+        for (uint32_t v = 0; v < nv; ++v) {
+          const uint32_t at = vtx_base + v * st;
+          uint32_t rx = R32(base, at + pos_off), ry = R32(base, at + pos_off + 4);
+          float fx, fy;
+          std::memcpy(&fx, &rx, 4);
+          std::memcpy(&fy, &ry, 4);
+          if (fx < x0) x0 = fx;
+          if (fx > x1) x1 = fx;
+          if (fy < y0) y0 = fy;
+          if (fy > y1) y1 = fy;
+          if (col_off != 0xFFFFFFFFu) col = R32(base, at + col_off);
+        }
+        // Only quads big enough to be a panel AND inside the rectangle the pause
+        // menu occupies (measured off the emulated path, which draws it
+        // correctly: x 377..580, y 313..460 in the guest's 1280x720 UI space).
+        // Without the region filter the HUD and the minimap exhaust the budget
+        // before the menu is ever opened.
+        // The full-screen UI composite: one quad covering the whole guest UI
+        // space. It is the draw that puts the Flash surface on the frame, and
+        // the one whose sampled texture was never identified -- RenderDoc shows
+        // it with no texture at all because the bind is bindless.
+        if (x0 <= 2.0f && y0 <= 2.0f && x1 >= 1278.0f && y1 >= 718.0f) {
+          static uint32_t fs = 0;
+          if (fs++ < 8u) {
+            if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+              std::fprintf(f, "FULLSCREENUI color=%08X ntex=%u", col, bound_tex_count);
+              for (uint32_t t = 0; t < bound_tex_count && t < 4u; ++t) {
+                std::fprintf(f, " | slot%u addr=0x%08X %ux%u fmt=%u src=%c",
+                             bound_tex[t].fetch_slot, bound_tex[t].fetch.base_address,
+                             bound_tex[t].fetch.width, bound_tex[t].fetch.height,
+                             bound_tex[t].fetch.format, TextureSourceTag(bound_tex[t].source));
+              }
+              std::fprintf(f, " ps=%016llX\n", (unsigned long long)ps_id);
+              std::fflush(f); std::fclose(f);
+            }
+          }
+        }
+        // The region box that used to sit here was in the guest's 1280x720 UI
+        // space, so it could not match a quad issued through a smaller viewport
+        // either. Size alone now; the rect+texture dedup keeps the repeating
+        // HUD from spending the table.
+        if ((x1 - x0) >= 40.0f && (y1 - y0) >= 25.0f) {
+          const uint32_t rsig = (uint32_t(x0) & 0x7FFu) | ((uint32_t(y0) & 0x7FFu) << 11) |
+                                ((uint32_t(x1 - x0) & 0x3FFu) << 22);
+          const uint32_t tsig = bound_tex_count ? bound_tex[0].fetch.base_address : 0u;
+          const uint32_t sig = rsig ^ (tsig << 3) ^ (tsig >> 13);
+          bool fresh = true;
+          for (uint32_t k = 0; k < uq_n; ++k) if (uq_seen[k] == sig) { fresh = false; break; }
+          if (!fresh) return_if_seen: { }
+          if (!fresh) goto uiquad_done;
+          uq_seen[uq_n++] = sig;
+          uint32_t t_addr = 0, t_w = 0, t_h = 0;
+          char t_src = '-';
+          if (bound_tex_count) {
+            t_addr = bound_tex[0].fetch.base_address;
+            t_w = bound_tex[0].fetch.width;
+            t_h = bound_tex[0].fetch.height;
+            t_src = TextureSourceTag(bound_tex[0].source);
+          }
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            // The surface the quad was AUTHORED for, read off gWorldViewProj
+            // (c8..c11 of the VS bank). An orthographic UI matrix carries
+            // 2/width in [0] and -2/height in [5], so this says what the guest
+            // thinks it is drawing into -- independently of the viewport
+            // registers the pass shape is derived from. Where the two disagree,
+            // the runtime is routing the draw to the wrong target.
+            const float* wvp = reinterpret_cast<const float*>(vs_bank.data() + 8 * 16);
+            const float ow = (std::isfinite(wvp[0]) && wvp[0] != 0.0f) ? 2.0f / wvp[0] : 0.0f;
+            const float oh = (std::isfinite(wvp[5]) && wvp[5] != 0.0f) ? -2.0f / wvp[5] : 0.0f;
+            std::fprintf(f,
+                         "UIQUAD rect=(%.0f,%.0f..%.0f,%.0f) pass=%ux%u pitch=%u gm=%u "
+                         "ortho=%.0fx%.0f color=%08X tex=0x%08X %ux%u src=%c "
+                         "inline=%d stride=%u ps=%016llX\n",
+                         x0, y0, x1, y1, cfg.width, cfg.height, rs.surface_info & 0x3FFFu,
+                         rs.msaa_samples, ow, oh, col, t_addr, t_w, t_h, t_src,
+                         inline_geom ? 1 : 0, vtx_stride, (unsigned long long)ps_id);
+            std::fflush(f); std::fclose(f);
+          }
+        }
+        uiquad_done:;
+      }
+    }
+  }
+  // TEMP DIAG (DISPDRAW): a plain inventory of everything that renders into the
+  // display-sized colour target -- shader, first texture, vertex count. No
+  // rectangle filter and no assumption about where POSITION sits in the vertex,
+  // because every earlier dump that DID assume one reported "no menu geometry"
+  // and that conclusion turned out to rest on the filter, not on the frame.
+  if (cfg.rt_format == 28u && cfg.width >= 1024u) {
+    static uint32_t seen_dd[512];
+    static uint32_t seen_dd_n = 0;
+    const uint32_t taddr = bound_tex_count ? bound_tex[0].fetch.base_address : 0u;
+    const uint32_t sig = uint32_t(ps_id) ^ (taddr << 1) ^ (taddr >> 17);
+    bool fresh = true;
+    for (uint32_t k = 0; k < seen_dd_n; ++k) {
+      if (seen_dd[k] == sig) { fresh = false; break; }
+    }
+    if (fresh && seen_dd_n < 512u) {
+      seen_dd[seen_dd_n++] = sig;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f,
+                     "DISPDRAW ps=%016llX tex=0x%08X %ux%u src=%c ntex=%u verts=%u prim=%u "
+                     "inline=%d\n",
+                     (unsigned long long)ps_id, taddr,
+                     bound_tex_count ? bound_tex[0].fetch.width : 0u,
+                     bound_tex_count ? bound_tex[0].fetch.height : 0u,
+                     bound_tex_count ? TextureSourceTag(bound_tex[0].source) : '-',
+                     bound_tex_count, element_count, primitive_type,
+                     inline_geom ? 1 : 0);
+        std::fflush(f); std::fclose(f);
+      }
+    }
+  }
+  // TEMP DIAG (SRVMAP): descriptor index -> what the runtime actually put there,
+  // for every draw that renders into a UI-sized colour target. RenderDoc can
+  // read the index out of the shader's constants but cannot follow a bindless
+  // heap slot to its resource; the runtime can. This is how a capture's
+  // "TextureSampler_Texture2DDescriptorIndex = N" becomes a guest address.
+  if (cfg.rt_format == 28u && cfg.width >= 640u) {
+    for (uint32_t i = 0; i < bound_tex_count; ++i) {
+      const BoundTexture& b = bound_tex[i];
+      static uint32_t seen_srv[256];
+      static uint32_t seen_srv_n = 0;
+      bool fresh = true;
+      for (uint32_t k = 0; k < seen_srv_n; ++k) {
+        if (seen_srv[k] == b.srv_descriptor_index) { fresh = false; break; }
+      }
+      if (!fresh || seen_srv_n >= 256u) continue;
+      seen_srv[seen_srv_n++] = b.srv_descriptor_index;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f,
+                     "SRVMAP idx=%u slot=%u addr=0x%08X %ux%u fmt=%u src=%c into=%ux%u "
+                     "ps=%016llX\n",
+                     b.srv_descriptor_index, b.fetch_slot, b.fetch.base_address, b.fetch.width,
+                     b.fetch.height, b.fetch.format, TextureSourceTag(b.source), cfg.width,
+                     cfg.height, (unsigned long long)ps_id);
+        std::fflush(f); std::fclose(f);
+      }
+    }
+  }
+  // TEMP DIAG (UITEX): what the UI pass asks for and what the bridge handed it.
+  // The pause menu draws its panel with a textured shader; a census of the
+  // capture found twelve such draws on the display target with NO texture bound
+  // at all, which is a different failure from binding the wrong one.
+  if (is_display) {
+    static uint32_t seen[192];
+    static uint32_t seen_n = 0;
+    if (bound_tex_count == 0) {
+      const uint32_t sig = uint32_t(ps_id) ^ 0x8000000u;
+      bool fresh = true;
+      for (uint32_t i = 0; i < seen_n; ++i) if (seen[i] == sig) { fresh = false; break; }
+      if (fresh && seen_n < 192u) {
+        seen[seen_n++] = sig;
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "UITEX ps=%016llX NENHUMA TEXTURA LIGADA elems=%zu\n",
+                       (unsigned long long)ps_id, geom.input_layout.size());
+          std::fflush(f); std::fclose(f);
+        }
+      }
+    }
+    for (uint32_t i = 0; i < bound_tex_count; ++i) {
+      const BoundTexture& b = bound_tex[i];
+      // Only the failures. Logging every bound texture spent the whole budget on
+      // ordinary world art before the menu was even opened -- 192 entries, all
+      // of them a healthy guest decode or render-target bridge.
+      if (b.source == TextureSource::kGuestDecode ||
+          b.source == TextureSource::kRenderTargetBridge) {
+        continue;
+      }
+      const uint32_t sig = b.fetch.base_address ^ (b.fetch.width << 3) ^ (b.fetch.height << 17);
+      bool fresh = true;
+      for (uint32_t k = 0; k < seen_n; ++k) if (seen[k] == sig) { fresh = false; break; }
+      if (!fresh || seen_n >= 192u) continue;
+      seen[seen_n++] = sig;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f,
+                     "UITEX ps=%016llX slot=%u addr=0x%08X %ux%u fmt=%u src=%c resolved=%d\n",
+                     (unsigned long long)ps_id, b.fetch_slot, b.fetch.base_address, b.fetch.width,
+                     b.fetch.height, b.fetch.format, TextureSourceTag(b.source),
+                     b.resolved ? 1 : 0);
+        std::fflush(f); std::fclose(f);
+      }
+    }
+  }
   g_binder_stats_for_report = binder.stats();
+  // TEMP DIAG (remove after): two things never tested about the minimap.
+  //
+  // MMSRC: the 220x220 minimap is render-to-texture -- drawn into, then SAMPLED
+  // by the composite. If that sample comes from a guest-memory decode instead of
+  // the live render target, the circular punch (which writes alpha into the
+  // render target) never reaches the screen, because the native runtime does not
+  // write resolved pixels back to guest memory. The punch would look perfect and
+  // be invisible at the same time -- exactly the state this investigation is in.
+  //
+  // MMSAMP: the sampler the mask is read through. Only WHICH texture sat in
+  // fetch slot 0 was ever logged, never how it is filtered or clamped.
+  {
+    static std::set<uint64_t> seen_src;
+    for (uint32_t i = 0; i < bound_tex_count; ++i) {
+      const BoundTexture& b = bound_tex[i];
+      const bool is_minimap = b.fetch.width == 220 && b.fetch.height == 220;
+      const bool is_mask = cfg.width == 220 && cfg.height == 220 && b.fetch_slot == 0;
+      if (!is_minimap && !is_mask) continue;
+      const uint64_t sig = (uint64_t(b.fetch.base_address) << 12) ^
+                           (uint64_t(uint32_t(b.source)) << 4) ^ uint64_t(b.fetch_slot) ^
+                           (is_mask ? 0x80000000ull : 0ull);
+      if (!seen_src.insert(sig).second) continue;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        static const char* kSrc[] = {"UNRESOLVED", "RT_BRIDGE", "GUEST_DECODE", "FALLBACK"};
+        std::fprintf(f, "%s slot=%u 0x%08X %ux%u f%u src=%s | clamp=%u,%u mag=%u min=%u mip=%u aniso=%u lodbias=%d border=%u | into=%ux%u\n",
+                     is_mask ? "MMSAMP" : "MMSRC", b.fetch_slot, b.fetch.base_address,
+                     b.fetch.width, b.fetch.height, b.fetch.format,
+                     kSrc[uint32_t(b.source) & 3u], b.sampler.clamp_x, b.sampler.clamp_y,
+                     b.sampler.mag_filter, b.sampler.min_filter, b.sampler.mip_filter,
+                     b.sampler.aniso_filter, b.sampler.lod_bias_raw, b.sampler.border_color,
+                     cfg.width, cfg.height);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  g_buffer_stats_for_report = buffers.stats();
+  g_texture_stats_for_report = textures.stats();
   uint32_t resolved_tex = 0;
   for (uint32_t i = 0; i < bound_tex_count; ++i) {
     NoteTexture(bound_tex[i].fetch.format, bound_tex[i].resolved);
@@ -1827,6 +3147,189 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   std::memcpy(shared.data() + kSharedBlendPremultAByteOffset, &shared_values.blend_premult_a, 4);
   std::memcpy(shared.data() + kSharedBlendPremultConstByteOffset,
               shared_values.blend_premult_constant, 16);
+  // TEMP DIAG (remove after): the punch that clips the minimap to a circle is
+  // the draw into the 220x220 target whose blend op is REV_SUBTRACT. The UV and
+  // the mask texture both check out now, so this reports what the draw actually
+  // receives: which texture landed in fetch slot 0 (the shader MaskSampler),
+  // whether it resolved, the premult mode folded into the shader output, and
+  // the alpha threshold -- the shader clips on `oC0.w - g_AlphaThreshold`.
+  if (cfg.width == 220 && cfg.height == 220) {
+    // Order matters and was never checked: a punch that runs BEFORE the road
+    // draws erases an empty buffer, and the roads are then painted over
+    // everything -- indistinguishable from a punch that does nothing.
+    static uint32_t mm_frame = 0xFFFFFFFFu;
+    static uint32_t mm_index = 0;
+    // TEMP DIAG (MINIMAPORDER): the punch's position within the pass, against
+    // the pass's total. The suspicion above is now the only one left standing:
+    // the mask, the blend, the shader, the geometry, the target resource and
+    // the colour write mask all measured correct, and the draw does reach a
+    // Draw* call, yet the 220x220 alpha has no circle in it. A punch that runs
+    // before the roads erases an empty buffer and is then painted over.
+    static uint32_t mm_punches[16];
+    static uint32_t mm_punch_n = 0;
+    if (mm_frame != context.frame_index()) {
+      if (mm_frame != 0xFFFFFFFFu && mm_index) {
+        static uint32_t reported = 0;
+        if (reported++ < 400u) {
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f, "MINIMAPORDER frame=%u draws=%u punches em:", mm_frame, mm_index);
+            for (uint32_t i = 0; i < mm_punch_n; ++i) std::fprintf(f, " #%u", mm_punches[i]);
+            std::fprintf(f, "%s\n", mm_punch_n ? "" : " (nenhum)");
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+      mm_frame = context.frame_index();
+      mm_index = 0;
+      mm_punch_n = 0;
+    }
+    ++mm_index;
+    if (rs.blend_control0 == 0x01810181u && mm_punch_n < 16u) {
+      mm_punches[mm_punch_n++] = mm_index;
+    }
+    static std::set<uint64_t> seen_mmst;
+    const uint32_t blend_op_rgb = (rs.blend_control0 >> 5) & 0x7u;
+    const uint32_t blend_op_a = (rs.blend_control0 >> 21) & 0x7u;
+    uint64_t sig = (uint64_t(blend_op_rgb) << 40) ^ (uint64_t(blend_op_a) << 32) ^
+                   (uint64_t(mm_index) << 8) ^ uint64_t(bound_tex_count);
+    for (uint32_t i = 0; i < bound_tex_count; ++i) {
+      sig ^= (uint64_t(bound_tex[i].fetch.base_address) << 3) ^ uint64_t(bound_tex[i].fetch_slot);
+    }
+    // TEMP DIAG (remove after): for the PUNCH specifically -- the draw into the
+    // 220x220 target whose blend op is REV_SUBTRACT on both channels -- read the
+    // GUEST memory behind whatever texture sits in fetch slot 0, the shader
+    // MaskSampler. Reading guest memory rather than the decoded resource keeps
+    // this independent of the texture cache: it answers "is the mask white in
+    // the game's own memory" for whichever texture the punch really uses, be it
+    // the 32x32 or the 256x256 DXT1 that also appears in this slot.
+    if (blend_op_rgb == 4u && blend_op_a == 4u) {
+      static std::set<uint32_t> seen_punch;
+      for (uint32_t i = 0; i < bound_tex_count; ++i) {
+        const BoundTexture& b = bound_tex[i];
+        if (b.fetch_slot != 0 || !seen_punch.insert(b.fetch.base_address).second) continue;
+        const uint32_t probe = 4096u;
+        uint32_t ones = 0, zeros = 0, other = 0;
+        uint32_t head[6] = {};
+        // PHYSICAL, not virtual: the texture cache reads this address through
+        // TranslatePhysicalGuest / IsPhysicalRangeReadable, and the virtual
+        // predicate says "not readable" for it -- which silently made the first
+        // version of this probe read nothing and report 0% for every bucket.
+        const uint8_t* g = IsPhysicalRangeReadable(b.fetch.base_address, probe)
+                               ? TranslatePhysicalGuest(b.fetch.base_address)
+                               : nullptr;
+        if (g) {
+          for (uint32_t k = 0; k < probe; ++k) {
+            if (g[k] == 0xFFu) ++ones; else if (g[k] == 0x00u) ++zeros; else ++other;
+          }
+          for (uint32_t k = 0; k < 6; ++k) std::memcpy(&head[k], g + k * 4, 4);
+        }
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "PUNCHTEX 0x%08X %ux%u f%u tiled=%d endian=%u src=%u | guest 4KiB: 0xFF=%.1f%% 0x00=%.1f%% outros=%.1f%% | head %08X %08X %08X %08X %08X %08X\n",
+                       b.fetch.base_address, b.fetch.width, b.fetch.height, b.fetch.format,
+                       b.fetch.tiled ? 1 : 0, b.fetch.endianness, uint32_t(b.source),
+                       100.0 * ones / probe, 100.0 * zeros / probe, 100.0 * other / probe,
+                       head[0], head[1], head[2], head[3], head[4], head[5]);
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+    if (seen_mmst.insert(sig).second) {
+      // TEMP DIAG (MINIMAPRECT): the punch quad's own screen rectangle and UVs.
+      //
+      // Measured on the 220x220 target: alpha INSIDE the circle is 44.7 and
+      // OUTSIDE 76.5 -- the punch subtracted where it should preserve and left
+      // the corners untouched, which is what a quad that only covers the middle
+      // does. Everything else about this draw already measured correct, so the
+      // geometry is the last thing left unmeasured.
+      {
+        const uint32_t vbase = inline_geom ? inline_geom->address
+                                           : (bound.streams.empty() ? 0u
+                                                                    : bound.streams[0].guest_base);
+        const uint32_t vstride = inline_geom ? inline_geom->stride
+                                             : (bound.streams.empty() ? 0u
+                                                                      : bound.streams[0].stride);
+        const uint32_t vsize = inline_geom ? inline_geom->size_bytes
+                                           : (bound.streams.empty() ? 0u
+                                                                    : bound.streams[0].guest_size);
+        uint32_t pos_off = 0xFFFFFFFFu, uv_off = 0xFFFFFFFFu;
+        for (const auto& el : bound.input_layout) {
+          if (!el.semantic_name || el.semantic_index != 0) continue;
+          if (std::strcmp(el.semantic_name, "POSITION") == 0) pos_off = el.aligned_byte_offset;
+          else if (std::strcmp(el.semantic_name, "TEXCOORD") == 0) uv_off = el.aligned_byte_offset;
+        }
+        // Inline geometry is virtual; a bound stream's base is PHYSICAL.
+        const uint8_t* phys = inline_geom ? nullptr : TranslatePhysicalGuest(vbase);
+        const bool ok = vbase && vstride && pos_off != 0xFFFFFFFFu &&
+                        (inline_geom ? IsGuestRangeReadable(vbase, 6u * vstride)
+                                     : (phys && IsPhysicalRangeReadable(vbase, 6u * vstride)));
+        if (ok) {
+          const auto rd = [&](uint32_t v, uint32_t o) {
+            if (phys) {
+              uint32_t d;
+              std::memcpy(&d, phys + v * vstride + o, 4);
+              return __builtin_bswap32(d);
+            }
+            return R32(base, vbase + v * vstride + o);
+          };
+          float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+          float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+          const uint32_t nv = std::min<uint32_t>(vsize / vstride, 6u);
+          for (uint32_t v = 0; v < nv; ++v) {
+            float fx, fy;
+            const uint32_t rx = rd(v, pos_off), ry = rd(v, pos_off + 4);
+            std::memcpy(&fx, &rx, 4);
+            std::memcpy(&fy, &ry, 4);
+            x0 = std::min(x0, fx); x1 = std::max(x1, fx);
+            y0 = std::min(y0, fy); y1 = std::max(y1, fy);
+            if (uv_off != 0xFFFFFFFFu && uv_off + 8 <= vstride) {
+              float fu, fv;
+              const uint32_t ru = rd(v, uv_off), rv = rd(v, uv_off + 4);
+              std::memcpy(&fu, &ru, 4);
+              std::memcpy(&fv, &rv, 4);
+              u0 = std::min(u0, fu); u1 = std::max(u1, fu);
+              v0 = std::min(v0, fv); v1 = std::max(v1, fv);
+            }
+          }
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f,
+                         "MINIMAPRECT rgb_op=%u nv=%u rect=(%.1f,%.1f..%.1f,%.1f) "
+                         "uv=(%.3f,%.3f..%.3f,%.3f) vp=(%.0f,%.0f %.0fx%.0f) target=%ux%u "
+                         "stride=%u inline=%d\n",
+                         blend_op_rgb, nv, x0, y0, x1, y1, u0, v0, u1, v1, hv.top_left_x,
+                         hv.top_left_y, hv.width, hv.height, cfg.width, cfg.height, vstride,
+                         inline_geom ? 1 : 0);
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "MINIMAPDRAW #%u rgb_op=%u a_op=%u ctl=0x%08X premult_rgb=%u premult_a=%u "
+                        "| depthctl=0x%08X stencil=%d ref=%u rd=0x%02X wr=0x%02X func=%u fail=%u pass=%u zfail=%u depth_test=%d depth_write=%d "
+                        "alpha_test=%d thresh=%.6f ntex=%u |",
+                     mm_index, blend_op_rgb, blend_op_a, rs.blend_control0,
+                     shared_values.blend_premult_rgb, shared_values.blend_premult_a,
+                     rs.depth_control, (rs.depth_control & 0x1u) ? 1 : 0, rs.stencil_ref,
+                     rs.stencil_read_mask, rs.stencil_write_mask,
+                     (rs.depth_control >> 8) & 0x7u, (rs.depth_control >> 11) & 0x7u,
+                     (rs.depth_control >> 14) & 0x7u, (rs.depth_control >> 17) & 0x7u,
+                     (rs.depth_control & 0x2u) ? 1 : 0, (rs.depth_control & 0x4u) ? 1 : 0,
+                     rs.alpha_test_enable ? 1 : 0, double(shared_values.alpha_threshold),
+                     bound_tex_count);
+        for (uint32_t i = 0; i < bound_tex_count; ++i) {
+          std::fprintf(f, " s%u=0x%08X %ux%u f%u %s", bound_tex[i].fetch_slot,
+                       bound_tex[i].fetch.base_address, bound_tex[i].fetch.width,
+                       bound_tex[i].fetch.height, bound_tex[i].fetch.format,
+                       bound_tex[i].resolved ? "ok" : "FALLBACK");
+        }
+        std::fprintf(f, "\n");
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
 
   ConstantBindings cbv;
   const auto t_const = ProfileClock::now();
@@ -1941,6 +3444,14 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // pass clears to 0 and tests GEQUAL. A normal range means the opposite, and
   // clearing it to 0 would reject every fragment.
   const float clear_depth = hv.min_depth > hv.max_depth ? 0.0f : 1.0f;
+  // TEMP DIAG (remove after): remember the minimap target so the frame end can
+  // dump it. Every previous read of this target was taken in a frame that did
+  // NOT contain its draws, so it showed stale content -- which is why "the
+  // punch does not erase the corners" was never actually measured.
+  if (cfg.width == 220 && cfg.height == 220) {
+    g_minimap_key = PooledKey(cfg);
+    g_minimap_seen = true;
+  }
   RenderTarget* target = render_targets.Acquire(context, PooledKey(cfg), clear_depth);
   // A draw that writes oC1 needs the pass's second surface attached before it
   // is bound. Kept out of the pool key on purpose -- see EnsureSecondTarget.
@@ -1952,9 +3463,56 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // Sampling the first draw was misleading: it is a depth prepass with the
   // colour mask at zero, which looks identical to a pass that never writes.
   NotePassDraw(cfg.width, cfg.height, cfg.rt_format, rs.color_mask);
+  // TEMP DIAG (remove after): what the GUEST asks for in RB_SURFACE_INFO
+  // against what the pool actually allocates. PooledSampleCountFields forces
+  // the cvar count onto the HDR scene target and ONE sample everywhere else,
+  // so any pass the guest multisamples and this line reports as pooled=1 is a
+  // pass with no antialiasing on the native path.
+  {
+    static std::set<uint64_t> seen_msaa;
+    // The pitch is part of the signature. Without it, two passes of the same
+    // viewport shape but DIFFERENT surface widths collapse into one line, and
+    // the second never prints -- which is how a 960x640 viewport into a
+    // 1024-wide surface stayed invisible while its resolve missed 18 times.
+    const uint64_t sig = (uint64_t(cfg.width) << 40) ^ (uint64_t(cfg.height) << 24) ^
+                         (uint64_t(cfg.rt_format) << 12) ^ (uint64_t(rs.msaa_samples) << 8) ^
+                         uint64_t(cfg.ds_format) ^ (uint64_t(rs.surface_info & 0x3FFFu) << 48) ^
+                         (uint64_t(rs.color_info & 0xFFFu) << 4);
+    if (seen_msaa.size() < 64 && seen_msaa.insert(sig).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        // RB_SURFACE_INFO bits 0..13 are the surface pitch in pixels: the width
+        // of the EDRAM surface the pass renders into, which is NOT the viewport
+        // width when the guest pads to a power of two. The pooled target is
+        // sized from the viewport, so a resolve of the whole surface asks for a
+        // shape no target has.
+        std::fprintf(f,
+                     "MSAA pass %ux%u rt=%u ds=%u guest_samples=%u pooled=%u pitch=%u "
+                     "edram_base=%u colorinfo=0x%08X\n",
+                     cfg.width, cfg.height, cfg.rt_format, cfg.ds_format,
+                     1u << (rs.msaa_samples & 3u), PooledSampleCount(cfg),
+                     rs.surface_info & 0x3FFFu, rs.color_info & 0xFFFu, rs.color_info);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
   if (!target) {
     CLOGF("      no render target: %ux%u rt=%u ds=%u samples=%u\n", cfg.width, cfg.height,
           cfg.rt_format, cfg.ds_format, cfg.sample_count);
+    // TEMP DIAG (BINDFAIL): which of the four fail_bind sites closes on the
+    // frame, and for which target. With MSAA on the tally only said
+    // "fail_bind", which is four different failures wearing one name.
+    {
+      static uint32_t n = 0;
+      if (n++ < 24u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "BINDFAIL site=no_target %ux%u rt=%u ds=%u pooled_samples=%u\n",
+                       cfg.width, cfg.height, cfg.rt_format, cfg.ds_format,
+                       PooledSampleCount(cfg));
+          std::fclose(f);
+        }
+      }
+    }
     ++g_cap.fail_bind;
     return;
   }
@@ -2140,11 +3698,14 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     const D3D12_RESOURCE_DESC rd = target->color->GetDesc();
     if (uint32_t(rd.Width) != target->key.width || rd.Height != target->key.height) {
       static uint32_t n = 0;
-      if (n++ < 8) {
-        REXLOG_INFO("[SKYCLEAR] anchor first-draw cleardepth={:.1f} vpz={:.3f}..{:.3f} "
-                    "vs={:016X} ps={:016X} func={} depth_wr={}",
-                    target->clear_depth, hv.min_depth, hv.max_depth, vs_id, ps_id, rs.depth_func,
-                    rs.depth_write ? 1 : 0);
+      if (n++ < 16u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "KEYMISMATCH key=%ux%u res=%llux%u fmt=%u vp=%.0fx%.0f ps=%016llX\n",
+                       target->key.width, target->key.height,
+                       (unsigned long long)rd.Width, rd.Height, unsigned(rd.Format), hv.width,
+                       hv.height, (unsigned long long)ps_id);
+          std::fflush(f); std::fclose(f);
+        }
       }
     }
   }
@@ -2620,7 +4181,139 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     }
     return;
   }
-  if (expand_topology) {
+  // Identity dump for a range of per-frame draw numbers, written next to the
+  // hangfind file. Once bisection has narrowed the artefact to a few hundred
+  // draws, this says what those draws actually ARE without another build.
+  //
+  // Deliberately the same fields the hangfind path prints, because those are
+  // the ones that have explained real artefacts here before: the stream strides
+  // and guest bases (a wrong stride reads the wrong buffer), the world-view-
+  // projection (a degenerate transform is what drags a triangle across the
+  // screen), and the bound textures.
+  {
+    const uint32_t dump_last = REXCVAR_GET(mcla_native_gfx_dump_draw_last);
+    if (dump_last != 0 && g_cap.offered >= REXCVAR_GET(mcla_native_gfx_dump_draw_first) &&
+        g_cap.offered <= dump_last) {
+      if (FILE* f = std::fopen("native_gfx_draws.txt", "ab")) {
+        std::fprintf(f,
+                     "draw#%u vs=%016llX ps=%016llX prim=%u elements=%u expand=%d is_aux=%d "
+                     "is_display=%d target=%ux%u rt_format=%u indexed=%d base_vertex=%d\n",
+                     g_cap.offered, (unsigned long long)vs_id, (unsigned long long)ps_id,
+                     primitive_type, element_count, expand_topology ? 1 : 0, is_aux ? 1 : 0,
+                     is_display ? 1 : 0, cfg.width, cfg.height, cfg.rt_format,
+                     bound.indexed ? 1 : 0, bound.base_vertex);
+        for (const auto& st : bound.streams) {
+          std::fprintf(f, "  stream slot=%u guest_base=0x%08X stride=%u size=%u\n", st.fetch_slot,
+                       st.guest_base, st.stride, st.guest_size);
+        }
+        const float* c = reinterpret_cast<const float*>(vs_bank.data() + 8 * 16);
+        std::fprintf(f, "  WVP:");
+        for (int i = 0; i < 16; ++i) std::fprintf(f, " %.4g", c[i]);
+        std::fprintf(f, "\n");
+        std::fclose(f);
+      }
+    }
+  }
+
+  // TEMP DIAG (PUNCHISSUED): does the minimap punch reach a draw call at all?
+  //
+  // MINIMAPDRAW prints right after BuildGeometrySnapshot, hundreds of lines
+  // before this point, so it proves the draw was OFFERED and nothing more. The
+  // 220x220 target's alpha is the road network across the whole square with no
+  // trace of a circle, while the punch's mask, blend, shader and geometry all
+  // measured correct -- so the question is whether the draw is issued.
+  if (cfg.width == 220u && cfg.height == 220u) {
+    static uint64_t punches = 0, others = 0;
+    static uint64_t punch_ps = 0, punch_vs = 0;
+    static uint32_t punch_tex = 0, punch_texw = 0, punch_texh = 0, punch_elems = 0;
+    static uint32_t punch_shared0 = 0, punch_srv = 0, punch_slot = 0, punch_ntex = 0;
+    const bool is_punch = rs.blend_control0 == 0x01810181u;
+    if (is_punch) {
+      ++punches;
+      punch_ps = ps_id;
+      punch_vs = vs_id;
+      punch_elems = element_count;
+      punch_ntex = bound_tex_count;
+      // What the SHADER reads: SharedConstants[0] is the Texture2D descriptor
+      // index for fetch slot 0, which is where xAlphaModulate's MaskSampler
+      // lives (packoffset(c0.x)). If it disagrees with the descriptor the
+      // runtime says it wrote for the mask, the shader is sampling a different
+      // resource than every diagnostic here reports -- and a uniform sample is
+      // exactly what the measurements show (alpha 105.9 inside vs 96.7 outside
+      // immediately after the punch, i.e. no circle at all).
+      std::memcpy(&punch_shared0, shared.data(), 4);
+      if (bound_tex_count) {
+        punch_tex = bound_tex[0].fetch.base_address;
+        punch_texw = bound_tex[0].fetch.width;
+        punch_texh = bound_tex[0].fetch.height;
+        punch_srv = bound_tex[0].srv_descriptor_index;
+        punch_slot = bound_tex[0].fetch_slot;
+      }
+    } else {
+      ++others;
+    }
+    static uint64_t tick = 0;
+    if ((++tick % 2000u) == 0u) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "PUNCHISSUED punch=%llu outros=%llu | expand=%d prim=%u idx=%u "
+                        "color_mask=0x%X ctl=0x%08X rt=%p rtfmt=%u\n",
+                     (unsigned long long)punches, (unsigned long long)others,
+                     expand_topology ? 1 : 0, primitive_type,
+                     expand_topology ? expansion.index_count : element_count, rs.color_mask,
+                     rs.blend_control0, (void*)(target ? target->color.Get() : nullptr),
+                     cfg.rt_format);
+        std::fprintf(f, "PUNCHSHADER ps=%016llX vs=%016llX tex0=0x%08X %ux%u elems=%u | "
+                        "shared[slot0]=%u srv_idx=%u slot=%u ntex=%u\n",
+                     (unsigned long long)punch_ps, (unsigned long long)punch_vs, punch_tex,
+                     punch_texw, punch_texh, punch_elems, punch_shared0, punch_srv, punch_slot,
+                     punch_ntex);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  // TEMP DIAG (skip_punch): drop the minimap's circular punch entirely, so its
+  // contribution can be isolated by comparing the finished 220x220 target with
+  // and without it. Everything about the draw measures correct and the target
+  // comes out with no circle, so the first thing to establish is whether it
+  // changes ANY pixel.
+  // TEMP DIAG (skip_water): pular por familia de shader de agua, para descobrir
+  // QUAL delas pinta a faixa clara. 1 = shore, 2 = ocean water, 4 = ocean LOD,
+  // 8 = pond. O clarao aparece na zona de arrebentacao (pilares do pier, linha
+  // de surf da praia) e nao no mar aberto, o que aponta para o shore -- mas
+  // apontar nao e medir.
+  {
+    const uint32_t skip = uint32_t(REXCVAR_GET(mcla_native_gfx_skip_water));
+    if (skip) {
+      const bool shore = ps_id == 0x18821F3A51B6E4DEull;
+      const bool ocean = ps_id == 0xC5C95CAE57E0D1C4ull;
+      const bool oclod = ps_id == 0x3E5818BE5A70E06Bull;
+      const bool pond  = ps_id == 0x2EB9178258B7EBDAull;
+      // Bits altos: os quatro shaders que desenham DENTRO do passe de reflexo
+      // 256x256. O reflexo sai 11x mais claro que a cena do mesmo frame, entao
+      // a pergunta passa a ser qual deles o deixa claro.
+      const bool seed  = ps_id == 0x35F41762995C91B9ull;  // xrage_postfx__PSSeedRTNoZ
+      const bool sky   = ps_id == 0x37BB7CE96694769Eull;  // xSkyhat__ps_main_cheap
+      const bool winlod= ps_id == 0xB8444D32CC82F785ull;  // xCityWindowLOD__PSMultiLight
+      const bool citlod= ps_id == 0xF6623ADB9AE9F2BEull;  // xCityLOD__PSMultiLight
+      if (((skip & 1u) && shore) || ((skip & 2u) && ocean) ||
+          ((skip & 4u) && oclod) || ((skip & 8u) && pond) ||
+          ((skip & 16u) && seed) || ((skip & 32u) && sky) ||
+          ((skip & 64u) && winlod) || ((skip & 128u) && citlod)) {
+        return;
+      }
+    }
+  }
+  const bool skip_this_punch =
+      REXCVAR_GET(mcla_native_gfx_skip_punch) && cfg.width == 220u && cfg.height == 220u &&
+      rs.blend_control0 == 0x01810181u && bound_tex_count &&
+      bound_tex[0].fetch.base_address == 0x02D64000u;
+  // Only the Draw* is skipped, never the dump below: with the switch on the
+  // dump is the target BEFORE the punch, with it off the same dump on the same
+  // instance is AFTER. Same code path, same counter, so the pair isolates
+  // exactly what the punch contributes.
+  if (skip_this_punch) {
+  } else if (expand_topology) {
     // The generated indices already cover every primitive of the draw, and the
     // counts are small (quads, not streamed geometry), so the >65535 slicer is
     // skipped: its slicing is defined in terms of the ORIGINAL topology and
@@ -3049,12 +4742,395 @@ bool EnsureOwnedDisplay(ID3D12Device* device, OwnedDisplayBuffer& slot, uint32_t
 }
 }  // namespace
 
+// TEMP DIAG helper: a resolved target's raw bytes, written to a file and
+// summarised in the diag. ReadbackTargetToTga interprets the bytes by
+// rt_format; the exposure targets are R32_FLOAT and a TGA of them says nothing.
+// TEMP DIAG helper: hash and average each 640x640 quadrant of the shadow atlas.
+// Two quadrants coming back identical is the cascade that inherited the previous
+// cascade depth and rejected every fragment.
+static void ReadbackShadowQuadrants(D3D12Context& context, ID3D12Device* device,
+                                    RenderTarget& target);
+
+static void ReadbackTargetToRaw(D3D12Context& context, ID3D12Device* device, RenderTarget& target,
+                                const char* path) {
+  ID3D12GraphicsCommandList* cl = context.BeginFrame();
+  if (!cl || !target.color) {
+    return;
+  }
+  D3D12_RESOURCE_BARRIER b = {};
+  b.Transition.pResource = target.color.Get();
+  b.Transition.StateBefore = target.color_state;
+  b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  const bool move = target.color_state != D3D12_RESOURCE_STATE_COPY_SOURCE;
+  if (move) {
+    cl->ResourceBarrier(1, &b);
+  }
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
+  UINT64 total = 0;
+  D3D12_RESOURCE_DESC sd = target.color->GetDesc();
+  device->GetCopyableFootprints(&sd, 0, 1, 0, &fp, nullptr, nullptr, &total);
+  D3D12_RESOURCE_DESC rb = {};
+  rb.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  rb.Width = total;
+  rb.Height = 1;
+  rb.DepthOrArraySize = 1;
+  rb.MipLevels = 1;
+  rb.SampleDesc.Count = 1;
+  rb.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+  device->CreateCommittedResource(&rex::ui::d3d12::util::kHeapPropertiesReadback,
+                                  D3D12_HEAP_FLAG_NONE, &rb, D3D12_RESOURCE_STATE_COPY_DEST,
+                                  nullptr, IID_PPV_ARGS(&readback));
+  if (readback) {
+    D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+    dst.pResource = readback.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    src.pResource = target.color.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+  }
+  if (move) {
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    cl->ResourceBarrier(1, &b);
+  }
+  context.EndFrame();
+  context.WaitForIdle();
+  if (!readback) {
+    return;
+  }
+  void* mapped = nullptr;
+  const D3D12_RANGE range = {0, size_t(total)};
+  if (FAILED(readback->Map(0, &range, &mapped)) || !mapped) {
+    return;
+  }
+  if (FILE* raw = std::fopen(path, "wb")) {
+    std::fwrite(mapped, 1, size_t(total), raw);
+    std::fclose(raw);
+  }
+  if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+    std::fprintf(f, "EXPOSURE %s %ux%u fmt=%u bytes=%llu rowpitch=%u first:", path,
+                 target.key.width, target.key.height, target.key.rt_format,
+                 (unsigned long long)total, fp.Footprint.RowPitch);
+    const uint32_t n = target.key.width * target.key.height;
+    for (uint32_t i = 0; i < n && i < 16u; ++i) {
+      float v = 0.0f;
+      std::memcpy(&v, static_cast<const uint8_t*>(mapped) + i * 4u, 4);
+      std::fprintf(f, " %.6f", v);
+    }
+    std::fprintf(f, "\n");
+    std::fflush(f);
+    std::fclose(f);
+  }
+  readback->Unmap(0, nullptr);
+}
+
+static void ReadbackShadowQuadrants(D3D12Context& context, ID3D12Device* device,
+                                    RenderTarget& target) {
+  ID3D12GraphicsCommandList* cl = context.BeginFrame();
+  if (!cl || !target.color) {
+    return;
+  }
+  D3D12_RESOURCE_BARRIER b = {};
+  b.Transition.pResource = target.color.Get();
+  b.Transition.StateBefore = target.color_state;
+  b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  const bool move = target.color_state != D3D12_RESOURCE_STATE_COPY_SOURCE;
+  if (move) {
+    cl->ResourceBarrier(1, &b);
+  }
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
+  UINT64 total = 0;
+  D3D12_RESOURCE_DESC sd = target.color->GetDesc();
+  device->GetCopyableFootprints(&sd, 0, 1, 0, &fp, nullptr, nullptr, &total);
+  D3D12_RESOURCE_DESC rb = {};
+  rb.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  rb.Width = total;
+  rb.Height = 1;
+  rb.DepthOrArraySize = 1;
+  rb.MipLevels = 1;
+  rb.SampleDesc.Count = 1;
+  rb.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+  device->CreateCommittedResource(&rex::ui::d3d12::util::kHeapPropertiesReadback,
+                                  D3D12_HEAP_FLAG_NONE, &rb, D3D12_RESOURCE_STATE_COPY_DEST,
+                                  nullptr, IID_PPV_ARGS(&readback));
+  if (readback) {
+    D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+    dst.pResource = readback.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    src.pResource = target.color.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+  }
+  if (move) {
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    cl->ResourceBarrier(1, &b);
+  }
+  context.EndFrame();
+  context.WaitForIdle();
+  if (!readback) {
+    return;
+  }
+  void* mapped = nullptr;
+  const D3D12_RANGE range = {0, size_t(total)};
+  if (FAILED(readback->Map(0, &range, &mapped)) || !mapped) {
+    return;
+  }
+  const auto* bytes = static_cast<const uint8_t*>(mapped);
+  const uint32_t pitch = fp.Footprint.RowPitch;
+  const uint32_t half = target.key.width / 2u;
+  uint64_t hash[4] = {};
+  double mean[4] = {};
+  for (uint32_t q = 0; q < 4u; ++q) {
+    const uint32_t x0 = (q & 1u) * half;
+    const uint32_t y0 = (q >> 1) * half;
+    uint64_t h = 1469598103934665603ull;  // FNV-1a
+    double sum = 0.0;
+    for (uint32_t y = 0; y < half; ++y) {
+      const uint8_t* row = bytes + size_t(y0 + y) * pitch + size_t(x0) * 4u;
+      for (uint32_t x = 0; x < half; ++x) {
+        uint32_t v = 0;
+        std::memcpy(&v, row + x * 4u, 4);
+        h = (h ^ v) * 1099511628211ull;
+        sum += double(v);
+      }
+    }
+    hash[q] = h;
+    mean[q] = sum / double(half * half);
+  }
+  readback->Unmap(0, nullptr);
+  if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+    std::fprintf(f, "SHADOWQUAD hashes %016llX %016llX %016llX %016llX\n",
+                 (unsigned long long)hash[0], (unsigned long long)hash[1],
+                 (unsigned long long)hash[2], (unsigned long long)hash[3]);
+    std::fprintf(f, "  medias %.1f %.1f %.1f %.1f\n", mean[0], mean[1], mean[2], mean[3]);
+    bool dup = false;
+    for (uint32_t i = 0; i < 4u; ++i) {
+      for (uint32_t j = i + 1u; j < 4u; ++j) {
+        if (hash[i] == hash[j]) {
+          std::fprintf(f, "  IGUAIS: quadrante %u == quadrante %u\n", i, j);
+          dup = true;
+        }
+      }
+    }
+    if (!dup) {
+      std::fprintf(f, "  os quatro sao DISTINTOS\n");
+    }
+    std::fflush(f);
+    std::fclose(f);
+  }
+}
+
 bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_targets) {
   static int pc = 0;
   const bool tr = pc < 4;
   if (tr) REXLOG_INFO("[native_gfx] PrepareDisplay#{} readback={} anchor={} offered={}", pc,
                       g_cap.has_readback ? 1 : 0, g_cap.has_anchor ? 1 : 0, g_cap.offered);
   FlushBatch(context);
+  {  // TEMP DIAG (LOWRES): the 320x180 buffer at 0x02DE6000.
+    //
+    // Its resolve MISSES every single frame (`RESOLVE_MISS dest=0x02DE6000
+    // 320x180 count=600`), and the miss detail says why: the key built at
+    // resolve time asks for rt_format 28 (R8G8B8A8) while the only 320x180 pass
+    // the pool holds is the HDR one (`RESOLVE_DEST dest=0x02D6E000 320x180
+    // src_fmt=10`). So nothing native ever writes 0x02DE6000 and any fetch of it
+    // decodes GUEST MEMORY -- whatever the title's allocator last left there.
+    //
+    // That is the shape of the reported artifact: a downsampled post-process
+    // buffer read from stale memory is mostly harmless, until a page under it is
+    // reused and one texel comes back wildly wrong. At 320x180 one texel is a
+    // 4x4 block on a 1280x720 frame, sharp-edged because it is upscaled after
+    // the blur -- transient, anywhere, black or bright.
+    //
+    // This dumps the raw guest bytes so the content can be looked at offline.
+    static uint32_t lowres_taken = 0;
+    static uint32_t lowres_tick = 0;
+    const uint32_t want = REXCVAR_GET(mcla_native_gfx_lowres_dump);
+    if (want && lowres_taken < want && (++lowres_tick % 300u) == 0u) {
+      // Address and size are cvars so the same probe can be pointed at any
+      // surface whose resolve misses. 0x02DE6000 (320x180) came back all zero --
+      // that buffer is not the artifact. 0x050A0000 (1024x1024) is the next one:
+      // the fast-mipmap chain samples it, and the diag shows the fetch resolving
+      // as src=G, a guest-memory decode.
+      const uint32_t kAddr = REXCVAR_GET(mcla_native_gfx_lowres_addr);
+      const uint32_t kW = REXCVAR_GET(mcla_native_gfx_lowres_w);
+      const uint32_t kH = REXCVAR_GET(mcla_native_gfx_lowres_h);
+      if (!kAddr || !kW || !kH) {
+        lowres_taken = want;
+      }
+      const uint64_t bytes = uint64_t(kW) * kH * 4ull;
+      const uint8_t* phys = TranslatePhysicalGuest(kAddr);
+      if (phys && IsPhysicalRangeReadable(kAddr, bytes)) {
+        char path[64];
+        std::snprintf(path, sizeof(path), "native_gfx_lowres_%u.bin", lowres_taken);
+        if (FILE* raw = std::fopen(path, "wb")) {
+          std::fwrite(phys, 1, size_t(bytes), raw);
+          std::fclose(raw);
+        }
+        uint32_t lo = 0xFFFFFFFFu, hi = 0, nonzero = 0;
+        for (uint32_t t = 0; t < kW * kH; ++t) {
+          uint32_t d = 0;
+          std::memcpy(&d, phys + t * 4u, 4);
+          if (d < lo) lo = d;
+          if (d > hi) hi = d;
+          if (d) ++nonzero;
+        }
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "LOWRES#%u 0x%08X %ux%u min=%08X max=%08X nonzero=%u/%u\n",
+                       lowres_taken, kAddr, kW, kH, lo, hi, nonzero, kW * kH);
+          std::fflush(f);
+          std::fclose(f);
+        }
+        ++lowres_taken;
+      } else if (lowres_taken == 0) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "LOWRES unreadable at 0x%08X\n", kAddr);
+          std::fclose(f);
+        }
+        ++lowres_taken;
+      }
+    }
+  }
+  {  // TEMP DIAG (SHADOWQUAD): are the four shadow-atlas quadrants distinct?
+    //
+    // The shadow pass reuses ONE 640x640 depth surface for the four cascades and
+    // resolves each into a quadrant of the 1280x1280 atlas at 0x06E65000. When a
+    // cascade inherits the previous cascade depth, every fragment is rejected and
+    // its quadrant comes out BIT-IDENTICAL to its neighbour -- that was the
+    // "sun only inside a box" bug, and it is back on the GPS map (which is the
+    // 3D city at low LOD, so the box is tiny and the whole map reads unlit).
+    //
+    // This is the measurement that identified it the first time and that the
+    // notes list as still not repeated. It reads the RESOLVED copy, never the
+    // pooled target -- a pooled 1280x1280 hands back its clear colour through
+    // recycling and reads as a false negative.
+    static uint32_t sq_taken = 0;
+    static uint32_t sq_tick = 0;
+    if (REXCVAR_GET(mcla_native_gfx_shadow_quads) &&
+        sq_taken < REXCVAR_GET(mcla_native_gfx_shadow_quads) && (++sq_tick % 180u) == 0u) {
+      // The atlas is registered by the DEPTH resolve, and its shape follows the
+      // time of day (1280x1280 by day, 1280x720 at night were both seen on slot
+      // 15), so the lookup has to search rather than assume. Assuming
+      // 1280x1280 + want_depth=false found nothing at all.
+      D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COMMON;
+      struct Cand { uint32_t w, h; bool depth; };
+      static const Cand kCands[] = {
+          // COLOUR first, deliberately. For depth the pool registers its OWN
+          // surface directly (RegisterDirect) instead of making a copy, and that
+          // surface is re-cleared when a full-surface depth resolve ends the
+          // pass -- reading it at end of frame gives the cleared far plane
+          // (0xFFFFFF in all four quadrants) no matter what the cascades drew.
+          // A real resolved COPY, if one exists, is the only trustworthy read.
+          {1280, 1280, false}, {1280, 720, false}, {1280, 1280, true}, {1280, 720, true},
+      };
+      ID3D12Resource* res = nullptr;
+      uint32_t hit_w = 0, hit_h = 0;
+      bool hit_depth = false;
+      for (const Cand& c : kCands) {
+        res = render_targets.FindResolvedTarget(0x06E65000u, c.w, c.h, c.depth, &st);
+        if (res) { hit_w = c.w; hit_h = c.h; hit_depth = c.depth; break; }
+      }
+      if (res) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "SHADOWQUAD achou %ux%u depth=%d\n", hit_w, hit_h, hit_depth ? 1 : 0);
+          std::fclose(f);
+        }
+        ++sq_taken;
+        RenderTarget tmp;
+        tmp.color = res;
+        tmp.color_state = st;
+        tmp.key.width = hit_w;
+        tmp.key.height = hit_h;
+        tmp.key.rt_format = 22;
+        tmp.key.sample_count = 1;
+        ReadbackShadowQuadrants(context, context.device(), tmp);
+      } else if (sq_taken == 0) {
+        ++sq_taken;
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "SHADOWQUAD nenhuma copia resolvida em 0x06E65000 (6 formas tentadas)\n");
+          std::fclose(f);
+        }
+      }
+    }
+  }
+  {  // TEMP DIAG (EXPOSURE): the auto-exposure value the tonemap chain produces.
+    //
+    // The guest computes an average scene luminance down to a 1x1 target and the
+    // post-process chain divides by it. If the native runtime's copy of that
+    // number comes out too small, everything downstream is over-exposed --
+    // which is what the cam-53 comparison shows: midtones +84 and 11.6% of the
+    // frame clipped white against 2.6% on the emulated path, with the SHADOWS
+    // matching (p1 19.8 vs 17.8). Darks equal + midtones lifted + highlights
+    // clipped is gain before a tonemap, not a gamma curve (the fitted exponent
+    // ran 1.1 to 35, so it is not one curve at all).
+    //
+    // Reads the resolved 1x1 back and prints it as a float, plus the 4x4 stage
+    // above it. Both are the addresses the diag already names (FIND / FALLBACK).
+    static uint32_t exp_taken = 0;
+    static uint32_t exp_tick = 0;
+    if (REXCVAR_GET(mcla_native_gfx_exposure_probe) &&
+        exp_taken < REXCVAR_GET(mcla_native_gfx_exposure_probe) && (++exp_tick % 200u) == 0u) {
+      struct Probe { uint32_t addr, w, h, fmt; const char* name; };
+      static const Probe kProbes[] = {
+          {0x02D6C000u, 1, 1, 41u, "exposure 1x1"},
+          {0x02D6D000u, 4, 4, 41u, "exposure 4x4"},
+      };
+      ++exp_taken;
+      for (const Probe& pr : kProbes) {
+        D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COMMON;
+        ID3D12Resource* res =
+            render_targets.FindResolvedTarget(pr.addr, pr.w, pr.h, /*want_depth=*/false, &st);
+        if (!res) {
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f, "EXPOSURE %s 0x%08X SEM ALVO RESOLVIDO\n", pr.name, pr.addr);
+            std::fclose(f);
+          }
+          continue;
+        }
+        RenderTarget tmp;
+        tmp.color = res;
+        tmp.color_state = st;
+        tmp.key.width = pr.w;
+        tmp.key.height = pr.h;
+        tmp.key.rt_format = pr.fmt;
+        tmp.key.sample_count = 1;
+        char path[64];
+        std::snprintf(path, sizeof(path), "native_gfx_exposure_%ux%u.bin", pr.w, pr.h);
+        ReadbackTargetToRaw(context, context.device(), tmp, path);
+      }
+    }
+  }
+  {  // TEMP DIAG (EYECOLLDUMP): the 8x8 shadow collector the eye samples at
+    // night, read back from the resolved copy the clear-only path now produces.
+    // This is the shader's actual input: the PS scales the eye's light by
+    // `saturate(-0.25 + s)`, so white here means lit and zero means black.
+    // Done from here, not the draw path, because a readback needs its own
+    // command list and a WaitForIdle.
+    static bool done = false;
+    if (!done && REXCVAR_GET(mcla_native_gfx_eye_probe)) {
+      D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COMMON;
+      ID3D12Resource* res =
+          render_targets.FindResolvedTarget(0x0329C000u, 8, 8, /*want_depth=*/false, &st);
+      if (res) {
+        done = true;
+        RenderTarget tmp;
+        tmp.color = res;
+        tmp.color_state = st;
+        tmp.key.width = 8;
+        tmp.key.height = 8;
+        tmp.key.rt_format = 28;
+        tmp.key.sample_count = 1;
+        ReadbackTargetToTga(context, context.device(), tmp, "native_gfx_eyecoll.tga",
+                            "eye shadow collector");
+      }
+    }
+  }
   RenderTarget* display = nullptr;
   // Diagnostic/stopgap: present the anchor (the raw scene target) instead of the
   // readback (composite) pass. In continuous mode the selected readback comes out
@@ -3215,12 +5291,170 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       RenderTarget* anchor = g_cap.has_anchor ? render_targets.Find(g_cap.anchor_key) : nullptr;
       if (FILE* fd = std::fopen("native_gfx_diag.txt", "ab")) {
         std::fprintf(fd,
-                     "DUMP@frame%u readback=%ux%u rt_format=%u | anchor=%ux%u rt_format=%u\n",
+                     "DUMP@frame%u readback=%ux%u rt_format=%u samples=%u | anchor=%ux%u "
+                     "rt_format=%u samples=%u\n",
                      seen, display->key.width, display->key.height, display->key.rt_format,
-                     anchor ? anchor->key.width : 0, anchor ? anchor->key.height : 0,
-                     anchor ? anchor->key.rt_format : 0);
+                     display->key.sample_count, anchor ? anchor->key.width : 0,
+                     anchor ? anchor->key.height : 0, anchor ? anchor->key.rt_format : 0,
+                     anchor ? anchor->key.sample_count : 0);
         std::fflush(fd);
         std::fclose(fd);
+      }
+      // TEMP DIAG (remove after): the minimap target, dumped only on frames that
+      // actually drew into it. Corner alpha here answers whether the circular
+      // punch erases: if it works the corners are 0, if not they keep the road
+      // coverage the content draws left.
+      if (g_minimap_seen) {
+        if (RenderTarget* mm = render_targets.Find(g_minimap_key)) {
+          if (mm->color) {
+            char mm_path[64];
+            std::snprintf(mm_path, sizeof(mm_path), "native_gfx_minimap_f%u.tga", seen);
+            if (FILE* fm = std::fopen("native_gfx_diag.txt", "ab")) {
+              std::fprintf(fm, "MINIMAPDUMP f%u rt=%p %ux%u rtfmt=%u\n", seen,
+                           (void*)mm->color.Get(), mm->key.width, mm->key.height,
+                           mm->key.rt_format);
+              std::fflush(fm);
+              std::fclose(fm);
+            }
+            ReadbackTargetToTga(context, context.device(), *mm, mm_path, "minimap 220x220");
+          }
+        }
+        g_minimap_seen = false;
+      }
+      // TEMP DIAG (REFLDUMP): the water's ReflectionSampler target (slot 3 of
+      // xCityOceanWater, a 256x256 resolved surface at 0x05AC3000), dumped raw.
+      // The sea is dark from far and blows out white up close while BOTH
+      // cameras bind this same address, so the content is the only thing left
+      // that can differ. Raw, not TGA: the format is decided by the resource,
+      // and interpreting a surface with the wrong one already cost a round.
+      {
+        static bool refl_dumped = false;
+        D3D12_RESOURCE_STATES rst = D3D12_RESOURCE_STATE_COMMON;
+        ID3D12Resource* refl =
+            render_targets.FindResolvedTarget(0x05AC3000u, 256, 256, false, &rst);
+        if (!refl_dumped && refl) {
+          refl_dumped = true;
+          if (ID3D12GraphicsCommandList* rcl = context.BeginFrame()) {
+            const D3D12_RESOURCE_DESC rd = refl->GetDesc();
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
+            UINT64 total = 0;
+            context.device()->GetCopyableFootprints(&rd, 0, 1, 0, &fp, nullptr, nullptr, &total);
+            D3D12_RESOURCE_DESC rb = {};
+            rb.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rb.Width = total;
+            rb.Height = 1;
+            rb.DepthOrArraySize = 1;
+            rb.MipLevels = 1;
+            rb.SampleDesc.Count = 1;
+            rb.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+            context.device()->CreateCommittedResource(
+                &rex::ui::d3d12::util::kHeapPropertiesReadback, D3D12_HEAP_FLAG_NONE, &rb,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback));
+            D3D12_RESOURCE_BARRIER br = {};
+            br.Transition.pResource = refl;
+            br.Transition.StateBefore = rst;
+            br.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            br.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            if (rst != D3D12_RESOURCE_STATE_COPY_SOURCE) rcl->ResourceBarrier(1, &br);
+            if (readback) {
+              D3D12_TEXTURE_COPY_LOCATION d = {}, sl = {};
+              d.pResource = readback.Get();
+              d.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+              d.PlacedFootprint = fp;
+              sl.pResource = refl;
+              sl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+              sl.SubresourceIndex = 0;
+              rcl->CopyTextureRegion(&d, 0, 0, 0, &sl, nullptr);
+            }
+            if (rst != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+              std::swap(br.Transition.StateBefore, br.Transition.StateAfter);
+              rcl->ResourceBarrier(1, &br);
+            }
+            context.EndFrame();
+            context.WaitForIdle();
+            void* mapped = nullptr;
+            const D3D12_RANGE rng = {0, size_t(total)};
+            if (readback && SUCCEEDED(readback->Map(0, &rng, &mapped))) {
+              if (FILE* bf = std::fopen("native_gfx_refl.bin", "wb")) {
+                std::fwrite(mapped, 1, size_t(total), bf);
+                std::fclose(bf);
+              }
+              readback->Unmap(0, nullptr);
+            }
+            // E o alvo de CENA no mesmo frame. O reflexo so pode ser chamado de "claro
+            // demais" contra alguma referencia, e a referencia certa e o mundo que
+            // ele reflete, renderizado com a mesma iluminacao.
+            if (anchor && anchor->color) {
+              if (ID3D12GraphicsCommandList* scl = context.BeginFrame()) {
+                const D3D12_RESOURCE_DESC sd = anchor->color->GetDesc();
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT sfp = {};
+                UINT64 stot = 0;
+                context.device()->GetCopyableFootprints(&sd, 0, 1, 0, &sfp, nullptr, nullptr, &stot);
+                D3D12_RESOURCE_DESC srb = {};
+                srb.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                srb.Width = stot;
+                srb.Height = 1;
+                srb.DepthOrArraySize = 1;
+                srb.MipLevels = 1;
+                srb.SampleDesc.Count = 1;
+                srb.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                Microsoft::WRL::ComPtr<ID3D12Resource> srd;
+                context.device()->CreateCommittedResource(
+                    &rex::ui::d3d12::util::kHeapPropertiesReadback, D3D12_HEAP_FLAG_NONE, &srb,
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&srd));
+                Microsoft::WRL::ComPtr<ID3D12Resource> tmp_ms;
+                D3D12_RESOURCE_STATES ast = anchor->color_state;
+                ID3D12Resource* asrc = ResolveForReadback(context, scl, *anchor, ast, tmp_ms);
+                if (srd && asrc) {
+                  D3D12_RESOURCE_BARRIER ab = {};
+                  ab.Transition.pResource = asrc;
+                  ab.Transition.StateBefore = ast;
+                  ab.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                  ab.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                  if (ast != D3D12_RESOURCE_STATE_COPY_SOURCE) scl->ResourceBarrier(1, &ab);
+                  D3D12_TEXTURE_COPY_LOCATION dd = {}, ss = {};
+                  dd.pResource = srd.Get();
+                  dd.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                  dd.PlacedFootprint = sfp;
+                  ss.pResource = asrc;
+                  ss.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                  ss.SubresourceIndex = 0;
+                  scl->CopyTextureRegion(&dd, 0, 0, 0, &ss, nullptr);
+                  if (ast != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+                    std::swap(ab.Transition.StateBefore, ab.Transition.StateAfter);
+                    scl->ResourceBarrier(1, &ab);
+                  }
+                }
+                context.EndFrame();
+                context.WaitForIdle();
+                void* sm = nullptr;
+                const D3D12_RANGE sr = {0, size_t(stot)};
+                if (srd && SUCCEEDED(srd->Map(0, &sr, &sm))) {
+                  if (FILE* sf = std::fopen("native_gfx_scene.bin", "wb")) {
+                    std::fwrite(sm, 1, size_t(stot), sf);
+                    std::fclose(sf);
+                  }
+                  srd->Unmap(0, nullptr);
+                }
+                if (FILE* fs = std::fopen("native_gfx_diag.txt", "ab")) {
+                  std::fprintf(fs, "SCENEDUMP fmt=%u %llux%u rowpitch=%u total=%llu\n",
+                               uint32_t(sd.Format), (unsigned long long)sd.Width, sd.Height,
+                               sfp.Footprint.RowPitch, (unsigned long long)stot);
+                  std::fflush(fs);
+                  std::fclose(fs);
+                }
+              }
+            }
+            if (FILE* fr = std::fopen("native_gfx_diag.txt", "ab")) {
+              std::fprintf(fr, "REFLDUMP fmt=%u %llux%u rowpitch=%u total=%llu\n",
+                           uint32_t(rd.Format), (unsigned long long)rd.Width, rd.Height,
+                           fp.Footprint.RowPitch, (unsigned long long)total);
+              std::fflush(fr);
+              std::fclose(fr);
+            }
+          }
+        }
       }
       char display_path[64], anchor_path[64];
       std::snprintf(display_path, sizeof(display_path), "native_gfx_display_f%u.tga", seen);
@@ -3261,6 +5495,17 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   if (!EnsureOwnedDisplay(context.device(), slot, display->key.width, display->key.height,
                           slot_format, tonemap || want_ramp)) {
     return false;
+  }
+  {  // TEMP DIAG (DISPLAY)
+    static uint32_t n = 0;
+    if (n++ < 12u) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "DISPLAY %ux%u rt=%u samples=%u tonemap=%d\n",
+                     display->key.width, display->key.height, display->key.rt_format,
+                     display->key.sample_count, tonemap ? 1 : 0);
+        std::fclose(f);
+      }
+    }
   }
   ID3D12GraphicsCommandList* cl = context.BeginFrame();
   if (!cl) {
@@ -3526,6 +5771,7 @@ void ResetContinuousFrame(RenderTargetPool& render_targets) {
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
   g_cap.offered = 0;
+  g_cap.skipped_by_range = 0;
   g_cap.quad_replicated = 0;
   g_cap.quad_replicate_failed = 0;
   g_cap.expanded_nonzero_start = 0;

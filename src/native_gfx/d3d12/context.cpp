@@ -6,6 +6,7 @@
 #include "context.h"
 
 #include <chrono>
+#include <cstdio>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -71,6 +72,28 @@ bool D3D12Context::Initialize(const rex::ui::d3d12::D3D12Provider& provider) {
   if (!device_ || !queue_) {
     REXLOG_ERROR("[native_gfx] D3D12 provider has no device/queue");
     return false;
+  }
+  {  // TEMP DIAG (IQPROBE): a InfoQueue existe E grava? Sem isso, "fila vazia"
+     // nao distingue "sem erro" de "camada desligada".
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> iq;
+    const bool have = SUCCEEDED(device_->QueryInterface(IID_PPV_ARGS(&iq))) && iq;
+    UINT64 before = 0, after = 0;
+    if (have) {
+      iq->SetMuteDebugOutput(FALSE);
+      // The queue comes back with a storage limit of ZERO, so nothing is ever
+      // recorded and "InfoQueue empty" cannot be told apart from "no error".
+      // Raise it here: the limit is a property of the queue, not of the layer.
+      iq->SetMessageCountLimit(4096);
+      before = iq->GetNumStoredMessages();
+      iq->AddApplicationMessage(D3D12_MESSAGE_SEVERITY_ERROR, "native_gfx infoqueue probe");
+      after = iq->GetNumStoredMessages();
+    }
+    if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+      std::fprintf(f, "IQPROBE have=%d before=%llu after=%llu limit=%llu\n", have ? 1 : 0,
+                   (unsigned long long)before, (unsigned long long)after,
+                   have ? (unsigned long long)iq->GetMessageCountLimit() : 0ull);
+      std::fclose(f);
+    }
   }
 
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -139,6 +162,16 @@ bool D3D12Context::Initialize(const rex::ui::d3d12::D3D12Provider& provider) {
 
 ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
   if (!initialized_ || frame_open_) {
+    {  // TEMP DIAG (BEGINFAIL)
+      static uint32_t n = 0;
+      if (n++ < 8u) {
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "BEGINFAIL init=%d frame_open=%d\n", initialized_ ? 1 : 0,
+                       frame_open_ ? 1 : 0);
+          std::fclose(f);
+        }
+      }
+    }
     return nullptr;
   }
   const uint32_t slot = uint32_t(frame_index_ % kFramesInFlight);
@@ -155,6 +188,17 @@ ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
   allocators_[slot]->Reset();
   if (FAILED(command_list_->Reset(allocators_[slot].Get(), nullptr))) {
     REXLOG_ERROR("[native_gfx] command list Reset failed");
+    do {  // TEMP DIAG (BEGINFAIL), throttled: this fires on EVERY draw once the
+      static uint32_t reset_lines = 0;
+      if (reset_lines++ >= 8u) break;
+      const HRESULT removed = device_ ? device_->GetDeviceRemovedReason() : S_OK;
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "BEGINFAIL reset_failed removed_reason=0x%08X\n",
+                     unsigned(removed));
+        std::fclose(f);
+      }
+      DrainDebugMessages("command list Reset");
+    } while (false);
     return nullptr;
   }
   upload_offset_[slot] = 0;
@@ -168,8 +212,16 @@ bool D3D12Context::EndFrame() {
     return false;
   }
   frame_open_ = false;
-  if (FAILED(command_list_->Close())) {
-    REXLOG_ERROR("[native_gfx] command list Close failed");
+  const HRESULT close_hr = command_list_->Close();
+  if (FAILED(close_hr)) {
+    REXLOG_ERROR("[native_gfx] command list Close failed {:#010x}", uint32_t(close_hr));
+    {  // TEMP DIAG (CLOSEFAIL)
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "CLOSEFAIL hr=0x%08X removed=0x%08X\n", unsigned(close_hr),
+                     unsigned(device_ ? device_->GetDeviceRemovedReason() : S_OK));
+        std::fclose(f);
+      }
+    }
     DrainDebugMessages("command list Close");
     return false;
   }
@@ -209,11 +261,23 @@ void D3D12Context::DrainDebugMessages(const char* context_label) {
   Microsoft::WRL::ComPtr<ID3D12InfoQueue> info_queue;
   if (FAILED(device_->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
     REXLOG_ERROR("[native_gfx] {}: no D3D12 InfoQueue (debug layer off?)", context_label);
+    static uint32_t iq_lines = 0;
+    if (iq_lines++ < 8u)
+    if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+      std::fprintf(f, "D3DERR %s: no_infoqueue\n", context_label);
+      std::fclose(f);
+    }
     return;
   }
   const UINT64 count = info_queue->GetNumStoredMessages();
   if (count == 0) {
     REXLOG_ERROR("[native_gfx] {}: InfoQueue empty", context_label);
+    static uint32_t iq_lines = 0;
+    if (iq_lines++ < 8u)
+    if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+      std::fprintf(f, "D3DERR %s: infoqueue_empty\n", context_label);
+      std::fclose(f);
+    }
     return;
   }
   std::vector<uint8_t> buffer;
@@ -232,6 +296,16 @@ void D3D12Context::DrainDebugMessages(const char* context_label) {
     // command processor, so warnings here are often not ours. Only
     // CORRUPTION/ERROR get error level; anything milder would be noise.
     if (message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) {
+      // TEMP DIAG: also to the diag file -- under RenderDoc's ExecuteAndInject
+      // the process stdout is not readable, and this is the only place that
+      // says WHY a command list failed to close.
+      static uint32_t iq_lines = 0;
+      if (iq_lines++ < 8u)
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "D3DERR %s: [sev %d id %d] %s\n", context_label,
+                     int(message->Severity), int(message->ID), text);
+        std::fclose(f);
+      }
       REXLOG_ERROR("[native_gfx] {}: D3D12 [sev {} id {}] {}", context_label,
                    uint32_t(message->Severity), uint32_t(message->ID), text);
     } else if (message->Severity == D3D12_MESSAGE_SEVERITY_WARNING) {

@@ -138,6 +138,13 @@ struct GeometrySnapshot {
   bool indexed = false;
   bool index_32bit = false;
   uint32_t index_endian = 0;  // xenos::Endian, from the index buffer object
+  // The object the address came from, and its raw header word. The draw
+  // builder reads both from D3DDevice+12436 (sub_8241D620: v15 = *(dev+12436),
+  // address = v15[6], endian and index width from *v15), so logging them says
+  // whether a wrong index address is a stale OBJECT pointer or an object
+  // holding a bad address.
+  uint32_t index_obj_va = 0;
+  uint32_t index_obj_dword0 = 0;
   uint32_t index_guest_base = 0;
   uint64_t index_gpu_address = 0;
   uint32_t index_buffer_bytes = 0;
