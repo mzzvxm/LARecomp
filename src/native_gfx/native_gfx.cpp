@@ -147,6 +147,18 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
                       "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_native_gfx_gen_mips, false, "MCLA/NativeGfx",
+    "Gerar cadeia de mip no host para textura de nivel unico, por box filter 2x2, "
+    "restrito a 32 bits por texel sem compressao. Anisotropia so escolhe um nivel mais "
+    "fino ao longo do eixo maior: sem cadeia, um sampler ANISOTROPIC 16x perfeito nao "
+    "muda pixel nenhum. Medido no passe de cena: de 16.1M de binds >= 512x512, 12.7M sao "
+    "kBaseMap e ZERO deles carrega cadeia -- o jogo marca base-map porque a textura tem "
+    "um nivel so -- e 70% desses (9.0M) sao formato 6 (k_8_8_8_8), que e box filter na "
+    "CPU sem precisar recomprimir BC. E MELHORIA, nao paridade: o 360 tambem aliasava "
+    "nessas superficies, por isso o default e off.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, false, "MCLA/NativeGfx",
                     "Apply the fetch constant's 12-bit swizzle to the SRV's "
                     "Shader4ComponentMapping instead of the D3D12 default. The two encodings "
@@ -181,6 +193,22 @@ REXCVAR_DEFINE_BOOL(
     "register is read per draw rather than assumed. "
     "Turn off to get the pre-fix behaviour back while bisecting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(
+    mcla_native_gfx_aniso, -1, "MCLA/NativeGfx",
+    "Anisotropic filtering override, with the same numbering as the emulated path's\n"
+    "anisotropic_override: -1 leaves the guest's own choice alone (the default), 0 disables\n"
+    "it, and 1 to 5 force 1x, 2x, 4x, 8x or 16x. The native runtime already honoured what\n"
+    "the game asks for -- it reads the ratio out of the fetch constant -- but had no way to\n"
+    "raise it, while the emulated path was running with anisotropic_override=5 from the\n"
+    "same toml. That is a texture-sharpness difference at oblique angles (road and ground\n"
+    "surfaces above all) that has nothing to do with MSAA.\n"
+    "\n"
+    "Applies only to a sampler that is already filtering with mipmaps, which is the same\n"
+    "eligibility rule the emulated path uses: forcing anisotropy onto a point-sampled or\n"
+    "base-map sampler would change what the game asked for rather than how sharply it is\n"
+    "filtered.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
     mcla_native_gfx_surface_key, false, "MCLA/NativeGfx",

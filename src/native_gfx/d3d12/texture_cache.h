@@ -96,6 +96,9 @@ inline char TextureSourceTag(TextureSource s) {
 class TextureCache {
  public:
   struct Stats {
+    // Texturas de nivel unico que ganharam uma cadeia gerada no host, para a
+    // anisotropia ter nivel que escolher. Ver mcla_native_gfx_gen_mips.
+    uint64_t generated_chains = 0;
     uint64_t hits = 0;
     uint64_t uploads = 0;             // first-use decode+upload (expected)
     uint64_t render_target_hits = 0;
@@ -149,6 +152,9 @@ class TextureCache {
 
  private:
   struct Entry {
+    // A cadeia deste recurso nao veio do guest: foi gerada por box filter no
+    // host. O sampler precisa saber para poder soltar o MaxLOD de um base-map.
+    bool host_generated_mips = false;
     Microsoft::WRL::ComPtr<ID3D12Resource> resource;
     TextureFetch fetch;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;

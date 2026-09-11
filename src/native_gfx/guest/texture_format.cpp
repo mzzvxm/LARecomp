@@ -43,13 +43,17 @@ TextureFetch DecodeTextureFetch(const uint32_t d[6]) {
 
   t.swizzle = (d[3] >> 1) & 0xFFFu;
 
+  t.mip_min_level = (d[4] >> 2) & 0xFu;
+  t.mip_max_level = (d[4] >> 6) & 0xFu;
 
   // Colour components share one sign field in practice; x decides.
   t.gamma = ((d[0] >> 2) & 0x3u) == 3u;
 
 
   t.dimension = (d[5] >> 9) & 0x3u;
+  t.packed_mips = ((d[5] >> 11) & 0x1u) != 0;
   t.mip_address = ((d[5] >> 12) & 0xFFFFFu) << 12;
+
   return t;
 }
 

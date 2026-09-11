@@ -5,7 +5,14 @@
 
 #include "sampler_state.h"
 
+#include <cstdio>
 #include <d3d12.h>
+#include <set>
+
+#include <rex/cvar.h>
+
+REXCVAR_DECLARE(int32_t, mcla_native_gfx_aniso);
+REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
 
 namespace mcla::native_gfx {
 
@@ -63,11 +70,46 @@ void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
   // sampler by REMOVING THE DEVICE (CreateSampler2 error 742, then
   // DXGI_ERROR_INVALID_CALL) — no page fault and no DRED breadcrumb, because
   // nothing ever reached the GPU.
-  const bool aniso = s.aniso_filter != 0;
+  // Optional override, with the same numbering and the same eligibility rule
+  // the emulated path uses (src/graphics/d3d12/texture_cache.cpp): -1 leaves the
+  // guest's choice alone, 0 disables, 1..5 force 1x/2x/4x/8x/16x, and it only
+  // applies to a sampler that is already filtering with mipmaps -- forcing
+  // anisotropy onto a point-sampled or base-map sampler would change what the
+  // game asked for, not just how sharply it is filtered.
+  uint32_t aniso_filter = s.aniso_filter;
+  const int32_t forced = REXCVAR_GET(mcla_native_gfx_aniso);
+  // Override estilo driver: com mip gerado no host E anisotropia forcada, o
+  // base-map deixa de ser barreira. Sozinho o kBaseMap e correto -- o jogo pede
+  // "so o nivel base" porque a textura tem um nivel so -- mas depois de gerar a
+  // cadeia existe nivel para escolher, e anisotropia escolhe um mais FINO no eixo
+  // maior, que e o caso rasante da rua. Precisa dos DOIS cvars ligados de
+  // proposito: e desvio do que o jogo pediu.
+  const bool driver_override =
+      REXCVAR_GET(mcla_native_gfx_gen_mips) && REXCVAR_GET(mcla_native_gfx_aniso) >= 1;
+  const bool eligible = (s.mip_filter != 2u /* kBaseMap */ || driver_override) &&
+                        FilterIsLinear(s.min_filter) &&
+                        FilterIsLinear(s.mag_filter);
+  if (forced >= 0 && forced <= 5 && eligible) {
+    aniso_filter = uint32_t(forced);
+  }
+  // TEMP DIAG (ANISO): what the GAME asks for, once per distinct combination.
+  {
+    static std::set<uint32_t> seen;
+    const uint32_t combo = (s.aniso_filter << 12) | (s.min_filter << 8) | (s.mag_filter << 4) |
+                           s.mip_filter;
+    if (seen.size() < 24u && seen.insert(combo).second) {
+      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+        std::fprintf(f, "ANISO guest=%u min=%u mag=%u mip=%u -> usado=%u\n", s.aniso_filter,
+                     s.min_filter, s.mag_filter, s.mip_filter, aniso_filter);
+        std::fclose(f);
+      }
+    }
+  }
+  const bool aniso = aniso_filter != 0;
   if (aniso) {
     d.Filter = D3D12_FILTER_ANISOTROPIC;
-    const uint32_t ratio = s.aniso_filter <= 5u ? (1u << (s.aniso_filter - 1u))
-                                                : 16u;  // 6/7 are not real ratios
+    const uint32_t ratio = aniso_filter <= 5u ? (1u << (aniso_filter - 1u))
+                                              : 16u;  // 6/7 are not real ratios
     d.MaxAnisotropy = ratio > 16u ? 16u : ratio;
   } else {
     const bool min_lin = FilterIsLinear(s.min_filter);
@@ -83,20 +125,47 @@ void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
   d.AddressW = AddressMode(s.clamp_z);
   d.MipLODBias = float(s.lod_bias_raw) / 32.0f;  // 5 fractional bits
   d.MinLOD = float(s.mip_min_level);
-  d.MaxLOD = s.mip_max_level ? float(s.mip_max_level) : D3D12_FLOAT32_MAX;
+  if (s.mip_filter == 2u /* kBaseMap */ && !driver_override) {
+    // kBaseMap means "sample the base level only". Leaving MaxLOD open let the
+    // hardware walk down the chain the texture cache uploads, which is a level
+    // coarser than the console ever reads -- measured on a grazing road, mean
+    // gradient 7.69 against 8.56 on the emulated path, with our own POINT
+    // sampling at 8.66. The SDK pins it the same way (D3D12TextureCache::
+    // WriteSampler), including the 0.25 slack that keeps magnification
+    // distinguishable from minification when anisotropy is off.
+    d.MaxLOD = d.MinLOD;
+    if (!aniso) {
+      d.MaxLOD += 0.25f;
+    }
+  } else {
+    d.MaxLOD = s.mip_max_level ? float(s.mip_max_level) : D3D12_FLOAT32_MAX;
+  }
   d.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
 
-  // xenos::BorderColor: 0 = transparent black, 1 = opaque black,
-  // 2 = opaque white. Anything else is not used by the game.
+  // xenos::BorderColor, from the enum rather than from memory: 0 = k_ABGR_Black,
+  // 1 = k_ABGR_White (1,1,1,1), 2 = k_ACBYCR_Black, 3 = k_ACBCRY_Black. The two
+  // YCbCr blacks are black in a chroma-centred encoding, so the neutral chroma
+  // is 0.5 rather than 0.
+  //
+  // 1 and 2 used to be swapped here -- white was written for 2 and an opaque
+  // black for 1 -- which is what boxed the sun in around the player: the shadow
+  // map is sampled with CLAMP_TO_BORDER and a WHITE border, meaning "lit
+  // outside the map", and it was reading black, meaning "shadowed everywhere
+  // else". Matches the SDK's texture_cache.cpp exactly, on purpose.
   switch (s.border_color) {
-    case 1:
-      d.BorderColor[3] = 1.0f;
-      break;
-    case 2:
+    case 1:  // k_ABGR_White
       d.BorderColor[0] = d.BorderColor[1] = d.BorderColor[2] = d.BorderColor[3] = 1.0f;
       break;
+    case 2:  // k_ACBYCR_Black
+      d.BorderColor[0] = 0.5f;
+      d.BorderColor[2] = 0.5f;
+      break;
+    case 3:  // k_ACBCRY_Black
+      d.BorderColor[1] = 0.5f;
+      d.BorderColor[2] = 0.5f;
+      break;
     default:
-      break;  // transparent black
+      break;  // k_ABGR_Black: all zero, already cleared
   }
 }
 

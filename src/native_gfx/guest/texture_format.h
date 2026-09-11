@@ -51,6 +51,13 @@ struct TextureFetch {
   uint32_t endianness = 0;
   uint32_t swizzle = 0;
   uint32_t dimension = 0;  // 1 == 2D
+  // Mip chain description out of the fetch constant. `mip_address` is where
+  // level 1 and smaller live; `packed_mips` says the tail levels share one
+  // block. See xenos.h xe_gpu_texture_fetch_t: mip_min_level +2 / mip_max_level
+  // +6 in dword 4, packed_mips +11 in dword 5.
+  uint32_t mip_min_level = 0;
+  uint32_t mip_max_level = 0;
+  bool packed_mips = false;
   bool tiled = false;
   bool type_valid = false;  // fetch constant type bits == 2
   // The fetch constant's four 2-bit sign fields (dword 0, bits 2..9) say how
