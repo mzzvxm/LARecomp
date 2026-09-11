@@ -23,6 +23,7 @@
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_texcache_mb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
+REXCVAR_DECLARE(bool, mcla_native_gfx_verify_textures);
 
 namespace mcla::native_gfx {
 
@@ -44,6 +45,27 @@ uint64_t Hash64(const void* data, size_t size) {
 }
 
 }  // namespace
+
+uint64_t TextureCache::HashGuestSampled(const uint8_t* p, uint64_t size) {
+  // Eight 64-byte slices spread evenly over the surface. Hashing every byte was
+  // measured on the buffer cache at 25 MB a frame and doubled the frame time;
+  // sampling caught the same staleness for a fortieth of the cost. Mixes eight
+  // bytes at a time, and folds the size in so a resize alone is a mismatch.
+  constexpr uint64_t kSlice = 64;
+  constexpr uint32_t kSlices = 8;
+  uint64_t h = size * 1099511628211ull;
+  for (uint32_t i = 0; i < kSlices; ++i) {
+    const uint64_t off = size > kSlice ? (size - kSlice) * i / (kSlices - 1) : 0;
+    const uint64_t len = size > kSlice ? kSlice : size;
+    for (uint64_t b = 0; b + 8 <= len; b += 8) {
+      uint64_t v;
+      std::memcpy(&v, p + off + b, 8);
+      h = (h ^ v) * 1099511628211ull;
+      h ^= h >> 29;
+    }
+  }
+  return h;
+}
 
 uint64_t TextureCache::MakeKey(const TextureFetch& f) {
   // The mip fields are part of the identity: the same base address can be
@@ -375,12 +397,38 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   const uint64_t key = MakeKey(fetch);
   auto it = entries_.find(key);
   if (it != entries_.end() && it->second.resource) {
-    it->second.last_use_frame = context.frame_index();
-    ++stats_.hits;
-    if (out_source) {
-      *out_source = TextureSource::kGuestDecode;
+    // Backstop for a lost invalidation: re-check the guest bytes this entry was
+    // decoded from, once per entry per frame, and drop the entry when they have
+    // changed. Without it the minimap's circular mask stayed a stale, unrelated
+    // texture for the whole session -- the punch sampled it, produced a
+    // near-constant `1 - mask`, and the map kept its square corners.
+    const bool verify = REXCVAR_GET(mcla_native_gfx_verify_textures) &&
+                        it->second.content_hash != 0 &&
+                        it->second.verified_frame != context.frame_index();
+    if (verify) {
+      it->second.verified_frame = context.frame_index();
+      const uint8_t* g = TranslatePhysicalGuest(it->second.guest_base);
+      if (g && IsPhysicalRangeReadable(it->second.guest_base, it->second.guest_size)) {
+        ++stats_.verify_checks;
+        if (HashGuestSampled(g, it->second.guest_size) != it->second.content_hash) {
+          ++stats_.verify_catches;
+          if (it->second.resource) {
+            context.DeferRelease(it->second.resource.Detach());
+          }
+          stats_.live_bytes -= std::min(stats_.live_bytes, it->second.bytes);
+          entries_.erase(it);
+          it = entries_.end();
+        }
+      }
     }
-    return it->second.resource.Get();
+    if (it != entries_.end()) {
+      it->second.last_use_frame = context.frame_index();
+      ++stats_.hits;
+      if (out_source) {
+        *out_source = TextureSource::kGuestDecode;
+      }
+      return it->second.resource.Get();
+    }
   }
 
   const uint32_t width_blocks = (fetch.width + fi.block_width - 1) / fi.block_width;
@@ -872,6 +920,17 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // half-decoded upload resident for the rest of the session.
   e.guest_base = fetch.base_address;
   e.guest_size = src_size;
+  // Sampled hash of the bytes this decode read, so a later Resolve can tell
+  // whether guest memory has moved on. The watch alone is not enough: measured,
+  // the minimap mask's entry held a different texture for the whole session
+  // while the guest had the circle sitting at that very address.
+  e.content_hash = 0;
+  e.verified_frame = context.frame_index();
+  if (const uint8_t* g = TranslatePhysicalGuest(fetch.base_address)) {
+    if (IsPhysicalRangeReadable(fetch.base_address, src_size)) {
+      e.content_hash = HashGuestSampled(g, src_size);
+    }
+  }
   WatchEntry(e);
   // Take the pointer before evicting: EvictToBudget erases entries, and while it
   // never touches one used this frame (this one), the reference `e` must not

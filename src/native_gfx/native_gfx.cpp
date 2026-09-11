@@ -161,6 +161,23 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
                     "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.");
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_textures, true, "MCLA/NativeGfx",
+                    "Re-check a cached TEXTURE against the guest memory it was decoded from, "
+                    "once per entry per frame, and drop it when they differ. Same lost-invalidation "
+                    "hole as the buffer cache: measured, the minimap's circular mask entry at "
+                    "0x02D64000 held an unrelated texture for the whole session while guest "
+                    "memory still held the circle, so the punch sampled a near-constant mask "
+                    "and the map kept its square corners. Off restores the old behaviour, for "
+                    "A/B.");
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_regions, true, "MCLA/NativeGfx",
+                    "Re-check a clean buffer region against guest memory once per frame "
+                    "before binding it, and re-upload when they differ. The write watch "
+                    "loses notifications: measured on MCLA, five xPed vertex regions held "
+                    "bytes that differed from guest memory for 200 consecutive observations "
+                    "each while still marked clean, which is what draws a pedestrian with "
+                    "the previous mesh's vertices. Off restores the old behaviour, for A/B; "
+                    "the cost is one hash of each region something actually binds, once a "
+                    "frame.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_decl_float, true, "MCLA/NativeGfx",
                     "Read the two 32-bit float vertex declaration types at their measured "
                     "width: 0x002C23A5 is FLOAT2 and 0x001A23A6 is FLOAT4, not FLOAT1 and "

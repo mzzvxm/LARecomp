@@ -18,6 +18,7 @@
 #include "context.h"
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
+REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
 
 namespace mcla::native_gfx {
 
@@ -105,6 +106,74 @@ void BufferCache::Shutdown(D3D12Context& context) {
   }
 }
 
+namespace {
+// TEMP DIAG (MESHSTALE): FNV-1a over guest bytes. Cheap enough to run on every
+// upload and on a handful of draws a frame; the point is only "same or not".
+uint64_t HashGuestBytes(const uint8_t* p, uint32_t size) {
+  // Eight bytes at a time. Byte-at-a-time FNV was a third of the cost of the
+  // whole-region verification it was written for; this is change detection, not
+  // cryptography, so mixing whole words is enough and is several times faster.
+  uint64_t h = 1469598103934665603ull;
+  const uint32_t whole = size & ~7u;
+  for (uint32_t i = 0; i < whole; i += 8) {
+    uint64_t v;
+    std::memcpy(&v, p + i, 8);
+    h = (h ^ v) * 1099511628211ull;
+    h ^= h >> 29;
+  }
+  for (uint32_t i = whole; i < size; ++i) {
+    h = (h ^ p[i]) * 1099511628211ull;
+  }
+  return h;
+}
+}  // namespace
+
+namespace {
+// Three 64-byte slices of a block -- head, middle, tail -- instead of all 4096.
+//
+// This is change detection for a RECYCLED buffer: when the streaming system
+// drops a new mesh at an address, essentially every byte differs, so sampling
+// catches it. Hashing every byte of every bound block was exact and cost
+// ~12 MB a frame (wall ~55 ms -> ~110 ms), which trades one bug for another.
+// Both sides -- the upload and the check -- must sample identically.
+uint64_t HashBlockSampled(const uint8_t* p, uint32_t len) {
+  // Eight 64-byte slices spread evenly, i.e. one in every 512 bytes of the
+  // block. Three (head/middle/tail) was cheaper and let a real case through --
+  // MESHSTALE still reported one region whose changed bytes missed all three.
+  constexpr uint32_t kSlice = 64;
+  constexpr uint32_t kSlices = 8;
+  uint64_t h = uint64_t(len) * 1099511628211ull;
+  for (uint32_t i = 0; i < kSlices; ++i) {
+    const uint32_t off = len > kSlice ? uint32_t(uint64_t(len - kSlice) * i / (kSlices - 1)) : 0u;
+    h ^= HashGuestBytes(p + off, std::min(kSlice, len - off));
+    h *= 1099511628211ull;
+    h ^= h >> 31;
+  }
+  return h;
+}
+}  // namespace
+
+bool BufferCache::VerifyRegion(uint32_t guest_address, uint32_t size, BufferSwap swap,
+                               uint32_t* out_region_base, uint32_t* out_region_size,
+                               uint64_t* out_uploaded, uint64_t* out_live) {
+  Region* r = FindContaining(regions_[uint32_t(swap)], guest_address, size);
+  if (!r || r->content_hash == 0 || r->dirty) {
+    // A dirty region is one we already know needs re-uploading; comparing it
+    // would report a mismatch that the next Resolve is about to fix, which is
+    // the opposite of the signal wanted here.
+    return false;
+  }
+  const uint8_t* p = TranslatePhysicalGuest(r->base);
+  if (!p || !IsPhysicalRangeReadable(r->base, r->size)) {
+    return false;
+  }
+  if (out_region_base) *out_region_base = r->base;
+  if (out_region_size) *out_region_size = r->size;
+  if (out_uploaded) *out_uploaded = r->content_hash;
+  if (out_live) *out_live = HashGuestBytes(p, r->size);
+  return true;
+}
+
 BufferCache::Region* BufferCache::FindContaining(RegionMap& map, uint32_t address,
                                                  uint32_t size) {
   if (map.empty()) {
@@ -137,6 +206,27 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
     return false;
   }
   SwapCopy(static_cast<uint8_t*>(staging.cpu), src, region.size, swap);
+  // TEMP DIAG (MESHSTALE): hash of the GUEST bytes this upload carried, so a
+  // later draw can ask whether the GPU's copy still matches guest memory. Reads
+  // `src` -- ordinary cached memory -- exactly as the note below prescribes.
+  region.content_hash = HashGuestBytes(src, region.size);
+  {
+    const uint32_t blocks = (region.size + kVerifyBlock - 1u) / kVerifyBlock;
+    region.block_hash.assign(blocks, 0);
+    region.block_frame.assign(blocks, 0);
+    for (uint32_t b = 0; b < blocks; ++b) {
+      const uint32_t off = b * kVerifyBlock;
+      region.block_hash[b] = HashBlockSampled(src + off, std::min(kVerifyBlock, region.size - off));
+    }
+  }
+  // The content hash lived here and has been removed. It answered its question
+  // -- 27% of invalidation-driven re-uploads carried byte-identical data -- but
+  // it read back from `staging.cpu`, which is an upload heap: write-combined,
+  // uncached, and murderously slow to READ. It took geom from 25ms to 114ms a
+  // frame, so the timing measured alongside it was meaningless. If this is ever
+  // wanted again, hash `src` (ordinary cached guest memory) and store the swap
+  // mode next to the hash, because the same bytes under a different swap are
+  // not the same upload. Never read back from staging.
 
   if (region.state != D3D12_RESOURCE_STATE_COPY_DEST) {
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -209,6 +299,48 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     ++stats_.unreadable;
     return false;
   };
+  // A clean region is only clean because the write watch says so, and measured
+  // on MCLA it lies: five xPed vertex regions held bytes that differed from
+  // guest memory for 200 consecutive observations each, none of them marked
+  // dirty -- the watch never fired for those writes. The game recycles vertex
+  // buffer memory constantly while streaming, so a lost notification means a
+  // new mesh renders with the previous mesh's bytes (the exploded pedestrians).
+  //
+  // This re-checks the region's own hash against guest memory and marks it
+  // dirty when they differ, which turns a lost notification into a re-upload
+  // instead of a corrupt draw. Once per region per frame: a region bound by
+  // twenty draws is hashed once, and only regions something actually binds are
+  // touched at all.
+  if (region && !region->dirty && REXCVAR_GET(mcla_native_gfx_verify_regions) &&
+      !region->block_hash.empty()) {
+    // Only the blocks this request actually reads, and each at most once a
+    // frame. Verifying the whole region was correct and cost 25 MB of hashing
+    // per frame (wall ~55 ms -> ~150 ms); a draw cannot be corrupted by bytes
+    // it does not read.
+    if (const uint8_t* p = TranslatePhysicalGuest(region->base)) {
+      const uint32_t rel = guest_address - region->base;
+      const uint32_t first = rel / kVerifyBlock;
+      const uint32_t last =
+          std::min<uint32_t>((rel + size - 1u) / kVerifyBlock,
+                             uint32_t(region->block_hash.size()) - 1u);
+      const uint32_t frame32 = uint32_t(frame_) | 1u;  // 0 means "never checked"
+      for (uint32_t b = first; b <= last; ++b) {
+        if (region->block_frame[b] == frame32) {
+          continue;
+        }
+        region->block_frame[b] = frame32;
+        const uint32_t off = b * kVerifyBlock;
+        const uint32_t len = std::min(kVerifyBlock, region->size - off);
+        stats_.verify_bytes += 512u;  // eight 64-byte slices, not the block
+        ++stats_.verify_regions;
+        if (HashBlockSampled(p + off, len) != region->block_hash[b]) {
+          region->dirty = true;
+          ++stats_.verify_catches;
+          break;
+        }
+      }
+    }
+  }
   if (region && !region->dirty) {
     ++stats_.hits;
   } else if (region) {

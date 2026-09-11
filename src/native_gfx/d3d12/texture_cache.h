@@ -96,6 +96,10 @@ inline char TextureSourceTag(TextureSource s) {
 class TextureCache {
  public:
   struct Stats {
+    // Backstop that re-checks a cached entry against guest memory. A non-zero
+    // `verify_catches` is a lost invalidation being caught.
+    uint64_t verify_checks = 0;
+    uint64_t verify_catches = 0;
     // Texturas de nivel unico que ganharam uma cadeia gerada no host, para a
     // anisotropia ter nivel que escolher. Ver mcla_native_gfx_gen_mips.
     uint64_t generated_chains = 0;
@@ -165,7 +169,22 @@ class TextureCache {
     // write landed inside it.
     uint32_t guest_base = 0;
     uint64_t guest_size = 0;
+    // Sampled hash of the GUEST bytes this entry was decoded from, plus the
+    // last frame it was re-checked against them.
+    //
+    // The write watch loses invalidations: measured on the minimap punch, the
+    // entry for the circular mask at 0x02D64000 held a completely different
+    // texture (uniform noise, red 68.6 inside vs 68.3 outside) while guest
+    // memory at that address still held the mask -- the guest wrote the circle
+    // after the entry was uploaded and nothing dropped it. The exact-unlock
+    // path does not cover it either: 383 of 383 unlock ranges matched no entry
+    // at all in one session.
+    uint64_t content_hash = 0;
+    uint64_t verified_frame = 0;
   };
+  // Sampled so re-checking costs a few hundred bytes per entry per frame
+  // instead of the whole surface; a recycled texture differs almost everywhere.
+  static uint64_t HashGuestSampled(const uint8_t* p, uint64_t size);
 
   // Re-arms the write watch over an entry's guest range. Consumed when it
   // fires, so it is set again after every upload.

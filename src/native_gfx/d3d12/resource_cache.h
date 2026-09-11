@@ -108,6 +108,12 @@ class BufferCache {
     uint64_t inval_scan_steps = 0;
     uint64_t region_count = 0;  // live regions, both swaps
     uint64_t unreadable = 0;       // guest range not committed
+    // Re-verification backstop: regions hashed, bytes hashed, and the ones that
+    // came back different from what was uploaded -- i.e. invalidations the
+    // write watch lost. A non-zero `verify_catches` is the bug reproducing.
+    uint64_t verify_regions = 0;
+    uint64_t verify_bytes = 0;
+    uint64_t verify_catches = 0;
     // Why the most recent Resolve failed. Without this a failure is just
     // "could not be resolved", which names five different causes.
     const char* last_failure = nullptr;
@@ -151,6 +157,24 @@ class BufferCache {
   // Live regions and the bytes they occupy, for the memory census.
   void Census(size_t& count, uint64_t& bytes) const;
 
+  // TEMP DIAG (MESHSTALE): does the region backing this range still match the
+  // guest memory it was uploaded from?
+  //
+  // The stale-region bug this cache exists to prevent is invisible until it
+  // reaches the screen, and by then the frame is gone. This compares the hash
+  // taken of the GUEST bytes at upload time against a fresh hash of the same
+  // bytes now, so a missed invalidation is caught the moment it happens rather
+  // than when it happens to deform something the eye catches.
+  //
+  // Hashes guest memory on both sides, never the upload heap -- reading back
+  // from write-combined staging took geom from 25ms to 114ms a frame the last
+  // time it was tried.
+  //
+  // Returns false when there is no region for the range (nothing to say).
+  bool VerifyRegion(uint32_t guest_address, uint32_t size, BufferSwap swap,
+                    uint32_t* out_region_base, uint32_t* out_region_size, uint64_t* out_uploaded,
+                    uint64_t* out_live);
+
   // GPU address of a small, permanently zero buffer, created on first use.
   // Bound with stride 0 for an attribute the vertex declaration does not
   // supply: the Xenos leaves that vfetch unpatched and the shader reads zeros,
@@ -164,7 +188,24 @@ class BufferCache {
     uint32_t size = 0;
     bool dirty = true;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+    // Hash of the guest bytes as they were last uploaded. Only read by the
+    // instrumentation: it answers whether an invalidation-driven re-upload is
+    // actually carrying new data, which is the difference between "the guest
+    // rewrites this every frame" and "the watch fired on a page that did not
+    // change" -- opposite conclusions, and nothing in the counters told them
+    // apart.
+    uint64_t content_hash = 0;
+    // Per-4 KiB hashes of the guest bytes this region was last uploaded from,
+    // plus the frame each block was last re-checked.
+    //
+    // Whole-region verification was correct and unaffordable: 25 MB hashed per
+    // frame took wall from ~55 ms to ~150 ms. A draw only reads the sub-range
+    // it binds, so only the blocks that sub-range covers need checking, and a
+    // block bound by twenty draws is checked once a frame.
+    std::vector<uint64_t> block_hash;
+    std::vector<uint32_t> block_frame;
   };
+  static constexpr uint32_t kVerifyBlock = 4096;
 
   using RegionMap = std::map<uint32_t, Region>;
 
@@ -210,6 +251,9 @@ class BufferCache {
   std::mutex invalidation_mutex_;
   std::vector<std::pair<uint32_t, uint32_t>> pending_invalidations_;
   void* invalidation_handle_ = nullptr;
+  // Bumped by ReportPeriodic, which the frame boundary already calls once a
+  // frame; only used to throttle the re-verification to once per region.
+  uint64_t frame_ = 0;
   // Shared all-zero vertex stream. A default-heap buffer is zero-initialised by
   // D3D12 on creation, so it needs no upload.
   Microsoft::WRL::ComPtr<ID3D12Resource> zero_stream_;
