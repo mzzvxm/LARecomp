@@ -33,6 +33,7 @@
 #include "d3d12/frame_capture.h"
 #include "d3d12/memory_census.h"
 #include "guest/render_state.h"
+#include "guest/vblank_probe.h"
 #include "guest/texture_format.h"
 #include "d3d12/pipeline_cache.h"
 #include "d3d12/render_target_pool.h"
@@ -41,6 +42,10 @@
 #include "d3d12/shader_db.h"
 #include "d3d12/texture_binding.h"
 #include "d3d12/texture_cache.h"
+
+// Defined in guest/vblank_probe.cpp.
+REXCVAR_DECLARE(bool, mcla_native_gfx_vblank_probe);
+
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
                     "MCLA Native Graphics Runtime. OFF (default): the game renders through the "

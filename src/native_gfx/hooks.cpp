@@ -54,6 +54,7 @@
 #include "../native_probe/mcla_gfx_probe.h"
 #include "guest/guest_constants.h"
 #include "guest/guest_fence.h"
+#include "guest/vblank_probe.h"
 #include "native_gfx.h"
 #include "telemetry.h"
 
