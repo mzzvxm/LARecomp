@@ -703,7 +703,7 @@ bool PresentFrame() {
 
 }  // namespace mcla::native_gfx
 
-// NOTE: the D3DDevice_Swap hook (rex_sub_82419E98) lives in hooks.cpp, the
+// NOTE: the D3DDevice_Swap hook (D3DDevice_Swap) lives in hooks.cpp, the
 // single owner of the guest graphics hooks, together with the draw, tiling
 // and frame-boundary hooks shared with the passive probe.
 
