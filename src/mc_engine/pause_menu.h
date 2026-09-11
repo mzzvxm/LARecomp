@@ -4,6 +4,16 @@
 
 void InitPauseMenuHooks();
 
+// Pop one level off the VirtualHSM navigation stack -- the same call the B
+// button makes. The cutscene gallery uses it to walk the pause menu off screen
+// before it starts a scene, since the game stays paused while any of it is up.
+bool PauseMenuPopStack();
+
+// Drop our "a submenu owns the input" flag without a cancel press. The cutscene
+// gallery calls this when it unpauses the game to play a scene, otherwise the
+// pause menu keeps swallowing every button after the scene is over.
+void PauseMenuLeaveSubmenu();
+
 void Hook_CapturePMContinue(PPCRegister& r3);
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4);
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4);

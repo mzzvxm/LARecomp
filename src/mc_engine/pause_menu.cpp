@@ -2,6 +2,7 @@
 #include "pause_menu.h"
 #include "carbon_parts.h"
 #include "camera_look.h"
+#include "cutscene_gallery.h"
 #include "menu_items.h"
 #include "logging.h"
 
@@ -950,6 +951,15 @@ const ItemDef kLangItems[] = {
          kLangVals, kLangNames, kNumLangs),
 };
 
+// Cutscene gallery. One value row walking the whole table plus the button
+// that plays it -- the row's value window is only ever three wide (see
+// BuildRowValueSet), so a list this long costs nothing extra.
+const ItemDef kCutsceneItems[] = {
+    Str   ("PM_RxCutPick", "cutscene_replay", "CUTSCENE: ",
+           CutsceneIds(), CutsceneLabels(), CutsceneCount()),
+    Action("PM_RxCutPlay", kActionPlayCutscene),
+};
+
 struct MenuDef {
     const char* btn_key;   // button state name + its string-table key
     const char* label;     // button label AND submenu title
@@ -1004,6 +1014,8 @@ const MenuDef kMenus[] = {
      kCarbonItems, int(sizeof(kCarbonItems) / sizeof(kCarbonItems[0]))},
     {"PM_RxTabLang",   "LANGUAGES",        "RxLangMenu",
      kLangItems,   int(sizeof(kLangItems)   / sizeof(kLangItems[0]))},
+    {"PM_RxTabCut",    "CUTSCENES",        "RxCutMenu",
+     kCutsceneItems, int(sizeof(kCutsceneItems) / sizeof(kCutsceneItems[0]))},
 };
 constexpr int kNumMenus = int(sizeof(kMenus) / sizeof(kMenus[0]));
 
@@ -1143,6 +1155,17 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
 std::string ItemRowLabel(const ItemDef& it) {
+    if (it.kind == ItemKind::kAction) {
+        switch (ActionId(it.nvals)) {
+        case kActionPlayCutscene:
+            // The row is the only feedback there is: once the menu closes the
+            // scene owns the screen, and if it refuses to start the log is the
+            // only other place that says so.
+            return CutsceneReplayBusy() ? "PLAYING..." : "PLAY CUTSCENE";
+        }
+        return "";
+    }
+
     std::string label = it.prefix;
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
@@ -1177,6 +1200,20 @@ void ApplyItem(const ItemDef& it, int dir) {
         // Goes straight into the car's customization data — the game's own
         // save carries it, so there is nothing to write to larecomp.toml.
         CarbonToggleGroup(uint8_t(it.nvals));
+        break;
+    case ItemKind::kAction:
+        switch (ActionId(it.nvals)) {
+        case kActionPlayCutscene:
+            // Leave the submenu ourselves so the gallery only has the pause
+            // tab left to pop, then let it drive the rest from the frame tick.
+            // This goes through the shared exit so the hijacked list is handed
+            // back exactly as a B press hands it back -- doing the pop inline
+            // here skipped the restore and left the game's list pointing at our
+            // rows, which killed the pause menu the next time it opened.
+            PauseMenuLeaveSubmenu();
+            CutsceneRequestPlay();
+            break;
+        }
         break;
     }
 }
@@ -3098,6 +3135,38 @@ bool MCLA_MenuListNullTableGuard(PPCRegister& r30) {
     return r30.u32 == 0;
 }
 
+
+bool PauseMenuPopStack() {
+    return GuestStackPop();
+}
+
+// While g_active_menu is set our hooks consume every action press so the game's
+// own handler never sees a click meant for one of our submenus. That is right
+// while the submenu is on screen, and very wrong once it is not: the cutscene
+// gallery leaves the menu by unpausing the game rather than by a B press, so
+// nothing ever cleared the flag and the pause menu went on eating input with
+// nothing drawn -- the game ran, and no button did anything.
+void PauseMenuLeaveSubmenu() {
+    if (g_active_menu.exchange(-1, std::memory_order_relaxed) < 0) return;
+    MC_INFO("[pause-menu] left the submenu without a cancel press "
+            "(a replay took the menu away)");
+    // A RexGlue submenu does not own a list: it HIJACKS the pause menu's own
+    // one, saving its row source, table source, selection, scroll and caps and
+    // writing ours over them. Hook_RexGlueCancel puts them back on a B press --
+    // and for a long time that was the only route out, so nothing else had to.
+    // Leaving through here without restoring left the game's list pointing at
+    // our rows; the next time the pause menu was opened it walked that and
+    // died on a null vtable. Same restore, any exit.
+    // Exactly one pop, and only because g_active_menu was set -- that means our
+    // own submenu really is the top of the stack, the same thing a B press would
+    // take off. Leaving it there is what crashed sub_82224678 (a submenu with no
+    // parent, vfunc204 null) the next time the player opened the pause menu.
+    // Popping any further is what took the HUD away. Pop first, then restore,
+    // in that order, because that is the order the B press has always used.
+    GuestStackPop();
+    RestoreTabDisplay(0);
+}
+
 bool Hook_RexGlueCancel(PPCRegister& r31) {
     if (g_active_menu.load(std::memory_order_relaxed) < 0)
         return false;
@@ -3133,6 +3202,8 @@ bool Hook_RexGlueCancel(PPCRegister& r31) {
 
 #include <rex/ppc/context.h>
 
+bool PauseMenuPopStack() { return false; }
+void PauseMenuLeaveSubmenu() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) { return false; }
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4) { return false; }

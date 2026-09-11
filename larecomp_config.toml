@@ -26075,6 +26075,167 @@ address = 0x82282EA8
 name = "Hook_PromptDropped"
 registers = []
 after_instruction = false
+
+# Cutscene camera diagnosis. mcCineScript::Camera_LaunchEvent (sub_823C3BA8) is
+# what core_rolling_prototype calls to put the cutscene camera on screen, right
+# before EndDescriptionAndStartClock -- and the disassembly of that script shows
+# the call is unconditional, at the exit of a loop, so a replay that reaches the
+# clock reached this too. The handler has four outcomes and each one is a
+# different bug, so hook them apart:
+#   0x823C3BC0  entry, r3 = anim dictionary, r4 = event name
+#   0x823C3CC0  the animpack is not streamed, so it takes the fallback path
+#   0x823C3C14  r29 = camera event slot, zero means the pool is depleted
+#   0x823C3C30  r30 = the clip, zero means the event is missing from the pack
+#   0x823C3CA4  success: r4 is the event being queued onto mgr+0x108
+[[midasm_hook]]
+name = "MCLA_CamEventEnter"
+address = 0x823C3BC0
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+name = "MCLA_CamEventNoPack"
+address = 0x823C3CC0
+
+[[midasm_hook]]
+name = "MCLA_CamEventPool"
+address = 0x823C3C14
+registers = ["r29"]
+
+[[midasm_hook]]
+name = "MCLA_CamEventClip"
+address = 0x823C3C30
+registers = ["r30", "r28", "r27"]
+
+[[midasm_hook]]
+name = "MCLA_CamEventQueued"
+address = 0x823C3CA4
+registers = ["r3", "r4"]
+
+# 0x823BEF54: right after `bl sub_823BBB98` in sub_823BEEB0, with f1 holding the
+# time the queue walker picked -- the earliest "CineEvents" instance of id 72, 73
+# or 58. The caller schedules the cut for that time (mgr+0x134) and marks
+# mgr+0x13C, which is what ended the replay after four frames once the gate was
+# forced open. r31 is the mcCineScript manager, so the scene clock at
+# *(mgr+268)+364 can be read alongside it.
+[[midasm_hook]]
+name = "MCLA_CineEventWalk"
+address = 0x823BEF4C
+registers = ["r31"]
+
+# 0x823BEF5C is `fcmpu cr6, f1, f0`, two instructions past the call, so f1 still
+# holds the walker's result -- and it avoids hooking the slot right after a bl.
+[[midasm_hook]]
+name = "MCLA_CineEventTime"
+address = 0x823BEF5C
+registers = ["f1", "r31"]
+
+# The camera hand-over. sub_822C0320 picks the camera the frame is rendered
+# from; 0x822C0458 is the test that sends it down the in-game override branch
+# (r19), and 0x822C0478 is where mcCineDirector::IsCameraActive (sub_823CDC90)
+# has just answered in r11. Hooking 0x822C0474 would be the slot right after
+# the bl, which does not fire.
+# sub_823D76A8 is the generic cine event's start handler: every non-camera event
+# in the scene goes through it, and event+32 is the id that indexes the game's
+# own name table at off_827EAD60. One line per event = the scene's whole
+# timeline, which also proves whether the event queue is being dispatched.
+[[midasm_hook]]
+name = "MCLA_CineEventFired"
+address = 0x823D76A8
+registers = ["r4"]
+
+# CineScript_Characters_LoadType: sub_823CA198 takes (charMgr, path, name), and
+# two instructions past the call in the handler r8 holds the byte result.
+# The character half of the launch path, sub_823C41D8:
+#   entry            r3 slot, r4 actor name, r5 anim dictionary, r6 anim name
+#   0x823C4280       r18 = sub_823CA248's answer, the character instance; zero
+#                    here drops the event with no message at all
+#   0x823C44F0       r4 = the event about to be queued on mgr+0x108
+# sub_823D2330, the actor spawn: 0x823D2400 has r31 = the entity sub_822E6A80
+# returned, 0x823D2450 has r11 = whether sub_823D1D40 bound the animation.
+# 0x823C42A0: r20 = the clip sub_823BF2F0 found for the actor's body, zero when
+# the lookup failed (the complaint next to it is a nullsub in retail).
+[[midasm_hook]]
+name = "MCLA_CineActorClip"
+address = 0x823C42A0
+registers = ["r20"]
+
+# sub_823D7120 is the character event's start handler; r4 is the event.
+[[midasm_hook]]
+name = "MCLA_CineActorStart"
+address = 0x823D7120
+registers = ["r4"]
+
+# The live actor spawn is sub_823D24A8, not its twin sub_823D2330: measured, the
+# clip lands at event+48, so the start handler takes the second branch
+# (sub_823CA370 -> sub_823D24A8 = mcCineCharacterMgr::LaunchAnimAt).
+#   0x823D2570  r4  = the "<name><suffix>" the entity is looked up by
+#   0x823D2578  r31 = the entity sub_822E6A80 returned
+#   0x823D25C8  r11 = whether sub_823D1F48 bound the animation
+[[midasm_hook]]
+name = "MCLA_CineActorName"
+address = 0x823D2570
+registers = ["r4"]
+
+[[midasm_hook]]
+name = "MCLA_CineActorEntity"
+address = 0x823D2578
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "MCLA_CineActorBound"
+address = 0x823D25C8
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "MCLA_CineCharAnim"
+address = 0x823C41D8
+registers = ["r3", "r4", "r5", "r6"]
+
+[[midasm_hook]]
+name = "MCLA_CineCharActor"
+address = 0x823C4280
+registers = ["r18"]
+
+[[midasm_hook]]
+name = "MCLA_CineCharQueued"
+address = 0x823C44F0
+registers = ["r4"]
+
+[[midasm_hook]]
+name = "MCLA_CineCharLoad"
+address = 0x823CA198
+registers = ["r4", "r5"]
+
+[[midasm_hook]]
+name = "MCLA_CineCharLoaded"
+address = 0x823C05CC
+registers = ["r8"]
+
+[[midasm_hook]]
+name = "MCLA_GameCamInGame"
+address = 0x822C0458
+registers = ["r19"]
+
+[[midasm_hook]]
+name = "MCLA_GameCamActive"
+address = 0x822C0478
+registers = ["r11"]
+
+# 0x823CEBE8 is one instruction past `lwz r3,8(r3)` in sub_823CEBD8, so r3 is
+# the mcCineCamera itself: +120 its clock, +116 the clip, +64 the translation
+# row of the matrix it just built.
+[[midasm_hook]]
+name = "MCLA_CineCamUpdate"
+address = 0x823CEBE8
+registers = ["r3"]
+
+# sub_823CEE48 is only reachable from the camera event's start handler, so this
+# firing is the proof that the queued event was dispatched.
+[[midasm_hook]]
+name = "MCLA_CineCamInstall"
+address = 0x823CEE48
+registers = ["r3", "r4", "r5"]
+
 # Full map: absolute mouse cursor.
 #
 # sub_8262A688 is the map screen's input tick -- it reads the raw pad block at

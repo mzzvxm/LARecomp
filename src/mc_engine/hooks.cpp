@@ -53,6 +53,7 @@
 #include "modloader/modloader.h"
 #include "mp3custom/mp3custom.h"
 #include "hud_units.h"
+#include "cutscene_gallery.h"
 #include "map_mouse.h"
 #include "camera_look.h"
 #include "texture_dump.h"
@@ -3153,6 +3154,7 @@ void Patch_DeltaTimePre() {
     TickButtonPrompts();        // picks up a live button_prompts change
     TickCustomMusic();          // custom radio: volume + end-of-track advance
     TickHudUnits();             // hud_speed_units: mph -> km/h, live
+    TickCutsceneGallery();      // cutscene replay: close the menu, start the script
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
