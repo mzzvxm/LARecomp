@@ -40,6 +40,13 @@ struct MeshPart {
     // are what says which is which. Empty for a .obj and for a glTF whose
     // primitives have no named ancestor.
     std::string group;
+
+    // What the source file called this primitive's material. A character does
+    // not need it either: the whole mesh is drawn by one shader. A car does --
+    // paint, glass, lights and trim are different shaders in MCLA as well, and
+    // the material name is the only thing in the file that says which of them a
+    // triangle belongs to. Empty when the primitive has no material.
+    std::string material;
 };
 
 struct Mesh {

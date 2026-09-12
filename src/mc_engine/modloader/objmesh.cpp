@@ -68,6 +68,17 @@ void Mesh::Bounds(float min_out[3], float max_out[3]) const {
     }
 }
 
+// The rest of an .obj line after its tag, trimmed. A name may hold spaces, so
+// it cannot be read with the stream extractor the numeric tags use.
+std::string RestOfLine(std::istringstream& stream) {
+    std::string text;
+    std::getline(stream, text);
+    const char* const blank = " \t\r";
+    const size_t first = text.find_first_not_of(blank);
+    const size_t last = text.find_last_not_of(blank);
+    return first == std::string::npos ? std::string() : text.substr(first, last - first + 1);
+}
+
 bool LoadObj(const std::filesystem::path& path, Mesh& out, std::string& error) {
     std::ifstream in(path);
     if (!in) {
@@ -82,6 +93,42 @@ bool LoadObj(const std::filesystem::path& path, Mesh& out, std::string& error) {
 
     out.vertices.clear();
     out.indices.clear();
+    out.parts.clear();
+
+    // The named runs of a .obj, which used to be thrown away.
+    //
+    // A character is one thing and does not need them. A car is not: it arrives
+    // as one file holding the shell, both bumpers, the doors and the cabin, and
+    // `o <name>` is what says where each begins. That name is what a parts.txt
+    // slot line matches against, and the material name beside it is what the
+    // shader map keys off -- the same two fields a glTF primitive already fills
+    // in, so everything downstream already knows what to do with them.
+    //
+    // A run owns its vertices outright: the dedupe table is cleared whenever the
+    // run changes, so each part is a contiguous block and the boundary between
+    // two parts is a seam rather than a shared edge. That costs a duplicated
+    // vertex along each seam and buys the thing a part has to have, which is
+    // being separable at all.
+    MeshPart run;
+    bool run_open = false;
+    auto close_run = [&]() {
+        if (!run_open) return;
+        run.vertex_count = static_cast<uint32_t>(out.vertices.size()) - run.first_vertex;
+        if (run.vertex_count) out.parts.push_back(run);
+        run_open = false;
+    };
+    auto open_run = [&](const std::string& group, const std::string& material) {
+        if (run_open && run.group == group && run.material == material) return;
+        close_run();
+        MeshPart fresh;
+        fresh.first_vertex = static_cast<uint32_t>(out.vertices.size());
+        fresh.group = group;
+        fresh.material = material;
+        run = std::move(fresh);
+        run_open = true;
+        unique.clear();
+    };
+    std::string group, material;
 
     std::string line;
     while (std::getline(in, line)) {
@@ -91,7 +138,16 @@ bool LoadObj(const std::filesystem::path& path, Mesh& out, std::string& error) {
         std::string tag;
         stream >> tag;
 
-        if (tag == "v") {
+        if (tag == "o") {
+            // `o` names the part. `g` is deliberately ignored: an exporter uses
+            // it for the material run inside a part as often as for the part
+            // itself, and taking both would split one object into several.
+            group = RestOfLine(stream);
+            open_run(group, material);
+        } else if (tag == "usemtl") {
+            material = RestOfLine(stream);
+            open_run(group, material);
+        } else if (tag == "v") {
             float x = 0, y = 0, z = 0;
             stream >> x >> y >> z;
             positions.insert(positions.end(), {x, y, z});
@@ -145,6 +201,8 @@ bool LoadObj(const std::filesystem::path& path, Mesh& out, std::string& error) {
             }
         }
     }
+
+    close_run();
 
     if (out.vertices.empty() || out.indices.empty()) {
         error = "no geometry in " + path.filename().string();

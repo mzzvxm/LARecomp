@@ -680,11 +680,17 @@ bool LoadGltf(const std::filesystem::path& path, Mesh& out, std::string& error) 
     // pbrMetallicRoughness out entirely -- so looking only for the core name
     // finds nothing at all and the model silently keeps the driver's skin.
     std::vector<int> material_image;
+    // The material's own name, kept beside the image it samples. A car mod says
+    // which MCLA shader each of its materials belongs to by naming it, so the
+    // name has to survive the read; nothing else here looks at it.
+    std::vector<std::string> material_name;
     if (const Json* materials = gltf.root.Find("materials")) {
         material_image.assign(materials->items.size(), -1);
+        material_name.assign(materials->items.size(), std::string());
         const Json* textures = gltf.root.Find("textures");
         for (size_t i = 0; i < materials->items.size(); ++i) {
             const Json& material = materials->items[i];
+            if (const Json* name = material.Find("name")) material_name[i] = name->text;
 
             const Json* slot = nullptr;
             if (const Json* pbr = material.Find("pbrMetallicRoughness"))
@@ -841,6 +847,8 @@ bool LoadGltf(const std::filesystem::path& path, Mesh& out, std::string& error) 
         const int material = primitive->IntField("material", -1);
         if (material >= 0 && static_cast<size_t>(material) < material_image.size())
             part.image = material_image[static_cast<size_t>(material)];
+        if (material >= 0 && static_cast<size_t>(material) < material_name.size())
+            part.material = material_name[static_cast<size_t>(material)];
         out.parts.push_back(part);
 
         if (!indices.empty()) {
