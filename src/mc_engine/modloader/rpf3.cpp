@@ -263,8 +263,12 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
             if ((node.data_offset / kAlign) > 0x1FFFFFull) return false;  // 21-bit sector field
             words[0] = RageHash(node.name);
             words[1] = static_cast<uint32_t>(node.file->data.size());
+            // Eight bits of type, not eleven -- see Rpf3Entry::data_offset. The
+            // payload is 2048-aligned, so the offset owns everything above bit
+            // seven either way; masking wider than a byte leaks the type into
+            // the offset and the streamer reads the wrong place.
             words[2] = static_cast<uint32_t>((node.data_offset / kAlign) << 11) |
-                       (node.file->resource_type & 0x7FFu);
+                       (node.file->resource_type & 0xFFu);
             words[3] = node.file->flag;
         }
         std::memcpy(toc.data() + static_cast<size_t>(node.entry_index) * 16, words, 16);

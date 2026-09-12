@@ -44,8 +44,34 @@ struct Rpf3Entry {
     bool is_directory() const { return (offset_type & 0x80000000u) != 0; }
     uint32_t first_child() const { return offset_type & 0x7FFFFFFFu; }
     uint32_t child_count() const { return flag & 0x3FFFFFFFu; }
-    uint64_t data_offset() const { return static_cast<uint64_t>(offset_type >> 11) * 2048ull; }
-    uint32_t resource_type() const { return offset_type & 0x7FFu; }
+    bool is_resource() const { return (flag & 0x80000000u) != 0; }
+
+    // The low bits of offset_type mean different things either side of
+    // is_resource, and the split is eight bits, not eleven.
+    //
+    // Measured over the 14,928 resources and 7,140 plain files in
+    // xarchive_cache.rpf: every resource has bits 8..10 clear and a low byte no
+    // larger than 226, while plain files use all eight values of bits 8..10 and
+    // low bytes up to 255. So a resource carries an eight-bit type over a
+    // 256-byte offset, and a plain file an eleven-bit byte offset inside its
+    // 2048-byte sector -- several small files share one sector.
+    //
+    // Both readings agree on the shipped data, because a shipped resource never
+    // sets bits 8..10. They disagree on a resource whose type does not fit in a
+    // byte, and the .xct tune is one: type 37938, stored as 50. Writing eleven
+    // bits there puts 0x400 into the offset, the streamer reads 1024 bytes into
+    // the file, and the resource arrives as whatever was at that spot.
+    //
+    // The plain-file half used to drop the in-sector offset, which read the
+    // right bytes only for a file that happens to start on a sector boundary.
+    // game.dat and sounds.dat do; waveslots.xml sits at +0x6BB in its sector
+    // and came back as whatever led the sector.
+    uint64_t data_offset() const {
+        if (is_resource()) return static_cast<uint64_t>(offset_type & ~0xFFu);
+        return static_cast<uint64_t>(offset_type >> 11) * 2048ull + sector_offset();
+    }
+    uint32_t resource_type() const { return offset_type & 0xFFu; }
+    uint32_t sector_offset() const { return offset_type & 0x7FFu; }
 };
 
 // Read-only view over an existing archive; only what the template extractor
