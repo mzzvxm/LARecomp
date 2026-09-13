@@ -263,6 +263,26 @@ REXCVAR_DEFINE_BOOL(model_mods_grow, false, "MCLA/Mods",
     "go back to welding everything into the shipped buffers.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
+    "Let two materials that name the same picture share one cell of the atlas."
+    "\n"
+    "A textures/ folder is keyed by material name, so a car whose three lamp "
+    "materials all draw 750i_taillight ships three identical files and they "
+    "take three cells. Collapsing them by content is free resolution -- the "
+    "lamp shader went from six images in a 1024 atlas to two in a 512, which is "
+    "128 pixels a material against 256."
+    "\n"
+    "OFF, because it is not free. Turning it on is the ONE change between the "
+    "last build of this car that drew correctly and the one that came back as "
+    "flat slabs, isolated by switching model_mods_car_textures off: with the "
+    "atlas gone the geometry was whole again and the car merely wore the "
+    "donor's artwork. Sharing a cell makes that cell cover the UNION of what "
+    "every part sharing it asks for, which is the only thing here that changes "
+    "a UV by more than a texel -- and something downstream of that is not "
+    "surviving it. Until that is understood this stays off and each material "
+    "keeps its own cell.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(model_mods_car_verbatim, false, "MCLA/Mods",
     "Diagnostic, cars only. Copies each part's shipped file into the mod "
     "archive exactly as it lies in the game's own -- same bytes, same "
@@ -548,6 +568,10 @@ uint32_t LoadBE32(const uint8_t* p) {
 }
 constexpr const char* kVehiclePartsFile = "parts.txt";
 
+// Textures a mod ships beside its model rather than inside it, one file per
+// material name -- see LoadSidecarTextures.
+constexpr const char* kTextureFolder = "textures";
+
 // The part of the car every other part is measured against. One scale factor is
 // worked out from this slot and used for all of them, so the car arrives as one
 // vehicle rather than twenty independently resized pieces.
@@ -760,6 +784,128 @@ bool LoadMeshFile(const std::filesystem::path& path, Mesh& mesh, std::string& er
     std::transform(suffix.begin(), suffix.end(), suffix.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return suffix == ".obj" ? LoadObj(path, mesh, error) : LoadGltf(path, mesh, error);
+}
+
+// Image files a mod may drop beside its model, most wanted first. .dds is on
+// the list because it is what the games these models come from stored, and
+// making people convert a folder of them before anything shows is a step that
+// buys nothing -- see DecodeDds.
+constexpr const char* kTextureExtensions[] = {".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp"};
+
+// Textures a mod ships as loose files rather than inside its model.
+//
+// A .glb can embed one image per material and a well-behaved exporter does, but
+// two common cases do not reach here that way: a .obj carries no images at all,
+// and a .glb baked from a converted model arrives with its materials stripped to
+// names. Both are the shape a car mod actually turns up in -- the model comes
+// out of one tool and the textures out of another -- so a `textures/` folder
+// beside the model, one file per material name, is read as if the model had
+// carried them.
+//
+// Only materials that have no image already: what the file itself says wins, so
+// dropping a folder next to a fully textured .glb changes nothing.
+size_t LoadSidecarTextures(const std::filesystem::path& folder, Mesh& mesh) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(folder, ec)) return 0;
+
+    // The folder is listed once and keyed by lowercased stem: a material called
+    // "MAT_7" has to find "mat_7.dds", and asking the filesystem about each
+    // name in turn would be case-sensitive on the platforms that are.
+    std::map<std::string, std::filesystem::path> by_stem;
+    for (const auto& file : std::filesystem::directory_iterator(folder, ec)) {
+        if (ec) break;
+        if (!file.is_regular_file()) continue;
+
+        std::string extension = file.path().extension().string();
+        std::string stem = file.path().stem().string();
+        for (std::string* text : {&extension, &stem}) {
+            std::transform(text->begin(), text->end(), text->begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        }
+        if (std::find(std::begin(kTextureExtensions), std::end(kTextureExtensions), extension) ==
+            std::end(kTextureExtensions)) {
+            continue;
+        }
+        // Earlier extensions win, so a folder holding both mat_7.dds and
+        // mat_7.png resolves the same way every run.
+        const auto existing = by_stem.find(stem);
+        if (existing != by_stem.end()) {
+            std::string held = existing->second.extension().string();
+            std::transform(held.begin(), held.end(), held.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const auto rank = [](const std::string& e) {
+                return std::find(std::begin(kTextureExtensions), std::end(kTextureExtensions), e) -
+                       std::begin(kTextureExtensions);
+            };
+            if (rank(held) <= rank(extension)) continue;
+        }
+        by_stem[stem] = file.path();
+    }
+    if (by_stem.empty()) return 0;
+
+    std::map<std::string, int> image_of;  // stem -> index into mesh.images
+    // Two materials naming the same picture have to end up on the same image,
+    // or they each take a cell of the atlas and everything in it gets smaller.
+    //
+    // A folder keyed by material name cannot avoid holding duplicates -- this
+    // car's three tail-lamp materials are three copies of one 750i_taillight,
+    // because the map from material to texture is what the folder states -- so
+    // the loader collapses them by content. Measured: the wheel-and-lamp shader
+    // reported six images for four pictures and took a four by four grid at
+    // 128 pixels a cell where two by two at 256 was available.
+    std::map<std::pair<size_t, size_t>, int> image_of_content;
+    size_t attached = 0;
+    for (MeshPart& part : mesh.parts) {
+        if (part.image >= 0 || part.material.empty()) continue;
+
+        std::string stem = part.material;
+        std::transform(stem.begin(), stem.end(), stem.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        const auto cached = image_of.find(stem);
+        if (cached != image_of.end()) {
+            part.image = cached->second;
+            if (cached->second >= 0) ++attached;
+            continue;
+        }
+
+        const auto file = by_stem.find(stem);
+        if (file == by_stem.end()) {
+            image_of[stem] = -1;
+            continue;
+        }
+
+        std::ifstream stream(file->second, std::ios::binary);
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(stream)),
+                                   std::istreambuf_iterator<char>());
+        if (bytes.empty()) {
+            image_of[stem] = -1;
+            continue;
+        }
+
+        // Keyed by size and a checksum rather than by the bytes themselves:
+        // these are whole textures, and holding a second copy of each to compare
+        // against costs more than the cell it saves is worth.
+        size_t sum = 0;
+        for (uint8_t byte : bytes) sum = sum * 131u + byte;
+        const auto same = REXCVAR_GET(model_mods_share_images)
+                              ? image_of_content.find({bytes.size(), sum})
+                              : image_of_content.end();
+        if (same != image_of_content.end()) {
+            image_of[stem] = same->second;
+            part.image = same->second;
+            ++attached;
+            continue;
+        }
+
+        const int index = static_cast<int>(mesh.images.size());
+        image_of_content[{bytes.size(), sum}] = index;
+        mesh.images.push_back(std::move(bytes));
+        image_of[stem] = index;
+        part.image = index;
+        ++attached;
+    }
+    return attached;
 }
 
 // Turns a wheel model onto the axle the game spins wheels about.
@@ -1193,6 +1339,10 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
             LARECOMP_APP_ERROR("[mods] {}/rims/{}: {}", mod.mod_name, mod.asset, error);
             continue;
         }
+        if (LoadSidecarTextures(mod.obj.parent_path() / kTextureFolder, mesh) != 0) {
+            LARECOMP_APP_INFO("[mods] {}/rims/{}: textured from {}/", mod.mod_name, mod.asset,
+                              kTextureFolder);
+        }
 
         // The atlas is built before the rewrite, as it is for a character: it
         // remaps the UVs per primitive, and the rewrite decimates and reorders
@@ -1589,6 +1739,10 @@ void Init() {
         if (!LoadMeshFile(mod.obj, mesh, error)) {
             LARECOMP_APP_ERROR("[mods] {}/{}: {}", mod.mod_name, mod.asset, error);
             continue;
+        }
+        if (LoadSidecarTextures(mod.obj.parent_path() / kTextureFolder, mesh) != 0) {
+            LARECOMP_APP_INFO("[mods] {}/{}: textured from {}/", mod.mod_name, mod.asset,
+                              kTextureFolder);
         }
         const size_t triangles = mesh.indices.size() / 3;
 

@@ -29,12 +29,210 @@ namespace mc::modloader {
 
 namespace {
 
-// Decodes any format stb understands to tightly packed R8G8B8A8.
+uint32_t ReadLE32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+uint16_t ReadLE16(const uint8_t* p) {
+    return static_cast<uint16_t>(static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8));
+}
+
+// Unpacks one 565 colour into R8G8B8, replicating the high bits into the low
+// ones so white stays white rather than landing at 248.
+void Unpack565(uint16_t c, uint8_t out[3]) {
+    const uint8_t r = static_cast<uint8_t>((c >> 11) & 0x1F);
+    const uint8_t g = static_cast<uint8_t>((c >> 5) & 0x3F);
+    const uint8_t b = static_cast<uint8_t>(c & 0x1F);
+    out[0] = static_cast<uint8_t>((r << 3) | (r >> 2));
+    out[1] = static_cast<uint8_t>((g << 2) | (g >> 4));
+    out[2] = static_cast<uint8_t>((b << 3) | (b >> 2));
+}
+
+// The colour half of a DXT block, shared by all three: two endpoints and two
+// bits a texel. `punchthrough` is the DXT1 rule where c0 <= c1 means three
+// colours and a transparent fourth; DXT3 and DXT5 carry their alpha separately
+// and always interpolate all four.
+void DecodeColourBlock(const uint8_t* block, bool punchthrough, uint8_t out[16][4]) {
+    const uint16_t c0 = ReadLE16(block);
+    const uint16_t c1 = ReadLE16(block + 2);
+    uint8_t colour[4][4] = {};
+    Unpack565(c0, colour[0]);
+    Unpack565(c1, colour[1]);
+    colour[0][3] = colour[1][3] = 255;
+
+    if (!punchthrough || c0 > c1) {
+        for (int i = 0; i < 3; ++i) {
+            colour[2][i] = static_cast<uint8_t>((2 * colour[0][i] + colour[1][i]) / 3);
+            colour[3][i] = static_cast<uint8_t>((colour[0][i] + 2 * colour[1][i]) / 3);
+        }
+        colour[2][3] = colour[3][3] = 255;
+    } else {
+        for (int i = 0; i < 3; ++i) {
+            colour[2][i] = static_cast<uint8_t>((colour[0][i] + colour[1][i]) / 2);
+            colour[3][i] = 0;
+        }
+        colour[2][3] = 255;
+        colour[3][3] = 0;
+    }
+
+    const uint32_t bits = ReadLE32(block + 4);
+    for (int texel = 0; texel < 16; ++texel) {
+        const uint8_t* source = colour[(bits >> (texel * 2)) & 3];
+        for (int i = 0; i < 4; ++i) out[texel][i] = source[i];
+    }
+}
+
+// The DXT5 alpha half: two endpoints and three bits a texel, the indices packed
+// as two little-endian 24-bit runs.
+void DecodeAlphaBlock(const uint8_t* block, uint8_t out[16]) {
+    uint8_t alpha[8] = {block[0], block[1]};
+    if (alpha[0] > alpha[1]) {
+        for (int i = 0; i < 6; ++i) {
+            alpha[2 + i] = static_cast<uint8_t>(((6 - i) * alpha[0] + (1 + i) * alpha[1]) / 7);
+        }
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            alpha[2 + i] = static_cast<uint8_t>(((4 - i) * alpha[0] + (1 + i) * alpha[1]) / 5);
+        }
+        alpha[6] = 0;
+        alpha[7] = 255;
+    }
+
+    for (int half = 0; half < 2; ++half) {
+        const uint8_t* p = block + 2 + half * 3;
+        const uint32_t bits = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                              (static_cast<uint32_t>(p[2]) << 16);
+        for (int i = 0; i < 8; ++i) out[half * 8 + i] = alpha[(bits >> (i * 3)) & 7];
+    }
+}
+
+// Decodes a .dds to tightly packed R8G8B8A8, top level only.
+//
+// stb reads PNG, JPEG, TGA and BMP and not this, and every vehicle texture a
+// GTA-era mod ships is a DXT1 or DXT5 .dds. Asking for a folder of them to be
+// converted before a mod shows anything is a step that can be done here instead,
+// so `textures/` takes the files the source game stored as they are.
+//
+// Only the shapes a vehicle texture is ever stored in: DXT1/3/5 and the two
+// uncompressed masked layouts. Levels past the first are ignored -- the atlas
+// resamples whatever it is handed, and MCLA's own mip chain is rebuilt on the
+// way out.
+constexpr uint32_t kDdsMagic = 0x20534444u;  // 'DDS '
+constexpr size_t kDdsHeaderSize = 124;
+constexpr size_t kDdsPixelFormat = 4 + 72;
+constexpr size_t kDdsData = 4 + kDdsHeaderSize;
+
+std::vector<uint8_t> DecodeDds(const std::vector<uint8_t>& encoded, uint32_t& width,
+                               uint32_t& height) {
+    if (encoded.size() < kDdsData || ReadLE32(encoded.data()) != kDdsMagic ||
+        ReadLE32(encoded.data() + 4) != kDdsHeaderSize) {
+        return {};
+    }
+
+    height = ReadLE32(encoded.data() + 12);
+    width = ReadLE32(encoded.data() + 16);
+    if (width == 0 || height == 0 || width > 8192 || height > 8192) return {};
+
+    const uint32_t flags = ReadLE32(encoded.data() + kDdsPixelFormat + 4);
+    const uint32_t four_cc = ReadLE32(encoded.data() + kDdsPixelFormat + 8);
+    const uint32_t bits = ReadLE32(encoded.data() + kDdsPixelFormat + 12);
+    const uint32_t red = ReadLE32(encoded.data() + kDdsPixelFormat + 16);
+    const uint32_t green = ReadLE32(encoded.data() + kDdsPixelFormat + 20);
+    const uint32_t blue = ReadLE32(encoded.data() + kDdsPixelFormat + 24);
+    const uint32_t alpha = ReadLE32(encoded.data() + kDdsPixelFormat + 28);
+
+    std::vector<uint8_t> out(static_cast<size_t>(width) * height * 4, 0);
+    const uint8_t* data = encoded.data() + kDdsData;
+    const size_t available = encoded.size() - kDdsData;
+
+    const bool compressed = (flags & 0x4u) != 0;
+    if (compressed) {
+        size_t stride = 0;
+        bool punchthrough = false, has_alpha_block = false;
+        switch (four_cc) {
+            case 0x31545844u: stride = 8; punchthrough = true; break;   // DXT1
+            case 0x33545844u: stride = 16; break;                       // DXT3
+            case 0x35545844u: stride = 16; has_alpha_block = true; break;  // DXT5
+            default: return {};
+        }
+
+        const uint32_t block_columns = (width + 3) / 4;
+        const uint32_t block_rows = (height + 3) / 4;
+        if (available < static_cast<size_t>(block_columns) * block_rows * stride) return {};
+
+        for (uint32_t by = 0; by < block_rows; ++by) {
+            for (uint32_t bx = 0; bx < block_columns; ++bx) {
+                const uint8_t* block = data + (static_cast<size_t>(by) * block_columns + bx) * stride;
+                uint8_t texel[16][4] = {};
+                DecodeColourBlock(block + (stride == 16 ? 8 : 0), punchthrough, texel);
+
+                if (has_alpha_block) {
+                    uint8_t alpha_of[16] = {};
+                    DecodeAlphaBlock(block, alpha_of);
+                    for (int i = 0; i < 16; ++i) texel[i][3] = alpha_of[i];
+                } else if (stride == 16) {
+                    // DXT3: four bits a texel, two texels a byte, row by row.
+                    for (int i = 0; i < 16; ++i) {
+                        const uint8_t nibble = (i & 1) ? static_cast<uint8_t>(block[i / 2] >> 4)
+                                                       : static_cast<uint8_t>(block[i / 2] & 0x0F);
+                        texel[i][3] = static_cast<uint8_t>((nibble << 4) | nibble);
+                    }
+                }
+
+                for (int i = 0; i < 16; ++i) {
+                    const uint32_t x = bx * 4 + static_cast<uint32_t>(i % 4);
+                    const uint32_t y = by * 4 + static_cast<uint32_t>(i / 4);
+                    if (x >= width || y >= height) continue;
+                    uint8_t* pixel = out.data() + (static_cast<size_t>(y) * width + x) * 4;
+                    for (int c = 0; c < 4; ++c) pixel[c] = texel[i][c];
+                }
+            }
+        }
+        return out;
+    }
+
+    // Uncompressed, described by channel masks rather than a name. Only whole
+    // bytes a channel, which is every layout a .dds of this era uses.
+    if (bits != 32 && bits != 24) return {};
+    const size_t texel_bytes = bits / 8;
+    if (available < static_cast<size_t>(width) * height * texel_bytes) return {};
+
+    auto shift_of = [](uint32_t mask) {
+        int shift = 0;
+        if (mask == 0) return -1;
+        while ((mask & 1u) == 0) { mask >>= 1; ++shift; }
+        return shift;
+    };
+    const int shift[4] = {shift_of(red), shift_of(green), shift_of(blue), shift_of(alpha)};
+    const uint32_t mask[4] = {red, green, blue, alpha};
+
+    for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
+        const uint8_t* source = data + i * texel_bytes;
+        uint32_t word = static_cast<uint32_t>(source[0]) | (static_cast<uint32_t>(source[1]) << 8) |
+                        (static_cast<uint32_t>(source[2]) << 16);
+        if (texel_bytes == 4) word |= static_cast<uint32_t>(source[3]) << 24;
+        uint8_t* pixel = out.data() + i * 4;
+        for (int c = 0; c < 4; ++c) {
+            pixel[c] = shift[c] < 0 ? (c == 3 ? 255 : 0)
+                                    : static_cast<uint8_t>((word & mask[c]) >> shift[c]);
+        }
+    }
+    return out;
+}
+
+// Decodes any format stb understands, plus .dds, to tightly packed R8G8B8A8.
 std::vector<uint8_t> DecodeImage(const std::vector<uint8_t>& encoded, uint32_t& width,
                                  uint32_t& height) {
     width = 0;
     height = 0;
     if (encoded.empty()) return {};
+
+    if (encoded.size() >= 4 && ReadLE32(encoded.data()) == kDdsMagic) {
+        std::vector<uint8_t> rgba = DecodeDds(encoded, width, height);
+        if (rgba.empty()) { width = 0; height = 0; }
+        return rgba;
+    }
 
     int decoded_width = 0, decoded_height = 0, channels = 0;
     stbi_uc* pixels = stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()),
