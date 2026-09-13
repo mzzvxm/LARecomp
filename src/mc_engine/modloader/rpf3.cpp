@@ -137,6 +137,42 @@ bool Rpf3Reader::Find(std::string_view path, Rpf3Entry& out) const {
     return true;
 }
 
+bool Rpf3Reader::ListDirectory(std::string_view path, std::vector<Rpf3Entry>& out) const {
+    out.clear();
+    if (entries_.empty()) return false;
+
+    Rpf3Entry current = entries_[0];
+    for (const std::string& part : SplitPath(path)) {
+        if (!current.is_directory()) return false;
+
+        const uint32_t hash = RageHash(part);
+        uint32_t low = current.first_child();
+        uint32_t high = low + current.child_count();
+        if (high > entries_.size()) return false;
+
+        bool found = false;
+        while (low < high) {
+            const uint32_t mid = low + (high - low) / 2;
+            const uint32_t mid_hash = entries_[mid].hash;
+            if (mid_hash == hash) {
+                current = entries_[mid];
+                found = true;
+                break;
+            }
+            if (mid_hash < hash) low = mid + 1;
+            else high = mid;
+        }
+        if (!found) return false;
+    }
+    if (!current.is_directory()) return false;
+
+    const uint32_t first = current.first_child();
+    const uint32_t count = current.child_count();
+    if (static_cast<uint64_t>(first) + count > entries_.size()) return false;
+    out.assign(entries_.begin() + first, entries_.begin() + first + count);
+    return true;
+}
+
 bool Rpf3Reader::ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const {
     FILE* file = nullptr;
 #if defined(_WIN32)
@@ -164,7 +200,21 @@ bool Rpf3Reader::ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) con
 
 void Rpf3Writer::Add(std::string path, std::vector<uint8_t> data, uint32_t flag,
                      uint32_t resource_type) {
-    files_.push_back(PendingFile{std::move(path), std::move(data), flag, resource_type});
+    files_.push_back(PendingFile{std::move(path), std::move(data), flag, resource_type, false, 0});
+}
+
+void Rpf3Writer::AddHashed(std::string path, uint32_t name_hash, std::vector<uint8_t> data,
+                           uint32_t flag, uint32_t resource_type) {
+    files_.push_back(
+        PendingFile{std::move(path), std::move(data), flag, resource_type, true, name_hash});
+}
+
+void Rpf3Writer::AddFromFile(std::string path, std::filesystem::path source, uint64_t size,
+                             uint32_t flag, uint32_t resource_type) {
+    PendingFile pending{std::move(path), {}, flag, resource_type, false, 0};
+    pending.source = std::move(source);
+    pending.source_size = size;
+    files_.push_back(std::move(pending));
 }
 
 bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
@@ -183,6 +233,13 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
 
     std::vector<Node> nodes;
     nodes.push_back(Node{});  // root
+
+    // What a node is filed under. Normally its own name, but a file cloned out
+    // of another archive keeps the hash that archive gave it -- its name was
+    // never in any string table to begin with.
+    auto hash_of = [](const Node& node) {
+        return (node.file && node.file->hashed) ? node.file->name_hash : RageHash(node.name);
+    };
 
     for (const auto& pending : files_) {
         const auto parts = SplitPath(pending.path);
@@ -222,7 +279,7 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
         kids.reserve(parent.children.size());
         for (const auto& [name, index] : parent.children) kids.push_back(index);
         std::sort(kids.begin(), kids.end(), [&](size_t a, size_t b) {
-            return RageHash(nodes[a].name) < RageHash(nodes[b].name);
+            return hash_of(nodes[a]) < hash_of(nodes[b]);
         });
 
         parent.first_child = next_index;
@@ -244,7 +301,7 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
         Node& node = nodes[index];
         if (node.is_dir) continue;
         node.data_offset = cursor;
-        cursor = AlignUp(cursor + node.file->data.size(), kAlign);
+        cursor = AlignUp(cursor + node.file->payload_size(), kAlign);
     }
     const uint64_t total_size = cursor;
 
@@ -261,13 +318,13 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
             words[3] = child_count;
         } else {
             if ((node.data_offset / kAlign) > 0x1FFFFFull) return false;  // 21-bit sector field
-            words[0] = RageHash(node.name);
-            words[1] = static_cast<uint32_t>(node.file->data.size());
+            words[0] = hash_of(node);
+            words[1] = static_cast<uint32_t>(node.file->payload_size());
             // Eight bits of type, not eleven -- see Rpf3Entry::data_offset. The
             // payload is 2048-aligned, so the offset owns everything above bit
             // seven either way; masking wider than a byte leaks the type into
             // the offset and the streamer reads the wrong place.
-            words[2] = static_cast<uint32_t>((node.data_offset / kAlign) << 11) |
+            words[2] = static_cast<uint32_t>(node.data_offset) |
                        (node.file->resource_type & 0xFFu);
             words[3] = node.file->flag;
         }
@@ -303,14 +360,47 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
     if (ok) ok = std::fwrite(toc.data(), 1, toc.size(), file) == toc.size();
     at = kTocOffset + toc_size;
 
+    std::vector<uint8_t> copy_buffer;
     for (size_t index : order) {
         const Node& node = nodes[index];
         if (node.is_dir || !ok) continue;
         at = pad_to(node.data_offset, at);
         if (!ok) break;
-        ok = std::fwrite(node.file->data.data(), 1, node.file->data.size(), file) ==
-             node.file->data.size();
-        at = node.data_offset + node.file->data.size();
+
+        if (node.file->on_disk()) {
+            // Streamed a megabyte at a time: a music bank is several megabytes
+            // and there can be hundreds of them in one archive.
+            if (copy_buffer.empty()) copy_buffer.resize(1u << 20);
+            FILE* input = nullptr;
+#if defined(_WIN32)
+            if (_wfopen_s(&input, node.file->source.wstring().c_str(), L"rb") != 0) input = nullptr;
+#else
+            input = std::fopen(node.file->source.string().c_str(), "rb");
+#endif
+            if (!input) {
+                ok = false;
+                break;
+            }
+            uint64_t left = node.file->source_size;
+            while (left > 0) {
+                const size_t want =
+                    static_cast<size_t>(std::min<uint64_t>(left, copy_buffer.size()));
+                if (std::fread(copy_buffer.data(), 1, want, input) != want) {
+                    ok = false;
+                    break;
+                }
+                if (std::fwrite(copy_buffer.data(), 1, want, file) != want) {
+                    ok = false;
+                    break;
+                }
+                left -= want;
+            }
+            std::fclose(input);
+        } else {
+            ok = std::fwrite(node.file->data.data(), 1, node.file->data.size(), file) ==
+                 node.file->data.size();
+        }
+        at = node.data_offset + node.file->payload_size();
     }
     pad_to(total_size, at);
 

@@ -86,6 +86,12 @@ class Rpf3Reader {
     // Raw on-disk bytes of a file entry (still LZX-compressed for resources).
     bool ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const;
 
+    // Every child of one directory, in TOC order. The TOC keeps hashes and not
+    // names, so what comes back can be copied but not printed -- which is
+    // exactly what cloning a donor car's folder needs: several of its parts are
+    // named by a hash nobody has cracked, and they still have to travel.
+    bool ListDirectory(std::string_view path, std::vector<Rpf3Entry>& out) const;
+
     const std::filesystem::path& path() const { return path_; }
 
  private:
@@ -102,6 +108,22 @@ class Rpf3Writer {
     // bit30 clear.
     void Add(std::string path, std::vector<uint8_t> data, uint32_t flag, uint32_t resource_type);
 
+    // The same, for a file whose name is not known -- only the hash the shipped
+    // archive filed it under. The last component of `path` is a label: it has
+    // to be unique within its directory and is never hashed, `name_hash` is
+    // written into the entry instead. Anything that looks the file up by name
+    // therefore finds it exactly as it found the original.
+    void AddHashed(std::string path, uint32_t name_hash, std::vector<uint8_t> data, uint32_t flag,
+                   uint32_t resource_type);
+
+    // The same, for a payload that is already a file on disk and goes in
+    // unchanged. It is copied straight from `source` into the archive at Write
+    // time and never held in memory, which is what makes a folder of hundreds
+    // of music banks affordable: holding them all would be gigabytes of host
+    // RAM for bytes that are only ever copied.
+    void AddFromFile(std::string path, std::filesystem::path source, uint64_t size, uint32_t flag,
+                     uint32_t resource_type);
+
     bool Write(const std::filesystem::path& out_path) const;
 
     bool empty() const { return files_.empty(); }
@@ -113,6 +135,15 @@ class Rpf3Writer {
         std::vector<uint8_t> data;
         uint32_t flag = 0;
         uint32_t resource_type = 0;
+        bool hashed = false;      // whether `name_hash` replaces the name's own
+        uint32_t name_hash = 0;
+
+        // Set when the payload lives on disk instead of in `data`.
+        std::filesystem::path source;
+        uint64_t source_size = 0;
+
+        bool on_disk() const { return !source.empty(); }
+        uint64_t payload_size() const { return on_disk() ? source_size : data.size(); }
     };
 
     std::vector<PendingFile> files_;
