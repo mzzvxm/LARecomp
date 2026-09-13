@@ -6,6 +6,13 @@ namespace mc::modloader {
 
 namespace {
 
+// One XCompress chunk of output. A frame may hold up to 32768 bytes, and the
+// game's own files use the full size -- but theirs are really compressed, so a
+// whole frame is a few kilobytes on the wire. A STORED frame of 32768 costs
+// 32786 bytes, and sub_821BC140 hands the inflater one 32768-byte read at a
+// time (32748 usable on the first, which starts twelve bytes in). One full
+// frame still decodes, because the refill completes it; two never do, which is
+// why BuildRsc5File ships anything larger than one frame uncompressed.
 constexpr size_t kChunkOutput = 32768;
 constexpr uint32_t kBlockTypeStored = 3;
 

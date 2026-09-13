@@ -363,6 +363,11 @@ constexpr const char* kSourceArchiveName = "xarchive_cache.rpf";
 // costs no resampling at all.
 constexpr uint32_t kAtlasCell = 256;
 
+// Bytes left between the last buffer of a rebuilt drawable and the end of its
+// segment. The end of a resource does not arrive intact; see PadResourceTail
+// for the two measurements that bracket it.
+constexpr uint32_t kResourceTailSlack = 65536;
+
 bool g_mod_archive_ready = false;
 
 std::filesystem::path ExeDir() {
@@ -1109,6 +1114,12 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                                      std::to_string(lod),
                                  stats);
 
+                std::string pad_error;
+                if (!passthrough && !PadResourceTail(resource, kResourceTailSlack, pad_error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{} {}: {}", vehicle.mod_name,
+                                       vehicle.car, mapping.slot, pad_error);
+                }
+
                 std::vector<uint8_t> file;
                 uint32_t flag = 0;
                 if (!BuildRsc5File(resource, file, flag, error)) {
@@ -1276,6 +1287,11 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
             continue;
         }
         WriteDiagnostics(cache_dir, mod.mod_name, "rim_" + mod.asset, stats);
+
+        std::string rim_pad_error;
+        if (!passthrough && !PadResourceTail(resource, kResourceTailSlack, rim_pad_error)) {
+            LARECOMP_APP_ERROR("[mods] {}/rims/{}: {}", mod.mod_name, mod.asset, rim_pad_error);
+        }
 
         std::vector<uint8_t> file;
         uint32_t flag = 0;
@@ -1670,6 +1686,11 @@ void Init() {
             if (variant == mod.asset && stats.submeshes > 1) {
                 detail += (detail.empty() ? "" : ", ") + std::to_string(stats.submeshes) +
                           " submeshes used";
+            }
+
+            std::string pad_error;
+            if (!passthrough && !PadResourceTail(resource, kResourceTailSlack, pad_error)) {
+                LARECOMP_APP_ERROR("[mods] {}/{}: {}", mod.mod_name, variant, pad_error);
             }
 
             std::vector<uint8_t> file;

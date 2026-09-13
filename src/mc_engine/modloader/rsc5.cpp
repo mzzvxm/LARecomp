@@ -1385,72 +1385,76 @@ bool BuildRsc5File(Rsc5Resource& resource, std::vector<uint8_t>& out_file,
         return false;
     }
 
-    // How much compressed data the streamer will read, which is not the size of
-    // the file.
+    // There is no upper budget on how long the file may be, and the padding
+    // that used to be added here to respect one was doing real harm.
     //
-    // sub_821BC140 pulls the stream in 32768-byte blocks and stops once it has
-    // read as many blocks as the UNCOMPRESSED size needs -- it never consults
-    // how long the file actually is. A shipped resource is smaller compressed
-    // than not, so it always arrives inside that budget. A stream of stored LZX
-    // blocks is not: it costs about eighteen bytes a block MORE than the data
-    // it carries.
+    // Read from the binary rather than assumed. sub_821E5E58 asks the streamer
+    // for `offset = 0xC` plus the destination chunk list, whose sizes sum to
+    // virtual + physical, so the request lands EXACTLY on the ceiling
+    // sub_821BCB10 enforces (`virtual + physical + 12`) and can never exceed it.
+    // The read loop in sub_821BC140 then pulls `min(0x8000, entry size)` at a
+    // time until the chunks are full, consulting the file's own length: a file
+    // longer than it needs simply has a tail nobody reads.
     //
-    // Whether that overflows depends on nothing but the size. A resource of
-    // 3,444,736 bytes rounds up to 106 blocks and has 28 KB of slack, which is
-    // why every character and wheel has always worked. A resource whose size is
-    // an exact multiple of 32768 has NO slack, and every vehicle part is one --
-    // 622592, 524288, 294912, 131072 -- because they keep everything in the
-    // virtual segment. The stream then runs out of input before the output is
-    // full, and the read loop either spins asking for zero bytes or takes a
-    // short read: the garage hanging, and the disc error.
+    // The one real constraint is the other direction. If the stream runs out
+    // before the chunks are full, `v47` becomes zero, the read returns zero,
+    // which is not treated as a short read, and the loop asks for zero bytes
+    // forever. So a segment must never be declared larger than the bytes the
+    // stream actually decodes to -- which is why the padding is gone: it grew
+    // the declared size, changed the page class the resource had always used,
+    // and bought nothing.
+
+    // One LZX frame carries at most 32768 bytes, and a STORED frame is the one
+    // shape the console's streaming decoder will not split.
     //
-    // Padding the virtual segment with a sector of zeroes buys a whole extra
-    // block of budget. Nothing inside the resource moves and no pointer
-    // changes; the segment is simply declared a little larger than it needs to
-    // be, which the loader is free to allocate.
-    constexpr size_t kStreamBlock = 32768;
-    constexpr uint32_t kSector = 2048;
-
-    std::vector<uint8_t> stream = LzxEncodeStored(resource.data.data(), resource.data.size());
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        const size_t budget = (expected + kStreamBlock - 1) / kStreamBlock * kStreamBlock;
-        if (stream.size() <= budget) break;
-
-        uint32_t mantissa = 0, shift = 0;
-        const uint32_t preferred = (resource.flag >> 11) & 0xF;
-        if (!EncodeSegmentSize(resource.virtual_size + kSector, mantissa, shift, preferred)) {
-            error = "cannot pad the virtual segment to fit the streamer's read budget";
-            return false;
-        }
-        // As in GrowPhysicalSegment: the segment becomes exactly the size the
-        // flag can express, never the size that was asked for.
-        const uint32_t encoded = mantissa << (shift + 8);
-        if (encoded <= resource.virtual_size) {
-            error = "virtual segment cannot be padded any further";
-            return false;
-        }
-        resource.data.insert(resource.data.begin() + resource.virtual_size,
-                             encoded - resource.virtual_size, 0);
-        resource.virtual_size = encoded;
-        resource.flag = (resource.flag & ~0x7FFFu) | (shift << 11) | mantissa;
-        expected = static_cast<size_t>(resource.virtual_size) + resource.physical_size;
-
-        stream = LzxEncodeStored(resource.data.data(), resource.data.size());
-    }
-
-    // Everything the game streams is compressed, so mark it as such: the
-    // uncompressed branch of the streamer is never exercised by any shipped
-    // file and cannot be trusted.
-    out_flag = resource.flag | 0x40000000u;
+    // Traced in the game (the inflate probe): on the first call the decoder is
+    // handed 32748 bytes -- a 32768-byte read less the twelve it starts past --
+    // eats all of them and emits nothing, because a stored frame of 32768 costs
+    // 32786 and it wants the whole frame before it writes a byte. On the refill
+    // it finishes that frame, fills the first output chunk, and swallows the
+    // next frame too. Then the output has room, the file has no bytes left, and
+    // the read loop only refills when the buffer empties: it asks for zero
+    // bytes forever. One frame survives this because the refill completes it;
+    // two never do.
+    //
+    // So anything past a single frame goes down the streamer's other road.
+    constexpr size_t kLzxFrame = 32768;
+    const bool one_frame = resource.data.size() <= kLzxFrame;
 
     out_file.clear();
-    out_file.resize(20);
+    if (one_frame) {
+        const std::vector<uint8_t> stream =
+            LzxEncodeStored(resource.data.data(), resource.data.size());
+        out_flag = resource.flag | 0x40000000u;
+        out_file.resize(20);
+        StoreBE32(out_file.data() + 0, kRsc5Magic);
+        StoreBE32(out_file.data() + 4, resource.type);
+        StoreBE32(out_file.data() + 8, out_flag);
+        StoreBE32(out_file.data() + 12, kXCompressMagic);
+        StoreBE32(out_file.data() + 16, static_cast<uint32_t>(stream.size()));
+        out_file.insert(out_file.end(), stream.begin(), stream.end());
+        return true;
+    }
+
+    // The uncompressed road, read straight out of sub_821BC140: with bit 30
+    // clear it never touches the inflater and reads each destination chunk
+    // directly, one after another, starting at the request offset of twelve
+    // that sub_821E5E58 passes. The compressed branch is the one that subtracts
+    // those twelve again; this one does not. So the payload sits at offset
+    // TWELVE, not twenty, and the file is exactly 12 + virtual + physical --
+    // which is also exactly the ceiling sub_821BCB10 enforces for an
+    // uncompressed entry, `offset + requested <= entry size`.
+    //
+    // Getting that length wrong is why this road looked impassable before: a
+    // 20-byte header puts the payload eight bytes late AND leaves the entry
+    // eight bytes short of the ceiling, so the request is refused and the car
+    // loads forever with nothing logged.
+    out_flag = (resource.flag | 0x80000000u) & ~0x40000000u;
+    out_file.resize(12);
     StoreBE32(out_file.data() + 0, kRsc5Magic);
     StoreBE32(out_file.data() + 4, resource.type);
     StoreBE32(out_file.data() + 8, out_flag);
-    StoreBE32(out_file.data() + 12, kXCompressMagic);
-    StoreBE32(out_file.data() + 16, static_cast<uint32_t>(stream.size()));
-    out_file.insert(out_file.end(), stream.begin(), stream.end());
+    out_file.insert(out_file.end(), resource.data.begin(), resource.data.end());
     return true;
 }
 
@@ -3280,6 +3284,41 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     return true;
 }
 
+// The coarsest page a grown segment may use.
+//
+// Nothing about the page COUNT needs guarding: 682 of the 12,987 resources the
+// game ships declare more than 127 pages and the largest declares 1454, so the
+// streamer's chunk map is not one entry per page and a grown segment is free to
+// ask for as many as it needs.
+//
+// The page SIZE needed guarding while every resource went down the compressed
+// road: a page class of 32768 or coarser can only express multiples of the
+// streamer's block, so padding a segment away from an exact multiple never
+// closed the deficit -- a four-megabyte vehicle body 2376 bytes over its
+// budget, and a purchase that loads forever. Half a block is the coarsest page
+// that still lets one padding step change the answer. Only payloads of a
+// single frame take that road now; see EncodeGrownSize.
+constexpr uint32_t kCoarsestGrownShift = 6;  // 256 << 6 = 16384
+
+// Re-encodes `size`, keeping the page class the resource already uses unless it
+// is one padding cannot work with.
+bool EncodeGrownSize(uint32_t size, uint32_t preferred, uint32_t& mantissa, uint32_t& shift) {
+    // The cap above exists to keep a padding step able to move the answer, and
+    // padding only happens on the compressed road, which is the one a payload of
+    // a single LZX frame or less takes. Past that the resource ships
+    // uncompressed, nothing pads it, and a coarser page is not only allowed but
+    // wanted: the page class sets the size of the blocks the resource is split
+    // into, and a buffer has to fit inside one. See PadResourceTail and
+    // MeshOffset::block_align.
+    const uint32_t coarsest = size > 32768 ? 15u : kCoarsestGrownShift;
+    const uint32_t wanted = (preferred == 0 || preferred > coarsest) ? coarsest : preferred;
+    if (EncodeSegmentSize(size, mantissa, shift, wanted) && shift == wanted) return true;
+    for (uint32_t candidate = 3; candidate <= coarsest; ++candidate) {
+        if (EncodeSegmentSize(size, mantissa, shift, candidate) && shift == candidate) return true;
+    }
+    return EncodeSegmentSize(size, mantissa, shift, preferred);
+}
+
 bool GrowPhysicalSegment(Rsc5Resource& resource, uint32_t bytes, std::string& error) {
     if (bytes == 0) return true;
     if (resource.physical_size == 0) {
@@ -3289,7 +3328,7 @@ bool GrowPhysicalSegment(Rsc5Resource& resource, uint32_t bytes, std::string& er
 
     uint32_t mantissa = 0, shift = 0;
     const uint32_t preferred = (resource.flag >> 26) & 0xF;
-    if (!EncodeSegmentSize(resource.physical_size + bytes, mantissa, shift, preferred)) {
+    if (!EncodeGrownSize(resource.physical_size + bytes, preferred, mantissa, shift)) {
         error = "physical segment cannot be encoded at " +
                 std::to_string(resource.physical_size + bytes) + " bytes";
         return false;
@@ -3312,7 +3351,7 @@ bool GrowVirtualSegment(Rsc5Resource& resource, uint32_t bytes, std::string& err
 
     uint32_t mantissa = 0, shift = 0;
     const uint32_t preferred = (resource.flag >> 11) & 0xF;
-    if (!EncodeSegmentSize(resource.virtual_size + bytes, mantissa, shift, preferred)) {
+    if (!EncodeGrownSize(resource.virtual_size + bytes, preferred, mantissa, shift)) {
         error = "virtual segment cannot be encoded at " +
                 std::to_string(resource.virtual_size + bytes) + " bytes";
         return false;
@@ -3327,6 +3366,137 @@ bool GrowVirtualSegment(Rsc5Resource& resource, uint32_t bytes, std::string& err
                          encoded - resource.virtual_size, 0);
     resource.virtual_size = encoded;
     resource.flag = (resource.flag & ~0x7FFFu) | (shift << 11) | mantissa;
+    return true;
+}
+
+uint32_t VirtualBlockSize(const Rsc5Resource& resource) {
+    return 4096u << ((resource.flag >> 11) & 0xFu);
+}
+
+bool RoundVirtualToBlock(Rsc5Resource& resource, std::string& error) {
+    // sub_821E57B8 emits blocks of 4096 << shift for as long as they fit and
+    // then HALVES, so a segment whose size is not a whole number of those ends
+    // in a tail of smaller blocks -- and a buffer placed on a multiple of the
+    // big block can still straddle two of the small ones. Rounding the segment
+    // up to a whole number of big blocks makes every block the same size, and
+    // then "aligned to the block" means what it says. Measured: without this the
+    // BMW's paint buffer sat at 1048576, inside a 524288 block, and crossed.
+    const uint32_t block = VirtualBlockSize(resource);
+    if (block == 0 || resource.virtual_size % block == 0) return true;
+    const uint64_t rounded = (uint64_t(resource.virtual_size) / block + 1) * block;
+    if (rounded > 0xFFFFFFFFull) {
+        error = "rounding the virtual segment to a whole block overflows";
+        return false;
+    }
+    return GrowVirtualSegment(resource, static_cast<uint32_t>(rounded) - resource.virtual_size,
+                              error);
+}
+
+bool SetVirtualPageShift(Rsc5Resource& resource, uint32_t shift, std::string& error) {
+    if (shift > 15) {
+        error = "page shift " + std::to_string(shift) + " is past the four bits the flag has";
+        return false;
+    }
+    const uint32_t unit = 256u << shift;
+    const uint64_t pages = (uint64_t(resource.virtual_size) + unit - 1) / unit;
+    if (pages == 0 || pages > 0x7FF) {
+        error = "a page of " + std::to_string(unit) + " cannot express " +
+                std::to_string(resource.virtual_size) + " bytes";
+        return false;
+    }
+    const uint32_t encoded = static_cast<uint32_t>(pages) * unit;
+    if (encoded > resource.virtual_size) {
+        resource.data.insert(resource.data.begin() + resource.virtual_size,
+                             encoded - resource.virtual_size, 0);
+    }
+    resource.virtual_size = encoded;
+    resource.flag = (resource.flag & ~0x7FFFu) | (shift << 11) | static_cast<uint32_t>(pages);
+    return true;
+}
+
+bool PadResourceTail(Rsc5Resource& resource, uint32_t want, std::string& error,
+                     uint32_t* out_room) {
+    Rsc5View view(resource.data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) {
+        error = "resource is not a drawable";
+        return false;
+    }
+
+    // The furthest byte any LOD still draws from, in each segment separately: a
+    // vehicle keeps its buffers in the virtual segment, but a resource that
+    // keeps them in the physical one has to be padded there instead, since
+    // growing the virtual segment only pushes the physical one further along
+    // and leaves the same bytes at the end of the file.
+    size_t virtual_end = 0, physical_end = 0;
+    for (uint32_t slot = 0; slot < drawable.lod_slots; ++slot) {
+        uint32_t lod = 0;
+        if (!view.U32(drawable.drawable + drawable.lod_field + slot * 4, lod) || lod == 0) continue;
+
+        uint32_t model_array = 0;
+        uint16_t model_count = 0;
+        if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) continue;
+
+        for (uint16_t m = 0; m < model_count; ++m) {
+            uint32_t model = 0, geometry_array = 0;
+            uint16_t geometry_count = 0;
+            if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+            if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count))
+                continue;
+
+            for (uint16_t g = 0; g < geometry_count; ++g) {
+                uint32_t geometry = 0, buffer = 0, stride = 0, index_count = 0;
+                uint16_t vertex_count = 0;
+                if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+                view.U32(geometry + 44, index_count);
+                view.U16(geometry + 52, vertex_count);
+
+                struct { uint32_t pointer_at; size_t bytes; } spans[2] = {{0, 0}, {0, 0}};
+                if (view.U32(geometry + 12, buffer) && buffer &&
+                    view.U32(buffer + 12, stride) && stride) {
+                    view.U32(buffer + 24, spans[0].pointer_at);
+                    spans[0].bytes = static_cast<size_t>(vertex_count) * stride;
+                }
+                if (view.U32(geometry + 28, buffer) && buffer) {
+                    view.U32(buffer + 8, spans[1].pointer_at);
+                    spans[1].bytes = static_cast<size_t>(index_count) * 2;
+                }
+
+                for (const auto& span : spans) {
+                    size_t at = 0;
+                    if (span.pointer_at == 0 || span.bytes == 0) continue;
+                    if (!view.Offset(span.pointer_at, span.bytes, at)) continue;
+                    const size_t end = at + span.bytes;
+                    if (end <= resource.virtual_size) {
+                        virtual_end = std::max(virtual_end, end);
+                    } else {
+                        physical_end = std::max(physical_end, end - resource.virtual_size);
+                    }
+                }
+            }
+        }
+    }
+
+    if (physical_end != 0 && resource.physical_size != 0) {
+        const size_t room = resource.physical_size - std::min<size_t>(physical_end,
+                                                                     resource.physical_size);
+        if (room < want &&
+            !GrowPhysicalSegment(resource, want - static_cast<uint32_t>(room), error)) {
+            return false;
+        }
+        if (out_room) {
+            *out_room = static_cast<uint32_t>(resource.physical_size - physical_end);
+        }
+        return true;
+    }
+    if (virtual_end == 0) return true;
+    const size_t room = resource.virtual_size - std::min<size_t>(virtual_end,
+                                                                 resource.virtual_size);
+    if (room < want && !GrowVirtualSegment(resource, want - static_cast<uint32_t>(room), error)) {
+        return false;
+    }
+    if (out_room) *out_room = static_cast<uint32_t>(resource.virtual_size - virtual_end);
     return true;
 }
 

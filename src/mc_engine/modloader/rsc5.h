@@ -56,22 +56,21 @@ bool ParseRsc5Header(const std::vector<uint8_t>& file, Rsc5Resource& out,
 // A mantissa is a page count, and there was a moment where that looked like a
 // budget: sub_821BC140 walks a chunk array at +8 of the request with its count
 // at +1540, twelve bytes an entry, which reads as a ceiling of 127. It is not
-// one, and the shipped data says so -- the driver's own resource declares 26
-// virtual pages and 207 physical, 233 chunks, and loads. Whatever +1540 counts,
-// it is not one entry per page, so nothing here caps the page count.
+// one, and the shipped data settles it -- of the 12,987 resources in
+// xarchive_cache.rpf, 682 declare more than 127 pages and the largest declares
+// 1454. Whatever +1540 counts, it is not one entry per page, so nothing here
+// caps the page count. The page SIZE is what matters: it sets the blocks a
+// resource is split into -- see kCoarsestGrownShift and PadResourceTail.
 bool EncodeSegmentSize(uint32_t size, uint32_t& mantissa, uint32_t& shift,
                        uint32_t preferred_shift = 0);
 
-// Wraps a resource back into the on-disk .xrsc shape: the 12-byte RSC5 header,
-// the 8-byte XCompress marker, then an LZX stream. `out_flag` comes back with
-// the compression bit set and is what the archive entry must carry.
-//
-// The resource is taken by reference because it may have to grow: the game
-// reads a fixed number of 32768-byte blocks, worked out from the uncompressed
-// size and not from the file, and a stream of stored LZX blocks is slightly
-// larger than the data it carries. When that does not fit, the virtual segment
-// is padded with zeroes until it does -- see the comment on the implementation
-// for why every vehicle part needs this and no character ever did.
+// Wraps a resource back into the on-disk .xrsc shape. A payload of one LZX
+// frame (32768 bytes) or less gets the 12-byte RSC5 header, the 8-byte
+// XCompress marker and a stored LZX stream, with the compression bit set in
+// `out_flag`. Anything larger ships uncompressed: bit 31 set, bit 30 clear and
+// the payload straight after the 12-byte header -- see the implementation for
+// why the streamer cannot take more than one stored frame. `out_flag` is what
+// the archive entry must carry.
 bool BuildRsc5File(Rsc5Resource& resource, std::vector<uint8_t>& out_file,
                    uint32_t& out_flag, std::string& error);
 
@@ -99,6 +98,47 @@ bool GrowPhysicalSegment(Rsc5Resource& resource, uint32_t bytes, std::string& er
 // physical segment moves along with it -- which changes nothing either, since a
 // physical address is resolved relative to wherever the virtual segment ends.
 bool GrowVirtualSegment(Rsc5Resource& resource, uint32_t bytes, std::string& error);
+
+// Leaves at least `want` bytes between the last buffer any LOD draws from and
+// the end of the segment that buffer lives in, growing the segment if it does
+// not already have that much room.
+//
+// The end of a resource does not arrive intact. A probe once left the index
+// buffer 16,516 bytes from the end of a wheel and it came back holed; 64 KB of
+// nothing after it came back clean. The BMW hit it again from the other side:
+// interior0_lod_0 shipped PERFECT -- every index in range, every edge sane,
+// measured off the file in xarchive_mods.rpf -- with its last buffer 4,452
+// bytes from the end of a 2.9 MB segment, and in the game those 10,138
+// triangles of paint came back as slabs. The drawables that drew correctly all
+// had between 72,844 and 125,694 bytes after their last buffer.
+//
+// Measuring is the point. The rewrite already asks for slack when it grows
+// (MeshOffset::grow_slack), but a later shader pass writes its own buffers into
+// that slack without growing anything, so "this resource was grown" says
+// nothing about whether the last buffer is safe. Call this once, after every
+// pass has had its turn.
+// `out_room`, when given, comes back as the bytes that end up after the last
+// buffer, so a caller can put the number the next log has to be judged on into
+// its own line.
+bool PadResourceTail(Rsc5Resource& resource, uint32_t want, std::string& error,
+                     uint32_t* out_room = nullptr);
+
+// The largest block the virtual segment will be split into, which is
+// 4096 << page_shift. A buffer has to fit inside one of these.
+uint32_t VirtualBlockSize(const Rsc5Resource& resource);
+
+// Grows the virtual segment to a whole number of those blocks, so that every
+// block is the same size and a buffer aligned to one is inside one. Without it
+// the segment ends in a tail of halved blocks and the alignment means nothing
+// there. Call after the last buffer is placed, with PadResourceTail.
+bool RoundVirtualToBlock(Rsc5Resource& resource, std::string& error);
+
+// Re-states the virtual segment in a coarser (or finer) page class, padding it
+// up to a whole number of pages. Every virtual address is unchanged -- only the
+// flag and the bytes after the end move -- and the point is the block size:
+// coarser pages mean bigger blocks, and a buffer that has to be contiguous can
+// only be as big as a block. Use before rewriting geometry, not after.
+bool SetVirtualPageShift(Rsc5Resource& resource, uint32_t shift, std::string& error);
 
 struct RewriteStats {
     uint32_t vertices = 0;   // what ended up in the resource
