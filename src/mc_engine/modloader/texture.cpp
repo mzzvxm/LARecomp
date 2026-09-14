@@ -574,6 +574,9 @@ struct Cell {
     float min_v = 0.0f, max_v = 1.0f;
     int tiles_u = 1, tiles_v = 1;
     int origin_u = 0, origin_v = 0;  // the tile the range starts in
+    // Whether the range was too wide to be covered by repeating the image, so
+    // the UVs wrap into one copy of it instead of being scaled into several.
+    bool wrap_u = false, wrap_v = false;
 };
 
 // A UV range wider than one unit means the material tiles its texture. The atlas
@@ -581,14 +584,35 @@ struct Cell {
 // whole range is covered by repeating the image inside the cell instead, and the
 // UVs are scaled into it. Clamping instead is what folds a whole model's texture
 // onto one edge of itself.
+constexpr int kMaxTiles = 4;
+
 void MeasureTiles(Cell& cell) {
     constexpr float kSlack = 1e-3f;  // exporters overshoot 1.0 by a rounding step
     cell.origin_u = static_cast<int>(std::floor(cell.min_u + kSlack));
     cell.origin_v = static_cast<int>(std::floor(cell.min_v + kSlack));
-    cell.tiles_u = std::clamp(
-        static_cast<int>(std::ceil(cell.max_u - kSlack)) - cell.origin_u, 1, 4);
-    cell.tiles_v = std::clamp(
-        static_cast<int>(std::ceil(cell.max_v - kSlack)) - cell.origin_v, 1, 4);
+    const int wanted_u = static_cast<int>(std::ceil(cell.max_u - kSlack)) - cell.origin_u;
+    const int wanted_v = static_cast<int>(std::ceil(cell.max_v - kSlack)) - cell.origin_v;
+
+    // Beyond a handful of repeats the cell cannot hold them, and what used to
+    // happen then was the worst of the options: the count was clamped and the
+    // UVs were scaled by the clamped count, so everything past the fourth tile
+    // saturated. Measured on this car's cabin, where leather and headlining run
+    // their texture across the whole surface -- the seat material's U spans
+    // -92.695 to 30.287, a hundred and twenty-three repeats, which scaled by
+    // four and clamped put 99% of the surface on one edge of its cell. A dash,
+    // a headliner and a door card all reading a single texel is exactly what
+    // "the interior came out flat" looks like.
+    //
+    // So past the ceiling the cell holds ONE copy and the UVs wrap into it,
+    // which is what the material asked for in the first place. The cost is a
+    // seam wherever a triangle crosses a repeat -- the atlas cannot wrap in
+    // hardware, so the two sides of that triangle land at opposite edges of the
+    // cell -- and that is a thin artifact against a surface that otherwise has
+    // no detail at all.
+    cell.wrap_u = wanted_u > kMaxTiles;
+    cell.wrap_v = wanted_v > kMaxTiles;
+    cell.tiles_u = cell.wrap_u ? 1 : std::clamp(wanted_u, 1, kMaxTiles);
+    cell.tiles_v = cell.wrap_v ? 1 : std::clamp(wanted_v, 1, kMaxTiles);
 }
 
 }  // namespace
@@ -757,13 +781,22 @@ bool BuildMeshAtlas(Mesh& mesh, uint32_t cell_size, Image& atlas, std::string& e
             MeshVertex& vertex = mesh.vertices[v];
             // An untextured part collapses onto the middle of its flat cell:
             // whatever its own UVs said, there is nothing for them to address.
-            const float u = textured ? std::clamp((vertex.u - static_cast<float>(cell.origin_u)) /
-                                                      static_cast<float>(cell.tiles_u),
-                                                  0.0f, 1.0f)
+            auto into_cell = [](float value, int origin, int tiles, bool wrap) {
+                const float local = (value - static_cast<float>(origin)) /
+                                    static_cast<float>(tiles);
+                if (!wrap) return std::clamp(local, 0.0f, 1.0f);
+                // The repeat the material asked for, folded into the one copy
+                // the cell holds. Anything that lands exactly on a boundary is
+                // pulled just inside it rather than to zero, so a seam stays a
+                // seam instead of becoming a wrap of its own.
+                const float fraction = local - std::floor(local);
+                return std::clamp(fraction, 0.0f, 1.0f);
+            };
+            const float u = textured ? into_cell(vertex.u, cell.origin_u, cell.tiles_u,
+                                                 cell.wrap_u)
                                      : 0.5f;
-            const float w = textured ? std::clamp((vertex.v - static_cast<float>(cell.origin_v)) /
-                                                      static_cast<float>(cell.tiles_v),
-                                                  0.0f, 1.0f)
+            const float w = textured ? into_cell(vertex.v, cell.origin_v, cell.tiles_v,
+                                                 cell.wrap_v)
                                      : 0.5f;
             vertex.u = origin_u + inset_u + u * (span - 2.0f * inset_u);
             vertex.v = origin_v + inset_v + w * (span - 2.0f * inset_v);
