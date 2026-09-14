@@ -195,6 +195,33 @@ REXCVAR_DEFINE_INT32(model_mods_rim_texture_mode, -1, "MCLA/Mods",
     "blank. Force the choice with 0 or 1 when a mod's alpha does not say what "
     "it meant.");
 
+REXCVAR_DEFINE_BOOL(model_mods_rim_shade_occlusion, true, "MCLA/Mods",
+    "Bake the wheel's shade lane from occlusion measured on the replacement."
+    "\n"
+    "A shipped wheel carries a baked lane: measured on three of them it runs "
+    "0..252 with a deviation near fifty (bbs_ch 0..252 mean 155 dev 52, "
+    "amer_razor 5..254 mean 186 dev 45, 5zigen_5zr 0..249 mean 144 dev 55). "
+    "A modded wheel had none: flooding one average gives a deviation of ZERO, "
+    "and the only shading left is the material's specular, which is pinned to "
+    "the geometry and sweeps round as the wheel turns. That is what \"the "
+    "normals change with rotation\" is, and it is not the normals."
+    "\n"
+    "The other answer -- model_mods_rim_inherit_shade -- carries the "
+    "template's lane across by proximity, and lights the wheel NEON: the lane's "
+    "colour is 0x000000 on every shipped wheel, so what moves is the UV1 band "
+    "beside it, and a band picks a material (RimMaterialA..E). Scattered across "
+    "a shape that does not share them, some vertices land on the emissive one."
+    "\n"
+    "So the lane is measured instead of copied or invented. Validated before "
+    "being switched on: this car's rim comes out 0..255 mean 156 deviation 77 "
+    "against a target of mean 155 deviation 52 -- the mean lands on its own, "
+    "and only the contrast is pulled in. Off falls back to the flat fill."
+    "\n"
+    "Takes precedence over model_mods_rim_shade_profile, which guesses the same "
+    "lane from statistics and which its own comment scores at R^2 -0.09 across "
+    "wheels -- no better than the flat average it replaces.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(model_mods_rim_inherit_shade, false, "MCLA/Mods",
     "Diagnostic. Copy the shipped wheel's per-vertex shading onto the "
     "replacement, vertex by vertex from whichever original vertex is nearest. "
@@ -1414,7 +1441,12 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
             if (whole_rim) offset.force_shader = static_cast<int32_t>(textured_shader);
         }
         offset.uniform_shade = !REXCVAR_GET(model_mods_rim_inherit_shade);
-        offset.shade_profile = offset.uniform_shade && REXCVAR_GET(model_mods_rim_shade_profile);
+        offset.shade_occlusion =
+            offset.uniform_shade && REXCVAR_GET(model_mods_rim_shade_occlusion);
+        // The statistical guess only runs when the measurement is not: they
+        // write the same lane, and the one that describes the actual mesh wins.
+        offset.shade_profile = offset.uniform_shade && !offset.shade_occlusion &&
+                               REXCVAR_GET(model_mods_rim_shade_profile);
         offset.grow_buffers = REXCVAR_GET(model_mods_grow);
         offset.x = static_cast<float>(REXCVAR_GET(model_mods_rim_offset_x));
         offset.yaw += static_cast<float>(REXCVAR_GET(model_mods_rim_yaw));
@@ -1481,9 +1513,22 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
             }
         }
 
-        LARECOMP_APP_INFO("[mods] {} -> rim {} ({} tris in {} submesh(es){}{})", mod.mod_name,
+        // The shade lane is reported because it is the whole of the wheel's
+        // lighting and it is invisible from a screenshot: a flat lane and a
+        // baked one look the same until the wheel turns. A deviation of zero
+        // means the bake did not run.
+        std::string shade;
+        if (stats.shade_deviation >= 0.0f) {
+            shade = fmt::format(", shade {}..{} mean {:.0f} deviation {:.0f}", stats.shade_low,
+                                stats.shade_high, stats.shade_mean, stats.shade_deviation);
+        } else if (offset.shade_profile) {
+            shade = ", shade profiled";
+        } else if (offset.uniform_shade) {
+            shade = ", shade flat";
+        }
+        LARECOMP_APP_INFO("[mods] {} -> rim {} ({} tris in {} submesh(es){}{}{})", mod.mod_name,
                           mod.asset, stats.triangles, stats.submeshes,
-                          stats.decimated ? ", decimated" : "", paint);
+                          stats.decimated ? ", decimated" : "", paint, shade);
     }
     return built;
 }

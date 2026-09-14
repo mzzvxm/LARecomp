@@ -146,6 +146,15 @@ struct RewriteStats {
     uint32_t bones = 0;       // palette entries used, when the mesh came skinned
     uint32_t first_bone = 0;  // bone the heaviest palette slot maps to
     bool decimated = false;  // the mesh had to be reduced to fit
+    // The shade lane that was baked, when MeshOffset::shade_occlusion asked for
+    // one. Reported because a lane is invisible in the file and its whole point
+    // is its spread: a shipped wheel runs about 0..252 with a deviation near
+    // fifty, and a flooded one has a deviation of zero. Without these in the log
+    // there is no way to tell from a screenshot whether the bake even ran.
+    uint32_t shade_low = 0;
+    uint32_t shade_high = 0;
+    float shade_mean = 0.0f;
+    float shade_deviation = -1.0f;   // negative when nothing was baked
     uint32_t submeshes = 0;  // how many of the drawable's slots it was dealt into
     // Which shader of the group ends up drawing the mesh -- the texture swap
     // needs it to know whose diffuse map to overwrite.
@@ -248,6 +257,15 @@ struct MeshOffset {
     // -- it replaces that mode's flat fill, and keeps its band and tint.
     bool shade_profile = false;
 
+    // Bake the shade lane from occlusion measured on the replacement itself.
+    //
+    // The honest answer to a flat-lit wheel, and the only one of the three that
+    // describes the mesh actually being drawn. See BakeOcclusion for what the
+    // other two do and why neither works: a flooded lane has zero deviation
+    // where every shipped wheel has about fifty, and carrying the template's
+    // lane across by proximity lights the wheel neon. Requires uniform_shade,
+    // whose flooded band it keeps and whose flat level it replaces.
+    bool shade_occlusion = false;
     // Whether the mesh already sits where it belongs and must not be fitted.
     //
     // A character and a wheel each replace one whole thing, so scaling them into

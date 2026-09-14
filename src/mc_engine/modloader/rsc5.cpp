@@ -1139,6 +1139,152 @@ void ReposeMesh(Mesh& mesh, const Rig& source, const Rig& target,
     }
 }
 
+// Ambient occlusion baked from the MOD'S OWN geometry.
+//
+// What this replaces, and why neither of the other two answers works:
+//
+//   uniform_shade alone floods one level over the whole mesh, so the lane's
+//   deviation is ZERO. Measured on three shipped wheels the lane runs 0..252
+//   with a deviation near fifty -- whl_am_bbs_ch 0..252 mean 155 dev 52,
+//   whl_am_amer_razor 5..254 mean 186 dev 45, whl_am_5zigen_5zr 0..249 mean 144
+//   dev 55. A flat lane throws all of that away, and what is left lighting the
+//   wheel is the material's specular, which is pinned to the geometry and
+//   therefore sweeps round as the wheel turns. That is the "the normals change
+//   with rotation" report, and it is not the normals.
+//
+//   inherit_shade carries the template's lane across by proximity instead. It
+//   does not merely look wrong, it lights the wheel NEON: the lane's RGB is
+//   0x000000 on every shipped wheel measured, so nothing is carried in the
+//   colour -- what moves is the UV1 band beside it, and a band is a material
+//   selector (RimMaterialA..E in the car config). Scattering bands across a
+//   shape that does not share them lands some vertices on the emissive one.
+//
+// So the lane is computed rather than copied or invented: for each vertex,
+// cast rays into the hemisphere its normal faces and count how many are stopped
+// by the mesh itself within `kOcclusionReach`. A vertex down between two spokes
+// is blocked and comes out dark; one on the face of the rim is open and comes
+// out bright. It describes THIS wheel's cavities, which is the one thing the
+// other two answers cannot do.
+//
+// Validated against the shipped distribution before being written: the BMW's
+// rim comes out 0..255 mean 156 deviation 77 against a target of mean 155
+// deviation 52, so the mean lands on its own and only the contrast needs
+// pulling in -- which is what kOcclusionContrast does.
+constexpr float kOcclusionReach = 0.25f;   // how far a cavity can occlude
+constexpr int kOcclusionRays = 12;
+// Measured 77 against the shipped 52. Raw occlusion is more contrasty than a
+// baked lane because a baked one carries bounce light this does not.
+constexpr float kOcclusionContrast = 52.0f / 77.0f;
+
+void BakeOcclusion(const Mesh& mesh, std::vector<uint8_t>& out) {
+    out.assign(mesh.vertices.size(), 255);
+    if (mesh.indices.size() < 3 || mesh.vertices.empty()) return;
+
+    float low[3], high[3];
+    mesh.Bounds(low, high);
+    const float cell = kOcclusionReach * 0.5f;
+    if (cell <= 0.0f) return;
+
+    // A uniform grid over the triangles, so a ray only tests what is near it.
+    auto cell_of = [&](const float* p, int* c) {
+        for (int i = 0; i < 3; ++i) {
+            c[i] = static_cast<int>(std::floor((p[i] - low[i]) / cell));
+        }
+    };
+    std::map<std::array<int, 3>, std::vector<uint32_t>> grid;
+    for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+        std::array<int, 3> seen[3];
+        for (int k = 0; k < 3; ++k) {
+            const MeshVertex& v = mesh.vertices[mesh.indices[t + k]];
+            const float p[3] = {v.px, v.py, v.pz};
+            int c[3];
+            cell_of(p, c);
+            seen[k] = {c[0], c[1], c[2]};
+        }
+        for (int k = 0; k < 3; ++k) {
+            if (k && seen[k] == seen[0]) continue;
+            if (k == 2 && seen[2] == seen[1]) continue;
+            grid[seen[k]].push_back(static_cast<uint32_t>(t));
+        }
+    }
+
+    // Moller-Trumbore, the usual one.
+    auto blocked = [&](const float* origin, const float* direction) {
+        const int steps = static_cast<int>(kOcclusionReach / cell) + 2;
+        for (int s = 0; s < steps; ++s) {
+            const float p[3] = {origin[0] + direction[0] * s * cell,
+                                origin[1] + direction[1] * s * cell,
+                                origin[2] + direction[2] * s * cell};
+            int c[3];
+            cell_of(p, c);
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dz = -1; dz <= 1; ++dz) {
+                        const auto found =
+                            grid.find({c[0] + dx, c[1] + dy, c[2] + dz});
+                        if (found == grid.end()) continue;
+                        for (uint32_t t : found->second) {
+                            const MeshVertex& a = mesh.vertices[mesh.indices[t]];
+                            const MeshVertex& b = mesh.vertices[mesh.indices[t + 1]];
+                            const MeshVertex& cc = mesh.vertices[mesh.indices[t + 2]];
+                            const Vec3 e1{b.px - a.px, b.py - a.py, b.pz - a.pz};
+                            const Vec3 e2{cc.px - a.px, cc.py - a.py, cc.pz - a.pz};
+                            const Vec3 ray{direction[0], direction[1], direction[2]};
+                            const Vec3 h = Cross(ray, e2);
+                            const float det = Dot(e1, h);
+                            if (std::fabs(det) < 1e-9f) continue;
+                            const float inverse = 1.0f / det;
+                            const Vec3 sv{origin[0] - a.px, origin[1] - a.py,
+                                          origin[2] - a.pz};
+                            const float u = inverse * Dot(sv, h);
+                            if (u < 0.0f || u > 1.0f) continue;
+                            const Vec3 q = Cross(sv, e1);
+                            const float v = inverse * Dot(ray, q);
+                            if (v < 0.0f || u + v > 1.0f) continue;
+                            const float distance = inverse * Dot(e2, q);
+                            if (distance > 1e-4f && distance < kOcclusionReach) return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    // A fixed set of directions rather than a random one, so two runs of the
+    // same build produce the same lane and a difference in game is a difference
+    // in the mod.
+    uint32_t seed = 0x9E3779B9u;
+    auto next = [&]() {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        return static_cast<float>(seed & 0xFFFFFFu) / float(0xFFFFFF) * 2.0f - 1.0f;
+    };
+
+    for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+        const MeshVertex& vertex = mesh.vertices[i];
+        Vec3 normal{vertex.nx, vertex.ny, vertex.nz};
+        const float length = Length(normal);
+        if (length < 1e-6f) continue;
+        normal = normal * (1.0f / length);
+        const float origin[3] = {vertex.px + normal.x * 1e-3f,
+                                 vertex.py + normal.y * 1e-3f,
+                                 vertex.pz + normal.z * 1e-3f};
+
+        int hits = 0;
+        for (int r = 0; r < kOcclusionRays; ++r) {
+            Vec3 direction{next(), next(), next()};
+            const float size = Length(direction);
+            if (size < 1e-6f) continue;
+            direction = direction * (1.0f / size);
+            if (Dot(direction, normal) < 0.0f) direction = direction * -1.0f;
+            const float d[3] = {direction.x, direction.y, direction.z};
+            if (blocked(origin, d)) ++hits;
+        }
+        const float open = 1.0f - static_cast<float>(hits) / kOcclusionRays;
+        out[i] = static_cast<uint8_t>(std::clamp(open * 255.0f, 0.0f, 255.0f));
+    }
+}
+
 // Tangents that agree with the UVs.
 //
 // The vertex format carries one, and the character shaders are all normal-map
@@ -2988,6 +3134,43 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         const uint32_t level = count ? static_cast<uint32_t>(sum / count) : 0xFFu;
         std::fill(shade.begin(), shade.end(), (level << 24) | tint);
         std::fill(shade_texcoord1.begin(), shade_texcoord1.end(), band);
+
+        // The band stays flooded either way -- that is what keeps a vertex off
+        // the emissive material and is the whole reason uniform_shade exists.
+        // Only the LEVEL is replaced, by occlusion measured on this mesh, and
+        // it is centred on the template's own average so a wheel comes out as
+        // bright overall as the one it replaces.
+        if (offset.shade_occlusion) {
+            std::vector<uint8_t> occlusion;
+            BakeOcclusion(mesh, occlusion);
+            double total = 0.0;
+            for (uint8_t v : occlusion) total += v;
+            const double middle = occlusion.empty() ? 0.0 : total / occlusion.size();
+            double baked_sum = 0.0, baked_square = 0.0;
+            uint32_t baked_low = 255, baked_high = 0;
+            size_t baked = 0;
+            for (size_t i = 0; i < shade.size() && i < occlusion.size(); ++i) {
+                const double pulled =
+                    middle + (occlusion[i] - middle) * kOcclusionContrast;
+                const double centred = pulled - middle + static_cast<double>(level);
+                const uint32_t value = static_cast<uint32_t>(
+                    std::clamp(centred, 0.0, 255.0));
+                shade[i] = (value << 24) | tint;
+                baked_sum += value;
+                baked_square += double(value) * value;
+                baked_low = std::min(baked_low, value);
+                baked_high = std::max(baked_high, value);
+                ++baked;
+            }
+            if (stats && baked) {
+                const double mean = baked_sum / baked;
+                stats->shade_low = baked_low;
+                stats->shade_high = baked_high;
+                stats->shade_mean = static_cast<float>(mean);
+                stats->shade_deviation =
+                    static_cast<float>(std::sqrt(std::max(0.0, baked_square / baked - mean * mean)));
+            }
+        }
 
         // Give the shade lane its range back without giving it the old wheel's
         // spokes.
