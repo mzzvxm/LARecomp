@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <functional>
 #include <map>
 #include <utility>
@@ -258,7 +260,8 @@ bool ResolveDrawable(const Rsc5View& view, uint32_t type, DrawableLayout& out) {
 
 // Reads a submesh's declaration. Fails when a field is of a type this cannot
 // place, so the caller can leave that submesh out rather than write nonsense.
-bool ReadVertexLayout(const Rsc5View& view, uint32_t vertex_buffer, VertexLayout& out) {
+bool ReadVertexLayout(const Rsc5View& view, uint32_t vertex_buffer, VertexLayout& out,
+                     bool require_uv = true) {
     uint32_t declaration = 0, fvf = 0, stride = 0, low = 0, high = 0;
     if (!view.U32(vertex_buffer + 16, declaration) || declaration == 0 ||
         !view.U32(declaration, fvf) || !view.U32(vertex_buffer + 12, stride) || stride == 0 ||
@@ -280,7 +283,12 @@ bool ReadVertexLayout(const Rsc5View& view, uint32_t vertex_buffer, VertexLayout
     if (offset != stride) return false;
 
     out.stride = stride;
-    return out.has(kSemPosition) && out.has(kSemTexcoord0);
+    // A UV is demanded by default because a character's every submesh samples a
+    // skin, so one without a texture coordinate is a misread declaration rather
+    // than a real slot. A car's BlackMatte submeshes are real and carry nothing
+    // but a position, so the caller can lift the requirement.
+    if (!out.has(kSemPosition)) return false;
+    return require_uv ? out.has(kSemTexcoord0) : true;
 }
 
 struct GeometryRef {
@@ -1760,6 +1768,8 @@ std::vector<uint32_t> TexturePackTextures(const Rsc5View& view) {
 // low), so the search is a bounded scan of one block per material rather than
 // a guess at the parameter layout.
 constexpr uint32_t kPackMaterials = 8;
+// Which effect a material runs, as an index into the game's car shader list.
+constexpr uint32_t kMaterialEffect = 12;
 constexpr uint32_t kPackMaterialCount = 12;
 constexpr uint32_t kMaterialParameters = 16;
 constexpr uint32_t kMaterialParameterSize = 24;
@@ -1916,6 +1926,54 @@ bool ShaderGroupOf(const Rsc5View& view, const DrawableLayout& drawable, uint32_
     if (!drawable.shader_group) return false;
     if (!view.U32(drawable.drawable + 8, group) || group == 0) return false;
     return view.U32(group + 8, array) && array != 0 && view.U16(group + 12, count) && count != 0;
+}
+
+// Which models of a drawable's first LOD are authored in a bone's local frame
+// rather than the car's. See MeshOffset::car_space_only for the measurement.
+std::vector<bool> LocalModels(const Rsc5View& view, const std::vector<uint8_t>& data,
+                              uint32_t model_array, uint16_t model_count) {
+    std::vector<bool> local(model_count, false);
+    constexpr float kFloor = 0.15f;
+    constexpr float kStraddle = 0.02f;
+    for (uint16_t m = 0; m < model_count; ++m) {
+        uint32_t model = 0, geometry_array = 0;
+        uint16_t geometry_count = 0;
+        if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+        if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count)) continue;
+
+        float low[3] = {0, 0, 0}, high[3] = {0, 0, 0};
+        bool any = false;
+        for (uint16_t g = 0; g < geometry_count; ++g) {
+            uint32_t geometry = 0, buffer = 0, address = 0;
+            uint16_t vertex_count = 0;
+            if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+            if (!view.U32(geometry + 12, buffer) || buffer == 0) continue;
+            if (!view.U16(geometry + 52, vertex_count) || vertex_count == 0) continue;
+            if (!view.U32(buffer + 24, address) || address == 0) continue;
+            VertexLayout layout;
+            if (!ReadVertexLayout(view, buffer, layout, false)) continue;
+            size_t at = 0;
+            if (!view.Offset(address, static_cast<size_t>(vertex_count) * layout.stride, at))
+                continue;
+            for (uint16_t v = 0; v < vertex_count; ++v) {
+                const uint8_t* p = data.data() + at + v * layout.stride +
+                                   layout.offset[kSemPosition];
+                for (int i = 0; i < 3; ++i) {
+                    const float value = LoadBEFloat(p + i * 4);
+                    low[i] = any ? std::min(low[i], value) : value;
+                    high[i] = any ? std::max(high[i], value) : value;
+                }
+                any = true;
+            }
+        }
+        if (!any) continue;
+        const bool below_floor = (low[1] + high[1]) * 0.5f < kFloor;
+        const bool straddles = low[0] < kStraddle && high[0] > -kStraddle &&
+                               low[1] < kStraddle && high[1] > -kStraddle &&
+                               low[2] < kStraddle && high[2] > -kStraddle;
+        local[m] = below_floor || straddles;
+    }
+    return local;
 }
 
 // The box a template's own mesh occupies, for the roots that do not store one.
@@ -2320,9 +2378,18 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             ref.shader_map = shader_map;
             ref.slot_in_model = g;
             ref.model = m;
+            // A pass that owns one shader only considers that shader's slots,
+            // and reads the assignment as it SHIPPED -- an earlier pass may
+            // already have repointed a slot it took over, and rereading that
+            // would let the second pass steal it back.
+            if (offset.only_shader >= 0 &&
+                ref.shader != static_cast<uint32_t>(offset.only_shader)) {
+                continue;
+            }
             // A submesh whose layout cannot be written is simply not offered as
             // a slot; the rest of the character still gets replaced.
-            const bool writable = ReadVertexLayout(view, ref.vertex_buffer, ref.layout);
+            const bool writable = ReadVertexLayout(view, ref.vertex_buffer, ref.layout,
+                                                   !offset.allow_untextured);
             if (diagnose) say("  submesh model " + std::to_string(m) + " slot " + std::to_string(g) + " at " +
                 Hex(geometry) + ": " + std::to_string(ref.vertex_count) + " vertices, " +
                 std::to_string(ref.index_count) + " indices, " + std::to_string(ref.bone_count) +
@@ -2358,6 +2425,37 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             }
             if (!writable) continue;
             geometries.push_back(ref);
+        }
+    }
+
+    if (offset.car_space_only && !geometries.empty()) {
+        const std::vector<bool> local =
+            LocalModels(view, resource.data, model_array, model_count);
+        size_t silenced = 0;
+        for (const GeometryRef& reference : geometries) {
+            if (reference.model >= local.size() || !local[reference.model]) continue;
+            // Silenced here and now, not merely left out: left out, the donor's
+            // own bumper paint and door glass would go on drawing beside the
+            // replacement.
+            view.SetU32(reference.address + 44, 0);
+            view.SetU32(reference.address + 48, 0);
+            view.SetU16(reference.address + 52, 0);
+            if (reference.index_buffer) view.SetU32(reference.index_buffer + 4, 0);
+            if (reference.vertex_buffer) view.SetU16(reference.vertex_buffer + 4, 0);
+            ++silenced;
+        }
+        geometries.erase(std::remove_if(geometries.begin(), geometries.end(),
+                                        [&](const GeometryRef& reference) {
+                                            return reference.model < local.size() &&
+                                                   local[reference.model];
+                                        }),
+                         geometries.end());
+        if (stats) stats->local_silenced = static_cast<uint32_t>(silenced);
+        if (geometries.empty()) {
+            error = "every submesh of this shader is in a bone-local model (" +
+                    std::to_string(silenced) + " silenced) -- give its materials a shader "
+                    "that has a car-space model, in this drawable or a car-space part slot";
+            return false;
         }
     }
 
@@ -2445,6 +2543,7 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         float nx = 0, ny = 0, nz = 0;
         uint32_t colour = 0xFFFFFFFFu;
         uint32_t texcoord1 = 0;
+        uint32_t texcoord0 = 0;
         uint32_t geometry = 0;  // address of the submesh it was read from
     };
     std::vector<Shade> shipped;
@@ -2470,6 +2569,8 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                 entry.colour = LoadBE32(source + reference.layout.offset[kSemColour]);
             if (reference.layout.has(kSemTexcoord1))
                 entry.texcoord1 = LoadBE32(source + reference.layout.offset[kSemTexcoord1]);
+            if (reference.layout.has(kSemTexcoord0))
+                entry.texcoord0 = LoadBE32(source + reference.layout.offset[kSemTexcoord0]);
             entry.geometry = reference.address;
             shipped.push_back(entry);
         }
@@ -2651,9 +2752,20 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         // Vertices are sized against the leftover INDICES, since a triangle
         // dealt to another slot brings its vertices with it and, worst case,
         // shares none of them.
+        //
+        // The shortfall is asked for with a quarter again on top, because it is
+        // a floor and not a fit. Dealing refuses a triangle that would overrun
+        // the slot it is working on and leaves it for the next one, so a set of
+        // slots sized to the exact total always ends with triangles nobody can
+        // take -- and the answer to that is a fifth off the whole mesh and
+        // another attempt. Measured on a car body cut to shader: 31,844
+        // triangles into slots summing to exactly 31,844 came back decimated to
+        // 19,643. The headroom is a few kilobytes.
         const size_t indices_short =
-            mesh.indices.size() > have_indices ? mesh.indices.size() - have_indices : 0;
-        const uint32_t want_vertices = static_cast<uint32_t>(std::min<size_t>(
+            mesh.indices.size() > have_indices
+                ? (mesh.indices.size() - have_indices) * 5 / 4 + 3072
+                : 0;
+        uint32_t want_vertices = static_cast<uint32_t>(std::min<size_t>(
             growing == 0 ? mesh.vertices.size() : target.vertex_count + indices_short,
             0xFFFFu));
         // Indices have a ceiling of their own, and it is not the buffer's.
@@ -2679,7 +2791,7 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         // 65535 is a whole number of triangles, 21845, so the cap costs nothing
         // beyond the triangles it leaves for the other slots.
         constexpr uint32_t kMaxDrawIndices = 65535;
-        const uint32_t want_indices = static_cast<uint32_t>(std::min<size_t>(
+        uint32_t want_indices = static_cast<uint32_t>(std::min<size_t>(
             growing == 0 ? mesh.indices.size() : target.index_count + indices_short,
             kMaxDrawIndices));
         if (growing == 0 && mesh.indices.size() > kMaxDrawIndices) {
@@ -2690,6 +2802,40 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
 
 
         if (want_vertices > target.vertex_count || want_indices > target.index_count) {
+            // Would this slot take the resource past what the game itself ever
+            // streams?
+            //
+            // Then it takes what is left rather than nothing. Refusing the
+            // growth outright leaves the slot at the size it shipped with --
+            // fifteen hundred vertices on a car body -- and the mesh is welded
+            // down to that, which throws away far more than the ceiling asked
+            // for. Vertices and indices are cut by the same fraction, because a
+            // triangle needs both and starving one wastes the other.
+            if (offset.grow_ceiling != 0) {
+                const uint32_t stride = target.layout.stride;
+                const uint64_t floor = uint64_t(resource.virtual_size) + resource.physical_size +
+                                       offset.grow_slack + 512;
+                const uint64_t room =
+                    floor < offset.grow_ceiling ? offset.grow_ceiling - floor : 0;
+                const uint64_t need =
+                    uint64_t(want_vertices) * stride + uint64_t(want_indices) * 2;
+                if (need > room) {
+                    const double share = room ? double(room) / double(need) : 0.0;
+                    want_vertices = std::max<uint32_t>(
+                        target.vertex_count, static_cast<uint32_t>(want_vertices * share));
+                    want_indices = std::max<uint32_t>(
+                        target.index_count, static_cast<uint32_t>(want_indices * share));
+                    want_indices -= want_indices % 3;
+                    say("slot " + std::to_string(growing) + " capped to " +
+                        std::to_string(want_vertices) + " vertices and " +
+                        std::to_string(want_indices) + " indices by the " +
+                        std::to_string(offset.grow_ceiling) + "-byte ceiling");
+                    if (want_vertices <= target.vertex_count &&
+                        want_indices <= target.index_count) {
+                        continue;
+                    }
+                }
+            }
             // Which segment the new buffers belong in is not a choice: they go
             // where this submesh's buffers already are. A character and a wheel
             // keep theirs in the physical segment; a vehicle part has no
@@ -2716,8 +2862,41 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             const bool in_place = false;
             const uint32_t base =
                 in_place ? kAlign : (segment + kAlign - 1) / kAlign * kAlign;
-            const uint32_t vertex_at = base;
-            const uint32_t index_at = (base + vertex_bytes + kAlign - 1) / kAlign * kAlign;
+
+            // A buffer may not run past the end of the block it starts in.
+            //
+            // The resource is split into blocks of halving powers of two
+            // (sub_821E57B8) and each block is allocated on its own
+            // (sub_821E58F0, measured in game: the byte it branches on is zero,
+            // so never one allocation). A pointer is fixed up by finding its
+            // block and adding that block's delta, so bytes past the block's end
+            // come from whatever else the heap put there. The game's own bodies
+            // obey this: of 123 body drawables, 117 have no buffer crossing at
+            // all, and the six that do cross once with a buffer bigger than a
+            // block. Ours crossed nine times out of fourteen.
+            const uint32_t block = offset.block_align;
+            auto fits = [&](uint32_t at, uint32_t bytes) {
+                if (block == 0 || bytes == 0) return true;
+                return at / block == (at + bytes - 1) / block;
+            };
+            auto place = [&](uint32_t at, uint32_t bytes) {
+                if (fits(at, bytes)) return at;
+                const uint32_t next = (at / block + 1) * block;
+                // A buffer larger than a block cannot be placed at all; leaving
+                // it where it was keeps the waste down and the diagnosis below
+                // names it.
+                return fits(next, bytes) ? next : at;
+            };
+
+            const uint32_t vertex_at = place(base, vertex_bytes);
+            const uint32_t index_at =
+                place((vertex_at + vertex_bytes + kAlign - 1) / kAlign * kAlign, index_bytes);
+            if (block != 0 && (!fits(vertex_at, vertex_bytes) || !fits(index_at, index_bytes))) {
+                say("submesh does not fit in one " + std::to_string(block) +
+                    "-byte block (vertex buffer " + std::to_string(vertex_bytes) +
+                    " bytes, index buffer " + std::to_string(index_bytes) +
+                    ") -- it will be read across two allocations");
+            }
 
             if (in_place) {
                 if (index_at + index_bytes > segment) {
@@ -3065,6 +3244,29 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
 
     std::vector<uint32_t> shade(mesh.vertices.size(), 0xFFFFFFFFu);
     std::vector<uint32_t> shade_texcoord1(mesh.vertices.size(), 0);
+    // The one texel a flooded UV points at: the value the submesh being written
+    // into uses for most of itself. Read by address, like the band above, since
+    // the list is sorted by size after it was gathered.
+    uint32_t uniform_texcoord0 = 0;
+    if (offset.uniform_uv && !shipped.empty() && !geometries.empty()) {
+        const uint32_t target = geometries.front().address;
+        std::map<uint32_t, size_t> seen;
+        for (const Shade& entry : shipped) {
+            if (entry.geometry != target) continue;
+            ++seen[entry.texcoord0];
+        }
+        if (seen.empty()) {
+            for (const Shade& entry : shipped) ++seen[entry.texcoord0];
+        }
+        size_t best = 0;
+        for (const auto& [value, count] : seen) {
+            if (count > best) {
+                best = count;
+                uniform_texcoord0 = value;
+            }
+        }
+    }
+
     if (offset.uniform_shade && !shipped.empty()) {
         // The band the template uses for most of itself, and that band's own
         // average shade. Both come out of the template rather than being
@@ -3350,9 +3552,25 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             if (layout.has(kSemColour))
                 StoreBE32(out + layout.offset[kSemColour], shade[source]);
 
-            uint8_t* uv = out + layout.offset[kSemTexcoord0];
-            StoreBE16(uv + 0, FloatToHalf(vertex.u));
-            StoreBE16(uv + 2, FloatToHalf(vertex.v));
+            if (layout.has(kSemTexcoord0)) {
+                uint8_t* uv = out + layout.offset[kSemTexcoord0];
+                if (offset.uniform_uv) {
+                    // One texel for the whole submesh, taken from the template.
+                    //
+                    // For a shader whose picture the mod does not have. Audited
+                    // against the model's own .mtl: gta_vehicle_vehglass carries
+                    // no diffuse at all, so a window's UVs describe nothing, and
+                    // writing them makes the glass sample wherever they happen
+                    // to fall in the donor's pack -- which is why it came out
+                    // red. The donor's own glass samples one place and looks
+                    // like glass; pointing at the same place costs nothing,
+                    // because a tint has no detail to lose.
+                    StoreBE32(uv, uniform_texcoord0);
+                } else {
+                    StoreBE16(uv + 0, FloatToHalf(vertex.u));
+                    StoreBE16(uv + 2, FloatToHalf(vertex.v));
+                }
+            }
 
             if (layout.has(kSemTexcoord1))
                 StoreBE32(out + layout.offset[kSemTexcoord1], shade_texcoord1[source]);
@@ -3449,7 +3667,7 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     // of zero either way, so it buys nothing, and it is a change to every
     // character and wheel that already worked. A submesh left describing a
     // buffer it no longer draws from is how the shipped path has always run.
-    for (size_t i = 0; i < geometries.size(); ++i) {
+    for (size_t i = 0; i < geometries.size() && !offset.keep_unused; ++i) {
         if (used[i]) continue;
         const GeometryRef& other = geometries[i];
         patched.SetU32(other.address + 44, 0);
@@ -3912,6 +4130,480 @@ bool ReplaceDictionaryTexture(Rsc5Resource& resource, const Image& image, std::s
         stats->levels = levels;
     }
     return true;
+}
+
+bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& stride_of) {
+    stride_of.clear();
+
+    auto& data = const_cast<std::vector<uint8_t>&>(resource.data);
+    Rsc5View view(data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return false;
+
+    // Sized from the shader indices the models actually name, not from the
+    // shader group: a vehicle body is its own root and keeps no readable group
+    // where a character's sits (ShaderGroupOf reads drawable+8, which on a type
+    // 63 is the first LOD pointer), so asking for the group reports nothing and
+    // every stride comes back zero.
+    uint32_t lod = 0;
+    if (!view.U32(drawable.drawable + drawable.lod_field, lod) || lod == 0) return false;
+
+    uint32_t model_array = 0;
+    uint16_t model_count = 0;
+    if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) return false;
+
+    for (uint16_t m = 0; m < model_count; ++m) {
+        uint32_t model = 0;
+        if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+
+        uint32_t geometry_array = 0, shader_map = 0;
+        uint16_t geometry_count = 0;
+        if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count)) continue;
+        view.U32(model + 16, shader_map);
+
+        for (uint16_t g = 0; g < geometry_count; ++g) {
+            uint32_t geometry = 0, vertex_buffer = 0, stride = 0;
+            uint16_t shader = 0;
+            if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+            if (!view.U32(geometry + 12, vertex_buffer) || vertex_buffer == 0) continue;
+            if (!view.U32(vertex_buffer + 12, stride) || stride == 0) continue;
+            if (!shader_map || !view.U16(shader_map + g * 2u, shader)) continue;
+            if (shader >= stride_of.size()) stride_of.resize(shader + 1u, 0);
+            // The widest one a shader owns: a pass is dealt into every slot of
+            // its shader, and the cost of the mesh is set by the ones it fills.
+            stride_of[shader] = std::max(stride_of[shader], stride);
+        }
+    }
+    return true;
+}
+
+namespace {
+
+// The textures one material of a pack reads, in the order its parameter block
+// lists them.
+//
+// A material says where its parameters live (+0x10) and how big that block is
+// (+0x18, the count in the high half and the byte size in the low), and the
+// block mixes texture pointers with float data. Rather than guess the layout per
+// effect -- there are fifty-eight of them and they disagree, from three
+// parameters on BlackMatte to twenty on CarPaintCustomizable -- every word of
+// the block is tested against the dictionary's own texture addresses. That is
+// the same bounded scan TexturePackMaterialOf already runs from the other end,
+// and it cannot mistake a float for a pointer because the only addresses it
+// accepts are ones the dictionary handed out.
+std::vector<uint32_t> PackMaterialTextures(const Rsc5View& view, uint32_t material,
+                                           const std::vector<uint32_t>& dictionary) {
+    std::vector<uint32_t> out;
+    uint32_t parameters = 0, packed = 0;
+    if (!view.U32(material + kMaterialParameters, parameters) || parameters == 0) return out;
+    if (!view.U32(material + kMaterialParameterSize, packed)) return out;
+
+    const uint32_t bytes = packed & 0xFFFFu;
+    for (uint32_t at = 0; at + 4 <= bytes; at += 4) {
+        uint32_t word = 0;
+        if (!view.U32(parameters + at, word) || word == 0) continue;
+        if (std::find(dictionary.begin(), dictionary.end(), word) == dictionary.end()) continue;
+        if (std::find(out.begin(), out.end(), word) != out.end()) continue;
+        out.push_back(word);
+    }
+    return out;
+}
+
+bool NameEndsWith(const std::string& name, const char* suffix) {
+    const size_t length = std::strlen(suffix);
+    return name.size() > length && name.compare(name.size() - length, length, suffix) == 0;
+}
+
+// Which of a material's textures is its colour map: the first that is neither a
+// normal map nor a tiling detail sheet, falling back to the first of any kind.
+// The same rule ReplaceShaderDiffuse applies to a character's shader, and it
+// holds here for the same reason -- the colour map is declared first on every
+// shipped car material that has one.
+bool PackMaterialDiffuse(const Rsc5View& view, uint32_t material,
+                         const std::vector<uint32_t>& dictionary, TextureRef& out) {
+    bool found = false;
+    for (uint32_t address : PackMaterialTextures(view, material, dictionary)) {
+        TextureRef texture;
+        if (!ReadTexture(view, address, texture)) continue;
+        if (!found) {
+            out = texture;
+            found = true;
+        }
+        if (!NameEndsWith(texture.name, "_n") && texture.name.rfind("detail", 0) != 0) {
+            out = texture;
+            return true;
+        }
+    }
+    return found;
+}
+
+// The pack's material array, or false when the resource is not one.
+bool PackMaterialArray(const Rsc5View& view, uint32_t& materials, uint16_t& count) {
+    uint32_t pack = 0;
+    if (!view.U32(kVirtualBase + kPackField, pack) || pack == 0) return false;
+    if (!view.U32(pack + kPackMaterials, materials) || materials == 0) return false;
+    return view.U16(pack + kPackMaterialCount, count) && count != 0;
+}
+
+}  // namespace
+
+bool ReadPackMaterials(const Rsc5Resource& pack, std::vector<PackMaterial>& out) {
+    out.clear();
+    if (pack.type != kTypeTexturePack) return false;
+
+    auto& data = const_cast<std::vector<uint8_t>&>(pack.data);
+    Rsc5View view(data, pack.virtual_size);
+
+    uint32_t materials = 0;
+    uint16_t count = 0;
+    if (!PackMaterialArray(view, materials, count)) return false;
+
+    const std::vector<uint32_t> dictionary = TexturePackTextures(view);
+    for (uint16_t i = 0; i < count; ++i) {
+        uint32_t material = 0, effect = 0;
+        if (!view.U32(materials + i * 4u, material) || material == 0) return false;
+        if (!view.U32(material + kMaterialEffect, effect)) return false;
+
+        PackMaterial entry;
+        entry.effect = effect;
+        entry.address = material;
+
+        TextureRef diffuse;
+        if (PackMaterialDiffuse(view, material, dictionary, diffuse)) {
+            entry.diffuse = diffuse.address;
+            entry.diffuse_name = diffuse.name;
+            entry.width = diffuse.width;
+            entry.height = diffuse.height;
+            entry.writable = diffuse.supported && diffuse.base != 0;
+        }
+        out.push_back(std::move(entry));
+    }
+    return true;
+}
+
+bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, const Image& image,
+                                std::string& error, TextureStats* stats) {
+    if (image.empty()) {
+        error = "no image to write";
+        return false;
+    }
+    if (pack.type != kTypeTexturePack) {
+        error = "resource is type " + std::to_string(pack.type) + ", not a material pack";
+        return false;
+    }
+
+    Rsc5View view(pack.data, pack.virtual_size);
+
+    uint32_t materials = 0;
+    uint16_t count = 0;
+    if (!PackMaterialArray(view, materials, count)) {
+        error = "the pack has no material array";
+        return false;
+    }
+    if (material_index >= count) {
+        error = "material " + std::to_string(material_index) + " is outside the pack's " +
+                std::to_string(count);
+        return false;
+    }
+
+    // A pack holds no geometry, so its dictionary's textures are the only things
+    // allocated in it and they alone bound how far a write may run.
+    const std::vector<uint32_t> dictionary = TexturePackTextures(view);
+    std::vector<uint32_t> allocations;
+    for (uint32_t address : dictionary) {
+        TextureRef texture;
+        if (!ReadTexture(view, address, texture)) continue;
+        if (texture.base) allocations.push_back(texture.base);
+        if (texture.mip) allocations.push_back(texture.mip);
+    }
+    std::sort(allocations.begin(), allocations.end());
+    allocations.erase(std::unique(allocations.begin(), allocations.end()), allocations.end());
+
+    uint32_t material = 0;
+    if (!view.U32(materials + material_index * 4u, material) || material == 0) {
+        error = "material " + std::to_string(material_index) + " is null";
+        return false;
+    }
+
+    TextureRef target;
+    if (!PackMaterialDiffuse(view, material, dictionary, target)) {
+        uint32_t effect = 0;
+        view.U32(material + kMaterialEffect, effect);
+        error = std::string(CarEffectName(effect)) + " (material " +
+                std::to_string(material_index) + ") reads no texture at all";
+        return false;
+    }
+    if (!target.supported) {
+        error = "texture " + target.name + " is in a format this cannot write";
+        return false;
+    }
+
+    uint32_t levels = 0;
+    if (!WriteTextureInPlace(view, pack, allocations, target, image, levels)) {
+        error = "no room to write " + target.name + " in place";
+        return false;
+    }
+
+    // The two companions of a colour map. The illuminated variant carries the
+    // same picture, so a lamp keeps its own artwork when it lights; the normal
+    // map is flattened, because it is still the donor's and the mesh no longer
+    // has the donor's UVs -- left as it is, the lighting reads it as detail and
+    // picks out a shape that belongs to another car.
+    const std::string illuminated = target.name + "_i";
+    for (uint32_t address : PackMaterialTextures(view, material, dictionary)) {
+        TextureRef texture;
+        if (!ReadTexture(view, address, texture)) continue;
+        if (!texture.supported || texture.base == 0 || texture.address == target.address) continue;
+
+        uint32_t companion_levels = 0;
+        if (texture.name == illuminated) {
+            WriteTextureInPlace(view, pack, allocations, texture, image, companion_levels);
+        } else if (NameEndsWith(texture.name, "_n")) {
+            WriteTextureInPlace(view, pack, allocations, texture,
+                                FlatNormalMap(texture.width, texture.height), companion_levels);
+        }
+    }
+
+    if (stats) {
+        stats->name = target.name;
+        stats->width = target.width;
+        stats->height = target.height;
+        stats->levels = levels;
+    }
+    return true;
+}
+
+// The game's own car shader list, in the order shaders/cars/preload.list gives
+// it -- which is the order the effect number at a material's +12 indexes.
+//
+// The link was proved on the police Caprice, whose seven materials name effects
+// 53, 25, 9, 7, 40, 3 and 42: BumpSpecAlpha on the submesh that samples the
+// car's trim texture, CarPaintCustomizable on the two largest body submeshes,
+// BlackMatte on the position-only ones, CarLight on the submesh holding both
+// light textures, Chrome, CarGlass, and LicensePlate on a four-vertex quad.
+// Seven out of seven agree with what those submeshes are, which is what says
+// the number is an index into this list and not something else.
+const char* const kCarEffects[] = {
+    "WheelRubber",       "WheelBrakeRotor",   "CarbonFiber",
+    "CarGlass",          "BrushedMetal",      "TexturedPlastic",
+    "BumpSpec",          "CarLight",          "AmbientOcclusionGenerator",
+    "BlackMatte",        "BumpedGlass",       "InteriorTrim",
+    "TestRimBlur",       "ShaderBlits",       "VehBlurImposter",
+    "BrakeCaliper",      "SkidMark",          "BumpSpecSkinned",
+    "AnisotropicBilletMetal", "Seam",         "AmbientOcclusionShadows",
+    "InteriorTrimAlpha", "SpecMapGen",        "InteriorTexturedEmissive",
+    "InteriorTexturedEmissiveAlpha",          "CarPaintCustomizable",
+    "VinylGenerator",    "VertDamageLayoutGenerator",
+    "VertDamageBlit",    "FontDraw",          "RimMain",
+    "RimBadge",          "ShadowImposterCollector", "SSTTrail",
+    "PowerupShootEffect", "PowerupTargetEffect",    "Grill",
+    "RoarShockwave",     "Underbody",         "RimNormalMapped",
+    "Chrome",            "BumpedAlphaChrome", "LicensePlate",
+    "CarPaintNormalMapped", "EngineBay",      "BumperSubframe",
+    "AmbientCarPaint",   "AmbientBumpSpec",   "AmbientCarGlass",
+    "AmbientBlackMatte", "AmbientTire",       "AmbientCarLight",
+    "PowerupIceCube",    "BumpSpecAlpha",     "GrillOpaque",
+    "BlackOpaqueGlass",  "BumpedBrushedMetal", "PowerupStealthSkinned",
+};
+
+const char* CarEffectName(uint32_t index) {
+    return index < std::size(kCarEffects) ? kCarEffects[index] : "";
+}
+
+int32_t CarEffectIndex(const std::string& name) {
+    auto same = [](const char* a, const std::string& b) {
+        if (std::strlen(a) != b.size()) return false;
+        for (size_t i = 0; i < b.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                std::tolower(static_cast<unsigned char>(b[i]))) {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (size_t i = 0; i < std::size(kCarEffects); ++i) {
+        if (same(kCarEffects[i], name)) return static_cast<int32_t>(i);
+    }
+    return -1;
+}
+
+bool ReadPackEffects(const Rsc5Resource& pack, std::vector<uint32_t>& effects) {
+    effects.clear();
+    if (pack.type != kTypeTexturePack) return false;
+
+    auto& data = const_cast<std::vector<uint8_t>&>(pack.data);
+    Rsc5View view(data, pack.virtual_size);
+
+    uint32_t root = 0, materials = 0;
+    uint16_t count = 0;
+    if (!view.U32(kVirtualBase + kPackField, root) || root == 0) return false;
+    if (!view.U32(root + kPackMaterials, materials) || materials == 0) return false;
+    if (!view.U16(root + kPackMaterialCount, count) || count == 0) return false;
+
+    for (uint16_t i = 0; i < count; ++i) {
+        uint32_t material = 0, effect = 0;
+        if (!view.U32(materials + i * 4u, material) || material == 0) return false;
+        if (!view.U32(material + kMaterialEffect, effect)) return false;
+        effects.push_back(effect);
+    }
+    return true;
+}
+
+size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader) {
+    Rsc5View view(resource.data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return 0;
+
+    size_t silenced = 0;
+    for (uint32_t slot = 0; slot < drawable.lod_slots; ++slot) {
+        uint32_t lod = 0;
+        if (!view.U32(drawable.drawable + drawable.lod_field + slot * 4, lod) || lod == 0) continue;
+
+        uint32_t model_array = 0;
+        uint16_t model_count = 0;
+        if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) continue;
+
+        for (uint16_t m = 0; m < model_count; ++m) {
+            uint32_t model = 0;
+            if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+
+            uint32_t geometry_array = 0, shader_map = 0;
+            uint16_t geometry_count = 0;
+            if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count))
+                continue;
+            view.U32(model + 16, shader_map);
+
+            for (uint16_t g = 0; g < geometry_count; ++g) {
+                uint32_t geometry = 0, vertex_buffer = 0, index_buffer = 0;
+                if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+                if (shader >= 0) {
+                    uint16_t drawn_by = 0;
+                    if (!shader_map || !view.U16(shader_map + g * 2u, drawn_by) ||
+                        drawn_by != static_cast<uint16_t>(shader)) {
+                        continue;
+                    }
+                }
+                view.U32(geometry + 12, vertex_buffer);
+                view.U32(geometry + 28, index_buffer);
+                view.SetU32(geometry + 44, 0);
+                view.SetU32(geometry + 48, 0);
+                view.SetU16(geometry + 52, 0);
+                if (index_buffer) view.SetU32(index_buffer + 4, 0);
+                if (vertex_buffer) view.SetU16(vertex_buffer + 4, 0);
+                ++silenced;
+            }
+        }
+    }
+    return silenced;
+}
+
+// Moves every submesh a shader draws by a fixed amount, in the car's own space.
+//
+// For the one piece of the donor worth keeping. Its licence plate is a four
+// vertex quad, and in the Caprice it sits dead centre -- x exactly 0.000, 30 by
+// 15 centimetres, at y 0.679 and z 2.724 -- so it is not crooked, it is simply
+// at the Caprice's rear. A car fitted into the same box does not have its bumper
+// face at that depth or the plate recess at that height, and there is no way to
+// work the right pair out from the geometry: the recess is a dent in a panel,
+// not a feature the mesh names. So it is a number the mod states and an eye
+// checks.
+size_t TranslateShaderGeometry(Rsc5Resource& resource, int32_t shader, float dx, float dy,
+                               float dz) {
+    Rsc5View view(resource.data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return 0;
+
+    size_t moved = 0;
+    for (uint32_t slot = 0; slot < drawable.lod_slots; ++slot) {
+        uint32_t lod = 0;
+        if (!view.U32(drawable.drawable + drawable.lod_field + slot * 4, lod) || lod == 0) continue;
+
+        uint32_t model_array = 0;
+        uint16_t model_count = 0;
+        if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) continue;
+
+        for (uint16_t m = 0; m < model_count; ++m) {
+            uint32_t model = 0;
+            if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+
+            uint32_t geometry_array = 0, shader_map = 0;
+            uint16_t geometry_count = 0;
+            if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count))
+                continue;
+            view.U32(model + 16, shader_map);
+
+            for (uint16_t g = 0; g < geometry_count; ++g) {
+                uint32_t geometry = 0;
+                if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+
+                uint16_t drawn_by = 0;
+                if (!shader_map || !view.U16(shader_map + g * 2u, drawn_by) ||
+                    drawn_by != static_cast<uint16_t>(shader)) {
+                    continue;
+                }
+
+                uint32_t vertex_buffer = 0, address = 0;
+                uint16_t vertex_count = 0;
+                if (!view.U32(geometry + 12, vertex_buffer) || vertex_buffer == 0) continue;
+                if (!view.U16(geometry + 52, vertex_count) || vertex_count == 0) continue;
+
+                VertexLayout layout;
+                if (!ReadVertexLayout(view, vertex_buffer, layout, false)) continue;
+                if (!layout.has(kSemPosition)) continue;
+                if (!view.U32(vertex_buffer + 24, address) || address == 0) continue;
+
+                size_t at = 0;
+                const size_t bytes = static_cast<size_t>(vertex_count) * layout.stride;
+                if (!view.Offset(address, bytes, at)) continue;
+
+                for (uint32_t v = 0; v < vertex_count; ++v) {
+                    uint8_t* p = resource.data.data() + at + v * layout.stride +
+                                 layout.offset[kSemPosition];
+                    StoreBEFloat(p + 0, LoadBEFloat(p + 0) + dx);
+                    StoreBEFloat(p + 4, LoadBEFloat(p + 4) + dy);
+                    StoreBEFloat(p + 8, LoadBEFloat(p + 8) + dz);
+                }
+                ++moved;
+            }
+        }
+    }
+    return moved;
+}
+
+size_t SilenceDrawable(Rsc5Resource& resource) {
+    // A whole part the mod ships empty, hidden the only way that survives the
+    // loader: each LOD keeps its model array pointer, and only the count beside
+    // it goes to zero.
+    //
+    // Emptying the geometries instead -- which is what SilenceShaderGeometry
+    // does, correctly, for one shader among several -- is what asserted. A part
+    // whose every geometry carries a zero vertex and index count still has its
+    // buffer pointers, mcCarDrawableChunk's placer follows one of them, and the
+    // fixup is handed a word nobody ever wrote: the reported address differed
+    // between two runs of the same build, 0xCDCDCDCD and 0x09240002, which is
+    // what reading uninitialised memory looks like. Cutting the count above the
+    // models means nothing under the LOD is walked at all, and a LOD that lists
+    // nothing is a shape the game already ships -- the donor's own hood has two
+    // of its three LOD slots null.
+    Rsc5View view(resource.data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return 0;
+
+    size_t hidden = 0;
+    for (uint32_t slot = 0; slot < drawable.lod_slots; ++slot) {
+        uint32_t lod = 0;
+        if (!view.U32(drawable.drawable + drawable.lod_field + slot * 4, lod) || lod == 0) continue;
+
+        uint16_t model_count = 0;
+        if (!view.U16(lod + 4, model_count) || model_count == 0) continue;
+        view.SetU16(lod + 4, 0);
+        hidden += model_count;
+    }
+    return hidden;
 }
 
 }  // namespace mc::modloader

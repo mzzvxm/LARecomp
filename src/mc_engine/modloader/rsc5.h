@@ -155,6 +155,8 @@ struct RewriteStats {
     uint32_t shade_high = 0;
     float shade_mean = 0.0f;
     float shade_deviation = -1.0f;   // negative when nothing was baked
+    // Submeshes of this pass left silent because their model is bone-local.
+    uint32_t local_silenced = 0;
     uint32_t submeshes = 0;  // how many of the drawable's slots it was dealt into
     // Which shader of the group ends up drawing the mesh -- the texture swap
     // needs it to know whose diffuse map to overwrite.
@@ -266,6 +268,37 @@ struct MeshOffset {
     // lane across by proximity lights the wheel neon. Requires uniform_shade,
     // whose flooded band it keeps and whose flat level it replaces.
     bool shade_occlusion = false;
+    // Keep every buffer this pass places inside one block of this many bytes.
+    //
+    // A resource is split into blocks of halving powers of two starting at
+    // 4096 << page_shift (sub_821E57B8), and each block is allocated separately
+    // (sub_821E58F0). Every pointer is fixed up by the delta of the block it
+    // falls in, so a buffer that runs past its block's end is read as though the
+    // next block followed it in memory, and from that byte on the GPU fetches
+    // another allocation entirely -- blades on screen from a file that is
+    // perfect on disk. 0 places buffers wherever they fit, which is what the
+    // loader did before this was measured.
+    uint32_t block_align = 0;
+    // Write only into models authored in the CAR's frame, and silence this
+    // pass's submeshes in the others.
+    //
+    // A vehicle body is several models, and the game draws each one with its
+    // own matrix: a bumper, a door window, a mirror, a lamp. Those models store
+    // their vertices relative to that part's bone, so geometry that arrives in
+    // car space and is dealt into one of them lands wherever the bone puts it.
+    // Measured on vp_chv_impala_96's body_lod_0: m0 (bumper paint, BrushedMetal,
+    // BumpSpec) is y -0.27..0.02, z 0..0.92; m1 (the ONLY CarLight) is a point
+    // at y -0.27, z 0.90; m2/m3 (door glass) are y -0.08..0.35. The BMW came
+    // back with its nose in the ground, its lamps above the car and its windows
+    // tilted -- exactly those three. The caprice never showed it because its
+    // big models, m8 and m9, are the car-space ones and the writer happened to
+    // favour them.
+    //
+    // A model is taken to be local when its box centre sits below the car's
+    // floor (y < 0.15) or its box straddles the origin on every axis; every car-
+    // space model on both donors is well above that and none straddles.
+    bool car_space_only = false;
+
     // Whether the mesh already sits where it belongs and must not be fitted.
     //
     // A character and a wheel each replace one whole thing, so scaling them into
@@ -318,6 +351,55 @@ struct MeshOffset {
     // for the whole rim rather than a badge. Only the texture pack knows which
     // material that is.
     int32_t force_shader = -1;
+
+    // Restrict the rewrite to the submeshes one shader already draws, or -1 for
+    // all of them.
+    //
+    // A character is one surface and a wheel is nearly one, so dealing a mod
+    // across whatever submeshes exist and pointing them all at a single shader
+    // is right for both. A car is not: paint, glass, lights and trim are
+    // separate shaders of the same drawable, and a body dealt across all of
+    // them comes back with its windows painted and its tail lights bodywork.
+    //
+    // With this set the drawable is rewritten one shader at a time -- the
+    // caller hands over only the triangles whose material belongs to that
+    // shader, and only the submeshes that shader already draws are candidates.
+    // Slots of every other shader are neither written nor counted, which is
+    // what makes the calls composable: each leaves the others exactly as it
+    // found them.
+    int32_t only_shader = -1;
+
+    // Whether submeshes this pass did not fill keep what they shipped.
+    //
+    // Leaving them is only right when the pass can see slots that are not its
+    // own. With `only_shader` set the candidate list is already that shader's
+    // slots and nothing else, so clearing the unfilled ones cannot reach a slot
+    // another pass is about to use -- and it must be cleared, or a shader the
+    // mod claims but only partly fills keeps drawing the donor there. That is
+    // where a police light bar survived on the roof of the car that replaced
+    // it: the whole-shader silencing below never looked at CarLight, because
+    // CarLight was claimed.
+    bool keep_unused = false;
+
+    // Whether the texture coordinate is flooded with one value from the
+    // template instead of the mesh's own.
+    //
+    // For a shader whose picture the mod does not have. The model's .mtl says
+    // gta_vehicle_vehglass carries no diffuse at all, so a window's UVs
+    // describe nothing; written as they are, the glass samples wherever they
+    // land in the donor's pack, which is how a BMW ended up with red windows.
+    // The donor's own glass samples one place and looks like glass.
+    bool uniform_uv = false;
+
+    // Whether a submesh with no texture coordinate may be written.
+    //
+    // The layout reader demands position and UV, because a character's every
+    // submesh samples a skin and one without a UV would be a misread
+    // declaration rather than a real slot. A car has real ones: MCLA draws its
+    // cabin blockers and shadow hulls with BlackMatte, a shader that reads
+    // nothing, and ships them as twelve-byte position-only vertices. Those are
+    // writable -- there is simply no UV to write.
+    bool allow_untextured = false;
 
     // A shader whose submeshes must be left exactly as they shipped -- neither
     // written into nor silenced. Used to protect a wheel's badge quad, which is
@@ -372,6 +454,17 @@ struct MeshOffset {
     // and can be fetched from. Only after both is a changed count worth trying.
     int grow_probe = 0;
 
+    // The largest the resource's segment may be grown to, or 0 for no ceiling.
+    //
+    // Growing has no natural limit -- a mod hands over whatever it modelled and
+    // the segment follows. The game does have one in practice: of the 9045
+    // type-63 drawables it ships, the largest declares 1,163,264 bytes, and a
+    // vehicle body four times that is asking the streamer and the resource heap
+    // for something neither has ever been handed. When the next buffer would
+    // cross this, the slot is left at the size it shipped with and the mesh is
+    // welded down to what the slots between them can hold.
+    uint32_t grow_ceiling = 0;
+
     // Extra bytes asked for beyond what the buffers need, so they stop well
     // short of the segment's end. The mesh a probe writes lands within a few
     // kilobytes of that end, and what breaks breaks there; slack says whether
@@ -392,6 +485,44 @@ bool ReadDrawableBounds(const Rsc5Resource& resource, float min_out[3], float ma
 bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                              const MeshOffset& offset, std::string& error,
                              RewriteStats* stats = nullptr);
+
+// Makes every submesh drawn by `shader` draw nothing, and reports how many.
+//
+// The counterpart to a shader-at-a-time rewrite: a donor car brings shaders the
+// mod has no material for -- a police light bar, a grille the new body models
+// itself -- and those slots would otherwise keep drawing the donor's geometry
+// through the replacement. Pass -1 to silence every submesh of the drawable,
+// which is how a part slot the new car does not use is delivered: the resource
+// still loads, it just has nothing in it.
+size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader);
+
+// Moves every submesh a shader draws by a fixed amount, in the car's own
+// space. For the donor's licence plate, which is centred but sits at the
+// donor's rear rather than the replacement's.
+size_t TranslateShaderGeometry(Rsc5Resource& resource, int32_t shader, float dx, float dy,
+                               float dz);
+
+// Hides a whole drawable by zeroing each LOD's model count, leaving every
+// pointer intact. The only shape of empty part the loader accepts: emptying the
+// geometries instead leaves their buffer pointers behind for the placer to
+// follow into memory nobody wrote.
+size_t SilenceDrawable(Rsc5Resource& resource);
+
+// Which effect each shader index of a vehicle's material pack runs, as an index
+// into the game's own car shader list (shaders/cars/preload.list).
+//
+// A vehicle body's shader group is not one this code can read -- thirty-two
+// byte shaders picked by vtable, no name pointer -- but the sibling .xtl/.xtp
+// pack states it plainly: its materials are in shader-index order and each
+// holds the effect number at +12. That is the whole reason a car mod can say
+// "this material is paint" and have it land on the shader that paints.
+bool ReadPackEffects(const Rsc5Resource& pack, std::vector<uint32_t>& effects);
+
+// The name of car effect `index`, or an empty string when it is out of range.
+const char* CarEffectName(uint32_t index);
+
+// The index of the car effect called `name`, case-insensitively, or -1.
+int32_t CarEffectIndex(const std::string& name);
 
 struct TextureStats {
     std::string name;      // the shipped texture that was overwritten
@@ -436,5 +567,59 @@ bool ReplaceDictionaryTexture(Rsc5Resource& resource, const Image& image, std::s
 // with a material that reads a texture at all. False when the pack has no
 // writable texture, or no material admits to sampling it.
 bool TexturePackShader(const Rsc5Resource& resource, uint32_t& shader_index);
+
+// The vertex stride each shader of the drawable's high LOD draws with, by
+// shader index, and zero for a shader with no submesh in that LOD.
+//
+// The room a body may grow into is measured in bytes, and a triangle does not
+// cost the same on every shader. Measured on the police Caprice's body_lod_0:
+// BlackMatte is drawn from position-only submeshes of twelve bytes a vertex and
+// every other shader from POS/NRM/UV0/UV1/TAN at twenty-eight, so the same
+// triangle count is nearly twice the bytes on one as on the other.
+//
+// The split is weighted by triangles, which means a `weight.<effect>` is not a
+// share of the room -- it is a share of the room per triangle, and it silently
+// changes meaning the moment a material moves between shaders. That is not a
+// hypothetical: this car's cabin moved from BlackMatte to BumpSpecAlpha under
+// the same 0.25 and came back at 4535 triangles instead of 20,859. Reporting
+// the stride beside the triangle count is what makes that visible in the log
+// rather than only in the game.
+bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& stride_of);
+
+// One material of a vehicle's material pack, in shader-index order.
+//
+// A car is not one surface and its textures are not one image: the pack states,
+// per shader, which effect draws it and which of the dictionary's textures that
+// effect reads. Both halves are needed to give a replacement body its own skin
+// -- the effect says whether the shader samples anything at all (paint, glass,
+// black matte and chrome sample nothing, and no amount of writing gives them a
+// picture), and the texture says where the picture goes.
+struct PackMaterial {
+    uint32_t effect = 0;        // index into the game's car shader list
+    uint32_t address = 0;       // the material struct
+    uint32_t diffuse = 0;       // the texture its colour map reads, 0 for none
+    std::string diffuse_name;
+    uint32_t width = 0;         // of that texture, as the pack stores it
+    uint32_t height = 0;
+    bool writable = false;      // the texture is there and in a format this can encode
+};
+
+// Every material of `pack`, in the order the drawable's shader indices use.
+bool ReadPackMaterials(const Rsc5Resource& pack, std::vector<PackMaterial>& out);
+
+// Writes `image` over the colour map of pack material `material_index`.
+//
+// The same write ReplaceShaderDiffuse performs, addressed through a material
+// pack instead of a drawable's shader group: resampled to the size the shipped
+// texture already is, encoded in the format it already declares, tiled, and
+// dropped at the address it already lives at, mip chain included. Nothing grows.
+//
+// Two companions of the colour map are handled with it. A normal map (its name
+// ends in _n) is flattened, because it is still the donor's and the mesh no
+// longer has the donor's UVs. An illuminated variant (the colour map's name plus
+// _i, which is how a car's lights carry their lit state) is written with the
+// same image, so a lamp does not change picture when it comes on.
+bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, const Image& image,
+                                std::string& error, TextureStats* stats = nullptr);
 
 }  // namespace mc::modloader

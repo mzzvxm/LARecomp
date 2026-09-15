@@ -6,10 +6,13 @@
 #include <algorithm>
 #include <cstdio>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -120,6 +123,22 @@ REXCVAR_DEFINE_BOOL(model_mods_textures, true, "MCLA/Mods",
     "are remapped into its own cell, and the result is written over the "
     "character's diffuse map in place -- same address, same size, same format. "
     "Off leaves the mesh wearing the original driver's skin.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(model_mods_car_textures, true, "MCLA/Mods",
+    "Give a replacement car body its own textures. A car is drawn by several "
+    "shaders of one drawable and each of them samples at most one image, so the "
+    "mod's materials are grouped by the shader they were mapped to, packed into "
+    "one atlas per shader with their UVs remapped, and written over that "
+    "shader's colour map in the car's material packs (.xtl and .xtp) in place.\n"
+    "\n"
+    "Only shaders that sample anything get one. CarPaintCustomizable, CarGlass, "
+    "BlackMatte and Chrome read no texture at all -- the effect decides that, "
+    "not the data -- so their materials keep the UVs they came with, which is "
+    "what paint needs for its vinyls to sit right.\n"
+    "\n"
+    "Off ships the donor's packs exactly as the game holds them, and the body "
+    "comes back wearing the donor's own artwork.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_autoalign, true, "MCLA/Mods",
@@ -290,6 +309,42 @@ REXCVAR_DEFINE_BOOL(model_mods_grow, false, "MCLA/Mods",
     "go back to welding everything into the shipped buffers.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_UINT32(model_mods_car_budget, 1048576, "MCLA/Mods",
+    "The largest a replaced car body may be grown to, in bytes per LOD. "
+    "Anything the mod brings beyond what fits is welded away.\n"
+    "\n"
+    "Growing a drawable has no natural limit -- the mod hands over whatever it "
+    "modelled and the resource follows -- but the game has one in practice. "
+    "Counted over the 8849 vehicle drawables the game ships, the largest "
+    "declares 1,163,264 bytes and the median 45,056; counted over body_lod_0 "
+    "alone the largest is 884,736 and the median 266,240. The default sits just "
+    "under that largest, so a mod may be as heavy as the heaviest thing the "
+    "engine already streams and no heavier.\n"
+    "\n"
+    "Measured, and not a verdict: a 4,194,304 budget gave the BMW a 3,825,664 "
+    "byte body_lod_0 that drives correctly, so exceeding the shipped maximum is "
+    "not by itself what breaks a car.\n"
+    "\n"
+    "0 lifts the ceiling entirely, which is the setting to try when you want to "
+    "know whether size is what a car is failing on.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(model_mods_car_pack_write, true, "MCLA/Mods",
+    "Write the mod's atlases into the car's material packs."
+    "\n"
+    "A probe, not a feature. model_mods_car_textures gates TWO things at once: "
+    "the atlas, which rewrites the mesh's UVs, and the pack rewrite, which "
+    "unpacks .xtl/.xtp, drops the atlases in and repacks them through "
+    "BuildRsc5File instead of shipping the donor's bytes as they came. "
+    "Switching that cvar off made a broken car whole again, which says the "
+    "fault is in one of those two and not which."
+    "\n"
+    "Off keeps the atlas and its UV rewrite and ships the packs untouched. The "
+    "car then wears the donor's artwork through the mod's UVs, which looks "
+    "wrong on purpose -- what is being read is the GEOMETRY. Whole means the "
+    "pack rewrite is at fault; in pieces means the UV rewrite is.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
     "Let two materials that name the same picture share one cell of the atlas."
     "\n"
@@ -308,6 +363,21 @@ REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
     "a UV by more than a texel -- and something downstream of that is not "
     "surviving it. Until that is understood this stays off and each material "
     "keeps its own cell.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
+    "How much larger than the donor's own a replacement PART may be, as a "
+    "multiple of the shipped resource.\n"
+    "\n"
+    "A part is not a body and does not need the body's machinery: the Impala's "
+    "front bumper is 1731 vertices where its shell is three thousand-odd, and "
+    "the whole of a car's sixty parts together weigh less than one of its LODs. "
+    "Eight times the shipped size is room for a part modelled far more finely "
+    "than the one it stands in for, and still small enough that nothing has to "
+    "be dealt out between shaders the way the body's room is.\n"
+    "\n"
+    "1 keeps every part at exactly the size the donor shipped, which is the "
+    "setting to try when a car loads without its parts.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(model_mods_car_verbatim, false, "MCLA/Mods",
@@ -372,6 +442,25 @@ REXCVAR_DEFINE_UINT32(model_mods_grow_slack, 65536, "MCLA/Mods",
     "smallest that might. 0 restores the old behaviour and the holes with it.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(model_mods_car_space_only, true, "MCLA/Mods",
+    "Write a donor car's replacement mesh only into the models the donor authors "
+    "in the CAR's frame, and silence the pass's submeshes in the others.\n"
+    "\n"
+    "A vehicle body is several models and the game draws each with its own part "
+    "matrix -- a bumper, a lamp, a door window. Geometry that arrives in car "
+    "space and lands in one of those goes wherever that bone is, which is the "
+    "nose in the ground and the lamps above the roof.\n"
+    "\n"
+    "Silencing here zeroes the index and vertex counts and leaves the buffer "
+    "pointers, which is the technique that twice failed in game when it emptied a "
+    "whole part; applied to some submeshes of a shader rather than all, it has "
+    "always been fine. It was suspected once of causing blades and cleared: those "
+    "were buffers crossing a resource block boundary, and the fix for that is "
+    "elsewhere (MeshOffset::block_align). Kept switchable because it is the one "
+    "thing between a car in its right place and a car whose nose is in the "
+    "ground. Read at archive build time, so it needs a restart and no rebuild.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_INT32(model_mods_grow_probe, 0, "MCLA/Mods",
     "With `model_mods_grow` on: 1 grows the resource and stops there, the segment "
     "gets bigger and nothing else changes -- no buffer moves, no pointer is "
@@ -414,6 +503,11 @@ constexpr uint32_t kAtlasCell = 256;
 // segment. The end of a resource does not arrive intact; see PadResourceTail
 // for the two measurements that bracket it.
 constexpr uint32_t kResourceTailSlack = 65536;
+
+// Page class a rebuilt vehicle drawable is restated in: 256 << 8 = 65536, which
+// makes the blocks it is split into 4096 << 8 = 1 MB. See
+// MeshOffset::block_align for why a block has to be able to hold a whole buffer.
+constexpr uint32_t kCarPageShift = 8;
 
 bool g_mod_archive_ready = false;
 
@@ -563,6 +657,7 @@ constexpr const char* kRimFolder = "rims";
 // swap possible -- MCLA's Skyline has five spoiler slots and a BMW has no
 // spoiler at all.
 constexpr const char* kVehicleFolder = "vehicles";
+
 
 // Files that are not meshes at all, copied into the mod archive byte for byte
 // under the path they already have:
@@ -998,8 +1093,17 @@ std::vector<PartMapping> ReadPartsFile(const std::filesystem::path& path, std::s
 
     std::string line;
     while (std::getline(in, line)) {
-        const size_t comment = line.find('#');
-        if (comment != std::string::npos) line.resize(comment);
+        // A comment starts at a '#' that begins the line or follows whitespace.
+        // Not at every '#': "InteriorTrim#3" names the fourth drawn InteriorTrim,
+        // and cutting it there silently turned every such rule into plain
+        // "InteriorTrim" -- the whole BMW cabin, fourteen materials meant for ten
+        // shaders, landed on one.
+        for (size_t at = line.find('#'); at != std::string::npos; at = line.find('#', at + 1)) {
+            if (at == 0 || line[at - 1] == ' ' || line[at - 1] == '\t') {
+                line.resize(at);
+                break;
+            }
+        }
 
         const size_t equals = line.find('=');
         if (equals == std::string::npos) continue;
@@ -1031,12 +1135,33 @@ std::vector<PartMapping> ReadPartsFile(const std::filesystem::path& path, std::s
     return out;
 }
 
+// The triangles a slot line names, as a mesh of their own.
+//
+// A name matches either the object a part came from (`o` in the .obj, the node
+// in the .glb) or its MATERIAL. Both, because the two ways a model says "this
+// is the cabin" are a node called that and a set of materials that are it, and
+// a car exported out of GTA IV only ever offers the second: the bake collapses
+// the whole shell into one node, so `interior0 = body` would claim the entire
+// car while `interior0 = MAT_1, MAT_2, ...` claims the fourteen materials that
+// really are its cabin.
+//
+// This is what lets a heavy car stop inflating body_lod_0. Measured on
+// vp_chv_impala_96: its body_lod_0 is 245,760 bytes and its interior0_lod_0 is
+// 950,272, drawing 25,069 triangles over TWENTY shader slots. The game does not
+// put a cabin in the body, and neither should a mod.
+bool NamesPart(const std::vector<std::string>& names, const MeshPart& part) {
+    return std::find(names.begin(), names.end(), part.group) != names.end() ||
+           std::find(names.begin(), names.end(), part.material) != names.end();
+}
+
 // The box a set of named groups occupies inside `mesh`.
 bool GroupBounds(const Mesh& mesh, const std::vector<std::string>& groups,
                  float min_out[3], float max_out[3]) {
     bool any = false;
     for (const MeshPart& part : mesh.parts) {
-        if (std::find(groups.begin(), groups.end(), part.group) == groups.end()) continue;
+        // Same match as ExtractGroups, or the box is measured over a different
+        // set of triangles than the one that gets built.
+        if (!NamesPart(groups, part)) continue;
         for (uint32_t i = 0; i < part.vertex_count; ++i) {
             const MeshVertex& vertex = mesh.vertices[part.first_vertex + i];
             const float p[3] = {vertex.px, vertex.py, vertex.pz};
@@ -1054,6 +1179,39 @@ bool GroupBounds(const Mesh& mesh, const std::vector<std::string>& groups,
     return any;
 }
 
+// Everything a slot line does NOT name. A material routed to a part slot has to
+// leave the body, or the car is drawn twice: once in the body it was never
+// removed from and once in the slot it was sent to, which reads as z-fighting
+// over the whole cabin and spends the budget twice.
+Mesh ExcludeGroups(const Mesh& mesh, const std::vector<std::string>& groups) {
+    std::vector<uint32_t> remap(mesh.vertices.size(), 0xFFFFFFFFu);
+    Mesh out;
+    out.images = mesh.images;
+
+    for (const MeshPart& part : mesh.parts) {
+        if (NamesPart(groups, part)) continue;
+        MeshPart copy = part;
+        copy.first_vertex = static_cast<uint32_t>(out.vertices.size());
+        for (uint32_t i = 0; i < part.vertex_count; ++i) {
+            const uint32_t source = part.first_vertex + i;
+            remap[source] = static_cast<uint32_t>(out.vertices.size());
+            out.vertices.push_back(mesh.vertices[source]);
+        }
+        out.parts.push_back(copy);
+    }
+
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        const uint32_t a = remap[mesh.indices[i]];
+        const uint32_t b = remap[mesh.indices[i + 1]];
+        const uint32_t c = remap[mesh.indices[i + 2]];
+        if (a == 0xFFFFFFFFu || b == 0xFFFFFFFFu || c == 0xFFFFFFFFu) continue;
+        out.indices.push_back(a);
+        out.indices.push_back(b);
+        out.indices.push_back(c);
+    }
+    return out;
+}
+
 // Everything belonging to `groups`, lifted out as a mesh of its own. A triangle
 // comes along only when all three of its vertices do, so a primitive is never
 // split down the middle.
@@ -1063,7 +1221,7 @@ Mesh ExtractGroups(const Mesh& mesh, const std::vector<std::string>& groups) {
     out.images = mesh.images;
 
     for (const MeshPart& part : mesh.parts) {
-        if (std::find(groups.begin(), groups.end(), part.group) == groups.end()) continue;
+        if (!NamesPart(groups, part)) continue;
         MeshPart copy = part;
         copy.first_vertex = static_cast<uint32_t>(out.vertices.size());
         for (uint32_t i = 0; i < part.vertex_count; ++i) {
@@ -1107,6 +1265,1441 @@ void PlacePart(Mesh& mesh, float yaw, float scale, const float slot_min[3],
     }
 }
 
+// ---------------------------------------------------------------------------
+// A car the game has never heard of.
+//
+// Everything above replaces a vehicle MCLA ships. This builds one it does not:
+// the roster is data, so a `tune/vehicle/vehicle000N.lst` entry naming a car
+// makes the showroom ask for `$/resources/vehicle/<name>/...`, and nothing
+// under that path has to have existed before. What the loader
+// (sub_823723C8) asks for, in order:
+//
+//   body_lod_0..2          the drawable, three LODs, resource type 63
+//   <name>.xtl, <name>.xtp two type-83 material packs, which also carry the
+//                          physics bound the player-vehicle path needs
+//   <name>.xct             the car tune, type 37938 (50 in the archive entry)
+//   <name>.xspm            type 19 -- the manifest saying which parts exist
+//   <slot><i>_lod_<l>      55 slot names x 10 indices x 3 LODs, gated by the
+//                          .xspm and each existence-checked
+//
+// Every one of those sits behind an exists-first check, so a file a mod does
+// not ship is simply not drawn. That is what makes a donor workable: clone the
+// parts of another vehicle that are not geometry -- its tune, its packs, its
+// bound, its manifest -- and put the mod's own mesh in the drawable.
+//
+// The donor is named in parts.txt, and so is the material map, because a car is
+// not one surface. MCLA draws paint, glass, lights and trim with different
+// shaders of the same drawable, and a body dealt across all of them comes back
+// with painted windows. A mod says which of its materials is which by naming
+// the game's own car shader, and the rewrite then runs once per shader.
+struct ShaderRule {
+    std::string material;  // the mod's material name, or "*" for the fallback
+    std::string effect;    // a name from the game's car shader list
+    // Which drawable the rule speaks for: empty is the car's body, otherwise a
+    // part slot such as "bumper_f0".
+    //
+    // One map for the whole car is not enough once parts are filled separately,
+    // because the same shader index appears in more than one of its drawables.
+    // Measured on the Impala: CarPaintCustomizable#1 draws 673 vertices of the
+    // body AND 1731 of bumper_f0, so a material sent to it without saying which
+    // drawable is meant would be written into both and drawn twice. A rule
+    // naming a slot applies only there and beats the unqualified one.
+    std::string slot;
+};
+
+struct VehiclePlan {
+    std::string donor;
+    std::vector<PartMapping> slots;
+    std::vector<ShaderRule> shaders;
+    std::vector<std::string> silenced;  // slots shipped empty
+    std::vector<std::string> kept;  // effects left exactly as the donor drew them
+    // Effects whose UVs are flooded with the template's, because the mod has no
+    // picture for them -- glass, whose GTA shader carries no diffuse at all.
+    std::vector<std::string> flat_uv;
+    // How much of a capped body's room each effect is worth, by name. Absent
+    // means 1. Triangle count alone says how much a shader brought, not how
+    // much of it the player looks at -- a cabin blocker is half the mesh and
+    // nobody sees it, the painted shell is the car's whole silhouette.
+    std::map<std::string, float> effect_weight;
+    float scale = 1.0f;
+    float yaw = 0.0f;
+    // Pitch and roll, for a model whose file does not agree with the game about
+    // which way is up. A .glb out of a modelling tool usually does -- the
+    // exporter is asked for Y-up and gives it -- but a .obj converted straight
+    // out of another game does not: the openFormats export of this car measures
+    // 4.857 along Y and 1.294 along Z, which is Z-up, and the quarter turn that
+    // fixes it used to be done by hand in Blender on the way through.
+    float pitch = 0.0f;
+    float roll = 0.0f;
+    float offset[3] = {0.0f, 0.0f, 0.0f};
+    bool placed = false;  // whether a measured transform was given
+
+    // Whether the tune is rewritten to carry this car's name, or copied exactly
+    // as the donor holds it.
+    //
+    // Rewriting is what the car wants -- the tune objects are filed under
+    // "<name>_base", "<name>_mods" and so on (sub_82363990 formats exactly
+    // those), so a clone left carrying the donor's name has its handling looked
+    // up under a name that is not its own. But the rewritten bytes cannot be
+    // put back the way they came: a resource is stored LZX-compressed, a stored
+    // LZX stream of 32768 bytes is larger than the 32768 the streamer will read
+    // for it, and the only other shape on offer is uncompressed -- which the
+    // game never uses. Not once: of the 14,927 resources in xarchive_cache.rpf,
+    // 14,927 are compressed and none are not, and pgStreamer::Read sizes a
+    // compressed request as vsize + psize + 12, the twelve being the header
+    // that an uncompressed payload does not carry.
+    //
+    // So the default is the copy. A car with the donor's tune name drives like
+    // nothing in particular; a car with an uncompressed tune never finished
+    // loading, which is what four separate attempts at this produced. Those
+    // attempts predate the 12-byte header BuildRsc5File now gives the
+    // uncompressed road, so the rename is worth trying again -- but not by
+    // default.
+    bool rename_tune = false;
+
+    // Where the donor's licence plate has to move to land on this car's rear.
+    // Metres, in the car's own space: x is lateral, y up, z back.
+    float plate[3] = {0.0f, 0.0f, 0.0f};
+
+    // Clone the donor and rewrite nothing.
+    //
+    // A control, not a feature. Two things could keep a new car from loading --
+    // the machinery that gives it a name and a set of files, or the geometry
+    // written into its body -- and they can only be told apart by shipping one
+    // without the other. A verbatim car is the donor under a new name, down to
+    // the last byte of its drawables: if that loads, the naming is sound and
+    // the fault is in the mesh; if it does not, the mesh was never the problem.
+    bool verbatim = false;
+};
+
+// Pulls the reserved keys out of a parts.txt and leaves the rest as slots.
+//
+// The grammar is the one that was already there -- `key = value` -- so the new
+// directives are only reserved keys, and `shader.<material>` carries its second
+// operand in the key. No existing parts.txt changes meaning.
+//
+//   donor          = vp_chv_police_96
+//   scale          = 1.0735
+//   offset         = 0 0.7557 0.111
+//   yaw            = 0
+//   pitch          = -90        (a model whose file is Z-up)
+//   roll           = 0
+//   verbatim       = 1          (a control: clone the donor, rewrite nothing)
+//   tune           = rename     (rewrite the tune's name; see rename_tune)
+//   silence        = hood0, skirts0
+//   keep           = LicensePlate
+//   weight.CarPaintCustomizable = 2.5
+//   shader.MAT_21  = CarPaintCustomizable
+//   shader.*       = BumpSpecAlpha
+//   shader.bumper_f0.MAT_21 = CarPaintCustomizable#1   (only in that part)
+//   bumper_f0      = bumper_f   (a slot line: which of the model's groups fill it)
+//   body           = admiral_high
+VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
+    VehiclePlan plan;
+    for (const PartMapping& mapping : mappings) {
+        const std::string& key = mapping.slot;
+        std::string lower = key;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (lower.rfind("shader.", 0) == 0) {
+            // "shader.<material>" or "shader.<slot>.<material>". A material name
+            // never holds a dot, so the second dot is unambiguous.
+            std::string rest = key.substr(7);
+            std::string slot;
+            const size_t dot = rest.find('.');
+            if (dot != std::string::npos) {
+                slot = rest.substr(0, dot);
+                rest = rest.substr(dot + 1);
+            }
+            plan.shaders.push_back(
+                ShaderRule{std::move(rest), mapping.groups.front(), std::move(slot)});
+            continue;
+        }
+        if (lower.rfind("weight.", 0) == 0) {
+            plan.effect_weight[key.substr(7)] =
+                std::strtof(mapping.groups.front().c_str(), nullptr);
+            continue;
+        }
+        if (lower == "donor") {
+            plan.donor = mapping.groups.front();
+            continue;
+        }
+        if (lower == "verbatim") {
+            plan.verbatim = mapping.groups.front() != "0";
+            continue;
+        }
+        if (lower == "plate") {
+            for (size_t i = 0; i < 3 && i < mapping.groups.size(); ++i)
+                plan.plate[i] = std::strtof(mapping.groups[i].c_str(), nullptr);
+            continue;
+        }
+        if (lower == "tune") {
+            plan.rename_tune = mapping.groups.front() == "rename";
+            continue;
+        }
+        if (lower == "silence") {
+            for (const std::string& slot : mapping.groups) plan.silenced.push_back(slot);
+            continue;
+        }
+        if (lower == "flat_uv") {
+            for (const std::string& effect : mapping.groups) plan.flat_uv.push_back(effect);
+            continue;
+        }
+        if (lower == "keep") {
+            for (const std::string& effect : mapping.groups) plan.kept.push_back(effect);
+            continue;
+        }
+        if (lower == "scale") {
+            plan.scale = std::strtof(mapping.groups.front().c_str(), nullptr);
+            plan.placed = true;
+            continue;
+        }
+        if (lower == "yaw") {
+            plan.yaw = std::strtof(mapping.groups.front().c_str(), nullptr);
+            continue;
+        }
+        if (lower == "pitch") {
+            plan.pitch = std::strtof(mapping.groups.front().c_str(), nullptr);
+            continue;
+        }
+        if (lower == "roll") {
+            plan.roll = std::strtof(mapping.groups.front().c_str(), nullptr);
+            continue;
+        }
+        if (lower == "offset") {
+            // Three numbers on one line, so they arrive as a single "group".
+            std::istringstream stream(mapping.groups.front());
+            for (int i = 0; i < 3; ++i) stream >> plan.offset[i];
+            plan.placed = true;
+            continue;
+        }
+        plan.slots.push_back(mapping);
+    }
+    return plan;
+}
+
+// Which MCLA shader index each of the mod's materials must be drawn with, for
+// one drawable of the car.
+//
+// `effects` is what the donor's own material pack states, one entry per shader
+// index; a rule names an effect and the first shader running it wins. A rule
+// naming an effect the donor does not have is dropped with a line in the log --
+// sending those triangles somewhere else without saying so would be worse.
+//
+// `slot` is empty for the body and a part slot otherwise. Unqualified rules are
+// read first and the slot's own rules are read after, so a slot rule overwrites
+// the general one for that material and nothing else.
+//
+// `drawn` is the set of shader indices the BODY actually renders with, and it
+// is not the same set as the material pack's. Measured on vp_chv_impala_96: the
+// pack states 47 materials, the body draws 13, and CarPaintCustomizable appears
+// at BOTH 19 and 23 with only 23 drawn. Matching by name alone takes the first
+// in the pack, which is 19, and 19 has no geometry -- so the whole painted
+// shell, 31,844 triangles, was silently left as the donor's and the car came
+// back looking like a Chevrolet Impala. Pass it empty to match against the pack
+// as before.
+std::map<std::string, uint32_t> ResolveShaderMap(const VehiclePlan& plan,
+                                                 const std::vector<uint32_t>& effects,
+                                                 const std::vector<uint32_t>& drawn,
+                                                 const std::string& mod_name,
+                                                 const std::string& car, int32_t& fallback,
+                                                 const std::string& slot = std::string()) {
+    auto has_geometry = [&](size_t index) {
+        return drawn.empty() || (index < drawn.size() && drawn[index] != 0);
+    };
+    std::map<std::string, uint32_t> out;
+    fallback = -1;
+
+    std::vector<const ShaderRule*> ordered;
+    for (const ShaderRule& rule : plan.shaders) {
+        if (rule.slot.empty()) ordered.push_back(&rule);
+    }
+    for (const ShaderRule& rule : plan.shaders) {
+        if (!rule.slot.empty() && rule.slot == slot) ordered.push_back(&rule);
+    }
+
+    for (const ShaderRule* entry : ordered) {
+        const ShaderRule& rule = *entry;
+        // A rich donor runs the same effect on many shaders -- the Impala has
+        // fourteen InteriorTrim materials, one per surface of its cabin, each
+        // reading a texture of its own -- and a name alone can only ever name
+        // the first of them. "#N" says which: "InteriorTrim#3" is the fourth
+        // shader running InteriorTrim, and a bare "#12" is shader twelve
+        // whatever it runs. Without the suffix the first match is taken, so
+        // nothing already written changes meaning.
+        std::string effect_name = rule.effect;
+        int32_t nth = 0;
+        const size_t hash = effect_name.find('#');
+        if (hash != std::string::npos) {
+            const std::string digits = effect_name.substr(hash + 1);
+            if (digits.empty() ||
+                digits.find_first_not_of("0123456789") != std::string::npos) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: '{}' does not end in a shader number",
+                                   mod_name, car, rule.effect);
+                continue;
+            }
+            nth = std::atoi(digits.c_str());
+            effect_name.erase(hash);
+        }
+
+        int32_t shader = -1;
+        if (effect_name.empty()) {
+            // "#12": the shader index itself, for a donor whose effect names do
+            // not tell its materials apart.
+            if (static_cast<size_t>(nth) >= effects.size()) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the donor has {} shaders, so '{}' has "
+                                   "nowhere to go", mod_name, car, effects.size(), rule.effect);
+                continue;
+            }
+            shader = nth;
+            if (!has_geometry(static_cast<size_t>(nth))) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: shader {} exists but the body draws "
+                                   "nothing with it, so '{}' would be written into nothing",
+                                   mod_name, car, nth, rule.effect);
+                continue;
+            }
+        } else {
+            const int32_t effect = CarEffectIndex(effect_name);
+            if (effect < 0) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: '{}' is not one of the game's car "
+                                   "shaders", mod_name, car, effect_name);
+                continue;
+            }
+            // Only the occurrences that have geometry are counted, so "#1"
+            // means the second DRAWN one rather than the second in the pack.
+            int32_t seen = 0, in_pack = 0;
+            for (size_t i = 0; i < effects.size(); ++i) {
+                if (effects[i] != static_cast<uint32_t>(effect)) continue;
+                ++in_pack;
+                if (!has_geometry(i)) continue;
+                if (seen++ < nth) continue;
+                shader = static_cast<int32_t>(i);
+                break;
+            }
+            if (shader < 0 && seen > 0) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the body draws with {} {} time(s), so "
+                                   "'{}' has nowhere to go", mod_name, car, effect_name, seen,
+                                   rule.effect);
+                continue;
+            }
+            if (shader < 0 && in_pack > 0 && !slot.empty() && rule.slot.empty()) {
+                continue;   // a body rule, and this slot simply does not draw that shader
+            }
+            if (shader < 0 && in_pack > 0) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the donor's pack states {} {} time(s) "
+                                   "and the body draws NONE of them, so '{}' would be written "
+                                   "into nothing -- pick a shader the body renders",
+                                   mod_name, car, effect_name, in_pack, rule.material);
+                continue;
+            }
+        }
+        if (shader < 0) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the donor draws nothing with {}, so '{}' "
+                               "has nowhere to go", mod_name, car, rule.effect, rule.material);
+            continue;
+        }
+        if (rule.material == "*") {
+            fallback = shader;
+        } else {
+            out[rule.material] = static_cast<uint32_t>(shader);
+        }
+    }
+    return out;
+}
+
+// The triangles of `mesh` whose material is drawn by `shader`, as a mesh of
+// their own. Vertices are renumbered, so what comes back stands alone.
+Mesh ExtractShader(const Mesh& mesh, const std::map<std::string, uint32_t>& shader_of,
+                   int32_t fallback, uint32_t shader) {
+    std::vector<uint32_t> remap(mesh.vertices.size(), 0xFFFFFFFFu);
+    Mesh out;
+    out.images = mesh.images;
+
+    for (const MeshPart& part : mesh.parts) {
+        const auto rule = shader_of.find(part.material);
+        const int32_t target =
+            rule != shader_of.end() ? static_cast<int32_t>(rule->second) : fallback;
+        if (target < 0 || static_cast<uint32_t>(target) != shader) continue;
+
+        MeshPart copy = part;
+        copy.first_vertex = static_cast<uint32_t>(out.vertices.size());
+        for (uint32_t i = 0; i < part.vertex_count; ++i) {
+            const uint32_t source = part.first_vertex + i;
+            remap[source] = static_cast<uint32_t>(out.vertices.size());
+            out.vertices.push_back(mesh.vertices[source]);
+        }
+        out.parts.push_back(std::move(copy));
+    }
+
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        const uint32_t a = remap[mesh.indices[i]];
+        const uint32_t b = remap[mesh.indices[i + 1]];
+        const uint32_t c = remap[mesh.indices[i + 2]];
+        if (a == 0xFFFFFFFFu || b == 0xFFFFFFFFu || c == 0xFFFFFFFFu) continue;
+        out.indices.push_back(a);
+        out.indices.push_back(b);
+        out.indices.push_back(c);
+    }
+    return out;
+}
+
+// Moves the whole mesh into the game's space, once, before any slot sees it.
+//
+// The per-slot placement above centres a part on the box of the part it
+// replaces, which is right when a mod is a set of parts standing in for the
+// donor's. A whole-body swap wants the opposite: one measured transform for the
+// entire car, so its wheels land on the axles the donor's skeleton keeps rather
+// than wherever a bounding box happened to sit. The numbers come from
+// measurement -- the donor states its axles in its own skeleton (`axl_0..3`),
+// the mod states its wheels, and the ratio of the two wheelbases is the scale.
+void PlaceCar(Mesh& mesh, const VehiclePlan& plan) {
+    TransformMesh(mesh, plan.yaw, plan.pitch, plan.roll, plan.scale);
+    for (MeshVertex& vertex : mesh.vertices) {
+        vertex.px += plan.offset[0];
+        vertex.py += plan.offset[1];
+        vertex.pz += plan.offset[2];
+    }
+}
+
+// Renames a donor's own name where it is written inside a resource.
+//
+// The tune resource states the car it belongs to a dozen times -- "<car>",
+// "<car>_base", "<car>_mods", "E@<car>" -- and those are the names the tune
+// objects are filed under when the vehicle is built (sub_82363990 formats
+// exactly those). A clone left carrying the donor's name would have its tunes
+// looked up under a name that is not its own.
+//
+// Strings are rewritten where they sit, so the new name has to be no longer
+// than the donor's; everything after it is kept and the slack is zeroed. Any
+// word in the resource holding the RAGE hash of a string that changed is
+// rewritten too, which is what keeps a dictionary's parallel hash array in step
+// without having to know where that array is.
+size_t RenameInResource(std::vector<uint8_t>& data, const std::string& from,
+                        const std::string& to) {
+    if (from.empty() || to.size() > from.size()) return 0;
+
+    std::vector<std::pair<uint32_t, uint32_t>> hashes;  // old -> new
+    size_t renamed = 0;
+
+    for (size_t at = 0; at + from.size() <= data.size();) {
+        if (std::memcmp(data.data() + at, from.data(), from.size()) != 0) {
+            ++at;
+            continue;
+        }
+        // Only a whole, NUL-terminated, printable string is a name. Anything
+        // else that happens to hold these bytes is left alone.
+        size_t start = at;
+        while (start > 0 && data[start - 1] >= 0x20 && data[start - 1] < 0x7F) --start;
+        size_t end = at + from.size();
+        while (end < data.size() && data[end] >= 0x20 && data[end] < 0x7F) ++end;
+        if (end >= data.size() || data[end] != 0) {
+            at += from.size();
+            continue;
+        }
+
+        const std::string before(reinterpret_cast<const char*>(data.data() + start), end - start);
+        std::string after = before;
+        for (size_t found = after.find(from); found != std::string::npos;
+             found = after.find(from, found + to.size())) {
+            after.replace(found, from.size(), to);
+        }
+        hashes.emplace_back(RageHash(before), RageHash(after));
+
+        std::memcpy(data.data() + start, after.data(), after.size());
+        std::memset(data.data() + start + after.size(), 0, (end - start) - after.size());
+        ++renamed;
+        at = end;
+    }
+
+    for (const auto& [old_hash, new_hash] : hashes) {
+        for (size_t at = 0; at + 4 <= data.size(); at += 4) {
+            if (LoadBE32(data.data() + at) != old_hash) continue;
+            data[at + 0] = static_cast<uint8_t>(new_hash >> 24);
+            data[at + 1] = static_cast<uint8_t>(new_hash >> 16);
+            data[at + 2] = static_cast<uint8_t>(new_hash >> 8);
+            data[at + 3] = static_cast<uint8_t>(new_hash);
+        }
+    }
+    return renamed;
+}
+
+// The 55 part slots a player vehicle can carry, in the order the loader walks
+// them (the table at 0x827E9608, read by sub_823723C8). It asks for
+// `<slot><index>_lod_<lod>` with index 0..9 and lod 0..2 for every one of them,
+// so these names plus that shape are the whole vocabulary of a car's folder --
+// which is what lets a donor's hash-named files be recognised and renamed.
+const char* const kCarSlots[] = {
+    "conv_top",    "conv_topup",  "hood",        "bumper_r",    "trunk_swap",
+    "intercooler", "bumper_f",    "fenders",     "skirts",      "spoiler",
+    "spoiler_b",   "headlight",   "taillight",   "taillight_b", "frontgrill",
+    "wheeliebar",  "blower",      "bike_tail",   "bike_tank",   "bike_cowl",
+    "door_l",      "door_r",      "conv_topdown", "exh_pipe",   "exh_side",
+    "armfl",       "armfr",       "armrl",       "armrr",       "shockfl",
+    "shockfr",     "shockrl",     "shockrr",     "guiderl",     "guiderr",
+    "axle",        "subbumf",     "subbumr",     "widebody",    "spoiler_wide",
+    "hood_wide",   "door_l_wide", "door_r_wide", "trunk_wide",  "interior",
+    "seats_f",     "seats_p",     "door_l_int",  "door_r_int",  "stereo",
+    "stereo_l",    "stereo_r",    "steer_whl",   "post_gauge",  "occluder_",
+};
+
+// Every file name a car's folder can hold, as hash -> name. The archive files
+// them by hash and keeps no strings, so this is the only way to know what a
+// donor's children are called -- and a child whose hash is not in here is
+// copied under its hash instead of being guessed at.
+std::map<uint32_t, std::string> CarFolderNames(const std::string& car) {
+    std::map<uint32_t, std::string> out;
+    auto put = [&](std::string name) { out.emplace(RageHash(name), std::move(name)); };
+
+    for (int lod = 0; lod < 3; ++lod) put("body_lod_" + std::to_string(lod) + ".xrsc");
+    for (const char* extension : {".xct", ".xspm", ".xtl", ".xtp"}) put(car + extension);
+    for (const char* slot : kCarSlots) {
+        for (int index = 0; index < 10; ++index) {
+            for (int lod = 0; lod < 3; ++lod) {
+                put(std::string(slot) + std::to_string(index) + "_lod_" + std::to_string(lod) +
+                    ".xrsc");
+            }
+        }
+    }
+    return out;
+}
+
+// Builds one car the game does not ship, from a donor that it does.
+size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh mesh,
+                     const Rpf3Reader& archive, Rpf3Writer& writer) {
+    const std::string& car = vehicle.car;
+    const std::string& donor = plan.donor;
+    const std::string donor_dir = "resources/vehicle/" + donor;
+    const std::string car_dir = "resources/vehicle/" + car;
+    std::string error;
+
+    if (car.size() > donor.size()) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the name is longer than the donor's ({}), and "
+                           "the donor's tune states its own name in strings that are rewritten "
+                           "where they sit -- pick a name of at most {} characters",
+                           vehicle.mod_name, car, donor, donor.size());
+        return 0;
+    }
+
+    // What the donor draws with, one effect per shader index. Its material pack
+    // is the only place a vehicle says this: the drawable's own shader group is
+    // a class with no names in it at all.
+    Rsc5Resource pack;
+    if (!ExtractTemplate(archive, donor_dir + "/" + donor + ".xtl", pack, error)) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: donor {}: {}", vehicle.mod_name, car, donor,
+                           error);
+        return 0;
+    }
+    std::vector<uint32_t> effects;
+    if (!ReadPackEffects(pack, effects) || effects.empty()) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot read the donor's material pack",
+                           vehicle.mod_name, car);
+        return 0;
+    }
+    {
+        std::string list;
+        for (size_t i = 0; i < effects.size(); ++i) {
+            list += (i ? ", " : "") + std::to_string(i) + "=" + CarEffectName(effects[i]);
+        }
+        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: donor {} draws with {}", vehicle.mod_name, car,
+                          donor, list);
+    }
+
+    // Which of those shaders the BODY renders with. Read off body_lod_0 rather
+    // than off the pack, because the two disagree and it is the drawable that
+    // decides: a shader index the pack states and the drawable never names has
+    // no geometry to write into, and a pass aimed at one is dropped in silence.
+    std::vector<uint32_t> drawn;
+    {
+        Rsc5Resource body;
+        std::string body_error;
+        if (ExtractTemplate(archive, donor_dir + "/body_lod_0.xrsc", body, body_error)) {
+            ShaderVertexStrides(body, drawn);
+        }
+        if (drawn.empty()) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot read what donor {} draws with; "
+                               "shader names will be matched against its pack instead, which "
+                               "can land a pass on a shader that has no geometry",
+                               vehicle.mod_name, car, donor);
+        } else {
+            std::string list;
+            size_t count = 0;
+            for (size_t i = 0; i < drawn.size(); ++i) {
+                if (!drawn[i]) continue;
+                list += (count++ ? ", " : "") + std::to_string(i) + "=" +
+                        CarEffectName(i < effects.size() ? effects[i] : 0);
+            }
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: body_lod_0 renders {} of them: {}",
+                              vehicle.mod_name, car, count, list);
+        }
+    }
+
+    int32_t fallback = -1;
+    const std::map<std::string, uint32_t> shader_of =
+        ResolveShaderMap(plan, effects, drawn, vehicle.mod_name, car, fallback);
+
+    if (plan.placed) {
+        PlaceCar(mesh, plan);   // once, on the whole model: see the caller
+        float min[3], max[3];
+        mesh.Bounds(min, max);
+        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: placed at scale {:.4f}, box ({:.2f} {:.2f} "
+                          "{:.2f}) to ({:.2f} {:.2f} {:.2f})", vehicle.mod_name, car, plan.scale,
+                          min[0], min[1], min[2], max[0], max[1], max[2]);
+    }
+
+    // Which of the donor's shaders can be given a picture at all.
+    //
+    // The effect decides it, and the data cannot argue: CarPaintCustomizable,
+    // CarGlass, BlackMatte and Chrome declare no texture parameter, so there is
+    // nowhere to put one and nothing would sample it if there were. That also
+    // makes them the shaders whose UVs must be left alone -- paint reads its
+    // own set to place vinyls, and folding it into an atlas cell would move
+    // every decal on the car.
+    //
+    // What is left is the donor's textured shaders, and how many of them there
+    // are is the whole ceiling on a replacement's artwork. The police Caprice
+    // has three: BumpSpecAlpha, CarLight and LicensePlate. A modifiable car has
+    // fifteen or more, with real InteriorTrim slots for the cabin.
+    std::vector<PackMaterial> pack_materials;
+    const bool want_car_textures =
+        REXCVAR_GET(model_mods_car_textures) && !plan.verbatim && !mesh.images.empty() &&
+        ReadPackMaterials(pack, pack_materials);
+    if (want_car_textures) {
+        std::string list;
+        size_t writable = 0;
+        for (size_t i = 0; i < pack_materials.size(); ++i) {
+            if (!pack_materials[i].writable) continue;
+            ++writable;
+            list += (list.empty() ? "" : ", ") + std::to_string(i) + "=" +
+                    pack_materials[i].diffuse_name + " " +
+                    std::to_string(pack_materials[i].width) + "x" +
+                    std::to_string(pack_materials[i].height);
+        }
+        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: donor {} offers {} writable texture slot(s): {}",
+                          vehicle.mod_name, car, donor, writable,
+                          list.empty() ? "none" : list);
+    }
+
+    // The shell. Every group the `body` line names, which is the whole model
+    // when it names none -- the shape a mod that ships one lump arrives in.
+    const auto body_line = std::find_if(plan.slots.begin(), plan.slots.end(),
+                                        [](const PartMapping& m) { return m.slot == "body"; });
+    Mesh body_mesh = body_line != plan.slots.end() && !body_line->groups.empty()
+                         ? ExtractGroups(mesh, body_line->groups)
+                         : mesh;
+
+    // Whatever a part slot claimed leaves the body. Without this the cabin is
+    // built twice -- once in the body it was never removed from and once in the
+    // slot it was routed to -- which both z-fights and spends the body's budget
+    // on geometry that is already somewhere else, so the shell gets decimated
+    // to pay for a copy of a cabin nobody can see.
+    {
+        std::vector<std::string> claimed;
+        for (const PartMapping& mapping : plan.slots) {
+            if (mapping.slot == "body" || mapping.slot == kVehicleBodySlot) continue;
+            claimed.insert(claimed.end(), mapping.groups.begin(), mapping.groups.end());
+        }
+        if (!claimed.empty()) {
+            const size_t before = body_mesh.indices.size() / 3;
+            body_mesh = ExcludeGroups(body_mesh, claimed);
+            const size_t after = body_mesh.indices.size() / 3;
+            if (after != before) {
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} of {} triangles moved out of the "
+                                  "body into part slot(s)", vehicle.mod_name, car,
+                                  before - after, before);
+            }
+        }
+    }
+    if (!plan.verbatim && (body_mesh.vertices.empty() || body_mesh.indices.size() < 3)) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the 'body' line names no geometry in the model",
+                           vehicle.mod_name, car);
+        return 0;
+    }
+
+    // One atlas per shader, built while the body is, kept for the packs below.
+    // The packs store one picture per shader for every LOD, so only the atlas
+    // LOD 0 produced is kept -- the other two are built solely to carry the same
+    // UV rewrite into their own copy of the mesh.
+    std::map<uint32_t, Image> atlas_of;
+
+    // Which of the donor's own files a slot line claims, so the clone below
+    // knows not to copy over what was just built.
+    std::vector<std::string> built;
+    size_t written = 0;
+
+    // The body, three LODs. The near two are grown to hold the mesh whole and
+    // the far one is welded down into the buffers the donor already had, which
+    // is both smaller and what that LOD is for.
+    for (int lod = 0; lod < 3 && !plan.verbatim; ++lod) {
+        const std::string name = "body_lod_" + std::to_string(lod) + ".xrsc";
+        Rsc5Resource resource;
+        if (!ExtractTemplate(archive, donor_dir + "/" + name, resource, error)) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: donor {}/{}: {}", vehicle.mod_name, car,
+                               donor, name, error);
+            continue;
+        }
+
+        // Coarsen the page class before a single buffer is placed.
+        //
+        // The blocks a resource is split into are 4096 << page_shift, and a
+        // buffer has to fit inside one. The donor ships an 8192 page, so a block
+        // is 131072 -- and the replacement's paint alone wants 622272 bytes of
+        // vertices. A 65536 page makes the block a megabyte, which covers
+        // everything measured. The cost is that the segment rounds up to whole
+        // 64 KB pages; the alternative is geometry read across two allocations.
+        if (lod <= 1) {
+            std::string shift_error;
+            if (!SetVirtualPageShift(resource, kCarPageShift, shift_error)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{}: {}", vehicle.mod_name,
+                                   car, lod, shift_error);
+            }
+        }
+
+        const uint32_t shipped_size = resource.virtual_size;
+        size_t filled = 0;
+        std::vector<bool> claimed(effects.size(), false);
+
+        // How the room a body may grow into is divided between the shaders.
+        //
+        // The passes run in order and the segment only ever grows, so a ceiling
+        // applied flat would be first-come-first-served: paint asks for a
+        // megabyte, takes everything, and the glass behind it gets the fifteen
+        // hundred vertices the donor shipped. Each pass is given a cumulative
+        // ceiling instead -- the base plus its share of the room, weighted by
+        // how many triangles it actually brought -- so every shader comes out
+        // reduced by roughly the same fraction and the car stays in proportion.
+        size_t all_triangles = 0;
+        std::vector<size_t> triangles(effects.size(), 0);
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            const Mesh part = ExtractShader(body_mesh, shader_of, fallback, shader);
+            triangles[shader] = part.indices.size() / 3;
+            all_triangles += triangles[shader];
+        }
+        // Weighted by triangles, but with a floor under every shader that has
+        // any. Strict proportion is fair by volume and wrong by eye: the glass
+        // on this car is one percent of its triangles, so a strict share left
+        // the windscreen with a hundred triangles while the cabin blocker,
+        // which nobody looks at, kept sixteen thousand. A shader that brought
+        // anything gets at least a thirty-second of the room.
+        const size_t floor_weight = all_triangles / 32;
+        size_t all_weight = 0;
+        std::vector<size_t> weight(effects.size(), 0);
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            if (triangles[shader] == 0) continue;
+            const auto tuned = plan.effect_weight.find(CarEffectName(effects[shader]));
+            const float scale = tuned != plan.effect_weight.end() ? tuned->second : 1.0f;
+            weight[shader] =
+                static_cast<size_t>((double(triangles[shader]) + double(floor_weight)) *
+                                    double(scale > 0.0f ? scale : 0.01f));
+            if (weight[shader] == 0) weight[shader] = 1;
+            all_weight += weight[shader];
+        }
+        // The budget is per LOD, and LOD 1 was being handed the same as LOD 0 --
+        // the whole mesh twice. The donor ships both at one size because its own
+        // mesh is small enough not to care; a mod's is not. A quarter is still
+        // four times the donor's entire body, and nothing that far away shows
+        // the difference.
+        //
+        // LOD 2 keeps the buffers it already had, and it has to.
+        //
+        // It looks wrong on paper: the police Caprice's body_lod_2 is ONE model
+        // of three submeshes, 92 vertices and 52 triangles in total, 44 of them
+        // on the paint, so a 31,844-triangle shell welded into it comes out as
+        // 28 triangles with a median edge of a metre. Letting it grow at an
+        // eighth of the budget fixed that on its own terms -- 6431 triangles,
+        // 10 cm edges, 448 KB -- and broke the game: the car came back as slabs
+        // and the city with it.
+        //
+        // The pair that says so is body_lod_2 and nothing else. Run 993 drew
+        // this car whole at a four-megabyte budget with LOD 2 at its shipped
+        // 53,248 bytes; run 997, same budget, same 3,555,328-byte LOD 0 and
+        // 1,114,112-byte LOD 1, with LOD 2 grown to 458,752, was in pieces.
+        // Whatever the far LOD of a vehicle is allowed to be, it is not that.
+        const uint32_t full = REXCVAR_GET(model_mods_car_budget);
+        const uint32_t budget = lod == 0 ? full : full / 4;
+        const uint32_t room = budget > shipped_size ? budget - shipped_size : 0;
+        // What each shader is actually being given, in the unit the ceiling is
+        // in. The weight is per triangle and the room is bytes, so a share only
+        // means something once the stride is beside it -- 12 bytes a vertex on
+        // BlackMatte against 28 on everything else, measured, which is nearly a
+        // factor of two in what the same triangle count costs.
+        //
+        // The order matters as much as the share, and that is the part with no
+        // sign of itself in the game: a ceiling is cumulative, so the FIRST pass
+        // is handed its own slice and nothing more, while the last may use
+        // whatever every pass before it left. Moving a material from a late
+        // shader to an early one cuts its allowance even at the same weight.
+        // Both numbers are printed here so the next car mod can be read off the
+        // log instead of off the screen.
+        if (lod == 0) {
+            std::vector<uint32_t> stride_of;
+            ShaderVertexStrides(resource, stride_of);
+            size_t running = 0;
+            for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+                if (triangles[shader] == 0) continue;
+                running += weight[shader];
+                const uint32_t ceiling =
+                    all_weight == 0 ? 0
+                                    : shipped_size + static_cast<uint32_t>(
+                                                         uint64_t(room) * running / all_weight);
+                LARECOMP_APP_INFO("[mods]   budget {} : {} tris, stride {}, {:.1f}% of the room, "
+                                  "ceiling {} bytes", CarEffectName(effects[shader]),
+                                  triangles[shader],
+                                  shader < stride_of.size() ? stride_of[shader] : 0,
+                                  all_weight == 0 ? 0.0
+                                                  : 100.0 * double(weight[shader]) /
+                                                        double(all_weight),
+                                  ceiling);
+            }
+        }
+        size_t dealt = 0;
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            Mesh part = ExtractShader(body_mesh, shader_of, fallback, shader);
+            if (part.vertices.empty() || part.indices.size() < 3) continue;
+
+            // The mod's own picture for this shader, and the UVs that reach it.
+            //
+            // Everything one MCLA car shader draws samples one image, and a mod
+            // arrives with one image per material -- leather, wood, dial, badge,
+            // lamp. Packing the ones that landed on this shader into a grid and
+            // sending each part's UVs to its own cell is what lets a single
+            // texture slot carry all of them, and it is the same answer the
+            // character and wheel paths already give.
+            //
+            // Only for a shader that samples anything: see the note on
+            // pack_materials for why a paint or glass shader must keep the UVs
+            // it came with.
+            if (want_car_textures && shader < pack_materials.size() &&
+                pack_materials[shader].writable) {
+                Image shader_atlas;
+                uint32_t cells = 0;
+                std::string atlas_error;
+                if (BuildMeshAtlas(part, kAtlasCell, shader_atlas, atlas_error, &cells)) {
+                    if (lod == 0) {
+                        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} -> {}: {} image(s) in a "
+                                          "{}x{} atlas", vehicle.mod_name, car,
+                                          CarEffectName(effects[shader]),
+                                          pack_materials[shader].diffuse_name, cells,
+                                          shader_atlas.width, shader_atlas.height);
+                        atlas_of[shader] = std::move(shader_atlas);
+                    }
+                } else if (lod == 0) {
+                    // Not an error: a shader may legitimately have drawn only
+                    // materials the mod gave no picture to. The donor's own
+                    // texture then stays, which is the old behaviour.
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} keeps the donor's {}: {}",
+                                      vehicle.mod_name, car, CarEffectName(effects[shader]),
+                                      pack_materials[shader].diffuse_name, atlas_error);
+                }
+            }
+
+            MeshOffset offset;
+            offset.pre_fitted = true;
+            // Flood the band, do not carry it over. Tried the other way and it
+            // is worse in game: holes through the doors, a grey shell, panels
+            // lit as if they were something else.
+            //
+            // The reason is the one already written on the wheel path -- the
+            // second UV set selects which material band a vertex belongs to,
+            // and scattering bands by proximity across a shape that does not
+            // share them lights it in patches. A car body fitted into the
+            // donor's box looked like the exception, because the donor is a
+            // saloon of the same size; it is not. Panel boundaries do not line
+            // up, so "the nearest shipped vertex" crosses from a door to a
+            // window often enough to break the surface.
+            //
+            // So the colour blocks -- red roof, red glass -- are NOT this. They
+            // survive with either setting.
+            offset.uniform_shade = true;
+            offset.submeshes = true;
+            offset.decimate = true;
+            offset.allow_untextured = true;
+            // The pass owns one shader, and with only_shader set the candidate
+            // list holds that shader's slots and nothing else -- so the slots it
+            // does not fill are the donor's leftovers within that shader, and
+            // clearing them cannot touch a slot another pass is about to use.
+            // That is where the police light bar and siren were surviving on the
+            // roof of the replacement: silencing a whole unclaimed shader was
+            // never enough, because CarLight was claimed and only partly filled.
+            offset.keep_unused = false;
+            offset.uniform_uv =
+                std::find(plan.flat_uv.begin(), plan.flat_uv.end(),
+                          CarEffectName(effects[shader])) != plan.flat_uv.end();
+            offset.only_shader = static_cast<int32_t>(shader);
+            offset.force_shader = static_cast<int32_t>(shader);
+            // The model arrives in car space, so it only goes into models that
+            // are in car space too. See MeshOffset::car_space_only.
+            offset.car_space_only = REXCVAR_GET(model_mods_car_space_only);
+            offset.block_align = VirtualBlockSize(resource);
+            // LOD 0 and 1 hold the mesh whole; the donor ships them as the same
+            // file, so that is what it meant by them. LOD 2 is welded down into
+            // the buffers it already had -- see the note above the budget for
+            // what happens when it is not.
+            offset.grow_buffers = lod <= 1;
+            dealt += weight[shader];
+            offset.grow_ceiling =
+                budget == 0 || all_weight == 0
+                    ? 0
+                    : shipped_size + static_cast<uint32_t>(uint64_t(room) * dealt / all_weight);
+            // A pass is not the last one, and only the last buffer in the
+            // segment needs to stop short of its end -- so the slack that
+            // matters is added once, after every shader has had its turn,
+            // rather than seven times over in the middle of the resource where
+            // it is nothing but dead space.
+            offset.grow_slack = 4096;
+
+            RewriteStats stats;
+            std::string shader_error;
+            if (!RewriteDrawableGeometry(resource, part, 0, offset, shader_error, &stats)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{} body_lod_{} {}: {}", vehicle.mod_name,
+                                   car, lod, CarEffectName(effects[shader]), shader_error);
+                continue;
+            }
+            claimed[shader] = true;
+            ++filled;
+            if (lod == 0) {
+                LARECOMP_APP_INFO("[mods]   {} <- {} of {} tris in {} submesh(es){}{}",
+                                  CarEffectName(effects[shader]), stats.triangles,
+                                  part.indices.size() / 3, stats.submeshes,
+                                  stats.decimated ? ", decimated" : "",
+                                  stats.local_silenced
+                                      ? fmt::format(", {} bone-local submesh(es) silenced",
+                                                    stats.local_silenced)
+                                      : std::string());
+            }
+        }
+
+        // A shader the mod brought no material for would otherwise keep drawing
+        // the donor's own geometry through the replacement -- a police light bar
+        // standing on a BMW.
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            if (claimed[shader]) continue;
+            // Some of the donor's own geometry is worth keeping: its licence
+            // plate is a four-vertex quad in the right place on any car of the
+            // same shape, and no mod is going to bring one.
+            const char* const name = CarEffectName(effects[shader]);
+            if (std::find(plan.kept.begin(), plan.kept.end(), name) != plan.kept.end()) {
+                const bool move = plan.plate[0] != 0.0f || plan.plate[1] != 0.0f ||
+                                  plan.plate[2] != 0.0f;
+                size_t moved = 0;
+                if (move) {
+                    moved = TranslateShaderGeometry(resource, static_cast<int32_t>(shader),
+                                                    plan.plate[0], plan.plate[1], plan.plate[2]);
+                }
+                if (lod == 0) {
+                    if (move) {
+                        LARECOMP_APP_INFO("[mods]   {} kept, {} submesh(es) moved by "
+                                          "({} {} {})", name, moved, plan.plate[0],
+                                          plan.plate[1], plan.plate[2]);
+                    } else {
+                        LARECOMP_APP_INFO("[mods]   {} kept as the donor drew it", name);
+                    }
+                }
+                continue;
+            }
+            const size_t gone = SilenceShaderGeometry(resource, static_cast<int32_t>(shader));
+            if (gone && lod == 0) {
+                LARECOMP_APP_INFO("[mods]   {} silenced ({} submesh(es) the mod has no material "
+                                  "for)", name, gone);
+            }
+        }
+        if (filled == 0) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} took no geometry at all",
+                               vehicle.mod_name, car, lod);
+            continue;
+        }
+
+        // The end of a resource does not arrive intact, so whichever buffer
+        // ended up last has to stop short of it. See PadResourceTail.
+        uint32_t tail = 0;
+        {
+            std::string pad_error;
+            if (!PadResourceTail(resource, kResourceTailSlack, pad_error, &tail) ||
+                !RoundVirtualToBlock(resource, pad_error)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{}: {}", vehicle.mod_name,
+                                   car, lod, pad_error);
+            }
+        }
+
+        std::vector<uint8_t> file;
+        uint32_t flag = 0;
+        if (!BuildRsc5File(resource, file, flag, error)) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{}: {}", vehicle.mod_name, car,
+                               lod, error);
+            continue;
+        }
+        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: body_lod_{} is {} bytes ({} on disk), "
+                          "{} free after the last buffer", vehicle.mod_name, car, lod,
+                          resource.virtual_size, file.size(), tail);
+        writer.Add(car_dir + "/" + name, std::move(file), flag, resource.type);
+        built.push_back(name);
+        ++written;
+    }
+
+    // ---------------------------------------------------------------------
+    // The parts a car sheds.
+    //
+    // Everything above writes the shell. A modifiable car is not only a shell:
+    // the same folder holds bumper_f0_lod_N.xrsc, interior0, steer_whl0 and
+    // forty more, each its own drawable, and those are the pieces MCLA can
+    // knock off, open, or let the player swap. A donor that ships them is what
+    // makes them reachable -- the police Caprice ships two, a modifiable car
+    // ships sixty.
+    //
+    // They all index the SAME material pack as the body, which is what makes
+    // this worth doing at all. Measured on the Impala: interior0_lod_0 draws
+    // with shaders 3..22, and those include the cabin's real textures --
+    // tmp_plasticbump_c, tmp_carpet_c, perf_leather_c, tmp_leather_c,
+    // tmp_cloth_c, every one of them 256 square -- none of which appears
+    // anywhere in the body. bumper_r0_lod_0 is where LicensePlate lives, so a
+    // plate follows the bumper it is bolted to rather than having to be moved.
+    //
+    // No budget games here. A part is small -- the Impala's front bumper is
+    // 1731 vertices against the body's three thousand-odd -- and the ceiling is
+    // a plain multiple of what the donor shipped, so a replacement may be a good
+    // deal heavier than the original and still nothing like a body.
+    for (const PartMapping& mapping : plan.slots) {
+        if (plan.verbatim || mapping.slot == "body" || mapping.groups.empty()) continue;
+        if (mapping.slot == kVehicleBodySlot) continue;
+
+        Mesh source = ExtractGroups(mesh, mapping.groups);
+        if (source.vertices.empty() || source.indices.size() < 3) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: slot {} names no geometry in the model",
+                               vehicle.mod_name, car, mapping.slot);
+            continue;
+        }
+
+        // A part is its own drawable and renders with its own handful of the
+        // donor's shaders -- the impala's steer_whl0 is not going to draw with
+        // CarPaintCustomizable -- so the set of shaders that have geometry is
+        // read off THIS slot rather than off the body.
+        std::vector<uint32_t> part_drawn;
+        {
+            Rsc5Resource first;
+            std::string part_error;
+            if (ExtractTemplate(archive, donor_dir + "/" + mapping.slot + "_lod_0.xrsc", first,
+                                part_error)) {
+                ShaderVertexStrides(first, part_drawn);
+            }
+        }
+
+        int32_t part_fallback = -1;
+        const std::map<std::string, uint32_t> part_shader_of =
+            ResolveShaderMap(plan, effects, part_drawn, vehicle.mod_name, car, part_fallback,
+                             mapping.slot);
+
+        size_t lods = 0;
+        for (int lod = 0; lod < 3; ++lod) {
+            const std::string name = mapping.slot + "_lod_" + std::to_string(lod) + ".xrsc";
+            Rsc5Resource resource;
+            // A part need not have every LOD -- the donor's own hood has no LOD
+            // two -- so a missing template is the file simply not existing
+            // rather than a failure.
+            if (!ExtractTemplate(archive, donor_dir + "/" + name, resource, error)) continue;
+
+            // A part does NOT live in the car's space, and this is where that
+            // was got wrong first. Measured on the Impala: steer_whl0_lod_0 is a
+            // disc on the ORIGIN (x -0.220..0.220, y -0.220..0.220,
+            // z -0.078..0.025) and bumper_f0_lod_0 is centred there too --
+            // every one of them is authored relative to the bone that places
+            // it, not to the car. Only seats_f0 is in car space, because its
+            // bone sits at the origin.
+            //
+            // So the piece cut out of the model, which IS in car space, has to
+            // be moved onto the template's own box before it is written. The
+            // scale is already applied -- PlaceCar ran over the whole model
+            // before any of this -- so only the translation is wanted, which is
+            // what a scale of one asks PlacePart for.
+            //
+            // Shipping it pre-fitted instead is what leaves a steering wheel a
+            // metre from the driver's hands.
+            float slot_min[3], slot_max[3];
+            if (!ReadDrawableBounds(resource, slot_min, slot_max)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} states no bounds to place on",
+                                   vehicle.mod_name, car, name);
+                continue;
+            }
+            // Two kinds of slot, told apart by where the donor's own part sits.
+            //
+            // A part authored in its OWN space is centred on its bone, so its
+            // box straddles the origin on every axis -- measured on the impala,
+            // steer_whl0 is x +-0.22, y +-0.22, z -0.078..0.025 and bumper_f0
+            // is x +-0.939, y -0.218..0.277, z -0.388..0.333. Those are
+            // re-centred onto the slot, which is what puts a steering wheel in
+            // the driver's hands.
+            //
+            // A part authored in CAR space is not: interior0 is x +-0.971,
+            // y 0.235..1.414, z -1.136..2.018, the same frame as body_lod_0,
+            // and seats_f0 sits wholly on the driver's side. For those the
+            // model is already where it belongs -- PlaceCar put it there, in
+            // the donor's frame, measured off the axles -- and re-centring it
+            // onto the donor's box slides the BMW's cabin to wherever the
+            // Chevrolet's cabin happened to be centred, which on this pair is
+            // above and behind the BMW's own body.
+            const bool own_space = slot_min[0] < 0.0f && slot_max[0] > 0.0f &&
+                                   slot_min[1] < 0.0f && slot_max[1] > 0.0f &&
+                                   slot_min[2] < 0.0f && slot_max[2] > 0.0f;
+            Mesh placed = source;
+            if (own_space) PlacePart(placed, 0.0f, 1.0f, slot_min, slot_max);
+            if (lod == 0) {
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is authored in {} space, box "
+                                  "({:.2f} {:.2f} {:.2f}) to ({:.2f} {:.2f} {:.2f})",
+                                  vehicle.mod_name, car, name, own_space ? "its own" : "car",
+                                  slot_min[0], slot_min[1], slot_min[2], slot_max[0],
+                                  slot_max[1], slot_max[2]);
+            }
+
+            // The same coarser page the body gets, and for the same reason: a
+            // part slot that takes a whole cabin holds buffers of hundreds of
+            // kilobytes, and a block of 131072 cannot hold one.
+            {
+                std::string shift_error;
+                if (!SetVirtualPageShift(resource, kCarPageShift, shift_error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                       name, shift_error);
+                }
+            }
+
+            const uint32_t shipped_size = resource.virtual_size;
+            const uint32_t ceiling = shipped_size * REXCVAR_GET(model_mods_part_growth);
+            size_t filled = 0;
+            std::vector<bool> claimed(effects.size(), false);
+
+            for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+                Mesh part = ExtractShader(placed, part_shader_of, part_fallback, shader);
+                if (part.vertices.empty() || part.indices.size() < 3) continue;
+
+                if (want_car_textures && shader < pack_materials.size() &&
+                    pack_materials[shader].writable) {
+                    Image shader_atlas;
+                    uint32_t cells = 0;
+                    std::string atlas_error;
+                    if (BuildMeshAtlas(part, kAtlasCell, shader_atlas, atlas_error, &cells) &&
+                        lod == 0) {
+                        // The pack holds one picture per shader for the whole
+                        // car, so the first drawable to claim a shader is the
+                        // one whose atlas it gets. With a shader mapped in only
+                        // one drawable -- which is what the per-slot rules are
+                        // for -- that never comes up; say so when it does,
+                        // because the answer is a parts.txt change.
+                        if (atlas_of.count(shader)) {
+                            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} and an earlier drawable "
+                                               "both draw with {}, which stores one picture -- "
+                                               "give one of them a shader of its own",
+                                               vehicle.mod_name, car, name,
+                                               CarEffectName(effects[shader]));
+                        } else {
+                            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} -> {}: {} image(s) in a "
+                                              "{}x{} atlas", vehicle.mod_name, car,
+                                              CarEffectName(effects[shader]),
+                                              pack_materials[shader].diffuse_name, cells,
+                                              shader_atlas.width, shader_atlas.height);
+                            atlas_of[shader] = std::move(shader_atlas);
+                        }
+                    }
+                }
+
+                MeshOffset offset;
+                offset.pre_fitted = true;
+                offset.uniform_shade = true;
+                offset.submeshes = true;
+                offset.decimate = true;
+                offset.allow_untextured = true;
+                offset.keep_unused = false;
+                offset.only_shader = static_cast<int32_t>(shader);
+                offset.force_shader = static_cast<int32_t>(shader);
+                // A car-space slot has car-space models that need the same guard
+                // as the body; an own-space slot is ALL bone-local by definition,
+                // and the part has already been moved into that frame.
+                offset.car_space_only = !own_space && REXCVAR_GET(model_mods_car_space_only);
+                offset.block_align = VirtualBlockSize(resource);
+                offset.grow_buffers = lod <= 1;
+                offset.grow_ceiling = ceiling;
+                offset.grow_slack = 4096;
+
+                RewriteStats stats;
+                std::string shader_error;
+                if (!RewriteDrawableGeometry(resource, part, 0, offset, shader_error, &stats)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{} {} {}: {}", vehicle.mod_name, car,
+                                       name, CarEffectName(effects[shader]), shader_error);
+                    continue;
+                }
+                claimed[shader] = true;
+                ++filled;
+                if (lod == 0) {
+                    LARECOMP_APP_INFO("[mods]   {} {} <- {} of {} tris in {} submesh(es){}{}",
+                                      name, CarEffectName(effects[shader]), stats.triangles,
+                                      part.indices.size() / 3, stats.submeshes,
+                                      stats.decimated ? ", decimated" : "",
+                                      stats.local_silenced
+                                          ? fmt::format(", {} bone-local submesh(es) silenced",
+                                                        stats.local_silenced)
+                                          : std::string());
+                }
+            }
+
+            if (filled == 0) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} took no geometry, shipped as the "
+                                   "donor holds it", vehicle.mod_name, car, name);
+                continue;
+            }
+
+            // Whatever the mod brought no material for keeps drawing the donor's
+            // part through the replacement, exactly as on the body.
+            for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+                if (claimed[shader]) continue;
+                const char* const effect = CarEffectName(effects[shader]);
+                if (std::find(plan.kept.begin(), plan.kept.end(), effect) != plan.kept.end())
+                    continue;
+                const size_t gone = SilenceShaderGeometry(resource, static_cast<int32_t>(shader));
+                if (gone && lod == 0) {
+                    LARECOMP_APP_INFO("[mods]   {} {} silenced ({} submesh(es))", name, effect,
+                                      gone);
+                }
+            }
+
+            // The same tail pad the body gets, and for the same reason: this is
+            // the path that shipped interior0_lod_0 with its last buffer 4,452
+            // bytes from the end and put 10,138 triangles of paint on screen as
+            // slabs. See PadResourceTail.
+            uint32_t tail = 0;
+            {
+                std::string pad_error;
+                if (!PadResourceTail(resource, kResourceTailSlack, pad_error, &tail) ||
+                    !RoundVirtualToBlock(resource, pad_error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                       name, pad_error);
+                }
+            }
+
+            std::vector<uint8_t> file;
+            uint32_t flag = 0;
+            if (!BuildRsc5File(resource, file, flag, error)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car, name,
+                                   error);
+                continue;
+            }
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is {} bytes (was {}), {} free after the "
+                              "last buffer", vehicle.mod_name, car, name, resource.virtual_size,
+                              shipped_size, tail);
+            writer.Add(car_dir + "/" + name, std::move(file), flag, resource.type);
+            built.push_back(name);
+            ++written;
+            ++lods;
+        }
+
+        if (lods == 0) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: donor {} ships no {} to build on",
+                               vehicle.mod_name, car, donor, mapping.slot);
+        }
+    }
+
+    // Everything else the donor's folder holds, under the new car's name.
+    //
+    // The archive files children by hash and keeps no strings, so a child is
+    // matched against every name a car folder can have. What matches is written
+    // under that name -- with the donor's own name swapped for this car's in the
+    // four files named after it -- and what does not is written under the hash
+    // it already had, which addresses it exactly as the original was addressed.
+    std::vector<Rpf3Entry> children;
+    if (!archive.ListDirectory(donor_dir, children)) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot list the donor's folder",
+                           vehicle.mod_name, car);
+        return written;
+    }
+
+    const std::map<uint32_t, std::string> donor_names = CarFolderNames(donor);
+    for (const Rpf3Entry& child : children) {
+        if (child.is_directory()) continue;
+
+        const auto known = donor_names.find(child.hash);
+        std::string name = known != donor_names.end() ? known->second : std::string();
+        if (!name.empty() &&
+            std::find(built.begin(), built.end(), name) != built.end()) {
+            continue;
+        }
+
+        std::vector<uint8_t> raw;
+        if (!archive.ReadFile(child, raw) || raw.empty()) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot read donor entry {:#010x}",
+                               vehicle.mod_name, car, child.hash);
+            continue;
+        }
+
+        // The tune is the one file whose contents name the car, so it is the one
+        // rewritten rather than copied. BuildRsc5File picks its shape: stored LZX
+        // for a single frame or less, uncompressed past that.
+        const bool is_tune = plan.rename_tune && !name.empty() && name == donor + ".xct";
+        // The two material packs, which is where a car's textures live. The
+        // drawable has none of its own: its shader group is thirty-two byte
+        // objects picked by vtable with nothing embedded, and the pack beside
+        // it holds both the dictionary and the materials that read it. They
+        // come in a pair, the same five-or-fifty pictures at two sizes -- .xtl
+        // at half of .xtp -- and both are written, because the game picks
+        // between them by distance and writing one leaves the car changing
+        // skin as you drive away from it.
+        const bool is_pack = !atlas_of.empty() && REXCVAR_GET(model_mods_car_pack_write) &&
+                             !name.empty() &&
+                             (name == donor + ".xtl" || name == donor + ".xtp");
+        // A slot the mod ships empty: the manifest still promises it, so the
+        // resource has to load, and it simply draws nothing.
+        bool silence = false;
+        for (const std::string& slot : plan.silenced) {
+            for (int lod = 0; lod < 3 && !silence; ++lod) {
+                if (name == slot + "_lod_" + std::to_string(lod) + ".xrsc") silence = true;
+            }
+            if (silence) break;
+        }
+
+        std::string target = name.empty() ? std::string() : name;
+        if (!target.empty() && target.rfind(donor + ".", 0) == 0) {
+            target = car + target.substr(donor.size());
+        }
+
+        // A part the mod does not want is left out of the archive entirely.
+        //
+        // Two ways of shipping it empty were tried first and both brought the
+        // loader down on "Invalid fixup, address is neither virtual nor
+        // physical", with an address that differed between runs of the same
+        // build -- uninitialised memory. Emptying every geometry leaves their
+        // vertex and index buffer pointers for mcCarDrawableChunk's placer to
+        // follow; zeroing the model count above them, which changed exactly one
+        // byte of the donor's file, failed the same way. The placer wants a LOD
+        // with something in it.
+        //
+        // Absence is what the game itself uses: the donor's own hood has a LOD
+        // zero and one and no LOD two at all, and the loader opens every part
+        // path unconditionally -- sub_82130008 is a stub returning one, not a
+        // test -- so a part that is not there simply leaves a null pointer.
+        if (silence) {
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} left out, the mod ships its own",
+                              vehicle.mod_name, car, target);
+            continue;
+        }
+
+        if (is_tune || is_pack) {
+            Rsc5Resource resource;
+            size_t payload_offset = 0, payload_size = 0;
+            if (!ParseRsc5Header(raw, resource, payload_offset, payload_size, error)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                   target, error);
+                continue;
+            }
+            const size_t total =
+                static_cast<size_t>(resource.virtual_size) + resource.physical_size;
+            if (!LzxDecompress(raw.data() + payload_offset, payload_size, resource.data, total)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot unpack {}", vehicle.mod_name,
+                                   car, target);
+                continue;
+            }
+
+            if (is_pack) {
+                // One atlas per shader, over the colour map that shader reads.
+                //
+                // The two packs are written from the same atlases and each
+                // resamples them to whatever it stores, so nothing here has to
+                // know that .xtl is the half-size copy.
+                //
+                // A texture shared between materials is written once, by the
+                // first shader that claims it. That is not a case to work
+                // around quietly: on a rich donor several InteriorTrim
+                // materials point at the same tmp_leather_c, so two of the
+                // mod's shaders can be asking for the same bytes, and the
+                // second would silently overwrite the first. It is named in the
+                // log instead, because the answer is a parts.txt change -- pick
+                // a different "Effect#N" -- and not something this can guess.
+                std::vector<uint32_t> claimed;
+                size_t replaced = 0;
+                for (const auto& entry : atlas_of) {
+                    const uint32_t shader = entry.first;
+                    if (shader >= pack_materials.size()) continue;
+                    const uint32_t texture = pack_materials[shader].diffuse;
+
+                    if (std::find(claimed.begin(), claimed.end(), texture) != claimed.end()) {
+                        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: shader {} ({}) shares {} "
+                                           "with a shader already written -- name the material "
+                                           "'<effect>#N' in parts.txt to pick another",
+                                           vehicle.mod_name, car, target, shader,
+                                           CarEffectName(effects[shader]),
+                                           pack_materials[shader].diffuse_name);
+                        continue;
+                    }
+                    claimed.push_back(texture);
+
+                    TextureStats written_texture;
+                    if (!ReplacePackMaterialDiffuse(resource, shader, entry.second, error,
+                                                    &written_texture)) {
+                        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: shader {}: {}",
+                                           vehicle.mod_name, car, target, shader, error);
+                        continue;
+                    }
+                    ++replaced;
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {}: {} -> {} {}x{}, {} mip level(s)",
+                                      vehicle.mod_name, car, target,
+                                      CarEffectName(effects[shader]), written_texture.name,
+                                      written_texture.width, written_texture.height,
+                                      written_texture.levels);
+                }
+
+                if (replaced == 0) {
+                    // Nothing was written, so the donor's file travels as it
+                    // came rather than being repacked for no reason.
+                    writer.Add(car_dir + "/" + target, std::move(raw), child.flag,
+                               child.resource_type());
+                    ++written;
+                    continue;
+                }
+
+                std::vector<uint8_t> file;
+                uint32_t flag = 0;
+                if (!BuildRsc5File(resource, file, flag, error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                       target, error);
+                    continue;
+                }
+                writer.Add(car_dir + "/" + target, std::move(file), flag, resource.type);
+                ++written;
+                continue;
+            }
+
+            if (is_tune) {
+                const size_t renamed = RenameInResource(resource.data, donor, car);
+                std::vector<uint8_t> file;
+                uint32_t flag = 0;
+                if (!BuildRsc5File(resource, file, flag, error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                       target, error);
+                    continue;
+                }
+                // The shape (stored LZX or uncompressed) is BuildRsc5File's call,
+                // made on the payload size; see the comment there.
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} renamed {} string(s) from {}, "
+                                  "{} bytes packed", vehicle.mod_name, car, target, renamed,
+                                  donor, resource.virtual_size);
+                writer.Add(car_dir + "/" + target, std::move(file), flag, resource.type);
+            }
+            ++written;
+            continue;
+        }
+
+        // Everything else travels exactly as the shipped archive holds it.
+        if (target.empty()) {
+            char label[16] = {};
+            std::snprintf(label, sizeof label, "%08X", child.hash);
+            writer.AddHashed(car_dir + "/" + label, child.hash, std::move(raw), child.flag,
+                             child.resource_type());
+        } else {
+            writer.Add(car_dir + "/" + target, std::move(raw), child.flag,
+                       child.resource_type());
+        }
+        ++written;
+    }
+
+    LARECOMP_APP_INFO("[mods] {} -> {}: {} file(s) from donor {}", vehicle.mod_name, car, written,
+                      donor);
+    return written;
+}
+
 // Builds every car part replacement into `writer`, and reports how many landed.
 size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reader& archive,
                         const std::filesystem::path& cache_dir, bool passthrough,
@@ -1123,11 +2716,6 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                 break;
             }
         }
-        if (source.empty()) {
-            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: no .glb, .gltf or .obj in the folder",
-                               vehicle.mod_name, vehicle.car);
-            continue;
-        }
 
         std::string error;
         const std::vector<PartMapping> mappings =
@@ -1138,9 +2726,39 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
             continue;
         }
 
+        // A parts.txt naming a donor is not asking for a car to be replaced. It
+        // is asking for one to exist, built out of a car that already does --
+        // a different job with a different shape, so it takes its own path.
+        const VehiclePlan plan = ReadVehiclePlan(mappings);
+
         Mesh mesh;
-        if (!LoadMeshFile(source, mesh, error)) {
-            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}", vehicle.mod_name, vehicle.car, error);
+        if (!plan.verbatim) {
+            if (source.empty()) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: no .glb, .gltf or .obj in the folder",
+                                   vehicle.mod_name, vehicle.car);
+                continue;
+            }
+            if (!LoadMeshFile(source, mesh, error)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}", vehicle.mod_name, vehicle.car,
+                                   error);
+                continue;
+            }
+            const size_t sidecar =
+                LoadSidecarTextures(vehicle.folder / kTextureFolder, mesh);
+            if (sidecar != 0) {
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} material(s) textured from {}/",
+                                  vehicle.mod_name, vehicle.car, sidecar, kTextureFolder);
+            }
+        }
+
+        if (!plan.donor.empty()) {
+            // The WHOLE model goes in, not just the body's groups. A car the
+            // game does not ship is several drawables -- the shell, each
+            // bumper, the cabin, the wheel in front of the driver -- and they
+            // have to be placed by ONE transform or they arrive at different
+            // sizes. Cutting the body out here left the rest of the model
+            // behind before anything could ask for it.
+            built += BuildDonorCar(vehicle, plan, std::move(mesh), archive, writer);
             continue;
         }
 
