@@ -502,6 +502,13 @@ struct ModEntry {
     std::string asset;              // e.g. drv_mp_01_set
     std::filesystem::path obj;      // source mesh
     std::string mod_name;           // owning folder, for logs
+
+    // A wheel the game does not ship, built from one it does. Empty for the
+    // ordinary case, where the asset replaces itself. A new car's stock wheel
+    // is looked up by a name derived from the car's own (sub_8238F9D0 strips
+    // "vp_" and asks for "whl_stk_<rest>"), so a car nobody has heard of needs
+    // a wheel nobody has heard of, and there is no template under that name.
+    std::string donor;
 };
 
 // A car replacement is a folder, not a file: one mesh plus the mapping that
@@ -682,7 +689,21 @@ void ScanFolder(const std::filesystem::path& folder, const std::string& mod_name
     for (const auto& file : std::filesystem::directory_iterator(folder, ec)) {
         if (ec) break;
         if (!file.is_regular_file() || !IsMeshFile(file.path())) continue;
-        out.push_back(ModEntry{file.path().stem().string(), file.path(), mod_name});
+
+        // A sidecar naming the asset this one is built out of: put
+        // "whl_am_bbs_ch" in whl_stk_bmw_740i_98.donor and the shipped BBS is
+        // the template while the file lands under the new name.
+        std::string donor;
+        std::ifstream sidecar(folder / (file.path().stem().string() + ".donor"));
+        if (sidecar) {
+            std::getline(sidecar, donor);
+            const size_t first = donor.find_first_not_of(" \t\r\n");
+            const size_t last = donor.find_last_not_of(" \t\r\n");
+            donor = first == std::string::npos ? std::string()
+                                               : donor.substr(first, last - first + 1);
+        }
+        out.push_back(
+            ModEntry{file.path().stem().string(), file.path(), mod_name, std::move(donor)});
     }
 }
 
@@ -1387,13 +1408,18 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
             }
         }
 
+        // Where the template is read from, and where the result lands. They are
+        // the same name unless the mod named a donor.
+        const std::string source = mod.donor.empty() ? mod.asset : mod.donor;
+        const std::string source_path = "resources/rims/" + source + "/body_lod_0.xrsc";
         const std::string archive_path = "resources/rims/" + mod.asset + "/body_lod_0.xrsc";
-        const std::filesystem::path cache_file = cache_dir / kRimFolder / (mod.asset + ".tpl");
+        const std::filesystem::path cache_file = cache_dir / kRimFolder / (source + ".tpl");
 
         Rsc5Resource resource;
         if (!LoadTemplateCache(cache_file, resource)) {
-            if (!ExtractTemplate(archive, archive_path, resource, error)) {
-                LARECOMP_APP_ERROR("[mods] {}/rims/{}: {}", mod.mod_name, mod.asset, error);
+            if (!ExtractTemplate(archive, source_path, resource, error)) {
+                LARECOMP_APP_ERROR("[mods] {}/rims/{}: {}: {}", mod.mod_name, mod.asset,
+                                   source_path, error);
                 continue;
             }
             SaveTemplateCache(cache_file, resource);
@@ -1402,15 +1428,16 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         // The texture pack comes first, because it decides something the
         // geometry rewrite needs: which of the wheel's materials samples a
         // texture. The wheel body ships on the one that does not.
+        const std::string texture_source = "resources/rims/" + source + "/" + source + ".xtp";
         const std::string texture_path = "resources/rims/" + mod.asset + "/" + mod.asset + ".xtp";
         const std::filesystem::path texture_cache =
-            cache_dir / kRimFolder / (mod.asset + ".xtp.tpl");
+            cache_dir / kRimFolder / (source + ".xtp.tpl");
 
         Rsc5Resource textures;
         bool have_textures = false;
         if (!atlas.empty()) {
             have_textures = LoadTemplateCache(texture_cache, textures);
-            if (!have_textures && ExtractTemplate(archive, texture_path, textures, error)) {
+            if (!have_textures && ExtractTemplate(archive, texture_source, textures, error)) {
                 SaveTemplateCache(texture_cache, textures);
                 have_textures = true;
             }
@@ -1510,6 +1537,20 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
                                          : " on the hub cap";
                     if (sampled && offset.reserve_shader < 0) paint += ", badge silenced";
                 }
+            }
+        }
+
+        // A wheel built from a donor needs the donor's paint under its own name
+        // as well, unless the mod brought an image and the block above already
+        // wrote one. Without it the game asks for a texture pack that is not
+        // there and the rim arrives unpainted.
+        if (!mod.donor.empty() && paint.empty()) {
+            Rpf3Entry entry;
+            std::vector<uint8_t> raw;
+            if (archive.Find(texture_source, entry) && archive.ReadFile(entry, raw)) {
+                writer.Add(texture_path, std::move(raw), entry.flag, entry.resource_type());
+                ++built;
+                paint = ", paint copied from " + mod.donor;
             }
         }
 
