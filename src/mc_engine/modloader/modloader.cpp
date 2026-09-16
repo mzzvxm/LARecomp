@@ -3342,13 +3342,48 @@ void Init() {
 
         std::error_code read_ec;
         const auto size = std::filesystem::file_size(file.source, read_ec);
+        if (read_ec || size == 0 || size > 0x3FFFFFFFull) {
+            LARECOMP_APP_ERROR("[mods] {}/files/{}: cannot read", file.mod_name,
+                               file.archive_path);
+            continue;
+        }
+
+        // Only a resource has to be read: its header has to be inspected and its
+        // segments may have to be repacked. A plain file goes in byte for byte,
+        // so it is left where it is and streamed at Write time -- a music folder
+        // is hundreds of multi-megabyte banks, and holding them all in memory at
+        // once is what used to make a big folder die on boot.
+        uint8_t head[kRsc5HeaderSize] = {};
+        {
+            std::ifstream input(file.source, std::ios::binary);
+            if (!input) {
+                LARECOMP_APP_ERROR("[mods] {}/files/{}: cannot read", file.mod_name,
+                                   file.archive_path);
+                continue;
+            }
+            input.read(reinterpret_cast<char*>(head),
+                       static_cast<std::streamsize>(std::min<uint64_t>(size, sizeof(head))));
+        }
+        const bool is_resource_file =
+            size > kRsc5HeaderSize &&
+            (LoadBE32(head) == kLarcMagic || LoadBE32(head) == kRsc5Magic);
+
+        if (!is_resource_file) {
+            writer.AddFromFile(file.archive_path, file.source, size,
+                               static_cast<uint32_t>(size), 0);
+            taken_paths.push_back(std::move(key));
+            LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, verbatim)", file.mod_name,
+                              file.archive_path, size);
+            continue;
+        }
+
         std::vector<uint8_t> bytes;
-        if (!read_ec && size <= 0x3FFFFFFFull) {
+        {
             std::ifstream input(file.source, std::ios::binary);
             bytes.assign(std::istreambuf_iterator<char>(input),
                          std::istreambuf_iterator<char>());
         }
-        if (bytes.empty() || bytes.size() != static_cast<size_t>(size)) {
+        if (bytes.size() != static_cast<size_t>(size)) {
             LARECOMP_APP_ERROR("[mods] {}/files/{}: cannot read", file.mod_name,
                                file.archive_path);
             continue;
@@ -3383,6 +3418,23 @@ void Init() {
             resource_type = LoadBE32(bytes.data() + 4);
             flag = LoadBE32(bytes.data() + 8);
             bytes.erase(bytes.begin(), bytes.begin() + kRsc5HeaderSize);
+
+            // An uncompressed resource IS readable -- sub_821BC140 has a branch
+            // for it that skips the inflater and reads each destination chunk
+            // straight out of the file -- but only in a precise shape: the
+            // payload at offset twelve and the entry exactly 12 + virtual +
+            // physical bytes long, because pgStreamer::Read measures an
+            // uncompressed request against the entry's own size. This path
+            // ships what it is handed, unchanged, so it cannot produce that
+            // shape. BuildRsc5File can, and the branch below routes through it.
+            if ((flag & 0xC0000000u) == 0x80000000u) {
+                LARECOMP_APP_ERROR("[mods] {}/files/{}: flag {:#010x} marks an uncompressed "
+                                   "resource, which this path ships unchanged and so cannot "
+                                   "lay out -- ship the bare segments behind an RSC5 header "
+                                   "instead and they will be packed",
+                                   file.mod_name, file.archive_path, flag);
+                continue;
+            }
         } else if (bytes.size() > kRsc5HeaderSize && LoadBE32(bytes.data()) == kRsc5Magic) {
             resource_type = LoadBE32(bytes.data() + 4);
             flag = LoadBE32(bytes.data() + 8);
