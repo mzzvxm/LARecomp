@@ -31,6 +31,7 @@
 #include "rsc5.h"
 #include "texture.h"
 #include "xcompress.h"
+#include "mc_engine/boot_progress.h"
 #include "mc_engine/music/custom_music.h"
 
 REXCVAR_DEFINE_BOOL(model_mods, true, "MCLA/Mods",
@@ -3224,6 +3225,13 @@ void AppendModArchiveTo(uint32_t buffer, size_t capacity) {
 }
 
 void Init() {
+    // Called from OnPostSetup (through the boot progress overlay) and again
+    // from InitHooks, which is where it used to live. Building twice would
+    // rewrite the archive under a game that has already been told to mount it.
+    static bool built = false;
+    if (built) return;
+    built = true;
+
     g_mod_archive_ready = false;
 
     if (!REXCVAR_GET(model_mods)) return;
@@ -3330,7 +3338,9 @@ void Init() {
     // file after a resource some mesh also builds and nothing gets built at
     // all. Nothing checks for that, because a mod has no reason to do it.
     std::vector<std::string> taken_paths;
+    if (!raw_files.empty()) boot::BeginPhase("Files", static_cast<int>(raw_files.size()));
     for (const RawFile& file : raw_files) {
+        boot::Step(file.archive_path);
         std::string key = file.archive_path;
         std::transform(key.begin(), key.end(), key.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -3483,13 +3493,17 @@ void Init() {
         }
     }
 
+    if (!raw_files.empty()) boot::EndPhase();
+
     const bool passthrough = REXCVAR_GET(model_mods_passthrough);
     if (passthrough) {
         LARECOMP_APP_INFO("[mods] passthrough is on: repacking the original geometry, "
                           ".obj meshes are ignored");
     }
 
+    if (!build_list.empty()) boot::BeginPhase("Models", static_cast<int>(build_list.size()));
     for (const auto& mod : build_list) {
+        boot::Step(mod.asset);
         Mesh mesh;
         std::string error;
         if (!LoadMeshFile(mod.obj, mesh, error)) {
@@ -3620,24 +3634,31 @@ void Init() {
         }
     }
 
+    if (!build_list.empty()) boot::EndPhase();
+
     if (!rim_mods.empty())
         BuildRimMods(rim_mods, archive, cache_dir, passthrough, writer);
     if (!car_mods.empty())
         BuildVehicleMods(car_mods, archive, cache_dir, passthrough, writer);
 
     const std::filesystem::path mod_archive = game_root / kModArchiveName;
+    boot::BeginPhase("Archive", 1);
 
     if (writer.empty()) {
         // Leaving a stale archive behind would silently keep an old mod alive.
         std::filesystem::remove(mod_archive, ec);
         LARECOMP_APP_ERROR("[mods] nothing built, model replacement disabled");
+        boot::EndPhase();
         return;
     }
 
     if (!writer.Write(mod_archive)) {
         LARECOMP_APP_ERROR("[mods] cannot write {}", mod_archive.string());
+        boot::EndPhase();
         return;
     }
+    boot::Step(kModArchiveName);
+    boot::EndPhase();
 
     g_mod_archive_ready = true;
     LARECOMP_APP_INFO("[mods] {} with {} replacement(s), mounted last", kModArchiveName,

@@ -41,6 +41,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hud_units.cpp
     src/mc_engine/cutscene_gallery.cpp
     src/mc_engine/texture_dump.cpp
+    src/mc_engine/boot_progress.cpp
 
     # Custom MP3 radio: <exe>/music/*.mp3 injected into mcMusicManager, decoded
     # and played on the host (Media Foundation + XAudio2).
@@ -131,6 +132,7 @@ set(LARECOMP_SOURCES
 
     src/isoinstaller/larecomp_iso_installer.cpp
     src/saveporter/larecomp_save_porter.cpp
+    src/bootprogress/larecomp_boot_progress.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

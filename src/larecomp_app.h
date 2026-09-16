@@ -19,6 +19,8 @@
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
+#include "bootprogress/larecomp_boot_progress.h"
+#include "mc_engine/modloader/modloader.h"
 
 #include <cstdint>
 #include <memory>
@@ -514,6 +516,13 @@ class LarecompApp : public rex::ReXApp {
     } else {
       LARECOMP_APP_ERROR("Failed to get native window handle!");
     }
+
+    // Mods and custom music are built here rather than from InitHooks so the
+    // work can happen off the UI thread with a progress popup over the window.
+    // It still lands before the guest runs, which is all the archive mount
+    // cares about. InitHooks' own call is a no-op after this one.
+    larecomp::RunBootBuildWithOverlay(app_context(), window(), imgui_drawer(),
+                                      []() { mc::modloader::Init(); });
 
     LARECOMP_Discord_Init();
     mc::ui::InitGraphicsButtonPatch();
