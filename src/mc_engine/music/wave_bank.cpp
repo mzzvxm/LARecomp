@@ -16,7 +16,6 @@ constexpr uint32_t kMaxStartPackets = 0x212;  // the guest rejects anything abov
 constexpr uint32_t kPcmMagic = 0x4C50434Du;  // 'LPCM'
 constexpr uint8_t kCodecMp3 = 2;
 constexpr uint32_t kMp3PacketHeader = 12;
-constexpr uint32_t kMp3SamplesPerFrame = 1152;
 
 void StoreBE16(uint8_t* p, uint16_t v) {
     p[0] = static_cast<uint8_t>(v >> 8);
@@ -61,29 +60,45 @@ struct Mp3Frame {
     uint32_t length = 0;
 };
 
-// MPEG-1 Layer III only; anything else is refused up front rather than written
-// into a bank the runtime cannot decode.
-uint32_t Mp3FrameLength(const uint8_t* p, size_t available, uint32_t& rate, uint32_t& channels) {
-    static const uint32_t kBitrate[16] = {0,   32,  40,  48,  56,  64,  80,  96,
-                                          112, 128, 160, 192, 224, 256, 320, 0};
-    static const uint32_t kRate[4] = {44100, 48000, 32000, 0};
+// Layer III, any MPEG version. The frames are handed to the runtime untouched
+// and decoded by ffmpeg there, which takes MPEG-1, MPEG-2 and MPEG-2.5 alike --
+// so the only thing refused here is what is not Layer III at all.
+//
+// MPEG-2 and 2.5 halve everything: 576 samples per frame instead of 1152, their
+// own bitrate table, and their own sample rates.
+uint32_t Mp3FrameLength(const uint8_t* p, size_t available, uint32_t& rate, uint32_t& channels,
+                        uint32_t& samples_per_frame) {
+    static const uint32_t kBitrateV1[16] = {0,   32,  40,  48,  56,  64,  80,  96,
+                                            112, 128, 160, 192, 224, 256, 320, 0};
+    static const uint32_t kBitrateV2[16] = {0,  8,  16, 24,  32,  40,  48,  56,
+                                            64, 80, 96, 112, 128, 144, 160, 0};
+    static const uint32_t kRateV1[4] = {44100, 48000, 32000, 0};
+    static const uint32_t kRateV2[4] = {22050, 24000, 16000, 0};
+    static const uint32_t kRateV25[4] = {11025, 12000, 8000, 0};
+
     if (available < 4 || p[0] != 0xFF || (p[1] & 0xE0) != 0xE0) return 0;
-    const uint32_t version = (p[1] >> 3) & 3;
-    const uint32_t layer = (p[1] >> 1) & 3;
+    const uint32_t version = (p[1] >> 3) & 3;  // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
+    const uint32_t layer = (p[1] >> 1) & 3;    // 1 = Layer III
     const uint32_t bitrate_index = p[2] >> 4;
     const uint32_t rate_index = (p[2] >> 2) & 3;
     const uint32_t padding = (p[2] >> 1) & 1;
-    if (version != 3 || layer != 1 || bitrate_index == 0 || bitrate_index == 15 ||
+    if (version == 1 || layer != 1 || bitrate_index == 0 || bitrate_index == 15 ||
         rate_index == 3) {
         return 0;
     }
-    rate = kRate[rate_index];
+
+    const bool version1 = version == 3;
+    const uint32_t bitrate = (version1 ? kBitrateV1 : kBitrateV2)[bitrate_index] * 1000;
+    rate = version1 ? kRateV1[rate_index]
+                    : (version == 2 ? kRateV2[rate_index] : kRateV25[rate_index]);
+    if (!rate) return 0;
+    samples_per_frame = version1 ? 1152 : 576;
     channels = ((p[3] >> 6) == 3) ? 1 : 2;
-    return (144 * kBitrate[bitrate_index] * 1000 / kRate[rate_index]) + padding;
+    return (samples_per_frame / 8 * bitrate / rate) + padding;
 }
 
 std::vector<Mp3Frame> ScanMp3Frames(const std::vector<uint8_t>& blob, uint32_t& rate,
-                                    uint32_t& channels) {
+                                    uint32_t& channels, uint32_t& samples_per_frame) {
     size_t at = 0;
     if (blob.size() > 10 && blob[0] == 'I' && blob[1] == 'D' && blob[2] == '3') {
         at = 10 + ((blob[6] & 0x7Fu) << 21 | (blob[7] & 0x7Fu) << 14 | (blob[8] & 0x7Fu) << 7 |
@@ -92,9 +107,9 @@ std::vector<Mp3Frame> ScanMp3Frames(const std::vector<uint8_t>& blob, uint32_t& 
     }
     std::vector<Mp3Frame> frames;
     while (at + 4 <= blob.size()) {
-        uint32_t frame_rate = 0, frame_channels = 0;
-        const uint32_t length =
-            Mp3FrameLength(blob.data() + at, blob.size() - at, frame_rate, frame_channels);
+        uint32_t frame_rate = 0, frame_channels = 0, frame_samples = 0;
+        const uint32_t length = Mp3FrameLength(blob.data() + at, blob.size() - at, frame_rate,
+                                               frame_channels, frame_samples);
         if (!length) {
             ++at;
             continue;
@@ -103,6 +118,7 @@ std::vector<Mp3Frame> ScanMp3Frames(const std::vector<uint8_t>& blob, uint32_t& 
         if (!rate) {
             rate = frame_rate;
             channels = frame_channels;
+            samples_per_frame = frame_samples;
         }
         frames.push_back(Mp3Frame{static_cast<uint32_t>(at), length});
         at += length;
@@ -115,7 +131,7 @@ std::vector<Mp3Frame> ScanMp3Frames(const std::vector<uint8_t>& blob, uint32_t& 
 // drains whole frames out of it -- because at 320 kbps a frame is 1044 bytes and
 // refusing to split would waste half of every packet.
 Wave BuildMp3Wave(const std::vector<uint8_t>& blob, const std::vector<Mp3Frame>& frames,
-                  uint32_t hash, uint32_t rate, uint8_t channel) {
+                  uint32_t hash, uint32_t rate, uint32_t samples_per_frame, uint8_t channel) {
     Wave wave;
     wave.hash = hash;
     wave.rate = rate;
@@ -140,14 +156,14 @@ Wave BuildMp3Wave(const std::vector<uint8_t>& blob, const std::vector<Mp3Frame>&
         wave.packets.resize(at + kPacket, 0);
         uint8_t* packet = wave.packets.data() + at;
         StoreBE32(packet, kPcmMagic);
-        StoreBE16(packet + 4, static_cast<uint16_t>(begins * kMp3SamplesPerFrame));
+        StoreBE16(packet + 4, static_cast<uint16_t>(begins * samples_per_frame));
         packet[6] = kCodecMp3;
         packet[7] = channel;
         StoreBE16(packet + 8, static_cast<uint16_t>(piece));
         std::memcpy(packet + kMp3PacketHeader, blob.data() + base + start, piece);
 
         wave.first_sample.push_back(wave.sample_count);
-        wave.sample_count += begins * kMp3SamplesPerFrame;
+        wave.sample_count += begins * samples_per_frame;
     }
     return wave;
 }
@@ -213,7 +229,7 @@ std::vector<ChunkPlan> PlanChunks(const Wave (&waves)[2]) {
     }
 }
 
-std::vector<uint8_t> BuildBank(const Wave (&waves)[2], BankInfo& info) {
+std::vector<uint8_t> BuildBank(const Wave (&waves)[2], uint32_t header_budget, BankInfo& info) {
     const std::vector<ChunkPlan> plan = PlanChunks(waves);
 
     std::vector<uint8_t> desc[2];
@@ -244,7 +260,7 @@ std::vector<uint8_t> BuildBank(const Wave (&waves)[2], BankInfo& info) {
     info.sample_rate = waves[0].rate;
     info.header_end = head_end;
     info.block_size = block_size;
-    if (block_size > kMaxHeaderSize) return {};
+    if (block_size > header_budget) return {};
 
     std::vector<uint8_t> out(0x50, 0);
     out.insert(out.end(), desc[0].begin(), desc[0].end());
@@ -309,25 +325,32 @@ std::vector<uint8_t> BuildBank(const Wave (&waves)[2], BankInfo& info) {
 
 }  // namespace
 
-uint32_t Mp3SecondsThatFit(uint32_t bytes_per_second) {
-    if (!bytes_per_second) return 0;
+uint32_t Mp3SecondsThatFit(uint32_t bytes_per_second, uint32_t header_budget) {
+    if (!bytes_per_second || header_budget <= 0xC0) return 0;
     // Header cost per packet: 4 bytes in each wave's firstSample table plus
     // 8 bytes of chunk table per 62 packets, and both waves carry the stream.
     const double per_packet = 2.0 * 4.0 + 8.0 / kChunkCapacity * 2.0;
-    const double packets = (kMaxHeaderSize - 0xC0) / per_packet;
+    const double packets = (header_budget - 0xC0) / per_packet;
     return static_cast<uint32_t>(packets * (kPacket - kMp3PacketHeader) / bytes_per_second);
 }
 
 bool BuildMp3Bank(const std::vector<uint8_t>& mp3, uint32_t left_hash, uint32_t right_hash,
-                  std::vector<uint8_t>& out, BankInfo& info, std::string& error) {
-    uint32_t rate = 0, channels = 0;
-    const std::vector<Mp3Frame> frames = ScanMp3Frames(mp3, rate, channels);
+                  uint32_t header_budget, std::vector<uint8_t>& out, BankInfo& info,
+                  std::string& error) {
+    uint32_t rate = 0, channels = 0, samples_per_frame = 0;
+    const std::vector<Mp3Frame> frames = ScanMp3Frames(mp3, rate, channels, samples_per_frame);
     if (frames.empty() || !rate) {
-        error = "no MPEG-1 Layer III frames (only plain MP3 is supported)";
+        error = "no MPEG Layer III frames (only plain MP3 is supported)";
         return false;
     }
-    if (rate != 32000 && rate != 44100 && rate != 48000) {
-        error = "sample rate " + std::to_string(rate) + " is not one the XMA context can carry";
+    // The scanner reads MPEG-2 and 2.5 so the reason below can be precise, but
+    // the runtime cannot play them yet: XmaContext::DrainMp3Frames resyncs on
+    // MPEG-1 headers only, and the XMA context runs at one of 24/32/44.1/48 kHz
+    // with no resampler, so a 22 kHz stream would come out twice as fast.
+    if (samples_per_frame != 1152 || (rate != 32000 && rate != 44100 && rate != 48000)) {
+        error = "MPEG-" + std::string(samples_per_frame == 1152 ? "1" : "2/2.5") + " at " +
+                std::to_string(rate) +
+                " Hz -- only MPEG-1 at 32, 44.1 or 48 kHz plays; re-encode the file";
         return false;
     }
     info.channels = channels;
@@ -335,21 +358,22 @@ bool BuildMp3Bank(const std::vector<uint8_t>& mp3, uint32_t left_hash, uint32_t 
     // Both waves hold the same stereo bitstream; the packet names the channel,
     // because a bank wave is mono and an MP3 does not split without re-encoding.
     const Wave waves[2] = {
-        BuildMp3Wave(mp3, frames, left_hash, rate, 0),
-        BuildMp3Wave(mp3, frames, right_hash, rate, channels > 1 ? 1 : 0),
+        BuildMp3Wave(mp3, frames, left_hash, rate, samples_per_frame, 0),
+        BuildMp3Wave(mp3, frames, right_hash, rate, samples_per_frame, channels > 1 ? 1 : 0),
     };
 
-    out = BuildBank(waves, info);
+    out = BuildBank(waves, header_budget, info);
     if (out.empty()) {
         const uint32_t seconds = static_cast<uint32_t>(
-            static_cast<uint64_t>(frames.size()) * kMp3SamplesPerFrame / rate);
+            static_cast<uint64_t>(frames.size()) * samples_per_frame / rate);
         const uint32_t fits = Mp3SecondsThatFit(
             static_cast<uint32_t>((frames.back().offset + frames.back().length -
                                    frames.front().offset) /
-                                  std::max<uint32_t>(1, seconds)));
+                                  std::max<uint32_t>(1, seconds)),
+            header_budget);
         error = "track is " + std::to_string(seconds) + " s but only about " +
-                std::to_string(fits) +
-                " s of it fit in the wave slot's header budget at this bitrate";
+                std::to_string(fits) + " s of it fit in a header budget of " +
+                std::to_string(header_budget) + " bytes at this bitrate";
         return false;
     }
     return true;

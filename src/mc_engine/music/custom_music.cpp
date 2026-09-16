@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "../../larecomp_log.h"
+#include "mc_engine/boot_progress.h"
 #include "mc_engine/modloader/rpf3.h"
 #include "mc_engine/music/audio_dat.h"
 #include "mc_engine/music/wave_bank.h"
@@ -24,6 +25,7 @@ namespace {
 
 constexpr const char* kCacheFolder = ".custommusic";
 constexpr const char* kSourceArchive = "xarchive_cache.rpf";
+constexpr const char* kWaveSlots = "audio/x360/config/waveslots.xml";
 constexpr const char* kTemplate = "ROCK_CSS_RATISDEAD";
 constexpr const char* kManager = "MUSIC_0_MANAGER";
 
@@ -34,6 +36,33 @@ constexpr int kGenreCount = 7;
 // MUSIC_0_MANAGER lists its songs in seven groups; each group holds exactly one
 // genre, in this order (measured, and every shipped song agrees).
 constexpr int kGroupOfGenre[kGenreCount] = {6, 2, 0, 4, 1, 3, 5};
+
+// A group's song count is ONE BYTE in the manager record (sub_821EF450 reads it
+// with lbz and counts with a byte). Write a 256th song into a group and the
+// count wraps to zero: the loader then reads the next group's count out of the
+// middle of a song hash, walks off the end of the record and dies before the
+// first frame. That was the ~250-track ceiling -- 12 shipped ECLECTIC songs
+// plus 243 custom ones, all landing in the same group because ECLECTIC is the
+// default genre.
+//
+// Which group a song is listed in does NOT decide which genre it plays under.
+// sub_821EF310 takes the hash from the group body, resolves the game object,
+// and files the song by the object's own genre byte (+10) into a per-genre
+// atArray whose count is a u16. So a full group can spill into any other one:
+// the track still shows up under its own genre, and the ceiling becomes
+// 7 x 255 = 1785 songs instead of 255.
+constexpr int kGroupCapacity = 255;
+
+// How far the slot header budget is allowed to be pushed. Not a taste call: a
+// bank goes into the archive as one plain file, and the modloader refuses an
+// entry over 0x3FFFFFFF bytes. Both waves carry the whole bitstream, so a bank
+// stays under a gigabyte while the MP3 is under ~512 MB -- about three and a
+// half hours at 320 kbps -- and the header for that is a shade under 2 MB.
+//
+// Reaching it would grow the seven STREAM slots by about 2 MB each, on a slot
+// pool that ships at 20 MB -- and only a folder that really holds a track that
+// long ever pays it.
+constexpr uint32_t kHeaderBudgetCeiling = 0x200000;
 
 std::vector<std::pair<std::string, std::string>> g_titles;
 std::vector<std::string> g_claimed;
@@ -122,7 +151,37 @@ bool WriteFile(const fs::path& path, const std::vector<uint8_t>& data) {
 
 // --------------------------------------------------------------- the shipped pair
 
-bool LoadShippedDat(const fs::path& archive_path, AudioDat& game, AudioDat& sounds) {
+// One plain file out of the archive, inflated if it is stored deflated -- which
+// is what bit30 of the entry flag says.
+bool ReadArchiveFile(const modloader::Rpf3Reader& archive, const std::string& path,
+                     std::vector<uint8_t>& out) {
+    modloader::Rpf3Entry entry;
+    if (!archive.Find(path, entry)) {
+        LARECOMP_APP_ERROR("[music] {} has no {}", archive.path().string(), path);
+        return false;
+    }
+    if (!archive.ReadFile(entry, out)) {
+        LARECOMP_APP_ERROR("[music] cannot read {}", path);
+        return false;
+    }
+    if (entry.flag & 0x40000000u) {
+        int out_length = 0;
+        char* inflated = stbi_zlib_decode_noheader_malloc(
+            reinterpret_cast<const char*>(out.data()), static_cast<int>(out.size()), &out_length);
+        if (!inflated || out_length <= 0) {
+            LARECOMP_APP_ERROR("[music] cannot inflate {}", path);
+            return false;
+        }
+        out.assign(inflated, inflated + out_length);
+        std::free(inflated);
+    }
+    return true;
+}
+
+// The .dat pair, plus the wave slot table the header budget lives in. A missing
+// waveslots.xml is not fatal: it only means tracks stay inside the stock budget.
+bool LoadShippedDat(const fs::path& archive_path, AudioDat& game, AudioDat& sounds,
+                    std::string& wave_slots) {
     modloader::Rpf3Reader archive;
     if (!archive.Open(archive_path)) {
         LARECOMP_APP_ERROR("[music] cannot open {}", archive_path.string());
@@ -132,37 +191,103 @@ bool LoadShippedDat(const fs::path& archive_path, AudioDat& game, AudioDat& soun
     AudioDat* targets[2] = {&game, &sounds};
     const char* names[2] = {"game.dat", "sounds.dat"};
     for (int i = 0; i < 2; ++i) {
-        modloader::Rpf3Entry entry;
         const std::string path = std::string("audio/x360/config/") + names[i];
-        if (!archive.Find(path, entry)) {
-            LARECOMP_APP_ERROR("[music] {} has no {}", archive_path.string(), path);
-            return false;
-        }
         std::vector<uint8_t> raw;
-        if (!archive.ReadFile(entry, raw)) {
-            LARECOMP_APP_ERROR("[music] cannot read {}", path);
-            return false;
-        }
-        // A plain file's flag is bit30 (compressed) plus its uncompressed size.
-        if (entry.flag & 0x40000000u) {
-            int out_length = 0;
-            char* inflated = stbi_zlib_decode_noheader_malloc(
-                reinterpret_cast<const char*>(raw.data()), static_cast<int>(raw.size()),
-                &out_length);
-            if (!inflated || out_length <= 0) {
-                LARECOMP_APP_ERROR("[music] cannot inflate {}", path);
-                return false;
-            }
-            raw.assign(inflated, inflated + out_length);
-            std::free(inflated);
-        }
+        if (!ReadArchiveFile(archive, path, raw)) return false;
         std::string error;
         if (!targets[i]->Parse(raw, error)) {
             LARECOMP_APP_ERROR("[music] {}: {}", path, error);
             return false;
         }
     }
+
+    std::vector<uint8_t> xml;
+    if (ReadArchiveFile(archive, kWaveSlots, xml)) {
+        wave_slots.assign(xml.begin(), xml.end());
+    }
     return true;
+}
+
+// ---------------------------------------------------------------- the slot budget
+
+// How much header a bank already built is asking for: `blockSize` at +0x2C is
+// the offset of chunk 0, so it is exactly what the slot has to hold. Read off
+// the cached file so a reused bank still counts towards the budget.
+uint32_t BankHeaderSize(const fs::path& bank) {
+    std::ifstream input(bank, std::ios::binary);
+    if (!input) return 0;
+    uint8_t head[0x30] = {};
+    input.read(reinterpret_cast<char*>(head), sizeof(head));
+    if (input.gcount() != static_cast<std::streamsize>(sizeof(head))) return 0;
+    return (static_cast<uint32_t>(head[0x2C]) << 24) | (static_cast<uint32_t>(head[0x2D]) << 16) |
+           (static_cast<uint32_t>(head[0x2E]) << 8) | head[0x2F];
+}
+
+// Where a `<Key value="N" />` sits inside one slot, and what N is.
+bool FindSlotValue(const std::string& slot, const char* key, size_t& first, size_t& last,
+                   uint32_t& value) {
+    const size_t at = slot.find(key);
+    if (at == std::string::npos) return false;
+    first = at + std::strlen(key);
+    last = slot.find('"', first);
+    if (last == std::string::npos) return false;
+    value = static_cast<uint32_t>(
+        std::strtoul(slot.substr(first, last - first).c_str(), nullptr, 10));
+    return true;
+}
+
+// Raises the header budget of every STREAM slot in waveslots.xml.
+//
+// A slot's `Size` is NOT its header budget: it is the header plus the streaming
+// window that follows it -- 2 x 0x20000 for the music slots, 0x10000 for the
+// others -- and all 41 slots share one 20 MB pool. So the window is preserved
+// and only the header part grows, which is what the extra heap actually buys.
+//
+// Only STREAM slots are touched: those are the ones a music bank loads into,
+// and one of them also stages the header read in audWaveSlot::RequestLoad. WAVE
+// and BANK slots, and any slot already roomier than the budget, are left alone.
+std::string PatchWaveSlots(const std::string& xml, uint32_t budget, int& patched,
+                           uint32_t& added_bytes) {
+    patched = 0;
+    added_bytes = 0;
+
+    std::string out;
+    out.reserve(xml.size() + 256);
+
+    size_t at = 0;
+    while (true) {
+        const size_t open = xml.find("<Slot>", at);
+        if (open == std::string::npos) break;
+        const size_t close = xml.find("</Slot>", open);
+        if (close == std::string::npos) break;
+
+        const size_t end = close + 7;
+        std::string slot = xml.substr(open, end - open);
+        out.append(xml, at, open - at);
+        at = end;
+
+        size_t header_first = 0, header_last = 0, size_first = 0, size_last = 0;
+        uint32_t header = 0, size = 0;
+        if (slot.find(">STREAM<") == std::string::npos ||
+            !FindSlotValue(slot, "<MaxHeaderSize value=\"", header_first, header_last, header) ||
+            !FindSlotValue(slot, "<Size value=\"", size_first, size_last, size) ||
+            header >= budget || size < header) {
+            out += slot;
+            continue;
+        }
+
+        const uint32_t grow = budget - header;
+        // The Size field sits after MaxHeaderSize in every shipped slot, so it
+        // is rewritten first and the earlier offsets stay valid.
+        slot = slot.substr(0, size_first) + std::to_string(size + grow) + slot.substr(size_last);
+        slot = slot.substr(0, header_first) + std::to_string(budget) + slot.substr(header_last);
+
+        added_bytes += grow;
+        ++patched;
+        out += slot;
+    }
+    out.append(xml, at, std::string::npos);
+    return out;
 }
 
 // ------------------------------------------------------------------ the records
@@ -180,24 +305,58 @@ std::vector<uint8_t> MusicObject(int genre, uint32_t cue_hash, const std::string
     return rec;
 }
 
-// Appends a song to the manager's group for `genre`.
-std::vector<uint8_t> ManagerWith(const std::vector<uint8_t>& record, int genre,
-                                 uint32_t song_hash) {
-    const int group = kGroupOfGenre[genre];
+// How many songs each group already lists. False when the record does not walk
+// cleanly, which means the shape assumed here is not the shape on disk.
+bool ReadGroupCounts(const std::vector<uint8_t>& record, int (&out)[kGenreCount]) {
+    if (record.size() < 43) return false;
+    size_t p = 42;
+    for (int g = 0; g < kGenreCount; ++g) {
+        if (p >= record.size()) return false;
+        const size_t n = record[p];
+        if (p + 1 + 4 * n > record.size()) return false;
+        out[g] = static_cast<int>(n);
+        p += 1 + 4 * n;
+    }
+    return p == record.size();
+}
+
+// Appends whole lists of songs to the manager's groups in one pass. Done once
+// at the end rather than per song: ReplaceObject leaves the old body behind as
+// dead space, so rewriting the record N times costs O(N^2) bytes in game.dat.
+std::vector<uint8_t> ManagerWith(const std::vector<uint8_t>& record,
+                                 const std::vector<uint32_t> (&added)[kGenreCount]) {
     std::vector<uint8_t> out(record.begin(), record.begin() + 42);
     size_t p = 42;
-    for (int g = 0; p < record.size(); ++g) {
+    for (int g = 0; g < kGenreCount && p < record.size(); ++g) {
         const uint8_t n = record[p];
         const size_t body = 4ull * n;
         if (p + 1 + body > record.size()) break;
-        out.push_back(static_cast<uint8_t>(g == group ? n + 1 : n));
+        out.push_back(static_cast<uint8_t>(n + added[g].size()));
         out.insert(out.end(), record.begin() + p + 1, record.begin() + p + 1 + body);
-        if (g == group) {
-            for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(song_hash >> (24 - 8 * i)));
+        for (uint32_t song_hash : added[g]) {
+            for (int i = 0; i < 4; ++i) {
+                out.push_back(static_cast<uint8_t>(song_hash >> (24 - 8 * i)));
+            }
         }
         p += 1 + body;
     }
     return out;
+}
+
+// The group this song can actually be listed in: its own genre's while that one
+// has room, otherwise the emptiest group there is. Spilling is free -- the song
+// still plays under its own genre, see kGroupCapacity -- so the only thing lost
+// is tidiness in a file nobody reads. -1 when every group is full.
+int PlaceInGroup(int genre, const int (&counts)[kGenreCount]) {
+    const int own = kGroupOfGenre[genre];
+    if (counts[own] < kGroupCapacity) return own;
+
+    int best = -1;
+    for (int g = 0; g < kGenreCount; ++g) {
+        if (counts[g] >= kGroupCapacity) continue;
+        if (best < 0 || counts[g] < counts[best]) best = g;
+    }
+    return best;
 }
 
 void StoreBE32At(std::vector<uint8_t>& rec, size_t at, uint32_t value) {
@@ -213,9 +372,10 @@ struct Song {
     int genre = 0;
 };
 
-// The two wave leaves, the cue that pairs them, the radio entry, and the
-// manager that lists it. Records are cloned from a shipped song so every field
-// nobody has decoded yet keeps its shipped value.
+// The two wave leaves, the cue that pairs them and the radio entry. Records are
+// cloned from a shipped song so every field nobody has decoded yet keeps its
+// shipped value. Listing the entry in the manager is the caller's job, done for
+// every song at once at the end.
 bool AddSong(AudioDat& game, AudioDat& sounds, const Song& song) {
     const std::string template_bank = std::string(kTemplate).substr(std::strlen("ROCK_"));
     const std::string template_cue = std::string("SND_") + kTemplate;
@@ -255,8 +415,6 @@ bool AddSong(AudioDat& game, AudioDat& sounds, const Song& song) {
 
     game.AddObject(song.name,
                    MusicObject(song.genre, modloader::RageHash(cue_name), song.title));
-    game.ReplaceObject(kManager, ManagerWith(game.Record(kManager), song.genre,
-                                             modloader::RageHash(song.name)));
     return true;
 }
 
@@ -535,12 +693,62 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
     const std::vector<Song> songs = ScanSongs(exe_dir);
     if (songs.empty()) return {};
 
+    boot::BeginPhase("Music", static_cast<int>(songs.size()));
+
     AudioDat game, sounds;
-    if (!LoadShippedDat(game_root / kSourceArchive, game, sounds)) return {};
-    if (game.IndexOf(kManager) < 0) {
-        LARECOMP_APP_ERROR("[music] the shipped game.dat has no {}", kManager);
+    std::string wave_slots;
+    if (!LoadShippedDat(game_root / kSourceArchive, game, sounds, wave_slots)) {
+        boot::EndPhase();
         return {};
     }
+    if (game.IndexOf(kManager) < 0) {
+        LARECOMP_APP_ERROR("[music] the shipped game.dat has no {}", kManager);
+        boot::EndPhase();
+        return {};
+    }
+
+    // What the shipped record already lists, so the byte each group's count
+    // lives in never wraps.
+    const std::vector<uint8_t> manager = game.Record(kManager);
+    int group_count[kGenreCount] = {};
+    if (!ReadGroupCounts(manager, group_count)) {
+        LARECOMP_APP_ERROR("[music] {} does not walk as seven groups, radio left alone", kManager);
+        boot::EndPhase();
+        return {};
+    }
+    std::vector<uint32_t> added[kGenreCount];
+    int spilled = 0, refused = 0, failed = 0;
+
+    // Tracks are built against a budget nobody is going to hit, and the slot
+    // table is then written to fit the tallest header that actually turned up.
+    // Guest heap is only spent on what the folder really needs, and a track is
+    // no longer refused for being long -- see kStockHeaderSize.
+    //
+    // That only holds while the table can actually be rewritten, so it is
+    // checked here, before a single track goes in. A bank whose header is past
+    // what the slot reads plays a truncated chunk table: the stream runs into
+    // bytes that are not packets, the XMA context tries them as XMA ("There are
+    // no bits to copy!"), the track repeats itself and the audio thread can
+    // hang. Without a table to patch, long tracks are refused like they always
+    // were.
+    uint32_t budget_ceiling = kStockHeaderSize;
+    if (wave_slots.empty()) {
+        LARECOMP_APP_ERROR("[music] {} could not be read, so tracks stay inside the stock {} byte "
+                           "header budget",
+                           kWaveSlots, kStockHeaderSize);
+    } else {
+        int probe_patched = 0;
+        uint32_t probe_bytes = 0;
+        PatchWaveSlots(wave_slots, kHeaderBudgetCeiling, probe_patched, probe_bytes);
+        if (probe_patched > 0) {
+            budget_ceiling = kHeaderBudgetCeiling;
+        } else {
+            LARECOMP_APP_ERROR("[music] {} has no STREAM slot to raise, so tracks stay inside the "
+                               "stock {} byte header budget",
+                               kWaveSlots, kStockHeaderSize);
+        }
+    }
+    uint32_t needed_header = kStockHeaderSize;
 
     const fs::path cache_dir = exe_dir / "models" / kCacheFolder;
     const fs::path banks_dir = cache_dir / "files" / "audio" / "x360" / "sfx" / "music";
@@ -555,28 +763,53 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
 
     std::vector<GeneratedFile> files;
     for (const Song& song : songs) {
+        // Stepped here rather than at the end, so a track that is skipped still
+        // moves the bar and still names itself in the popup.
+        boot::Step(song.display.empty() ? song.bank : song.display);
+
+        // Room in the record first: a bank built for a song the manager cannot
+        // list is several megabytes written for nothing.
+        const int group = PlaceInGroup(song.genre, group_count);
+        if (group < 0) {
+            ++refused;
+            continue;
+        }
+        if (group != kGroupOfGenre[song.genre]) ++spilled;
+
         const fs::path bank_path = banks_dir / song.bank;
         const std::string stamp = SourceStamp(song.audio);
         const auto previous = cached.find(song.bank);
-        const bool reusable = !stamp.empty() && previous != cached.end() &&
-                              previous->second == stamp && fs::exists(bank_path, ec);
+        bool reusable = !stamp.empty() && previous != cached.end() &&
+                        previous->second == stamp && fs::exists(bank_path, ec);
+        // A cached bank was built against whatever budget that boot had. If it
+        // asks for more than this boot can give, it goes through the builder
+        // again, which refuses it with the reason instead of shipping it.
+        uint32_t cached_header = 0;
+        if (reusable) {
+            cached_header = BankHeaderSize(bank_path);
+            if (cached_header == 0 || cached_header > budget_ceiling) reusable = false;
+        }
 
         if (!reusable) {
             std::vector<uint8_t> mp3;
             if (!ReadFile(song.audio, mp3)) {
                 LARECOMP_APP_ERROR("[music] cannot read {}", song.audio.string());
+                ++failed;
                 continue;
             }
             std::vector<uint8_t> bank;
             BankInfo info;
             std::string error;
             if (!BuildMp3Bank(mp3, modloader::RageHash(song.bank + "_left"),
-                              modloader::RageHash(song.bank + "_right"), bank, info, error)) {
+                              modloader::RageHash(song.bank + "_right"), budget_ceiling, bank,
+                              info, error)) {
                 LARECOMP_APP_ERROR("[music] {}: {}", song.audio.filename().string(), error);
+                ++failed;
                 continue;
             }
             if (!WriteFile(bank_path, bank)) {
                 LARECOMP_APP_ERROR("[music] cannot write {}", bank_path.string());
+                ++failed;
                 continue;
             }
             LARECOMP_APP_INFO(
@@ -585,13 +818,20 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
                 static_cast<double>(info.samples) / info.sample_rate, info.sample_rate,
                 info.channels, info.packets, static_cast<double>(bank.size()) / (1024.0 * 1024.0),
                 info.header_end);
+            needed_header = std::max(needed_header, info.block_size);
+        } else {
+            needed_header = std::max(needed_header, cached_header);
         }
 
         if (!AddSong(game, sounds, song)) {
             LARECOMP_APP_ERROR("[music] {}: the template records are missing from sounds.dat",
                                song.name);
+            ++failed;
             continue;
         }
+
+        added[group].push_back(modloader::RageHash(song.name));
+        ++group_count[group];
 
         fresh[song.bank] = stamp;
         files.push_back(GeneratedFile{"audio/x360/sfx/music/" + song.bank, bank_path});
@@ -600,12 +840,65 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
         g_claimed.push_back(Lower(song.audio.string()));
     }
 
-    if (files.empty()) return {};
+    if (files.empty()) {
+        boot::EndPhase();
+        return {};
+    }
+
+    game.ReplaceObject(kManager, ManagerWith(manager, added));
+
+    if (spilled > 0) {
+        LARECOMP_APP_INFO("[music] {} track(s) listed under another genre's group because theirs "
+                          "was full at {} -- they still play under their own genre",
+                          spilled, kGroupCapacity);
+    }
+    if (refused > 0) {
+        LARECOMP_APP_ERROR("[music] the radio is full at {} songs -- {} track(s) skipped",
+                           kGenreCount * kGroupCapacity, refused);
+    }
+    if (failed > 0) {
+        // Nothing catches these any more: the old host player is off by default,
+        // so a track that does not build simply is not on the radio. Say so
+        // once, plainly, instead of leaving the person to count the rows.
+        LARECOMP_APP_ERROR(
+            "[music] {} track(s) could not be built and are NOT on the radio -- see the lines "
+            "above for which and why",
+            failed);
+    }
+
+    // A budget past the shipped one only works if the slot table says so, and
+    // the table has to be shipped whenever the tracks need it -- including on a
+    // boot where every bank came from the cache and nothing was built.
+    // needed_header can only pass the stock budget when budget_ceiling did, so
+    // the table is known to be patchable by now.
+    if (needed_header > kStockHeaderSize) {
+        {
+            int patched = 0;
+            uint32_t added_bytes = 0;
+            const std::string xml =
+                PatchWaveSlots(wave_slots, needed_header, patched, added_bytes);
+            const fs::path slots_out = config_dir / "waveslots.xml";
+            const std::vector<uint8_t> bytes(xml.begin(), xml.end());
+            if (patched > 0 && WriteFile(slots_out, bytes)) {
+                files.push_back(GeneratedFile{kWaveSlots, slots_out});
+                LARECOMP_APP_INFO(
+                    "[music] slot header budget raised to {} bytes on {} streaming slot(s) "
+                    "(stock is {}), {:.2f} MB more guest heap",
+                    needed_header, patched, kStockHeaderSize,
+                    static_cast<double>(added_bytes) / (1024.0 * 1024.0));
+            } else {
+                LARECOMP_APP_ERROR("[music] cannot write the patched {} -- tracks with a header "
+                                   "past {} bytes will not stream correctly this boot",
+                                   kWaveSlots, kStockHeaderSize);
+            }
+        }
+    }
 
     const fs::path game_out = config_dir / "game.dat";
     const fs::path sounds_out = config_dir / "sounds.dat";
     if (!WriteFile(game_out, game.Serialize()) || !WriteFile(sounds_out, sounds.Serialize())) {
         LARECOMP_APP_ERROR("[music] cannot write the rebuilt .dat pair");
+        boot::EndPhase();
         return {};
     }
     files.push_back(GeneratedFile{"audio/x360/config/game.dat", game_out});
@@ -616,6 +909,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
 
     LARECOMP_APP_INFO("[music] {} track(s) on the radio, {} object(s) in game.dat",
                       g_titles.size(), game.object_count());
+    boot::EndPhase();
     return files;
 }
 
