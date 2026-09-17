@@ -752,6 +752,74 @@ bool Active() {
 }
 
 
+// First-draw bring-up, shared by every entry point that can produce the frame's
+// first draw.
+//
+// This used to live inline in TryFirstDraw, which only the bound-stream draw
+// hooks (D3DDevice_DrawIndexedVertices / _DrawVertices) reach. The inline-
+// geometry path (BeginVertices/EndVertices) bailed on `!g_draw_ready` instead
+// of arming it, so a screen drawn ENTIRELY from inline geometry never armed the
+// runtime at all: no draw was ever offered, continuous mode never turned on,
+// and with no command processor behind it nothing was presented -- a black
+// screen for as long as that screen lasted. That is exactly the legals/intro
+// sequence, which runs its own frame loop (guest sub_82131508) before the main
+// loop starts and paints fullscreen movie quads through BeginVertices.
+//
+// Returns false if bring-up failed; the caller must then do nothing.
+static bool EnsureDrawReady() {
+  if (g_draw_init_failed) {
+    return false;
+  }
+  if (g_draw_ready) {
+    return true;
+  }
+  // Report which subsystem failed: collapsing these into one condition
+  // makes an initialization failure impossible to diagnose from the log.
+  const char* failed = nullptr;
+  if (!g_provider) {
+    failed = "no D3D12 provider";
+  } else if (!g_draw_context.Initialize(*g_provider)) {
+    failed = "D3D12Context";
+  } else if (!g_pipelines.Initialize(g_draw_context)) {
+    failed = "PipelineCache (root signature)";
+  } else if (!g_binder.Initialize(g_draw_context)) {
+    failed = "TextureBinder (descriptor heaps)";
+  } else if (!g_draw_shaders.Load()) {
+    failed = "ShaderDatabase (assets/mcla_shaders.pack)";
+  }
+  // The bridge that lets a texture fetch find the render target that
+  // produced it, instead of decoding never-written guest memory.
+  g_textures.SetRenderTargetLookup(&g_render_targets);
+  // Guest writes to an uploaded vertex/index range have to invalidate it.
+  // Without this a range was uploaded once and never again, so a mesh
+  // streamed into recycled memory rendered with the previous mesh's bytes.
+  // A failure here is not fatal: it only restores that old behaviour.
+  g_buffers.StartWatchingGuestWrites();
+  // Same hole on the texture side: a tile sampled while it was still
+  // streaming in stayed half-decoded forever, which is the grid of black
+  // squares on the map screen.
+  g_textures.StartWatchingGuestWrites();
+  if (failed) {
+    REXLOG_ERROR("[native_gfx] first-draw initialization failed at: {}", failed);
+    g_draw_init_failed = true;
+    return false;
+  }
+  g_draw_ready = true;
+
+  // Continuous mode takes the swap over: the guest swap is suppressed and the
+  // composite is presented straight through rex::ui::Presenter. It has to be
+  // a takeover rather than a second refresh after the guest swap, because the
+  // Presenter's guest output is single-producer -- refreshing it from this
+  // thread while the command processor refreshes it from its own inside
+  // IssueSwap is a data race on the mailbox.
+  if (REXCVAR_GET(mcla_native_gfx_continuous)) {
+    g_present_ready = true;
+    SetContinuousMode(true);
+    REXLOG_INFO("[native_gfx] continuous mode active (presenting at the guest swap)");
+  }
+  return g_draw_ready;
+}
+
 void TryFirstDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                   uint32_t element_count, uint32_t start_element, int32_t base_vertex,
                   bool indexed) {
@@ -766,51 +834,8 @@ void TryFirstDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
   if (!want_continuous && (want_capture ? FrameCaptureDone() : FirstRealDrawDone())) {
     return;
   }
-  if (!g_draw_ready) {
-    // Report which subsystem failed: collapsing these into one condition
-    // makes an initialization failure impossible to diagnose from the log.
-    const char* failed = nullptr;
-    if (!g_provider) {
-      failed = "no D3D12 provider";
-    } else if (!g_draw_context.Initialize(*g_provider)) {
-      failed = "D3D12Context";
-    } else if (!g_pipelines.Initialize(g_draw_context)) {
-      failed = "PipelineCache (root signature)";
-    } else if (!g_binder.Initialize(g_draw_context)) {
-      failed = "TextureBinder (descriptor heaps)";
-    } else if (!g_draw_shaders.Load()) {
-      failed = "ShaderDatabase (assets/mcla_shaders.pack)";
-    }
-    // The bridge that lets a texture fetch find the render target that
-    // produced it, instead of decoding never-written guest memory.
-    g_textures.SetRenderTargetLookup(&g_render_targets);
-    // Guest writes to an uploaded vertex/index range have to invalidate it.
-    // Without this a range was uploaded once and never again, so a mesh
-    // streamed into recycled memory rendered with the previous mesh's bytes.
-    // A failure here is not fatal: it only restores that old behaviour.
-    g_buffers.StartWatchingGuestWrites();
-    // Same hole on the texture side: a tile sampled while it was still
-    // streaming in stayed half-decoded forever, which is the grid of black
-    // squares on the map screen.
-    g_textures.StartWatchingGuestWrites();
-    if (failed) {
-      REXLOG_ERROR("[native_gfx] first-draw initialization failed at: {}", failed);
-      g_draw_init_failed = true;
-      return;
-    }
-    g_draw_ready = true;
-
-    // Continuous mode takes the swap over: the guest swap is suppressed and the
-    // composite is presented straight through rex::ui::Presenter. It has to be
-    // a takeover rather than a second refresh after the guest swap, because the
-    // Presenter's guest output is single-producer -- refreshing it from this
-    // thread while the command processor refreshes it from its own inside
-    // IssueSwap is a data race on the mailbox.
-    if (REXCVAR_GET(mcla_native_gfx_continuous)) {
-      g_present_ready = true;
-      SetContinuousMode(true);
-      REXLOG_INFO("[native_gfx] continuous mode active (presenting at the guest swap)");
-    }
+  if (!EnsureDrawReady()) {
+    return;
   }
   // Continuous mode has no draw limit (the finish-on-limit path is gated off in
   // frame_capture); it just needs a non-zero value so the draw is not skipped.
@@ -1281,8 +1306,13 @@ void NoteEndVertices(const uint8_t* base, uint32_t dev) {
   const bool want_continuous = REXCVAR_GET(mcla_native_gfx_continuous);
   const uint32_t capture_limit =
       want_continuous ? 1000000u : uint32_t(REXCVAR_GET(mcla_native_gfx_capture));
-  if (capture_limit == 0 || !g_draw_ready || g_draw_init_failed ||
-      (!want_continuous && FrameCaptureDone())) {
+  if (capture_limit == 0 || (!want_continuous && FrameCaptureDone())) {
+    return;
+  }
+  // Arm the runtime here too. An inline-geometry draw is a real first draw --
+  // the legals/intro screens are made of nothing else -- and bailing on
+  // `!g_draw_ready` meant those frames armed nothing and presented nothing.
+  if (!EnsureDrawReady()) {
     return;
   }
   const uint32_t aux_override = uint32_t(REXCVAR_GET(mcla_native_gfx_auxstage));
