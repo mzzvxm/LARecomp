@@ -51,6 +51,10 @@ enum class RpcStr {
   // Race subtypes
   RaceStreet, RaceMission, RaceSeries, RaceTournament, RaceWager, RaceTimeTrial,
   RaceDelivery, RacePayback, RaceRedLight, RaceFreeway, RaceBeatMeThere, RaceOnline,
+  // Series / tournament standings (see RpcOnRaceTick)
+  SeriesProgressFmt,      // wins so far / wins needed, "%d" "%d"
+  SeriesRaceFmt,          // series race number when the target is unknown, "%d"
+  TournamentProgressFmt,  // race n of m + points, "%d" "%d" "%d"
   // Per-state details (top line)
   DetBoot, DetLoading, DetMainMenu, DetGarage, DetFreeRoam, DetRace, DetPause, DetCredits, DetDefault,
   // Per-state text (bottom line)
@@ -65,3 +69,8 @@ const char* RpcTr(RpcStr key);
 // Updates the Rich Presence area live while in Free Roam / a Race. Cheap: it
 // only rebuilds when the district actually changes.
 void RpcOnDistrictChanged(int district_idx);
+
+// Per-frame tick (Patch_DeltaTimePre). Re-reads the live race object so the
+// presence can name the race being run and, in a series or tournament, how the
+// player stands in it. Self-throttled; a no-op outside a race.
+void RpcOnRaceTick();
