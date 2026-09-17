@@ -28,9 +28,14 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_BOOL(custom_music, true, "MCLA/Audio",
-    "Expose <exe>/music/*.mp3 and the User Music folder as radio songs. The "
-    "tracks are decoded on the host; the guest radio only carries the row.")
+REXCVAR_DEFINE_BOOL(custom_music, false, "MCLA/Audio",
+    "Old host player: decodes <exe>/music/*.mp3 outside the game and plays them "
+    "over it, with the guest radio carrying only the row. Off, because the "
+    "native route (mc_engine/music) turns the same files into real game "
+    "objects, real cues and real streaming wave banks -- the radio then behaves "
+    "exactly as it does for a shipped song. This only ever sees a file the "
+    "native route could not take, and playing that one a second-class way hides "
+    "the reason instead of showing it.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(custom_music_announce, true, "MCLA/Audio",
