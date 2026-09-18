@@ -220,6 +220,13 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_skip_water, 0, "MCLA/NativeGfx",
                       "Diagnostico: pula draws de agua por familia, para saber qual pinta a "
                       "faixa branca. Bitmask: 1 = xCityOceanShore, 2 = xCityOceanWater, "
                       "4 = xCityOceanWaterLOD, 8 = xCityPondWater.");
+REXCVAR_DEFINE_STRING(mcla_native_gfx_skip_ps, "", "MCLA/NativeGfx",
+                      "Diagnostico: pula todo draw cujo PIXEL SHADER tem esta identidade, "
+                      "em hexadecimal (ex. \"0xF43F1D5258D0F6EF\"). Vazio = nao pula nada. "
+                      "A bisseccao por numero de draw (skip_draw_first/last) reindexa a cada "
+                      "frame e nao serve para um passe de pos-processamento, que aparece uma "
+                      "vez por frame em posicao variavel; a identidade do shader nao muda. "
+                      "O ps_id sai no log em DEPTHFETCH e nos dumps de draw.");
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_skip_punch, false, "MCLA/NativeGfx",
                     "Diagnostic: drop the minimap's circular punch draw. On, the 220x220 "
                     "target should keep its square corners; if it looks identical with the "

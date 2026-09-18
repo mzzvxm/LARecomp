@@ -12,7 +12,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <filesystem>
 #include <algorithm>
 #include <set>
@@ -226,6 +228,7 @@ REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
 REXCVAR_DECLARE(bool, mcla_native_gfx_unsupplied_drop);
+REXCVAR_DECLARE(std::string, mcla_native_gfx_skip_ps);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_first);
@@ -1710,6 +1713,24 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                                       const_cast<uint8_t*>(base), psr.guest_address)),
                                   psr.size_bytes);
   const uint32_t ps_spec = rs.alpha_test_enable ? 2u : 0u;
+  // Drop one whole pass by its pixel-shader identity.
+  //
+  // skip_draw_first/last bisects by the draw NUMBER inside the frame, which is
+  // fine for hunting one draw among thousands of scene draws but useless for a
+  // post-processing pass: it runs once a frame at a position that moves with
+  // whatever the scene happened to submit. The shader identity does not move.
+  //
+  // Parsed once. strtoull with base 0 takes both "0xF43F..." and a decimal.
+  {
+    static uint64_t skip_ps = [] {
+      const std::string v = REXCVAR_GET(mcla_native_gfx_skip_ps);
+      return v.empty() ? 0ull : std::strtoull(v.c_str(), nullptr, 0);
+    }();
+    if (skip_ps != 0ull && ps_id == skip_ps) {
+      ++g_cap.skipped_by_range;
+      return;
+    }
+  }
   // TEMP DIAG (remove after): MULTIPLE RENDER TARGETS.
   //
   // This runtime binds exactly one RTV -- OMSetRenderTargets(1, ...) here and
