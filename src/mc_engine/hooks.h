@@ -88,6 +88,34 @@ void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11);
 void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31);
 // Diagnostic (tune_field_probe cvar): logs every tune field as it registers.
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6);
+
+// One instruction after pgStreamer::Open returns inside sub_821E2940: r1+0x60
+// is the resolved path and r3 the handle, -1 when the file was not found.
+void MCLA_StreamOpenResult(PPCRegister& r1, PPCRegister& r3);
+
+// RAGE's fatal error (sub_821BD618), which spins forever and prints nothing.
+// r3 is the format, r4 the first argument.
+void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6);
+
+// One instruction after fiDevice's plain-file open returns inside
+// sub_821CA6A8: r1+0x50 is the path and r3 the stream, zero when nothing
+// opened. Covers the tunes, cameras and garage files the streamer never sees.
+void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3);
+
+// Entry of zlibInflater's decode step; r4 is its context. Says how much the
+// decoder ate and produced, which is the only evidence a repacked resource that
+// never arrives leaves behind.
+void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4);
+
+// datResource's fixup error. r3 is the resource descriptor, r4 the message and
+// r5 the address that fit no segment. Dumps the segment table, which names the
+// resource by its sizes.
+void MCLA_ResourceFixupError(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+
+// Inside the resource segment allocator, after the table has been built: r31 is
+// the table -- the blocks a resource is actually broken into in memory.
+void MCLA_ResourceSegments(PPCRegister& r31);
+
 // Entry guard for phBoundComposite::ReleaseChildren; true skips the whole loop.
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30);
 

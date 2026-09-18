@@ -26061,6 +26061,67 @@ name = "MCLA_TuneFieldProbe"
 address = 0x824DF200
 registers = ["r3", "r4", "r5", "r6"]
 
+# One instruction after `bl sub_821BCE68` in sub_821E2940 (pgStreamer::Open, the
+# call that turns a resource path into a handle). The resolved path is still the
+# stack buffer at r1+0x60 and r3 is the handle, -1 when the archive did not have
+# the file. Pure observer, gated on the stream_trace cvar.
+[[midasm_hook]]
+name = "MCLA_StreamOpenResult"
+address = 0x821E29C4
+registers = ["r1", "r3"]
+
+# Entry of RAGE's fatal error. It never returns: it calls a handler that is null
+# in the shipped build and then spins forever, so every one of its 223 call sites
+# is a silent freeze. r3 is the printf format and r4 the first argument.
+[[midasm_hook]]
+name = "MCLA_RageFatal"
+address = 0x821BD618
+registers = ["r3", "r4", "r5", "r6"]
+
+# datResource's fixup error, the only way in to the segment table. It is called
+# once, on the way to the fatal, so it costs nothing: r3 is the resource
+# descriptor (+0 the table, +8 the name), r4 the message and r5 the address that
+# fit no segment. Dumping the table names the resource by its segment sizes and
+# shows the real entry layout, which sub_82187A38 and sub_8217D828 appear to
+# disagree about.
+[[midasm_hook]]
+name = "MCLA_ResourceFixupError"
+address = 0x821D2378
+registers = ["r3", "r4", "r5"]
+
+# 0x821E5908 in sub_821E58F0, one instruction after `bl sub_821E57B8` -- which is
+# what fills the segment table, so the entry of the function is too early and
+# sees nothing but the zeroed counts sub_821E25B0 left. Here r31 is the table:
+# two 16-bit counts, then twelve-byte entries of {address built for, destination,
+# size}. sub_821E57B8 builds it by splitting the segment into blocks of halving
+# powers of two starting at 16 pages, and the very next instructions read
+# byte_8286CE81 to decide whether all those blocks get one allocation or one
+# each. That pair is the whole question: a buffer that runs past its block's end
+# is read as if the next block followed it. Gated on segment_trace.
+[[midasm_hook]]
+name = "MCLA_ResourceSegments"
+address = 0x821E5908
+registers = ["r31"]
+
+# Entry of zlibInflater's step, the one that turns a streamed resource back into
+# bytes. r4 is its context: +0 input left, +4 input pointer, +8 input consumed so
+# far, +12 the stream length, +16 output space left, +20 output pointer. Logging
+# it on the way in says, across two consecutive calls, exactly how much the
+# decoder ate and produced -- which is the one number that separates "it needs a
+# whole frame in the buffer" from "it buffers partials". Gated on inflate_trace.
+[[midasm_hook]]
+name = "MCLA_InflateStep"
+address = 0x821D5E10
+registers = ["r3", "r4"]
+
+# One instruction after `bl sub_821BDF20` in sub_821CA6A8, fiDevice's plain-file
+# open. Every tune, camera and garage file goes through here and through none of
+# the resource streamer above. r1+0x50 is the path, r3 the stream (zero = miss).
+[[midasm_hook]]
+name = "MCLA_FileOpenResult"
+address = 0x821CA708
+registers = ["r1", "r3"]
+
 [rexcrt]
 RtlAllocateHeap = 0x82134860
 RtlFreeHeap = 0x82135150
