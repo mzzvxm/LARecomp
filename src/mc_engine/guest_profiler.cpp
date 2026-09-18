@@ -2,6 +2,8 @@
 
 #include "guest_profiler.h"
 
+#include <rex/cvar.h>
+
 #include "logging.h"
 
 #if defined(_WIN32)
@@ -14,11 +16,13 @@
 #endif
 #include <windows.h>
 #include <dbghelp.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -29,6 +33,15 @@
 #include <vector>
 
 #pragma comment(lib, "dbghelp.lib")
+
+REXCVAR_DEFINE_BOOL(guest_profile, false, "MCLA/Diag",
+    "Sample the guest thread, and photograph every thread when the game stops. "
+    "The same thing MCLA_PROFILE=1 turns on, reachable from the config file so a "
+    "session need not be launched from a shell to get it. The periodic report says "
+    "where frame time goes; the stall dump is the one that matters when a load "
+    "never finishes, because the thread the sampler follows is parked in a wait by "
+    "then and the stuck one is somebody else. Reports land in logs/profile_*.log.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mc::profiler {
 namespace {
@@ -46,6 +59,16 @@ constexpr double kReportIntervalSec = 30.0;
 // all the frames that were already fine.
 constexpr double kSlowFrameMs = 20.0;
 
+// A stall is the interesting case and the sampler cannot see it: the profiler
+// follows the guest's main thread, and when a load never finishes that thread is
+// parked in a wait while some OTHER thread is the one stuck. So once the frame
+// hook has been silent this long, every thread in the process is photographed
+// once -- suspended, instruction pointer read, resumed -- and written out with
+// symbols. One snapshot names whatever is not moving.
+constexpr double kStallSeconds = 8.0;
+
+std::atomic<int64_t> g_last_tick_ns{0};
+std::atomic<bool> g_stall_dumped{false};
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_frame_is_slow{false};
 HANDLE g_target = nullptr;
@@ -62,8 +85,10 @@ int g_report_index = 0;
 
 bool EnabledImpl() {
     const char* e = std::getenv("MCLA_PROFILE");
-    return e && *e == '1';
+    return (e && *e == '1') || REXCVAR_GET(guest_profile);
 }
+
+void DumpAllThreads(const char* reason);
 
 void SamplerLoop() {
     // Below normal so the sampler never competes with the thread it measures.
@@ -94,6 +119,21 @@ void SamplerLoop() {
             g_slow_samples.insert(g_slow_samples.end(), local_slow.begin(), local_slow.end());
             local.clear();
             local_slow.clear();
+        }
+
+        // The frame hook is the only thing that moves this, so when it stops
+        // moving the game has stopped with it -- and that is the moment worth a
+        // picture of every thread. Once only: a stalled game stays stalled.
+        const int64_t last = g_last_tick_ns.load(std::memory_order_relaxed);
+        if (last && !g_stall_dumped.load(std::memory_order_relaxed)) {
+            const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+            if (double(now - last) / 1e9 >= kStallSeconds) {
+                g_stall_dumped.store(true, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(g_mtx);
+                DumpAllThreads("STALL -- no frame for 8 s");
+            }
         }
 
         std::this_thread::sleep_for(std::chrono::microseconds(kSampleIntervalUs));
@@ -202,6 +242,67 @@ void WriteReport(const char* reason, std::vector<uint64_t> all, std::vector<uint
     std::fflush(g_log);
 }
 
+// Every thread in this process, with the function each one is sitting in.
+//
+// The sampler above follows the guest's main thread, which is the right target
+// for "what is slow" and the wrong one for "what is stuck": when a load never
+// finishes, that thread is parked in a wait and some OTHER thread is the one
+// not moving. One suspend-read-resume pass over every thread names it.
+void DumpAllThreads(const char* reason) {
+    if (!g_log) return;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        std::fprintf(g_log, "\n=== %s: cannot enumerate threads ===\n", reason);
+        std::fflush(g_log);
+        return;
+    }
+
+    const DWORD self_pid = GetCurrentProcessId();
+    const DWORD self_tid = GetCurrentThreadId();
+    HANDLE proc = GetCurrentProcess();
+    char symbuf[sizeof(SYMBOL_INFO) + 512];
+
+    std::fprintf(g_log, "\n=== %s: every thread in the process ===\n%8s  %-52s %s\n", reason,
+                 "tid", "symbol", "guest addr");
+
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != self_pid) continue;
+        if (te.th32ThreadID == self_tid) continue;  // the sampler itself
+
+        HANDLE th =
+            OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
+        if (!th) continue;
+
+        DWORD64 rip = 0;
+        if (SuspendThread(th) != DWORD(-1)) {
+            alignas(16) CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(th, &ctx)) rip = ctx.Rip;
+            ResumeThread(th);
+        }
+        CloseHandle(th);
+        if (!rip) continue;
+
+        std::memset(symbuf, 0, sizeof(symbuf));
+        auto* si = reinterpret_cast<SYMBOL_INFO*>(symbuf);
+        si->SizeOfStruct = sizeof(SYMBOL_INFO);
+        si->MaxNameLen = 512;
+        DWORD64 disp = 0;
+        const char* name = SymFromAddr(proc, rip, &disp, si) ? si->Name : "<no symbol>";
+
+        char guest[16] = "-";
+        if (const uint32_t g = GuestAddrFromSymbol(name))
+            std::snprintf(guest, sizeof(guest), "0x%08X", g);
+        std::fprintf(g_log, "%8lu  %-52s %s\n", (unsigned long)te.th32ThreadID, name, guest);
+    }
+    CloseHandle(snap);
+    std::fprintf(g_log, "\n");
+    std::fflush(g_log);
+}
+
 }  // namespace
 
 bool Enabled() {
@@ -252,6 +353,10 @@ void Tick(double frame_ms) {
                 name);
     }
 
+    g_last_tick_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count(),
+                         std::memory_order_relaxed);
     g_frame_is_slow.store(frame_ms >= kSlowFrameMs, std::memory_order_relaxed);
     g_total_frames++;
     if (frame_ms >= kSlowFrameMs) g_total_slow_frames++;
@@ -287,6 +392,7 @@ void Shutdown() {
     if (!Enabled()) return;
     if (g_running.exchange(false, std::memory_order_relaxed)) {
         if (g_sampler.joinable()) g_sampler.join();
+        if (!g_stall_dumped.load(std::memory_order_relaxed)) DumpAllThreads("shutdown");
         Report("final");
     }
     if (g_log) {
