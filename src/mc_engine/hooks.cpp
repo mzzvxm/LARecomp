@@ -28,6 +28,7 @@
 #include <rex/runtime.h>
 #include <rex/perf/counter.h>
 #include "guest_profiler.h"
+#include "draw_stats.h"
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -3231,11 +3232,16 @@ static void EnforceFrameLimit() {
 
     if (now < next_us) {
         uint64_t remaining = next_us - now;
-        if (remaining > 1500) {
-            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1500));
+        if (remaining > 2000) {
+            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1200));
         }
+        // Sub-millisecond spin with YieldProcessor() (x86 PAUSE) to hit the exact
+        // microsecond deadline. Replacing std::this_thread::yield() eliminates
+        // Windows scheduler stalls that cause 1-2 ms wake-up jitter.
         while (now_us() < next_us) {
-            std::this_thread::yield();
+#if defined(_WIN32)
+            YieldProcessor();
+#endif
         }
     }
 
@@ -3309,36 +3315,64 @@ CounterAccum g_ctr{};
 void SampleCounters() {
     using rex::perf::CounterId;
     using rex::perf::GetCounter;
-    auto add = [](uint64_t& dst, CounterId id) {
-        const int64_t v = GetCounter(id);
-        if (v > 0) dst += static_cast<uint64_t>(v);
+
+    static int64_t s_prev_counters[static_cast<size_t>(CounterId::kCount)];
+    static bool s_initialized = false;
+    if (!s_initialized) {
+        for (size_t i = 0; i < static_cast<size_t>(CounterId::kCount); ++i) {
+            s_prev_counters[i] = -1;
+        }
+        s_initialized = true;
+    }
+
+    auto add_delta = [](uint64_t& dst, CounterId id) {
+        const size_t idx = static_cast<size_t>(id);
+        if (idx >= static_cast<size_t>(CounterId::kCount)) return;
+        const int64_t cur = GetCounter(id);
+        const int64_t prev = s_prev_counters[idx];
+        s_prev_counters[idx] = cur;
+
+        if (prev < 0) {
+            // First frame baseline: record initial value without adding full lifetime elapsed
+            return;
+        }
+        if (cur >= prev) {
+            dst += static_cast<uint64_t>(cur - prev);
+        } else if (cur >= 0) {
+            // Counter was reset by runtime between frames
+            dst += static_cast<uint64_t>(cur);
+        }
     };
-    add(g_ctr.gpu_submit_us,          CounterId::kGpuSubmitTimeUs);
-    add(g_ctr.gpu_draw_us,            CounterId::kGpuDrawTimeUs);
-    add(g_ctr.gpu_fencewait_us,       CounterId::kGpuFenceWaitTimeUs);
-    add(g_ctr.gpu_resolve_us,         CounterId::kGpuResolveTimeUs);
-    add(g_ctr.gpu_pipeline_us,        CounterId::kGpuPipelineTimeUs);
-    add(g_ctr.gpu_pipeline_create_us, CounterId::kGpuPipelineCreateTimeUs);
-    add(g_ctr.gpu_pipeline_create_n,  CounterId::kGpuPipelineCreateCount);
-    add(g_ctr.gpu_texupload_us,       CounterId::kGpuTextureUploadTimeUs);
-    add(g_ctr.gpu_texupload_n,        CounterId::kGpuTextureUploadCount);
+
+    add_delta(g_ctr.gpu_submit_us,          CounterId::kGpuSubmitTimeUs);
+    add_delta(g_ctr.gpu_draw_us,            CounterId::kGpuDrawTimeUs);
+    add_delta(g_ctr.gpu_fencewait_us,       CounterId::kGpuFenceWaitTimeUs);
+    add_delta(g_ctr.gpu_resolve_us,         CounterId::kGpuResolveTimeUs);
+    add_delta(g_ctr.gpu_pipeline_us,        CounterId::kGpuPipelineTimeUs);
+    add_delta(g_ctr.gpu_pipeline_create_us, CounterId::kGpuPipelineCreateTimeUs);
+    add_delta(g_ctr.gpu_pipeline_create_n,  CounterId::kGpuPipelineCreateCount);
+    add_delta(g_ctr.gpu_texupload_us,       CounterId::kGpuTextureUploadTimeUs);
+    add_delta(g_ctr.gpu_texupload_n,        CounterId::kGpuTextureUploadCount);
     // The guest CPU blocking on the GPU. If frame time is unaccounted for and
     // nothing is being drawn, this is where to look first.
-    add(g_ctr.gpu_waitregmem_us,      CounterId::kGpuWaitRegMemTimeUs);
-    add(g_ctr.gpu_waitregmem_n,       CounterId::kGpuWaitRegMemCount);
-    add(g_ctr.gpu_cmdwait_us,         CounterId::kGpuCommandWaitTimeUs);
+    add_delta(g_ctr.gpu_waitregmem_us,      CounterId::kGpuWaitRegMemTimeUs);
+    add_delta(g_ctr.gpu_waitregmem_n,       CounterId::kGpuWaitRegMemCount);
+    add_delta(g_ctr.gpu_cmdwait_us,         CounterId::kGpuCommandWaitTimeUs);
     // Raw guest CPU churn: a collapse with flat GPU counters and a rising
     // dispatch count is guest code, not the emulator.
-    add(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
-    add(g_ctr.interrupts,             CounterId::kInterruptDispatches);
-    add(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
-    add(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
-    add(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
-    add(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
-    add(g_ctr.draws,                  CounterId::kDrawCalls);
-    add(g_ctr.verts,                  CounterId::kVerticesProcessed);
-    add(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
-    add(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+    add_delta(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
+    add_delta(g_ctr.interrupts,             CounterId::kInterruptDispatches);
+    add_delta(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
+    add_delta(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
+    add_delta(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
+    add_delta(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
+    add_delta(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
+    add_delta(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+
+    // Guest draw stats: recorded directly at D3DDevice draw entrypoints, ensuring accurate
+    // counts even when SDK REXGLUE_ENABLE_PERF_COUNTERS is compiled out.
+    g_ctr.draws += mcla::draw_stats::g_draw_calls.exchange(0, std::memory_order_relaxed);
+    g_ctr.verts += mcla::draw_stats::g_vertices.exchange(0, std::memory_order_relaxed);
 }
 
 // GPU interrupt probe. Diagnostic only: everything below is gated on the timing

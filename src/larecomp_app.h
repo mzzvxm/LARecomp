@@ -203,6 +203,9 @@ class LarecompApp : public rex::ReXApp {
     // Allows physical GPU execution to overlap with CPU command recording and reduces queue bubbles.
     SetFlag("d3d12_submit_on_primary_buffer_end", "true");
 
+    // BadassBaboon: Fast polling for the GPU vsync worker thread, eliminating 1ms coarse sleep stalls.
+    SetFlag("gpu_vsync_fast_poll", "true");
+
     const char* fetch = getenv("MCLA_ALLOW_INVALID_FETCH");
     SetFlag("gpu_allow_invalid_fetch_constants", (fetch && *fetch) ? fetch : "true");
 
