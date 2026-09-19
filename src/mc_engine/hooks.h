@@ -29,6 +29,7 @@ void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28);
 bool Patch_EdramLimit(PPCRegister& r11);
+bool Patch_FenceSpinThrottle();
 bool Patch_DebugCamGate();
 void Patch_DebugCam(PPCRegister& r3);
 

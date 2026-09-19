@@ -25436,6 +25436,15 @@ name = "Patch_EdramLimit"
 registers = ["r11"]
 jump_address_on_true = 0x82410E48
 
+# Throttle the D3D poll predicate / fence wait spin loop (sub_82412F98).
+# The guest executes 32 PowerPC pipeline-throttle NOPs (mr r31, r31) in a tight
+# loop. On host x86, this burns ~40% of the Render Thread while waiting for GPU Commands.
+# This hook yields the host processor and jumps past the loop to 0x82412FD8.
+[[midasm_hook]]
+address = 0x82412FB0
+name = "Patch_FenceSpinThrottle"
+jump_address_on_true = 0x82412FD8
+
 # RAGE debug camera selector — camera update (sub_822C0320) loads the dcam
 # manager from camsys+0x33C into r3 (null-checked at 0x822C0660) and calls its
 # per-frame update (sub_82502E18) at 0x822C0668. Hook fires right before the

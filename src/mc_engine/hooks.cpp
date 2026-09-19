@@ -1966,6 +1966,30 @@ bool Patch_EdramLimit(PPCRegister& r11) {
     return r11.u64 <= 4096;
 }
 
+// BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.
+//
+// In sub_82412F98 (called by D3DDevice_BlockOnFence at 0x82411F34 and sub_82411180),
+// the guest executes a tight loop of 32 `mr r31, r31` instructions meant to pause
+// PowerPC in-order hardware execution pipelines.
+// On host x86, those NOPs compile to an unconstrained busy-wait loop that burns ~40%
+// of the Render Thread (XThread4918 at ~98% CPU) while waiting for GPU Commands.
+//
+// We replace the spin with host CPU yielding:
+// - Low spin counts: YieldProcessor() (x86 PAUSE) to keep wake latency minimal.
+// - Extended spin: SwitchToThread() yields the CPU quantum directly to GPU Commands.
+// Returning true jumps to 0x82412FD8, bypassing the 32 NOP instructions.
+bool Patch_FenceSpinThrottle() {
+#if defined(_WIN32)
+    static thread_local uint32_t s_spin_count = 0;
+    YieldProcessor();
+    if (++s_spin_count >= 16) {
+        SwitchToThread();
+        s_spin_count = 0;
+    }
+#endif
+    return true;
+}
+
 static float ReadGuestF32(const uint8_t* base, uint32_t addr);
 static void WriteGuestF32(uint8_t* base, uint32_t addr, float val);
 static void ApplyAmbientDensityTuning();
@@ -4656,6 +4680,7 @@ bool Patch_AspectRatio_822E5E68(PPCRegister& f12) { return false; }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) { return false; }
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {}
 bool Patch_EdramLimit(PPCRegister& r11) { return false; }
+bool Patch_FenceSpinThrottle() { return false; }
 bool Patch_DebugCamGate() { return false; }
 void Patch_DebugCam(PPCRegister& r3) {}
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
