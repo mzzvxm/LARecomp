@@ -247,6 +247,16 @@ struct Resolved {
 
 class Resolver {
   public:
+    Resolver() {
+        // InstallCrashLogger calls SymInitialize with fInvadeProcess, which
+        // enumerates the modules loaded *at that moment*. It runs from the app
+        // constructor, long before Runtime::Setup loads the GPU plugin, so
+        // rexgpu-xenos is never registered with dbghelp and every sample in it
+        // resolved as <no symbol> - over a third of the GPU Commands thread.
+        // Refreshing here picks up everything loaded since.
+        SymRefreshModuleList(GetCurrentProcess());
+    }
+
     const Resolved& operator()(uint64_t addr) {
         auto it = cache_.find(addr);
         if (it != cache_.end()) return it->second;
