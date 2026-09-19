@@ -25260,7 +25260,7 @@ registers = ["r7", "r8", "r25", "r28"]
 [[midasm_hook]]
 address = 0x82410E34
 name = "Patch_EdramLimit"
-registers = ["r11"]
+registers = ["r3", "r30", "r11"]
 jump_address_on_true = 0x82410E48
 
 # Throttle the D3D poll predicate / fence wait spin loop (sub_82412F98).

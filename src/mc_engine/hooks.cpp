@@ -1961,9 +1961,15 @@ void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCReg
 // virtual EDRAM is 4096 tiles and the guest surface header keeps 12-bit base
 // fields (max 4095), so allocations up to 4096 are safe. r11 = base + size;
 // returning true jumps to the success branch (0x82410E48).
-bool Patch_EdramLimit(PPCRegister& r11) {
+bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
     if (!REXCVAR_GET(single_tile)) return false;
-    return r11.u64 <= 4096;
+    const uint32_t base = static_cast<uint32_t>(r3.u32);
+    const uint32_t size = static_cast<uint32_t>(r30.u32);
+    const uint32_t end  = static_cast<uint32_t>(r11.u32);
+    MC_INFO("[edram] CreateSurface: base={} size={} end={}", base, size, end);
+    // Base tile must fit in the 12-bit hardware register field (max 4095).
+    // The guest allocator table (sub_824252A8) supports up to 6144 tiles total.
+    return base < 4096 && end <= 6144;
 }
 
 // BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.
@@ -4679,7 +4685,7 @@ bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12) { return false; }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) { return false; }
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {}
-bool Patch_EdramLimit(PPCRegister& r11) { return false; }
+bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) { return false; }
 bool Patch_FenceSpinThrottle() { return false; }
 bool Patch_DebugCamGate() { return false; }
 void Patch_DebugCam(PPCRegister& r3) {}
