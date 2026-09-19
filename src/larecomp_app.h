@@ -102,6 +102,7 @@ class LarecompApp : public rex::ReXApp {
         "d3d12_bindless", "d3d12_readback_resolve", "readback_resolve",
         "readback_memexport_fast", "d3d12_pipeline_creation_threads",
         "d3d12_allow_variable_refresh_rate_and_tearing", "d3d12_tiled_shared_memory",
+        "d3d12_submit_on_primary_buffer_end",
         "render_target_path_d3d12", "texture_cache_memory_limit_soft",
         "texture_cache_memory_limit_hard",
         "texture_cache_memory_limit_render_to_texture",
@@ -164,24 +165,43 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void ApplyGpuFlags() {
-    // BadassBaboon's Recomp Adjustments: Increased texture cache limits (1536MB soft / 2048MB hard / 64MB RTT)
-    // to prevent premature eviction of CTX1 normal maps and sector texture dictionaries during high-speed driving.
+    // BadassBaboon's Recomp Adjustments: Texture cache memory limits.
+    // Respect user-specified values from larecomp.toml or MCLA_TEX_* env overrides.
+    // If not set, default to a safe 2560MB soft / 4096MB hard baseline suitable for 6GB-8GB+ GPUs.
     const char* tex_soft = getenv("MCLA_TEX_SOFT");
-    SetFlag("texture_cache_memory_limit_soft", (tex_soft && *tex_soft) ? tex_soft : "1536");
+    if (tex_soft && *tex_soft) {
+      SetFlag("texture_cache_memory_limit_soft", tex_soft);
+    } else if (rex::cvar::GetFlagByName("texture_cache_memory_limit_soft").empty()) {
+      SetFlag("texture_cache_memory_limit_soft", "2560");
+    }
 
     const char* tex_hard = getenv("MCLA_TEX_HARD");
-    SetFlag("texture_cache_memory_limit_hard", (tex_hard && *tex_hard) ? tex_hard : "2048");
+    if (tex_hard && *tex_hard) {
+      SetFlag("texture_cache_memory_limit_hard", tex_hard);
+    } else if (rex::cvar::GetFlagByName("texture_cache_memory_limit_hard").empty()) {
+      SetFlag("texture_cache_memory_limit_hard", "4096");
+    }
 
     const char* tex_rtt = getenv("MCLA_TEX_RTT");
-    SetFlag("texture_cache_memory_limit_render_to_texture", (tex_rtt && *tex_rtt) ? tex_rtt : "64");
+    if (tex_rtt && *tex_rtt) {
+      SetFlag("texture_cache_memory_limit_render_to_texture", tex_rtt);
+    } else if (rex::cvar::GetFlagByName("texture_cache_memory_limit_render_to_texture").empty()) {
+      SetFlag("texture_cache_memory_limit_render_to_texture", "64");
+    }
 
-    // anisotropic_override: 5 = 16x
-    SetFlag("anisotropic_override", "5");
+    // anisotropic_override: default to 5 (16x) if not explicitly configured in larecomp.toml
+    if (rex::cvar::GetFlagByName("anisotropic_override").empty()) {
+      SetFlag("anisotropic_override", "5");
+    }
 
     SetFlag("async_shader_compilation", "true");
     SetFlag("d3d12_bindless", "true");
     SetFlag("d3d12_readback_resolve", "false");
     SetFlag("readback_memexport_fast", "true");
+
+    // BadassBaboon: Asynchronously submit D3D12 command lists as primary PM4 buffers finish.
+    // Allows physical GPU execution to overlap with CPU command recording and reduces queue bubbles.
+    SetFlag("d3d12_submit_on_primary_buffer_end", "true");
 
     const char* fetch = getenv("MCLA_ALLOW_INVALID_FETCH");
     SetFlag("gpu_allow_invalid_fetch_constants", (fetch && *fetch) ? fetch : "true");
