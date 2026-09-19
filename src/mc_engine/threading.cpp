@@ -15,6 +15,7 @@
 #include <timeapi.h>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
 #endif
@@ -47,6 +48,22 @@ void DisableHighResTimer() {
 #if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
 
 // Sleep (0x8244FEC0)
+//
+// This used to spin the entire remainder of every sleep on YieldProcessor,
+// re-reading steady_clock::now() each iteration. With ms == 1 it never slept
+// at all: SwitchToThread, then a full millisecond of spinning. Since
+// steady_clock::now() is QueryPerformanceCounter, a single guest thread
+// looping on Sleep(1) pinned a whole core. Measured on the thread that sat at
+// 99.7% of a core for an entire session: 68% of its samples in
+// RtlQueryPerformanceCounter and 25% in this hook, doing no game work.
+//
+// timeBeginPeriod(1) is already set process-wide, so sleep_for is accurate to
+// about a millisecond on its own and the spin was buying very little. The tail
+// spin is kept but bounded, so a late wake-up is still tightened up without
+// turning a sleep into a busy-wait. MCLA_SLEEP_SPIN=1 restores the old
+// unbounded behaviour for comparison.
+constexpr auto kMaxSleepSpin = std::chrono::microseconds(300);
+
 u32 Sleep_hook(u32 ms) {
     mc::EnableHighResTimer();
 
@@ -55,18 +72,36 @@ u32 Sleep_hook(u32 ms) {
         return 0;
     }
 
-    auto target = std::chrono::steady_clock::now()
-                + std::chrono::milliseconds(uint32_t(ms));
+    static const bool legacy_spin = [] {
+        const char* e = std::getenv("MCLA_SLEEP_SPIN");
+        return e && *e == '1';
+    }();
 
-    if (uint32_t(ms) >= 2) {
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(uint32_t(ms)) - std::chrono::microseconds(1500));
-    } else {
-        SwitchToThread();
+    const auto target = std::chrono::steady_clock::now()
+                      + std::chrono::milliseconds(uint32_t(ms));
+
+    if (legacy_spin) {
+        if (uint32_t(ms) >= 2) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(uint32_t(ms)) - std::chrono::microseconds(1500));
+        } else {
+            SwitchToThread();
+        }
+        while (std::chrono::steady_clock::now() < target)
+            YieldProcessor();
+        return 0;
     }
 
-    while (std::chrono::steady_clock::now() < target)
+    // Sleep for all but a short tail, then spin at most kMaxSleepSpin to land
+    // on the deadline. A 1 ms request sleeps rather than spinning.
+    const auto lead = std::chrono::milliseconds(uint32_t(ms)) - kMaxSleepSpin;
+    if (lead > std::chrono::microseconds(0)) std::this_thread::sleep_for(lead);
+
+    const auto spin_deadline = std::chrono::steady_clock::now() + kMaxSleepSpin;
+    while (std::chrono::steady_clock::now() < target) {
+        if (std::chrono::steady_clock::now() >= spin_deadline) break;
         YieldProcessor();
+    }
 
     return 0;
 }
