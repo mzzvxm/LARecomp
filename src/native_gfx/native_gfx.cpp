@@ -431,6 +431,19 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "resolve on every slot, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
+                      "Consecutive frames of being written to after which a geometry region "
+                      "comes off the page write watch, or 0 to keep every region watched. The "
+                      "watch costs an access violation per guest write, taken through the memory "
+                      "system's global lock, plus a VirtualProtect over three heaps to re-arm "
+                      "after every upload -- measured at ~300 faults and ~360 re-uploads a "
+                      "frame, about 9% of the render thread, to report writes the next frame "
+                      "was going to re-upload anyway. An unwatched region is checked by the "
+                      "sampled block hash instead, once a frame over the blocks a draw reads, "
+                      "so unchanged bytes still cost no upload; four unchanged frames put it "
+                      "back under the watch.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_state_cache, true, "MCLA/NativeGfx",
                     "Send a draw only the pipeline state that changed since the last draw on the "
                     "same command list: descriptor heaps, root signature, the four descriptor "

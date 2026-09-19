@@ -21,6 +21,7 @@
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
@@ -257,8 +258,11 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   region.state = barrier.Transition.StateAfter;
   region.dirty = false;
   // The watch is consumed when it fires, so it has to be re-armed after every
-  // upload or the region would only ever be invalidated once.
-  WatchRegion(region);
+  // upload or the region would only ever be invalidated once. A streaming
+  // region deliberately stays unwatched: it is re-checked by hash instead.
+  if (!region.streaming) {
+    WatchRegion(region);
+  }
   return true;
 }
 
@@ -321,8 +325,10 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
   // instead of a corrupt draw. Once per region per frame: a region bound by
   // twenty draws is hashed once, and only regions something actually binds are
   // touched at all.
-  if (region && !region->dirty && REXCVAR_GET(mcla_native_gfx_verify_regions) &&
-      !region->block_hash.empty()) {
+  // For a streaming region this is not a backstop but the only thing that
+  // reports the guest's writes, so it runs whether or not the backstop is on.
+  if (region && !region->dirty && !region->block_hash.empty() &&
+      (region->streaming || REXCVAR_GET(mcla_native_gfx_verify_regions))) {
     // Only the blocks this request actually reads, and each at most once a
     // frame. Verifying the whole region was correct and cost 25 MB of hashing
     // per frame (wall ~55 ms -> ~150 ms); a draw cannot be corrupted by bytes
@@ -334,11 +340,13 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
           std::min<uint32_t>((rel + size - 1u) / kVerifyBlock,
                              uint32_t(region->block_hash.size()) - 1u);
       const uint32_t frame32 = uint32_t(frame_) | 1u;  // 0 means "never checked"
+      bool checked_any = false;
       for (uint32_t b = first; b <= last; ++b) {
         if (region->block_frame[b] == frame32) {
           continue;
         }
         region->block_frame[b] = frame32;
+        checked_any = true;
         const uint32_t off = b * kVerifyBlock;
         const uint32_t len = std::min(kVerifyBlock, region->size - off);
         stats_.verify_bytes += 512u;  // eight 64-byte slices, not the block
@@ -347,6 +355,28 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
           region->dirty = true;
           ++stats_.verify_catches;
           break;
+        }
+      }
+      // A streaming region that comes back unchanged often enough is not
+      // streaming any more: put it back under the watch, which costs one
+      // VirtualProtect instead of a hash per frame. Only frames where blocks
+      // were really re-hashed count, so a second draw binding the same blocks
+      // cannot inflate the streak.
+      if (region->streaming && checked_any) {
+        if (region->dirty) {
+          region->clean_streak = 0;
+        } else {
+          ++stats_.streaming_clean;
+          if (++region->clean_streak >= 4u) {
+            region->streaming = false;
+            region->clean_streak = 0;
+            region->dirty_streak = 0;
+            WatchRegion(*region);
+            ++stats_.streaming_demotions;
+            if (stats_.streaming_regions) {
+              --stats_.streaming_regions;
+            }
+          }
         }
       }
     }
@@ -736,10 +766,25 @@ void BufferCache::ApplyPendingInvalidations() {
                                });
     for (; it != region_index_.end() && it->physical_lo < hi; ++it) {
       ++stats_.inval_scan_steps;
-      if (!it->region->dirty) {
+      Region& r = *it->region;
+      if (!r.dirty) {
         ++stats_.regions_dirtied;
       }
-      it->region->dirty = true;
+      r.dirty = true;
+      // Consecutive frames of being written to. A region that crosses the
+      // threshold comes off the watch (see Region::streaming); the watch
+      // itself is simply not re-armed after its next upload.
+      if (r.dirty_frame != frame_) {
+        r.dirty_streak = (r.dirty_frame + 1 == frame_) ? r.dirty_streak + 1u : 1u;
+        r.dirty_frame = frame_;
+        const uint32_t threshold = REXCVAR_GET(mcla_native_gfx_streaming_frames);
+        if (!r.streaming && threshold != 0 && r.dirty_streak >= threshold) {
+          r.streaming = true;
+          r.clean_streak = 0;
+          ++stats_.streaming_promotions;
+          ++stats_.streaming_regions;
+        }
+      }
     }
   }
 }

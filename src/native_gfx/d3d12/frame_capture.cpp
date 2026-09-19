@@ -5429,6 +5429,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      "| inval thunk=%llu/%lluKB unlockKB=%llu dirtied=%llu"
                      "| geomphase ucode=%.1f decl=%.1f match=%.1f idx=%.1f res=%.1f ms"
                      "| invscan steps=%llu regions=%llu"
+                     "| stream now=%llu prom=%llu dem=%llu clean=%llu"
                      "| tex hit=%llu up=%llu rt=%llu evict=%llu verify=%llu CAUGHT=%llu"
                      " texinv=%llu/%llu/%llu"
                      "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
@@ -5477,6 +5478,15 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      gp[4] / 1000.0 - prev_gp[4] / 1000.0,
                      D(g_buffer_stats_for_report.inval_scan_steps, prev_buf.inval_scan_steps),
                      (unsigned long long)g_buffer_stats_for_report.region_count,
+                     // Write-watch policy: regions off the watch right now, the
+                     // moves each way this window, and the frames an unwatched
+                     // region came back unchanged (an upload not paid for).
+                     (unsigned long long)g_buffer_stats_for_report.streaming_regions,
+                     D(g_buffer_stats_for_report.streaming_promotions,
+                       prev_buf.streaming_promotions),
+                     D(g_buffer_stats_for_report.streaming_demotions,
+                       prev_buf.streaming_demotions),
+                     D(g_buffer_stats_for_report.streaming_clean, prev_buf.streaming_clean),
                      D(g_texture_stats_for_report.hits, prev_tex.hits),
                      D(g_texture_stats_for_report.uploads, prev_tex.uploads),
                      D(g_texture_stats_for_report.render_target_hits,

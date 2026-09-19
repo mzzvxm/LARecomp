@@ -106,6 +106,13 @@ class BufferCache {
     uint64_t thunk_bytes = 0;
     uint64_t unlock_bytes = 0;        // bytes covered by exact unlock ranges
     uint64_t regions_dirtied = 0;     // regions actually flipped to dirty
+    // Write-watch policy: regions currently off the watch, and the moves in
+    // each direction. `streaming_clean` counts the frames a streaming region
+    // came back byte-identical, i.e. an upload the watch would have charged.
+    uint64_t streaming_regions = 0;
+    uint64_t streaming_promotions = 0;
+    uint64_t streaming_demotions = 0;
+    uint64_t streaming_clean = 0;
     // InvalidateRange walks EVERY region for EVERY pending range. If the
     // region count is in the thousands and the watch fires hundreds of times a
     // frame, this is a quadratic scan sitting in the middle of the draw path,
@@ -225,6 +232,25 @@ class BufferCache {
     // block bound by twenty draws is checked once a frame.
     std::vector<uint64_t> block_hash;
     std::vector<uint32_t> block_frame;
+
+    // Write-watch policy. A region the guest rewrites every frame earns
+    // nothing from the watch: every guest write to it is an access violation
+    // taken through the memory system's global lock, and every re-upload
+    // re-arms the watch with a VirtualProtect over three heaps. Measured in
+    // gameplay: ~300 faults and ~360 re-uploads a frame, together about 9% of
+    // the render thread, to be told something the next frame was going to
+    // re-upload anyway.
+    //
+    // After mcla_native_gfx_streaming_frames consecutive frames of being
+    // dirtied, a region stops being re-armed. What decides whether it changed
+    // is then the sampled block hash the verify backstop already computes --
+    // once a frame, over the blocks the draw actually reads -- so an unchanged
+    // region still costs no upload, and one that goes quiet is handed back to
+    // the watch.
+    uint32_t dirty_streak = 0;
+    uint64_t dirty_frame = 0;
+    uint32_t clean_streak = 0;
+    bool streaming = false;
   };
   static constexpr uint32_t kVerifyBlock = 4096;
 
