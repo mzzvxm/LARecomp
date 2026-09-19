@@ -601,6 +601,7 @@ void BufferCache::NoteGuestWrite(uint32_t guest_address, uint32_t size) {
   }
   std::lock_guard<std::mutex> lock(invalidation_mutex_);
   pending_invalidations_.emplace_back(guest_address, size);
+  pending_flag_.store(true, std::memory_order_release);
   ++stats_.unlock_invalidations;
   stats_.unlock_bytes += size;
 }
@@ -617,6 +618,7 @@ std::pair<uint32_t, uint32_t> BufferCache::InvalidationThunk(void* context_ptr,
     // this only records the range; Resolve applies it.
     std::lock_guard<std::mutex> lock(self->invalidation_mutex_);
     self->pending_invalidations_.emplace_back(physical_address_start, length);
+    self->pending_flag_.store(true, std::memory_order_release);
     ++self->stats_.thunk_ranges;
     self->stats_.thunk_bytes += length;
   }
@@ -670,13 +672,21 @@ void BufferCache::WatchRegion(const Region& region) {
 
 void BufferCache::ApplyPendingInvalidations() {
   stats_.region_count = regions_[0].size() + regions_[1].size();
-  std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  // Nothing queued, which is most calls: skip the mutex. The flag is written
+  // under the same mutex as the queue, so a range queued after this load is
+  // simply applied by the next Resolve.
+  if (!pending_flag_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::vector<std::pair<uint32_t, uint32_t>>& ranges = drain_ranges_;
+  ranges.clear();
   {
     std::lock_guard<std::mutex> lock(invalidation_mutex_);
-    if (pending_invalidations_.empty()) {
-      return;
-    }
     ranges.swap(pending_invalidations_);
+    pending_flag_.store(false, std::memory_order_relaxed);
+  }
+  if (ranges.empty()) {
+    return;
   }
 
   // This used to be `for (range) InvalidateRange(range)`, and InvalidateRange
@@ -692,7 +702,8 @@ void BufferCache::ApplyPendingInvalidations() {
   // against physical addresses -- the map is keyed by guest base while the
   // comparison is physical, and guest->physical is not a plain mask, so using
   // the map's own ordering to narrow the walk would be wrong.
-  std::vector<std::pair<uint64_t, uint64_t>> merged;
+  std::vector<std::pair<uint64_t, uint64_t>>& merged = drain_merged_;
+  merged.clear();
   merged.reserve(ranges.size());
   for (const auto& [start, length] : ranges) {
     const uint64_t lo = start & 0x1FFFFFFFu;

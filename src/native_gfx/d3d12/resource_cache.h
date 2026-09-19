@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <map>
+#include <atomic>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -270,6 +271,13 @@ class BufferCache {
   // runs on whichever thread performed the write.
   std::mutex invalidation_mutex_;
   std::vector<std::pair<uint32_t, uint32_t>> pending_invalidations_;
+  // Set under invalidation_mutex_ whenever a range is queued, cleared by the
+  // drain, so Resolve -- twice per draw -- skips the mutex when nothing is
+  // queued. Same scheme as TextureCache.
+  std::atomic<bool> pending_flag_{false};
+  // Reused by every drain instead of allocated per call.
+  std::vector<std::pair<uint32_t, uint32_t>> drain_ranges_;
+  std::vector<std::pair<uint64_t, uint64_t>> drain_merged_;
   void* invalidation_handle_ = nullptr;
   // Bumped by ReportPeriodic, which the frame boundary already calls once a
   // frame; only used to throttle the re-verification to once per region.
