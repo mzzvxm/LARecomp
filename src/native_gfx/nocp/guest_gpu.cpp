@@ -74,6 +74,16 @@ struct State {
   std::atomic<uint32_t> idle_spin{0};
   std::atomic<uint64_t> ring_publishes{0};
   std::atomic<uint32_t> last_consumed{0};
+  // The ring allocator's whole wait condition, sampled from the same read that
+  // publishes it. sub_82411180 spins while the writeback's low two bits
+  // disagree with the guest's own wrap counter or while the position it wants
+  // is past what has been consumed, so without these four the report cannot
+  // tell "the guest is waiting on the ring" from "the guest is waiting on
+  // something else entirely".
+  std::atomic<uint32_t> ring_wrap{0};       // dev+14920 & 3
+  std::atomic<uint32_t> ring_end{0};        // dev+14908, the command buffer end
+  std::atomic<uint32_t> wb_fence{0};        // *(block + 0), the retired fence
+  std::atomic<uint32_t> wb_consumed{0};     // *(block + 4), ring consumption
   std::atomic<uint32_t> write_ptr{0};
   std::atomic<uint32_t> kick_limit{0};
   std::atomic<bool> installed{false};
@@ -229,6 +239,13 @@ void RetireRingConsumption(uint8_t* base, uint32_t device_va) {
   }
   const uint32_t wrap = load_be(device_va + 14920) & 3u;
   const uint32_t buffer_end = load_be(device_va + 14908);
+  // Sampled before every early return: the frames where nothing is published
+  // are exactly the frames a stuck guest is spinning through, so those are the
+  // ones whose values the report has to carry.
+  s.ring_wrap.store(wrap, std::memory_order_relaxed);
+  s.ring_end.store(buffer_end, std::memory_order_relaxed);
+  s.wb_fence.store(load_be(block + 0), std::memory_order_relaxed);
+  s.wb_consumed.store(load_be(block + 4), std::memory_order_relaxed);
   if (!buffer_end) {
     return;
   }
@@ -398,11 +415,16 @@ uint64_t FlipCount() { return state().flips.load(std::memory_order_relaxed); }
 
 std::string Summary() {
   State& s = state();
-  char buf[224];
+  // 224 bytes truncated the line right where `last=` starts, and that field is
+  // the name of the hook a stuck guest is parked in -- the one thing a freeze
+  // report exists to say. It was measured cut to "last=D3D", then "last=D",
+  // shrinking as the vblank count grew digits.
+  char buf[512];
   std::snprintf(buf, sizeof(buf),
                 "installed=%d vblanks=%llu flips=%llu front_buffer=%08X ring_kicks=%llu | "
                 "fence issued=%u retired=%u published=%llu | wptr=%08X limit=%08X "
-                "idle_spin=%u | ring pub=%llu | hooks=%llu frames=%llu swaps=%llu last=%s",
+                "idle_spin=%u | ring pub=%llu wrap=%u end=%08X wb_fence=%08X wb_consumed=%08X | "
+                "hooks=%llu frames=%llu swaps=%llu last=%s",
                 s.installed.load(std::memory_order_relaxed) ? 1 : 0,
                 (unsigned long long)s.vblanks.load(std::memory_order_relaxed),
                 (unsigned long long)s.flips.load(std::memory_order_relaxed),
@@ -415,6 +437,10 @@ std::string Summary() {
                 s.kick_limit.load(std::memory_order_relaxed),
                 s.idle_spin.load(std::memory_order_relaxed),
                 (unsigned long long)s.ring_publishes.load(std::memory_order_relaxed),
+                s.ring_wrap.load(std::memory_order_relaxed),
+                s.ring_end.load(std::memory_order_relaxed),
+                s.wb_fence.load(std::memory_order_relaxed),
+                s.wb_consumed.load(std::memory_order_relaxed),
                 (unsigned long long)HookCallCount(), (unsigned long long)FrameEndCount(),
                 (unsigned long long)SwapCount(), LastHookName());
   return std::string(buf);
