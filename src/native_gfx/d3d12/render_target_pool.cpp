@@ -311,6 +311,10 @@ void RenderTargetPool::Shutdown(D3D12Context& context) {
     }
   }
   resolved_.clear();
+  for (auto& spare : resolved_spares_) {
+    if (spare.copy.resource) context.DeferRelease(spare.copy.resource.Detach());
+  }
+  resolved_spares_.clear();
   for (auto& [key, s] : msaa_scratch_) {
     if (s.resource) context.DeferRelease(s.resource.Detach());
   }
@@ -321,7 +325,7 @@ RenderTargetPool::Census RenderTargetPool::TakeCensus(ID3D12Device* device) cons
   Census c;
   c.targets = targets_.size();
   c.target_bytes = stats_.bytes_allocated;
-  c.resolved = resolved_.size();
+  c.resolved = resolved_.size() + resolved_spares_.size();
   c.orphaned = orphaned_resources_.size();
   c.pending_copies = pending_copies_.size();
   c.gpu_produced = gpu_produced_.size();
@@ -334,7 +338,55 @@ RenderTargetPool::Census RenderTargetPool::TakeCensus(ID3D12Device* device) cons
       c.resolved_bytes += device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
     }
   }
+  for (const auto& spare : resolved_spares_) {
+    if (device && spare.copy.resource) {
+      const D3D12_RESOURCE_DESC desc = spare.copy.resource->GetDesc();
+      c.resolved_bytes += device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+    }
+  }
   return c;
+}
+
+void RenderTargetPool::StashResolvedVariant(uint32_t address, ResolvedCopy&& copy) {
+  const bool keep = REXCVAR_GET(mcla_native_gfx_resolve_variants) && copy.resource && copy.owned;
+  if (!keep) {
+    // Exactly the old retirement: an owned copy and any packed twin go to the
+    // fence-gated release, a borrowed resource is just dropped with the entry.
+    if (copy.resource && copy.owned) {
+      orphaned_resources_.push_back(std::move(copy.resource));
+    }
+    return;
+  }
+  if (resolved_spares_.size() >= kMaxResolvedSpares) {
+    ResolvedSpare& oldest = resolved_spares_.front();
+    if (oldest.copy.resource) {
+      orphaned_resources_.push_back(std::move(oldest.copy.resource));
+    }
+    resolved_spares_.erase(resolved_spares_.begin());
+    ++stats_.resolve_variants_evicted;
+  }
+  // Its state fields travel with it: nothing touches a spare, so the state it
+  // was retired in is still the state it is in.
+  resolved_spares_.push_back(ResolvedSpare{address, std::move(copy)});
+}
+
+bool RenderTargetPool::TakeResolvedVariant(uint32_t address, uint32_t width, uint32_t height,
+                                           uint32_t dxgi_format, bool from_depth,
+                                           ResolvedCopy* out) {
+  if (!REXCVAR_GET(mcla_native_gfx_resolve_variants)) {
+    return false;
+  }
+  for (auto it = resolved_spares_.begin(); it != resolved_spares_.end(); ++it) {
+    const ResolvedCopy& c = it->copy;
+    if (it->address == address && c.width == width && c.height == height &&
+        c.dxgi_format == dxgi_format && c.from_depth == from_depth) {
+      *out = std::move(it->copy);
+      resolved_spares_.erase(it);
+      ++stats_.resolve_variant_reuses;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool RenderTargetPool::IsGpuProduced(uint32_t guest_address, uint32_t width,
@@ -529,26 +581,27 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
       it->second.height != dest_height || it->second.from_depth != from_depth ||
       it->second.dxgi_format != want_format) {
     if (it != resolved_.end()) {
-      if (it->second.resource && it->second.owned) {
-        // Retire (do NOT leak): the guest reused this address with a different
-        // format/size. No context here to defer-release, so park it; the next
-        // FlushPendingCopies drains this list through the fence-gated
-        // DeferRelease. The old Detach()-and-leak grew VRAM without bound
-        // (measured 12 GB on a 4 GB card).
-        orphaned_resources_.push_back(std::move(it->second.resource));
-      }
+      // Retire (do NOT leak) -- the guest reused this address with a different
+      // format/size. StashResolvedVariant keeps an owned copy for the next time
+      // this shape comes back, or parks it for the fence-gated release in
+      // FlushPendingCopies. The old Detach()-and-leak grew VRAM without bound
+      // (measured 12 GB on a 4 GB card).
+      StashResolvedVariant(dest_address, std::move(it->second));
       resolved_.erase(it);
     }
     ResolvedCopy copy;
-    copy.width = dest_width;
-    copy.height = dest_height;
-    copy.dxgi_format = want_format;
-    copy.state = D3D12_RESOURCE_STATE_COPY_DEST;
-    copy.owned = true;
-    copy.from_depth = from_depth;
-    // Created lazily on the next flush, where a device is available.
+    if (!TakeResolvedVariant(dest_address, dest_width, dest_height, want_format, from_depth,
+                             &copy)) {
+      copy.width = dest_width;
+      copy.height = dest_height;
+      copy.dxgi_format = want_format;
+      copy.state = D3D12_RESOURCE_STATE_COPY_DEST;
+      copy.owned = true;
+      copy.from_depth = from_depth;
+      // Created lazily on the next flush, where a device is available.
+      ++stats_.resolve_copies_created;
+    }
     it = resolved_.emplace(dest_address, std::move(copy)).first;
-    ++stats_.resolve_copies_created;
   }
 
   // A resolve must not submit work (hundreds per frame, on the queue shared
@@ -1310,9 +1363,18 @@ void RenderTargetPool::RecordResolve(D3D12Context& context, ID3D12GraphicsComman
   if (it == resolved_.end() || it->second.width != width || it->second.height != height ||
       it->second.dxgi_format != dxgi) {
     if (it != resolved_.end() && it->second.resource) {
-      context.DeferRelease(it->second.resource.Detach());
+      StashResolvedVariant(dest_address, std::move(it->second));
       resolved_.erase(it);
+      it = resolved_.end();
     }
+    ResolvedCopy spare;
+    if (it == resolved_.end() &&
+        TakeResolvedVariant(dest_address, width, height, dxgi, /*from_depth=*/false, &spare)) {
+      it = resolved_.emplace(dest_address, std::move(spare)).first;
+    }
+  }
+  if (it == resolved_.end() || it->second.width != width || it->second.height != height ||
+      it->second.dxgi_format != dxgi) {
     ResolvedCopy copy;
     copy.width = width;
     copy.height = height;

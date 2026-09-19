@@ -162,6 +162,10 @@ class RenderTargetPool : public RenderTargetLookup {
     uint64_t resolves_without_target = 0;  // resolve of a pass we never rendered
     uint64_t targets_refused = 0;          // over the budget below
     uint64_t bytes_allocated = 0;
+    // A resolve that found its shape among the retired variants of its address
+    // (resolved_spares_) instead of allocating, and variants dropped for room.
+    uint64_t resolve_variant_reuses = 0;
+    uint64_t resolve_variants_evicted = 0;
   };
 
   void Shutdown(D3D12Context& context);
@@ -362,6 +366,27 @@ class RenderTargetPool : public RenderTargetLookup {
   // (which has the context) drains it through the fence-gated DeferRelease. This
   // replaces the previous Detach()-and-leak, which grew VRAM unbounded.
   std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> orphaned_resources_;
+
+  // Owned resolve copies retired by a resolve of a different shape at the same
+  // address, kept for reuse. The guest alternates shapes at one destination,
+  // and destroying the loser every time recreated a 1280x720 copy and its
+  // packed depth+stencil twin (7 MiB each) about 25 times a second -- ~8% of the
+  // render thread inside the driver's allocate/free calls. Lookups still see
+  // only resolved_, the most recent resolve at each address, exactly as before;
+  // this only keeps the resources instead of freeing and recreating them.
+  // mcla_native_gfx_resolve_variants turns it off.
+  struct ResolvedSpare {
+    uint32_t address = 0;
+    ResolvedCopy copy;
+  };
+  static constexpr size_t kMaxResolvedSpares = 16;
+  std::vector<ResolvedSpare> resolved_spares_;
+  // Retires the entry leaving resolved_: kept when owned and the reuse is on,
+  // otherwise parked for the fence-gated release as before.
+  void StashResolvedVariant(uint32_t address, ResolvedCopy&& copy);
+  // Moves a retired variant of exactly this shape back out; false if none.
+  bool TakeResolvedVariant(uint32_t address, uint32_t width, uint32_t height,
+                           uint32_t dxgi_format, bool from_depth, ResolvedCopy* out);
 
   // Single-sampled stand-ins for a multisampled target, so a sub-rect resolve
   // still has something CopyTextureRegion can read: D3D12 refuses a copy whose

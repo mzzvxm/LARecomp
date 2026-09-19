@@ -1939,7 +1939,8 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // resource and the GPU sees the new data without any rebind.
   const RenderTargetPool::Stats& rts = render_targets.stats();
   const uint64_t rt_guard = rts.targets_created + rts.resolves + rts.resolves_depth +
-                            rts.resolve_copies_created + rts.resolves_without_target;
+                            rts.resolve_copies_created + rts.resolves_without_target +
+                            rts.resolve_variant_reuses;
   binder.BindAll(context, cl, base, dev, textures, shared.data(), bound_tex, &bound_tex_count, 32,
                  rt_guard);
   ProfileAdd(g_profile.bind_us, t_bind);

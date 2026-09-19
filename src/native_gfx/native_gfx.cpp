@@ -409,6 +409,16 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_bind_memo, true, "MCLA/NativeGfx",
                     "to get the unconditional rebind back.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_resolve_variants, true, "MCLA/NativeGfx",
+                    "Keep a resolve destination's copy when the guest resolves a different shape "
+                    "to the same address, and reuse it when that shape comes back, instead of "
+                    "destroying and recreating it. The guest alternates shapes at one address "
+                    "and the recreation ran about 25 times a second (a 1280x720 copy plus its "
+                    "packed depth+stencil twin), ~8% of the render thread in driver allocate/free. "
+                    "Lookups are unchanged: they see the most recent resolve at each address. "
+                    "Off restores destroy-and-recreate, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "Cache each texture SLOT bind for the rest of the frame, keyed by its six "
                     "raw fetch-constant dwords: a hit hands back the descriptor indices without "
