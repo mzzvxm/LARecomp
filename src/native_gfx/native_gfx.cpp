@@ -431,6 +431,18 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "resolve on every slot, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_state_cache, true, "MCLA/NativeGfx",
+                    "Send a draw only the pipeline state that changed since the last draw on the "
+                    "same command list: descriptor heaps, root signature, the four descriptor "
+                    "tables, PSO, stencil ref, blend factor, the three constant-buffer views, "
+                    "render targets, viewport, scissor, topology and the vertex/index buffers. "
+                    "Every draw used to re-set all of it, about nineteen driver calls, and "
+                    "consecutive draws share nearly all of them; the user-mode driver was 20% of "
+                    "the render thread. The copy is dropped whenever the list is reset or another "
+                    "pass (a compute pass, a blit) records its own state onto it. Off restores the "
+                    "full set per draw, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_INT32(
     mcla_native_gfx_aniso, -1, "MCLA/NativeGfx",
     "Anisotropic filtering override, with the same numbering as the emulated path's\n"

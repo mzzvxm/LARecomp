@@ -193,4 +193,11 @@ class D3D12Context {
   bool device_removed_reported_ = false;
 };
 
+// Anything that records its own pipeline state onto the shared command list
+// -- the compute passes, the blits, the presenter's own pass -- has to call
+// this. The draw path keeps a copy of what the list was last told so it can
+// skip the calls that would change nothing, and that copy is only true while
+// nothing else touches the list.
+void NoteCommandListStateDisturbed();
+
 }  // namespace mcla::native_gfx

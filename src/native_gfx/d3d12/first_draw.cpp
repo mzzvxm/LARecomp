@@ -545,6 +545,9 @@ bool TryFirstRealDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type
   D3D12_VIEWPORT vp = {hv.top_left_x, hv.top_left_y, hv.width,
                        hv.height,     hv.min_depth,  hv.max_depth};
   D3D12_RECT sc = {0, 0, LONG(kWidth), LONG(kHeight)};
+  // This pass binds its own heaps, root signature and pipeline onto the
+  // shared command list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
   cl->RSSetViewports(1, &vp);
   cl->RSSetScissorRects(1, &sc);
 

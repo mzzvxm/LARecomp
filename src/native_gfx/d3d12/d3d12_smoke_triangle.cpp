@@ -146,6 +146,9 @@ bool D3D12SmokeTriangle::Present(rex::ui::Presenter* presenter) {
     State& s = *static_cast<State*>(user);
     const float clear_color[4] = {0.05f, 0.05f, 0.08f, 1.0f};
     output.BindAndClear(cl, clear_color);
+    // This pass binds its own heaps, root signature and pipeline onto the
+    // shared command list, so the draw path's copy of that state is stale.
+    NoteCommandListStateDisturbed();
     cl->SetPipelineState(s.pso.Get());
     cl->SetGraphicsRootSignature(s.root_signature.Get());
     cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

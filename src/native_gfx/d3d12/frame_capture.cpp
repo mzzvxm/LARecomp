@@ -219,6 +219,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
                     "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.");
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+REXCVAR_DECLARE(bool, mcla_native_gfx_state_cache);
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
 REXCVAR_DECLARE(bool, mcla_native_gfx_guest_clear);
 REXCVAR_DECLARE(bool, mcla_native_gfx_reclear);
@@ -320,6 +321,9 @@ struct Capture {
   bool renderdoc_capturing = false;
   bool frame_open = false;
   uint32_t draws_in_batch = 0;
+  // State-setting D3D12 calls issued versus skipped as redundant.
+  uint64_t state_sets = 0;
+  uint64_t state_skips = 0;
 
   uint32_t limit = 0;
   uint32_t offered = 0;
@@ -901,6 +905,53 @@ RenderTargetKey PooledKey(const TargetConfig& cfg) {
 // inside the TDR window and that the per-frame upload ring can back it.
 constexpr uint32_t kDrawsPerBatch = 128;
 
+// What the command list was last told, so a draw only sends what changed.
+//
+// Every draw used to re-set the whole pipeline -- descriptor heaps, root
+// signature, four descriptor tables, PSO, stencil ref, blend factor, three
+// CBVs, render targets, viewport, scissor, topology, vertex and index buffers
+// -- about nineteen driver calls, and consecutive draws share nearly all of
+// them. Measured in gameplay: the NVIDIA user-mode driver was 20% of the
+// render thread.
+//
+// The copy is only true while nothing else records onto the same list, so the
+// compute passes and blits clear it through NoteCommandListStateDisturbed,
+// and EnsureFrame clears it whenever the list is reset. `armed` is false on a
+// fresh list: the first draw then sends everything, which is what keeps a
+// zero-valued field (an empty viewport, stencil ref 0) from matching a state
+// the list was never given.
+struct RecordedState {
+  bool armed = false;
+  const void* target = nullptr;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv = {};
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
+  UINT rtv_count = 0;
+  D3D12_VIEWPORT viewport = {};
+  D3D12_RECT scissor = {};
+  ID3D12DescriptorHeap* srv_heap = nullptr;
+  ID3D12DescriptorHeap* sampler_heap = nullptr;
+  ID3D12RootSignature* root_signature = nullptr;
+  ID3D12PipelineState* pso = nullptr;
+  uint32_t stencil_ref = 0;
+  float blend_constant[4] = {};
+  D3D12_GPU_VIRTUAL_ADDRESS cbv_vs = 0;
+  D3D12_GPU_VIRTUAL_ADDRESS cbv_ps = 0;
+  D3D12_GPU_VIRTUAL_ADDRESS cbv_shared = 0;
+  D3D12_GPU_DESCRIPTOR_HANDLE srv_table = {};
+  D3D12_GPU_DESCRIPTOR_HANDLE sampler_table = {};
+  D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+  // More streams than this is never seen (four is the most any MCLA
+  // declaration uses); past it the views are simply always re-sent.
+  static constexpr uint32_t kMaxTrackedStreams = 8;
+  uint32_t vbv_count = 0;
+  D3D12_VERTEX_BUFFER_VIEW vbv[kMaxTrackedStreams] = {};
+  // 0 = unknown (fresh list), 1 = explicitly unbound, 2 = the view below.
+  uint32_t ib_state = 0;
+  D3D12_INDEX_BUFFER_VIEW ibv = {};
+  void Clear() { *this = RecordedState{}; }
+};
+RecordedState g_rec;
+
 // Returns the open command list, opening one if needed.
 ID3D12GraphicsCommandList* EnsureFrame(D3D12Context& context) {
   if (g_cap.frame_open) {
@@ -913,6 +964,8 @@ ID3D12GraphicsCommandList* EnsureFrame(D3D12Context& context) {
   g_cap.frame_open = true;
   g_cap.draws_in_batch = 0;
   context.ClearDebugMessages();
+  // A reset list holds no state at all.
+  g_rec.Clear();
   return cl;
 }
 
@@ -923,6 +976,7 @@ bool FlushBatch(D3D12Context& context) {
   }
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
+  g_rec.Clear();
   return context.EndFrame();
 }
 
@@ -1177,6 +1231,8 @@ void Finish(D3D12Context& context, PipelineCache& pipelines, BufferCache& buffer
 }
 
 }  // namespace
+
+void NoteCommandListStateDisturbed() { g_rec.Clear(); }
 
 bool FrameCaptureDone() { return g_cap.finished; }
 
@@ -3657,7 +3713,23 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // covers them.
   const UINT rtv_count =
       (have_second_target && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x20u)) ? 2u : 1u;
-  cl->OMSetRenderTargets(rtv_count, &rtv, rtv_count > 1 ? TRUE : FALSE, &dsv);
+  // Only what changed from the last draw on this list. The target pointer is
+  // compared as well as the handles: a pool entry released and replaced could
+  // hand back the same descriptor address for a different resource. (It
+  // cannot happen inside one batch -- releases are deferred to the fence --
+  // but the check costs one comparison.)
+  const bool reuse = g_rec.armed && REXCVAR_GET(mcla_native_gfx_state_cache);
+  if (!reuse || g_rec.target != target || g_rec.rtv.ptr != rtv.ptr ||
+      g_rec.dsv.ptr != dsv.ptr || g_rec.rtv_count != rtv_count) {
+    cl->OMSetRenderTargets(rtv_count, &rtv, rtv_count > 1 ? TRUE : FALSE, &dsv);
+    g_rec.target = target;
+    g_rec.rtv = rtv;
+    g_rec.dsv = dsv;
+    g_rec.rtv_count = rtv_count;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
   if (target->cleared && target->needs_depth_reclear) {
     // A full-source depth resolve since the last draw ended this surface's
     // pass. The shadow map reuses ONE 640x640 surface for four cascades and
@@ -3757,8 +3829,20 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // the GPU as soon as any pass other than the anchor was rendered
   // (DXGI_ERROR_DEVICE_HUNG, always on a pass of a different size).
   D3D12_RECT sc = {0, 0, LONG(target->key.width), LONG(target->key.height)};
-  cl->RSSetViewports(1, &vp);
-  cl->RSSetScissorRects(1, &sc);
+  if (!reuse || std::memcmp(&g_rec.viewport, &vp, sizeof(vp)) != 0) {
+    cl->RSSetViewports(1, &vp);
+    g_rec.viewport = vp;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse || std::memcmp(&g_rec.scissor, &sc, sizeof(sc)) != 0) {
+    cl->RSSetScissorRects(1, &sc);
+    g_rec.scissor = sc;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
   // TEMP DIAG (remove after): the viewport a draw actually rasterises through,
   // once per distinct rect. ComputeHostViewport never validates that the rect
   // lands inside its own target, and `y_flipped` is compensated only as a
@@ -3787,21 +3871,98 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   }
 
   ID3D12DescriptorHeap* heaps[] = {binder.srv_heap(), binder.sampler_heap()};
-  cl->SetDescriptorHeaps(2, heaps);
-  cl->SetGraphicsRootSignature(pipelines.root_signature());
-  cl->SetPipelineState(pso);
-  cl->OMSetStencilRef(rs.stencil_ref);
-  cl->OMSetBlendFactor(rs.blend_constant);
-  cl->SetGraphicsRootConstantBufferView(kRootVsConstants, cbv.vs);
-  cl->SetGraphicsRootConstantBufferView(kRootPsConstants, cbv.ps);
-  cl->SetGraphicsRootConstantBufferView(kRootSharedConstants, cbv.shared);
+  if (!reuse || g_rec.srv_heap != heaps[0] || g_rec.sampler_heap != heaps[1]) {
+    cl->SetDescriptorHeaps(2, heaps);
+    g_rec.srv_heap = heaps[0];
+    g_rec.sampler_heap = heaps[1];
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  ID3D12RootSignature* const root_signature = pipelines.root_signature();
+  if (!reuse || g_rec.root_signature != root_signature) {
+    cl->SetGraphicsRootSignature(root_signature);
+    g_rec.root_signature = root_signature;
+    // Setting a root signature leaves every root argument undefined, so the
+    // tables and CBVs below have to be sent again with it.
+    g_rec.cbv_vs = 0;
+    g_rec.cbv_ps = 0;
+    g_rec.cbv_shared = 0;
+    g_rec.srv_table = D3D12_GPU_DESCRIPTOR_HANDLE{};
+    g_rec.sampler_table = D3D12_GPU_DESCRIPTOR_HANDLE{};
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse || g_rec.pso != pso) {
+    cl->SetPipelineState(pso);
+    g_rec.pso = pso;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse || g_rec.stencil_ref != rs.stencil_ref) {
+    cl->OMSetStencilRef(rs.stencil_ref);
+    g_rec.stencil_ref = rs.stencil_ref;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse ||
+      std::memcmp(g_rec.blend_constant, rs.blend_constant, sizeof(g_rec.blend_constant)) != 0) {
+    cl->OMSetBlendFactor(rs.blend_constant);
+    std::memcpy(g_rec.blend_constant, rs.blend_constant, sizeof(g_rec.blend_constant));
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse || g_rec.cbv_vs != cbv.vs) {
+    cl->SetGraphicsRootConstantBufferView(kRootVsConstants, cbv.vs);
+    g_rec.cbv_vs = cbv.vs;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse || g_rec.cbv_ps != cbv.ps) {
+    cl->SetGraphicsRootConstantBufferView(kRootPsConstants, cbv.ps);
+    g_rec.cbv_ps = cbv.ps;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  if (!reuse || g_rec.cbv_shared != cbv.shared) {
+    cl->SetGraphicsRootConstantBufferView(kRootSharedConstants, cbv.shared);
+    g_rec.cbv_shared = cbv.shared;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  // The three texture tables all point at the start of the SRV heap: the
+  // shaders index into it themselves, so the handle is the same for every
+  // draw and only ever changes with the heap.
   const D3D12_GPU_DESCRIPTOR_HANDLE srv_base =
       binder.srv_heap()->GetGPUDescriptorHandleForHeapStart();
-  cl->SetGraphicsRootDescriptorTable(kRootTexture2DTable, srv_base);
-  cl->SetGraphicsRootDescriptorTable(kRootTexture3DTable, srv_base);
-  cl->SetGraphicsRootDescriptorTable(kRootTextureCubeTable, srv_base);
-  cl->SetGraphicsRootDescriptorTable(kRootSamplerTable,
-                                     binder.sampler_heap()->GetGPUDescriptorHandleForHeapStart());
+  if (!reuse || g_rec.srv_table.ptr != srv_base.ptr) {
+    cl->SetGraphicsRootDescriptorTable(kRootTexture2DTable, srv_base);
+    cl->SetGraphicsRootDescriptorTable(kRootTexture3DTable, srv_base);
+    cl->SetGraphicsRootDescriptorTable(kRootTextureCubeTable, srv_base);
+    g_rec.srv_table = srv_base;
+    g_cap.state_sets += 3;
+  } else {
+    g_cap.state_skips += 3;
+  }
+  const D3D12_GPU_DESCRIPTOR_HANDLE sampler_base =
+      binder.sampler_heap()->GetGPUDescriptorHandleForHeapStart();
+  if (!reuse || g_rec.sampler_table.ptr != sampler_base.ptr) {
+    cl->SetGraphicsRootDescriptorTable(kRootSamplerTable, sampler_base);
+    g_rec.sampler_table = sampler_base;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
+  }
+  // From here the copy describes a list that has really been told all of the
+  // above, so later draws may compare against it.
+  g_rec.armed = true;
 
   // TEMP INSTRUMENTATION: the shadow pass is the only one with ds_format 45.
   if (diag && cfg.ds_format == 45 && g_shadow_record_count < kMaxShadowRecords) {
@@ -3898,6 +4059,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   }
 
   TopologyExpander::Buffer expansion;
+  D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
   if (expand_topology) {
     expansion = g_topology.Acquire(context, primitive_type, element_count);
     if (expansion.index_count == 0) {
@@ -3907,9 +4069,16 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // The PSO already asks for D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE: the
     // switch in PipelineCache falls through to it for every type without a
     // direct topology, so the expanded draw needs no separate pipeline.
-    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
   } else {
-    cl->IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY(PrimitiveTypeToTopology(primitive_type)));
+    topology = D3D12_PRIMITIVE_TOPOLOGY(PrimitiveTypeToTopology(primitive_type));
+  }
+  if (!reuse || g_rec.topology != topology) {
+    cl->IASetPrimitiveTopology(topology);
+    g_rec.topology = topology;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
   }
   // Reused, like the constant banks above: one draw at a time on this thread,
   // so keeping the capacity costs nothing and saves an allocation per draw.
@@ -4074,7 +4243,26 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   if (expand_topology && start_element != 0) {
     ++g_cap.expanded_nonzero_start;
   }
-  cl->IASetVertexBuffers(0, UINT(vbvs.size()), vbvs.data());
+  {
+    const uint32_t vbv_count = uint32_t(vbvs.size());
+    const bool same = reuse && vbv_count == g_rec.vbv_count &&
+                      vbv_count <= RecordedState::kMaxTrackedStreams &&
+                      std::memcmp(g_rec.vbv, vbvs.data(),
+                                  vbv_count * sizeof(D3D12_VERTEX_BUFFER_VIEW)) == 0;
+    if (!same) {
+      cl->IASetVertexBuffers(0, UINT(vbv_count), vbvs.data());
+      g_rec.vbv_count = vbv_count;
+      if (vbv_count <= RecordedState::kMaxTrackedStreams) {
+        std::memcpy(g_rec.vbv, vbvs.data(), vbv_count * sizeof(D3D12_VERTEX_BUFFER_VIEW));
+      } else {
+        // Not tracked: force the next draw to send its own views.
+        g_rec.vbv_count = 0xFFFFFFFFu;
+      }
+      ++g_cap.state_sets;
+    } else {
+      ++g_cap.state_skips;
+    }
+  }
   // A draw the GPU cannot satisfy: the expanded index count needs more vertices
   // than the bound view holds. D3D12 returns ZERO for an out-of-bounds vertex
   // fetch, so those vertices land at the origin and drag long thin triangles
@@ -4200,20 +4388,32 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   }
   // A non-indexed draw has no index buffer to describe. Binding a zeroed view
   // would leave a stale one from the previous draw bound instead.
-  if (expand_topology) {
+  if (expand_topology || bound.indexed) {
     D3D12_INDEX_BUFFER_VIEW ibv = {};
-    ibv.BufferLocation = expansion.gpu_address;
-    ibv.SizeInBytes = expansion.size_bytes;
-    ibv.Format = DXGI_FORMAT_R32_UINT;
-    cl->IASetIndexBuffer(&ibv);
-  } else if (bound.indexed) {
-    D3D12_INDEX_BUFFER_VIEW ibv = {};
-    ibv.BufferLocation = bound.index_gpu_address;
-    ibv.SizeInBytes = bound.index_buffer_bytes;
-    ibv.Format = bound.index_32bit ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
-    cl->IASetIndexBuffer(&ibv);
-  } else {
+    if (expand_topology) {
+      ibv.BufferLocation = expansion.gpu_address;
+      ibv.SizeInBytes = expansion.size_bytes;
+      ibv.Format = DXGI_FORMAT_R32_UINT;
+    } else {
+      ibv.BufferLocation = bound.index_gpu_address;
+      ibv.SizeInBytes = bound.index_buffer_bytes;
+      ibv.Format = bound.index_32bit ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
+    }
+    if (!reuse || g_rec.ib_state != 2u ||
+        std::memcmp(&g_rec.ibv, &ibv, sizeof(ibv)) != 0) {
+      cl->IASetIndexBuffer(&ibv);
+      g_rec.ibv = ibv;
+      g_rec.ib_state = 2u;
+      ++g_cap.state_sets;
+    } else {
+      ++g_cap.state_skips;
+    }
+  } else if (!reuse || g_rec.ib_state != 1u) {
     cl->IASetIndexBuffer(nullptr);
+    g_rec.ib_state = 1u;
+    ++g_cap.state_sets;
+  } else {
+    ++g_cap.state_skips;
   }
 
   if (is_aux && aux_stage < 3) {
@@ -5233,7 +5433,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      " texinv=%llu/%llu/%llu"
                      "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
                      "| memo hit=%llu miss=%llu (guard=%llu key=%llu) bridge=%llu"
-                     " slot=%llu/%llu/%llu/%llu\n",
+                     " slot=%llu/%llu/%llu/%llu"
+                     "| state set=%llu skip=%llu\n",
                      total, ok, no_disp, g_cap.has_anchor ? 1 : 0, g_cap.has_readback ? 1 : 0,
                      display ? display->key.width : 0, display ? display->key.height : 0,
                      display ? display->key.rt_format : 0,
@@ -5311,7 +5512,11 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      D(g_binder_stats_for_report.slot_hits, prev_bind.slot_hits),
                      D(g_binder_stats_for_report.slot_misses, prev_bind.slot_misses),
                      D(g_binder_stats_for_report.slot_flushes, prev_bind.slot_flushes),
-                     D(g_binder_stats_for_report.slot_overflow, prev_bind.slot_overflow));
+                     D(g_binder_stats_for_report.slot_overflow, prev_bind.slot_overflow),
+                     // Command-list state calls this frame: issued / skipped
+                     // because the list already had the value.
+                     (unsigned long long)g_cap.state_sets,
+                     (unsigned long long)g_cap.state_skips);
         prev_buf = g_buffer_stats_for_report;
         prev_tex = g_texture_stats_for_report;
         prev_bind = g_binder_stats_for_report;
@@ -5827,6 +6032,8 @@ void ResetContinuousFrame(RenderTargetPool& render_targets) {
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
   g_cap.offered = 0;
+  g_cap.state_sets = 0;
+  g_cap.state_skips = 0;
   g_cap.skipped_by_range = 0;
   g_cap.quad_replicated = 0;
   g_cap.quad_replicate_failed = 0;

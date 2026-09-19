@@ -117,6 +117,9 @@ void FxaaPass::Record(D3D12Context& context, ID3D12GraphicsCommandList* cl, ID3D
   device->CreateUnorderedAccessView(dst, nullptr, &uav, cpu);
 
   ID3D12DescriptorHeap* heaps[] = {heap_.Get()};
+  // This pass binds its own heaps, root signature and pipeline onto the
+  // shared command list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
   cl->SetDescriptorHeaps(1, heaps);
   cl->SetComputeRootSignature(root_signature_.Get());
   cl->SetPipelineState(pso_.Get());

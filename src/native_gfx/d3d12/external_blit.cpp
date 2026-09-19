@@ -5,6 +5,8 @@
 
 #include <rex/logging.h>
 
+#include "context.h"
+
 #include "blit_cs_dxil.inc"
 
 namespace mcla::native_gfx {
@@ -127,6 +129,9 @@ bool RecordExternalBlitToGuestOutput(ID3D12Device* device, ID3D12GraphicsCommand
   cl->ResourceBarrier(1, &barrier);
 
   ID3D12DescriptorHeap* heaps[] = {g_blit.heap.Get()};
+  // This pass binds its own heaps, root signature and pipeline onto the
+  // shared command list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
   cl->SetDescriptorHeaps(1, heaps);
   cl->SetComputeRootSignature(g_blit.root_signature.Get());
   cl->SetPipelineState(g_blit.pso.Get());

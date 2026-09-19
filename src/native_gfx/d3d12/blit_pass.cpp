@@ -105,6 +105,9 @@ void BlitPass::Record(D3D12Context& context, ID3D12GraphicsCommandList* cl, ID3D
   const D3D12_CPU_DESCRIPTOR_HANDLE cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart();
   context.device()->CreateShaderResourceView(source, &srv, cpu);
 
+  // This pass binds its own heaps, root signature and pipeline onto the
+  // shared command list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get()};
   cl->SetDescriptorHeaps(1, heaps);
   cl->SetGraphicsRootSignature(root_signature_.Get());

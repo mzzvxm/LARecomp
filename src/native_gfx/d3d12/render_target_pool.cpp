@@ -815,6 +815,9 @@ ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
     device->CreateUnorderedAccessView(scratch.resource.Get(), nullptr, &uav, cpu_uav);
     D3D12_GPU_DESCRIPTOR_HANDLE gpu = g_depth_cs.heap->GetGPUDescriptorHandleForHeapStart();
     gpu.ptr += UINT64(slot) * 2 * g_depth_cs.inc;
+    // Binds its own heap, root signature and pipeline onto the shared command
+    // list, so the draw path's copy of that state is stale.
+    NoteCommandListStateDisturbed();
     ID3D12DescriptorHeap* heaps[] = {g_depth_cs.heap.Get()};
     cl->SetDescriptorHeaps(1, heaps);
     cl->SetComputeRootSignature(g_depth_cs.root.Get());

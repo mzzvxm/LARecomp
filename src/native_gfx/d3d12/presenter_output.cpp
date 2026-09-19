@@ -56,6 +56,9 @@ bool PresenterOutput::Initialize(D3D12Context& context, uint32_t width, uint32_t
 }
 
 void PresenterOutput::BindAndClear(ID3D12GraphicsCommandList* cl, const float clear_color[4]) {
+  // This pass binds its own heaps, root signature and pipeline onto the
+  // shared command list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
   cl->OMSetRenderTargets(1, &rtv_, FALSE, nullptr);
   cl->ClearRenderTargetView(rtv_, clear_color, 0, nullptr);
   D3D12_VIEWPORT viewport = {0.0f, 0.0f, float(width_), float(height_), 0.0f, 1.0f};
