@@ -24,6 +24,7 @@
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_texcache_mb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_textures);
+REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_index);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
@@ -89,6 +90,7 @@ void TextureCache::Shutdown(D3D12Context& context) {
     }
   }
   entries_.clear();
+  range_index_stale_ = true;
   stats_.live_bytes = 0;
 }
 
@@ -101,6 +103,7 @@ std::pair<uint32_t, uint32_t> TextureCache::InvalidationThunk(void* context_ptr,
     std::lock_guard<std::mutex> lock(self->invalidation_mutex_);
     self->pending_invalidations_.push_back(
         PendingInvalidation{physical_address_start, length, /*from_unlock=*/false});
+    self->pending_flag_.store(true, std::memory_order_release);
   }
   return std::make_pair(physical_address_start, length);
 }
@@ -132,6 +135,7 @@ void TextureCache::NoteGuestWrite(uint32_t guest_address, uint32_t length) {
   }
   pending_invalidations_.push_back(
       PendingInvalidation{guest_address, length, /*from_unlock=*/true});
+  pending_flag_.store(true, std::memory_order_release);
   ++stats_.unlock_ranges;
 }
 
@@ -178,38 +182,118 @@ void TextureCache::WatchEntry(const Entry& entry) {
   }
 }
 
+void TextureCache::RebuildRangeIndex() {
+  range_index_.clear();
+  wide_entries_.clear();
+  range_index_max_span_ = 0;
+  for (const auto& [key, e] : entries_) {
+    if (!e.guest_size) {
+      continue;  // never assigned a guest extent: nothing can invalidate it
+    }
+    const uint64_t lo = e.guest_base & 0x1FFFFFFFu;
+    const RangeIndexEntry r{lo, lo + e.guest_size, key};
+    if (e.guest_size > kIndexedSpanMax) {
+      wide_entries_.push_back(r);
+      continue;
+    }
+    range_index_.push_back(r);
+    range_index_max_span_ = std::max(range_index_max_span_, e.guest_size);
+  }
+  std::sort(range_index_.begin(), range_index_.end(),
+            [](const RangeIndexEntry& a, const RangeIndexEntry& b) { return a.lo < b.lo; });
+  range_index_stale_ = false;
+  ++stats_.inval_index_rebuilds;
+}
+
+bool TextureCache::DropInvalidatedEntry(D3D12Context& context, uint64_t key) {
+  auto it = entries_.find(key);
+  if (it == entries_.end()) {
+    return false;
+  }
+  Entry& e = it->second;
+  if (e.resource) {
+    context.DeferRelease(e.resource.Detach());
+  }
+  stats_.live_bytes -= (e.bytes <= stats_.live_bytes) ? e.bytes : stats_.live_bytes;
+  ++stats_.invalidated;
+  entries_.erase(it);
+  range_index_stale_ = true;
+  return true;
+}
+
 void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
-  std::vector<PendingInvalidation> ranges;
+  // Nothing queued, which is nearly every call: skip the mutex. The flag is
+  // written under the same mutex as the queue, so a range queued after this
+  // load is simply applied by the next Resolve.
+  if (!pending_flag_.load(std::memory_order_acquire)) {
+    return;
+  }
+  drain_scratch_.clear();
   {
     std::lock_guard<std::mutex> lock(invalidation_mutex_);
-    if (pending_invalidations_.empty()) {
-      return;
-    }
-    ranges.swap(pending_invalidations_);
+    drain_scratch_.swap(pending_invalidations_);
+    pending_flag_.store(false, std::memory_order_relaxed);
+  }
+  if (drain_scratch_.empty()) {
+    return;
+  }
+  ++stats_.inval_drains;
+  const bool indexed = REXCVAR_GET(mcla_native_gfx_texinv_index);
+  if (indexed && range_index_stale_) {
+    RebuildRangeIndex();
   }
   // Dropping the entry rather than flagging it is what re-decodes the texture:
   // the next Resolve misses and rebuilds it from whatever the guest has now.
   // The release is fence-gated, so a command list still referencing the old
   // resource stays valid, and TextureBinder rebuilds its SRVs every frame
   // (the descriptor heap halves flip), so no stale pointer-keyed view survives.
-  for (const PendingInvalidation& range : ranges) {
+  //
+  // Ranges are applied in arrival order and an entry is credited to the first
+  // range that drops it, exactly as the linear walk did, so the per-source
+  // split below means the same thing on both paths.
+  for (const PendingInvalidation& range : drain_scratch_) {
     const uint64_t lo = range.address & 0x1FFFFFFFu;
     const uint64_t hi = lo + range.length;
     uint64_t dropped_here = 0;
-    for (auto it = entries_.begin(); it != entries_.end();) {
-      Entry& e = it->second;
-      const uint64_t e_lo = e.guest_base & 0x1FFFFFFFu;
-      const uint64_t e_hi = e_lo + e.guest_size;
-      if (e.guest_size && e_lo < hi && lo < e_hi) {
-        if (e.resource) {
-          context.DeferRelease(e.resource.Detach());
+    if (indexed) {
+      // An indexed entry that starts before lo - max_span ends before lo, and
+      // one that starts at hi or later begins past the range, so the candidates
+      // are exactly the entries starting inside (lo - max_span, hi).
+      const uint64_t from = lo > range_index_max_span_ ? lo - range_index_max_span_ : 0;
+      auto it = std::lower_bound(
+          range_index_.begin(), range_index_.end(), from,
+          [](const RangeIndexEntry& e, uint64_t v) { return e.lo < v; });
+      for (; it != range_index_.end() && it->lo < hi; ++it) {
+        ++stats_.inval_scan_steps;
+        if (it->hi > lo && DropInvalidatedEntry(context, it->key)) {
+          ++dropped_here;
         }
-        stats_.live_bytes -= (e.bytes <= stats_.live_bytes) ? e.bytes : stats_.live_bytes;
-        ++stats_.invalidated;
-        ++dropped_here;
-        it = entries_.erase(it);
-      } else {
-        ++it;
+      }
+      for (const RangeIndexEntry& w : wide_entries_) {
+        ++stats_.inval_scan_steps;
+        if (w.lo < hi && lo < w.hi && DropInvalidatedEntry(context, w.key)) {
+          ++dropped_here;
+        }
+      }
+    } else {
+      // The original walk, kept behind mcla_native_gfx_texinv_index for A/B.
+      for (auto it = entries_.begin(); it != entries_.end();) {
+        ++stats_.inval_scan_steps;
+        Entry& e = it->second;
+        const uint64_t e_lo = e.guest_base & 0x1FFFFFFFu;
+        const uint64_t e_hi = e_lo + e.guest_size;
+        if (e.guest_size && e_lo < hi && lo < e_hi) {
+          if (e.resource) {
+            context.DeferRelease(e.resource.Detach());
+          }
+          stats_.live_bytes -= (e.bytes <= stats_.live_bytes) ? e.bytes : stats_.live_bytes;
+          ++stats_.invalidated;
+          ++dropped_here;
+          it = entries_.erase(it);
+          range_index_stale_ = true;
+        } else {
+          ++it;
+        }
       }
     }
     if (range.from_unlock) {
@@ -256,6 +340,7 @@ void TextureCache::EvictToBudget(D3D12Context& context, uint64_t current_frame) 
     stats_.evicted_bytes += it->second.bytes;
     ++stats_.evictions;
     entries_.erase(it);
+    range_index_stale_ = true;
   }
 }
 
@@ -473,6 +558,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
           }
           stats_.live_bytes -= std::min(stats_.live_bytes, it->second.bytes);
           entries_.erase(it);
+          range_index_stale_ = true;
           it = entries_.end();
         }
       }
@@ -681,6 +767,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       REXLOG_ERROR("[native_gfx] texture creation failed ({}x{} fmt {})", fetch.width,
                    fetch.height, fetch.format);
       entries_.erase(key);
+      range_index_stale_ = true;
       ++stats_.decode_failures;
       NoteResolveFailure(fetch, "D3D12 texture creation failed");
       return nullptr;
@@ -978,6 +1065,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // half-decoded upload resident for the rest of the session.
   e.guest_base = fetch.base_address;
   e.guest_size = src_size;
+  range_index_stale_ = true;
   // Sampled hash of the bytes this decode read, so a later Resolve can tell
   // whether guest memory has moved on. The watch alone is not enough: measured,
   // the minimap mask's entry held a different texture for the whole session

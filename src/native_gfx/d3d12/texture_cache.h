@@ -24,6 +24,7 @@
 // is failed rather than rendered with wrong data.
 // ===========================================================================
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
@@ -129,6 +130,13 @@ class TextureCache {
     uint64_t unlock_ranges = 0;
     uint64_t unlock_ranges_no_hit = 0;
     uint64_t live_bytes = 0;     // sum of the resident entries' resource sizes
+    // Cost of draining the invalidation queue: entries examined against a
+    // queued range, drains that found something queued, and index rebuilds.
+    // Same shape as BufferCache's inval_scan_steps, which is what exposed the
+    // quadratic walk there.
+    uint64_t inval_scan_steps = 0;
+    uint64_t inval_drains = 0;
+    uint64_t inval_index_rebuilds = 0;
   };
 
   // The render-target bridge is optional during bring-up: without it, RT-
@@ -244,6 +252,44 @@ class TextureCache {
     bool from_unlock = false;
   };
   std::vector<PendingInvalidation> pending_invalidations_;
+  // Set under invalidation_mutex_ whenever a range is queued and cleared by the
+  // drain, so Resolve -- about fifty thousand calls a frame -- can skip the
+  // mutex on the overwhelmingly common call where nothing is queued.
+  std::atomic<bool> pending_flag_{false};
+  // Swapped with pending_invalidations_ on every drain, so neither side
+  // reallocates once both have grown to the usual queue length.
+  std::vector<PendingInvalidation> drain_scratch_;
+
+  // Entries by guest physical start, for the invalidation drain.
+  //
+  // The drain used to walk every entry for every queued range. The write watch
+  // hands this cache EVERY fault in the process -- both caches' callbacks run
+  // on any watched page -- so in gameplay that was ~600 ranges a frame against
+  // ~970 entries, and it measured 16.9% of the render thread on its own, the
+  // single largest function. Ranges arrive a few at a time, so batching them
+  // does not help; what helps is making one range cheap: a binary search into
+  // the entries sorted by start, then a scan bounded by the widest entry.
+  //
+  // Entries wider than kIndexedSpanMax go to a short list checked linearly, so
+  // one large surface cannot widen the scan window for every range.
+  //
+  // Rebuilt lazily: every insert, erase and range assignment marks it stale,
+  // and the drain rebuilds it only when it actually has ranges to apply.
+  struct RangeIndexEntry {
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    uint64_t key = 0;
+  };
+  static constexpr uint64_t kIndexedSpanMax = 1ull << 20;
+  std::vector<RangeIndexEntry> range_index_;
+  std::vector<RangeIndexEntry> wide_entries_;
+  uint64_t range_index_max_span_ = 0;
+  bool range_index_stale_ = true;
+  void RebuildRangeIndex();
+  // Drops one entry the guest overwrote; false when the key is already gone
+  // (an earlier range in the same drain took it).
+  bool DropInvalidatedEntry(D3D12Context& context, uint64_t key);
+
   void* invalidation_handle_ = nullptr;
   bool pending_overflow_logged_ = false;
   Stats stats_;

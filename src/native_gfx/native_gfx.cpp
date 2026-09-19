@@ -579,6 +579,15 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_texcache_mb, 768, "MCLA/NativeGfx",
                       "budget, least-recently-used entries are released (fence-gated, never one "
                       "the current frame bound). 0 = unbounded, the old behaviour.");
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_index, true, "MCLA/NativeGfx",
+                    "Apply queued texture invalidations through an index of the cache entries "
+                    "sorted by guest address, instead of walking every entry for every queued "
+                    "range. The write watch hands the texture cache every fault in the process, "
+                    "about 600 ranges a frame in gameplay against ~970 entries, and the walk "
+                    "measured 16.9% of the render thread. Same entries dropped either way; off "
+                    "restores the walk, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_diag, false, "MCLA/NativeGfx",
                     "Master switch for the diagnostic probes on the draw path (the TEMP DIAG / TEMP "
                     "INSTRUMENTATION blocks: MESHCHK, the index-range probe, UIQUAD, SRVMAP, the "

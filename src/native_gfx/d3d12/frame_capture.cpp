@@ -5217,6 +5217,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      "| geomphase ucode=%.1f decl=%.1f match=%.1f idx=%.1f res=%.1f ms"
                      "| invscan steps=%llu regions=%llu"
                      "| tex hit=%llu up=%llu rt=%llu evict=%llu verify=%llu CAUGHT=%llu"
+                     " texinv=%llu/%llu/%llu"
                      "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
                      "| memo hit=%llu miss=%llu (guard=%llu key=%llu) bridge=%llu\n",
                      total, ok, no_disp, g_cap.has_anchor ? 1 : 0, g_cap.has_readback ? 1 : 0,
@@ -5272,6 +5273,12 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      // shape of a transient wrong-looking block in gameplay.
                      D(g_texture_stats_for_report.verify_checks, prev_tex.verify_checks),
                      D(g_texture_stats_for_report.verify_catches, prev_tex.verify_catches),
+                     // Invalidation drain cost: entries examined / drains that
+                     // had ranges / index rebuilds.
+                     D(g_texture_stats_for_report.inval_scan_steps, prev_tex.inval_scan_steps),
+                     D(g_texture_stats_for_report.inval_drains, prev_tex.inval_drains),
+                     D(g_texture_stats_for_report.inval_index_rebuilds,
+                       prev_tex.inval_index_rebuilds),
                      D(g_binder_stats_for_report.srv_hits, prev_bind.srv_hits),
                      D(g_binder_stats_for_report.srv_misses, prev_bind.srv_misses),
                      D(g_binder_stats_for_report.sampler_hits, prev_bind.sampler_hits),
