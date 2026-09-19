@@ -22,6 +22,7 @@
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
+REXCVAR_DECLARE(bool, mcla_native_gfx_region_memo);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
@@ -97,6 +98,7 @@ void SwapCopyBytes(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap s
 
 void BufferCache::Shutdown(D3D12Context& context) {
   StopWatchingGuestWrites();
+  ++region_generation_;
   for (RegionMap& map : regions_) {
     for (auto& [base, r] : map) {
       if (r.resource) {
@@ -293,7 +295,27 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
   ApplyPendingInvalidations();
 
   RegionMap& map = regions_[uint32_t(swap)];
-  Region* region = FindContaining(map, guest_address, size);
+  // The same buffer is bound by draw after draw, so try the memo before the
+  // tree. 4 KiB granularity matches how regions are aligned.
+  const bool memo_enabled = REXCVAR_GET(mcla_native_gfx_region_memo);
+  LookupMemo& memo =
+      lookup_memo_[uint32_t(swap) & 1u][(guest_address >> 12) & (kLookupMemoSize - 1u)];
+  Region* region = nullptr;
+  if (memo_enabled && memo.generation == region_generation_ && memo.region &&
+      guest_address >= memo.base &&
+      uint64_t(guest_address) + size <= uint64_t(memo.base) + memo.size) {
+    region = memo.region;
+    ++stats_.memo_hits;
+  } else {
+    region = FindContaining(map, guest_address, size);
+    ++stats_.memo_misses;
+    if (memo_enabled && region) {
+      memo.generation = region_generation_;
+      memo.base = region->base;
+      memo.size = region->size;
+      memo.region = region;
+    }
+  }
   // The readability check exists to keep UploadRegion from reading unmapped
   // guest pages, so it belongs on the paths that actually read them. Running it
   // first cost the whole frame: IsPhysicalRangeReadable walks the page table of
@@ -435,6 +457,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
         }
         map.erase(it);
         region_index_stale_ = true;
+        ++region_generation_;
         ++stats_.merges;
       }
     }
@@ -464,6 +487,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
         }
         it = map.erase(it);
         region_index_stale_ = true;
+        ++region_generation_;
         ++stats_.merges;
       } else {
         ++it;
@@ -503,6 +527,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       return false;
     }
     region_index_stale_ = true;
+    ++region_generation_;
     region = &it->second;
     if (!UploadRegion(context, cl, *region, swap)) {
       return false;
@@ -790,6 +815,9 @@ void BufferCache::ApplyPendingInvalidations() {
 }
 
 void BufferCache::RebuildRegionIndex() {
+  // Rebuilding follows every insertion or erasure, which is exactly when a
+  // memoised pointer may have died.
+  ++region_generation_;
   region_index_.clear();
   for (RegionMap& map : regions_) {
     for (auto& [base, r] : map) {

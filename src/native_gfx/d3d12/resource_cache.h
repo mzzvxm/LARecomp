@@ -113,6 +113,9 @@ class BufferCache {
     uint64_t streaming_promotions = 0;
     uint64_t streaming_demotions = 0;
     uint64_t streaming_clean = 0;
+    // Region lookups served by the memo instead of the map walk.
+    uint64_t memo_hits = 0;
+    uint64_t memo_misses = 0;
     // InvalidateRange walks EVERY region for EVERY pending range. If the
     // region count is in the thousands and the watch fires hundreds of times a
     // frame, this is a quadratic scan sitting in the middle of the draw path,
@@ -257,6 +260,26 @@ class BufferCache {
   using RegionMap = std::map<uint32_t, Region>;
 
   Region* FindContaining(RegionMap& map, uint32_t address, uint32_t size);
+
+  // Direct-mapped memo over the last lookups, because FindContaining walks a
+  // std::map of several thousand regions twice per draw (vertex stream and
+  // index buffer) and the draws of a frame keep coming back to the same few
+  // hundred. Measured: BufferCache::Resolve was 6.8% of the render thread with
+  // the tree walk as its largest part.
+  //
+  // An entry is only trusted while `region_generation_` is unchanged, which is
+  // bumped by every insertion or erasure, so a pointer can never outlive its
+  // node. The stored extent is re-checked against the request, so an entry
+  // found for one range cannot serve a range it does not cover.
+  struct LookupMemo {
+    uint64_t generation = 0;
+    uint32_t base = 0;
+    uint32_t size = 0;
+    Region* region = nullptr;
+  };
+  static constexpr uint32_t kLookupMemoSize = 1024;  // power of two
+  LookupMemo lookup_memo_[2][kLookupMemoSize] = {};
+  uint64_t region_generation_ = 1;
 
   // Regions sorted by PHYSICAL start, which is the space invalidation works in.
   // Without it, marking one written range dirty walked every region: measured

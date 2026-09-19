@@ -431,6 +431,16 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "resolve on every slot, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
+                    "Remember the geometry region each address resolved to, so a draw does "
+                    "not walk the region map again for a buffer the draw before it already "
+                    "used. The map holds several thousand regions and is searched twice per "
+                    "draw, for the vertex stream and the index buffer. Entries are dropped "
+                    "whenever a region is created, merged or erased, and the remembered "
+                    "extent is re-checked against each request. Off restores the map walk, "
+                    "for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
                       "Consecutive frames of being written to after which a geometry region "
                       "comes off the page write watch, or 0 to keep every region watched. The "

@@ -5430,6 +5430,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      "| geomphase ucode=%.1f decl=%.1f match=%.1f idx=%.1f res=%.1f ms"
                      "| invscan steps=%llu regions=%llu"
                      "| stream now=%llu prom=%llu dem=%llu clean=%llu"
+                     "| bufmemo hit=%llu miss=%llu"
                      "| tex hit=%llu up=%llu rt=%llu evict=%llu verify=%llu CAUGHT=%llu"
                      " texinv=%llu/%llu/%llu"
                      "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
@@ -5487,6 +5488,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      D(g_buffer_stats_for_report.streaming_demotions,
                        prev_buf.streaming_demotions),
                      D(g_buffer_stats_for_report.streaming_clean, prev_buf.streaming_clean),
+                     D(g_buffer_stats_for_report.memo_hits, prev_buf.memo_hits),
+                     D(g_buffer_stats_for_report.memo_misses, prev_buf.memo_misses),
                      D(g_texture_stats_for_report.hits, prev_tex.hits),
                      D(g_texture_stats_for_report.uploads, prev_tex.uploads),
                      D(g_texture_stats_for_report.render_target_hits,
