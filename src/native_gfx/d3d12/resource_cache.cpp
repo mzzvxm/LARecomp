@@ -21,6 +21,7 @@
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
 
@@ -212,7 +213,10 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   // TEMP DIAG (MESHSTALE): hash of the GUEST bytes this upload carried, so a
   // later draw can ask whether the GPU's copy still matches guest memory. Reads
   // `src` -- ordinary cached memory -- exactly as the note below prescribes.
-  region.content_hash = HashGuestBytes(src, region.size);
+  // Whole-region hash, read by nothing but the MESHCHK probe (VerifyRegion);
+  // it re-read every uploaded byte, ~14 MB a frame in gameplay.
+  region.content_hash =
+      REXCVAR_GET(mcla_native_gfx_diag) ? HashGuestBytes(src, region.size) : 0;
   {
     const uint32_t blocks = (region.size + kVerifyBlock - 1u) / kVerifyBlock;
     region.block_hash.assign(blocks, 0);

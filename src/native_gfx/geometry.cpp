@@ -23,6 +23,10 @@
 #include "guest/guest_resources.h"
 #include "shader_identity.h"
 
+#include <rex/cvar.h>
+
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+
 namespace mcla::native_gfx {
 
 namespace {
@@ -232,8 +236,15 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
                                        BufferCache* buffers, D3D12Context* context,
                                        ID3D12GraphicsCommandList* cl,
                                        const InlineGeometry* inline_geometry) {
-  auto phase_prev = std::chrono::steady_clock::now();
-  const auto phase_mark = [&phase_prev](int slot) {
+  // The phase timers and the probes below are diagnostics: five clock reads
+  // per call, twice per draw, plus the index scan. mcla_native_gfx_diag.
+  const bool diag = REXCVAR_GET(mcla_native_gfx_diag);
+  auto phase_prev = diag ? std::chrono::steady_clock::now()
+                         : std::chrono::steady_clock::time_point{};
+  const auto phase_mark = [&phase_prev, diag](int slot) {
+    if (!diag) {
+      return;
+    }
     const auto now = std::chrono::steady_clock::now();
     g_geometry_phase_us[slot] += std::chrono::duration<double, std::micro>(now - phase_prev).count();
     phase_prev = now;
@@ -306,7 +317,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
   // whether the guest really declares a scalar or whether a second record
   // (e.g. TEXCOORD1 at offset 32 of a 36-byte stride) carries the missing
   // component.
-  if (inline_geometry) {
+  if (diag && inline_geometry) {
     static std::set<uint64_t> seen_decl;
     uint64_t sig = uint64_t(decl_count) << 32 ^ velem_count;
     for (uint32_t d = 0; d < decl_count; ++d) {
@@ -494,7 +505,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
       // (sub_82423A38: `a4[*v16]`, a4 = dev+12528). So the disagreement is in a
       // value only a live dump can show -- which record got matched, what its
       // stream is, and where the fetch constant actually points.
-      if (!inline_geometry) {
+      if (diag && !inline_geometry) {
         static std::set<uint64_t> seen_stride;
         static uint32_t lines = 0;
         const uint64_t sig = (uint64_t(match->stream) << 56) ^ (uint64_t(stride) << 48) ^

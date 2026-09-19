@@ -23,6 +23,8 @@
 REXCVAR_DECLARE(bool, mcla_native_gfx_texture_swizzle);
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_bind_memo);
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+REXCVAR_DECLARE(bool, mcla_native_gfx_slot_cache);
 
 namespace mcla::native_gfx {
 
@@ -257,7 +259,7 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   } id = {uint64_t(reinterpret_cast<uintptr_t>(resource)), fetch.format, fetch.width,
           fetch.height, fetch.swizzle,      uint32_t(source)};
   const uint64_t key = Hash64(&id, sizeof(id));
-  {  // TEMP DIAG (SWIZ): quais swizzles chegam, e de que tipo de origem. O
+  if (REXCVAR_GET(mcla_native_gfx_diag)) {  // TEMP DIAG (SWIZ): quais swizzles chegam, e de que tipo de origem. O
      // swizzle so e aplicado a textura decodificada do guest; se um alvo de
      // render trouxer swizzle nao-identidade, o canal que o shader le esta
      // errado (o PS da sombra de folhagem corta por .x).
@@ -513,7 +515,7 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
       // for the whole session, so it only ever shows the first frames -- it
       // cannot answer whether a LATER draw (the 2D start screen) is being
       // whitened by the render-target refusal.
-      {
+      if (REXCVAR_GET(mcla_native_gfx_diag)) {
         static std::set<uint64_t> seen;
         const uint64_t id = (uint64_t(fetch.base_address) << 16) ^
                             (uint64_t(fetch.format) << 8) ^ uint64_t(slot);

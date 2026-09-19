@@ -23,6 +23,8 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_depth_cs);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_depth_reclear_infer);
 REXCVAR_DECLARE(bool, mcla_native_gfx_reclear_probe);
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+REXCVAR_DECLARE(bool, mcla_native_gfx_resolve_variants);
 
 namespace mcla::native_gfx {
 
@@ -484,7 +486,7 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
   // k_8_8_8_8 input (0x06ACD000) reaches the composite as a guest-memory decode,
   // and only this list can say whether that is a missing resolve or a failed
   // registration.
-  {
+  if (REXCVAR_GET(mcla_native_gfx_diag)) {
     static std::set<uint32_t> seen;
     if (seen.insert(dest_address).second) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
@@ -496,7 +498,7 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
       }
     }
   }
-  if (dest_address == 0x02D6C000u) {
+  if (REXCVAR_GET(mcla_native_gfx_diag) && dest_address == 0x02D6C000u) {
     if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
       std::fprintf(f, "NOTE_RESOLVE dest=0x%08X %ux%u from_depth=%d src=%p src_fmt=%u\n",
                    dest_address, dest_width, dest_height, from_depth ? 1 : 0, (void*)src,
@@ -1441,7 +1443,7 @@ ID3D12Resource* RenderTargetPool::FindResolvedTarget(uint32_t guest_address, uin
                                                      uint32_t height, bool want_depth,
                                                      D3D12_RESOURCE_STATES* out_state) {
   // TEMP DIAG (remove after): why the exposure input 0x02D6C000 misses.
-  if (guest_address == 0x02D6C000u) {
+  if (REXCVAR_GET(mcla_native_gfx_diag) && guest_address == 0x02D6C000u) {
     static unsigned n = 0;
     ++n;
     // See the matching note in texture_cache.cpp: six samples only ever showed

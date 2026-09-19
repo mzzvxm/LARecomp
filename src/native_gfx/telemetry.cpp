@@ -47,10 +47,11 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texdump, false, "MCLA/NativeGfx",
                     "because it writes tens of MB.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_telemetry, true, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_telemetry, false, "MCLA/NativeGfx",
                     "Collect resource-usage telemetry (bound buffers, index buffers, texture "
                     "fetch constants) while the native graphics runtime is active. Written to "
-                    "mcla_native_gfx_resources_*.csv. Cheap; on by default during bring-up.")
+                    "mcla_native_gfx_resources_*.csv. Off by default: it takes a mutex and two "
+                    "map lookups per fetch slot on every draw.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {

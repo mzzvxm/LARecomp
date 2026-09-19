@@ -68,6 +68,7 @@
 // global scope too. Read directly rather than through Active(), which latches
 // its failure and would be the wrong thing to touch this early.
 REXCVAR_DECLARE(bool, mcla_native_gfx);
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 REX_EXTERN(__imp__D3DDevice_DrawIndexedVertices);
 REX_EXTERN(__imp__D3DDevice_DrawVertices);
@@ -266,7 +267,7 @@ extern "C" REX_FUNC(D3DResource_Lock) {
     // never writes the pixels back into guest memory, the way the emulated path
     // does through SharedMemory::RangeWrittenByGpu. That difference only bites
     // if the guest READS the resolved surface, so this says whether it does.
-    {
+    if (REXCVAR_GET(mcla_native_gfx_diag)) {
       const uint32_t res = ctx.r3.u32;
       if (res >= 0x1000u) {
         uint32_t raw;
@@ -512,7 +513,7 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
   // 0x074AA000 never appears among them.
   {
     static uint32_t tick = 0;
-    if ((tick++ % 600u) == 0u) {
+    if (REXCVAR_GET(mcla_native_gfx_diag) && (tick++ % 600u) == 0u) {
       // Two candidates, because the first conclusion was drawn from the wrong
       // one. 0x074AA000 (32x32) reads 100% 0xFF on BOTH paths, yet the emulated
       // path clips the circle correctly -- so that texture is a white

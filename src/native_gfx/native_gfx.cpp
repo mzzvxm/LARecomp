@@ -579,11 +579,24 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_texcache_mb, 768, "MCLA/NativeGfx",
                       "budget, least-recently-used entries are released (fence-gated, never one "
                       "the current frame bound). 0 = unbounded, the old behaviour.");
 
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_census, 120, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_diag, false, "MCLA/NativeGfx",
+                    "Master switch for the diagnostic probes on the draw path (the TEMP DIAG / TEMP "
+                    "INSTRUMENTATION blocks: MESHCHK, the index-range probe, UIQUAD, SRVMAP, the "
+                    "minimap and water traces, the per-shape std::set logs, the periodic "
+                    "900-frame target dumps, the geometry phase timers). They stay in the code "
+                    "and a probe with its own switch still needs that switch too. Off by "
+                    "default because together they cost the render thread several milliseconds "
+                    "a frame -- MESHCHK alone hashes a whole buffer region per skinned draw. "
+                    "The one-shot capture mode keeps them on regardless.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_census, 0, "MCLA/NativeGfx",
                       "Frame boundaries between memory census reports written to "
                       "native_gfx_mem.txt: process commit/working set, DXGI local (VRAM) and "
                       "non-local usage, and the live size of every native cache. The pool whose "
-                      "delta tracks the process delta is the leak. 0 disables.");
+                      "delta tracks the process delta is the leak. 0 disables (default: each "
+                      "report walks the whole address space with VirtualQuery, measured at 2.8% "
+                      "of the render thread at 120).");
 
 namespace mcla::native_gfx {
 
@@ -920,7 +933,7 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
   // Everything below ignores the index and resolves the ONE colour surface the
   // pool holds for this shape, so a resolve of target 1 hands target 0's pixels
   // to target 1's destination address.
-  {
+  if (REXCVAR_GET(mcla_native_gfx_diag)) {
     const uint32_t rt_index = flags & 7u;
     static uint32_t seen[32];
     static uint32_t seen_n = 0;
@@ -1210,7 +1223,7 @@ void NoteGuestClear(uint32_t flags, uint32_t color, float z, uint32_t stencil) {
   const uint32_t n = g_guest_clear_calls.fetch_add(1, std::memory_order_relaxed);
   // TEMP DIAG: the point of the first build is to see WHICH clears arrive and
   // in what order relative to the policy clear, not just to apply them.
-  if (n < 96u || (n % 512u) == 0u) {
+  if (REXCVAR_GET(mcla_native_gfx_diag) && (n < 96u || (n % 512u) == 0u)) {
     // native_gfx_diag.txt, not REXLOG: under RenderDoc the game is launched by
     // ExecuteAndInject and its stdout goes nowhere this session can read.
     if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
@@ -1461,7 +1474,7 @@ void NotifyFrameBoundary() {
   {
     static unsigned fb = 0;
     ++fb;
-    if (fb <= 10u || (fb % 60u) == 0u) {
+    if (REXCVAR_GET(mcla_native_gfx_diag) && (fb <= 10u || (fb % 60u) == 0u)) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
         std::fprintf(f,
                      "frameboundary#%u continuous=%d present_ready=%d draw_ready=%d | swap_hook=%u "
@@ -1569,7 +1582,10 @@ void NotifyFrameBoundary() {
       // Two producers, one consumer: the keybind (any thread, atomic flag) and
       // the trigger file kept for scripts. exchange/remove both consume once.
       const bool key_request = g_rdc_capture_request.exchange(false, std::memory_order_acq_rel);
-      const bool file_request = std::remove("native_gfx_rdc_trigger") == 0;
+      // A filesystem call; once a second is plenty for a file dropped by hand.
+      static uint32_t trigger_tick = 0;
+      const bool file_request =
+          (++trigger_tick % 60u) == 0u && std::remove("native_gfx_rdc_trigger") == 0;
       if (!rdc_capturing && !rdc_done && (key_request || file_request)) {
         if (RenderDocBeginCapture(g_draw_context.device())) {
           rdc_capturing = true;

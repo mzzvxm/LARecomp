@@ -24,6 +24,7 @@
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_texcache_mb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_textures);
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
 
@@ -266,6 +267,9 @@ namespace {
 // in xAlphaModulate__PS_Textured samples fetch slot 0 and computes 1 - mask, so
 // a mask that falls back to white subtracts nothing and the corners survive.
 void NoteResolveFailure(const TextureFetch& fetch, const char* why) {
+  if (!REXCVAR_GET(mcla_native_gfx_diag)) {
+    return;
+  }
   static std::set<uint64_t> seen;
   const uint64_t sig = (uint64_t(fetch.base_address) << 8) ^ uint64_t(why[0]) ^
                        (uint64_t(fetch.format) << 1);
@@ -291,7 +295,8 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     *out_source = TextureSource::kUnresolved;
   }
   // TEMP DIAG (remove after): trace the exposure fetch at 0x02D6C000.
-  if (fetch.base_address == 0x02D6C000u) {
+  const bool diag = REXCVAR_GET(mcla_native_gfx_diag);
+  if (diag && fetch.base_address == 0x02D6C000u) {
     static unsigned n = 0;
     ++n;
     // First few AND a periodic sample. Capping at six showed only frame 1,
@@ -388,7 +393,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     // bridge thinks it knows. The square minimap traced here: the circular mask
     // sampled by xAlphaModulate__PS_Textured falls back to the neutral white,
     // so `1 - mask` is 0 and the subtract erases nothing.
-    NoteResolveFailure(fetch,
+    if (diag) NoteResolveFailure(fetch,
                        (rt_lookup_ && rt_lookup_->IsGpuProduced(fetch.base_address, fetch.width,
                                                                 fetch.height))
                            ? "bridge: IsGpuProduced but no matching resolved target"
@@ -403,7 +408,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // resolve registers this address at 1280x720 -- so the expectation is bytes
   // nobody produced. Sampling four spread-out dwords distinguishes "uniform
   // never-written fill" from "real image".
-  if (fetch.base_address == 0x06ACD000u && fetch.width >= 1024) {
+  if (diag && fetch.base_address == 0x06ACD000u && fetch.width >= 1024) {
     static unsigned n = 0;
     ++n;
     if (n <= 4 || (n % 600) == 0) {

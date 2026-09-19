@@ -218,6 +218,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
                     "DEVICE_HUNG TDR) is the one that times out; its vs/ps identity is written "
                     "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.");
 
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
 REXCVAR_DECLARE(bool, mcla_native_gfx_guest_clear);
 REXCVAR_DECLARE(bool, mcla_native_gfx_reclear);
@@ -1357,6 +1358,10 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   if (g_cap.finished || draw_limit == 0) {
     return;
   }
+  // The TEMP DIAG / TEMP INSTRUMENTATION blocks below run only with the master
+  // switch on, or in the one-shot capture, whose report is built from them.
+  // Continuous mode is the one that has to run at frame rate.
+  const bool diag = REXCVAR_GET(mcla_native_gfx_diag) || !g_cap.continuous;
   // Continuous mode ends a frame from the boundary hook (ResetContinuousFrame),
   // never from inside a draw, so the one-shot finish paths are skipped.
   if (g_cap.started && g_cap.end_requested && !g_cap.continuous) {
@@ -1454,7 +1459,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // TEMP DIAG (remove once the guard-band path is settled): every distinct
   // viewport/scissor shape, once each, so the registers behind this can be
   // checked against a real run rather than inferred from one capture.
-  {
+  if (diag) {
     static std::set<uint64_t> seen_vp_shape;
     static uint32_t lines = 0;
     const uint64_t sig = (uint64_t(uint32_t(hv.width)) << 40) ^
@@ -1646,7 +1651,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     if (is_display) {
       ++g_cap.rej_unsup_display;
     }
-    {
+    if (diag) {
       static std::set<uint64_t> seen_unsup;
       for (const UnsuppliedAttribute& u : geom.unsupplied) {
         const uint64_t sig = (uint64_t(u.semantic_name ? u.semantic_name[0] : '?') << 32) ^
@@ -1740,7 +1745,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // xPropFoliage__PSGenerateImposterNight writes oC0 (impostor colour) AND oC1
   // (the packed normal the impostor shader later unpacks with *2-1), which is
   // exactly the atlas the flat canopy would come from.
-  if ((rs.color_mask >> 4) != 0u) {
+  if (diag && (rs.color_mask >> 4) != 0u) {
     static std::set<uint64_t> seen_mrt;
     const uint64_t sig = ps_id ^ (uint64_t(rs.color_mask) << 40);
     if (seen_mrt.size() < 64 && seen_mrt.insert(sig).second) {
@@ -1849,7 +1854,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // that made the menus black earlier -- the .y is 0, the fetch reads a thin
   // strip at the top of the mask instead of the circle, and a mask of 1 makes
   // the subtract erase nothing: the map keeps its square corners.
-  if (cfg.width == 220 && cfg.height == 220) {
+  if (diag && cfg.width == 220 && cfg.height == 220) {
     static std::set<uint64_t> seen_mm;
     uint64_t sig = uint64_t(bound.input_layout.size());
     for (const InputElement& e : bound.input_layout) {
@@ -2318,7 +2323,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   //
   // Read-only, deduplicated by fetch address, and it never touches the GPU --
   // the point is precisely to compare against what the GPU was given.
-  if (!inline_geom && !bound.streams.empty()) {
+  if (diag && !inline_geom && !bound.streams.empty()) {
     // The declaration's own NORMAL slot. Hardcoding +20 would only be right for
     // xPed; asking the layout makes this work for every skinned draw.
     uint32_t norm_off = 0xFFFFFFFFu, norm_slot = 0;
@@ -2495,7 +2500,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // RB_COLOR_INFO exponent bias looks like -- the Xenos pre-divides by 2^bias
   // on write and the resolve undoes it. Same class as
   // project-mcla-color-exp-bias.
-  if (cfg.width == 256u && cfg.height == 256u && cfg.rt_format != 28u) {
+  if (diag && cfg.width == 256u && cfg.height == 256u && cfg.rt_format != 28u) {
     static std::set<uint64_t> seen_bias;
     const int32_t bias = ReadColorExpBias(base, dev);
     const uint64_t sig = (uint64_t(uint32_t(bias)) << 32) ^ cfg.rt_format ^ ps_id;
@@ -2519,7 +2524,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // their output path, so the difference is not the code -- it is what they are
   // fed. Both sample ReflectionSampler and WaveFoamSampler; a reflection target
   // that comes back white is the shape of the symptom.
-  {
+  if (diag) {
     const bool is_water = ps_id == 0x35F41762995C91B9ull ||   // seed do reflexo
                           ps_id == 0xC5C95CAE57E0D1C4ull ||   // xCityOceanWater
                           ps_id == 0x3E5818BE5A70E06Bull ||   // xCityOceanWaterLOD
@@ -2606,7 +2611,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // whatever it renders into. RenderDoc cannot answer this -- its
   // GetReadOnlyResources does not enumerate a bindless bind, so a capture shows
   // these draws with no texture at all. The runtime knows the fetch, so it can.
-  for (uint32_t i = 0; i < bound_tex_count; ++i) {
+  for (uint32_t i = 0; diag && i < bound_tex_count; ++i) {
     const BoundTexture& b = bound_tex[i];
     if (b.fetch.width != 960u || b.fetch.height != 640u) continue;
     static uint32_t seen_panel[64];
@@ -2786,7 +2791,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // the VIEWPORT -- so that draw was excluded from the very census that
   // concluded "the geometry is never emitted". Any colour pass now, with the
   // pass shape and the guest's surface pitch printed alongside.
-  if (vtx_base && vtx_stride >= 16u && vtx_size >= vtx_stride &&
+  if (diag && vtx_base && vtx_stride >= 16u && vtx_size >= vtx_stride &&
       IsGuestRangeReadable(vtx_base, std::min<uint32_t>(vtx_size, 6u * vtx_stride)) &&
       cfg.rt_format == 28u) {
     // Deduplicated by rectangle and texture, not capped by count: the HUD
@@ -2894,7 +2899,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // rectangle filter and no assumption about where POSITION sits in the vertex,
   // because every earlier dump that DID assume one reported "no menu geometry"
   // and that conclusion turned out to rest on the filter, not on the frame.
-  if (cfg.rt_format == 28u && cfg.width >= 1024u) {
+  if (diag && cfg.rt_format == 28u && cfg.width >= 1024u) {
     static uint32_t seen_dd[512];
     static uint32_t seen_dd_n = 0;
     const uint32_t taddr = bound_tex_count ? bound_tex[0].fetch.base_address : 0u;
@@ -2924,7 +2929,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // read the index out of the shader's constants but cannot follow a bindless
   // heap slot to its resource; the runtime can. This is how a capture's
   // "TextureSampler_Texture2DDescriptorIndex = N" becomes a guest address.
-  if (cfg.rt_format == 28u && cfg.width >= 640u) {
+  if (diag && cfg.rt_format == 28u && cfg.width >= 640u) {
     for (uint32_t i = 0; i < bound_tex_count; ++i) {
       const BoundTexture& b = bound_tex[i];
       static uint32_t seen_srv[256];
@@ -2950,7 +2955,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // The pause menu draws its panel with a textured shader; a census of the
   // capture found twelve such draws on the display target with NO texture bound
   // at all, which is a different failure from binding the wrong one.
-  if (is_display) {
+  if (diag && is_display) {
     static uint32_t seen[192];
     static uint32_t seen_n = 0;
     if (bound_tex_count == 0) {
@@ -3002,7 +3007,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   //
   // MMSAMP: the sampler the mask is read through. Only WHICH texture sat in
   // fetch slot 0 was ever logged, never how it is filtered or clamped.
-  {
+  if (diag) {
     static std::set<uint64_t> seen_src;
     for (uint32_t i = 0; i < bound_tex_count; ++i) {
       const BoundTexture& b = bound_tex[i];
@@ -3031,10 +3036,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   g_texture_stats_for_report = textures.stats();
   uint32_t resolved_tex = 0;
   for (uint32_t i = 0; i < bound_tex_count; ++i) {
-    NoteTexture(bound_tex[i].fetch.format, bound_tex[i].resolved);
+    if (diag) {
+      NoteTexture(bound_tex[i].fetch.format, bound_tex[i].resolved);
+    }
     if (bound_tex[i].resolved) {
       ++resolved_tex;
-    } else {
+    } else if (diag) {
       NoteUnresolved(bound_tex[i]);
     }
   }
@@ -3113,7 +3120,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       (rs.pa_su_vtx_cntl & uint32_t(1)) == xenos_pix_center_d3d_zero;
   if (REXCVAR_GET(mcla_native_gfx_half_pixel) && pix_center_zero && hv.width > 0.0f &&
       hv.height > 0.0f) {
-  {  // TEMP DIAG (A2M): quem pede alpha-to-mask, e com que referencia de alpha.
+  if (diag) {  // TEMP DIAG (A2M): quem pede alpha-to-mask, e com que referencia de alpha.
     static std::set<uint64_t> seen_a2m;
     const uint64_t combo = (uint64_t(cfg.width) << 40) | (uint64_t(cfg.height) << 16) |
                            (rs.color_control & 0x1Fu);
@@ -3127,7 +3134,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       }
     }
   }
-    {  // TEMP DIAG (PIXCENTER): distribution of PA_SU_VTX_CNTL per pass.
+    if (diag) {  // TEMP DIAG (PIXCENTER): distribution of PA_SU_VTX_CNTL per pass.
       static std::set<uint64_t> seen;
       const uint64_t combo = (uint64_t(cfg.width) << 40) | (uint64_t(cfg.height) << 16) |
                              (rs.pa_su_vtx_cntl & 0xFFFFu);
@@ -3174,7 +3181,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // receives: which texture landed in fetch slot 0 (the shader MaskSampler),
   // whether it resolved, the premult mode folded into the shader output, and
   // the alpha threshold -- the shader clips on `oC0.w - g_AlphaThreshold`.
-  if (cfg.width == 220 && cfg.height == 220) {
+  if (diag && cfg.width == 220 && cfg.height == 220) {
     // Order matters and was never checked: a punch that runs BEFORE the road
     // draws erases an empty buffer, and the roads are then painted over
     // everything -- indistinguishable from a punch that does nothing.
@@ -3469,7 +3476,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // dump it. Every previous read of this target was taken in a frame that did
   // NOT contain its draws, so it showed stale content -- which is why "the
   // punch does not erase the corners" was never actually measured.
-  if (cfg.width == 220 && cfg.height == 220) {
+  if (diag && cfg.width == 220 && cfg.height == 220) {
     g_minimap_key = PooledKey(cfg);
     g_minimap_seen = true;
   }
@@ -3483,13 +3490,15 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // TEMP INSTRUMENTATION: accumulated per pass, not sampled from one draw.
   // Sampling the first draw was misleading: it is a depth prepass with the
   // colour mask at zero, which looks identical to a pass that never writes.
-  NotePassDraw(cfg.width, cfg.height, cfg.rt_format, rs.color_mask);
+  if (diag) {
+    NotePassDraw(cfg.width, cfg.height, cfg.rt_format, rs.color_mask);
+  }
   // TEMP DIAG (remove after): what the GUEST asks for in RB_SURFACE_INFO
   // against what the pool actually allocates. PooledSampleCountFields forces
   // the cvar count onto the HDR scene target and ONE sample everywhere else,
   // so any pass the guest multisamples and this line reports as pooled=1 is a
   // pass with no antialiasing on the native path.
-  {
+  if (diag) {
     static std::set<uint64_t> seen_msaa;
     // The pitch is part of the signature. Without it, two passes of the same
     // viewport shape but DIFFERENT surface widths collapse into one line, and
@@ -3541,7 +3550,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // TEMP SKYPROBE: report the state of the sky-dome / mini-sky passes once each
   // so the reason the sky region stays at the clear colour can be pinned down
   // (depth-reject vs cull vs wrong target). Remove after the skybox is fixed.
-  {
+  if (diag) {
     static const uint64_t kSkyVs[] = {
         0x7E5802436ED6C520ull /*vs_main*/,     0xBA77A519EF33AFBDull /*vs_main_fast*/,
         0xB869978B200BFF5Bull /*vs_MiniSky*/,  0xAEAF86AD49C20C9Aull /*vs_BlurSky*/,
@@ -3715,7 +3724,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // the two ever disagree a draw rasterises through one rectangle into a
   // surface of another size -- measured once on the pause menu composite, whose
   // scissor read 960x640 while the bound RTV was the 1280x720 composite.
-  if (target->color) {
+  if (diag && target->color) {
     const D3D12_RESOURCE_DESC rd = target->color->GetDesc();
     if (uint32_t(rd.Width) != target->key.width || rd.Height != target->key.height) {
       static uint32_t n = 0;
@@ -3745,7 +3754,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // lands inside its own target, and `y_flipped` is compensated only as a
   // winding change in the PSO -- never geometrically -- so a fullscreen quad
   // can be recorded, counted, and still rasterise nowhere visible.
-  {
+  if (diag) {
     static std::set<uint64_t> seen_vp;
     const uint64_t sig = (uint64_t(uint32_t(vp.TopLeftX)) << 44) ^
                          (uint64_t(uint32_t(vp.TopLeftY)) << 32) ^
@@ -3785,7 +3794,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                                      binder.sampler_heap()->GetGPUDescriptorHandleForHeapStart());
 
   // TEMP INSTRUMENTATION: the shadow pass is the only one with ds_format 45.
-  if (cfg.ds_format == 45 && g_shadow_record_count < kMaxShadowRecords) {
+  if (diag && cfg.ds_format == 45 && g_shadow_record_count < kMaxShadowRecords) {
     ShadowDrawRecord& r = g_shadow_records[g_shadow_record_count];
     r.index = g_shadow_record_count;
     ++g_shadow_record_count;
@@ -4106,7 +4115,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       static std::set<uint64_t> seen_short;
       const uint64_t sig = (uint64_t(primitive_type) << 48) ^ (uint64_t(view_verts) << 24) ^
                            uint64_t(expanded_indices);
-      if (seen_short.size() < 32 && seen_short.insert(sig).second) {
+      if (diag && seen_short.size() < 32 && seen_short.insert(sig).second) {
         REXLOG_WARN(
             "[native_gfx] expanded draw outruns its vertex view: prim={} vertex_count={} "
             "expanded_indices={} view_bytes={} stride={} view_verts={} ratio={:.1f} "
@@ -4514,7 +4523,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // keyed on ds_format too, so a composite pass using a different depth format
     // gets its own target of the same size and colour format, and what we
     // present is one that was only ever cleared.
-    if (is_display) {
+    if (diag && is_display) {
       static std::set<uint64_t> seen;
       const RenderTargetKey k = PooledKey(cfg);
       const uint64_t sig = (uint64_t(k.rt_format) << 40) ^ (uint64_t(k.ds_format) << 24) ^
@@ -5306,7 +5315,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // but its clear colour, which reads as "flat" for a reason that has nothing
     // to do with lighting. Re-dump periodically so a LATE frame -- streaming
     // settled, exposure converged -- can be compared against it.
-    if ((!dumped && seen >= 4u) || (seen % 900u) == 0u) {
+    if (REXCVAR_GET(mcla_native_gfx_diag) && ((!dumped && seen >= 4u) || (seen % 900u) == 0u)) {
       dumped = true;
       // Readback (the pass we present) and the anchor (main scene) side by side.
       RenderTarget* anchor = g_cap.has_anchor ? render_targets.Find(g_cap.anchor_key) : nullptr;
