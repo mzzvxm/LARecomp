@@ -362,6 +362,10 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
 
   const uint32_t shadow = dev + kDevFetchShadowOffset;
   phase_mark(1);
+  // One allocation each instead of a reallocation per push: this runs for
+  // every draw, and the growth showed up in the render thread's heap time.
+  s.input_layout.reserve(velem_count);
+  s.streams.reserve(4);
 
   for (uint32_t i = 0; i < velem_count; ++i) {
     const ShaderDatabase::VertexElementRef& ve = velems[i];
@@ -630,7 +634,26 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
   phase_mark(3);
 
   // --- resolve to native resources (skipped in guest-only diagnostic mode)
-  if (buffers && context && cl) {
+  if (buffers && context && cl &&
+      !ResolveGeometryBuffers(s, element_count, start_element, *buffers, *context, cl,
+                              inline_geometry)) {
+    return s;
+  }
+
+  phase_mark(4);
+
+  s.complete = true;
+  return s;
+}
+
+bool ResolveGeometryBuffers(GeometrySnapshot& s, uint32_t element_count,
+                            uint32_t start_element, BufferCache& buffers_ref,
+                            D3D12Context& context_ref, ID3D12GraphicsCommandList* cl,
+                            const InlineGeometry* inline_geometry) {
+  BufferCache* buffers = &buffers_ref;
+  D3D12Context* context = &context_ref;
+  const bool diag = REXCVAR_GET(mcla_native_gfx_diag);
+  {
     for (VertexStream& stream : s.streams) {
       if (stream.zero_fill) {
         // Shared, permanently zero, bound with stride 0. Not routed through the
@@ -639,7 +662,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
         stream.resolved = stream.gpu_address != 0;
         if (!stream.resolved) {
           s.failure = "zero vertex stream unavailable";
-          return s;
+          return false;
         }
         continue;
       }
@@ -667,7 +690,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
       if (!buffers->Resolve(*context, cl, stream.guest_base, stream.guest_size,
                             SwapForEndian(stream.endian), b)) {
         s.failure = "vertex buffer could not be resolved";
-        return s;
+        return false;
       }
       stream.resource_base = b.region_base;
       stream.resource_size = b.region_size;
@@ -680,17 +703,15 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
       if (!buffers->Resolve(*context, cl, s.index_guest_base, s.index_buffer_bytes,
                             SwapForEndian(s.index_endian), b)) {
         s.failure = "index buffer could not be resolved";
-        return s;
+        return false;
       }
       s.index_gpu_address = b.gpu_address;
     }
-    ProbeIndexRangeAgainstStream(s, element_count, start_element);
+    if (diag) {
+      ProbeIndexRangeAgainstStream(s, element_count, start_element);
+    }
   }
-
-  phase_mark(4);
-
-  s.complete = true;
-  return s;
+  return true;
 }
 
 }  // namespace mcla::native_gfx

@@ -189,6 +189,17 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
                                        ::ID3D12GraphicsCommandList* cl,
                                        const InlineGeometry* inline_geometry = nullptr);
 
+// The second half of BuildGeometrySnapshot on its own: resolves the streams
+// and the index buffer of an already-described snapshot to native buffers.
+// The draw path describes each draw once, to reject it early, and then only
+// needs this -- rebuilding the whole description a second time (microcode
+// identity, declaration match, fresh vectors) was pure repetition.
+// Returns false and sets `failure` when a buffer cannot be resolved.
+bool ResolveGeometryBuffers(GeometrySnapshot& s, uint32_t element_count,
+                            uint32_t start_element, BufferCache& buffers,
+                            D3D12Context& context, ::ID3D12GraphicsCommandList* cl,
+                            const InlineGeometry* inline_geometry);
+
 // Native primitive topology for a Xenos primitive type. Returns 0
 // (D3D_PRIMITIVE_TOPOLOGY_UNDEFINED) for types with no direct equivalent —
 // kQuadList and kRectangleList need index/geometry expansion, which the draw

@@ -1630,7 +1630,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   }
 
   const auto t_state = ProfileClock::now();
-  const GeometrySnapshot geom =
+  GeometrySnapshot geom =
       BuildGeometrySnapshot(base, dev, primitive_type, element_count, start_element, base_vertex,
                             indexed, shaders, nullptr, nullptr, nullptr, inline_geom);
   ProfileAdd(g_profile.state_us, t_state);
@@ -1842,9 +1842,18 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // or the frame livelocks exactly as described at the constant upload.
   const uint64_t buffer_upload_failures_before = buffers.stats().upload_failures;
   const auto t_geom = ProfileClock::now();
-  const GeometrySnapshot bound =
-      BuildGeometrySnapshot(base, dev, primitive_type, element_count, start_element, base_vertex,
-                            indexed, shaders, &buffers, &context, cl, inline_geom);
+  // The description built for the reject checks above is reused; only the
+  // buffers are resolved now. The one field that differs is the texcoord swap
+  // mask, which host-built rect vertices (already in host order) must not
+  // carry -- BuildGeometrySnapshot derives it the same way.
+  GeometrySnapshot& bound = geom;
+  if (inline_geom && inline_geom->host_gpu_address) {
+    bound.swapped_texcoords = 0;
+  }
+  if (!ResolveGeometryBuffers(bound, element_count, start_element, buffers, context, cl,
+                              inline_geom)) {
+    bound.complete = false;
+  }
   ProfileAdd(g_profile.geom_us, t_geom);
   // TEMP DIAG (remove after): every draw into the 220x220 minimap target, with
   // the vertex layout it actually got. The circular punch there is
@@ -3902,7 +3911,10 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   } else {
     cl->IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY(PrimitiveTypeToTopology(primitive_type)));
   }
-  std::vector<D3D12_VERTEX_BUFFER_VIEW> vbvs;
+  // Reused, like the constant banks above: one draw at a time on this thread,
+  // so keeping the capacity costs nothing and saves an allocation per draw.
+  static std::vector<D3D12_VERTEX_BUFFER_VIEW> vbvs;
+  vbvs.clear();
   for (const VertexStream& stream : bound.streams) {
     D3D12_VERTEX_BUFFER_VIEW v = {};
     v.BufferLocation = stream.gpu_address;
