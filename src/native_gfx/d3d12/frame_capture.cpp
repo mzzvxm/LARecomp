@@ -3518,7 +3518,10 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   ProfileAdd(g_profile.const_us, t_const);
 
   const auto t_pso = ProfileClock::now();
-  PsoKey key = PipelineCache::MakeKey(bound, rs, vs_id, ps_id, vs_spec, ps_spec);
+  // Reused across draws so the key's input layout keeps its storage: built
+  // fresh it was one heap allocation per draw.
+  static PsoKey key;
+  PipelineCache::MakeKeyInto(key, bound, rs, vs_id, ps_id, vs_spec, ps_spec);
   // A PSO whose sample count disagrees with the bound target is rejected
   // outright, so this has to follow the same rule the pool key does. Same for
   // the render-target count: a PSO declaring one target cannot be used with two

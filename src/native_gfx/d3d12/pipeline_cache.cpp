@@ -224,6 +224,19 @@ PsoKey PipelineCache::MakeKey(const GeometrySnapshot& geometry,
                               uint64_t ps_identity, uint32_t vs_spec_mask,
                               uint32_t ps_spec_mask) {
   PsoKey k;
+  MakeKeyInto(k, geometry, render_state, vs_identity, ps_identity, vs_spec_mask, ps_spec_mask);
+  return k;
+}
+
+void PipelineCache::MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
+                                const GuestRenderState& render_state, uint64_t vs_identity,
+                                uint64_t ps_identity, uint32_t vs_spec_mask,
+                                uint32_t ps_spec_mask) {
+  // Every scalar below is assigned from scratch; only the layout's storage is
+  // taken over from `out`, so nothing of the previous draw's key survives.
+  PsoKey k;
+  k.input_layout = std::move(out.input_layout);
+  k.input_layout.clear();
   k.vs_identity = vs_identity;
   k.ps_identity = ps_identity;
   k.vs_spec_mask = vs_spec_mask;
@@ -313,7 +326,7 @@ PsoKey PipelineCache::MakeKey(const GeometrySnapshot& geometry,
     p.aligned_byte_offset = e.aligned_byte_offset;
     k.input_layout.push_back(p);
   }
-  return k;
+  out = std::move(k);
 }
 
 bool PipelineCache::Initialize(D3D12Context& context) {

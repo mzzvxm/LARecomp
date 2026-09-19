@@ -124,6 +124,13 @@ class PipelineCache {
   ID3D12RootSignature* root_signature() const { return root_signature_.Get(); }
 
   // Builds the key for a draw from the pieces already captured.
+  // Fills `out` instead of returning a fresh key, so the caller can keep one
+  // key across draws and with it the input layout's capacity: MakeKey ran once
+  // per draw and its vector was one heap allocation each time.
+  static void MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
+                          const GuestRenderState& render_state, uint64_t vs_identity,
+                          uint64_t ps_identity, uint32_t vs_spec_mask, uint32_t ps_spec_mask);
+
   static PsoKey MakeKey(const GeometrySnapshot& geometry, const GuestRenderState& render_state,
                         uint64_t vs_identity, uint64_t ps_identity, uint32_t vs_spec_mask,
                         uint32_t ps_spec_mask);
