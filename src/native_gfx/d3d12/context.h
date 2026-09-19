@@ -29,7 +29,14 @@ class D3D12Provider;
 
 namespace mcla::native_gfx {
 
-inline constexpr uint32_t kFramesInFlight = 2;
+// Submissions in flight, NOT frames: a frame is submitted in batches of
+// kDrawsPerBatch, about fourteen of them in gameplay, and BeginFrame waits on
+// the fence of the slot it is about to reuse. At two slots the render thread
+// blocks until the batch before last has finished on the GPU; measured, that
+// wait was 8% of the thread (gpu_wait 1.2-1.8 ms a frame) while the GPU itself
+// was not the limit. Each slot costs one allocator plus one upload ring buffer
+// (mcla_native_gfx_upload_mb, 64 MiB by default).
+inline constexpr uint32_t kFramesInFlight = 4;
 
 class D3D12Context {
  public:
