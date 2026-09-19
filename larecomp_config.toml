@@ -25423,7 +25423,7 @@ after_instruction = true
 [[midasm_hook]]
 address = 0x8217A700
 name = "Patch_SingleTile"
-registers = ["r7", "r8", "r25", "r28"]
+registers = ["r7", "r8", "r17", "r25", "r28"]
 
 # EDRAM capacity bypass for single-tile mode — sub_82410D70 (CreateSurface)
 # rejects allocations past 0x800 tiles (real console EDRAM) at 0x82410E34;

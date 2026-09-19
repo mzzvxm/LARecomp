@@ -1937,8 +1937,14 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
 // also stored at 0x827D42A4 before this point — overwrite it to 1 for the
 // resolve/end path that reads the global. Needs the SDK's enlarged virtual
 // EDRAM (720p 2xMSAA color+depth = 2880 tiles > the real 2048).
-void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCRegister& r25, PPCRegister& r28) {
     if (!REXCVAR_GET(single_tile)) return;
+
+    // BadassBaboon: ONLY apply single_tile forcing to the main screen scene (a1 == nullptr / 0)!
+    // In sub_8217A470, r17 preserves a1 (grcRenderTarget*). When r17 != 0, an offscreen
+    // render target (pause snapshot, boot orbital camera, bloom, shadows) is being rendered.
+    // Forcing 1280x720 single tile onto offscreen targets breaks their layout and EDRAM allocation.
+    if (r17.u64 != 0) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
@@ -1966,10 +1972,9 @@ bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
     const uint32_t base = static_cast<uint32_t>(r3.u32);
     const uint32_t size = static_cast<uint32_t>(r30.u32);
     const uint32_t end  = static_cast<uint32_t>(r11.u32);
-    MC_INFO("[edram] CreateSurface: base={} size={} end={}", base, size, end);
     // Base tile must fit in the 12-bit hardware register field (max 4095).
-    // The guest allocator table (sub_824252A8) supports up to 6144 tiles total.
-    return base < 4096 && end <= 6144;
+    // The SDK's virtual EDRAM is 4096 tiles (20 MB).
+    return base < 4096 && end <= 4096;
 }
 
 // BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.
@@ -4684,7 +4689,7 @@ bool Patch_AspectRatio_82233EB4(PPCRegister& f0) { return false; }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12) { return false; }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) { return false; }
-void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {}
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCRegister& r25, PPCRegister& r28) {}
 bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) { return false; }
 bool Patch_FenceSpinThrottle() { return false; }
 bool Patch_DebugCamGate() { return false; }

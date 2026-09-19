@@ -27,7 +27,7 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24);
 
 void Patch_DeltaTimePre();
 void Patch_DeltaTime(PPCRegister& r24);
-void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28);
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCRegister& r25, PPCRegister& r28);
 bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11);
 bool Patch_FenceSpinThrottle();
 bool Patch_DebugCamGate();
