@@ -65,6 +65,20 @@ uint64_t Hash64(const void* data, size_t size) {
   return h;
 }
 
+// Slot cache key hash: the six fetch dwords as three 64-bit words, mixed with
+// multiplies. The key is compared byte for byte on every probe, so this only
+// has to spread entries, not be collision-proof.
+inline uint64_t SlotKeyHash(const uint32_t* k) {
+  uint64_t a, b, c;
+  std::memcpy(&a, k, 8);
+  std::memcpy(&b, k + 2, 8);
+  std::memcpy(&c, k + 4, 8);
+  uint64_t h = a * 0x9E3779B97F4A7C15ull;
+  h = (h ^ (h >> 32) ^ b) * 0xC2B2AE3D27D4EB4Full;
+  h = (h ^ (h >> 29) ^ c) * 0x165667B19E3779F9ull;
+  return h ^ (h >> 32);
+}
+
 }  // namespace
 
 bool TextureBinder::Initialize(D3D12Context& context) {
@@ -99,6 +113,8 @@ void TextureBinder::Shutdown(D3D12Context& context) {
   (void)context;
   srv_cache_.clear();
   sampler_cache_.clear();
+  slot_cache_.clear();
+  ++slot_cache_generation_;
   fallback_texture_.Reset();
   fallback_ready_ = false;
   fallback_filled_ = false;
@@ -129,6 +145,8 @@ void TextureBinder::BeginFrame() {
   // Descriptor indices are allocated out of THIS frame's half, so every index
   // the memo holds names a descriptor that is about to be overwritten.
   memo_valid_ = false;
+  // Same for the slot cache: a new generation makes every entry stale at once.
+  ++slot_cache_generation_;
   // The fallback texture persists, but its descriptor lives in the heap and must
   // be re-created in this frame's half; force a re-alloc on next FallbackSrv.
   fallback_srv_valid_ = false;
@@ -414,6 +432,47 @@ uint32_t TextureBinder::FallbackSrv(D3D12Context& context, ID3D12GraphicsCommand
   return fallback_srv_;
 }
 
+TextureBinder::SlotCacheEntry* TextureBinder::SlotCacheFind(const uint32_t* key) {
+  constexpr uint32_t kMask = kSlotCacheSize - 1;
+  uint32_t i = uint32_t(SlotKeyHash(key)) & kMask;
+  for (uint32_t probe = 0; probe < kSlotCacheProbe; ++probe, i = (i + 1) & kMask) {
+    SlotCacheEntry& e = slot_cache_[i];
+    if (e.generation != slot_cache_generation_) {
+      // Nothing is deleted within a generation, so the first entry that is not
+      // live ends every probe sequence that could hold this key.
+      return nullptr;
+    }
+    if (std::memcmp(e.key, key, sizeof(e.key)) == 0) {
+      return &e;
+    }
+  }
+  return nullptr;
+}
+
+void TextureBinder::SlotCacheStore(const uint32_t* key, const BoundTexture& bound) {
+  constexpr uint32_t kMask = kSlotCacheSize - 1;
+  uint32_t i = uint32_t(SlotKeyHash(key)) & kMask;
+  for (uint32_t probe = 0; probe < kSlotCacheProbe; ++probe, i = (i + 1) & kMask) {
+    SlotCacheEntry& e = slot_cache_[i];
+    if (e.generation == slot_cache_generation_) {
+      if (std::memcmp(e.key, key, sizeof(e.key)) == 0) {
+        return;  // bound twice in one draw; already stored
+      }
+      continue;
+    }
+    std::memcpy(e.key, key, sizeof(e.key));
+    e.generation = slot_cache_generation_;
+    e.srv_index = bound.srv_descriptor_index;
+    e.sampler_index = bound.sampler_descriptor_index;
+    e.resource = bound.resource;
+    e.source = bound.source;
+    e.fetch = bound.fetch;
+    e.sampler = bound.sampler;
+    return;
+  }
+  ++stats_.slot_overflow;
+}
+
 void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                             const uint8_t* base, uint32_t dev, TextureCache& textures,
                             uint8_t* shared_bytes, BoundTexture* out, uint32_t* out_count,
@@ -438,10 +497,30 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
   // constant has to break the memo. Contents changing is fine -- the SRV still
   // names the same resource and the GPU sees the new data -- so only the
   // counters that mean "a different resource now backs this address" are here.
+  //
+  // With the slot cache on, a hit skips TextureCache::Resolve and with it the
+  // drain of queued guest writes Resolve does first, so the drain happens here,
+  // and the two ways the texture cache DROPS an entry join the guard: the memo
+  // could live without them because it only ever spans two consecutive draws.
+  const bool slot_cache = REXCVAR_GET(mcla_native_gfx_slot_cache);
+  if (slot_cache) {
+    textures.DrainPendingInvalidations(context);
+  }
   const TextureCache::Stats& tc = textures.stats();
-  const uint64_t guard = tc.uploads + tc.evictions + tc.bridge_refusals +
-                         tc.stale_gpu_addresses + tc.decode_failures +
-                         tc.unsupported_format + volatile_guard;
+  uint64_t guard = tc.uploads + tc.evictions + tc.bridge_refusals +
+                   tc.stale_gpu_addresses + tc.decode_failures +
+                   tc.unsupported_format + volatile_guard;
+  if (slot_cache) {
+    guard += tc.invalidated + tc.verify_catches;
+    if (slot_cache_.empty()) {
+      slot_cache_.resize(kSlotCacheSize);
+    }
+    if (guard != slot_cache_guard_) {
+      slot_cache_guard_ = guard;
+      ++slot_cache_generation_;
+      ++stats_.slot_flushes;
+    }
+  }
 
   const bool memo_enabled = REXCVAR_GET(mcla_native_gfx_bind_memo);
   if (memo_enabled && memo_valid_ && memo_dev_ == dev && memo_guard_ == guard &&
@@ -473,6 +552,32 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
     const uint32_t* d = shadow_dwords + slot * kFetchGroupDwords;
     if ((d[0] & 0x3u) != 2u) {
       continue;  // not a texture fetch constant
+    }
+    if (slot_cache) {
+      if (const SlotCacheEntry* ce = SlotCacheFind(d)) {
+        ++stats_.slot_hits;
+        if (ce->source == TextureSource::kRenderTargetBridge) {
+          ++stats_.memo_bridge_binds;
+        }
+        if (shared_bytes) {
+          const uint32_t table_index = ce->srv_index | (ce->fetch.gamma ? 0x80000000u : 0u);
+          std::memcpy(shared_bytes + SharedTextureIndexByteOffset(0, slot), &table_index, 4);
+          std::memcpy(shared_bytes + SharedSamplerIndexByteOffset(slot), &ce->sampler_index, 4);
+        }
+        if (out && out_count && *out_count < out_capacity) {
+          BoundTexture& b = out[(*out_count)++];
+          b.fetch_slot = slot;
+          b.fetch = ce->fetch;
+          b.sampler = ce->sampler;
+          b.srv_descriptor_index = ce->srv_index;
+          b.sampler_descriptor_index = ce->sampler_index;
+          b.resource = ce->resource;
+          b.resolved = true;
+          b.source = ce->source;
+        }
+        continue;
+      }
+      ++stats_.slot_misses;
     }
     // The fetch constant's four 2-bit sign fields and its exponent bias were
     // measured over 40.6 million slot decodes of MCLA, and the result is why
@@ -558,6 +663,7 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
       }
       continue;
     }
+    const uint64_t exhausted_before = stats_.srv_exhausted + stats_.sampler_exhausted;
     const uint32_t srv_index = AcquireSrv(context, resource, fetch, source);
     const uint32_t sampler_index = AcquireSampler(context, sampler);
     if (source == TextureSource::kRenderTargetBridge) {
@@ -583,16 +689,22 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
       std::memcpy(shared_bytes + SharedSamplerIndexByteOffset(slot), &sampler_index, 4);
     }
 
+    BoundTexture bound;
+    bound.fetch_slot = slot;
+    bound.fetch = fetch;
+    bound.sampler = sampler;
+    bound.srv_descriptor_index = srv_index;
+    bound.sampler_descriptor_index = sampler_index;
+    bound.resource = resource;
+    bound.resolved = true;
+    bound.source = source;
     if (out && out_count && *out_count < out_capacity) {
-      BoundTexture& b = out[(*out_count)++];
-      b.fetch_slot = slot;
-      b.fetch = fetch;
-      b.sampler = sampler;
-      b.srv_descriptor_index = srv_index;
-      b.sampler_descriptor_index = sampler_index;
-      b.resource = resource;
-      b.resolved = true;
-      b.source = source;
+      out[(*out_count)++] = bound;
+    }
+    // An exhausted heap hands back index 0, a wrong picture that must not
+    // outlive the draw that got it.
+    if (slot_cache && stats_.srv_exhausted + stats_.sampler_exhausted == exhausted_before) {
+      SlotCacheStore(d, bound);
     }
   }
 

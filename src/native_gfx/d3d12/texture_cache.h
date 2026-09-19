@@ -154,6 +154,11 @@ class TextureCache {
 
   const Stats& stats() const { return stats_; }
 
+  // Applies queued guest writes now. Resolve does this itself; a caller that
+  // can skip Resolve -- the binder's slot cache -- calls it first, so a cache
+  // hit never serves an entry a queued write has already invalidated.
+  void DrainPendingInvalidations(D3D12Context& context) { ApplyPendingInvalidations(context); }
+
   // Resident entries, for the memory census.
   size_t entry_count() const { return entries_.size(); }
 

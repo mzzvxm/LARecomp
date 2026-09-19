@@ -5219,7 +5219,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      "| tex hit=%llu up=%llu rt=%llu evict=%llu verify=%llu CAUGHT=%llu"
                      " texinv=%llu/%llu/%llu"
                      "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
-                     "| memo hit=%llu miss=%llu (guard=%llu key=%llu) bridge=%llu\n",
+                     "| memo hit=%llu miss=%llu (guard=%llu key=%llu) bridge=%llu"
+                     " slot=%llu/%llu/%llu/%llu\n",
                      total, ok, no_disp, g_cap.has_anchor ? 1 : 0, g_cap.has_readback ? 1 : 0,
                      display ? display->key.width : 0, display ? display->key.height : 0,
                      display ? display->key.rt_format : 0,
@@ -5292,7 +5293,12 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      D(g_binder_stats_for_report.memo_misses, prev_bind.memo_misses),
                      D(g_binder_stats_for_report.memo_miss_guard, prev_bind.memo_miss_guard),
                      D(g_binder_stats_for_report.memo_miss_key, prev_bind.memo_miss_key),
-                     D(g_binder_stats_for_report.memo_bridge_binds, prev_bind.memo_bridge_binds));
+                     D(g_binder_stats_for_report.memo_bridge_binds, prev_bind.memo_bridge_binds),
+                     // Slot cache: hits / misses / flushes / inserts with no room.
+                     D(g_binder_stats_for_report.slot_hits, prev_bind.slot_hits),
+                     D(g_binder_stats_for_report.slot_misses, prev_bind.slot_misses),
+                     D(g_binder_stats_for_report.slot_flushes, prev_bind.slot_flushes),
+                     D(g_binder_stats_for_report.slot_overflow, prev_bind.slot_overflow));
         prev_buf = g_buffer_stats_for_report;
         prev_tex = g_texture_stats_for_report;
         prev_bind = g_binder_stats_for_report;

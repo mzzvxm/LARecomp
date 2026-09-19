@@ -409,6 +409,18 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_bind_memo, true, "MCLA/NativeGfx",
                     "to get the unconditional rebind back.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
+                    "Cache each texture SLOT bind for the rest of the frame, keyed by its six "
+                    "raw fetch-constant dwords: a hit hands back the descriptor indices without "
+                    "the texture cache, the render-target bridge or the descriptor maps. Slots "
+                    "repeat across draws far more than whole draws do (the shadow atlas, light "
+                    "grids and LUTs are bound by nearly every material draw), which is what the "
+                    "one-draw memo above cannot exploit. Emptied at every frame and whenever the "
+                    "texture cache or render-target pool changes what backs an address; queued "
+                    "invalidations are drained before each draw's lookups. Off restores the "
+                    "resolve on every slot, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_INT32(
     mcla_native_gfx_aniso, -1, "MCLA/NativeGfx",
     "Anisotropic filtering override, with the same numbering as the emulated path's\n"

@@ -31,6 +31,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 #include <rex/ui/d3d12/d3d12_api.h>
 
@@ -118,6 +119,13 @@ class TextureBinder {
     // opposite fixes, and only the first one is ours to tune.
     uint64_t memo_miss_guard = 0;
     uint64_t memo_miss_key = 0;
+    // Per-frame slot cache (see slot_cache_ below): slot binds served from it,
+    // binds that had to resolve, times a guard change emptied it, and inserts
+    // that found no free entry.
+    uint64_t slot_hits = 0;
+    uint64_t slot_misses = 0;
+    uint64_t slot_flushes = 0;
+    uint64_t slot_overflow = 0;
   };
 
   bool Initialize(D3D12Context& context);
@@ -220,6 +228,43 @@ class TextureBinder {
   uint8_t memo_shared_[kMemoSharedBytes] = {};
   BoundTexture memo_out_[kFetchConstantSlotCount] = {};
   uint32_t memo_out_count_ = 0;
+
+  // ---- Per-frame slot cache ------------------------------------------------
+  // The memo above only helps when a draw binds exactly what the previous one
+  // did (measured 10-15%). Slots repeat far more than whole draws do: the
+  // shadow atlas, the light grids and the colour LUTs are bound by nearly every
+  // material draw, interleaved with each draw's own textures. So this caches
+  // one SLOT at a time, keyed by its raw six fetch-constant dwords -- the whole
+  // input DecodeTextureFetch and DecodeSampler read -- and hands back the
+  // descriptor indices and the decoded fetch without touching the texture
+  // cache, the render-target bridge or the descriptor maps.
+  //
+  // Validity is the memo's contract, applied per entry:
+  //   * a generation number; an entry is live only while it matches, and
+  //     BeginFrame() advances it, because descriptor indices come from the
+  //     frame's half of the heap;
+  //   * the same guard the memo uses, plus the texture cache's invalidation
+  //     and verify drops; any change advances the generation;
+  //   * results that fell back to the neutral texture are never stored.
+  // Pending invalidations are drained at the top of BindAll, so a hit can never
+  // skip the drain the resolve path would have done.
+  struct SlotCacheEntry {
+    uint32_t key[kFetchGroupDwords] = {};
+    uint64_t generation = 0;  // 0 never matches: slot_cache_generation_ starts at 1
+    uint32_t srv_index = 0;
+    uint32_t sampler_index = 0;
+    ID3D12Resource* resource = nullptr;
+    TextureSource source = TextureSource::kUnresolved;
+    TextureFetch fetch;
+    SamplerDescription sampler;
+  };
+  static constexpr uint32_t kSlotCacheSize = 4096;  // power of two
+  static constexpr uint32_t kSlotCacheProbe = 8;
+  SlotCacheEntry* SlotCacheFind(const uint32_t* key);
+  void SlotCacheStore(const uint32_t* key, const BoundTexture& bound);
+  std::vector<SlotCacheEntry> slot_cache_;
+  uint64_t slot_cache_generation_ = 1;
+  uint64_t slot_cache_guard_ = ~0ull;
 
   Stats stats_;
 };
