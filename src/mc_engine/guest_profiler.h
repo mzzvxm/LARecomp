@@ -8,15 +8,26 @@
 // per frame. That leaves the recompiled guest code, and nothing we had could
 // say which part of it.
 //
-// This answers that. The recompiled functions are ordinary native code with
-// real PDB symbols named rex_sub_82XXXXXX, so a host sampling profiler
-// attributes time straight back to guest addresses that can be opened in the
-// IDB. A background thread suspends the guest's main thread on a timer, reads
-// its instruction pointer, and resumes. Addresses are stored raw and resolved
-// only when a report is written, so the sampling loop stays cheap.
+// This answers that. A background thread suspends a handful of threads on a
+// timer, reads their instruction pointers, and resumes. Addresses are stored
+// raw and resolved only when a report is written, so the sampling loop stays
+// cheap.
 //
-// Off unless MCLA_PROFILE=1. When off, Tick() is one already-resolved bool
-// test and no thread is ever created.
+// Two things about the design are worth knowing before reading a report:
+//
+// - It samples up to four threads, not one. The thread that drives frames is
+//   pinned (MCLA_PROFILE_THREAD overrides which one); the rest are re-chosen
+//   every report from the per-thread CPU table, because the busy thread
+//   changes with what the game is doing and usually does not exist yet when
+//   the first frame ticks. Sampling only the frame thread produced reports
+//   that were 70% "blocked in a wait" and said nothing about who it waited on.
+//
+// - Guest addresses come from the codegen function table (PPCFuncMappings),
+//   not from symbols, so they are correct on a machine that has no PDB next to
+//   the exe. That is the normal case for a profile taken by somebody else.
+//
+// Off unless MCLA_PROFILE=1 or the guest_profile cvar is set. When off, Tick()
+// is one already-resolved bool test and no thread is ever created.
 
 #include <cstdint>
 
