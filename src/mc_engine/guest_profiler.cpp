@@ -92,6 +92,10 @@ constexpr int kMaxDepth = 24;
 // pointer read, resumed -- and written out with symbols.
 constexpr double kStallSeconds = 8.0;
 
+// A symbol further than this from the sampled address is not that symbol. See
+// Resolver::operator() for why this matters.
+constexpr DWORD64 kMaxSymbolDisp = 0x8000;
+
 // What counts as a slow frame, in ms. 20 is right for a 60 FPS target and far
 // too loose for anything higher: at a 144 cap the budget is 6.9 ms, so a 16 ms
 // frame is already a bad frame while sitting well under a 20 ms threshold.
@@ -177,6 +181,15 @@ class Resolver {
         }
 
 
+        // SymFromAddr returns the nearest PRECEDING public symbol with no
+        // bound on the distance. In a module whose private symbols are absent
+        // -- ucrtbase, or any module whose PDB is not next to the exe -- every
+        // unsymbolized address lands on whatever export happens to sit below
+        // it, and the report grows hot spots that do not exist: "fmal" as the
+        // fourth heaviest frame, "_report_gsfailure" in every window when a
+        // real GS failure would have killed the process. Rejecting a symbol
+        // whose reported size does not cover the address, or that is absurdly
+        // far away, turns those back into honest module+offset.
         char buf[sizeof(SYMBOL_INFO) + 512];
         std::memset(buf, 0, sizeof(buf));
         auto* si = reinterpret_cast<SYMBOL_INFO*>(buf);
@@ -185,8 +198,11 @@ class Resolver {
         DWORD64 disp = 0;
         bool named = false;
         if (SymFromAddr(GetCurrentProcess(), addr, &disp, si)) {
+            const bool covered = si->Size ? (disp < si->Size) : (disp <= kMaxSymbolDisp);
+            if (covered) {
                 r.sym = si->Name;
                 named = true;
+            }
         }
 
         if (!named) {
