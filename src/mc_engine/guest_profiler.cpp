@@ -3,6 +3,7 @@
 #include "guest_profiler.h"
 
 #include <rex/cvar.h>
+#include <rex/ppc/func.h>
 
 #include "logging.h"
 
@@ -32,6 +33,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "dbghelp.lib")
@@ -140,6 +142,122 @@ int64_t NowNs() {
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
+
+//=============================================================================
+// Guest address recovery, without a PDB
+//=============================================================================
+//
+// Codegen emits PPCFuncMappings[] -- every recompiled function as a
+// { guest address, host function pointer } pair, terminated by { 0, nullptr }.
+// It is linked into the exe and needs no symbols at all, which matters because
+// a profile taken on somebody else's machine has no PDB next to it: every
+// recompiled frame in such a log resolves as "<no symbol>" and the guest
+// address column, the whole point of the report, comes out empty.
+//
+// Inverting the table turns a sampled instruction pointer back into the guest
+// address it came from. The lookup is keyed on the FUNCTION START reported by
+// the unwind tables rather than on the sampled address itself, so an address
+// that belongs to no recompiled function is rejected outright instead of being
+// charged to whichever entry happens to precede it.
+
+std::vector<std::pair<uint64_t, uint32_t>> g_guest_by_host;  // sorted by host
+std::unordered_map<uint64_t, uint32_t> g_guest_exact;        // host start -> guest
+std::unordered_set<uint64_t> g_guest_folded;                 // host claimed by 2+ guests
+uint64_t g_exe_lo = 0, g_exe_hi = 0;                         // larecomp.exe image
+
+void BuildGuestMap() {
+    // Recompiled code only ever lives in the exe. Without this bound the range
+    // fallback below charges addresses in ntdll, KERNEL32 and the runtime DLLs
+    // to whichever table entry sits nearest in memory -- and since those
+    // modules load ABOVE the exe, every one of them came out stamped with the
+    // last entry's guest address.
+    if (HMODULE exe = GetModuleHandleW(nullptr)) {
+        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(exe);
+        if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
+            auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+                reinterpret_cast<const uint8_t*>(exe) + dos->e_lfanew);
+            if (nt->Signature == IMAGE_NT_SIGNATURE) {
+                g_exe_lo = reinterpret_cast<uint64_t>(exe);
+                g_exe_hi = g_exe_lo + nt->OptionalHeader.SizeOfImage;
+            }
+        }
+    }
+
+    size_t n = 0;
+    for (const PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) ++n;
+    g_guest_by_host.reserve(n);
+    g_guest_exact.reserve(n * 2);
+
+    for (const PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) {
+        const uint64_t host = reinterpret_cast<uint64_t>(m->host);
+        const uint32_t guest = static_cast<uint32_t>(m->guest);
+        g_guest_by_host.emplace_back(host, guest);
+
+        // Release links fold identical functions together (/OPT:ICF), and with
+        // 30k recompiled stubs some of them ARE identical. The table then
+        // points several guest addresses at one host address, and keeping
+        // whichever arrived first would put a confident, wrong number in the
+        // report. Those are marked instead, and counted in the header so the
+        // ambiguity is visible rather than inferred.
+        auto [it, inserted] = g_guest_exact.emplace(host, guest);
+        if (!inserted && it->second != guest) g_guest_folded.insert(host);
+    }
+    std::sort(g_guest_by_host.begin(), g_guest_by_host.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+}
+
+// 0 when the address is not inside a recompiled guest function.
+// `approx` comes back true when the answer is attribution by adjacency or by a
+// folded entry rather than an exact hit, so the report can say so instead of
+// printing a number that looks as solid as the exact ones.
+uint32_t GuestAddrFromRip(uint64_t rip, bool* approx) {
+    if (approx) *approx = false;
+    if (g_guest_by_host.empty()) return 0;
+    if (g_exe_hi && (rip < g_exe_lo || rip >= g_exe_hi)) return 0;
+
+    DWORD64 image_base = 0;
+    PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(rip, &image_base, nullptr);
+    if (!rf) return 0;  // no unwind info: not one of ours
+
+    const uint64_t start = uint64_t(image_base) + rf->BeginAddress;
+    if (auto it = g_guest_exact.find(start); it != g_guest_exact.end()) {
+        if (approx && g_guest_folded.count(start)) *approx = true;
+        return it->second;
+    }
+
+    // The unwind entry can describe a FRAGMENT of a function rather than the
+    // function itself (chained unwind info, or a block the linker moved). The
+    // fragment start is still a real code boundary, so the entry immediately
+    // below it in layout order is the function it was split from -- as long as
+    // the next recompiled function starts after it.
+    //
+    // This is attribution by adjacency and it IS sometimes wrong: a non-guest
+    // helper laid out after a recompiled function picks up that function's
+    // address (measured: std::this_thread::sleep_for came out tagged with the
+    // guest address of the hook that calls it). Release builds inline more, so
+    // it gets worse there, not better. Hence the marker.
+    auto it = std::upper_bound(g_guest_by_host.begin(), g_guest_by_host.end(), start,
+                               [](uint64_t v, const auto& e) { return v < e.first; });
+    if (it == g_guest_by_host.begin()) return 0;
+    --it;
+    if ((it + 1) != g_guest_by_host.end() && start >= (it + 1)->first) return 0;
+    if (approx) *approx = true;
+    return it->second;
+}
+
+// "rex_sub_8226ABCD" -> 0x8226ABCD. Secondary source, used when a PDB is
+// present and the mapping table missed.
+uint32_t GuestAddrFromSymbol(const char* name) {
+    if (!name) return 0;
+    const char* p = std::strstr(name, "sub_82");
+    if (!p) return 0;
+    p += 4;  // land on "82..."
+    char* end = nullptr;
+    const unsigned long v = std::strtoul(p, &end, 16);
+    if (end != p + 8) return 0;
+    return static_cast<uint32_t>(v);
+}
+
 //=============================================================================
 // Symbolization
 //=============================================================================
@@ -147,6 +265,8 @@ int64_t NowNs() {
 struct Resolved {
     std::string sym;
     std::string mod;
+    uint32_t guest = 0;
+    bool guest_approx = false;
 };
 
 class Resolver {
@@ -180,6 +300,7 @@ class Resolver {
             }
         }
 
+        r.guest = GuestAddrFromRip(addr, &r.guest_approx);
 
         // SymFromAddr returns the nearest PRECEDING public symbol with no
         // bound on the distance. In a module whose private symbols are absent
@@ -202,12 +323,17 @@ class Resolver {
             if (covered) {
                 r.sym = si->Name;
                 named = true;
+                if (!r.guest) r.guest = GuestAddrFromSymbol(si->Name);
             }
         }
 
         if (!named) {
             char tmp[64];
-            if (mod_base) {
+            if (r.guest) {
+                // Name it after the guest function; that is the name the user
+                // can actually look up, PDB or no PDB.
+                std::snprintf(tmp, sizeof(tmp), "guest_sub_%08X", r.guest);
+            } else if (mod_base) {
                 std::snprintf(tmp, sizeof(tmp), "+0x%llX",
                               (unsigned long long)(addr - mod_base));
             } else {
@@ -543,6 +669,8 @@ void WriteThreadSection(Resolver& resolve, const ThreadData& d, DWORD tid, doubl
     struct Bucket {
         uint64_t total = 0;
         uint64_t slow = 0;
+        uint32_t guest = 0;
+        bool guest_approx = false;
     };
     std::unordered_map<std::string, Bucket> by_symbol;
     for (uint64_t a : d.all) {
@@ -550,6 +678,10 @@ void WriteThreadSection(Resolver& resolve, const ThreadData& d, DWORD tid, doubl
         const std::string key = r.mod.empty() ? r.sym : r.mod + "!" + r.sym;
         Bucket& b = by_symbol[key];
         b.total++;
+        if (!b.guest) {
+            b.guest = r.guest;
+            b.guest_approx = r.guest_approx;
+        }
     }
     for (uint64_t a : d.slow) {
         const Resolved& r = resolve(a);
@@ -571,6 +703,9 @@ void WriteThreadSection(Resolver& resolve, const ThreadData& d, DWORD tid, doubl
     for (const auto& r : rows) {
         if (printed++ >= (detailed ? 20 : 10)) break;
         char guest[16] = "-";
+        if (r.second.guest)
+            std::snprintf(guest, sizeof(guest), "0x%08X%s", r.second.guest,
+                          r.second.guest_approx ? "~" : "");
         std::fprintf(g_log, "  %6.2f%% %6.2f%%  %-56s %s\n",
                      100.0 * double(r.second.slow) / slow_n,
                      100.0 * double(r.second.total) / all_n, r.first.c_str(), guest);
@@ -704,6 +839,8 @@ void DumpAllThreads(const char* reason) {
         // suspended thread might be holding.
         const Resolved& r = resolve(rip);
         char guest[16] = "-";
+        if (r.guest)
+            std::snprintf(guest, sizeof(guest), "0x%08X%s", r.guest, r.guest_approx ? "~" : "");
         const std::string sym = (r.mod.empty() ? std::string("?") : r.mod) + "!" + r.sym;
         std::fprintf(g_log, "%8lu  %-56s %s  %s\n", (unsigned long)te.th32ThreadID, sym.c_str(),
                      guest, name.c_str());
@@ -743,6 +880,7 @@ void Tick(double frame_ms) {
     if (!started) {
         started = true;
 
+        BuildGuestMap();
 
         HANDLE pinned = nullptr;
         std::string target_name = "the frame-driving thread";
