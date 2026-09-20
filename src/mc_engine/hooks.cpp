@@ -28,6 +28,7 @@
 #include <rex/runtime.h>
 #include <rex/perf/counter.h>
 #include "guest_profiler.h"
+#include "draw_stats.h"
 #include <rex/system/xmemory.h>
 #include <rex/graphics/xenos.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -1937,8 +1938,14 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
 // also stored at 0x827D42A4 before this point — overwrite it to 1 for the
 // resolve/end path that reads the global. Needs the SDK's enlarged virtual
 // EDRAM (720p 2xMSAA color+depth = 2880 tiles > the real 2048).
-void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCRegister& r25, PPCRegister& r28) {
     if (!REXCVAR_GET(single_tile)) return;
+
+    // BadassBaboon: ONLY apply single_tile forcing to the main screen scene (a1 == nullptr / 0)!
+    // In sub_8217A470, r17 preserves a1 (grcRenderTarget*). When r17 != 0, an offscreen
+    // render target (pause snapshot, boot orbital camera, bloom, shadows) is being rendered.
+    // Forcing 1280x720 single tile onto offscreen targets breaks their layout and EDRAM allocation.
+    if (r17.u64 != 0) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
@@ -1961,9 +1968,38 @@ void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCReg
 // virtual EDRAM is 4096 tiles and the guest surface header keeps 12-bit base
 // fields (max 4095), so allocations up to 4096 are safe. r11 = base + size;
 // returning true jumps to the success branch (0x82410E48).
-bool Patch_EdramLimit(PPCRegister& r11) {
+bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
     if (!REXCVAR_GET(single_tile)) return false;
-    return r11.u64 <= 4096;
+    const uint32_t base = static_cast<uint32_t>(r3.u32);
+    const uint32_t size = static_cast<uint32_t>(r30.u32);
+    const uint32_t end  = static_cast<uint32_t>(r11.u32);
+    // Base tile must fit in the 12-bit hardware register field (max 4095).
+    // The SDK's virtual EDRAM is 4096 tiles (20 MB).
+    return base < 4096 && end <= 4096;
+}
+
+// BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.
+//
+// In sub_82412F98 (called by D3DDevice_BlockOnFence at 0x82411F34 and sub_82411180),
+// the guest executes a tight loop of 32 `mr r31, r31` instructions meant to pause
+// PowerPC in-order hardware execution pipelines.
+// On host x86, those NOPs compile to an unconstrained busy-wait loop that burns ~40%
+// of the Render Thread (XThread4918 at ~98% CPU) while waiting for GPU Commands.
+//
+// We replace the spin with host CPU yielding:
+// - Low spin counts: YieldProcessor() (x86 PAUSE) to keep wake latency minimal.
+// - Extended spin: SwitchToThread() yields the CPU quantum directly to GPU Commands.
+// Returning true jumps to 0x82412FD8, bypassing the 32 NOP instructions.
+bool Patch_FenceSpinThrottle() {
+#if defined(_WIN32)
+    static thread_local uint32_t s_spin_count = 0;
+    YieldProcessor();
+    if (++s_spin_count >= 16) {
+        SwitchToThread();
+        s_spin_count = 0;
+    }
+#endif
+    return true;
 }
 
 static float ReadGuestF32(const uint8_t* base, uint32_t addr);
@@ -3196,11 +3232,16 @@ static void EnforceFrameLimit() {
 
     if (now < next_us) {
         uint64_t remaining = next_us - now;
-        if (remaining > 1500) {
-            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1500));
+        if (remaining > 2000) {
+            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1200));
         }
+        // Sub-millisecond spin with YieldProcessor() (x86 PAUSE) to hit the exact
+        // microsecond deadline. Replacing std::this_thread::yield() eliminates
+        // Windows scheduler stalls that cause 1-2 ms wake-up jitter.
         while (now_us() < next_us) {
-            std::this_thread::yield();
+#if defined(_WIN32)
+            YieldProcessor();
+#endif
         }
     }
 
@@ -3274,36 +3315,64 @@ CounterAccum g_ctr{};
 void SampleCounters() {
     using rex::perf::CounterId;
     using rex::perf::GetCounter;
-    auto add = [](uint64_t& dst, CounterId id) {
-        const int64_t v = GetCounter(id);
-        if (v > 0) dst += static_cast<uint64_t>(v);
+
+    static int64_t s_prev_counters[static_cast<size_t>(CounterId::kCount)];
+    static bool s_initialized = false;
+    if (!s_initialized) {
+        for (size_t i = 0; i < static_cast<size_t>(CounterId::kCount); ++i) {
+            s_prev_counters[i] = -1;
+        }
+        s_initialized = true;
+    }
+
+    auto add_delta = [](uint64_t& dst, CounterId id) {
+        const size_t idx = static_cast<size_t>(id);
+        if (idx >= static_cast<size_t>(CounterId::kCount)) return;
+        const int64_t cur = GetCounter(id);
+        const int64_t prev = s_prev_counters[idx];
+        s_prev_counters[idx] = cur;
+
+        if (prev < 0) {
+            // First frame baseline: record initial value without adding full lifetime elapsed
+            return;
+        }
+        if (cur >= prev) {
+            dst += static_cast<uint64_t>(cur - prev);
+        } else if (cur >= 0) {
+            // Counter was reset by runtime between frames
+            dst += static_cast<uint64_t>(cur);
+        }
     };
-    add(g_ctr.gpu_submit_us,          CounterId::kGpuSubmitTimeUs);
-    add(g_ctr.gpu_draw_us,            CounterId::kGpuDrawTimeUs);
-    add(g_ctr.gpu_fencewait_us,       CounterId::kGpuFenceWaitTimeUs);
-    add(g_ctr.gpu_resolve_us,         CounterId::kGpuResolveTimeUs);
-    add(g_ctr.gpu_pipeline_us,        CounterId::kGpuPipelineTimeUs);
-    add(g_ctr.gpu_pipeline_create_us, CounterId::kGpuPipelineCreateTimeUs);
-    add(g_ctr.gpu_pipeline_create_n,  CounterId::kGpuPipelineCreateCount);
-    add(g_ctr.gpu_texupload_us,       CounterId::kGpuTextureUploadTimeUs);
-    add(g_ctr.gpu_texupload_n,        CounterId::kGpuTextureUploadCount);
+
+    add_delta(g_ctr.gpu_submit_us,          CounterId::kGpuSubmitTimeUs);
+    add_delta(g_ctr.gpu_draw_us,            CounterId::kGpuDrawTimeUs);
+    add_delta(g_ctr.gpu_fencewait_us,       CounterId::kGpuFenceWaitTimeUs);
+    add_delta(g_ctr.gpu_resolve_us,         CounterId::kGpuResolveTimeUs);
+    add_delta(g_ctr.gpu_pipeline_us,        CounterId::kGpuPipelineTimeUs);
+    add_delta(g_ctr.gpu_pipeline_create_us, CounterId::kGpuPipelineCreateTimeUs);
+    add_delta(g_ctr.gpu_pipeline_create_n,  CounterId::kGpuPipelineCreateCount);
+    add_delta(g_ctr.gpu_texupload_us,       CounterId::kGpuTextureUploadTimeUs);
+    add_delta(g_ctr.gpu_texupload_n,        CounterId::kGpuTextureUploadCount);
     // The guest CPU blocking on the GPU. If frame time is unaccounted for and
     // nothing is being drawn, this is where to look first.
-    add(g_ctr.gpu_waitregmem_us,      CounterId::kGpuWaitRegMemTimeUs);
-    add(g_ctr.gpu_waitregmem_n,       CounterId::kGpuWaitRegMemCount);
-    add(g_ctr.gpu_cmdwait_us,         CounterId::kGpuCommandWaitTimeUs);
+    add_delta(g_ctr.gpu_waitregmem_us,      CounterId::kGpuWaitRegMemTimeUs);
+    add_delta(g_ctr.gpu_waitregmem_n,       CounterId::kGpuWaitRegMemCount);
+    add_delta(g_ctr.gpu_cmdwait_us,         CounterId::kGpuCommandWaitTimeUs);
     // Raw guest CPU churn: a collapse with flat GPU counters and a rising
     // dispatch count is guest code, not the emulator.
-    add(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
-    add(g_ctr.interrupts,             CounterId::kInterruptDispatches);
-    add(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
-    add(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
-    add(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
-    add(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
-    add(g_ctr.draws,                  CounterId::kDrawCalls);
-    add(g_ctr.verts,                  CounterId::kVerticesProcessed);
-    add(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
-    add(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+    add_delta(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
+    add_delta(g_ctr.interrupts,             CounterId::kInterruptDispatches);
+    add_delta(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
+    add_delta(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
+    add_delta(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
+    add_delta(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
+    add_delta(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
+    add_delta(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+
+    // Guest draw stats: recorded directly at D3DDevice draw entrypoints, ensuring accurate
+    // counts even when SDK REXGLUE_ENABLE_PERF_COUNTERS is compiled out.
+    g_ctr.draws += mcla::draw_stats::g_draw_calls.exchange(0, std::memory_order_relaxed);
+    g_ctr.verts += mcla::draw_stats::g_vertices.exchange(0, std::memory_order_relaxed);
 }
 
 // GPU interrupt probe. Diagnostic only: everything below is gated on the timing
@@ -4654,8 +4723,9 @@ bool Patch_AspectRatio_82233EB4(PPCRegister& f0) { return false; }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12) { return false; }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) { return false; }
-void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r25, PPCRegister& r28) {}
-bool Patch_EdramLimit(PPCRegister& r11) { return false; }
+void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCRegister& r25, PPCRegister& r28) {}
+bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) { return false; }
+bool Patch_FenceSpinThrottle() { return false; }
 bool Patch_DebugCamGate() { return false; }
 void Patch_DebugCam(PPCRegister& r3) {}
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }

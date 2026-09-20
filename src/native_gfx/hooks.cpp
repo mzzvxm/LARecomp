@@ -63,6 +63,7 @@
 #include "guest/texture_registry.h"
 #include "native_gfx.h"
 #include "telemetry.h"
+#include "../mc_engine/draw_stats.h"
 
 // Defined in native_gfx.cpp at global scope, so the declaration goes here at
 // global scope too. Read directly rather than through Active(), which latches
@@ -342,6 +343,7 @@ extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
       mcla::native_gfx::Active() ? mcla::native_gfx::ReadConstantDirtyMasks(base, dev)
                                  : mcla::native_gfx::ConstantDirtyMasks{};
   __imp__D3DDevice_DrawIndexedVertices(ctx, base);
+  mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/1, /*is_up=*/false);
   }
@@ -370,6 +372,7 @@ extern "C" REX_FUNC(D3DDevice_DrawVertices) {
       mcla::native_gfx::Active() ? mcla::native_gfx::ReadConstantDirtyMasks(base, dev)
                                  : mcla::native_gfx::ConstantDirtyMasks{};
   __imp__D3DDevice_DrawVertices(ctx, base);
+  mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/0, /*is_up=*/false);
   }
@@ -401,6 +404,7 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   const uint32_t stride = ctx.r6.u32;
   __imp__D3DDevice_BeginVertices(ctx, base);
   const uint32_t buffer = ctx.r3.u32;  // return value: where the caller writes
+  mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/0, /*is_up=*/true);
   }
