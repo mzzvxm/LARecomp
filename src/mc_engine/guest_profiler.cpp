@@ -128,6 +128,7 @@ std::atomic<bool> g_running{false};
 std::atomic<bool> g_frame_is_slow{false};
 
 std::mutex g_frame_mtx;
+std::vector<float> g_frame_ms;  // every frame time in the current window
 uint64_t g_total_frames = 0;
 uint64_t g_total_slow_frames = 0;
 
@@ -759,6 +760,62 @@ void SamplerLoop() {
 // Report
 //=============================================================================
 
+double Percentile(const std::vector<float>& sorted, double p) {
+    if (sorted.empty()) return 0.0;
+    const double idx = p * double(sorted.size() - 1);
+    const size_t lo = size_t(idx);
+    const size_t hi = lo + 1 < sorted.size() ? lo + 1 : lo;
+    const double frac = idx - double(lo);
+    return double(sorted[lo]) * (1.0 - frac) + double(sorted[hi]) * frac;
+}
+
+void WriteFrameStats(double window_sec) {
+    std::vector<float> ms;
+    uint64_t frames = 0, slow_frames = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_frame_mtx);
+        ms.swap(g_frame_ms);
+        frames = g_total_frames;
+        slow_frames = g_total_slow_frames;
+        g_total_frames = 0;
+        g_total_slow_frames = 0;
+        g_frame_ms.reserve(4096);
+    }
+    if (ms.empty()) return;
+
+    std::sort(ms.begin(), ms.end());
+
+    // "984 slow frames of 1150" does not distinguish a 22 ms frame from a
+    // 200 ms one, and those are different bugs.
+    std::fprintf(g_log,
+                 "\n--- frame time over %.1f s: %llu frames (%.1f FPS), %llu slow (>= %.0f ms) "
+                 "---\n"
+                 "p50 %.1f  p90 %.1f  p95 %.1f  p99 %.1f  max %.1f ms\n",
+                 window_sec, (unsigned long long)frames,
+                 window_sec > 0.0 ? double(frames) / window_sec : 0.0,
+                 (unsigned long long)slow_frames, SlowFrameMs(), Percentile(ms, 0.50),
+                 Percentile(ms, 0.90), Percentile(ms, 0.95), Percentile(ms, 0.99),
+                 double(ms.back()));
+
+    static const double edges[] = {8, 12, 16, 20, 25, 33, 50, 100, 200};
+    size_t idx = 0;
+    double prev = 0.0;
+    for (double e : edges) {
+        size_t n = 0;
+        while (idx < ms.size() && double(ms[idx]) < e) {
+            ++idx;
+            ++n;
+        }
+        if (n)
+            std::fprintf(g_log, "  %5.0f-%-5.0f ms  %5zu  %4.1f%%\n", prev, e, n,
+                         100.0 * double(n) / double(ms.size()));
+        prev = e;
+    }
+    if (idx < ms.size())
+        std::fprintf(g_log, "  %5.0f+      ms  %5zu  %4.1f%%\n", prev, ms.size() - idx,
+                     100.0 * double(ms.size() - idx) / double(ms.size()));
+}
+
 void WriteThreadSection(Resolver& resolve, const ThreadData& d, DWORD tid, double window_sec,
                         double cpu_ms, bool detailed) {
     // Both rates are measured, not assumed. The old report printed the
@@ -859,6 +916,7 @@ void WriteReport(const char* reason, double window_sec, const std::vector<CpuRow
 
     std::fprintf(g_log, "\n=== profile #%d (%s) ===\n", g_report_index++, reason);
 
+    WriteFrameStats(window_sec);
     WriteThreadCpuTable(rows, cpu_window_sec > 0.0 ? cpu_window_sec : window_sec);
 
     size_t total_samples = 0;
@@ -1074,6 +1132,10 @@ void Tick(double frame_ms) {
             std::fflush(g_log);
         }
 
+        {
+            std::lock_guard<std::mutex> lock(g_frame_mtx);
+            g_frame_ms.reserve(4096);
+        }
         g_running.store(true, std::memory_order_relaxed);
         g_sampler = std::thread(SamplerLoop);
         MC_INFO("[profiler] sampling up to {} threads at {} Hz -> {}", kMaxTargets,
@@ -1085,6 +1147,7 @@ void Tick(double frame_ms) {
     g_frame_is_slow.store(slow, std::memory_order_relaxed);
 
     std::lock_guard<std::mutex> lock(g_frame_mtx);
+    g_frame_ms.push_back(float(frame_ms));
     g_total_frames++;
     if (slow) g_total_slow_frames++;
 }
