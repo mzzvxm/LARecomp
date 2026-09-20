@@ -358,6 +358,103 @@ bool IsSystemModule(const std::string& m) {
 }
 
 //=============================================================================
+// Machine description
+//=============================================================================
+//
+// A profile is usually read on a different machine than it was taken on, and
+// the first question about a slow one is whether the box had the cores to run
+// it. Without this header the CPU table below is uninterpretable: five cores'
+// worth of demand is healthy on twelve cores and a catastrophe on four.
+
+std::string CpuBrand() {
+    int r[4] = {};
+    __cpuid(r, 0x80000000);
+    if (static_cast<unsigned>(r[0]) < 0x80000004u) return "<unknown CPU>";
+    char brand[49] = {};
+    for (int i = 0; i < 3; ++i) {
+        __cpuid(r, 0x80000002 + i);
+        std::memcpy(brand + i * 16, r, 16);
+    }
+    std::string s(brand);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.pop_back();
+    size_t b = s.find_first_not_of(' ');
+    return b == std::string::npos ? s : s.substr(b);
+}
+
+DWORD PhysicalCores() {
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (!len) return 0;
+    std::vector<uint8_t> buf(len);
+    auto* p = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, p, &len)) return 0;
+
+    DWORD n = 0;
+    for (DWORD off = 0; off < len;) {
+        auto* e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+        if (!e->Size) break;
+        if (e->Relationship == RelationProcessorCore) ++n;
+        off += e->Size;
+    }
+    return n;
+}
+
+std::string GpuName() {
+    DISPLAY_DEVICEA dd{};
+    dd.cb = sizeof(dd);
+    for (DWORD i = 0; EnumDisplayDevicesA(nullptr, i, &dd, 0); ++i) {
+        if (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) return dd.DeviceString;
+        dd.cb = sizeof(dd);
+    }
+    return "<unknown GPU>";
+}
+
+std::string OsBuild() {
+    struct VerW {
+        ULONG size, major, minor, build, platform;
+        WCHAR csd[128];
+    } vi{};
+    vi.size = sizeof(vi);
+    using Fn = LONG(WINAPI*)(VerW*);
+    char out[64] = "<unknown>";
+    if (HMODULE nt = GetModuleHandleW(L"ntdll.dll")) {
+        if (auto fn = reinterpret_cast<Fn>(
+                reinterpret_cast<void*>(GetProcAddress(nt, "RtlGetVersion")))) {
+            if (fn(&vi) == 0)
+                std::snprintf(out, sizeof(out), "%lu.%lu build %lu", vi.major, vi.minor, vi.build);
+        }
+    }
+    return out;
+}
+
+void WriteMachineHeader(std::FILE* f) {
+    const DWORD logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const DWORD physical = PhysicalCores();
+
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    const bool have_mem = GlobalMemoryStatusEx(&ms) != FALSE;
+
+    std::fprintf(f,
+                 "\n--- machine ---\n"
+                 "cpu       %s\n"
+                 "cores     %lu physical, %lu logical\n",
+                 CpuBrand().c_str(), (unsigned long)physical, (unsigned long)logical);
+    if (have_mem)
+        std::fprintf(f, "ram       %.1f GiB total, %.1f GiB free\n",
+                     double(ms.ullTotalPhys) / (1024.0 * 1024.0 * 1024.0),
+                     double(ms.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0));
+    std::fprintf(f,
+                 "gpu       %s\n"
+                 "os        Windows %s\n"
+                 "guest map %zu recompiled functions; %zu host addresses are shared by more\n"
+                 "          than one of them (linker folding). A guest address printed with a\n"
+                 "          trailing ~ is attribution by adjacency or by a folded entry, not exact.\n",
+                 GpuName().c_str(), OsBuild().c_str(), g_guest_by_host.size(),
+                 g_guest_folded.size());
+}
+
+//=============================================================================
 // Per-thread CPU time
 //=============================================================================
 //
@@ -432,6 +529,14 @@ std::vector<CpuRow> CollectThreadCpu(double* out_window_sec) {
 }
 
 void WriteThreadCpuTable(const std::vector<CpuRow>& rows, double window_sec) {
+    // The total is over EVERY thread, not just the ones printed. Truncating at
+    // sixteen rows and printing no total is how a saturated machine hides: the
+    // rows that fit looked merely busy.
+    double total_ms = 0.0;
+    for (const CpuRow& r : rows) total_ms += r.ms;
+
+    const DWORD logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const double cores = window_sec > 0.0 ? total_ms / (window_sec * 1000.0) : 0.0;
 
     std::fprintf(g_log, "\n--- CPU time per thread over the last %.1f s (one core = 100%%) ---\n",
                  window_sec);
@@ -443,6 +548,10 @@ void WriteThreadCpuTable(const std::vector<CpuRow>& rows, double window_sec) {
                      window_sec > 0.0 ? 100.0 * r.ms / (window_sec * 1000.0) : 0.0,
                      (unsigned long)r.tid, r.name.empty() ? "<unnamed>" : r.name.c_str());
     }
+    std::fprintf(g_log, "%8.1f ms  %6.1f%%  ALL %zu threads = %.2f of %lu cores%s\n", total_ms,
+                 window_sec > 0.0 ? 100.0 * total_ms / (window_sec * 1000.0) : 0.0, rows.size(),
+                 cores, (unsigned long)logical,
+                 (logical && cores > double(logical) * 0.9) ? "   <-- SATURATED" : "");
 }
 
 //=============================================================================
@@ -961,6 +1070,7 @@ void Tick(double frame_ms) {
                          "pinned: %s\n",
                          kMaxTargets, kPerTargetRateHz, kMaxTotalRateHz, kReportIntervalSec,
                          SlowFrameMs(), g_pinned_name.c_str());
+            WriteMachineHeader(g_log);
             std::fflush(g_log);
         }
 
