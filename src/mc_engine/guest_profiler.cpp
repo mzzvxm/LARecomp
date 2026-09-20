@@ -816,6 +816,15 @@ void WriteFrameStats(double window_sec) {
                      100.0 * double(ms.size() - idx) / double(ms.size()));
 }
 
+uint64_t HashStack(const Stack& s) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t i = 0; i < s.n; ++i) {
+        h ^= s.f[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
 void WriteThreadSection(Resolver& resolve, const ThreadData& d, DWORD tid, double window_sec,
                         double cpu_ms, bool detailed) {
     // Both rates are measured, not assumed. The old report printed the
@@ -908,6 +917,42 @@ void WriteThreadSection(Resolver& resolve, const ThreadData& d, DWORD tid, doubl
                      r.first.c_str());
     }
 
+    if (!detailed) return;
+
+    // Aggregating only the first non-system frame collapses every guest wait
+    // into one bucket, which is how a report ends up with a single line
+    // covering 73% of it and saying nothing. Grouping whole stacks separates
+    // "one call site waits" from "twelve of them do".
+    std::unordered_map<uint64_t, std::pair<uint64_t, const Stack*>> distinct;
+    for (const Stack& s : d.stacks) {
+        auto& e = distinct[HashStack(s)];
+        e.first++;
+        e.second = &s;
+    }
+    std::vector<std::pair<uint64_t, const Stack*>> drows;
+    drows.reserve(distinct.size());
+    for (auto& [h, e] : distinct) drows.push_back(e);
+    std::sort(drows.begin(), drows.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    std::fprintf(g_log, "  %zu distinct slow-frame stacks; top %d:\n", drows.size(),
+                 int(drows.size() < 3 ? drows.size() : 3));
+    for (size_t i = 0; i < drows.size() && i < 3; ++i) {
+        std::fprintf(g_log, "\n  --- %.2f%% (%llu samples) ---\n",
+                     100.0 * double(drows[i].first) / double(d.stacks.size()),
+                     (unsigned long long)drows[i].first);
+        const Stack& s = *drows[i].second;
+        for (uint32_t k = 0; k < s.n; ++k) {
+            const Resolved& r = resolve(s.f[k]);
+            if (r.guest)
+                std::fprintf(g_log, "   #%02u %s!%s   (guest 0x%08X%s)\n", k,
+                             r.mod.empty() ? "?" : r.mod.c_str(), r.sym.c_str(), r.guest,
+                             r.guest_approx ? "~" : "");
+            else
+                std::fprintf(g_log, "   #%02u %s!%s\n", k, r.mod.empty() ? "?" : r.mod.c_str(),
+                             r.sym.c_str());
+        }
+    }
 }
 
 void WriteReport(const char* reason, double window_sec, const std::vector<CpuRow>& rows,
