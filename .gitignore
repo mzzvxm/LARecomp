@@ -5,7 +5,13 @@ bin/
 obj/
 generated/
 generated_xeo3/
-tools/
+# tools/ is local scratch work, except the repository backup script,
+# which has to travel with the history it backs up.
+tools/*
+!tools/backup/
+
+# Backup bundles belong next to the repository, never inside it.
+*.bundle
 
 # Codegen & diagnostic logs
 codegen_err.txt
