@@ -1,34 +1,60 @@
-<p align="center">
-  <img src="assets/larecomplogo.png" alt="LARecomp" width="480">
-</p>
-
 # LARecomp
+![Status](https://img.shields.io/badge/Status-In%20Development-yellow) ![Platform](https://img.shields.io/badge/Platform-Windows%20x86--64-blue) ![Language](https://img.shields.io/badge/Language-C%2B%2B-green) ![Toolchain](https://img.shields.io/badge/Toolchain-Clang%20%2B%20CMake%20%2B%20Ninja-orange) ![SDK](https://img.shields.io/badge/ReXGlue%20SDK-0.10.0-58A6FF)
 
-A static recompilation of **Midnight Club: Los Angeles (Complete Edition)** for Windows x86-64, built on the [ReXGlue SDK](https://github.com/rexglue/rexglue).
-
-Static recompilation translates the Xbox 360 PowerPC code inside the game's `default.xex` into native C++ that compiles and runs on a PC. There is no emulator and no interpreter in the loop. File I/O, GPU commands, audio and threading go through the ReXGlue runtime.
-
-You supply the game data. Nothing from the disc is included here.
+> **Disclaimer:** This is a **static recompilation** project created for preservation and research purposes.
+> It is **not affiliated** with Rockstar Games or Rockstar San Diego. You supply the game data — nothing from the disc is included here.
 
 ---
 
-## What you get
+## About
+**LARecomp** is a static recompilation of **Midnight Club: Los Angeles (Complete Edition)** for Windows x86-64, built on the [ReXGlue SDK](https://github.com/rexglue/rexglue).
 
-The game boots to the menu, free roam and races work, and saves load. On top of that:
+Static recompilation translates the Xbox 360 PowerPC code inside the game's `default.xex` into native C++ that compiles and runs on a PC. There is no emulator and no interpreter in the loop. File I/O, GPU commands, audio and threading go through the ReXGlue runtime.
 
-**Runs properly above 30 FPS.** The original code locks the simulation to a fixed 30 Hz timestep, and the well-known Xenia unlock makes the game run at double speed. LARecomp feeds the simulation the real measured frame time instead, so physics, camera and traffic behave the same at 30, 60, 120 and 144 FPS.
+The goal is a native PC build that behaves like the console game but is not bound by it:
+**Recompile → Hook → Fix → Play**, at any frame rate, with the settings exposed in-game.
 
-**Smooth frame pacing.** Frame times used to land on a 15.625 ms grid, which is Windows' default timer resolution rather than anything about the display. Raising timer resolution and taking presentation off vsync removed it and gained about 30% throughput.
+---
 
-**Camera and suspension that do not break at high frame rates.** Chase camera lag, chassis roll and the ground depth filter step with continuous-time exponential decay calibrated against the 30 FPS console curve, so they behave identically at any frame rate.
+## Tech Stack
+- **Language:** C++ (recompiled PowerPC), TOML for codegen config
+- **SDK:** ReXGlue SDK 0.10.0
+- **Toolchain:** Clang (LLVM or Visual Studio), CMake 3.25+, Ninja — MSVC will not build this
+- **Graphics:** D3D12 through the ReXGlue GPU plugin
+- **Windowing & input:** SDL3
+- **Scale:** 112 mid-asm hooks, 155 settings, 24,927 named function hints driving codegen
 
-**A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
+---
 
-**Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker that reaches the German and Italian translations the retail NTSC/U build region-gates out.
+## Features
 
-Under the hood there are 112 mid-asm hooks, 155 settings, and 24,927 named function hints driving codegen.
+### Runs properly above 30 FPS
+- The original code locks the simulation to a fixed 30 Hz timestep, and the well-known Xenia unlock makes the game run at double speed
+- LARecomp feeds the simulation the real measured frame time instead
+- Physics, camera and traffic behave the same at 30, 60, 120 and 144 FPS
 
-## Known issues
+### Smooth frame pacing
+- Frame times used to land on a 15.625 ms grid — Windows' default timer resolution, not anything about the display
+- Raising timer resolution and taking presentation off vsync removed it and gained about 30% throughput
+
+### Camera and suspension that do not break at high frame rates
+- Chase camera lag, chassis roll and the ground depth filter step with continuous-time exponential decay
+- Calibrated against the 30 FPS console curve, so they behave identically at any frame rate
+
+### A settings menu inside the game
+- Press Start, open Options: eight tabs — ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages
+- Changes apply immediately and save when you leave the submenu
+
+### Quality of life
+- ISO install wizard on first launch
+- Save import from Xenia and RPCS3
+- Custom MP3 radio, Discord Rich Presence, mod loader
+- Speedometer that switches between mph and km/h
+- Language picker that reaches the German and Italian translations the retail NTSC/U build region-gates out
+
+---
+
+## Known Issues
 
 | Issue | Detail |
 |---|---|
@@ -52,26 +78,52 @@ Full write-up in [`TECHNICAL_NOTES.md`](documentation/TECHNICAL_NOTES.md).
 
 ---
 
-## Getting it running
+## Project Structure (Simplified)
+```text
+larecomp/
+├── README.md
+├── documentation/
+│   ├── RUNNING.md              # run and debug quick reference
+│   ├── TECHNICAL_NOTES.md      # engine findings, corrections, gotchas
+│   └── MCLA_WORKPLAN.md        # investigation log and open work
+├── src/
+│   ├── larecomp_app.h          # paths, cvars, GPU flags, stub sweep
+│   ├── mc_engine/              # hooks, pause menu, HUD, music, mod loader
+│   ├── isoinstaller/           # first-run ISO install wizard
+│   ├── saveporter/             # Xenia and RPCS3 save import
+│   ├── discord_rpc/
+│   └── mcla_rage_types.h       # big-endian RAGE structs, offsets static_asserted
+├── assets/
+│   └── gamecontrollerdb.txt    # SDL controller mappings, copied next to the exe
+├── generated/                  # REGENERATED BY CODEGEN, never hand-edit
+├── larecomp_manifest.toml      # codegen entry point
+└── larecomp_config.toml        # function hints and hook declarations
+```
 
-### You need
+---
 
-- ReXGlue SDK 0.10.0
-- CMake 3.25 or newer
-- Clang, from LLVM or Visual Studio. MSVC will not build this.
-- Ninja
-- Your own copy of the game, extracted from disc
+## Build & Installation
+
+This project must be compiled with **Clang** and run against your own copy of the game, extracted from disc.
+
+### Requirements
+
+* ReXGlue SDK 0.10.0
+* CMake 3.25 or newer
+* Clang, from LLVM or Visual Studio — **MSVC will not build this**
+* Ninja
+* Your own copy of the game, extracted from disc
 
 ### Game data
 
 Point LARecomp at a folder holding `default.xex` and the `xarchive_*.rpf` archives:
 
-```
+```text
 MCLA_Game_Files/
-  default.xex
-  xarchive_cache.rpf
-  xarchive_audio.rpf
-  ...
+├── default.xex
+├── xarchive_cache.rpf
+├── xarchive_audio.rpf
+└── ...
 ```
 
 It looks for that folder on its own, in this order:
@@ -84,7 +136,7 @@ A directory only counts if it has `default.xex` **and** at least one archive nex
 
 Codegen is separate: `larecomp_manifest.toml` points at `../MCLA_Game_Files/default.xex`, relative to the repo. That path is only read by `rexglue codegen`, never at runtime.
 
-### Build
+### Build Steps
 
 ```powershell
 cmake --preset win-amd64-relwithdebinfo .
@@ -112,7 +164,7 @@ Everything else is in the pause menu. It defaults to 60 FPS with real frame delt
 
 Most settings are cvars, not environment variables. Set them in the pause menu, on the command line as `--name=value`, or in `larecomp.toml` beside the executable.
 
-Two rows that sound alike but are not:
+### Two rows that sound alike but are not
 
 | Setting | What it does |
 |---|---|
@@ -121,7 +173,9 @@ Two rows that sound alike but are not:
 
 Turning REAL FRAME DELTA off puts the engine back on its original 30 Hz timestep. The hitch clamp, the FPS cap and the city LOD scale keep working either way.
 
-These are the environment variables the build reads. Everything else moved to cvars:
+### Environment variables
+
+These are the only ones the build reads. Everything else moved to cvars:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -141,7 +195,7 @@ These are the environment variables the build reads. Everything else moved to cv
 
 ---
 
-## Working on the code
+## Working on the Code
 
 Engine patches are `[[midasm_hook]]` entries in `larecomp_config.toml`, implemented in `src/mc_engine/hooks.cpp`:
 
@@ -164,51 +218,28 @@ cmake --build out/build/win-amd64-relwithdebinfo
 
 Pass the **manifest**, not the config. The manifest includes the config and sets up module dependencies.
 
-**Never edit anything in `generated/`.** Codegen rewrites the whole directory. Hooks survive regeneration because they live in the config and in `hooks.cpp`; hand edits do not.
+> **Never edit anything in `generated/`.** Codegen rewrites the whole directory. Hooks survive regeneration because they live in the config and in `hooks.cpp`; hand edits do not.
 
-### Layout
+---
 
-```
-larecomp/
-  README.md
-  documentation/
-    RUNNING.md              # run and debug quick reference
-    TECHNICAL_NOTES.md      # engine findings, corrections, gotchas
-    MCLA_WORKPLAN.md        # investigation log and open work
-  src/
-    larecomp_app.h          # paths, cvars, GPU flags, stub sweep
-    mc_engine/              # hooks, pause menu, HUD, music, mod loader
-    isoinstaller/           # first-run ISO install wizard
-    saveporter/             # Xenia and RPCS3 save import
-    discord_rpc/
-    mcla_rage_types.h       # big-endian RAGE structs, offsets static_asserted
-  assets/
-    gamecontrollerdb.txt    # SDL controller mappings, copied next to the exe
-  generated/                # REGENERATED BY CODEGEN, never hand-edit
-  larecomp_manifest.toml    # codegen entry point
-  larecomp_config.toml      # function hints and hook declarations
-```
+## Legal Notice
+
+* This project is for **preservation and research purposes only**
+* No game code, assets or disc data are distributed here — you supply your own copy
+* Not affiliated with Rockstar Games or Rockstar San Diego
+* The developers take **no responsibility** for how this software is used
 
 ---
 
 ## Credits & Acknowledgments
 
-**[mzzvxm](https://github.com/mzzvxm)**, author and maintainer of **[LARecomp](https://github.com/mzzvxm/larecomp)**, the original static recompilation of Midnight Club: Los Angeles, in development since 2025. This repository is the LARecomp project: the ReXGlue port, the in-game pause menu and settings system, the ISO install wizard, save porting from Xenia and RPCS3, custom music, Discord Rich Presence, the mod loader, and the bulk of the engine hook work.
+### [mzzvxm](https://github.com/mzzvxm)
+
+Author and maintainer of **[LARecomp](https://github.com/mzzvxm/larecomp)**, the original static recompilation of Midnight Club: Los Angeles, in development since 2025. This repository is the LARecomp project: the ReXGlue port, the in-game pause menu and settings system, the ISO install wizard, save porting from Xenia and RPCS3, custom music, Discord Rich Presence, the mod loader, and the bulk of the engine hook work.
 
 Also the custom ReXGlue build LARecomp is developed against, which is not published yet. Its rendering fixes are what removed the broken car body reflections and the intermittent HUD glitches, leaving dithered alpha as the only rendering issue outstanding.
 
-**[BadassBaboon](https://github.com/BadassBaboon)** and the **[midnightclub fork](https://github.com/BadassBaboon/midnightclub)**.
-
-Frame timing and high-frame-rate work, developed in the fork and carried into LARecomp:
-
-- Real frame delta injection. The 2x speed bug needed hooks on **two** fixed-timestep paths, not the one the Xenia patch addresses, and it had to keep the timer reset guard that the Xenia patch skips. Dropping that guard caused a loud audio blowout.
-- Frame pacing. Identifying the 15.625 ms grid as Windows timer granularity, and establishing that both `timeBeginPeriod(1)` and vsync off are required.
-- The wall-clock frame limiter, deliberately not vblank-based so pacing stays continuous.
-- Continuous-time chase camera, chassis roll and ground depth smoothing.
-- Ambient traffic and pedestrian density tuning, with the corrected `mcAmbientDensityTuning` field offsets.
-- Texture cache sizing that takes `texture_cache_misses` to zero.
-
-Fixes made directly in LARecomp:
+**Fixes made directly in LARecomp:**
 
 - **Unclickable setup wizards.** ReXGlue moved windowing and input to SDL3, but the ISO installer and the save import wizard still pumped messages with Win32 `PeekMessageW`, which never drains SDL3's event queue. ImGui received no mouse events at all, so the buttons did nothing.
 - **Access violation on the aspect ratio patch.** `flt_8201E7EC` sits in `.rdata`, which the XEX loader maps read-only. Once `g_guest_mem` was actually populated, the patch stopped exiting early and wrote straight into a read-only page. It now unprotects the page first.
@@ -225,8 +256,35 @@ Fixes made directly in LARecomp:
 - **Adaptive texture cache limits & D3D12 primary buffer submission.** Replaced hardcoded texture cache overrides with a universally safe 2560 MB soft / 4096 MB hard baseline that prevents VRAM exhaustion on 6 GB and 8 GB GPUs while respecting user TOML overrides on high-VRAM cards (12 GB–24 GB). Enabled `d3d12_submit_on_primary_buffer_end = true` to allow asynchronous overlap of GPU rendering with CPU command recording, smoothing out pipeline bubbles.
 - **Guest profiler 144 FPS / GPU Commands call-stack sampling.** Added `profile_gpu_commands.ps1` helper for targeting `GPU Commands` with `RtlVirtualUnwind` stack sampling at 144 FPS / 7.0ms threshold.
 
-**[Foxxyyy](https://github.com/Foxxyyy)**, for reverse-engineering work on **[CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)**: the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here.
+### [BadassBaboon](https://github.com/BadassBaboon) — [midnightclub fork](https://github.com/BadassBaboon/midnightclub)
 
-**[ReXGlue Team](https://github.com/rexglue/rexglue)**, for the Xbox 360 static recompilation toolkit and runtime.
+Frame timing and high-frame-rate work, developed in the fork and carried into LARecomp:
 
-**Rockstar San Diego**, who made the game.
+- Real frame delta injection. The 2x speed bug needed hooks on **two** fixed-timestep paths, not the one the Xenia patch addresses, and it had to keep the timer reset guard that the Xenia patch skips. Dropping that guard caused a loud audio blowout.
+- Frame pacing. Identifying the 15.625 ms grid as Windows timer granularity, and establishing that both `timeBeginPeriod(1)` and vsync off are required.
+- The wall-clock frame limiter, deliberately not vblank-based so pacing stays continuous.
+- Continuous-time chase camera, chassis roll and ground depth smoothing.
+- Ambient traffic and pedestrian density tuning, with the corrected `mcAmbientDensityTuning` field offsets.
+- Texture cache sizing that takes `texture_cache_misses` to zero.
+
+### [Foxxyyy](https://github.com/Foxxyyy) — [CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)
+
+Reverse-engineering work on the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here.
+
+### [ReXGlue Team](https://github.com/rexglue/rexglue)
+
+The Xbox 360 static recompilation toolkit and runtime.
+
+### Rockstar San Diego
+
+Who made the game.
+
+---
+
+## Author
+
+Developed by **[mzzvxm](https://github.com/mzzvxm)**
+
+Contributions, issues, and pull requests are welcome!
+
+---
