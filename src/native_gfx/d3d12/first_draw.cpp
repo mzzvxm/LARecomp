@@ -254,10 +254,12 @@ bool TryFirstRealDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type
           rex::memory::GuestPtr(const_cast<uint8_t*>(base), psr.guest_address)),
       psr.size_bytes);
   const uint32_t ps_spec = rs.alpha_test_enable ? 2u : 0u;
-  // See frame_capture.cpp for why this is 1: spec bit 0 is the packed
-  // normal/tangent unpack, and asking for 0 hands every such shader a
-  // zero normal. A shader without one ships only variant 0 and falls back.
-  const uint32_t vs_spec = 1u;
+  // Spec bit 0 is the packed normal/tangent unpack. Asking for 0 hands every
+  // shader with a packed normal a zero normal; asking for 1 unconditionally
+  // flattens the ones whose normal slot holds real floats. It is the bound
+  // declaration that decides -- see DeclarationNeedsPackedNormalUnpack(). A
+  // shader without a packed normal ships only variant 0 and Lookup falls back.
+  const uint32_t vs_spec = DeclarationNeedsPackedNormalUnpack(geom.input_layout) ? 1u : 0u;
   const ShaderBytecode vs_code = shaders.Lookup(vs_id, vs_spec, /*is_pixel=*/false);
   const ShaderBytecode ps_code = shaders.Lookup(ps_id, ps_spec, /*is_pixel=*/true);
   if (!vs_code.valid() || !ps_code.valid()) {

@@ -12,6 +12,11 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_decl_float);
 
 namespace mcla::native_gfx {
 
+// The header spells this value out to stay free of Windows headers; this is
+// the one translation unit that can check the spelling.
+static_assert(kDxgiFormatR32Uint == uint32_t(DXGI_FORMAT_R32_UINT),
+              "kDxgiFormatR32Uint no longer matches DXGI_FORMAT_R32_UINT");
+
 namespace {
 
 inline uint16_t LoadBe16(const uint8_t* p) { return uint16_t(p[0]) << 8 | p[1]; }

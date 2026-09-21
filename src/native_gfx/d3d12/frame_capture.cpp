@@ -1826,7 +1826,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // ran asfloat() over a small integer and got a denormal: a zero normal on
   // 2148 of 2158 normal/tangent attributes in a frame. A shader that has no
   // packed normal ships only variant 0, and Lookup falls back to it.
-  const uint32_t vs_spec = 1u;
+  //
+  // Hardcoding 1 instead was the other half of the same mistake: the bit is a
+  // property of the bound declaration, not of the shader, and the ~10 float
+  // normals in that count are rmptfx billboard corner offsets that the unpack
+  // flattens. DeclarationNeedsPackedNormalUnpack() reads it off the layout.
+  const uint32_t vs_spec = DeclarationNeedsPackedNormalUnpack(geom.input_layout) ? 1u : 0u;
   const ShaderBytecode vs_code = shaders.Lookup(vs_id, vs_spec, /*is_pixel=*/false);
   const ShaderBytecode ps_code =
       depth_only ? ShaderBytecode{} : shaders.Lookup(ps_id, ps_spec, /*is_pixel=*/true);

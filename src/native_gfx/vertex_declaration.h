@@ -29,7 +29,8 @@
 //   0x002A23B9  k_32_32_32_FLOAT     -> DXGI_FORMAT_R32G32B32_FLOAT
 //   0x001A2286  k_8_8_8_8 (raw)      -> DXGI_FORMAT_R8G8B8A8_UINT
 //   0x00182886  k_8_8_8_8 (norm/BGRA)-> DXGI_FORMAT_B8G8R8A8_UNORM
-//   0x001A2187  k_2_10_10_10         -> DXGI_FORMAT_R10G10B10A2_UINT
+//   0x001A2187  k_2_10_10_10         -> DXGI_FORMAT_R32_UINT (one whole dword;
+//                                       R10G10B10A2_UINT splits it and is wrong)
 //
 // The UINT choices match the XenosRecomp HLSL entry points, which declare
 // packed attributes as uint4 and decode them in the shader
@@ -42,6 +43,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace mcla::native_gfx {
@@ -56,6 +58,45 @@ struct InputElement {
   uint32_t input_slot = 0;   // = guest Stream
   uint32_t aligned_byte_offset = 0;
 };
+
+// DXGI_FORMAT_R32_UINT, spelled out so this header keeps its promise of not
+// dragging a Windows header into every consumer. vertex_declaration.cpp, which
+// does include <dxgiformat.h>, static_asserts the two agree.
+inline constexpr uint32_t kDxgiFormatR32Uint = 42;
+
+// True when a normal/tangent/binormal in this layout is the packed
+// k_2_10_10_10 dword, i.e. when the translated vertex shader has to run with
+// SPEC_CONSTANT_R11G11B10_NORMAL set so tfetchR11G11B10() unpacks instead of
+// passing the bits through as a float.
+//
+// The spec bit belongs to the DECLARATION, not to the shader. D3D9 on the 360
+// patches each vfetch's format from the declaration bound at draw time, so the
+// same VS runs over a packed normal in one draw and over three real floats in
+// the next. Hardcoding the bit to 1 broke every draw of the second kind: rmptfx
+// billboards carry the sprite corner offset in NORMAL0 as float3, and the
+// unpack reads only bits 0..29 of value.x -- which are identical for +1.675 and
+// -1.675, the two differing solely in the sign bit. All four corners of every
+// particle then landed on one point, so the quads had zero area and the smoke
+// plume rasterized nothing. Measured in checkpoint.rdc: eid 22007 post-VS gave
+// four identical screen positions per sprite, 38 draws in that frame affected.
+//
+// A declaration that mixes a packed normal with a float tangent
+// (xBrushedMetal__VS_BrakeRotor, xEngineBay__VS -- 18 draws in the same frame)
+// cannot be served correctly by a single bit either way. It keeps the packed
+// reading, which is what the normal needs and what the runtime already did.
+inline bool DeclarationNeedsPackedNormalUnpack(const std::vector<InputElement>& layout) {
+  for (const InputElement& e : layout) {
+    if (e.dxgi_format != kDxgiFormatR32Uint || e.semantic_name == nullptr) {
+      continue;
+    }
+    if (std::strcmp(e.semantic_name, "NORMAL") == 0 ||
+        std::strcmp(e.semantic_name, "TANGENT") == 0 ||
+        std::strcmp(e.semantic_name, "BINORMAL") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
 
 struct VertexDeclarationDesc {
   std::vector<InputElement> elements;
