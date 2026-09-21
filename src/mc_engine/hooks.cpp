@@ -371,6 +371,11 @@ REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
     "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(frame_limit_spin, true, "MCLA/Performance",
+    "Hit the frame-limit deadline with a PAUSE spin. Off restores the sleep-then-yield wait, "
+    "which gives the core back instead of burning it.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
     "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
     "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
@@ -3266,16 +3271,19 @@ static void EnforceFrameLimit() {
 
     if (now < next_us) {
         uint64_t remaining = next_us - now;
-        if (remaining > 2000) {
-            std::this_thread::sleep_for(std::chrono::microseconds(remaining - 1200));
+        const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 1200 : 1500;
+        if (remaining > slack_us + 500) {
+            std::this_thread::sleep_for(std::chrono::microseconds(remaining - slack_us));
         }
         // Sub-millisecond spin with YieldProcessor() (x86 PAUSE) to hit the exact
         // microsecond deadline. Replacing std::this_thread::yield() eliminates
         // Windows scheduler stalls that cause 1-2 ms wake-up jitter.
+        const bool spin = REXCVAR_GET(frame_limit_spin);
         while (now_us() < next_us) {
 #if defined(_WIN32)
-            YieldProcessor();
+            if (spin) { YieldProcessor(); continue; }
 #endif
+            std::this_thread::yield();
         }
     }
 
