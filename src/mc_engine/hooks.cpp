@@ -2024,17 +2024,49 @@ bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
 // - Low spin counts: YieldProcessor() (x86 PAUSE) to keep wake latency minimal.
 // - Extended spin: SwitchToThread() yields the CPU quantum directly to GPU Commands.
 // Returning true jumps to 0x82412FD8, bypassing the 32 NOP instructions.
+// Instrumentation for the claim above. The hook sits INSIDE the 4-iteration NOP
+// loop, so "how often does the guest reach this fence poll" and "how much wall
+// time does the yield itself cost" are the only two numbers that decide whether
+// this patch pays for itself. Both are published per second by the timing log.
+std::atomic<uint64_t> g_fence_hook_calls{0};
+std::atomic<uint64_t> g_fence_switches{0};
+std::atomic<uint64_t> g_fence_switch_us{0};
+
 bool Patch_FenceSpinThrottle() {
+    // The guest reaches this ~10 million times a second, so the counters below
+    // need their own switch, separate from MCLA_TIMING_LOG: an unconditional
+    // atomic RMW at that rate costs about 1.7 fps on its own, which is the
+    // same size as the effects the timing log is there to measure. Arming them
+    // with the log made every A/B pay the instrumentation and compare against
+    // a binary that did not. MCLA_SPIN_COUNTERS=1 turns them on deliberately.
+    static const bool kCount = [] {
+        const char* e = std::getenv("MCLA_SPIN_COUNTERS");
+        return e && *e == '1';
+    }();
     if (!REXCVAR_GET(fence_spin_throttle)) {
         // Still count the reaches, so the OFF run reports the same call rate
         // and the two runs are comparable.
+        if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
 #if defined(_WIN32)
     static thread_local uint32_t s_spin_count = 0;
+    if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
     YieldProcessor();
     if (++s_spin_count >= 16) {
+        LARGE_INTEGER a, b;
+        if (kCount) QueryPerformanceCounter(&a);
         SwitchToThread();
+        if (kCount) QueryPerformanceCounter(&b);
+        static const double kUsPerTick = [] {
+            LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+            return 1000000.0 / double(f.QuadPart);
+        }();
+        if (kCount) {
+            g_fence_switches.fetch_add(1, std::memory_order_relaxed);
+            g_fence_switch_us.fetch_add(
+                uint64_t((b.QuadPart - a.QuadPart) * kUsPerTick), std::memory_order_relaxed);
+        }
         s_spin_count = 0;
     }
 #endif
@@ -3230,6 +3262,10 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
 }
 
 // BadassBaboon's Recomp Adjustments: Rock-solid thread-pinned frame rate limiter
+// Wall time the frame limiter spends in its PAUSE spin instead of sleeping.
+std::atomic<uint64_t> g_limiter_spin_us{0};
+std::atomic<uint64_t> g_limiter_spins{0};
+
 static void EnforceFrameLimit() {
     // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
     // change after process start, and this runs on every single frame.
@@ -3278,6 +3314,7 @@ static void EnforceFrameLimit() {
         // Sub-millisecond spin with YieldProcessor() (x86 PAUSE) to hit the exact
         // microsecond deadline. Replacing std::this_thread::yield() eliminates
         // Windows scheduler stalls that cause 1-2 ms wake-up jitter.
+        const uint64_t spin_from = now_us();
         const bool spin = REXCVAR_GET(frame_limit_spin);
         while (now_us() < next_us) {
 #if defined(_WIN32)
@@ -3285,6 +3322,10 @@ static void EnforceFrameLimit() {
 #endif
             std::this_thread::yield();
         }
+        // How much wall time this thread spent burning a core to hit the
+        // deadline, as opposed to sleeping through it.
+        g_limiter_spin_us.fetch_add(now_us() - spin_from, std::memory_order_relaxed);
+        g_limiter_spins.fetch_add(1, std::memory_order_relaxed);
     }
 
     uint64_t after = now_us();
@@ -3564,6 +3605,19 @@ void RecordFrameTime() {
                 " | draws=%llu verts=%llu\n",
                 CTR(tex_hit), CTR(tex_miss), CTR(pipe_hit), CTR(pipe_miss),
                 CTR(draws), CTR(verts));
+            // The three host-side spin/yield patches, measured where they decide.
+            // fence_hits  = times the guest reached the D3D fence poll body
+            // fence_sw    = SwitchToThread() calls the throttle made, and the
+            //               wall time they actually cost
+            // limiter     = wall time EnforceFrameLimit burned in its PAUSE spin
+            std::fprintf(log,
+                "           spin/s: fence_hits=%llu fence_sw=%llu (%llu us)"
+                "  limiter_spin=%llu us x%llu\n",
+                (unsigned long long)g_fence_hook_calls.exchange(0, std::memory_order_relaxed),
+                (unsigned long long)g_fence_switches.exchange(0, std::memory_order_relaxed),
+                (unsigned long long)g_fence_switch_us.exchange(0, std::memory_order_relaxed),
+                (unsigned long long)g_limiter_spin_us.exchange(0, std::memory_order_relaxed),
+                (unsigned long long)g_limiter_spins.exchange(0, std::memory_order_relaxed));
             std::fprintf(log,
                 "           sys: cmdbuf_stalls=%llu crit_contentions=%llu"
                 " | now: apc_depth=%lld threads=%lld qdepth=%lld audio_lat_us=%lld\n",
