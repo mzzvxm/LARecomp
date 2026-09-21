@@ -21,6 +21,7 @@
 #include "texture_cache.h"
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_texture_swizzle);
+REXCVAR_DECLARE(bool, mcla_native_gfx_pack_depth_stencil);
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_bind_memo);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
@@ -217,6 +218,8 @@ uint32_t HostFormatSwizzle(uint32_t guest_format, bool tiled) {
   constexpr uint32_t kRgba = 0x688u;  // (X,Y,Z,W)
   constexpr uint32_t kRrrr = 0x000u;  // (X,X,X,X)
   constexpr uint32_t kBgra = 0x60Au;  // (Z,Y,X,W)
+  // (X,X,Y,X): depth in every component but z, stencil in z.
+  constexpr uint32_t kDepthStencilPacked = 0x040u;
   switch (GuestTextureFormat(guest_format)) {
     case GuestTextureFormat::k_1_5_5_5:
       // B5G5R5A1_UNORM over an unconverted R5G5B5A1 payload.
@@ -234,20 +237,45 @@ uint32_t HostFormatSwizzle(uint32_t guest_format, bool tiled) {
     case GuestTextureFormat::k_8:
     case GuestTextureFormat::k_32_FLOAT:
       return kRrrr;
+    case GuestTextureFormat::k_24_8:
+    case GuestTextureFormat::k_24_8_FLOAT:
+      // A depth fetch is served the PACKED copy the resolve builds, not the raw
+      // two-plane depth-stencil: R holds depth, G holds stencil/256
+      // (render_target_pool, shaders/depth_stencil_pack_cs.hlsl). x, y and w
+      // take depth; z takes the stencil half.
+      //
+      // That z mapping is NOT how MCLA's motion blur gets its vehicle id, which
+      // is what it was first written for. Decoding the pass's container shows
+      // four samplers on four fetch slots: DepthMapSampler reads .x of this
+      // k_24_8 fetch, while StencilSampler is a SEPARATE fetch of a second depth
+      // resolve, read as k_8_8_8_8 -- see FindResolvedDepthAs8888. No measured
+      // draw reads .z of a k_24_8 fetch, and the emulated path answers RRRR
+      // here. The mapping is kept because the only known consumer reads .x,
+      // where both agree; it has not been checked against another one.
+      //
+      // Only when the packed copy is actually what the bridge hands back;
+      // with the pass off the fetch still gets the raw depth plane, where G
+      // reads nothing and RRRR is the right answer.
+      return REXCVAR_GET(mcla_native_gfx_pack_depth_stencil) ? kDepthStencilPacked : kRrrr;
     default:
       // Everything else this runtime binds is a straight component-for-
-      // component DXGI match; depth arrives through the render-target path and
-      // is sampled as a single channel, which kRrrr would also give.
+      // component DXGI match.
       return kRgba;
   }
 }
 
 uint32_t ShaderComponentMappingForSwizzle(uint32_t guest_swizzle, uint32_t guest_format,
-                                         bool tiled) {
+                                         bool tiled, TextureSource source) {
   if (!REXCVAR_GET(mcla_native_gfx_texture_swizzle)) {
     return D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   }
-  const uint32_t host_format_swizzle = HostFormatSwizzle(guest_format, tiled);
+  // The repacked depth-as-8888 copy is written in the component order the
+  // hardware fetch produces, endian swap included, so the host-side reordering
+  // a DECODED 8888 needs must not be applied on top of it. Only the guest's own
+  // dst_swiz is composed, which is what the Xenos does.
+  const uint32_t host_format_swizzle = source == TextureSource::kDepthAs8888
+                                           ? 0x688u  // (X,Y,Z,W)
+                                           : HostFormatSwizzle(guest_format, tiled);
   uint32_t mapping = 0;
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t guest_component = (guest_swizzle >> (3u * i)) & 0x7u;
@@ -313,7 +341,8 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   // built from the guest format would not match it.
   desc.Format = DXGI_FORMAT(SrvFormatForResource(resource, fetch.format));
   desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-  desc.Shader4ComponentMapping = ShaderComponentMappingForSwizzle(fetch.swizzle, fetch.format, fetch.tiled);
+  desc.Shader4ComponentMapping =
+      ShaderComponentMappingForSwizzle(fetch.swizzle, fetch.format, fetch.tiled, source);
   // Every level the resource has, not just the top one. Pinning this to 1
   // hides the mip chain the texture cache now uploads: the sampler would still
   // have a mip filter and a LOD range, but nothing below level 0 to read, so

@@ -220,6 +220,15 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_skip_water, 0, "MCLA/NativeGfx",
                       "Diagnostico: pula draws de agua por familia, para saber qual pinta a "
                       "faixa branca. Bitmask: 1 = xCityOceanShore, 2 = xCityOceanWater, "
                       "4 = xCityOceanWaterLOD, 8 = xCityPondWater.");
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_pack_depth_stencil, true, "MCLA/NativeGfx",
+                    "Monta por compute, em cada resolve de profundidade de resolucao "
+                    "cheia, duas copias dos dois planos: R32G32_FLOAT (profundidade em R, "
+                    "stencil/256 em G) para um fetch k_24_8, e R8G8B8A8_UNORM na ordem de "
+                    "componentes que o fetch do Xenos entrega para um fetch k_8_8_8_8 do "
+                    "mesmo resolve. E pela segunda que o motion blur da MCLA le o id de "
+                    "veiculo que a cena escreveu no stencil; sem ela o carro do jogador e "
+                    "reprojetado como cenario estatico e borra. Custa duas alocacoes do "
+                    "tamanho do alvo por endereco de resolve. Desligar so para bissectar.");
 REXCVAR_DEFINE_STRING(mcla_native_gfx_skip_ps, "", "MCLA/NativeGfx",
                       "Diagnostico: pula todo draw cujo PIXEL SHADER tem esta identidade, "
                       "em hexadecimal (ex. \"0xF43F1D5258D0F6EF\"). Vazio = nao pula nada. "

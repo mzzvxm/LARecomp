@@ -18,8 +18,10 @@
 #include "image_dump.h"
 
 #include "depth_msaa_resolve_dxil.inc"
+#include "depth_stencil_pack_dxil.inc"
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_depth_cs);
+REXCVAR_DECLARE(bool, mcla_native_gfx_pack_depth_stencil);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_depth_reclear_infer);
 REXCVAR_DECLARE(bool, mcla_native_gfx_reclear_probe);
@@ -110,6 +112,35 @@ uint32_t DepthResolvePlaneFormat(uint32_t ds_dxgi) {
       return DXGI_FORMAT_R32_FLOAT;
     default:
       return 0;
+  }
+}
+
+// True when this resource format carries a STENCIL plane (subresource 1).
+//
+// A depth-stencil resource is two planes. Every copy in this file addresses
+// subresource 0, which is depth alone, so the stencil plane of a resolve
+// destination stays at whatever it was created with -- zero.
+//
+// MCLA depends on that plane. Its motion blur reprojects each pixel with the
+// previous frame's matrix, which is only correct for static geometry, so the
+// game tags each vehicle with an id in the stencil and the blur shader decodes
+// it (round(stencil_sample * 256) * 0.25) to pick that vehicle's own matrix out
+// of Mc4MotionBlurVehicleMtxs and cancel its motion. Measured in one frame:
+// 3453 draws write stencil with REPLACE, reference values 4, 5, 8, 12, 16 and
+// 20 -- exactly 4x the indices 1..5.
+//
+// With the plane left at zero every pixel decodes index 0, the static-world
+// matrix, so the player's car is blurred by the camera's own motion. The world
+// looks right because index 0 is the correct answer for it.
+bool HasStencilPlane(uint32_t dxgi) {
+  switch (dxgi) {
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -313,6 +344,8 @@ void RenderTargetPool::Shutdown(D3D12Context& context) {
   resolved_.clear();
   for (auto& spare : resolved_spares_) {
     if (spare.copy.resource) context.DeferRelease(spare.copy.resource.Detach());
+    if (spare.copy.packed) context.DeferRelease(spare.copy.packed.Detach());
+    if (spare.copy.packed8888) context.DeferRelease(spare.copy.packed8888.Detach());
   }
   resolved_spares_.clear();
   for (auto& [key, s] : msaa_scratch_) {
@@ -355,12 +388,24 @@ void RenderTargetPool::StashResolvedVariant(uint32_t address, ResolvedCopy&& cop
     if (copy.resource && copy.owned) {
       orphaned_resources_.push_back(std::move(copy.resource));
     }
+    if (copy.packed) {
+      orphaned_resources_.push_back(std::move(copy.packed));
+    }
+    if (copy.packed8888) {
+      orphaned_resources_.push_back(std::move(copy.packed8888));
+    }
     return;
   }
   if (resolved_spares_.size() >= kMaxResolvedSpares) {
     ResolvedSpare& oldest = resolved_spares_.front();
     if (oldest.copy.resource) {
       orphaned_resources_.push_back(std::move(oldest.copy.resource));
+    }
+    if (oldest.copy.packed) {
+      orphaned_resources_.push_back(std::move(oldest.copy.packed));
+    }
+    if (oldest.copy.packed8888) {
+      orphaned_resources_.push_back(std::move(oldest.copy.packed8888));
     }
     resolved_spares_.erase(resolved_spares_.begin());
     ++stats_.resolve_variants_evicted;
@@ -585,7 +630,8 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
       // format/size. StashResolvedVariant keeps an owned copy for the next time
       // this shape comes back, or parks it for the fence-gated release in
       // FlushPendingCopies. The old Detach()-and-leak grew VRAM without bound
-      // (measured 12 GB on a 4 GB card).
+      // (measured 12 GB on a 4 GB card), and leaking the packed depth+stencil
+      // twin ran the device out of memory in about fourteen seconds of loading.
       StashResolvedVariant(dest_address, std::move(it->second));
       resolved_.erase(it);
     }
@@ -687,6 +733,104 @@ bool EnsureDepthResolveCs(ID3D12Device* device) {
   g_depth_cs.ok = true;
   REXLOG_INFO("[native_gfx] multisampled depth resolve (compute) ready");
   return true;
+}
+
+
+// Packs a resolved depth-stencil into the one texture a k_24_8 fetch behaves
+// like: depth in R, stencil/256 in G. Same shape as the depth resolve above --
+// its own root signature, PSO and descriptor ring -- because it runs from the
+// resolve, outside any draw's descriptor setup.
+struct DepthStencilPackCs {
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+  uint32_t inc = 0;
+  uint32_t next = 0;  // ring over kSlots triples of descriptors
+  bool tried = false;
+  bool ok = false;
+  static constexpr uint32_t kSlots = 16;
+  static constexpr uint32_t kPerSlot = 4;  // depth SRV, stencil SRV, 2 packed UAVs
+};
+DepthStencilPackCs g_ds_pack;
+
+bool EnsureDepthStencilPackCs(ID3D12Device* device) {
+  if (g_ds_pack.tried) {
+    return g_ds_pack.ok;
+  }
+  g_ds_pack.tried = true;
+  D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+  ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  ranges[0].NumDescriptors = 2;
+  ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+  ranges[1].NumDescriptors = 2;  // u0 R32G32_FLOAT, u1 R8G8B8A8_UNORM
+  ranges[1].OffsetInDescriptorsFromTableStart = 2;
+  D3D12_ROOT_PARAMETER params[2] = {};
+  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  params[0].DescriptorTable.NumDescriptorRanges = 2;
+  params[0].DescriptorTable.pDescriptorRanges = ranges;
+  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  params[1].Constants.Num32BitValues = 4;
+  D3D12_ROOT_SIGNATURE_DESC rs = {};
+  rs.NumParameters = 2;
+  rs.pParameters = params;
+  Microsoft::WRL::ComPtr<ID3DBlob> blob, err;
+  if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) {
+    REXLOG_ERROR("[native_gfx] depth-stencil pack root signature serialize failed");
+    return false;
+  }
+  if (FAILED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                         IID_PPV_ARGS(&g_ds_pack.root)))) {
+    REXLOG_ERROR("[native_gfx] depth-stencil pack CreateRootSignature failed");
+    return false;
+  }
+  D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+  pd.pRootSignature = g_ds_pack.root.Get();
+  pd.CS = {kDepthStencilPackCsDxil, kDepthStencilPackCsDxilLen};
+  if (FAILED(device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_ds_pack.pso)))) {
+    REXLOG_ERROR("[native_gfx] depth-stencil pack PSO failed");
+    return false;
+  }
+  D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  hd.NumDescriptors = DepthStencilPackCs::kSlots * DepthStencilPackCs::kPerSlot;
+  hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_ds_pack.heap)))) {
+    REXLOG_ERROR("[native_gfx] depth-stencil pack descriptor heap failed");
+    return false;
+  }
+  g_ds_pack.inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  g_ds_pack.ok = true;
+  REXLOG_INFO("[native_gfx] depth+stencil pack (compute) ready");
+  return true;
+}
+
+// The stencil-plane view format that goes with a typeless depth-stencil.
+// 0 means the resource has no stencil plane.
+uint32_t StencilPlaneFormat(uint32_t dxgi) {
+  switch (dxgi) {
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+      return DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+      return DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+    default:
+      return 0;
+  }
+}
+
+// The depth-plane view format for the same resource.
+uint32_t DepthPlaneViewFormat(uint32_t dxgi) {
+  switch (dxgi) {
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+      return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+      return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    default:
+      return 0;
+  }
 }
 
 }  // namespace
@@ -838,6 +982,194 @@ ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
   cl->ResourceBarrier(1, &to_copy);
   scratch.state = final_state;
   return scratch.resource.Get();
+}
+
+void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
+                                                ID3D12GraphicsCommandList* cl,
+                                                ResolvedCopy& dst) {
+  if (!cl || !dst.resource || !REXCVAR_GET(mcla_native_gfx_pack_depth_stencil)) {
+    return;
+  }
+  const D3D12_RESOURCE_DESC rd = dst.resource->GetDesc();
+  const uint32_t stencil_fmt = StencilPlaneFormat(rd.Format);
+  const uint32_t depth_fmt = DepthPlaneViewFormat(rd.Format);
+  if (!stencil_fmt || !depth_fmt) {
+    return;  // single-plane depth (or colour): nothing to pack
+  }
+  ID3D12Device* device = context.device();
+  if (!device || !EnsureDepthStencilPackCs(device)) {
+    return;
+  }
+  const uint32_t w = uint32_t(rd.Width), h = rd.Height;
+  // Only the full-size depth resolves. The pass this exists for samples the
+  // scene depth, and packing every small destination as well (64x32 shadow
+  // stages, the 220x220 minimap, the 1x1 exposure) doubled the footprint of
+  // each for nothing. The first build without this gate ran a 4 GB card out of
+  // memory about fourteen seconds into loading: every later CreateCommittedResource
+  // failed, then the device was lost.
+  if (w < 640u || h < 360u) {
+    return;
+  }
+  if (!dst.packed) {
+    D3D12_RESOURCE_DESC pd = {};
+    pd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    pd.Width = w;
+    pd.Height = h;
+    pd.DepthOrArraySize = 1;
+    pd.MipLevels = 1;
+    pd.Format = DXGI_FORMAT_R32G32_FLOAT;
+    pd.SampleDesc.Count = 1;
+    pd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    pd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(device->CreateCommittedResource(
+            &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &pd,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dst.packed)))) {
+      REXLOG_ERROR("[native_gfx] packed depth+stencil creation failed ({}x{})", w, h);
+      return;
+    }
+    dst.packed_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    // Says both that the pass is live and what it costs. An out-of-memory here
+    // surfaced as every unrelated creation failing a few seconds later, with
+    // nothing in the log pointing at this allocation.
+    //
+    // Counts creations, not live copies: a retired one leaves through the orphan
+    // queue without being subtracted. The first few and then one in 256 --
+    // logging every creation was a console write on the render thread about 25
+    // times a second while the alias churn (see resolved_spares_) was unfixed.
+    static uint32_t packed_created = 0;
+    ++packed_created;
+    if (packed_created <= 4u || (packed_created % 256u) == 0u) {
+      REXLOG_INFO("[native_gfx] packed depth+stencil {}x{} ({} created, {} MiB each)", w, h,
+                  packed_created, (uint64_t(w) * uint64_t(h) * 8ull) >> 20);
+    }
+  }
+  if (!dst.packed8888) {
+    D3D12_RESOURCE_DESC pd = {};
+    pd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    pd.Width = w;
+    pd.Height = h;
+    pd.DepthOrArraySize = 1;
+    pd.MipLevels = 1;
+    pd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.SampleDesc.Count = 1;
+    pd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    pd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(device->CreateCommittedResource(
+            &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &pd,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dst.packed8888)))) {
+      REXLOG_ERROR("[native_gfx] depth-as-8888 copy creation failed ({}x{})", w, h);
+      // Not fatal: the dispatch below needs a valid u1, so bail rather than
+      // bind a null descriptor, and leave the R32G32 copy to be built next
+      // time. Falling through with a null UAV removed the device once.
+      return;
+    }
+    dst.packed8888_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  }
+
+  // The source has to be readable as an SRV and the destination writable as a
+  // UAV for the length of the dispatch; both go back afterwards.
+  const D3D12_RESOURCE_STATES src_before = dst.state;
+  if (src_before != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE) {
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Transition.pResource = dst.resource.Get();
+    b.Transition.StateBefore = src_before;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cl->ResourceBarrier(1, &b);
+    dst.state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+  }
+  if (dst.packed_state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Transition.pResource = dst.packed.Get();
+    b.Transition.StateBefore = dst.packed_state;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cl->ResourceBarrier(1, &b);
+    dst.packed_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  }
+  if (dst.packed8888_state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Transition.pResource = dst.packed8888.Get();
+    b.Transition.StateBefore = dst.packed8888_state;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cl->ResourceBarrier(1, &b);
+    dst.packed8888_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  }
+
+  const uint32_t slot = g_ds_pack.next;
+  g_ds_pack.next = (g_ds_pack.next + 1) % DepthStencilPackCs::kSlots;
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_ds_pack.heap->GetCPUDescriptorHandleForHeapStart();
+  cpu.ptr += SIZE_T(slot) * DepthStencilPackCs::kPerSlot * g_ds_pack.inc;
+
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+  srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srv.Texture2D.MipLevels = 1;
+  srv.Format = DXGI_FORMAT(depth_fmt);
+  srv.Texture2D.PlaneSlice = 0;
+  device->CreateShaderResourceView(dst.resource.Get(), &srv, cpu);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu_stencil = cpu;
+  cpu_stencil.ptr += g_ds_pack.inc;
+  srv.Format = DXGI_FORMAT(stencil_fmt);
+  srv.Texture2D.PlaneSlice = 1;
+  device->CreateShaderResourceView(dst.resource.Get(), &srv, cpu_stencil);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu_uav = cpu_stencil;
+  cpu_uav.ptr += g_ds_pack.inc;
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+  uav.Format = DXGI_FORMAT_R32G32_FLOAT;
+  uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  device->CreateUnorderedAccessView(dst.packed.Get(), nullptr, &uav, cpu_uav);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu_uav8888 = cpu_uav;
+  cpu_uav8888.ptr += g_ds_pack.inc;
+  uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  device->CreateUnorderedAccessView(dst.packed8888.Get(), nullptr, &uav, cpu_uav8888);
+
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu = g_ds_pack.heap->GetGPUDescriptorHandleForHeapStart();
+  gpu.ptr += UINT64(slot) * DepthStencilPackCs::kPerSlot * g_ds_pack.inc;
+  ID3D12DescriptorHeap* heaps[] = {g_ds_pack.heap.Get()};
+  // This pass binds its own heaps, root signature and pipeline onto the
+  // shared command list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
+  cl->SetDescriptorHeaps(1, heaps);
+  cl->SetComputeRootSignature(g_ds_pack.root.Get());
+  cl->SetPipelineState(g_ds_pack.pso.Get());
+  cl->SetComputeRootDescriptorTable(0, gpu);
+  const uint32_t consts[4] = {w, h, 0, 0};
+  cl->SetComputeRoot32BitConstants(1, 4, consts, 0);
+  cl->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
+
+  D3D12_RESOURCE_BARRIER to_srv = {};
+  to_srv.Transition.pResource = dst.packed.Get();
+  to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  to_srv.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+  to_srv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cl->ResourceBarrier(1, &to_srv);
+  dst.packed_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+  to_srv.Transition.pResource = dst.packed8888.Get();
+  to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  cl->ResourceBarrier(1, &to_srv);
+  dst.packed8888_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+}
+
+ID3D12Resource* RenderTargetPool::FindResolvedDepthAs8888(uint32_t guest_address, uint32_t width,
+                                                          uint32_t height,
+                                                          D3D12_RESOURCE_STATES* out_state) {
+  auto it = resolved_.find(guest_address);
+  if (it == resolved_.end() || !it->second.from_depth || !it->second.packed8888) {
+    return nullptr;
+  }
+  // Same superset rule as FindResolvedTarget: a smaller fetch over a larger
+  // resolve is the guest reading a sub-rect, a larger one is a different
+  // resource that happens to share the address.
+  if (width > it->second.width || height > it->second.height) {
+    return nullptr;
+  }
+  if (out_state) {
+    *out_state = it->second.packed8888_state;
+  }
+  ++stats_.lookup_hits;
+  return it->second.packed8888.Get();
 }
 
 void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
@@ -1017,6 +1349,21 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     }
     cl->CopyTextureRegion(&dst_loc, dx, dy, 0, &src_loc, &box);
 
+    // Second plane: the stencil. Same rect, subresource 1 on both sides.
+    //
+    // Only for a depth resolve, and only when BOTH resources actually have the
+    // plane -- the multisampled path copies out of a single-sampled stand-in
+    // that may have been created depth-only, and asking for subresource 1 of a
+    // resource that has one plane is a device-removal-grade error, not a
+    // no-op.
+    if (pc.from_depth && HasStencilPlane(src_res->GetDesc().Format) &&
+        HasStencilPlane(dst.resource->GetDesc().Format)) {
+      D3D12_TEXTURE_COPY_LOCATION sdst = dst_loc, ssrc = src_loc;
+      sdst.SubresourceIndex = 1;
+      ssrc.SubresourceIndex = 1;
+      cl->CopyTextureRegion(&sdst, dx, dy, 0, &ssrc, &box);
+    }
+
     D3D12_RESOURCE_BARRIER to_srv = {};
     to_srv.Transition.pResource = dst.resource.Get();
     to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -1024,6 +1371,11 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     to_srv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &to_srv);
     dst.state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+
+    // Both planes are in place now, so build the packed copy a k_24_8 fetch
+    // gets handed. Cheap to skip: it returns immediately unless this really is
+    // a two-plane depth-stencil.
+    PackResolvedDepthStencil(context, cl, dst);
 
     // A colour target is bound again by the next draw of its pass, so it has
     // to go back to RENDER_TARGET; leaving it in COPY_SOURCE would be an
@@ -1442,6 +1794,11 @@ void RenderTargetPool::RecordResolve(D3D12Context& context, ID3D12GraphicsComman
     cl->CopyResource(dst.resource.Get(), src);
   }
 
+  // Same packing as the region path above. The multisampled branch resolves
+  // only subresource 0, so that one has no stencil to pack and the call falls
+  // through -- a known gap, and the reason this is not the MSAA path's fix.
+  PackResolvedDepthStencil(context, cl, dst);
+
   // Leave both sides in the states the next user expects.
   sb.Transition.StateBefore = sb.Transition.StateAfter;
   sb.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1539,6 +1896,19 @@ ID3D12Resource* RenderTargetPool::FindResolvedTarget(uint32_t guest_address, uin
     ++stats_.lookup_misses;
     ++stats_.miss_no_resource;
     return nullptr;
+  }
+  // A depth fetch gets the PACKED copy, never the raw two-plane surface: an
+  // R32G32_FLOAT with depth in R and stencil/256 in G, because D3D12 has no
+  // single view that serves both planes. HostFormatSwizzle (texture binding)
+  // maps .z onto G. The stencil MCLA's motion blur actually uses does not come
+  // through here -- it is a k_8_8_8_8 fetch of another depth resolve, answered
+  // by FindResolvedDepthAs8888.
+  if (want_depth && it->second.packed) {
+    if (out_state) {
+      *out_state = it->second.packed_state;
+    }
+    ++stats_.lookup_hits;
+    return it->second.packed.Get();
   }
   // Kind mismatch is COUNTED but not rejected: reading a depth resolve through
   // a colour fetch is a deliberate Xbox 360 idiom (a shader unpacks the depth

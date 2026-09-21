@@ -249,6 +249,16 @@ class RenderTargetPool : public RenderTargetLookup {
                                      bool want_depth,
                                      D3D12_RESOURCE_STATES* out_state) override;
 
+  // The depth resolve at `guest_address` seen as an ordinary 8888 texture, or
+  // null when there is no such entry. Separate from FindResolvedTarget because
+  // the two differ in what the CALLER asked for, not in what is stored: a
+  // k_8_8_8_8 fetch over a depth resolve is a deliberate guest idiom and has
+  // to be answered with the repacked copy, while FindResolvedTarget's
+  // `want_depth` is about depth-formatted fetches.
+  ID3D12Resource* FindResolvedDepthAs8888(uint32_t guest_address, uint32_t width,
+                                          uint32_t height,
+                                          D3D12_RESOURCE_STATES* out_state) override;
+
   // Registers a resolve destination directly against an existing resource,
   // used for depth: a typeless depth target is already the image a fetch
   // wants, so copying it into a colour texture would only lose precision (and
@@ -320,7 +330,28 @@ class RenderTargetPool : public RenderTargetLookup {
     // R32_TYPELESS and the destination format is R16G16B16A16_TYPELESS",
     // which killed the whole command list.
     bool from_depth = false;
+    // A depth-stencil entry also carries a PACKED copy: one R32G32_FLOAT
+    // texture with depth in R and stencil/256 in G. A guest k_24_8 fetch is
+    // handed this instead of the raw two-plane surface, since one D3D12 view
+    // cannot expose both planes. See shaders/depth_stencil_pack_cs.hlsl.
+    Microsoft::WRL::ComPtr<ID3D12Resource> packed;
+    D3D12_RESOURCE_STATES packed_state = D3D12_RESOURCE_STATE_COMMON;
+    // And a SECOND packed copy, R8G8B8A8_UNORM, for the other guest format the
+    // same depth resolve is read through. MCLA resolves the depth buffer to a
+    // separate address and samples THAT as a plain k_8_8_8_8 colour texture to
+    // recover the stencil byte -- measured in blur.rdc as addr 0x06ACD000,
+    // 1280x720, format 6, swizzle 0x60A, endian 2, produced by a resolve whose
+    // source index is 4 (depth). Its components reproduce the post-endian
+    // fetch: (stencil, D[7:0], D[15:8], D[23:16]).
+    Microsoft::WRL::ComPtr<ID3D12Resource> packed8888;
+    D3D12_RESOURCE_STATES packed8888_state = D3D12_RESOURCE_STATE_COMMON;
   };
+
+  // Builds (or refreshes) the packed depth+stencil copy of `dst`. No-op when
+  // the entry is not a two-plane depth-stencil.
+  void PackResolvedDepthStencil(D3D12Context& context, ID3D12GraphicsCommandList* cl,
+                                ResolvedCopy& dst);
+
 
   // A pass renders into one target, but the guest cycles through many
   // transient configurations; pooling every one of them exhausted GPU memory

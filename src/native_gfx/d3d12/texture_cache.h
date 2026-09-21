@@ -57,6 +57,11 @@ class RenderTargetLookup {
   virtual ID3D12Resource* FindResolvedTarget(uint32_t guest_address, uint32_t width,
                                              uint32_t height, bool want_depth,
                                              D3D12_RESOURCE_STATES* out_state) = 0;
+  // The same depth resolve seen as an ordinary 8888 texture; null when the
+  // address has no depth entry or no repacked copy yet.
+  virtual ID3D12Resource* FindResolvedDepthAs8888(uint32_t guest_address, uint32_t width,
+                                                  uint32_t height,
+                                                  D3D12_RESOURCE_STATES* out_state) = 0;
 
   // True when the guest resolved something to this address, i.e. the data is
   // produced by the GPU and does not exist in guest memory. Classifying by
@@ -82,6 +87,11 @@ enum class TextureSource : uint32_t {
   kRenderTargetBridge,    // the resource the GPU already owns (trustworthy)
   kGuestDecode,           // decoded from guest memory (only as good as memory)
   kFallback,              // the neutral 1x1 white substitute
+  // The depth resolve repacked as R8G8B8A8 for a guest k_8_8_8_8 fetch. Its own
+  // value because it decides the SRV's component mapping: the copy is already
+  // in the guest's post-endian component order, so the host-side reordering
+  // that a decoded 8888 needs would be applied twice.
+  kDepthAs8888,
 };
 
 // One-character tag for the diagnostics, so a 9-slot dump stays on one line.
@@ -90,6 +100,7 @@ inline char TextureSourceTag(TextureSource s) {
     case TextureSource::kRenderTargetBridge: return 'R';
     case TextureSource::kGuestDecode:        return 'G';
     case TextureSource::kFallback:           return 'F';
+    case TextureSource::kDepthAs8888:        return 'D';
     default:                                 return 'U';
   }
 }

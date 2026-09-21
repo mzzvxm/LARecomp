@@ -430,6 +430,29 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // owns. Depth and float targets read back as textures land here.
   if (rt_lookup_) {
     D3D12_RESOURCE_STATES rt_state = D3D12_RESOURCE_STATE_COMMON;
+    // A k_8_8_8_8 fetch over a DEPTH resolve is the guest unpacking the depth
+    // buffer as a colour texture, and MCLA does it to read the stencil byte:
+    // the scene pass writes a vehicle id into stencil with REPLACE, the game
+    // resolves the depth buffer to its own address (measured: 0x06ACD000,
+    // 1280x720, `RESOLVE_SRCIDX idx=4` = depth source), and
+    // xrage_postfx__PSStreakMotionBlur samples that as format 6 and decodes
+    // trunc(v * 256) to index Mc4MotionBlurVehicleMtxs.
+    //
+    // D3D12 cannot serve it from the two-plane surface -- an SRV names one
+    // plane, and a depth-plane view reads zero where the stencil should be, so
+    // every pixel took vehicle index 0 and the player's car was reprojected
+    // with the static-world matrix. The repacked R8G8B8A8 copy carries the
+    // post-endian component order the hardware fetch yields.
+    if (GuestTextureFormat(fetch.format) == GuestTextureFormat::k_8_8_8_8) {
+      if (ID3D12Resource* rt = rt_lookup_->FindResolvedDepthAs8888(
+              fetch.base_address, fetch.width, fetch.height, &rt_state)) {
+        ++stats_.render_target_hits;
+        if (out_source) {
+          *out_source = TextureSource::kDepthAs8888;
+        }
+        return rt;
+      }
+    }
     // A depth-sourced fetch format wants the depth resolve; anything else wants
     // the colour resolve. Without this the ShadowCollector (colour) was served
     // the depth resolve that shares its address.
