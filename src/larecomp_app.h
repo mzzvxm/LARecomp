@@ -522,23 +522,8 @@ class LarecompApp : public rex::ReXApp {
 
     window()->SetTitle("LARecomp (60 FPS Enhanced)");
 
-    std::filesystem::path src_dir = std::filesystem::path(__FILE__).parent_path();
-    std::string icon_path = (src_dir / "assets" / "mcla.ico").string();
-    
-    void* native_hwnd = window()->GetNativeWindowHandle();
-    if (native_hwnd) {
-#ifdef _WIN32
-      HICON hIcon = (HICON)LoadImageA(NULL, icon_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
-      if (hIcon) {
-        SendMessageA((HWND)native_hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
-        SendMessageA((HWND)native_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
-      } else {
-        LARECOMP_APP_ERROR("Failed to load icon file with LoadImageA!");
-      }
-#endif
-    } else {
-      LARECOMP_APP_ERROR("Failed to get native window handle!");
-    }
+    // No window icon is set: the build ships no .ico, so the window keeps the
+    // default one the window class provides.
 
     // Mods and custom music are built here rather than from InitHooks so the
     // work can happen off the UI thread with a progress popup over the window.

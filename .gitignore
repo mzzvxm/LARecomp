@@ -65,9 +65,7 @@ MCLA_Game_Files/
 .DS_Store
 Thumbs.db
 
-# src/assets/ is source, not build output — the .rc embeds the icon from it.
-# The shader pack next to it is generated and far too big to version.
-!src/assets/
-src/assets/*
-!src/assets/mcla.ico
+# src/assets/ holds the generated shader pack, which is far too big to
+# version. Nothing in the directory is tracked.
+src/assets/
 translations/
