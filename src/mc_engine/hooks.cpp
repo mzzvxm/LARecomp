@@ -376,6 +376,11 @@ REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
     "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(fence_spin_throttle, true, "MCLA/Performance",
+    "Yield the host CPU inside the guest's D3D fence poll (sub_82412F98) instead of running "
+    "its 32 pipeline-throttle NOPs. Off restores the stock guest spin.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_STRING(debug_cam, "off", "MCLA/Camera",
     "Free-fly camera during live gameplay: left stick moves, right stick looks, triggers change "
     "speed. Gameplay keeps running underneath (drive, traffic, physics).")
@@ -2015,6 +2020,11 @@ bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
 // - Extended spin: SwitchToThread() yields the CPU quantum directly to GPU Commands.
 // Returning true jumps to 0x82412FD8, bypassing the 32 NOP instructions.
 bool Patch_FenceSpinThrottle() {
+    if (!REXCVAR_GET(fence_spin_throttle)) {
+        // Still count the reaches, so the OFF run reports the same call rate
+        // and the two runs are comparable.
+        return false;
+    }
 #if defined(_WIN32)
     static thread_local uint32_t s_spin_count = 0;
     YieldProcessor();
