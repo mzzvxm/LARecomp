@@ -266,7 +266,10 @@ class LarecompApp : public rex::ReXApp {
             rex::cvar::GetFlagByName("submit_on_primary_buffer_end") == "true" ? "true" : "false");
 
     // BadassBaboon: Fast polling for the GPU vsync worker thread, eliminating 1ms coarse sleep stalls.
-    SetFlag("gpu_vsync_fast_poll", "true");
+    // With vsync off the guest vblank interval is 1 ms, so fast poll makes the "GPU VSync" worker
+    // spin a whole core permanently. Gated so it can be A/B tested from larecomp.toml.
+    SetFlag("gpu_vsync_fast_poll",
+            rex::cvar::GetFlagByName("vsync_fast_poll") == "false" ? "false" : "true");
 
     const char* fetch = getenv("MCLA_ALLOW_INVALID_FETCH");
     SetFlag("gpu_allow_invalid_fetch_constants", (fetch && *fetch) ? fetch : "true");

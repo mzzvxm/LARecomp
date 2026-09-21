@@ -371,6 +371,11 @@ REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
     "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
+    "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
+    "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_STRING(debug_cam, "off", "MCLA/Camera",
     "Free-fly camera during live gameplay: left stick moves, right stick looks, triggers change "
     "speed. Gameplay keeps running underneath (drive, traffic, physics).")
