@@ -22,8 +22,10 @@
 #include "bootprogress/larecomp_boot_progress.h"
 #include "mc_engine/modloader/modloader.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <filesystem>
 #include <cstdlib>
@@ -38,6 +40,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// DedicatedVideoMemory, to size the texture cache against the real adapter.
+#include <dxgi.h>
 #endif
 
 #include <rex/cvar.h>
@@ -164,33 +168,90 @@ class LarecompApp : public rex::ReXApp {
     }
   }
 
+  // "Did anything other than the compiled-in default write this flag?"
+  //
+  // The obvious-looking test - GetFlagByName(name).empty() - is always false
+  // for a registered flag: the getter returns the flag's CURRENT value, and an
+  // untouched flag's current value is its default, not "". Every guard written
+  // that way silently skips its own SetFlag, which is how the texture cache
+  // limits and the 16x anisotropic override below ended up never being applied
+  // at all (logs/effective_config.txt read back the SDK stock 384/768/0 with
+  // none of the three names present in the SetFlagByName results).
+  //
+  // The registry already records who last wrote each flag, so ask it.
+  static bool FlagWasConfigured(const char* name) {
+    return rex::cvar::GetFlagSource(name) != rex::cvar::Source::kDefault;
+  }
+
+  // Dedicated VRAM of the adapter the game will actually run on, in MiB, or 0
+  // when it cannot be determined. Used to size the texture cache: the limits
+  // are what the cache is allowed to hold before it evicts, so a limit above
+  // the card's VRAM means it never evicts, D3D12 overcommits, and WDDM demotes
+  // resources to system memory over PCIe - which reads as constant stutter on
+  // exactly the machines with the least VRAM to spare.
+  static uint32_t DetectVideoMemoryMB() {
+#if defined(_WIN32)
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+      return 0;
+    }
+    uint64_t best = 0;
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+      DXGI_ADAPTER_DESC1 desc{};
+      if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+        best = std::max<uint64_t>(best, desc.DedicatedVideoMemory);
+      }
+      adapter->Release();
+      adapter = nullptr;
+    }
+    factory->Release();
+    return static_cast<uint32_t>(best / (1024ull * 1024ull));
+#else
+    return 0;
+#endif
+  }
+
   void ApplyGpuFlags() {
     // BadassBaboon's Recomp Adjustments: Texture cache memory limits.
     // Respect user-specified values from larecomp.toml or MCLA_TEX_* env overrides.
-    // If not set, default to a safe 2560MB soft / 4096MB hard baseline suitable for 6GB-8GB+ GPUs.
+    //
+    // The unconfigured default is derived from the adapter's VRAM rather than
+    // fixed: a flat 2560/4096 is fine on an 8 GB card and is the whole of a
+    // 4 GB one. Half the VRAM for the hard ceiling, three quarters of that for
+    // the soft one, floored at the SDK stock so a tiny or unreadable adapter
+    // cannot end up below it, and capped at 2560/4096 because more than that
+    // buys nothing here. A 4 GB card lands on 1536/2048, which is what this
+    // build shipped with before the limits stopped being applied at all.
+    const uint32_t vram_mb = DetectVideoMemoryMB();
+    const uint32_t hard_mb = vram_mb ? std::clamp<uint32_t>(vram_mb / 2, 768, 4096) : 2048;
+    const uint32_t soft_mb = std::clamp<uint32_t>(hard_mb * 3 / 4, 384, 2560);
+    MC_INFO("[gpu] adapter VRAM {} MB -> texture cache soft {} MB / hard {} MB",
+            vram_mb, soft_mb, hard_mb);
+
     const char* tex_soft = getenv("MCLA_TEX_SOFT");
     if (tex_soft && *tex_soft) {
       SetFlag("texture_cache_memory_limit_soft", tex_soft);
-    } else if (rex::cvar::GetFlagByName("texture_cache_memory_limit_soft").empty()) {
-      SetFlag("texture_cache_memory_limit_soft", "2560");
+    } else if (!FlagWasConfigured("texture_cache_memory_limit_soft")) {
+      SetFlag("texture_cache_memory_limit_soft", std::to_string(soft_mb).c_str());
     }
 
     const char* tex_hard = getenv("MCLA_TEX_HARD");
     if (tex_hard && *tex_hard) {
       SetFlag("texture_cache_memory_limit_hard", tex_hard);
-    } else if (rex::cvar::GetFlagByName("texture_cache_memory_limit_hard").empty()) {
-      SetFlag("texture_cache_memory_limit_hard", "4096");
+    } else if (!FlagWasConfigured("texture_cache_memory_limit_hard")) {
+      SetFlag("texture_cache_memory_limit_hard", std::to_string(hard_mb).c_str());
     }
 
     const char* tex_rtt = getenv("MCLA_TEX_RTT");
     if (tex_rtt && *tex_rtt) {
       SetFlag("texture_cache_memory_limit_render_to_texture", tex_rtt);
-    } else if (rex::cvar::GetFlagByName("texture_cache_memory_limit_render_to_texture").empty()) {
+    } else if (!FlagWasConfigured("texture_cache_memory_limit_render_to_texture")) {
       SetFlag("texture_cache_memory_limit_render_to_texture", "64");
     }
 
-    // anisotropic_override: default to 5 (16x) if not explicitly configured in larecomp.toml
-    if (rex::cvar::GetFlagByName("anisotropic_override").empty()) {
+    // anisotropic_override: 5 = 16x, unless larecomp.toml says otherwise.
+    if (!FlagWasConfigured("anisotropic_override")) {
       SetFlag("anisotropic_override", "5");
     }
 
