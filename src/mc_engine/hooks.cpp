@@ -352,6 +352,25 @@ REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
     "and state traffic with MSAA on. Requires the enlarged virtual EDRAM (SDK >= this build).")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// Off, because it was measured off. e0d9e94 turned the SDK flag on for the
+// overlap it is supposed to buy, but on the bench (menu_cam slot 8, 40-116 s,
+// three interleaved pairs against a build of ac2453d - the commit before that
+// batch - with the same SDK DLLs) it costs about 7%:
+//
+//   pre-batch build                40.26 fps  (40.47 / 40.25 / 40.07)
+//   this build, flag off           40.88 fps  (40.75 / 40.68 / 41.20)
+//   this build, flag on            38.04 fps  (37.72 / 38.25 / 38.15)
+//
+// Ending a submission at every PM4 primary buffer end trades one batched
+// submit per frame for many small ones; the driver overhead of the extra
+// ExecuteCommandLists and fence signals outweighs the overlap here. It may
+// still win on a faster GPU, which is why this stays a cvar instead of a
+// deletion - set it true in larecomp.toml to measure that.
+REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
+    "Drive the SDK's d3d12_submit_on_primary_buffer_end. Ends a D3D12 submission at every PM4 "
+    "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_STRING(debug_cam, "off", "MCLA/Camera",
     "Free-fly camera during live gameplay: left stick moves, right stick looks, triggers change "
     "speed. Gameplay keeps running underneath (drive, traffic, physics).")

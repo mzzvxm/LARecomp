@@ -262,7 +262,8 @@ class LarecompApp : public rex::ReXApp {
 
     // BadassBaboon: Asynchronously submit D3D12 command lists as primary PM4 buffers finish.
     // Allows physical GPU execution to overlap with CPU command recording and reduces queue bubbles.
-    SetFlag("d3d12_submit_on_primary_buffer_end", "true");
+    SetFlag("d3d12_submit_on_primary_buffer_end",
+            rex::cvar::GetFlagByName("submit_on_primary_buffer_end") == "true" ? "true" : "false");
 
     // BadassBaboon: Fast polling for the GPU vsync worker thread, eliminating 1ms coarse sleep stalls.
     SetFlag("gpu_vsync_fast_poll", "true");
