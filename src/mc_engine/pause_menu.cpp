@@ -872,6 +872,18 @@ const ItemDef kPerfItems[] = {
     Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
     Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
     Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
+    // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so
+    // the next fence poll already sees a change made here. Worth a row rather
+    // than a toml line because whether it helps or hurts depends on the host
+    // CPU, not on the game. It replaces the guest's fence-poll pause with
+    // YieldProcessor plus a SwitchToThread every 16th call, and the guest
+    // reaches that poll about 271k times per frame. Measured on an 8C/16T with
+    // three threads near 100%: 644k SwitchToThread a second costing 10 ms/s in
+    // total, because with cores to spare each one returns without switching --
+    // no gain, no loss. On a machine with fewer cores those same calls switch
+    // for real and the poll thread pays microseconds each time, so ON can cost
+    // far more than it saves. Leave it ON, turn it OFF if the game stutters.
+    Bool("PM_RxFenceSpin",   "fence_spin_throttle",       "FENCE SPIN YIELD: "),
     // BadassBaboon's Recomp Adjustments: city ambient density.
     Bool("PM_RxAmbientTune", "enable_ambient_tuning",     "CITY AMBIENT CULLING: "),
     Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
