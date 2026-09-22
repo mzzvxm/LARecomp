@@ -483,6 +483,13 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
+                    "Find the geometry regions a guest write touches with a walk that stays "
+                    "correct when regions overlap (declined merges leave overlaps). The old "
+                    "binary search assumed disjoint regions and could skip a large region "
+                    "containing the write, losing the invalidation. Off restores it, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
                       "Consecutive frames of being written to after which a geometry region "
                       "comes off the page write watch, or 0 to keep every region watched. The "

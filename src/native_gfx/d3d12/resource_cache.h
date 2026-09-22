@@ -297,6 +297,10 @@ class BufferCache {
     Region* region = nullptr;
   };
   std::vector<RegionIndexEntry> region_index_;
+  uint64_t region_index_max_len_ = 0;  // largest region in the index
+  // Largest region ever created in each map. Regions never grow, so it is a
+  // safe bound for "can a region starting this far below still reach here".
+  uint32_t map_max_len_[uint32_t(BufferSwap::kCount)] = {};
   bool region_index_stale_ = true;
   void RebuildRegionIndex();
   bool UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList* cl, Region& region,

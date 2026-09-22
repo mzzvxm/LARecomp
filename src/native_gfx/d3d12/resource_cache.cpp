@@ -24,6 +24,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
 REXCVAR_DECLARE(bool, mcla_native_gfx_region_memo);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+REXCVAR_DECLARE(bool, mcla_native_gfx_overlap_index);
 
 namespace mcla::native_gfx {
 
@@ -426,7 +427,15 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
                                     ? uint32_t(REXCVAR_GET(mcla_native_gfx_region_kb)) << 10
                                     : kMaxRegionBytesDefault;
     std::vector<uint32_t> merged;
-    for (auto it = map.begin(); it != map.end();) {
+    // Start where an overlap first becomes possible instead of at begin(): a
+    // region starting below lo - (largest region in this map) ends below lo.
+    // The old walk from begin() visited those too and rejected every one of
+    // them before any merge could lower `lo`, so the result is identical --
+    // it just skips a linear walk over thousands of regions for every region
+    // created, which is what driving through new streets does a dozen times a
+    // frame.
+    const uint32_t map_max = map_max_len_[uint32_t(swap)];
+    for (auto it = map.lower_bound(lo > map_max ? lo - map_max : 0u); it != map.end();) {
       const uint32_t r_lo = it->second.base;
       const uint32_t r_hi = it->second.base + it->second.size;
       if (r_lo < hi && lo < r_hi) {
@@ -515,6 +524,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       return false;
     }
     fresh.state = D3D12_RESOURCE_STATE_COPY_DEST;
+    map_max_len_[uint32_t(swap)] = std::max(map_max_len_[uint32_t(swap)], fresh.size);
     auto [it, inserted] = map.emplace(fresh.base, std::move(fresh));
     if (!inserted) {
       // Should be unreachable after the sweep above, but silently reusing a
@@ -777,39 +787,72 @@ void BufferCache::ApplyPendingInvalidations() {
   }
   merged.resize(w);
 
-  if (region_index_stale_) {
-    RebuildRegionIndex();
-  }
   // Walk the RANGES and binary-search the regions, not the other way round.
   // Regions are disjoint and sorted by physical start, so for each range the
   // candidates are a contiguous run: the first entry that can reach into it,
   // then forward while the next one still starts before the range ends.
+  //
+  // Except they are not always disjoint: a declined merge leaves the new,
+  // smaller region overlapping the one it declined to merge with, and index
+  // buffers and vertex streams (two maps) share the index. With overlaps the
+  // entries' ends are no longer sorted, so a binary search on the end can land
+  // PAST a large region that contains the written page -- that region is never
+  // dirtied, the write is lost, and only the sampled hash notices, later. The
+  // overlap-safe walk starts at the first region whose start is within the
+  // largest region size below the range, which is monotone in the start.
+  const bool overlap_safe = REXCVAR_GET(mcla_native_gfx_overlap_index);
+  const auto mark = [&](Region& r, uint64_t lo, uint64_t hi) {
+    ++stats_.inval_scan_steps;
+    if (!r.dirty) {
+      ++stats_.regions_dirtied;
+    }
+    r.dirty = true;
+    // Consecutive frames of being written to. A region that crosses the
+    // threshold comes off the watch (see Region::streaming); the watch
+    // itself is simply not re-armed after its next upload.
+    if (r.dirty_frame != frame_) {
+      r.dirty_streak = (r.dirty_frame + 1 == frame_) ? r.dirty_streak + 1u : 1u;
+      r.dirty_frame = frame_;
+      const uint32_t threshold = REXCVAR_GET(mcla_native_gfx_streaming_frames);
+      if (!r.streaming && threshold != 0 && r.dirty_streak >= threshold) {
+        r.streaming = true;
+        r.clean_streak = 0;
+        ++stats_.streaming_promotions;
+        ++stats_.streaming_regions;
+      }
+    }
+  };
+  if (overlap_safe) {
+    // Straight on the maps: Resolve masks every address to its physical
+    // spelling before keying, so each map is already sorted by physical start
+    // and the parallel index -- rebuilt and re-sorted after every insertion,
+    // several times a frame while driving -- is not needed. Per map, a region
+    // starting below lo - (largest region in it) ends below lo.
+    for (const auto& [lo, hi] : merged) {
+      for (uint32_t m = 0; m < uint32_t(BufferSwap::kCount); ++m) {
+        RegionMap& map = regions_[m];
+        const uint64_t max_len = map_max_len_[m];
+        const uint32_t from = uint32_t(lo > max_len ? lo - max_len : 0);
+        for (auto it = map.lower_bound(from); it != map.end() && it->first < hi; ++it) {
+          if (uint64_t(it->first) + it->second.size <= lo) {
+            continue;  // starts below the range and ends before it
+          }
+          mark(it->second, lo, hi);
+        }
+      }
+    }
+    return;
+  }
+  if (region_index_stale_) {
+    RebuildRegionIndex();
+  }
   for (const auto& [lo, hi] : merged) {
     auto it = std::lower_bound(region_index_.begin(), region_index_.end(), lo,
                                [](const RegionIndexEntry& e, uint64_t v) {
                                  return e.physical_hi <= v;
                                });
     for (; it != region_index_.end() && it->physical_lo < hi; ++it) {
-      ++stats_.inval_scan_steps;
-      Region& r = *it->region;
-      if (!r.dirty) {
-        ++stats_.regions_dirtied;
-      }
-      r.dirty = true;
-      // Consecutive frames of being written to. A region that crosses the
-      // threshold comes off the watch (see Region::streaming); the watch
-      // itself is simply not re-armed after its next upload.
-      if (r.dirty_frame != frame_) {
-        r.dirty_streak = (r.dirty_frame + 1 == frame_) ? r.dirty_streak + 1u : 1u;
-        r.dirty_frame = frame_;
-        const uint32_t threshold = REXCVAR_GET(mcla_native_gfx_streaming_frames);
-        if (!r.streaming && threshold != 0 && r.dirty_streak >= threshold) {
-          r.streaming = true;
-          r.clean_streak = 0;
-          ++stats_.streaming_promotions;
-          ++stats_.streaming_regions;
-        }
-      }
+      mark(*it->region, lo, hi);
     }
   }
 }
@@ -819,10 +862,12 @@ void BufferCache::RebuildRegionIndex() {
   // memoised pointer may have died.
   ++region_generation_;
   region_index_.clear();
+  region_index_max_len_ = 0;
   for (RegionMap& map : regions_) {
     for (auto& [base, r] : map) {
       const uint64_t lo = r.base & 0x1FFFFFFFu;
       region_index_.push_back({lo, lo + r.size, &r});
+      region_index_max_len_ = std::max<uint64_t>(region_index_max_len_, r.size);
     }
   }
   std::sort(region_index_.begin(), region_index_.end(),
