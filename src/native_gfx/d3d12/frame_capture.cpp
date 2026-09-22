@@ -231,6 +231,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
 REXCVAR_DECLARE(bool, mcla_native_gfx_unsupplied_drop);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_skip_ps);
+REXCVAR_DECLARE(std::string, mcla_native_gfx_dump_ps);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_first);
@@ -3021,6 +3022,197 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                      cfg.height, (unsigned long long)ps_id);
         std::fflush(f); std::fclose(f);
       }
+    }
+  }
+  // Reads back one entry of the Texture2D descriptor-index table the shader
+  // indexes by fetch slot, so a PSSLOTS line can say what the slot BOUND and
+  // what the slot READS in the same row.
+  const auto TableIndexForSlot = [](const uint8_t* shared_bytes, uint32_t slot) -> uint32_t {
+    uint32_t v = 0;
+    std::memcpy(&v, shared_bytes + SharedTextureIndexByteOffset(0, slot), 4);
+    return v & 0x7FFFFFFFu;
+  };
+  // TEMP DIAG (PSSLOTS): EVERY bound texture slot of one chosen pixel shader,
+  // with no format filter at all.
+  //
+  // DEPTHFETCH below only prints fetches whose format passes
+  // IsRenderTargetSourcedFormat, and that predicate is exactly what this is
+  // chasing: in blur.rdc the motion blur (ps 0F681CC854B766D4,
+  // xrage_postfx__PSStreakMotionBlur) had its StencilSampler served the RAW
+  // two-plane D32S8, so the .z it reads for the vehicle id was zero. That
+  // sampler is a k_8_8_8_8 fetch of a SECOND depth resolve (0x06ACD000), which
+  // the predicate rejects -- DEPTHFETCH could not show it, by construction.
+  // This prints the slot whatever its format is.
+  //
+  // Identify the shader by the FNV-1a hash of its ucode, not by the effect of
+  // skipping it: F43F1D5258D0F6EF, which this was first pointed at, is
+  // PSInitialScaleBuffer, and a whole investigation went into the wrong pass.
+  //
+  // Measured consequence: stencil .z == 0 -> vehicle index 0 -> the player's
+  // car is reprojected with the STATIC WORLD matrix. Simulating the shader on
+  // the capture's own constants gives |velocity| 123 px at the car with index
+  // 0 against 2.5 px with index 1, and 123 px lands alpha 0.9975 where the
+  // frame measures 0.9971 -- the tonemap's lerp weight is saturate(alpha*4),
+  // so the car comes wholly from the 640x360 blurred buffer.
+  {
+    static const uint64_t dump_ps = [] {
+      const std::string v = REXCVAR_GET(mcla_native_gfx_dump_ps);
+      return v.empty() ? 0ull : std::strtoull(v.c_str(), nullptr, 0);
+    }();
+    if (dump_ps != 0ull && ps_id == dump_ps) {
+      static std::set<uint64_t> seen_slots;
+      // THE TABLE ITSELF, which is what the shader actually reads. bound_tex
+      // says what BindAll bound this draw; the translated shader indexes
+      // SharedConstants by fetch slot, and a slot BindAll left alone keeps
+      // whatever an earlier draw wrote. Printing both is the only way to tell
+      // "this pass fetches junk at slot 1" from "slot 1 carries a leftover the
+      // pass never reads".
+      {
+        uint32_t table[16] = {};
+        for (uint32_t s = 0; s < 16u; ++s) {
+          std::memcpy(&table[s], shared.data() + SharedTextureIndexByteOffset(0, s), 4);
+        }
+        static std::set<uint64_t> seen_table;
+        // FNV-1a 64 in hex on purpose: the decimal basis has been typed here
+        // before with a digit missing, which hashes self-consistently and
+        // compares against nothing.
+        uint64_t tsig = 0xCBF29CE484222325ull;
+        for (uint32_t s = 0; s < 16u; ++s) {
+          tsig = (tsig ^ table[s]) * 0x100000001B3ull;
+        }
+        if (seen_table.size() < 32u && seen_table.insert(tsig).second) {
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f, "PSTABLE ps=%016llX tex2d[0..15] =", (unsigned long long)ps_id);
+            for (uint32_t s = 0; s < 16u; ++s) {
+              std::fprintf(f, " %u", table[s] & 0x7FFFFFFFu);
+            }
+            // The guest's own per-sampler texture pointer. Zero means the game
+            // bound NULL there, and on this hardware binding NULL leaves the
+            // fetch constant untouched -- so that slot's fetch constant is a
+            // leftover from an earlier pass, not this draw's texture. See
+            // kDevSamplerTextureOffset for the instruction-level provenance.
+            std::fprintf(f, " | guest_tex[0..15] =");
+            for (uint32_t s = 0; s < 16u; ++s) {
+              std::fprintf(f, " 0x%08X", R32(base, dev + kDevSamplerTextureOffset + 4u * s));
+            }
+            // What the GAME thinks it handed this pass, straight off the postfx
+            // object, so the pointers above can be matched to a slot by value.
+            //
+            // rage::grPostFX lives at the guest global 0x829054A0. Its motion
+            // blur setup (sub_8260E9A0 in the xex) does
+            //   SetTexture(StencilTexture handle @+0xCB8, texture @+0xCB4)
+            //   SetTexture(QuarterMap    handle @+0xD44, texture @+0x0C)
+            // and the fullscreen-quad helper sub_8260D678 then binds the source
+            // at +0x5C. grcTexture keeps the D3D texture pointer at +0x10 --
+            // that is the value D3DDevice_SetTexture stores per sampler, so it
+            // is directly comparable with guest_tex[] above.
+            //
+            // If the stencil pointer shows up at a slot OTHER than 1, the
+            // ucode's const_index and the slot the game actually binds
+            // disagree, and that is the whole bug.
+            {
+              const uint32_t postfx = R32(base, 0x829054A0u);
+              auto tex_ptr = [&](uint32_t field) -> uint32_t {
+                if (postfx < 0x1000u) return 0u;
+                const uint32_t obj = R32(base, postfx + field);
+                return obj < 0x1000u ? 0u : R32(base, obj + 0x10u);
+              };
+              std::fprintf(f, " | postfx=0x%08X stencil=0x%08X quarter=0x%08X source=0x%08X",
+                           postfx, tex_ptr(0xCB4u), tex_ptr(0x0Cu), tex_ptr(0x5Cu));
+              // The effect VARIABLE HANDLES the game resolved by name at
+              // startup (sub_8260C8E0: GetVariable "StencilTexture" -> +0xCB8,
+              // "QuarterMap" -> +0xD44, "Mc4MotionBlurVehicleMtxs" -> +0xCB0,
+              // "FrameBufferSize" -> +0xCBC, GetTechnique "StreakMotionBlur"
+              // -> +0xD40).
+              //
+              // grcEffect::SetTexture (sub_82189CE0) opens with `if (handle)`
+              // and does nothing at all when the handle is zero, so a failed
+              // name lookup silently never binds the texture -- which is
+              // exactly what the shadow shows for the stencil and the quarter
+              // map. The matrices and FrameBufferSize are the control: their
+              // values DO arrive in the shader (measured in blur.rdc, c73..c76
+              // populated and c165 = 1280,720,640,360), so their handles must
+              // be non-zero. If those are non-zero and the texture ones are
+              // zero, the lookup is the defect and nothing downstream is.
+              const uint32_t h = postfx < 0x1000u ? 0u : postfx;
+              std::fprintf(f, " | h_stencil=%u h_quarter=%u h_tech=%u h_mtx=%u h_fbsize=%u",
+                           h ? R32(base, h + 0xCB8u) : 0u, h ? R32(base, h + 0xD44u) : 0u,
+                           h ? R32(base, h + 0xD40u) : 0u, h ? R32(base, h + 0xCB0u) : 0u,
+                           h ? R32(base, h + 0xCBCu) : 0u);
+            }
+            std::fprintf(f, "\n");
+            std::fflush(f);
+            std::fclose(f);
+          }
+        }
+      }
+      for (uint32_t i = 0; i < bound_tex_count; ++i) {
+        const BoundTexture& b = bound_tex[i];
+        // One line per distinct (slot, address, format, swizzle, source): the
+        // pass runs once a frame, and without this the log is unreadable.
+        const uint64_t sig = (uint64_t(b.fetch_slot) << 56) ^ uint64_t(b.fetch.base_address) ^
+                             (uint64_t(b.fetch.format) << 40) ^
+                             (uint64_t(b.fetch.swizzle & 0xFFFu) << 24) ^
+                             (uint64_t(uint32_t(b.source)) << 20);
+        if (seen_slots.size() >= 128u || !seen_slots.insert(sig).second) {
+          continue;
+        }
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f,
+                       "PSSLOTS ps=%016llX slot=%-2u addr=0x%08X %ux%u pitch=%u fmt=%u "
+                       "swizzle=0x%03X endian=%u tiled=%d valid=%d src=%c res=%p srv_idx=%u "
+                       "table[%u]=%u into=%ux%u rt_fmt=%u\n",
+                       (unsigned long long)ps_id, b.fetch_slot, b.fetch.base_address,
+                       b.fetch.width, b.fetch.height, b.fetch.pitch, b.fetch.format,
+                       b.fetch.swizzle & 0xFFFu, b.fetch.endianness, b.fetch.tiled ? 1 : 0,
+                       b.fetch.type_valid ? 1 : 0, TextureSourceTag(b.source),
+                       (void*)b.resource, b.srv_descriptor_index, b.fetch_slot,
+                       TableIndexForSlot(shared.data(), b.fetch_slot), cfg.width,
+                       cfg.height, cfg.rt_format);
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+  }
+  // TEMP DIAG (DEPTHFETCH): every fetch of a render-target-sourced (depth)
+  // texture, wherever it renders.
+  //
+  // SRVMAP above is filtered to LDR colour targets (rt_format 28), so the pass
+  // this exists for -- MCLA's vehicle blur, which renders into a 640x360 HDR
+  // target -- never appeared in it. The blur's pixel shader reads .z of a depth
+  // fetch for both its centre tap and its eight neighbours, and rejects a tap
+  // whose .z differs from the centre's; what .z actually resolves to decides
+  // whether the car is excluded from its own blur or smeared by it.
+  //
+  // The guest swizzle is the field that settles it: a component selector of 5
+  // means "constant 1", which no host-side format swizzle can override, and
+  // would make every tap read the same value and every rejection fail.
+  for (uint32_t i = 0; diag && i < bound_tex_count; ++i) {
+    const BoundTexture& b = bound_tex[i];
+    if (!IsRenderTargetSourcedFormat(b.fetch.format)) {
+      continue;
+    }
+    static uint64_t seen_df[64];
+    static uint32_t seen_df_n = 0;
+    const uint64_t tag = (uint64_t(b.fetch.format) << 40) | (uint64_t(b.fetch.swizzle & 0xFFFu) << 24) |
+                         (uint64_t(b.fetch_slot) << 16) | (uint64_t(uint32_t(b.source)) << 8) |
+                         uint64_t(cfg.rt_format & 0xFFu);
+    bool fresh = true;
+    for (uint32_t k = 0; k < seen_df_n; ++k) {
+      if (seen_df[k] == tag) { fresh = false; break; }
+    }
+    if (!fresh || seen_df_n >= 64u) continue;
+    seen_df[seen_df_n++] = tag;
+    if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+      std::fprintf(f,
+                   "DEPTHFETCH slot=%u addr=0x%08X %ux%u fmt=%u swizzle=0x%03X src=%c "
+                   "into=%ux%u rt_fmt=%u ds_fmt=%u ps=%016llX\n",
+                   b.fetch_slot, b.fetch.base_address, b.fetch.width, b.fetch.height,
+                   b.fetch.format, b.fetch.swizzle & 0xFFFu, TextureSourceTag(b.source),
+                   cfg.width, cfg.height, cfg.rt_format, cfg.ds_format,
+                   (unsigned long long)ps_id);
+      std::fflush(f); std::fclose(f);
     }
   }
   // TEMP DIAG (UITEX): what the UI pass asks for and what the bridge handed it.

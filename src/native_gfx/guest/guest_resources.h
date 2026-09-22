@@ -62,6 +62,27 @@ VertexFetch DecodeVertexFetch(uint32_t dword0_be_decoded, uint32_t dword1_be_dec
 // while +1148 yields none — and the flush routine (sub_82423788) reads the
 // groups with the same +4 skew.
 inline constexpr uint32_t kDevFetchShadowOffset = 1152;
+
+// Per-sampler CURRENT TEXTURE pointer array in the guest D3DDevice: one dword
+// per sampler at dev + 12544 + 4 * sampler.
+//
+// From D3DDevice_SetTexture (sub_82410F88 in the MCLA xex), at instruction
+// level, not from a decompiler guess:
+//
+//   addi  r11, r4, 0xC40      ; sampler + 3136
+//   slwi  r29, r11, 2         ; * 4
+//   lwzx  r28, r29, r31       ; old texture pointer
+//   cmplwi cr6, r5, 0         ; the NEW texture
+//   beq   cr6, loc_8241108C   ; NULL -> skip the fetch-constant write entirely
+//   addi  r11, r4, 0x30       ; sampler + 48
+//   mulli r11, r11, 0x18      ; * 24  -> dev + 1152 + 24 * sampler
+//
+// So binding NULL to a sampler clears only this pointer and LEAVES the fetch
+// constant group at kDevFetchShadowOffset holding whatever the previous pass
+// put there. A slot whose pointer here is zero therefore has a STALE fetch
+// constant, and anything the runtime binds from it is a leftover.
+inline constexpr uint32_t kDevSamplerTextureOffset = 12544;
+
 inline constexpr uint32_t kFetchShadowGroups = 32;
 inline constexpr uint32_t kFetchGroupDwords = 6;  // 1 texture fetch or 3 vertex-fetch pairs
 

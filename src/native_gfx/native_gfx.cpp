@@ -229,6 +229,16 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_pack_depth_stencil, true, "MCLA/NativeGfx",
                     "veiculo que a cena escreveu no stencil; sem ela o carro do jogador e "
                     "reprojetado como cenario estatico e borra. Custa duas alocacoes do "
                     "tamanho do alvo por endereco de resolve. Desligar so para bissectar.");
+REXCVAR_DEFINE_STRING(mcla_native_gfx_dump_ps, "", "MCLA/NativeGfx",
+                      "Diagnostico: despeja TODO slot de textura ligado do draw cujo PIXEL "
+                      "SHADER tem esta identidade, em hexadecimal (ex. "
+                      "\"0x0F681CC854B766D4\", o motion blur). Sai como linhas PSSLOTS em "
+                      "native_gfx_diag.txt, uma por combinacao distinta de slot/endereco/"
+                      "formato/swizzle/origem. Existe porque a sonda DEPTHFETCH filtra por "
+                      "IsRenderTargetSourcedFormat, e e justamente esse predicado que decide "
+                      "se o fetch recebe a copia empacotada de profundidade+stencil ou a "
+                      "superficie crua de dois planos: um fetch que ele rejeita nunca aparece "
+                      "la. Vazio = nao despeja nada.");
 REXCVAR_DEFINE_STRING(mcla_native_gfx_skip_ps, "", "MCLA/NativeGfx",
                       "Diagnostico: pula todo draw cujo PIXEL SHADER tem esta identidade, "
                       "em hexadecimal (ex. \"0xF43F1D5258D0F6EF\"). Vazio = nao pula nada. "
