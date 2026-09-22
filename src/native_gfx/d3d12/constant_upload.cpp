@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 
 #include "../guest/guest_constants.h"
 #include "../guest/render_state.h"
@@ -26,6 +27,14 @@ namespace {
 // ever read (194 uses, all of them .x or a swizzle of it), so only .x is
 // scaled.
 constexpr size_t kInvColorExpBiasByteOffset = 27 * 16;  // c27.x
+
+// The shaders the fold is NOT exact for, by runtime identity (FNV-1a over the
+// vfetch-normalized ucode; checked against the pack: this key's two DXIL blobs
+// are the ones RenderDoc shows bound on the neon draws).
+constexpr uint64_t kPsCalcShadowsLight = 0xEC62E63D9A9C539Aull;
+constexpr size_t kCalcShadowsLightColorByteOffset = 64 * 16;  // lightColor, c64
+constexpr uint64_t kPsGenVelocityNoVehicleBlur = 0x120BB962920EB327ull;
+constexpr uint64_t kVsVehBlurImposterMotionBlur = 0x0C93FA31BBB56F49ull;
 
 }  // namespace
 
@@ -49,12 +58,12 @@ void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev) {
   // between targets within a frame, which a fixed 1.0 could not.
   float inv = 0.0f;
   std::memcpy(&inv, static_cast<const uint8_t*>(bank) + kInvColorExpBiasByteOffset, sizeof(inv));
-  // O cancelamento pretendido leva a 1.0: o jogo sobe 2^-bias e o bias do alvo
-  // desfaz. Medido na MCLA, isso SO fecha no alvo de cena (bias 4, upload 1/16
-  // -> 1.0). No passe de reflexo da agua o alvo tem bias 2 e o jogo NAO reenvia
-  // a constante, entao o produto da 0.25 -- um fator 4 de diferenca entre dois
-  // passes do mesmo frame. Com o cvar, neutraliza para 1.0 sempre, que e o que
-  // um alvo float host precisa (nada foi dividido, nada tem de ser desfeito).
+  // The product is not always 1.0, and it is not supposed to be. The road
+  // reflection pass sets bias 2 on its target (sub_823143C0, a literal 2) and
+  // uploads no constant, so the 2^-4 the pass loop sent a moment earlier is
+  // still there: 2^-4 * 2^2 = 0.25 on the hardware too. The fold reproduces
+  // that. mcla_native_gfx_exp_bias_unit forces 1.0 instead, which is NOT what
+  // the hardware does.
   const float scaled = REXCVAR_GET(mcla_native_gfx_exp_bias_unit)
                            ? 1.0f
                            : inv * std::ldexp(1.0f, bias);
@@ -62,6 +71,54 @@ void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev) {
     return;
   }
   std::memcpy(static_cast<uint8_t*>(bank) + kInvColorExpBiasByteOffset, &scaled, sizeof(scaled));
+}
+
+void CorrectColorExpBiasFold(uint64_t vs_id, uint64_t ps_id, void* ps_bank, const uint8_t* base,
+                             uint32_t dev) {
+  // Identity first: this runs on every draw and only three shaders care, so the
+  // guest register read is left for them.
+  if (ps_id != kPsCalcShadowsLight && ps_id != kPsGenVelocityNoVehicleBlur &&
+      vs_id != kVsVehBlurImposterMotionBlur) {
+    return;
+  }
+  if (!ps_bank || !base || !REXCVAR_GET(mcla_native_gfx_color_exp_bias)) {
+    return;
+  }
+  const int32_t bias = ReadColorExpBias(base, dev);
+  if (bias == 0) {
+    return;  // the fold left the banks alone, so it cannot have been wrong
+  }
+
+  if (ps_id == kPsCalcShadowsLight) {
+    // The output merger multiplies the whole export by 2^bias, the light term
+    // included, and the fold only reaches the constant half. Scale the other
+    // half the same way. Independent of the constant's value, so it is exact
+    // on a pass whose constant is stale as well.
+    const float scale = std::ldexp(1.0f, bias);
+    float color[3];
+    uint8_t* at = static_cast<uint8_t*>(ps_bank) + kCalcShadowsLightColorByteOffset;
+    std::memcpy(color, at, sizeof(color));
+    for (float& c : color) {
+      c *= scale;
+    }
+    std::memcpy(at, color, sizeof(color));  // .w is never read by the shader
+    return;
+  }
+
+  // The other two feed rcp(gInvColorExpBias) into further arithmetic, so the
+  // exact treatment depends on how their output is blended -- and neither has
+  // been seen on a biased target in any capture (GenVelocity* is not drawn in
+  // gameplay at all). Say so once rather than guess a correction.
+  static bool warned_velocity = false;
+  static bool warned_imposter = false;
+  bool& warned = ps_id == kPsGenVelocityNoVehicleBlur ? warned_velocity : warned_imposter;
+  if (!warned) {
+    warned = true;
+    REXLOG_WARN(
+        "[native_gfx] colour exp bias fold is inexact for vs={:016X} ps={:016X} on a target "
+        "with bias {} and is left uncorrected -- capture this frame",
+        vs_id, ps_id, bias);
+  }
 }
 
 // Xenos blend factor ids, as they appear in RB_BLENDCONTROL. Named here rather

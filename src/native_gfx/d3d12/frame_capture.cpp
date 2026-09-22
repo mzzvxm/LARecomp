@@ -1987,6 +1987,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   ApplyColorExpBias(vs_bank.data(), base, dev);
   ApplyColorExpBias(ps_bank.data(), base, dev);
 
+  CorrectColorExpBiasFold(vs_id, ps_id, ps_bank.data(), base, dev);
   // Resolve destinations are created and copied HERE, before the textures are
   // bound. NoteResolve inserts the resolved_ entry immediately but builds the
   // resource lazily, and the flush used to run only at render setup (after

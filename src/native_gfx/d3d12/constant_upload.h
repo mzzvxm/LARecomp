@@ -109,4 +109,22 @@ bool UploadConstants(D3D12Context& context, const void* vs_bank, const void* ps_
 // mcla_native_gfx_color_exp_bias.
 void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev);
 
+// The fold above is exact only for a shader whose output is PROPORTIONAL to
+// gInvColorExpBias: then scaling the constant scales the output, which is what
+// the output merger would have done. A dataflow audit of all 168 shaders that
+// read it (150 pixel, 18 vertex) found 165 proportional and 3 not.
+//
+// The one that matters is xAmbientOcclusionShadows__PS_CalcShadowsLight, the
+// car's neon underglow: oC0.rgb = gInvColorExpBias + lightColor * coverage,
+// blended DstColor/Zero with an RGB-only write mask, so its output MULTIPLIES
+// the scene. The hardware multiplies by 2^bias * (c + L*k); the fold gives
+// 2^bias * c + L*k, the light 2^bias too weak -- 16x on the scene target, and
+// the neon never showed. Measured on the same frame: the pass moved the
+// ground by a median 1.033 here against 1.372 on the emulated path.
+//
+// Called right after the fold, on the banks about to be uploaded for this draw
+// only. Must run after ApplyColorExpBias.
+void CorrectColorExpBiasFold(uint64_t vs_id, uint64_t ps_id, void* ps_bank, const uint8_t* base,
+                             uint32_t dev);
+
 }  // namespace mcla::native_gfx
