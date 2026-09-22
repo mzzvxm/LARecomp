@@ -26,8 +26,13 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_textures);
 REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_index);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+REXCVAR_DECLARE(bool, mcla_native_gfx_verify_per_frame);
 
 namespace mcla::native_gfx {
+
+uint64_t TextureCache::VerifyEpoch(const D3D12Context& context) const {
+  return REXCVAR_GET(mcla_native_gfx_verify_per_frame) ? game_frame_ : context.frame_index();
+}
 
 namespace {
 
@@ -568,9 +573,9 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     // near-constant `1 - mask`, and the map kept its square corners.
     const bool verify = REXCVAR_GET(mcla_native_gfx_verify_textures) &&
                         it->second.content_hash != 0 &&
-                        it->second.verified_frame != context.frame_index();
+                        it->second.verified_frame != VerifyEpoch(context);
     if (verify) {
-      it->second.verified_frame = context.frame_index();
+      it->second.verified_frame = VerifyEpoch(context);
       const uint8_t* g = TranslatePhysicalGuest(it->second.guest_base);
       if (g && IsPhysicalRangeReadable(it->second.guest_base, it->second.guest_size)) {
         ++stats_.verify_checks;
@@ -1094,7 +1099,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // the minimap mask's entry held a different texture for the whole session
   // while the guest had the circle sitting at that very address.
   e.content_hash = 0;
-  e.verified_frame = context.frame_index();
+  e.verified_frame = VerifyEpoch(context);
   if (const uint8_t* g = TranslatePhysicalGuest(fetch.base_address)) {
     if (IsPhysicalRangeReadable(fetch.base_address, src_size)) {
       e.content_hash = HashGuestSampled(g, src_size);

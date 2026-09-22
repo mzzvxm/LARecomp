@@ -450,6 +450,14 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "resolve on every slot, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, false, "MCLA/NativeGfx",
+                    "Re-check a cached texture against guest memory once per guest frame, as "
+                    "mcla_native_gfx_verify_textures describes, instead of once per submitted "
+                    "batch. The batch counter advances ~14 times a frame, so every bound "
+                    "texture was being re-hashed that many times. Off restores the per-batch "
+                    "check, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "Remember the geometry region each address resolved to, so a draw does "
                     "not walk the region map again for a buffer the draw before it already "
@@ -1661,6 +1669,7 @@ void NotifyFrameBoundary() {
       // resource can no longer alias a stale pointer-keyed SRV) without clobbering
       // this frame's still-in-flight half.
       g_binder.BeginFrame();
+      g_textures.BeginGameFrame();
       ResetContinuousFrame(g_render_targets);
       // Arm the next frame's capture if the trigger file is present. std::remove
       // returns 0 only when it existed and was deleted, consuming it atomically.

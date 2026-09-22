@@ -164,6 +164,9 @@ class TextureCache {
                           TextureSource* out_source = nullptr);
 
   const Stats& stats() const { return stats_; }
+  // Called once per guest frame. context.frame_index() advances per submitted
+  // batch (~14 a frame), so it cannot serve as the "once a frame" of the verify.
+  void BeginGameFrame() { ++game_frame_; }
 
   // Applies queued guest writes now. Resolve does this itself; a caller that
   // can skip Resolve -- the binder's slot cache -- calls it first, so a cache
@@ -309,6 +312,8 @@ class TextureCache {
   void* invalidation_handle_ = nullptr;
   bool pending_overflow_logged_ = false;
   Stats stats_;
+  uint64_t game_frame_ = 1;
+  uint64_t VerifyEpoch(const D3D12Context& context) const;
 };
 
 }  // namespace mcla::native_gfx
