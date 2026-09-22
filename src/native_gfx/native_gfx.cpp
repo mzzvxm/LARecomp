@@ -458,6 +458,21 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, false, "MCLA/NativeGfx",
                     "check, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_stencil, true, "MCLA/NativeGfx",
+                    "With mcla_native_gfx_msaa on, resolve the scene depth's stencil plane too "
+                    "(sample 0, as the emulated resolve does for depth) into the resolved copy. "
+                    "The depth goes through a single-plane compute resolve, so without this the "
+                    "copy's stencil stayed zero and the car motion blur took vehicle index 0 "
+                    "for every pixel, blurring the player's car with the world. Off restores "
+                    "the old behaviour, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_stencil_probe, 0, "MCLA/NativeGfx",
+                      "Diagnostic. Every N full-size depth+stencil packs, read back the stencil "
+                      "channel of the depth-as-8888 copy the car motion blur samples and log "
+                      "STENCILPROBE to native_gfx_diag.txt: share of pixels with a non-zero "
+                      "vehicle id and the ids seen. 0 disables it.");
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "Remember the geometry region each address resolved to, so a draw does "
                     "not walk the region map again for a buffer the draw before it already "

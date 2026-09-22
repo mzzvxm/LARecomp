@@ -19,9 +19,12 @@
 
 #include "depth_msaa_resolve_dxil.inc"
 #include "depth_stencil_pack_dxil.inc"
+#include "stencil_msaa_resolve_dxil.inc"
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_depth_cs);
 REXCVAR_DECLARE(bool, mcla_native_gfx_pack_depth_stencil);
+REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_stencil);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_stencil_probe);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
 REXCVAR_DECLARE(bool, mcla_native_gfx_depth_reclear_infer);
 REXCVAR_DECLARE(bool, mcla_native_gfx_reclear_probe);
@@ -833,6 +836,176 @@ uint32_t DepthPlaneViewFormat(uint32_t dxgi) {
   }
 }
 
+// The stencil half of a multisampled depth resolve.
+//
+// The depth half goes through the compute resolve above into a single-plane
+// R32_FLOAT scratch, so the stencil plane was never carried over: the resolved
+// copy's stencil stayed zero and the car motion blur read vehicle index 0 for
+// every pixel whenever MSAA was on. D3D12 has no call that copies or resolves a
+// multisampled stencil plane, and a shader can only write stencil through
+// SV_StencilRef, which the target GPU does not have. So a compute pass reads
+// the plane's sample 0 into a linear buffer and a footprint copy lands it in
+// the resolved copy's stencil plane, over the same rect as the depth copy.
+//
+// Sample 0 is what the reference path does too: the emulated resolve
+// (SanitizeCopySampleSelect, "Depth can't be averaged") turns any multi-sample
+// depth resolve into a single sample, k0. An average of two vehicle ids is a
+// third vehicle.
+//
+// Reuses the depth resolve's root signature and descriptor ring -- same table
+// shape, one SRV then one UAV, plus four root constants.
+struct StencilResolveCs {
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+  Microsoft::WRL::ComPtr<ID3D12Resource> buffer;  // one byte per pixel, pitched rows
+  uint64_t size = 0;
+  D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
+  bool tried = false;
+  bool ok = false;
+};
+StencilResolveCs g_stencil_cs;
+
+bool EnsureStencilResolveCs(ID3D12Device* device) {
+  if (g_stencil_cs.tried) {
+    return g_stencil_cs.ok;
+  }
+  if (!EnsureDepthResolveCs(device)) {
+    return false;
+  }
+  g_stencil_cs.tried = true;
+  D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+  pd.pRootSignature = g_depth_cs.root.Get();
+  pd.CS = {kStencilMsaaResolveCsDxil, kStencilMsaaResolveCsDxilLen};
+  if (FAILED(device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_stencil_cs.pso)))) {
+    REXLOG_ERROR("[native_gfx] stencil resolve PSO failed");
+    return false;
+  }
+  g_stencil_cs.ok = true;
+  REXLOG_INFO("[native_gfx] multisampled stencil resolve (compute) ready");
+  return true;
+}
+
+// Writes sample 0 of `source`'s stencil plane into subresource 1 of the
+// resource `dst_depth_loc` names, at (dx, dy), taking `box` out of the source
+// surface -- the same placement the depth copy just used. Returns false and
+// writes nothing when any step is unavailable, which leaves the plane as the
+// path without this left it.
+bool ResolveMsaaStencil(D3D12Context& context, ID3D12GraphicsCommandList* cl,
+                        const RenderTarget& source, const D3D12_TEXTURE_COPY_LOCATION& dst_depth_loc,
+                        uint32_t dx, uint32_t dy, const D3D12_BOX& box) {
+  ID3D12Device* device = context.device();
+  ID3D12Resource* src = source.depth.Get();
+  if (!device || !cl || !src || !dst_depth_loc.pResource || !EnsureStencilResolveCs(device)) {
+    return false;
+  }
+  const uint32_t stencil_fmt = StencilPlaneFormat(uint32_t(src->GetDesc().Format));
+  if (!stencil_fmt) {
+    return false;
+  }
+  // The footprint the copy reads has to be the stencil plane's own copy format.
+  const D3D12_RESOURCE_DESC dd = dst_depth_loc.pResource->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT plane = {};
+  device->GetCopyableFootprints(&dd, 1, 1, 0, &plane, nullptr, nullptr, nullptr);
+  if (plane.Footprint.Format != DXGI_FORMAT_R8_TYPELESS) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_ERROR("[native_gfx] stencil resolve: unexpected stencil copy format {}",
+                   uint32_t(plane.Footprint.Format));
+    }
+    return false;
+  }
+  const uint32_t w = source.key.width;
+  const uint32_t h = source.key.height;
+  const uint32_t pitch = (w + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
+                         ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+  const uint64_t size = uint64_t(pitch) * h;
+  if (!g_stencil_cs.buffer || g_stencil_cs.size < size) {
+    if (g_stencil_cs.buffer) {
+      context.DeferRelease(g_stencil_cs.buffer.Detach());
+    }
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = size;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(device->CreateCommittedResource(
+            &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&g_stencil_cs.buffer)))) {
+      REXLOG_ERROR("[native_gfx] stencil resolve buffer creation failed ({} bytes)", size);
+      g_stencil_cs.size = 0;
+      return false;
+    }
+    g_stencil_cs.size = size;
+    g_stencil_cs.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  }
+  if (g_stencil_cs.state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Transition.pResource = g_stencil_cs.buffer.Get();
+    b.Transition.StateBefore = g_stencil_cs.state;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cl->ResourceBarrier(1, &b);
+    g_stencil_cs.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  }
+
+  const uint32_t slot = g_depth_cs.next;
+  g_depth_cs.next = (g_depth_cs.next + 1) % DepthResolveCs::kSlots;
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_depth_cs.heap->GetCPUDescriptorHandleForHeapStart();
+  cpu.ptr += SIZE_T(slot) * 2 * g_depth_cs.inc;
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+  srv.Format = DXGI_FORMAT(stencil_fmt);
+  srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+  srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  device->CreateShaderResourceView(src, &srv, cpu);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu_uav = cpu;
+  cpu_uav.ptr += g_depth_cs.inc;
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+  uav.Format = DXGI_FORMAT_R32_TYPELESS;
+  uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+  uav.Buffer.NumElements = UINT(size / 4u);
+  uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+  device->CreateUnorderedAccessView(g_stencil_cs.buffer.Get(), nullptr, &uav, cpu_uav);
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu = g_depth_cs.heap->GetGPUDescriptorHandleForHeapStart();
+  gpu.ptr += UINT64(slot) * 2 * g_depth_cs.inc;
+  // Binds its own heap, root signature and pipeline onto the shared command
+  // list, so the draw path's copy of that state is stale.
+  NoteCommandListStateDisturbed();
+  ID3D12DescriptorHeap* heaps[] = {g_depth_cs.heap.Get()};
+  cl->SetDescriptorHeaps(1, heaps);
+  cl->SetComputeRootSignature(g_depth_cs.root.Get());
+  cl->SetPipelineState(g_stencil_cs.pso.Get());
+  cl->SetComputeRootDescriptorTable(0, gpu);
+  const uint32_t consts[4] = {w, h, pitch, 0};
+  cl->SetComputeRoot32BitConstants(1, 4, consts, 0);
+  cl->Dispatch(((w + 3u) / 4u + 7u) / 8u, (h + 7u) / 8u, 1);
+
+  D3D12_RESOURCE_BARRIER to_copy = {};
+  to_copy.Transition.pResource = g_stencil_cs.buffer.Get();
+  to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cl->ResourceBarrier(1, &to_copy);
+  g_stencil_cs.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+
+  D3D12_TEXTURE_COPY_LOCATION sdst = dst_depth_loc;
+  sdst.SubresourceIndex = 1;
+  D3D12_TEXTURE_COPY_LOCATION ssrc = {};
+  ssrc.pResource = g_stencil_cs.buffer.Get();
+  ssrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  ssrc.PlacedFootprint.Offset = 0;
+  ssrc.PlacedFootprint.Footprint.Format = plane.Footprint.Format;
+  ssrc.PlacedFootprint.Footprint.Width = w;
+  ssrc.PlacedFootprint.Footprint.Height = h;
+  ssrc.PlacedFootprint.Footprint.Depth = 1;
+  ssrc.PlacedFootprint.Footprint.RowPitch = pitch;
+  cl->CopyTextureRegion(&sdst, dx, dy, 0, &ssrc, &box);
+  return true;
+}
+
 }  // namespace
 
 ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
@@ -1150,6 +1323,104 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
   to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   cl->ResourceBarrier(1, &to_srv);
   dst.packed8888_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+
+  // TEMP DIAG (STENCILPROBE): what vehicle ids the motion blur is actually
+  // handed. Copies the depth-as-8888 copy to a readback buffer and reads it 60
+  // packs later, by which point the in-flight slots guarantee the GPU is done.
+  // R is the stencil byte (see depth_stencil_pack_cs.hlsl).
+  if (const uint32_t every = REXCVAR_GET(mcla_native_gfx_stencil_probe)) {
+    static Microsoft::WRL::ComPtr<ID3D12Resource> rb;
+    static uint32_t calls = 0, wait = 0, rb_w = 0, rb_h = 0, rb_pitch = 0;
+    ++calls;
+    if (wait) {
+      if (--wait == 0 && rb) {
+        uint8_t* p = nullptr;
+        const D3D12_RANGE read = {0, SIZE_T(rb_pitch) * rb_h};
+        if (SUCCEEDED(rb->Map(0, &read, reinterpret_cast<void**>(&p))) && p) {
+          uint64_t hist[256] = {};
+          uint64_t car_nonzero = 0, car_total = 0;
+          for (uint32_t y = 0; y < rb_h; ++y) {
+            const uint8_t* row = p + size_t(y) * rb_pitch;
+            const bool car_row = y >= rb_h * 6u / 10u && y < rb_h * 9u / 10u;
+            for (uint32_t x = 0; x < rb_w; ++x) {
+              const uint8_t s = row[size_t(x) * 4u];
+              ++hist[s];
+              if (car_row && x >= rb_w * 4u / 10u && x < rb_w * 6u / 10u) {
+                ++car_total;
+                car_nonzero += s != 0;
+              }
+            }
+          }
+          const D3D12_RANGE none = {0, 0};
+          rb->Unmap(0, &none);
+          const uint64_t total = uint64_t(rb_w) * rb_h;
+          if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+            std::fprintf(f,
+                         "STENCILPROBE %ux%u msaa_stencil=%d nonzero=%.2f%% "
+                         "bottom_centre_nonzero=%.2f%% ids:",
+                         rb_w, rb_h, REXCVAR_GET(mcla_native_gfx_msaa_stencil) ? 1 : 0,
+                         total ? 100.0 * double(total - hist[0]) / double(total) : 0.0,
+                         car_total ? 100.0 * double(car_nonzero) / double(car_total) : 0.0);
+            for (uint32_t v = 1; v < 256; ++v) {
+              if (hist[v]) {
+                std::fprintf(f, " %u:%llu", v, (unsigned long long)hist[v]);
+              }
+            }
+            std::fprintf(f, "\n");
+            std::fclose(f);
+          }
+        }
+      }
+    } else if ((calls % every) == 0) {
+      rb_w = w;
+      rb_h = h;
+      rb_pitch = (w * 4u + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
+                 ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+      const uint64_t need = uint64_t(rb_pitch) * h;
+      if (!rb || rb->GetDesc().Width < need) {
+        if (rb) {
+          context.DeferRelease(rb.Detach());
+        }
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC bd = {};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = need;
+        bd.Height = 1;
+        bd.DepthOrArraySize = 1;
+        bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                   IID_PPV_ARGS(&rb)))) {
+          rb.Reset();
+          return;
+        }
+      }
+      D3D12_RESOURCE_BARRIER b = {};
+      b.Transition.pResource = dst.packed8888.Get();
+      b.Transition.StateBefore = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+      b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      cl->ResourceBarrier(1, &b);
+      D3D12_TEXTURE_COPY_LOCATION from = {}, to = {};
+      from.pResource = dst.packed8888.Get();
+      from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      to.pResource = rb.Get();
+      to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      to.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+      to.PlacedFootprint.Footprint.Width = w;
+      to.PlacedFootprint.Footprint.Height = h;
+      to.PlacedFootprint.Footprint.Depth = 1;
+      to.PlacedFootprint.Footprint.RowPitch = rb_pitch;
+      cl->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+      b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+      cl->ResourceBarrier(1, &b);
+      wait = 60;
+    }
+  }
 }
 
 ID3D12Resource* RenderTargetPool::FindResolvedDepthAs8888(uint32_t guest_address, uint32_t width,
@@ -1362,6 +1633,12 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       sdst.SubresourceIndex = 1;
       ssrc.SubresourceIndex = 1;
       cl->CopyTextureRegion(&sdst, dx, dy, 0, &ssrc, &box);
+    } else if (pc.from_depth && used_scratch && REXCVAR_GET(mcla_native_gfx_msaa_stencil) &&
+               HasStencilPlane(dst.resource->GetDesc().Format) && pc.source->depth &&
+               HasStencilPlane(pc.source->depth->GetDesc().Format)) {
+      // Multisampled: the depth came through the single-plane compute scratch,
+      // so the stencil has to be resolved on its own. See ResolveMsaaStencil.
+      ResolveMsaaStencil(context, cl, *pc.source, dst_loc, dx, dy, box);
     }
 
     D3D12_RESOURCE_BARRIER to_srv = {};
