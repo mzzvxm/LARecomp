@@ -8,10 +8,13 @@
 #include <set>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ui/d3d12/d3d12_util.h>
 
 #include "context.h"
+
+REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
 
@@ -204,7 +207,9 @@ bool SynthesiseRectList(const uint8_t* guest_vertices, uint32_t vertex_count, ui
     // single colour over the whole target -- which is what a quad whose
     // TEXCOORD does not vary across its corners produces. These are the values
     // the GPU actually receives, read back from `dst` in host byte order.
-    if (r == 0) {
+    // Behind the diag switch: ungated, the set insert ran on every synthesised
+    // rectangle, ~1.3% of the render thread while driving.
+    if (r == 0 && REXCVAR_GET(mcla_native_gfx_diag)) {
       static std::set<uint64_t> seen;
       uint64_t sig = (uint64_t(stride) << 32) ^ (uint64_t(elements.size()) << 16) ^ vertex_count;
       for (const InputElement& e : elements) {
