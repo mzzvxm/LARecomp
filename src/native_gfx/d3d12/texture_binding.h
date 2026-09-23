@@ -182,21 +182,25 @@ class TextureBinder {
   bool fallback_srv_valid_ = false;  // fallback SRV allocated in the CURRENT frame's half
   uint32_t AcquireSampler(D3D12Context& context, const SamplerDescription& sampler);
 
+  static constexpr uint32_t kPersistentReservedSrvs = 256;
+  static constexpr uint32_t kSrvRings = 4;
+  static constexpr uint32_t kSrvRingSize = 16384;
+  static constexpr uint32_t kSrvHeapSize = kPersistentReservedSrvs + kSrvRings * kSrvRingSize;
+  static constexpr uint32_t kSamplerHeapSize = 2048;
+
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srv_heap_;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sampler_heap_;
   uint32_t srv_increment_ = 0;
   uint32_t sampler_increment_ = 0;
   uint32_t srv_next_ = 0;
   uint32_t sampler_next_ = 0;
-  // Double-buffering: each native frame allocates from one half of the heap, the
-  // previous frame's half stays untouched while the GPU still reads it.
-  uint32_t frame_parity_ = 0;    // 0 or 1: which half the current frame uses
-  uint32_t srv_base_ = 0;        // current half's first SRV index
-  uint32_t sampler_base_ = 0;    // current half's first sampler index
-  bool srv_warned_ = false;      // exhaustion logged once this frame (no I/O spiral)
+  uint32_t ring_index_ = 0;     // 0..3: which 16K ring the current frame allocates from
+  uint32_t srv_base_ = 0;       // current ring's first SRV index
+  bool srv_warned_ = false;     // exhaustion logged once this frame
   bool sampler_warned_ = false;
-  // Guest identity -> descriptor index.
-  std::unordered_map<uint64_t, uint32_t> srv_cache_;
+  // Per-ring SRV cache (4 frames deep to completely eliminate GPU in-flight hazards)
+  std::unordered_map<uint64_t, uint32_t> srv_cache_[kSrvRings];
+  // Persistent sampler cache: samplers never mutate in D3D12 and persist permanently
   std::unordered_map<uint64_t, uint32_t> sampler_cache_;
 
   // ---- One-draw memo -------------------------------------------------------

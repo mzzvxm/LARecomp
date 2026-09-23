@@ -91,7 +91,7 @@ struct PsoKey {
   uint32_t color_control = 0;
   uint32_t color_mask = 0;
   uint32_t depth_control = 0;
-  uint32_t stencil_ref_mask = 0;  // RB_STENCILREFMASK: ref + read/write masks
+  uint32_t stencil_mask = 0;  // (read_mask) | (write_mask << 8). Stencil ref is dynamic state!
   uint32_t pa_su_sc_mode_cntl = 0;
   // Set when the guest viewport has a positive Y scale, which D3D12 cannot
   // express as a viewport and which reverses the screen-space winding.
@@ -101,9 +101,9 @@ struct PsoKey {
   // survives culling.
   int32_t depth_bias = 0;
   float slope_scaled_depth_bias = 0.0f;
-  std::vector<PsoInputElement> input_layout;
+  uint32_t layout_id = 0;
 
-  bool operator==(const PsoKey& o) const;
+  bool operator==(const PsoKey& o) const = default;
 };
 
 struct PsoKeyHash {
@@ -124,9 +124,6 @@ class PipelineCache {
   ID3D12RootSignature* root_signature() const { return root_signature_.Get(); }
 
   // Builds the key for a draw from the pieces already captured.
-  // Fills `out` instead of returning a fresh key, so the caller can keep one
-  // key across draws and with it the input layout's capacity: MakeKey ran once
-  // per draw and its vector was one heap allocation each time.
   static void MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
                           const GuestRenderState& render_state, uint64_t vs_identity,
                           uint64_t ps_identity, uint32_t vs_spec_mask, uint32_t ps_spec_mask);
@@ -150,6 +147,8 @@ class PipelineCache {
  private:
   Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature_;
   std::unordered_map<PsoKey, Microsoft::WRL::ComPtr<ID3D12PipelineState>, PsoKeyHash> pipelines_;
+  PsoKey mru_key_ = {};
+  ID3D12PipelineState* mru_pso_ = nullptr;
   Stats stats_;
 };
 
