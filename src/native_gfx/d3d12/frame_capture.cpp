@@ -37,6 +37,7 @@
 #include "../shader_identity.h"
 #include "constant_upload.h"
 #include "context.h"
+#include "gpu_profiler.h"
 #include "image_dump.h"
 #include "pipeline_cache.h"
 #include "render_target_pool.h"
@@ -992,6 +993,7 @@ ID3D12GraphicsCommandList* EnsureFrame(D3D12Context& context) {
   context.ClearDebugMessages();
   // A reset list holds no state at all.
   g_rec.Clear();
+  GpuProfiler::Instance().BeginFrame(context, cl);
   return cl;
 }
 
@@ -1000,6 +1002,7 @@ bool FlushBatch(D3D12Context& context) {
   if (!g_cap.frame_open) {
     return true;
   }
+  GpuProfiler::Instance().EndFrame(context, context.CurrentCommandList());
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
   g_rec.Clear();
@@ -6139,6 +6142,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   if (!cl) {
     return false;
   }
+  GpuProfiler::Instance().BeginScope(cl, "Display Prep / PostFX");
   if (tonemap) {
     // Source (HDR anchor) -> shader-readable; owned slot -> UAV for the compute
     // write. The tonemap dispatch reads the HDR SRV and writes the LDR UAV.
@@ -6161,6 +6165,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     if (n) {
       cl->ResourceBarrier(n, pre);
     }
+    GpuProfiler::Instance().SetMarker(cl, "ACES Tonemap Pass");
     g_tonemap.Record(context, cl, display->color.Get(), display->key.rt_format, slot.tex.Get(),
                      display->key.width, display->key.height,
                      float(REXCVAR_GET(mcla_native_gfx_exposure)));
@@ -6170,6 +6175,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     post.Transition.StateAfter = kReadable;
     post.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &post);
+    GpuProfiler::Instance().EndScope(cl);
     context.EndFrame();
     slot.state = kReadable;
     // Anchor left readable; the pool restores it to RENDER_TARGET on its next
@@ -6218,6 +6224,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
         if (fx_count) {
           cl->ResourceBarrier(fx_count, pre_fx);
         }
+        GpuProfiler::Instance().SetMarker(cl, "NVIDIA FXAA Pass");
         g_fxaa.Record(context, cl, display->color.Get(), display->key.rt_format,
                       g_fxaa_buffer.tex.Get(), uint32_t(slot_format), display->key.width,
                       display->key.height,
@@ -6288,6 +6295,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
         swap[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         swap[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         cl->ResourceBarrier(2, swap);
+        GpuProfiler::Instance().SetMarker(cl, "Display Gamma Ramp Pass");
         g_gamma.Record(context, cl, src_tex, src_fmt, slot.tex.Get(), display->key.width,
                        display->key.height);
         D3D12_RESOURCE_BARRIER back = {};
@@ -6301,6 +6309,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       }
     }
     if (!ramped) {
+      GpuProfiler::Instance().SetMarker(cl, "Display Copy Resource");
       cl->CopyResource(slot.tex.Get(), src_tex);
     }
     // Owned slot -> readable for the compute blit.
@@ -6310,6 +6319,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     post.Transition.StateAfter = kReadable;
     post.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &post);
+    GpuProfiler::Instance().EndScope(cl);
     context.EndFrame();
     slot.state = kReadable;
     // The pooled composite is left in COPY_SOURCE; the pool restores it to

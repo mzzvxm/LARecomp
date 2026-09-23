@@ -47,6 +47,7 @@
 #include "d3d12/texture_binding.h"
 #include "d3d12/texture_cache.h"
 #include "d3d12/device_manager.h"
+#include "d3d12/gpu_profiler.h"
 #include "d3d12/swapchain.h"
 #include "diag.h"
 
@@ -537,6 +538,21 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, true, "MCLA/NativeGfx",
                     "in it until they outnumber the live ones. While driving it was being "
                     "rebuilt several times a frame, ~3.4% of the render thread. Off restores "
                     "the rebuild-on-change, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_pipeline_library, true, "MCLA/NativeGfx",
+                    "Persist compiled D3D12 pipeline state objects (PSOs) to disk using "
+                    "ID3D12PipelineLibrary to eliminate runtime shader compilation stutter.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_profiler, true, "MCLA/NativeGfx",
+                    "Query GPU hardware timestamps via ID3D12QueryHeap to measure exact GPU frame "
+                    "and pass execution durations.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_pix_markers, true, "MCLA/NativeGfx",
+                    "Emit BeginEvent/EndEvent and SetMarker on D3D12 graphics command lists for "
+                    "RenderDoc, PIX, and NSight pass hierarchy inspection.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
@@ -1038,6 +1054,9 @@ static bool EnsureDrawReady() {
     failed = "TextureBinder (descriptor heaps)";
   } else if (!failed && !g_draw_shaders.Load()) {
     failed = "ShaderDatabase (assets/mcla_shaders.pack)";
+  }
+  if (!failed) {
+    GpuProfiler::Instance().Initialize(g_draw_context);
   }
   // The bridge that lets a texture fetch find the render target that
   // produced it, instead of decoding never-written guest memory.
@@ -1645,6 +1664,30 @@ void NotifyFrameBoundary() {
   // This split says whether those are fresh regions or re-uploads of dirtied
   // ones -- different bugs, different fixes.
   g_buffers.ReportPeriodic();
+
+  if (g_pipelines.is_library_dirty()) {
+    static uint32_t pso_save_tick = 0;
+    if ((++pso_save_tick % 300u) == 0u) {
+      g_pipelines.SaveLibrary();
+    }
+  }
+  {
+    static uint64_t pso_report = 0;
+    if ((pso_report++ % 600u) == 0u) {
+      const auto& ps = g_pipelines.stats();
+      REXLOG_INFO("[native_gfx] PSO cache: {} active, {} hits, {} misses, {} loaded from disk, {} stored to disk",
+                  g_pipelines.pipeline_count(), ps.hits, ps.misses, ps.library_loads, ps.library_stores);
+    }
+  }
+  {
+    static uint64_t gpu_report = 0;
+    if (REXCVAR_GET(mcla_native_gfx_gpu_profiler) && (gpu_report++ % 300u) == 0u) {
+      const std::string sum = GpuProfiler::Instance().Summary();
+      if (!sum.empty()) {
+        REXLOG_INFO("[native_gfx] {}", sum);
+      }
+    }
+  }
 
   // Ownership counters, on the same cadence as the registry dump. Reported
   // here too because ownership does not depend on the registry cvar, and the

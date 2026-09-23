@@ -26,6 +26,7 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -116,12 +117,20 @@ class PipelineCache {
     uint64_t hits = 0;
     uint64_t misses = 0;
     uint64_t creation_failures = 0;
+    uint64_t library_loads = 0;
+    uint64_t library_stores = 0;
   };
+
+  PipelineCache() = default;
+  ~PipelineCache() { SaveLibrary(); }
 
   bool Initialize(D3D12Context& context);
   void Shutdown(D3D12Context& context);
 
   ID3D12RootSignature* root_signature() const { return root_signature_.Get(); }
+  ID3D12PipelineLibrary* pipeline_library() const { return pipeline_library_.Get(); }
+  bool is_library_dirty() const { return library_dirty_; }
+  void SaveLibrary();
 
   // Builds the key for a draw from the pieces already captured.
   static void MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
@@ -145,10 +154,15 @@ class PipelineCache {
   size_t pipeline_count() const { return pipelines_.size(); }
 
  private:
+  void InitializePipelineLibrary(D3D12Context& context);
+
   Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature_;
   std::unordered_map<PsoKey, Microsoft::WRL::ComPtr<ID3D12PipelineState>, PsoKeyHash> pipelines_;
   PsoKey mru_key_ = {};
   ID3D12PipelineState* mru_pso_ = nullptr;
+  Microsoft::WRL::ComPtr<ID3D12PipelineLibrary> pipeline_library_;
+  bool library_dirty_ = false;
+  std::string library_path_;
   Stats stats_;
 };
 

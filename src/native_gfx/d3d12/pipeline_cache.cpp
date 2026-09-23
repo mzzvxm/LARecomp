@@ -6,6 +6,8 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 #include <rex/logging.h>
 
@@ -16,6 +18,7 @@
 
 REXCVAR_DECLARE(int32_t, mcla_native_gfx_shadow_bias);
 REXCVAR_DECLARE(bool, mcla_native_gfx_rectlist_nocull);
+REXCVAR_DECLARE(bool, mcla_native_gfx_pipeline_library);
 
 namespace mcla::native_gfx {
 
@@ -314,8 +317,101 @@ void PipelineCache::MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
   out.layout_id = g_layout_registry.Intern(geometry.input_layout);
 }
 
+void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
+  if (pipeline_library_ || !REXCVAR_GET(mcla_native_gfx_pipeline_library)) {
+    return;
+  }
+  Microsoft::WRL::ComPtr<ID3D12Device1> dev1;
+  if (FAILED(context.device()->QueryInterface(IID_PPV_ARGS(&dev1)))) {
+    return;
+  }
+
+  library_path_ = "cache/d3d12_pso.cache";
+  std::error_code ec;
+  std::filesystem::create_directories("cache", ec);
+
+  std::ifstream file(library_path_, std::ios::binary | std::ios::ate);
+  if (file.is_open()) {
+    const std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (size > 0) {
+      std::vector<uint8_t> blob(static_cast<size_t>(size));
+      if (file.read(reinterpret_cast<char*>(blob.data()), size)) {
+        HRESULT hr = dev1->CreatePipelineLibrary(blob.data(), blob.size(),
+                                                 IID_PPV_ARGS(&pipeline_library_));
+        if (SUCCEEDED(hr)) {
+          REXLOG_INFO("[native_gfx] ID3D12PipelineLibrary loaded from {} ({} bytes)",
+                      library_path_, size);
+        } else if (hr == D3D12_ERROR_DRIVER_VERSION_MISMATCH) {
+          REXLOG_WARN("[native_gfx] Pipeline library driver version mismatch; re-creating empty library");
+          dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+          library_dirty_ = true;
+        } else {
+          REXLOG_WARN("[native_gfx] Failed to load pipeline library (HRESULT 0x{:08X}); re-creating empty",
+                      static_cast<uint32_t>(hr));
+          dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+          library_dirty_ = true;
+        }
+      }
+    }
+  }
+
+  if (!pipeline_library_) {
+    HRESULT hr = dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+    if (SUCCEEDED(hr)) {
+      REXLOG_INFO("[native_gfx] Created new empty ID3D12PipelineLibrary ({})", library_path_);
+    }
+  }
+}
+
+void PipelineCache::SaveLibrary() {
+  if (!pipeline_library_ || !library_dirty_ || library_path_.empty()) {
+    return;
+  }
+  const SIZE_T size = pipeline_library_->GetSerializedSize();
+  if (size == 0) {
+    return;
+  }
+  std::vector<uint8_t> buffer(size);
+  HRESULT hr = pipeline_library_->Serialize(buffer.data(), buffer.size());
+  if (FAILED(hr)) {
+    REXLOG_WARN("[native_gfx] Failed to serialize pipeline library: HRESULT 0x{:08X}",
+                static_cast<uint32_t>(hr));
+    return;
+  }
+
+  std::filesystem::path path(library_path_);
+  std::error_code ec;
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path(), ec);
+  }
+
+  std::filesystem::path temp_path = path;
+  temp_path += ".tmp";
+
+  FILE* f = std::fopen(temp_path.string().c_str(), "wb");
+  if (!f) {
+    REXLOG_WARN("[native_gfx] Failed to open temp file for pipeline library: {}", temp_path.string());
+    return;
+  }
+  const size_t written = std::fwrite(buffer.data(), 1, buffer.size(), f);
+  std::fclose(f);
+
+  if (written == buffer.size()) {
+    std::filesystem::rename(temp_path, path, ec);
+    if (!ec) {
+      library_dirty_ = false;
+      REXLOG_INFO("[native_gfx] Saved ID3D12PipelineLibrary to {} ({} bytes, {} PSOs stored)",
+                  path.string(), buffer.size(), stats_.library_stores);
+    } else {
+      REXLOG_WARN("[native_gfx] Failed to replace pipeline library file: {}", ec.message());
+    }
+  }
+}
+
 bool PipelineCache::Initialize(D3D12Context& context) {
   if (root_signature_) {
+    InitializePipelineLibrary(context);
     return true;
   }
 
@@ -378,6 +474,7 @@ bool PipelineCache::Initialize(D3D12Context& context) {
                                                          blob->GetBufferSize(),
                                                          IID_PPV_ARGS(&root_signature_)))) {
         REXLOG_INFO("[native_gfx] Root Signature 1.1 created (DATA_STATIC_WHILE_SET_AT_EXECUTE enabled)");
+        InitializePipelineLibrary(context);
         return true;
       }
     }
@@ -438,10 +535,13 @@ bool PipelineCache::Initialize(D3D12Context& context) {
     return false;
   }
   REXLOG_INFO("[native_gfx] root signature created (b0/b1/b2 space4, t0 space0-2, s0 space3)");
+  InitializePipelineLibrary(context);
   return true;
 }
 
 void PipelineCache::Shutdown(D3D12Context& context) {
+  SaveLibrary();
+  pipeline_library_.Reset();
   for (auto& [key, pso] : pipelines_) {
     if (pso) {
       context.DeferRelease(pso.Detach());
@@ -619,6 +719,24 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
   }
   desc.DSVFormat = DXGI_FORMAT(key.ds_format);
 
+  wchar_t pso_name[128] = {};
+  if (pipeline_library_) {
+    swprintf_s(pso_name, L"pso_%016llx_%016llx_%08x_%08x_%08x_%016llx",
+               (unsigned long long)key.vs_identity,
+               (unsigned long long)key.ps_identity,
+               key.layout_id, key.rt_format, key.ds_format,
+               (unsigned long long)PsoKeyHash{}(key));
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> lib_pso;
+    HRESULT hr = pipeline_library_->LoadGraphicsPipeline(pso_name, &desc, IID_PPV_ARGS(&lib_pso));
+    if (SUCCEEDED(hr)) {
+      ++stats_.library_loads;
+      auto [inserted, ok] = pipelines_.emplace(key, std::move(lib_pso));
+      mru_key_ = key;
+      mru_pso_ = inserted->second.Get();
+      return mru_pso_;
+    }
+  }
+
   Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
   if (FAILED(context.device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)))) {
     REXLOG_ERROR("[native_gfx] PSO creation failed (vs {:016X} ps {:016X} rt {} ds {} samples {})",
@@ -657,6 +775,15 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
     ++stats_.creation_failures;
     return nullptr;
   }
+
+  if (pipeline_library_) {
+    HRESULT hr = pipeline_library_->StorePipeline(pso_name, pso.Get());
+    if (SUCCEEDED(hr)) {
+      library_dirty_ = true;
+      ++stats_.library_stores;
+    }
+  }
+
   auto [inserted, ok] = pipelines_.emplace(key, std::move(pso));
   mru_key_ = key;
   mru_pso_ = inserted->second.Get();
