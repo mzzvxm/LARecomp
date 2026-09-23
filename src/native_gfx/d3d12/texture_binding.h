@@ -126,7 +126,14 @@ class TextureBinder {
     uint64_t slot_misses = 0;
     uint64_t slot_flushes = 0;
     uint64_t slot_overflow = 0;
+    // Which guard component moved when the slot cache was emptied, in the order
+    // kGuardPartNames lists them. One flush can count under several.
+    uint64_t slot_flush_by[9] = {};
   };
+  // uploads, evictions, bridge refusals, stale GPU addresses, decode failures,
+  // unsupported formats, render-target pool changes, invalidations, verify
+  // catches.
+  static constexpr uint32_t kGuardParts = 9;
 
   bool Initialize(D3D12Context& context);
   void Shutdown(D3D12Context& context);
@@ -265,6 +272,7 @@ class TextureBinder {
   std::vector<SlotCacheEntry> slot_cache_;
   uint64_t slot_cache_generation_ = 1;
   uint64_t slot_cache_guard_ = ~0ull;
+  uint64_t slot_guard_parts_[kGuardParts] = {};
 
   Stats stats_;
 };

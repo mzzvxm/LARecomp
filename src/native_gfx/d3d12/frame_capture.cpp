@@ -9,6 +9,7 @@
 #include "frame_capture.h"
 
 #include <atomic>
+#include <intrin.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -232,7 +233,9 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
 REXCVAR_DECLARE(bool, mcla_native_gfx_unsupplied_drop);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_skip_ps);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_dump_ps);
+REXCVAR_DECLARE(std::string, mcla_native_gfx_ab_cvar);
 REXCVAR_DECLARE(bool, mcla_native_gfx_inline_fenced);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_ab_frames);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_first);
@@ -427,12 +430,31 @@ struct DrawProfile {
   double bind_us = 0;    // texture/sampler binding
   double const_us = 0;   // constant banks: read, compare, upload
   double pso_us = 0;     // PSO key + cache
+  // Everything inside CaptureDrawImpl, recording and submission included. The
+  // stages above only cover part of a draw; this is what the draw path costs
+  // the render thread, which is the number a frame budget is spent against.
+  double draw_us = 0;
+  // Parts of draw_us no stage above covers: opening a command list (which
+  // waits for a free in-flight slot), closing and submitting it, the render
+  // target acquire/transition, and the two constant-bank reads.
+  double begin_us = 0;
+  double submit_us = 0;
+  double rt_us = 0;
+  double cbank_us = 0;
 };
 DrawProfile g_profile;
 
-using ProfileClock = std::chrono::steady_clock;
+// The stage timers read the TSC, not steady_clock. There are ~16 reads per
+// draw, and through QueryPerformanceCounter they were measured at ~3.6% of the
+// render thread in gameplay -- the instrumentation was one of the larger items
+// it reported. Slots accumulate raw ticks; PrepareContinuousDisplay converts
+// the frame's totals to microseconds once, against steady_clock.
+struct ProfileClock {
+  using time_point = uint64_t;
+  static time_point now() { return __rdtsc(); }
+};
 inline void ProfileAdd(double& slot, ProfileClock::time_point begin) {
-  slot += std::chrono::duration<double, std::micro>(ProfileClock::now() - begin).count();
+  slot += double(__rdtsc() - begin);
 }
 
 // Histogram of the render target configurations that were offered but not
@@ -959,7 +981,9 @@ ID3D12GraphicsCommandList* EnsureFrame(D3D12Context& context) {
   if (g_cap.frame_open) {
     return context.CurrentCommandList();
   }
+  const auto t_begin = ProfileClock::now();
   ID3D12GraphicsCommandList* cl = context.BeginFrame();
+  ProfileAdd(g_profile.begin_us, t_begin);
   if (!cl) {
     return nullptr;
   }
@@ -979,7 +1003,10 @@ bool FlushBatch(D3D12Context& context) {
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
   g_rec.Clear();
-  return context.EndFrame();
+  const auto t_submit = ProfileClock::now();
+  const bool ok = context.EndFrame();
+  ProfileAdd(g_profile.submit_us, t_submit);
+  return ok;
 }
 
 // Resolves, reads back and writes the accumulated image plus the report.
@@ -2003,14 +2030,16 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // one thread, and three 4 KiB vectors per draw is three malloc/free pairs per
   // draw for buffers whose size never changes.
   static std::vector<uint8_t> vs_bank(kAluBankBytes), ps_bank(kAluBankBytes);
+  const auto t_cbank = ProfileClock::now();
   ReadConstantBank(base, dev + kDevVsConstantBankOffset, vs_bank.data());
   ReadConstantBank(base, dev + kDevPsConstantBankOffset, ps_bank.data());
+  ProfileAdd(g_profile.cbank_us, t_cbank);
   // Right after the read, so the mirror below stores the same bytes that were
   // uploaded and its comparison stays meaningful.
   ApplyColorExpBias(vs_bank.data(), base, dev);
   ApplyColorExpBias(ps_bank.data(), base, dev);
-
   CorrectColorExpBiasFold(vs_id, ps_id, ps_bank.data(), base, dev);
+
   // Resolve destinations are created and copied HERE, before the textures are
   // bound. NoteResolve inserts the resolved_ entry immediately but builds the
   // resource lazily, and the flush used to run only at render setup (after
@@ -3769,7 +3798,9 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     g_minimap_key = PooledKey(cfg);
     g_minimap_seen = true;
   }
+  const auto t_rt = ProfileClock::now();
   RenderTarget* target = render_targets.Acquire(context, PooledKey(cfg), clear_depth);
+  ProfileAdd(g_profile.rt_us, t_rt);
   // A draw that writes oC1 needs the pass's second surface attached before it
   // is bound. Kept out of the pool key on purpose -- see EnsureSecondTarget.
   bool have_second_target = false;
@@ -3925,7 +3956,9 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       break;
     }
   }
+  const auto t_prep = ProfileClock::now();
   render_targets.PrepareForRendering(cl, *target, samples_own_depth);
+  ProfileAdd(g_profile.rt_us, t_prep);
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = target->rtv_heap->GetCPUDescriptorHandleForHeapStart();
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = target->dsv_heap->GetCPUDescriptorHandleForHeapStart();
   if (samples_own_depth) {
@@ -5042,9 +5075,11 @@ void CaptureDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                  uint32_t draw_limit, D3D12Context& context, ShaderDatabase& shaders,
                  BufferCache& buffers, TextureCache& textures, TextureBinder& binder,
                  PipelineCache& pipelines, RenderTargetPool& render_targets, uint32_t aux_stage) {
+  const auto t_draw = ProfileClock::now();
   CaptureDrawImpl(base, dev, primitive_type, element_count, start_element, base_vertex, indexed,
                   draw_limit, context, shaders, buffers, textures, binder, pipelines,
                   render_targets, aux_stage, nullptr);
+  ProfileAdd(g_profile.draw_us, t_draw);
 }
 
 void SetContinuousMode(bool on) {
@@ -5628,6 +5663,92 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
             .count();
     const double gpu_wait_ms = context.TakeGpuWaitUs() / 1000.0;
     g_frame_start = std::chrono::steady_clock::now();
+    // The stage slots hold TSC ticks (see ProfileClock). Convert them with the
+    // tick rate measured against steady_clock over the whole run so far, which
+    // settles to the true rate within the first second.
+    {
+      static const auto calib_steady0 = std::chrono::steady_clock::now();
+      static const uint64_t calib_tsc0 = __rdtsc();
+      const double el_us =
+          std::chrono::duration<double, std::micro>(g_frame_start - calib_steady0).count();
+      const uint64_t el_ticks = __rdtsc() - calib_tsc0;
+      const double us_per_tick = el_ticks ? el_us / double(el_ticks) : 0.0;
+      for (double* slot : {&g_profile.state_us, &g_profile.shader_us, &g_profile.geom_us,
+                           &g_profile.bind_us, &g_profile.const_us, &g_profile.pso_us,
+                           &g_profile.draw_us, &g_profile.begin_us, &g_profile.submit_us,
+                           &g_profile.rt_us, &g_profile.cbank_us}) {
+        *slot *= us_per_tick;
+      }
+    }
+    // Window averages. The line below prints one frame's numbers, which swing
+    // by 10 ms from frame to frame; an A/B needs the mean over the window.
+    static uint32_t win_frames = 0;
+    static double win_wall = 0, win_gpu_wait = 0, win_draw = 0, win_geom = 0, win_bind = 0,
+                  win_front = 0, win_back = 0, win_begin = 0, win_submit = 0, win_rt = 0,
+                  win_cbank = 0, win_replay = 0, win_flush = 0;
+    static uint64_t win_cmds = 0;
+    static uint64_t win_acc = 0, win_offered = 0;
+    ++win_frames;
+    win_wall += wall_ms;
+    win_gpu_wait += gpu_wait_ms;
+    win_draw += g_profile.draw_us / 1000.0;
+    win_geom += g_profile.geom_us / 1000.0;
+    win_bind += g_profile.bind_us / 1000.0;
+    win_front += (g_profile.state_us + g_profile.shader_us) / 1000.0;
+    win_back += (g_profile.const_us + g_profile.pso_us) / 1000.0;
+    win_begin += g_profile.begin_us / 1000.0;
+    win_submit += g_profile.submit_us / 1000.0;
+    win_rt += g_profile.rt_us / 1000.0;
+    win_cbank += g_profile.cbank_us / 1000.0;
+    {
+      uint64_t cmds = 0;
+      win_replay += context.TakeReplayUs(&cmds) / 1000.0;
+      win_flush += context.TakeFlushWaitUs() / 1000.0;
+      win_cmds += cmds;
+    }
+    win_acc += g_cap.accepted;
+    win_offered += g_cap.offered;
+    // Paired A/B inside one session: flips a boolean cvar every ab_frames and
+    // tags each window with the state it ran under. Between separate boots the
+    // same scene varies by ~0.8 ms, which buries anything smaller; alternating
+    // within a run compares like with like. The window right after a flip is
+    // marked settle=1 so a transition (re-uploads, cache refill) can be dropped.
+    static int ab_phase = -1;
+    static int ab_settle = 0;
+    const std::string ab_cvar = REXCVAR_GET(mcla_native_gfx_ab_cvar);
+    const uint32_t ab_frames = std::max<uint32_t>(60u, REXCVAR_GET(mcla_native_gfx_ab_frames));
+    if ((total % 60u) == 0u && win_frames) {
+      if (FILE* fw = std::fopen("native_gfx_diag.txt", "ab")) {
+        const double n = double(win_frames);
+        std::fprintf(fw, "ab=%d settle=%d ", ab_cvar.empty() ? -1 : ab_phase, ab_settle);
+        std::fprintf(fw,
+                     "perfwin frames=%u wall=%.2f gpu_wait=%.2f draw=%.2f geom=%.2f bind=%.2f "
+                     "front=%.2f back=%.2f begin=%.2f submit=%.2f rt=%.2f cbank=%.2f "
+                     "replay=%.2f flush=%.2f ms/frame cmds=%.0f | offered=%.0f acc=%.0f /frame | "
+                     "draw_us_per_acc=%.2f\n",
+                     win_frames, win_wall / n, win_gpu_wait / n, win_draw / n, win_geom / n,
+                     win_bind / n, win_front / n, win_back / n, win_begin / n, win_submit / n,
+                     win_rt / n, win_cbank / n, win_replay / n, win_flush / n,
+                     double(win_cmds) / n,
+                     double(win_offered) / n,
+                     double(win_acc) / n, win_acc ? win_draw * 1000.0 / double(win_acc) : 0.0);
+        std::fclose(fw);
+      }
+      win_frames = 0;
+      win_wall = win_gpu_wait = win_draw = win_geom = win_bind = win_front = win_back = 0;
+      win_begin = win_submit = win_rt = win_cbank = win_replay = win_flush = 0;
+      win_cmds = 0;
+      ab_settle = 0;
+      if (!ab_cvar.empty()) {
+        const int want = int((total / ab_frames) & 1u);
+        if (want != ab_phase) {
+          rex::cvar::SetFlagByName(ab_cvar, want ? "true" : "false");
+          ab_phase = want;
+          ab_settle = 1;
+        }
+      }
+      win_acc = win_offered = 0;
+    }
     if (total <= 10u || (total % 60u) == 0u) {
       static BufferCache::Stats prev_buf;
       static TextureCache::Stats prev_tex;
@@ -5658,7 +5779,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      " texinv=%llu/%llu/%llu"
                      "| srv hit=%llu miss=%llu smp hit=%llu miss=%llu unres=%llu"
                      "| memo hit=%llu miss=%llu (guard=%llu key=%llu) bridge=%llu"
-                     " slot=%llu/%llu/%llu/%llu"
+                     " slot=%llu/%llu/%llu/%llu flushby=%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu"
                      "| state set=%llu skip=%llu\n",
                      total, ok, no_disp, g_cap.has_anchor ? 1 : 0, g_cap.has_readback ? 1 : 0,
                      display ? display->key.width : 0, display ? display->key.height : 0,
@@ -5750,6 +5871,15 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      D(g_binder_stats_for_report.slot_misses, prev_bind.slot_misses),
                      D(g_binder_stats_for_report.slot_flushes, prev_bind.slot_flushes),
                      D(g_binder_stats_for_report.slot_overflow, prev_bind.slot_overflow),
+                     D(g_binder_stats_for_report.slot_flush_by[0], prev_bind.slot_flush_by[0]),
+                     D(g_binder_stats_for_report.slot_flush_by[1], prev_bind.slot_flush_by[1]),
+                     D(g_binder_stats_for_report.slot_flush_by[2], prev_bind.slot_flush_by[2]),
+                     D(g_binder_stats_for_report.slot_flush_by[3], prev_bind.slot_flush_by[3]),
+                     D(g_binder_stats_for_report.slot_flush_by[4], prev_bind.slot_flush_by[4]),
+                     D(g_binder_stats_for_report.slot_flush_by[5], prev_bind.slot_flush_by[5]),
+                     D(g_binder_stats_for_report.slot_flush_by[6], prev_bind.slot_flush_by[6]),
+                     D(g_binder_stats_for_report.slot_flush_by[7], prev_bind.slot_flush_by[7]),
+                     D(g_binder_stats_for_report.slot_flush_by[8], prev_bind.slot_flush_by[8]),
                      // Command-list state calls this frame: issued / skipped
                      // because the list already had the value.
                      (unsigned long long)g_cap.state_sets,
@@ -6311,9 +6441,11 @@ void CaptureInlineDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_typ
   // so BeginVertices stores (count * stride) >> 2 dwords back as bytes.
   geom.size_bytes = ((vertex_count * stride) >> 2) * 4u;
   geom.stride = stride;
+  const auto t_draw = ProfileClock::now();
   CaptureDrawImpl(base, dev, primitive_type, vertex_count, /*start_element=*/0, /*base_vertex=*/0,
                   /*indexed=*/false, draw_limit, context, shaders, buffers, textures, binder,
                   pipelines, render_targets, aux_stage, &geom);
+  ProfileAdd(g_profile.draw_us, t_draw);
 }
 
 

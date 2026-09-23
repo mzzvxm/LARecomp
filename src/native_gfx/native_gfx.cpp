@@ -229,6 +229,16 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_pack_depth_stencil, true, "MCLA/NativeGfx",
                     "veiculo que a cena escreveu no stencil; sem ela o carro do jogador e "
                     "reprojetado como cenario estatico e borra. Custa duas alocacoes do "
                     "tamanho do alvo por endereco de resolve. Desligar so para bissectar.");
+REXCVAR_DEFINE_STRING(mcla_native_gfx_ab_cvar, "", "MCLA/NativeGfx",
+                      "Performance A/B within one session: the name of a boolean cvar to flip "
+                      "every mcla_native_gfx_ab_frames frames. Each perfwin line in "
+                      "native_gfx_diag.txt is tagged ab=0/1 with the state it ran under, and "
+                      "settle=1 on the window right after a flip. Empty disables it.");
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_ab_frames, 240, "MCLA/NativeGfx",
+                      "Frames between flips of mcla_native_gfx_ab_cvar; rounded to whole "
+                      "60-frame report windows.");
+
 REXCVAR_DEFINE_STRING(mcla_native_gfx_dump_ps, "", "MCLA/NativeGfx",
                       "Diagnostico: despeja TODO slot de textura ligado do draw cujo PIXEL "
                       "SHADER tem esta identidade, em hexadecimal (ex. "
