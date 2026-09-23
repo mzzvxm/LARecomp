@@ -22,6 +22,8 @@
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
+REXCVAR_DECLARE(bool, mcla_native_gfx_streaming_sticky);
+REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_demote_frames);
 REXCVAR_DECLARE(bool, mcla_native_gfx_region_memo);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 REXCVAR_DECLARE(bool, mcla_native_gfx_partial_reupload);
@@ -500,7 +502,11 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
           region->clean_streak = 0;
         } else {
           ++stats_.streaming_clean;
-          if (++region->clean_streak >= 4u) {
+          const uint32_t demote_after =
+              REXCVAR_GET(mcla_native_gfx_streaming_sticky)
+                  ? std::max(1u, REXCVAR_GET(mcla_native_gfx_streaming_demote_frames))
+                  : 4u;
+          if (++region->clean_streak >= demote_after) {
             region->streaming = false;
             region->clean_streak = 0;
             region->dirty_streak = 0;
@@ -960,7 +966,12 @@ void BufferCache::ApplyPendingInvalidations() {
     // threshold comes off the watch (see Region::streaming); the watch
     // itself is simply not re-armed after its next upload.
     if (r.dirty_frame != frame_) {
-      r.dirty_streak = (r.dirty_frame + 1 == frame_) ? r.dirty_streak + 1u : 1u;
+      // Sticky: a region written every OTHER frame (a double-buffered
+      // dynamic buffer) still counts as a streak. Without it such a region
+      // never reaches the threshold and pays a fault, a re-arm and a
+      // re-upload on every write, for as long as it lives.
+      const uint64_t gap = REXCVAR_GET(mcla_native_gfx_streaming_sticky) ? 2u : 1u;
+      r.dirty_streak = (r.dirty_frame + gap >= frame_) ? r.dirty_streak + 1u : 1u;
       r.dirty_frame = frame_;
       const uint32_t threshold = REXCVAR_GET(mcla_native_gfx_streaming_frames);
       if (!r.streaming && threshold != 0 && r.dirty_streak >= threshold) {

@@ -568,6 +568,28 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
                       "back under the watch.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_streaming_sticky, false, "MCLA/NativeGfx",
+                    "Hysteresis for the streaming classifier above. Promotion counts a region "
+                    "written every other frame as a streak (a double-buffered dynamic buffer "
+                    "never had two consecutive dirty frames, so it stayed watched and paid a "
+                    "fault, a VirtualProtect and a re-upload on every write), and demotion "
+                    "waits mcla_native_gfx_streaming_demote_frames clean frames instead of four. "
+                    "Measured while driving before this existed: ~25 promotions and ~24 "
+                    "demotions a frame, each demotion re-arming the watch and re-sending the "
+                    "whole region, and ~690 watch faults a frame. Measured on: promotions and "
+                    "demotions -85%, re-uploads and watch faults -29%, but no frame time gain "
+                    "above noise -- and with it on for a whole session stale meshes showed up "
+                    "(stretched triangles across the screen, HUD pieces missing): more regions "
+                    "off the watch means more rewrites left to the sampled hash, which misses "
+                    "them. Keep it off.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_demote_frames, 30, "MCLA/NativeGfx",
+                      "With mcla_native_gfx_streaming_sticky on: clean frames (frames in which "
+                      "the region was drawn and its hashed blocks matched) before a streaming "
+                      "region goes back under the write watch.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_state_cache, true, "MCLA/NativeGfx",
                     "Send a draw only the pipeline state that changed since the last draw on the "
                     "same command list: descriptor heaps, root signature, the four descriptor "
