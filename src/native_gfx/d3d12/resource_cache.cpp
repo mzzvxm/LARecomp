@@ -24,6 +24,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
 REXCVAR_DECLARE(bool, mcla_native_gfx_region_memo);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
+REXCVAR_DECLARE(bool, mcla_native_gfx_partial_reupload);
 REXCVAR_DECLARE(bool, mcla_native_gfx_overlap_index);
 
 namespace mcla::native_gfx {
@@ -199,8 +200,98 @@ BufferCache::Region* BufferCache::FindContaining(RegionMap& map, uint32_t addres
 }
 
 bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList* cl,
-                               Region& region, BufferSwap swap) {
+                               Region& region, BufferSwap swap, uint32_t* out_bytes) {
   const auto upload_begin = std::chrono::steady_clock::now();
+  const uint32_t blocks = (region.size + kVerifyBlock - 1u) / kVerifyBlock;
+  // Only the blocks an exact range dirtied, when that is all that is known to
+  // have changed. Anything else -- a new region, a hash mismatch, a region
+  // whose block tables do not match its size -- is sent whole, as before.
+  const bool partial = REXCVAR_GET(mcla_native_gfx_partial_reupload) && !region.whole_dirty &&
+                       !region.streaming &&
+                       region.block_dirty.size() == blocks &&
+                       region.block_hash.size() == blocks && region.block_frame.size() == blocks;
+  if (partial) {
+    const uint8_t* src = TranslatePhysicalGuest(region.base);
+    if (!src) {
+      stats_.last_failure = "physical translation returned null";
+      ++stats_.upload_failures;
+      return false;
+    }
+    uint32_t total = 0;
+    for (uint32_t b = 0; b < blocks; ++b) {
+      if (region.block_dirty[b]) {
+        total += std::min(kVerifyBlock, region.size - b * kVerifyBlock);
+      }
+    }
+    if (total != 0) {
+      D3D12Context::UploadAlloc staging;
+      if (!context.AllocateUpload(total, 4, staging, D3D12Context::UploadTag::kGeometry)) {
+        stats_.last_failure = "upload ring allocation failed";
+        ++stats_.upload_failures;
+        return false;
+      }
+      if (region.state != D3D12_RESOURCE_STATE_COPY_DEST) {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Transition.pResource = region.resource.Get();
+        barrier.Transition.StateBefore = region.state;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &barrier);
+      }
+      // One copy per run of consecutive dirty blocks, packed back to back in
+      // the staging allocation. Block offsets are multiples of 4096 from a
+      // dword-aligned base, so the swap lanes stay in step with the guest's.
+      uint32_t staged = 0;
+      for (uint32_t b = 0; b < blocks;) {
+        if (!region.block_dirty[b]) {
+          ++b;
+          continue;
+        }
+        uint32_t e = b;
+        while (e < blocks && region.block_dirty[e]) {
+          ++e;
+        }
+        const uint32_t off = b * kVerifyBlock;
+        const uint32_t len = std::min(e * kVerifyBlock, region.size) - off;
+        SwapCopy(static_cast<uint8_t*>(staging.cpu) + staged, src + off, len, swap);
+        cl->CopyBufferRegion(region.resource.Get(), off, staging.buffer, staging.offset + staged,
+                             len);
+        for (uint32_t k = b; k < e; ++k) {
+          const uint32_t koff = k * kVerifyBlock;
+          region.block_hash[k] =
+              HashBlockSampled(src + koff, std::min(kVerifyBlock, region.size - koff));
+          region.block_frame[k] = 0;
+          region.block_dirty[k] = 0;
+        }
+        staged += len;
+        b = e;
+      }
+      D3D12_RESOURCE_BARRIER barrier = {};
+      barrier.Transition.pResource = region.resource.Get();
+      barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+      barrier.Transition.StateAfter =
+          D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
+      barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      cl->ResourceBarrier(1, &barrier);
+      region.state = barrier.Transition.StateAfter;
+      // The whole-region hash is diag-only; the region's bytes are no longer
+      // the ones it described.
+      region.content_hash = 0;
+      ++stats_.partial_reuploads;
+    }
+    stats_.upload_us +=
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - upload_begin)
+            .count();
+    region.dirty = false;
+    if (!region.streaming) {
+      WatchRegion(region);
+    }
+    if (out_bytes) {
+      *out_bytes = total;
+    }
+    return true;
+  }
+
   D3D12Context::UploadAlloc staging;
   if (!context.AllocateUpload(region.size, 4, staging, D3D12Context::UploadTag::kGeometry)) {
     stats_.last_failure = "upload ring allocation failed";
@@ -222,9 +313,10 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   region.content_hash =
       REXCVAR_GET(mcla_native_gfx_diag) ? HashGuestBytes(src, region.size) : 0;
   {
-    const uint32_t blocks = (region.size + kVerifyBlock - 1u) / kVerifyBlock;
     region.block_hash.assign(blocks, 0);
     region.block_frame.assign(blocks, 0);
+    region.block_dirty.assign(blocks, 0);
+    region.whole_dirty = false;
     for (uint32_t b = 0; b < blocks; ++b) {
       const uint32_t off = b * kVerifyBlock;
       region.block_hash[b] = HashBlockSampled(src + off, std::min(kVerifyBlock, region.size - off));
@@ -265,6 +357,9 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   // region deliberately stays unwatched: it is re-checked by hash instead.
   if (!region.streaming) {
     WatchRegion(region);
+  }
+  if (out_bytes) {
+    *out_bytes = region.size;
   }
   return true;
 }
@@ -376,6 +471,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
         ++stats_.verify_regions;
         if (HashBlockSampled(p + off, len) != region->block_hash[b]) {
           region->dirty = true;
+          region->whole_dirty = true;
           ++stats_.verify_catches;
           break;
         }
@@ -410,11 +506,12 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     if (!readable()) {
       return false;
     }
-    if (!UploadRegion(context, cl, *region, swap)) {
+    uint32_t sent = 0;
+    if (!UploadRegion(context, cl, *region, swap, &sent)) {
       return false;
     }
     ++stats_.reuploads;
-    stats_.reupload_bytes += region->size;
+    stats_.reupload_bytes += sent;
   } else {
     if (!readable()) {
       return false;
@@ -655,8 +752,26 @@ void BufferCache::InvalidateRange(uint32_t guest_address, uint32_t size) {
           ++stats_.regions_dirtied;
         }
         r.dirty = true;
+        r.whole_dirty = true;
       }
     }
+  }
+}
+
+void BufferCache::MarkDirtyBlocks(Region& r, uint64_t lo, uint64_t hi) {
+  const uint64_t r_lo = r.base & 0x1FFFFFFFu;
+  const uint64_t r_hi = r_lo + r.size;
+  const uint64_t a = std::max(lo, r_lo);
+  const uint64_t b = std::min(hi, r_hi);
+  if (a >= b || r.block_dirty.empty()) {
+    r.whole_dirty = true;
+    return;
+  }
+  const uint32_t first = uint32_t((a - r_lo) / kVerifyBlock);
+  const uint32_t last =
+      std::min(uint32_t((b - 1 - r_lo) / kVerifyBlock), uint32_t(r.block_dirty.size()) - 1u);
+  for (uint32_t k = first; k <= last; ++k) {
+    r.block_dirty[k] = 1;
   }
 }
 
@@ -807,6 +922,16 @@ void BufferCache::ApplyPendingInvalidations() {
       ++stats_.regions_dirtied;
     }
     r.dirty = true;
+    // The range is exact to the page, so the region only needs the blocks
+    // it covers re-sent. With the switch off every dirty region goes whole,
+    // which is the old behaviour.
+    // A streaming region is off the watch, so an exact range (a guest
+    // unlock) does not cover every write it may have had: send it whole.
+    if (REXCVAR_GET(mcla_native_gfx_partial_reupload) && !r.streaming) {
+      MarkDirtyBlocks(r, lo, hi);
+    } else {
+      r.whole_dirty = true;
+    }
     // Consecutive frames of being written to. A region that crosses the
     // threshold comes off the watch (see Region::streaming); the watch
     // itself is simply not re-armed after its next upload.

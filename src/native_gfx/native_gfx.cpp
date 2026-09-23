@@ -490,6 +490,15 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
                     "containing the write, losing the invalidation. Off restores it, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_partial_reupload, true, "MCLA/NativeGfx",
+                    "Re-send only the 4 KiB blocks of a geometry region that the page write "
+                    "watch or a guest unlock reported as written, instead of the whole region. "
+                    "Those ranges are exact to the page; measured in gameplay they add up to "
+                    "~2 MB a frame while ~18 MB were being re-sent. Dirt found by the sampled "
+                    "hash, which only reads part of each block, still re-sends the whole "
+                    "region. Off restores whole-region re-uploads, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
                       "Consecutive frames of being written to after which a geometry region "
                       "comes off the page write watch, or 0 to keep every region watched. The "

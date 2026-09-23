@@ -102,6 +102,7 @@ class BufferCache {
     uint64_t upload_bytes = 0;        // bytes copied by first-use uploads
     uint64_t reupload_bytes = 0;      // bytes copied by invalidation re-uploads
     uint64_t reuploads_identical = 0; // re-upload whose content hash was unchanged
+    uint64_t partial_reuploads = 0;   // re-uploads that sent only the dirty blocks
     uint64_t thunk_ranges = 0;        // invalidation ranges from the page watch
     uint64_t thunk_bytes = 0;
     uint64_t unlock_bytes = 0;        // bytes covered by exact unlock ranges
@@ -235,6 +236,18 @@ class BufferCache {
     // block bound by twenty draws is checked once a frame.
     std::vector<uint64_t> block_hash;
     std::vector<uint32_t> block_frame;
+    // Which of those blocks an exact range (write watch or guest unlock) has
+    // touched since the last upload, so a re-upload can send just them. The
+    // watch reports whole pages, so a region dirtied by it is otherwise mostly
+    // unchanged: measured in gameplay, ~2 MB of dirty pages a frame against
+    // ~18 MB re-sent whole.
+    //
+    // `whole_dirty` is for dirt that has no exact extent -- a new region, or a
+    // sampled-hash mismatch. The hash only reads 512 bytes of every block, so a
+    // mismatch in one block says nothing reliable about the others; those keep
+    // the whole-region re-upload they always had.
+    std::vector<uint8_t> block_dirty;
+    bool whole_dirty = true;
 
     // Write-watch policy. A region the guest rewrites every frame earns
     // nothing from the watch: every guest write to it is an access violation
@@ -303,8 +316,12 @@ class BufferCache {
   uint32_t map_max_len_[uint32_t(BufferSwap::kCount)] = {};
   bool region_index_stale_ = true;
   void RebuildRegionIndex();
+  // `out_bytes` receives how many bytes were actually copied, which is less
+  // than the region when only its dirty blocks were sent.
   bool UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList* cl, Region& region,
-                    BufferSwap swap);
+                    BufferSwap swap, uint32_t* out_bytes = nullptr);
+  // Marks the blocks of `r` that the physical range [lo, hi) touches.
+  void MarkDirtyBlocks(Region& r, uint64_t lo, uint64_t hi);
   // Re-arms the write watch over a region. The watch is consumed when it fires,
   // so it has to be set again after every upload.
   void WatchRegion(const Region& region);

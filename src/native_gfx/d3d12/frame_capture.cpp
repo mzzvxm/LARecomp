@@ -5626,7 +5626,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      "| wall=%.1fms gpu_wait=%.1fms "
                      "| cpu state=%.1f shader=%.1f geom=%.1f bind=%.1f const=%.1f pso=%.1f ms"
                      "| buf hit=%llu up=%llu reup=%llu unlock=%llu merge=%llu"
-                     "| geom up_ms=%.1f up_MB=%.1f reup_MB=%.1f same=%llu"
+                     "| geom up_ms=%.1f up_MB=%.1f reup_MB=%.1f same=%llu part=%llu"
                      "| inval thunk=%llu/%lluKB unlockKB=%llu dirtied=%llu"
                      "| geomphase ucode=%.1f decl=%.1f match=%.1f idx=%.1f res=%.1f ms"
                      "| invscan steps=%llu regions=%llu"
@@ -5671,6 +5671,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      double(D(g_buffer_stats_for_report.upload_bytes, prev_buf.upload_bytes)) / 1048576.0,
                      double(D(g_buffer_stats_for_report.reupload_bytes, prev_buf.reupload_bytes)) / 1048576.0,
                      D(g_buffer_stats_for_report.reuploads_identical, prev_buf.reuploads_identical),
+                     D(g_buffer_stats_for_report.partial_reuploads, prev_buf.partial_reuploads),
                      D(g_buffer_stats_for_report.thunk_ranges, prev_buf.thunk_ranges),
                      D(g_buffer_stats_for_report.thunk_bytes, prev_buf.thunk_bytes) / 1024,
                      D(g_buffer_stats_for_report.unlock_bytes, prev_buf.unlock_bytes) / 1024,
