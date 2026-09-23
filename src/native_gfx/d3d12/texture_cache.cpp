@@ -27,6 +27,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_verify_textures);
 REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_index);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_per_frame);
+REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_incremental);
 
 namespace mcla::native_gfx {
 
@@ -187,7 +188,32 @@ void TextureCache::WatchEntry(const Entry& entry) {
   }
 }
 
+void TextureCache::IndexAdd(uint64_t key, const Entry& e) {
+  if (!e.guest_size) {
+    return;
+  }
+  const uint64_t lo = e.guest_base & 0x1FFFFFFFu;
+  const RangeIndexEntry r{lo, lo + e.guest_size, key};
+  if (e.guest_size > kIndexedSpanMax) {
+    wide_entries_.push_back(r);
+    return;
+  }
+  auto at = std::upper_bound(range_index_.begin(), range_index_.end(), lo,
+                             [](uint64_t v, const RangeIndexEntry& x) { return v < x.lo; });
+  range_index_.insert(at, r);
+  range_index_max_span_ = std::max(range_index_max_span_, e.guest_size);
+}
+
+void TextureCache::NoteIndexRemoval() {
+  if (REXCVAR_GET(mcla_native_gfx_texinv_incremental) && !range_index_stale_) {
+    ++range_index_dead_;
+  } else {
+    range_index_stale_ = true;
+  }
+}
+
 void TextureCache::RebuildRangeIndex() {
+  range_index_dead_ = 0;
   range_index_.clear();
   wide_entries_.clear();
   range_index_max_span_ = 0;
@@ -222,7 +248,7 @@ bool TextureCache::DropInvalidatedEntry(D3D12Context& context, uint64_t key) {
   stats_.live_bytes -= (e.bytes <= stats_.live_bytes) ? e.bytes : stats_.live_bytes;
   ++stats_.invalidated;
   entries_.erase(it);
-  range_index_stale_ = true;
+  NoteIndexRemoval();
   return true;
 }
 
@@ -244,7 +270,8 @@ void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
   }
   ++stats_.inval_drains;
   const bool indexed = REXCVAR_GET(mcla_native_gfx_texinv_index);
-  if (indexed && range_index_stale_) {
+  if (indexed && (range_index_stale_ ||
+                  (range_index_dead_ > 1024u && range_index_dead_ > range_index_.size() / 2u))) {
     RebuildRangeIndex();
   }
   // Dropping the entry rather than flagging it is what re-decodes the texture:
@@ -345,7 +372,7 @@ void TextureCache::EvictToBudget(D3D12Context& context, uint64_t current_frame) 
     stats_.evicted_bytes += it->second.bytes;
     ++stats_.evictions;
     entries_.erase(it);
-    range_index_stale_ = true;
+    NoteIndexRemoval();
   }
 }
 
@@ -586,7 +613,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
           }
           stats_.live_bytes -= std::min(stats_.live_bytes, it->second.bytes);
           entries_.erase(it);
-          range_index_stale_ = true;
+          NoteIndexRemoval();
           it = entries_.end();
         }
       }
@@ -795,7 +822,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       REXLOG_ERROR("[native_gfx] texture creation failed ({}x{} fmt {})", fetch.width,
                    fetch.height, fetch.format);
       entries_.erase(key);
-      range_index_stale_ = true;
+      NoteIndexRemoval();
       ++stats_.decode_failures;
       NoteResolveFailure(fetch, "D3D12 texture creation failed");
       return nullptr;
@@ -1093,7 +1120,11 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // half-decoded upload resident for the rest of the session.
   e.guest_base = fetch.base_address;
   e.guest_size = src_size;
-  range_index_stale_ = true;
+  if (REXCVAR_GET(mcla_native_gfx_texinv_incremental) && !range_index_stale_) {
+    IndexAdd(key, e);
+  } else {
+    range_index_stale_ = true;
+  }
   // Sampled hash of the bytes this decode read, so a later Resolve can tell
   // whether guest memory has moved on. The watch alone is not enough: measured,
   // the minimap mask's entry held a different texture for the whole session

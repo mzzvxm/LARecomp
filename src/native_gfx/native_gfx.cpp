@@ -490,6 +490,14 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "restores the old ring, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, false, "MCLA/NativeGfx",
+                    "Keep the texture invalidation index sorted by insertion instead of "
+                    "re-sorting all of it after every new texture, and leave removed entries "
+                    "in it until they outnumber the live ones. While driving it was being "
+                    "rebuilt several times a frame, ~3.4% of the render thread. Off restores "
+                    "the rebuild-on-change, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
                     "Find the geometry regions a guest write touches with a walk that stays "
                     "correct when regions overlap (declined merges leave overlaps). The old "

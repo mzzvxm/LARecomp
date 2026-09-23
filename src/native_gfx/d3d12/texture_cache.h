@@ -305,6 +305,15 @@ class TextureCache {
   uint64_t range_index_max_span_ = 0;
   bool range_index_stale_ = true;
   void RebuildRangeIndex();
+  // Incremental upkeep (mcla_native_gfx_texinv_incremental). Inserting keeps
+  // the index sorted without a rebuild; a removed entry is simply left behind,
+  // because the drain looks every key up in entries_ and an absent one costs a
+  // step and nothing else. A key that comes back names the same address and
+  // extent (both are part of it), so a stale index entry stays truthful. The
+  // dead are compacted away by a rebuild once they outnumber the living.
+  void IndexAdd(uint64_t key, const Entry& e);
+  void NoteIndexRemoval();
+  size_t range_index_dead_ = 0;
   // Drops one entry the guest overwrote; false when the key is already gone
   // (an earlier range in the same drain took it).
   bool DropInvalidatedEntry(D3D12Context& context, uint64_t key);
