@@ -13,6 +13,13 @@
 #include "achievement_metadata.h"
 #include "mc_engine/hooks.h"
 #include "native_gfx/nocp/nocp_app.h"
+#include "native_gfx/native_gfx.h"
+#include "native_gfx/d3d12/device_manager.h"
+#include "native_gfx/d3d12/swapchain.h"
+
+REXCVAR_DECLARE(bool, mcla_native_gfx);
+REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
+REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
 #include "mc_engine/map_mouse.h"
@@ -321,10 +328,53 @@ class LarecompApp : public rex::ReXApp {
   // and D3D12Presenter live in src/ui/d3d12 -- swapchain, descriptor pools,
   // upload buffers, submission tracking. There is no PM4, EDRAM or register
   // file anywhere in that directory.
+#if defined(_WIN32)
+  class NativeSwapChainResizeListener : public rex::ui::WindowListener {
+   public:
+    void OnResize(rex::ui::UISetupEvent& e) override {
+      if (e.target() && mcla::native_gfx::NativeSwapChain::Instance().IsInitialized()) {
+        HWND hwnd = static_cast<HWND>(e.target()->GetNativeWindowHandle());
+        if (hwnd) {
+          RECT rc = {};
+          GetClientRect(hwnd, &rc);
+          uint32_t w = static_cast<uint32_t>(rc.right - rc.left);
+          uint32_t h = static_cast<uint32_t>(rc.bottom - rc.top);
+          if (w > 0 && h > 0) {
+            mcla::native_gfx::NativeSwapChain::Instance().ResizeBuffers(
+                mcla::native_gfx::DeviceManager::Instance(), w, h);
+          }
+        }
+      }
+    }
+  };
+  NativeSwapChainResizeListener swapchain_resize_listener_;
+#endif
+
   bool SetupPresentation() override {
     if (!rex::ReXApp::SetupPresentation()) {
       return false;
     }
+
+#if defined(_WIN32)
+    if (REXCVAR_GET(mcla_native_gfx) || mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      if (REXCVAR_GET(mcla_native_gfx_own_device)) {
+        mcla::native_gfx::DeviceManager::Instance().Initialize(false, false);
+      }
+      if (REXCVAR_GET(mcla_native_gfx_own_swapchain) && window()) {
+        HWND hwnd = static_cast<HWND>(window()->GetNativeWindowHandle());
+        if (hwnd) {
+          RECT rc = {};
+          GetClientRect(hwnd, &rc);
+          uint32_t w = static_cast<uint32_t>(rc.right - rc.left);
+          uint32_t h = static_cast<uint32_t>(rc.bottom - rc.top);
+          mcla::native_gfx::NativeSwapChain::Instance().Initialize(
+              mcla::native_gfx::DeviceManager::Instance(), hwnd, w ? w : 1280, h ? h : 720);
+          window()->AddListener(&swapchain_resize_listener_);
+        }
+      }
+    }
+#endif
+
     if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
       return true;
     }
@@ -333,6 +383,10 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+#if defined(_WIN32)
+    mcla::native_gfx::NativeSwapChain::Instance().Shutdown();
+    mcla::native_gfx::DeviceManager::Instance().Shutdown();
+#endif
     LARECOMP_Discord_Shutdown();
     mc::profiler::Shutdown();
     mc::DisableHighResTimer();

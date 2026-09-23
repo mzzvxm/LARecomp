@@ -36,6 +36,8 @@ class D3D12Provider;
 
 namespace mcla::native_gfx {
 
+class DeviceManager;
+
 // Submissions in flight, NOT frames: a frame is submitted in batches of
 // kDrawsPerBatch, about fourteen of them in gameplay, and BeginFrame waits on
 // the fence of the slot it is about to reuse. At two slots the render thread
@@ -50,6 +52,7 @@ class D3D12Context {
   ~D3D12Context();
 
   bool Initialize(const rex::ui::d3d12::D3D12Provider& provider);
+  bool Initialize(DeviceManager& manager);
   void Shutdown();
   bool initialized() const { return initialized_; }
 
@@ -281,6 +284,8 @@ class D3D12Context {
     IUnknown* resource;
   };
   std::vector<PendingRelease> pending_releases_;
+
+  bool FinishInitialize();
 
   uint64_t frame_index_ = 0;
   bool frame_open_ = false;
