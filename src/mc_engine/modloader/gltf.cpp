@@ -801,6 +801,7 @@ bool LoadGltf(const std::filesystem::path& path, Mesh& out, std::string& error) 
             gltf.ReadAccessor(accessor, weights, components);
             if (components != 4) weights.clear();
         }
+        const bool indexed = primitive->IntField("indices", -1) >= 0;
         if (const int accessor = primitive->IntField("indices", -1); accessor >= 0) {
             gltf.ReadAccessorInts(accessor, indices, components);
             if (components != 1) indices.clear();
@@ -851,11 +852,24 @@ bool LoadGltf(const std::filesystem::path& path, Mesh& out, std::string& error) 
             part.material = material_name[static_cast<size_t>(material)];
         out.parts.push_back(part);
 
+        // An index accessor that is present but empty draws NOTHING. Reading it
+        // as "no indices" made every three vertices a triangle, and when the
+        // vertex count was not a multiple of three every triangle after it in
+        // the file came out shifted -- measured on the BMW e38: a split-off
+        // lamp primitive left with zero indices put 946 garbage triangles in
+        // interior0 and 3-4 m edges into the glass, paint and chrome.
         if (!indices.empty()) {
-            for (uint32_t index : indices) out.indices.push_back(base + index);
-        } else {
-            for (size_t i = 0; i < vertex_count; ++i)
+            for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+                out.indices.push_back(base + indices[i]);
+                out.indices.push_back(base + indices[i + 1]);
+                out.indices.push_back(base + indices[i + 2]);
+            }
+        } else if (!indexed) {
+            for (size_t i = 0; i + 2 < vertex_count; i += 3) {
                 out.indices.push_back(base + static_cast<uint32_t>(i));
+                out.indices.push_back(base + static_cast<uint32_t>(i + 1));
+                out.indices.push_back(base + static_cast<uint32_t>(i + 2));
+            }
         }
     }
 
