@@ -1656,6 +1656,8 @@ constexpr uint32_t kTextureHeight = 34;
 // six; word 5 packs the mip chain's address the same way.
 constexpr uint32_t kFetchBaseWord = 0x1Cu + 4;
 constexpr uint32_t kFetchMipWord = 0x1Cu + 20;
+// Fetch constant dword 4: mip_min_level at bits 2..5, mip_max_level at 6..9.
+constexpr uint32_t kFetchMipLevelWord = 0x1Cu + 16;
 constexpr uint32_t kAddressMask = 0xFFFFF000u;
 constexpr uint32_t kFormatMask = 0x3Fu;
 constexpr uint32_t kFormatDxt1 = 18;
@@ -1876,6 +1878,27 @@ bool WriteTextureInPlace(Rsc5View& view, Rsc5Resource& resource,
         written += stored;
         ++out_levels;
         current = std::move(next);
+    }
+
+    // Declare only the levels that were written.
+    //
+    // The run above stops where the Xenos packs the small levels into one
+    // tail, so a shipped chain is only partly replaced -- and a sampler that
+    // still believes the old level count reads the DONOR's picture from the
+    // levels left behind. Measured on the BMW e38: vp_chv_impala_96_trim
+    // declares mip_max_level 7 (512x512) and 6 in the .xtl, the write
+    // reached 2 and 1, and the badges turned the colour of the Impala's trim
+    // sheet more the further away they were. mip_max_level is fetch constant
+    // dword 4, bits 6..9.
+    uint32_t levels_word = 0;
+    uint32_t d3d = 0;
+    if (view.U32(slot.address + kTextureD3d, d3d) && d3d != 0 &&
+        view.U32(d3d + kFetchMipLevelWord, levels_word)) {
+        const uint32_t declared = (levels_word >> 6) & 0xFu;
+        if (declared > out_levels) {
+            levels_word = (levels_word & ~(0xFu << 6)) | (out_levels << 6);
+            view.SetU32(d3d + kFetchMipLevelWord, levels_word);
+        }
     }
     return true;
 }
