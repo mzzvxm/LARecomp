@@ -232,6 +232,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
 REXCVAR_DECLARE(bool, mcla_native_gfx_unsupplied_drop);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_skip_ps);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_dump_ps);
+REXCVAR_DECLARE(bool, mcla_native_gfx_inline_fenced);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_first);
@@ -1873,7 +1874,23 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     const uint32_t out_verts = RectListVertexCount(element_count);
     const uint32_t out_bytes = out_verts * inline_geom->stride;
     uint64_t gpu = 0;
-    uint8_t* dst = out_bytes ? g_inline_vertices.Allocate(context, out_bytes, &gpu) : nullptr;
+    uint8_t* dst = nullptr;
+    if (out_bytes && REXCVAR_GET(mcla_native_gfx_inline_fenced)) {
+      // The per-slot upload ring is only rewound once the GPU has finished the
+      // submission that used it (BeginFrame waits on the slot's fence).
+      // g_inline_vertices is rewound at the first draw of EVERY frame in
+      // continuous mode with no wait at all -- its own comment only holds for
+      // the one-shot capture, where Finish waited for idle -- so a rectangle
+      // recorded early in a frame could overwrite vertices the GPU was still
+      // reading from the end of the previous one.
+      D3D12Context::UploadAlloc a;
+      if (context.AllocateUpload(out_bytes, 16, a, D3D12Context::UploadTag::kGeometry)) {
+        dst = static_cast<uint8_t*>(a.cpu);
+        gpu = a.gpu;
+      }
+    } else if (out_bytes) {
+      dst = g_inline_vertices.Allocate(context, out_bytes, &gpu);
+    }
     // Guard the guest read: a bad address here is an access violation inside
     // the game's own draw thread, with no D3D12 error to point at it.
     const bool src_sane = inline_geom->address >= 0x1000u &&

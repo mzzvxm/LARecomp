@@ -483,6 +483,13 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
+                    "Take rectangle-list inline vertices from the fence-protected per-slot "
+                    "upload ring instead of the inline vertex ring, which continuous mode "
+                    "rewinds at the start of every frame without waiting for the GPU. Off "
+                    "restores the old ring, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
                     "Find the geometry regions a guest write touches with a walk that stays "
                     "correct when regions overlap (declined merges leave overlaps). The old "
