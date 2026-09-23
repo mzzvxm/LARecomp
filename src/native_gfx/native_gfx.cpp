@@ -467,7 +467,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "resolve on every slot, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, true, "MCLA/NativeGfx",
                     "Re-check a cached texture against guest memory once per guest frame, as "
                     "mcla_native_gfx_verify_textures describes, instead of once per submitted "
                     "batch. The batch counter advances ~14 times a frame, so every bound "
@@ -522,7 +522,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "restores the old ring, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, true, "MCLA/NativeGfx",
                     "Untile and endian-swap texture levels in ordinary cached memory and copy "
                     "the result to the upload ring in one pass, instead of swapping in place "
                     "inside the ring. The ring is write-combined, so the in-place swap read "
@@ -531,7 +531,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, false, "MCLA/NativeGfx",
                     "for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, true, "MCLA/NativeGfx",
                     "Keep the texture invalidation index sorted by insertion instead of "
                     "re-sorting all of it after every new texture, and leave removed entries "
                     "in it until they outnumber the live ones. While driving it was being "

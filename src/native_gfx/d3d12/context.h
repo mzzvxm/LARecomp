@@ -58,6 +58,9 @@ class D3D12Context {
 
   ID3D12Device* device() const { return device_; }
   ID3D12CommandQueue* queue() const { return queue_; }
+  ID3D12Fence* fence() const { return fence_.Get(); }
+  uint64_t completed_fence_value() const { return fence_ ? fence_->GetCompletedValue() : 0; }
+  uint64_t current_fence_value() const { return fence_value_; }
 
   // Begins a native frame: reclaims the frame slot's allocator (waiting on
   // its fence if the GPU is still using it), resets the command list.

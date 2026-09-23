@@ -52,20 +52,32 @@ constexpr uint32_t kRegionGranularity = 4096;
 // own. Duplicating bytes across two regions is harmless here: the data is
 // read-only to the GPU, and invalidation is by address range, so both copies
 // are dirtied by the same guest write.
+#include <immintrin.h>
+
 constexpr uint32_t kMaxRegionBytesDefault = 128u << 10;
 
 inline uint32_t AlignDown(uint32_t v, uint32_t a) { return v & ~(a - 1); }
 inline uint32_t AlignUp(uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); }
 
-// Endian-swapping copy. Region bases are 4096-aligned (or dword-aligned on
-// the fallback path), so the swap lanes line up with the guest's own dword
-// lanes and a straight loop is enough. A trailing partial unit is copied
-// through unchanged: it cannot be part of a complete element.
+// Endian-swapping copy. Accelerated with SSE4.1 _mm_shuffle_epi8 vectorization
+// for 16-byte burst processing, falling back to scalar cleanup loops.
 void SwapCopy(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap swap) {
   switch (swap) {
     case BufferSwap::k8in32: {
+      uint32_t i = 0;
+      const uint32_t vec_end = size & ~15u;
+      const __m128i mask = _mm_setr_epi8(
+          3, 2, 1, 0,
+          7, 6, 5, 4,
+          11, 10, 9, 8,
+          15, 14, 13, 12);
+      for (; i < vec_end; i += 16) {
+        __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        v = _mm_shuffle_epi8(v, mask);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), v);
+      }
       const uint32_t whole = size & ~3u;
-      for (uint32_t i = 0; i < whole; i += 4) {
+      for (; i < whole; i += 4) {
         uint32_t v;
         std::memcpy(&v, src + i, 4);
         v = __builtin_bswap32(v);
@@ -77,8 +89,20 @@ void SwapCopy(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap swap) 
       break;
     }
     case BufferSwap::k8in16: {
+      uint32_t i = 0;
+      const uint32_t vec_end = size & ~15u;
+      const __m128i mask = _mm_setr_epi8(
+          1, 0, 3, 2,
+          5, 4, 7, 6,
+          9, 8, 11, 10,
+          13, 12, 15, 14);
+      for (; i < vec_end; i += 16) {
+        __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        v = _mm_shuffle_epi8(v, mask);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), v);
+      }
       const uint32_t whole = size & ~1u;
-      for (uint32_t i = 0; i < whole; i += 2) {
+      for (; i < whole; i += 2) {
         uint16_t v;
         std::memcpy(&v, src + i, 2);
         v = uint16_t((v >> 8) | (v << 8));
@@ -100,6 +124,68 @@ void SwapCopyBytes(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap s
   SwapCopy(dst, src, size, swap);
 }
 
+Microsoft::WRL::ComPtr<ID3D12Resource> BufferCache::AcquireBuffer(D3D12Context& context, uint32_t size) {
+  // Reclaim any retired buffers whose fence has passed on the GPU
+  const uint64_t completed = context.completed_fence_value();
+  for (auto it = retired_buffers_.begin(); it != retired_buffers_.end();) {
+    if (it->fence_value <= completed) {
+      available_buffers_.push_back(std::move(*it));
+      it = retired_buffers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // Find a suitable buffer in available_buffers_ (best fit)
+  int best_idx = -1;
+  uint32_t best_cap = UINT32_MAX;
+  for (size_t i = 0; i < available_buffers_.size(); ++i) {
+    uint32_t cap = available_buffers_[i].capacity;
+    if (cap >= size && cap < best_cap) {
+      best_cap = cap;
+      best_idx = int(i);
+      if (cap == size) break;
+    }
+  }
+
+  if (best_idx >= 0 && best_cap <= std::max(size * 2u, 65536u)) {
+    ++stats_.pool_hits;
+    auto res = std::move(available_buffers_[best_idx].resource);
+    available_buffers_.erase(available_buffers_.begin() + best_idx);
+    return res;
+  }
+
+  // Not found in pool: allocate fresh committed resource
+  // Round up to at least 64KB for optimal reuse later
+  const uint32_t alloc_size = std::max(AlignUp(size, 65536u), size);
+  D3D12_RESOURCE_DESC desc = {};
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  desc.Width = alloc_size;
+  desc.Height = 1;
+  desc.DepthOrArraySize = 1;
+  desc.MipLevels = 1;
+  desc.SampleDesc.Count = 1;
+  desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+  Microsoft::WRL::ComPtr<ID3D12Resource> res;
+  if (SUCCEEDED(context.device()->CreateCommittedResource(
+          &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&res)))) {
+    ++stats_.pool_allocations;
+    return res;
+  }
+  return nullptr;
+}
+
+void BufferCache::RetireBuffer(D3D12Context& context, Microsoft::WRL::ComPtr<ID3D12Resource> resource, uint32_t size) {
+  if (!resource) return;
+  // If pool already has a lot of idle buffers (e.g. >= 128), release to context
+  if (available_buffers_.size() + retired_buffers_.size() >= 128) {
+    context.DeferRelease(resource.Detach());
+    return;
+  }
+  retired_buffers_.push_back({std::move(resource), size, context.current_fence_value()});
+}
 
 void BufferCache::Shutdown(D3D12Context& context) {
   StopWatchingGuestWrites();
@@ -112,6 +198,18 @@ void BufferCache::Shutdown(D3D12Context& context) {
     }
     map.clear();
   }
+  for (auto& b : available_buffers_) {
+    if (b.resource) {
+      context.DeferRelease(b.resource.Detach());
+    }
+  }
+  available_buffers_.clear();
+  for (auto& b : retired_buffers_) {
+    if (b.resource) {
+      context.DeferRelease(b.resource.Detach());
+    }
+  }
+  retired_buffers_.clear();
   if (zero_stream_) {
     context.DeferRelease(zero_stream_.Detach());
   }
@@ -588,7 +686,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       auto it = map.find(base);
       if (it != map.end()) {
         if (it->second.resource) {
-          context.DeferRelease(it->second.resource.Detach());
+          RetireBuffer(context, std::move(it->second.resource), it->second.size);
         }
         map.erase(it);
         region_index_stale_ = true;
@@ -618,7 +716,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       const uint32_t r_hi = r_lo + it->second.size;
       if (r_lo >= lo && r_hi <= hi) {
         if (it->second.resource) {
-          context.DeferRelease(it->second.resource.Detach());
+          RetireBuffer(context, std::move(it->second.resource), it->second.size);
         }
         it = map.erase(it);
         region_index_stale_ = true;
@@ -632,20 +730,11 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     Region fresh;
     fresh.base = lo;
     fresh.size = hi - lo;
-    D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Width = fresh.size;
-    desc.Height = 1;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.SampleDesc.Count = 1;
-    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    if (FAILED(context.device()->CreateCommittedResource(
-            &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&fresh.resource)))) {
+    fresh.resource = AcquireBuffer(context, fresh.size);
+    if (!fresh.resource) {
       REXLOG_ERROR("[native_gfx] buffer region creation failed ({:#010x}+{})", fresh.base,
                    fresh.size);
-      stats_.last_failure = "CreateCommittedResource failed";
+      stats_.last_failure = "AcquireBuffer failed";
       ++stats_.upload_failures;
       return false;
     }
@@ -736,8 +825,7 @@ void BufferCache::ReportPeriodic() {
   REXLOG_INFO(
       "[native_gfx] BufferCache @frame {}: regions={} bytes={} KiB | verify: regions={} "
       "MB={} CAUGHT={} (streaming={}) | since last: hits={} "
-      "uploads={} reuploads={} (from unlock={}) merges={} declined={} failures={} "
-      "unreadable={} | {}",
+      "uploads={} reuploads={} (from unlock={}) merges={} declined={} pool_hits={} pool_allocs={} | {}",
       frames, regions, bytes >> 10, stats_.verify_regions - prev.verify_regions,
       (stats_.verify_bytes - prev.verify_bytes) >> 20, stats_.verify_catches - prev.verify_catches,
       stats_.verify_catches_streaming - prev.verify_catches_streaming,
@@ -745,7 +833,7 @@ void BufferCache::ReportPeriodic() {
       stats_.reuploads - prev.reuploads,
       stats_.unlock_invalidations - prev.unlock_invalidations, stats_.merges - prev.merges,
       stats_.merge_declined - prev.merge_declined,
-      stats_.upload_failures - prev.upload_failures, stats_.unreadable - prev.unreadable,
+      stats_.pool_hits - prev.pool_hits, stats_.pool_allocations - prev.pool_allocations,
       DrawRejectionSummary());
   // The rejection counters are the only thing that says WHICH gate closed on a
   // frame that recorded nothing, and REXLOG only reaches stdout -- which is
