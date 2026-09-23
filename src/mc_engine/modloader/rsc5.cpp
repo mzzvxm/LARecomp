@@ -113,8 +113,16 @@ uint16_t FloatToHalf(float value) {
                                  (mantissa >> 13));
 }
 
-// Dec3N, in the component order the game stores: bits 0-9 hold Y, bits 10-19
-// hold Z, bits 20-29 hold X (the axis rotation MCLA applies to packed normals).
+// Dec3N in the plain order: bits 0-9 hold X, bits 10-19 Y, bits 20-29 Z.
+//
+// There is no axis rotation. This used to write Y, Z, X, and every normal and
+// tangent the loader shipped reached the shader turned a third of a turn --
+// the facets and the wrong reflections on the BMW's shell, and the highlight
+// that sweeps round a replaced wheel as it spins. Measured on the game's own
+// drawables by fitting all 48 axis orders against normals rebuilt from the
+// triangles: X-low wins at a median dot of 0.991 on whl_am_bbs_ch, 0.996 on
+// vp_chv_impala_96's body and 0.995 on drv_mp_01_set, and the native
+// renderer's unpacker reads int3(v, v >> 10, v >> 20) and draws those right.
 uint32_t PackDec3N(float x, float y, float z) {
     auto pack = [](float v) -> uint32_t {
         const float clamped = std::max(-1.0f, std::min(1.0f, v));
@@ -122,7 +130,7 @@ uint32_t PackDec3N(float x, float y, float z) {
         quantised = std::max(-511, std::min(511, quantised));
         return static_cast<uint32_t>(quantised) & 0x3FFu;
     };
-    return pack(y) | (pack(z) << 10) | (pack(x) << 20);
+    return pack(x) | (pack(y) << 10) | (pack(z) << 20);
 }
 
 void UnpackDec3N(uint32_t packed, float& x, float& y, float& z) {
@@ -131,9 +139,9 @@ void UnpackDec3N(uint32_t packed, float& x, float& y, float& z) {
         const int signed_value = (field & 0x200u) ? static_cast<int>(field) - 1024 : static_cast<int>(field);
         return static_cast<float>(signed_value) / 511.0f;
     };
-    y = unpack(packed);
-    z = unpack(packed >> 10);
-    x = unpack(packed >> 20);
+    x = unpack(packed);
+    y = unpack(packed >> 10);
+    z = unpack(packed >> 20);
 }
 
 // Address translation for the two RSC5 pointer spaces.
