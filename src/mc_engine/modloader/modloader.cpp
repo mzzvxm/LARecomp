@@ -4,6 +4,7 @@
 #include <rex/runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
@@ -1381,6 +1382,27 @@ struct VehiclePlan {
     float offset[3] = {0.0f, 0.0f, 0.0f};
     bool placed = false;  // whether a measured transform was given
 
+    // `frame.<slot> = tx ty tz rx ry rz [scale]`: the rest pose of the bone
+    // that draws the slot, so the part is written in that bone's own space.
+    //
+    // A part drawn by a moving bone has to be authored around it, or it moves
+    // around the wrong point: the steering wheel turns about the bone's local
+    // Z. Re-centring on the slot's box (PlacePart) only translates, so a wheel
+    // raked like the car's column came out raked twice. Numbers are read off
+    // the donor's skeleton: the bone struct holds its translation at +0x20 and
+    // its Euler angles, radians, at +0x30. vp_chv_impala_96 `steer` is
+    // (-0.428 0.847 -0.376) turned -0.2928 about X -- and the BMW's own wheel,
+    // placed, is centred at (-0.423 0.851 -0.413) with its axis 2.1 degrees
+    // off that bone's Z, which is what proved the convention. The optional
+    // scale is about the axis: the driver's hands grip the DONOR's rim
+    // (radius 0.220) and the BMW's is 0.202.
+    struct SlotFrame {
+        float t[3] = {0.0f, 0.0f, 0.0f};
+        float r[3] = {0.0f, 0.0f, 0.0f};
+        float scale = 1.0f;
+    };
+    std::map<std::string, SlotFrame> frames;
+
     // Whether the tune is rewritten to carry this car's name, or copied exactly
     // as the donor holds it.
     //
@@ -1419,6 +1441,63 @@ struct VehiclePlan {
     bool verbatim = false;
 };
 
+// Writes a part in the space of the bone that draws it. See VehiclePlan::frames.
+//
+// The rotation is Rz * Ry * Rx (X applied first); the part arrives in car space,
+// so it is taken back through the inverse: p' = R^T (p - t), normals by R^T.
+// Then it is put ON the axis the bone turns about -- centred in local XY -- and
+// its rim, the outer fifth of it by radius, at local z = 0, which is where the
+// donor's own steer_whl0 has its rim (mean z 0.002 over r > 0.18). A wheel a
+// few centimetres off the axis wobbles as it turns; one at the right depth
+// sits where the hands close.
+void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
+    const float cx = std::cos(frame.r[0]), sx = std::sin(frame.r[0]);
+    const float cy = std::cos(frame.r[1]), sy = std::sin(frame.r[1]);
+    const float cz = std::cos(frame.r[2]), sz = std::sin(frame.r[2]);
+    // R = Rz * Ry * Rx, row-major.
+    const float r[3][3] = {
+        {cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx},
+        {sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx},
+        {-sy, cy * sx, cy * cx},
+    };
+    auto inverse = [&](float x, float y, float z, float out[3]) {
+        for (int i = 0; i < 3; ++i) out[i] = r[0][i] * x + r[1][i] * y + r[2][i] * z;
+    };
+    for (MeshVertex& vertex : mesh.vertices) {
+        float p[3], n[3];
+        inverse(vertex.px - frame.t[0], vertex.py - frame.t[1], vertex.pz - frame.t[2], p);
+        inverse(vertex.nx, vertex.ny, vertex.nz, n);
+        vertex.px = p[0];
+        vertex.py = p[1];
+        vertex.pz = p[2];
+        vertex.nx = n[0];
+        vertex.ny = n[1];
+        vertex.nz = n[2];
+    }
+    if (mesh.vertices.empty()) return;
+
+    float min[3], max[3];
+    mesh.Bounds(min, max);
+    const float mid_x = (min[0] + max[0]) * 0.5f, mid_y = (min[1] + max[1]) * 0.5f;
+    float radius = 0.0f;
+    for (const MeshVertex& vertex : mesh.vertices) {
+        radius = std::max(radius, std::hypot(vertex.px - mid_x, vertex.py - mid_y));
+    }
+    double rim_z = 0.0;
+    size_t rim = 0;
+    for (const MeshVertex& vertex : mesh.vertices) {
+        if (std::hypot(vertex.px - mid_x, vertex.py - mid_y) < 0.8f * radius) continue;
+        rim_z += vertex.pz;
+        ++rim;
+    }
+    const float depth = rim ? static_cast<float>(rim_z / static_cast<double>(rim)) : 0.0f;
+    for (MeshVertex& vertex : mesh.vertices) {
+        vertex.px = (vertex.px - mid_x) * frame.scale;
+        vertex.py = (vertex.py - mid_y) * frame.scale;
+        vertex.pz = (vertex.pz - depth) * frame.scale;
+    }
+}
+
 // Pulls the reserved keys out of a parts.txt and leaves the rest as slots.
 //
 // The grammar is the one that was already there -- `key = value` -- so the new
@@ -1441,6 +1520,7 @@ struct VehiclePlan {
 //   shader.bumper_f0.MAT_21 = CarPaintCustomizable#1   (only in that part)
 //   bumper_f0      = bumper_f   (a slot line: which of the model's groups fill it)
 //   body           = admiral_high
+//   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
     VehiclePlan plan;
     for (const PartMapping& mapping : mappings) {
@@ -1461,6 +1541,15 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             }
             plan.shaders.push_back(
                 ShaderRule{std::move(rest), mapping.groups.front(), std::move(slot)});
+            continue;
+        }
+        if (lower.rfind("frame.", 0) == 0) {
+            VehiclePlan::SlotFrame frame;
+            std::istringstream stream(mapping.groups.front());
+            stream >> frame.t[0] >> frame.t[1] >> frame.t[2] >> frame.r[0] >> frame.r[1] >>
+                frame.r[2];
+            if (!(stream >> frame.scale)) frame.scale = 1.0f;
+            plan.frames[key.substr(6)] = frame;
             continue;
         }
         if (lower.rfind("weight.", 0) == 0) {
@@ -2325,7 +2414,28 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         if (plan.verbatim || mapping.slot == "body" || mapping.groups.empty()) continue;
         if (mapping.slot == kVehicleBodySlot) continue;
 
-        Mesh source = ExtractGroups(mesh, mapping.groups);
+        // A NODE another slot line names belongs to that slot, even when this
+        // one asks for its material. interior0 takes MAT_1 and MAT_6 by
+        // material, and the steering wheel is MAT_1 and MAT_6 too: without
+        // this the wheel would be drawn twice, once turning in steer_whl0 and
+        // once frozen in the cabin. Only node names count -- a material another
+        // slot names is shared on purpose.
+        std::vector<std::string> other_nodes;
+        for (const PartMapping& other : plan.slots) {
+            if (&other == &mapping) continue;
+            // The body line names the node everything else is cut FROM. Counted
+            // here it took the whole model away from interior0 (run 157: "slot
+            // interior0 names no geometry").
+            if (other.slot == "body" || other.slot == kVehicleBodySlot) continue;
+            for (const std::string& name : other.groups) {
+                const bool is_node =
+                    std::any_of(mesh.parts.begin(), mesh.parts.end(),
+                                [&](const MeshPart& part) { return part.group == name; });
+                if (is_node) other_nodes.push_back(name);
+            }
+        }
+        Mesh source = ExtractGroups(
+            other_nodes.empty() ? mesh : ExcludeGroups(mesh, other_nodes), mapping.groups);
         if (source.vertices.empty() || source.indices.size() < 3) {
             LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: slot {} names no geometry in the model",
                                vehicle.mod_name, car, mapping.slot);
@@ -2418,7 +2528,20 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                    slot_min[1] < 0.0f && slot_max[1] > 0.0f &&
                                    slot_min[2] < 0.0f && slot_max[2] > 0.0f;
             Mesh placed = source;
-            if (own_space) PlacePart(placed, 0.0f, 1.0f, slot_min, slot_max);
+            const auto frame = plan.frames.find(mapping.slot);
+            if (frame != plan.frames.end()) {
+                PlaceInBoneFrame(placed, frame->second);
+                if (lod == 0) {
+                    float pmin[3], pmax[3];
+                    placed.Bounds(pmin, pmax);
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} written in its bone's frame, box "
+                                      "({:.3f} {:.3f} {:.3f}) to ({:.3f} {:.3f} {:.3f})",
+                                      vehicle.mod_name, car, name, pmin[0], pmin[1], pmin[2],
+                                      pmax[0], pmax[1], pmax[2]);
+                }
+            } else if (own_space) {
+                PlacePart(placed, 0.0f, 1.0f, slot_min, slot_max);
+            }
             if (lod == 0) {
                 LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is authored in {} space, box "
                                   "({:.2f} {:.2f} {:.2f}) to ({:.2f} {:.2f} {:.2f})",
