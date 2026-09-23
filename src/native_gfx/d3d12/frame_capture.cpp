@@ -1234,7 +1234,12 @@ void Finish(D3D12Context& context, PipelineCache& pipelines, BufferCache& buffer
 
 }  // namespace
 
-void NoteCommandListStateDisturbed() { g_rec.Clear(); }
+void NoteCommandListStateDisturbed() {
+  if (SideListOpenOnThisThread()) {
+    return;  // a pass on the side list leaves the main list's state alone
+  }
+  g_rec.Clear();
+}
 
 bool FrameCaptureDone() { return g_cap.finished; }
 

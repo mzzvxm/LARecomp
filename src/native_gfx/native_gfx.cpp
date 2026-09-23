@@ -483,6 +483,21 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_submit_thread, false, "MCLA/NativeGfx",
+                    "Hand each recorded submission to a dedicated thread that replays it onto "
+                    "the D3D12 command list and submits it, so the driver calls, Close and "
+                    "ExecuteCommandLists leave the guest's render thread. Implies "
+                    "mcla_native_gfx_record_replay. Off submits on the render thread, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_record_replay, false, "MCLA/NativeGfx",
+                    "Record each submission's D3D12 commands into a buffer and replay them onto "
+                    "the real command list at submit time, instead of issuing them as they are "
+                    "made. The first step towards a submission thread: every cache and state "
+                    "decision stays where it is, only the driver calls move. Off issues them "
+                    "directly, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "Take rectangle-list inline vertices from the fence-protected per-slot "
                     "upload ring instead of the inline vertex ring, which continuous mode "
@@ -1795,6 +1810,53 @@ void RequestRenderDocCapture() {
 // synchronization; only the consumer handoff is atomic). So this may only run
 // when the command processor is NOT also refreshing -- which is why continuous
 // mode suppresses the guest swap instead of running after it.
+// Records the blit into the guest output and hands the frame to the presenter.
+// `side` records it on the calling thread's side list: that is the submission
+// thread, which has already put every batch of the frame on the queue.
+bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32_t h,
+                       bool side) {
+  const bool ok = g_presenter->RefreshGuestOutput(
+      w, h, w, h, [&](rex::ui::Presenter::GuestOutputRefreshContext& refresh) -> bool {
+        auto& ctx =
+            static_cast<rex::ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(refresh);
+        ID3D12GraphicsCommandList* cl =
+            side ? g_draw_context.BeginSideList() : g_draw_context.BeginFrame();
+        if (cl == nullptr) {
+          // BeginFrame returns null without logging when a frame is already
+          // open. That is what made this failure invisible for three sessions.
+          g_present_no_cmdlist.fetch_add(1, std::memory_order_relaxed);
+          static std::atomic<bool> logged{false};
+          if (!logged.exchange(true)) {
+            REXLOG_ERROR(
+                "[native_gfx] continuous present: no command list (a frame is already open); "
+                "the guest swap will paint instead");
+          }
+          return false;
+        }
+        const bool recorded = RecordExternalBlitToGuestOutput(
+            g_draw_context.device(), cl, ctx.resource_uav_capable(), display, fmt, w, h,
+            rex::ui::d3d12::D3D12Presenter::kGuestOutputInternalState);
+        if (!recorded) {
+          g_present_blit_false.fetch_add(1, std::memory_order_relaxed);
+        }
+        const bool ended = side ? g_draw_context.EndSideList() : g_draw_context.EndFrame();
+        if (!side) {
+          // The presenter signals its own fence and publishes the frame as soon
+          // as this returns, so the blit -- and every batch of the frame
+          // before it -- has to be on the queue by then, not still in the
+          // submission thread's hands.
+          g_draw_context.FlushWorker();
+        }
+        return recorded && ended;
+      });
+  if (ok) {
+    g_present_ok.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_present_refresh_false.fetch_add(1, std::memory_order_relaxed);
+  }
+  return ok;
+}
+
 bool PresentContinuousDisplay() {
   g_present_calls.fetch_add(1, std::memory_order_relaxed);
   if (!g_presenter || !g_draw_context.initialized()) {
@@ -1810,39 +1872,18 @@ bool PresentContinuousDisplay() {
     return false;
   }
 
-  const bool ok = g_presenter->RefreshGuestOutput(
-      w, h, w, h, [&](rex::ui::Presenter::GuestOutputRefreshContext& refresh) -> bool {
-        auto& ctx =
-            static_cast<rex::ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(refresh);
-        ID3D12GraphicsCommandList* cl = g_draw_context.BeginFrame();
-        if (cl == nullptr) {
-          // BeginFrame returns null without logging when a frame is already
-          // open. That is what made this failure invisible for three sessions.
-          g_present_no_cmdlist.fetch_add(1, std::memory_order_relaxed);
-          static bool logged = false;
-          if (!logged) {
-            logged = true;
-            REXLOG_ERROR(
-                "[native_gfx] continuous present: no command list (a frame is already open); "
-                "the guest swap will paint instead");
-          }
-          return false;
-        }
-        if (!RecordExternalBlitToGuestOutput(
-                g_draw_context.device(), cl, ctx.resource_uav_capable(), display, fmt, w, h,
-                rex::ui::d3d12::D3D12Presenter::kGuestOutputInternalState)) {
-          g_present_blit_false.fetch_add(1, std::memory_order_relaxed);
-          g_draw_context.EndFrame();
-          return false;
-        }
-        return g_draw_context.EndFrame();
-      });
-  if (ok) {
-    g_present_ok.fetch_add(1, std::memory_order_relaxed);
-  } else {
-    g_present_refresh_false.fetch_add(1, std::memory_order_relaxed);
+  if (g_draw_context.SubmitThreadActive()) {
+    // In line behind the frame's batches on the submission thread, so the
+    // render thread never waits for that thread to drain at the frame
+    // boundary. Presenter::RefreshGuestOutput is single-producer: while the
+    // thread is in use, only it calls it.
+    g_draw_context.EnqueueWorkerTask(
+        [display, fmt, w, h] { PresentDisplayNow(display, fmt, w, h, /*side=*/true); });
+    return true;
   }
-  return ok;
+  // Nothing may still be presenting on the submission thread.
+  g_draw_context.FlushWorker();
+  return PresentDisplayNow(display, fmt, w, h, /*side=*/false);
 }
 
 bool PresentTakeover() {

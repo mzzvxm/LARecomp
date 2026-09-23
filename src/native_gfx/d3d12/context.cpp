@@ -18,6 +18,8 @@
 // enclosing scope, and declaring it inside mcla::native_gfx asks the linker
 // for a symbol nobody defines.
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_upload_mb);
+REXCVAR_DECLARE(bool, mcla_native_gfx_record_replay);
+REXCVAR_DECLARE(bool, mcla_native_gfx_submit_thread);
 
 namespace mcla::native_gfx {
 
@@ -174,7 +176,21 @@ ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
     }
     return nullptr;
   }
+  // Decided per submission, so the A/B harness can flip them between frames.
+  // The submission thread replays recorded streams, so it implies recording.
+  const bool threaded = REXCVAR_GET(mcla_native_gfx_submit_thread);
+  const bool recording = threaded || REXCVAR_GET(mcla_native_gfx_record_replay);
+  if (threaded) {
+    StartWorker();
+  } else {
+    // The direct path resets and records the real list here, which the
+    // submission thread may still be replaying into.
+    FlushWorker();
+  }
   const uint32_t slot = uint32_t(frame_index_ % kFramesInFlight);
+  // With a submission thread this fence only completes once that thread has
+  // replayed and submitted the slot AND the GPU has finished it, so it also
+  // guarantees the slot's recorder, allocator and upload ring are free.
   const uint64_t completed = fence_->GetCompletedValue();
   if (completed < slot_fence_value_[slot]) {
     fence_->SetEventOnCompletion(slot_fence_value_[slot], fence_event_);
@@ -185,25 +201,34 @@ ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
                         .count();
   }
   ReleaseCompleted(fence_->GetCompletedValue());
-  allocators_[slot]->Reset();
-  if (FAILED(command_list_->Reset(allocators_[slot].Get(), nullptr))) {
-    REXLOG_ERROR("[native_gfx] command list Reset failed");
-    do {  // TEMP DIAG (BEGINFAIL), throttled: this fires on EVERY draw once the
-      static uint32_t reset_lines = 0;
-      if (reset_lines++ >= 8u) break;
-      const HRESULT removed = device_ ? device_->GetDeviceRemovedReason() : S_OK;
-      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
-        std::fprintf(f, "BEGINFAIL reset_failed removed_reason=0x%08X\n",
-                     unsigned(removed));
-        std::fclose(f);
-      }
-      DrainDebugMessages("command list Reset");
-    } while (false);
-    return nullptr;
+  if (!threaded) {
+    allocators_[slot]->Reset();
+    if (FAILED(command_list_->Reset(allocators_[slot].Get(), nullptr))) {
+      REXLOG_ERROR("[native_gfx] command list Reset failed");
+      do {  // TEMP DIAG (BEGINFAIL), throttled: this fires on EVERY draw once the
+        static uint32_t reset_lines = 0;
+        if (reset_lines++ >= 8u) break;
+        const HRESULT removed = device_ ? device_->GetDeviceRemovedReason() : S_OK;
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "BEGINFAIL reset_failed removed_reason=0x%08X\n",
+                       unsigned(removed));
+          std::fclose(f);
+        }
+        DrainDebugMessages("command list Reset");
+      } while (false);
+      return nullptr;
+    }
   }
   upload_offset_[slot] = 0;
   ResetUploadAccounting();
   frame_open_ = true;
+  recording_ = recording;
+  threaded_ = threaded;
+  recording_slot_ = slot;
+  if (recording_) {
+    recorders_[slot].BeginRecording(device_);
+    return &recorders_[slot];
+  }
   return command_list_.Get();
 }
 
@@ -212,23 +237,62 @@ bool D3D12Context::EndFrame() {
     return false;
   }
   frame_open_ = false;
-  const HRESULT close_hr = command_list_->Close();
-  if (FAILED(close_hr)) {
-    REXLOG_ERROR("[native_gfx] command list Close failed {:#010x}", uint32_t(close_hr));
-    {  // TEMP DIAG (CLOSEFAIL)
-      if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
-        std::fprintf(f, "CLOSEFAIL hr=0x%08X removed=0x%08X\n", unsigned(close_hr),
-                     unsigned(device_ ? device_->GetDeviceRemovedReason() : S_OK));
-        std::fclose(f);
-      }
+  const uint32_t slot = uint32_t(frame_index_ % kFramesInFlight);
+  // The fence value is assigned here, on the recording thread, and signalled
+  // unconditionally by whoever submits. BeginFrame and EndFrameReleases both
+  // reason in these values, so they must exist before the submission does.
+  const uint64_t fence = ++fence_value_;
+  slot_fence_value_[slot] = fence;
+  ++frame_index_;
+  const bool recording = recording_;
+  const bool threaded = threaded_;
+  recording_ = false;
+  threaded_ = false;
+  if (threaded) {
+    {
+      std::lock_guard<std::mutex> lock(worker_mutex_);
+      worker_jobs_.push_back(SubmitJob{slot, fence, nullptr});
     }
-    DrainDebugMessages("command list Close");
-    return false;
+    worker_cv_.notify_one();
+    return true;
+  }
+  return ReplayAndSubmit(slot, fence, recording, /*reset_first=*/false);
+}
+
+bool D3D12Context::ReplayAndSubmit(uint32_t slot, uint64_t fence_value, bool replay,
+                                   bool reset_first) {
+  const auto replay_begin = std::chrono::steady_clock::now();
+  bool ok = true;
+  if (reset_first) {
+    allocators_[slot]->Reset();
+    if (FAILED(command_list_->Reset(allocators_[slot].Get(), nullptr))) {
+      REXLOG_ERROR("[native_gfx] submission thread: command list Reset failed");
+      ok = false;
+    }
+  }
+  if (ok && replay) {
+    recorders_[slot].Replay(command_list_.Get());
+    replay_commands_.fetch_add(recorders_[slot].command_count(), std::memory_order_relaxed);
+  }
+  if (ok) {
+    const HRESULT close_hr = command_list_->Close();
+    if (FAILED(close_hr)) {
+      ok = false;
+      REXLOG_ERROR("[native_gfx] command list Close failed {:#010x}", uint32_t(close_hr));
+      {  // TEMP DIAG (CLOSEFAIL)
+        if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
+          std::fprintf(f, "CLOSEFAIL hr=0x%08X removed=0x%08X\n", unsigned(close_hr),
+                       unsigned(device_ ? device_->GetDeviceRemovedReason() : S_OK));
+          std::fclose(f);
+        }
+      }
+      DrainDebugMessages("command list Close");
+    }
   }
   // A removed device turns every later creation into a failure somewhere
   // unrelated (textures, PSOs, buffers all at once), which hides the cause.
   // Report it once, at the frame that follows the fault.
-  if (!device_removed_reported_) {
+  if (ok && !device_removed_reported_) {
     const HRESULT removed = device_->GetDeviceRemovedReason();
     if (FAILED(removed)) {
       device_removed_reported_ = true;
@@ -237,8 +301,6 @@ bool D3D12Context::EndFrame() {
       DumpDeviceRemovedData();
     }
   }
-  ID3D12CommandList* lists[] = {command_list_.Get()};
-  const uint32_t slot = uint32_t(frame_index_ % kFramesInFlight);
   {
     // Serialize against the Xenia command processor, which submits to this same
     // queue from another thread (see D3D12Provider::DirectQueueSubmitMutex).
@@ -246,12 +308,200 @@ bool D3D12Context::EndFrame() {
     if (submit_mutex_) {
       submit_lock = std::unique_lock<std::mutex>(*submit_mutex_);
     }
-    queue_->ExecuteCommandLists(1, lists);
-    queue_->Signal(fence_.Get(), ++fence_value_);
+    if (ok) {
+      ID3D12CommandList* lists[] = {command_list_.Get()};
+      queue_->ExecuteCommandLists(1, lists);
+    }
+    // Signalled even when nothing was executed: the recording thread waits on
+    // this value to reuse the slot, and a value that never arrives would hang
+    // it for good.
+    queue_->Signal(fence_.Get(), fence_value);
   }
-  slot_fence_value_[slot] = fence_value_;
-  ++frame_index_;
+  replay_ns_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now() - replay_begin)
+                                    .count()),
+                       std::memory_order_relaxed);
+  return ok;
+}
+
+void D3D12Context::StartWorker() {
+  if (worker_.joinable()) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    worker_stop_ = false;
+  }
+  worker_ = std::thread([this] { WorkerMain(); });
+  SetThreadDescription(worker_.native_handle(), L"MCLA Native Submit");
+  REXLOG_INFO("[native_gfx] submission thread started");
+}
+
+void D3D12Context::StopWorker() {
+  if (!worker_.joinable()) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    worker_stop_ = true;
+  }
+  worker_cv_.notify_all();
+  worker_.join();
+}
+
+void D3D12Context::WorkerMain() {
+  std::unique_lock<std::mutex> lock(worker_mutex_);
+  for (;;) {
+    worker_cv_.wait(lock, [this] { return worker_stop_ || !worker_jobs_.empty(); });
+    if (worker_jobs_.empty()) {
+      break;  // stop requested and nothing left to submit
+    }
+    const SubmitJob job = worker_jobs_.front();
+    worker_jobs_.pop_front();
+    worker_busy_ = true;
+    lock.unlock();
+    if (job.task) {
+      job.task();
+    } else {
+      ReplayAndSubmit(job.slot, job.fence_value, /*replay=*/true, /*reset_first=*/true);
+    }
+    lock.lock();
+    worker_busy_ = false;
+    if (worker_jobs_.empty()) {
+      worker_idle_cv_.notify_all();
+    }
+  }
+  worker_busy_ = false;
+  worker_idle_cv_.notify_all();
+}
+
+void D3D12Context::FlushWorker() {
+  if (!worker_.joinable()) {
+    return;
+  }
+  std::unique_lock<std::mutex> lock(worker_mutex_);
+  if (worker_jobs_.empty() && !worker_busy_) {
+    return;
+  }
+  const auto wait_begin = std::chrono::steady_clock::now();
+  worker_idle_cv_.wait(lock, [this] { return worker_jobs_.empty() && !worker_busy_; });
+  flush_wait_ns_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - wait_begin)
+                                        .count()),
+                           std::memory_order_relaxed);
+}
+
+namespace {
+thread_local bool t_side_list_open = false;
+}  // namespace
+
+bool SideListOpenOnThisThread() { return t_side_list_open; }
+
+bool D3D12Context::SubmitThreadActive() {
+  return REXCVAR_GET(mcla_native_gfx_submit_thread) && worker_.joinable();
+}
+
+void D3D12Context::EnqueueWorkerTask(std::function<void()> task) {
+  if (!task) {
+    return;
+  }
+  if (!SubmitThreadActive()) {
+    task();
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    worker_jobs_.push_back(SubmitJob{0, 0, std::move(task)});
+  }
+  worker_cv_.notify_one();
+}
+
+bool D3D12Context::EnsureSideList() {
+  if (side_list_) {
+    return true;
+  }
+  if (side_tried_ || !device_) {
+    return false;
+  }
+  side_tried_ = true;
+  for (uint32_t i = 0; i < kSideSlots; ++i) {
+    if (FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                               IID_PPV_ARGS(&side_allocators_[i])))) {
+      REXLOG_ERROR("[native_gfx] side list: CreateCommandAllocator failed");
+      return false;
+    }
+  }
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+  if (FAILED(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                        side_allocators_[0].Get(), nullptr,
+                                        IID_PPV_ARGS(&list)))) {
+    REXLOG_ERROR("[native_gfx] side list: CreateCommandList failed");
+    return false;
+  }
+  list->SetName(L"mcla_native_gfx_side");
+  list->Close();
+  if (FAILED(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&side_fence_)))) {
+    REXLOG_ERROR("[native_gfx] side list: CreateFence failed");
+    return false;
+  }
+  side_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!side_event_) {
+    REXLOG_ERROR("[native_gfx] side list: event creation failed");
+    side_fence_.Reset();
+    return false;
+  }
+  side_list_ = list;
   return true;
+}
+
+ID3D12GraphicsCommandList* D3D12Context::BeginSideList() {
+  if (side_open_ || !EnsureSideList()) {
+    return nullptr;
+  }
+  const uint32_t slot = side_index_ % kSideSlots;
+  if (side_fence_->GetCompletedValue() < side_slot_fence_[slot]) {
+    side_fence_->SetEventOnCompletion(side_slot_fence_[slot], side_event_);
+    WaitForSingleObject(side_event_, INFINITE);
+  }
+  side_allocators_[slot]->Reset();
+  if (FAILED(side_list_->Reset(side_allocators_[slot].Get(), nullptr))) {
+    REXLOG_ERROR("[native_gfx] side list Reset failed");
+    return nullptr;
+  }
+  side_open_ = true;
+  t_side_list_open = true;
+  return side_list_.Get();
+}
+
+bool D3D12Context::EndSideList() {
+  if (!side_open_) {
+    return false;
+  }
+  side_open_ = false;
+  t_side_list_open = false;
+  const uint32_t slot = side_index_ % kSideSlots;
+  ++side_index_;
+  const bool closed = SUCCEEDED(side_list_->Close());
+  if (!closed) {
+    REXLOG_ERROR("[native_gfx] side list Close failed");
+  }
+  {
+    std::unique_lock<std::mutex> submit_lock;
+    if (submit_mutex_) {
+      submit_lock = std::unique_lock<std::mutex>(*submit_mutex_);
+    }
+    if (closed) {
+      ID3D12CommandList* lists[] = {side_list_.Get()};
+      queue_->ExecuteCommandLists(1, lists);
+    }
+    queue_->Signal(side_fence_.Get(), ++side_fence_value_);
+  }
+  side_slot_fence_[slot] = side_fence_value_;
+  return closed;
+}
+
+double D3D12Context::TakeFlushWaitUs() {
+  return double(flush_wait_ns_.exchange(0, std::memory_order_relaxed)) / 1000.0;
 }
 
 void D3D12Context::DrainDebugMessages(const char* context_label) {
@@ -591,6 +841,15 @@ void D3D12Context::ReleaseCompleted(uint64_t completed_value) {
   pending_releases_.resize(kept);
 }
 
+double D3D12Context::TakeReplayUs(uint64_t* out_commands) {
+  const uint64_t ns = replay_ns_.exchange(0, std::memory_order_relaxed);
+  const uint64_t cmds = replay_commands_.exchange(0, std::memory_order_relaxed);
+  if (out_commands) {
+    *out_commands = cmds;
+  }
+  return double(ns) / 1000.0;
+}
+
 double D3D12Context::TakeGpuWaitUs() {
   const double v = gpu_wait_us_;
   gpu_wait_us_ = 0.0;
@@ -612,6 +871,9 @@ void D3D12Context::WaitForIdle() {
   if (!queue_ || !fence_ || !fence_event_) {
     return;
   }
+  // Everything handed to the submission thread has to be on the queue before
+  // the idle signal, or "idle" would not include it.
+  FlushWorker();
   queue_->Signal(fence_.Get(), ++fence_value_);
   if (fence_->GetCompletedValue() < fence_value_) {
     fence_->SetEventOnCompletion(fence_value_, fence_event_);
@@ -628,6 +890,16 @@ void D3D12Context::Shutdown() {
     return;
   }
   WaitForIdle();
+  StopWorker();
+  if (side_event_) {
+    CloseHandle(side_event_);
+    side_event_ = nullptr;
+  }
+  side_list_.Reset();
+  side_fence_.Reset();
+  for (auto& a : side_allocators_) {
+    a.Reset();
+  }
   for (auto& p : pending_releases_) {
     p.resource->Release();
   }

@@ -17,11 +17,18 @@
 // primitive between rendering, the guest-output copy and the paint.
 // ===========================================================================
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include <rex/ui/d3d12/d3d12_api.h>
+
+#include "recording_command_list.h"
 
 namespace rex::ui::d3d12 {
 class D3D12Provider;
@@ -61,8 +68,12 @@ class D3D12Context {
   // The command list of the frame currently open, so a caller that records
   // across several calls does not have to carry it around. Null when no frame
   // is open.
-  ID3D12GraphicsCommandList* CurrentCommandList() const {
-    return frame_open_ ? command_list_.Get() : nullptr;
+  ID3D12GraphicsCommandList* CurrentCommandList() {
+    if (!frame_open_) {
+      return nullptr;
+    }
+    return recording_ ? static_cast<ID3D12GraphicsCommandList*>(&recorders_[recording_slot_])
+                      : command_list_.Get();
   }
 
   // Transient upload allocation valid for the current frame only.
@@ -166,10 +177,87 @@ class D3D12Context {
   // the accumulated microseconds and resets the accumulator.
   double TakeGpuWaitUs();
 
+  // Record-and-replay (mcla_native_gfx_record_replay): microseconds spent
+  // replaying recorded commands onto the real list plus Close and submit, and
+  // the number of commands replayed, since the last call. This is exactly the
+  // work a submission thread would take off the guest's render thread.
+  double TakeReplayUs(uint64_t* out_commands = nullptr);
+
+  // Submission thread (mcla_native_gfx_submit_thread, needs record_replay):
+  // blocks until every submission handed to it has been replayed and put on
+  // the queue. Anything that needs the queue order to include this thread's
+  // work -- a present, a readback, WaitForIdle -- calls this first. A no-op
+  // when the thread is idle or not running.
+  void FlushWorker();
+  // Microseconds the calling thread spent blocked in FlushWorker since the
+  // last call: the part of the submission thread's work the recording thread
+  // still waits for.
+  double TakeFlushWaitUs();
+
+  // Runs `task` on the submission thread, after every submission queued
+  // before it -- or right here, when submissions are not going to that thread.
+  void EnqueueWorkerTask(std::function<void()> task);
+  // Whether submissions currently go to the submission thread.
+  bool SubmitThreadActive();
+
+  // A command list recorded and submitted on the CALLING thread: the
+  // submission thread's present. It has its own allocators and its own fence,
+  // so its submissions never interleave with the fence values the recording
+  // thread assigns to the main list ahead of time.
+  ID3D12GraphicsCommandList* BeginSideList();
+  bool EndSideList();
+
  private:
   void ReleaseCompleted(uint64_t completed_value);
 
   double gpu_wait_us_ = 0.0;  // accumulated BeginFrame fence-wait, Fase-A timing
+  // Written by whichever thread replays (this one, or the submission thread).
+  std::atomic<uint64_t> replay_ns_{0};
+  std::atomic<uint64_t> replay_commands_{0};
+  std::atomic<uint64_t> flush_wait_ns_{0};
+  // One per submission slot: with a submission thread, slot N's stream is
+  // being replayed while the guest thread already records slot N+1. A slot is
+  // only handed out again once its fence has completed, which the submission
+  // thread signals only after replaying it -- so the reuse needs no lock.
+  RecordingCommandList recorders_[kFramesInFlight];
+  uint32_t recording_slot_ = 0;
+  bool recording_ = false;  // the open frame hands out recorders_[recording_slot_]
+  bool threaded_ = false;   // the open frame goes to the submission thread
+
+  // ---- submission thread ----
+  struct SubmitJob {
+    uint32_t slot;
+    uint64_t fence_value;
+    std::function<void()> task;  // set: run this instead of submitting a slot
+  };
+  void WorkerMain();
+  void StartWorker();
+  void StopWorker();
+  // Replays a slot's stream onto the real list and submits it, signalling
+  // `fence_value` even on failure. Used by both the direct path and the
+  // submission thread; `reset_first` resets the slot's allocator and the list,
+  // which the direct path already did in BeginFrame.
+  bool ReplayAndSubmit(uint32_t slot, uint64_t fence_value, bool replay, bool reset_first);
+  std::thread worker_;
+  std::mutex worker_mutex_;
+  std::condition_variable worker_cv_;       // a job arrived / stop
+  std::condition_variable worker_idle_cv_;  // the queue drained
+  std::deque<SubmitJob> worker_jobs_;
+  bool worker_busy_ = false;
+  bool worker_stop_ = false;
+
+  // ---- side list (see BeginSideList) ----
+  static constexpr uint32_t kSideSlots = 3;
+  bool EnsureSideList();
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> side_allocators_[kSideSlots];
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> side_list_;
+  Microsoft::WRL::ComPtr<ID3D12Fence> side_fence_;
+  HANDLE side_event_ = nullptr;
+  uint64_t side_fence_value_ = 0;
+  uint64_t side_slot_fence_[kSideSlots] = {};
+  uint32_t side_index_ = 0;
+  bool side_open_ = false;
+  bool side_tried_ = false;
   std::mutex* submit_mutex_ = nullptr;  // shared with the Xenia CP; serializes queue submits
 
   ID3D12Device* device_ = nullptr;  // owned by the provider
@@ -206,5 +294,11 @@ class D3D12Context {
 // skip the calls that would change nothing, and that copy is only true while
 // nothing else touches the list.
 void NoteCommandListStateDisturbed();
+
+// True while the calling thread has a side list open (D3D12Context::
+// BeginSideList). A pass recorded there does not touch the main list, so it
+// must not invalidate the main list's state cache -- which the recording
+// thread may be using at that very moment.
+bool SideListOpenOnThisThread();
 
 }  // namespace mcla::native_gfx
