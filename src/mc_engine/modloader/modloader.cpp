@@ -1431,8 +1431,11 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             continue;
         }
         if (lower == "plate") {
-            for (size_t i = 0; i < 3 && i < mapping.groups.size(); ++i)
-                plan.plate[i] = std::strtof(mapping.groups[i].c_str(), nullptr);
+            // Three numbers on one line arrive as ONE group, like `offset`.
+            // Reading a number per group took the first and left the plate
+            // at (0 0 0), which is why the log said "kept as the donor drew it".
+            std::istringstream stream(mapping.groups.front());
+            for (int i = 0; i < 3; ++i) stream >> plan.plate[i];
             continue;
         }
         if (lower == "tune") {
