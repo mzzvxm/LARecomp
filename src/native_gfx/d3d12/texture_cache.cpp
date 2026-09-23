@@ -28,6 +28,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_index);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_per_frame);
 REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_incremental);
+REXCVAR_DECLARE(bool, mcla_native_gfx_tex_cached_decode);
 
 namespace mcla::native_gfx {
 
@@ -871,7 +872,22 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       NoteResolveFailure(fetch, "upload ring allocation failed");
       return nullptr;
     }
-    auto* dst = static_cast<uint8_t*>(staging.cpu);
+    // The staging ring is an UPLOAD heap: write-combined, so every CPU read of
+    // it is uncached. The endian swap below works in place (read + write) and
+    // the generated-mip base copy reads it back, and together they were 16% of
+    // the render thread while driving. When either will happen, decode into
+    // ordinary cached memory instead and stream the finished bytes to the ring
+    // with one sequential copy. Same bytes either way.
+    uint8_t* const staging_cpu = static_cast<uint8_t*>(staging.cpu);
+    const bool cached_decode =
+        REXCVAR_GET(mcla_native_gfx_tex_cached_decode) &&
+        (TextureEndian(fetch.endianness) != TextureEndian::kNone ||
+         (generated_levels && level == 0));
+    static thread_local std::vector<uint8_t> decode_scratch;
+    if (cached_decode && decode_scratch.size() < p.upload_size) {
+      decode_scratch.resize(size_t(p.upload_size));
+    }
+    uint8_t* dst = cached_decode ? decode_scratch.data() : staging_cpu;
     if (p.packed) {
       // The whole shared tile is decoded once, then this level's rectangle is
       // lifted out of it. Decoding straight into the staging buffer is not an
@@ -920,6 +936,9 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     // the swap width. Skipping this leaves DXT colour endpoints byte-reversed,
     // which decodes as coloured speckle rather than as a missing texture.
     SwapTextureData(fetch.endianness, dst, p.upload_size);
+    if (cached_decode) {
+      std::memcpy(staging_cpu, dst, size_t(p.upload_size));
+    }
 
     // Guarda o nivel 0 ja decodificado para a cadeia gerada abaixo. Tem de ser
     // aqui, depois do untile e do swap: e exatamente o que a GPU amostra.
@@ -1069,7 +1088,16 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
                                   staging, D3D12Context::UploadTag::kTexture)) {
         break;  // sem espaco no ring: a cadeia para aqui, os niveis ja subidos valem
       }
-      auto* out = static_cast<uint8_t*>(staging.cpu);
+      // Same write-combined trap as the level decode: build the level in cached
+      // memory, then stream it to the ring, instead of reading the ring back
+      // into `prev` for the next reduction.
+      auto* const ring_out = static_cast<uint8_t*>(staging.cpu);
+      const bool cached_mip = REXCVAR_GET(mcla_native_gfx_tex_cached_decode);
+      std::vector<uint8_t> next;
+      if (cached_mip) {
+        next.resize(size_t(pitch) * h);
+      }
+      uint8_t* const out = cached_mip ? next.data() : ring_out;
       for (uint32_t y = 0; y < h; ++y) {
         const uint32_t y0 = y * 2u;
         const uint32_t y1 = (y0 + 1u < prev_h) ? y0 + 1u : y0;
@@ -1100,7 +1128,12 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       src_loc.PlacedFootprint.Footprint.Depth = 1;
       src_loc.PlacedFootprint.Footprint.RowPitch = pitch;
       cl->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
-      prev.assign(out, out + size_t(pitch) * h);
+      if (cached_mip) {
+        std::memcpy(ring_out, out, size_t(pitch) * h);
+        prev = std::move(next);
+      } else {
+        prev.assign(out, out + size_t(pitch) * h);
+      }
       prev_w = w; prev_h = h; prev_pitch = pitch;
     }
     ++stats_.generated_chains;

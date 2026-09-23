@@ -515,6 +515,15 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "restores the old ring, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, false, "MCLA/NativeGfx",
+                    "Untile and endian-swap texture levels in ordinary cached memory and copy "
+                    "the result to the upload ring in one pass, instead of swapping in place "
+                    "inside the ring. The ring is write-combined, so the in-place swap read "
+                    "uncached memory: copy_and_swap_16 was 16% of the render thread while "
+                    "driving. The uploaded bytes are identical. Off restores the old path, "
+                    "for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, false, "MCLA/NativeGfx",
                     "Keep the texture invalidation index sorted by insertion instead of "
                     "re-sorting all of it after every new texture, and leave removed entries "
