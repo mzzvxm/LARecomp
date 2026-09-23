@@ -3370,6 +3370,63 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         std::fill(shade.begin(), shade.end(), (level << 24) | tint);
         std::fill(shade_texcoord1.begin(), shade_texcoord1.end(), band);
 
+        // See MeshOffset::nearest_band. Every shipped vertex of this pass is a
+        // candidate, not only the submesh being written: on the Caprice the
+        // headlights (2, 3) and the tail lamps (0, 6) are two submeshes and the
+        // replacement is written into one of them.
+        if (offset.nearest_band) {
+            // Which material each vertex came from, for lamp boxes that name one.
+            std::vector<const std::string*> material_of(mesh.vertices.size(), nullptr);
+            for (const MeshPart& part : mesh.parts) {
+                for (uint32_t v = 0; v < part.vertex_count; ++v) {
+                    if (part.first_vertex + v < material_of.size())
+                        material_of[part.first_vertex + v] = &part.material;
+                }
+            }
+            for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+                const MeshVertex& vertex = mesh.vertices[i];
+                float nearest = std::numeric_limits<float>::max();
+                for (const Shade& candidate : shipped) {
+                    const float dx = candidate.x - vertex.px;
+                    const float dy = candidate.y - vertex.py;
+                    const float dz = candidate.z - vertex.pz;
+                    const float distance = dx * dx + dy * dy + dz * dz;
+                    if (distance < nearest) {
+                        nearest = distance;
+                        shade_texcoord1[i] = candidate.texcoord1;
+                    }
+                }
+                for (const BandSample& candidate : offset.extra_bands) {
+                    const float dx = candidate.x - vertex.px;
+                    const float dy = candidate.y - vertex.py;
+                    const float dz = candidate.z - vertex.pz;
+                    const float distance = dx * dx + dy * dy + dz * dz;
+                    if (distance < nearest) {
+                        nearest = distance;
+                        shade_texcoord1[i] = candidate.texcoord1;
+                    }
+                }
+                // A stated region wins. texcoord1 is Half2, x in the high half;
+                // the low half (y, 1.0 on every shipped lamp) is kept.
+                const float ax = std::fabs(vertex.px);
+                for (const LampBox& box : offset.lamp_boxes) {
+                    if (!box.material.empty() && box.material != "*" &&
+                        (!material_of[i] || *material_of[i] != box.material)) {
+                        continue;
+                    }
+                    if (ax < box.min[0] || ax > box.max[0] || vertex.py < box.min[1] ||
+                        vertex.py > box.max[1] || vertex.pz < box.min[2] ||
+                        vertex.pz > box.max[2]) {
+                        continue;
+                    }
+                    shade_texcoord1[i] =
+                        (static_cast<uint32_t>(FloatToHalf(static_cast<float>(box.index))) << 16) |
+                        (shade_texcoord1[i] & 0xFFFFu);
+                    break;
+                }
+            }
+        }
+
         // Put the template's material bands back, ring by ring.
         //
         // See MeshOffset::band_profile for the measurement this rests on. The
@@ -4668,6 +4725,62 @@ size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader) {
 // work the right pair out from the geometry: the recess is a dent in a panel,
 // not a feature the mesh names. So it is a number the mod states and an eye
 // checks.
+size_t ShaderBandSamples(const Rsc5Resource& resource, int32_t shader,
+                         std::vector<BandSample>& out) {
+    auto& data = const_cast<std::vector<uint8_t>&>(resource.data);
+    Rsc5View view(data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return 0;
+
+    uint32_t lod = 0;
+    if (!view.U32(drawable.drawable + drawable.lod_field, lod) || lod == 0) return 0;
+    uint32_t model_array = 0;
+    uint16_t model_count = 0;
+    if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) return 0;
+
+    size_t read = 0;
+    for (uint16_t m = 0; m < model_count; ++m) {
+        uint32_t model = 0;
+        if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+        uint32_t geometry_array = 0, shader_map = 0;
+        uint16_t geometry_count = 0;
+        if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count)) continue;
+        view.U32(model + 16, shader_map);
+        for (uint16_t g = 0; g < geometry_count; ++g) {
+            uint32_t geometry = 0;
+            if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+            uint16_t drawn_by = 0;
+            if (!shader_map || !view.U16(shader_map + g * 2u, drawn_by) ||
+                drawn_by != static_cast<uint16_t>(shader)) {
+                continue;
+            }
+            uint32_t vertex_buffer = 0, address = 0;
+            uint16_t vertex_count = 0;
+            if (!view.U32(geometry + 12, vertex_buffer) || vertex_buffer == 0) continue;
+            if (!view.U16(geometry + 52, vertex_count) || vertex_count == 0) continue;
+            VertexLayout layout;
+            if (!ReadVertexLayout(view, vertex_buffer, layout, false)) continue;
+            if (!layout.has(kSemPosition) || !layout.has(kSemTexcoord1)) continue;
+            if (!view.U32(vertex_buffer + 24, address) || address == 0) continue;
+            size_t at = 0;
+            const size_t bytes = static_cast<size_t>(vertex_count) * layout.stride;
+            if (!view.Offset(address, bytes, at)) continue;
+            for (uint32_t v = 0; v < vertex_count; ++v) {
+                const uint8_t* source = resource.data.data() + at + v * layout.stride;
+                BandSample sample;
+                sample.x = LoadBEFloat(source + layout.offset[kSemPosition] + 0);
+                sample.y = LoadBEFloat(source + layout.offset[kSemPosition] + 4);
+                sample.z = LoadBEFloat(source + layout.offset[kSemPosition] + 8);
+                sample.texcoord1 = LoadBE32(source + layout.offset[kSemTexcoord1]);
+                out.push_back(sample);
+                ++read;
+            }
+        }
+    }
+    return read;
+}
+
 size_t TranslateShaderGeometry(Rsc5Resource& resource, int32_t shader, float dx, float dy,
                                float dz) {
     Rsc5View view(resource.data, resource.virtual_size);

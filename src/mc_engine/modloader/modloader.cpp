@@ -15,6 +15,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(_WIN32)
@@ -1402,6 +1403,12 @@ struct VehiclePlan {
         float scale = 1.0f;
     };
     std::map<std::string, SlotFrame> frames;
+    // Donor part slots whose lamps are sampled for lamp indices -- see
+    // MeshOffset::extra_bands. `lamp_from = headlight0, taillight0`.
+    std::vector<std::string> lamp_from;
+    // `lamp_box = <index> <MAT_n|*> xmin xmax ymin ymax zmin zmax`, x as |x|. See
+    // MeshOffset::lamp_boxes. First matching line wins.
+    std::vector<LampBox> lamp_boxes;
 
     // Whether the tune is rewritten to carry this car's name, or copied exactly
     // as the donor holds it.
@@ -1541,6 +1548,18 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             }
             plan.shaders.push_back(
                 ShaderRule{std::move(rest), mapping.groups.front(), std::move(slot)});
+            continue;
+        }
+        if (lower == "lamp_box") {
+            LampBox box;
+            std::istringstream stream(mapping.groups.front());
+            stream >> box.index >> box.material >> box.min[0] >> box.max[0] >> box.min[1] >>
+                box.max[1] >> box.min[2] >> box.max[2];
+            if (stream) plan.lamp_boxes.push_back(box);
+            continue;
+        }
+        if (lower == "lamp_from") {
+            for (const std::string& slot : mapping.groups) plan.lamp_from.push_back(slot);
             continue;
         }
         if (lower.rfind("frame.", 0) == 0) {
@@ -2069,6 +2088,30 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     // The body, three LODs. The near two are grown to hold the mesh whole and
     // the far one is welded down into the buffers the donor already had, which
     // is both smaller and what that LOD is for.
+    //
+    // LOD 1 is not rebuilt at all by default: it is LOD 0 again, byte for byte.
+    // See model_mods_car_lod1_copy.
+    // Lamp indices from the donor's own lamp slots. See MeshOffset::extra_bands.
+    std::vector<BandSample> lamp_samples;
+    for (const std::string& slot : plan.lamp_from) {
+        Rsc5Resource lamp;
+        std::string lamp_error;
+        if (!ExtractTemplate(archive, donor_dir + "/" + slot + "_lod_0.xrsc", lamp, lamp_error)) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: lamp_from {}: {}", vehicle.mod_name, car,
+                               slot, lamp_error);
+            continue;
+        }
+        size_t read = 0;
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            if (std::string_view(CarEffectName(effects[shader])) != "CarLight") continue;
+            read += ShaderBandSamples(lamp, static_cast<int32_t>(shader), lamp_samples);
+        }
+        LARECOMP_APP_INFO("[mods] {}/vehicles/{}: lamp_from {}: {} lamp vertices", vehicle.mod_name,
+                          car, slot, read);
+    }
+
+    std::vector<uint8_t> body_lod0_file;
+    uint32_t body_lod0_flag = 0, body_lod0_type = 0;
     for (int lod = 0; lod < 3 && !plan.verbatim; ++lod) {
         const std::string name = "body_lod_" + std::to_string(lod) + ".xrsc";
         Rsc5Resource resource;
@@ -2269,6 +2312,15 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // roof of the replacement: silencing a whole unclaimed shader was
             // never enough, because CarLight was claimed and only partly filled.
             offset.keep_unused = false;
+            // A lamp's texcoord1 says which lamp it is: take it from the nearest
+            // donor lamp. Its UVs stay the mod's, pointing into the relief and
+            // glow built from the mod's own photos. See MeshOffset::nearest_band.
+            offset.nearest_band =
+                std::string_view(CarEffectName(effects[shader])) == "CarLight";
+            if (offset.nearest_band) {
+                offset.extra_bands = lamp_samples;
+                offset.lamp_boxes = plan.lamp_boxes;
+            }
             offset.uniform_uv =
                 std::find(plan.flat_uv.begin(), plan.flat_uv.end(),
                           CarEffectName(effects[shader])) != plan.flat_uv.end();
@@ -2609,6 +2661,13 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 offset.keep_unused = false;
                 offset.only_shader = static_cast<int32_t>(shader);
                 offset.force_shader = static_cast<int32_t>(shader);
+                // Same lamp rule as the body (MeshOffset::nearest_band).
+                offset.nearest_band =
+                    std::string_view(CarEffectName(effects[shader])) == "CarLight";
+                if (offset.nearest_band) {
+                offset.extra_bands = lamp_samples;
+                offset.lamp_boxes = plan.lamp_boxes;
+            }
                 // A car-space slot has car-space models that need the same guard
                 // as the body; an own-space slot is ALL bone-local by definition,
                 // and the part has already been moved into that frame.

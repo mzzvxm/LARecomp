@@ -203,6 +203,22 @@ constexpr uint32_t kSlotOneTest = 0xFFFFFFFEu;
 // it made the model vanish. Real per-vertex skinning needs weights to come in
 // with the mesh.
 // Nudge applied to the mesh after it is fitted, in metres, model space.
+// One shipped vertex's position and raw texcoord1 word, read from a drawable
+// other than the one being written. See MeshOffset::extra_bands.
+struct BandSample {
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    uint32_t texcoord1 = 0;
+};
+
+// A box in the car's space, mirrored across x (|x| is tested), whose vertices
+// are given one lamp index outright. See MeshOffset::lamp_boxes.
+struct LampBox {
+    uint32_t index = 0;
+    std::string material;  // only this mod material, or empty / "*" for any
+    float min[3] = {0.0f, 0.0f, 0.0f};
+    float max[3] = {0.0f, 0.0f, 0.0f};
+};
+
 struct MeshOffset {
     float x = 0.0f, y = 0.0f, z = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;  // degrees, applied before fitting
@@ -309,6 +325,40 @@ struct MeshOffset {
     // which is what made inherit_shade land vertices on the emissive band.
     // Requires uniform_shade.
     bool band_profile = false;
+    // Take texcoord1 from the NEAREST shipped vertex instead of flooding one.
+    //
+    // On CarLight texcoord1.x is not a band but WHICH LAMP a vertex is:
+    // xCarLight's VS_Light reads trunc(texcoord1.x) into a0 and takes the lamp's
+    // colour from gCarConstantBuffer(4 + a0) and its on/off state from
+    // gCarConstantBuffer(39 + a0). Measured on the police Caprice: the front
+    // lamps (z -2.4) carry 2 and 3, the rear ones 0 (x +-0.79) and 6 (inboard),
+    // the light bar 13 and 14. Flooding the dominant value of the submesh being
+    // written -- the rear one -- made every lamp of the BMW a tail lamp, which is
+    // the red headlights. A lamp index is a place on the car, so the nearest
+    // shipped lamp vertex is the right donor for it. The shade word stays
+    // flooded.
+    bool nearest_band = false;
+    // More candidates for nearest_band, from other drawables of the donor.
+    //
+    // A modifiable donor keeps its lamps in part slots: the Impala's body and
+    // interior0 draw CarLight only as lamp indices 3, 11 and 12 (a lens and two
+    // cabin lights), while headlight0 carries 2 and 3 and taillight0 0, 6 and
+    // 9. A BMW lamp written into interior0 took 11/12 from the nearest cabin
+    // light -- the high beam never lit. These come from `lamp_from` in
+    // parts.txt, in the car's own space.
+    std::vector<BandSample> extra_bands;
+    // Lamp indices stated by region, applied over nearest_band.
+    //
+    // The index is a lamp TYPE -- the game's own table (0x827E9814, one
+    // pointer per index): 0 brake light, 1 taillight, 2 turn signal,
+    // 3 headlight, 4 high beam, 5 side marker, 6 reverse light, 7 interior
+    // light, 8 fog light, 9 red / 10 amber / 11 clear reflector, 12 third
+    // brakelight, 13 red / 14 blue coplight, 15..18 turn signal FL/FR/BL/BR.
+    // Nearest-shipped-lamp cannot give a type the donor never put there: the
+    // Impala's headlight0 carries 2 (turn signal) and 3 (headlight) only, so
+    // half of the BMW's four round lamps came out amber and none was a high
+    // beam. A box says it directly.
+    std::vector<LampBox> lamp_boxes;
     // Write only into models authored in the CAR's frame, and silence this
     // pass's submeshes in the others.
     //
@@ -531,6 +581,11 @@ size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader);
 // donor's rear rather than the replacement's.
 size_t TranslateShaderGeometry(Rsc5Resource& resource, int32_t shader, float dx, float dy,
                                float dz);
+
+// Every vertex of the high LOD that `shader` draws, as position + texcoord1.
+// Returns how many were read; zero when the layout has no texcoord1.
+size_t ShaderBandSamples(const Rsc5Resource& resource, int32_t shader,
+                         std::vector<BandSample>& out);
 
 // Hides a whole drawable by zeroing each LOD's model count, leaving every
 // pointer intact. The only shape of empty part the loader accepts: emptying the
