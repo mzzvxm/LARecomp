@@ -25,6 +25,7 @@ REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
 REXCVAR_DECLARE(bool, mcla_native_gfx_region_memo);
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 REXCVAR_DECLARE(bool, mcla_native_gfx_partial_reupload);
+REXCVAR_DECLARE(bool, mcla_native_gfx_watch_before_copy);
 REXCVAR_DECLARE(bool, mcla_native_gfx_overlap_index);
 
 namespace mcla::native_gfx {
@@ -203,6 +204,16 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
                                Region& region, BufferSwap swap, uint32_t* out_bytes) {
   const auto upload_begin = std::chrono::steady_clock::now();
   const uint32_t blocks = (region.size + kVerifyBlock - 1u) / kVerifyBlock;
+  // Re-arm the watch BEFORE reading guest memory. Armed after the copy, a write
+  // another guest thread makes between the copy and the re-arm lands on a page
+  // that is still unprotected: no fault, no invalidation, and the bytes just
+  // copied are stale with the region marked clean -- a "lost" notification the
+  // runtime itself created. Armed first, such a write faults and dirties the
+  // region again, and the next draw re-sends it.
+  const bool arm_first = REXCVAR_GET(mcla_native_gfx_watch_before_copy) && !region.streaming;
+  if (arm_first) {
+    WatchRegion(region);
+  }
   // Only the blocks an exact range dirtied, when that is all that is known to
   // have changed. Anything else -- a new region, a hash mismatch, a region
   // whose block tables do not match its size -- is sent whole, as before.
@@ -283,7 +294,7 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
         std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - upload_begin)
             .count();
     region.dirty = false;
-    if (!region.streaming) {
+    if (!region.streaming && !arm_first) {
       WatchRegion(region);
     }
     if (out_bytes) {
@@ -355,7 +366,7 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   // The watch is consumed when it fires, so it has to be re-armed after every
   // upload or the region would only ever be invalidated once. A streaming
   // region deliberately stays unwatched: it is re-checked by hash instead.
-  if (!region.streaming) {
+  if (!region.streaming && !arm_first) {
     WatchRegion(region);
   }
   if (out_bytes) {
@@ -473,6 +484,9 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
           region->dirty = true;
           region->whole_dirty = true;
           ++stats_.verify_catches;
+          if (region->streaming) {
+            ++stats_.verify_catches_streaming;
+          }
           break;
         }
       }
@@ -491,6 +505,15 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
             region->clean_streak = 0;
             region->dirty_streak = 0;
             WatchRegion(*region);
+            // Same window as in UploadRegion: the blocks were hashed BEFORE
+            // the watch went back on, so a write in between leaves the region
+            // clean and stale. With the watch now armed, send it once more --
+            // any write after this point faults and dirties it again.
+            if (REXCVAR_GET(mcla_native_gfx_watch_before_copy)) {
+              region->dirty = true;
+              region->whole_dirty = true;
+              ++stats_.demotion_resends;
+            }
             ++stats_.streaming_demotions;
             if (stats_.streaming_regions) {
               --stats_.streaming_regions;
@@ -706,11 +729,12 @@ void BufferCache::ReportPeriodic() {
   Census(regions, bytes);
   REXLOG_INFO(
       "[native_gfx] BufferCache @frame {}: regions={} bytes={} KiB | verify: regions={} "
-      "MB={} CAUGHT={} | since last: hits={} "
+      "MB={} CAUGHT={} (streaming={}) | since last: hits={} "
       "uploads={} reuploads={} (from unlock={}) merges={} declined={} failures={} "
       "unreadable={} | {}",
       frames, regions, bytes >> 10, stats_.verify_regions - prev.verify_regions,
       (stats_.verify_bytes - prev.verify_bytes) >> 20, stats_.verify_catches - prev.verify_catches,
+      stats_.verify_catches_streaming - prev.verify_catches_streaming,
       stats_.hits - prev.hits, stats_.uploads - prev.uploads,
       stats_.reuploads - prev.reuploads,
       stats_.unlock_invalidations - prev.unlock_invalidations, stats_.merges - prev.merges,

@@ -130,6 +130,11 @@ class BufferCache {
     uint64_t verify_regions = 0;
     uint64_t verify_bytes = 0;
     uint64_t verify_catches = 0;
+    // The share of those on regions off the watch, where the hash is the only
+    // detector and catches are expected. The rest are on watched regions, i.e.
+    // writes the watch did not report.
+    uint64_t verify_catches_streaming = 0;
+    uint64_t demotion_resends = 0;  // streaming -> watched, re-sent after arming
     // Why the most recent Resolve failed. Without this a failure is just
     // "could not be resolved", which names five different causes.
     const char* last_failure = nullptr;

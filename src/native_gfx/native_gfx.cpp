@@ -490,6 +490,13 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
                     "containing the write, losing the invalidation. Off restores it, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_watch_before_copy, true, "MCLA/NativeGfx",
+                    "Re-arm a geometry region's page write watch before copying its bytes "
+                    "instead of after. Armed after, a write another guest thread makes between "
+                    "the copy and the re-arm raises no fault and leaves stale bytes in a region "
+                    "marked clean. Off restores the old order, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_partial_reupload, true, "MCLA/NativeGfx",
                     "Re-send only the 4 KiB blocks of a geometry region that the page write "
                     "watch or a guest unlock reported as written, instead of the whole region. "
