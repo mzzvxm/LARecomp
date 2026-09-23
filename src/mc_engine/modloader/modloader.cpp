@@ -366,6 +366,26 @@ REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
     "keeps its own cell.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
+    "Ship a replacement car's LOD 1 as a byte copy of the LOD 0 just built, for "
+    "the body and for every part slot the donor gives a LOD 1.\n"
+    "\n"
+    "The garage draws LOD 1 close up. Measured on the BMW e38: the crumpled "
+    "bonnet, the V cut into the plate and the bent grille in the garage are "
+    "body_lod_1 exactly -- rasterised offline, LOD 0 is smooth and LOD 1 is that "
+    "picture. LOD 1 was rewritten on a quarter of the budget, and a quarter "
+    "buys 12,075 of the paint's 21,706 triangles through a clustering "
+    "decimator, which is what crumples a panel. interior0's LOD 1 was worse: "
+    "the donor has no paint there at all, so 10,138 triangles of shell were "
+    "simply missing from it.\n"
+    "\n"
+    "A copy is what the game itself does for the Caprice -- its body_lod_0 and "
+    "body_lod_1 are the same file, md5 and all -- and here it costs nothing: "
+    "block rounding already makes both LODs of the body 2 MB.\n"
+    "\n"
+    "OFF rebuilds LOD 1 from the donor's own LOD 1 on a quarter budget, the "
+    "old behaviour.");
+
 REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
     "How much larger than the donor's own a replacement PART may be, as a "
     "multiple of the shipped resource.\n"
@@ -1942,6 +1962,14 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                donor, name, error);
             continue;
         }
+        if (lod == 1 && !body_lod0_file.empty() && REXCVAR_GET(model_mods_car_lod1_copy)) {
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: body_lod_1 is a copy of body_lod_0 "
+                              "({} bytes)", vehicle.mod_name, car, body_lod0_file.size());
+            writer.Add(car_dir + "/" + name, body_lod0_file, body_lod0_flag, body_lod0_type);
+            built.push_back(name);
+            ++written;
+            continue;
+        }
 
         // Coarsen the page class before a single buffer is placed.
         //
@@ -2235,6 +2263,11 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         LARECOMP_APP_INFO("[mods] {}/vehicles/{}: body_lod_{} is {} bytes ({} on disk), "
                           "{} free after the last buffer", vehicle.mod_name, car, lod,
                           resource.virtual_size, file.size(), tail);
+        if (lod == 0) {
+            body_lod0_file = file;
+            body_lod0_flag = flag;
+            body_lod0_type = resource.type;
+        }
         writer.Add(car_dir + "/" + name, std::move(file), flag, resource.type);
         built.push_back(name);
         ++written;
@@ -2293,6 +2326,8 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                              mapping.slot);
 
         size_t lods = 0;
+        std::vector<uint8_t> lod0_file;
+        uint32_t lod0_flag = 0, lod0_type = 0;
         for (int lod = 0; lod < 3; ++lod) {
             const std::string name = mapping.slot + "_lod_" + std::to_string(lod) + ".xrsc";
             Rsc5Resource resource;
@@ -2300,6 +2335,19 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // two -- so a missing template is the file simply not existing
             // rather than a failure.
             if (!ExtractTemplate(archive, donor_dir + "/" + name, resource, error)) continue;
+
+            // Same as the body: LOD 1 is LOD 0 again. For interior0 this is not
+            // only quality -- the donor's interior0_lod_1 draws no paint, so the
+            // 10,138 triangles of shell that live in this slot had nowhere to go.
+            if (lod == 1 && !lod0_file.empty() && REXCVAR_GET(model_mods_car_lod1_copy)) {
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is a copy of LOD 0 ({} bytes)",
+                                  vehicle.mod_name, car, name, lod0_file.size());
+                writer.Add(car_dir + "/" + name, lod0_file, lod0_flag, lod0_type);
+                built.push_back(name);
+                ++written;
+                ++lods;
+                continue;
+            }
 
             // A part does NOT live in the car's space, and this is where that
             // was got wrong first. Measured on the Impala: steer_whl0_lod_0 is a
@@ -2486,6 +2534,11 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is {} bytes (was {}), {} free after the "
                               "last buffer", vehicle.mod_name, car, name, resource.virtual_size,
                               shipped_size, tail);
+            if (lod == 0) {
+                lod0_file = file;
+                lod0_flag = flag;
+                lod0_type = resource.type;
+            }
             writer.Add(car_dir + "/" + name, std::move(file), flag, resource.type);
             built.push_back(name);
             ++written;
