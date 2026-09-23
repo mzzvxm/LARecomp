@@ -215,6 +215,32 @@ REXCVAR_DEFINE_INT32(model_mods_rim_texture_mode, -1, "MCLA/Mods",
     "blank. Force the choice with 0 or 1 when a mod's alpha does not say what "
     "it meant.");
 
+REXCVAR_DEFINE_BOOL(model_mods_rim_band_profile, false, "MCLA/Mods",
+    "Carry the template wheel's material bands onto the replacement instead of "
+    "flooding one."
+    "\n"
+    "texcoord1.x is the rim's material selector: xRimMain's VS_Common indexes "
+    "materialHookups and tintColors with it, and PS_Multi then reflects a "
+    "dual-paraboloid environment map through whatever material came out. A "
+    "shipped wheel's body uses FOUR bands, and two unrelated ones put them in "
+    "the same places -- band 1 is a ring at 0.82..0.88 of the radius two "
+    "thirds of the way in, band 2 the outer lip past 0.93, band 0 the face and "
+    "spokes, band 3 scattered accents. Flooding the dominant band gives the "
+    "whole rim one material, and one material over a mirror is a mirror ball: "
+    "the highlight sweeps round as the wheel turns. The bands are rings, so "
+    "they are carried by nearest neighbour in radius and axial depth, each "
+    "normalised to its own mesh. Only the band moves -- the colour does not, "
+    "which is what separates this from model_mods_rim_inherit_shade."
+    "\n"
+    "OFF, because it does not beat doing nothing. Validated against ground "
+    "truth by predicting one shipped wheel's bands from another's and counting "
+    "per-vertex agreement: flooding the dominant band alone already scores 59% "
+    "on the skyline and 57% on the bbs, and the transfer scores 61%/51% "
+    "matching on absolute depth and 57%/70% matching on each mesh's own depth "
+    "span. Neither normalisation wins in both directions, so the bands are in "
+    "the same PLACES on every wheel without being predictable per vertex from "
+    "where a vertex sits. Kept, off, so the next idea has something to beat.");
+
 REXCVAR_DEFINE_BOOL(model_mods_rim_shade_occlusion, true, "MCLA/Mods",
     "Bake the wheel's shade lane from occlusion measured on the replacement."
     "\n"
@@ -3145,6 +3171,8 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         offset.uniform_shade = !REXCVAR_GET(model_mods_rim_inherit_shade);
         offset.shade_occlusion =
             offset.uniform_shade && REXCVAR_GET(model_mods_rim_shade_occlusion);
+        offset.band_profile =
+            offset.uniform_shade && REXCVAR_GET(model_mods_rim_band_profile);
         // The statistical guess only runs when the measurement is not: they
         // write the same lane, and the one that describes the actual mesh wins.
         offset.shade_profile = offset.uniform_shade && !offset.shade_occlusion &&
@@ -3242,6 +3270,7 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         } else if (offset.uniform_shade) {
             shade = ", shade flat";
         }
+        if (stats.bands) shade += fmt::format(", {} material band(s)", stats.bands);
         LARECOMP_APP_INFO("[mods] {} -> rim {} ({} tris in {} submesh(es){}{}{})", mod.mod_name,
                           mod.asset, stats.triangles, stats.submeshes,
                           stats.decimated ? ", decimated" : "", paint, shade);

@@ -8,7 +8,9 @@
 #include <cstring>
 #include <iterator>
 #include <functional>
+#include <limits>
 #include <map>
+#include <set>
 #include <utility>
 
 #include "lzx_encode.h"
@@ -3367,6 +3369,132 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         const uint32_t level = count ? static_cast<uint32_t>(sum / count) : 0xFFu;
         std::fill(shade.begin(), shade.end(), (level << 24) | tint);
         std::fill(shade_texcoord1.begin(), shade_texcoord1.end(), band);
+
+        // Put the template's material bands back, ring by ring.
+        //
+        // See MeshOffset::band_profile for the measurement this rests on. The
+        // flood above stays as the floor: a vertex that matches no ring keeps
+        // the dominant band, which is the safe one.
+        //
+        // Only bands that ARE rings are carried. Measured on two unrelated
+        // shipped wheels the four bands split cleanly in two by how far they
+        // spread in the (radius, depth) plane, normalised to the wheel's own
+        // extent, between the 5th and 95th percentile:
+        //
+        //   band   bbs_ch               skyline_99
+        //   0      r span 0.80          r span 0.81      the face, not a ring
+        //   1      r 0.06 depth 0.05    r 0.06 depth 0.03   RING, the bead step
+        //   2      r 0.07 depth 0.04    r 0.12 depth 0.11   RING, the outer lip
+        //   3      r 0.82 depth 0.97    r 0.90 depth 0.96   scattered accents
+        //
+        // 0.12 against 0.80 is not a close call, so the cut sits at a quarter.
+        // Excluding the scattered band matters for more than tidiness: it is
+        // the one that carries the emissive material, and a plain nearest
+        // neighbour hands it 23% of the BMW's rim -- which is the neon wheel
+        // that model_mods_rim_inherit_shade produced.
+        //
+        // The axle is x, so a ring is a band in (radius, depth) and nothing
+        // else: a wheel is rotationally symmetric, so the angle carries no
+        // information and using it would make the match depend on how the two
+        // meshes happen to be clocked.
+        if (offset.band_profile) {
+            constexpr float kRingSpread = 0.25f;   // above this it is not a ring
+            constexpr float kLowQuantile = 0.05f;  // trimmed, so one stray vertex
+            constexpr float kHighQuantile = 0.95f; // cannot widen a ring
+
+            struct Sample {
+                float radius, depth;
+            };
+            std::map<uint32_t, std::vector<Sample>> by_band;
+            float t_radius = 0.0f, t_low = 0.0f, t_high = 0.0f;
+            bool t_any = false;
+            for (const Shade& entry : shipped) {
+                if (from_target && entry.geometry != target) continue;
+                const float radius = std::sqrt(entry.y * entry.y + entry.z * entry.z);
+                t_radius = std::max(t_radius, radius);
+                if (!t_any) {
+                    t_low = t_high = entry.x;
+                    t_any = true;
+                } else {
+                    t_low = std::min(t_low, entry.x);
+                    t_high = std::max(t_high, entry.x);
+                }
+                by_band[entry.texcoord1].push_back({radius, entry.x});
+            }
+
+            const float t_span = t_high - t_low;
+            struct Ring {
+                float radius_low, radius_high, depth_low, depth_high;
+                uint32_t band;
+            };
+            std::vector<Ring> rings;
+            if (t_any && t_radius > 1e-6f && t_span > 1e-6f) {
+                for (auto& [value, samples] : by_band) {
+                    if (value == band || samples.size() < 8) continue;
+                    std::vector<float> radii, depths;
+                    radii.reserve(samples.size());
+                    depths.reserve(samples.size());
+                    for (const Sample& sample : samples) {
+                        radii.push_back(sample.radius / t_radius);
+                        depths.push_back((sample.depth - t_low) / t_span);
+                    }
+                    std::sort(radii.begin(), radii.end());
+                    std::sort(depths.begin(), depths.end());
+                    auto at = [](const std::vector<float>& sorted, float quantile) {
+                        const size_t index = static_cast<size_t>(
+                            quantile * static_cast<float>(sorted.size() - 1));
+                        return sorted[index];
+                    };
+                    const Ring ring{at(radii, kLowQuantile), at(radii, kHighQuantile),
+                                    at(depths, kLowQuantile), at(depths, kHighQuantile), value};
+                    if (ring.radius_high - ring.radius_low > kRingSpread) continue;
+                    if (ring.depth_high - ring.depth_low > kRingSpread) continue;
+                    rings.push_back(ring);
+                }
+            }
+
+            float m_radius = 0.0f, m_low = 0.0f, m_high = 0.0f;
+            for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+                const MeshVertex& vertex = mesh.vertices[i];
+                m_radius = std::max(m_radius,
+                                    std::sqrt(vertex.py * vertex.py + vertex.pz * vertex.pz));
+                if (!i) {
+                    m_low = m_high = vertex.px;
+                } else {
+                    m_low = std::min(m_low, vertex.px);
+                    m_high = std::max(m_high, vertex.px);
+                }
+            }
+
+            const float m_span = m_high - m_low;
+            if (!rings.empty() && m_radius > 1e-6f && m_span > 1e-6f) {
+                for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+                    const MeshVertex& vertex = mesh.vertices[i];
+                    const float radius =
+                        std::sqrt(vertex.py * vertex.py + vertex.pz * vertex.pz) / m_radius;
+                    const float depth = (vertex.px - m_low) / m_span;
+                    // Nearest ring CENTRE among the rings the vertex is inside,
+                    // so a vertex in the overlap of two goes to the one it sits
+                    // deeper in rather than to whichever was measured first.
+                    float best = std::numeric_limits<float>::max();
+                    for (const Ring& ring : rings) {
+                        if (radius < ring.radius_low || radius > ring.radius_high) continue;
+                        if (depth < ring.depth_low || depth > ring.depth_high) continue;
+                        const float dr = radius - (ring.radius_low + ring.radius_high) * 0.5f;
+                        const float dd = depth - (ring.depth_low + ring.depth_high) * 0.5f;
+                        const float distance = dr * dr + dd * dd;
+                        if (distance < best) {
+                            best = distance;
+                            shade_texcoord1[i] = ring.band;
+                        }
+                    }
+                }
+            }
+        }
+        if (stats) {
+            std::set<uint32_t> distinct(shade_texcoord1.begin(), shade_texcoord1.end());
+            stats->bands = static_cast<uint32_t>(distinct.size());
+        }
 
         // The band stays flooded either way -- that is what keeps a vertex off
         // the emissive material and is the whole reason uniform_shade exists.

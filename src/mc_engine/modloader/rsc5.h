@@ -155,6 +155,9 @@ struct RewriteStats {
     uint32_t shade_high = 0;
     float shade_mean = 0.0f;
     float shade_deviation = -1.0f;   // negative when nothing was baked
+    // How many distinct material bands the written mesh ended up with. One is
+    // the flood; the shipped wheels have four.
+    uint32_t bands = 0;
     // Submeshes of this pass left silent because their model is bone-local.
     uint32_t local_silenced = 0;
     uint32_t submeshes = 0;  // how many of the drawable's slots it was dealt into
@@ -279,6 +282,33 @@ struct MeshOffset {
     // perfect on disk. 0 places buffers wherever they fit, which is what the
     // loader did before this was measured.
     uint32_t block_align = 0;
+    // Carry the template's MATERIAL BANDS across instead of flooding one.
+    //
+    // The band is texcoord1.x, and xRimMain's VS_Common indexes materialHookups
+    // and tintColors with it -- the rim's whole appearance is picked per vertex
+    // by this number, and PS_Multi then reflects a dual-paraboloid environment
+    // map through whatever material it selected. Measured on two unrelated
+    // shipped wheels, the body uses FOUR bands and they sit in the same places
+    // on both:
+    //
+    //   band  r/R (5|50|95%)      x/X (5|50|95%)        what it is
+    //   0     0.13|0.57|0.93      -0.97|-0.92|-0.66     the face and spokes
+    //   1     0.82|0.84|0.88      -0.72|-0.66|-0.62     the bead step
+    //   2     0.93|0.95|1.00      -1.00|-0.96|-0.92     the outer lip
+    //   3     scattered, and the only band that reaches positive x
+    //
+    // whl_am_bbs_ch and whl_stk_nsn_skyline_99 agree to within 0.02 on the
+    // first three. Flooding the dominant band gives the whole rim ONE material,
+    // and one material over a mirror is a mirror ball: its highlight sweeps
+    // round as the wheel turns, which is what "the normals change with the
+    // rotation" describes.
+    //
+    // The bands are rings, so they are carried by nearest neighbour in
+    // (radius, axial depth) normalised to each mesh's own extent -- not by 3D
+    // proximity, which is what inherit_shade did, and not carrying the colour,
+    // which is what made inherit_shade land vertices on the emissive band.
+    // Requires uniform_shade.
+    bool band_profile = false;
     // Write only into models authored in the CAR's frame, and silence this
     // pass's submeshes in the others.
     //
