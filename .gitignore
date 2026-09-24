@@ -12,6 +12,7 @@ tools/*
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle
+backups/
 
 # Codegen & diagnostic logs
 codegen_err.txt
