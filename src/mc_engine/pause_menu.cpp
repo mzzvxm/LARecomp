@@ -13,8 +13,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -680,19 +685,111 @@ void RestoreTabDisplay(uint32_t controller) {
 
 // ── CVar access by name (uniform for larecomp AND SDK cvars) ───────────
 
+// ── Restart-only cvars: held here, never applied live ──────────────────
+//
+// SetFlagByName changes a kRequiresRestart cvar's LIVE value -- the lifecycle
+// only marks it as pending a restart. The native runtime reads mcla_native_gfx
+// in every draw hook and bakes msaa/aniso into targets and samplers as they are
+// created, so flipping them mid-session would send the next draw down the other
+// path or mix sample counts. A menu change to one of these is therefore kept
+// in g_deferred, shown on the row, and only written into larecomp.toml when the
+// submenu saves; it takes effect on the next launch, as the (RESTART) suffix
+// says. RENDERER carries its two companions along: the native runtime only
+// makes sense with no emulated GPU in the process and rendering every frame,
+// and the emulated path is broken by either.
+struct DeferredCvar {
+    const char* name;
+    const char* linked[2];  // set to the same value alongside it
+};
+const DeferredCvar kDeferredCvars[] = {
+    {"mcla_native_gfx", {"mcla_native_gfx_nocp", "mcla_native_gfx_continuous"}},
+    {"mcla_native_gfx_msaa", {nullptr, nullptr}},
+    {"mcla_native_gfx_aniso", {nullptr, nullptr}},
+};
+
+std::mutex g_deferred_mutex;
+std::vector<std::pair<std::string, std::string>> g_deferred;
+
+const DeferredCvar* FindDeferredCvar(std::string_view name) {
+    for (const auto& d : kDeferredCvars)
+        if (name == d.name) return &d;
+    return nullptr;
+}
+
+void SetDeferred(const char* name, const char* value) {
+    std::lock_guard<std::mutex> lock(g_deferred_mutex);
+    for (auto& [k, v] : g_deferred) {
+        if (k == name) {
+            v = value;
+            return;
+        }
+    }
+    g_deferred.emplace_back(name, value);
+}
+
+// SaveConfig has just written the live values; replace the deferred keys'
+// lines with the held ones (appending any the file does not have). The toml
+// is flat, one `key = value` per line.
+void WriteDeferredCvars(const std::filesystem::path& path) {
+    std::vector<std::pair<std::string, std::string>> pending;
+    {
+        std::lock_guard<std::mutex> lock(g_deferred_mutex);
+        pending = g_deferred;
+    }
+    if (pending.empty()) return;
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::string line;
+        while (std::getline(in, line)) lines.push_back(line);
+    }
+    for (const auto& [key, value] : pending) {
+        bool found = false;
+        for (auto& l : lines) {
+            const size_t p = l.find_first_not_of(" \t");
+            if (p == std::string::npos || l.compare(p, key.size(), key) != 0) continue;
+            // The key must be followed by '=', so mcla_native_gfx does not
+            // match mcla_native_gfx_msaa.
+            const size_t q = l.find_first_not_of(" \t", p + key.size());
+            if (q == std::string::npos || l[q] != '=') continue;
+            const bool cr = !l.empty() && l.back() == '\r';
+            l = key + " = " + value + (cr ? "\r" : "");
+            found = true;
+        }
+        if (!found) lines.push_back(key + " = " + value);
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    for (const auto& l : lines) out << l << '\n';
+    MC_INFO("[pause-menu] {} restart-only setting(s) written to {}; they apply on the next launch",
+            pending.size(), path.string());
+}
+
 std::string CvarGet(const char* name) {
+    {
+        std::lock_guard<std::mutex> lock(g_deferred_mutex);
+        for (const auto& [k, v] : g_deferred)
+            if (k == name) return v;
+    }
     return rex::cvar::GetFlagByName(name);
 }
 
 bool CvarGetBool(const char* name) {
-    return rex::cvar::GetFlagByName(name) == "true";
+    return CvarGet(name) == "true";
 }
 
 double CvarGetDouble(const char* name) {
-    return std::strtod(rex::cvar::GetFlagByName(name).c_str(), nullptr);
+    return std::strtod(CvarGet(name).c_str(), nullptr);
 }
 
 void CvarSet(const char* name, const char* value) {
+    if (const DeferredCvar* d = FindDeferredCvar(name)) {
+        MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
+        SetDeferred(name, value);
+        for (const char* l : d->linked)
+            if (l) SetDeferred(l, value);
+        return;
+    }
     // Logged before the write, not after: a cvar's change callbacks run
     // synchronously on this (guest) thread with the cvar registry mutex held,
     // so an apply that hangs used to leave no trace at all -- the last line in
@@ -911,6 +1008,29 @@ const ItemDef kFfxItems[] = {
          "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g"),
 };
 
+// Native renderer. RENDERER picks between the emulated path (Xenia's command
+// processor) and the native D3D12 runtime; NATIVE also brings the no-CP mode
+// and continuous rendering with it (see kDeferredCvars), so neither has a row
+// of its own. Everything but FXAA is read at startup or baked into targets and
+// samplers as they are created, so those rows only take effect on a restart.
+const char* const kRendererVals[]  = {"false", "true"};
+const char* const kRendererNames[] = {"XENIA", "NATIVE"};
+const char* const kMsaaVals[]      = {"0", "2", "4", "8"};
+const char* const kMsaaNames[]     = {"OFF", "2X", "4X", "8X"};
+// Same numbering as the emulated path's anisotropic_override.
+const char* const kAnisoVals[]     = {"-1", "0", "1", "2", "3", "4", "5"};
+const char* const kAnisoNames[]    = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
+
+const ItemDef kNativeItems[] = {
+    Str ("PM_RxRenderer",    "mcla_native_gfx",       "RENDERER: ",
+         kRendererVals, kRendererNames, 2, " (RESTART)"),
+    Str ("PM_RxNativeMsaa",  "mcla_native_gfx_msaa",  "MSAA: ",
+         kMsaaVals, kMsaaNames, 4, " (RESTART)"),
+    Bool("PM_RxNativeFxaa",  "mcla_native_gfx_fxaa",  "FXAA: "),
+    Str ("PM_RxNativeAniso", "mcla_native_gfx_aniso", "ANISOTROPIC: ",
+         kAnisoVals, kAnisoNames, 7, " (RESTART)"),
+};
+
 const ItemDef kCamItems[] = {
     // BadassBaboon's Recomp Adjustments: in-game pause menu smooth chase camera toggle
     Bool("PM_RxSmoothCam",    "smooth_chase_cam", "SMOOTH CHASE CAM: "),
@@ -1015,6 +1135,8 @@ const MenuDef kMenus[] = {
      kPerfItems,   int(sizeof(kPerfItems)   / sizeof(kPerfItems[0]))},
     {"PM_RxTabFfx",    "FIDELITY FX",      "RxFfxMenu",
      kFfxItems,    int(sizeof(kFfxItems)    / sizeof(kFfxItems[0]))},
+    {"PM_RxTabNative", "RENDERER OPTIONS",  "RxNativeMenu",
+     kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
     // The free-look rows come from camera_look.cpp, next to the code that
     // reads them.
     {"PM_RxTabCam",    "DEBUG CAMERA",     "RxCamMenu",
@@ -3228,6 +3350,7 @@ bool Hook_RexGlueCancel(PPCRegister& r31) {
         auto config_path =
             rex::filesystem::GetExecutableFolder() / "larecomp.toml";
         rex::cvar::SaveConfig(config_path);
+        WriteDeferredCvars(config_path);
         MC_INFO("[pause-menu] settings saved to {}", config_path.string());
     }
 
