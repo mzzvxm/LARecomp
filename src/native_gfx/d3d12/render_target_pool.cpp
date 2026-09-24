@@ -15,6 +15,7 @@
 #include <rex/ui/d3d12/d3d12_util.h>
 
 #include "context.h"
+#include "barrier_batch.h"
 #include "image_dump.h"
 
 #include "depth_msaa_resolve_dxil.inc"
@@ -220,13 +221,8 @@ void RenderTargetPool::DumpResolved(D3D12Context& context,
     }
 
     const bool needs_transition = r.state != D3D12_RESOURCE_STATE_COPY_SOURCE;
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = r.resource.Get();
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     if (needs_transition) {
-      b.Transition.StateBefore = r.state;
-      b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      cl->ResourceBarrier(1, &b);
+      BarrierBatch::Transition(cl, r.resource.Get(), r.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
     }
     D3D12_TEXTURE_COPY_LOCATION dst_loc = {}, src_loc = {};
     dst_loc.pResource = p.readback.Get();
@@ -237,9 +233,7 @@ void RenderTargetPool::DumpResolved(D3D12Context& context,
     src_loc.SubresourceIndex = 0;
     cl->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
     if (needs_transition) {
-      b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      b.Transition.StateAfter = r.state;
-      cl->ResourceBarrier(1, &b);
+      BarrierBatch::Transition(cl, r.resource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, r.state);
     }
     pending.push_back(std::move(p));
   }
@@ -943,12 +937,8 @@ bool ResolveMsaaStencil(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     g_stencil_cs.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   }
   if (g_stencil_cs.state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = g_stencil_cs.buffer.Get();
-    b.Transition.StateBefore = g_stencil_cs.state;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+    BarrierBatch::TransitionBuffer(cl, g_stencil_cs.buffer.Get(), g_stencil_cs.state,
+                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     g_stencil_cs.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   }
 
@@ -983,12 +973,9 @@ bool ResolveMsaaStencil(D3D12Context& context, ID3D12GraphicsCommandList* cl,
   cl->SetComputeRoot32BitConstants(1, 4, consts, 0);
   cl->Dispatch(((w + 3u) / 4u + 7u) / 8u, (h + 7u) / 8u, 1);
 
-  D3D12_RESOURCE_BARRIER to_copy = {};
-  to_copy.Transition.pResource = g_stencil_cs.buffer.Get();
-  to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-  to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &to_copy);
+  BarrierBatch::TransitionBuffer(cl, g_stencil_cs.buffer.Get(),
+                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                 D3D12_RESOURCE_STATE_COPY_SOURCE);
   g_stencil_cs.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
 
   D3D12_TEXTURE_COPY_LOCATION sdst = dst_depth_loc;
@@ -1073,26 +1060,15 @@ ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
   const D3D12_RESOURCE_STATES want_dst = from_depth
                                              ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                              : D3D12_RESOURCE_STATE_RESOLVE_DEST;
-  D3D12_RESOURCE_BARRIER barriers[2] = {};
-  uint32_t n = 0;
+  BarrierBatch batch;
   const D3D12_RESOURCE_STATES src_state = from_depth ? source.depth_state : source.color_state;
   if (src_state != want_src) {
-    barriers[n].Transition.pResource = src;
-    barriers[n].Transition.StateBefore = src_state;
-    barriers[n].Transition.StateAfter = want_src;
-    barriers[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    ++n;
+    batch.AddTexture(src, src_state, want_src);
   }
   if (scratch.state != want_dst) {
-    barriers[n].Transition.pResource = scratch.resource.Get();
-    barriers[n].Transition.StateBefore = scratch.state;
-    barriers[n].Transition.StateAfter = want_dst;
-    barriers[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    ++n;
+    batch.AddTexture(scratch.resource.Get(), scratch.state, want_dst);
   }
-  if (n) {
-    cl->ResourceBarrier(n, barriers);
-  }
+  batch.Flush(cl);
   if (from_depth) {
     source.depth_state = want_src;
   } else {
@@ -1147,12 +1123,7 @@ ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
     cl->ResolveSubresource(scratch.resource.Get(), 0, src, 0, DXGI_FORMAT(source.key.rt_format));
   }
 
-  D3D12_RESOURCE_BARRIER to_copy = {};
-  to_copy.Transition.pResource = scratch.resource.Get();
-  to_copy.Transition.StateBefore = want_dst;
-  to_copy.Transition.StateAfter = final_state;
-  to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &to_copy);
+  BarrierBatch::Transition(cl, scratch.resource.Get(), want_dst, final_state);
   scratch.state = final_state;
   return scratch.resource.Get();
 }
@@ -1242,33 +1213,20 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
   // The source has to be readable as an SRV and the destination writable as a
   // UAV for the length of the dispatch; both go back afterwards.
   const D3D12_RESOURCE_STATES src_before = dst.state;
+  BarrierBatch pre_pack;
   if (src_before != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = dst.resource.Get();
-    b.Transition.StateBefore = src_before;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+    pre_pack.AddTexture(dst.resource.Get(), src_before, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dst.state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
   }
   if (dst.packed_state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = dst.packed.Get();
-    b.Transition.StateBefore = dst.packed_state;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+    pre_pack.AddTexture(dst.packed.Get(), dst.packed_state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     dst.packed_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   }
   if (dst.packed8888_state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = dst.packed8888.Get();
-    b.Transition.StateBefore = dst.packed8888_state;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+    pre_pack.AddTexture(dst.packed8888.Get(), dst.packed8888_state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     dst.packed8888_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   }
+  pre_pack.Flush(cl);
 
   const uint32_t slot = g_ds_pack.next;
   g_ds_pack.next = (g_ds_pack.next + 1) % DepthStencilPackCs::kSlots;
@@ -1312,16 +1270,13 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
   cl->SetComputeRoot32BitConstants(1, 4, consts, 0);
   cl->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
 
-  D3D12_RESOURCE_BARRIER to_srv = {};
-  to_srv.Transition.pResource = dst.packed.Get();
-  to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  to_srv.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-  to_srv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &to_srv);
+  BarrierBatch post_pack;
+  post_pack.AddTexture(dst.packed.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+  post_pack.AddTexture(dst.packed8888.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+  post_pack.Flush(cl);
   dst.packed_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-  to_srv.Transition.pResource = dst.packed8888.Get();
-  to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  cl->ResourceBarrier(1, &to_srv);
   dst.packed8888_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 
   // TEMP DIAG (STENCILPROBE): what vehicle ids the motion blur is actually
@@ -1398,12 +1353,9 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
           return;
         }
       }
-      D3D12_RESOURCE_BARRIER b = {};
-      b.Transition.pResource = dst.packed8888.Get();
-      b.Transition.StateBefore = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-      b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      cl->ResourceBarrier(1, &b);
+      BarrierBatch::Transition(cl, dst.packed8888.Get(),
+                               D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+                               D3D12_RESOURCE_STATE_COPY_SOURCE);
       D3D12_TEXTURE_COPY_LOCATION from = {}, to = {};
       from.pResource = dst.packed8888.Get();
       from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -1415,9 +1367,9 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
       to.PlacedFootprint.Footprint.Depth = 1;
       to.PlacedFootprint.Footprint.RowPitch = rb_pitch;
       cl->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
-      b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-      cl->ResourceBarrier(1, &b);
+      BarrierBatch::Transition(cl, dst.packed8888.Get(),
+                               D3D12_RESOURCE_STATE_COPY_SOURCE,
+                               D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
       wait = 60;
     }
   }
@@ -1489,12 +1441,8 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
     if (pc.source->pending_guest_clear && !pc.from_depth && pc.source->color &&
         pc.source->rtv_heap) {
       if (pc.source->color_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Transition.pResource = pc.source->color.Get();
-        b.Transition.StateBefore = pc.source->color_state;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cl->ResourceBarrier(1, &b);
+        BarrierBatch::Transition(cl, pc.source->color.Get(), pc.source->color_state,
+                                 D3D12_RESOURCE_STATE_RENDER_TARGET);
         pc.source->color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       }
       cl->ClearRenderTargetView(pc.source->rtv_heap->GetCPUDescriptorHandleForHeapStart(),
@@ -1556,28 +1504,17 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       continue;
     }
 
-    D3D12_RESOURCE_BARRIER barriers[2] = {};
-    uint32_t barrier_count = 0;
+    BarrierBatch batch;
     const D3D12_RESOURCE_STATES src_state =
         pc.from_depth ? pc.source->depth_state
                       : (from_color1 ? pc.source->color1_state : pc.source->color_state);
     if (!used_scratch && src_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
-      barriers[barrier_count].Transition.pResource = src_res;
-      barriers[barrier_count].Transition.StateBefore = src_state;
-      barriers[barrier_count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      barriers[barrier_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      ++barrier_count;
+      batch.AddTexture(src_res, src_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
     }
     if (dst.state != D3D12_RESOURCE_STATE_COPY_DEST) {
-      barriers[barrier_count].Transition.pResource = dst.resource.Get();
-      barriers[barrier_count].Transition.StateBefore = dst.state;
-      barriers[barrier_count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-      barriers[barrier_count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      ++barrier_count;
+      batch.AddTexture(dst.resource.Get(), dst.state, D3D12_RESOURCE_STATE_COPY_DEST);
     }
-    if (barrier_count) {
-      cl->ResourceBarrier(barrier_count, barriers);
-    }
+    batch.Flush(cl);
     if (!used_scratch) {
       if (pc.from_depth) {
         pc.source->depth_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -1641,12 +1578,8 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       ResolveMsaaStencil(context, cl, *pc.source, dst_loc, dx, dy, box);
     }
 
-    D3D12_RESOURCE_BARRIER to_srv = {};
-    to_srv.Transition.pResource = dst.resource.Get();
-    to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    to_srv.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-    to_srv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &to_srv);
+    BarrierBatch::Transition(cl, dst.resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                             D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dst.state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 
     // Both planes are in place now, so build the packed copy a k_24_8 fetch
@@ -1678,12 +1611,7 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       D3D12_RESOURCE_STATES& back_state =
           back_is_color1 ? pc.source->color1_state : pc.source->color_state;
       if (back_res && back_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
-        D3D12_RESOURCE_BARRIER back = {};
-        back.Transition.pResource = back_res;
-        back.Transition.StateBefore = back_state;
-        back.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        back.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cl->ResourceBarrier(1, &back);
+        BarrierBatch::Transition(cl, back_res, back_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
         back_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       }
     }
@@ -1692,21 +1620,19 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
 }
 
 void RenderTargetPool::FlushPendingTransitions(ID3D12GraphicsCommandList* cl) {
-  if (!cl) {
+  if (!cl || pending_to_shader_.empty()) {
+    pending_to_shader_.clear();
     return;
   }
+  BarrierBatch batch;
   for (RenderTarget* t : pending_to_shader_) {
     if (!t->depth || t->depth_state == D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE) {
       continue;
     }
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = t->depth.Get();
-    b.Transition.StateBefore = t->depth_state;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+    batch.AddTexture(t->depth.Get(), t->depth_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     t->depth_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
   }
+  batch.Flush(cl);
   pending_to_shader_.clear();
 }
 
@@ -1768,6 +1694,7 @@ void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, Render
   if (!cl) {
     return;
   }
+  BarrierBatch batch;
   // Colour back to RENDER_TARGET before it is bound as an RTV (OMSetRenderTargets).
   // In continuous mode PrepareContinuousDisplay leaves the chosen display target's
   // colour in ALL_SHADER_RESOURCE, and a resolve leaves a target in COPY_SOURCE;
@@ -1791,24 +1718,14 @@ void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, Render
         }
       }
     }
-    D3D12_RESOURCE_BARRIER c = {};
-    c.Transition.pResource = target.color.Get();
-    c.Transition.StateBefore = target.color_state;
-    c.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    c.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &c);
+    batch.AddTexture(target.color.Get(), target.color_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     target.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   }
   // Target 1 is bound as an RTV in the same call as target 0, so it needs the
   // same state; a resolve leaves it in COPY_SOURCE.
   if (target.color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x8u) &&
       target.color1_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
-    D3D12_RESOURCE_BARRIER c1 = {};
-    c1.Transition.pResource = target.color1.Get();
-    c1.Transition.StateBefore = target.color1_state;
-    c1.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    c1.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &c1);
+    batch.AddTexture(target.color1.Get(), target.color1_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     target.color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   }
   // A pass that samples this same depth buffer needs a state that is readable
@@ -1819,14 +1736,10 @@ void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, Render
                          D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE)
                       : D3D12_RESOURCE_STATE_DEPTH_WRITE;
   if (target.depth && target.depth_state != want_depth) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = target.depth.Get();
-    b.Transition.StateBefore = target.depth_state;
-    b.Transition.StateAfter = want_depth;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+    batch.AddTexture(target.depth.Get(), target.depth_state, want_depth);
     target.depth_state = want_depth;
   }
+  batch.Flush(cl);
 }
 
 RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTargetKey& key,
@@ -1956,12 +1869,7 @@ void RenderTargetPool::RecordResolve(D3D12Context& context, ID3D12GraphicsComman
     // DEPTH_WRITE first: a resource sampled while still in that state is a
     // GPU fault, not a validation warning.
     if (source.depth_state != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE) {
-      D3D12_RESOURCE_BARRIER b = {};
-      b.Transition.pResource = src;
-      b.Transition.StateBefore = source.depth_state;
-      b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-      b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      cl->ResourceBarrier(1, &b);
+      BarrierBatch::Transition(cl, src, source.depth_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
       source.depth_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
     }
     // A depth resolve normally registers the POOLED depth resource itself as
@@ -2034,38 +1942,22 @@ void RenderTargetPool::RecordResolve(D3D12Context& context, ID3D12GraphicsComman
   }
 
   ResolvedCopy& dst = it->second;
-  if (dst.state != D3D12_RESOURCE_STATE_COPY_DEST &&
-      dst.state != D3D12_RESOURCE_STATE_RESOLVE_DEST) {
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Transition.pResource = dst.resource.Get();
-    b.Transition.StateBefore = dst.state;
-    b.Transition.StateAfter = src_desc.SampleDesc.Count > 1
-                                  ? D3D12_RESOURCE_STATE_RESOLVE_DEST
-                                  : D3D12_RESOURCE_STATE_COPY_DEST;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
-    dst.state = b.Transition.StateAfter;
-  }
+  const D3D12_RESOURCE_STATES want_dst_state = src_desc.SampleDesc.Count > 1
+                                                   ? D3D12_RESOURCE_STATE_RESOLVE_DEST
+                                                   : D3D12_RESOURCE_STATE_COPY_DEST;
+  const D3D12_RESOURCE_STATES want_src_state = src_desc.SampleDesc.Count > 1
+                                                   ? D3D12_RESOURCE_STATE_RESOLVE_SOURCE
+                                                   : D3D12_RESOURCE_STATE_COPY_SOURCE;
 
-  D3D12_RESOURCE_BARRIER sb = {};
-  sb.Transition.pResource = src;
-  sb.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-  sb.Transition.StateAfter = src_desc.SampleDesc.Count > 1
-                                 ? D3D12_RESOURCE_STATE_RESOLVE_SOURCE
-                                 : D3D12_RESOURCE_STATE_COPY_SOURCE;
-  sb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &sb);
+  BarrierBatch pre_resolve;
+  if (dst.state != want_dst_state) {
+    pre_resolve.AddTexture(dst.resource.Get(), dst.state, want_dst_state);
+    dst.state = want_dst_state;
+  }
+  pre_resolve.AddTexture(src, D3D12_RESOURCE_STATE_RENDER_TARGET, want_src_state);
+  pre_resolve.Flush(cl);
 
   if (src_desc.SampleDesc.Count > 1) {
-    if (dst.state != D3D12_RESOURCE_STATE_RESOLVE_DEST) {
-      D3D12_RESOURCE_BARRIER b = {};
-      b.Transition.pResource = dst.resource.Get();
-      b.Transition.StateBefore = dst.state;
-      b.Transition.StateAfter = D3D12_RESOURCE_STATE_RESOLVE_DEST;
-      b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      cl->ResourceBarrier(1, &b);
-      dst.state = D3D12_RESOURCE_STATE_RESOLVE_DEST;
-    }
     cl->ResolveSubresource(dst.resource.Get(), 0, src, 0, DXGI_FORMAT(dxgi));
   } else {
     cl->CopyResource(dst.resource.Get(), src);
@@ -2077,17 +1969,13 @@ void RenderTargetPool::RecordResolve(D3D12Context& context, ID3D12GraphicsComman
   PackResolvedDepthStencil(context, cl, dst);
 
   // Leave both sides in the states the next user expects.
-  sb.Transition.StateBefore = sb.Transition.StateAfter;
-  sb.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-  cl->ResourceBarrier(1, &sb);
-
-  D3D12_RESOURCE_BARRIER db = {};
-  db.Transition.pResource = dst.resource.Get();
-  db.Transition.StateBefore = dst.state;
-  db.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
-  db.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &db);
-  dst.state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+  BarrierBatch post_resolve;
+  post_resolve.AddTexture(src, want_src_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+  if (dst.state != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE) {
+    post_resolve.AddTexture(dst.resource.Get(), dst.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    dst.state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+  }
+  post_resolve.Flush(cl);
 }
 
 void RenderTargetPool::RegisterDirect(uint32_t dest_address, ID3D12Resource* resource,

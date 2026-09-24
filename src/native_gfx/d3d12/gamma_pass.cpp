@@ -8,6 +8,7 @@
 #include <rex/logging.h>
 
 #include "context.h"
+#include "barrier_batch.h"
 #include "gamma_ramp_dxil.inc"  // kGammaRampCsDxil
 
 namespace mcla::native_gfx {
@@ -154,20 +155,12 @@ bool GammaPass::UpdateRamp(D3D12Context& context, ID3D12GraphicsCommandList* cl,
   ramp_upload_->Unmap(0, &written);
 
   if (ramp_ready_) {
-    D3D12_RESOURCE_BARRIER to_copy = {};
-    to_copy.Transition.pResource = ramp_.Get();
-    to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &to_copy);
+    BarrierBatch::TransitionBuffer(cl, ramp_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                   D3D12_RESOURCE_STATE_COPY_DEST);
   }
   cl->CopyBufferRegion(ramp_.Get(), 0, ramp_upload_.Get(), 0, kRampBytes);
-  D3D12_RESOURCE_BARRIER to_read = {};
-  to_read.Transition.pResource = ramp_.Get();
-  to_read.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-  to_read.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-  to_read.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &to_read);
+  BarrierBatch::TransitionBuffer(cl, ramp_.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   ramp_ready_ = true;
   return true;
 }

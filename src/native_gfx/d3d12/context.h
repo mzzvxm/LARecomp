@@ -82,6 +82,13 @@ class D3D12Context {
                       : command_list_.Get();
   }
 
+  ID3D12GraphicsCommandList7* CurrentCommandList7() {
+    if (!frame_open_ || recording_) {
+      return nullptr;
+    }
+    return command_list7_.Get();
+  }
+
   // Transient upload allocation valid for the current frame only.
   // Returns a CPU pointer and the GPU virtual address; alignment must be a
   // power of two (256 for CBVs). Returns false when the ring is exhausted
@@ -270,6 +277,7 @@ class D3D12Context {
   ID3D12CommandQueue* queue_ = nullptr;
   Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators_[kFramesInFlight];
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list_;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> command_list7_;
   Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
   HANDLE fence_event_ = nullptr;
   uint64_t fence_value_ = 0;

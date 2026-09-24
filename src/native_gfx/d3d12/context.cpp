@@ -136,6 +136,7 @@ bool D3D12Context::FinishInitialize() {
     return false;
   }
   command_list_->SetName(L"mcla_native_gfx");
+  command_list_->QueryInterface(IID_PPV_ARGS(&command_list7_));
   command_list_->Close();
 
   if (FAILED(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)))) {
@@ -938,6 +939,7 @@ void D3D12Context::Shutdown() {
     upload_buffers_[i].Reset();
     allocators_[i].Reset();
   }
+  command_list7_.Reset();
   command_list_.Reset();
   fence_.Reset();
   if (fence_event_) {

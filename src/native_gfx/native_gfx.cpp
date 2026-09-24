@@ -49,6 +49,8 @@
 #include "d3d12/device_manager.h"
 #include "d3d12/gpu_profiler.h"
 #include "d3d12/swapchain.h"
+#include "d3d12/barrier_batch.h"
+#include "d3d12/untile_pass.h"
 #include "diag.h"
 
 // Defined in device_manager.cpp and swapchain.cpp
@@ -553,6 +555,16 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_profiler, true, "MCLA/NativeGfx",
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_pix_markers, true, "MCLA/NativeGfx",
                     "Emit BeginEvent/EndEvent and SetMarker on D3D12 graphics command lists for "
                     "RenderDoc, PIX, and NSight pass hierarchy inspection.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_enhanced_barriers, true, "MCLA/NativeGfx",
+                    "Use D3D12 Enhanced Barriers (ID3D12GraphicsCommandList7) when supported by "
+                    "hardware and OS to minimize GPU pipeline flushes and transition overhead.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_untile, true, "MCLA/NativeGfx",
+                    "Use compute shader untiling and endian swapping on GPU for uploaded textures "
+                    "to eliminate CPU decode overhead.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
@@ -1949,13 +1961,10 @@ bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32
     ID3D12Resource* back_buffer = sc.GetCurrentBackBuffer();
     D3D12_CPU_DESCRIPTOR_HANDLE back_buffer_rtv = sc.GetCurrentBackBufferRTV();
 
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = back_buffer;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &barrier);
+    BarrierBatch::Transition(cl, back_buffer, D3D12_RESOURCE_STATE_PRESENT,
+                             D3D12_RESOURCE_STATE_RENDER_TARGET,
+                             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                             side ? nullptr : g_draw_context.CurrentCommandList7());
 
     cl->OMSetRenderTargets(1, &back_buffer_rtv, FALSE, nullptr);
     D3D12_VIEWPORT vp = {0.0f, 0.0f, float(sc.width()), float(sc.height()), 0.0f, 1.0f};
@@ -1968,9 +1977,10 @@ bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32
     }
     g_blit.Record(g_draw_context, cl, display, fmt);
 
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    cl->ResourceBarrier(1, &barrier);
+    BarrierBatch::Transition(cl, back_buffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                             D3D12_RESOURCE_STATE_PRESENT,
+                             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                             side ? nullptr : g_draw_context.CurrentCommandList7());
 
     const bool ended = side ? g_draw_context.EndSideList() : g_draw_context.EndFrame();
     if (!side) {

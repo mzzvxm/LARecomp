@@ -126,6 +126,8 @@ set(LARECOMP_SOURCES
     src/native_gfx/d3d12/tonemap_pass.cpp
     src/native_gfx/d3d12/d3d12_smoke_triangle.cpp
     src/native_gfx/d3d12/gpu_profiler.cpp
+    src/native_gfx/d3d12/barrier_batch.cpp
+    src/native_gfx/d3d12/untile_pass.cpp
 
     src/achievement_metadata.cpp
 

@@ -11,6 +11,7 @@
 #include "texture_format.h"
 
 #include <cstring>
+#include <smmintrin.h>
 
 #include <dxgiformat.h>
 
@@ -144,27 +145,51 @@ void SwapTextureData(uint32_t endianness, uint8_t* data, uint64_t size_bytes) {
   if (!data || size_bytes == 0) {
     return;
   }
-  // CopySwapBlock is safe in place: every backend swaps element by element at
-  // the same index, and the SIMD paths load and store the same lane.
-  //
-  // k16in32 is the exception and is deliberately NOT routed there.
-  // CopySwapBlock passes the byte length straight through to
-  // copy_and_swap_16_in_32_unaligned, which consumes 4 bytes per count
-  // (core/memory.cpp), so it would run four times past the end of the buffer;
-  // the k8in16 and k8in32 cases divide the length correctly. MCLA has never
-  // been observed to bind a k16in32 texture (see the telemetry in
-  // texture_format.h), so this is a guard, not a hot path.
   switch (TextureEndian(endianness)) {
-    case TextureEndian::k8in16:
-      tc::CopySwapBlock(xe::Endian::k8in16, data, data, size_t(size_bytes));
+    case TextureEndian::k8in16: {
+      const __m128i mask = _mm_setr_epi8(1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14);
+      uint64_t i = 0;
+      const uint64_t vector_limit = size_bytes & ~15ull;
+      for (; i < vector_limit; i += 16) {
+        __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        chunk = _mm_shuffle_epi8(chunk, mask);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), chunk);
+      }
+      for (; i + 1 < size_bytes; i += 2) {
+        uint16_t v;
+        std::memcpy(&v, data + i, 2);
+        v = (v >> 8) | (v << 8);
+        std::memcpy(data + i, &v, 2);
+      }
       break;
-    case TextureEndian::k8in32:
-      tc::CopySwapBlock(xe::Endian::k8in32, data, data, size_t(size_bytes));
+    }
+    case TextureEndian::k8in32: {
+      const __m128i mask = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+      uint64_t i = 0;
+      const uint64_t vector_limit = size_bytes & ~15ull;
+      for (; i < vector_limit; i += 16) {
+        __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        chunk = _mm_shuffle_epi8(chunk, mask);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), chunk);
+      }
+      for (; i + 3 < size_bytes; i += 4) {
+        uint32_t v;
+        std::memcpy(&v, data + i, 4);
+        v = __builtin_bswap32(v);
+        std::memcpy(data + i, &v, 4);
+      }
       break;
+    }
     case TextureEndian::k16in32: {
-      // Exchange the two halves of each dword without swapping their bytes.
-      const uint64_t whole = size_bytes & ~3ull;
-      for (uint64_t i = 0; i < whole; i += 4) {
+      const __m128i mask = _mm_setr_epi8(2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13);
+      uint64_t i = 0;
+      const uint64_t vector_limit = size_bytes & ~15ull;
+      for (; i < vector_limit; i += 16) {
+        __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        chunk = _mm_shuffle_epi8(chunk, mask);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), chunk);
+      }
+      for (; i + 3 < size_bytes; i += 4) {
         uint32_t v;
         std::memcpy(&v, data + i, 4);
         v = (v >> 16) | (v << 16);

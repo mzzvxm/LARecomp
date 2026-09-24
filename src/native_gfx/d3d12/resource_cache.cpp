@@ -18,6 +18,7 @@
 #include "../guest/guest_resources.h"
 #include "frame_capture.h"
 #include "context.h"
+#include "barrier_batch.h"
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
@@ -342,12 +343,8 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
         return false;
       }
       if (region.state != D3D12_RESOURCE_STATE_COPY_DEST) {
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Transition.pResource = region.resource.Get();
-        barrier.Transition.StateBefore = region.state;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cl->ResourceBarrier(1, &barrier);
+        BarrierBatch::TransitionBuffer(cl, region.resource.Get(), region.state,
+                                       D3D12_RESOURCE_STATE_COPY_DEST);
       }
       // One copy per run of consecutive dirty blocks, packed back to back in
       // the staging allocation. Block offsets are multiples of 4096 from a
@@ -377,14 +374,11 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
         staged += len;
         b = e;
       }
-      D3D12_RESOURCE_BARRIER barrier = {};
-      barrier.Transition.pResource = region.resource.Get();
-      barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-      barrier.Transition.StateAfter =
+      const D3D12_RESOURCE_STATES target_state =
           D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
-      barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      cl->ResourceBarrier(1, &barrier);
-      region.state = barrier.Transition.StateAfter;
+      BarrierBatch::TransitionBuffer(cl, region.resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                     target_state);
+      region.state = target_state;
       // The whole-region hash is diag-only; the region's bytes are no longer
       // the ones it described.
       region.content_hash = 0;
@@ -443,25 +437,18 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   // not the same upload. Never read back from staging.
 
   if (region.state != D3D12_RESOURCE_STATE_COPY_DEST) {
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Transition.pResource = region.resource.Get();
-    barrier.Transition.StateBefore = region.state;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &barrier);
+    BarrierBatch::TransitionBuffer(cl, region.resource.Get(), region.state,
+                                   D3D12_RESOURCE_STATE_COPY_DEST);
   }
   cl->CopyBufferRegion(region.resource.Get(), 0, staging.buffer, staging.offset, region.size);
   stats_.upload_us +=
       std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - upload_begin)
           .count();
-  D3D12_RESOURCE_BARRIER barrier = {};
-  barrier.Transition.pResource = region.resource.Get();
-  barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-  barrier.Transition.StateAfter =
+  const D3D12_RESOURCE_STATES target_state =
       D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
-  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(1, &barrier);
-  region.state = barrier.Transition.StateAfter;
+  BarrierBatch::TransitionBuffer(cl, region.resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                 target_state);
+  region.state = target_state;
   region.dirty = false;
   // The watch is consumed when it fires, so it has to be re-armed after every
   // upload or the region would only ever be invalidated once. A streaming

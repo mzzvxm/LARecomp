@@ -3714,16 +3714,19 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // that BeginFrame rewinds, so a GPU address from a previous batch points at
     // bytes that have since been overwritten. context.frame_index() advances on
     // every submit, which makes it exactly the right epoch.
-    static std::vector<uint8_t> vs_mirror, ps_mirror;
+    static std::vector<uint8_t> vs_mirror, ps_mirror, shared_mirror;
     static uint64_t mirror_epoch = UINT64_MAX;
-    static uint64_t mirror_vs_gpu = 0, mirror_ps_gpu = 0;
+    static uint64_t mirror_vs_gpu = 0, mirror_ps_gpu = 0, mirror_shared_gpu = 0;
     const uint64_t epoch = context.frame_index();
     const bool epoch_ok = epoch == mirror_epoch && vs_mirror.size() == kAluBankBytes &&
-                          ps_mirror.size() == kAluBankBytes;
+                          ps_mirror.size() == kAluBankBytes &&
+                          shared_mirror.size() == kSharedConstantsBytes;
     const bool vs_same =
         epoch_ok && std::memcmp(vs_mirror.data(), vs_bank.data(), kAluBankBytes) == 0;
     const bool ps_same =
         epoch_ok && std::memcmp(ps_mirror.data(), ps_bank.data(), kAluBankBytes) == 0;
+    const bool shared_same =
+        epoch_ok && std::memcmp(shared_mirror.data(), shared.data(), kSharedConstantsBytes) == 0;
     // Any early return below leaves the mirror describing an allocation this
     // draw abandoned, so drop it rather than hand it to the next draw.
     const auto invalidate_mirror = [&]() { mirror_epoch = UINT64_MAX; };
@@ -3748,24 +3751,29 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       std::memcpy(a.cpu, ps_bank.data(), kAluBankBytes);
       cbv.ps = a.gpu;
     }
+    if (shared_same) {
+      cbv.shared = mirror_shared_gpu;
+    } else {
+      if (!upload_or_flush(kSharedConstantsBytes)) {
+        invalidate_mirror();
+        return;
+      }
+      std::memcpy(a.cpu, shared.data(), kSharedConstantsBytes);
+      cbv.shared = a.gpu;
+    }
     if (!vs_same) {
       vs_mirror.assign(vs_bank.begin(), vs_bank.end());
     }
     if (!ps_same) {
       ps_mirror.assign(ps_bank.begin(), ps_bank.end());
     }
+    if (!shared_same) {
+      shared_mirror.assign(shared.data(), shared.data() + kSharedConstantsBytes);
+    }
     mirror_vs_gpu = cbv.vs;
     mirror_ps_gpu = cbv.ps;
+    mirror_shared_gpu = cbv.shared;
     mirror_epoch = epoch;
-
-    // The shared buffer carries this draw's descriptor indices, so it is always
-    // different and always uploaded.
-    if (!upload_or_flush(kSharedConstantsBytes)) {
-      invalidate_mirror();
-      return;
-    }
-    std::memcpy(a.cpu, shared.data(), kSharedConstantsBytes);
-    cbv.shared = a.gpu;
   }
   ProfileAdd(g_profile.const_us, t_const);
 
