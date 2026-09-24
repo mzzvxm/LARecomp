@@ -3011,6 +3011,25 @@ void Patch_ArchiveList(PPCRegister& r1) {
                                       kListBufferSize);
 }
 
+// Driver animations of a new car. The game files them under the car's name
+// minus "vp_" and, when the pack is missing, falls back to the Challenger's
+// (sub_823D2AB0) -- which in a cloned Impala's seat put the driver into the
+// seat back with his hands off the wheel. The three buffers are renamed right
+// after they are formatted, so the pack, its dictionary and every animation in
+// it are the ones the donor's seat was authored for. See hooks.h.
+void MCLA_DriverAnimPack(PPCRegister& r1) {
+    mc::modloader::AliasDriverAnimName(static_cast<uint32_t>(r1.u64) + 0x80, 0x80);
+}
+
+void MCLA_DriverAnimDict(PPCRegister& r28, PPCRegister& r29) {
+    mc::modloader::AliasDriverAnimName(static_cast<uint32_t>(r29.u64),
+                                       static_cast<uint32_t>(r28.u64));
+}
+
+void MCLA_DriverAnimName(PPCRegister& r1) {
+    mc::modloader::AliasDriverAnimName(static_cast<uint32_t>(r1.u64) + 0x50, 0x80);
+}
+
 // Ride height range. sub_82392F68 is the wheel-fit validator: with
 //   f31 = TireRadius, f30 = RideHeight (negative = lowered)
 // it rejects a setup when f31 + f30 < AxleToFloorboards ("ride too low
@@ -4864,6 +4883,9 @@ bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
 void MCLA_StreamOpenResult(PPCRegister& r1, PPCRegister& r3) {}
 void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
 void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3) {}
+void MCLA_DriverAnimPack(PPCRegister& r1) {}
+void MCLA_DriverAnimDict(PPCRegister& r28, PPCRegister& r29) {}
+void MCLA_DriverAnimName(PPCRegister& r1) {}
 void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4) {}
 void MCLA_ResourceFixupError(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {}
 void MCLA_ResourceSegments(PPCRegister& r31) {}

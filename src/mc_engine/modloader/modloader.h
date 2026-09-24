@@ -34,4 +34,11 @@ void Init();
 // inactive, when the archive is already listed, or when it would not fit.
 void AppendModArchiveTo(uint32_t buffer, size_t capacity);
 
+// Renames a new car's driver animation name, in place, to the one it borrows
+// (its donor's unless parts.txt says `driver = <car>`). `buffer` is a guest
+// string the engine just formatted: a pack path, a dictionary path or an
+// animation name. Does nothing when no new car is named in it or the result
+// would not fit in `capacity` bytes, terminator included.
+void AliasDriverAnimName(uint32_t buffer, size_t capacity);
+
 }  // namespace mc::modloader

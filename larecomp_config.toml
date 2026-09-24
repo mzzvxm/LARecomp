@@ -25865,6 +25865,28 @@ address = 0x822C4864
 name = "Patch_ArchiveList"
 registers = ["r1"]
 
+# Driver animations of a car the modloader builds from a donor. Each hook is
+# the instruction after the sprintf that formats a name out of the car's; the
+# buffer is renamed to the donor's pack so the driver sits in the donor's seat
+# the way that seat was animated, instead of in the Challenger fallback.
+# 0x823D2D68: sub_823D2AB0, "$/resources/animation/Drv/%s/%s/%s" at r1+0x80.
+[[midasm_hook]]
+address = 0x823D2D68
+name = "MCLA_DriverAnimPack"
+registers = ["r1"]
+
+# 0x823B7C5C: sub_823B7BD0, "$/anim/Drv/%s/%s" into r29, r28 bytes.
+[[midasm_hook]]
+address = 0x823B7C5C
+name = "MCLA_DriverAnimDict"
+registers = ["r28", "r29"]
+
+# 0x823B7E9C: sub_823B7E20, "%s_%s" / "%s_f%s" at r1+0x50, 128 bytes.
+[[midasm_hook]]
+address = 0x823B7E9C
+name = "MCLA_DriverAnimName"
+registers = ["r1"]
+
 # BadassBaboon's Recomp Adjustments: Continuous-time exponential decay camera smoothing
 # 0x82320468: addi r9, r1, 0x50 in sub_82320298 (mcPlayerCamera::Update).
 # f13 is the camera position chase/lag smoothing factor S1 right before storage.

@@ -103,6 +103,17 @@ void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegist
 // opened. Covers the tunes, cameras and garage files the streamer never sees.
 void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3);
 
+// Driver animations of a car the game does not ship. Each hook sits one
+// instruction after the sprintf that names them and hands the buffer to
+// mc::modloader::AliasDriverAnimName, which swaps the new car's name for the
+// one whose animations it borrows:
+//   sub_823D2AB0 pack path    "$/resources/animation/Drv/%s/%s/%s", r1+0x80, 128
+//   sub_823B7BD0 dictionary   "$/anim/Drv/%s/%s", r29, r28 bytes
+//   sub_823B7E20 anim name    "%s_%s" / "%s_f%s", r1+0x50, 128
+void MCLA_DriverAnimPack(PPCRegister& r1);
+void MCLA_DriverAnimDict(PPCRegister& r28, PPCRegister& r29);
+void MCLA_DriverAnimName(PPCRegister& r1);
+
 // Entry of zlibInflater's decode step; r4 is its context. Says how much the
 // decoder ate and produced, which is the only evidence a repacked resource that
 // never arrives leaves behind.

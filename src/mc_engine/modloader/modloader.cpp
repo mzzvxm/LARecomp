@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -559,6 +560,19 @@ constexpr uint32_t kResourceTailSlack = 65536;
 constexpr uint32_t kCarPageShift = 8;
 
 bool g_mod_archive_ready = false;
+
+// Driver animation name of each new car -> the name whose animations it borrows.
+// Filled while the cars are built, read by the guest's path formatters.
+std::mutex g_driver_alias_mutex;
+std::map<std::string, std::string, std::less<>> g_driver_alias;
+
+// The name the driver animations are filed under: the car's name without its
+// "vp_" (sub_823D2AB0 and sub_823B7BD0 skip three characters unless the name
+// starts with "vpd"; the bytes at 0x82058B5C are "vpd").
+std::string DriverAnimName(const std::string& car) {
+    if (car.rfind("vpd", 0) == 0) return car;
+    return car.substr(std::min<size_t>(3, car.size()));
+}
 
 std::filesystem::path ExeDir() {
 #if defined(_WIN32)
@@ -1358,6 +1372,13 @@ struct ShaderRule {
 
 struct VehiclePlan {
     std::string donor;
+    // Whose driver animations the car borrows. Empty means the donor's. The
+    // seat, the wheel and the pedals are where the donor's skeleton puts them,
+    // so the donor's own pack is the one that fits; the game's fallback for a
+    // car with no pack is the Challenger's, and in the Impala's seat that sat
+    // the driver inside the seat back with his hands off the wheel. A donor
+    // with no pack of its own (vp_chv_police_96) names one here.
+    std::string driver;
     std::vector<PartMapping> slots;
     std::vector<ShaderRule> shaders;
     std::vector<std::string> silenced;  // slots shipped empty
@@ -1512,6 +1533,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 // operand in the key. No existing parts.txt changes meaning.
 //
 //   donor          = vp_chv_police_96
+//   driver         = vp_chv_impala_96   (whose driver animations; default the donor)
 //   scale          = 1.0735
 //   offset         = 0 0.7557 0.111
 //   yaw            = 0
@@ -1578,6 +1600,10 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower == "donor") {
             plan.donor = mapping.groups.front();
+            continue;
+        }
+        if (lower == "driver") {
+            plan.driver = mapping.groups.front();
             continue;
         }
         if (lower == "verbatim") {
@@ -3092,7 +3118,20 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
             // have to be placed by ONE transform or they arrive at different
             // sizes. Cutting the body out here left the rest of the model
             // behind before anything could ask for it.
-            built += BuildDonorCar(vehicle, plan, std::move(mesh), archive, writer);
+            const size_t car_files =
+                BuildDonorCar(vehicle, plan, std::move(mesh), archive, writer);
+            built += car_files;
+            if (car_files != 0) {
+                const std::string from = DriverAnimName(vehicle.car);
+                const std::string to =
+                    DriverAnimName(plan.driver.empty() ? plan.donor : plan.driver);
+                if (from != to) {
+                    std::lock_guard<std::mutex> lock(g_driver_alias_mutex);
+                    g_driver_alias[from] = to;
+                }
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: driver animations from {}",
+                                  vehicle.mod_name, vehicle.car, to);
+            }
             continue;
         }
 
@@ -3558,6 +3597,63 @@ void AppendModArchiveTo(uint32_t buffer, size_t capacity) {
 
     LARECOMP_APP_INFO("[mods] archive list: {}",
                       reinterpret_cast<const char*>(list));
+}
+
+void AliasDriverAnimName(uint32_t buffer, size_t capacity) {
+    if (capacity == 0) return;
+    std::lock_guard<std::mutex> lock(g_driver_alias_mutex);
+    if (g_driver_alias.empty()) return;
+
+    char* text = reinterpret_cast<char*>(GuestPointer(buffer));
+    if (!text) return;
+    size_t length = 0;
+    while (length < capacity && text[length] != 0) ++length;
+    if (length >= capacity) return;
+
+    // The name is a whole path element or the head of "<name>_<anim>": it
+    // starts the string or follows a '/', and ends the string or meets a '/'
+    // or a '_'. Of the names that fit there, the longest wins, so a new car
+    // whose name extends another's is never read as that one. Case is ignored
+    // and kept: sub_823B7C68 upper-cases the name before the pack path is
+    // formatted ("Drv/Player/Male/BMW_740I_E38").
+    const std::string_view view(text, length);
+    const auto same_at = [&](size_t at, const std::string& name) {
+        if (at + name.size() > length) return false;
+        for (size_t i = 0; i < name.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(view[at + i])) !=
+                std::tolower(static_cast<unsigned char>(name[i]))) {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (size_t at = 0; at < length; at = view.find('/', at) + 1) {
+        const std::pair<const std::string, std::string>* best = nullptr;
+        for (const auto& alias : g_driver_alias) {
+            const std::string& name = alias.first;
+            if (!same_at(at, name)) continue;
+            const size_t end = at + name.size();
+            if (end < length && view[end] != '/' && view[end] != '_') continue;
+            if (!best || name.size() > best->first.size()) best = &alias;
+        }
+        if (best) {
+            const std::string& from = best->first;
+            std::string to = best->second;
+            if (length - from.size() + to.size() + 1 > capacity) return;
+            const bool upper = std::any_of(view.begin() + at, view.begin() + at + from.size(),
+                                           [](unsigned char c) { return std::isupper(c); });
+            if (upper) {
+                std::transform(to.begin(), to.end(), to.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::toupper(c));
+                });
+            }
+            std::memmove(text + at + to.size(), text + at + from.size(),
+                         length - at - from.size() + 1);
+            std::memcpy(text + at, to.data(), to.size());
+            return;
+        }
+        if (view.find('/', at) == std::string_view::npos) break;
+    }
 }
 
 void Init() {
