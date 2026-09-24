@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 // The image loader is vendored here rather than borrowed from the SDK, which
 // exposes one built with STBI_ONLY_PNG for decoding icons. A mod's textures are
@@ -852,6 +853,22 @@ bool BuildMeshAtlas(Mesh& mesh, uint32_t cell_size, Image& atlas, std::string& e
             vertex.v = origin_v + inset_v + w * (span - 2.0f * inset_v);
         }
     }
+    return true;
+}
+
+bool InflateRaw(const uint8_t* data, size_t size, size_t expected, std::vector<uint8_t>& out) {
+    out.clear();
+    constexpr size_t kLimit = static_cast<size_t>(std::numeric_limits<int>::max());
+    if (!data || size == 0 || expected == 0 || size > kLimit || expected > kLimit) return false;
+    out.resize(expected);
+    const int inflated = stbi_zlib_decode_noheader_buffer(
+        reinterpret_cast<char*>(out.data()), static_cast<int>(expected),
+        reinterpret_cast<const char*>(data), static_cast<int>(size));
+    if (inflated < 0) {
+        out.clear();
+        return false;
+    }
+    out.resize(static_cast<size_t>(inflated));
     return true;
 }
 

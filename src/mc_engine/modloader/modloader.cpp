@@ -3568,6 +3568,150 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
     return built;
 }
 
+// ---------------------------------------------------------------------------
+// The rim a car config names.
+//
+// A CarConfig (.xcc) states its rim as a byte at +0x844: an index into the rim
+// catalog, the "rims" sections of tune/vehicle/wheel_models.list and then
+// wheel_models0001..0007.list, in that order (sub_8239ACA0 counts them at boot,
+// sub_8239A128 fills them). A byte past the end of the catalog means "the car's
+// own": sub_82390768 then builds whl_stk_<name without its first three
+// characters> and looks it up by name (sub_8238F9D0), and a new car's config
+// says 0xFF for exactly that, because nobody knows its index when it is written.
+//
+// That lookup only happens when the car is built to be driven. Buying one
+// (sub_8238B6E8) copies the config into the garage as it stands, and the garage
+// draws rim 255, which does not exist -- so a new BMW stood in the garage with
+// no wheels at all until it had been out on the street once, and the index it
+// found there is what the save then kept (0xAF in the second _98's slot). The
+// catalog is fixed by the lists this archive ships, so the index is resolved
+// here instead, the same way, and written into the config.
+
+constexpr size_t kCarConfigSize = 8176;
+constexpr size_t kCarConfigRim = 0x844;   // u8 index into the rim catalog
+constexpr size_t kCarConfigName = 0x1FAD; // char[32], the vehicle's name
+
+// A plain file out of the shipped archive. One stored compressed has bit 30 of
+// its flag set and the stream length in the low thirty bits -- a raw deflate
+// stream, with `size` the inflated length.
+bool ReadArchiveText(const Rpf3Reader& archive, std::string_view path, std::string& out) {
+    Rpf3Entry entry;
+    std::vector<uint8_t> raw;
+    if (!archive.Find(path, entry) || entry.is_directory() || entry.is_resource() ||
+        !archive.ReadFile(entry, raw)) {
+        return false;
+    }
+    if ((entry.flag & 0x40000000u) != 0) {
+        const size_t stored = std::min<size_t>(entry.flag & 0x3FFFFFFFu, raw.size());
+        std::vector<uint8_t> inflated;
+        if (!InflateRaw(raw.data(), stored, entry.size, inflated)) return false;
+        raw = std::move(inflated);
+    }
+    out.assign(raw.begin(), raw.end());
+    return true;
+}
+
+// The names in the "rims" block of a wheel list. The block is flat; a name
+// followed by its own braces would be a group (the tires block has tir_car and
+// tir_bike), and is skipped rather than counted.
+std::vector<std::string> RimSection(std::string_view text) {
+    std::vector<std::string> tokens;
+    for (size_t at = 0; at < text.size();) {
+        const char c = text[at];
+        if (c == '{' || c == '}') {
+            tokens.emplace_back(1, c);
+            ++at;
+        } else if (std::isspace(static_cast<unsigned char>(c))) {
+            ++at;
+        } else {
+            size_t end = at;
+            while (end < text.size() && text[end] != '{' && text[end] != '}' &&
+                   !std::isspace(static_cast<unsigned char>(text[end]))) {
+                ++end;
+            }
+            tokens.emplace_back(text.substr(at, end - at));
+            at = end;
+        }
+    }
+
+    std::vector<std::string> rims;
+    int depth = 0;
+    bool inside = false;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const std::string& token = tokens[i];
+        if (token == "{") {
+            ++depth;
+        } else if (token == "}") {
+            if (--depth == 0 && inside) break;
+        } else if (depth == 0) {
+            inside = token == "rims" && i + 1 < tokens.size() && tokens[i + 1] == "{";
+        } else if (inside && depth == 1 && !(i + 1 < tokens.size() && tokens[i + 1] == "{")) {
+            rims.push_back(token);
+        }
+    }
+    return rims;
+}
+
+// The rim catalog as the game will build it from this archive: each list from
+// the mod that ships it (the first one, as the raw-file pass keeps), otherwise
+// from the shipped archive.
+std::vector<std::string> RimCatalog(const Rpf3Reader& archive,
+                                    const std::vector<RawFile>& raw_files) {
+    std::vector<std::string> catalog;
+    for (int list = 0; list < 8; ++list) {
+        const std::string path = list == 0 ? std::string("tune/vehicle/wheel_models.list")
+                                           : fmt::format("tune/vehicle/wheel_models{:04d}.list",
+                                                         list);
+        std::string text;
+        bool found = false;
+        for (const RawFile& file : raw_files) {
+            if (file.archive_path.size() != path.size() ||
+                !std::equal(path.begin(), path.end(), file.archive_path.begin(),
+                            [](char a, char b) {
+                                return std::tolower(static_cast<unsigned char>(a)) ==
+                                       std::tolower(static_cast<unsigned char>(b));
+                            })) {
+                continue;
+            }
+            std::ifstream input(file.source, std::ios::binary);
+            text.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+            found = true;
+            break;
+        }
+        if (!found && !ReadArchiveText(archive, path, text)) continue;
+        for (std::string& rim : RimSection(text)) catalog.push_back(std::move(rim));
+    }
+    return catalog;
+}
+
+// sub_8238F9D0's name for a car's own rim.
+std::string StockRimName(const std::string& car) {
+    if (car.find("DUB") != std::string::npos) return "whl_am_tis_tis07";
+    if (car.find("vpd_") != std::string::npos) {
+        return "whld_stk_" + car.substr(std::min<size_t>(4, car.size()));
+    }
+    return "whl_stk_" + car.substr(std::min<size_t>(3, car.size()));
+}
+
+// Writes the catalog index of the car's own rim into a config that asks for it
+// by name. Returns the index written, or -1 when the config names a rim of its
+// own or the rim is not in the catalog.
+int ResolveConfigRim(std::vector<uint8_t>& config, const std::vector<std::string>& catalog) {
+    if (config.size() != kCarConfigSize || catalog.empty()) return -1;
+    if (config[kCarConfigRim] < catalog.size()) return -1;
+
+    const char* name = reinterpret_cast<const char*>(config.data() + kCarConfigName);
+    const std::string car(name, strnlen(name, 32));
+    if (car.empty()) return -1;
+
+    const auto it = std::find(catalog.begin(), catalog.end(), StockRimName(car));
+    if (it == catalog.end()) return -1;
+    const size_t index = static_cast<size_t>(it - catalog.begin());
+    if (index >= 0xFF) return -1;  // a byte, and 0xFF is the "by name" mark
+    config[kCarConfigRim] = static_cast<uint8_t>(index);
+    return static_cast<int>(index);
+}
+
 }  // namespace
 
 void AppendModArchiveTo(uint32_t buffer, size_t capacity) {
@@ -3725,6 +3869,14 @@ void Init() {
         return;
     }
 
+    // What a car config's rim byte indexes, from the same lists this archive
+    // is about to ship. See ResolveConfigRim.
+    const std::vector<std::string> rim_catalog =
+        has_meshes ? RimCatalog(archive, raw_files) : std::vector<std::string>{};
+    if (!rim_catalog.empty()) {
+        LARECOMP_APP_INFO("[mods] rim catalog: {} rim(s)", rim_catalog.size());
+    }
+
     // A mesh named "all" replaces every character there is, which is the way out
     // of having to know which resource a given racer, car or bike will ask for.
     // A mesh named after one character still wins for that character, so one can
@@ -3809,6 +3961,29 @@ void Init() {
         const bool is_resource_file =
             size > kRsc5HeaderSize &&
             (LoadBE32(head) == kLarcMagic || LoadBE32(head) == kRsc5Magic);
+
+        // A car config that asks for its rim by name goes in with the index
+        // already resolved, or the garage shows the car without wheels until
+        // it has been driven once. See ResolveConfigRim.
+        if (!is_resource_file && size == kCarConfigSize && !rim_catalog.empty() &&
+            key.size() > 4 && key.compare(key.size() - 4, 4, ".xcc") == 0) {
+            std::vector<uint8_t> config;
+            {
+                std::ifstream input(file.source, std::ios::binary);
+                config.assign(std::istreambuf_iterator<char>(input),
+                              std::istreambuf_iterator<char>());
+            }
+            const uint8_t asked = config.size() == kCarConfigSize ? config[kCarConfigRim] : 0;
+            const int rim = ResolveConfigRim(config, rim_catalog);
+            if (rim >= 0) {
+                writer.Add(file.archive_path, std::move(config), static_cast<uint32_t>(size), 0);
+                taken_paths.push_back(std::move(key));
+                LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, rim byte {:#04x} resolved to "
+                                  "catalog index {})",
+                                  file.mod_name, file.archive_path, size, asked, rim);
+                continue;
+            }
+        }
 
         if (!is_resource_file) {
             writer.AddFromFile(file.archive_path, file.source, size,

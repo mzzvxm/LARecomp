@@ -92,4 +92,10 @@ Image LampNormalMap(const Image& picture, float strength = 2.0f);
 // bright as a stock car's. 0.55 brings the mean back to the donor's.
 Image LampGlowMap(const Image& picture, float scale = 0.55f);
 
+// Inflates a raw deflate stream (no zlib header), the shape a compressed plain
+// file takes in an RPF3 archive. `expected` is the inflated size the entry
+// states; the result is empty on failure. It lives here because this is the
+// file that owns stb_image, whose zlib decoder it borrows.
+bool InflateRaw(const uint8_t* data, size_t size, size_t expected, std::vector<uint8_t>& out);
+
 }  // namespace mc::modloader
