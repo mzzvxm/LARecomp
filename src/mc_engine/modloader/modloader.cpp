@@ -2022,6 +2022,12 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     const bool want_car_textures =
         REXCVAR_GET(model_mods_car_textures) && !plan.verbatim && !mesh.images.empty() &&
         ReadPackMaterials(pack, pack_materials);
+    // CarLight still gets an atlas, but not as a colour map -- it has none. The
+    // texture PackMaterialDiffuse picks for it is the lens NORMAL map (+16,
+    // purple facets; the Impala's other CarLight binds swatch_flatnormal there)
+    // and its companion is the glow mask (+20, _light_i, grey, R = G).
+    // ReplacePackMaterialDiffuse turns the photos into relief and glow for those
+    // two; the colour comes from the lamp index (MeshOffset::nearest_band).
     if (want_car_textures) {
         std::string list;
         size_t writable = 0;
@@ -2036,6 +2042,54 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         LARECOMP_APP_INFO("[mods] {}/vehicles/{}: donor {} offers {} writable texture slot(s): {}",
                           vehicle.mod_name, car, donor, writable,
                           list.empty() ? "none" : list);
+    }
+
+    // One atlas for every lamp, shared by every drawable that draws CarLight.
+    //
+    // The pack holds one picture per shader for the whole car, and
+    // BuildMeshAtlas crops each cell to the UV range the drawable it is given
+    // uses. Lamps split across headlight0 and taillight0 -- which is where the
+    // light halo comes from: with those slots silenced the car drew no glow
+    // at all -- crop the same photographs differently, and the second slot
+    // would read the first one's layout. So the lamps are atlased once, as a
+    // union, before any drawable is cut, and every CarLight pass takes this.
+    Image lamp_atlas;
+    bool lamp_atlas_ready = false;
+    if (want_car_textures) {
+        std::vector<std::string> lamp_materials;
+        for (const ShaderRule& rule : plan.shaders) {
+            if (rule.material != "*" && rule.effect.rfind("CarLight", 0) == 0)
+                lamp_materials.push_back(rule.material);
+        }
+        Mesh lamps;
+        lamps.images = mesh.images;
+        std::vector<uint32_t> source;
+        for (const MeshPart& part : mesh.parts) {
+            if (std::find(lamp_materials.begin(), lamp_materials.end(), part.material) ==
+                lamp_materials.end()) {
+                continue;
+            }
+            MeshPart copy = part;
+            copy.first_vertex = static_cast<uint32_t>(lamps.vertices.size());
+            for (uint32_t i = 0; i < part.vertex_count; ++i) {
+                lamps.vertices.push_back(mesh.vertices[part.first_vertex + i]);
+                source.push_back(part.first_vertex + i);
+            }
+            lamps.parts.push_back(copy);
+        }
+        uint32_t cells = 0;
+        std::string lamp_error;
+        if (!lamps.vertices.empty() &&
+            BuildMeshAtlas(lamps, kAtlasCell, lamp_atlas, lamp_error, &cells)) {
+            for (size_t i = 0; i < source.size(); ++i) {
+                mesh.vertices[source[i]].u = lamps.vertices[i].u;
+                mesh.vertices[source[i]].v = lamps.vertices[i].v;
+            }
+            lamp_atlas_ready = true;
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: lamps share one {}x{} atlas of {} image(s) "
+                              "across every CarLight drawable", vehicle.mod_name, car,
+                              lamp_atlas.width, lamp_atlas.height, cells);
+        }
     }
 
     // The shell. Every group the `body` line names, which is the whole model
@@ -2259,7 +2313,14 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // Only for a shader that samples anything: see the note on
             // pack_materials for why a paint or glass shader must keep the UVs
             // it came with.
-            if (want_car_textures && shader < pack_materials.size() &&
+            const bool shared_lamp =
+                lamp_atlas_ready && std::string_view(CarEffectName(effects[shader])) == "CarLight";
+            if (shared_lamp) {
+                if (lod == 0 && !atlas_of.count(shader) && shader < pack_materials.size() &&
+                    pack_materials[shader].writable) {
+                    atlas_of[shader] = lamp_atlas;
+                }
+            } else if (want_car_textures && shader < pack_materials.size() &&
                 pack_materials[shader].writable) {
                 Image shader_atlas;
                 uint32_t cells = 0;
@@ -2622,7 +2683,15 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 Mesh part = ExtractShader(placed, part_shader_of, part_fallback, shader);
                 if (part.vertices.empty() || part.indices.size() < 3) continue;
 
-                if (want_car_textures && shader < pack_materials.size() &&
+                const bool shared_lamp = lamp_atlas_ready &&
+                                         std::string_view(CarEffectName(effects[shader])) ==
+                                             "CarLight";
+                if (shared_lamp) {
+                    if (lod == 0 && !atlas_of.count(shader) && shader < pack_materials.size() &&
+                        pack_materials[shader].writable) {
+                        atlas_of[shader] = lamp_atlas;
+                    }
+                } else if (want_car_textures && shader < pack_materials.size() &&
                     pack_materials[shader].writable) {
                     Image shader_atlas;
                     uint32_t cells = 0;

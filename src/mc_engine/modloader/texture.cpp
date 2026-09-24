@@ -425,6 +425,56 @@ Image FlatNormalMap(uint32_t width, uint32_t height) {
     return out;
 }
 
+Image LampNormalMap(const Image& picture, float strength) {
+    Image out;
+    out.width = picture.width;
+    out.height = picture.height;
+    out.rgba.assign(picture.rgba.size(), 255);
+    if (picture.empty()) return out;
+    const int w = static_cast<int>(picture.width), h = static_cast<int>(picture.height);
+    auto height = [&](int x, int y) {
+        x = std::clamp(x, 0, w - 1);
+        y = std::clamp(y, 0, h - 1);
+        const uint8_t* p = &picture.rgba[(static_cast<size_t>(y) * w + x) * 4];
+        return (0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2]) / 255.0f;
+    };
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            // Sobel, so one noisy texel does not become a spike.
+            const float dx = (height(x + 1, y - 1) + 2 * height(x + 1, y) + height(x + 1, y + 1)) -
+                             (height(x - 1, y - 1) + 2 * height(x - 1, y) + height(x - 1, y + 1));
+            const float dy = (height(x - 1, y + 1) + 2 * height(x, y + 1) + height(x + 1, y + 1)) -
+                             (height(x - 1, y - 1) + 2 * height(x, y - 1) + height(x + 1, y - 1));
+            float nx = -dx * strength, ny = -dy * strength, nz = 1.0f;
+            const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= length;
+            ny /= length;
+            nz /= length;
+            uint8_t* o = &out.rgba[(static_cast<size_t>(y) * w + x) * 4];
+            o[0] = static_cast<uint8_t>(std::lround((nx * 0.5f + 0.5f) * 255.0f));
+            o[1] = static_cast<uint8_t>(std::lround((ny * 0.5f + 0.5f) * 255.0f));
+            o[2] = static_cast<uint8_t>(std::lround((nz * 0.5f + 0.5f) * 255.0f));
+            o[3] = 255;
+        }
+    }
+    return out;
+}
+
+Image LampGlowMap(const Image& picture, float scale) {
+    Image out;
+    out.width = picture.width;
+    out.height = picture.height;
+    out.rgba.assign(picture.rgba.size(), 255);
+    for (size_t i = 0; i + 3 < picture.rgba.size(); i += 4) {
+        const float brightest =
+            std::max({picture.rgba[i + 0], picture.rgba[i + 1], picture.rgba[i + 2]});
+        const uint8_t glow = static_cast<uint8_t>(
+            std::clamp(std::lround(brightest * scale), 0L, 255L));
+        out.rgba[i + 0] = out.rgba[i + 1] = out.rgba[i + 2] = glow;
+    }
+    return out;
+}
+
 void ResizeImage(const Image& source, uint32_t width, uint32_t height, Image& out) {
     out.width = width;
     out.height = height;

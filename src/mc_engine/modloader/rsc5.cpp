@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <string_view>
 #include <utility>
 
 #include "lzx_encode.h"
@@ -4553,6 +4554,35 @@ bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, con
     if (!target.supported) {
         error = "texture " + target.name + " is in a format this cannot write";
         return false;
+    }
+
+    // A lamp has no colour map: what PackMaterialDiffuse found is the lens
+    // normal map, and its companion _i is the glow mask. Both are built from
+    // the photograph instead of receiving it. See LampNormalMap.
+    uint32_t effect = 0;
+    view.U32(material + kMaterialEffect, effect);
+    if (std::string_view(CarEffectName(effect)) == "CarLight") {
+        uint32_t levels = 0;
+        if (!WriteTextureInPlace(view, pack, allocations, target, LampNormalMap(image), levels)) {
+            error = "no room to write " + target.name + " in place";
+            return false;
+        }
+        const Image glow = LampGlowMap(image);
+        for (uint32_t address : PackMaterialTextures(view, material, dictionary)) {
+            TextureRef texture;
+            if (!ReadTexture(view, address, texture)) continue;
+            if (!texture.supported || texture.base == 0 || texture.address == target.address)
+                continue;
+            uint32_t glow_levels = 0;
+            WriteTextureInPlace(view, pack, allocations, texture, glow, glow_levels);
+        }
+        if (stats) {
+            stats->name = target.name;
+            stats->width = target.width;
+            stats->height = target.height;
+            stats->levels = levels;
+        }
+        return true;
     }
 
     uint32_t levels = 0;

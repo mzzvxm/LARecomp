@@ -74,4 +74,22 @@ uint32_t StoredTextureSize(uint32_t width, uint32_t height, BlockFormat format);
 // Flat is therefore mid-grey in both of those and nothing anywhere else.
 Image FlatNormalMap(uint32_t width, uint32_t height);
 
+// The two pictures a car LAMP is made of, built from a mod's lamp photograph.
+//
+// CarLight samples no colour map: its lamp colour is a constant picked by the
+// lamp index, and what gives a shipped lamp its detail is a lens NORMAL map
+// (plain RGB, flat = 128,128,255 -- vp_chv_impala_96_light is purple) and a
+// glow mask (_light_i, grey, R = G). So the photograph becomes relief -- its
+// luminance read as height -- and glow -- its brightest channel, so a red lens
+// glows as hard as a white one.
+Image LampNormalMap(const Image& picture, float strength = 2.0f);
+//
+// The glow is scaled down to the donor's level. A lamp photograph is bright
+// across the whole lens -- a red lens is 255 in red wherever it is red -- while
+// a shipped glow mask is a soft blob. Measured over the lit area (> 0.05):
+// vp_chv_impala_96_light_i averages 0.345 (median 0.28), the BMW's two lamp
+// photos 0.585 and 0.649 unscaled, which lit the tail lamps about twice as
+// bright as a stock car's. 0.55 brings the mean back to the donor's.
+Image LampGlowMap(const Image& picture, float scale = 0.55f);
+
 }  // namespace mc::modloader
