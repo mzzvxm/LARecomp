@@ -335,11 +335,21 @@ void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
     const std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     if (size > 0) {
-      std::vector<uint8_t> blob(static_cast<size_t>(size));
-      if (file.read(reinterpret_cast<char*>(blob.data()), size)) {
-        HRESULT hr = dev1->CreatePipelineLibrary(blob.data(), blob.size(),
+      // CreatePipelineLibrary does not copy the blob: "the pointer provided as
+      // input to this method must remain valid for the lifetime of the object
+      // returned". Read into a local vector it was freed as soon as this block
+      // closed, and every PSO loaded out of the library afterwards -- and every
+      // Serialize -- read released memory. The driver removed the device on
+      // the first load (DXGI_ERROR_DRIVER_INTERNAL_ERROR): the black screen.
+      // Only a boot that finds the file builds the library from it, so the
+      // boot that writes it always looked fine.
+      bool from_file = false;
+      library_blob_.resize(static_cast<size_t>(size));
+      if (file.read(reinterpret_cast<char*>(library_blob_.data()), size)) {
+        HRESULT hr = dev1->CreatePipelineLibrary(library_blob_.data(), library_blob_.size(),
                                                  IID_PPV_ARGS(&pipeline_library_));
         if (SUCCEEDED(hr)) {
+          from_file = true;
           REXLOG_INFO("[native_gfx] ID3D12PipelineLibrary loaded from {} ({} bytes)",
                       library_path_, size);
         } else if (hr == D3D12_ERROR_DRIVER_VERSION_MISMATCH) {
@@ -352,6 +362,9 @@ void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
           dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
           library_dirty_ = true;
         }
+      }
+      if (!from_file) {
+        library_blob_ = std::vector<uint8_t>();  // an empty library points at nothing
       }
     }
   }

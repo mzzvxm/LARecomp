@@ -156,6 +156,10 @@ class PipelineCache {
  private:
   void InitializePipelineLibrary(D3D12Context& context);
 
+  // The cache file the pipeline library was created from. D3D12 keeps a
+  // pointer to these bytes instead of copying them, so they have to outlive
+  // the library and every PSO loaded out of it: declared first, destroyed last.
+  std::vector<uint8_t> library_blob_;
   Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature_;
   std::unordered_map<PsoKey, Microsoft::WRL::ComPtr<ID3D12PipelineState>, PsoKeyHash> pipelines_;
   PsoKey mru_key_ = {};
