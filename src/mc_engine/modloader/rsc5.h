@@ -345,6 +345,20 @@ struct MeshOffset {
     // shipped lamp vertex is the right donor for it. The shade word stays
     // flooded.
     bool nearest_band = false;
+
+    // Take the whole colour word from the NEAREST shipped vertex (of this pass,
+    // preferring one facing the same side) instead of flooding one.
+    //
+    // In a cabin the colour word is lighting, not a band: xInteriorTrim's VS
+    // weights siColor0, siColor1 and siColor2 -- the car's three interior light
+    // colours -- by three of its bytes and hands the fourth to the pixel shader.
+    // The Impala's interior runs them 0..253 from vertex to vertex; flooded with
+    // one average, a whole cabin answered the interior neon about as much as the
+    // darkest corner of the donor's does, which is to say not visibly. Where the
+    // cabin sits in the donor's own cabin, the donor's vertex there is the best
+    // available answer for how much of each light reaches it. Requires
+    // uniform_shade.
+    bool nearest_shade = false;
     // More candidates for nearest_band, from other drawables of the donor.
     //
     // A modifiable donor keeps its lamps in part slots: the Impala's body and

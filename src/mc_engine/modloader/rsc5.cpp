@@ -3431,6 +3431,37 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
             }
         }
 
+        // See MeshOffset::nearest_shade: the whole colour word from the nearest
+        // shipped vertex, preferring one whose normal faces the same side.
+        if (offset.nearest_shade && !shipped.empty()) {
+            for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+                const MeshVertex& vertex = mesh.vertices[i];
+                float nearest_facing = std::numeric_limits<float>::max();
+                float nearest_any = std::numeric_limits<float>::max();
+                uint32_t facing_colour = 0, any_colour = 0;
+                for (const Shade& candidate : shipped) {
+                    const float dx = candidate.x - vertex.px;
+                    const float dy = candidate.y - vertex.py;
+                    const float dz = candidate.z - vertex.pz;
+                    const float distance = dx * dx + dy * dy + dz * dz;
+                    if (distance < nearest_any) {
+                        nearest_any = distance;
+                        any_colour = candidate.colour;
+                    }
+                    const float facing = candidate.nx * vertex.nx + candidate.ny * vertex.ny +
+                                         candidate.nz * vertex.nz;
+                    if (facing > 0.0f && distance < nearest_facing) {
+                        nearest_facing = distance;
+                        facing_colour = candidate.colour;
+                    }
+                }
+                // A facing candidate much further off than the nearest one is a
+                // different surface altogether; take the nearest then.
+                shade[i] = nearest_facing <= nearest_any * 4.0f + 0.0025f ? facing_colour
+                                                                          : any_colour;
+            }
+        }
+
         // Put the template's material bands back, ring by ring.
         //
         // See MeshOffset::band_profile for the measurement this rests on. The

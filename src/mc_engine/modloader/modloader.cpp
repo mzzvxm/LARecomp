@@ -398,6 +398,17 @@ REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
     "keeps its own cell.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(model_mods_cabin_light, true, "MCLA/Mods",
+    "Give a replacement car's cabin (the car-space part slots, interior0) the "
+    "donor's per-vertex interior lighting, read off the donor's cabin vertex "
+    "nearest each new one, instead of one flooded average.\n"
+    "\n"
+    "The colour word of a cabin vertex is how much of each of the car's three "
+    "interior lights (siColor0..2: the interior neon among them) reaches it. "
+    "Flooded with one average the BMW's cabin barely answered the interior neon "
+    "being switched on. Off restores the flood.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
     "Ship a replacement car's LOD 1 as a byte copy of the LOD 0 just built, for "
     "the body and for every part slot the donor gives a LOD 1.\n"
@@ -3352,6 +3363,14 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 // as the body; an own-space slot is ALL bone-local by definition,
                 // and the part has already been moved into that frame.
                 offset.car_space_only = !own_space && REXCVAR_GET(model_mods_car_space_only);
+                // A car-space slot is the cabin, and there the colour word is how
+                // much of each interior light reaches a vertex -- read it off the
+                // donor's cabin where this one sits. See MeshOffset::nearest_shade.
+                // Paint given a shade of its own keeps it: the cabin's light is
+                // not what an exterior panel routed through here should wear.
+                offset.nearest_shade = !own_space && !offset.nearest_band &&
+                                       offset.fixed_shade == 0 &&
+                                       REXCVAR_GET(model_mods_cabin_light);
                 offset.block_align = VirtualBlockSize(resource);
                 offset.grow_buffers = lod <= 1;
                 offset.grow_ceiling = ceiling;
