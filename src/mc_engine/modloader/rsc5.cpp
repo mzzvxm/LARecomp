@@ -12,6 +12,7 @@
 #include <map>
 #include <set>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include "lzx_encode.h"
@@ -114,6 +115,22 @@ uint16_t FloatToHalf(float value) {
     if (exponent >= 31) return static_cast<uint16_t>(sign | 0x7BFFu);
     return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10) |
                                  (mantissa >> 13));
+}
+
+// For the log only: denormals read as zero, which no band or lamp index is.
+float HalfToFloat(uint16_t half) {
+    const uint32_t sign = static_cast<uint32_t>(half & 0x8000u) << 16;
+    const uint32_t exponent = (half >> 10) & 0x1Fu;
+    const uint32_t mantissa = half & 0x3FFu;
+    uint32_t bits = sign;
+    if (exponent == 31) {
+        bits |= 0x7F800000u | (mantissa << 13);
+    } else if (exponent != 0) {
+        bits |= ((exponent - 15 + 127) << 23) | (mantissa << 13);
+    }
+    float value;
+    std::memcpy(&value, &bits, 4);
+    return value;
 }
 
 // Dec3N in the plain order: bits 0-9 hold X, bits 10-19 Y, bits 20-29 Z.
@@ -3427,6 +3444,79 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                         (static_cast<uint32_t>(FloatToHalf(static_cast<float>(box.index))) << 16) |
                         (shade_texcoord1[i] & 0xFFFFu);
                     break;
+                }
+            }
+
+            // One band per piece. See MeshOffset::band_by_piece.
+            if (offset.band_by_piece && !mesh.vertices.empty()) {
+                std::vector<uint32_t> parent(mesh.vertices.size());
+                for (uint32_t v = 0; v < parent.size(); ++v) parent[v] = v;
+                auto find = [&](uint32_t v) {
+                    while (parent[v] != v) {
+                        parent[v] = parent[parent[v]];
+                        v = parent[v];
+                    }
+                    return v;
+                };
+                auto unite = [&](uint32_t a, uint32_t b) {
+                    a = find(a);
+                    b = find(b);
+                    if (a != b) parent[b] = a;
+                };
+                for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+                    const uint32_t a = mesh.indices[t], b = mesh.indices[t + 1],
+                                   c = mesh.indices[t + 2];
+                    if (a >= parent.size() || b >= parent.size() || c >= parent.size()) continue;
+                    unite(a, b);
+                    unite(a, c);
+                }
+                // A seam in the UVs splits a pane's vertices without splitting
+                // the pane: join vertices that stand in the same place (0.1 mm).
+                std::map<std::tuple<int32_t, int32_t, int32_t>, uint32_t> at;
+                for (uint32_t v = 0; v < mesh.vertices.size(); ++v) {
+                    const MeshVertex& vertex = mesh.vertices[v];
+                    const auto key = std::make_tuple(
+                        static_cast<int32_t>(std::lround(vertex.px * 10000.0f)),
+                        static_cast<int32_t>(std::lround(vertex.py * 10000.0f)),
+                        static_cast<int32_t>(std::lround(vertex.pz * 10000.0f)));
+                    const auto [found, inserted] = at.emplace(key, v);
+                    if (!inserted) unite(found->second, v);
+                }
+                std::map<uint32_t, std::map<uint32_t, size_t>> votes;
+                for (uint32_t v = 0; v < mesh.vertices.size(); ++v)
+                    ++votes[find(v)][shade_texcoord1[v]];
+                std::map<uint32_t, uint32_t> winner;
+                for (const auto& [piece, tally] : votes) {
+                    size_t best_count = 0;
+                    for (const auto& [value, seen] : tally) {
+                        if (seen > best_count) {
+                            best_count = seen;
+                            winner[piece] = value;
+                        }
+                    }
+                }
+                for (uint32_t v = 0; v < mesh.vertices.size(); ++v)
+                    shade_texcoord1[v] = winner[find(v)];
+                if (stats) {
+                    std::map<uint32_t, std::pair<size_t, size_t>> per_band;  // pieces, vertices
+                    for (const auto& [piece, tally] : votes) {
+                        size_t vertices = 0;
+                        for (const auto& [value, seen] : tally) vertices += seen;
+                        auto& entry = per_band[winner[piece]];
+                        ++entry.first;
+                        entry.second += vertices;
+                    }
+                    std::string summary;
+                    for (const auto& [value, entry] : per_band) {
+                        char line[96];
+                        std::snprintf(line, sizeof(line), "%sband %g: %zu piece(s), %zu vertices",
+                                      summary.empty() ? "" : "; ",
+                                      static_cast<double>(HalfToFloat(
+                                          static_cast<uint16_t>(value >> 16))),
+                                      entry.first, entry.second);
+                        summary += line;
+                    }
+                    stats->band_summary = summary;
                 }
             }
         }

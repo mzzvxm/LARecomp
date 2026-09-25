@@ -158,6 +158,10 @@ struct RewriteStats {
     // How many distinct material bands the written mesh ended up with. One is
     // the flood; the shipped wheels have four.
     uint32_t bands = 0;
+    // With MeshOffset::band_by_piece: which band each piece settled on, as
+    // "band x: n piece(s), v vertices" -- for the log, since a pane number is
+    // invisible in the file and only shows as film or no film in game.
+    std::string band_summary;
     // Submeshes of this pass left silent because their model is bone-local.
     uint32_t local_silenced = 0;
     uint32_t submeshes = 0;  // how many of the drawable's slots it was dealt into
@@ -345,6 +349,23 @@ struct MeshOffset {
     // shipped lamp vertex is the right donor for it. The shade word stays
     // flooded.
     bool nearest_band = false;
+
+    // With nearest_band: settle the band once per PIECE of the mesh instead of
+    // per vertex -- every vertex of a connected piece (joined by shared corners
+    // or by sharing a position) takes the band most of the piece's vertices
+    // found.
+    //
+    // For glass, where texcoord1.x is which pane a vertex belongs to: 0 the
+    // windscreen, 1 the rear window, 2 and 3 the doors, and the window film
+    // (xcc+0x160) tints 1-3 and never 0. Flooded with the dominant band of the
+    // submesh written into, a whole replacement body's glass is one pane --
+    // vp_nsn_240sx_98's car-space glass is {0: 90, 1: 84, 2: 29, 3: 29}
+    // vertices, so every window of the S15 was windscreen and the film tinted
+    // nothing. The nearest donor pane is the right answer for a pane, but not
+    // vertex by vertex: the band is read in the vertex shader and blended across
+    // a triangle, so a windscreen whose top corners sit nearer the donor's rear
+    // window would fade into tint. One band per piece keeps each pane whole.
+    bool band_by_piece = false;
 
     // Take the whole colour word from the NEAREST shipped vertex (of this pass,
     // preferring one facing the same side) instead of flooding one.

@@ -435,6 +435,14 @@ REXCVAR_DEFINE_BOOL(model_mods_part_probe, true, "MCLA/Mods",
     "wheels included -- log which selected part is not resident yet and the "
     "state of its stream (object, resource, handle, flags, state, refcount). "
     "See PartProbeLoop.");
+REXCVAR_DEFINE_BOOL(model_mods_glass_band, true, "MCLA/Mods",
+    "Give a replacement body's glass the pane number of the donor glass nearest "
+    "each piece of it, instead of the dominant pane of the submesh it is written "
+    "into. texcoord1.x on CarGlass says which pane a vertex is -- 0 windscreen, "
+    "1 rear, 2/3 doors -- and the window film tints 1-3 only, so a body flooded "
+    "with 0 takes no film at all. See MeshOffset::band_by_piece. Read at archive "
+    "build time.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
     "How much larger than the donor's own a replacement PART may be, as a "
     "multiple of the shipped resource.\n"
@@ -3105,6 +3113,14 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 offset.extra_bands = lamp_samples;
                 offset.lamp_boxes = plan.lamp_boxes;
             }
+            // Glass: the pane number, by the donor pane nearest each piece --
+            // what lets the window film reach a replacement's rear and quarter
+            // windows. See MeshOffset::band_by_piece.
+            if (std::string_view(CarEffectName(effects[shader])) == "CarGlass" &&
+                REXCVAR_GET(model_mods_glass_band)) {
+                offset.nearest_band = true;
+                offset.band_by_piece = true;
+            }
             offset.uniform_uv =
                 std::find(plan.flat_uv.begin(), plan.flat_uv.end(),
                           CarEffectName(effects[shader])) != plan.flat_uv.end();
@@ -3141,14 +3157,17 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             claimed[shader] = true;
             ++filled;
             if (lod == 0) {
-                LARECOMP_APP_INFO("[mods]   {} <- {} of {} tris in {} submesh(es){}{}",
+                LARECOMP_APP_INFO("[mods]   {} <- {} of {} tris in {} submesh(es){}{}{}",
                                   CarEffectName(effects[shader]), stats.triangles,
                                   part.indices.size() / 3, stats.submeshes,
                                   stats.decimated ? ", decimated" : "",
                                   stats.local_silenced
                                       ? fmt::format(", {} bone-local submesh(es) silenced",
                                                     stats.local_silenced)
-                                      : std::string());
+                                      : std::string(),
+                                  stats.band_summary.empty()
+                                      ? std::string()
+                                      : " -- panes by nearest donor glass: " + stats.band_summary);
             }
         }
 
