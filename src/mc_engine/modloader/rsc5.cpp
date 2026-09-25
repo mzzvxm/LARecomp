@@ -2378,6 +2378,8 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
     say("");
     say("template LOD 0: " + std::to_string(model_count) + " model(s)");
     for (uint16_t m = 0; m < model_count; ++m) {
+        // See MeshOffset::only_model.
+        if (offset.only_model >= 0 && m != offset.only_model) continue;
         uint32_t model = 0;
         if (!view.U32(model_array + m * 4, model) || model == 0) continue;
 
@@ -3368,7 +3370,8 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         }
 
         const uint32_t level = count ? static_cast<uint32_t>(sum / count) : 0xFFu;
-        std::fill(shade.begin(), shade.end(), (level << 24) | tint);
+        std::fill(shade.begin(), shade.end(),
+                  offset.fixed_shade ? offset.fixed_shade : (level << 24) | tint);
         std::fill(shade_texcoord1.begin(), shade_texcoord1.end(), band);
 
         // See MeshOffset::nearest_band. Every shipped vertex of this pass is a
@@ -4349,7 +4352,8 @@ bool ReplaceDictionaryTexture(Rsc5Resource& resource, const Image& image, std::s
     return true;
 }
 
-bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& stride_of) {
+bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& stride_of,
+                         int32_t only_model) {
     stride_of.clear();
 
     auto& data = const_cast<std::vector<uint8_t>&>(resource.data);
@@ -4371,6 +4375,7 @@ bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& st
     if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) return false;
 
     for (uint16_t m = 0; m < model_count; ++m) {
+        if (only_model >= 0 && m != only_model) continue;
         uint32_t model = 0;
         if (!view.U32(model_array + m * 4, model) || model == 0) continue;
 
@@ -4696,7 +4701,7 @@ bool ReadPackEffects(const Rsc5Resource& pack, std::vector<uint32_t>& effects) {
     return true;
 }
 
-size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader) {
+size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader, int32_t only_model) {
     Rsc5View view(resource.data, resource.virtual_size);
 
     DrawableLayout drawable;
@@ -4712,6 +4717,7 @@ size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader) {
         if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) continue;
 
         for (uint16_t m = 0; m < model_count; ++m) {
+            if (only_model >= 0 && m != only_model) continue;
             uint32_t model = 0;
             if (!view.U32(model_array + m * 4, model) || model == 0) continue;
 
@@ -4743,6 +4749,123 @@ size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader) {
         }
     }
     return silenced;
+}
+
+bool ShaderVertexSemantics(const Rsc5Resource& resource, std::vector<uint32_t>& mask_of,
+                           int32_t only_model) {
+    mask_of.clear();
+
+    auto& data = const_cast<std::vector<uint8_t>&>(resource.data);
+    Rsc5View view(data, resource.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return false;
+
+    uint32_t lod = 0, model_array = 0;
+    uint16_t model_count = 0;
+    if (!view.U32(drawable.drawable + drawable.lod_field, lod) || lod == 0) return false;
+    if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) return false;
+
+    for (uint16_t m = 0; m < model_count; ++m) {
+        if (only_model >= 0 && m != only_model) continue;
+        uint32_t model = 0, geometry_array = 0, shader_map = 0;
+        uint16_t geometry_count = 0;
+        if (!view.U32(model_array + m * 4, model) || model == 0) continue;
+        if (!view.U32(model + 4, geometry_array) || !view.U16(model + 8, geometry_count)) continue;
+        view.U32(model + 16, shader_map);
+
+        for (uint16_t g = 0; g < geometry_count; ++g) {
+            uint32_t geometry = 0, vertex_buffer = 0;
+            uint16_t shader = 0;
+            if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+            if (!view.U32(geometry + 12, vertex_buffer) || vertex_buffer == 0) continue;
+            if (!shader_map || !view.U16(shader_map + g * 2u, shader)) continue;
+            VertexLayout layout;
+            if (!ReadVertexLayout(view, vertex_buffer, layout, false)) continue;
+            uint32_t mask = 0;
+            for (int semantic = 0; semantic < 16; ++semantic) {
+                if (layout.has(semantic)) mask |= 1u << semantic;
+            }
+            if (shader >= mask_of.size()) mask_of.resize(shader + 1u, 0);
+            mask_of[shader] |= mask;
+        }
+    }
+    return true;
+}
+
+uint32_t CarVertexSemantics() {
+    return (1u << kSemPosition) | (1u << kSemNormal) | (1u << kSemColour) |
+           (1u << kSemTexcoord0) | (1u << kSemTangent);
+}
+
+int LayoutFitScore(uint32_t host, uint32_t wanted) {
+    auto count = [](uint32_t bits) {
+        int n = 0;
+        for (; bits; bits &= bits - 1) ++n;
+        return n;
+    };
+    const uint32_t tangent = 1u << kSemTangent;
+    const int missing = count(wanted & ~host);
+    const int extra = count(host & ~wanted);
+    // A tangent the wanted shader does not read is worth keeping for one that
+    // does: of two otherwise equal hosts, the one without it goes first.
+    const int waste = (host & tangent) && !(wanted & tangent) ? 1 : 0;
+    return missing * 10 + extra + waste;
+}
+
+size_t RestoreModelGeometry(Rsc5Resource& resource, const Rsc5Resource& pristine, int32_t model,
+                            int32_t shader) {
+    Rsc5View view(resource.data, resource.virtual_size);
+    auto& shipped_data = const_cast<std::vector<uint8_t>&>(pristine.data);
+    Rsc5View shipped(shipped_data, pristine.virtual_size);
+
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) return 0;
+
+    uint32_t lod = 0, model_array = 0, address = 0;
+    uint16_t model_count = 0;
+    if (!view.U32(drawable.drawable + drawable.lod_field, lod) || lod == 0) return 0;
+    if (!view.U32(lod, model_array) || !view.U16(lod + 4, model_count)) return 0;
+    if (model < 0 || model >= model_count) return 0;
+    if (!view.U32(model_array + static_cast<uint32_t>(model) * 4, address) || address == 0)
+        return 0;
+
+    uint32_t geometry_array = 0, shader_map = 0;
+    uint16_t geometry_count = 0;
+    if (!view.U32(address + 4, geometry_array) || !view.U16(address + 8, geometry_count)) return 0;
+    view.U32(address + 16, shader_map);
+
+    size_t restored = 0;
+    for (uint16_t g = 0; g < geometry_count; ++g) {
+        uint32_t geometry = 0, vertex_buffer = 0, index_buffer = 0;
+        if (!view.U32(geometry_array + g * 4, geometry) || geometry == 0) continue;
+        if (shader >= 0) {
+            uint16_t drawn_by = 0;
+            if (!shader_map || !view.U16(shader_map + g * 2u, drawn_by) ||
+                drawn_by != static_cast<uint16_t>(shader)) {
+                continue;
+            }
+        }
+        // The same five fields SilenceShaderGeometry zeroes, read back from the
+        // template as it shipped.
+        uint32_t index_count = 0, primitives = 0, index_buffer_count = 0;
+        uint16_t vertex_count = 0, vertex_buffer_count = 0;
+        if (!shipped.U32(geometry + 44, index_count) || !shipped.U32(geometry + 48, primitives) ||
+            !shipped.U16(geometry + 52, vertex_count)) {
+            continue;
+        }
+        view.U32(geometry + 12, vertex_buffer);
+        view.U32(geometry + 28, index_buffer);
+        view.SetU32(geometry + 44, index_count);
+        view.SetU32(geometry + 48, primitives);
+        view.SetU16(geometry + 52, vertex_count);
+        if (index_buffer && shipped.U32(index_buffer + 4, index_buffer_count))
+            view.SetU32(index_buffer + 4, index_buffer_count);
+        if (vertex_buffer && shipped.U16(vertex_buffer + 4, vertex_buffer_count))
+            view.SetU16(vertex_buffer + 4, vertex_buffer_count);
+        ++restored;
+    }
+    return restored;
 }
 
 // Moves every submesh a shader draws by a fixed amount, in the car's own space.

@@ -263,6 +263,13 @@ struct MeshOffset {
     // template's own most-used band.
     bool uniform_shade = false;
 
+    // With uniform_shade: flood this colour word instead of the host's average,
+    // when non-zero. For geometry written into a submesh that was never its own
+    // -- a licence plate drawn in the Underbody -- the host's baked shade is the
+    // wrong answer: the Impala's front-bumper Underbody averages 5 of 255 and a
+    // plate flooded with it came out grey next to one at 38 on the boot lid.
+    uint32_t fixed_shade = 0;
+
     // Wheels only: rebuild the shade lane from the template instead of flooding
     // it with one average.
     //
@@ -449,6 +456,15 @@ struct MeshOffset {
     // found them.
     int32_t only_shader = -1;
 
+    // Restrict the rewrite to one model of the drawable, or -1 for all of them.
+    //
+    // A car body keeps a panel the game swings or drops as a model of its own,
+    // authored around the bone that moves it: model 0 of vp_chv_impala_96's
+    // body_lod_0 is the boot lid, x +-0.77, y -0.27..0.02, z 0..0.93 from the
+    // `tk` hinge. Its paint is shader 23, the same as the shell's, so writing a
+    // lid into it has to reach that model's submeshes and no other's.
+    int32_t only_model = -1;
+
     // Whether submeshes this pass did not fill keep what they shipped.
     //
     // Leaving them is only right when the pass can see slots that are not its
@@ -573,8 +589,46 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
 // itself -- and those slots would otherwise keep drawing the donor's geometry
 // through the replacement. Pass -1 to silence every submesh of the drawable,
 // which is how a part slot the new car does not use is delivered: the resource
-// still loads, it just has nothing in it.
-size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader);
+// still loads, it just has nothing in it. With `only_model` set, only that
+// model's submeshes are touched.
+size_t SilenceShaderGeometry(Rsc5Resource& resource, int32_t shader, int32_t only_model = -1);
+
+// Gives the high LOD's `model` back the counts `pristine` shipped for the
+// submeshes `shader` draws in it (-1: all of them), and reports how many.
+//
+// Silencing zeroes a submesh's counts and leaves its buffers where they are, so
+// this is all it takes to read the donor's vertices again. A body panel written
+// into a model the shell pass silenced needs them: the flood of the colour word
+// (MeshOffset::uniform_shade) is taken from the vertices the target still has,
+// and with none the panel comes out at full brightness beside a shaded shell.
+// `pristine` must be the same template before any buffer of that model moved.
+size_t RestoreModelGeometry(Rsc5Resource& resource, const Rsc5Resource& pristine, int32_t model,
+                            int32_t shader);
+
+// Which vertex semantics each shader's submeshes carry, one bit per semantic in
+// declaration order (position 0, normal 3, colour 4, texcoord0 6, texcoord1 7,
+// tangent 14), OR-ed over the shader's submeshes of the high LOD -- or of one
+// model of it with `only_model` set.
+//
+// For choosing a host to borrow. A shader drawn from a submesh laid out for
+// another reads the vertex through that submesh's declaration, so the host
+// has to carry what the borrowed shader reads. Measured on vp_chv_impala_96:
+// Chrome and LicensePlate ship POSITION NORMAL COLOUR0 TEX0 TANGENT, EngineBay
+// ships the same without the tangent, and BrushedMetal carries TEX1 where the
+// others have the tangent -- a Chrome or a plate written into BrushedMetal
+// would have no tangent to read.
+bool ShaderVertexSemantics(const Rsc5Resource& resource, std::vector<uint32_t>& mask_of,
+                           int32_t only_model = -1);
+
+// The layout almost every car shader ships with: POSITION NORMAL COLOUR0 TEX0
+// TANGENT. What a borrowed shader is assumed to read when no submesh of it is
+// there to ask.
+uint32_t CarVertexSemantics();
+
+// How badly a host laid out as `host` serves a shader that reads `wanted`:
+// every semantic it lacks costs ten, every one it carries for nothing costs
+// one, and a tangent carried for nothing one more. Lower is better.
+int LayoutFitScore(uint32_t host, uint32_t wanted);
 
 // Moves every submesh a shader draws by a fixed amount, in the car's own
 // space. For the donor's licence plate, which is centred but sits at the
@@ -669,7 +723,10 @@ bool TexturePackShader(const Rsc5Resource& resource, uint32_t& shader_index);
 // the same 0.25 and came back at 4535 triangles instead of 20,859. Reporting
 // the stride beside the triangle count is what makes that visible in the log
 // rather than only in the game.
-bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& stride_of);
+// With `only_model` set, only that model of the high LOD is read: which shaders
+// one body panel's model draws, and at what stride.
+bool ShaderVertexStrides(const Rsc5Resource& resource, std::vector<uint32_t>& stride_of,
+                         int32_t only_model = -1);
 
 // One material of a vehicle's material pack, in shader-index order.
 //
