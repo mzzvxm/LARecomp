@@ -1596,6 +1596,8 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
+//   body_m0          = trunk   (groups written into model 0 of the body; needs a
+//                               rigid frame.body_m0 -- see WriteBodyModel)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
 //   paint_shade      = F4000000   (one colour word for all paint; see VehiclePlan)
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
@@ -2324,6 +2326,165 @@ uint32_t PaintShade(const VehiclePlan& plan, uint32_t effect) {
                : 0u;
 }
 
+// `body_m<N> = <groups>`: which model of the body drawable a line fills, or -1
+// when the line is an ordinary part slot.
+int32_t BodyModelSlot(const std::string& slot) {
+    constexpr std::string_view kPrefix = "body_m";
+    if (slot.size() <= kPrefix.size() || slot.compare(0, kPrefix.size(), kPrefix) != 0) return -1;
+    const std::string digits = slot.substr(kPrefix.size());
+    if (digits.find_first_not_of("0123456789") != std::string::npos) return -1;
+    return std::atoi(digits.c_str());
+}
+
+// Writes groups of the model into one model of the body drawable, in the space
+// of the bone that model hangs from.
+//
+// Not every panel the game moves is a part slot. vp_chv_impala_96 has no boot
+// slot -- none of the 55 kinds sub_823723C8 walks is a boot lid on this car,
+// nor on the Murcielago -- because the lid is model 0 of body_lod_0 itself,
+// authored around the `tk` bone: x +-0.77, y -0.27..0.02, z 0..0.93 from the
+// hinge. The skeleton agrees: `tk` sits at (0, 1.040, 1.848) off the root, and
+// `splr`, which the spoilers hang from, is its child at zero offset. The tune's
+// cTrunkMovement swings or drops that bone. A car-space shell never reaches the
+// model -- the car_space_only guard silences it as bone-local, which is right
+// for everything else in the body -- so the BMW's lid stayed welded to the
+// shell whatever the tune said.
+//
+// The line works like a part slot: `frame.body_m<N>` (rigid: the bone's rest
+// pose) moves the groups into the bone's space, `shader.body_m<N>.<MAT>` rules
+// apply to them alone, a rule naming an effect the model does not draw borrows
+// a spare submesh of that model, and `license.body_m<N>` puts the game's plate
+// on it. It runs after the shell and the silencing, so each submesh it fills
+// first gets its shipped counts back (the colour word is flooded from them),
+// and whatever it leaves unfilled stays silenced. Hosts are picked by layout:
+// a borrowed shader is drawn through the host's vertex declaration.
+size_t WriteBodyModel(Rsc5Resource& resource, const Rsc5Resource& pristine, const Mesh& mesh,
+                      const PartMapping& mapping, int32_t model, const VehiclePlan& plan,
+                      const std::vector<uint32_t>& effects, const std::string& mod_name,
+                      const std::string& car, int lod) {
+    const auto frame = plan.frames.find(mapping.slot);
+    if (frame == plan.frames.end() || !frame->second.rigid) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} needs a rigid frame.{} -- the rest pose of "
+                           "the bone model {} hangs from", mod_name, car, mapping.slot,
+                           mapping.slot, model);
+        return 0;
+    }
+    Mesh source = ExtractGroups(mesh, mapping.groups);
+    if (source.vertices.empty() || source.indices.size() < 3) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} names no geometry in the model", mod_name,
+                           car, mapping.slot);
+        return 0;
+    }
+    PlaceInBoneFrame(source, frame->second);
+
+    // What this model draws, and how each of its submeshes is laid out -- read
+    // off the template as it shipped, since the shell pass has zeroed the counts.
+    std::vector<uint32_t> drawn, semantics, whole_semantics;
+    ShaderVertexStrides(pristine, drawn, model);
+    ShaderVertexSemantics(pristine, semantics, model);
+    ShaderVertexSemantics(pristine, whole_semantics);
+    if (drawn.empty()) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: the body has no model {}", mod_name, car,
+                           mapping.slot, model);
+        return 0;
+    }
+    drawn.resize(effects.size(), 0);
+
+    int32_t fallback = -1;
+    std::map<std::string, uint32_t> borrowed;
+    const std::map<std::string, uint32_t> shader_of =
+        ResolveShaderMap(plan, effects, drawn, mod_name, car, fallback, mapping.slot, &borrowed);
+
+    std::vector<bool> claimed(effects.size(), false);
+    size_t filled = 0;
+    for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+        if (drawn[shader] == 0) continue;
+        const Mesh part = ExtractShader(source, shader_of, fallback, shader);
+        if (part.vertices.empty() || part.indices.size() < 3) continue;
+        RestoreModelGeometry(resource, pristine, model, static_cast<int32_t>(shader));
+
+        MeshOffset offset;
+        offset.pre_fitted = true;
+        offset.uniform_shade = true;
+        offset.fixed_shade = PaintShade(plan, effects[shader]);
+        offset.submeshes = true;
+        offset.decimate = true;
+        offset.allow_untextured = true;
+        offset.keep_unused = false;
+        offset.only_shader = static_cast<int32_t>(shader);
+        offset.force_shader = static_cast<int32_t>(shader);
+        offset.only_model = model;
+        offset.block_align = VirtualBlockSize(resource);
+        offset.grow_buffers = true;
+        offset.grow_slack = 4096;
+
+        RewriteStats stats;
+        std::string error;
+        if (!RewriteDrawableGeometry(resource, part, 0, offset, error, &stats)) {
+            SilenceShaderGeometry(resource, static_cast<int32_t>(shader), model);
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{} body_lod_{} {} {}: {}", mod_name, car, lod,
+                               mapping.slot, CarEffectName(effects[shader]), error);
+            continue;
+        }
+        claimed[shader] = true;
+        ++filled;
+        if (lod == 0) {
+            LARECOMP_APP_INFO("[mods]   {} {} <- {} of {} tris in {} submesh(es){}", mapping.slot,
+                              CarEffectName(effects[shader]), stats.triangles,
+                              part.indices.size() / 3, stats.submeshes,
+                              stats.decimated ? ", decimated" : "");
+        }
+    }
+
+    // Shaders the model does not draw, each into a spare submesh of it.
+    std::set<uint32_t> borrowed_shaders;
+    for (const auto& entry : borrowed) borrowed_shaders.insert(entry.second);
+    for (const uint32_t wanted : borrowed_shaders) {
+        std::map<std::string, uint32_t> only_these;
+        for (const auto& entry : borrowed) {
+            if (entry.second == wanted) only_these[entry.first] = wanted;
+        }
+        const Mesh part = ExtractShader(source, only_these, -1, wanted);
+        if (part.vertices.empty() || part.indices.size() < 3) continue;
+        const uint32_t wanted_semantics =
+            wanted < whole_semantics.size() && whole_semantics[wanted] ? whole_semantics[wanted]
+                                                                       : CarVertexSemantics();
+        std::string error;
+        const int32_t host = WriteIntoHost(resource, part, wanted, "", effects, drawn, claimed,
+                                           error, 0, model, &pristine, &semantics,
+                                           wanted_semantics);
+        if (host < 0) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{} body_lod_{} {} {}: {}", mod_name, car, lod,
+                               mapping.slot, CarEffectName(effects[wanted]), error);
+            continue;
+        }
+        ++filled;
+        if (lod == 0) {
+            LARECOMP_APP_INFO("[mods]   {} {} <- {} tris, borrowing the {} submesh", mapping.slot,
+                              CarEffectName(effects[wanted]), part.indices.size() / 3,
+                              CarEffectName(effects[static_cast<size_t>(host)]));
+        }
+    }
+
+    // The game's plate, which goes wherever the model goes.
+    if (const auto license = plan.licenses.find(mapping.slot); license != plan.licenses.end()) {
+        Mesh quad = LicenseQuad(license->second);
+        PlaceInBoneFrame(quad, frame->second);
+        std::string error;
+        if (WriteLicensePlate(resource, quad, effects, drawn, claimed, error, model, &pristine,
+                              &semantics)) {
+            ++filled;
+            if (lod == 0) {
+                LARECOMP_APP_INFO("[mods]   {} LicensePlate <- the game's plate", mapping.slot);
+            }
+        } else {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{} body_lod_{} {} licence plate: {}", mod_name,
+                               car, lod, mapping.slot, error);
+        }
+    }
+    return filled;
+}
+
 // Builds one car the game does not ship, from a donor that it does.
 size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh mesh,
                      const Rpf3Reader& archive, Rpf3Writer& writer) {
@@ -2600,6 +2761,12 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                    car, lod, shift_error);
             }
         }
+        // The template before any pass touches it, for the `body_m<N>` panels
+        // written at the end. See WriteBodyModel.
+        const bool has_body_models =
+            std::any_of(plan.slots.begin(), plan.slots.end(),
+                        [](const PartMapping& m) { return BodyModelSlot(m.slot) >= 0; });
+        const Rsc5Resource pristine = has_body_models ? resource : Rsc5Resource{};
 
         const uint32_t shipped_size = resource.virtual_size;
         size_t filled = 0;
@@ -2885,6 +3052,17 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                   "for)", name, gone);
             }
         }
+
+        // Panels that are models of the body itself, after everything above has
+        // silenced them. See WriteBodyModel. LOD 2 has no such model to fill.
+        if (has_body_models && lod <= 1) {
+            for (const PartMapping& local : plan.slots) {
+                const int32_t model = BodyModelSlot(local.slot);
+                if (model < 0 || local.groups.empty()) continue;
+                filled += WriteBodyModel(resource, pristine, mesh, local, model, plan, effects,
+                                         vehicle.mod_name, car, lod);
+            }
+        }
         if (filled == 0) {
             LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} took no geometry at all",
                                vehicle.mod_name, car, lod);
@@ -2948,6 +3126,8 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     for (const PartMapping& mapping : plan.slots) {
         if (plan.verbatim || mapping.slot == "body" || mapping.groups.empty()) continue;
         if (mapping.slot == kVehicleBodySlot) continue;
+        // Written into the body above, not a file of the donor's.
+        if (BodyModelSlot(mapping.slot) >= 0) continue;
 
         // A NODE another slot line names belongs to that slot, even when this
         // one asks for its material. interior0 takes MAT_1 and MAT_6 by

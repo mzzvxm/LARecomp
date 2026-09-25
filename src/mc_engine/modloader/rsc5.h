@@ -373,8 +373,8 @@ struct MeshOffset {
     // own matrix: a bumper, a door window, a mirror, a lamp. Those models store
     // their vertices relative to that part's bone, so geometry that arrives in
     // car space and is dealt into one of them lands wherever the bone puts it.
-    // Measured on vp_chv_impala_96's body_lod_0: m0 (bumper paint, BrushedMetal,
-    // BumpSpec) is y -0.27..0.02, z 0..0.92; m1 (the ONLY CarLight) is a point
+    // Measured on vp_chv_impala_96's body_lod_0: m0 (the boot lid: paint,
+    // BrushedMetal, BumpSpec) is y -0.27..0.02, z 0..0.92; m1 (the ONLY CarLight) is a point
     // at y -0.27, z 0.90; m2/m3 (door glass) are y -0.08..0.35. The BMW came
     // back with its nose in the ground, its lamps above the car and its windows
     // tilted -- exactly those three. The caprice never showed it because its
