@@ -4716,7 +4716,8 @@ bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, con
     // same picture, so a lamp keeps its own artwork when it lights; the normal
     // map is flattened, because it is still the donor's and the mesh no longer
     // has the donor's UVs -- left as it is, the lighting reads it as detail and
-    // picks out a shape that belongs to another car.
+    // picks out a shape that belongs to another car. Flattened in the car's own
+    // encoding, RGB, not the character one: see FlatNormalMapRgb.
     const std::string illuminated = target.name + "_i";
     for (uint32_t address : PackMaterialTextures(view, material, dictionary)) {
         TextureRef texture;
@@ -4727,8 +4728,10 @@ bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, con
         if (texture.name == illuminated) {
             WriteTextureInPlace(view, pack, allocations, texture, image, companion_levels);
         } else if (NameEndsWith(texture.name, "_n")) {
+            const uint8_t alpha = texture.format == BlockFormat::kBc1 ? 255 : 128;
             WriteTextureInPlace(view, pack, allocations, texture,
-                                FlatNormalMap(texture.width, texture.height), companion_levels);
+                                FlatNormalMapRgb(texture.width, texture.height, alpha),
+                                companion_levels);
         }
     }
 

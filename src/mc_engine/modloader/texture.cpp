@@ -426,6 +426,20 @@ Image FlatNormalMap(uint32_t width, uint32_t height) {
     return out;
 }
 
+Image FlatNormalMapRgb(uint32_t width, uint32_t height, uint8_t alpha) {
+    Image out;
+    out.width = std::max(1u, width);
+    out.height = std::max(1u, height);
+    out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
+    for (size_t i = 0; i < out.rgba.size(); i += 4) {
+        out.rgba[i + 0] = 128;  // X
+        out.rgba[i + 1] = 128;  // Y
+        out.rgba[i + 2] = 255;  // Z, straight out of the surface
+        out.rgba[i + 3] = alpha;
+    }
+    return out;
+}
+
 Image LampNormalMap(const Image& picture, float strength) {
     Image out;
     out.width = picture.width;

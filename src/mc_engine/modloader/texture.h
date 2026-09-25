@@ -74,6 +74,20 @@ uint32_t StoredTextureSize(uint32_t width, uint32_t height, BlockFormat format);
 // Flat is therefore mid-grey in both of those and nothing anywhere else.
 Image FlatNormalMap(uint32_t width, uint32_t height);
 
+// A normal map that perturbs nothing, in the encoding a CAR pack's normal maps
+// use -- which is not the character one. Decoded across every car pack the game
+// ships, the DXT1 *_n textures (tmp_leather_n, tmp_plasticbump_n, tmp_carpet_n,
+// perf_leather_n, ... on 50-60 cars each) average 127,127,255: plain RGB, X in
+// red, Y in green, Z in blue, the lavender of a tangent-space map. The character
+// flat (0,128,0) read that way is a normal lying on its side, and it is what the
+// S15's cabin, seats and two of its wheels were lit through: dark from the
+// front, bright from wherever that normal happened to point. `alpha` is the
+// fourth channel: 255 for DXT1, which has none to speak of; 128 for BC3, where
+// the car's few DXT5 maps keep a height (xInteriorTrim: "normal map with height
+// in alpha channel") and where a DXT5nm reader would find X there -- 128 is flat
+// to both.
+Image FlatNormalMapRgb(uint32_t width, uint32_t height, uint8_t alpha);
+
 // The two pictures a car LAMP is made of, built from a mod's lamp photograph.
 //
 // CarLight samples no colour map: its lamp colour is a constant picked by the
