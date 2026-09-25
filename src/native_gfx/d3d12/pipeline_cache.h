@@ -161,6 +161,7 @@ class PipelineCache {
   // the library and every PSO loaded out of it: declared first, destroyed last.
   std::vector<uint8_t> library_blob_;
   Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature_;
+  uint32_t root_signature_version_ = 0;  // D3D_ROOT_SIGNATURE_VERSION, part of every PSO name
   std::unordered_map<PsoKey, Microsoft::WRL::ComPtr<ID3D12PipelineState>, PsoKeyHash> pipelines_;
   PsoKey mru_key_ = {};
   ID3D12PipelineState* mru_pso_ = nullptr;

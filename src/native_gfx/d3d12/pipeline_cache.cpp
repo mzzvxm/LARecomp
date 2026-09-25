@@ -182,9 +182,30 @@ inline void HashCombine(uint64_t& h, uint64_t v) {
   h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
 }
 
+// FNV-1a over a shader's DXIL, 0 for no shader.
+uint64_t BytecodeHash(const ShaderBytecode& code) {
+  if (!code.valid()) {
+    return 0;
+  }
+  uint64_t h = 0xCBF29CE484222325ull;
+  const auto* bytes = static_cast<const uint8_t*>(code.data);
+  for (uint32_t i = 0; i < code.size; ++i) {
+    h = (h ^ bytes[i]) * 0x100000001B3ull;
+  }
+  return h;
+}
+
 struct InputLayoutRegistry {
   std::unordered_map<uint64_t, uint32_t> hash_to_id;
   std::vector<std::vector<PsoInputElement>> layouts;
+  // Content hash of each layout, indexed by id - 1. Ids are handed out in the
+  // order layouts first appear, which changes from boot to boot, so anything
+  // that outlives the process has to key on this instead.
+  std::vector<uint64_t> hashes;
+
+  uint64_t ContentHash(uint32_t id) const {
+    return (id == 0 || id > hashes.size()) ? 0 : hashes[id - 1];
+  }
 
   uint32_t Intern(const std::vector<InputElement>& elements) {
     if (elements.empty()) {
@@ -224,6 +245,7 @@ struct InputLayoutRegistry {
       pso_elements.push_back(p);
     }
     layouts.push_back(std::move(pso_elements));
+    hashes.push_back(h);
     hash_to_id.emplace(h, id);
     return id;
   }
@@ -326,9 +348,13 @@ void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
     return;
   }
 
-  library_path_ = "cache/d3d12_pso.cache";
+  // v2 names pipelines by what they contain (see GetOrCreate). No v1 name can
+  // match again, and the library carries every entry into each Serialize, so
+  // the v1 file is deleted instead of loaded and dragged along forever.
+  library_path_ = "cache/d3d12_pso_v2.cache";
   std::error_code ec;
   std::filesystem::create_directories("cache", ec);
+  std::filesystem::remove("cache/d3d12_pso.cache", ec);
 
   std::ifstream file(library_path_, std::ios::binary | std::ios::ate);
   if (file.is_open()) {
@@ -487,6 +513,7 @@ bool PipelineCache::Initialize(D3D12Context& context) {
                                                          blob->GetBufferSize(),
                                                          IID_PPV_ARGS(&root_signature_)))) {
         REXLOG_INFO("[native_gfx] Root Signature 1.1 created (DATA_STATIC_WHILE_SET_AT_EXECUTE enabled)");
+        root_signature_version_ = D3D_ROOT_SIGNATURE_VERSION_1_1;
         InitializePipelineLibrary(context);
         return true;
       }
@@ -548,6 +575,7 @@ bool PipelineCache::Initialize(D3D12Context& context) {
     return false;
   }
   REXLOG_INFO("[native_gfx] root signature created (b0/b1/b2 space4, t0 space0-2, s0 space3)");
+  root_signature_version_ = D3D_ROOT_SIGNATURE_VERSION_1;
   InitializePipelineLibrary(context);
   return true;
 }
@@ -734,11 +762,31 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
 
   wchar_t pso_name[128] = {};
   if (pipeline_library_) {
-    swprintf_s(pso_name, L"pso_%016llx_%016llx_%08x_%08x_%08x_%016llx",
+    // The name has to mean the same pipeline on every boot, and layout_id does
+    // not: streaming changes the order layouts first appear in, so a pipeline
+    // the file already held came back under a new name and was compiled again
+    // (measured: 103 of the 154 a boot needed, all differing only in the id).
+    // The layout's content hash stands in for the id, in the name and the hash.
+    PsoKey stable = key;
+    stable.layout_id = 0;
+    const uint64_t layout_hash = g_layout_registry.ContentHash(key.layout_id);
+    uint64_t name_hash = PsoKeyHash{}(stable);
+    HashCombine(name_hash, layout_hash);
+    // So does the rest of what the runtime compares on load. A description
+    // that differs from the stored one fails the load, and the store after the
+    // compile is refused because the name is taken, so the pipeline is never
+    // cached again (measured: 0 of 153 loaded and 128 refused, root signature
+    // 1.0 against a file written under 1.1). The version follows
+    // mcla_native_gfx_own_device, and a rebuilt shader pack can change the
+    // DXIL under the same identity.
+    HashCombine(name_hash, root_signature_version_);
+    HashCombine(name_hash, BytecodeHash(vs));
+    HashCombine(name_hash, BytecodeHash(ps));
+    swprintf_s(pso_name, L"pso_%016llx_%016llx_%016llx_%08x_%08x_%016llx",
                (unsigned long long)key.vs_identity,
                (unsigned long long)key.ps_identity,
-               key.layout_id, key.rt_format, key.ds_format,
-               (unsigned long long)PsoKeyHash{}(key));
+               (unsigned long long)layout_hash, key.rt_format, key.ds_format,
+               (unsigned long long)name_hash);
     Microsoft::WRL::ComPtr<ID3D12PipelineState> lib_pso;
     HRESULT hr = pipeline_library_->LoadGraphicsPipeline(pso_name, &desc, IID_PPV_ARGS(&lib_pso));
     if (SUCCEEDED(hr)) {
