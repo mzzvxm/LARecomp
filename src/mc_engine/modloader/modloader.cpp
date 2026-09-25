@@ -1454,6 +1454,11 @@ struct VehiclePlan {
     // default.
     bool rename_tune = false;
 
+    // `tune.<field> = <value>`: fields of the car's tune changed after the
+    // donor's is copied in, by name. Only a renamed tune is rewritten, so these
+    // need `tune = rename`. See ApplyTuneOverrides for the fields and values.
+    std::vector<std::pair<std::string, std::string>> tune_overrides;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1550,6 +1555,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   bumper_f0      = bumper_f   (a slot line: which of the model's groups fill it)
 //   body           = admiral_high
 //   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
+//   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
     VehiclePlan plan;
     for (const PartMapping& mapping : mappings) {
@@ -1620,6 +1626,10 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower == "tune") {
             plan.rename_tune = mapping.groups.front() == "rename";
+            continue;
+        }
+        if (lower.rfind("tune.", 0) == 0) {
+            plan.tune_overrides.emplace_back(key.substr(5), mapping.groups.front());
             continue;
         }
         if (lower == "silence") {
@@ -1906,6 +1916,136 @@ size_t RenameInResource(std::vector<uint8_t>& data, const std::string& from,
         }
     }
     return renamed;
+}
+
+// Changes named fields of a car's tune, in place, after it has been renamed.
+//
+// The two objects a crash reads, measured in the IDB. sub_82385948 registers
+// mcCarModelTune (208 bytes) and sub_82383CE8 mcCarDamageTune (288 bytes), each
+// writing its members' offsets into the parMember table as it goes. The enums
+// are the name tables at 0x827E81E4 -- bumpers: NoMovement, AllowLoose,
+// AllowBroken -- and 0x827E81F4 -- hood and boot: NoMovement, NormalMovement,
+// ReverseMovement. In the tune resource every object starts with a word that is
+// the same for its class on each car read so far (0xECEB5700 for the model
+// tune, 0x20E45700 for the damage tune, on the Impala and on the Murcielago),
+// then carries zero at +16 and 0x01000000 at +20.
+//
+// What those two ship, for the record: bumpers AllowBroken front and rear on
+// both, hood NormalMovement on both, boot NormalMovement on the Impala and
+// ReverseMovement on the Murcielago -- its engine cover is hinged at the back,
+// model 3 of its body running forward of the bone where the Impala's boot lid,
+// model 0, runs back -- and MaxDamage/MedDamage 325/250 against 400/350.
+size_t ApplyTuneOverrides(std::vector<uint8_t>& data,
+                          const std::vector<std::pair<std::string, std::string>>& overrides,
+                          const std::string& mod_name, const std::string& car) {
+    constexpr uint32_t kModelTune = 0xECEB5700u;
+    constexpr uint32_t kDamageTune = 0x20E45700u;
+    // 'B' bumper enum, 'P' panel enum, 'f' float, 'b' byte flag.
+    struct Field {
+        const char* name;
+        uint32_t object;
+        uint32_t offset;
+        char kind;
+    };
+    static constexpr Field kFields[] = {
+        {"cFrontBumperMovement", kModelTune, 184, 'B'},
+        {"cRearBumperMovement", kModelTune, 188, 'B'},
+        {"cHoodMovement", kModelTune, 192, 'P'},
+        {"cTrunkMovement", kModelTune, 196, 'P'},
+        {"bDoubleSidedTrunk", kModelTune, 200, 'b'},
+        {"MaxDamage", kDamageTune, 24, 'f'},
+        {"MedDamage", kDamageTune, 28, 'f'},
+    };
+    static const char* const kBumper[] = {"NoMovement", "AllowLoose", "AllowBroken"};
+    static const char* const kPanel[] = {"NoMovement", "NormalMovement", "ReverseMovement"};
+
+    auto equal = [](std::string_view a, std::string_view b) {
+        return a.size() == b.size() &&
+               std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                   return std::tolower(static_cast<unsigned char>(x)) ==
+                          std::tolower(static_cast<unsigned char>(y));
+               });
+    };
+    // The one object of a class. Anything but exactly one and nothing is written:
+    // a tune this does not recognise is left as it came.
+    auto find_object = [&](uint32_t tag) -> int64_t {
+        int64_t found = -1;
+        for (size_t at = 0; at + 24 <= data.size(); at += 16) {
+            if (LoadBE32(data.data() + at) != tag || LoadBE32(data.data() + at + 16) != 0 ||
+                LoadBE32(data.data() + at + 20) != 0x01000000u) {
+                continue;
+            }
+            if (found >= 0) return -2;
+            found = static_cast<int64_t>(at);
+        }
+        return found;
+    };
+    auto store = [&](size_t at, uint32_t value) {
+        data[at + 0] = static_cast<uint8_t>(value >> 24);
+        data[at + 1] = static_cast<uint8_t>(value >> 16);
+        data[at + 2] = static_cast<uint8_t>(value >> 8);
+        data[at + 3] = static_cast<uint8_t>(value);
+    };
+
+    size_t applied = 0;
+    for (const auto& [name, value] : overrides) {
+        const Field* field = nullptr;
+        for (const Field& candidate : kFields) {
+            if (equal(candidate.name, name)) field = &candidate;
+        }
+        if (!field) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: tune.{} is not a field this can change",
+                               mod_name, car, name);
+            continue;
+        }
+        const int64_t object = find_object(field->object);
+        if (object < 0 || static_cast<size_t>(object) + field->offset + 4 > data.size()) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: tune.{}: {} object of its class in the "
+                               "tune, left as it came", mod_name, car, name,
+                               object == -2 ? "more than one" : "no");
+            continue;
+        }
+        const size_t at = static_cast<size_t>(object) + field->offset;
+
+        if (field->kind == 'B' || field->kind == 'P') {
+            const char* const* names = field->kind == 'B' ? kBumper : kPanel;
+            int32_t wanted = -1;
+            for (int32_t i = 0; i < 3; ++i) {
+                if (equal(names[i], value)) wanted = i;
+            }
+            if (wanted < 0 && !value.empty() &&
+                value.find_first_not_of("0123456789") == std::string::npos) {
+                wanted = std::atoi(value.c_str());
+            }
+            if (wanted < 0 || wanted > 2) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: tune.{} = {}: expected {}, {} or {}",
+                                   mod_name, car, name, value, names[0], names[1], names[2]);
+                continue;
+            }
+            const uint32_t was = LoadBE32(data.data() + at);
+            store(at, static_cast<uint32_t>(wanted));
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: tune {} {} -> {}", mod_name, car,
+                              field->name, was <= 2 ? names[was] : std::to_string(was).c_str(),
+                              names[wanted]);
+        } else if (field->kind == 'b') {
+            const bool on = value == "1" || equal(value, "true");
+            const uint8_t was = data[at];
+            data[at] = on ? 1 : 0;
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: tune {} {} -> {}", mod_name, car,
+                              field->name, was, on ? 1 : 0);
+        } else {
+            const float wanted = std::strtof(value.c_str(), nullptr);
+            uint32_t bits = 0, was_bits = LoadBE32(data.data() + at);
+            float was = 0.0f;
+            std::memcpy(&bits, &wanted, sizeof(bits));
+            std::memcpy(&was, &was_bits, sizeof(was));
+            store(at, bits);
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: tune {} {} -> {}", mod_name, car,
+                              field->name, was, wanted);
+        }
+        ++applied;
+    }
+    return applied;
 }
 
 // The 55 part slots a player vehicle can carry, in the order the loader walks
@@ -2869,6 +3009,11 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     }
 
     const std::map<uint32_t, std::string> donor_names = CarFolderNames(donor);
+    if (!plan.tune_overrides.empty() && !plan.rename_tune) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} tune.<field> line(s) ignored -- only a "
+                           "renamed tune is rewritten, add `tune = rename`",
+                           vehicle.mod_name, car, plan.tune_overrides.size());
+    }
     for (const Rpf3Entry& child : children) {
         if (child.is_directory()) continue;
 
@@ -3024,6 +3169,9 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
 
             if (is_tune) {
                 const size_t renamed = RenameInResource(resource.data, donor, car);
+                if (!plan.tune_overrides.empty()) {
+                    ApplyTuneOverrides(resource.data, plan.tune_overrides, vehicle.mod_name, car);
+                }
                 std::vector<uint8_t> file;
                 uint32_t flag = 0;
                 if (!BuildRsc5File(resource, file, flag, error)) {
