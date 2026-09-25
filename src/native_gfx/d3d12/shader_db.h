@@ -69,6 +69,13 @@ class ShaderDatabase {
   Impl* impl_ = nullptr;
   bool loaded_ = false;
   uint32_t entry_count_ = 0;
+  struct MruEntry {
+    uint64_t identity = 0;
+    uint32_t spec_mask = 0;
+    ShaderBytecode bytecode;
+  };
+  MruEntry mru_vs_;
+  MruEntry mru_ps_;
   uint64_t miss_count_ = 0;
 };
 

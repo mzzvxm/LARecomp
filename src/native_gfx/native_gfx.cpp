@@ -46,6 +46,16 @@
 #include "d3d12/shader_db.h"
 #include "d3d12/texture_binding.h"
 #include "d3d12/texture_cache.h"
+#include "d3d12/device_manager.h"
+#include "d3d12/gpu_profiler.h"
+#include "d3d12/swapchain.h"
+#include "d3d12/barrier_batch.h"
+#include "d3d12/untile_pass.h"
+#include "diag.h"
+
+// Defined in device_manager.cpp and swapchain.cpp
+REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
+REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 
 // Defined in guest/texture_ownership.cpp, read here for bring-up and for the
 // periodic report. Same global-scope rule as the declaration above.
@@ -460,7 +470,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "resolve on every slot, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, true, "MCLA/NativeGfx",
                     "Re-check a cached texture against guest memory once per guest frame, as "
                     "mcla_native_gfx_verify_textures describes, instead of once per submitted "
                     "batch. The batch counter advances ~14 times a frame, so every bound "
@@ -515,7 +525,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "restores the old ring, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, true, "MCLA/NativeGfx",
                     "Untile and endian-swap texture levels in ordinary cached memory and copy "
                     "the result to the upload ring in one pass, instead of swapping in place "
                     "inside the ring. The ring is write-combined, so the in-place swap read "
@@ -524,12 +534,37 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, false, "MCLA/NativeGfx",
                     "for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, true, "MCLA/NativeGfx",
                     "Keep the texture invalidation index sorted by insertion instead of "
                     "re-sorting all of it after every new texture, and leave removed entries "
                     "in it until they outnumber the live ones. While driving it was being "
                     "rebuilt several times a frame, ~3.4% of the render thread. Off restores "
                     "the rebuild-on-change, for A/B.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_pipeline_library, true, "MCLA/NativeGfx",
+                    "Persist compiled D3D12 pipeline state objects (PSOs) to disk using "
+                    "ID3D12PipelineLibrary to eliminate runtime shader compilation stutter.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_profiler, true, "MCLA/NativeGfx",
+                    "Query GPU hardware timestamps via ID3D12QueryHeap to measure exact GPU frame "
+                    "and pass execution durations.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_pix_markers, true, "MCLA/NativeGfx",
+                    "Emit BeginEvent/EndEvent and SetMarker on D3D12 graphics command lists for "
+                    "RenderDoc, PIX, and NSight pass hierarchy inspection.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_enhanced_barriers, true, "MCLA/NativeGfx",
+                    "Use D3D12 Enhanced Barriers (ID3D12GraphicsCommandList7) when supported by "
+                    "hardware and OS to minimize GPU pipeline flushes and transition overhead.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_untile, true, "MCLA/NativeGfx",
+                    "Use compute shader untiling and endian swapping on GPU for uploaded textures "
+                    "to eliminate CPU decode overhead.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
@@ -865,6 +900,22 @@ bool TryInitialize() {
   // no PM4, no EDRAM, no register file). Attaching to those makes this runtime
   // the ONLY thing drawing, instead of the second renderer beside an emulator.
   const bool nocp_mode = nocp::WantNoCommandProcessor();
+
+  if (REXCVAR_GET(mcla_native_gfx_own_device) && DeviceManager::Instance().IsInitialized()) {
+    // Native runtime directly owns the D3D12 device and queue.
+    if (!nocp_mode && runtime->graphics_system()) {
+      g_presenter = runtime->graphics_system()->presenter();
+    } else if (nocp_mode) {
+      g_presenter = nocp::PresenterPtr();
+    }
+    rex::ui::UnregisterBind("bind_renderdoc_capture");
+    rex::ui::RegisterBind("bind_native_gfx_renderdoc", "F11",
+                          "Capture the next guest frame with RenderDoc (native runtime)",
+                          [] { RequestRenderDocCapture(); });
+    g_present_ready = true;
+    return true;
+  }
+
   rex::system::IGraphicsSystem* graphics = nullptr;
   if (!nocp_mode) {
     // The concrete GraphicsSystem lives inside the rexgpu-xenos plugin, which
@@ -998,16 +1049,26 @@ static bool EnsureDrawReady() {
   // Report which subsystem failed: collapsing these into one condition
   // makes an initialization failure impossible to diagnose from the log.
   const char* failed = nullptr;
-  if (!g_provider) {
-    failed = "no D3D12 provider";
-  } else if (!g_draw_context.Initialize(*g_provider)) {
-    failed = "D3D12Context";
-  } else if (!g_pipelines.Initialize(g_draw_context)) {
+  if (REXCVAR_GET(mcla_native_gfx_own_device) && DeviceManager::Instance().IsInitialized()) {
+    if (!g_draw_context.Initialize(DeviceManager::Instance())) {
+      failed = "D3D12Context (DeviceManager)";
+    }
+  } else if (g_provider) {
+    if (!g_draw_context.Initialize(*g_provider)) {
+      failed = "D3D12Context (Provider)";
+    }
+  } else {
+    failed = "no D3D12 device or provider";
+  }
+  if (!failed && !g_pipelines.Initialize(g_draw_context)) {
     failed = "PipelineCache (root signature)";
-  } else if (!g_binder.Initialize(g_draw_context)) {
+  } else if (!failed && !g_binder.Initialize(g_draw_context)) {
     failed = "TextureBinder (descriptor heaps)";
-  } else if (!g_draw_shaders.Load()) {
+  } else if (!failed && !g_draw_shaders.Load()) {
     failed = "ShaderDatabase (assets/mcla_shaders.pack)";
+  }
+  if (!failed) {
+    GpuProfiler::Instance().Initialize(g_draw_context);
   }
   // The bridge that lets a texture fetch find the render target that
   // produced it, instead of decoding never-written guest memory.
@@ -1200,7 +1261,7 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
                                           key.sample_count);
     if (source) {
       static uint32_t n = 0;
-      if (n++ < 12u) {
+      if (REXCVAR_GET(mcla_native_gfx_diag) && n++ < 12u) {
         if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
           std::fprintf(f, "RESOLVE_SHAPE dest=0x%08X %ux%u pediu fmt=%u achou fmt=%u\n", dest,
                        key.width, key.height, key.rt_format, source->key.rt_format);
@@ -1295,7 +1356,7 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
           g_render_targets.RequestClearOnlyFill(*created, clear.rgba);
           source = created;
           static uint32_t n = 0;
-          if (n++ < 16u) {
+          if (REXCVAR_GET(mcla_native_gfx_diag) && n++ < 16u) {
             if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
               std::fprintf(f,
                            "CLEARONLY dest=0x%08X %ux%u rgba=%.3f,%.3f,%.3f,%.3f\n", dest,
@@ -1315,7 +1376,7 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
     // the resolve's OWN rectangle -- then ask the pool what it does hold in that
     // format. The pause menu panel is produced into a 960x640 target and
     // resolved with a 1024x1024 key, so the three disagree.
-    if (!from_depth) {
+    if (!from_depth && REXCVAR_GET(mcla_native_gfx_diag)) {
       // Once per destination address, not a global cap: the post-process chain
       // misses hundreds of times a frame at one address and used to spend the
       // whole budget before the interesting one (the UI surface) ever printed.
@@ -1350,7 +1411,7 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
     if (!from_depth && REXCVAR_GET(mcla_native_gfx_alias_missed_resolve)) {
       if (g_render_targets.AliasMissedColourResolve(dest, fetch.width, fetch.height)) {
         static uint32_t n = 0;
-        if (n++ < 8u) {
+        if (REXCVAR_GET(mcla_native_gfx_diag) && n++ < 8u) {
           if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
             std::fprintf(f, "RESALIAS dest=0x%08X %ux%u\n", dest, fetch.width, fetch.height);
             std::fflush(f);
@@ -1616,6 +1677,30 @@ void NotifyFrameBoundary() {
   // ones -- different bugs, different fixes.
   g_buffers.ReportPeriodic();
 
+  if (g_pipelines.is_library_dirty()) {
+    static uint32_t pso_save_tick = 0;
+    if ((++pso_save_tick % 300u) == 0u) {
+      g_pipelines.SaveLibrary();
+    }
+  }
+  {
+    static uint64_t pso_report = 0;
+    if ((pso_report++ % 600u) == 0u) {
+      const auto& ps = g_pipelines.stats();
+      REXLOG_INFO("[native_gfx] PSO cache: {} active, {} hits, {} misses, {} loaded from disk, {} stored to disk",
+                  g_pipelines.pipeline_count(), ps.hits, ps.misses, ps.library_loads, ps.library_stores);
+    }
+  }
+  {
+    static uint64_t gpu_report = 0;
+    if (REXCVAR_GET(mcla_native_gfx_gpu_profiler) && (gpu_report++ % 300u) == 0u) {
+      const std::string sum = GpuProfiler::Instance().Summary();
+      if (!sum.empty()) {
+        REXLOG_INFO("[native_gfx] {}", sum);
+      }
+    }
+  }
+
   // Ownership counters, on the same cadence as the registry dump. Reported
   // here too because ownership does not depend on the registry cvar, and the
   // numbers that matter (validate_failed, orphaned) have to be visible without
@@ -1856,6 +1941,66 @@ void RequestRenderDocCapture() {
 // thread, which has already put every batch of the frame on the queue.
 bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32_t h,
                        bool side) {
+  if (REXCVAR_GET(mcla_native_gfx_own_swapchain) && NativeSwapChain::Instance().IsInitialized()) {
+    NativeSwapChain& sc = NativeSwapChain::Instance();
+    sc.WaitForNextFrameBuffer();
+
+    ID3D12GraphicsCommandList* cl =
+        side ? g_draw_context.BeginSideList() : g_draw_context.BeginFrame();
+    if (cl == nullptr) {
+      g_present_no_cmdlist.fetch_add(1, std::memory_order_relaxed);
+      static std::atomic<bool> logged{false};
+      if (!logged.exchange(true)) {
+        REXLOG_ERROR(
+            "[native_gfx] continuous present: no command list (a frame is already open); "
+            "the guest swap will paint instead");
+      }
+      return false;
+    }
+
+    ID3D12Resource* back_buffer = sc.GetCurrentBackBuffer();
+    D3D12_CPU_DESCRIPTOR_HANDLE back_buffer_rtv = sc.GetCurrentBackBufferRTV();
+
+    BarrierBatch::Transition(cl, back_buffer, D3D12_RESOURCE_STATE_PRESENT,
+                             D3D12_RESOURCE_STATE_RENDER_TARGET,
+                             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                             side ? nullptr : g_draw_context.CurrentCommandList7());
+
+    cl->OMSetRenderTargets(1, &back_buffer_rtv, FALSE, nullptr);
+    D3D12_VIEWPORT vp = {0.0f, 0.0f, float(sc.width()), float(sc.height()), 0.0f, 1.0f};
+    D3D12_RECT rc = {0, 0, LONG(sc.width()), LONG(sc.height())};
+    cl->RSSetViewports(1, &vp);
+    cl->RSSetScissorRects(1, &rc);
+
+    if (!g_blit.initialized()) {
+      g_blit.Initialize(g_draw_context, DXGI_FORMAT_R8G8B8A8_UNORM);
+    }
+    g_blit.Record(g_draw_context, cl, display, fmt);
+
+    BarrierBatch::Transition(cl, back_buffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                             D3D12_RESOURCE_STATE_PRESENT,
+                             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                             side ? nullptr : g_draw_context.CurrentCommandList7());
+
+    const bool ended = side ? g_draw_context.EndSideList() : g_draw_context.EndFrame();
+    if (!side) {
+      g_draw_context.FlushWorker();
+    }
+
+    const bool presented = sc.Present(/*vsync=*/false);
+    if (presented && ended) {
+      g_present_ok.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    }
+    g_present_refresh_false.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+
+  if (!g_presenter) {
+    g_present_no_presenter.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+
   const bool ok = g_presenter->RefreshGuestOutput(
       w, h, w, h, [&](rex::ui::Presenter::GuestOutputRefreshContext& refresh) -> bool {
         auto& ctx =
@@ -1900,7 +2045,12 @@ bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32
 
 bool PresentContinuousDisplay() {
   g_present_calls.fetch_add(1, std::memory_order_relaxed);
-  if (!g_presenter || !g_draw_context.initialized()) {
+  const bool own_sc = REXCVAR_GET(mcla_native_gfx_own_swapchain) && NativeSwapChain::Instance().IsInitialized();
+  if (!own_sc && !g_presenter) {
+    g_present_no_presenter.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  if (!g_draw_context.initialized()) {
     g_present_no_presenter.fetch_add(1, std::memory_order_relaxed);
     return false;
   }

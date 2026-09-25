@@ -18,6 +18,8 @@
 
 #include "guest_gpu.h"
 
+REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
+
 REXCVAR_DEFINE_BOOL(
     mcla_native_gfx_nocp, false, "MCLA/NativeGfx",
     "Run with NO emulated GPU in the process. Leaves gpu_plugin empty, so ReXApp never calls "
@@ -115,6 +117,10 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateImmediateDrawer() {
 
 bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer* imgui_drawer,
                         rex::ui::ImmediateDrawer* immediate_drawer) {
+  if (REXCVAR_GET(mcla_native_gfx_own_swapchain)) {
+    REXLOG_INFO("[nocp] native swapchain owns presentation; skipping D3D12Presenter swapchain creation");
+    return true;
+  }
   if (!g_provider) {
     REXLOG_ERROR("[nocp] no D3D12 provider; OnCreateImmediateDrawer must run first");
     return false;

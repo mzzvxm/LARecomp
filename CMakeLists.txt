@@ -104,6 +104,8 @@ set(LARECOMP_SOURCES
     src/native_gfx/guest/vertex_fetch_decode.cpp
     src/native_gfx/d3d12/constant_upload.cpp
     src/native_gfx/d3d12/context.cpp
+    src/native_gfx/d3d12/device_manager.cpp
+    src/native_gfx/d3d12/swapchain.cpp
     src/native_gfx/d3d12/first_draw.cpp
     src/native_gfx/d3d12/frame_capture.cpp
     src/native_gfx/d3d12/render_target_pool.cpp
@@ -123,6 +125,9 @@ set(LARECOMP_SOURCES
     src/native_gfx/d3d12/gamma_pass.cpp
     src/native_gfx/d3d12/tonemap_pass.cpp
     src/native_gfx/d3d12/d3d12_smoke_triangle.cpp
+    src/native_gfx/d3d12/gpu_profiler.cpp
+    src/native_gfx/d3d12/barrier_batch.cpp
+    src/native_gfx/d3d12/untile_pass.cpp
 
     src/achievement_metadata.cpp
 
@@ -206,11 +211,13 @@ else()
         )
     endif()
 
-    add_custom_command(TARGET larecomp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
-        "$<TARGET_FILE_DIR:larecomp>/assets"
-    )
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
+            "$<TARGET_FILE_DIR:larecomp>/assets"
+        )
+    endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt")
         add_custom_command(TARGET larecomp POST_BUILD
@@ -218,5 +225,13 @@ else()
                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gamecontrollerdb.txt"
                     "$<TARGET_FILE_DIR:larecomp>/gamecontrollerdb.txt"
             COMMENT "Copying gamecontrollerdb.txt next to larecomp.exe")
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12"
+                    "$<TARGET_FILE_DIR:larecomp>/D3D12"
+            COMMENT "Copying Agility SDK runtime binaries next to larecomp.exe")
     endif()
 endif()

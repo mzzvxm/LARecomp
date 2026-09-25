@@ -135,6 +135,8 @@ class BufferCache {
     // writes the watch did not report.
     uint64_t verify_catches_streaming = 0;
     uint64_t demotion_resends = 0;  // streaming -> watched, re-sent after arming
+    uint64_t pool_hits = 0;
+    uint64_t pool_allocations = 0;
     // Why the most recent Resolve failed. Without this a failure is just
     // "could not be resolved", which names five different causes.
     const char* last_failure = nullptr;
@@ -360,6 +362,19 @@ class BufferCache {
   // Shared all-zero vertex stream. A default-heap buffer is zero-initialised by
   // D3D12 on creation, so it needs no upload.
   Microsoft::WRL::ComPtr<ID3D12Resource> zero_stream_;
+
+  // Buffer recycling pool: prevents constant committed resource allocation/destruction
+  struct PooledBuffer {
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    uint32_t capacity = 0;
+    uint64_t fence_value = 0;
+  };
+  std::vector<PooledBuffer> retired_buffers_;
+  std::vector<PooledBuffer> available_buffers_;
+
+  Microsoft::WRL::ComPtr<ID3D12Resource> AcquireBuffer(D3D12Context& context, uint32_t size);
+  void RetireBuffer(D3D12Context& context, Microsoft::WRL::ComPtr<ID3D12Resource> resource, uint32_t size);
+
   Stats stats_;
 };
 

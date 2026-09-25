@@ -32,21 +32,6 @@ namespace mcla::native_gfx {
 
 namespace {
 
-// Descriptor heap sizes. Generous but bounded; the caches make reuse the
-// common case, and running out is reported rather than silently wrapping.
-// A full unlimited MCLA frame (scene+shadow+aux+composite, ~4000 draws) binds
-// well over 2048 unique textures, so with the heap split in halves each half
-// must hold a whole frame's worth. 32768 -> 16384 per half covers it with room
-// to spare (shader-visible CBV/SRV/UAV heaps allow up to 1M on tier-1 hardware).
-constexpr uint32_t kSrvHeapSize = 32768;
-// Shader-visible SAMPLER heaps are hard-capped at 2048 total by D3D12, so this
-// cannot grow; 1024 unique sampler states per frame is far more than MCLA uses.
-constexpr uint32_t kSamplerHeapSize = 2048;
-// Double-buffered: each native frame uses one half of the heap so the previous
-// frame's descriptors (still read by the GPU) are never overwritten.
-constexpr uint32_t kSrvHalf = kSrvHeapSize / 2;          // 16384 SRVs per frame
-constexpr uint32_t kSamplerHalf = kSamplerHeapSize / 2;  // 1024 samplers per frame
-
 inline uint32_t R32(const uint8_t* base, uint32_t ea) {
   if (ea < 0x1000u) {
     return 0;
@@ -107,12 +92,18 @@ bool TextureBinder::Initialize(D3D12Context& context) {
       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   sampler_increment_ =
       context.device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+  ring_index_ = 0;
+  srv_base_ = kPersistentReservedSrvs;
+  srv_next_ = srv_base_;
+  sampler_next_ = 0;
   return true;
 }
 
 void TextureBinder::Shutdown(D3D12Context& context) {
   (void)context;
-  srv_cache_.clear();
+  for (uint32_t r = 0; r < kSrvRings; ++r) {
+    srv_cache_[r].clear();
+  }
   sampler_cache_.clear();
   slot_cache_.clear();
   ++slot_cache_generation_;
@@ -125,32 +116,23 @@ void TextureBinder::Shutdown(D3D12Context& context) {
   srv_next_ = 0;
   sampler_next_ = 0;
   srv_base_ = 0;
-  sampler_base_ = 0;
-  frame_parity_ = 0;
+  ring_index_ = 0;
   fallback_srv_valid_ = false;
 }
 
 void TextureBinder::BeginFrame() {
-  // Flip to the other half; the previous frame's descriptors (still in flight)
-  // live in the half we leave. Fresh caches so no stale pointer-keyed SRV
-  // survives a resource free/recycle.
-  frame_parity_ ^= 1u;
-  srv_base_ = frame_parity_ * kSrvHalf;
-  sampler_base_ = frame_parity_ * kSamplerHalf;
+  // Advance to the next 16K ring (0..3). 4 rings completely eliminates the GPU in-flight hazard.
+  ring_index_ = (ring_index_ + 1u) % kSrvRings;
+  srv_base_ = kPersistentReservedSrvs + ring_index_ * kSrvRingSize;
   srv_next_ = srv_base_;
-  sampler_next_ = sampler_base_;
-  srv_cache_.clear();
-  sampler_cache_.clear();
+  srv_cache_[ring_index_].clear();
   srv_warned_ = false;
-  sampler_warned_ = false;
-  // Descriptor indices are allocated out of THIS frame's half, so every index
-  // the memo holds names a descriptor that is about to be overwritten.
+
+  // Samplers are persistent across all frames: do NOT clear sampler_cache_!
+  // This eliminates CreateSampler driver overhead during steady gameplay.
+
   memo_valid_ = false;
-  // Same for the slot cache: a new generation makes every entry stale at once.
   ++slot_cache_generation_;
-  // The fallback texture persists, but its descriptor lives in the heap and must
-  // be re-created in this frame's half; force a re-alloc on next FallbackSrv.
-  fallback_srv_valid_ = false;
 }
 
 namespace {
@@ -320,14 +302,14 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
       }
     }
   }
-  auto it = srv_cache_.find(key);
-  if (it != srv_cache_.end()) {
+  auto it = srv_cache_[ring_index_].find(key);
+  if (it != srv_cache_[ring_index_].end()) {
     ++stats_.srv_hits;
     return it->second;
   }
-  if (srv_next_ >= srv_base_ + kSrvHalf) {
+  if (srv_next_ >= srv_base_ + kSrvRingSize) {
     if (!srv_warned_) {
-      REXLOG_ERROR("[native_gfx] SRV descriptor half exhausted ({} entries/frame)", kSrvHalf);
+      REXLOG_ERROR("[native_gfx] SRV descriptor ring exhausted ({} entries/frame)", kSrvRingSize);
       srv_warned_ = true;
     }
     ++stats_.srv_exhausted;
@@ -353,7 +335,7 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   D3D12_CPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
   handle.ptr += SIZE_T(index) * srv_increment_;
   context.device()->CreateShaderResourceView(resource, &desc, handle);
-  srv_cache_.emplace(key, index);
+  srv_cache_[ring_index_].emplace(key, index);
   ++stats_.srv_misses;
   return index;
 }
@@ -365,9 +347,9 @@ uint32_t TextureBinder::AcquireSampler(D3D12Context& context, const SamplerDescr
     ++stats_.sampler_hits;
     return it->second;
   }
-  if (sampler_next_ >= sampler_base_ + kSamplerHalf) {
+  if (sampler_next_ >= kSamplerHeapSize) {
     if (!sampler_warned_) {
-      REXLOG_ERROR("[native_gfx] sampler descriptor half exhausted ({} entries/frame)", kSamplerHalf);
+      REXLOG_ERROR("[native_gfx] sampler descriptor heap exhausted ({} entries)", kSamplerHeapSize);
       sampler_warned_ = true;
     }
     ++stats_.sampler_exhausted;
@@ -387,54 +369,49 @@ uint32_t TextureBinder::AcquireSampler(D3D12Context& context, const SamplerDescr
 }
 
 uint32_t TextureBinder::FallbackSrv(D3D12Context& context, ID3D12GraphicsCommandList* cl) {
-  // The SRV descriptor lives in the heap half of the CURRENT frame and must be
-  // re-created every frame (BeginFrame flips halves + clears validity). The
-  // texture itself is created ONCE and reused.
-  if (fallback_srv_valid_) {
-    return fallback_srv_;
-  }
-  if (!fallback_ready_) {
-    fallback_ready_ = true;  // one attempt; a failure must not retry every draw
-    D3D12_RESOURCE_DESC d = {};
-    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    d.Width = 1;
-    d.Height = 1;
-    d.DepthOrArraySize = 1;
-    d.MipLevels = 1;
-    d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    d.SampleDesc.Count = 1;
-    // COPY_DEST so the white pixel can be uploaded below. An UNINITIALISED
-    // fallback (the previous COMMON, never-written texture) is the black-screen
-    // bug: a missing fetch — the composite's 1x1 average-exposure input among
-    // them — sampled heap garbage, and a near-zero garbage exposure multiplies
-    // the whole scene to black in the tonemap. White (1,1,1,1) makes a missing
-    // multiply-style input a pass-through instead.
-    if (FAILED(context.device()->CreateCommittedResource(
-            &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &d,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&fallback_texture_)))) {
-      REXLOG_ERROR("[native_gfx] fallback texture creation failed");
-      fallback_ready_ = false;
-      return 0;
+  // Descriptor 0 in the persistent reserved region is permanently reserved for fallback.
+  // The texture itself is created ONCE and reused.
+  if (!fallback_srv_valid_) {
+    if (!fallback_ready_) {
+      fallback_ready_ = true;  // one attempt; a failure must not retry every draw
+      D3D12_RESOURCE_DESC d = {};
+      d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+      d.Width = 1;
+      d.Height = 1;
+      d.DepthOrArraySize = 1;
+      d.MipLevels = 1;
+      d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+      d.SampleDesc.Count = 1;
+      // COPY_DEST so the white pixel can be uploaded below. An UNINITIALISED
+      // fallback (the previous COMMON, never-written texture) is the black-screen
+      // bug: a missing fetch — the composite's 1x1 average-exposure input among
+      // them — sampled heap garbage, and a near-zero garbage exposure multiplies
+      // the whole scene to black in the tonemap. White (1,1,1,1) makes a missing
+      // multiply-style input a pass-through instead.
+      if (FAILED(context.device()->CreateCommittedResource(
+              &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &d,
+              D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&fallback_texture_)))) {
+        REXLOG_ERROR("[native_gfx] fallback texture creation failed");
+        fallback_ready_ = false;
+        return 0;
+      }
     }
+    fallback_srv_ = 0;
+    fallback_srv_valid_ = true;
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.Texture2D.MipLevels = 1;
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+    context.device()->CreateShaderResourceView(fallback_texture_.Get(), &desc, handle);
   }
-  if (srv_next_ >= srv_base_ + kSrvHalf) {
-    return 0;
-  }
-  fallback_srv_ = srv_next_++;
-  fallback_srv_valid_ = true;
-  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
-  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-  desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-  desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-  desc.Texture2D.MipLevels = 1;
-  D3D12_CPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
-  handle.ptr += SIZE_T(fallback_srv_) * srv_increment_;
-  context.device()->CreateShaderResourceView(fallback_texture_.Get(), &desc, handle);
+
   // The white-pixel upload only needs to happen once (the texture persists in
   // ALL_SHADER_RESOURCE afterward); re-creating the SRV each frame does not
   // touch the pixel data. `fallback_filled_` guards the one-time copy.
   D3D12Context::UploadAlloc up;
-  if (!fallback_filled_ && cl && context.AllocateUpload(256, 256, up)) {
+  if (!fallback_filled_ && cl && fallback_texture_ && context.AllocateUpload(256, 256, up)) {
     *reinterpret_cast<uint32_t*>(up.cpu) = 0xFFFFFFFFu;  // R8G8B8A8 white, opaque
     D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
     dst.pResource = fallback_texture_.Get();
@@ -456,7 +433,7 @@ uint32_t TextureBinder::FallbackSrv(D3D12Context& context, ID3D12GraphicsCommand
     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &b);
     fallback_filled_ = true;
-    REXLOG_INFO("[native_gfx] fallback texture (white) at SRV descriptor {}", fallback_srv_);
+    REXLOG_INFO("[native_gfx] fallback texture (white) at persistent SRV descriptor {}", fallback_srv_);
   }
   return fallback_srv_;
 }

@@ -36,6 +36,8 @@ class D3D12Provider;
 
 namespace mcla::native_gfx {
 
+class DeviceManager;
+
 // Submissions in flight, NOT frames: a frame is submitted in batches of
 // kDrawsPerBatch, about fourteen of them in gameplay, and BeginFrame waits on
 // the fence of the slot it is about to reuse. At two slots the render thread
@@ -50,11 +52,15 @@ class D3D12Context {
   ~D3D12Context();
 
   bool Initialize(const rex::ui::d3d12::D3D12Provider& provider);
+  bool Initialize(DeviceManager& manager);
   void Shutdown();
   bool initialized() const { return initialized_; }
 
   ID3D12Device* device() const { return device_; }
   ID3D12CommandQueue* queue() const { return queue_; }
+  ID3D12Fence* fence() const { return fence_.Get(); }
+  uint64_t completed_fence_value() const { return fence_ ? fence_->GetCompletedValue() : 0; }
+  uint64_t current_fence_value() const { return fence_value_; }
 
   // Begins a native frame: reclaims the frame slot's allocator (waiting on
   // its fence if the GPU is still using it), resets the command list.
@@ -74,6 +80,13 @@ class D3D12Context {
     }
     return recording_ ? static_cast<ID3D12GraphicsCommandList*>(&recorders_[recording_slot_])
                       : command_list_.Get();
+  }
+
+  ID3D12GraphicsCommandList7* CurrentCommandList7() {
+    if (!frame_open_ || recording_) {
+      return nullptr;
+    }
+    return command_list7_.Get();
   }
 
   // Transient upload allocation valid for the current frame only.
@@ -264,6 +277,7 @@ class D3D12Context {
   ID3D12CommandQueue* queue_ = nullptr;
   Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators_[kFramesInFlight];
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list_;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> command_list7_;
   Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
   HANDLE fence_event_ = nullptr;
   uint64_t fence_value_ = 0;
@@ -281,6 +295,8 @@ class D3D12Context {
     IUnknown* resource;
   };
   std::vector<PendingRelease> pending_releases_;
+
+  bool FinishInitialize();
 
   uint64_t frame_index_ = 0;
   bool frame_open_ = false;

@@ -165,6 +165,12 @@ ShaderBytecode ShaderDatabase::Lookup(uint64_t identity, uint32_t spec_mask, boo
   if (!loaded_) {
     return out;
   }
+
+  MruEntry& mru = is_pixel ? mru_ps_ : mru_vs_;
+  if (mru.bytecode.valid() && mru.identity == identity && mru.spec_mask == spec_mask) {
+    return mru.bytecode;
+  }
+
   auto it = impl_->entries.find(identity);
   if (it == impl_->entries.end()) {
     ++miss_count_;
@@ -197,6 +203,10 @@ ShaderBytecode ShaderDatabase::Lookup(uint64_t identity, uint32_t spec_mask, boo
   }
   out.data = impl_->file.data() + off;
   out.size = size;
+
+  mru.identity = identity;
+  mru.spec_mask = spec_mask;
+  mru.bytecode = out;
   return out;
 }
 

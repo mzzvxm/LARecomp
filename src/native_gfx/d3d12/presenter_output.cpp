@@ -10,6 +10,7 @@
 #include <rex/ui/d3d12/d3d12_util.h>
 
 #include "context.h"
+#include "barrier_batch.h"
 
 namespace mcla::native_gfx {
 
@@ -69,20 +70,17 @@ void PresenterOutput::BindAndClear(ID3D12GraphicsCommandList* cl, const float cl
 
 void PresenterOutput::RecordCopyToGuestOutput(ID3D12GraphicsCommandList* cl,
                                               ID3D12Resource* guest_output) {
-  D3D12_RESOURCE_BARRIER barriers[2] = {};
-  barriers[0].Transition.pResource = rt_.Get();
-  barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-  barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-  barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  barriers[1].Transition.pResource = guest_output;
-  barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-  barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-  barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl->ResourceBarrier(2, barriers);
+  BarrierBatch pre;
+  pre.AddTexture(rt_.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  pre.AddTexture(guest_output, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+  pre.Flush(cl);
+
   cl->CopyResource(guest_output, rt_.Get());
-  std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
-  std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
-  cl->ResourceBarrier(2, barriers);
+
+  BarrierBatch post;
+  post.AddTexture(rt_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+  post.AddTexture(guest_output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  post.Flush(cl);
 }
 
 void PresenterOutput::Shutdown(D3D12Context& context) {

@@ -6,15 +6,19 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 #include <rex/logging.h>
 
 #include "../geometry.h"
 #include "context.h"
+#include "device_manager.h"
 #include "shader_db.h"
 
 REXCVAR_DECLARE(int32_t, mcla_native_gfx_shadow_bias);
 REXCVAR_DECLARE(bool, mcla_native_gfx_rectlist_nocull);
+REXCVAR_DECLARE(bool, mcla_native_gfx_pipeline_library);
 
 namespace mcla::native_gfx {
 
@@ -178,21 +182,54 @@ inline void HashCombine(uint64_t& h, uint64_t v) {
   h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
 }
 
-}  // namespace
+struct InputLayoutRegistry {
+  std::unordered_map<uint64_t, uint32_t> hash_to_id;
+  std::vector<std::vector<PsoInputElement>> layouts;
 
-bool PsoKey::operator==(const PsoKey& o) const {
-  return vs_identity == o.vs_identity && ps_identity == o.ps_identity &&
-         vs_spec_mask == o.vs_spec_mask && ps_spec_mask == o.ps_spec_mask &&
-         topology_type == o.topology_type && rt_format == o.rt_format &&
-         rt1_format == o.rt1_format && blend_control1 == o.blend_control1 &&
-         ds_format == o.ds_format && sample_count == o.sample_count &&
-         blend_control0 == o.blend_control0 && color_control == o.color_control &&
-         color_mask == o.color_mask && depth_control == o.depth_control &&
-         stencil_ref_mask == o.stencil_ref_mask &&
-         pa_su_sc_mode_cntl == o.pa_su_sc_mode_cntl && y_flipped == o.y_flipped &&
-         depth_bias == o.depth_bias &&
-         slope_scaled_depth_bias == o.slope_scaled_depth_bias && input_layout == o.input_layout;
-}
+  uint32_t Intern(const std::vector<InputElement>& elements) {
+    if (elements.empty()) {
+      return 0;
+    }
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (const auto& e : elements) {
+      uint32_t usage = 0;
+      if (e.semantic_name) {
+        for (int i = 0; i < 4 && e.semantic_name[i]; ++i) {
+          usage = (usage << 8) | uint8_t(e.semantic_name[i]);
+        }
+      }
+      HashCombine(h, (uint64_t(usage) << 32) | e.semantic_index);
+      HashCombine(h, (uint64_t(e.dxgi_format) << 32) | e.input_slot);
+      HashCombine(h, e.aligned_byte_offset);
+    }
+    auto it = hash_to_id.find(h);
+    if (it != hash_to_id.end()) {
+      return it->second;
+    }
+    uint32_t id = static_cast<uint32_t>(layouts.size() + 1);
+    std::vector<PsoInputElement> pso_elements;
+    pso_elements.reserve(elements.size());
+    for (const auto& e : elements) {
+      PsoInputElement p;
+      p.usage = 0;
+      if (e.semantic_name) {
+        for (int i = 0; i < 4 && e.semantic_name[i]; ++i) {
+          p.usage = (p.usage << 8) | uint8_t(e.semantic_name[i]);
+        }
+      }
+      p.usage_index = e.semantic_index;
+      p.dxgi_format = e.dxgi_format;
+      p.input_slot = e.input_slot;
+      p.aligned_byte_offset = e.aligned_byte_offset;
+      pso_elements.push_back(p);
+    }
+    layouts.push_back(std::move(pso_elements));
+    hash_to_id.emplace(h, id);
+    return id;
+  }
+} g_layout_registry;
+
+}  // namespace
 
 size_t PsoKeyHash::operator()(const PsoKey& k) const {
   uint64_t h = 0xCBF29CE484222325ull;
@@ -204,17 +241,12 @@ size_t PsoKeyHash::operator()(const PsoKey& k) const {
   HashCombine(h, (uint64_t(k.rt1_format) << 32) | k.blend_control1);
   HashCombine(h, (uint64_t(k.blend_control0) << 32) | k.color_control);
   HashCombine(h, (uint64_t(k.color_mask) << 32) | k.depth_control);
-  HashCombine(h, (uint64_t(k.pa_su_sc_mode_cntl) << 32) | k.stencil_ref_mask);
-  HashCombine(h, k.y_flipped);
+  HashCombine(h, (uint64_t(k.pa_su_sc_mode_cntl) << 32) | k.stencil_mask);
+  HashCombine(h, (uint64_t(k.y_flipped) << 32) | k.layout_id);
   {
     uint32_t slope_bits;
     std::memcpy(&slope_bits, &k.slope_scaled_depth_bias, 4);
     HashCombine(h, (uint64_t(uint32_t(k.depth_bias)) << 32) | slope_bits);
-  }
-  for (const PsoInputElement& e : k.input_layout) {
-    HashCombine(h, (uint64_t(e.usage) << 32) | e.usage_index);
-    HashCombine(h, (uint64_t(e.dxgi_format) << 32) | e.input_slot);
-    HashCombine(h, e.aligned_byte_offset);
   }
   return size_t(h);
 }
@@ -232,109 +264,224 @@ void PipelineCache::MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
                                 const GuestRenderState& render_state, uint64_t vs_identity,
                                 uint64_t ps_identity, uint32_t vs_spec_mask,
                                 uint32_t ps_spec_mask) {
-  // Every scalar below is assigned from scratch; only the layout's storage is
-  // taken over from `out`, so nothing of the previous draw's key survives.
-  PsoKey k;
-  k.input_layout = std::move(out.input_layout);
-  k.input_layout.clear();
-  k.vs_identity = vs_identity;
-  k.ps_identity = ps_identity;
-  k.vs_spec_mask = vs_spec_mask;
-  k.ps_spec_mask = ps_spec_mask;
+  out.vs_identity = vs_identity;
+  out.ps_identity = ps_identity;
+  out.vs_spec_mask = vs_spec_mask;
+  out.ps_spec_mask = ps_spec_mask;
 
   switch (PrimitiveTypeToTopology(geometry.primitive_type)) {
     case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
-      k.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+      out.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
       break;
     case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
     case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
-      k.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+      out.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
       break;
     default:
-      k.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      out.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
       break;
   }
 
-  k.rt_format = ColorRenderTargetFormatToDxgi(render_state.color_format);
-  k.ds_format = DepthRenderTargetFormatToDxgi(render_state.depth_format);
-  k.sample_count = SampleCountFromMsaa(render_state.msaa_samples);
-  k.blend_control0 = render_state.blend_control0;
-  // rt1_format is filled by the caller, which is the only place that knows the
-  // pooled target set; the blend equation for it comes straight from the guest.
-  k.blend_control1 = render_state.blend_control1;
-  k.color_control = render_state.color_control;
-  k.color_mask = render_state.color_mask;
-  k.depth_control = render_state.depth_control;
-  k.stencil_ref_mask = (render_state.stencil_ref) | (render_state.stencil_read_mask << 8) |
-                       (render_state.stencil_write_mask << 16);
-  k.pa_su_sc_mode_cntl = render_state.pa_su_sc_mode_cntl;
-  // kRectangleList has no orientation to cull against. The Xenos generates the
-  // rect's two triangles itself; the three vertices describe an AREA, not a
-  // wound triangle, so the guest's cull state was never about them. Synthesising
-  // the fourth corner on the CPU turns that area into ordinary triangles, and
-  // those do get a winding -- one the guest never chose and cannot have meant.
-  //
-  // Measured on the minimap: the circular punch is a rect list whose corners
-  // are (-0.5,-0.5) (255.5,-0.5) (-0.5,255.5) in a Y-down target, which comes
-  // out CLOCKWISE on screen, while the draw carries cull_back=1 with
-  // counter-clockwise as front. Every fragment was culled. The draw issued, the
-  // mask on the GPU was the correct circle, the descriptor, the UVs, the blend
-  // and the write mask all measured right, and the target changed by 0.1 of an
-  // alpha level between punch-on and punch-off -- which is what a fully culled
-  // draw looks like from every diagnostic that does not ask the rasterizer.
+  out.rt_format = ColorRenderTargetFormatToDxgi(render_state.color_format);
+  out.ds_format = DepthRenderTargetFormatToDxgi(render_state.depth_format);
+  out.sample_count = SampleCountFromMsaa(render_state.msaa_samples);
+  out.blend_control0 = render_state.blend_control0;
+  out.blend_control1 = render_state.blend_control1;
+  out.color_control = render_state.color_control;
+  out.color_mask = render_state.color_mask;
+  out.depth_control = render_state.depth_control;
+  // Dynamic stencil ref is bound via OMSetStencilRef(); key keeps read/write masks only.
+  out.stencil_mask = (render_state.stencil_read_mask & 0xFFu) |
+                     ((render_state.stencil_write_mask & 0xFFu) << 8);
+  out.pa_su_sc_mode_cntl = render_state.pa_su_sc_mode_cntl;
   if (geometry.primitive_type == 8u && REXCVAR_GET(mcla_native_gfx_rectlist_nocull)) {
-    k.pa_su_sc_mode_cntl &= ~0x3u;  // clear cull_front | cull_back
+    out.pa_su_sc_mode_cntl &= ~0x3u;  // clear cull_front | cull_back
   }
-  k.y_flipped = ComputeHostViewport(render_state).y_flipped ? 1u : 0u;
+  out.y_flipped = ComputeHostViewport(render_state).y_flipped ? 1u : 0u;
 
   {
     float poly_offset_scale = 0.0f, poly_offset = 0.0f;
     PreferredFacePolygonOffset(render_state,
-                               k.topology_type == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                               out.topology_type == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
                                &poly_offset_scale, &poly_offset);
-    k.depth_bias = IntegerPolygonOffset(render_state.depth_format, poly_offset);
-    k.slope_scaled_depth_bias = poly_offset_scale * kPolygonOffsetScaleSubpixelUnit;
-    // O atlas de sombra nativo sai
-    // 7..17 quanta de D24 ABAIXO do emulado na mesma cena, e o ShadowBlend
-    // compara os quatro taps do PCF contra uma profundidade de receptor
-    // calculada em float no shader -- entao um atlas baixo demais faz a
-    // superficie se sombrear sozinha -- medido: o plano do chao inteiro em 2/4
-    // taps, 68.5% do quadro iluminado contra 92.5% com o bias. Ver o texto do
-    // cvar para o que a medicao cobre e o que ficou sem explicacao.
+    out.depth_bias = IntegerPolygonOffset(render_state.depth_format, poly_offset);
+    out.slope_scaled_depth_bias = poly_offset_scale * kPolygonOffsetScaleSubpixelUnit;
     if (int32_t extra = REXCVAR_GET(mcla_native_gfx_shadow_bias)) {
       const HostViewport shadow_vp = ComputeHostViewport(render_state);
       if (shadow_vp.width == 640.0f && shadow_vp.height == 640.0f) {
-        k.depth_bias += extra;
+        out.depth_bias += extra;
       }
     }
   }
 
-  k.input_layout.reserve(geometry.input_layout.size());
-  for (const InputElement& e : geometry.input_layout) {
-    PsoInputElement p;
-    // The semantic name is a literal; hash the first four characters so the
-    // key does not depend on pointer identity.
-    p.usage = 0;
-    if (e.semantic_name) {
-      for (int i = 0; i < 4 && e.semantic_name[i]; ++i) {
-        p.usage = (p.usage << 8) | uint8_t(e.semantic_name[i]);
+  out.layout_id = g_layout_registry.Intern(geometry.input_layout);
+}
+
+void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
+  if (pipeline_library_ || !REXCVAR_GET(mcla_native_gfx_pipeline_library)) {
+    return;
+  }
+  Microsoft::WRL::ComPtr<ID3D12Device1> dev1;
+  if (FAILED(context.device()->QueryInterface(IID_PPV_ARGS(&dev1)))) {
+    return;
+  }
+
+  library_path_ = "cache/d3d12_pso.cache";
+  std::error_code ec;
+  std::filesystem::create_directories("cache", ec);
+
+  std::ifstream file(library_path_, std::ios::binary | std::ios::ate);
+  if (file.is_open()) {
+    const std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (size > 0) {
+      std::vector<uint8_t> blob(static_cast<size_t>(size));
+      if (file.read(reinterpret_cast<char*>(blob.data()), size)) {
+        HRESULT hr = dev1->CreatePipelineLibrary(blob.data(), blob.size(),
+                                                 IID_PPV_ARGS(&pipeline_library_));
+        if (SUCCEEDED(hr)) {
+          REXLOG_INFO("[native_gfx] ID3D12PipelineLibrary loaded from {} ({} bytes)",
+                      library_path_, size);
+        } else if (hr == D3D12_ERROR_DRIVER_VERSION_MISMATCH) {
+          REXLOG_WARN("[native_gfx] Pipeline library driver version mismatch; re-creating empty library");
+          dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+          library_dirty_ = true;
+        } else {
+          REXLOG_WARN("[native_gfx] Failed to load pipeline library (HRESULT 0x{:08X}); re-creating empty",
+                      static_cast<uint32_t>(hr));
+          dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+          library_dirty_ = true;
+        }
       }
     }
-    p.usage_index = e.semantic_index;
-    p.dxgi_format = e.dxgi_format;
-    p.input_slot = e.input_slot;
-    p.aligned_byte_offset = e.aligned_byte_offset;
-    k.input_layout.push_back(p);
   }
-  out = std::move(k);
+
+  if (!pipeline_library_) {
+    HRESULT hr = dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+    if (SUCCEEDED(hr)) {
+      REXLOG_INFO("[native_gfx] Created new empty ID3D12PipelineLibrary ({})", library_path_);
+    }
+  }
+}
+
+void PipelineCache::SaveLibrary() {
+  if (!pipeline_library_ || !library_dirty_ || library_path_.empty()) {
+    return;
+  }
+  const SIZE_T size = pipeline_library_->GetSerializedSize();
+  if (size == 0) {
+    return;
+  }
+  std::vector<uint8_t> buffer(size);
+  HRESULT hr = pipeline_library_->Serialize(buffer.data(), buffer.size());
+  if (FAILED(hr)) {
+    REXLOG_WARN("[native_gfx] Failed to serialize pipeline library: HRESULT 0x{:08X}",
+                static_cast<uint32_t>(hr));
+    return;
+  }
+
+  std::filesystem::path path(library_path_);
+  std::error_code ec;
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path(), ec);
+  }
+
+  std::filesystem::path temp_path = path;
+  temp_path += ".tmp";
+
+  FILE* f = std::fopen(temp_path.string().c_str(), "wb");
+  if (!f) {
+    REXLOG_WARN("[native_gfx] Failed to open temp file for pipeline library: {}", temp_path.string());
+    return;
+  }
+  const size_t written = std::fwrite(buffer.data(), 1, buffer.size(), f);
+  std::fclose(f);
+
+  if (written == buffer.size()) {
+    std::filesystem::rename(temp_path, path, ec);
+    if (!ec) {
+      library_dirty_ = false;
+      REXLOG_INFO("[native_gfx] Saved ID3D12PipelineLibrary to {} ({} bytes, {} PSOs stored)",
+                  path.string(), buffer.size(), stats_.library_stores);
+    } else {
+      REXLOG_WARN("[native_gfx] Failed to replace pipeline library file: {}", ec.message());
+    }
+  }
 }
 
 bool PipelineCache::Initialize(D3D12Context& context) {
   if (root_signature_) {
+    InitializePipelineLibrary(context);
     return true;
   }
-  // One unbounded SRV range per space, each in its own table: D3D12 refuses
-  // to append a range after an unbounded one, so they cannot be combined.
+
+  bool use_v1_1 = false;
+  if (DeviceManager::Instance().IsInitialized() &&
+      DeviceManager::Instance().capabilities().highest_root_signature_version >=
+          D3D_ROOT_SIGNATURE_VERSION_1_1) {
+    use_v1_1 = true;
+  }
+
+  Microsoft::WRL::ComPtr<ID3DBlob> blob, error;
+  if (use_v1_1) {
+    D3D12_DESCRIPTOR_RANGE1 srv_ranges[3] = {};
+    for (uint32_t i = 0; i < 3; ++i) {
+      srv_ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+      srv_ranges[i].NumDescriptors = UINT_MAX;  // unbounded, as declared in HLSL
+      srv_ranges[i].BaseShaderRegister = 0;     // t0
+      srv_ranges[i].RegisterSpace = i;          // space0/1/2
+      srv_ranges[i].OffsetInDescriptorsFromTableStart = 0;
+      srv_ranges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+    }
+    D3D12_DESCRIPTOR_RANGE1 sampler_range = {};
+    sampler_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+    sampler_range.NumDescriptors = UINT_MAX;
+    sampler_range.BaseShaderRegister = 0;  // s0
+    sampler_range.RegisterSpace = 3;
+    sampler_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    sampler_range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+
+    D3D12_ROOT_PARAMETER1 params[kRootParameterCount] = {};
+    const uint32_t cbv_registers[3] = {0, 1, 2};
+    for (uint32_t i = 0; i < 3; ++i) {
+      params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+      params[i].Descriptor.ShaderRegister = cbv_registers[i];
+      params[i].Descriptor.RegisterSpace = 4;
+      params[i].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+      params[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    }
+    const uint32_t srv_params[3] = {kRootTexture2DTable, kRootTexture3DTable,
+                                    kRootTextureCubeTable};
+    for (uint32_t i = 0; i < 3; ++i) {
+      params[srv_params[i]].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      params[srv_params[i]].DescriptorTable.NumDescriptorRanges = 1;
+      params[srv_params[i]].DescriptorTable.pDescriptorRanges = &srv_ranges[i];
+      params[srv_params[i]].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    }
+    params[kRootSamplerTable].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[kRootSamplerTable].DescriptorTable.NumDescriptorRanges = 1;
+    params[kRootSamplerTable].DescriptorTable.pDescriptorRanges = &sampler_range;
+    params[kRootSamplerTable].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC vdesc = {};
+    vdesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    vdesc.Desc_1_1.NumParameters = kRootParameterCount;
+    vdesc.Desc_1_1.pParameters = params;
+    vdesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    if (SUCCEEDED(D3D12SerializeVersionedRootSignature(&vdesc, &blob, &error))) {
+      if (SUCCEEDED(context.device()->CreateRootSignature(0, blob->GetBufferPointer(),
+                                                         blob->GetBufferSize(),
+                                                         IID_PPV_ARGS(&root_signature_)))) {
+        REXLOG_INFO("[native_gfx] Root Signature 1.1 created (DATA_STATIC_WHILE_SET_AT_EXECUTE enabled)");
+        InitializePipelineLibrary(context);
+        return true;
+      }
+    }
+    REXLOG_WARN("[native_gfx] Root Signature 1.1 failed, falling back to 1.0");
+  }
+
+  // Fallback / standard Root Signature 1.0
   D3D12_DESCRIPTOR_RANGE srv_ranges[3] = {};
   for (uint32_t i = 0; i < 3; ++i) {
     srv_ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -376,7 +523,6 @@ bool PipelineCache::Initialize(D3D12Context& context) {
   desc.pParameters = params;
   desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-  Microsoft::WRL::ComPtr<ID3DBlob> blob, error;
   if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error))) {
     REXLOG_ERROR("[native_gfx] root signature serialization failed: {}",
                  error ? static_cast<const char*>(error->GetBufferPointer()) : "(no message)");
@@ -389,16 +535,21 @@ bool PipelineCache::Initialize(D3D12Context& context) {
     return false;
   }
   REXLOG_INFO("[native_gfx] root signature created (b0/b1/b2 space4, t0 space0-2, s0 space3)");
+  InitializePipelineLibrary(context);
   return true;
 }
 
 void PipelineCache::Shutdown(D3D12Context& context) {
+  SaveLibrary();
+  pipeline_library_.Reset();
   for (auto& [key, pso] : pipelines_) {
     if (pso) {
       context.DeferRelease(pso.Detach());
     }
   }
   pipelines_.clear();
+  mru_pso_ = nullptr;
+  mru_key_ = {};
   root_signature_.Reset();
 }
 
@@ -406,10 +557,17 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
                                                 const ShaderBytecode& vs,
                                                 const ShaderBytecode& ps,
                                                 const GeometrySnapshot& geometry) {
+  if (mru_pso_ && key == mru_key_) {
+    ++stats_.hits;
+    return mru_pso_;
+  }
+
   auto it = pipelines_.find(key);
   if (it != pipelines_.end()) {
     ++stats_.hits;
-    return it->second.Get();
+    mru_key_ = key;
+    mru_pso_ = it->second.Get();
+    return mru_pso_;
   }
   ++stats_.misses;
 
@@ -510,8 +668,8 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
   // FrontFace/BackFace must be valid whenever stencil is enabled: D3D12's
   // enums start at 1, so leaving the zero-initialised struct in place makes
   // CreateGraphicsPipelineState fail with E_INVALIDARG and no message.
-  desc.DepthStencilState.StencilReadMask = UINT8((key.stencil_ref_mask >> 8) & 0xFF);
-  desc.DepthStencilState.StencilWriteMask = UINT8((key.stencil_ref_mask >> 16) & 0xFF);
+  desc.DepthStencilState.StencilReadMask = UINT8(key.stencil_mask & 0xFF);
+  desc.DepthStencilState.StencilWriteMask = UINT8((key.stencil_mask >> 8) & 0xFF);
   desc.DepthStencilState.FrontFace.StencilFunc = CompareFunc((key.depth_control >> 8) & 0x7u);
   desc.DepthStencilState.FrontFace.StencilFailOp = StencilOp((key.depth_control >> 11) & 0x7u);
   desc.DepthStencilState.FrontFace.StencilPassOp = StencilOp((key.depth_control >> 14) & 0x7u);
@@ -561,6 +719,24 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
   }
   desc.DSVFormat = DXGI_FORMAT(key.ds_format);
 
+  wchar_t pso_name[128] = {};
+  if (pipeline_library_) {
+    swprintf_s(pso_name, L"pso_%016llx_%016llx_%08x_%08x_%08x_%016llx",
+               (unsigned long long)key.vs_identity,
+               (unsigned long long)key.ps_identity,
+               key.layout_id, key.rt_format, key.ds_format,
+               (unsigned long long)PsoKeyHash{}(key));
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> lib_pso;
+    HRESULT hr = pipeline_library_->LoadGraphicsPipeline(pso_name, &desc, IID_PPV_ARGS(&lib_pso));
+    if (SUCCEEDED(hr)) {
+      ++stats_.library_loads;
+      auto [inserted, ok] = pipelines_.emplace(key, std::move(lib_pso));
+      mru_key_ = key;
+      mru_pso_ = inserted->second.Get();
+      return mru_pso_;
+    }
+  }
+
   Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
   if (FAILED(context.device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)))) {
     REXLOG_ERROR("[native_gfx] PSO creation failed (vs {:016X} ps {:016X} rt {} ds {} samples {})",
@@ -599,8 +775,19 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
     ++stats_.creation_failures;
     return nullptr;
   }
+
+  if (pipeline_library_) {
+    HRESULT hr = pipeline_library_->StorePipeline(pso_name, pso.Get());
+    if (SUCCEEDED(hr)) {
+      library_dirty_ = true;
+      ++stats_.library_stores;
+    }
+  }
+
   auto [inserted, ok] = pipelines_.emplace(key, std::move(pso));
-  return inserted->second.Get();
+  mru_key_ = key;
+  mru_pso_ = inserted->second.Get();
+  return mru_pso_;
 }
 
 }  // namespace mcla::native_gfx

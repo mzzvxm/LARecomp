@@ -6,6 +6,7 @@
 #include <rex/logging.h>
 
 #include "context.h"
+#include "barrier_batch.h"
 
 #include "blit_cs_dxil.inc"
 
@@ -120,13 +121,8 @@ bool RecordExternalBlitToGuestOutput(ID3D12Device* device, ID3D12GraphicsCommand
   uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
   device->CreateUnorderedAccessView(guest_output, nullptr, &uav_desc, cpu);
 
-  D3D12_RESOURCE_BARRIER barrier{};
-  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  barrier.Transition.pResource = guest_output;
-  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  barrier.Transition.StateBefore = guest_output_state;
-  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  cl->ResourceBarrier(1, &barrier);
+  BarrierBatch::Transition(cl, guest_output, guest_output_state,
+                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
   ID3D12DescriptorHeap* heaps[] = {g_blit.heap.Get()};
   // This pass binds its own heaps, root signature and pipeline onto the
@@ -141,9 +137,8 @@ bool RecordExternalBlitToGuestOutput(ID3D12Device* device, ID3D12GraphicsCommand
   cl->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
   // Back to the state the Presenter expects on return.
-  barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  barrier.Transition.StateAfter = guest_output_state;
-  cl->ResourceBarrier(1, &barrier);
+  BarrierBatch::Transition(cl, guest_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                           guest_output_state);
   return true;
 }
 

@@ -37,6 +37,7 @@
 #include "../shader_identity.h"
 #include "constant_upload.h"
 #include "context.h"
+#include "gpu_profiler.h"
 #include "image_dump.h"
 #include "pipeline_cache.h"
 #include "render_target_pool.h"
@@ -992,6 +993,7 @@ ID3D12GraphicsCommandList* EnsureFrame(D3D12Context& context) {
   context.ClearDebugMessages();
   // A reset list holds no state at all.
   g_rec.Clear();
+  GpuProfiler::Instance().BeginFrame(context, cl);
   return cl;
 }
 
@@ -1000,6 +1002,7 @@ bool FlushBatch(D3D12Context& context) {
   if (!g_cap.frame_open) {
     return true;
   }
+  GpuProfiler::Instance().EndFrame(context, context.CurrentCommandList());
   g_cap.frame_open = false;
   g_cap.draws_in_batch = 0;
   g_rec.Clear();
@@ -3711,16 +3714,19 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // that BeginFrame rewinds, so a GPU address from a previous batch points at
     // bytes that have since been overwritten. context.frame_index() advances on
     // every submit, which makes it exactly the right epoch.
-    static std::vector<uint8_t> vs_mirror, ps_mirror;
+    static std::vector<uint8_t> vs_mirror, ps_mirror, shared_mirror;
     static uint64_t mirror_epoch = UINT64_MAX;
-    static uint64_t mirror_vs_gpu = 0, mirror_ps_gpu = 0;
+    static uint64_t mirror_vs_gpu = 0, mirror_ps_gpu = 0, mirror_shared_gpu = 0;
     const uint64_t epoch = context.frame_index();
     const bool epoch_ok = epoch == mirror_epoch && vs_mirror.size() == kAluBankBytes &&
-                          ps_mirror.size() == kAluBankBytes;
+                          ps_mirror.size() == kAluBankBytes &&
+                          shared_mirror.size() == kSharedConstantsBytes;
     const bool vs_same =
         epoch_ok && std::memcmp(vs_mirror.data(), vs_bank.data(), kAluBankBytes) == 0;
     const bool ps_same =
         epoch_ok && std::memcmp(ps_mirror.data(), ps_bank.data(), kAluBankBytes) == 0;
+    const bool shared_same =
+        epoch_ok && std::memcmp(shared_mirror.data(), shared.data(), kSharedConstantsBytes) == 0;
     // Any early return below leaves the mirror describing an allocation this
     // draw abandoned, so drop it rather than hand it to the next draw.
     const auto invalidate_mirror = [&]() { mirror_epoch = UINT64_MAX; };
@@ -3745,24 +3751,29 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       std::memcpy(a.cpu, ps_bank.data(), kAluBankBytes);
       cbv.ps = a.gpu;
     }
+    if (shared_same) {
+      cbv.shared = mirror_shared_gpu;
+    } else {
+      if (!upload_or_flush(kSharedConstantsBytes)) {
+        invalidate_mirror();
+        return;
+      }
+      std::memcpy(a.cpu, shared.data(), kSharedConstantsBytes);
+      cbv.shared = a.gpu;
+    }
     if (!vs_same) {
       vs_mirror.assign(vs_bank.begin(), vs_bank.end());
     }
     if (!ps_same) {
       ps_mirror.assign(ps_bank.begin(), ps_bank.end());
     }
+    if (!shared_same) {
+      shared_mirror.assign(shared.data(), shared.data() + kSharedConstantsBytes);
+    }
     mirror_vs_gpu = cbv.vs;
     mirror_ps_gpu = cbv.ps;
+    mirror_shared_gpu = cbv.shared;
     mirror_epoch = epoch;
-
-    // The shared buffer carries this draw's descriptor indices, so it is always
-    // different and always uploaded.
-    if (!upload_or_flush(kSharedConstantsBytes)) {
-      invalidate_mirror();
-      return;
-    }
-    std::memcpy(a.cpu, shared.data(), kSharedConstantsBytes);
-    cbv.shared = a.gpu;
   }
   ProfileAdd(g_profile.const_us, t_const);
 
@@ -6139,6 +6150,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   if (!cl) {
     return false;
   }
+  GpuProfiler::Instance().BeginScope(cl, "Display Prep / PostFX");
   if (tonemap) {
     // Source (HDR anchor) -> shader-readable; owned slot -> UAV for the compute
     // write. The tonemap dispatch reads the HDR SRV and writes the LDR UAV.
@@ -6161,6 +6173,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     if (n) {
       cl->ResourceBarrier(n, pre);
     }
+    GpuProfiler::Instance().SetMarker(cl, "ACES Tonemap Pass");
     g_tonemap.Record(context, cl, display->color.Get(), display->key.rt_format, slot.tex.Get(),
                      display->key.width, display->key.height,
                      float(REXCVAR_GET(mcla_native_gfx_exposure)));
@@ -6170,6 +6183,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     post.Transition.StateAfter = kReadable;
     post.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &post);
+    GpuProfiler::Instance().EndScope(cl);
     context.EndFrame();
     slot.state = kReadable;
     // Anchor left readable; the pool restores it to RENDER_TARGET on its next
@@ -6218,6 +6232,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
         if (fx_count) {
           cl->ResourceBarrier(fx_count, pre_fx);
         }
+        GpuProfiler::Instance().SetMarker(cl, "NVIDIA FXAA Pass");
         g_fxaa.Record(context, cl, display->color.Get(), display->key.rt_format,
                       g_fxaa_buffer.tex.Get(), uint32_t(slot_format), display->key.width,
                       display->key.height,
@@ -6288,6 +6303,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
         swap[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         swap[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         cl->ResourceBarrier(2, swap);
+        GpuProfiler::Instance().SetMarker(cl, "Display Gamma Ramp Pass");
         g_gamma.Record(context, cl, src_tex, src_fmt, slot.tex.Get(), display->key.width,
                        display->key.height);
         D3D12_RESOURCE_BARRIER back = {};
@@ -6301,6 +6317,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       }
     }
     if (!ramped) {
+      GpuProfiler::Instance().SetMarker(cl, "Display Copy Resource");
       cl->CopyResource(slot.tex.Get(), src_tex);
     }
     // Owned slot -> readable for the compute blit.
@@ -6310,6 +6327,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     post.Transition.StateAfter = kReadable;
     post.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cl->ResourceBarrier(1, &post);
+    GpuProfiler::Instance().EndScope(cl);
     context.EndFrame();
     slot.state = kReadable;
     // The pooled composite is left in COPY_SOURCE; the pool restores it to
