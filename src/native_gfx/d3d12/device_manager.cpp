@@ -4,10 +4,13 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_own_device, true, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_own_device, false, "MCLA/NativeGfx",
                     "Use native DeviceManager to own the D3D12 device and direct command queue "
                     "instead of borrowing from RexGlue/Xenia provider. Enables high-performance "
-                    "adapter selection, Agility SDK features, and drops the shared submit mutex.")
+                    "adapter selection, Agility SDK features, and drops the shared submit mutex. "
+                    "Off by default, like mcla_native_gfx_own_swapchain: without that one the "
+                    "presenter shows the frame from its own queue, which nothing orders after the "
+                    "blit on this one.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::native_gfx {

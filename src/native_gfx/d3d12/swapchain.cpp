@@ -4,10 +4,13 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_own_swapchain, true, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_own_swapchain, false, "MCLA/NativeGfx",
                     "Use NativeSwapChain (FLIP_DISCARD, tearing, frame latency waitable object) "
                     "presenting directly to the HWND backbuffer, eliminating intermediate blits "
-                    "and enabling full ReShade / Reno DX DevKit visibility.")
+                    "and enabling full ReShade / Reno DX DevKit visibility. Off by default: it "
+                    "bypasses rex::ui::Presenter, so present_effect (FSR) and every ImGui overlay "
+                    "(console, F3, toasts) are gone and the frame is stretched bilinearly. Needs "
+                    "mcla_native_gfx_own_device.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::native_gfx {
