@@ -429,6 +429,9 @@ REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
     "OFF rebuilds LOD 1 from the donor's own LOD 1 on a quarter budget, the "
     "old behaviour.");
 
+REXCVAR_DEFINE_BOOL(model_mods_part_probe, true, "MCLA/Mods",
+    "TEMPORARY diagnostic: every 2 s, log the skeleton matrices of the player "
+    "car's rear bumper, spoiler and exh_pipe parts (tail pipe placement).");
 REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
     "How much larger than the donor's own a replacement PART may be, as a "
     "multiple of the shipped resource.\n"
@@ -2511,9 +2514,93 @@ size_t WriteBodyModel(Rsc5Resource& resource, const Rsc5Resource& pristine, cons
     return filled;
 }
 
+// ---------------------------------------------------------------------------
+// TEMPORARY diagnostic (25/09): where the game really puts a part's bones.
+// Three boots moved the tail pipe bones and three times the pipes landed
+// somewhere the file said they could not. Every 2 s this reads the player's
+// mcCarModel (dword_8288DCF8, set by its ctor sub_8235AF90) and logs, for the
+// rear bumper (slot 3), spoiler (9) and exh_pipe (23): the per-slot matrix
+// buffer at car+5740+4*slot (64-byte matrices, sub_8235CBD0) and the part's
+// skeleton instance at car+6740+4*slot (+16 count, +20 64-byte matrices, +12
+// 80-byte entries). Logged only when something changed. Read-only.
+uint32_t ProbeU32(const uint8_t* base, uint32_t address) {
+    const uint8_t* p = base + address;
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+}
+
+float ProbeF32(const uint8_t* base, uint32_t address) {
+    const uint32_t bits = ProbeU32(base, address);
+    float value;
+    std::memcpy(&value, &bits, 4);
+    return value;
+}
+
+// The player car sat at 0xBF5120F0 (seen 25/09), in the 0xA0000000+ heap.
+bool ProbeAddress(uint32_t address) { return address >= 0x40000000u && address < 0xFFF00000u; }
+
+std::string ProbeMatrix(const uint8_t* base, uint32_t address) {
+    std::string out;
+    for (int r = 0; r < 4; ++r) {
+        out += fmt::format("[{:.3f} {:.3f} {:.3f} {:.3f}]", ProbeF32(base, address + r * 16),
+                           ProbeF32(base, address + r * 16 + 4), ProbeF32(base, address + r * 16 + 8),
+                           ProbeF32(base, address + r * 16 + 12));
+    }
+    return out;
+}
+
+void PartProbeLoop() {
+    std::string last;
+    for (;;) {
+        Sleep(2000);
+        if (!REXCVAR_GET(model_mods_part_probe)) continue;
+        auto* runtime = rex::Runtime::instance();
+        if (!runtime || !runtime->memory()) continue;
+        const uint8_t* base = runtime->memory()->virtual_membase();
+        if (!base) continue;
+        const uint32_t car = ProbeU32(base, 0x8288DCF8u);
+        std::string report = fmt::format(" (dword_8288DCF8)");
+        if (!ProbeAddress(car)) {
+            if (report + std::to_string(car) != last) {
+                last = report + std::to_string(car);
+                LARECOMP_APP_INFO("[mods-probe] no player car yet: dword_8288DCF8 = 0x{:08X}", car);
+            }
+            continue;
+        }
+        for (const uint32_t slot : {3u, 9u, 23u}) {
+            const uint32_t buffer = ProbeU32(base, car + 5740 + 4 * slot);
+            const uint32_t inst = ProbeU32(base, car + 6740 + 4 * slot);
+            report += fmt::format("\n  slot {} buffer 0x{:08X} inst 0x{:08X}", slot, buffer, inst);
+            if (!ProbeAddress(inst)) continue;
+            const uint32_t count = ProbeU32(base, inst + 16);
+            const uint32_t m64 = ProbeU32(base, inst + 20);
+            const uint32_t m80 = ProbeU32(base, inst + 12);
+            report += fmt::format("\n  slot {} inst 0x{:08X} bones {}", slot, inst, count);
+            for (uint32_t b = 0; b < count && b < 8; ++b) {
+                if (ProbeAddress(buffer)) report += fmt::format("\n    [{}] buf {}", b, ProbeMatrix(base, buffer + 64 * b));
+                if (ProbeAddress(m64)) report += fmt::format("\n    [{}] i64 {}", b, ProbeMatrix(base, m64 + 64 * b));
+                if (ProbeAddress(m80)) report += fmt::format("\n    [{}] i80 {}", b, ProbeMatrix(base, m80 + 80 * b));
+            }
+        }
+        if (report.empty() || report == last) continue;
+        last = report;
+        LARECOMP_APP_INFO("[mods-probe] player car 0x{:08X}:{}", car, report);
+    }
+}
+
+void StartPartProbe() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        HANDLE thread = CreateThread(
+            nullptr, 0, [](LPVOID) -> DWORD { PartProbeLoop(); return 0; }, nullptr, 0, nullptr);
+        LARECOMP_APP_INFO("[mods-probe] started ({})", thread ? "thread up" : "CreateThread failed");
+        if (thread) CloseHandle(thread);
+    });
+}
+
 // Builds one car the game does not ship, from a donor that it does.
 size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh mesh,
                      const Rpf3Reader& archive, Rpf3Writer& writer) {
+    StartPartProbe();
     const std::string& car = vehicle.car;
     const std::string& donor = plan.donor;
     const std::string donor_dir = "resources/vehicle/" + donor;
