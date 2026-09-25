@@ -592,6 +592,15 @@ struct MeshOffset {
 // where its own centre is, and the part is moved onto it.
 bool ReadDrawableBounds(const Rsc5Resource& resource, float min_out[3], float max_out[3]);
 
+// Sets the rest pose of every bone of the drawable's skeleton whose name is
+// `prefix` followed by digits (extPrimary0, extPrimary1...): translation at +32
+// and Euler rotation at +48 of the bone record, relative to its parent. The
+// record is the one whose +0 points at the name and whose +16 (parent) points
+// into the virtual segment. The skeleton's ready matrices, which are what the
+// game builds the bone from, are rewritten with it. Returns how many were set.
+size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const float translation[3],
+                   const float rotation[3]);
+
 bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                              const MeshOffset& offset, std::string& error,
                              RewriteStats* stats = nullptr);

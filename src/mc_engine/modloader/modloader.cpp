@@ -1461,6 +1461,15 @@ struct VehiclePlan {
     // NORMAL COLOUR0 TEX0 TANGENT at stride 28, and a shader no BMW material
     // uses -- repointed at LicensePlate.
     std::map<std::string, std::array<float, 12>> licenses;
+    // `exhaust.<slot> = x y z`: where the tail pipes go when this part is on,
+    // car space, the left pipe's mouth (the right one is the mirror). The game
+    // draws exh_pipe<N> at two bones INSIDE the rear bumper drawable,
+    // extPrimary<i> / extSecondary<i> under bumr0<i>, and every one of the
+    // donor's rear bumpers puts them somewhere else (Impala: +-0.664, 0.293,
+    // 0.126, 0.526, 0.428 from the centre line). Those bones are moved here and
+    // all given the same half turn about y, so one exh_pipe part, written in a
+    // `frame.exh_pipe<N>` with that turn, fits them all.
+    std::map<std::string, std::array<float, 3>> exhausts;
     // Donor part slots whose lamps are sampled for lamp indices -- see
     // MeshOffset::extra_bands. `lamp_from = headlight0, taillight0`.
     std::vector<std::string> lamp_from;
@@ -1665,6 +1674,12 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             bool complete = true;
             for (float& value : corners) complete = complete && static_cast<bool>(stream >> value);
             if (complete) plan.licenses[key.substr(8)] = corners;
+            continue;
+        }
+        if (lower.rfind("exhaust.", 0) == 0) {
+            std::array<float, 3> at{};
+            std::istringstream stream(mapping.groups.front());
+            if (stream >> at[0] >> at[1] >> at[2]) plan.exhausts[key.substr(8)] = at;
             continue;
         }
         if (lower.rfind("weight.", 0) == 0) {
@@ -3448,6 +3463,49 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                       name, CarEffectName(effects[wanted]),
                                       borrowed.indices.size() / 3,
                                       CarEffectName(effects[static_cast<size_t>(host)]));
+                }
+            }
+
+            // The tail pipe bones this bumper carries, moved onto the car's own
+            // pipes (VehiclePlan::exhausts). Like the plate, the car-space point
+            // takes the part's move into its bone's space, so a rigid frame.
+            if (const auto exhaust = plan.exhausts.find(mapping.slot);
+                exhaust != plan.exhausts.end() && filled != 0) {
+                if (frame == plan.frames.end() || !frame->second.rigid) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} exhaust: the slot needs a rigid "
+                                       "frame", vehicle.mod_name, car, name);
+                } else {
+                    Mesh pipes;
+                    for (const float side : {-1.0f, 1.0f}) {
+                        MeshVertex vertex;
+                        vertex.px = side * std::fabs(exhaust->second[0]);
+                        vertex.py = exhaust->second[1];
+                        vertex.pz = exhaust->second[2];
+                        pipes.vertices.push_back(vertex);
+                    }
+                    PlaceInBoneFrame(pipes, frame->second);
+                    // (pi, 0, pi) = a half turn about y, what the Impala's
+                    // bumpers 1-4 use (probe of the running game 25/09:
+                    // rows -1 0 0 / 0 1 0 / 0 0 -1), so smoke and nitro still
+                    // point back. Earlier boots only failed because the
+                    // skeleton's matrices were never rewritten (see SetBonePose).
+                    const float rotation[3] = {3.14159265f, 0.0f, 3.14159265f};
+                    const float left[3] = {pipes.vertices[0].px, pipes.vertices[0].py,
+                                           pipes.vertices[0].pz};
+                    const float right[3] = {pipes.vertices[1].px, pipes.vertices[1].py,
+                                            pipes.vertices[1].pz};
+                    const size_t moved = SetBonePose(resource, "extPrimary", left, rotation) +
+                                         SetBonePose(resource, "extSecondary", right, rotation);
+                    if (lod == 0) {
+                        LARECOMP_APP_INFO("[mods]   {} exhaust bones moved: {} (left pipe at "
+                                          "{:.3f} {:.3f} {:.3f} in the bone's space)",
+                                          name, moved, left[0], left[1], left[2]);
+                    }
+                    if (moved != 2) {
+                        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} exhaust: found {} of the 2 "
+                                           "extPrimary/extSecondary bones", vehicle.mod_name,
+                                           car, name, moved);
+                    }
                 }
             }
 
