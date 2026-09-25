@@ -1418,10 +1418,18 @@ struct VehiclePlan {
     // off that bone's Z, which is what proved the convention. The optional
     // scale is about the axis: the driver's hands grip the DONOR's rim
     // (radius 0.220) and the BMW's is 0.202.
+    //
+    // `frame.<slot> = tx ty tz rx ry rz rigid`: the same move into the bone's
+    // space and nothing else -- no centring on an axis, no scale. That is what a
+    // body panel wants: a bumper or a hood has to stay exactly where it meets
+    // the rest of THIS car's body, and only needs to be expressed relative to
+    // the bone the game swings or drops it by. Centring it on the slot instead
+    // puts the BMW's bumper where the Impala's was.
     struct SlotFrame {
         float t[3] = {0.0f, 0.0f, 0.0f};
         float r[3] = {0.0f, 0.0f, 0.0f};
         float scale = 1.0f;
+        bool rigid = false;
     };
     std::map<std::string, SlotFrame> frames;
     // Donor part slots whose lamps are sampled for lamp indices -- see
@@ -1507,7 +1515,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
         vertex.ny = n[1];
         vertex.nz = n[2];
     }
-    if (mesh.vertices.empty()) return;
+    if (mesh.vertices.empty() || frame.rigid) return;
 
     float min[3], max[3];
     mesh.Bounds(min, max);
@@ -1555,6 +1563,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   bumper_f0      = bumper_f   (a slot line: which of the model's groups fill it)
 //   body           = admiral_high
 //   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
+//   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
     VehiclePlan plan;
@@ -1595,7 +1604,12 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             std::istringstream stream(mapping.groups.front());
             stream >> frame.t[0] >> frame.t[1] >> frame.t[2] >> frame.r[0] >> frame.r[1] >>
                 frame.r[2];
-            if (!(stream >> frame.scale)) frame.scale = 1.0f;
+            if (!(stream >> frame.scale)) {
+                frame.scale = 1.0f;
+                stream.clear();
+            }
+            std::string mode;
+            if (stream >> mode) frame.rigid = mode == "rigid";
             plan.frames[key.substr(6)] = frame;
             continue;
         }
@@ -2803,11 +2817,18 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // onto the donor's box slides the BMW's cabin to wherever the
             // Chevrolet's cabin happened to be centred, which on this pair is
             // above and behind the BMW's own body.
-            const bool own_space = slot_min[0] < 0.0f && slot_max[0] > 0.0f &&
-                                   slot_min[1] < 0.0f && slot_max[1] > 0.0f &&
-                                   slot_min[2] < 0.0f && slot_max[2] > 0.0f;
-            Mesh placed = source;
+            //
+            // A slot given a frame is in its bone's space by definition, whatever
+            // its box says. The Impala's hood0 is x +-0.81, y -0.38..0.03,
+            // z -1.41..0.00 -- it hangs forward off a hinge bone, so its box
+            // touches zero instead of straddling it, and read as car space the
+            // hood's whole shell was thrown away as bone-local.
             const auto frame = plan.frames.find(mapping.slot);
+            const bool own_space = frame != plan.frames.end() ||
+                                   (slot_min[0] < 0.0f && slot_max[0] > 0.0f &&
+                                    slot_min[1] < 0.0f && slot_max[1] > 0.0f &&
+                                    slot_min[2] < 0.0f && slot_max[2] > 0.0f);
+            Mesh placed = source;
             if (frame != plan.frames.end()) {
                 PlaceInBoneFrame(placed, frame->second);
                 if (lod == 0) {
