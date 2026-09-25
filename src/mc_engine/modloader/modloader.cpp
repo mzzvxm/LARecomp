@@ -430,8 +430,11 @@ REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
     "old behaviour.");
 
 REXCVAR_DEFINE_BOOL(model_mods_part_probe, true, "MCLA/Mods",
-    "TEMPORARY diagnostic: every 2 s, log the skeleton matrices of the player "
-    "car's rear bumper, spoiler and exh_pipe parts (tail pipe placement).");
+    "TEMPORARY diagnostic: every second, while the player's car is waiting to "
+    "reattach its parts (car+6467) -- which is when the game draws none of it, "
+    "wheels included -- log which selected part is not resident yet and the "
+    "state of its stream (object, resource, handle, flags, state, refcount). "
+    "See PartProbeLoop.");
 REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
     "How much larger than the donor's own a replacement PART may be, as a "
     "multiple of the shipped resource.\n"
@@ -2515,75 +2518,112 @@ size_t WriteBodyModel(Rsc5Resource& resource, const Rsc5Resource& pristine, cons
 }
 
 // ---------------------------------------------------------------------------
-// TEMPORARY diagnostic (25/09): where the game really puts a part's bones.
-// Three boots moved the tail pipe bones and three times the pipes landed
-// somewhere the file said they could not. Every 2 s this reads the player's
-// mcCarModel (dword_8288DCF8, set by its ctor sub_8235AF90) and logs, for the
-// rear bumper (slot 3), spoiler (9) and exh_pipe (23): the per-slot matrix
-// buffer at car+5740+4*slot (64-byte matrices, sub_8235CBD0) and the part's
-// skeleton instance at car+6740+4*slot (+16 count, +20 64-byte matrices, +12
-// 80-byte entries). Logged only when something changed. Read-only.
+// TEMPORARY diagnostic (25/09): which part a car is waiting for.
+//
+// The game draws none of a car -- body, parts, wheels -- while it is waiting to
+// reattach its parts: sub_8235FB78 skips the whole draw while car+6467 is set,
+// and only sub_8235CBD0 clears it, once sub_823537C8 says every selected part
+// is resident. So one part that never finishes loading is a car that vanishes
+// the moment it is picked in the garage and comes back when another is (the
+// S15's front bumper 1, twice). sub_823537C8, read off the IDB:
+//
+//   data = *(*(car+20)+80), config = *(*(car+20)+132), table = *(data+32)
+//   for slot < (data+41 ? 55 : 44):  state = config[2144+slot], v = 10*slot+state
+//     exists  table[3v + (data+40 == 0)]                      (sub_82360E68)
+//     ready   sub_82371A38(table, slot, state, data+40 == 0) -- lod clamped
+//             to 1..3 unless table+6652; object table[3v+lod] != 0,
+//             refcount table[3314+v] > 0, state table[1664+3v+lod] == 3,
+//             object[2] & 0x30000000 == 0x30000000              (sub_82371678)
+//
+// Every second, for the player's car (dword_8288DCF8), this repeats that walk
+// and logs every part that exists and is not ready, with the whole state of its
+// stream, whenever the list changes. Read-only.
 uint32_t ProbeU32(const uint8_t* base, uint32_t address) {
     const uint8_t* p = base + address;
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
 }
 
-float ProbeF32(const uint8_t* base, uint32_t address) {
-    const uint32_t bits = ProbeU32(base, address);
-    float value;
-    std::memcpy(&value, &bits, 4);
-    return value;
-}
+uint8_t ProbeU8(const uint8_t* base, uint32_t address) { return base[address]; }
 
 // The player car sat at 0xBF5120F0 (seen 25/09), in the 0xA0000000+ heap.
 bool ProbeAddress(uint32_t address) { return address >= 0x40000000u && address < 0xFFF00000u; }
 
-std::string ProbeMatrix(const uint8_t* base, uint32_t address) {
-    std::string out;
-    for (int r = 0; r < 4; ++r) {
-        out += fmt::format("[{:.3f} {:.3f} {:.3f} {:.3f}]", ProbeF32(base, address + r * 16),
-                           ProbeF32(base, address + r * 16 + 4), ProbeF32(base, address + r * 16 + 8),
-                           ProbeF32(base, address + r * 16 + 12));
-    }
-    return out;
-}
-
 void PartProbeLoop() {
     std::string last;
     for (;;) {
-        Sleep(2000);
+        Sleep(1000);
         if (!REXCVAR_GET(model_mods_part_probe)) continue;
         auto* runtime = rex::Runtime::instance();
         if (!runtime || !runtime->memory()) continue;
         const uint8_t* base = runtime->memory()->virtual_membase();
         if (!base) continue;
+
         const uint32_t car = ProbeU32(base, 0x8288DCF8u);
-        std::string report = fmt::format(" (dword_8288DCF8)");
         if (!ProbeAddress(car)) {
-            if (report + std::to_string(car) != last) {
-                last = report + std::to_string(car);
-                LARECOMP_APP_INFO("[mods-probe] no player car yet: dword_8288DCF8 = 0x{:08X}", car);
+            const std::string report = fmt::format("no player car (0x{:08X})", car);
+            if (report != last) {
+                last = report;
+                LARECOMP_APP_INFO("[mods-probe] {}", report);
             }
             continue;
         }
-        for (const uint32_t slot : {3u, 9u, 23u}) {
-            const uint32_t buffer = ProbeU32(base, car + 5740 + 4 * slot);
-            const uint32_t inst = ProbeU32(base, car + 6740 + 4 * slot);
-            report += fmt::format("\n  slot {} buffer 0x{:08X} inst 0x{:08X}", slot, buffer, inst);
-            if (!ProbeAddress(inst)) continue;
-            const uint32_t count = ProbeU32(base, inst + 16);
-            const uint32_t m64 = ProbeU32(base, inst + 20);
-            const uint32_t m80 = ProbeU32(base, inst + 12);
-            report += fmt::format("\n  slot {} inst 0x{:08X} bones {}", slot, inst, count);
-            for (uint32_t b = 0; b < count && b < 8; ++b) {
-                if (ProbeAddress(buffer)) report += fmt::format("\n    [{}] buf {}", b, ProbeMatrix(base, buffer + 64 * b));
-                if (ProbeAddress(m64)) report += fmt::format("\n    [{}] i64 {}", b, ProbeMatrix(base, m64 + 64 * b));
-                if (ProbeAddress(m80)) report += fmt::format("\n    [{}] i80 {}", b, ProbeMatrix(base, m80 + 80 * b));
+        const uint32_t owner = ProbeU32(base, car + 20);
+        if (!ProbeAddress(owner)) continue;
+        const uint32_t data = ProbeU32(base, owner + 80);
+        const uint32_t config = ProbeU32(base, owner + 132);
+        if (!ProbeAddress(data) || !ProbeAddress(config)) continue;
+        const uint32_t table = ProbeU32(base, data + 32);
+        if (!ProbeAddress(table)) continue;
+
+        const uint8_t pending = ProbeU8(base, car + 6467);
+        const uint8_t all_ready = ProbeU8(base, car + 6487);
+        const uint32_t blocked = ProbeU32(base, car + 6472);
+        const bool detail = ProbeU8(base, data + 40) != 0;
+        const uint32_t slots = ProbeU8(base, data + 41) ? 55u : 44u;
+        const uint32_t exists_lod = detail ? 0u : 1u;
+        uint32_t lod = exists_lod;
+        const bool any_lod = ProbeU8(base, table + 6652) != 0;
+        if (!any_lod) lod = std::clamp<uint32_t>(lod, 1u, 3u);
+
+        std::string waiting;
+        for (uint32_t slot = 0; slot < slots; ++slot) {
+            const uint32_t state = ProbeU8(base, config + 2144 + slot);
+            const uint32_t v = 10 * slot + state;
+            if (ProbeU32(base, table + 4 * (3 * v + exists_lod)) == 0) continue;
+            const uint32_t object = ProbeU32(base, table + 4 * (3 * v + lod));
+            const int32_t refs = static_cast<int32_t>(ProbeU32(base, table + 4 * (3314 + v)));
+            const uint32_t stream = ProbeU32(base, table + 4 * (1664 + 3 * v + lod));
+            uint32_t resource = 0, handle = 0, flags = 0;
+            if (ProbeAddress(object)) {
+                resource = ProbeU32(base, object);
+                handle = ProbeU32(base, object + 4);
+                flags = ProbeU32(base, object + 8);
             }
+            const bool ready = object != 0 && refs > 0 && stream == 3 &&
+                               (flags & 0x30000000u) == 0x30000000u;
+            if (ready) continue;
+            waiting += fmt::format(
+                "\n  {}{} lod {}: object 0x{:08X} resource 0x{:08X} handle 0x{:08X} "
+                "flags 0x{:08X} (resident bits {}) state {} refs {}",
+                slot < std::size(kCarSlots) ? kCarSlots[slot] : "?", state, lod, object, resource,
+                handle, flags, (flags >> 28) & 3u, stream, refs);
         }
-        if (report.empty() || report == last) continue;
+        // pgStreamable's "Unable to allocate %dK memory for streaming operation"
+        // (sub_821E2820) prints to nothing and sets this byte on the streaming
+        // manager (dword_8286CE50 + 6212) -- the one sign a part waits because
+        // the heap had no room for it.
+        const uint32_t streamer = ProbeU32(base, 0x8286CE50u);
+        const int alloc_failed = ProbeAddress(streamer) ? ProbeU8(base, streamer + 6212) : -1;
+        const std::string report =
+            fmt::format("car 0x{:08X} reattach pending {} all-ready {} blocked 0x{:08X} "
+                        "detail {} lod {}{} front bumper {} streamer alloc-failed {} -- {}",
+                        car, pending, all_ready, blocked, detail ? 1 : 0, lod,
+                        any_lod ? " (any lod)" : "", ProbeU8(base, config + 2144 + 6),
+                        alloc_failed,
+                        waiting.empty() ? "every selected part resident" : "waiting on:" + waiting);
+        if (report == last) continue;
         last = report;
-        LARECOMP_APP_INFO("[mods-probe] player car 0x{:08X}:{}", car, report);
+        LARECOMP_APP_INFO("[mods-probe] {}", report);
     }
 }
 
