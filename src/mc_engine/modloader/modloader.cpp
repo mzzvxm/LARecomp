@@ -4,6 +4,7 @@
 #include <rex/runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cctype>
@@ -12,7 +13,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
+#include <set>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -1432,6 +1435,21 @@ struct VehiclePlan {
         bool rigid = false;
     };
     std::map<std::string, SlotFrame> frames;
+
+    // `license.<slot> = TL TR BL BR`, twelve numbers: the corners of a licence
+    // plate as seen from outside the car, in car space, and the drawable that
+    // carries it ("body" or a part slot with a rigid frame). The game writes the
+    // car's own plate text on it, where a mod's plate is a picture with
+    // somebody else's registration on it -- and on a part slot it goes with the
+    // part, so a front plate falls off with its bumper instead of hanging in
+    // the air where the bumper used to be.
+    //
+    // The donor only has one plate, a four-vertex quad in bumper_r0 (the
+    // Impala has no front plate at all), so the quad is drawn in the donor's
+    // Underbody submesh of that drawable -- the same vertex layout, POSITION
+    // NORMAL COLOUR0 TEX0 TANGENT at stride 28, and a shader no BMW material
+    // uses -- repointed at LicensePlate.
+    std::map<std::string, std::array<float, 12>> licenses;
     // Donor part slots whose lamps are sampled for lamp indices -- see
     // MeshOffset::extra_bands. `lamp_from = headlight0, taillight0`.
     std::vector<std::string> lamp_from;
@@ -1564,6 +1582,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   body           = admiral_high
 //   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
+//   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
     VehiclePlan plan;
@@ -1611,6 +1630,14 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             std::string mode;
             if (stream >> mode) frame.rigid = mode == "rigid";
             plan.frames[key.substr(6)] = frame;
+            continue;
+        }
+        if (lower.rfind("license.", 0) == 0) {
+            std::array<float, 12> corners{};
+            std::istringstream stream(mapping.groups.front());
+            bool complete = true;
+            for (float& value : corners) complete = complete && static_cast<bool>(stream >> value);
+            if (complete) plan.licenses[key.substr(8)] = corners;
             continue;
         }
         if (lower.rfind("weight.", 0) == 0) {
@@ -1712,7 +1739,9 @@ std::map<std::string, uint32_t> ResolveShaderMap(const VehiclePlan& plan,
                                                  const std::vector<uint32_t>& drawn,
                                                  const std::string& mod_name,
                                                  const std::string& car, int32_t& fallback,
-                                                 const std::string& slot = std::string()) {
+                                                 const std::string& slot = std::string(),
+                                                 std::map<std::string, uint32_t>* borrowed =
+                                                     nullptr) {
     auto has_geometry = [&](size_t index) {
         return drawn.empty() || (index < drawn.size() && drawn[index] != 0);
     };
@@ -1793,6 +1822,27 @@ std::map<std::string, uint32_t> ResolveShaderMap(const VehiclePlan& plan,
             }
             if (shader < 0 && in_pack > 0 && !slot.empty() && rule.slot.empty()) {
                 continue;   // a body rule, and this slot simply does not draw that shader
+            }
+            // A rule written for THIS slot asking for a shader the slot does
+            // not draw: the donor's bumpers have no Chrome, and a bumper's
+            // chrome strip still has to fall with it. Borrowed -- written into
+            // a submesh the slot has spare and repointed (see WriteIntoHost).
+            // The material is kept out of the ordinary passes, or the fallback
+            // would take it as well.
+            if (shader < 0 && in_pack > 0 && borrowed && !rule.slot.empty() &&
+                rule.material != "*") {
+                int32_t pack_shader = -1, occurrence = 0;
+                for (size_t i = 0; i < effects.size(); ++i) {
+                    if (effects[i] != static_cast<uint32_t>(effect)) continue;
+                    if (occurrence++ < nth) continue;
+                    pack_shader = static_cast<int32_t>(i);
+                    break;
+                }
+                if (pack_shader >= 0) {
+                    (*borrowed)[rule.material] = static_cast<uint32_t>(pack_shader);
+                    out[rule.material] = 0xFFFFFFFFu;
+                    continue;
+                }
             }
             if (shader < 0 && in_pack > 0) {
                 LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the donor's pack states {} {} time(s) "
@@ -2100,6 +2150,150 @@ std::map<uint32_t, std::string> CarFolderNames(const std::string& car) {
         }
     }
     return out;
+}
+
+// The quad a licence plate is drawn on, from its corners as seen from outside:
+// top-left, top-right, bottom-left, bottom-right. UV (0,0) is the top-left of
+// the plate picture, as on the donor's own quad (bumper_r0: TEX0 (0,0) at the
+// top of its -x edge seen from behind), and the two triangles wind
+// counter-clockwise seen from outside, like the rest of the model.
+Mesh LicenseQuad(const std::array<float, 12>& corner) {
+    const float* tl = &corner[0];
+    const float* tr = &corner[3];
+    const float* bl = &corner[6];
+    const float* br = &corner[9];
+    float down[3], right[3];
+    for (int i = 0; i < 3; ++i) {
+        down[i] = bl[i] - tl[i];
+        right[i] = tr[i] - tl[i];
+    }
+    float normal[3] = {down[1] * right[2] - down[2] * right[1],
+                       down[2] * right[0] - down[0] * right[2],
+                       down[0] * right[1] - down[1] * right[0]};
+    const float length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] +
+                                   normal[2] * normal[2]);
+    if (length > 0.0f) {
+        for (float& value : normal) value /= length;
+    }
+
+    Mesh quad;
+    const float* points[4] = {tl, tr, bl, br};
+    const float uv[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
+    for (int i = 0; i < 4; ++i) {
+        MeshVertex vertex;
+        vertex.px = points[i][0];
+        vertex.py = points[i][1];
+        vertex.pz = points[i][2];
+        vertex.nx = normal[0];
+        vertex.ny = normal[1];
+        vertex.nz = normal[2];
+        vertex.u = uv[i][0];
+        vertex.v = uv[i][1];
+        quad.vertices.push_back(vertex);
+    }
+    quad.indices = {0, 2, 1, 1, 2, 3};
+    MeshPart part;
+    part.vertex_count = 4;
+    quad.parts.push_back(part);
+    return quad;
+}
+
+// Draws `mesh` with a shader this drawable has no submesh of, by taking over a
+// submesh it has spare -- one no pass claimed, whose layout carries normals and
+// UVs (stride 24 and up; the BlackMatte blockers are position-only at 12) --
+// and repointing it at `wanted`. A host named `preferred` is taken first. Host
+// and wanted are both marked claimed, so the silencing that follows leaves the
+// repointed submesh alone. Returns the host's shader index, or -1.
+//
+// With `only_model` set the host is that model's submesh and no other model's,
+// and `drawn`/`claimed` have to describe that model alone. A model the shell
+// pass already silenced gets the host's shipped counts back from `pristine`
+// first, since the colour word is flooded from the vertices the host still has.
+//
+// With `host_semantics` (ShaderVertexSemantics of the same model) the host is
+// the one whose layout serves `wanted_semantics` best (LayoutFitScore), the
+// preferred name still first; without it, the first spare in index order.
+int32_t WriteIntoHost(Rsc5Resource& resource, const Mesh& mesh, uint32_t wanted,
+                      std::string_view preferred, const std::vector<uint32_t>& effects,
+                      const std::vector<uint32_t>& drawn, std::vector<bool>& claimed,
+                      std::string& error, uint32_t fixed_shade = 0, int32_t only_model = -1,
+                      const Rsc5Resource* pristine = nullptr,
+                      const std::vector<uint32_t>* host_semantics = nullptr,
+                      uint32_t wanted_semantics = 0) {
+    int32_t host = -1;
+    if (host_semantics) {
+        int best = std::numeric_limits<int>::max();
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            if (shader == wanted || shader >= claimed.size() || claimed[shader]) continue;
+            if (shader >= drawn.size() || drawn[shader] < 24) continue;
+            const uint32_t mask =
+                shader < host_semantics->size() ? (*host_semantics)[shader] : 0u;
+            int score = LayoutFitScore(mask, wanted_semantics);
+            if (!preferred.empty() && CarEffectName(effects[shader]) == preferred) score -= 1000;
+            if (score < best) {
+                best = score;
+                host = static_cast<int32_t>(shader);
+            }
+        }
+    }
+    for (int pass = 0; pass < 2 && host < 0 && !host_semantics; ++pass) {
+        for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+            if (shader == wanted || shader >= claimed.size() || claimed[shader]) continue;
+            if (shader >= drawn.size() || drawn[shader] < 24) continue;
+            if (pass == 0 && CarEffectName(effects[shader]) != preferred) continue;
+            host = static_cast<int32_t>(shader);
+            break;
+        }
+    }
+    if (host < 0) {
+        error = "this drawable has no spare submesh with normals and UVs to draw it in";
+        return -1;
+    }
+    if (pristine && only_model >= 0) RestoreModelGeometry(resource, *pristine, only_model, host);
+
+    MeshOffset offset;
+    offset.pre_fitted = true;
+    offset.uniform_shade = true;
+    offset.fixed_shade = fixed_shade;
+    offset.submeshes = true;
+    offset.allow_untextured = true;
+    offset.keep_unused = false;
+    offset.only_shader = host;
+    offset.only_model = only_model;
+    offset.force_shader = static_cast<int32_t>(wanted);
+    offset.block_align = VirtualBlockSize(resource);
+    offset.grow_buffers = true;
+    offset.grow_slack = 4096;
+    RewriteStats stats;
+    if (!RewriteDrawableGeometry(resource, mesh, 0, offset, error, &stats)) return -1;
+    claimed[static_cast<size_t>(host)] = true;
+    claimed[wanted] = true;
+    return host;
+}
+
+// A plate quad, in this drawable's Underbody submesh (see VehiclePlan::licenses).
+bool WriteLicensePlate(Rsc5Resource& resource, const Mesh& quad,
+                       const std::vector<uint32_t>& effects, const std::vector<uint32_t>& drawn,
+                       std::vector<bool>& claimed, std::string& error, int32_t only_model = -1,
+                       const Rsc5Resource* pristine = nullptr,
+                       const std::vector<uint32_t>* host_semantics = nullptr) {
+    int32_t plate = -1;
+    for (uint32_t shader = 0; shader < effects.size() && plate < 0; ++shader) {
+        if (std::string_view(CarEffectName(effects[shader])) == "LicensePlate") {
+            plate = static_cast<int32_t>(shader);
+        }
+    }
+    if (plate < 0) {
+        error = "the donor's pack has no LicensePlate shader";
+        return false;
+    }
+    // The donor's own plate quad (bumper_r0) is shaded 0x7C020000..0x7D020000 on
+    // its open edge and 0x55030000 under the boot lip; the open value is used
+    // for the whole quad, front and back alike.
+    constexpr uint32_t kPlateShade = 0x7D020000u;
+    return WriteIntoHost(resource, quad, static_cast<uint32_t>(plate), "Underbody", effects,
+                         drawn, claimed, error, kPlateShade, only_model, pristine, host_semantics,
+                         CarVertexSemantics()) >= 0;
 }
 
 // Builds one car the game does not ship, from a donor that it does.
@@ -2609,6 +2803,25 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             }
         }
 
+        // The game's own licence plate, where the mod asked for one on the body.
+        // See VehiclePlan::licenses. LOD 2 has no Underbody to draw it in, and is
+        // too far away to read a plate on anyway.
+        if (const auto license = plan.licenses.find("body");
+            license != plan.licenses.end() && lod <= 1) {
+            std::string plate_error;
+            if (WriteLicensePlate(resource, LicenseQuad(license->second), effects, drawn, claimed,
+                                  plate_error)) {
+                ++filled;
+                if (lod == 0) {
+                    LARECOMP_APP_INFO("[mods]   LicensePlate <- the game's plate, drawn in the "
+                                      "Underbody submesh");
+                }
+            } else {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} licence plate: {}",
+                                   vehicle.mod_name, car, lod, plate_error);
+            }
+        }
+
         // A shader the mod brought no material for would otherwise keep drawing
         // the donor's own geometry through the replacement -- a police light bar
         // standing on a BMW.
@@ -2750,9 +2963,10 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         }
 
         int32_t part_fallback = -1;
+        std::map<std::string, uint32_t> part_borrowed;
         const std::map<std::string, uint32_t> part_shader_of =
             ResolveShaderMap(plan, effects, part_drawn, vehicle.mod_name, car, part_fallback,
-                             mapping.slot);
+                             mapping.slot, &part_borrowed);
 
         size_t lods = 0;
         std::vector<uint8_t> lod0_file;
@@ -2951,6 +3165,60 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                           ? fmt::format(", {} bone-local submesh(es) silenced",
                                                         stats.local_silenced)
                                           : std::string());
+                }
+            }
+
+            // The game's plate on this part, so it goes wherever the part goes.
+            // The corners are in car space, so they take the same move into the
+            // bone's space as the part -- which only holds for a rigid frame.
+            if (const auto license = plan.licenses.find(mapping.slot);
+                license != plan.licenses.end()) {
+                std::string plate_error;
+                Mesh quad = LicenseQuad(license->second);
+                if (frame == plan.frames.end() || !frame->second.rigid) {
+                    plate_error = "the slot needs a rigid frame for car-space corners to land on";
+                } else {
+                    PlaceInBoneFrame(quad, frame->second);
+                }
+                if (plate_error.empty() && WriteLicensePlate(resource, quad, effects, part_drawn,
+                                                             claimed, plate_error)) {
+                    ++filled;
+                    if (lod == 0) {
+                        LARECOMP_APP_INFO("[mods]   {} LicensePlate <- the game's plate, drawn in "
+                                          "the Underbody submesh", name);
+                    }
+                } else {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} licence plate: {}",
+                                       vehicle.mod_name, car, name, plate_error);
+                }
+            }
+
+            // Materials this slot's rules send to a shader it does not draw,
+            // each shader's worth into a submesh the slot has spare. After the
+            // plate, which needs the Underbody in particular.
+            std::set<uint32_t> borrowed_shaders;
+            for (const auto& entry : part_borrowed) borrowed_shaders.insert(entry.second);
+            for (const uint32_t wanted : borrowed_shaders) {
+                std::map<std::string, uint32_t> only_these;
+                for (const auto& entry : part_borrowed) {
+                    if (entry.second == wanted) only_these[entry.first] = wanted;
+                }
+                const Mesh borrowed = ExtractShader(placed, only_these, -1, wanted);
+                if (borrowed.vertices.empty() || borrowed.indices.size() < 3) continue;
+                std::string borrow_error;
+                const int32_t host = WriteIntoHost(resource, borrowed, wanted, "", effects,
+                                                   part_drawn, claimed, borrow_error);
+                if (host < 0) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} {}: {}", vehicle.mod_name, car,
+                                       name, CarEffectName(effects[wanted]), borrow_error);
+                    continue;
+                }
+                ++filled;
+                if (lod == 0) {
+                    LARECOMP_APP_INFO("[mods]   {} {} <- {} tris, borrowing the {} submesh",
+                                      name, CarEffectName(effects[wanted]),
+                                      borrowed.indices.size() / 3,
+                                      CarEffectName(effects[static_cast<size_t>(host)]));
                 }
             }
 
