@@ -1485,6 +1485,19 @@ struct VehiclePlan {
     // need `tune = rename`. See ApplyTuneOverrides for the fields and values.
     std::vector<std::pair<std::string, std::string>> tune_overrides;
 
+    // `paint_shade = F4000000`: one colour word for every CarPaintCustomizable
+    // vertex the car gets, body, part slots and body models alike, instead of
+    // each drawable flooding its own donor submesh's average.
+    //
+    // The average is the donor's baked occlusion for that panel, and it varies
+    // a lot. Measured on the BMW over vp_chv_impala_96: shell 0xF4, boot lid
+    // 0xBE, hood 0xAB, rear bumper 0x94, front bumper 0x8B, and the shell's
+    // MAT_21 in interior0 averaged 0x6D, taken off the Impala's door insides.
+    // The level scales how much of the chosen paint shows, so the panels came
+    // out as five shades of one colour and the shell the dullest of them.
+    // 0 keeps the per-drawable flood.
+    uint32_t paint_shade = 0;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1584,6 +1597,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
+//   paint_shade      = F4000000   (one colour word for all paint; see VehiclePlan)
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
     VehiclePlan plan;
     for (const PartMapping& mapping : mappings) {
@@ -1671,6 +1685,11 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower.rfind("tune.", 0) == 0) {
             plan.tune_overrides.emplace_back(key.substr(5), mapping.groups.front());
+            continue;
+        }
+        if (lower == "paint_shade") {
+            plan.paint_shade =
+                static_cast<uint32_t>(std::strtoul(mapping.groups.front().c_str(), nullptr, 16));
             continue;
         }
         if (lower == "silence") {
@@ -2296,6 +2315,15 @@ bool WriteLicensePlate(Rsc5Resource& resource, const Mesh& quad,
                          CarVertexSemantics()) >= 0;
 }
 
+// The colour word a pass of this effect is flooded with, or 0 for the flood of
+// the drawable's own donor submesh. See VehiclePlan::paint_shade.
+uint32_t PaintShade(const VehiclePlan& plan, uint32_t effect) {
+    return plan.paint_shade &&
+                   std::string_view(CarEffectName(effect)) == "CarPaintCustomizable"
+               ? plan.paint_shade
+               : 0u;
+}
+
 // Builds one car the game does not ship, from a donor that it does.
 size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh mesh,
                      const Rpf3Reader& archive, Rpf3Writer& writer) {
@@ -2736,6 +2764,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // So the colour blocks -- red roof, red glass -- are NOT this. They
             // survive with either setting.
             offset.uniform_shade = true;
+            offset.fixed_shade = PaintShade(plan, effects[shader]);
             offset.submeshes = true;
             offset.decimate = true;
             offset.allow_untextured = true;
@@ -3125,6 +3154,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 MeshOffset offset;
                 offset.pre_fitted = true;
                 offset.uniform_shade = true;
+                offset.fixed_shade = PaintShade(plan, effects[shader]);
                 offset.submeshes = true;
                 offset.decimate = true;
                 offset.allow_untextured = true;
