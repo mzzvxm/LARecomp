@@ -3426,19 +3426,50 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                   slot_max[1], slot_max[2]);
             }
 
-            // The same coarser page the body gets, and for the same reason: a
-            // part slot that takes a whole cabin holds buffers of hundreds of
-            // kilobytes, and a block of 131072 cannot hold one.
+            // A page coarse enough that one block holds the part's biggest
+            // buffer, and no coarser.
+            //
+            // A slot that takes a whole cabin holds buffers of hundreds of
+            // kilobytes, and a block of 131072 cannot hold one -- which is why
+            // this used to be kCarPageShift for every part. But the segment is
+            // then rounded to whole blocks (RoundVirtualToBlock), so every part
+            // came out a megabyte: a bumper of 270 KB, a taillight of 150. The
+            // streamer allocates each block on its own, contiguous, from a heap
+            // a stock car barely touches (its parts are 30-130 KB), and the
+            // S15's selected parts alone asked for twenty megabytes. When the
+            // next one found no free megabyte, pgStreamable failed to allocate
+            // (sub_821E2820, "Unable to allocate %dK memory for streaming
+            // operation", printed to nothing), the part sat in stream state 2
+            // for good, and the game -- which draws none of a car until every
+            // selected part is resident -- showed no car at all, and would not
+            // leave the garage with it (log 224: taillight1 and bumper_f1).
+            //
+            // Never finer than the donor's own page, which its structures were
+            // laid out to fit.
             {
+                size_t biggest = 0;
+                for (uint32_t shader = 0; shader < effects.size(); ++shader) {
+                    const Mesh part = ExtractShader(placed, part_shader_of, part_fallback, shader);
+                    // 40 bytes a vertex: the widest car layout seen is 32
+                    // (position, normal, colour, two UV sets, tangent).
+                    biggest = std::max({biggest, part.vertices.size() * 40, part.indices.size() * 2});
+                }
+                uint32_t shift = (resource.flag >> 11) & 0xFu;
+                while (shift < kCarPageShift && (size_t(4096) << shift) < biggest + 8192) ++shift;
                 std::string shift_error;
-                if (!SetVirtualPageShift(resource, kCarPageShift, shift_error)) {
+                if (!SetVirtualPageShift(resource, shift, shift_error)) {
                     LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
                                        name, shift_error);
                 }
             }
 
             const uint32_t shipped_size = resource.virtual_size;
-            const uint32_t ceiling = shipped_size * REXCVAR_GET(model_mods_part_growth);
+            // The room a part may grow into is what it was when every part sat
+            // on the megabyte page (8 x a 128 KB template): the finer page only
+            // stops the part being rounded up to that, it must not cut into
+            // what the mesh may take.
+            const uint32_t ceiling = std::max<uint32_t>(
+                shipped_size * REXCVAR_GET(model_mods_part_growth), 1u << 20);
             size_t filled = 0;
             std::vector<bool> claimed(effects.size(), false);
 
