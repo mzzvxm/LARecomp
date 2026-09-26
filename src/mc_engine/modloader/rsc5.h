@@ -267,6 +267,20 @@ struct MeshOffset {
     // template's own most-used band.
     bool uniform_shade = false;
 
+    // With uniform_shade: flood texcoord1.x with this value instead of the
+    // host's dominant band, when non-negative. The low half (y) stays the
+    // host's.
+    //
+    // On InteriorTrim the band is an interior ZONE, and a zone carries more than
+    // a colour: xInteriorTrim's VS_BumpSpec reads a0 = trunc(texcoord1.x) and
+    // writes oTexCoord0.xy = texcoord0.xy * intDL0[a0].w -- a per-zone UV scale,
+    // there because the donor's cabin tiles detail sheets (UVs -11..12 on the
+    // 240SX's wheel). A mod's atlas UVs run 0..1, so a zone whose scale is not
+    // one prints the picture over and over: the S15's stock wheel in zone 5
+    // showed its hub badge three times. Zones the cabin already draws right
+    // (0 and 9 on the S15) are the safe ones to point a part at.
+    float fixed_band = -1.0f;
+
     // With uniform_shade: flood this colour word instead of the host's average,
     // when non-zero. For geometry written into a submesh that was never its own
     // -- a licence plate drawn in the Underbody -- the host's baked shade is the

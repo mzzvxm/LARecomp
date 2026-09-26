@@ -1540,6 +1540,12 @@ struct VehiclePlan {
     // screen at a sixteenth of its texels. 0 keeps kAtlasCell.
     uint32_t atlas_cell = 0;
 
+    // `band.<slot> = 9`: the texcoord1.x every pass of that part slot floods,
+    // instead of its donor submesh's. See MeshOffset::fixed_band -- on
+    // InteriorTrim it picks the interior zone, and with it the zone's colour
+    // and UV scale.
+    std::map<std::string, float> bands;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1703,6 +1709,10 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             std::array<float, 3> at{};
             std::istringstream stream(mapping.groups.front());
             if (stream >> at[0] >> at[1] >> at[2]) plan.exhausts[key.substr(8)] = at;
+            continue;
+        }
+        if (lower.rfind("band.", 0) == 0) {
+            plan.bands[key.substr(5)] = std::strtof(mapping.groups.front().c_str(), nullptr);
             continue;
         }
         if (lower.rfind("weight.", 0) == 0) {
@@ -3581,6 +3591,10 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 offset.nearest_shade = !own_space && !offset.nearest_band &&
                                        offset.fixed_shade == 0 &&
                                        REXCVAR_GET(model_mods_cabin_light);
+                if (const auto stated = plan.bands.find(mapping.slot);
+                    stated != plan.bands.end() && !offset.nearest_band) {
+                    offset.fixed_band = stated->second;
+                }
                 offset.block_align = VirtualBlockSize(resource);
                 offset.grow_buffers = lod <= 1;
                 offset.grow_ceiling = ceiling;

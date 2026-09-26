@@ -3390,6 +3390,10 @@ bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
         const uint32_t level = count ? static_cast<uint32_t>(sum / count) : 0xFFu;
         std::fill(shade.begin(), shade.end(),
                   offset.fixed_shade ? offset.fixed_shade : (level << 24) | tint);
+        // A stated band wins over the host's. See MeshOffset::fixed_band.
+        if (offset.fixed_band >= 0.0f) {
+            band = (static_cast<uint32_t>(FloatToHalf(offset.fixed_band)) << 16) | (band & 0xFFFFu);
+        }
         std::fill(shade_texcoord1.begin(), shade_texcoord1.end(), band);
 
         // See MeshOffset::nearest_band. Every shipped vertex of this pass is a
