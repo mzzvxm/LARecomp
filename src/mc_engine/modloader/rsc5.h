@@ -805,7 +805,25 @@ bool ReadPackMaterials(const Rsc5Resource& pack, std::vector<PackMaterial>& out)
 // longer has the donor's UVs. An illuminated variant (the colour map's name plus
 // _i, which is how a car's lights carry their lit state) is written with the
 // same image, so a lamp does not change picture when it comes on.
+//
+// With `growth`, a colour map smaller than `image` is not squeezed: it is moved
+// to room of its own at the end of the virtual segment, at the image's size,
+// and its grcTexture and fetch constant are pointed there. Every car pack the
+// game ships is 3.3-3.5 MB and every cabin texture in one is 256 at most, so a
+// mod's 1024 cabin sheet came out at a sixteenth of its texels. Call
+// FinishPackGrowth once after the last write.
+struct PackGrowth {
+    uint32_t end = 0;        // first free byte past what was placed, 0 = none yet
+    uint32_t textures = 0;   // how many were moved
+    uint32_t bytes = 0;      // what they took, mips included
+};
 bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, const Image& image,
-                                std::string& error, TextureStats* stats = nullptr);
+                                std::string& error, TextureStats* stats = nullptr,
+                                PackGrowth* growth = nullptr);
+
+// Leaves a pack that had textures moved into it in the shape the streamer needs:
+// the last texture stopped well short of the segment's end, and the segment a
+// whole number of blocks (see RoundVirtualToBlock). A no-op when nothing moved.
+bool FinishPackGrowth(Rsc5Resource& pack, const PackGrowth& growth, std::string& error);
 
 }  // namespace mc::modloader

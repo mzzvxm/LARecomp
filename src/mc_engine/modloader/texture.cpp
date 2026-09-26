@@ -683,7 +683,7 @@ void MeasureTiles(Cell& cell) {
 }  // namespace
 
 bool BuildMeshAtlas(Mesh& mesh, uint32_t cell_size, Image& atlas, std::string& error,
-                    uint32_t* out_cells) {
+                    uint32_t* out_cells, uint32_t max_cell) {
     if (out_cells) *out_cells = 0;
     if (mesh.images.empty()) {
         error = "the model carries no textures";
@@ -792,6 +792,17 @@ bool BuildMeshAtlas(Mesh& mesh, uint32_t cell_size, Image& atlas, std::string& e
     uint32_t columns = 1;
     while (static_cast<size_t>(columns) * columns < cells.size()) columns *= 2;
     if (out_cells) *out_cells = static_cast<uint32_t>(cells.size());
+
+    // A bigger cell where the caller allows one: the next power of two of the
+    // largest picture, never below the base cell and never above max_cell.
+    if (max_cell > cell_size) {
+        uint32_t largest = 0;
+        for (const Cell& cell : cells)
+            largest = std::max({largest, cell.decoded.width, cell.decoded.height});
+        uint32_t grown = cell_size;
+        while (grown < largest && grown * 2 <= max_cell) grown *= 2;
+        cell_size = grown;
+    }
 
     atlas.width = cell_size * columns;
     atlas.height = cell_size * columns;

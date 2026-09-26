@@ -40,8 +40,14 @@ enum class BlockFormat { kBc1, kBc3 };
 // cells still make a two by two atlas and the last two are left untouched --
 // anything measuring the atlas has to know where the real content stops, or it
 // reads the padding as part of the image.
+//
+// `max_cell`, when above `cell`, lets the cell grow to the next power of two of
+// the largest picture it holds, up to `max_cell`: a 1024-wide cabin sheet then
+// keeps its texels instead of being squeezed into 256. Only worth asking for
+// where the texture the atlas lands on can grow with it -- see
+// ReplacePackMaterialDiffuse's PackGrowth.
 bool BuildMeshAtlas(Mesh& mesh, uint32_t cell, Image& atlas, std::string& error,
-                    uint32_t* out_cells = nullptr);
+                    uint32_t* out_cells = nullptr, uint32_t max_cell = 0);
 
 // Bilinear resample. Used to fit the atlas to whatever the target texture is.
 void ResizeImage(const Image& source, uint32_t width, uint32_t height, Image& out);

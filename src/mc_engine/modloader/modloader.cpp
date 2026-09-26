@@ -1532,6 +1532,14 @@ struct VehiclePlan {
     // 0 keeps the per-drawable flood.
     uint32_t paint_shade = 0;
 
+    // `atlas_cell = 1024`: how big a textured shader's atlas cell may grow to
+    // hold the picture it carries (the next power of two of it, never below
+    // kAtlasCell). The .xtp texture the atlas lands on grows with it; the .xtl,
+    // the far copy, keeps its size. Every car pack the game ships stores its
+    // cabin at 256 at most, so a mod's 1024 cabin sheet otherwise reaches the
+    // screen at a sixteenth of its texels. 0 keeps kAtlasCell.
+    uint32_t atlas_cell = 0;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1634,6 +1642,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //                               rigid frame.body_m0 -- see WriteBodyModel)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
 //   paint_shade      = F4000000   (one colour word for all paint; see VehiclePlan)
+//   atlas_cell       = 1024       (textured shaders keep up to 1024 texels; see VehiclePlan)
 VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
     VehiclePlan plan;
     for (const PartMapping& mapping : mappings) {
@@ -1732,6 +1741,15 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         if (lower == "paint_shade") {
             plan.paint_shade =
                 static_cast<uint32_t>(std::strtoul(mapping.groups.front().c_str(), nullptr, 16));
+            continue;
+        }
+        if (lower == "atlas_cell") {
+            const unsigned long cell = std::strtoul(mapping.groups.front().c_str(), nullptr, 10);
+            // A power of two, 256..1024: the grid only resamples cleanly in
+            // powers of two (BuildMeshAtlas), and past 1024 a cabin texture
+            // costs more than the rest of the pack.
+            if (cell >= 256 && cell <= 1024 && (cell & (cell - 1)) == 0)
+                plan.atlas_cell = static_cast<uint32_t>(cell);
             continue;
         }
         if (lower == "silence") {
@@ -3055,7 +3073,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 Image shader_atlas;
                 uint32_t cells = 0;
                 std::string atlas_error;
-                if (BuildMeshAtlas(part, kAtlasCell, shader_atlas, atlas_error, &cells)) {
+                if (BuildMeshAtlas(part, kAtlasCell, shader_atlas, atlas_error, &cells, plan.atlas_cell)) {
                     if (lod == 0) {
                         LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} -> {}: {} image(s) in a "
                                           "{}x{} atlas", vehicle.mod_name, car,
@@ -3509,7 +3527,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                     Image shader_atlas;
                     uint32_t cells = 0;
                     std::string atlas_error;
-                    if (BuildMeshAtlas(part, kAtlasCell, shader_atlas, atlas_error, &cells) &&
+                    if (BuildMeshAtlas(part, kAtlasCell, shader_atlas, atlas_error, &cells, plan.atlas_cell) &&
                         lod == 0) {
                         // The pack holds one picture per shader for the whole
                         // car, so the first drawable to claim a shader is the
@@ -3868,6 +3886,12 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 // a different "Effect#N" -- and not something this can guess.
                 std::vector<uint32_t> claimed;
                 size_t replaced = 0;
+                // The near pack may grow a texture to the atlas; the far one
+                // keeps its sizes. See VehiclePlan::atlas_cell.
+                const bool near_pack =
+                    plan.atlas_cell > kAtlasCell && target.size() > 4 &&
+                    target.compare(target.size() - 4, 4, ".xtp") == 0;
+                PackGrowth growth;
                 for (const auto& entry : atlas_of) {
                     const uint32_t shader = entry.first;
                     if (shader >= pack_materials.size()) continue;
@@ -3886,7 +3910,8 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
 
                     TextureStats written_texture;
                     if (!ReplacePackMaterialDiffuse(resource, shader, entry.second, error,
-                                                    &written_texture)) {
+                                                    &written_texture,
+                                                    near_pack ? &growth : nullptr)) {
                         LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: shader {}: {}",
                                            vehicle.mod_name, car, target, shader, error);
                         continue;
@@ -3906,6 +3931,18 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                child.resource_type());
                     ++written;
                     continue;
+                }
+                if (growth.textures) {
+                    if (!FinishPackGrowth(resource, growth, error)) {
+                        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                           target, error);
+                        continue;
+                    }
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {}: {} texture(s) grown, {} bytes; "
+                                      "pack now {} bytes in blocks of {}",
+                                      vehicle.mod_name, car, target, growth.textures,
+                                      growth.bytes, resource.virtual_size,
+                                      VirtualBlockSize(resource));
                 }
 
                 std::vector<uint8_t> file;

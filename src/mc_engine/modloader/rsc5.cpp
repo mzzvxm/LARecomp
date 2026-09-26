@@ -1849,7 +1849,8 @@ size_t RoomAfter(const Rsc5View& view, const Rsc5Resource& resource,
 // the address it already lives at.
 bool WriteTextureInPlace(Rsc5View& view, Rsc5Resource& resource,
                          const std::vector<uint32_t>& allocations, const TextureRef& slot,
-                         const Image& image, uint32_t& out_levels) {
+                         const Image& image, uint32_t& out_levels,
+                         uint32_t max_levels = 0xFFFFFFFFu) {
     auto write_level = [&](uint32_t address, size_t skip, const Image& source,
                            size_t budget) -> size_t {
         std::vector<uint8_t> blocks, tiled;
@@ -1883,7 +1884,7 @@ bool WriteTextureInPlace(Rsc5View& view, Rsc5Resource& resource,
 
     size_t written = 0;
     Image current = level;
-    while (current.width > 1 || current.height > 1) {
+    while ((current.width > 1 || current.height > 1) && out_levels < max_levels) {
         Image next;
         HalveImage(current, next);
         const uint32_t stored = StoredTextureSize(next.width, next.height, slot.format);
@@ -4710,8 +4711,105 @@ bool ReadPackMaterials(const Rsc5Resource& pack, std::vector<PackMaterial>& out)
     return true;
 }
 
+namespace {
+
+// Room of its own for a colour map bigger than the one the pack shipped. See
+// PackGrowth.
+//
+// The texture moves to the end of the virtual segment: its top level and its
+// mip chain each inside one block (see RoundVirtualToBlock -- a buffer that
+// crosses into the next separately allocated block reads somebody else's
+// memory), the chain stopping at 32 texels because below that the Xenos packs
+// levels into a shared tail laid out by rules this does not reproduce
+// (GetPackedMipLevel in the SDK: the tail starts where the short side reaches
+// 16), and mip_max_level pointing at the last level written so the tail is
+// never sampled. Each level is stored padded to a 32x32-block tile, which is
+// what StoredTextureSize and the SDK's GetGuestTextureLayout both say.
+//
+// Then the fetch constant, field by field (xenos.h, xe_gpu_texture_fetch_t):
+// dword 0 pitch (texels >> 5, bits 22..30), dword 1 base address (bits 12..31),
+// dword 2 size less one (width bits 0..12, height 13..25), dword 4
+// mip_max_level (bits 6..9), dword 5 mip address (bits 12..31) -- and the
+// grcTexture's own width, height and level count at +32, +34 and +36.
+bool GrowPackTexture(Rsc5Resource& pack, TextureRef& slot, uint32_t width, uint32_t height,
+                     PackGrowth& growth, uint32_t& levels, std::string& error) {
+    if (pack.physical_size != 0) {
+        error = "the pack has a physical segment, which growing the virtual one would move";
+        return false;
+    }
+    if (width > 2048 || height > 2048 || width < 4 || height < 4) {
+        error = "a " + std::to_string(width) + "x" + std::to_string(height) + " texture";
+        return false;
+    }
+
+    const uint32_t base_bytes = StoredTextureSize(width, height, slot.format);
+    uint32_t mip_bytes = 0;
+    levels = 0;
+    for (uint32_t w = width / 2, h = height / 2; w >= 32 && h >= 32; w /= 2, h /= 2) {
+        mip_bytes += StoredTextureSize(w, h, slot.format);
+        ++levels;
+    }
+
+    // Blocks big enough for the top level. Coarsening keeps what is already
+    // placed whole: the new boundaries are a subset of the old ones.
+    const uint32_t current_shift = (pack.flag >> 11) & 0xFu;
+    uint32_t shift = current_shift;
+    while ((4096u << shift) < std::max(base_bytes, mip_bytes) && shift < 15) ++shift;
+    if (shift != current_shift && !SetVirtualPageShift(pack, shift, error)) return false;
+    const uint32_t block = VirtualBlockSize(pack);
+
+    auto place = [&](uint32_t at, uint32_t bytes) {
+        at = (at + 4095u) & ~4095u;
+        if (bytes && at / block != (at + bytes - 1) / block) at = (at / block + 1) * block;
+        return at;
+    };
+    const uint32_t start = growth.end ? growth.end : pack.virtual_size;
+    const uint32_t base_offset = place(start, base_bytes);
+    const uint32_t mip_offset = levels ? place(base_offset + base_bytes, mip_bytes) : 0;
+    const uint32_t end = levels ? mip_offset + mip_bytes : base_offset + base_bytes;
+    if (end > pack.virtual_size && !GrowVirtualSegment(pack, end - pack.virtual_size, error))
+        return false;
+    growth.bytes += end - start;
+    growth.end = end;
+    ++growth.textures;
+
+    Rsc5View view(pack.data, pack.virtual_size);
+    uint32_t d3d = 0;
+    if (!view.U32(slot.address + kTextureD3d, d3d) || d3d == 0) {
+        error = "texture has no D3D header";
+        return false;
+    }
+    uint32_t words[6] = {};
+    for (uint32_t i = 0; i < 6; ++i) {
+        if (!view.U32(d3d + 0x1Cu + 4u * i, words[i])) {
+            error = "texture's fetch constant is outside the pack";
+            return false;
+        }
+    }
+    const uint32_t base_address = kVirtualBase + base_offset;
+    const uint32_t mip_address = kVirtualBase + mip_offset;
+    words[0] = (words[0] & ~(0x1FFu << 22)) | (((width >> 5) & 0x1FFu) << 22);
+    words[1] = (words[1] & 0xFFFu) | (base_address & kAddressMask);
+    words[2] = (words[2] & ~0x03FFFFFFu) | ((width - 1) & 0x1FFFu) |
+               (((height - 1) & 0x1FFFu) << 13);
+    words[4] = (words[4] & ~(0xFu << 6)) | ((levels & 0xFu) << 6);
+    if (levels) words[5] = (words[5] & 0xFFFu) | (mip_address & kAddressMask);
+    for (uint32_t i = 0; i < 6; ++i) view.SetU32(d3d + 0x1Cu + 4u * i, words[i]);
+    view.SetU16(slot.address + kTextureWidth, static_cast<uint16_t>(width));
+    view.SetU16(slot.address + kTextureHeight, static_cast<uint16_t>(height));
+    view.SetU32(slot.address + 36, levels + 1);
+
+    slot.width = width;
+    slot.height = height;
+    slot.base = base_address;
+    slot.mip = levels ? mip_address : 0;
+    return true;
+}
+
+}  // namespace
+
 bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, const Image& image,
-                                std::string& error, TextureStats* stats) {
+                                std::string& error, TextureStats* stats, PackGrowth* growth) {
     if (image.empty()) {
         error = "no image to write";
         return false;
@@ -4796,8 +4894,41 @@ bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, con
         return true;
     }
 
+    // A picture bigger than the slot moves the slot rather than being squeezed
+    // into it. See PackGrowth.
+    uint32_t max_levels = 0xFFFFFFFFu;
+    // BC3 is twice the bytes of BC1, and a 1024 BC3 top level is a megabyte on
+    // its own -- enough to force megabyte blocks on the whole pack. Those stop
+    // at 512 (the S15's engine bay was the only one, and nobody looks at it).
+    const uint32_t cap = target.format == BlockFormat::kBc3 ? 512u : 2048u;
+    const uint32_t want_width = std::min(image.width, cap);
+    const uint32_t want_height = std::min(image.height, cap);
+    if (growth && (want_width > target.width || want_height > target.height)) {
+        const uint32_t width = std::max(want_width, target.width);
+        const uint32_t height = std::max(want_height, target.height);
+        uint32_t grown_levels = 0;
+        if (!GrowPackTexture(pack, target, width, height, *growth, grown_levels, error)) {
+            error = target.name + ": " + error;
+            return false;
+        }
+        max_levels = grown_levels;
+        // The view holds the vector, not its buffer, and a pack that can grow
+        // has no physical segment (GrowPackTexture), so the virtual size it
+        // was built with only bounds nothing it is asked for. The allocations
+        // are read again: the texture now lives somewhere else.
+        allocations.clear();
+        for (uint32_t address : dictionary) {
+            TextureRef texture;
+            if (!ReadTexture(view, address, texture)) continue;
+            if (texture.base) allocations.push_back(texture.base);
+            if (texture.mip) allocations.push_back(texture.mip);
+        }
+        std::sort(allocations.begin(), allocations.end());
+        allocations.erase(std::unique(allocations.begin(), allocations.end()), allocations.end());
+    }
+
     uint32_t levels = 0;
-    if (!WriteTextureInPlace(view, pack, allocations, target, image, levels)) {
+    if (!WriteTextureInPlace(view, pack, allocations, target, image, levels, max_levels)) {
         error = "no room to write " + target.name + " in place";
         return false;
     }
@@ -4832,6 +4963,19 @@ bool ReplacePackMaterialDiffuse(Rsc5Resource& pack, uint32_t material_index, con
         stats->levels = levels;
     }
     return true;
+}
+
+bool FinishPackGrowth(Rsc5Resource& pack, const PackGrowth& growth, std::string& error) {
+    if (growth.textures == 0) return true;
+    // The same tail the drawables keep (kResourceTailSlack in modloader.cpp,
+    // measured on a wheel): the last bytes of a grown segment do not arrive
+    // intact, so nothing drawn from may sit in them.
+    constexpr uint32_t kTail = 65536;
+    if (growth.end + kTail > pack.virtual_size &&
+        !GrowVirtualSegment(pack, growth.end + kTail - pack.virtual_size, error)) {
+        return false;
+    }
+    return RoundVirtualToBlock(pack, error);
 }
 
 // The game's own car shader list, in the order shaders/cars/preload.list gives
