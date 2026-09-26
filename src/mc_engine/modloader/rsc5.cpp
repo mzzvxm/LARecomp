@@ -4369,6 +4369,414 @@ size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const floa
     return set;
 }
 
+namespace {
+
+// What a clip block's channels are, by the byte at +5 of each (the vtable at +0
+// is only a placeholder in a resource). Read off vp_nsn_240sx_98's tach and
+// speedo, which decode to unit quaternions with these layouts.
+constexpr uint8_t kChannelStaticFloat = 0x04;  // +8 the value
+constexpr uint8_t kChannelQuantized = 0x06;    // +8 data, +12 bits, +16 count, +20 scale, +24 offset
+constexpr uint8_t kChannelStaticQuat = 0x09;   // +8 -> x y z w
+constexpr uint8_t kChannelStaticVec3 = 0x0D;   // +8 -> x y z
+
+struct ClipTrack {
+    uint8_t kind = 0;  // 0 translation, 1 rotation
+    uint16_t tag = 0;  // the bone's tag, as skeleton record +20 holds it
+    std::vector<uint32_t> channels;
+    std::vector<uint8_t> channel_kinds;
+};
+
+// Value `index` of a quantized channel. Bit n of the stream is bit n % 32 from
+// the LOW end of big-endian word n / 32: 81 frames of 11 bits decode to unit
+// quaternions that way and to noise the other.
+bool ReadPacked(const Rsc5View& view, uint32_t data, uint32_t bits, uint32_t index,
+                uint32_t& out) {
+    out = 0;
+    for (uint32_t b = 0; b < bits; ++b) {
+        const uint32_t at = index * bits + b;
+        uint32_t word = 0;
+        if (!view.U32(data + (at / 32) * 4, word)) return false;
+        out |= ((word >> (at % 32)) & 1u) << b;
+    }
+    return true;
+}
+
+bool ChannelFloat(const Rsc5View& view, uint32_t channel, uint32_t offset, float& out) {
+    return view.Float(channel + offset, out);
+}
+
+// Quaternion (x y z w) of the skeleton's Euler rotation.
+void EulerQuaternion(const float rotation[3], float q[4]) {
+    float rows[3][3];
+    EulerRows(rotation, rows);
+    // Column-vector matrix: column c is the image of axis c, i.e. row c above.
+    auto m = [&rows](int r, int c) { return rows[c][r]; };
+    const float trace = m(0, 0) + m(1, 1) + m(2, 2);
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q[3] = 0.25f * s;
+        q[0] = (m(2, 1) - m(1, 2)) / s;
+        q[1] = (m(0, 2) - m(2, 0)) / s;
+        q[2] = (m(1, 0) - m(0, 1)) / s;
+    } else if (m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2)) {
+        const float s = std::sqrt(1.0f + m(0, 0) - m(1, 1) - m(2, 2)) * 2.0f;
+        q[3] = (m(2, 1) - m(1, 2)) / s;
+        q[0] = 0.25f * s;
+        q[1] = (m(0, 1) + m(1, 0)) / s;
+        q[2] = (m(0, 2) + m(2, 0)) / s;
+    } else if (m(1, 1) > m(2, 2)) {
+        const float s = std::sqrt(1.0f + m(1, 1) - m(0, 0) - m(2, 2)) * 2.0f;
+        q[3] = (m(0, 2) - m(2, 0)) / s;
+        q[0] = (m(0, 1) + m(1, 0)) / s;
+        q[1] = 0.25f * s;
+        q[2] = (m(1, 2) + m(2, 1)) / s;
+    } else {
+        const float s = std::sqrt(1.0f + m(2, 2) - m(0, 0) - m(1, 1)) * 2.0f;
+        q[3] = (m(1, 0) - m(0, 1)) / s;
+        q[0] = (m(0, 2) + m(2, 0)) / s;
+        q[1] = (m(1, 2) + m(2, 1)) / s;
+        q[2] = 0.25f * s;
+    }
+}
+
+// Degrees clockwise at clip frame `frame`: piecewise linear through the knots
+// (sorted by frame), held before the first and past the last.
+float SweepAt(const std::vector<std::pair<float, float>>& knots, float frame) {
+    if (frame <= knots.front().first) return knots.front().second;
+    for (size_t i = 1; i < knots.size(); ++i) {
+        if (frame <= knots[i].first) {
+            const float span = knots[i].first - knots[i - 1].first;
+            const float t = span > 0.0f ? (frame - knots[i - 1].first) / span : 1.0f;
+            return knots[i - 1].second + t * (knots[i].second - knots[i - 1].second);
+        }
+    }
+    return knots.back().second;
+}
+
+// Sets the rest pose of the skeleton bone carrying `tag` (record +20 is
+// index << 16 | tag, records are 224 bytes, array and count at skeleton +0 and
+// +20). Returns whether one was found.
+bool SetBonePoseByTag(Rsc5Resource& resource, uint32_t skeleton, uint16_t tag,
+                      const float translation[3], const float rotation[3]) {
+    Rsc5View view(resource.data, resource.virtual_size);
+    uint32_t bones = 0;
+    uint16_t count = 0;
+    if (!view.U32(skeleton, bones) || !view.U16(skeleton + 20, count) || bones == 0) return false;
+    const size_t end = std::min<size_t>(resource.virtual_size, resource.data.size());
+    for (uint16_t b = 0; b < count; ++b) {
+        const uint32_t record = bones + 224u * b;
+        uint32_t id = 0;
+        if (!view.U32(record + 20, id)) return false;
+        if ((id & 0xFFFFu) != tag) continue;
+        const size_t rec = record & 0x0FFFFFFFu;
+        if (rec + 112 > end) return false;
+        RewriteBoneRecord(resource.data, end, rec, translation, rotation);
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& error,
+                     std::string* summary) {
+    if (resource.type != kTypeBodyDrawable) {
+        error = "not a vehicle body drawable";
+        return false;
+    }
+    if (dial.sweep.empty()) {
+        error = "no sweep";
+        return false;
+    }
+    std::vector<std::pair<float, float>> knots = dial.sweep;
+    std::sort(knots.begin(), knots.end());
+
+    Rsc5View view(resource.data, resource.virtual_size);
+    DrawableLayout drawable;
+    if (!ResolveDrawable(view, resource.type, drawable)) {
+        error = "no drawable in resource";
+        return false;
+    }
+
+    // The named clips: drawable +0x1C, count at +0x20; entry +0 the clip, +16
+    // its name.
+    uint32_t clips = 0, anim = 0;
+    uint16_t clip_count = 0;
+    if (!view.U32(drawable.drawable + 0x1C, clips) || !view.U16(drawable.drawable + 0x20, clip_count) ||
+        clips == 0 || clip_count == 0 || clip_count > 256) {
+        error = "the body carries no clips";
+        return false;
+    }
+    std::string names;
+    for (uint16_t i = 0; i < clip_count; ++i) {
+        uint32_t entry = 0, name_at = 0;
+        std::string name;
+        if (!view.U32(clips + 4u * i, entry) || !view.U32(entry + 16, name_at) ||
+            !view.String(name_at, name)) {
+            continue;
+        }
+        names += (names.empty() ? "" : " ") + name;
+        if (name == dial.clip && !view.U32(entry, anim)) anim = 0;
+    }
+    if (anim == 0) {
+        error = "no clip '" + dial.clip + "' (the body has: " + names + ")";
+        return false;
+    }
+
+    // crAnimation: +8 frames, +10 frames per block, +12 duration, +0x14 the
+    // blocks, +0x18 their count. A block: +4 its tracks, +8 their count, +0x10
+    // its frames; block b starts at frame b * per_block (speedo: 128 + 4 frames
+    // over 131, the seam frame in both).
+    uint16_t frames = 0, per_block = 0, block_count = 0;
+    uint32_t blocks = 0;
+    if (!view.U16(anim + 8, frames) || !view.U16(anim + 10, per_block) ||
+        !view.U32(anim + 0x14, blocks) || !view.U16(anim + 0x18, block_count) || frames < 2 ||
+        per_block == 0 || block_count == 0 || block_count > 64) {
+        error = "clip '" + dial.clip + "' has no blocks this can read";
+        return false;
+    }
+
+    // First pass, nothing written: every block must have the one layout this
+    // understands -- the dial's static translation and rotation, the rotor's
+    // turn as two static and two quantized components that decode to unit
+    // quaternions -- or the clip is left exactly as it shipped.
+    struct BlockPlan {
+        uint16_t frames = 0;
+        uint32_t first_frame = 0;
+        uint32_t dial_translation = 0, dial_rotation = 0;  // channel addresses
+        uint32_t rotor_z = 0, rotor_w = 0;
+    };
+    std::vector<BlockPlan> plans;
+    uint16_t dial_tag = 0, rotor_tag = 0;
+    bool tags_known = false;
+    for (uint16_t b = 0; b < block_count; ++b) {
+        uint32_t block = 0, track_array = 0;
+        uint16_t track_count = 0;
+        BlockPlan plan;
+        plan.first_frame = static_cast<uint32_t>(b) * per_block;
+        if (!view.U32(blocks + 4u * b, block) || !view.U32(block + 4, track_array) ||
+            !view.U16(block + 8, track_count) || !view.U16(block + 0x10, plan.frames) ||
+            track_count == 0 || track_count > 64 || plan.frames == 0) {
+            error = "block " + std::to_string(b) + " of '" + dial.clip + "' is unreadable";
+            return false;
+        }
+        std::vector<ClipTrack> tracks;
+        for (uint16_t t = 0; t < track_count; ++t) {
+            uint32_t track = 0, id = 0, channel_count = 0;
+            if (!view.U32(track_array + 4u * t, track) || !view.U32(track, id) ||
+                !view.U32(track + 0x14, channel_count) || channel_count == 0 || channel_count > 4) {
+                error = "track " + std::to_string(t) + " of '" + dial.clip + "' is unreadable";
+                return false;
+            }
+            ClipTrack out;
+            out.kind = static_cast<uint8_t>(id >> 24);
+            out.tag = static_cast<uint16_t>(id & 0xFFFFu);
+            for (uint32_t c = 0; c < channel_count; ++c) {
+                uint32_t channel = 0;
+                uint8_t kind = 0;
+                if (!view.U32(track + 4 + 4 * c, channel) || !view.U8(channel + 5, kind)) {
+                    error = "a channel of '" + dial.clip + "' is unreadable";
+                    return false;
+                }
+                out.channels.push_back(channel);
+                out.channel_kinds.push_back(kind);
+            }
+            tracks.push_back(std::move(out));
+        }
+
+        // The rotor: a rotation of x, y static zeros and z, w quantized.
+        const ClipTrack* rotor = nullptr;
+        for (const ClipTrack& track : tracks) {
+            if (track.kind != 1 || track.channels.size() != 4) continue;
+            if (track.channel_kinds[0] != kChannelStaticFloat ||
+                track.channel_kinds[1] != kChannelStaticFloat ||
+                track.channel_kinds[2] != kChannelQuantized ||
+                track.channel_kinds[3] != kChannelQuantized) {
+                continue;
+            }
+            rotor = &track;
+        }
+        if (rotor == nullptr) {
+            error = "'" + dial.clip + "' block " + std::to_string(b) +
+                    " has no needle turning about z (a rotation of 0, 0, z, w)";
+            return false;
+        }
+        float x = 0.0f, y = 0.0f;
+        ChannelFloat(view, rotor->channels[0], 8, x);
+        ChannelFloat(view, rotor->channels[1], 8, y);
+        if (std::fabs(x) > 1e-3f || std::fabs(y) > 1e-3f) {
+            error = "'" + dial.clip + "' turns its needle about more than z";
+            return false;
+        }
+        // The quantized pair must read back as unit quaternions: that is what
+        // proves the bit order and the field offsets before anything is written.
+        float worst = 0.0f;
+        for (int c = 2; c < 4; ++c) {
+            uint32_t count = 0;
+            if (!view.U32(rotor->channels[c] + 16, count) || count != plan.frames) {
+                error = "'" + dial.clip + "': a needle channel holds " + std::to_string(count) +
+                        " values for " + std::to_string(plan.frames) + " frames";
+                return false;
+            }
+        }
+        {
+            uint32_t data_z = 0, bits_z = 0, data_w = 0, bits_w = 0;
+            float scale_z = 0, offset_z = 0, scale_w = 0, offset_w = 0;
+            view.U32(rotor->channels[2] + 8, data_z);
+            view.U32(rotor->channels[2] + 12, bits_z);
+            view.Float(rotor->channels[2] + 20, scale_z);
+            view.Float(rotor->channels[2] + 24, offset_z);
+            view.U32(rotor->channels[3] + 8, data_w);
+            view.U32(rotor->channels[3] + 12, bits_w);
+            view.Float(rotor->channels[3] + 20, scale_w);
+            view.Float(rotor->channels[3] + 24, offset_w);
+            if (bits_z == 0 || bits_z > 24 || bits_w == 0 || bits_w > 24) {
+                error = "'" + dial.clip + "': needle channels of " + std::to_string(bits_z) + "/" +
+                        std::to_string(bits_w) + " bits";
+                return false;
+            }
+            for (uint32_t i = 0; i < plan.frames; ++i) {
+                uint32_t qz = 0, qw = 0;
+                if (!ReadPacked(view, data_z, bits_z, i, qz) ||
+                    !ReadPacked(view, data_w, bits_w, i, qw)) {
+                    error = "'" + dial.clip + "': needle data runs out of the resource";
+                    return false;
+                }
+                const float z = offset_z + scale_z * static_cast<float>(qz);
+                const float w = offset_w + scale_w * static_cast<float>(qw);
+                worst = std::max(worst, std::fabs(std::sqrt(x * x + y * y + z * z + w * w) - 1.0f));
+            }
+        }
+        if (worst > 0.02f) {
+            error = "'" + dial.clip + "': the needle does not decode to unit quaternions (off by " +
+                    std::to_string(worst) + ") -- not the layout this was written against";
+            return false;
+        }
+
+        // The dial: the other bone, a static translation and a static rotation.
+        const ClipTrack* dial_t = nullptr;
+        const ClipTrack* dial_r = nullptr;
+        for (const ClipTrack& track : tracks) {
+            if (track.tag == rotor->tag || track.channels.size() != 1) continue;
+            if (track.kind == 0 && track.channel_kinds[0] == kChannelStaticVec3) dial_t = &track;
+            if (track.kind == 1 && track.channel_kinds[0] == kChannelStaticQuat) dial_r = &track;
+        }
+        if (dial_t == nullptr || dial_r == nullptr || dial_t->tag != dial_r->tag) {
+            error = "'" + dial.clip + "' block " + std::to_string(b) +
+                    " has no dial bone with a static pose";
+            return false;
+        }
+        if (tags_known && (dial_t->tag != dial_tag || rotor->tag != rotor_tag)) {
+            error = "'" + dial.clip + "': blocks disagree on which bones they pose";
+            return false;
+        }
+        dial_tag = dial_t->tag;
+        rotor_tag = rotor->tag;
+        tags_known = true;
+        plan.dial_translation = dial_t->channels[0];
+        plan.dial_rotation = dial_r->channels[0];
+        plan.rotor_z = rotor->channels[2];
+        plan.rotor_w = rotor->channels[3];
+        plans.push_back(plan);
+    }
+
+    // Second pass: write.
+    float quaternion[4];
+    EulerQuaternion(dial.rotation, quaternion);
+    float first_angle = 0.0f, last_angle = 0.0f;
+    for (size_t b = 0; b < plans.size(); ++b) {
+        const BlockPlan& plan = plans[b];
+        uint32_t at = 0;
+        view.U32(plan.dial_translation + 8, at);
+        for (int i = 0; i < 3; ++i) {
+            size_t offset = 0;
+            if (!view.Offset(at + 4u * i, 4, offset)) {
+                error = "the dial's translation is out of the resource";
+                return false;
+            }
+            StoreBEFloat(resource.data.data() + offset, dial.translation[i]);
+        }
+        view.U32(plan.dial_rotation + 8, at);
+        for (int i = 0; i < 4; ++i) {
+            size_t offset = 0;
+            if (!view.Offset(at + 4u * i, 4, offset)) {
+                error = "the dial's rotation is out of the resource";
+                return false;
+            }
+            StoreBEFloat(resource.data.data() + offset, quaternion[i]);
+        }
+
+        // The needle: frame f turns -sweep(f) about z (negative = clockwise
+        // seen from +z, where the dial faces the driver).
+        std::vector<float> zs(plan.frames), ws(plan.frames);
+        for (uint32_t i = 0; i < plan.frames; ++i) {
+            const float degrees = SweepAt(knots, static_cast<float>(plan.first_frame + i));
+            if (b == 0 && i == 0) first_angle = degrees;
+            last_angle = degrees;
+            const float half = -degrees * 3.14159265358979f / 360.0f;
+            zs[i] = std::sin(half);
+            ws[i] = std::cos(half);
+        }
+        for (int component = 0; component < 2; ++component) {
+            const uint32_t channel = component == 0 ? plan.rotor_z : plan.rotor_w;
+            const std::vector<float>& values = component == 0 ? zs : ws;
+            uint32_t data = 0, bits = 0;
+            view.U32(channel + 8, data);
+            view.U32(channel + 12, bits);
+            const float lo = *std::min_element(values.begin(), values.end());
+            const float hi = *std::max_element(values.begin(), values.end());
+            const uint32_t top = (1u << bits) - 1u;
+            const float scale = hi > lo ? (hi - lo) / static_cast<float>(top) : 0.0f;
+            size_t offset = 0;
+            if (!view.Offset(channel + 20, 8, offset)) {
+                error = "a needle channel is out of the resource";
+                return false;
+            }
+            StoreBEFloat(resource.data.data() + offset, scale);
+            StoreBEFloat(resource.data.data() + offset + 4, lo);
+            const uint32_t words = (plan.frames * bits + 31) / 32;
+            size_t data_offset = 0;
+            if (!view.Offset(data, words * 4, data_offset)) {
+                error = "the needle data is out of the resource";
+                return false;
+            }
+            std::vector<uint32_t> packed(words, 0);
+            for (uint32_t i = 0; i < plan.frames; ++i) {
+                uint32_t q = 0;
+                if (scale > 0.0f) {
+                    const long rounded = std::lround((values[i] - lo) / scale);
+                    q = static_cast<uint32_t>(std::clamp<long>(rounded, 0, static_cast<long>(top)));
+                }
+                for (uint32_t k = 0; k < bits; ++k) {
+                    const uint32_t bit = i * bits + k;
+                    packed[bit / 32] |= ((q >> k) & 1u) << (bit % 32);
+                }
+            }
+            for (uint32_t w = 0; w < words; ++w)
+                StoreBE32(resource.data.data() + data_offset + 4 * w, packed[w]);
+        }
+    }
+
+    // The rest pose, for whenever the clip is not playing.
+    uint32_t skeleton = 0;
+    const bool rest = view.U32(drawable.drawable + drawable.skeleton_field, skeleton) &&
+                      skeleton != 0 &&
+                      SetBonePoseByTag(resource, skeleton, dial_tag, dial.translation, dial.rotation);
+
+    if (summary) {
+        char text[256];
+        std::snprintf(text, sizeof(text),
+                      "%s: dial bone %04X to (%.4f %.4f %.4f)%s, needle %04X re-quantized over %u "
+                      "frame(s) in %u block(s), %.1f to %.1f degrees",
+                      dial.clip.c_str(), dial_tag, dial.translation[0], dial.translation[1],
+                      dial.translation[2], rest ? "" : " (clip only: no skeleton bone)", rotor_tag,
+                      static_cast<unsigned>(frames), static_cast<unsigned>(block_count), first_angle,
+                      last_angle);
+        *summary = text;
+    }
+    return true;
+}
+
 bool ReplaceShaderDiffuse(Rsc5Resource& resource, uint32_t shader_index, const Image& atlas,
                           std::string& error, TextureStats* stats) {
     if (atlas.empty()) {

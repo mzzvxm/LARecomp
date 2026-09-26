@@ -1546,6 +1546,13 @@ struct VehiclePlan {
     // and UV scale.
     std::map<std::string, float> bands;
 
+    // `dial.<clip> = tx ty tz rx ry rz, frame degrees, frame degrees, ...`: a
+    // gauge the game turns with one of the body's clips (`tach`, `speedo`) moved
+    // to this car's dial, its needle swept to this car's face. See
+    // RewriteDialClip. The needle itself is a `body_m<N>` line (speedo_rotator
+    // carries model 4, tach_rotator model 5) whose rigid frame is this pose.
+    std::vector<DialClip> dials;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1713,6 +1720,27 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower.rfind("band.", 0) == 0) {
             plan.bands[key.substr(5)] = std::strtof(mapping.groups.front().c_str(), nullptr);
+            continue;
+        }
+        if (lower.rfind("dial.", 0) == 0) {
+            DialClip dial;
+            dial.clip = key.substr(5);
+            std::istringstream pose(mapping.groups.front());
+            bool ok = static_cast<bool>(pose >> dial.translation[0] >> dial.translation[1] >>
+                                        dial.translation[2] >> dial.rotation[0] >>
+                                        dial.rotation[1] >> dial.rotation[2]);
+            for (size_t i = 1; i < mapping.groups.size() && ok; ++i) {
+                std::istringstream knot(mapping.groups[i]);
+                float frame = 0.0f, degrees = 0.0f;
+                ok = static_cast<bool>(knot >> frame >> degrees);
+                if (ok) dial.sweep.emplace_back(frame, degrees);
+            }
+            if (ok && !dial.sweep.empty()) {
+                plan.dials.push_back(std::move(dial));
+            } else {
+                LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'tx ty tz rx ry rz, frame degrees, "
+                                   "...'", key);
+            }
             continue;
         }
         if (lower.rfind("weight.", 0) == 0) {
@@ -3267,6 +3295,18 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} took no geometry at all",
                                vehicle.mod_name, car, lod);
             continue;
+        }
+
+        // Gauges: the clips that turn the needles, and the dial bones they
+        // pose. Every LOD carries its own copy of the clips.
+        for (const DialClip& dial : plan.dials) {
+            std::string dial_error, dial_summary;
+            if (RewriteDialClip(resource, dial, dial_error, &dial_summary)) {
+                if (lod == 0) LARECOMP_APP_INFO("[mods]   dial {}", dial_summary);
+            } else {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} dial.{}: {}",
+                                   vehicle.mod_name, car, lod, dial.clip, dial_error);
+            }
         }
 
         // The end of a resource does not arrive intact, so whichever buffer

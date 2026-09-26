@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "objmesh.h"
@@ -635,6 +636,33 @@ bool ReadDrawableBounds(const Rsc5Resource& resource, float min_out[3], float ma
 // game builds the bone from, are rewritten with it. Returns how many were set.
 size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const float translation[3],
                    const float rotation[3]);
+
+// A dial the game turns by playing one of the body drawable's own clips.
+//
+// A car body carries its door, window and gauge animations as named clips
+// (drawable +0x1C, 12 on vp_nsn_240sx_98: tach, speedo, door_l_open...). Each
+// frame sub_8233E790 sets `tach` to rpm / 100 and `speedo` to mph clip frames
+// (time = value / (frames * unit) * duration, so a frame is 100 * N/(N-1) rpm
+// or N/(N-1) mph), and the clip poses two bones: the dial (`tach`: a static
+// translation and rotation -- the clip moves it, not only the skeleton) and the
+// needle's rotor (`tach_rotator`: a turn about its own z, quantized per frame,
+// negative = clockwise seen from +z). Model 4 of body_lod_0 hangs from
+// speedo_rotator and model 5 from tach_rotator (the LOD's model-to-bone table).
+//
+// This moves the dial to `translation`/`rotation` (car space, Euler radians in
+// the skeleton's convention), in every block of the clip and in the skeleton's
+// rest pose, and re-quantizes the rotor so frame f turns the needle `sweep(f)`
+// degrees clockwise from where it points at frame 0: piecewise linear through
+// the (frame, degrees) knots, held past the last one. Nothing is resized; the
+// quantized channels keep their bit widths.
+struct DialClip {
+    std::string clip;
+    float translation[3] = {0.0f, 0.0f, 0.0f};
+    float rotation[3] = {0.0f, 0.0f, 0.0f};
+    std::vector<std::pair<float, float>> sweep;
+};
+bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& error,
+                     std::string* summary = nullptr);
 
 bool RewriteDrawableGeometry(Rsc5Resource& resource, Mesh mesh, uint32_t bone,
                              const MeshOffset& offset, std::string& error,
