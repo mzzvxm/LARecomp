@@ -4267,6 +4267,68 @@ bool ReadDrawableBounds(const Rsc5Resource& resource, float min_out[3], float ma
     return MeasureTemplateBounds(view, resource.data, drawable, min_out, max_out);
 }
 
+namespace {
+
+// Rows of Rz * Ry * Rx for the skeleton's Euler angles, row-vector convention
+// (row i = image of axis i) -- how the ready matrices store a rotation.
+void EulerRows(const float rotation[3], float rows[3][3]) {
+    const float cx = std::cos(rotation[0]), sx = std::sin(rotation[0]);
+    const float cy = std::cos(rotation[1]), sy = std::sin(rotation[1]);
+    const float cz = std::cos(rotation[2]), sz = std::sin(rotation[2]);
+    const float out[3][3] = {{cy * cz, cy * sz, -sy},
+                             {sx * sy * cz - cx * sz, sx * sy * sz + cx * cz, sx * cy},
+                             {cx * sy * cz + sx * sz, cx * sy * sz - sx * cz, cx * cy}};
+    std::memcpy(rows, out, sizeof(out));
+}
+
+// Moves the bone whose record starts at `rec` to a new rest pose.
+//
+// The record is not what the game builds the bone from. The skeleton also
+// carries ready matrices (default local, global, and one more) whose last row
+// is this translation -- measured on the Impala's bumper_r0: extPrimary0 at
+// 0xE450, 0xE6C0, 0xE780, plus a bare copy at 0xEBC0 -- and a probe of the
+// running game showed the bone still at the Impala's place after only the record
+// moved. Every 16-aligned copy of the old translation is rewritten; when the 48
+// bytes before it are three unit rows, they are the matrix's rotation and get
+// the new one too (w lanes kept). A child at zero offset (tach_rotator under
+// tach) keeps its parent's position in its own global copy, so it follows.
+void RewriteBoneRecord(std::vector<uint8_t>& data, size_t end, size_t rec,
+                       const float translation[3], const float rotation[3]) {
+    float rows[3][3];
+    EulerRows(rotation, rows);
+    for (size_t at = 0; at + 12 <= end; at += 16) {
+        bool same = true;
+        for (int i = 0; i < 3 && same; ++i)
+            same = LoadBE32(&data[at + i * 4]) == LoadBE32(&data[rec + 32 + i * 4]);
+        if (!same || at == rec + 32) continue;
+        bool matrix = at >= 48;
+        for (int r = 0; r < 3 && matrix; ++r) {
+            float len = 0.0f;
+            for (int i = 0; i < 3; ++i) {
+                const float v = LoadBEFloat(&data[at - 48 + r * 16 + i * 4]);
+                len += v * v;
+            }
+            matrix = std::fabs(len - 1.0f) < 0.02f;
+        }
+        if (matrix) {
+            for (int r = 0; r < 3; ++r)
+                for (int i = 0; i < 3; ++i)
+                    StoreBEFloat(&data[at - 48 + r * 16 + i * 4], rows[r][i]);
+        }
+        for (int i = 0; i < 3; ++i) StoreBEFloat(&data[at + i * 4], translation[i]);
+    }
+    // +96 repeats the translation (measured: extPrimary0 holds -0.664 -0.280
+    // -0.050 at both +32 and +96), and moving only +32 left the pipes where the
+    // Impala's were (seen in game 25/09).
+    for (int i = 0; i < 3; ++i) {
+        StoreBEFloat(&data[rec + 32 + i * 4], translation[i]);
+        StoreBEFloat(&data[rec + 48 + i * 4], rotation[i]);
+        if (rec + 112 <= end) StoreBEFloat(&data[rec + 96 + i * 4], translation[i]);
+    }
+}
+
+}  // namespace
+
 size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const float translation[3],
                    const float rotation[3]) {
     // Bone records live in the virtual segment and point at their names there;
@@ -4298,52 +4360,7 @@ size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const floa
                 plausible &= std::isfinite(old_t[i]) && std::fabs(old_t[i]) < 50.0f;
             }
             if (!plausible) continue;
-            // The record is not what the game builds the bone from. The
-            // skeleton also carries ready matrices (default local, global, and
-            // one more) whose last row is this translation -- measured on the
-            // Impala's bumper_r0: extPrimary0 at 0xE450, 0xE6C0, 0xE780, plus a
-            // bare copy at 0xEBC0 -- and a probe of the running game showed the
-            // bone still at the Impala's place after only the record moved.
-            // Every 16-aligned copy of the old translation is rewritten; when
-            // the 48 bytes before it are three unit rows, they are the matrix's
-            // rotation and get the new one too (w lanes kept).
-            const float cx = std::cos(rotation[0]), sx = std::sin(rotation[0]);
-            const float cy = std::cos(rotation[1]), sy = std::sin(rotation[1]);
-            const float cz = std::cos(rotation[2]), sz = std::sin(rotation[2]);
-            // rows of Rz * Ry * Rx, row-vector convention (row i = image of axis i)
-            const float rows[3][3] = {
-                {cy * cz, cy * sz, -sy},
-                {sx * sy * cz - cx * sz, sx * sy * sz + cx * cz, sx * cy},
-                {cx * sy * cz + sx * sz, cx * sy * sz - sx * cz, cx * cy}};
-            for (size_t at = 0; at + 12 <= end; at += 16) {
-                bool same = true;
-                for (int i = 0; i < 3 && same; ++i)
-                    same = LoadBE32(&data[at + i * 4]) == LoadBE32(&data[rec + 32 + i * 4]);
-                if (!same || at == rec + 32) continue;
-                bool matrix = at >= 48;
-                for (int r = 0; r < 3 && matrix; ++r) {
-                    float len = 0.0f;
-                    for (int i = 0; i < 3; ++i) {
-                        const float v = LoadBEFloat(&data[at - 48 + r * 16 + i * 4]);
-                        len += v * v;
-                    }
-                    matrix = std::fabs(len - 1.0f) < 0.02f;
-                }
-                if (matrix) {
-                    for (int r = 0; r < 3; ++r)
-                        for (int i = 0; i < 3; ++i)
-                            StoreBEFloat(&data[at - 48 + r * 16 + i * 4], rows[r][i]);
-                }
-                for (int i = 0; i < 3; ++i) StoreBEFloat(&data[at + i * 4], translation[i]);
-            }
-            // +96 repeats the translation (measured: extPrimary0 holds
-            // -0.664 -0.280 -0.050 at both +32 and +96), and moving only +32
-            // left the pipes where the Impala's were (seen in game 25/09).
-            for (int i = 0; i < 3; ++i) {
-                StoreBEFloat(&data[rec + 32 + i * 4], translation[i]);
-                StoreBEFloat(&data[rec + 48 + i * 4], rotation[i]);
-                if (rec + 112 <= end) StoreBEFloat(&data[rec + 96 + i * 4], translation[i]);
-            }
+            RewriteBoneRecord(data, end, rec, translation, rotation);
             ++set;
             break;
         }
