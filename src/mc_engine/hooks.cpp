@@ -60,6 +60,7 @@
 #include "modloader/features/mod_breakables.h"
 #include "modloader/features/mod_glows.h"
 #include "camera_look.h"
+#include "frame_pacing.h"
 #include "texture_dump.h"
 #include "online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 
@@ -3287,7 +3288,9 @@ void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
 std::atomic<uint64_t> g_limiter_spin_us{0};
 std::atomic<uint64_t> g_limiter_spins{0};
 
-static void EnforceFrameLimit() {
+// Not static: with frame_pacing on, frame_pacing.cpp calls it right before the
+// game's clock reads the timebase instead of MCLAFrameDelta calling it after.
+void EnforceFrameLimit() {
     // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
     // change after process start, and this runs on every single frame.
     static const int32_t env_limit = [] {
@@ -3769,10 +3772,18 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // also silently disabled the FPS LIMIT row and the CITY LOD slider, which
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
-    EnforceFrameLimit();
+    //
+    // With frame_pacing on, the limiter runs in frame_pacing.cpp instead, right
+    // before the game's clock reads the timebase: sleeping here, after the read,
+    // landed every sleep in the next frame's measurement.
+    if (!mc::pacing::LimiterRunsBeforeClock()) EnforceFrameLimit();
     UpdateCityLODMemory();
     RecordFrameTime();
     TickGuestProfiler();
+
+    // The step the game simulates. Only the game's own clock is changed; see
+    // frame_pacing_policy.h.
+    r8.u64 = mc::pacing::AdjustFrameTicks(r8.u64);
 }
 
 // BadassBaboon's Recomp Adjustments: real delta instead of the fixed timestep.
