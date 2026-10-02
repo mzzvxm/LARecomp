@@ -11,6 +11,8 @@
 //   of the work.
 // - MCLAFrameDelta hands the measured ticks to AdjustFrameTicks, which returns
 //   the step to simulate.
+// - sub_8231D3A8 is wrapped so the gameplay camera's two temporal filters are
+//   scaled by the frame time.
 // - frame_pacing_trace writes one line per event to frame_pacing_trace.csv, so
 //   the pacing can be measured on a real session and replayed offline.
 
@@ -20,6 +22,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -69,6 +72,12 @@ REXCVAR_DEFINE_BOOL(frame_pacing_trace, false, "MCLA/Diagnostics",
     "positions handed to the renderer.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(camera_filters_dt, true, "MCLA/Camera",
+    "Scale the gameplay camera's direction and orientation filters by the frame time, so they "
+    "behave the way they do at 60 FPS at any frame rate. The game applies them as a fixed "
+    "fraction per frame, which makes the camera sway with the frame time when it varies.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DECLARE(bool, real_frame_delta);
 REXCVAR_DECLARE(int32_t, fps_limit);
 
@@ -85,6 +94,7 @@ extern void (*g_present_observer)(uint64_t tag, bool presented);
 
 REX_EXTERN(__imp__rex_sub_821BDA90);
 REX_EXTERN(__imp__rex_sub_82305B38);
+REX_EXTERN(__imp__rex_sub_8231D3A8);
 REX_EXTERN(__imp__D3DDevice_BlockOnFence);
 REX_EXTERN(__imp__rex_sub_821775D8);
 
@@ -92,6 +102,8 @@ namespace {
 
 // The game's clock object: sub_822C1FA8 updates it through its vtable slot 2.
 constexpr uint32_t kGameClock = 0x827D7500;
+constexpr uint32_t kClockScaledDelta = 0x827D7508;    // [clock+8]
+constexpr uint32_t kClockUnscaledDelta = 0x827D7558;  // [clock+88]
 
 // The D3D device (the r3 sub_8217B7B0 hands D3DDevice_Swap). D3DDevice_BlockOnFence
 // waits until the value at [[device+10896]] -- written by the command processor
@@ -111,9 +123,18 @@ constexpr uint32_t kPublishedCamera = 332768;       // sub_8220AA68's final matr
 constexpr uint32_t kCamBoomVtable = 0x82044DB4;
 
 // camBoomCS (sub_82320298) fields.
+constexpr uint32_t kCsTune = 240;
+constexpr uint32_t kCsUnscaledDtFlag = 184;  // sub_8271F020: byte set -> [clock+88]
 constexpr uint32_t kCsFocus = 416;           // smoothed focus / offset, after ApproachRate
 constexpr uint32_t kCsOffset = 432;
 constexpr uint32_t kCsLongAccel = 568;       // normalised longitudinal acceleration
+// Tune fields (sub_8231EF58), the two per-frame filters sub_8231D3A8 applies as
+// lerp(state, target, factor): OrientationFilter on the up vector (cs+272) and
+// DirectionFilter on the heading (cs+384). OrientationFactor at +212 is a
+// static blend between world up and the car's up, not a filter, so it is left
+// alone.
+constexpr uint32_t kTuneOrientationFilter = 216;
+constexpr uint32_t kTuneDirectionFilter = 220;
 
 // Only the frame limiter and the game clock's own update run on this flag.
 thread_local bool t_in_game_clock = false;
@@ -135,6 +156,26 @@ uint8_t* Membase() {
 // 0xE0000000 physical heap sits 0x1000 further on Windows.
 uint8_t* Host(const uint8_t* base, uint32_t ea) {
     return rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea);
+}
+
+uint32_t LoadU32(const uint8_t* base, uint32_t ea) {
+    uint32_t v;
+    std::memcpy(&v, Host(base, ea), 4);
+    return __builtin_bswap32(v);
+}
+
+float LoadF32(const uint8_t* base, uint32_t ea) {
+    const uint32_t v = LoadU32(base, ea);
+    float f;
+    std::memcpy(&f, &v, 4);
+    return f;
+}
+
+void StoreF32(uint8_t* base, uint32_t ea, float f) {
+    uint32_t v;
+    std::memcpy(&v, &f, 4);
+    v = __builtin_bswap32(v);
+    std::memcpy(Host(base, ea), &v, 4);
 }
 
 // The trace chases pointers through live game objects; a stale one must not
@@ -501,6 +542,41 @@ extern "C" REX_FUNC(D3DDevice_BlockOnFence) {
     const unsigned long long exit = HostNow();
     if (how == 3 || exit - enter > 1000)
         TraceLine("B,%llu,%llu,%u,%u\n", enter, exit, fence, how);
+}
+
+// sub_8231D3A8: builds the boom camera's frame, filtering its up vector and its
+// heading by a fixed fraction per frame (OrientationFilter / DirectionFilter).
+// The fractions are swapped for their frame-time equivalents for the duration
+// of the call: 1 - (1 - k)^(60 dt), which is k itself at exactly 60 FPS.
+extern "C" REX_FUNC(rex_sub_8231D3A8) {
+    uint8_t* mem = base;
+    const uint32_t cs = ctx.r3.u32;
+    uint32_t tune = 0;
+    float saved[2] = {};
+    bool patched = false;
+    if (REXCVAR_GET(camera_filters_dt) && PlausiblePtr(cs)) {
+        tune = LoadU32(mem, cs + kCsTune);
+        if (PlausiblePtr(tune)) {
+            const float dt = mem[cs + kCsUnscaledDtFlag] ? LoadF32(mem, kClockUnscaledDelta)
+                                                         : LoadF32(mem, kClockScaledDelta);
+            if (dt > 0.0f && dt < 0.25f) {
+                const uint32_t fields[2] = {kTuneOrientationFilter, kTuneDirectionFilter};
+                for (int i = 0; i < 2; ++i) {
+                    saved[i] = LoadF32(mem, tune + fields[i]);
+                    const double k = saved[i];
+                    if (k > 0.0 && k < 1.0)
+                        StoreF32(mem, tune + fields[i],
+                                 static_cast<float>(1.0 - std::pow(1.0 - k, 60.0 * dt)));
+                }
+                patched = true;
+            }
+        }
+    }
+    __imp__rex_sub_8231D3A8(ctx, base);
+    if (patched) {
+        StoreF32(mem, tune + kTuneOrientationFilter, saved[0]);
+        StoreF32(mem, tune + kTuneDirectionFilter, saved[1]);
+    }
 }
 
 #endif  // REXGLUE_HAS_XEO3_TARGET
