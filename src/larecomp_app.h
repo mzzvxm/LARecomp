@@ -12,6 +12,7 @@
 #include "crash_handler.h"
 #include "achievement_metadata.h"
 #include "mc_engine/hooks.h"
+#include "mc_engine/display_clock.h"
 #include "mc_engine/frame_pacing.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/native_gfx.h"
@@ -378,6 +379,12 @@ class LarecompApp : public rex::ReXApp {
     }
 #endif
 
+#if defined(_WIN32)
+    // frame_pacing 2 follows this window's monitor for its refresh clock.
+    if (window()) {
+      mc::display_clock::SetWindow(window()->GetNativeWindowHandle());
+    }
+#endif
     if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
       return true;
     }

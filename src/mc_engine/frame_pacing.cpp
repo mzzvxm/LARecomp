@@ -53,17 +53,29 @@
 #include <windows.h>
 #endif
 
+#include "display_clock.h"
 #include "frame_pacing_policy.h"
 #include "logging.h"
 
 REXCVAR_DEFINE_INT32(frame_pacing, 1, "MCLA/Performance",
-    "How the game's time step follows the frame rate. 1: while the game holds its "
+    "How the game's time step follows the frame rate. 2: every frame is given a refresh of the "
+    "monitor before it is simulated, advances by exactly the time until that refresh, and is "
+    "held back until then if it is ready early -- each frame is on screen for exactly the time "
+    "it simulated (native renderer only; otherwise behaves like 1). 1: while the game holds its "
     "rate (one vblank, or the FPS LIMIT period) every frame advances by exactly that period; "
     "when it does not, by a smoothed frame time. Simulation time stays on the wall clock "
     "either way. 0: every frame advances by its own measured time, as before -- a frame that "
     "misses a vblank then shows up three frames later as a double step, which reads as the car "
     "lurching back and forth.")
-    .range(0, 1)
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(frame_pacing_headroom_ms, 1.0, "MCLA/Performance",
+    "frame_pacing 2: extra time planned for every frame on top of how long frames usually take "
+    "to be ready (the 97th percentile of the last few seconds). More means fewer frames that "
+    "miss the refresh they were simulated for -- each miss shows as a small hitch -- at the "
+    "cost of that much more input latency.")
+    .range(0.0, 20.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(frame_pacing_trace, false, "MCLA/Diagnostics",
@@ -80,6 +92,7 @@ REXCVAR_DEFINE_BOOL(camera_filters_dt, true, "MCLA/Camera",
 
 REXCVAR_DECLARE(bool, real_frame_delta);
 REXCVAR_DECLARE(int32_t, fps_limit);
+REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 
 // hooks.cpp
 void EnforceFrameLimit();
@@ -89,6 +102,8 @@ void EnforceFrameLimit();
 // frame reaches the presenter (the submission thread, usually), with that tag.
 namespace mcla::native_gfx {
 extern uint64_t (*g_present_tag_source)();
+extern bool (*g_present_paced)();
+extern uint64_t (*g_present_release_time)(uint64_t tag);
 extern void (*g_present_observer)(uint64_t tag, bool presented);
 }  // namespace mcla::native_gfx
 
@@ -263,6 +278,11 @@ void TraceLineV(const char* fmt, va_list args) {
                      "the screen and the refresh it was shown at)\n"
                      "#M,host,hr,composition_mode,approved_present_duration (0 composed, "
                      "1 overlay, 2 none)\n"
+                     "#L,host,frame,refresh,refreshes,used,min_refreshes,latency_us,period_ms "
+                     "(frame_pacing 2: the refresh a frame is planned for, and its step in "
+                     "refreshes)\n"
+                     "#H,host_enter,host_release,frame,planned,target,shown (frame_pacing 2: "
+                     "the frame held at the present gate)\n"
                      "#C,host,frame,cam_index,cs,cs_is_boom,cam_x,cam_y,cam_z,fwd_x,fwd_y,fwd_z,"
                      "car_x,car_y,car_z,rel_right,rel_up,rel_fwd,speed,long_accel,offset_z,focus_z\n");
     }
@@ -391,6 +411,206 @@ void EnsureNativePresentObserver() {
     mcla::native_gfx::g_present_observer = &OnContinuousPresent;
 }
 
+// ---- display-locked pacing (frame_pacing = 2) ------------------------------
+//
+// See frame_pacing_policy.h for why. Three places take part:
+// - the frame start (the clock wrapper, main thread) picks the refresh the
+//   frame is for, and waits first if the frame would only be held later;
+// - AdjustFrameTicks turns the distance from the previous frame's refresh into
+//   the step;
+// - PresentReleaseTime tells native_gfx's present thread when to hand the
+//   frame to the presenter so that it is shown at that refresh.
+
+constexpr int kSlotRing = 64;
+struct FrameSlot {
+    std::atomic<uint64_t> frame{0};
+    int64_t refresh = 0;
+    uint64_t start_qpc = 0;
+};
+FrameSlot g_frame_slots[kSlotRing];
+
+std::mutex g_latency_mutex;
+mc::pacing::LatencyTracker g_latency;  // frame start -> ready to present, QPC ticks
+mc::pacing::StepCap g_step_cap;
+
+// Last time the native runtime asked for a release time: the hold only works
+// where frames go through it.
+std::atomic<uint64_t> g_last_gate_qpc{0};
+
+// Main thread only.
+bool g_have_last_refresh = false;
+int64_t g_last_refresh = 0;
+bool g_pending = false;
+int64_t g_pending_refresh = 0;
+uint64_t g_pending_start = 0;
+double g_pending_period = 0.0;
+int g_pending_min = 1;
+double g_pending_latency = 0.0;
+
+// Present thread only.
+int64_t g_last_shown_refresh = INT64_MIN;
+
+double QpcFrequency() {
+    static const double f = static_cast<double>(rex::chrono::Clock::QueryHostTickFrequency());
+    return f;
+}
+
+// Sleeps until `target` (QPC): a high-resolution waitable timer for the bulk,
+// then a short spin. Used to hold a frame start back; a fraction of a
+// millisecond either way changes nothing there.
+void WaitUntilQpc(double target) {
+#if defined(_WIN32)
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+    thread_local HANDLE timer = [] {
+        HANDLE h = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+        return h ? h : CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+    }();
+    const double freq = QpcFrequency();
+    // Never wait for more than this, whatever the arithmetic says.
+    const double limit = static_cast<double>(mc::display_clock::QpcNow()) + 0.15 * freq;
+    if (target > limit) target = limit;
+    for (;;) {
+        const double remaining = target - static_cast<double>(mc::display_clock::QpcNow());
+        if (remaining <= 0.0) return;
+        if (timer && remaining > 0.0006 * freq) {
+            LARGE_INTEGER due;
+            due.QuadPart = -static_cast<LONGLONG>((remaining - 0.0004 * freq) * 1e7 / freq);
+            if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+                WaitForSingleObject(timer, 200);
+                continue;
+            }
+        }
+        YieldProcessor();
+    }
+#else
+    (void)target;
+#endif
+}
+
+int MinRefreshes(const mc::display_clock::Grid& grid) {
+    const int minimum = 1;
+    const int32_t limit = FpsLimit();
+    if (limit <= 0) return minimum;
+    return std::max(minimum, static_cast<int>(std::lround(grid.RefreshHz() / limit)));
+}
+
+bool DisplayLockWanted() {
+    return REXCVAR_GET(frame_pacing) == 2 && REXCVAR_GET(real_frame_delta);
+}
+
+// The refreshes frames are planned on: the monitor's own.
+mc::display_clock::Grid PacingGrid() {
+    mc::display_clock::EnsureRunning();
+    return mc::display_clock::Get();
+}
+
+// At the frame start, before the game's clock reads the timebase. Returns false
+// when the frame is not display-locked (the caller then runs the limiter).
+bool BeginDisplayLockedFrame() {
+    g_pending = false;
+    if (!DisplayLockWanted()) {
+        g_have_last_refresh = false;
+        return false;
+    }
+    const mc::display_clock::Grid grid = PacingGrid();
+    const double freq = QpcFrequency();
+    const double now = static_cast<double>(mc::display_clock::QpcNow());
+    const uint64_t last_gate = g_last_gate_qpc.load(std::memory_order_relaxed);
+    if (!grid.valid || !last_gate || now - static_cast<double>(last_gate) > 0.25 * freq) {
+        g_have_last_refresh = false;
+        return false;
+    }
+    double latency;
+    {
+        std::lock_guard<std::mutex> lock(g_latency_mutex);
+        latency = g_latency.Percentile(0.97, 0.045 * freq);
+    }
+    latency += REXCVAR_GET(frame_pacing_headroom_ms) * 1e-3 * freq;
+    const int min_refreshes = MinRefreshes(grid);
+    int64_t refresh = grid.IndexAtOrAfter(now + latency);
+    if (g_have_last_refresh) refresh = std::max(refresh, g_last_refresh + min_refreshes);
+    // A frame that starts much earlier than its refresh needs only waits for it
+    // at the present thread, adding input latency -- so a frame that far ahead
+    // waits here instead. Up to one refresh early is left alone: waiting that
+    // out here as well (measured: 2.7 ms a frame on average) made the main
+    // thread the slower of the two and cost frames, and starting early is what
+    // gives a frame room to come out a little slow and still make its refresh.
+    const double start_by = grid.Time(refresh) - latency - grid.period_qpc;
+    if (start_by > now + 0.0002 * freq) WaitUntilQpc(start_by);
+
+    g_pending = true;
+    g_pending_refresh = refresh;
+    g_pending_start = mc::display_clock::QpcNow();
+    g_pending_period = grid.period_qpc;
+    g_pending_min = min_refreshes;
+    g_pending_latency = latency;
+    return true;
+}
+
+// Whether native_gfx should send frames through its present thread.
+bool PresentPaced() {
+    if (!DisplayLockWanted()) return false;
+    return PacingGrid().valid;
+}
+
+// native_gfx's present thread, once per frame, as soon as the frame's own
+// batches are on the queue: the QPC time to hand it to the presenter at (0 =
+// right away). `frame` is the update frame it rendered.
+uint64_t PresentReleaseTime(uint64_t frame) {
+    const uint64_t enter = mc::display_clock::QpcNow();
+    g_last_gate_qpc.store(enter, std::memory_order_relaxed);
+    FrameSlot& slot = g_frame_slots[frame % kSlotRing];
+    if (slot.frame.load(std::memory_order_acquire) != frame) {
+        g_last_shown_refresh = INT64_MIN;
+        return 0;
+    }
+    const int64_t planned = slot.refresh;
+    {
+        std::lock_guard<std::mutex> lock(g_latency_mutex);
+        g_latency.Add(static_cast<double>(enter - slot.start_qpc));
+    }
+    const mc::display_clock::Grid grid = PacingGrid();
+    if (!grid.valid) return 0;
+    const double freq = QpcFrequency();
+    // Two frames on one refresh would show only the second.
+    int64_t target = planned;
+    if (g_last_shown_refresh != INT64_MIN)
+        target = std::max(target, g_last_shown_refresh + 1);
+    // The presenter paints right after each vblank, with whatever it was
+    // handed by then: hand the frame over in the middle of the refresh before
+    // its own, as far from both edges as possible. Presented on the spot
+    // instead, by a swap chain of the runtime's own, it goes right after the
+    // vblank.
+    const bool presents_now = REXCVAR_GET(mcla_native_gfx_own_swapchain);
+    double release = presents_now ? grid.Time(target) + 0.0001 * freq
+                                  : grid.Time(target) - 0.5 * grid.period_qpc;
+    const double now = static_cast<double>(enter);
+    int64_t shown = target;
+    if (release <= now) {
+        // Late: it goes now and makes the first refresh it still can.
+        release = 0.0;
+        shown = presents_now ? grid.IndexAtOrAfter(now - 0.0002 * freq)
+                             : grid.IndexAtOrAfter(now + 0.0003 * freq);
+    }
+    g_last_shown_refresh = shown;
+    if (TraceOn())
+        TraceLine("H,%llu,%llu,%llu,%lld,%lld,%lld\n", static_cast<unsigned long long>(enter),
+                  static_cast<unsigned long long>(release > 0.0 ? release : now),
+                  static_cast<unsigned long long>(frame), static_cast<long long>(planned),
+                  static_cast<long long>(target), static_cast<long long>(shown));
+    return release > 0.0 ? static_cast<uint64_t>(release) : 0;
+}
+
+void EnsurePresentGate() {
+    if (mcla::native_gfx::g_present_release_time == &PresentReleaseTime) return;
+    mcla::native_gfx::g_present_tag_source = &PresentTag;
+    mcla::native_gfx::g_present_release_time = &PresentReleaseTime;
+    mcla::native_gfx::g_present_paced = &PresentPaced;
+}
+
 // The camera and car pair that is about to be handed to the render thread.
 void TraceCameraAndCar(const uint8_t* base, uint64_t frame) {
     uint32_t mgr = 0, player = 0, veh = 0, sim = 0;
@@ -462,11 +682,40 @@ uint64_t AdjustFrameTicks(uint64_t elapsed_ticks) {
 
     const int mode = REXCVAR_GET(frame_pacing);
     uint64_t step = elapsed_ticks;
-    if (mode != 0 && REXCVAR_GET(real_frame_delta) && freq > 0.0) {
+    if (g_pending && freq > 0.0) {
+        // Display-locked: exactly the time from the previous frame's refresh
+        // to this one's.
+        g_pending = false;
+        // The first frame after locking on has no previous refresh to count
+        // from: it keeps its measured time.
+        double refreshes = 0.0, used = 0.0;
+        if (g_have_last_refresh) {
+            refreshes = static_cast<double>(g_pending_refresh - g_last_refresh);
+            used = g_step_cap.Apply(refreshes, g_pending_min);
+            const double dt = used * g_pending_period * freq / QpcFrequency();
+            step = dt >= 1.0 ? static_cast<uint64_t>(dt + 0.5) : 1;
+        }
+        FrameSlot& slot = g_frame_slots[g_frame % kSlotRing];
+        slot.refresh = g_pending_refresh;
+        slot.start_qpc = g_pending_start;
+        slot.frame.store(g_frame, std::memory_order_release);
+        g_last_refresh = g_pending_refresh;
+        g_have_last_refresh = true;
+        g_policy.Reset();
+        if (TraceOn()) {
+            TraceLine("L,%llu,%llu,%lld,%.0f,%.2f,%d,%.1f,%.4f\n", HostNow(),
+                      static_cast<unsigned long long>(g_frame),
+                      static_cast<long long>(g_pending_refresh), refreshes, used, g_pending_min,
+                      g_pending_latency * 1e6 / QpcFrequency(),
+                      g_pending_period * 1e3 / QpcFrequency());
+        }
+    } else if (mode != 0 && REXCVAR_GET(real_frame_delta) && freq > 0.0) {
+        g_step_cap.Reset();
         const double dt = g_policy.Next(static_cast<double>(elapsed_ticks), limiter_period,
                                         vblank_period, 0.1 * freq);
         step = dt >= 1.0 ? static_cast<uint64_t>(dt + 0.5) : 1;
     } else {
+        g_step_cap.Reset();
         g_policy.Reset();
     }
 
@@ -504,7 +753,9 @@ void TraceWrite(const char* fmt, ...) {
 extern "C" REX_FUNC(rex_sub_821BDA90) {
     const bool game_clock = ctx.r3.u32 == kGameClock;
     if (game_clock) {
-        if (mc::pacing::LimiterRunsBeforeClock())
+        // Display-locked frames wait for their own start instead; the limiter's
+        // period is folded into the refresh they are given.
+        if (!BeginDisplayLockedFrame() && mc::pacing::LimiterRunsBeforeClock())
             EnforceFrameLimit();
         t_in_game_clock = true;
     }
@@ -516,6 +767,7 @@ extern "C" REX_FUNC(rex_sub_821BDA90) {
 // final here; the snapshot copies it for the render thread.
 extern "C" REX_FUNC(rex_sub_82305B38) {
     g_render_frame.store(g_frame, std::memory_order_relaxed);
+    EnsurePresentGate();
     if (TraceOn()) {
         EnsureFenceWatch();
         EnsurePaintProbe();

@@ -120,4 +120,84 @@ struct Policy {
     void Reset() { *this = Policy{}; }
 };
 
+// Display-locked pacing (frame_pacing = 2)
+// ---------------------------------------
+// Measured on the presenter's swap chain (DXGI frame statistics, 02/10): every
+// frame reaches the screen, at the first display refresh after the native
+// runtime hands it over, and the hand-over lands anywhere inside a refresh. At
+// ~60 FPS on a 240 Hz monitor that put each frame on screen for 3, 4 or 5
+// refreshes (12.5 / 16.7 / 20.8 ms) in no particular order, while the policy
+// above simulated an even ~16.7 ms for every one of them: the world ran a
+// quarter of a frame ahead, then behind, frame after frame.
+//
+// So in this mode a frame is given a display refresh before it is simulated,
+// and its step is the time from the previous frame's refresh to its own --
+// a whole number of refreshes, exactly the time it will be on screen. The
+// refresh is the first one the frame can make (its start plus a high
+// percentile of how long frames take to become ready), never sooner than the
+// FPS LIMIT allows; the frame is then held at the presenter until that
+// refresh, however early it is ready.
+
+// How long frames take from their start to being ready to present.
+struct LatencyTracker {
+    static constexpr int kWindow = 240;
+    double samples[kWindow] = {};
+    int count = 0;
+    int next = 0;
+
+    void Add(double v) {
+        samples[next] = v;
+        next = (next + 1) % kWindow;
+        if (count < kWindow) ++count;
+    }
+
+    // The p-th percentile (0..1) of the recent samples, leaving out the
+    // hitches -- anything over twice the median. A frame that stalls is late
+    // whatever is planned; planning every frame around stalls would only add
+    // their length to the latency of all the others.
+    double Percentile(double p, double fallback) const {
+        if (count < 30) return fallback;
+        double sorted[kWindow];
+        std::copy(samples, samples + count, sorted);
+        std::sort(sorted, sorted + count);
+        const double limit = 2.0 * sorted[count / 2];
+        int kept = count;
+        while (kept > 1 && sorted[kept - 1] > limit) --kept;
+        const int i = std::min(kept - 1, int(p * double(kept - 1) + 0.5));
+        return sorted[i];
+    }
+};
+
+// The step for a frame `refreshes` after the previous one, in refreshes. A
+// frame that comes after a stall would otherwise simulate the whole stall at
+// once -- the screen froze, then the world jumps ahead. Beyond twice the usual
+// spacing (the median of the last ones) the rest is let go instead: time
+// stops with the picture.
+//
+// A median, not a running average seeded from the first frame: seeded from a
+// short first step, an average that only learns from steps under its own cap
+// never grew past it, and cut every frame to three refreshes.
+struct StepCap {
+    static constexpr int kWindow = 31;
+    double recent[kWindow] = {};
+    int count = 0;
+    int next = 0;
+
+    double Apply(double refreshes, double minimum) {
+        double used = refreshes;
+        if (count >= 8) {
+            double sorted[kWindow];
+            std::copy(recent, recent + count, sorted);
+            std::nth_element(sorted, sorted + count / 2, sorted + count);
+            const double cap = std::max(2.0 * sorted[count / 2], minimum + 2.0);
+            used = std::min(refreshes, cap);
+        }
+        recent[next] = refreshes;
+        next = (next + 1) % kWindow;
+        if (count < kWindow) ++count;
+        return used;
+    }
+    void Reset() { count = 0; next = 0; }
+};
+
 }  // namespace mc::pacing

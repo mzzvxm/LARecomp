@@ -9,9 +9,15 @@
 
 #include "native_gfx.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/system/interfaces/graphics.h>
@@ -2048,8 +2054,125 @@ bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32
 // frame_pacing.cpp sets these; null otherwise). The tag is taken at the guest
 // swap, on the render thread, and handed back wherever the frame actually
 // reaches the presenter.
+//
+// While g_present_paced says so (frame_pacing's display-locked mode), frames
+// do not go to the presenter from the submission thread: they go to the
+// present thread below, which hands each one over at the time
+// g_present_release_time gives for it (QPC; 0 = right away). Holding a frame
+// on the submission thread itself would also hold every batch queued behind
+// it -- the next frame's -- and measured, that dropped ~60 FPS to ~37.
 uint64_t (*g_present_tag_source)() = nullptr;
+bool (*g_present_paced)() = nullptr;
+uint64_t (*g_present_release_time)(uint64_t tag) = nullptr;
 void (*g_present_observer)(uint64_t tag, bool presented) = nullptr;
+
+namespace {
+
+// The present thread. Only it calls Presenter::RefreshGuestOutput while it is
+// in use (the presenter is single-producer), and only it records on the side
+// list. The frame it holds is one of the owned display buffers
+// (frame_capture.cpp, a ring of 3): the batches that copy the NEXT frames into
+// the ring are already behind it on the queue, and the third one after it is
+// the first that could overwrite it -- the queue never holds more than one
+// frame waiting, because a frame that arrives behind another releases it.
+struct PacedPresent {
+  ID3D12Resource* display;
+  uint32_t fmt, w, h;
+  uint64_t tag;
+};
+std::mutex g_paced_mutex;
+std::condition_variable g_paced_cv;
+std::condition_variable g_paced_idle_cv;
+std::deque<PacedPresent> g_paced_queue;
+bool g_paced_busy = false;
+std::atomic<bool> g_paced_started{false};
+
+uint64_t QpcTicks() {
+  LARGE_INTEGER t;
+  QueryPerformanceCounter(&t);
+  return uint64_t(t.QuadPart);
+}
+
+double QpcHz() {
+  static const double hz = [] {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return double(f.QuadPart);
+  }();
+  return hz;
+}
+
+void PacedPresentMain() {
+  SetThreadDescription(GetCurrentThread(), L"MCLA Native Present");
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+  std::unique_lock<std::mutex> lock(g_paced_mutex);
+  for (;;) {
+    g_paced_cv.wait(lock, [] { return !g_paced_queue.empty(); });
+    const PacedPresent item = g_paced_queue.front();
+    g_paced_busy = true;
+    lock.unlock();
+    const uint64_t release = g_present_release_time ? g_present_release_time(item.tag) : 0;
+    lock.lock();
+    // Wait for the release time -- unless the next frame shows up first, in
+    // which case this one is late however it is timed.
+    const double hz = QpcHz();
+    while (release && g_paced_queue.size() == 1) {
+      const uint64_t now = QpcTicks();
+      if (now >= release) {
+        break;
+      }
+      const double remaining_ms = double(release - now) * 1000.0 / hz;
+      if (remaining_ms > 1.5) {
+        const double sleep_ms = std::min(remaining_ms - 1.0, 150.0);
+        g_paced_cv.wait_for(lock, std::chrono::microseconds(int64_t(sleep_ms * 1000.0)));
+        continue;
+      }
+      // The last stretch spinning: a timed wait can overshoot by a millisecond.
+      lock.unlock();
+      while (QpcTicks() < release) {
+        YieldProcessor();
+      }
+      lock.lock();
+      break;
+    }
+    g_paced_queue.pop_front();
+    lock.unlock();
+    const bool presented = PresentDisplayNow(item.display, item.fmt, item.w, item.h,
+                                             /*side=*/true);
+    if (auto* observer = g_present_observer) {
+      observer(item.tag, presented);
+    }
+    lock.lock();
+    g_paced_busy = false;
+    if (g_paced_queue.empty()) {
+      g_paced_idle_cv.notify_all();
+    }
+  }
+}
+
+void PacedPresentEnqueue(const PacedPresent& item) {
+  bool expected = false;
+  if (g_paced_started.compare_exchange_strong(expected, true)) {
+    std::thread(PacedPresentMain).detach();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_paced_mutex);
+    g_paced_queue.push_back(item);
+  }
+  g_paced_cv.notify_all();
+}
+
+// Before presenting from anywhere else again: whatever the present thread
+// still holds goes first.
+void PacedPresentDrain() {
+  if (!g_paced_started.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::unique_lock<std::mutex> lock(g_paced_mutex);
+  g_paced_idle_cv.wait(lock, [] { return g_paced_queue.empty() && !g_paced_busy; });
+}
+
+}  // namespace
 
 bool PresentContinuousDisplay() {
   g_present_calls.fetch_add(1, std::memory_order_relaxed);
@@ -2078,6 +2201,13 @@ bool PresentContinuousDisplay() {
     // boundary. Presenter::RefreshGuestOutput is single-producer: while the
     // thread is in use, only it calls it.
     g_draw_context.EnqueueWorkerTask([display, fmt, w, h, tag] {
+      // Here the frame's own batches are on the queue, so the present thread
+      // can take it from this point on without waiting for anything else.
+      if (auto* paced = g_present_paced; paced && paced()) {
+        PacedPresentEnqueue(PacedPresent{display, fmt, w, h, tag});
+        return;
+      }
+      PacedPresentDrain();
       const bool presented = PresentDisplayNow(display, fmt, w, h, /*side=*/true);
       if (auto* observer = g_present_observer) {
         observer(tag, presented);
@@ -2085,8 +2215,16 @@ bool PresentContinuousDisplay() {
     });
     return true;
   }
+  // No submission thread: the frame's batches went to the queue in its
+  // EndFrame, on this thread, so the present thread can take it from here --
+  // on the side list, since this thread reopens the frame list next frame.
+  if (auto* paced = g_present_paced; paced && paced()) {
+    PacedPresentEnqueue(PacedPresent{display, fmt, w, h, tag});
+    return true;
+  }
   // Nothing may still be presenting on the submission thread.
   g_draw_context.FlushWorker();
+  PacedPresentDrain();
   const bool presented = PresentDisplayNow(display, fmt, w, h, /*side=*/false);
   if (auto* observer = g_present_observer) {
     observer(tag, presented);
