@@ -223,6 +223,34 @@ Grid Get() {
     return g_grid;
 }
 
+double MonitorRefreshHz() {
+    // Re-read every couple of seconds: the window can move, the mode change.
+    static std::atomic<double> cached{0.0};
+    static std::atomic<uint64_t> read_at{0};
+    const uint64_t now = QpcNow();
+    const double freq = QpcFrequency();
+    if (cached.load(std::memory_order_relaxed) > 0.0 &&
+        double(now - read_at.load(std::memory_order_relaxed)) < 2.0 * freq) {
+        return cached.load(std::memory_order_relaxed);
+    }
+    read_at.store(now, std::memory_order_relaxed);
+    HWND hwnd = g_hwnd.load(std::memory_order_relaxed);
+    HMONITOR monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                            : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW info = {};
+    info.cbSize = sizeof(info);
+    DEVMODEW mode = {};
+    mode.dmSize = sizeof(mode);
+    double hz = 0.0;
+    if (GetMonitorInfoW(monitor, &info) &&
+        EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
+        mode.dmDisplayFrequency > 1) {
+        hz = double(mode.dmDisplayFrequency);
+    }
+    cached.store(hz, std::memory_order_relaxed);
+    return hz;
+}
+
 uint64_t QpcNow() {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -234,6 +262,7 @@ uint64_t QpcNow() {
 void SetWindow(void*) {}
 void EnsureRunning() {}
 Grid Get() { return Grid{}; }
+double MonitorRefreshHz() { return 0.0; }
 uint64_t QpcNow() { return 0; }
 
 #endif  // _WIN32

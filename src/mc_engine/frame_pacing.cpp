@@ -87,6 +87,12 @@ REXCVAR_DEFINE_BOOL(frame_pacing_direct_present, false, "MCLA/Performance",
     "and do not show.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(frame_pacing_vrr, false, "MCLA/Performance",
+    "frame_pacing 2 with frame_pacing_direct_present: the monitor runs variable refresh "
+    "(G-SYNC / FreeSync), so it shows a frame when it arrives -- frames are planned to the "
+    "tenth of a millisecond instead of to the monitor's refreshes.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(frame_pacing_trace, false, "MCLA/Diagnostics",
     "Write frame_pacing_trace.csv next to the executable: for every frame the measured and the "
     "simulated time step, every guest vblank and GPU interrupt, and the camera and player car "
@@ -499,8 +505,19 @@ void WaitUntilQpc(double target) {
 #endif
 }
 
+bool VrrGrid() { return REXCVAR_GET(frame_pacing_direct_present) && REXCVAR_GET(frame_pacing_vrr); }
+
+// The fewest grid steps between two frames on screen: one refresh, which on
+// the variable refresh grid is the monitor's fastest.
+int MonitorGap(const mc::display_clock::Grid& grid) {
+    if (!VrrGrid()) return 1;
+    const double monitor_hz = mc::display_clock::MonitorRefreshHz();
+    const double fastest = monitor_hz > 1.0 ? monitor_hz : 240.0;
+    return std::max(1, static_cast<int>(std::ceil(grid.RefreshHz() / fastest - 1e-6)));
+}
+
 int MinRefreshes(const mc::display_clock::Grid& grid) {
-    const int minimum = 1;
+    const int minimum = MonitorGap(grid);
     const int32_t limit = FpsLimit();
     if (limit <= 0) return minimum;
     return std::max(minimum, static_cast<int>(std::lround(grid.RefreshHz() / limit)));
@@ -514,8 +531,19 @@ bool DirectPresentWanted() {
     return DisplayLockWanted() && REXCVAR_GET(frame_pacing_direct_present);
 }
 
-// The refreshes frames are planned on: the monitor's own.
+// The refreshes frames are planned on: the monitor's own, or -- with variable
+// refresh and direct presents, where the monitor shows a frame whenever it
+// arrives -- a fine grid of its own.
 mc::display_clock::Grid PacingGrid() {
+    if (DisplayLockWanted() && VrrGrid()) {
+        mc::display_clock::Grid grid;
+        grid.valid = true;
+        grid.anchor_index = 0;
+        grid.anchor_qpc = 0.0;
+        grid.qpc_frequency = QpcFrequency();
+        grid.period_qpc = 0.0001 * grid.qpc_frequency;
+        return grid;
+    }
     mc::display_clock::EnsureRunning();
     return mc::display_clock::Get();
 }
@@ -594,15 +622,17 @@ uint64_t PresentReleaseTime(uint64_t frame) {
     const mc::display_clock::Grid grid = PacingGrid();
     if (!grid.valid) return 0;
     const double freq = QpcFrequency();
-    // Two frames on one refresh would show only the second.
+    // Two frames on one refresh would show only the second; on the variable
+    // refresh grid, one refresh is the monitor's fastest, not one grid step.
     int64_t target = planned;
     if (g_last_shown_refresh != INT64_MIN)
-        target = std::max(target, g_last_shown_refresh + 1);
+        target = std::max(target, g_last_shown_refresh + MonitorGap(grid));
     // The presenter paints right after each vblank, with whatever it was
     // handed by then: hand the frame over in the middle of the refresh before
     // its own, as far from both edges as possible. Presented on the spot
     // instead -- a swap chain of the runtime's own, or the presenter with no
-    // overlays attached -- it goes right after the vblank.
+    // overlays attached -- it goes right after the vblank, or, on a variable
+    // refresh grid, right at its time.
     const bool presents_now = REXCVAR_GET(mcla_native_gfx_own_swapchain) ||
                               (DirectPresentWanted() && mc::present_overlays::Detached());
     double release = presents_now ? grid.Time(target) + 0.0001 * freq

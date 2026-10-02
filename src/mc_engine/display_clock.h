@@ -38,6 +38,10 @@ void EnsureRunning();
 // whenever it loses the output (minimized, monitor change in progress).
 Grid Get();
 
+// The refresh rate the window's monitor is set to (its fastest, under
+// variable refresh). 0 when unknown.
+double MonitorRefreshHz();
+
 uint64_t QpcNow();
 
 }  // namespace mc::display_clock
