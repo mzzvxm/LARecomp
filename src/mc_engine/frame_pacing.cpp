@@ -53,9 +53,11 @@
 #include <windows.h>
 #endif
 
+#include "../native_gfx/nocp/nocp_app.h"
 #include "display_clock.h"
 #include "frame_pacing_policy.h"
 #include "logging.h"
+#include "present_overlays.h"
 
 REXCVAR_DEFINE_INT32(frame_pacing, 1, "MCLA/Performance",
     "How the game's time step follows the frame rate. 2: every frame is given a refresh of the "
@@ -76,6 +78,13 @@ REXCVAR_DEFINE_DOUBLE(frame_pacing_headroom_ms, 1.0, "MCLA/Performance",
     "miss the refresh they were simulated for -- each miss shows as a small hitch -- at the "
     "cost of that much more input latency.")
     .range(0.0, 20.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(frame_pacing_direct_present, false, "MCLA/Performance",
+    "frame_pacing 2: the presenter shows each frame the moment it is handed over, instead of on "
+    "the next of its own repaints. Those repaints (one per monitor refresh) exist for the "
+    "overlays -- console, F3, settings, toasts -- so while this is on the overlays are detached "
+    "and do not show.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(frame_pacing_trace, false, "MCLA/Diagnostics",
@@ -501,10 +510,20 @@ bool DisplayLockWanted() {
     return REXCVAR_GET(frame_pacing) == 2 && REXCVAR_GET(real_frame_delta);
 }
 
+bool DirectPresentWanted() {
+    return DisplayLockWanted() && REXCVAR_GET(frame_pacing_direct_present);
+}
+
 // The refreshes frames are planned on: the monitor's own.
 mc::display_clock::Grid PacingGrid() {
     mc::display_clock::EnsureRunning();
     return mc::display_clock::Get();
+}
+
+// Direct presents: the ImGui overlays come off the presenter while nothing of
+// theirs is on screen (present_overlays.cpp). Main thread, once a frame.
+void UpdateOverlayAttachment() {
+    mc::present_overlays::Update(DirectPresentWanted() && mcla::native_gfx::nocp::PresenterPtr());
 }
 
 // At the frame start, before the game's clock reads the timebase. Returns false
@@ -582,9 +601,10 @@ uint64_t PresentReleaseTime(uint64_t frame) {
     // The presenter paints right after each vblank, with whatever it was
     // handed by then: hand the frame over in the middle of the refresh before
     // its own, as far from both edges as possible. Presented on the spot
-    // instead, by a swap chain of the runtime's own, it goes right after the
-    // vblank.
-    const bool presents_now = REXCVAR_GET(mcla_native_gfx_own_swapchain);
+    // instead -- a swap chain of the runtime's own, or the presenter with no
+    // overlays attached -- it goes right after the vblank.
+    const bool presents_now = REXCVAR_GET(mcla_native_gfx_own_swapchain) ||
+                              (DirectPresentWanted() && mc::present_overlays::Detached());
     double release = presents_now ? grid.Time(target) + 0.0001 * freq
                                   : grid.Time(target) - 0.5 * grid.period_qpc;
     const double now = static_cast<double>(enter);
@@ -768,6 +788,7 @@ extern "C" REX_FUNC(rex_sub_821BDA90) {
 extern "C" REX_FUNC(rex_sub_82305B38) {
     g_render_frame.store(g_frame, std::memory_order_relaxed);
     EnsurePresentGate();
+    UpdateOverlayAttachment();
     if (TraceOn()) {
         EnsureFenceWatch();
         EnsurePaintProbe();

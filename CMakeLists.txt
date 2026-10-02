@@ -36,6 +36,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/camera_look.cpp
     src/mc_engine/frame_pacing.cpp
     src/mc_engine/display_clock.cpp
+    src/mc_engine/present_overlays.cpp
     src/mc_engine/present_probe.cpp
     src/mc_engine/time_of_day.cpp
     src/mc_engine/real_weather.cpp

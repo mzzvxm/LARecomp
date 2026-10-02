@@ -14,6 +14,7 @@
 #include "mc_engine/hooks.h"
 #include "mc_engine/display_clock.h"
 #include "mc_engine/frame_pacing.h"
+#include "mc_engine/present_overlays.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/native_gfx.h"
 #include "native_gfx/d3d12/device_manager.h"
@@ -380,9 +381,11 @@ class LarecompApp : public rex::ReXApp {
 #endif
 
 #if defined(_WIN32)
-    // frame_pacing 2 follows this window's monitor for its refresh clock.
+    // frame_pacing 2 follows this window's monitor for its refresh clock, and
+    // watches the keys that open an overlay (direct presents take them off).
     if (window()) {
       mc::display_clock::SetWindow(window()->GetNativeWindowHandle());
+      mc::present_overlays::Install(window());
     }
 #endif
     if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
