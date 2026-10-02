@@ -3498,6 +3498,7 @@ std::atomic<uint64_t> g_int_cpu{0};
 std::atomic<uint64_t> g_int_poison{0};
 
 void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {
+    mc::pacing::OnGuestInterrupt(static_cast<uint32_t>(r3.u32));  // frame_pacing_trace
     if (!TimingLogEnabled()) return;
 
     if (static_cast<uint32_t>(r3.u32) != 1) {

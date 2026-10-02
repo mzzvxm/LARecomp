@@ -2044,6 +2044,13 @@ bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32
   return ok;
 }
 
+// frame_pacing's view of the continuous present (src/mc_engine/
+// frame_pacing.cpp sets these; null otherwise). The tag is taken at the guest
+// swap, on the render thread, and handed back wherever the frame actually
+// reaches the presenter.
+uint64_t (*g_present_tag_source)() = nullptr;
+void (*g_present_observer)(uint64_t tag, bool presented) = nullptr;
+
 bool PresentContinuousDisplay() {
   g_present_calls.fetch_add(1, std::memory_order_relaxed);
   const bool own_sc = REXCVAR_GET(mcla_native_gfx_own_swapchain) && NativeSwapChain::Instance().IsInitialized();
@@ -2064,18 +2071,27 @@ bool PresentContinuousDisplay() {
     return false;
   }
 
+  const uint64_t tag = g_present_tag_source ? g_present_tag_source() : 0;
   if (g_draw_context.SubmitThreadActive()) {
     // In line behind the frame's batches on the submission thread, so the
     // render thread never waits for that thread to drain at the frame
     // boundary. Presenter::RefreshGuestOutput is single-producer: while the
     // thread is in use, only it calls it.
-    g_draw_context.EnqueueWorkerTask(
-        [display, fmt, w, h] { PresentDisplayNow(display, fmt, w, h, /*side=*/true); });
+    g_draw_context.EnqueueWorkerTask([display, fmt, w, h, tag] {
+      const bool presented = PresentDisplayNow(display, fmt, w, h, /*side=*/true);
+      if (auto* observer = g_present_observer) {
+        observer(tag, presented);
+      }
+    });
     return true;
   }
   // Nothing may still be presenting on the submission thread.
   g_draw_context.FlushWorker();
-  return PresentDisplayNow(display, fmt, w, h, /*side=*/false);
+  const bool presented = PresentDisplayNow(display, fmt, w, h, /*side=*/false);
+  if (auto* observer = g_present_observer) {
+    observer(tag, presented);
+  }
+  return presented;
 }
 
 bool PresentTakeover() {

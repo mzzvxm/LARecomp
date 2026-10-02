@@ -11,18 +11,44 @@
 //   of the work.
 // - MCLAFrameDelta hands the measured ticks to AdjustFrameTicks, which returns
 //   the step to simulate.
+// - frame_pacing_trace writes one line per event to frame_pacing_trace.csv, so
+//   the pacing can be measured on a real session and replayed offline.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
 #include "frame_pacing.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <thread>
 
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
+#include <rex/runtime.h>
+#include <rex/system/interfaces/graphics.h>
+#include <rex/system/xmemory.h>
+#include <rex/ui/imgui_drawer.h>
+#include <rex/ui/presenter.h>
+#include <rex/ui/ui_drawer.h>
+#include <rex/ui/windowed_app_context.h>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include "frame_pacing_policy.h"
 #include "logging.h"
@@ -37,23 +63,118 @@ REXCVAR_DEFINE_INT32(frame_pacing, 1, "MCLA/Performance",
     .range(0, 1)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(frame_pacing_trace, false, "MCLA/Diagnostics",
+    "Write frame_pacing_trace.csv next to the executable: for every frame the measured and the "
+    "simulated time step, every guest vblank and GPU interrupt, and the camera and player car "
+    "positions handed to the renderer.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DECLARE(bool, real_frame_delta);
 REXCVAR_DECLARE(int32_t, fps_limit);
 
 // hooks.cpp
 void EnforceFrameLimit();
 
+// native_gfx.cpp: where the continuous present can be observed. The tag source
+// runs on the render thread at the guest swap; the observer runs where the
+// frame reaches the presenter (the submission thread, usually), with that tag.
+namespace mcla::native_gfx {
+extern uint64_t (*g_present_tag_source)();
+extern void (*g_present_observer)(uint64_t tag, bool presented);
+}  // namespace mcla::native_gfx
+
 REX_EXTERN(__imp__rex_sub_821BDA90);
+REX_EXTERN(__imp__rex_sub_82305B38);
+REX_EXTERN(__imp__D3DDevice_BlockOnFence);
+REX_EXTERN(__imp__rex_sub_821775D8);
 
 namespace {
 
 // The game's clock object: sub_822C1FA8 updates it through its vtable slot 2.
 constexpr uint32_t kGameClock = 0x827D7500;
 
+// The D3D device (the r3 sub_8217B7B0 hands D3DDevice_Swap). D3DDevice_BlockOnFence
+// waits until the value at [[device+10896]] -- written by the command processor
+// as it retires the stream -- reaches the fence it was given; D3DDevice_Swap
+// leaves the fence that follows its swap packet in device+14940. So the time
+// [[device+10896]] passes a frame's swap fence is when the command processor
+// got through that frame's swap: the closest thing to its present the game can
+// see.
+constexpr uint32_t kD3DDevicePtr = 0x82839254;
+constexpr uint32_t kDeviceRetiredFencePtr = 10896;
+constexpr uint32_t kDeviceSwapFence = 14940;
+
+// Guest structures read by the trace (all found in sub_822C1FA8 / sub_822C0320).
+constexpr uint32_t kPlayerManagerPtr = 0x82874374;  // players at +8, count at +132
+constexpr uint32_t kVhsmPtr = 0x8286D804;           // +48 -> camera publisher
+constexpr uint32_t kPublishedCamera = 332768;       // sub_8220AA68's final matrix
+constexpr uint32_t kCamBoomVtable = 0x82044DB4;
+
+// camBoomCS (sub_82320298) fields.
+constexpr uint32_t kCsFocus = 416;           // smoothed focus / offset, after ApproachRate
+constexpr uint32_t kCsOffset = 432;
+constexpr uint32_t kCsLongAccel = 568;       // normalised longitudinal acceleration
+
 // Only the frame limiter and the game clock's own update run on this flag.
 thread_local bool t_in_game_clock = false;
 
 mc::pacing::Policy g_policy;
+uint64_t g_frame = 0;
+// The update frame whose state the render thread is drawing: set at the render
+// sync, which hands that state over. The render thread finishes the frame
+// (sub_821775D8, swap included) before the next sync can run, so it is stable
+// for the whole of it.
+std::atomic<uint64_t> g_render_frame{0};
+
+uint8_t* Membase() {
+    auto* runtime = rex::Runtime::instance();
+    return runtime ? runtime->virtual_membase() : nullptr;
+}
+
+// Guest address to host pointer, the way recompiled code computes it: the
+// 0xE0000000 physical heap sits 0x1000 further on Windows.
+uint8_t* Host(const uint8_t* base, uint32_t ea) {
+    return rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea);
+}
+
+// The trace chases pointers through live game objects; a stale one must not
+// take the process down. No C++ objects in here: __try cannot unwind them.
+bool SafeCopy(const uint8_t* base, uint32_t ea, void* dst, uint32_t bytes) {
+    if (!base || !ea) return false;
+#if defined(_WIN32)
+    __try {
+        std::memcpy(dst, Host(base, ea), bytes);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#else
+    std::memcpy(dst, Host(base, ea), bytes);
+    return true;
+#endif
+}
+
+bool SafeU32(const uint8_t* base, uint32_t ea, uint32_t& out) {
+    uint32_t raw;
+    if (!SafeCopy(base, ea, &raw, 4)) return false;
+    out = __builtin_bswap32(raw);
+    return true;
+}
+
+bool SafeVec3(const uint8_t* base, uint32_t ea, float out[3]) {
+    uint32_t raw[3];
+    if (!SafeCopy(base, ea, raw, 12)) return false;
+    for (int i = 0; i < 3; ++i) {
+        const uint32_t v = __builtin_bswap32(raw[i]);
+        std::memcpy(&out[i], &v, 4);
+    }
+    return true;
+}
+
+// Anything past the null page: the D3D device and its fence block live in
+// physical memory (0xA0000000 and up), game objects in the virtual heaps.
+// SafeCopy catches what is not mapped.
+bool PlausiblePtr(uint32_t v) { return v >= 0x10000u && !(v & 3u); }
 
 int32_t FpsLimit() {
     // Same override EnforceFrameLimit honours.
@@ -64,6 +185,213 @@ int32_t FpsLimit() {
     return env_limit >= 0 ? env_limit : REXCVAR_GET(fps_limit);
 }
 
+// ---- trace ----------------------------------------------------------------
+
+std::mutex g_trace_mutex;
+std::FILE* g_trace = nullptr;
+uint32_t g_trace_lines = 0;
+
+bool TraceOn() { return REXCVAR_GET(frame_pacing_trace); }
+
+void TraceLineV(const char* fmt, va_list args) {
+    std::lock_guard<std::mutex> lock(g_trace_mutex);
+    if (!g_trace) {
+        g_trace = std::fopen("frame_pacing_trace.csv", "w");
+        if (!g_trace) return;
+        std::fprintf(g_trace, "#host_freq,%llu,guest_freq,%llu\n",
+                     static_cast<unsigned long long>(rex::chrono::Clock::QueryHostTickFrequency()),
+                     static_cast<unsigned long long>(rex::chrono::Clock::guest_tick_frequency()));
+        std::fprintf(g_trace,
+                     "#F,host,frame,measured_us,step_us,ema_us,owed_us,period_us,mode\n"
+                     "#V,host (guest vblank)\n"
+                     "#I,host,retired_fence (PM4 interrupt)\n"
+                     "#Y,host,frame,swap_fence (render sync; fence of the previous frame's swap)\n"
+                     "#B,host_enter,host_exit,fence,how (D3DDevice_BlockOnFence; how 3 = the "
+                     "wait D3DDevice_Swap ends with)\n"
+                     "#D,host,retired_fence (command processor progress)\n"
+                     "#P,host (host paint, right before the present)\n"
+                     "#R,host_enter,host_exit,frame (render thread end of frame, sub_821775D8: "
+                     "EndFrame, swap and, with the native swap chain, the present; frame = the "
+                     "update frame whose state it rendered)\n"
+                     "#G,host,frame,presented (native continuous present: that frame handed to "
+                     "the presenter, or to the native swap chain)\n"
+                     "#C,host,frame,cam_index,cs,cs_is_boom,cam_x,cam_y,cam_z,fwd_x,fwd_y,fwd_z,"
+                     "car_x,car_y,car_z,rel_right,rel_up,rel_fwd,speed,long_accel,offset_z,focus_z\n");
+    }
+    std::vfprintf(g_trace, fmt, args);
+    if (++g_trace_lines % 64 == 0) std::fflush(g_trace);
+}
+
+void TraceLine(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    TraceLineV(fmt, args);
+    va_end(args);
+}
+
+unsigned long long HostNow() {
+    return static_cast<unsigned long long>(rex::chrono::Clock::QueryHostTickCount());
+}
+
+// Fence of the most recent swap the render thread submitted, 0 if unreadable.
+uint32_t LastSwapFence(const uint8_t* base) {
+    uint32_t device = 0, fence = 0;
+    if (!SafeU32(base, kD3DDevicePtr, device) || !PlausiblePtr(device)) return 0;
+    if (!SafeU32(base, device + kDeviceSwapFence, fence)) return 0;
+    return fence;
+}
+
+// The fence the command processor has retired, 0 if unreadable.
+uint32_t RetiredFence(const uint8_t* base) {
+    uint32_t device = 0, block = 0, retired = 0;
+    if (!SafeU32(base, kD3DDevicePtr, device) || !PlausiblePtr(device)) return 0;
+    if (!SafeU32(base, device + kDeviceRetiredFencePtr, block) || !PlausiblePtr(block)) return 0;
+    if (!SafeU32(base, block, retired)) return 0;
+    return retired;
+}
+
+// Watches the fence the command processor retires and logs every change, so
+// the trace knows when each frame's swap went through. A thread of its own
+// because the moment matters to well under a frame: a high-resolution waitable
+// timer paces it at 250 us without touching the process timer resolution.
+std::atomic<bool> g_fence_watch_started{false};
+
+void FenceWatch() {
+#if defined(_WIN32)
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+    if (!timer) timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+#endif
+    uint32_t last = 0;
+    while (TraceOn()) {
+        const uint32_t retired = RetiredFence(Membase());
+        if (retired && retired != last) {
+            last = retired;
+            TraceLine("D,%llu,%u\n", HostNow(), retired);
+        }
+#if defined(_WIN32)
+        if (timer) {
+            LARGE_INTEGER due;
+            due.QuadPart = -2500;  // 250 us, relative
+            if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+                WaitForSingleObject(timer, 5);
+                continue;
+            }
+        }
+        Sleep(1);
+#else
+        std::this_thread::sleep_for(std::chrono::microseconds(250));
+#endif
+    }
+#if defined(_WIN32)
+    if (timer) CloseHandle(timer);
+#endif
+    g_fence_watch_started.store(false);
+}
+
+void EnsureFenceWatch() {
+    bool expected = false;
+    if (g_fence_watch_started.compare_exchange_strong(expected, true))
+        std::thread(FenceWatch).detach();
+}
+
+// Stamps every host paint. The presenter runs its UI drawers once per paint,
+// after drawing the guest output and right before presenting, so this is when
+// the frame the host is holding reaches the swap chain. Registered from the UI
+// thread the first time the trace runs, and left in place: it only reads the
+// clock.
+class PaintProbe final : public rex::ui::UIDrawer {
+public:
+    void Draw(rex::ui::UIDrawContext&) override {
+        if (TraceOn()) TraceLine("P,%llu\n", HostNow());
+    }
+};
+
+PaintProbe g_paint_probe;
+std::atomic<bool> g_paint_probe_registered{false};
+
+void EnsurePaintProbe() {
+    if (g_paint_probe_registered.load(std::memory_order_relaxed)) return;
+    auto* runtime = rex::Runtime::instance();
+    auto* context = runtime ? runtime->app_context() : nullptr;
+    auto* graphics = runtime ? runtime->graphics_system() : nullptr;
+    rex::ui::Presenter* presenter = graphics ? graphics->presenter() : nullptr;
+    if (!context || !presenter) return;
+    bool expected = false;
+    if (!g_paint_probe_registered.compare_exchange_strong(expected, true)) return;
+    context->CallInUIThreadDeferred(
+        [presenter] { presenter->AddUIDrawerFromUIThread(&g_paint_probe, SIZE_MAX); });
+}
+
+// The native runtime's continuous present, tagged with the update frame the
+// render thread was drawing when the guest swapped. Installed the first time
+// the trace runs and left in place: both only read a counter and the clock.
+uint64_t PresentTag() { return g_render_frame.load(std::memory_order_relaxed); }
+
+void OnContinuousPresent(uint64_t frame, bool presented) {
+    if (TraceOn())
+        TraceLine("G,%llu,%llu,%d\n", HostNow(), static_cast<unsigned long long>(frame),
+                  presented ? 1 : 0);
+}
+
+void EnsureNativePresentObserver() {
+    if (mcla::native_gfx::g_present_observer == &OnContinuousPresent) return;
+    mcla::native_gfx::g_present_tag_source = &PresentTag;
+    mcla::native_gfx::g_present_observer = &OnContinuousPresent;
+}
+
+// The camera and car pair that is about to be handed to the render thread.
+void TraceCameraAndCar(const uint8_t* base, uint64_t frame) {
+    uint32_t mgr = 0, player = 0, veh = 0, sim = 0;
+    if (!SafeU32(base, kPlayerManagerPtr, mgr) || !PlausiblePtr(mgr)) return;
+    if (!SafeU32(base, mgr + 8, player) || !PlausiblePtr(player)) return;
+    if (!SafeU32(base, player + 48, veh) || !PlausiblePtr(veh)) return;
+
+    float car[3] = {}, speed = 0.0f;
+    if (!SafeVec3(base, veh + 144 + 48, car)) return;
+    if (SafeU32(base, veh + 8, sim) && PlausiblePtr(sim)) {
+        uint32_t raw = 0;
+        if (SafeU32(base, sim + 224, raw)) std::memcpy(&speed, &raw, 4);
+    }
+
+    uint32_t vhsm = 0, publisher = 0;
+    if (!SafeU32(base, kVhsmPtr, vhsm) || !PlausiblePtr(vhsm)) return;
+    if (!SafeU32(base, vhsm + 48, publisher) || !PlausiblePtr(publisher)) return;
+    const uint32_t m = publisher + kPublishedCamera;
+    float right[3], up[3], fwd[3], cam[3];
+    if (!SafeVec3(base, m, right) || !SafeVec3(base, m + 16, up) ||
+        !SafeVec3(base, m + 32, fwd) || !SafeVec3(base, m + 48, cam))
+        return;
+
+    const float rel[3] = {car[0] - cam[0], car[1] - cam[1], car[2] - cam[2]};
+    auto dot = [](const float a[3], const float b[3]) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    };
+
+    uint32_t pcam = 0, view = 0, cs = 0, cam_index = 0xFFFFFFFFu, vt = 0;
+    float long_accel = 0.0f, offset_z = 0.0f, focus_z = 0.0f;
+    if (SafeU32(base, player + 880, pcam) && PlausiblePtr(pcam)) {
+        SafeU32(base, pcam + 80, cam_index);
+        if (SafeU32(base, pcam + 16, view) && PlausiblePtr(view) && SafeU32(base, view + 48, cs) &&
+            PlausiblePtr(cs) && SafeU32(base, cs, vt) && vt == kCamBoomVtable) {
+            uint32_t raw = 0;
+            if (SafeU32(base, cs + kCsLongAccel, raw)) std::memcpy(&long_accel, &raw, 4);
+            if (SafeU32(base, cs + kCsOffset + 8, raw)) std::memcpy(&offset_z, &raw, 4);
+            if (SafeU32(base, cs + kCsFocus + 8, raw)) std::memcpy(&focus_z, &raw, 4);
+        }
+    }
+
+    TraceLine("C,%llu,%llu,%d,0x%08X,%d,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+              "%.4f,%.3f,%.4f,%.4f,%.4f\n",
+              HostNow(), static_cast<unsigned long long>(frame), static_cast<int>(cam_index), cs,
+              vt == kCamBoomVtable ? 1 : 0, cam[0], cam[1], cam[2], fwd[0], fwd[1], fwd[2],
+              car[0], car[1], car[2], dot(rel, right), dot(rel, up), dot(rel, fwd), speed,
+              long_accel, offset_z, focus_z);
+}
+
 }  // namespace
 
 namespace mc::pacing {
@@ -72,6 +400,7 @@ bool LimiterRunsBeforeClock() { return REXCVAR_GET(frame_pacing) != 0; }
 
 uint64_t AdjustFrameTicks(uint64_t elapsed_ticks) {
     if (!t_in_game_clock) return elapsed_ticks;
+    ++g_frame;
 
     const double freq = static_cast<double>(rex::chrono::Clock::guest_tick_frequency());
     const int32_t limit = FpsLimit();
@@ -93,7 +422,22 @@ uint64_t AdjustFrameTicks(uint64_t elapsed_ticks) {
         g_policy.Reset();
     }
 
+    if (TraceOn() && freq > 0.0) {
+        const double to_us = 1e6 / freq;
+        TraceLine("F,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.1f,%d\n", HostNow(),
+                  static_cast<unsigned long long>(g_frame), elapsed_ticks * to_us, step * to_us,
+                  g_policy.ema * to_us, g_policy.owed * to_us,
+                  (limiter_period > 0.0 ? limiter_period : vblank_period) * to_us, mode);
+    }
     return step;
+}
+
+void OnGuestInterrupt(uint32_t source) {
+    if (!TraceOn()) return;
+    if (source == 1)
+        TraceLine("I,%llu,%u\n", HostNow(), RetiredFence(Membase()));
+    else
+        TraceLine("V,%llu\n", HostNow());
 }
 
 }  // namespace mc::pacing
@@ -108,6 +452,55 @@ extern "C" REX_FUNC(rex_sub_821BDA90) {
     }
     __imp__rex_sub_821BDA90(ctx, base);
     if (game_clock) t_in_game_clock = false;
+}
+
+// sub_82305B38: the render sync. Everything the update produced this frame is
+// final here; the snapshot copies it for the render thread.
+extern "C" REX_FUNC(rex_sub_82305B38) {
+    g_render_frame.store(g_frame, std::memory_order_relaxed);
+    if (TraceOn()) {
+        EnsureFenceWatch();
+        EnsurePaintProbe();
+        EnsureNativePresentObserver();
+        // The render thread has returned from the swap of the previous frame by
+        // now (sub_823057E8 waited for it), so this is that frame's swap fence.
+        TraceLine("Y,%llu,%llu,%u\n", HostNow(), static_cast<unsigned long long>(g_frame),
+                  LastSwapFence(base));
+        TraceCameraAndCar(base, g_frame);
+    }
+    __imp__rex_sub_82305B38(ctx, base);
+}
+
+// sub_821775D8: the render thread's end of frame -- it ends in grcDevice_EndFrame
+// and so in D3DDevice_Swap. With the native runtime's own swap chain the
+// present happens inside, so the exit time is when the frame was presented.
+extern "C" REX_FUNC(rex_sub_821775D8) {
+    if (!TraceOn()) {
+        __imp__rex_sub_821775D8(ctx, base);
+        return;
+    }
+    const unsigned long long enter = HostNow();
+    __imp__rex_sub_821775D8(ctx, base);
+    TraceLine("R,%llu,%llu,%llu\n", enter, HostNow(),
+              static_cast<unsigned long long>(g_render_frame.load(std::memory_order_relaxed)));
+}
+
+// D3DDevice_BlockOnFence (sub_82411E98): r4 the fence, r5 how to wait. The one
+// D3DDevice_Swap ends with (r5 = 3) waits for the previous frame's swap, so its
+// exit is when the render thread saw that frame go through. Other calls are
+// logged only when they actually waited.
+extern "C" REX_FUNC(D3DDevice_BlockOnFence) {
+    if (!TraceOn()) {
+        __imp__D3DDevice_BlockOnFence(ctx, base);
+        return;
+    }
+    const uint32_t fence = ctx.r4.u32;
+    const uint32_t how = ctx.r5.u32;
+    const unsigned long long enter = HostNow();
+    __imp__D3DDevice_BlockOnFence(ctx, base);
+    const unsigned long long exit = HostNow();
+    if (how == 3 || exit - enter > 1000)
+        TraceLine("B,%llu,%llu,%u,%u\n", enter, exit, fence, how);
 }
 
 #endif  // REXGLUE_HAS_XEO3_TARGET
