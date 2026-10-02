@@ -12,6 +12,7 @@
 #include "crash_handler.h"
 #include "achievement_metadata.h"
 #include "mc_engine/hooks.h"
+#include "mc_engine/frame_pacing.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/native_gfx.h"
 #include "native_gfx/d3d12/device_manager.h"
@@ -49,6 +50,8 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include <windows.h>
 // DedicatedVideoMemory, to size the texture cache against the real adapter.
 #include <dxgi.h>
+// The no-command-processor mode's provider, for its DXGI factory.
+#include <rex/ui/d3d12/d3d12_provider.h>
 #endif
 
 #include <rex/cvar.h>
@@ -378,6 +381,13 @@ class LarecompApp : public rex::ReXApp {
     if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
       return true;
     }
+#if defined(_WIN32)
+    // frame_pacing_trace: before the presenter exists, so the probe sees the
+    // swap chain it creates. A no-op unless the trace is on.
+    if (auto* provider = mcla::native_gfx::nocp::Provider()) {
+      mc::pacing::InstallPresentProbe(provider->GetDXGIFactory());
+    }
+#endif
     return mcla::native_gfx::nocp::AttachPresentation(window(), imgui_drawer(),
                                                       immediate_drawer());
   }

@@ -256,6 +256,13 @@ void TraceLineV(const char* fmt, va_list args) {
                      "update frame whose state it rendered)\n"
                      "#G,host,frame,presented (native continuous present: that frame handed to "
                      "the presenter, or to the native swap chain)\n"
+                     "#Q,host_enter,host_exit,present_count,sync_interval,flags,thread,hr (host "
+                     "Present on the presenter's swap chain)\n"
+                     "#S,host,present_count,present_refresh_count,sync_refresh_count,sync_qpc "
+                     "(DXGI frame statistics right after a Present: the last Present that reached "
+                     "the screen and the refresh it was shown at)\n"
+                     "#M,host,hr,composition_mode,approved_present_duration (0 composed, "
+                     "1 overlay, 2 none)\n"
                      "#C,host,frame,cam_index,cs,cs_is_boom,cam_x,cam_y,cam_z,fwd_x,fwd_y,fwd_z,"
                      "car_x,car_y,car_z,rel_right,rel_up,rel_fwd,speed,long_accel,offset_z,focus_z\n");
     }
@@ -479,6 +486,16 @@ void OnGuestInterrupt(uint32_t source) {
         TraceLine("I,%llu,%u\n", HostNow(), RetiredFence(Membase()));
     else
         TraceLine("V,%llu\n", HostNow());
+}
+
+bool TraceEnabled() { return TraceOn(); }
+
+void TraceWrite(const char* fmt, ...) {
+    if (!TraceOn()) return;
+    va_list args;
+    va_start(args, fmt);
+    TraceLineV(fmt, args);
+    va_end(args);
 }
 
 }  // namespace mc::pacing

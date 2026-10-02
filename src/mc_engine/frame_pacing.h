@@ -21,4 +21,15 @@ bool LimiterRunsBeforeClock();
 // From the GPU interrupt probe. source 0 = vblank, 1 = PM4 interrupt.
 void OnGuestInterrupt(uint32_t source);
 
+// frame_pacing_trace: whether it is on, and one line appended to
+// frame_pacing_trace.csv (dropped when it is off).
+bool TraceEnabled();
+void TraceWrite(const char* fmt, ...);
+
+// present_probe.cpp. Hooks the IDXGIFactory2 the presenter will create its swap
+// chain with, so every host Present and the frame statistics after it land in
+// the trace. Must run before the presenter is attached; does nothing unless
+// frame_pacing_trace is on.
+void InstallPresentProbe(void* dxgi_factory2);
+
 }  // namespace mc::pacing
