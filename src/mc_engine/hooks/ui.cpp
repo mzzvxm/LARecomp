@@ -97,7 +97,8 @@ void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {
     }
 }
 
-// Intro/legals pacing - deliberately NOT patched here.
+// Intro/legals pacing is not patched here; see PaceUntimedSwap in
+// frame_timing.cpp.
 //
 // The previous Hook_IntroHalfRate skipped every other SWF advance, which is
 // only correct at exactly 60 FPS. With a configurable fps_limit (30 / 60 / 120 /
@@ -105,10 +106,10 @@ void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {
 // fast, at 30 it runs at half speed. It was removed from the midnightclub fork
 // for the same reason and is not being reintroduced.
 //
-// Playback pacing above 30 FPS is inherent to unlocking the engine's 30 Hz
-// design point. Verified in midnightclub by testing hard caps at 30, 45 and 60:
-// the movie speed is identical at all three, so it is not tied to present rate
-// and no frame-rate-based correction can fix it. Supported answer is skip_intro.
+// Hard caps at 30, 45 and 60 gave identical intro speed in midnightclub because
+// the legals/logo loop never calls the engine timer (sub_821BDA90), which is
+// where the frame limiter lives: the cap was never applied to those frames at
+// all. They are paced at the swap instead.
 
 // 0x82725100, in sub_827250A8's per-movie lighting pass. The game asks the movie
 // for its "lights" node and then uses the answer without checking it:

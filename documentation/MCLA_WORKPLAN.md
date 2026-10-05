@@ -181,7 +181,7 @@ Kept so none of it gets re-tested.
 | `MCLA_SUBSTEPS=0` is a valid setting | It leaves the player car with no wheels and undriveable. The substep passes are where vehicle setup happens. |
 | `clear_memory_page_state=false` is a harmless typo fix | It breaks the render-to-texture minimap, which turns into a white box |
 | Dummy `.loc` files remove streaming overhead | Leftover `test_` prefixed dev assets. Seven warnings once at startup, no per-frame cost. |
-| Capping the frame rate fixes the fast intro movies | Identical speed at 30, 45 and 60 FPS caps |
+| Capping the frame rate fixes the fast intro movies | Identical speed at 30, 45 and 60 FPS caps, because the intro loop never reaches the engine timer where the cap is applied. Paced at the swap instead (`PaceUntimedSwap`). |
 | Grepping for `0xF0(rN)` proves a field is unused | Fields passed by address never appear as a displacement |
 
 ---

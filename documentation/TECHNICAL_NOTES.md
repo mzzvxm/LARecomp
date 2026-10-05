@@ -130,7 +130,24 @@ The backwards step comes from `QueryGuestClockFast()`, which returns `guest_base
 
 **Workaround.** `clock_no_scaling=true` takes the branch that returns `ScaleHostToGuestTicks(host_tick_count, ...)`, a plain function of the host clock with no re-basing, so it is monotonic while QPC is. A 33 minute run with it set peaked at 4,037 vblanks/s, spent zero seconds above 1M, and never dropped below 24 FPS.
 
-**Proper fix**, for the SDK rather than this repo: clamp a backwards step with `if (current_time < last_frame_time) last_frame_time = current_time;` and cap the catch-up per pass so a large backlog is dropped instead of drained one millisecond at a time.
+**Proper fix**, for the SDK rather than this repo: resynchronise on a backwards step and cap the catch-up per pass so a large backlog is dropped instead of drained one millisecond at a time. That is [`patches/rexglue-vblank-resync.patch`](../patches/rexglue-vblank-resync.patch), from [mcla-recomp](https://github.com/holdmysocks/mcla-recomp):
+
+```cpp
+int64_t behind = int64_t(current_time - last_frame_time);
+if (behind < 0 || uint64_t(behind) > guest_tick_frequency / 4) {
+    last_frame_time = current_time;
+    behind = 0;
+}
+while (uint64_t(behind) >= interval_ticks) {
+    MarkVblank();
+    last_frame_time += interval_ticks;
+    behind -= int64_t(interval_ticks);
+}
+```
+
+The difference is taken as signed, so a backwards step reads as negative instead of as 1.8e19, and anything more than a quarter second behind is dropped. With the patch the workaround flag is not needed and the guest clock keeps its normal scaling path.
+
+Evidence so far, from mcla-recomp rather than this repo: an 18.5 minute session on the patched SDK, without `clock_no_scaling`, held about 5 interrupts per frame throughout and never stormed. That is consistent with the patch working. It is not a before/after measurement, because the collapse was not reproduced on that machine first.
 
 One detail worth knowing regardless: with `vsync=false` the interval is `guest_tick_frequency / 1000`, a **1 ms** vblank period. That is the ~1,010/s baseline, roughly 17x an Xbox 360's 60 Hz, and every one of them takes the global lock.
 
@@ -194,7 +211,7 @@ Only the SAVE SETTINGS row triggered it, because it was the one row that relabel
 
 ## 9. Known limitations
 
-- **Intro movies play fast.** Inherent to the frame rate unlock. Capping to 30, 45 or 60 FPS gives identical speed, so a cap does not help. Use `skip_intro` or press A.
+- **Intro movies played fast (fixed).** The legal screens and publisher logos are not Bink video. They are drawn in a loop that never calls the engine timer `sub_821BDA90`, so the frame limiter in `MCLAFrameDelta` never ran for them, which is why caps of 30, 45 and 60 FPS all gave the same speed. On the console the loop was paced only by the present interval of two vblanks. `PaceUntimedSwap` in `hooks/frame_timing.cpp` now holds any swap that follows another with no pass through the engine timer in between to 30 per second; `intro_original_speed=false` turns it off. Not checked: the real Bink movies (`intro720.bik`, `attract720.bik`). Their player (`sub_82468800`) waits on `BinkWait` (`sub_827BFB58`), whose clock is the kernel tick count, and none of them plays during start-up.
 - **Dithered alpha on shadows and foliage.** A dither pattern on shadow edges and on vegetation leaves. Two candidate causes, neither confirmed: the GPU plugin's handling of the dither pattern, or the game's own shaders dithering at a pattern scale that assumes the 1280x720 console output and does not hold at higher output resolutions.
 
   This is the only rendering issue left. Car body reflections and the occasional HUD glitches were both fixed in the custom ReXGlue build LARecomp is developed against, which is not published yet. Older notes in this project attributed all three to the stock `xenos` plugin lacking fixes that [xenia-edge](https://github.com/has207/xenia-edge) carries, and treated them as unfixable without plugin source. Two thirds of that turned out to be wrong.
