@@ -616,6 +616,13 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "restores the old ring, for A/B.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_direct, false, "MCLA/NativeGfx",
+                    "Copy every inline (BeginVertices) draw straight into the upload ring "
+                    "instead of using BufferCache. Off is the default because the direct path "
+                    "can stall MCLA; cached inline regions use exact per-block hashes on every "
+                    "draw so same-frame command-buffer rewrites do not flicker the 2D/UI.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, true, "MCLA/NativeGfx",
                     "Untile and endian-swap texture levels in ordinary cached memory and copy "
                     "the result to the upload ring in one pass, instead of swapping in place "

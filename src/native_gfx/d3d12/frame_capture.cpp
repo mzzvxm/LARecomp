@@ -30,6 +30,7 @@
 #include <rex/ui/flags.h>
 #include <dxgi1_4.h>
 
+#include "../diag.h"
 #include "../draw_slicing.h"
 #include "../geometry.h"
 #include "../guest/guest_constants.h"
@@ -252,6 +253,7 @@ REXCVAR_DECLARE(std::string, mcla_native_gfx_skip_ps);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_dump_ps);
 REXCVAR_DECLARE(std::string, mcla_native_gfx_ab_cvar);
 REXCVAR_DECLARE(bool, mcla_native_gfx_inline_fenced);
+REXCVAR_DECLARE(bool, mcla_native_gfx_inline_direct);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_ab_frames);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
@@ -2065,6 +2067,44 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     inline_geom = &inline_rect;
   }
 
+  // Every other inline draw: take the bytes now, not from the BufferCache.
+  // They sit in the command buffer, which the guest rewrites every frame, so
+  // the cache files those regions as streaming and checks them only with a
+  // sampled hash (eight 64-byte slices per 4 KiB block). A frame whose new
+  // vertices differ only outside the slices kept the previous frame's -- the
+  // 2D flickering for one frame, sometimes with a broken quad. Same address
+  // translation and swap as the cache, so the bytes are what it would upload;
+  // if the ring is full the cached path still takes the draw.
+  InlineGeometry inline_direct;
+  if (inline_geom && !inline_geom->host_gpu_address &&
+      REXCVAR_GET(mcla_native_gfx_inline_direct)) {
+    const uint32_t bytes = inline_geom->size_bytes;
+    const uint32_t physical = inline_geom->address & 0x1FFFFFFFu;
+    const uint8_t* src = TranslatePhysicalGuest(physical);
+    if (bytes == 0 || !src || !IsPhysicalRangeReadable(physical, bytes)) {
+      ++g_cap.fail_bind;
+      if (diag) {
+        DiagLog("inline direct skipped unreadable range addr=%08X bytes=%u\n", physical, bytes);
+      }
+      return;
+    }
+    D3D12Context::UploadAlloc a;
+    if (!context.AllocateUpload(bytes, 16, a, D3D12Context::UploadTag::kGeometry)) {
+      ++g_cap.fail_bind;
+      ++g_cap.ring_flushes;
+      FlushBatch(context);
+      return;
+    }
+    const BufferSwap swap = inline_geom->endian == 2   ? BufferSwap::k8in32
+                            : inline_geom->endian == 1 ? BufferSwap::k8in16
+                                                       : BufferSwap::kNone;
+    SwapCopyBytes(static_cast<uint8_t*>(a.cpu), src, bytes, swap);
+    inline_direct = *inline_geom;
+    inline_direct.host_gpu_address = a.gpu;
+    inline_direct.host_size_bytes = bytes;
+    inline_geom = &inline_direct;
+  }
+
   // Vertex/index uploads draw from the SAME per-slot upload ring as the
   // constants below, so they can exhaust it too. Watch the cache's own failure
   // counter across the call: on a ring exhaustion the batch has to be submitted
@@ -2074,9 +2114,10 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // The description built for the reject checks above is reused; only the
   // buffers are resolved now. The one field that differs is the texcoord swap
   // mask, which host-built rect vertices (already in host order) must not
-  // carry -- BuildGeometrySnapshot derives it the same way.
+  // carry -- BuildGeometrySnapshot derives it the same way. Direct inline
+  // vertices are swapped exactly as the cache would have, so they keep it.
   GeometrySnapshot& bound = geom;
-  if (inline_geom && inline_geom->host_gpu_address) {
+  if (inline_geom == &inline_rect) {
     bound.swapped_texcoords = 0;
   }
   if (!ResolveGeometryBuffers(bound, element_count, start_element, buffers, context, cl,
