@@ -220,3 +220,41 @@ Recorded so nobody re-tests them.
 | Camera smoothing can be fixed at the shared lerp `sub_8231D3A8` | That lerp is shared with cockpit view, wheel animation, speedometer and HUD. Hooking it breaks all of them. Hook the specific caller. |
 | Grepping for `0xF0(rN)` proves a field is unused | Fields passed **by address** to a helper never appear as a displacement. `mcDofObject::coc_vector` is uploaded via `addi r29, r31, 0xF0` into a shader parameter setter. |
 | Reading a perf counter once per second gives a per-second total | Counters are zeroed each frame, so one read samples one arbitrary frame. Healthy 61 FPS seconds printed `draws=0` this way. |
+| `sub_823688B8` smooths traffic | It is `mcBikeGyro::Update` and only runs on a motorcycle. A probe on it never fired in four minutes of free roam among traffic. |
+
+---
+
+## 11. The motorcycle gyro above 30 FPS
+
+`sub_823688B8` is slot 2 of the vtable at `0x820488C0`. Nothing in the generated code calls it directly, so its identity came from the RTTI behind that vtable: the CompleteObjectLocator at `0x820E9544` names `mcBikeGyro`, derived from `mcCarGyroBase`, `rage::vehGyro` and `rage::datBase`. The sibling vtables give each class's update in the same slot:
+
+| class | vtable | slot 2 (update) |
+|---|---|---|
+| `rage::vehGyro` | `0x8207E234` | `0x825639C0` |
+| `mcCarGyroBase` | `0x82048CA4` | `0x825639C0` (inherited) |
+| `mcCarGyro` | `0x82048760` | `0x823663D0` |
+| `mcBikeGyro` | `0x820488C0` | `0x823688B8` |
+
+The on-disk XEX is LZX-compressed and the SDK has no dump command, so the RTTI was read from a dump of the loaded image (`0x82000000` to `0x829E0000`) written from guest memory at runtime.
+
+The bike gyro keeps a smoothed position at `[this+64]`, which it lerps toward the vehicle's current one, and a smoothed velocity at `[this+80]`, lerped toward `(new - old) * 1/dt`. Both factors are fixed per call, and the frame-rate test is the same one `camBoomCS::Update` uses:
+
+```
+82368940  cmpwi cr6, r11, 60       ; r11 = round(1/dt), from [0x827D750C]
+8236894C  lfs   f16, 0xE94(r10)    ; 2.0
+82368950  lfs   f13, 0x6740(r11)   ; position factor, 0.40
+82368954  bge   cr6, loc_8236895C
+82368958  fmuls f13, f13, f16      ; 0.80 below 60 fps
+8236895C  <-- MCLABikeGyroPosSmoothing
+...
+823689E4  lfs   f0, 0x6744(r11)    ; velocity factor, 0.15
+823689E8  bge   cr6, loc_823689F0
+823689EC  fmuls f0, f0, f16        ; 0.30 below 60 fps
+823689F0  <-- MCLABikeGyroVelSmoothing
+```
+
+Both hooks take the factor the engine uses below 60 as the 30 FPS reference, `k30`, and replace it with `1 - (1 - k30) ^ (30 * dt)`. Above 60 the engine has not doubled it, so the hook does.
+
+`mcCarGyro::Update` needs nothing. It reads `dt` and `1/dt` from the timer and passes them to its helpers, and contains no frame-rate test.
+
+Only three functions in the game choose a constant by comparing the rounded frame rate against 60: `camBoomCS::Update` (`sub_82320298`), the chassis depth filter (`sub_82563298`) and `mcBikeGyro::Update`. All three are hooked now. Any remaining frame-rate dependence in traffic or pedestrians will be a plain per-call lerp, and searching for that test will not find it.
