@@ -59,6 +59,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/camera_look.cpp
     src/mc_engine/time_of_day.cpp
+    src/mc_engine/map_warp.cpp
     src/mc_engine/real_weather.cpp
     src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp

@@ -26108,7 +26108,7 @@ registers = ["r3"]
 # *(root + 0x80) as the composite's child array with no type check, so on a geometry
 # it picks up m_Vertices and the deform pass faults in sub_8259FF88. These three
 # sites are every place that does it; they substitute the root when it is not a
-# composite, and are a no-op for stock player cars. See hooks.cpp.
+# composite, and are a no-op for stock player cars. See hooks/vehicle.cpp.
 
 # 0x8232D048 in sub_8232CFF0, before `addi r6, r11, 0x10`. r9 = root + 0x80.
 [[midasm_hook]]

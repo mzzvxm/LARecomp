@@ -16,6 +16,7 @@
 #include "../cutscene_gallery.h"
 #include "../hud_units.h"
 #include "../map_mouse.h"
+#include "../map_warp.h"
 #include "../modloader/features/mod_breakables.h"
 #include "../modloader/features/mod_glows.h"
 #include "../modloader/modloader.h"
@@ -155,6 +156,7 @@ void Patch_DeltaTimePre() {
     TickHudUnits();             // hud_speed_units: mph -> km/h, live
     TickCutsceneGallery();      // cutscene replay: close the menu, start the script
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
+    TickMapWarp();              // warp console command / F9: a mod's warp point <-> back
     TickModGlows();             // guest scratch for the mods' light glows
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
