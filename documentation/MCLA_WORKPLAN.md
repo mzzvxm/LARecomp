@@ -17,6 +17,7 @@ The game boots, plays, and holds 60 FPS. Physics, camera and traffic behave the 
 | Frame timing above 30 FPS | Solved. Two fixed-timestep paths hooked, accumulators intact. |
 | Frame pacing | Solved. The 15.625 ms grid was Windows timer granularity. |
 | Camera and suspension at high FPS | Solved. Continuous-time decay against the 30 FPS reference curve. |
+| Motorcycle gyro at high FPS | Solved. Same treatment, in `mcBikeGyro::Update`. |
 | Ambient density tuning | Working since the hook moved to the constructor epilogue. It never fired before that. |
 | Texture cache | Closed. `texture_cache_misses` sits at zero. |
 | Long-session frame rate collapse | Root cause identified in the SDK. Workaround in place; upstream fix pending. |
@@ -53,6 +54,16 @@ a(dt) = 1 - 0.90 ^ (30 * dt)
 ```
 
 Rate-invariant by construction, because decay compounds.
+
+### Motorcycle gyro above 30 FPS
+
+`sub_823688B8` is `mcBikeGyro::Update`. It is only reached through a vtable, so the generated code cannot name it; the class came from the game's own RTTI, read out of a runtime dump of the loaded image. It lerps a smoothed position and velocity by fixed per-call factors, 0.40 and 0.15, doubled to 0.80 and 0.30 below 60 FPS. Correct at 30 and 60, too stiff above that: at 144 FPS the bike settles about 2.5x faster than intended.
+
+`MCLABikeGyroPosSmoothing` (`0x8236895C`) and `MCLABikeGyroVelSmoothing` (`0x823689F0`) replace both with `1 - (1 - k30) ^ (30 * dt)`, the camera formula. Behind `smooth_bike_gyro`, on by default, hot-reloadable. Verified by riding: lean and settle feel the same at a 30 FPS cap and at 144/uncapped.
+
+Cars are not affected and need no fix. `mcCarGyro::Update` (`0x823663D0`) steps with the engine's `dt` and `1/dt` and has no frame-rate switch.
+
+Not measured: whether the bike gyro runs once per frame or once per physics substep. It differentiates with the frame-level `1/dt`, which is only right once per frame, and the ride test agrees.
 
 ### Ambient density tuning
 
@@ -152,6 +163,8 @@ What is left is per-voice DSP or mixing inside the guest audio engine. Needs IDA
 ### Traffic and NPC smoothing sweep
 
 Vehicles and pedestrians other than the player car have their own per-frame interpolation constants that have not been swept the way the camera and chassis ones were. Same treatment likely applies. Not blocking anything.
+
+What the first pass found: only three functions in the game pick a constant by frame rate (`round(1/dt)` compared against 60). They are the chase camera, the chassis depth filter and the motorcycle gyro, and all three are now hooked. So if traffic smoothing is frame-rate dependent, it is a plain per-call lerp with no frame-rate test, and a search for that pattern will not find it. `sub_823688B8` looked like the traffic lead and turned out to be `mcBikeGyro::Update`: a probe on it never fired in four minutes of free roam among traffic.
 
 ### `PM4_DRAW_INDX_2` backend failure
 
