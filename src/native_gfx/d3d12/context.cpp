@@ -219,7 +219,9 @@ ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
   if (completed < slot_fence_value_[slot]) {
     fence_->SetEventOnCompletion(slot_fence_value_[slot], fence_event_);
     const auto wait_begin = std::chrono::steady_clock::now();
+    HangMark(g_hang_render, "BeginFrame: slot fence wait");  // TEMP DIAG
     WaitForSingleObject(fence_event_, INFINITE);
+    HangMark(g_hang_render, "BeginFrame: slot fence done");  // TEMP DIAG
     gpu_wait_us_ += std::chrono::duration<double, std::micro>(
                         std::chrono::steady_clock::now() - wait_begin)
                         .count();
@@ -376,6 +378,7 @@ void D3D12Context::StopWorker() {
 void D3D12Context::WorkerMain() {
   std::unique_lock<std::mutex> lock(worker_mutex_);
   for (;;) {
+    HangMark(g_hang_worker, "idle");  // TEMP DIAG
     worker_cv_.wait(lock, [this] { return worker_stop_ || !worker_jobs_.empty(); });
     if (worker_jobs_.empty()) {
       break;  // stop requested and nothing left to submit
@@ -385,10 +388,13 @@ void D3D12Context::WorkerMain() {
     worker_busy_ = true;
     lock.unlock();
     if (job.task) {
+      HangMark(g_hang_worker, "task");  // TEMP DIAG
       job.task();
     } else {
+      HangMark(g_hang_worker, "replay+submit");  // TEMP DIAG
       ReplayAndSubmit(job.slot, job.fence_value, /*replay=*/true, /*reset_first=*/true);
     }
+    HangMark(g_hang_worker, "job done");  // TEMP DIAG
     lock.lock();
     worker_busy_ = false;
     if (worker_jobs_.empty()) {
@@ -408,7 +414,9 @@ void D3D12Context::FlushWorker() {
     return;
   }
   const auto wait_begin = std::chrono::steady_clock::now();
+  HangMark(g_hang_render, "FlushWorker: wait");  // TEMP DIAG
   worker_idle_cv_.wait(lock, [this] { return worker_jobs_.empty() && !worker_busy_; });
+  HangMark(g_hang_render, "FlushWorker: done");  // TEMP DIAG
   flush_wait_ns_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                         std::chrono::steady_clock::now() - wait_begin)
                                         .count()),
@@ -485,7 +493,9 @@ ID3D12GraphicsCommandList* D3D12Context::BeginSideList() {
   const uint32_t slot = side_index_ % kSideSlots;
   if (side_fence_->GetCompletedValue() < side_slot_fence_[slot]) {
     side_fence_->SetEventOnCompletion(side_slot_fence_[slot], side_event_);
+    HangMark(g_hang_render, "BeginSideList: side fence wait");  // TEMP DIAG
     WaitForSingleObject(side_event_, INFINITE);
+    HangMark(g_hang_render, "BeginSideList: side fence done");  // TEMP DIAG
   }
   side_allocators_[slot]->Reset();
   if (FAILED(side_list_->Reset(side_allocators_[slot].Get(), nullptr))) {
@@ -904,7 +914,9 @@ void D3D12Context::WaitForIdle() {
   queue_->Signal(fence_.Get(), ++fence_value_);
   if (fence_->GetCompletedValue() < fence_value_) {
     fence_->SetEventOnCompletion(fence_value_, fence_event_);
+    HangMark(g_hang_render, "WaitForIdle: fence wait");  // TEMP DIAG
     WaitForSingleObject(fence_event_, INFINITE);
+    HangMark(g_hang_render, "WaitForIdle: done");  // TEMP DIAG
   }
   // The GPU is fully idle here, so any resource retired this frame (still
   // UNTAGGED) is safe to free now — stamp then reclaim.

@@ -2677,7 +2677,9 @@ void NotifyFrameBoundary() {
   // happens in the CP's swap (NativeGuestOutputCallback), not here.
   if (ContinuousMode()) {
     if (g_present_ready && g_draw_ready) {
+      HangMark(g_hang_render, "boundary: PrepareContinuousDisplay");  // TEMP DIAG
       const bool prepared = PrepareContinuousDisplay(g_draw_context, g_render_targets);
+      HangMark(g_hang_render, "boundary: prepared");  // TEMP DIAG
       // Present HERE, not from the swap hook.
       //
       // The guest swap is issued from INSIDE rage::grcDevice::EndFrame
@@ -2700,7 +2702,9 @@ void NotifyFrameBoundary() {
       // always closed. This also keeps the blit inside the RenderDoc bracket
       // below and ahead of stamp_releases(), whose fence value must cover it.
       if (prepared) {
+        HangMark(g_hang_render, "boundary: PresentContinuousDisplay");  // TEMP DIAG
         PresentContinuousDisplay();
+        HangMark(g_hang_render, "boundary: presented");  // TEMP DIAG
       }
       // Programmatic RenderDoc capture of one native frame. The native present
       // bypasses the swapchain, so RenderDoc's Present-driven frame delimiter
@@ -2734,9 +2738,11 @@ void NotifyFrameBoundary() {
       // sampler caches so next frame allocates fresh descriptors (a freed+recycled
       // resource can no longer alias a stale pointer-keyed SRV) without clobbering
       // this frame's still-in-flight half.
+      HangMark(g_hang_render, "boundary: reset");  // TEMP DIAG
       g_binder.BeginFrame();
       g_textures.BeginGameFrame();
       ResetContinuousFrame(g_render_targets);
+      HangMark(g_hang_render, "boundary: done");  // TEMP DIAG
       // Arm the next frame's capture if the trigger file is present. std::remove
       // returns 0 only when it existed and was deleted, consuming it atomically.
       // Two producers, one consumer: the keybind (any thread, atomic flag) and
