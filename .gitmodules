@@ -1,0 +1,7 @@
+[submodule "thirdparty/plume"]
+	path = thirdparty/plume
+	url = https://github.com/mzzvxm/plume.git
+	branch = larecomp
+[submodule "thirdparty/dxc-bin"]
+	path = thirdparty/dxc-bin
+	url = https://github.com/renderbag/dxc-bin.git
