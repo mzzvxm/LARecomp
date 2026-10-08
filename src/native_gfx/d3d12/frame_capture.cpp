@@ -5981,6 +5981,25 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                   win_cbank = 0, win_replay = 0, win_flush = 0;
     static uint64_t win_cmds = 0;
     static uint64_t win_acc = 0, win_offered = 0;
+    // Keep the actual slowest frame: averaging sixty frames hid multi-second
+    // streaming stalls, and the periodic prepare line sampled only one frame.
+    static double win_wall_max = 0.0;
+    static uint32_t win_slow_100 = 0, win_slow_1000 = 0;
+    if (total > 10u && std::isfinite(wall_ms) && wall_ms >= 0.0) {
+      win_wall_max = std::max(win_wall_max, wall_ms);
+      win_slow_100 += wall_ms >= 100.0;
+      win_slow_1000 += wall_ms >= 1000.0;
+      if (wall_ms >= 100.0 && REXCVAR_GET(mcla_native_gfx_diag)) {
+        REXLOG_INFO(
+            "[native_gfx] hitch frame={} wall={:.2f} gpu_wait={:.2f} draw={:.2f} "
+            "geom={:.2f} bind={:.2f} pso={:.2f} begin={:.2f} submit={:.2f} ms | "
+            "offered={} accepted={}",
+            total, wall_ms, gpu_wait_ms, g_profile.draw_us / 1000.0,
+            g_profile.geom_us / 1000.0, g_profile.bind_us / 1000.0,
+            g_profile.pso_us / 1000.0, g_profile.begin_us / 1000.0,
+            g_profile.submit_us / 1000.0, g_cap.offered, g_cap.accepted);
+      }
+    }
     ++win_frames;
     win_wall += wall_ms;
     win_gpu_wait += gpu_wait_ms;
@@ -6018,19 +6037,22 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
                      "perfwin frames=%u wall=%.2f gpu_wait=%.2f draw=%.2f geom=%.2f bind=%.2f "
                      "front=%.2f back=%.2f begin=%.2f submit=%.2f rt=%.2f cbank=%.2f "
                      "replay=%.2f flush=%.2f ms/frame cmds=%.0f | offered=%.0f acc=%.0f /frame | "
-                     "draw_us_per_acc=%.2f\n",
+                     "draw_us_per_acc=%.2f | max_wall=%.2f slow100=%u slow1000=%u\n",
                      win_frames, win_wall / n, win_gpu_wait / n, win_draw / n, win_geom / n,
                      win_bind / n, win_front / n, win_back / n, win_begin / n, win_submit / n,
                      win_rt / n, win_cbank / n, win_replay / n, win_flush / n,
                      double(win_cmds) / n,
                      double(win_offered) / n,
-                     double(win_acc) / n, win_acc ? win_draw * 1000.0 / double(win_acc) : 0.0);
+                     double(win_acc) / n, win_acc ? win_draw * 1000.0 / double(win_acc) : 0.0,
+                     win_wall_max, win_slow_100, win_slow_1000);
         std::fclose(fw);
       }
       win_frames = 0;
       win_wall = win_gpu_wait = win_draw = win_geom = win_bind = win_front = win_back = 0;
       win_begin = win_submit = win_rt = win_cbank = win_replay = win_flush = 0;
       win_cmds = 0;
+      win_wall_max = 0.0;
+      win_slow_100 = win_slow_1000 = 0;
       ab_settle = 0;
       if (!ab_cvar.empty()) {
         const int want = int((total / ab_frames) & 1u);
