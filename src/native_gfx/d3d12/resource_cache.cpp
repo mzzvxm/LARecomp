@@ -35,6 +35,56 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_overlap_index);
 namespace mcla::native_gfx {
 
 namespace {
+constexpr uint64_t kMaxPooledBufferBytes = 512ull * 1024ull * 1024ull;
+
+uint64_t BufferAllocationBytes(ID3D12Device* device, ID3D12Resource* resource) {
+  if (!resource) return 0;
+  const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+  if (device) {
+    const uint64_t bytes = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+    if (bytes != UINT64_MAX) return bytes;
+  }
+  // These are committed, 64 KiB-aligned buffers. Preserve a conservative
+  // bound if the device cannot report its allocation information.
+  return (desc.Width + 65535ull) & ~65535ull;
+}
+
+uint64_t BufferMemoryPressure(ID3D12Device* device) {
+  if (!device) return 0;
+  static ID3D12Device* cached_device = nullptr;
+  static LUID cached_luid = {};
+  static Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter;
+  static bool tried_adapter = false;
+  static std::chrono::steady_clock::time_point last_query = {};
+  const LUID luid = device->GetAdapterLuid();
+  if (device != cached_device || luid.LowPart != cached_luid.LowPart ||
+      luid.HighPart != cached_luid.HighPart) {
+    cached_device = device;
+    cached_luid = luid;
+    adapter.Reset();
+    tried_adapter = false;
+    last_query = {};
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_query < std::chrono::seconds(1)) return 0;
+  last_query = now;
+  if (!tried_adapter) {
+    tried_adapter = true;
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> base_adapter;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&base_adapter)))) {
+      base_adapter.As(&adapter);
+    }
+  }
+  DXGI_QUERY_VIDEO_MEMORY_INFO memory = {};
+  if (!adapter || FAILED(adapter->QueryVideoMemoryInfo(
+                      0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memory)) || !memory.Budget) {
+    return 0;  // unknown budget is not a zero budget
+  }
+  return memory.CurrentUsage > memory.Budget ? memory.CurrentUsage - memory.Budget : 0;
+}
+
 // Regions are rounded out to this granularity so that the many small
 // suballocated fetches inside one pool coalesce into a single resource
 // instead of producing thousands of tiny ones.
@@ -127,7 +177,8 @@ void SwapCopyBytes(uint8_t* dst, const uint8_t* src, uint32_t size, BufferSwap s
 }
 
 Microsoft::WRL::ComPtr<ID3D12Resource> BufferCache::AcquireBuffer(D3D12Context& context, uint32_t size,
-                                                                 D3D12_RESOURCE_STATES* out_state) {
+                                                                 D3D12_RESOURCE_STATES* out_state,
+                                                                 uint64_t* out_allocation_bytes) {
   // Reclaim any retired buffers whose fence has passed on the GPU
   const uint64_t completed = context.completed_fence_value();
   size_t w = 0;
@@ -145,9 +196,9 @@ Microsoft::WRL::ComPtr<ID3D12Resource> BufferCache::AcquireBuffer(D3D12Context& 
 
   // Find a suitable buffer in available_buffers_ (best fit)
   int best_idx = -1;
-  uint32_t best_cap = UINT32_MAX;
+  uint64_t best_cap = UINT64_MAX;
   for (size_t i = 0; i < available_buffers_.size(); ++i) {
-    uint32_t cap = available_buffers_[i].capacity;
+    const uint64_t cap = available_buffers_[i].capacity;
     if (cap >= size && cap < best_cap) {
       best_cap = cap;
       best_idx = int(i);
@@ -160,11 +211,20 @@ Microsoft::WRL::ComPtr<ID3D12Resource> BufferCache::AcquireBuffer(D3D12Context& 
     if (out_state) {
       *out_state = available_buffers_[best_idx].state;
     }
+    if (out_allocation_bytes) {
+      *out_allocation_bytes = available_buffers_[best_idx].allocation_bytes;
+    }
+    pooled_bytes_ -= available_buffers_[best_idx].allocation_bytes;
     auto res = std::move(available_buffers_[best_idx].resource);
     available_buffers_[best_idx] = std::move(available_buffers_.back());
     available_buffers_.pop_back();
+    // Reuse the matching allocation before trimming idle memory. Destroying it
+    // first would create a driver allocation precisely when VRAM is pressured.
+    TrimAvailableBuffers(0, BufferMemoryPressure(context.device()));
     return res;
   }
+
+  TrimAvailableBuffers(0, BufferMemoryPressure(context.device()));
 
   // Not found in pool: allocate fresh committed resource
   // Round up to at least 64KB for optimal reuse later
@@ -186,24 +246,54 @@ Microsoft::WRL::ComPtr<ID3D12Resource> BufferCache::AcquireBuffer(D3D12Context& 
     if (out_state) {
       *out_state = D3D12_RESOURCE_STATE_COPY_DEST;
     }
+    if (out_allocation_bytes) {
+      *out_allocation_bytes = BufferAllocationBytes(context.device(), res.Get());
+    }
     return res;
   }
   return nullptr;
 }
 
+void BufferCache::TrimAvailableBuffers(uint64_t incoming_bytes, uint64_t pressure_bytes) {
+  const auto over_cap = [&] {
+    return incoming_bytes > kMaxPooledBufferBytes ||
+           pooled_bytes_ > kMaxPooledBufferBytes - incoming_bytes;
+  };
+  if (available_buffers_.empty() || (!over_cap() && !pressure_bytes)) return;
+  // The available vector contains only fence-completed allocations. Keep the
+  // newest ones for reuse, and release the oldest first without touching any
+  // still-referenced buffer in retired_buffers_.
+  std::sort(available_buffers_.begin(), available_buffers_.end(),
+            [](const PooledBuffer& a, const PooledBuffer& b) {
+              return a.retired_frame > b.retired_frame;
+            });
+  while (!available_buffers_.empty() && (over_cap() || pressure_bytes)) {
+    const uint64_t bytes = available_buffers_.back().allocation_bytes;
+    pooled_bytes_ -= bytes;
+    pressure_bytes = bytes >= pressure_bytes ? 0 : pressure_bytes - bytes;
+    available_buffers_.pop_back();
+    ++stats_.pool_evictions;
+  }
+}
+
 void BufferCache::RetireBuffer(D3D12Context& context, Microsoft::WRL::ComPtr<ID3D12Resource> resource,
-                               uint32_t size, D3D12_RESOURCE_STATES state) {
+                               uint64_t allocation_bytes, D3D12_RESOURCE_STATES state) {
   if (!resource) return;
-  // Keep up to 8192 idle buffers in the pool (~256-512 MB VRAM max)
-  // to completely eliminate driver allocation locks (NtGdiDdDDICreateAllocation/DestroyAllocation)
-  // during sector streaming.
-  if (available_buffers_.size() + retired_buffers_.size() >= 8192) {
+  // The old count-only cap claimed a 512 MiB maximum, but stored the region's
+  // used bytes as capacity and ignored the actual committed allocation size.
+  const uint64_t capacity = resource->GetDesc().Width;
+  const uint64_t bytes = allocation_bytes;
+  TrimAvailableBuffers(bytes);
+  if (bytes > kMaxPooledBufferBytes || pooled_bytes_ > kMaxPooledBufferBytes - bytes ||
+      available_buffers_.size() + retired_buffers_.size() >= 8192) {
     context.DeferRelease(resource.Detach());
     return;
   }
   // Must tag with current_fence_value() + 1 because the current command list
   // referencing this buffer has not been submitted yet!
-  retired_buffers_.push_back({std::move(resource), size, context.current_fence_value() + 1, state});
+  retired_buffers_.push_back({std::move(resource), capacity, bytes,
+                              context.current_fence_value() + 1, state, frame_});
+  pooled_bytes_ += bytes;
 }
 
 void BufferCache::Shutdown(D3D12Context& context) {
@@ -229,9 +319,11 @@ void BufferCache::Shutdown(D3D12Context& context) {
     }
   }
   retired_buffers_.clear();
+  pooled_bytes_ = 0;
   if (zero_stream_) {
     context.DeferRelease(zero_stream_.Detach());
   }
+  zero_stream_bytes_ = 0;
 }
 
 namespace {
@@ -629,15 +721,15 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       // streaming any more: put it back under the watch, which costs one
       // VirtualProtect instead of a hash per frame. Only frames where blocks
       // were really re-hashed count, so a second draw binding the same blocks
-      // cannot inflate the streak. With the sticky classifier, a demote_frames
-      // of 0 keeps a streaming region off the watch for good.
+      // cannot inflate the streak. Sticky lifetimes, including demote_frames=0,
+      // require exact hashes: sampled regions must return to the write watch.
       if (region->streaming && checked_any) {
         if (region->dirty) {
           region->clean_streak = 0;
         } else {
           ++stats_.streaming_clean;
           const uint32_t demote_after =
-              REXCVAR_GET(mcla_native_gfx_streaming_sticky)
+              (REXCVAR_GET(mcla_native_gfx_streaming_sticky) && region->exact_hash)
                   ? REXCVAR_GET(mcla_native_gfx_streaming_demote_frames)
                   : 4u;
           if (demote_after != 0 && ++region->clean_streak >= demote_after) {
@@ -728,7 +820,8 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       auto it = map.find(base);
       if (it != map.end()) {
         if (it->second.resource) {
-          RetireBuffer(context, std::move(it->second.resource), it->second.size, it->second.state);
+          RetireBuffer(context, std::move(it->second.resource), it->second.allocation_bytes,
+                       it->second.state);
         }
         map.erase(it);
         region_index_stale_ = true;
@@ -758,7 +851,8 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
       const uint32_t r_hi = r_lo + it->second.size;
       if (r_lo >= lo && r_hi <= hi) {
         if (it->second.resource) {
-          RetireBuffer(context, std::move(it->second.resource), it->second.size, it->second.state);
+          RetireBuffer(context, std::move(it->second.resource), it->second.allocation_bytes,
+                       it->second.state);
         }
         it = map.erase(it);
         region_index_stale_ = true;
@@ -774,7 +868,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     fresh.size = hi - lo;
     fresh.exact_hash = exact_inline;
     D3D12_RESOURCE_STATES initial_state = D3D12_RESOURCE_STATE_COPY_DEST;
-    fresh.resource = AcquireBuffer(context, fresh.size, &initial_state);
+    fresh.resource = AcquireBuffer(context, fresh.size, &initial_state, &fresh.allocation_bytes);
     if (!fresh.resource) {
       REXLOG_ERROR("[native_gfx] buffer region creation failed ({:#010x}+{})", fresh.base,
                    fresh.size);
@@ -847,6 +941,7 @@ D3D12_GPU_VIRTUAL_ADDRESS BufferCache::ZeroStreamAddress(D3D12Context& context) 
     REXLOG_ERROR("[native_gfx] zero vertex stream creation failed");
     return 0;
   }
+  zero_stream_bytes_ = BufferAllocationBytes(context.device(), zero_stream_.Get());
   return zero_stream_->GetGPUVirtualAddress();
 }
 
@@ -867,9 +962,10 @@ void BufferCache::ReportPeriodic() {
   uint64_t bytes = 0;
   Census(regions, bytes);
   REXLOG_INFO(
-      "[native_gfx] BufferCache @frame {}: regions={} bytes={} KiB | verify: regions={} "
+      "[native_gfx] BufferCache @frame {}: buffers={} allocated={} KiB | verify: regions={} "
       "MB={} CAUGHT={} (streaming={}) | since last: hits={} "
-      "uploads={} reuploads={} (from unlock={}) merges={} declined={} pool_hits={} pool_allocs={} | {}",
+      "uploads={} reuploads={} (from unlock={}) merges={} declined={} pool_hits={} pool_allocs={} "
+      "pool_evicts={} idle={} KiB | {}",
       frames, regions, bytes >> 10, stats_.verify_regions - prev.verify_regions,
       (stats_.verify_bytes - prev.verify_bytes) >> 20, stats_.verify_catches - prev.verify_catches,
       stats_.verify_catches_streaming - prev.verify_catches_streaming,
@@ -878,6 +974,7 @@ void BufferCache::ReportPeriodic() {
       stats_.unlock_invalidations - prev.unlock_invalidations, stats_.merges - prev.merges,
       stats_.merge_declined - prev.merge_declined,
       stats_.pool_hits - prev.pool_hits, stats_.pool_allocations - prev.pool_allocations,
+      stats_.pool_evictions - prev.pool_evictions, pooled_bytes_ >> 10,
       DrawRejectionSummary());
   // The rejection counters are the only thing that says WHICH gate closed on a
   // frame that recorded nothing, and REXLOG only reaches stdout -- which is
@@ -893,10 +990,18 @@ void BufferCache::Census(size_t& count, uint64_t& bytes) const {
   count = 0;
   bytes = 0;
   for (const RegionMap& map : regions_) {
-    count += map.size();
     for (const auto& [base, r] : map) {
-      bytes += r.size;
+      if (r.resource) {
+        ++count;
+        bytes += r.allocation_bytes;
+      }
     }
+  }
+  count += available_buffers_.size() + retired_buffers_.size();
+  bytes += pooled_bytes_;
+  if (zero_stream_) {
+    ++count;
+    bytes += zero_stream_bytes_;
   }
 }
 
@@ -1102,7 +1207,11 @@ void BufferCache::ApplyPendingInvalidations() {
       // dynamic buffer) still counts as a streak. Without it such a region
       // never reaches the threshold and pays a fault, a re-arm and a
       // re-upload on every write, for as long as it lives.
-      const uint64_t gap = REXCVAR_GET(mcla_native_gfx_streaming_sticky) ? 2u : 1u;
+      // Longer off-watch lifetimes are safe only with full-byte verification.
+      // A sampled hash may miss a write, so it keeps the measured non-sticky
+      // promotion and four-clean-frame demotion policy regardless of config.
+      const uint64_t gap =
+          (REXCVAR_GET(mcla_native_gfx_streaming_sticky) && r.exact_hash) ? 2u : 1u;
       r.dirty_streak = (r.dirty_frame + gap >= frame_) ? r.dirty_streak + 1u : 1u;
       r.dirty_frame = frame_;
       const uint32_t threshold = REXCVAR_GET(mcla_native_gfx_streaming_frames);

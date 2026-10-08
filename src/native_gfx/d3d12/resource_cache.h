@@ -137,6 +137,7 @@ class BufferCache {
     uint64_t demotion_resends = 0;  // streaming -> watched, re-sent after arming
     uint64_t pool_hits = 0;
     uint64_t pool_allocations = 0;
+    uint64_t pool_evictions = 0;
     // Why the most recent Resolve failed. Without this a failure is just
     // "could not be resolved", which names five different causes.
     const char* last_failure = nullptr;
@@ -194,7 +195,8 @@ class BufferCache {
 
   const Stats& stats() const { return stats_; }
 
-  // Live regions and the bytes they occupy, for the memory census.
+  // Actual committed buffer allocations: live regions, idle/retired pool and
+  // zero stream. Region extents undercount their 64 KiB allocation padding.
   void Census(size_t& count, uint64_t& bytes) const;
 
   // TEMP DIAG (MESHSTALE): does the region backing this range still match the
@@ -226,6 +228,7 @@ class BufferCache {
     Microsoft::WRL::ComPtr<ID3D12Resource> resource;
     uint32_t base = 0;
     uint32_t size = 0;
+    uint64_t allocation_bytes = 0;
     bool dirty = true;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
     // Hash of the guest bytes as they were last uploaded. Only read by the
@@ -364,21 +367,30 @@ class BufferCache {
   // Shared all-zero vertex stream. A default-heap buffer is zero-initialised by
   // D3D12 on creation, so it needs no upload.
   Microsoft::WRL::ComPtr<ID3D12Resource> zero_stream_;
+  uint64_t zero_stream_bytes_ = 0;
 
   // Buffer recycling pool: prevents constant committed resource allocation/destruction
   struct PooledBuffer {
     Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-    uint32_t capacity = 0;
+    uint64_t capacity = 0;
+    uint64_t allocation_bytes = 0;
     uint64_t fence_value = 0;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+    uint64_t retired_frame = 0;
   };
   std::vector<PooledBuffer> retired_buffers_;
   std::vector<PooledBuffer> available_buffers_;
+  uint64_t pooled_bytes_ = 0;
+
+  // Only completed buffers can leave the recycling pool. Pending GPU work
+  // keeps its fence and state even when the idle budget is under pressure.
+  void TrimAvailableBuffers(uint64_t incoming_bytes, uint64_t pressure_bytes = 0);
 
   Microsoft::WRL::ComPtr<ID3D12Resource> AcquireBuffer(D3D12Context& context, uint32_t size,
-                                                       D3D12_RESOURCE_STATES* out_state = nullptr);
+                                                       D3D12_RESOURCE_STATES* out_state = nullptr,
+                                                       uint64_t* out_allocation_bytes = nullptr);
   void RetireBuffer(D3D12Context& context, Microsoft::WRL::ComPtr<ID3D12Resource> resource,
-                    uint32_t size, D3D12_RESOURCE_STATES state);
+                    uint64_t allocation_bytes, D3D12_RESOURCE_STATES state);
 
   Stats stats_;
 };

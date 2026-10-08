@@ -702,7 +702,9 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_streaming_sticky, false, "MCLA/NativeGfx",
-                    "Hysteresis for the streaming classifier above. Promotion counts a region "
+                    "Hysteresis for fully hashed regions only. Sampled-hash geometry keeps the "
+                    "normal four-frame demotion so old configurations cannot leave it permanently "
+                    "outside the write watch. Promotion counts an exact-hash region "
                     "written every other frame as a streak (a double-buffered dynamic buffer "
                     "never had two consecutive dirty frames, so it stayed watched and paid a "
                     "fault, a VirtualProtect and a re-upload on every write), and demotion "
@@ -714,14 +716,15 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_streaming_sticky, false, "MCLA/NativeGfx",
                     "above noise -- and with it on for a whole session stale meshes showed up "
                     "(stretched triangles across the screen, HUD pieces missing): more regions "
                     "off the watch means more rewrites left to the sampled hash, which misses "
-                    "them. Keep it off.")
+                    "them. Sampled-hash regions therefore ignore this setting.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_demote_frames, 30, "MCLA/NativeGfx",
-                      "With mcla_native_gfx_streaming_sticky on: clean frames (frames in which "
+                      "With mcla_native_gfx_streaming_sticky on, for fully hashed regions: clean frames (frames in which "
                       "the region was drawn and its hashed blocks matched) before a streaming "
                       "region goes back under the write watch. 0 never puts it back, which "
-                      "leaves every rewrite of the region to the sampled hash alone.")
+                      "leaves every rewrite to the full hash. Sampled-hash geometry always demotes "
+                      "after four clean frames regardless of this value.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_state_cache, true, "MCLA/NativeGfx",
