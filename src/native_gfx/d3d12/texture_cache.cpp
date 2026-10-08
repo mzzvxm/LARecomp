@@ -98,6 +98,8 @@ void TextureCache::Shutdown(D3D12Context& context) {
     }
   }
   entries_.clear();
+  failed_upload_keys_.clear();
+  failed_upload_frame_ = ~0ull;
   range_index_stale_ = true;
   stats_.live_bytes = 0;
 }
@@ -651,13 +653,21 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       }
     }
     if (it != entries_.end()) {
-      it->second.last_use_frame = context.frame_index();
+      it->second.last_use_frame = game_frame_;
       ++stats_.hits;
       if (out_source) {
         *out_source = TextureSource::kGuestDecode;
       }
       return it->second.resource.Get();
     }
+  }
+
+  if (failed_upload_frame_ != context.frame_index()) {
+    failed_upload_frame_ = context.frame_index();
+    failed_upload_keys_.clear();
+  } else if (failed_upload_keys_.contains(key)) {
+    ++stats_.upload_retry_skips;
+    return nullptr;
   }
 
   const uint32_t width_blocks = (fetch.width + fi.block_width - 1) / fi.block_width;
@@ -821,6 +831,48 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   }
   const uint32_t total_levels = level_count + generated_levels;
 
+  // Reserve the whole chain before creating a resource or recording a copy.
+  // Per-level allocations used to leave a COPY_DEST entry in the cache when a
+  // later mip ran out of ring space; the next draw then treated it as a hit.
+  // Generated mips must fit too: the SRV exposes every level declared below.
+  constexpr uint64_t kPlacementAlignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+  auto append_upload_size = [](uint64_t& offset, uint64_t size) {
+    offset = (offset + kPlacementAlignment - 1) & ~(kPlacementAlignment - 1);
+    offset += size;
+  };
+  uint64_t chain_upload_size = 0;
+  for (uint32_t level = 0; level < level_count; ++level) {
+    append_upload_size(chain_upload_size, plans[level].upload_size);
+  }
+  {
+    uint32_t w = fetch.width, h = fetch.height;
+    for (uint32_t i = 0; i < generated_levels; ++i) {
+      w = std::max(1u, w / 2u);
+      h = std::max(1u, h / 2u);
+      append_upload_size(chain_upload_size, uint64_t(Align(w * 4u, kUploadRowAlignment)) * h);
+    }
+  }
+  D3D12Context::UploadAlloc chain_upload;
+  if (!context.AllocateUpload(chain_upload_size, kPlacementAlignment, chain_upload,
+                              D3D12Context::UploadTag::kTexture)) {
+    failed_upload_keys_.insert(key);
+    ++stats_.upload_ring_failures;
+    ++stats_.decode_failures;
+    NoteResolveFailure(fetch, "complete mip chain upload ring allocation failed");
+    return nullptr;
+  }
+  uint64_t chain_upload_offset = 0;
+  auto next_upload = [&](uint64_t size) {
+    chain_upload_offset =
+        (chain_upload_offset + kPlacementAlignment - 1) & ~(kPlacementAlignment - 1);
+    D3D12Context::UploadAlloc staging = chain_upload;
+    staging.cpu = static_cast<uint8_t*>(chain_upload.cpu) + chain_upload_offset;
+    staging.gpu += chain_upload_offset;
+    staging.offset += chain_upload_offset;
+    chain_upload_offset += size;
+    return staging;
+  };
+
   // Yardstick for the chain above: how many fetches carry mip data at all, and
   // how many levels we ended up able to supply.
   {
@@ -838,10 +890,19 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     }
   }
 
-  Entry& e = entries_[key];
+  // An unpublished entry owns the upload until every declared mip is ready.
+  // A decoder failure after recorded copies must still retire the resource
+  // behind their final fence, but it must never become a subsequent cache hit.
+  Entry e;
   e.fetch = fetch;
   e.host_generated_mips = generated_levels != 0;
-  e.last_use_frame = context.frame_index();
+  e.last_use_frame = game_frame_;
+  auto abort_upload = [&]() -> ID3D12Resource* {
+    if (e.resource) {
+      context.DeferRelease(e.resource.Detach());
+    }
+    return nullptr;
+  };
   if (!e.resource) {
     D3D12_RESOURCE_DESC desc = {};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -858,8 +919,6 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       context.ReportCreateFailure("texture", hr);
       REXLOG_ERROR("[native_gfx] texture creation failed ({}x{} fmt {})", fetch.width,
                    fetch.height, fetch.format);
-      entries_.erase(key);
-      NoteIndexRemoval();
       ++stats_.decode_failures;
       NoteResolveFailure(fetch, "D3D12 texture creation failed");
       return nullptr;
@@ -870,7 +929,6 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     const D3D12_RESOURCE_ALLOCATION_INFO info =
         context.device()->GetResourceAllocationInfo(0, 1, &desc);
     e.bytes = info.SizeInBytes;
-    stats_.live_bytes += e.bytes;
   }
 
   // Texture fetch constants carry PHYSICAL addresses (the Xenos reads memory
@@ -899,15 +957,9 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     if (!src) {
       ++stats_.decode_failures;
       NoteResolveFailure(fetch, "physical translation null");
-      return nullptr;
+      return abort_upload();
     }
-    D3D12Context::UploadAlloc staging;
-    if (!context.AllocateUpload(p.upload_size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, staging,
-                                D3D12Context::UploadTag::kTexture)) {
-      ++stats_.decode_failures;
-      NoteResolveFailure(fetch, "upload ring allocation failed");
-      return nullptr;
-    }
+    const D3D12Context::UploadAlloc staging = next_upload(p.upload_size);
     // The staging ring is an UPLOAD heap: write-combined, so every CPU read of
     // it is uncached. The endian swap below works in place (read + write) and
     // the generated-mip base copy reads it back, and together they were 16% of
@@ -1128,11 +1180,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       const uint32_t h = prev_h > 1 ? prev_h / 2 : 1;
       const uint32_t pitch =
           (w * 4u + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
-      D3D12Context::UploadAlloc staging;
-      if (!context.AllocateUpload(size_t(pitch) * h, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
-                                  staging, D3D12Context::UploadTag::kTexture)) {
-        break;  // sem espaco no ring: a cadeia para aqui, os niveis ja subidos valem
-      }
+      const D3D12Context::UploadAlloc staging = next_upload(uint64_t(pitch) * h);
       // Same write-combined trap as the level decode: build the level in cached
       // memory, then stream it to the ring, instead of reading the ring back
       // into `prev` for the next reduction.
@@ -1198,11 +1246,6 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // half-decoded upload resident for the rest of the session.
   e.guest_base = fetch.base_address;
   e.guest_size = src_size;
-  if (REXCVAR_GET(mcla_native_gfx_texinv_incremental) && !range_index_stale_) {
-    IndexAdd(key, e);
-  } else {
-    range_index_stale_ = true;
-  }
   // Sampled hash of the bytes this decode read, so a later Resolve can tell
   // whether guest memory has moved on. The watch alone is not enough: measured,
   // the minimap mask's entry held a different texture for the whole session
@@ -1214,15 +1257,23 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       e.content_hash = HashGuestSampled(g, src_size);
     }
   }
-  WatchEntry(e);
+  Entry& resident = entries_[key];
+  resident = std::move(e);
+  stats_.live_bytes += resident.bytes;
+  if (REXCVAR_GET(mcla_native_gfx_texinv_incremental) && !range_index_stale_) {
+    IndexAdd(key, resident);
+  } else {
+    range_index_stale_ = true;
+  }
+  WatchEntry(resident);
   // Take the pointer before evicting: EvictToBudget erases entries, and while it
-  // never touches one used this frame (this one), the reference `e` must not
-  // outlive the call.
-  ID3D12Resource* uploaded = e.resource.Get();
+  // never touches one used this guest frame (this one), the reference
+  // `resident` must not outlive the call.
+  ID3D12Resource* uploaded = resident.resource.Get();
   if (out_source) {
     *out_source = TextureSource::kGuestDecode;
   }
-  EvictToBudget(context, context.frame_index());
+  EvictToBudget(context, game_frame_);
   return uploaded;
 }
 

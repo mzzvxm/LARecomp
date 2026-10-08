@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -125,6 +126,8 @@ class TextureCache {
     uint64_t stale_gpu_addresses = 0;  // TEMP INSTRUMENTATION  // served by the RT bridge
     uint64_t unsupported_format = 0;  // real errors
     uint64_t decode_failures = 0;
+    uint64_t upload_ring_failures = 0;  // complete chains that did not fit the batch
+    uint64_t upload_retry_skips = 0;    // same fetch refused again before the ring reset
     uint64_t evictions = 0;      // entries dropped to stay inside the budget
     uint64_t evicted_bytes = 0;
     // Entries dropped because the guest rewrote the memory they decoded. A
@@ -212,7 +215,7 @@ class TextureCache {
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
     // For the budget: what this entry costs and when it was last needed.
     uint64_t bytes = 0;
-    uint64_t last_use_frame = 0;
+    uint64_t last_use_frame = 0;  // guest frame, not the submitted-batch index
     // Guest extent this entry decoded, so an invalidation can tell whether a
     // write landed inside it.
     uint32_t guest_base = 0;
@@ -248,9 +251,9 @@ class TextureCache {
                                                          uint32_t length, bool exact_range);
 
   // Drops least-recently-used entries until the cache fits the budget. Entries
-  // touched during `current_frame` are never evicted: their SRVs are already in
-  // this frame's descriptor heap and the draws referencing them are still being
-  // recorded. Everything else is safe because the release is fence-gated
+  // touched during `current_frame` (a guest frame) are never evicted: later
+  // batches of the same frame can still reuse their SRVs. Everything else is
+  // safe because the release is fence-gated
   // (DeferRelease), so the resource outlives any command list still using it.
   void EvictToBudget(D3D12Context& context, uint64_t current_frame);
 
@@ -322,6 +325,12 @@ class TextureCache {
   bool pending_overflow_logged_ = false;
   Stats stats_;
   uint64_t game_frame_ = 1;
+  // Failed ring reservations cannot succeed until the submitted batch changes:
+  // no space is returned to an open batch. Avoid redoing the same texture's
+  // preparation for every subsequent draw while leaving smaller fetches free
+  // to use whatever space remains.
+  uint64_t failed_upload_frame_ = ~0ull;
+  std::unordered_set<uint64_t> failed_upload_keys_;
   uint64_t VerifyEpoch(const D3D12Context& context) const;
 };
 

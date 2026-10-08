@@ -133,6 +133,9 @@ void TextureBinder::BeginFrame() {
   // This eliminates CreateSampler driver overhead during steady gameplay.
 
   memo_valid_ = false;
+  // Paired with TextureCache::BeginGameFrame at the guest frame boundary.
+  // Any hit below was resolved in this guest frame already, so its texture
+  // stays protected from budget eviction across later submission batches.
   ++slot_cache_generation_;
 }
 
