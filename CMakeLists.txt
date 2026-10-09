@@ -215,6 +215,54 @@ else()
     # TARGET_RUNTIME_DLLS does not see it.
     rexglue_setup_target(larecomp GPU_PLUGINS xenos)
 
+    # The Plume renderer, src/gpu.
+    # Every backend the platform has is built in -- D3D12 and Vulkan on Windows,
+    # Vulkan elsewhere -- and the SDK's graphics_backend cvar picks one at
+    # startup; the host shaders are compiled once per
+    # backend format. Plume itself is the submodule thirdparty/plume: the
+    # project's fork (mzzvxm/plume, branch larecomp) of the zolaware revision
+    # reblue ships (SDL3 Vulkan path, fill mode, R11G11B10/D24S8), plus the
+    # teardown leak fixes; the host shaders are compiled by
+    # the dxc of the submodule thirdparty/dxc-bin (renderbag, the revision reblue
+    # and reeot use). Off outside Windows until that path has been compiled.
+    if(WIN32)
+        set(_larecomp_gpu_default ON)
+    else()
+        set(_larecomp_gpu_default OFF)
+    endif()
+    option(LARECOMP_GPU "Build the Plume renderer (src/gpu)" ${_larecomp_gpu_default})
+    if(LARECOMP_GPU)
+        # Metal is not wired.
+        if(WIN32)
+            set(LARECOMP_GPU_BACKENDS D3D12 VULKAN)
+        else()
+            set(LARECOMP_GPU_BACKENDS VULKAN)
+        endif()
+        foreach(_larecomp_gpu_dep plume/plume_render_interface.h dxc-bin/CMakeLists.txt)
+            if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/${_larecomp_gpu_dep}")
+                message(FATAL_ERROR "thirdparty/${_larecomp_gpu_dep} is missing: "
+                                    "git submodule update --init --recursive")
+            endif()
+        endforeach()
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            # Plume builds the Vulkan surface through the SDK's SDL3 window.
+            set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
+        endif()
+        add_subdirectory(thirdparty/plume EXCLUDE_FROM_ALL)
+        # Defines DIRECTX_DXC_TOOL. Skipped if something else already brought
+        # the same dxc-bin in (an in-tree XenosRecomp carries it too).
+        if(NOT TARGET Microsoft::DirectXShaderCompiler)
+            add_subdirectory(thirdparty/dxc-bin EXCLUDE_FROM_ALL)
+        endif()
+        add_subdirectory(src/gpu)
+        # The renderer's objects, and plume's archive without plume's include
+        # directories in larecomp's own translation units (CMP0131 is NEW with
+        # cmake_minimum_required 3.25). The rest of larecomp sees only gpu.h.
+        target_link_libraries(larecomp PRIVATE larecomp_gpu $<LINK_ONLY:plume>)
+        target_compile_definitions(larecomp PRIVATE LARECOMP_HAS_GPU=1)
+        message(STATUS "larecomp: Plume renderer (src/gpu) built for ${LARECOMP_GPU_BACKENDS}")
+    endif()
+
     # rexglue 0.7.4
     if(WIN32)
         # The native_gfx diagnostics use std::fopen on purpose (append-only text

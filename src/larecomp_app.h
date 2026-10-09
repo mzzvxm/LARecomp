@@ -16,6 +16,9 @@
 #include "native_gfx/native_gfx.h"
 #include "native_gfx/d3d12/device_manager.h"
 #include "native_gfx/d3d12/swapchain.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gpu.h"
+#endif
 
 REXCVAR_DECLARE(bool, mcla_native_gfx);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
@@ -317,6 +320,15 @@ class LarecompApp : public rex::ReXApp {
     if (!mcla::native_gfx::nocp::WantNoCommandProcessor()) {
       return nullptr;
     }
+#if defined(LARECOMP_HAS_GPU)
+    // The Plume renderer owns the window, so the D3D12Provider the line below
+    // would create (the SDK presenter's device) must not exist. Its drawer
+    // records the overlay frames that the renderer draws on its render thread;
+    // it needs no device, which does not exist yet at this point.
+    if (mcla::gpu::Enabled()) {
+      return mcla::gpu::CreateOverlayDrawer();
+    }
+#endif
     return mcla::native_gfx::nocp::CreateImmediateDrawer();
   }
 
@@ -355,6 +367,16 @@ class LarecompApp : public rex::ReXApp {
       return false;
     }
 
+#if defined(LARECOMP_HAS_GPU)
+    // mcla_gpu: the Plume renderer creates its own device and the only swap
+    // chain on this window, so none of the D3D12 presentation below may run.
+    // The base has already built the ImGui drawer on CreateOverlayDrawer's
+    // drawer; the renderer runs its passes from here on.
+    if (mcla::gpu::Enabled()) {
+      return mcla::gpu::Startup(window(), app_context(), imgui_drawer());
+    }
+#endif
+
 #if defined(_WIN32)
     if (REXCVAR_GET(mcla_native_gfx) || mcla::native_gfx::nocp::WantNoCommandProcessor()) {
       if (REXCVAR_GET(mcla_native_gfx_own_device)) {
@@ -382,10 +404,31 @@ class LarecompApp : public rex::ReXApp {
                                                       immediate_drawer());
   }
 
+  void OnWindowPixelSizeChanged(uint32_t pixel_width, uint32_t pixel_height) override {
+    rex::ReXApp::OnWindowPixelSizeChanged(pixel_width, pixel_height);
+#if defined(LARECOMP_HAS_GPU)
+    mcla::gpu::RequestResize();
+#endif
+  }
+
+  // A normal window close never reaches OnShutdown: ReXApp::OnClosing
+  // terminates the title and _Exit()s. This runs first, on the UI thread, so
+  // the Plume renderer stops its render thread, drains the GPU and gives the
+  // swap chain back before the process dies.
+  bool OnWindowCloseRequested() override {
+#if defined(LARECOMP_HAS_GPU)
+    mcla::gpu::Shutdown();
+#endif
+    return rex::ReXApp::OnWindowCloseRequested();
+  }
+
   void OnShutdown() override {
     // Closing the window while the boot content build runs: let it finish
     // writing the mod archive before the process goes, as it always did.
     larecomp::WaitForBootBuild();
+#if defined(LARECOMP_HAS_GPU)
+    mcla::gpu::Shutdown();
+#endif
 #if defined(_WIN32)
     mcla::native_gfx::NativeSwapChain::Instance().Shutdown();
     mcla::native_gfx::DeviceManager::Instance().Shutdown();
