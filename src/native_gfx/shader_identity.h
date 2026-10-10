@@ -60,6 +60,13 @@ size_t NormalizeVertexFetches(uint8_t* ucode, size_t size);
 // srcSwizzle (bits 30-31). Only constIndex/constIndexSelect are rewritten.
 bool HasComputedVertexFetchIndex(const uint8_t* ucode, size_t size);
 
+// The same test without the identity memo below: a pure function of the bytes,
+// for callers that keep an exact cache of their own (src/gpu/guest_capture.cpp).
+// `ucode` must be the raw bytes, not a normalized copy (normalizing clears the
+// source register this reads). Same answer as HasComputedVertexFetchIndex for
+// the same bytes.
+bool ProbeComputedVertexFetchIndex(const uint8_t* ucode, size_t size);
+
 // The runtime shader identity: copy, normalize, hash. `ucode` is the raw
 // big-endian microcode as read from guest memory (D3D shader object).
 // Returns 0 for degenerate input (null/empty/oversized).

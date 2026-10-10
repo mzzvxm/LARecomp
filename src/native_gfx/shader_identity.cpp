@@ -221,6 +221,13 @@ bool HasComputedVertexFetchIndex(const uint8_t* ucode, size_t size) {
   return Resolve(ucode, size).computed_fetch_index;
 }
 
+bool ProbeComputedVertexFetchIndex(const uint8_t* ucode, size_t size) {
+  if (!UsableUcode(ucode, size)) {
+    return false;
+  }
+  return ProbeComputedFetchIndex(ucode, size);
+}
+
 }  // namespace mcla::native_gfx
 
 #endif // REXGLUE_HAS_XEO3_TARGET
