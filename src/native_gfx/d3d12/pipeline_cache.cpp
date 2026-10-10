@@ -403,7 +403,7 @@ void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
   }
 }
 
-void PipelineCache::SaveLibrary() {
+void PipelineCache::SaveLibraryAtShutdown() {
   if (!pipeline_library_ || !library_dirty_ || library_path_.empty()) {
     return;
   }
@@ -449,6 +449,9 @@ void PipelineCache::SaveLibrary() {
 }
 
 bool PipelineCache::Initialize(D3D12Context& context) {
+  if (closing_) {
+    return false;
+  }
   if (root_signature_) {
     InitializePipelineLibrary(context);
     return true;
@@ -580,9 +583,15 @@ bool PipelineCache::Initialize(D3D12Context& context) {
   return true;
 }
 
+void PipelineCache::PersistBeforeExit() {
+  closing_ = true;
+  SaveLibraryAtShutdown();
+}
+
 void PipelineCache::Shutdown(D3D12Context& context) {
-  SaveLibrary();
+  SaveLibraryAtShutdown();
   pipeline_library_.Reset();
+  library_dirty_ = false;
   for (auto& [key, pso] : pipelines_) {
     if (pso) {
       context.DeferRelease(pso.Detach());
@@ -598,6 +607,9 @@ ID3D12PipelineState* PipelineCache::GetOrCreate(D3D12Context& context, const Pso
                                                 const ShaderBytecode& vs,
                                                 const ShaderBytecode& ps,
                                                 const GeometrySnapshot& geometry) {
+  if (closing_) {
+    return nullptr;
+  }
   if (mru_pso_ && key == mru_key_) {
     ++stats_.hits;
     return mru_pso_;

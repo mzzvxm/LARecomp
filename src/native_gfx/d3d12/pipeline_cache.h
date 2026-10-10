@@ -122,15 +122,20 @@ class PipelineCache {
   };
 
   PipelineCache() = default;
-  ~PipelineCache() { SaveLibrary(); }
+  ~PipelineCache() { SaveLibraryAtShutdown(); }
 
   bool Initialize(D3D12Context& context);
+  // Call only after the guest renderer has stopped using the cache. Disk
+  // persistence is deliberately restricted to shutdown: serializing the whole
+  // library on a frame boundary stalls the thread that draws the streamed city.
   void Shutdown(D3D12Context& context);
+  // The SDK's normal window close uses _Exit and skips destructors. Call from
+  // the close-request listener under the renderer's exclusive gate, before
+  // that exit. Later callers cannot create or store another pipeline.
+  void PersistBeforeExit();
 
   ID3D12RootSignature* root_signature() const { return root_signature_.Get(); }
   ID3D12PipelineLibrary* pipeline_library() const { return pipeline_library_.Get(); }
-  bool is_library_dirty() const { return library_dirty_; }
-  void SaveLibrary();
 
   // Builds the key for a draw from the pieces already captured.
   static void MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
@@ -155,6 +160,9 @@ class PipelineCache {
 
  private:
   void InitializePipelineLibrary(D3D12Context& context);
+  // No concurrent Load/Store calls are allowed while saving. Keeping this
+  // private prevents frame-boundary callers from reintroducing synchronous I/O.
+  void SaveLibraryAtShutdown();
 
   // The cache file the pipeline library was created from. D3D12 keeps a
   // pointer to these bytes instead of copying them, so they have to outlive
@@ -167,6 +175,7 @@ class PipelineCache {
   ID3D12PipelineState* mru_pso_ = nullptr;
   Microsoft::WRL::ComPtr<ID3D12PipelineLibrary> pipeline_library_;
   bool library_dirty_ = false;
+  bool closing_ = false;
   std::string library_path_;
   Stats stats_;
 };

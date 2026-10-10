@@ -1005,13 +1005,36 @@ class RenderGateGuard {
       AcquireSRWLockExclusive(&g_render_gate);
     }
   }
+  explicit RenderGateGuard(uint32_t max_wait_ms) : acquired_(false) {
+    if (t_render_gate_depth != 0) {
+      ++t_render_gate_depth;
+      acquired_ = true;
+      return;
+    }
+    const ULONGLONG started = GetTickCount64();
+    for (;;) {
+      if (TryAcquireSRWLockExclusive(&g_render_gate)) {
+        t_render_gate_depth = 1;
+        acquired_ = true;
+        return;
+      }
+      if (GetTickCount64() - started >= max_wait_ms) {
+        return;
+      }
+      Sleep(1);
+    }
+  }
   ~RenderGateGuard() {
-    if (--t_render_gate_depth == 0) {
+    if (acquired_ && --t_render_gate_depth == 0) {
       ReleaseSRWLockExclusive(&g_render_gate);
     }
   }
+  explicit operator bool() const { return acquired_; }
   RenderGateGuard(const RenderGateGuard&) = delete;
   RenderGateGuard& operator=(const RenderGateGuard&) = delete;
+
+ private:
+  bool acquired_ = true;
 };
 
 // The host thread that last ran a frame boundary, for the write-back log.
@@ -1025,6 +1048,10 @@ bool TryInitialize() {
   if (!runtime) {
     REXLOG_ERROR("[native_gfx] no Runtime instance");
     return false;
+  }
+  if (REXCVAR_GET(mcla_native_gfx_streaming_sticky)) {
+    REXLOG_INFO("[native_gfx] streaming hysteresis applies only to fully hashed buffers; "
+                "sampled geometry keeps four-frame write-watch demotion");
   }
   // Where the D3D12 provider and presenter come from, and the difference is
   // the whole point of the no-command-processor mode.
@@ -2543,6 +2570,17 @@ void NoteD3DTextureCreated(const uint8_t* base, uint32_t d3d_texture_va) {
   NoteTextureCreate(base, d3d_texture_va);
 }
 
+void NotifyWindowCloseRequested() {
+  // The SDK deliberately exits without waiting for a stuck renderer. Preserve
+  // that escape path if a draw is holding the gate while waiting on a GPU fence.
+  RenderGateGuard gate(250);
+  if (!gate) {
+    REXLOG_WARN("[native_gfx] skipping PSO persistence on close: render gate busy for 250 ms");
+    return;
+  }
+  g_pipelines.PersistBeforeExit();
+}
+
 void NotifyFrameBoundary() {
   RenderGateGuard gate;
   g_render_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
@@ -2552,12 +2590,9 @@ void NotifyFrameBoundary() {
   // ones -- different bugs, different fixes.
   g_buffers.ReportPeriodic();
 
-  if (g_pipelines.is_library_dirty()) {
-    static uint32_t pso_save_tick = 0;
-    if ((++pso_save_tick % 300u) == 0u) {
-      g_pipelines.SaveLibrary();
-    }
-  }
+  // Serialize and persist PSOs only at shutdown. Serializing the whole driver
+  // library and writing its file here stalled the game's render thread while
+  // it held the render gate, precisely when new sectors made the library dirty.
   {
     static uint64_t pso_report = 0;
     if ((pso_report++ % 600u) == 0u) {

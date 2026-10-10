@@ -16,8 +16,10 @@
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/ui/presenter.h>
 #include <rex/ui/window.h>
+#include <rex/ui/window_listener.h>
 
 #include "guest_gpu.h"
+#include "../native_gfx.h"
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 
@@ -74,6 +76,18 @@ namespace {
 // path that ends in _Exit.
 std::unique_ptr<rex::ui::d3d12::D3D12Provider> g_provider;
 std::unique_ptr<rex::ui::Presenter> g_presenter;
+
+// OnClosing is too late: the app listener can already have called _Exit.
+// Close requests reach every listener before that path. Registration happens
+// on the UI thread in AttachPresentation; this object outlives the window.
+class PipelineCacheCloseListener final : public rex::ui::WindowListener {
+ public:
+  bool OnCloseRequested(rex::ui::UIEvent&) override {
+    NotifyWindowCloseRequested();
+    return true;
+  }
+};
+PipelineCacheCloseListener g_pipeline_close_listener;
 
 }  // namespace
 
@@ -159,6 +173,9 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateImmediateDrawer() {
 
 bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer* imgui_drawer,
                         rex::ui::ImmediateDrawer* immediate_drawer) {
+  if (window) {
+    window->AddListener(&g_pipeline_close_listener);
+  }
   if (REXCVAR_GET(mcla_native_gfx_own_swapchain)) {
     REXLOG_INFO("[nocp] native swapchain owns presentation; skipping D3D12Presenter swapchain creation");
     return true;
