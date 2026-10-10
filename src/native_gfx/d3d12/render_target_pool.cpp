@@ -37,6 +37,18 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_resolve_cpu_writes);
 
 namespace mcla::native_gfx {
 
+namespace {
+uint64_t TargetAllocationBytes(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc) {
+  if (!device) return 0;
+  const uint64_t bytes = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+  return bytes == UINT64_MAX ? 0 : bytes;
+}
+
+uint64_t TargetAllocationBytes(ID3D12Device* device, ID3D12Resource* resource) {
+  return resource ? TargetAllocationBytes(device, resource->GetDesc()) : 0;
+}
+}  // namespace
+
 // TEMP DIAG (RECLEAR): see the header. One line per distinct site/shape, then a
 // running tally, so a frame's worth of cascade resolves does not drown the one
 // scene-sized arm that matters.
@@ -333,6 +345,8 @@ void RenderTargetPool::Shutdown(D3D12Context& context) {
     if (t.depth) context.DeferRelease(t.depth.Detach());
   }
   targets_.clear();
+  estimated_target_bytes_ = 0;
+  stats_.bytes_allocated = 0;
   // Colour copies are owned here; depth entries only borrow the pooled target
   // that was already released above, so releasing them again would double-free.
   for (auto& [addr, r] : resolved_) {
@@ -358,26 +372,37 @@ void RenderTargetPool::Shutdown(D3D12Context& context) {
 RenderTargetPool::Census RenderTargetPool::TakeCensus(ID3D12Device* device) const {
   Census c;
   c.targets = targets_.size();
-  c.target_bytes = stats_.bytes_allocated;
   c.resolved = resolved_.size() + resolved_spares_.size();
   c.orphaned = orphaned_resources_.size();
   c.pending_copies = pending_copies_.size();
   c.gpu_produced = gpu_produced_.size();
+  // Resolve aliases can borrow a target or scratch allocation, and multiple
+  // addresses can refer to it. Count each allocation once across all owners.
+  std::set<ID3D12Resource*> accounted;
+  const auto account = [&](ID3D12Resource* resource, uint64_t& bytes) {
+    if (resource && accounted.insert(resource).second) {
+      bytes += TargetAllocationBytes(device, resource);
+    }
+  };
+  for (const auto& [key, target] : targets_) {
+    account(target.color.Get(), c.target_bytes);
+    account(target.depth.Get(), c.target_bytes);
+    account(target.color1.Get(), c.target_bytes);
+  }
+  for (const auto& [key, scratch] : msaa_scratch_) {
+    account(scratch.resource.Get(), c.target_bytes);
+  }
   for (const auto& [addr, r] : resolved_) {
-    if (!r.resource || !r.owned) {
-      continue;  // borrowed entries are already counted in the pool
-    }
-    if (device) {
-      const D3D12_RESOURCE_DESC desc = r.resource->GetDesc();
-      c.resolved_bytes += device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
-    }
+    account(r.resource.Get(), c.resolved_bytes);
+    account(r.packed.Get(), c.resolved_bytes);
+    account(r.packed8888.Get(), c.resolved_bytes);
   }
   for (const auto& spare : resolved_spares_) {
-    if (device && spare.copy.resource) {
-      const D3D12_RESOURCE_DESC desc = spare.copy.resource->GetDesc();
-      c.resolved_bytes += device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
-    }
+    account(spare.copy.resource.Get(), c.resolved_bytes);
+    account(spare.copy.packed.Get(), c.resolved_bytes);
+    account(spare.copy.packed8888.Get(), c.resolved_bytes);
   }
+  for (const auto& resource : orphaned_resources_) account(resource.Get(), c.orphaned_bytes);
   return c;
 }
 
@@ -1812,6 +1837,8 @@ bool RenderTargetPool::EnsureSecondTarget(D3D12Context& context, RenderTarget& t
     // The guest reused this shape with a different second format. Retire the
     // old surface through the fence-gated queue rather than dropping it while a
     // submitted copy may still read it.
+    const uint64_t bytes = TargetAllocationBytes(context.device(), target.color1.Get());
+    stats_.bytes_allocated = bytes <= stats_.bytes_allocated ? stats_.bytes_allocated - bytes : 0;
     context.DeferRelease(target.color1.Detach());
   }
   D3D12_RESOURCE_DESC d = {};
@@ -1837,6 +1864,7 @@ bool RenderTargetPool::EnsureSecondTarget(D3D12Context& context, RenderTarget& t
     return false;
   }
   target.rt1_format = dxgi_format;
+  stats_.bytes_allocated += TargetAllocationBytes(context.device(), target.color1.Get());
   target.color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv1 = target.rtv_heap->GetCPUDescriptorHandleForHeapStart();
   rtv1.ptr += target.rtv_descriptor_size;
@@ -1907,19 +1935,6 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
     return &it->second;
   }
 
-  // Bytes this target would cost: colour (widest format assumed 8 B/px) plus
-  // depth (4 B/px). Approximate on purpose — it is a budget, not an allocator.
-  const uint64_t cost = uint64_t(key.width) * key.height * 12ull;
-  if (targets_.size() >= kMaxTargets || stats_.bytes_allocated + cost > kMaxTargetBytes) {
-    if (++stats_.targets_refused <= 4) {
-      REXLOG_ERROR("[native_gfx] render target budget reached ({} targets, {} MiB); "
-                   "refusing {}x{}",
-                   targets_.size(), stats_.bytes_allocated / (1024 * 1024), key.width,
-                   key.height);
-    }
-    return nullptr;
-  }
-
   RenderTarget t;
   t.key = key;
   t.clear_depth = clear_depth;
@@ -1934,6 +1949,26 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
   d.Format = DXGI_FORMAT(key.rt_format);
   d.SampleDesc.Count = key.sample_count;
   d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  D3D12_RESOURCE_DESC depth_desc = d;
+  depth_desc.Format = DXGI_FORMAT(TypelessForDepth(key.ds_format));
+  depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  // Keep admission compatible with the existing renderer. Actual allocation
+  // bytes are telemetry, not a new rejection rule for MSAA/MRT passes.
+  const uint64_t estimated_cost = uint64_t(key.width) * key.height * 12;
+  if (targets_.size() >= kMaxTargets || estimated_cost > kMaxEstimatedTargetBytes ||
+      estimated_target_bytes_ > kMaxEstimatedTargetBytes - estimated_cost) {
+    if (++stats_.targets_refused <= 4) {
+      REXLOG_ERROR("[native_gfx] render target admission budget reached ({} targets, "
+                   "{} MiB estimated, {} MiB allocated); refusing {}x{} samples={}",
+                   targets_.size(), estimated_target_bytes_ / (1024 * 1024),
+                   stats_.bytes_allocated / (1024 * 1024), key.width, key.height,
+                   key.sample_count);
+    }
+    return nullptr;
+  }
+  // Physical bytes include MSAA, depth format/planes and placement alignment.
+  const uint64_t cost = TargetAllocationBytes(device, d) +
+                        TargetAllocationBytes(device, depth_desc);
   D3D12_CLEAR_VALUE cv = {};
   cv.Format = d.Format;
   std::memcpy(cv.Color, kClearColor, sizeof(cv.Color));
@@ -1949,8 +1984,7 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
 
   // Typeless so the same resource can be a depth target and a shader
   // resource; the DSV below supplies the depth format explicitly.
-  d.Format = DXGI_FORMAT(TypelessForDepth(key.ds_format));
-  d.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  d = depth_desc;
   cv.Format = DXGI_FORMAT(key.ds_format);
   // Must match what the pass actually clears to, or D3D12 drops the fast
   // clear path and warns.
@@ -2001,6 +2035,7 @@ RenderTarget* RenderTargetPool::Acquire(D3D12Context& context, const RenderTarge
   t.depth_shader_format = ShaderFormatForDepth(key.ds_format);
 
   ++stats_.targets_created;
+  estimated_target_bytes_ += estimated_cost;
   stats_.bytes_allocated += cost;
   auto [inserted, ok] = targets_.emplace(key, std::move(t));
   return &inserted->second;

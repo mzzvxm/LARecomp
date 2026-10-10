@@ -363,10 +363,11 @@ class RenderTargetPool : public RenderTargetLookup {
   // distinct resolve destinations the guest uses.
   struct Census {
     size_t targets = 0;
-    uint64_t target_bytes = 0;  // the pool's own running total
+    uint64_t target_bytes = 0;  // actual colour/depth/MRT/MSAA scratch allocations
     size_t resolved = 0;
     uint64_t resolved_bytes = 0;
     size_t orphaned = 0;
+    uint64_t orphaned_bytes = 0;
     size_t pending_copies = 0;
     size_t gpu_produced = 0;
   };
@@ -425,8 +426,11 @@ class RenderTargetPool : public RenderTargetLookup {
   // A pass renders into one target, but the guest cycles through many
   // transient configurations; pooling every one of them exhausted GPU memory
   // and every later resource creation then failed (texture, PSO, buffer).
-  // Budget both the count and the footprint, and refuse past it rather than
-  // letting an allocation failure surface somewhere unrelated.
+  // Preserve the count and estimated-footprint admission guards below. The
+  // estimate is not physical VRAM: stats_ and TakeCensus account for MSAA and
+  // allocation alignment separately. Enforcing that larger physical footprint
+  // here would drop previously accepted passes without a safe target eviction
+  // policy (resolves and pending copies retain pointers into targets_).
   //
   // The COUNT was the binding limit at 10, and it is the wrong thing to bind
   // on: it charged a 4x4 target the same as a 1280x720 one. MCLA's exposure
@@ -437,7 +441,8 @@ class RenderTargetPool : public RenderTargetLookup {
   // constraint that actually protects against exhaustion, so the count is now
   // only a guard against unbounded growth.
   static constexpr uint32_t kMaxTargets = 64;
-  static constexpr uint64_t kMaxTargetBytes = 512ull * 1024 * 1024;
+  static constexpr uint64_t kMaxEstimatedTargetBytes = 512ull * 1024 * 1024;
+  uint64_t estimated_target_bytes_ = 0;
 
   std::map<RenderTargetKey, RenderTarget> targets_;
   // Address -> the extent that was resolved there. The address alone is not

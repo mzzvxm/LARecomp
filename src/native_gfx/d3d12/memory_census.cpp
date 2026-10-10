@@ -211,7 +211,7 @@ void MemoryCensusTick(D3D12Context& context, const BufferCache& buffers,
   std::fprintf(f,
                "frame=%llu commit=%llu MiB (%+lld) ws=%llu MiB | vram_local=%llu/%llu MiB "
                "nonlocal=%llu MiB | tex=%zu/%llu MiB evict=%llu/%llu MiB | buf=%zu/%llu MiB | "
-               "pso=%zu | rt=%zu/%llu MiB resolved=%zu/%llu MiB orphan=%zu pendcopy=%zu "
+               "pso=%zu | rt=%zu/%llu MiB resolved=%zu/%llu MiB orphan=%zu/%llu MiB pendcopy=%zu "
                "produced=%zu | pending_release=%zu\n",
                static_cast<unsigned long long>(context.frame_index()),
                static_cast<unsigned long long>(private_mib), static_cast<long long>(delta),
@@ -225,6 +225,7 @@ void MemoryCensusTick(D3D12Context& context, const BufferCache& buffers,
                static_cast<unsigned long long>(buffer_bytes / kMiB), pipelines.pipeline_count(),
                rt.targets, static_cast<unsigned long long>(rt.target_bytes / kMiB), rt.resolved,
                static_cast<unsigned long long>(rt.resolved_bytes / kMiB), rt.orphaned,
+               static_cast<unsigned long long>(rt.orphaned_bytes / kMiB),
                rt.pending_copies, rt.gpu_produced, context.pending_release_count());
 
   // Address-space breakdown, on its own line: it answers a different question
