@@ -51,6 +51,24 @@ bool Installed();
 uint32_t LatestFrontBuffer();
 uint64_t FlipCount();
 
+// The guest's retired fence -- the dword behind D3DDevice+10896 that the GPU
+// writes back when it passes a fence -- has exactly one writer at a time. By
+// default that is this module: nothing executes the ring, so it retires every
+// fence the moment it is issued (RetireGuestFences). A renderer that executes
+// the guest's work itself (src/gpu)
+// takes the write over: from then on the value moves only through
+// PublishOwnedRetiredFence, at the pace that renderer executes, until
+// ReleaseFenceRetirement hands it back and this module retires everything on
+// its next tick. Every write happens under one lock, so a hand-over never
+// interleaves two writers.
+void AcquireFenceRetirement();
+void ReleaseFenceRetirement();
+bool FenceRetirementAcquired();
+// Publishes `retired` for the guest device at `device` while the write is
+// held -- monotonic under the guest's own wraparound rule (guest_fence.h).
+// False, with nothing written, when it is not held.
+bool PublishOwnedRetiredFence(uint32_t device, uint32_t retired);
+
 std::string Summary();
 
 }  // namespace mcla::native_gfx::nocp

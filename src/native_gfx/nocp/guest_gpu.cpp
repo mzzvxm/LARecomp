@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <vector>
 
 #include <rex/chrono/clock.h>
@@ -24,6 +25,7 @@
 
 #include <cstring>
 
+#include "../diag.h"
 #include "../guest/guest_fence.h"
 #include "../guest/guest_resources.h"
 #include "../guest/vblank_probe.h"
@@ -87,6 +89,12 @@ struct State {
   std::atomic<uint32_t> wb_alloc_consumed{0};  // *(block + 60), allocator read cursor
   std::atomic<uint32_t> write_ptr{0};
   std::atomic<uint32_t> kick_limit{0};
+  // Who writes the retired fence (guest_gpu.h). Guarded by fence_mutex, which
+  // every write of the value is made under.
+  std::mutex fence_mutex;
+  bool fence_acquired = false;
+  std::atomic<bool> fence_acquired_view{false};  // for reports, not for decisions
+  std::atomic<uint64_t> owned_publishes{0};
   std::atomic<bool> installed{false};
   std::atomic<bool> worker_running{false};
   rex::system::object_ref<rex::system::XHostThread> worker;
@@ -175,7 +183,10 @@ void WriteRegister(void* /*ppc_context*/, void* /*context*/, uint32_t addr, uint
 // out has completed", and in this mode nothing was ever handed to any GPU at
 // all -- the ring goes nowhere. This is also the write that could never be
 // done while the emulator was alive, because the command processor owned it
-// and two writers would race. Being the only writer is what makes it correct.
+// and two writers would race. Being the only writer is what makes it correct,
+// which is why it stops while a renderer holds the write
+// (AcquireFenceRetirement): that renderer does execute the guest's work, and
+// retiring ahead of it would let the guest reuse memory it has not read yet.
 void RetireGuestFences(uint8_t* base, uint32_t device_va) {
   State& s = state();
   const GuestFenceState fence = ReadFenceState(base, device_va);
@@ -199,6 +210,10 @@ void RetireGuestFences(uint8_t* base, uint32_t device_va) {
   if (fence.retired == fence.issued) {
     return;
   }
+  std::lock_guard lock(s.fence_mutex);
+  if (s.fence_acquired) {
+    return;
+  }
   PublishRetiredFence(base, device_va, fence.issued);
   s.fence_publishes.fetch_add(1, std::memory_order_relaxed);
 }
@@ -220,6 +235,17 @@ void RetireGuestFences(uint8_t* base, uint32_t device_va) {
 // buffer and sub_82411640 clamps every request to it, so it is the ceiling no
 // request can exceed. The wrap counter is copied from the guest's own
 // dev+14920 so the two always agree.
+//
+// +60 is a different unit: the primary ring's read pointer, a dword index the
+// hardware writes back (the RPtr writeback), which sub_82411218 compares with
+// the write index dev+10952 masked by dev+14900 before it appends a kick's
+// INDIRECT_BUFFER packets (sub_82411928, which then stores the new index in
+// CP_RB_WPTR). "Consumed everything" there is read == write. It used to get
+// the command buffer address above: harmless while the write index has not
+// wrapped (the address compares above every index, so the wait returns at
+// once), an endless spin once it has -- 8192 dwords at 3 per kick, which the
+// boot movies reach when they run uncapped (frame 1361, 2728
+// kicks).
 void RetireRingConsumption(uint8_t* base, uint32_t device_va) {
   State& s = state();
   if (!IsGuestRangeReadable(device_va, 14912)) {
@@ -248,12 +274,13 @@ void RetireRingConsumption(uint8_t* base, uint32_t device_va) {
     return;
   }
   const uint32_t consumed = (buffer_end & ~3u) | wrap;
-  const uint32_t be = __builtin_bswap32(consumed);
+  const uint32_t ring_read = load_be(device_va + 10952);  // the primary ring's write index
   bool published = false;
-  for (const uint32_t offset : {4u, 60u}) {
-    if (load_be(block + offset) == consumed) {
+  for (const auto [offset, value] : {std::pair{4u, consumed}, std::pair{60u, ring_read}}) {
+    if (load_be(block + offset) == value) {
       continue;
     }
+    const uint32_t be = __builtin_bswap32(value);
     std::memcpy(rex::memory::GuestPtr(base, block + offset), &be, 4);
     published = true;
   }
@@ -417,6 +444,54 @@ uint32_t LatestFrontBuffer() { return state().front_buffer.load(std::memory_orde
 
 uint64_t FlipCount() { return state().flips.load(std::memory_order_relaxed); }
 
+void AcquireFenceRetirement() {
+  State& s = state();
+  {
+    std::lock_guard lock(s.fence_mutex);
+    if (s.fence_acquired) {
+      return;
+    }
+    s.fence_acquired = true;
+    s.fence_acquired_view.store(true, std::memory_order_relaxed);
+  }
+  REXLOG_INFO("[nocp] retired fence: written by the renderer that executes the guest's work "
+              "from now on");
+}
+
+void ReleaseFenceRetirement() {
+  State& s = state();
+  {
+    std::lock_guard lock(s.fence_mutex);
+    if (!s.fence_acquired) {
+      return;
+    }
+    s.fence_acquired = false;
+    s.fence_acquired_view.store(false, std::memory_order_relaxed);
+  }
+  REXLOG_INFO("[nocp] retired fence: back to the vblank thread ({} renderer publishes)",
+              s.owned_publishes.load(std::memory_order_relaxed));
+}
+
+bool FenceRetirementAcquired() {
+  return state().fence_acquired_view.load(std::memory_order_relaxed);
+}
+
+bool PublishOwnedRetiredFence(uint32_t device, uint32_t retired) {
+  State& s = state();
+  auto* runtime = rex::Runtime::instance();
+  auto* membase = runtime ? runtime->virtual_membase() : nullptr;
+  if (!membase || device == 0) {
+    return false;
+  }
+  std::lock_guard lock(s.fence_mutex);
+  if (!s.fence_acquired) {
+    return false;
+  }
+  PublishRetiredFence(membase, device, retired);
+  s.owned_publishes.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
 std::string Summary() {
   State& s = state();
   // 224 bytes truncated the line right where `last=` starts, and that field is
@@ -426,10 +501,11 @@ std::string Summary() {
   char buf[512];
   std::snprintf(buf, sizeof(buf),
                 "installed=%d vblanks=%llu flips=%llu front_buffer=%08X ring_kicks=%llu | "
-                "fence issued=%u retired=%u published=%llu | wptr=%08X limit=%08X "
+                "fence issued=%u retired=%u published=%llu owner=%s owned=%llu | "
+                "wptr=%08X limit=%08X "
                 "idle_spin=%u | ring pub=%llu wrap=%u end=%08X wb_fence=%08X "
                 "wb_consumed=%08X/%08X | "
-                "hooks=%llu frames=%llu swaps=%llu last=%s",
+                "hooks=%llu frames=%llu swaps=%llu last=%s | rt=%s wk=%s",
                 s.installed.load(std::memory_order_relaxed) ? 1 : 0,
                 (unsigned long long)s.vblanks.load(std::memory_order_relaxed),
                 (unsigned long long)s.flips.load(std::memory_order_relaxed),
@@ -438,6 +514,8 @@ std::string Summary() {
                 s.last_issued.load(std::memory_order_relaxed),
                 s.last_retired.load(std::memory_order_relaxed),
                 (unsigned long long)s.fence_publishes.load(std::memory_order_relaxed),
+                s.fence_acquired_view.load(std::memory_order_relaxed) ? "renderer" : "vblank",
+                (unsigned long long)s.owned_publishes.load(std::memory_order_relaxed),
                 s.write_ptr.load(std::memory_order_relaxed),
                 s.kick_limit.load(std::memory_order_relaxed),
                 s.idle_spin.load(std::memory_order_relaxed),
@@ -448,7 +526,9 @@ std::string Summary() {
                 s.wb_consumed.load(std::memory_order_relaxed),
                 s.wb_alloc_consumed.load(std::memory_order_relaxed),
                 (unsigned long long)HookCallCount(), (unsigned long long)FrameEndCount(),
-                (unsigned long long)SwapCount(), LastHookName());
+                (unsigned long long)SwapCount(), LastHookName(),
+                g_hang_render.load(std::memory_order_relaxed),  // TEMP DIAG
+                g_hang_worker.load(std::memory_order_relaxed));
   return std::string(buf);
 }
 

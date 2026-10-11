@@ -1098,13 +1098,23 @@ bool TryInitialize() {
   // comparisons and refuses to attach for a backend nobody ever selected.
   // Ask whether the flag exists before believing its value: where there is no
   // backend selector there is nothing to disagree with, and the provider cast
-  // below is the real check either way. A registered flag still refuses, so
-  // behaviour on this tree is unchanged.
+  // below is the real check either way. A registered flag still refuses next
+  // to an emulated GPU of another backend. With no emulated GPU (nocp) the cvar
+  // has nothing of the SDK's to pick -- it is the pause menu's GRAPHICS API row,
+  // shared with the emulated path and the Plume renderer
+  // -- and this runtime has only
+  // D3D12: said loudly, and run there, instead of leaving the game with no
+  // renderer at all.
   if (rex::cvar::GetFlagInfo("graphics_backend")) {
     const std::string backend = REXCVAR_QUERY(std::string, graphics_backend);
     if (backend != "auto" && backend != "d3d12") {
-      REXLOG_ERROR("[native_gfx] graphics_backend is '{}', native runtime needs d3d12", backend);
-      return false;
+      if (!nocp_mode) {
+        REXLOG_ERROR("[native_gfx] graphics_backend is '{}', native runtime needs d3d12", backend);
+        return false;
+      }
+      REXLOG_WARN("[native_gfx] graphics_backend is '{}', but the legacy native runtime has only "
+                  "D3D12; it runs on D3D12",
+                  backend);
     }
   }
   auto* provider = nocp_mode ? nocp::Provider()
