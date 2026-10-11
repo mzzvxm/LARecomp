@@ -45,6 +45,7 @@
 //                 texture fetch address can be tied to a render target)
 // ===========================================================================
 
+#include <chrono>
 #include <cstdint>
 
 #include <rex/cvar.h>
@@ -64,6 +65,9 @@
 #include "guest/texture_registry.h"
 #include "native_gfx.h"
 #include "telemetry.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "../gpu/gpu.h"
+#endif
 #include "../mc_engine/draw_stats.h"
 
 // Defined in native_gfx.cpp at global scope, so the declaration goes here at
@@ -91,6 +95,13 @@ REX_EXTERN(__imp__D3DDevice_InitializeEngines);
 REX_EXTERN(__imp__D3DDevice_BlockUntilIdle);
 REX_EXTERN(__imp__rex_sub_82421F38);
 REX_EXTERN(__imp__rex_sub_824195E8);
+#if defined(LARECOMP_HAS_GPU)
+REX_EXTERN(__imp__rex_sub_824194C0);
+REX_EXTERN(__imp__rex_sub_82411CD0);
+REX_EXTERN(__imp__rex_sub_82425C18);
+REX_EXTERN(__imp__D3DDevice_BlockOnFence);
+REX_EXTERN(__imp__rex_sub_8260EFD0);
+#endif
 REX_EXTERN(__imp__D3DDevice_CreateTexture);
 REX_EXTERN(__imp__grcTextureXenon_dtor);
 
@@ -114,6 +125,33 @@ extern "C" REX_FUNC(rex_sub_824195E8) {
   }
   __imp__rex_sub_824195E8(ctx, base);
 }
+
+#if defined(LARECOMP_HAS_GPU)
+// ClearF -- sub_824194C0(dev, Flags, pRect, pColor, Z, Stencil): r3 device, r4
+// flags (0xF colour targets, 0x10 depth, 0x20 stencil), r5 rectangle or 0 for
+// the whole surface, r6 four floats, f1 Z, r8 stencil. The funnel EVERY clear
+// reaches: D3DDevice_Clear above calls it once per rectangle, while
+// D3DDevice_BeginTiling and the predicated Z pass (sub_8241C7C0) call it
+// directly, so the Clear hook never sees those.
+//
+// For the Plume renderer (mcla_gpu) only. Bracketed: before the original, the
+// device state it reads -- the whole-surface rectangle depends on the surface
+// cache its own flush updates; after it, the registers it flushed.
+extern "C" REX_FUNC(rex_sub_824194C0) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_824194C0");
+  const uint32_t dev = ctx.r3.u32;
+  const uint32_t flags = ctx.r4.u32;
+  const uint32_t rect = ctx.r5.u32;
+  const uint32_t color = ctx.r6.u32;
+  const float z = static_cast<float>(ctx.f1.f64);
+  const uint32_t stencil = ctx.r8.u32;
+  const uint32_t caller = static_cast<uint32_t>(ctx.lr);
+  const mcla::gpu::GuestCallToken gpu_token =
+      mcla::gpu::BeforeGuestEvent(base, dev, mcla::gpu::GuestEvent::kClear, 0);
+  __imp__rex_sub_824194C0(ctx, base);
+  mcla::gpu::AfterGuestClear(gpu_token, base, dev, caller, flags, rect, color, z, stencil);
+}
+#endif
 
 // --- texture identity ------------------------------------------------------
 
@@ -350,7 +388,16 @@ extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
   const mcla::native_gfx::ConstantDirtyMasks dirty =
       mcla::native_gfx::Active() ? mcla::native_gfx::ReadConstantDirtyMasks(base, dev)
                                  : mcla::native_gfx::ConstantDirtyMasks{};
+#if defined(LARECOMP_HAS_GPU)
+  // Same reason: the Plume renderer's capture samples the masks here and the
+  // device state after the original.
+  const mcla::gpu::GuestCallToken gpu_token = mcla::gpu::BeforeGuestDraw(base, dev);
+#endif
   __imp__D3DDevice_DrawIndexedVertices(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestDrawIndexed(gpu_token, base, dev, prim, int32_t(base_vertex), start_index,
+                                   count);
+#endif
   mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/1, /*is_up=*/false);
@@ -379,7 +426,13 @@ extern "C" REX_FUNC(D3DDevice_DrawVertices) {
   const mcla::native_gfx::ConstantDirtyMasks dirty =
       mcla::native_gfx::Active() ? mcla::native_gfx::ReadConstantDirtyMasks(base, dev)
                                  : mcla::native_gfx::ConstantDirtyMasks{};
+#if defined(LARECOMP_HAS_GPU)
+  const mcla::gpu::GuestCallToken gpu_token = mcla::gpu::BeforeGuestDraw(base, dev);
+#endif
   __imp__D3DDevice_DrawVertices(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestDrawVertices(gpu_token, base, dev, prim, start_vertex, count);
+#endif
   mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/0, /*is_up=*/false);
@@ -410,8 +463,15 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   const uint32_t prim = ctx.r4.u32;
   const uint32_t count = ctx.r5.u32;
   const uint32_t stride = ctx.r6.u32;
+#if defined(LARECOMP_HAS_GPU)
+  // The original flushes (and zeroes) the constant dirty masks like a draw.
+  const mcla::gpu::GuestCallToken gpu_token = mcla::gpu::BeforeGuestDraw(base, dev);
+#endif
   __imp__D3DDevice_BeginVertices(ctx, base);
   const uint32_t buffer = ctx.r3.u32;  // return value: where the caller writes
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestBeginVertices(gpu_token, base, dev, prim, count, stride, buffer);
+#endif
   mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/0, /*is_up=*/true);
@@ -428,6 +488,9 @@ extern "C" REX_FUNC(D3DDevice_EndVertices) {
   mcla::native_gfx::nocp::NoteHook("D3DDevice_EndVertices");
   const uint32_t dev = ctx.r3.u32;
   __imp__D3DDevice_EndVertices(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestEndVertices(base, dev);
+#endif
   if (mcla::native_gfx::Active()) {
     mcla::native_gfx::NoteEndVertices(base, dev);
   }
@@ -452,7 +515,24 @@ extern "C" REX_FUNC(D3DDevice_BeginTiling) {
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::SetBracketTiles(tiles);
   }
+#if defined(LARECOMP_HAS_GPU)
+  // sub_8241BE78: r4 flags, r5 tile count, r6 rectangles, r7 clear colour, f1
+  // clear Z, r9 clear stencil.
+  const uint32_t gpu_dev = ctx.r3.u32;
+  const uint32_t gpu_flags = ctx.r4.u32;
+  const uint32_t gpu_rects = ctx.r6.u32;
+  const uint32_t gpu_color = ctx.r7.u32;
+  const float gpu_z = static_cast<float>(ctx.f1.f64);
+  const uint32_t gpu_stencil = ctx.r9.u32;
+  const uint32_t gpu_caller = static_cast<uint32_t>(ctx.lr);
+  const mcla::gpu::GuestCallToken gpu_token =
+      mcla::gpu::BeforeGuestEvent(base, gpu_dev, mcla::gpu::GuestEvent::kTilingBegin, 0);
+#endif
   __imp__D3DDevice_BeginTiling(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestBeginTiling(gpu_token, base, gpu_dev, gpu_caller, gpu_flags, tiles,
+                                   gpu_rects, gpu_color, gpu_z, gpu_stencil);
+#endif
 }
 
 // rage::grcDevice::EndTiledRendering — per-tile predication loop, then
@@ -489,7 +569,25 @@ extern "C" REX_FUNC(D3DDevice_EndTiling) {
   if (mcla::gfx_probe::Enabled()) {
     mcla::gfx_probe::NoteEndTiling(flags, ctx.r5.u32, dest_texture);
   }
+#if defined(LARECOMP_HAS_GPU)
+  // sub_8241C308: r5 rectangles or 0, r7 clear colour, f1 clear Z, r9 clear
+  // stencil, r10 pParameters. Its per-tile resolves reach the Resolve hook
+  // below through the D3DDevice_Resolve symbol, nested in this
+  // bracket.
+  const uint32_t gpu_rects = ctx.r5.u32;
+  const uint32_t gpu_color = ctx.r7.u32;
+  const float gpu_z = static_cast<float>(ctx.f1.f64);
+  const uint32_t gpu_stencil = ctx.r9.u32;
+  const uint32_t gpu_params = ctx.r10.u32;
+  const uint32_t gpu_caller = static_cast<uint32_t>(ctx.lr);
+  const mcla::gpu::GuestCallToken gpu_token =
+      mcla::gpu::BeforeGuestEvent(base, dev, mcla::gpu::GuestEvent::kTilingEnd, 0);
+#endif
   __imp__D3DDevice_EndTiling(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestEndTiling(gpu_token, base, dev, gpu_caller, flags, gpu_rects, dest_texture,
+                                 gpu_color, gpu_z, gpu_stencil, gpu_params);
+#endif
   // Notified AFTER the original, so the source surface is complete. The address
   // guard keeps a non-pointer argument from faulting the game's own draw thread:
   // NotifyResolve dereferences the destination without a readability check.
@@ -507,6 +605,11 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
   mcla::native_gfx::nocp::NoteFrameEnd();
   const bool probe_was_enabled = mcla::gfx_probe::Enabled();
   __imp__grcDevice_EndFrame(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  // Keeps the game off its command-buffer cache in the Plume mode, as
+  // NotifyFrameBoundary does for the legacy runtime below.
+  mcla::gpu::OnGuestFrameEnd(base);
+#endif
   if (probe_was_enabled) {
     mcla::gfx_probe::OnFrameEnd();
     if (!mcla::gfx_probe::Enabled()) {
@@ -596,6 +699,11 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
 // suppresses: it presents a triangle and has no command processor frame to
 // care about.
 extern "C" REX_FUNC(D3DDevice_Swap) {
+#if defined(LARECOMP_HAS_GPU)
+  // The original consumes these arguments and overwrites r3 with its result.
+  const uint32_t gpu_device = ctx.r3.u32;
+  const uint32_t gpu_front_buffer = ctx.r4.u32;
+#endif
   mcla::native_gfx::nocp::NoteHook("D3DDevice_Swap");
   mcla::native_gfx::nocp::NoteSwapCall();
   mcla::native_gfx::NoteSwapHook();
@@ -611,6 +719,12 @@ extern "C" REX_FUNC(D3DDevice_Swap) {
   // output is single-producer, so a second refresh from this thread would race
   // the one the command processor does inside IssueSwap.
   __imp__D3DDevice_Swap(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  // The Plume renderer (mcla_gpu) presents here, after the original has
+  // advanced the guest's own swap bookkeeping, exactly where the legacy
+  // no-command-processor path leaves the guest. A no-op outside mcla_gpu.
+  mcla::gpu::OnGuestSwap(base, gpu_device, gpu_front_buffer);
+#endif
 }
 
 // --- resolve ---------------------------------------------------------------
@@ -641,7 +755,20 @@ extern "C" REX_FUNC(D3DDevice_Resolve) {
   // trees and every distant tree rendered as one solid bush.
   const uint32_t clear_color_ptr = ctx.r10.u32;
   const uint32_t dest_level = ctx.r8.u32;  // a6: DestLevel
+#if defined(LARECOMP_HAS_GPU)
+  // r9 DestSliceOrFace, f1 ClearZ; ClearStencil and pParameters are on the
+  // caller's stack, read through r1 before the original.
+  const uint32_t gpu_slice = ctx.r9.u32;
+  const float gpu_z = static_cast<float>(ctx.f1.f64);
+  const uint32_t gpu_caller = static_cast<uint32_t>(ctx.lr);
+  const mcla::gpu::GuestCallToken gpu_token = mcla::gpu::BeforeGuestEvent(
+      base, dev, mcla::gpu::GuestEvent::kResolve, ctx.r1.u32);
+#endif
   __imp__D3DDevice_Resolve(ctx, base);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::AfterGuestResolve(gpu_token, base, dev, gpu_caller, flags, source_rect, dest_texture,
+                               dest_point, dest_level, gpu_slice, clear_color_ptr, gpu_z);
+#endif
   if (mcla::native_gfx::Active()) {
     mcla::native_gfx::NotifyResolve(base, dev, flags, dest_texture, source_rect, dest_point,
                                     clear_color_ptr, dest_level);
