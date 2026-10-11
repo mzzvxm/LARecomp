@@ -12,18 +12,21 @@
 // with no emulated GPU in it. Enabled() checks all of that once and says what
 // is missing.
 //
-// Milestone M2 (this code): on top of M1's device, swap chain, frames in
-// flight, retirement and render thread -- the bindless heap, transient upload
-// memory, host shaders, the SDK overlays (ImGui dialogs, F3, toasts) drawn on
-// the render thread from frames the UI thread records, presents while the
-// guest does not swap, GPU timestamps, RenderDoc capture, and a deadline on
-// stopping the render thread. The guest's own image is not rendered yet:
-// each frame is cleared to black under the overlays until M4.
+// Milestone M3 (this code): on top of M2's presentation (bindless heap, upload
+// memory, host shaders, SDK overlays, idle presents, GPU timestamps, RenderDoc)
+// -- every guest event that produces GPU work is captured with the device
+// state it consumed and carried to the render thread in a byte stream (draws,
+// clears, resolves, tiled rendering, the present), shader identities are exact,
+// constants travel as versioned 64-byte blocks, and the render thread decodes
+// and validates all of it against the shader pack v3, the guest shader layout
+// and the format tables. Nothing is drawn from it yet: each frame is still
+// cleared to black under the overlays until M4..
 //
 // Call order (all on the UI thread except where noted):
 //   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer
 //   Startup               from LarecompApp::SetupPresentation, after the base
-//   OnGuestSwap           guest render thread, D3DDevice_Swap
+//   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
+//                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
 //   Shutdown              OnWindowCloseRequested and OnShutdown
 // ===========================================================================
@@ -56,18 +59,73 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
 bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
              rex::ui::ImGuiDrawer* imgui_drawer);
 
-// Guest render thread, from D3DDevice_Swap. Queues one present and waits for
-// it, so the guest never runs more than the frames in flight ahead of the GPU.
-// No-op unless Startup succeeded and Shutdown has not begun.
-void OnGuestSwap();
+// --- guest capture (hooks.cpp) ------------------------------------------------
+// Each hooked D3D call is bracketed: Before* runs before the original (it reads
+// what the original consumes and clears -- the constant dirty masks, the state a
+// clear or resolve reads), After* after it (the state the original set up). The
+// token carries what Before* saw; an inactive token makes After* a no-op, so a
+// call bracketed across startup or shutdown is simply not captured.
+
+struct GuestCallToken {
+  uint64_t vs_dirty = 0;  // D3DDevice +0 before the call
+  uint64_t ps_dirty = 0;  // +8
+  uint32_t snapshot = 0;  // event pre-state slot (1-based), 0 = none
+  bool active = false;
+};
+
+enum class GuestEvent : uint8_t { kClear, kResolve, kTilingBegin, kTilingEnd };
+
+// D3DDevice_DrawIndexedVertices / DrawVertices / BeginVertices.
+GuestCallToken BeforeGuestDraw(const uint8_t* base, uint32_t device);
+void AfterGuestDrawIndexed(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                           uint32_t primitive, int32_t base_vertex, uint32_t start_index,
+                           uint32_t count);
+void AfterGuestDrawVertices(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                            uint32_t primitive, uint32_t start_vertex, uint32_t count);
+// `buffer` is BeginVertices' return value: where the caller writes the vertices.
+void AfterGuestBeginVertices(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                             uint32_t primitive, uint32_t count, uint32_t stride,
+                             uint32_t buffer);
+void AfterGuestEndVertices(const uint8_t* base, uint32_t device);
+
+// ClearF, Resolve, BeginTiling, EndTiling. `stack_pointer` is the caller's r1
+// (Resolve reads ClearStencil and pParameters from the stack); 0 elsewhere.
+GuestCallToken BeforeGuestEvent(const uint8_t* base, uint32_t device, GuestEvent event,
+                                uint32_t stack_pointer);
+// `caller` is the return address (LR) the hook was entered with.
+void AfterGuestClear(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                     uint32_t caller, uint32_t flags, uint32_t rect, uint32_t color, float z,
+                     uint32_t stencil);
+void AfterGuestResolve(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                       uint32_t caller, uint32_t flags, uint32_t source_rect,
+                       uint32_t dest_texture, uint32_t dest_point, uint32_t dest_level,
+                       uint32_t dest_slice, uint32_t clear_color, float clear_z);
+void AfterGuestBeginTiling(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                           uint32_t caller, uint32_t flags, uint32_t tile_count, uint32_t rects,
+                           uint32_t clear_color, float clear_z, uint32_t clear_stencil);
+void AfterGuestEndTiling(const GuestCallToken& token, const uint8_t* base, uint32_t device,
+                         uint32_t caller, uint32_t flags, uint32_t rects, uint32_t dest_texture,
+                         uint32_t clear_color, float clear_z, uint32_t clear_stencil,
+                         uint32_t params);
+
+// rage::grcDevice::EndFrame, after the original. Keeps the game off its
+// command-buffer cache: without a replay of our own, every draw has
+// to reach the hooks. Applies whenever the mode is enabled.
+void OnGuestFrameEnd(uint8_t* base);
+
+// Guest render thread, D3DDevice_Swap, after the original (`device` and
+// `front_buffer` are its r3/r4, read before it). Queues the present behind the
+// frame's records and waits until the render thread ran it. No-op unless
+// Startup succeeded and Shutdown has not begun.
+void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer);
 
 // UI thread, on a window pixel-size change. The rebuild happens on the render
 // thread at the next present (an idle one if the guest is not swapping).
 void RequestResize();
 
-// UI thread, at app shutdown: disconnects the overlay passes, stops the render
-// thread (with a deadline), drains the GPU and releases every GPU object,
-// device last. Safe to call more than once.
+// UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
+// stops the render thread (with a deadline), drains the GPU and releases every
+// GPU object, device last. Safe to call more than once.
 void Shutdown();
 
 }  // namespace mcla::gpu

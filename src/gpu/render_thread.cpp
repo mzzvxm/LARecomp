@@ -1,9 +1,8 @@
 // MCLA GPU renderer -- the render thread. See render_thread.h.
 //
-// Design followed: reeot gpu/render_thread.cpp (BSD-3-Clause) -- bounded ring,
-// single consumer, producers blocking on a full ring, Present waited by
-// sequence. The lock-free publication, spin-waiting and draw sorting there are
-// throughput work that waits for measurements here.
+// Design followed: reeot gpu/render_thread.cpp (BSD-3-Clause) -- single
+// consumer, producers blocking only on a full queue, Present waited by
+// sequence. The queue itself is stream.cpp.
 
 #include "render_thread.h"
 
@@ -16,16 +15,16 @@ RenderThread::~RenderThread() {
   Stop(std::chrono::milliseconds(2000));
 }
 
-bool RenderThread::Start(Executor& executor, std::chrono::milliseconds idle_period) {
+bool RenderThread::Start(Executor& executor, std::chrono::milliseconds idle_period,
+                         uint32_t stream_capacity) {
   if (running_) {
     return true;
   }
+  if (!stream_.Initialize(stream_capacity)) {
+    return false;
+  }
   executor_ = &executor;
   idle_period_ = idle_period;
-  ring_ = std::make_unique<RenderCommand[]>(kSlots);
-  head_ = tail_ = 0;
-  last_sequence_ = executed_sequence_ = 0;
-  stop_ = false;
   exited_ = false;
   running_ = true;
   thread_ = std::thread([this] { Main(); });
@@ -36,16 +35,10 @@ bool RenderThread::Stop(std::chrono::milliseconds deadline) {
   if (!running_) {
     return true;
   }
-  {
-    std::lock_guard lock(mutex_);
-    stop_ = true;
-  }
-  work_cv_.notify_all();
-  space_cv_.notify_all();
-  done_cv_.notify_all();
+  stream_.Stop();
   bool exited;
   {
-    std::unique_lock lock(mutex_);
+    std::unique_lock lock(exit_mutex_);
     exited = exit_cv_.wait_for(lock, deadline, [&] { return exited_; });
   }
   running_ = false;
@@ -61,45 +54,36 @@ bool RenderThread::Stop(std::chrono::milliseconds deadline) {
   return true;
 }
 
-void RenderThread::WaitExecuted(uint64_t sequence) {
-  if (sequence == 0) {
-    return;
-  }
-  std::unique_lock lock(mutex_);
-  done_cv_.wait(lock, [&] { return stop_ || executed_sequence_ >= sequence; });
-}
-
 void RenderThread::Main() {
   rex::thread::set_current_thread_name("larecomp gpu render");
-  for (;;) {
-    RenderCommand* command = nullptr;
-    {
-      std::unique_lock lock(mutex_);
-      const bool woke = work_cv_.wait_for(lock, idle_period_,
-                                          [&] { return stop_ || head_ != tail_; });
-      if (stop_) {
-        break;
+  using Clock = std::chrono::steady_clock;
+  auto next_idle = Clock::now() + idle_period_;
+  while (!stream_.stopped()) {
+    const RecordHeader* record = stream_.Next();
+    if (record) {
+      executor_->Execute(*record, reinterpret_cast<const uint8_t*>(record + 1));
+      const bool sync = (record->flags & kRecordSync) != 0;
+      const uint64_t sequence = record->sequence;
+      stream_.Release(record);
+      if (sync) {
+        stream_.MarkExecuted(sequence);
       }
-      if (woke) {
-        // The slot stays untouched by producers until head_ moves past it.
-        command = &ring_[head_ % kSlots];
+    } else {
+      const auto now = Clock::now();
+      if (now < next_idle) {
+        stream_.WaitForWork(std::chrono::duration_cast<std::chrono::milliseconds>(next_idle - now) +
+                            std::chrono::milliseconds(1));
+        continue;
       }
     }
-    if (!command) {
+    const auto now = Clock::now();
+    if (now >= next_idle) {
       executor_->OnIdle();
-      continue;
+      next_idle = Clock::now() + idle_period_;
     }
-    executor_->Execute(*command);
-    {
-      std::lock_guard lock(mutex_);
-      executed_sequence_ = command->sequence;
-      ++head_;
-    }
-    space_cv_.notify_one();
-    done_cv_.notify_all();
   }
   {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(exit_mutex_);
     exited_ = true;
   }
   exit_cv_.notify_all();

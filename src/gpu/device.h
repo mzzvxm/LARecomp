@@ -76,7 +76,8 @@ class Device {
       uint32_t sampler_count, const char* name);
   std::unique_ptr<plume::RenderPipelineLayout> CreatePipelineLayout(
       const plume::RenderPipelineLayoutBuilder& builder, const char* name);
-  // A host shader blob in kHostShaderFormat.
+  // A shader blob in kHostShaderFormat: the host shaders built with the
+  // renderer, and the guest shaders of the pack (shaders.h).
   std::unique_ptr<plume::RenderShader> CreateShader(const void* data, uint64_t size,
                                                     const char* entry_point, const char* name);
   std::unique_ptr<plume::RenderPipeline> CreateGraphicsPipeline(

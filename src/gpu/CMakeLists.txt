@@ -12,19 +12,29 @@ add_library(larecomp_gpu OBJECT
     capture.cpp
     descriptors.cpp
     device.cpp
+    format.cpp
     frame.cpp
+    guest_capture.cpp
+    layout.cpp
     native_window.cpp
     overlay.cpp
     render_thread.cpp
     renderer.cpp
+    shaders.cpp
+    stream.cpp
     swap_chain.cpp
     timing.cpp
     upload.cpp
+    validation.cpp
 )
 
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+# src/ too: the guest decoders the renderer reuses from the legacy runtime are
+# included as "native_gfx/...", which keeps every such dependency visible by
+# its path. Their definitions come from larecomp itself at link.
 target_include_directories(larecomp_gpu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
     "${LARECOMP_GPU_SHADER_DIR}"
 )
 # plume first: see the note at the top.
