@@ -138,6 +138,7 @@ void Renderer::Shutdown() {
   }
   // The validator's last report and CSVs, now that no record arrives.
   validator_.Finish();
+  trace_.Finish();
   // 2. Drain. Every retirement is released here, release actions included,
   //    while all the components they name are still alive. Skipped by
   //    FrameRing when the device is lost.
@@ -165,9 +166,11 @@ void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
   if (type < std::size(records_)) {
     ++records_[type];
   }
+  trace_.OnRecord(guest_frames_, header, payload);
   // M3: every record is decoded and validated; nothing is drawn from it yet.
   switch (header.type) {
     case RecordType::kPresent:
+      ++guest_frames_;
       validator_.OnPresent(*reinterpret_cast<const PresentRecord*>(payload));
       ExecutePresent(PresentSource::kGuest);
       return;

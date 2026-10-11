@@ -13,6 +13,7 @@ add_library(larecomp_gpu OBJECT
     descriptors.cpp
     device.cpp
     format.cpp
+    frame_trace.cpp
     frame.cpp
     guest_capture.cpp
     layout.cpp

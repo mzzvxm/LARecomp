@@ -42,6 +42,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
+#include "frame_trace.h"
 #include "layout.h"
 #include "overlay.h"
 #include "render_thread.h"
@@ -107,6 +108,7 @@ class Renderer final : public RenderThread::Executor {
   GuestLayout guest_layout_;
   ShaderStore shaders_;
   FrameValidator validator_;  // render thread; reads shaders_
+  FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   UploadRing upload_;
   SwapChain swap_chain_;
   OverlayRenderer overlay_;
@@ -122,6 +124,7 @@ class Renderer final : public RenderThread::Executor {
   // Render thread only.
   uint64_t presented_ = 0;
   uint64_t guest_presents_ = 0;
+  uint64_t guest_frames_ = 0;  // kPresent records executed, presented or skipped
   uint64_t idle_presents_ = 0;
   uint64_t skipped_ = 0;
   uint64_t overlay_draws_ = 0;
