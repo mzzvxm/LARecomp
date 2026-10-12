@@ -1,0 +1,200 @@
+#pragma once
+// ===========================================================================
+// MCLA GPU renderer -- the replay of the guest's frames
+// ===========================================================================
+// Executes the scene records of
+// each guest frame -- draws, clears, resolves, tiling -- into the frame's
+// command list, which the Renderer opens at the frame's first scene record
+// and submits with the present (frame.h).
+//
+// A draw goes through Prepare, which decides everything about it that does
+// not need its buffers or its targets:
+//   decoded Xenos state (draw_state.h) -> constant banks rebuilt and checked
+//   (constants.h) -> shaders from the pack -> host primitive (topology.h) ->
+//   target formats (format.h) -> input layout (input_layout.h) -> pipeline
+//   key, depth bias and pipeline (pipelines.h) -> viewport and NDC transform
+//   (viewport.h) -> samplers of every fetch constant the shaders read
+//   (samplers.h) and the texture tables -> the three constant buffers
+//   uploaded: VS bank, PS bank (each only when it changed since the last
+//   upload of the frame) and SharedConstants (only when it differs from the
+//   previous draw's).
+// Recording the draw needs the vertex and index buffers (M4.4) and the EDRAM
+// targets (M4.5); until then a prepared draw is counted and not recorded.
+// The texture tables point at the heap's null textures until M4.6.
+//
+// A draw that cannot be drawn correctly is skipped, never drawn with a
+// guess: the reason is counted, its first occurrences logged with the draw's
+// identity. Draws with no effect (no target written, both faces culled) are
+// counted apart -- they are not failures.
+//
+// Statistics: a line every kReportInterval guest frames and at shutdown.
+//
+// Threading: render thread only.
+// ===========================================================================
+
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+
+#include <plume_render_interface.h>
+
+#include "constants.h"
+#include "input_layout.h"
+#include "pipelines.h"
+#include "records.h"
+#include "shaders.h"
+#include "topology.h"
+#include "upload.h"
+#include "viewport.h"
+
+namespace mcla::gpu {
+
+class Samplers;
+
+class Scene {
+ public:
+  static constexpr uint64_t kReportInterval = 600;
+
+  explicit Scene(ShaderStore& shaders) : shaders_(shaders), input_layouts_(shaders) {}
+  Scene(const Scene&) = delete;
+  Scene& operator=(const Scene&) = delete;
+
+  void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers);
+
+  // The Renderer opened the frame's first list (frame slot `slot`).
+  void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
+  // The frame's last list is about to be submitted (or abandoned).
+  void EndFrame();
+  // A batch flush replaced the open list.
+  void OnListChanged(plume::RenderCommandList* list);
+
+  // `list`: the frame's open list, null when the device is lost (the banks are
+  // still applied: the deltas are incremental).
+  void OnDraw(const uint8_t* payload, plume::RenderCommandList* list);
+  void OnClear(const ClearRecord& record, plume::RenderCommandList* list);
+  void OnResolve(const ResolveRecord& record, plume::RenderCommandList* list);
+  void OnTilingBegin(const TilingBeginRecord& record, plume::RenderCommandList* list);
+  void OnTilingEnd(const TilingEndRecord& record, plume::RenderCommandList* list);
+
+  // A guest present: the frame boundary of the statistics.
+  void OnPresent();
+  // Final report (at renderer shutdown).
+  void Finish();
+
+  uint64_t draws_since_flush() const { return draws_since_flush_; }
+
+ private:
+  enum class Skip : uint8_t {
+    kDeviceLost,
+    kVsUnreadable,
+    kPsUnreadable,
+    kDeclUnreadable,
+    kIndexUnreadable,
+    kInlineUnreadable,
+    kInlineUnterminated,
+    kPrimitive,
+    kVsNotInPack,
+    kPsNotInPack,
+    kStageMismatch,
+    kTargetFormat,
+    kInputLayout,
+    kEdramMode,
+    kColorGap,
+    kPipeline,
+    kUpload,
+    kCount,
+  };
+  enum class NoEffect : uint8_t { kNoTarget, kCulled, kCount };
+
+  // Everything a draw needs once its buffers and targets exist.
+  struct PreparedDraw {
+    XenosState state;
+    const ShaderStore::Entry* vs = nullptr;
+    const ShaderStore::Entry* ps = nullptr;
+    const InputLayout* input_layout = nullptr;
+    HostPrimitive primitive;
+    plume::RenderPipeline* pipeline = nullptr;
+    PipelineKey key;
+    DepthBias bias;
+    ViewportInfo viewport;
+    UploadSpan vs_constants;
+    UploadSpan ps_constants;
+    UploadSpan shared_constants;
+  };
+
+  // kCount = prepared; otherwise why not. `no_effect` is set instead for a
+  // draw that changes nothing.
+  Skip Prepare(const DrawView& view, const ConstantBanks::Banks& banks, PreparedDraw& d,
+               bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
+  void FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedConstants& sc);
+  bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
+                       const SharedConstants& shared, PreparedDraw& d);
+  void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
+  void Report(const char* why);
+
+  ShaderStore& shaders_;
+  InputLayouts input_layouts_;
+  ConstantBanks banks_;
+  UploadRing* upload_ = nullptr;
+  Pipelines* pipelines_ = nullptr;
+  Samplers* samplers_ = nullptr;
+  SharedConstants base_shared_{};  // the texture tables on the null textures
+
+  // The frame being recorded.
+  plume::RenderCommandList* list_ = nullptr;
+  uint32_t slot_ = 0;
+  struct DeviceUpload {
+    uint64_t vs_version = 0;  // 0 = nothing uploaded in this frame
+    uint64_t ps_version = 0;
+    UploadSpan vs;
+    UploadSpan ps;
+  };
+  std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
+  SharedConstants last_shared_{};
+  UploadSpan last_shared_span_;
+  uint64_t draws_since_flush_ = 0;
+
+  // Statistics: the current window and the whole run.
+  struct Stats {
+    uint64_t frames = 0;
+    uint64_t draws = 0;
+    uint64_t prepared = 0;
+    std::array<uint64_t, size_t(Skip::kCount)> skips{};
+    std::array<uint64_t, size_t(NoEffect::kCount)> no_effect{};
+    std::array<uint64_t, 7> conversions{};  // by PrimitiveConversion
+    uint64_t bank_checks = 0;
+    uint64_t bank_mismatches = 0;
+    uint64_t alpha_test_draws = 0;
+    uint64_t clip_disabled_draws = 0;
+    // Alpha to mask (RB_COLORCONTROL) on a draw that writes colour: in all,
+    // on single-sampled targets (no host alpha to coverage), with RT0's
+    // exponent bias (the host would test the biased alpha).
+    uint64_t alpha_to_mask_draws = 0;
+    uint64_t alpha_to_mask_1x = 0;
+    uint64_t alpha_to_mask_biased = 0;
+    uint64_t depth_bias_draws = 0;
+    uint64_t constant_uploads = 0;  // VS/PS banks
+    uint64_t shared_uploads = 0;
+    uint64_t upload_bytes = 0;
+    uint64_t fetches = 0;  // fetch constants resolved to samplers
+    uint64_t fetch_not_texture = 0;
+    uint64_t clears = 0;
+    uint64_t resolves = 0;
+    uint64_t tiling_begins = 0;
+    uint64_t tiling_ends = 0;
+    uint64_t prepare_ns = 0;
+    uint64_t pipelines_created = 0;
+    uint64_t pipelines_failed = 0;
+    uint64_t pipeline_create_ns = 0;
+  };
+  void Add(Stats& into, const Stats& from) const;
+  Stats window_;
+  Stats total_;
+  std::array<uint32_t, size_t(Skip::kCount)> skip_logged_{};
+  uint32_t constants_issues_reported_ = 0;
+  uint32_t mismatches_logged_ = 0;
+};
+
+}  // namespace mcla::gpu
