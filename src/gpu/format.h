@@ -6,16 +6,19 @@
 // outcomes, kept apart on purpose:
 //
 //   kOk              mapped
-//   kMissingInPlume  a guest format MCLA uses whose host equivalent Plume does
-//                    not expose (R8G8B8A8_UNORM_SRGB, R10G10B10A2_UNORM,
-//                    B5G5R5A1_UNORM); `format` is UNKNOWN. Added to the Plume
-//                    fork when a milestone needs it, with M3's counts.
+//   kMissingInPlume  a guest format whose host equivalent Plume does not
+//                    expose (R10G10B10A2_UNORM for the k_2_10_10_10 targets,
+//                    which MCLA was never seen to use); `format` is
+//                    UNKNOWN. Added to the Plume fork if one ever appears.
 //   kUnknown         a value MCLA was never seen to use: reported, not guessed.
 //
 // Sources: vertex declaration types -- dword_827D42B0 (8 non-zero entries,
 // read in the IDB) with the widths measured by the legacy DECLGAP probe;
 // render targets and textures -- the legacy tables (guest/render_state.cpp,
-// guest/texture_format.cpp), whose DXGI choices map one to one.
+// guest/texture_format.cpp), whose DXGI choices map one to one, except where
+// M4 decided otherwise: k_8_8_8_8_GAMMA targets are stored
+// linear in float16, k_1_5_5_5 textures are expanded to 8888, and
+// k_16_16_16_16_EXPAND is float16.
 //
 // Threading: pure functions.
 // ===========================================================================

@@ -4,10 +4,15 @@
 // ===========================================================================
 // One query pool of kTimestamps per frame slot:
 //
-//   0 kFrameBegin     right after the slot's list opens
+//   0 kFrameBegin     right after the frame's first list opens (the first
+//                     scene record of the guest frame, or the present)
 //   1 kOverlayBegin   before the overlay draws (after uploads and the clear)
 //   2 kOverlayEnd     after the overlay draws
 //   3 kFrameEnd       after the back buffer went back to PRESENT
+//
+// A frame submitted without a present pass (minimised window, failed
+// acquire) gets its missing timestamps written back to back by CompleteFrame,
+// so its readback never holds an unwritten query.
 //
 // BeginFrame first reads what the slot's previous submission wrote -- the
 // FrameRing has waited that submission's fence by the time the slot is
@@ -60,6 +65,9 @@ class GpuTiming {
   // Outside any render pass, on a freshly opened list for `slot`.
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
   void Mark(plume::RenderCommandList* list, uint32_t slot, Timestamp timestamp);
+  // Writes, in order, every timestamp of the frame not written yet. Outside
+  // any render pass, before the frame's last list is submitted.
+  void CompleteFrame(plume::RenderCommandList* list, uint32_t slot);
   // After FrameRing::Submit executed the list (not after an abandoned one).
   void OnSubmitted(uint32_t slot);
 
@@ -73,6 +81,7 @@ class GpuTiming {
   bool available_ = false;
   std::unique_ptr<plume::RenderQueryPool> pools_[kFramesInFlight];
   bool pending_[kFramesInFlight] = {};
+  uint32_t written_[kFramesInFlight] = {};  // bit per Timestamp of the frame being recorded
   uint64_t frame_ns_ = 0;
   uint64_t overlay_ns_ = 0;
   uint64_t frames_ = 0;

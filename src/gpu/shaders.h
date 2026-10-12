@@ -1,12 +1,15 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the guest shader store (shader pack v3)
+// MCLA GPU renderer -- the guest shader store (shader pack v4)
 // ===========================================================================
 // The translated guest shaders (LAR-XenosRecomp HLSL compiled offline by
-// tools/build_shader_pack_v3.py), keyed by the runtime shader identity
+// tools/build_shader_pack_v4.py), keyed by the runtime shader identity
 // (FNV-1a 64 of the vfetch-normalized microcode, native_gfx/shader_identity.h).
-// Layout of the file: and the builder's
-// header. v3 carries v2's DXIL byte for byte and SPIR-V for every shader.
+// Layout of the file: (unchanged since
+// v3) and the builder's header. v4 is the shader contract this renderer is
+// written against: SharedConstants of 592 bytes with g_PosScale /
+// g_PosOffset, structured control flow, conditional exec blocks that test
+// their condition. The legacy runtime's v2 pack keeps the old contract.
 //
 // The pack is memory-mapped read-only from <exe folder>/assets (the legacy
 // runtime opens v2 relative to the working directory, a known pending issue);
@@ -41,8 +44,8 @@ class Device;
 
 class ShaderStore {
  public:
-  static constexpr const char* kPackFileName = "mcla_shaders.v3.pack";
-  static constexpr uint32_t kPackVersion = 3;
+  static constexpr const char* kPackFileName = "mcla_shaders.v4.pack";
+  static constexpr uint32_t kPackVersion = 4;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
@@ -56,6 +59,15 @@ class ShaderStore {
     kComputedFetchIndex = 1u << 0,  // a vfetch takes its index from something other than r0.x
   };
 
+  // Pixel shader outputs (pack flags bits 8..12, PixelShader::outputs of the container).
+  enum PixelOutputs : uint8_t {
+    kOutputColor0 = 1u << 0,
+    kOutputColor1 = 1u << 1,
+    kOutputColor2 = 1u << 2,
+    kOutputColor3 = 1u << 3,
+    kOutputDepth = 1u << 4,
+  };
+
   struct Entry {
     uint64_t key = 0;
     Stage stage = Stage::kVertex;
@@ -63,6 +75,8 @@ class ShaderStore {
     uint16_t velem_count = 0;
     uint32_t velem_offset = 0;
     uint32_t flags = 0;
+    uint8_t ps_outputs = 0;           // PixelOutputs; 0 for vertex shaders
+    uint32_t texture_fetch_mask = 0;  // bit i: a texture instruction reads fetch constant i
     Blob dxil[2];  // spec 0 / spec = spec_mask
     Blob spirv;
   };

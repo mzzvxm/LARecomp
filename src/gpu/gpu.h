@@ -18,7 +18,7 @@
 // state it consumed and carried to the render thread in a byte stream (draws,
 // clears, resolves, tiled rendering, the present), shader identities are exact,
 // constants travel as versioned 64-byte blocks, and the render thread decodes
-// and validates all of it against the shader pack v3, the guest shader layout
+// and validates all of it against the shader pack (v4 since M4.1), the guest shader layout
 // and the format tables. Nothing is drawn from it yet: each frame is still
 // cleared to black under the overlays until M4..
 //
@@ -119,13 +119,33 @@ void OnGuestFrameEnd(uint8_t* base);
 // Startup succeeded and Shutdown has not begun.
 void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer);
 
+// --- guest GPU fences ------------------------------------------
+// The render thread plays the guest's GPU: it holds the write of the guest's
+// retired fence from Startup to Shutdown and publishes each fence when it has
+// executed every record captured before it.
+
+// sub_82411CD0, AFTER the original. `value` is the device's issued counter
+// read before it -- what the inserted EVENT_WRITE carries. Becomes a fence
+// record when the capture is on.
+void OnGuestFenceInserted(uint32_t device, uint32_t value);
+// True while the render thread writes the retired fence and the capture is on.
+// D3DDevice_BlockUntilIdle then waits on a real fence.
+bool RetiresGuestFences();
+// sub_82425C18, the guest's "GPU is hung" detector, in this mode: logs and
+// returns; the hook makes the guest keep waiting. Any guest thread.
+void OnGuestGpuHangCheck(const uint8_t* base, uint32_t device);
+// A D3DDevice_BlockOnFence call that found its fence pending, and how long it
+// waited. Any guest thread.
+void NoteGuestFenceWait(uint64_t wait_ns);
+
 // UI thread, on a window pixel-size change. The rebuild happens on the render
 // thread at the next present (an idle one if the guest is not swapping).
 void RequestResize();
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
 // stops the render thread (with a deadline), drains the GPU and releases every
-// GPU object, device last. Safe to call more than once.
+// GPU object, device last, then hands the retired fence back to the vblank
+// thread. Safe to call more than once.
 void Shutdown();
 
 }  // namespace mcla::gpu

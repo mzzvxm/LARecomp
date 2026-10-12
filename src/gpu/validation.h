@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "constants.h"
 #include "format.h"
 #include "records.h"
 #include "shaders.h"
@@ -96,10 +97,6 @@ class FrameValidator {
     format::Mapping mapping;
     uint64_t uses = 0;
   };
-  struct DeviceBanks {
-    std::array<uint8_t, guest::kConstantBankBytes> vs{};
-    std::array<uint8_t, guest::kConstantBankBytes> ps{};
-  };
 
   void Count(Counter counter, uint64_t n = 1) {
     window_[counter] += n;
@@ -122,7 +119,7 @@ class FrameValidator {
   std::map<std::pair<std::string, uint32_t>, FormatUse> formats_;
   std::map<uint32_t, uint64_t> clear_callers_;
   std::map<uint32_t, uint64_t> resolve_callers_;
-  std::unordered_map<uint32_t, DeviceBanks> banks_;
+  ConstantBanks banks_;  // its own copy: the replay keeps another (constants.h)
   std::unordered_map<uint64_t, std::vector<ShaderStore::VertexElement>> velems_;
   std::vector<std::array<float, 4>> poly_offsets_;  // distinct front/back scale/offset, first 16
   // RB_SAMPLE_COUNT_CTL as the draws left it: distinct values (first 16) and

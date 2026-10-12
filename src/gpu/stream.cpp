@@ -42,6 +42,8 @@ const char* RecordTypeName(RecordType type) {
     case RecordType::kResolve: return "resolve";
     case RecordType::kTilingBegin: return "tiling begin";
     case RecordType::kTilingEnd: return "tiling end";
+    case RecordType::kFence: return "fence";
+    case RecordType::kCount: break;
   }
   return "unknown";
 }
@@ -125,7 +127,7 @@ uint8_t* CommandStream::Writer::Begin(RecordType type, uint32_t payload_bytes) {
   return reinterpret_cast<uint8_t*>(header + 1);
 }
 
-uint64_t CommandStream::Writer::Commit(bool sync) {
+uint64_t CommandStream::Writer::Commit(Publication publication) {
   if (!begun_) {
     return 0;
   }
@@ -134,12 +136,12 @@ uint64_t CommandStream::Writer::Commit(bool sync) {
   auto* header = reinterpret_cast<RecordHeader*>(s.At(record_at_));
   const uint64_t sequence = s.next_sequence_++;
   header->sequence = sequence;
-  header->flags = sync ? kRecordSync : 0;
+  header->flags = publication == Publication::kWaited ? kRecordSync : 0;
   s.tail_ = record_at_ + record_size_;
   ++s.unpublished_records_;
   s.unpublished_bytes_ += record_size_;
   s.bytes_written_.fetch_add(record_size_, std::memory_order_relaxed);
-  if (sync || s.unpublished_records_ >= kPublishRecords ||
+  if (publication != Publication::kBatched || s.unpublished_records_ >= kPublishRecords ||
       s.unpublished_bytes_ >= kPublishBytes ||
       s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
     s.Publish(s.tail_);

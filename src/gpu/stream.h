@@ -16,8 +16,9 @@
 // Publication is batched (reeot render_thread.cpp publishes every 8 commands
 // or at once while its consumer sleeps): the tail the consumer sees moves every
 // kPublishRecords records or kPublishBytes bytes, at once when the consumer is
-// asleep, and always on a sync record (the present). Waking the consumer is a
-// syscall, publishing is one atomic store.
+// asleep, and always on a record committed with Publication::kNow or kWaited
+// (a fence, the present). Waking the consumer is a syscall, publishing is one
+// atomic store.
 //
 // Consumer: the render thread. It reads up to the published tail, spins
 // briefly when it is empty, then sleeps on a condition with the idle period as
@@ -76,9 +77,9 @@ class CommandStream {
     // Reserves room for `payload_bytes` and returns where to write them, or
     // null when the stream is stopped or the record is too large (logged).
     uint8_t* Begin(RecordType type, uint32_t payload_bytes);
-    // Publishes per the batching rules (always when `sync`). Returns the
+    // Makes the record visible per `publication` (records.h). Returns the
     // record's sequence, 0 if nothing was begun.
-    uint64_t Commit(bool sync);
+    uint64_t Commit(Publication publication);
 
    private:
     CommandStream& stream_;

@@ -65,7 +65,7 @@ bool ShaderStore::Initialize(Device& device) {
   file_ = rex::memory::MappedMemory::Open(path_, rex::memory::MappedMemory::Mode::kRead);
   if (!file_ || !file_->data()) {
     REXLOG_ERROR("[gpu] shader pack: cannot open {} (build it with "
-                 "tools/build_shader_pack_v3.py; the build copies src/assets next to the exe)",
+                 "tools/build_shader_pack_v4.py; the build copies src/assets next to the exe)",
                  rex::path_to_utf8(path_));
     file_.reset();
     return false;
@@ -116,6 +116,8 @@ bool ShaderStore::Validate() {
     entry.velem_count = uint16_t(e[10] | e[11] << 8);
     entry.velem_offset = ReadU32(e + 12);
     entry.flags = ReadU32(e + 16);
+    entry.ps_outputs = static_cast<uint8_t>((entry.flags >> 8) & 0x1Fu);
+    entry.texture_fetch_mask = ReadU32(e + 20);
     entry.dxil[0] = ReadBlob(e + 24);
     entry.dxil[1] = ReadBlob(e + 40);
     entry.spirv = ReadBlob(e + 56);

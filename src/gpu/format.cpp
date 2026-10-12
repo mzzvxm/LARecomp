@@ -76,7 +76,10 @@ bool IsPackedNormalDeclType(uint32_t packed) { return packed == 0x001A2187; }
 Mapping ColorTargetFormat(uint32_t color_format) {
   switch (color_format) {
     case 0: return Ok(RenderFormat::R8G8B8A8_UNORM, "k_8_8_8_8");
-    case 1: return Missing("k_8_8_8_8_GAMMA");  // DXGI R8G8B8A8_UNORM_SRGB
+    // Stored linear in a wider float target; the resolve encodes the Xenos
+    // piecewise-linear gamma when it copies out. sRGB would not be
+    // the console's curve even where the host has it.
+    case 1: return Ok(RenderFormat::R16G16B16A16_FLOAT, "k_8_8_8_8_GAMMA");
     case 2: return Missing("k_2_10_10_10");     // DXGI R10G10B10A2_UNORM
     case 10: return Missing("k_2_10_10_10_AS_10_10_10_10");
     // No host 7e3 float; the wider float target is the lossless substitute
@@ -105,13 +108,17 @@ Mapping DepthTargetFormat(uint32_t depth_format) {
 Mapping TextureFormat(uint32_t texture_format) {
   switch (texture_format) {
     case 2: return Ok(RenderFormat::R8_UNORM, "k_8");
-    case 3: return Missing("k_1_5_5_5");  // DXGI B5G5R5A1_UNORM
+    // Expanded exactly to 8 bits per channel when decoded: the
+    // host format B5G5R5A1 is not in Plume, and the expansion makes it moot.
+    case 3: return Ok(RenderFormat::R8G8B8A8_UNORM, "k_1_5_5_5");
     case 6: return Ok(RenderFormat::R8G8B8A8_UNORM, "k_8_8_8_8");
     case 18: return Ok(RenderFormat::BC1_UNORM, "k_DXT1");
     case 19: return Ok(RenderFormat::BC2_UNORM, "k_DXT2_3");
     case 20: return Ok(RenderFormat::BC3_UNORM, "k_DXT4_5");
     case 32: return Ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_FLOAT");
-    case 29: return Ok(RenderFormat::R16G16B16A16_SNORM, "k_16_16_16_16_EXPAND");
+    // EXPAND is float16 per channel (the SDK's format table, and what the
+    // guest's own resolves write into it); M3 had SNORM, which was wrong.
+    case 29: return Ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_EXPAND");
     case 36: return Ok(RenderFormat::R32_FLOAT, "k_32_FLOAT");
     // Depth read back as a texture: one float channel, served by the render
     // target path (M5), never decoded from guest memory.

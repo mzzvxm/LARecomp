@@ -15,6 +15,8 @@
 //    window P before the call, window R after it, the bound surfaces' headers
 //    and every block an argument points at.
 //  - The present: the front buffer and the frame's capture statistics.
+//  - The guest's GPU fences, which the render thread retires as
+//    it executes them.
 //
 // Constants. A guest-side shadow of each device's two banks holds what the
 // render thread has been sent. A draw sends the blocks whose dirty bit was set
@@ -98,6 +100,17 @@ class GuestCapture {
 
   // Writes the present and waits for the render thread to run it.
   void Present(const uint8_t* base, uint32_t device, uint32_t front_buffer);
+
+  // A fence the guest inserted (sub_82411CD0), called AFTER the original:
+  // whether the capture is on is decided here, after the insertion, which is
+  // what makes the startup hand-over exact. `value` is the issued
+  // counter read before the original. Published at once.
+  void Fence(uint32_t device, uint32_t value);
+  // The startup hand-over: one fence record that covers every fence the guest
+  // inserted before the capture was on, with the issued counter read under the
+  // stream's producer lock. False when there is nothing to cover (no device,
+  // ring not set up). Published at once.
+  bool FenceCatchUp(const uint8_t* base, uint32_t device);
 
  private:
   struct DeviceState {

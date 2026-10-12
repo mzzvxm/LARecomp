@@ -10,7 +10,6 @@
 #include <iterator>
 
 #include <rex/filesystem.h>
-#include <rex/hash.h>
 #include <rex/logging.h>
 
 #include "backend.h"
@@ -239,25 +238,14 @@ void FrameValidator::CheckInputLayout(const uint8_t* payload, const ShaderStore:
 }
 
 void FrameValidator::ApplyConstants(const uint8_t* payload) {
-  const DrawView view(payload);
-  const DrawRecord& r = view.record();
-  DeviceBanks& banks = banks_[r.device];
-  for (uint32_t k = 0; k < r.vs_delta_count; ++k) {
-    const uint32_t block = view.vs_block_indices()[k] % guest::kConstantBlocksPerBank;
-    std::memcpy(banks.vs.data() + block * guest::kConstantBlockBytes,
-                view.vs_blocks() + k * guest::kConstantBlockBytes, guest::kConstantBlockBytes);
-  }
-  for (uint32_t k = 0; k < r.ps_delta_count; ++k) {
-    const uint32_t block = view.ps_block_indices()[k] % guest::kConstantBlocksPerBank;
-    std::memcpy(banks.ps.data() + block * guest::kConstantBlockBytes,
-                view.ps_blocks() + k * guest::kConstantBlockBytes, guest::kConstantBlockBytes);
-  }
-  if ((r.flags & kDrawBankCheck) != 0) {
+  ConstantBanks::Check check;
+  banks_.Apply(DrawView(payload), &check);
+  if (check.done) {
     Count(kBankChecks);
-    if (XXH3_64bits(banks.vs.data(), banks.vs.size()) != r.bank_check_vs) {
+    if (!check.vs_matches) {
       Count(kBankMismatchVs);
     }
-    if (XXH3_64bits(banks.ps.data(), banks.ps.size()) != r.bank_check_ps) {
+    if (!check.ps_matches) {
       Count(kBankMismatchPs);
     }
   }

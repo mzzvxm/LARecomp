@@ -2,12 +2,19 @@
 // ===========================================================================
 // MCLA GPU renderer -- frames in flight and resource retirement
 // ===========================================================================
-// kFramesInFlight slots, each with its own command list, fence and swap-chain
+// kFramesInFlight slots, each with its command lists, fence and swap-chain
 // acquire semaphore. While the GPU executes slot N the render thread records
 // slot N+1; Advance() moves to the next slot and waits for the fence of the
-// submission that last used it before its list is reset. Two slots is what
+// submission that last used it before its lists are reset. Two slots is what
 // reblue and reeot both run (gpu/device.h kNumFrames, gpu/device.h kNumFrames):
 // one more lets the CPU run further ahead without hiding anything new.
+//
+// A guest frame is recorded from its first scene record to its present
+//, possibly in several batches: a
+// batch flush ends the list being recorded, executes it WITHOUT a fence and
+// opens the slot's next list (created on first need). Only the frame's last
+// list signals the slot's fence; on one queue it completes after every batch
+// before it, so waiting for it proves the whole slot idle.
 //
 // Plume's RenderCommandFence is binary (plume_d3d12.cpp: an auto-reset event
 // armed by executeCommandLists; plume_vulkan.cpp: vkWaitForFences then
@@ -17,15 +24,17 @@
 //
 // Retirement. A GPU object that is no longer wanted may still be referenced by
 // a command list the GPU has not finished. Retire() takes it over and tags it
-// with the serial of the submission that will close the list being recorded;
-// it is destroyed once a fence wait proves that serial complete. On one queue
-// submissions complete in order, so "serial S done" covers every earlier use.
-// This holds for any slot count and for a list that is abandoned instead of
-// submitted (its serial passes to the next submission, which completes later
-// than any use recorded before it). reblue and reeot instead park objects in
-// per-slot graveyards keyed by the recording slot, which is correct for two
-// slots and needs reblue's RetireSlot guard because several guest threads
-// retire concurrently; here only the render thread records or retires.
+// with the serial of the frame submission that will close the lists being
+// recorded; it is destroyed once a fence wait proves that serial complete. On
+// one queue submissions complete in order, so "serial S done" covers every
+// earlier use, batches included (a batch executes before its frame's fenced
+// list). This holds for any slot count and for a frame that is abandoned
+// instead of submitted (its serial passes to the next submission, which
+// completes later than any use recorded before it). reblue and reeot instead
+// park objects in per-slot graveyards keyed by the recording slot, which is
+// correct for two slots and needs reblue's RetireSlot guard because several
+// guest threads retire concurrently; here only the render thread records or
+// retires.
 //
 // RetireAction defers work rather than an object -- rewriting a bindless slot
 // to its null descriptor and freeing it (descriptors.h) -- under the same rule.
@@ -41,6 +50,7 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <plume_render_interface.h>
 
@@ -62,11 +72,13 @@ class FrameRing {
   // destroys every retired object, the lists, fences and semaphores.
   void Shutdown();
 
-  // Opens the current slot's command list if it is not open yet. Null when the
+  // Opens the current slot's first list if no list is open. Null when the
   // device is lost or the ring is not initialized.
   plume::RenderCommandList* Begin();
   bool is_open() const { return open_; }
-  plume::RenderCommandList* list() const { return open_ ? slots_[slot_].list.get() : nullptr; }
+  plume::RenderCommandList* list() const {
+    return open_ ? slots_[slot_].lists[slots_[slot_].next_list - 1].get() : nullptr;
+  }
   uint32_t slot() const { return slot_; }
 
   // The semaphore a swap-chain acquire for this slot signals, and its submission
@@ -76,12 +88,18 @@ class FrameRing {
     return slots_[slot_].acquire.get();
   }
 
+  // Ends the open list, executes it without a fence and opens the slot's next
+  // list, which it returns. Null when no list is open or the device is lost
+  // (the open list is then abandoned).
+  plume::RenderCommandList* FlushBatch();
+
   // Ends the open list and executes it, signalling the slot's fence. False when
   // nothing was executed (no open list, or the device is lost and the list was
   // abandoned): work recorded in it, timestamps included, never runs.
   bool Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_count,
               plume::RenderCommandSemaphore** signals, uint32_t signal_count);
-  // Ends the open list without executing it (nothing it recorded reaches the GPU).
+  // Ends the open list without executing it (nothing it recorded reaches the
+  // GPU; batches already flushed did).
   void Abandon();
 
   // Moves to the next slot, waits for its outstanding submission, and destroys
@@ -90,9 +108,10 @@ class FrameRing {
 
   // Waits until the queue is idle -- every submission, and the queue work that
   // follows the last one (the swap chain's present), which no frame fence
-  // covers -- and destroys every retired object. Used around swap-chain
-  // rebuilds and at shutdown. With the device lost the waits are skipped (a
-  // removed device never signals a fence).
+  // covers -- and destroys every retired object no open list can name. Used
+  // around swap-chain rebuilds and at shutdown; valid with a list open (the
+  // guest frame being recorded). With the device lost the waits are skipped
+  // (a removed device never signals a fence).
   void WaitIdle();
 
   template <typename T>
@@ -110,6 +129,12 @@ class FrameRing {
   }
 
   size_t retired_count() const { return retired_.size(); }
+  // Batches flushed since the last call (the stats line).
+  uint64_t TakeBatchFlushes() {
+    const uint64_t n = batch_flushes_;
+    batch_flushes_ = 0;
+    return n;
+  }
 
  private:
   struct RetiredObject {
@@ -130,26 +155,35 @@ class FrameRing {
     std::unique_ptr<RetiredObject> object;
   };
   struct Slot {
-    std::unique_ptr<plume::RenderCommandList> list;
+    // The frame's batches in recording order; lists[next_list - 1] is the open
+    // one while a frame is recorded. Each list owns its allocator/pool, reset
+    // by its begin() only after the slot's fence was waited.
+    std::vector<std::unique_ptr<plume::RenderCommandList>> lists;
+    uint32_t next_list = 0;
     std::unique_ptr<plume::RenderCommandFence> fence;
     std::unique_ptr<plume::RenderCommandSemaphore> acquire;
     bool submitted = false;  // a fence signal is outstanding
     uint64_t serial = 0;     // serial of that submission
   };
 
+  // Opens the current slot's next list (creating it if needed).
+  plume::RenderCommandList* OpenNextList();
   void WaitSlot(Slot& slot);
-  // Executes an empty list from the current slot, signalling its fence after
-  // everything queued so far. Only with no list open.
-  void SubmitQueueFence();
   void ReleaseCompleted();
 
   Device* device_ = nullptr;
   Slot slots_[kFramesInFlight];
+  // An empty list and a fence of their own: WaitIdle executes them after
+  // everything queued so far and waits, which works whether or not a slot's
+  // list is open.
+  std::unique_ptr<plume::RenderCommandList> idle_list_;
+  std::unique_ptr<plume::RenderCommandFence> idle_fence_;
   uint32_t slot_ = 0;
   bool open_ = false;
   // Serial the next Submit() will carry; objects retired now are freed after it.
   uint64_t next_serial_ = 1;
   uint64_t completed_serial_ = 0;
+  uint64_t batch_flushes_ = 0;
   std::deque<Retirement> retired_;
 };
 

@@ -15,6 +15,7 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#include "native_gfx/guest/guest_fence.h"
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
 
@@ -441,7 +442,7 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
     uint8_t* payload = writer.Begin(RecordType::kDraw, layout.payload_bytes);
     if (payload) {
       WriteDraw(base, device, c, payload);
-      writer.Commit(false);
+      writer.Commit(Publication::kBatched);
       CountRecord(layout.payload_bytes);
       ++frame_.draws;
     }
@@ -529,7 +530,7 @@ void GuestCapture::FlushPendingInline(const uint8_t* base, uint32_t device, bool
   uint8_t* payload = writer.Begin(RecordType::kDraw, uint32_t(pending_.payload.size()));
   if (payload) {
     std::memcpy(payload, pending_.payload.data(), pending_.payload.size());
-    writer.Commit(false);
+    writer.Commit(Publication::kBatched);
     CountRecord(uint32_t(pending_.payload.size()));
     ++frame_.draws;
   }
@@ -665,7 +666,7 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
                                                                        : kEventColorUnreadable;
     }
     CopyEventState(*s, base, device, r->state, &r->flags);
-    writer.Commit(false);
+    writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ClearRecord));
   }
   frame_.capture_ns += s->before_ns + ElapsedNs(t0);
@@ -727,7 +728,7 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
                       : kEventDestUnreadable;
     }
     CopyEventState(*s, base, device, r->state, &r->flags);
-    writer.Commit(false);
+    writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ResolveRecord));
   }
   frame_.capture_ns += s->before_ns + ElapsedNs(t0);
@@ -769,7 +770,7 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
                       : kEventColorUnreadable;
     }
     CopyEventState(*s, base, device, r->state, &r->flags);
-    writer.Commit(false);
+    writer.Commit(Publication::kBatched);
     CountRecord(sizeof(TilingBeginRecord));
   }
   frame_.capture_ns += s->before_ns + ElapsedNs(t0);
@@ -827,7 +828,7 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
                       : kEventDestUnreadable;
     }
     CopyEventState(*s, base, device, r->state, &r->flags);
-    writer.Commit(false);
+    writer.Commit(Publication::kBatched);
     CountRecord(sizeof(TilingEndRecord));
   }
   frame_.capture_ns += s->before_ns + ElapsedNs(t0);
@@ -861,7 +862,7 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
       CountRecord(sizeof(PresentRecord));
       frame_.capture_ns += ElapsedNs(t0);
       r->stats = frame_;
-      sequence = writer.Commit(/*sync=*/true);
+      sequence = writer.Commit(Publication::kWaited);
     }
     frame_ = GuestFrameStats{};
     for (auto& state : devices_) {
@@ -869,6 +870,62 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
     }
   }
   stream_.WaitExecuted(sequence);
+}
+
+// ---------------------------------------------------------------------------
+// fences
+// ---------------------------------------------------------------------------
+
+void GuestCapture::Fence(uint32_t device, uint32_t value) {
+  if (!enabled()) {
+    return;
+  }
+  const auto t0 = Clock::now();
+  std::lock_guard lock(mutex_);
+  // Not a draw-state event: a pending inline draw stays open. A fence kicked
+  // between BeginVertices and EndVertices was inserted before that draw's
+  // packet, so it does not cover the draw and goes ahead of its record.
+  CommandStream::Writer writer(stream_);
+  uint8_t* payload = writer.Begin(RecordType::kFence, sizeof(FenceRecord));
+  if (!payload) {
+    return;
+  }
+  auto* r = new (payload) FenceRecord();
+  r->device = device;
+  r->value = value;
+  CountRecord(sizeof(FenceRecord));
+  ++frame_.fences;
+  frame_.capture_ns += ElapsedNs(t0);
+  writer.Commit(Publication::kNow);
+}
+
+bool GuestCapture::FenceCatchUp(const uint8_t* base, uint32_t device) {
+  if (!enabled() || device == 0) {
+    return false;
+  }
+  std::lock_guard lock(mutex_);
+  // Read with the producer lock held: a record whose writer finished before
+  // the increment this read sees is ahead of the catch-up in the stream.
+  CommandStream::Writer writer(stream_);
+  uint8_t issued_be[4];
+  if (!CopyGuest(base, device + nfx::kDevFenceIssuedOffset, issued_be, sizeof(issued_be))) {
+    return false;
+  }
+  const uint32_t issued = LoadBe32(issued_be);
+  if (issued == 0) {
+    return false;  // ring not set up yet; sub_82412A60 starts issued at 3, retired at 1
+  }
+  uint8_t* payload = writer.Begin(RecordType::kFence, sizeof(FenceRecord));
+  if (!payload) {
+    return false;
+  }
+  auto* r = new (payload) FenceRecord();
+  r->device = device;
+  r->value = issued - 2;  // the newest fence inserted so far
+  CountRecord(sizeof(FenceRecord));
+  ++frame_.fences;
+  writer.Commit(Publication::kNow);
+  return true;
 }
 
 }  // namespace mcla::gpu

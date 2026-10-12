@@ -4,7 +4,8 @@
 // ===========================================================================
 // One record per guest event that produces GPU work: draws, clears, resolves, the two ends of tiled
 // rendering, and the present. Each carries the device state its event
-// consumed, copied at the moment it was valid.
+// consumed, copied at the moment it was valid. Plus the guest's GPU fences
+// (24.20), which the render thread retires as it executes.
 //
 // Conventions:
 //  - Blocks copied out of guest memory (register and fetch windows, constant
@@ -40,6 +41,8 @@ enum class RecordType : uint8_t {
   kResolve,
   kTilingBegin,
   kTilingEnd,
+  kFence,
+  kCount,  // number of types; not a record
 };
 
 const char* RecordTypeName(RecordType type);
@@ -48,6 +51,15 @@ enum RecordHeaderFlags : uint8_t {
   // The producer waits for this record to be executed (the present): the
   // consumer reports its sequence as executed right after running it.
   kRecordSync = 1u << 0,
+};
+
+// When a committed record becomes visible to the render thread
+// (CommandStream::Writer::Commit).
+enum class Publication : uint8_t {
+  kBatched,  // with the batch (stream.h): most records
+  kNow,      // at once, nobody waits for its execution (a fence: the guest waits
+             // for the retired value instead)
+  kWaited,   // at once and flagged kRecordSync: the producer waits (the present)
 };
 
 struct RecordHeader {
@@ -84,6 +96,7 @@ struct GuestFrameStats {
   uint32_t constant_blocks_unmasked = 0;  // changed with their dirty bit clear (verify mode)
   uint32_t inline_unterminated = 0;
   uint32_t unreadable = 0;          // any guest pointer the capture could not follow
+  uint32_t fences = 0;              // kFence records
 };
 
 struct PresentRecord {
@@ -291,11 +304,25 @@ struct TilingEndRecord {
   EventState state;
 };
 
+// --- fence -----------------------------------------------------------------------
+
+// A GPU fence the guest inserted (sub_82411CD0, from Submit and from the end
+// of tiled rendering): the EVENT_WRITE that makes the GPU write `value` into
+// the guest's retired dword once everything submitted before it is done. The
+// render thread plays that GPU and publishes `value` when it executes this
+// record, i.e. after every record captured before the insertion. Also written once by the hand-over at startup, to cover the fences
+// inserted before the capture was on.
+struct FenceRecord {
+  uint32_t device = 0;
+  uint32_t value = 0;  // the device's issued counter before the insertion
+};
+
 static_assert(std::is_trivially_copyable_v<ClearRecord>);
 static_assert(std::is_trivially_copyable_v<ResolveRecord>);
 static_assert(std::is_trivially_copyable_v<TilingBeginRecord>);
 static_assert(std::is_trivially_copyable_v<TilingEndRecord>);
 static_assert(std::is_trivially_copyable_v<PresentRecord>);
+static_assert(std::is_trivially_copyable_v<FenceRecord>);
 
 // Raw guest reads, for decoders.
 inline uint32_t LoadBe32(const uint8_t* p) {

@@ -193,6 +193,11 @@ void FrameTrace::OnRecord(uint64_t frames, const RecordHeader& header, const uin
       WritePresent(header, *reinterpret_cast<const PresentRecord*>(payload));
       Close();
       break;
+    case RecordType::kFence: {
+      const auto& r = *reinterpret_cast<const FenceRecord*>(payload);
+      Printf("FN seq=%" PRIu64 " dev=%08x value=%u\n", header.sequence, r.device, r.value);
+      break;
+    }
     default:
       Printf("? type=%u seq=%" PRIu64 " size=%u\n", unsigned(header.type), header.sequence,
              header.size);

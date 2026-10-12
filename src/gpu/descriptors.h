@@ -97,6 +97,14 @@ class BindlessHeap {
   // Defers the release of `slot` until the GPU is done with it (see top).
   void ReleaseTexture(uint32_t slot, TextureDimension dimension);
 
+  // Writes `sampler` into the next free sampler slot. Guest samplers are few
+  // (27 distinct in the measured frames) and are kept for the life
+  // of the process, so a sampler slot is never released; the caller keeps the
+  // sampler alive until the heap is shut down. kInvalidBindlessSlot when every
+  // slot is taken (logged once).
+  uint32_t AddSampler(const plume::RenderSampler& sampler);
+  uint32_t samplers_in_use() const { return next_sampler_slot_; }
+
   uint32_t textures_in_use() const {
     return kBindlessTextureCount - kFirstAllocatableTextureSlot -
            static_cast<uint32_t>(free_texture_slots_.size());
@@ -121,6 +129,8 @@ class BindlessHeap {
   std::vector<uint8_t> slot_in_use_;          // per slot; catches a double release
   bool nulls_need_barrier_ = false;
   bool reported_full_ = false;
+  uint32_t next_sampler_slot_ = kFixedSamplerCount;
+  bool reported_samplers_full_ = false;
 };
 
 }  // namespace mcla::gpu

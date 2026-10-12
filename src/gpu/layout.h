@@ -11,15 +11,17 @@
 //                  device_pipelines.cpp does the same)
 //   set 3          the BindlessHeap sampler set (space3)
 //   D3D12          root CBVs b0/b1/b2 space4: VS constants, PS constants,
-//                  SharedConstants; root UAV u0 space5 reserved for the
-//                  occlusion counter
+//                  SharedConstants (root parameters 0, 1, 2 after the sets)
 //   Vulkan         one VERTEX|PIXEL push range of 24 bytes: the three buffer
-//                  device addresses the shaders read with vk::RawBufferLoad;
-//                  set 4, a read-write byte address buffer, reserved as above
+//                  device addresses the shaders read with vk::RawBufferLoad
+//
+// No occlusion counter: the reserve M3 kept (a root UAV / a fifth set) left
+// before the first pipeline, the game never arming a query (viz query 0 and
+// RB_SAMPLE_COUNT_CTL constant in every measured scene
+// item 4).
 //
 // Input-assembler input is allowed: the guest's vertex streams arrive through
-// vertex buffers. M3 creates the layout and proves it exists on both backends;
-// pipelines are M4.
+// vertex buffers.
 //
 // Threading: Initialize/Shutdown on the lifecycle thread, used by the render
 // thread.
@@ -36,8 +38,12 @@ class Device;
 
 class GuestLayout {
  public:
-  // The three addresses the SPIR-V shaders read (Vulkan push constants).
+  // The three addresses the SPIR-V shaders read (Vulkan push constants), in
+  // this order; on D3D12 the same three are root CBVs with these indices.
   static constexpr uint32_t kPushConstantBytes = 3 * sizeof(uint64_t);
+  static constexpr uint32_t kVertexConstants = 0;
+  static constexpr uint32_t kPixelConstants = 1;
+  static constexpr uint32_t kSharedConstants = 2;
 
   GuestLayout() = default;
   ~GuestLayout();
@@ -51,9 +57,6 @@ class GuestLayout {
   plume::RenderPipelineLayout* layout() const { return layout_.get(); }
 
  private:
-  // Vulkan's reserved set 4 needs its builder alive as long as the layout
-  // (RenderDescriptorSetBuilder::end points the desc into the builder).
-  plume::RenderDescriptorSetBuilder occlusion_builder_;
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
 };
 

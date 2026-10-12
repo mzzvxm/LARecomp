@@ -10,23 +10,34 @@
 add_library(larecomp_gpu OBJECT
     backend.cpp
     capture.cpp
+    constants.cpp
     descriptors.cpp
     device.cpp
+    draw_state.cpp
     format.cpp
     frame_trace.cpp
     frame.cpp
     guest_capture.cpp
+    guest_memory.cpp
+    input_layout.cpp
     layout.cpp
+    memory_census.cpp
     native_window.cpp
     overlay.cpp
+    pipelines.cpp
+    region_index.cpp
     render_thread.cpp
     renderer.cpp
+    samplers.cpp
+    scene.cpp
     shaders.cpp
     stream.cpp
     swap_chain.cpp
     timing.cpp
+    topology.cpp
     upload.cpp
     validation.cpp
+    viewport.cpp
 )
 
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")

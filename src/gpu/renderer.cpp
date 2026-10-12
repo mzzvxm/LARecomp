@@ -8,21 +8,25 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
 #include <rex/ui/keybinds.h>
 
 #include "gpu.h"
 #include "guest_capture.h"
+#include "native_gfx/guest/guest_fence.h"
 #include "native_gfx/guest/occlusion.h"
+#include "native_gfx/guest/vblank_probe.h"
+#include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu, false, "MCLA/GPU",
     "Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs "
     "mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so "
-    "neither the SDK presenter nor the legacy runtime can run beside it. Milestone M3: the SDK "
-    "overlays are drawn and every guest draw, clear, resolve and present is captured and "
-    "validated on the render thread; the guest's frames are not rendered yet (each one is "
-    "cleared to black until M4).")
+    "neither the SDK presenter nor the legacy runtime can run beside it. Milestone M4 in "
+    "progress: every guest draw is prepared on the render thread (state, constants, pipeline, "
+    "samplers) but not drawn yet, so each frame is still cleared to black under the SDK "
+    "overlays.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
@@ -41,11 +45,26 @@ REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
-    mcla_gpu_verify_constants, true, "MCLA/GPU",
+    mcla_gpu_verify_constants, false, "MCLA/GPU",
     "Compare every 64-byte block of both constant banks on every draw, not only the blocks the "
     "guest's dirty masks name, and send (and count) any that changed without its dirty bit. "
-    "Costs guest CPU per draw; on while milestone M3 measures whether the masks are complete "
+    "Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the "
+    "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
     ".")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_validate, false, "MCLA/GPU",
+    "Run the milestone M3 validator on every record besides the replay: per-record counters and "
+    "the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second "
+    "time on the render thread (3.5-7 ms/frame measured in M3).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_batch_draws, 0, "MCLA/GPU",
+    "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
+    "and continue in a new list (0: one submission per guest frame, the default). For measuring "
+    "submission batching.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
@@ -58,6 +77,16 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
 
 REXCVAR_DECLARE(bool, mcla_native_gfx);
 REXCVAR_DECLARE(bool, mcla_native_gfx_nocp);
+REXCVAR_DECLARE(bool, mcla_gpu_memory_census);
+
+namespace {
+
+// D3DDevice_BlockOnFence calls that found their fence pending, and the time
+// they waited (gpu.h NoteGuestFenceWait); taken by the stats line.
+std::atomic<uint64_t> g_fence_waits{0};
+std::atomic<uint64_t> g_fence_wait_ns{0};
+
+}  // namespace
 
 namespace mcla::gpu {
 
@@ -89,13 +118,24 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   // never initialized).
   bool ok = device_.Initialize(options.device) && frames_.Initialize(device_) &&
             heap_.Initialize(device_, frames_) && guest_layout_.Initialize(device_, heap_) &&
-            shaders_.Initialize(device_) && upload_.Initialize(device_) &&
-            swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
-            overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
-                                swap_chain_.format());
+            shaders_.Initialize(device_);
+  if (ok) {
+    samplers_.Initialize(device_, heap_);
+    pipelines_.Initialize(device_, guest_layout_, shaders_);
+    ok = upload_.Initialize(device_);
+  }
+  if (ok) {
+    scene_.Initialize(upload_, pipelines_, samplers_);
+    ok = swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
+         overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
+                             swap_chain_.format());
+  }
   if (ok) {
     timing_.Initialize(device_);
     capture_.Initialize();
+    census_.SetEnabled(REXCVAR_GET(mcla_gpu_memory_census));
+    validate_ = REXCVAR_GET(mcla_gpu_validate);
+    batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -104,6 +144,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     overlay_.Shutdown();
     swap_chain_.Shutdown();
     upload_.Shutdown();
+    pipelines_.Shutdown();
+    samplers_.Shutdown();
     shaders_.Shutdown();
     guest_layout_.Shutdown();
     heap_.Shutdown();
@@ -113,8 +155,11 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     return false;
   }
   initialized_ = true;
-  REXLOG_INFO("[gpu] renderer up: {} frames in flight, render thread running (idle tick {} ms)",
-              kFramesInFlight, kIdlePeriod.count());
+  REXLOG_INFO("[gpu] renderer up: {} frames in flight, render thread running (idle tick {} ms), "
+              "validator {}, {}",
+              kFramesInFlight, kIdlePeriod.count(), validate_ ? "on" : "off",
+              batch_draws_ ? "a batch every " + std::to_string(batch_draws_) + " draws"
+                           : std::string("one submission per guest frame"));
   return true;
 }
 
@@ -136,9 +181,15 @@ void Renderer::Shutdown() {
                  presented_);
     return;
   }
-  // The validator's last report and CSVs, now that no record arrives.
-  validator_.Finish();
+  // The last reports (and the validator's CSVs), now that no record arrives.
+  if (validate_) {
+    validator_.Finish();
+  }
+  scene_.Finish();
+  census_.Finish();
   trace_.Finish();
+  // Nothing reads or watches guest memory any more.
+  guest_memory_.Shutdown();
   // 2. Drain. Every retirement is released here, release actions included,
   //    while all the components they name are still alive. Skipped by
   //    FrameRing when the device is lost.
@@ -151,6 +202,8 @@ void Renderer::Shutdown() {
   overlay_.Shutdown();
   swap_chain_.Shutdown();
   upload_.Shutdown();
+  pipelines_.Shutdown();
+  samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
   heap_.Shutdown();
@@ -166,33 +219,125 @@ void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
   if (type < std::size(records_)) {
     ++records_[type];
   }
+  records_executed_.fetch_add(1, std::memory_order_relaxed);
   trace_.OnRecord(guest_frames_, header, payload);
-  // M3: every record is decoded and validated; nothing is drawn from it yet.
+  // Scene records open the guest frame's list; the present closes it.
   switch (header.type) {
     case RecordType::kPresent:
       ++guest_frames_;
-      validator_.OnPresent(*reinterpret_cast<const PresentRecord*>(payload));
+      if (validate_) {
+        validator_.OnPresent(*reinterpret_cast<const PresentRecord*>(payload));
+      }
+      scene_.OnPresent();
+      census_.OnPresent();
       ExecutePresent(PresentSource::kGuest);
       return;
     case RecordType::kDraw:
-      validator_.OnDraw(payload);
+      if (validate_) {
+        validator_.OnDraw(payload);
+      }
+      census_.OnDraw(payload);
+      scene_.OnDraw(payload, OpenFrameList());
+      MaybeFlushBatch();
       return;
-    case RecordType::kClear:
-      validator_.OnClear(*reinterpret_cast<const ClearRecord*>(payload));
+    case RecordType::kClear: {
+      const auto& record = *reinterpret_cast<const ClearRecord*>(payload);
+      if (validate_) {
+        validator_.OnClear(record);
+      }
+      scene_.OnClear(record, OpenFrameList());
       return;
-    case RecordType::kResolve:
-      validator_.OnResolve(*reinterpret_cast<const ResolveRecord*>(payload));
+    }
+    case RecordType::kResolve: {
+      const auto& record = *reinterpret_cast<const ResolveRecord*>(payload);
+      if (validate_) {
+        validator_.OnResolve(record);
+      }
+      scene_.OnResolve(record, OpenFrameList());
       return;
-    case RecordType::kTilingBegin:
-      validator_.OnTilingBegin(*reinterpret_cast<const TilingBeginRecord*>(payload));
+    }
+    case RecordType::kTilingBegin: {
+      const auto& record = *reinterpret_cast<const TilingBeginRecord*>(payload);
+      if (validate_) {
+        validator_.OnTilingBegin(record);
+      }
+      scene_.OnTilingBegin(record, OpenFrameList());
       return;
-    case RecordType::kTilingEnd:
-      validator_.OnTilingEnd(*reinterpret_cast<const TilingEndRecord*>(payload));
+    }
+    case RecordType::kTilingEnd: {
+      const auto& record = *reinterpret_cast<const TilingEndRecord*>(payload);
+      if (validate_) {
+        validator_.OnTilingEnd(record);
+      }
+      scene_.OnTilingEnd(record, OpenFrameList());
+      return;
+    }
+    case RecordType::kFence:
+      ExecuteFence(*reinterpret_cast<const FenceRecord*>(payload));
       return;
     case RecordType::kPad:
+    case RecordType::kCount:
       break;
   }
   REXLOG_ERROR("[gpu] render thread: unexpected record type {}", static_cast<uint32_t>(type));
+}
+
+// The render thread is the guest's GPU: everything captured before
+// the fence was inserted has been executed by now -- the M4 render thread reads
+// what a record names from guest memory while executing it -- so the guest may
+// reuse that memory. Publishing the value is what lets it.
+void Renderer::ExecuteFence(const FenceRecord& record) {
+  if (mcla::native_gfx::nocp::PublishOwnedRetiredFence(record.device, record.value)) {
+    fences_published_.fetch_add(1, std::memory_order_relaxed);
+    last_fence_.store(record.value, std::memory_order_relaxed);
+    return;
+  }
+  // Only after Shutdown handed the write back, while this thread stops: the
+  // vblank thread already retires everything.
+  if (fences_not_held_++ == 0) {
+    REXLOG_WARN("[gpu] render thread: fence {} of device {:#010x} arrived while the retired "
+                "fence is not held by this renderer; not published",
+                record.value, record.device);
+  }
+}
+
+plume::RenderCommandList* Renderer::OpenFrameList() {
+  if (frames_.is_open()) {
+    return frames_.list();
+  }
+  plume::RenderCommandList* list = frames_.Begin();
+  if (!list) {
+    return nullptr;
+  }
+  const uint32_t slot = frames_.slot();
+  // Outside any render pass: timestamp pool reset, one-time heap transitions.
+  timing_.BeginFrame(list, slot);
+  heap_.RecordPendingBarriers(list);
+  scene_.BeginFrame(list, slot);
+  return list;
+}
+
+void Renderer::MaybeFlushBatch() {
+  if (batch_draws_ == 0 || !frames_.is_open() || scene_.draws_since_flush() < batch_draws_) {
+    return;
+  }
+  scene_.OnListChanged(frames_.FlushBatch());
+}
+
+void Renderer::SubmitFrameWithoutPresent() {
+  if (!frames_.is_open()) {
+    return;
+  }
+  plume::RenderCommandList* list = frames_.list();
+  const uint32_t slot = frames_.slot();
+  scene_.EndFrame();
+  timing_.CompleteFrame(list, slot);
+  if (frames_.Submit(nullptr, 0, nullptr, 0)) {
+    timing_.OnSubmitted(slot);
+  }
+  frames_.Advance();
+  // The slot about to be recorded had its fence waited by Advance.
+  upload_.ResetSlot(frames_.slot());
 }
 
 void Renderer::OnIdle() {
@@ -202,6 +347,12 @@ void Renderer::OnIdle() {
   if (guest_has_presented_ &&
       std::chrono::steady_clock::now() - last_guest_present_ < kGuestActiveWindow) {
     // The guest is swapping; its presents carry the overlay.
+    return;
+  }
+  if (frames_.is_open()) {
+    // A guest frame is being recorded (the guest stopped between its first
+    // scene record and its present, e.g. while loading): presenting now would
+    // cut it in half. The overlay waits for the guest's present.
     return;
   }
   // The guest is quiet (not started yet, or stalled): keep the UI passes coming
@@ -223,6 +374,11 @@ bool Renderer::RebuildSwapChain() {
 
 void Renderer::ExecutePresent(PresentSource source) {
   if (device_.IsLost()) {
+    // Nothing recorded will run: drop the guest frame being recorded.
+    if (frames_.is_open()) {
+      scene_.EndFrame();
+      frames_.Abandon();
+    }
     return;
   }
   if (source == PresentSource::kGuest) {
@@ -237,7 +393,9 @@ void Renderer::ExecutePresent(PresentSource source) {
   }
   if (swap_chain_.empty()) {
     // Minimised, or a rebuild the backend refused: nothing to present into.
-    // Overlay uploads and deaths wait in the channel for the next frame.
+    // The guest frame still runs (its targets and resolves feed later frames);
+    // overlay uploads and deaths wait in the channel for the next frame.
+    SubmitFrameWithoutPresent();
     ++skipped_;
     return;
   }
@@ -249,21 +407,21 @@ void Renderer::ExecutePresent(PresentSource source) {
     // acquire did not signal the semaphore, so nothing may wait on it.
     if (!RebuildSwapChain() || !swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
       device_.CheckLost("swap chain acquire");
+      SubmitFrameWithoutPresent();
       ++skipped_;
       return;
     }
   }
 
-  plume::RenderCommandList* list = frames_.Begin();
+  // Already open when the guest frame had scene records.
+  plume::RenderCommandList* list = OpenFrameList();
   if (!list) {
     ++skipped_;
     return;
   }
   const uint32_t slot = frames_.slot();
-  // Outside any render pass: timestamp pool reset, one-time heap transitions,
-  // overlay texture uploads.
-  timing_.BeginFrame(list, slot);
-  heap_.RecordPendingBarriers(list);
+  scene_.EndFrame();
+  // Outside any render pass: overlay texture uploads.
   overlay_.Prepare(list, slot);
   RecordPresentPass(list, slot, image);
 
@@ -303,8 +461,9 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   if (!reported_no_scene_) {
     reported_no_scene_ = true;
     REXLOG_WARN(
-        "[gpu] no scene renderer yet (until milestone M4): each frame is cleared to black under "
-        "the SDK overlays. The guest's image is not drawn by this renderer before then.");
+        "[gpu] the guest's draws are prepared but not drawn yet (milestone M4 in progress: "
+        "buffers M4.4, EDRAM targets M4.5, textures and present M4.6): each frame is cleared to "
+        "black under the SDK overlays.");
   }
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -332,19 +491,24 @@ void Renderer::ReportFrameStats() {
                         " MiB"
                   : std::string("not reported");
   CommandStream& stream = thread_.stream();
+  const uint64_t fence_waits = g_fence_waits.exchange(0, std::memory_order_relaxed);
+  const uint64_t fence_wait_ns = g_fence_wait_ns.exchange(0, std::memory_order_relaxed);
   REXLOG_INFO(
       "[gpu] {} presents ({} guest, {} idle), {} skipped | {} | overlay {} draws, {} textures | "
-      "bindless {} of {} | upload {} chunks | {} retired pending | VRAM {} | {}x{} | records: "
-      "{} draws, {} clears, {} resolves, {}/{} tiling | stream {} MiB total, {} consumer wakes, "
-      "{} producer waits",
+      "bindless {} of {}, samplers {} | upload {} chunks | {} batch flushes | {} retired pending "
+      "| VRAM {} | {}x{} | records: {} draws, {} clears, {} resolves, {}/{} tiling, {} fences "
+      "(last {}) | guest fence waits {} ({:.1f} ms) | stream {} MiB total, {} consumer wakes, {} "
+      "producer waits",
       presented_, guest_presents_, idle_presents_, skipped_, timing_.TakeSummary(),
       overlay_draws_, overlay_.texture_count(), heap_.textures_in_use(),
-      kBindlessTextureCount - kFirstAllocatableTextureSlot, upload_.chunk_count(),
-      frames_.retired_count(), vram_text, swap_chain_.width(), swap_chain_.height(),
+      kBindlessTextureCount - kFirstAllocatableTextureSlot, heap_.samplers_in_use(),
+      upload_.chunk_count(), frames_.TakeBatchFlushes(), frames_.retired_count(), vram_text,
+      swap_chain_.width(), swap_chain_.height(),
       records_[size_t(RecordType::kDraw)], records_[size_t(RecordType::kClear)],
       records_[size_t(RecordType::kResolve)], records_[size_t(RecordType::kTilingBegin)],
-      records_[size_t(RecordType::kTilingEnd)], stream.bytes_written() >> 20,
-      stream.consumer_wakes(), stream.producer_waits());
+      records_[size_t(RecordType::kTilingEnd)], records_[size_t(RecordType::kFence)],
+      last_fence_.load(std::memory_order_relaxed), fence_waits, double(fence_wait_ns) / 1e6,
+      stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   overlay_draws_ = 0;
   for (uint64_t& count : records_) {
     count = 0;
@@ -367,6 +531,9 @@ std::atomic<Renderer*> g_active{nullptr};
 // runs finishes on the stopped stream.
 GuestCapture* g_capture = nullptr;
 std::atomic<GuestCapture*> g_capture_active{nullptr};
+// The render thread writes the guest's retired fence: from the
+// startup hand-over until Shutdown gives the write back to the vblank thread.
+std::atomic<bool> g_holds_retired_fence{false};
 
 // UI thread. The channel and drawer exist before the renderer: the SDK asks for
 // the drawer inside its SetupPresentation, before Startup runs.
@@ -444,10 +611,27 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
     return false;
   }
   g_active.store(g_renderer, std::memory_order_release);
+
+  // The fence hand-over, in this order: (a) take the retired
+  // fence from the vblank thread, so nothing retires ahead of the render
+  // thread; (b) turn the capture on, after which every fence the guest inserts
+  // becomes a record; (c) one record that covers the fences inserted before
+  // (b). In the normal order the guest has no device yet and (c) is a no-op.
+  mcla::native_gfx::nocp::AcquireFenceRetirement();
+  g_holds_retired_fence.store(true, std::memory_order_release);
   g_capture = new GuestCapture(g_renderer->stream(), REXCVAR_GET(mcla_gpu_verify_constants));
   g_capture_active.store(g_capture, std::memory_order_release);
   REXLOG_INFO("[gpu] guest capture on (constant verification {})",
               REXCVAR_GET(mcla_gpu_verify_constants) ? "on" : "off");
+  if (const uint32_t device = mcla::native_gfx::GraphicsDeviceVa()) {
+    auto* runtime = rex::Runtime::instance();
+    const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+    if (base && g_capture->FenceCatchUp(base, device)) {
+      REXLOG_WARN("[gpu] the guest's device {:#010x} existed before the capture; one fence "
+                  "record covers the fences it inserted until now",
+                  device);
+    }
+  }
 
   // F11. The SDK's bind requests the capture from an IGraphicsSystem, which
   // this mode does not have. A second bind on the same key would never fire
@@ -458,6 +642,16 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
                         "Capture the next frame with RenderDoc (Plume renderer)", [] {
                           if (Renderer* r = g_active.load(std::memory_order_acquire)) {
                             r->RequestCapture();
+                          }
+                        });
+  // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
+  // frame counter cannot be aimed at (menus, pause, photo mode).
+  rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
+                        "Write a raw trace of the next guest frame (Plume renderer)", [] {
+                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                            r->RequestTrace();
+                            REXLOG_INFO("[gpu] trace: the frame after the next present will be "
+                                        "written");
                           }
                         });
   return true;
@@ -574,6 +768,54 @@ void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   }
 }
 
+void OnGuestFenceInserted(uint32_t device, uint32_t value) {
+  if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
+    c->Fence(device, value);
+  }
+}
+
+bool RetiresGuestFences() {
+  return g_holds_retired_fence.load(std::memory_order_acquire) &&
+         g_capture_active.load(std::memory_order_acquire) != nullptr;
+}
+
+void OnGuestGpuHangCheck(const uint8_t* base, uint32_t device) {
+  // The guest calls this from its fence spin after ~5000 ticks without the
+  // retired value moving -- in this mode, a render thread busy for that long
+  // (creating many pipelines the first time it sees a scene) or one that
+  // stopped. Reported, never fatal: the first call of a stall, then every 10 s.
+  using Clock = std::chrono::steady_clock;
+  static std::atomic<int64_t> last_report_ms{0};
+  static std::atomic<uint64_t> calls{0};
+  const uint64_t call = calls.fetch_add(1, std::memory_order_relaxed) + 1;
+  const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             Clock::now().time_since_epoch())
+                             .count();
+  int64_t last = last_report_ms.load(std::memory_order_relaxed);
+  if (last != 0 && now_ms - last < 10000) {
+    return;
+  }
+  if (!last_report_ms.compare_exchange_strong(last, now_ms, std::memory_order_relaxed)) {
+    return;
+  }
+  const mcla::native_gfx::GuestFenceState fence = mcla::native_gfx::ReadFenceState(base, device);
+  Renderer::FenceProgress progress;
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    progress = r->fence_progress();
+  }
+  REXLOG_WARN("[gpu] the guest reports its GPU as hung (call {}): device {:#010x} issued {} "
+              "retired {} | render thread: {} records executed, {} fences published, last {} | "
+              "retired fence held by the renderer: {} | the guest keeps waiting",
+              call, device, fence.issued, fence.retired, progress.records_executed,
+              progress.fences_published, progress.last_fence,
+              g_holds_retired_fence.load(std::memory_order_relaxed) ? "yes" : "no");
+}
+
+void NoteGuestFenceWait(uint64_t wait_ns) {
+  g_fence_waits.fetch_add(1, std::memory_order_relaxed);
+  g_fence_wait_ns.fetch_add(wait_ns, std::memory_order_relaxed);
+}
+
 void RequestResize() {
   if (Renderer* r = g_active.load(std::memory_order_acquire)) {
     r->RequestResize();
@@ -594,6 +836,12 @@ void Shutdown() {
   Renderer* r = g_active.exchange(nullptr, std::memory_order_acq_rel);
   if (r) {
     r->Shutdown();
+  }
+  // After the render thread stopped (or was let go): the fence records still
+  // queued were dropped with it, and a guest thread waiting on one of them is
+  // released by the vblank thread's next tick.
+  if (g_holds_retired_fence.exchange(false, std::memory_order_acq_rel)) {
+    mcla::native_gfx::nocp::ReleaseFenceRetirement();
   }
 }
 

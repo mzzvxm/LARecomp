@@ -73,6 +73,7 @@ void GpuTiming::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   Harvest(slot);
   list->resetQueryPool(pools_[slot].get(), 0, kTimestamps);
   list->writeTimestamp(pools_[slot].get(), kFrameBegin);
+  written_[slot] = 1u << kFrameBegin;
 }
 
 void GpuTiming::Mark(plume::RenderCommandList* list, uint32_t slot, Timestamp timestamp) {
@@ -80,6 +81,18 @@ void GpuTiming::Mark(plume::RenderCommandList* list, uint32_t slot, Timestamp ti
     return;
   }
   list->writeTimestamp(pools_[slot].get(), timestamp);
+  written_[slot] |= 1u << timestamp;
+}
+
+void GpuTiming::CompleteFrame(plume::RenderCommandList* list, uint32_t slot) {
+  if (!available_ || !list) {
+    return;
+  }
+  for (uint32_t t = 0; t < kTimestamps; ++t) {
+    if ((written_[slot] & (1u << t)) == 0) {
+      Mark(list, slot, Timestamp(t));
+    }
+  }
 }
 
 void GpuTiming::OnSubmitted(uint32_t slot) {

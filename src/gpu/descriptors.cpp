@@ -219,6 +219,24 @@ uint32_t BindlessHeap::AllocateTexture(const plume::RenderTexture& texture,
   return slot;
 }
 
+uint32_t BindlessHeap::AddSampler(const plume::RenderSampler& sampler) {
+  if (!sampler_set_) {
+    return kInvalidBindlessSlot;
+  }
+  if (next_sampler_slot_ >= kBindlessSamplerCount) {
+    if (!reported_samplers_full_) {
+      reported_samplers_full_ = true;
+      REXLOG_ERROR("[gpu] bindless heap full: all {} sampler slots are in use; the sampler is "
+                   "not bound",
+                   kBindlessSamplerCount - kFixedSamplerCount);
+    }
+    return kInvalidBindlessSlot;
+  }
+  const uint32_t slot = next_sampler_slot_++;
+  sampler_set_->setSampler(slot, &sampler);
+  return slot;
+}
+
 void BindlessHeap::ReleaseTexture(uint32_t slot, TextureDimension dimension) {
   if (!frames_) {
     return;

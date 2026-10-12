@@ -6,12 +6,15 @@
 // order they are created and destroyed in:
 //
 //   Initialize:  Device -> FrameRing -> BindlessHeap -> GuestLayout ->
-//                ShaderStore -> UploadRing -> SwapChain -> OverlayRenderer ->
-//                GpuTiming -> FrameCapture -> RenderThread
+//                ShaderStore -> Samplers -> Pipelines -> UploadRing -> Scene
+//                -> SwapChain -> OverlayRenderer -> GpuTiming -> FrameCapture
+//                -> RenderThread
 //   Shutdown:    RenderThread stopped (deadline) -> FrameValidator::Finish ->
-//                FrameRing::WaitIdle (drains every retirement, running release
-//                actions while everything they name is alive) -> FrameCapture
-//                -> GpuTiming -> OverlayRenderer -> SwapChain -> UploadRing ->
+//                Scene::Finish -> MemoryCensus::Finish -> GuestMemory
+//                (callback unregistered) -> FrameRing::WaitIdle (drains every
+//                retirement, running release actions while everything they
+//                name is alive) -> FrameCapture -> GpuTiming -> OverlayRenderer
+//                -> SwapChain -> UploadRing -> Pipelines -> Samplers ->
 //                ShaderStore -> GuestLayout -> BindlessHeap -> FrameRing ->
 //                Device
 //
@@ -28,9 +31,13 @@
 // needs no global lock -- unlike reblue's VideoState mutex, which exists
 // because it records on several guest threads.
 //
-// Presents come from two places: the guest's D3DDevice_Swap (a kPresent
-// record) and the render thread's idle tick while the guest does not swap
-// (OnIdle; 21.2 "Present sem swap do guest"). Both run ExecutePresent.
+// A guest frame is recorded into one frame slot from its first scene record
+// (draw, clear, resolve, tiling) to its kPresent, whose present pass goes into
+// the same list; OpenFrameList opens it. Presents come from two
+// places: the guest's D3DDevice_Swap (a kPresent record) and the render
+// thread's idle tick while the guest does not swap (OnIdle; 21.2 "Present sem
+// swap do guest"), which never presents while a guest frame is open -- the
+// overlay then waits for the guest's present. Both run ExecutePresent.
 // ===========================================================================
 
 #include <atomic>
@@ -43,9 +50,14 @@
 #include "device.h"
 #include "frame.h"
 #include "frame_trace.h"
+#include "guest_memory.h"
 #include "layout.h"
+#include "memory_census.h"
 #include "overlay.h"
+#include "pipelines.h"
 #include "render_thread.h"
+#include "samplers.h"
+#include "scene.h"
 #include "shaders.h"
 #include "swap_chain.h"
 #include "timing.h"
@@ -71,7 +83,7 @@ class Renderer final : public RenderThread::Executor {
   static constexpr std::chrono::milliseconds kGuestActiveWindow{100};
   static constexpr std::chrono::milliseconds kStopDeadline{2000};
 
-  Renderer() : validator_(shaders_) {}
+  Renderer() : validator_(shaders_), scene_(shaders_), census_(guest_memory_) {}
   ~Renderer() override;
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
@@ -91,24 +103,55 @@ class Renderer final : public RenderThread::Executor {
   // Any thread.
   void RequestResize() { resize_requested_.store(true, std::memory_order_release); }
   void RequestCapture() { capture_.Request(); }
+  // Any thread: trace the guest frame after the next present (frame_trace.h).
+  void RequestTrace() { trace_.RequestNext(); }
+
+  // Any thread: how far the render thread got, for the "GPU is hung" report
+  // (gpu.h OnGuestGpuHangCheck).
+  struct FenceProgress {
+    uint64_t records_executed = 0;
+    uint64_t fences_published = 0;
+    uint32_t last_fence = 0;
+  };
+  FenceProgress fence_progress() const {
+    return FenceProgress{records_executed_.load(std::memory_order_relaxed),
+                         fences_published_.load(std::memory_order_relaxed),
+                         last_fence_.load(std::memory_order_relaxed)};
+  }
 
  private:
   enum class PresentSource : uint8_t { kGuest, kIdle };
 
   void Execute(const RecordHeader& header, const uint8_t* payload) override;
   void OnIdle() override;
+  void ExecuteFence(const FenceRecord& record);
+  // The guest frame's open list, opening it (and starting the frame's
+  // timestamps and the scene's frame) on the first scene record. Null when the
+  // device is lost.
+  plume::RenderCommandList* OpenFrameList();
+  // With mcla_gpu_batch_draws: submits the frame's list so far, unfenced, and
+  // continues in a new one (frame.h).
+  void MaybeFlushBatch();
+  // The open guest frame goes to the GPU without a present pass (nothing to
+  // present into), then the ring moves on.
+  void SubmitFrameWithoutPresent();
   void ExecutePresent(PresentSource source);
   bool RebuildSwapChain();
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image);
   void ReportFrameStats();
 
+  GuestMemory guest_memory_;  // attaches on first use; detached after the render thread stops
   Device device_;
   FrameRing frames_;
   BindlessHeap heap_;
   GuestLayout guest_layout_;
   ShaderStore shaders_;
-  FrameValidator validator_;  // render thread; reads shaders_
+  FrameValidator validator_;  // render thread; reads shaders_; on with mcla_gpu_validate
+  Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
+  MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_
+  Samplers samplers_;
+  Pipelines pipelines_;
   UploadRing upload_;
   SwapChain swap_chain_;
   OverlayRenderer overlay_;
@@ -120,6 +163,8 @@ class Renderer final : public RenderThread::Executor {
   std::atomic<bool> shutting_down_{false};
   std::atomic<bool> resize_requested_{false};
   bool initialized_ = false;
+  bool validate_ = false;       // mcla_gpu_validate, read at Initialize
+  uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
 
   // Render thread only.
   uint64_t presented_ = 0;
@@ -129,8 +174,15 @@ class Renderer final : public RenderThread::Executor {
   uint64_t skipped_ = 0;
   uint64_t overlay_draws_ = 0;
   // Records executed since the last stats line, by RecordType.
-  uint64_t records_[8] = {};
+  uint64_t records_[size_t(RecordType::kCount)] = {};
+  // Fence records that arrived while the retired fence was not held (logged
+  // once): nothing was published for them.
+  uint64_t fences_not_held_ = 0;
   bool guest_has_presented_ = false;
+  // Written by the render thread, read by any thread (fence_progress).
+  std::atomic<uint64_t> records_executed_{0};
+  std::atomic<uint64_t> fences_published_{0};
+  std::atomic<uint32_t> last_fence_{0};
   std::chrono::steady_clock::time_point last_guest_present_{};
   bool reported_no_scene_ = false;
 };

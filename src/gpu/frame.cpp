@@ -24,20 +24,31 @@ bool FrameRing::Initialize(Device& device) {
     REXLOG_ERROR("[gpu] frame ring: no device");
     return false;
   }
+  const auto fail = [&](const char* what) {
+    REXLOG_ERROR("[gpu] frame ring: could not create {}", what);
+    for (Slot& t : slots_) {
+      t = Slot{};
+    }
+    idle_list_.reset();
+    idle_fence_.reset();
+    return false;
+  };
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     Slot& s = slots_[i];
     // Each list owns its allocator/pool, so a slot's begin() resets only its
-    // own memory, and only after Advance() waited for the slot's fence.
-    s.list = queue->createCommandList();
+    // own memory, and only after Advance() waited for the slot's fence. More
+    // lists are created when a frame flushes batches (OpenNextList).
+    s.lists.push_back(queue->createCommandList());
     s.fence = dev->createCommandFence();
     s.acquire = dev->createCommandSemaphore();
-    if (!s.list || !s.fence || !s.acquire) {
-      REXLOG_ERROR("[gpu] frame ring: could not create the objects of slot {}", i);
-      for (Slot& t : slots_) {
-        t = Slot{};
-      }
-      return false;
+    if (!s.lists.back() || !s.fence || !s.acquire) {
+      return fail("the objects of a frame slot");
     }
+  }
+  idle_list_ = queue->createCommandList();
+  idle_fence_ = dev->createCommandFence();
+  if (!idle_list_ || !idle_fence_) {
+    return fail("the idle list and fence");
   }
   device_ = &device;
   slot_ = 0;
@@ -57,19 +68,56 @@ void FrameRing::Shutdown() {
   for (Slot& s : slots_) {
     s = Slot{};
   }
+  idle_list_.reset();
+  idle_fence_.reset();
   device_ = nullptr;
+}
+
+plume::RenderCommandList* FrameRing::OpenNextList() {
+  Slot& s = slots_[slot_];
+  if (s.next_list == s.lists.size()) {
+    std::unique_ptr<plume::RenderCommandList> list = device_->queue()->createCommandList();
+    if (!list) {
+      REXLOG_ERROR("[gpu] frame ring: could not create batch list {} of slot {}", s.next_list,
+                   slot_);
+      return nullptr;
+    }
+    s.lists.push_back(std::move(list));
+  }
+  plume::RenderCommandList* list = s.lists[s.next_list].get();
+  list->begin();
+  ++s.next_list;
+  open_ = true;
+  return list;
 }
 
 plume::RenderCommandList* FrameRing::Begin() {
   if (!device_ || device_->IsLost()) {
     return nullptr;
   }
-  Slot& s = slots_[slot_];
-  if (!open_) {
-    s.list->begin();
-    open_ = true;
+  if (open_) {
+    return list();
   }
-  return s.list.get();
+  slots_[slot_].next_list = 0;
+  return OpenNextList();
+}
+
+plume::RenderCommandList* FrameRing::FlushBatch() {
+  if (!open_) {
+    return nullptr;
+  }
+  if (device_->CheckLost("batch flush")) {
+    Abandon();
+    return nullptr;
+  }
+  Slot& s = slots_[slot_];
+  plume::RenderCommandList* current = s.lists[s.next_list - 1].get();
+  current->end();
+  open_ = false;
+  const plume::RenderCommandList* lists[] = {current};
+  device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, nullptr);
+  ++batch_flushes_;
+  return OpenNextList();
 }
 
 bool FrameRing::Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_count,
@@ -82,9 +130,10 @@ bool FrameRing::Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_coun
     Abandon();
     return false;
   }
-  s.list->end();
+  plume::RenderCommandList* current = s.lists[s.next_list - 1].get();
+  current->end();
   open_ = false;
-  const plume::RenderCommandList* lists[] = {s.list.get()};
+  const plume::RenderCommandList* lists[] = {current};
   device_->queue()->executeCommandLists(lists, 1, waits, wait_count, signals, signal_count,
                                         s.fence.get());
   s.submitted = true;
@@ -96,8 +145,15 @@ void FrameRing::Abandon() {
   if (!open_) {
     return;
   }
-  slots_[slot_].list->end();
+  Slot& s = slots_[slot_];
+  s.lists[s.next_list - 1]->end();
   open_ = false;
+  if (s.next_list > 1 && !device_->IsLost()) {
+    // Batches of this frame already run without a fence: nothing may reset
+    // their lists before they are done. Rare (a frame cut short), so the
+    // simplest proof is enough: wait for the queue to drain.
+    WaitIdle();
+  }
 }
 
 void FrameRing::WaitSlot(Slot& slot) {
@@ -132,27 +188,26 @@ void FrameRing::WaitIdle() {
   if (!device_) {
     return;
   }
-  if (!open_ && !device_->IsLost()) {
-    // A slot fence covers its command list, not what the queue runs after it:
-    // the swap chain's present (and on D3D12 the wait on the render semaphore
-    // before it) is queued after the frame's fence. Releasing back buffers on
-    // the strength of the frame fences alone is what the D3D12 debug layer
-    // caught as CORRUPTION ("referenced by GPU operations in-flight", 06/10,
-    // swap chain resize). One empty submission, fenced, after everything
-    // queued so far closes that gap; waiting for it below proves the queue
-    // idle.
-    SubmitQueueFence();
+  if (!device_->CheckLost("idle wait")) {
+    // A slot fence covers its command lists, not what the queue runs after
+    // them: the swap chain's present (and on D3D12 the wait on the render
+    // semaphore before it) is queued after the frame's fence. Releasing back
+    // buffers on the strength of the frame fences alone is what the D3D12
+    // debug layer caught as CORRUPTION ("referenced by GPU operations
+    // in-flight", 06/10, swap chain resize). An empty submission with a fence
+    // of its own, after everything queued so far, closes that gap whether or
+    // not a frame's list is open; waiting for it proves the queue idle.
+    idle_list_->begin();
+    idle_list_->end();
+    const plume::RenderCommandList* lists[] = {idle_list_.get()};
+    device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, idle_fence_.get());
+    device_->queue()->waitForCommandFence(idle_fence_.get());
+    // Every serial handed out so far belongs to a submission before the idle
+    // one, so all of them are complete.
+    completed_serial_ = next_serial_ - 1;
   }
-  // Wait in submission order so the completed serial only ever moves forward
-  // to a value whose predecessors are all done.
-  uint32_t order[kFramesInFlight];
-  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    order[i] = i;
-  }
-  std::sort(order, order + kFramesInFlight,
-            [&](uint32_t a, uint32_t b) { return slots_[a].serial < slots_[b].serial; });
-  for (uint32_t i : order) {
-    WaitSlot(slots_[i]);
+  for (Slot& s : slots_) {
+    s.submitted = false;
   }
   if (device_->IsLost() || !open_) {
     // Every submission is complete (or, with the device lost, will never run)
@@ -164,24 +219,7 @@ void FrameRing::WaitIdle() {
   }
   // A list is open: what it already recorded may name objects retired after
   // the recording started. Those carry next_serial_ and wait for its submission.
-  completed_serial_ = next_serial_ - 1;
   ReleaseCompleted();
-}
-
-void FrameRing::SubmitQueueFence() {
-  // The current slot's list is reused: its own fence is waited first, so the
-  // reset inside begin() cannot touch commands the GPU still runs.
-  Slot& s = slots_[slot_];
-  WaitSlot(s);
-  if (device_->IsLost()) {
-    return;
-  }
-  s.list->begin();
-  s.list->end();
-  const plume::RenderCommandList* lists[] = {s.list.get()};
-  device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, s.fence.get());
-  s.submitted = true;
-  s.serial = next_serial_++;
 }
 
 void FrameRing::ReleaseCompleted() {
