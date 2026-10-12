@@ -43,6 +43,13 @@
 //   sub_82420BA8  D3DDevice_Resolve (EDRAM -> main memory; the only way a
 //                 rendered image becomes samplable, so the only place a
 //                 texture fetch address can be tied to a render target)
+//   Plume renderer (mcla_gpu) only:
+//   sub_824194C0  ClearF, the funnel every clear reaches
+//   sub_82411CD0  GPU fence insertion (the EVENT_WRITE pair)
+//   sub_82411E98  D3DDevice_BlockOnFence (timed)
+//   sub_82425C18  the "GPU is hung" detector (reports instead of trapping)
+//   sub_8260EFD0  the end of the post chain: the scene is composed when it
+//                 returns, before anything copies it (M6c)
 // ===========================================================================
 
 #include <chrono>
@@ -264,13 +271,104 @@ extern "C" REX_FUNC(D3DDevice_InitializeEngines) {
 // With no command processor, "block until the GPU is idle" is trivially true:
 // nothing was ever handed to a GPU. So the whole call goes away. This is the
 // same answer reblue reached (REX_STUB(D3DDevice_BlockUntilIdle)).
+//
+// Except under the Plume renderer (mcla_gpu), which does execute the guest's
+// work on its render thread and owns the retired fence: there
+// idle is real, and the wait is the original's own -- BlockOnFence on the
+// issued fence, which kicks, inserts a fence the capture records, and waits
+// until the render thread executes it. Left out are only the WAIT_UNTIL packet
+// (for a command processor that does not exist) and the dev+11008 spin.
+#if defined(LARECOMP_HAS_GPU)
+// D3DDevice_BlockOnFence(dev, fence, ...) -- sub_82411E98, the wait every
+// resource lock, destroy, the swap and BlockUntilIdle go through. Under the
+// Plume renderer it is the guest waiting for the render thread, so a call whose
+// fence is pending at entry is timed (gpu.h NoteGuestFenceWait). Pass-through
+// otherwise.
+extern "C" REX_FUNC(D3DDevice_BlockOnFence) {
+  if (!mcla::gpu::RetiresGuestFences()) {
+    __imp__D3DDevice_BlockOnFence(ctx, base);
+    return;
+  }
+  const mcla::native_gfx::GuestFenceState fence =
+      mcla::native_gfx::ReadFenceState(base, ctx.r3.u32);
+  if (!fence.valid || mcla::native_gfx::IsFenceRetired(fence, ctx.r4.u32)) {
+    __imp__D3DDevice_BlockOnFence(ctx, base);
+    return;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  __imp__D3DDevice_BlockOnFence(ctx, base);
+  mcla::gpu::NoteGuestFenceWait(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             std::chrono::steady_clock::now() - start)
+                                             .count()));
+}
+#endif
+
 extern "C" REX_FUNC(D3DDevice_BlockUntilIdle) {
   mcla::native_gfx::nocp::NoteHook("D3DDevice_BlockUntilIdle");
+#if defined(LARECOMP_HAS_GPU)
+  if (mcla::gpu::RetiresGuestFences()) {
+    // BlockOnFence(dev, dev[10908], 4, 0, 0), as sub_82412990 calls it.
+    const mcla::native_gfx::GuestFenceState fence =
+        mcla::native_gfx::ReadFenceState(base, ctx.r3.u32);
+    if (fence.valid) {
+      ctx.r4.u64 = fence.issued;
+      ctx.r5.u64 = 4;
+      ctx.r6.u64 = 0;
+      ctx.r7.u64 = 0;
+      D3DDevice_BlockOnFence(ctx, base);
+    }
+    return;
+  }
+#endif
   if (mcla::native_gfx::nocp::WantNoCommandProcessor()) {
     return;
   }
   __imp__D3DDevice_BlockUntilIdle(ctx, base);
 }
+
+#if defined(LARECOMP_HAS_GPU)
+// GPU fence insertion -- sub_82411CD0(dev, cmdbuf): writes the EVENT_WRITE pair
+// (the retired fence = dev[10908] before the increment, and the ring
+// consumption) into the command buffer, advances dev[10908] by 2 and returns
+// the new write pointer. Called by Submit (sub_82412588) and by the end of
+// tiled rendering (sub_8242FEF8); the only place a fence is inserted at run
+// time. For the Plume renderer: the value is read before the
+// original and handed over after it, where the capture decides whether it is
+// on. Pass-through otherwise.
+extern "C" REX_FUNC(rex_sub_82411CD0) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_82411CD0");
+  if (!mcla::gpu::Enabled()) {
+    __imp__rex_sub_82411CD0(ctx, base);
+    return;
+  }
+  const uint32_t dev = ctx.r3.u32;
+  const mcla::native_gfx::GuestFenceState before = mcla::native_gfx::ReadFenceState(base, dev);
+  __imp__rex_sub_82411CD0(ctx, base);
+  if (before.valid) {
+    mcla::gpu::OnGuestFenceInserted(dev, before.issued);
+  } else if (mcla::gpu::RetiresGuestFences()) {
+    REXLOG_ERROR("[gpu] fence inserted on device {:#010x} whose fence pair is unreadable; it "
+                 "cannot be retired and a guest wait on it will not end",
+                 dev);
+  }
+}
+
+// The guest's "GPU is hung" detector -- sub_82425C18(dev), called only from the
+// fence spin (sub_82412F98) after ~5000 ticks without the retired value
+// moving. It prints and __traps outside the crash-dump mode; returning 0 makes
+// the spin reset its clock and keep waiting. Under the Plume renderer the
+// render thread is the GPU and can legitimately be busy that long (the first
+// time it creates a scene's pipelines), so it reports and keeps waiting.
+extern "C" REX_FUNC(rex_sub_82425C18) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_82425C18");
+  if (mcla::gpu::Enabled()) {
+    mcla::gpu::OnGuestGpuHangCheck(base, ctx.r3.u32);
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__rex_sub_82425C18(ctx, base);
+}
+#endif
 
 // --- texture memory --------------------------------------------------------
 
