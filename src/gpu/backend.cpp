@@ -81,6 +81,26 @@ void InstallDebugMessageSink(plume::RenderDevice* device) {
                  "its messages cannot be logged");
     return;
   }
+  // Notes this renderer produces by design, kept out so that what is left is
+  // worth reading (the callback honours the storage filter):
+  // - CLEAR{RENDERTARGET,DEPTHSTENCIL}VIEW_MISMATCHINGCLEARVALUE: the EDRAM
+  //   targets have no optimized clear value -- the guest clears them to
+  //   whatever each frame needs -- so every clear carries this performance note;
+  // - CREATEGRAPHICSPIPELINESTATE_RENDERTARGETVIEW_NOT_SET: a pixel shader that
+  //   writes a colour slot its pass has no target in; the layer itself says
+  //   writes to an unbound target are discarded, and the shader is still needed
+  //   for what it discards and the depth it leaves.
+  D3D12_MESSAGE_ID denied[] = {
+      D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
+      D3D12_MESSAGE_ID_CLEARDEPTHSTENCILVIEW_MISMATCHINGCLEARVALUE,
+      D3D12_MESSAGE_ID_CREATEGRAPHICSPIPELINESTATE_RENDERTARGETVIEW_NOT_SET,
+  };
+  D3D12_INFO_QUEUE_FILTER filter = {};
+  filter.DenyList.NumIDs = UINT(std::size(denied));
+  filter.DenyList.pIDList = denied;
+  if (FAILED(queue->PushStorageFilter(&filter))) {
+    REXLOG_WARN("[gpu] could not filter the D3D12 debug layer's by-design notes");
+  }
   DWORD cookie = 0;
   const HRESULT hr = queue->RegisterMessageCallback(&OnD3D12DebugMessage,
                                                     D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr,
@@ -170,6 +190,22 @@ bool IsNullBacked(const plume::RenderQueryPool* pool) {
 
 bool IsNullBacked(const plume::RenderCommandQueue* queue) {
   return !queue || static_cast<const plume::D3D12CommandQueue*>(queue)->d3d == nullptr;
+}
+
+bool IsNullBacked(const plume::RenderFramebuffer* framebuffer) {
+  // A D3D12 framebuffer is its RTV/DSV descriptors: failed if any of them
+  // could not be allocated.
+  if (!framebuffer) {
+    return true;
+  }
+  const auto* f = static_cast<const plume::D3D12Framebuffer*>(framebuffer);
+  for (uint32_t offset : f->colorTargetAllocatorOffsets) {
+    if (offset == plume::D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
+      return true;
+    }
+  }
+  return f->depthTarget != nullptr &&
+         f->depthTargetAllocatorOffset == plume::D3D12DescriptorHeapAllocator::INVALID_OFFSET;
 }
 
 bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view_count,
@@ -296,6 +332,11 @@ bool IsNullBacked(const plume::RenderQueryPool* pool) {
 
 bool IsNullBacked(const plume::RenderCommandQueue* queue) {
   return !queue || static_cast<const plume::VulkanCommandQueue*>(queue)->queue == nullptr;
+}
+
+bool IsNullBacked(const plume::RenderFramebuffer* framebuffer) {
+  return !framebuffer ||
+         static_cast<const plume::VulkanFramebuffer*>(framebuffer)->vk == VK_NULL_HANDLE;
 }
 
 bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t, uint32_t) {

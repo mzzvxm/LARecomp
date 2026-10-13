@@ -12,12 +12,13 @@
 // The replay and the optional validator (validation.h) each keep their own
 // ConstantBanks.
 //
-// SharedConstants. The block of shader contract v4 (LAR-XenosRecomp
+// SharedConstants. The block of shader contract v5 (LAR-XenosRecomp
 // shader_common.h, 592 bytes) the translated shaders read besides the banks:
 // the bindless texture indices per fetch constant slot (bit 31 = PWL gamma on
 // read) and sampler indices, the VS bools, the alpha test threshold, the
-// MIN/MAX source factor and RT0's exponent bias (both through the premult
-// modes), and the vertex position transform g_PosScale/g_PosOffset.
+// alpha to coverage parameters, the MIN/MAX source factor and RT0's exponent
+// bias (both through the premult modes), and the vertex position transform
+// g_PosScale/g_PosOffset.
 //
 // Threading: render thread only.
 // ===========================================================================
@@ -51,7 +52,7 @@ struct SharedConstants {
   float alpha_threshold;                   // 528
   uint32_t blend_premult_rgb;              // 532
   uint32_t blend_premult_a;                // 536
-  uint32_t reserved0;                      // 540
+  uint32_t alpha_to_mask;                  // 540, v5: AlphaToMaskParameters
   float blend_premult_constant[4];         // 544
   float pos_scale[4];                      // 560
   float pos_offset[4];                     // 576
@@ -60,6 +61,7 @@ static_assert(sizeof(SharedConstants) == 592, "SharedConstants is shader contrac
 static_assert(offsetof(SharedConstants, sampler) == 384);
 static_assert(offsetof(SharedConstants, booleans) == 512);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 528);
+static_assert(offsetof(SharedConstants, alpha_to_mask) == 540);
 static_assert(offsetof(SharedConstants, blend_premult_constant) == 544);
 static_assert(offsetof(SharedConstants, pos_scale) == 560);
 static_assert(offsetof(SharedConstants, pos_offset) == 576);
@@ -102,6 +104,11 @@ struct AlphaTest {
   bool unsupported = false;
 };
 AlphaTest ComputeAlphaTest(const XenosState& state);
+
+// g_AlphaToMask of contract v5 (the generated computeAlphaToMask, Xenia's
+// rule): bits 0-7 RB_COLORCONTROL's alpha_to_mask_offset0..3,
+// bit 8 enabled, bits 9-10 the sample count log2. 0 = off.
+uint32_t AlphaToMaskParameters(const XenosState& state);
 
 // What FillSharedConstants could not express; the caller reports each kind.
 enum SharedConstantsIssue : uint32_t {

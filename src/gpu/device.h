@@ -83,6 +83,8 @@ class Device {
   std::unique_ptr<plume::RenderPipeline> CreateGraphicsPipeline(
       const plume::RenderGraphicsPipelineDesc& desc, const char* name);
   std::unique_ptr<plume::RenderQueryPool> CreateQueryPool(uint32_t query_count, const char* name);
+  std::unique_ptr<plume::RenderFramebuffer> CreateFramebuffer(
+      const plume::RenderFramebufferDesc& desc, const char* name);
 
   // True once device loss has been seen. Latched.
   bool IsLost() const { return lost_.load(std::memory_order_acquire); }

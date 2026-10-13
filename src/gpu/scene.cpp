@@ -8,10 +8,12 @@
 
 #include <rex/logging.h>
 
+#include "backend.h"
 #include "descriptors.h"
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "format.h"
+#include "layout.h"
 #include "native_gfx/vertex_declaration.h"
 #include "samplers.h"
 
@@ -47,6 +49,8 @@ const char* SkipName(uint32_t skip) {
       "pipeline not created",
       "constant upload failed",
       "geometry",
+      "EDRAM target not made",
+      "framebuffer not made",
   };
   return skip < std::size(kNames) ? kNames[skip] : "?";
 }
@@ -69,11 +73,15 @@ const char* ConversionName(uint32_t conversion) {
 }  // namespace
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
-                       GeometryCache& geometry) {
+                       GeometryCache& geometry, EdramTargets& edram, const GuestLayout& layout,
+                       const BindlessHeap& heap) {
   upload_ = &upload;
   pipelines_ = &pipelines;
   samplers_ = &samplers;
   geometry_ = &geometry;
+  edram_ = &edram;
+  layout_ = &layout;
+  heap_ = &heap;
   base_shared_ = SharedConstants{};
   for (uint32_t i = 0; i < kFetchSlotCount; ++i) {
     base_shared_.texture_2d[i] = kNullTexture2DSlot;
@@ -83,10 +91,16 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   }
 }
 
+void Scene::ResetListState() {
+  bound_ = ListState{};
+}
+
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
   geometry_->BeginFrame(slot);
+  edram_->BeginFrame();
+  ResetListState();
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
@@ -94,18 +108,39 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
 }
 
 void Scene::EndFrame(plume::RenderCommandList* list) {
+  // The render pass closes before the geometry's copies and the present pass.
+  if (list && bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+  }
   geometry_->EndFrame(list);
+  ResetListState();
   list_ = nullptr;
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
   draws_since_flush_ = 0;
 }
 
+void Scene::BeforeFlush(plume::RenderCommandList* list) {
+  if (list && bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+  }
+}
+
 void Scene::OnListChanged(plume::RenderCommandList* list) {
   // The upload memory belongs to the slot, not to the list: what was uploaded
-  // stays valid for the rest of the frame.
+  // stays valid for the rest of the frame. Bindings belong to the list.
   list_ = list;
   draws_since_flush_ = 0;
+  ResetListState();
+}
+
+void Scene::BindFramebuffer(plume::RenderCommandList* list,
+                            plume::RenderFramebuffer* framebuffer) {
+  if (bound_.framebuffer == framebuffer) {
+    return;
+  }
+  list->setFramebuffer(framebuffer);
+  bound_.framebuffer = framebuffer;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +183,16 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
-      ++draws_since_flush_;
-      // Recording needs the buffers (M4.4) and the EDRAM targets (M4.5).
+      bool empty = false;
+      const Skip recorded = Record(d, list, &empty, &detail);
+      if (empty) {
+        ++window_.no_effect[size_t(NoEffect::kEmptyScissor)];
+      } else if (recorded != Skip::kCount) {
+        CountSkip(recorded, r, detail);
+      } else {
+        ++window_.recorded;
+        ++draws_since_flush_;
+      }
     }
   }
   window_.prepare_ns +=
@@ -240,7 +283,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
 
   // Input layout. Inline vertices carry their stride in the record (the
-  // device's stride table is zero for them).
+  // device's stride table is zero for them). A stride the
+  // table's byte (dwords) cannot hold is left out here and refused by the
+  // geometry (GeometryCache::Result::kInlineLayout), never drawn with 0.
   uint8_t strides[guest::kStreamCount];
   std::memcpy(strides, r.stream_strides, sizeof(strides));
   if (r.kind == DrawKind::kInline && r.inline_stride % 4 == 0 && r.inline_stride / 4 <= 0xFF) {
@@ -430,8 +475,326 @@ void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail)
 // clears, resolves, tiling (M4.5 and M4.6 execute them)
 // ---------------------------------------------------------------------------
 
-void Scene::OnClear(const ClearRecord&, plume::RenderCommandList*) {
+Scene::Skip Scene::Record(PreparedDraw& d, plume::RenderCommandList* list, bool* no_effect,
+                          std::string* detail) {
+  const XenosState& s = d.state;
+  // D3D's effective window scissor bounds every pixel the draw can touch.
+  const uint32_t scissor_br_x = s.scissor_br & 0x7FFFu;
+  const uint32_t scissor_br_y = (s.scissor_br >> 16) & 0x7FFFu;
+  const uint32_t scissor_tl_x = s.scissor_tl & 0x7FFFu;
+  const uint32_t scissor_tl_y = (s.scissor_tl >> 16) & 0x7FFFu;
+  if (scissor_br_x <= scissor_tl_x || scissor_br_y <= scissor_tl_y) {
+    *no_effect = true;
+    return Skip::kCount;
+  }
+  const uint32_t samples = MsaaSampleCount(s.msaa);
+  EdramTargets::Target* colors[kColorTargetCount] = {};
+  EdramTargets::Target* depth = nullptr;
+  const uint32_t pitch = s.surface_pitch;
+  // A target that has to grow copies its contents first, outside a render pass.
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    EdramKey key;
+    key.base_tiles = uint16_t(s.color[i].base_tiles);
+    key.pitch = uint16_t(pitch);
+    key.depth = 0;
+    key.format = uint8_t(FoldColorFormat(uint32_t(s.color[i].format)));
+    key.samples = uint8_t(samples);
+    const EdramTargets::Target* existing = edram_->Find(key);
+    if ((!existing || existing->height < scissor_br_y) && bound_.framebuffer) {
+      list->setFramebuffer(nullptr);
+      bound_.framebuffer = nullptr;
+    }
+    bool unset = false;
+    colors[i] = edram_->Get(key, scissor_br_y, list, &unset);
+    if (unset) {
+      bound_.framebuffer = nullptr;
+    }
+    if (!colors[i]) {
+      *detail = std::format("colour {} format {} at tile {}", i, key.format, key.base_tiles);
+      return Skip::kTarget;
+    }
+  }
+  if (d.key.depth_format != 0) {
+    EdramKey key;
+    key.base_tiles = uint16_t(s.depth_base_tiles);
+    key.pitch = uint16_t(pitch);
+    key.depth = 1;
+    key.format = uint8_t(s.depth_format);
+    key.samples = uint8_t(samples);
+    const EdramTargets::Target* existing = edram_->Find(key);
+    if ((!existing || existing->height < scissor_br_y) && bound_.framebuffer) {
+      list->setFramebuffer(nullptr);
+      bound_.framebuffer = nullptr;
+    }
+    bool unset = false;
+    depth = edram_->Get(key, scissor_br_y, list, &unset);
+    if (unset) {
+      bound_.framebuffer = nullptr;
+    }
+    if (!depth) {
+      *detail = std::format("depth format {} at tile {}", key.format, key.base_tiles);
+      return Skip::kTarget;
+    }
+  }
+  // Layouts (a barrier closes an open render pass on Vulkan; Plume reopens it).
+  uint32_t target_height = EdramTargets::kMaxExtent;
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    if (colors[i]->layout != plume::RenderTextureLayout::COLOR_WRITE) {
+      edram_->Transition(list, *colors[i], plume::RenderTextureLayout::COLOR_WRITE);
+    }
+    target_height = std::min(target_height, colors[i]->height);
+  }
+  if (depth) {
+    if (depth->layout != plume::RenderTextureLayout::DEPTH_WRITE) {
+      edram_->Transition(list, *depth, plume::RenderTextureLayout::DEPTH_WRITE);
+    }
+    target_height = std::min(target_height, depth->height);
+  }
+  plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth);
+  if (!framebuffer) {
+    return Skip::kFramebuffer;
+  }
+  BindFramebuffer(list, framebuffer);
+
+  if (!bound_.layout_bound) {
+    list->setGraphicsPipelineLayout(layout_->layout());
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 1);
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 2);
+    list->setGraphicsDescriptorSet(heap_->sampler_set(), 3);
+    bound_.layout_bound = true;
+    bound_.constants_bound = false;
+  }
+  if (bound_.pipeline != d.pipeline) {
+    list->setPipeline(d.pipeline);
+    bound_.pipeline = d.pipeline;
+  }
+  const plume::RenderBufferReference constants[3] = {
+      d.vs_constants.reference(), d.ps_constants.reference(), d.shared_constants.reference()};
+  bool constants_changed = !bound_.constants_bound;
+  for (uint32_t i = 0; i < 3 && !constants_changed; ++i) {
+    constants_changed = constants[i].ref != bound_.constants[i].ref ||
+                        constants[i].offset != bound_.constants[i].offset;
+  }
+  if (constants_changed) {
+    if constexpr (kBackend == Backend::kD3D12) {
+      list->setGraphicsRootDescriptor(constants[0], GuestLayout::kVertexConstants);
+      list->setGraphicsRootDescriptor(constants[1], GuestLayout::kPixelConstants);
+      list->setGraphicsRootDescriptor(constants[2], GuestLayout::kSharedConstants);
+    } else {
+      const uint64_t addresses[3] = {
+          d.vs_constants.buffer->getDeviceAddress() + d.vs_constants.offset,
+          d.ps_constants.buffer->getDeviceAddress() + d.ps_constants.offset,
+          d.shared_constants.buffer->getDeviceAddress() + d.shared_constants.offset};
+      list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+    }
+    for (uint32_t i = 0; i < 3; ++i) {
+      bound_.constants[i] = constants[i];
+    }
+    bound_.constants_bound = true;
+  }
+  list->setViewports(&d.viewport.viewport, 1);
+  const plume::RenderRect scissor = ComputeScissor(s, target_height);
+  list->setScissors(&scissor, 1);
+  if (pipelines_->dynamic_depth_bias() &&
+      (!bound_.depth_bias_bound || !(bound_.depth_bias == d.bias))) {
+    list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);
+    bound_.depth_bias = d.bias;
+    bound_.depth_bias_bound = true;
+  }
+  const DrawGeometry& g = d.geometry;
+  if (g.slot_count) {
+    list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count,
+                           d.input_layout->slots.data());
+  }
+  if (g.indexed) {
+    list->setIndexBuffer(&g.index_view);
+    list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
+  } else {
+    list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  return Skip::kCount;
+}
+
+void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
   ++window_.clears;
+  if (!list || (record.flags & kEventSurfaceUnreadable)) {
+    ++window_.clears_failed;
+    return;
+  }
+  // sub_824194C0 builds the rectangle, sub_82418E48 clips it and
+  // clears each requested target through its surface header.
+  const RegisterWindow pre(record.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  const uint32_t surfaces[guest::kSurfaceCount] = {
+      pre.DeviceDword(guest::kDevColorSurfaces), pre.DeviceDword(guest::kDevColorSurfaces + 4),
+      pre.DeviceDword(guest::kDevColorSurfaces + 8),
+      pre.DeviceDword(guest::kDevColorSurfaces + 12), pre.DeviceDword(guest::kDevDepthSurface)};
+  const auto header_dword = [&](uint32_t surface, uint32_t offset) {
+    return LoadBe32(record.state.surfaces[surface] + offset);
+  };
+  int32_t x0, y0, x1, y1;
+  if (record.flags & kEventHasRect) {
+    x0 = int32_t(LoadBe32(record.rect + 0));
+    y0 = int32_t(LoadBe32(record.rect + 4));
+    x1 = int32_t(LoadBe32(record.rect + 8));
+    y1 = int32_t(LoadBe32(record.rect + 12));
+  } else {
+    // The whole surface: RT0's (the depth one without RT0), or the tiling
+    // extent while tiling is on.
+    const uint32_t sized = surfaces[0] ? 0u : 4u;
+    if (!surfaces[sized]) {
+      ++window_.clears_failed;
+      return;
+    }
+    const uint32_t size_bits = header_dword(sized, 0x24);
+    x0 = 0;
+    y0 = 0;
+    x1 = int32_t((size_bits >> 18) + 1);
+    y1 = int32_t(((size_bits >> 3) & 0x7FFFu) + 1);
+    const uint8_t device_flags = pre.DeviceByte(guest::kDevFlags);
+    bool tiling = (device_flags & 0x10) != 0;
+    if (!tiling && (device_flags & 0x20) != 0) {
+      tiling = true;
+      for (uint32_t i = 0; i < guest::kSurfaceCount; ++i) {
+        const uint32_t tiled = pre.DeviceDword(guest::kDevSurfaceCache + 4 * i);
+        if (surfaces[i] != 0 && tiled != surfaces[i]) {
+          tiling = false;
+        }
+      }
+    }
+    if (tiling) {
+      x1 = int32_t(pre.DeviceDword(guest::kDevTilingExtent));
+      y1 = int32_t(pre.DeviceDword(guest::kDevTilingExtent + 4));
+    }
+  }
+  // The D3D viewport (floats X, Y, W, H, truncated as the guest does) and the
+  // user scissor when it is on.
+  const auto viewport_value = [&](uint32_t i) {
+    const uint32_t bits = pre.DeviceDword(guest::kDevViewport + 4 * i);
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return int32_t(f);
+  };
+  const int32_t vx = viewport_value(0), vy = viewport_value(1);
+  const int32_t vw = viewport_value(2), vh = viewport_value(3);
+  x0 = std::max(x0, vx);
+  y0 = std::max(y0, vy);
+  x1 = std::min(x1, vw + vx);
+  y1 = std::min(y1, vh + vy);
+  if (pre.DeviceDword(guest::kDevScissorEnable) != 0) {
+    x0 = std::max(x0, int32_t(pre.DeviceDword(guest::kDevScissorRect + 0)));
+    y0 = std::max(y0, int32_t(pre.DeviceDword(guest::kDevScissorRect + 4)));
+    x1 = std::min(x1, int32_t(pre.DeviceDword(guest::kDevScissorRect + 8)));
+    y1 = std::min(y1, int32_t(pre.DeviceDword(guest::kDevScissorRect + 12)));
+  }
+  x0 = std::max(x0, 0);
+  y0 = std::max(y0, 0);
+  if (x1 <= x0 || y1 <= y0) {
+    ++window_.clears_empty;
+    return;
+  }
+  uint32_t flags = record.clear_flags;
+  if (!surfaces[4]) {
+    flags &= ~0x30u;  // no depth surface: no depth or stencil clear
+  }
+  float color[4] = {};
+  if (record.flags & kEventHasColor) {
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t bits = LoadBe32(record.color + 4 * i);
+      std::memcpy(&color[i], &bits, 4);
+    }
+  }
+  // Growth copies sit outside a render pass.
+  if (bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+    bound_.framebuffer = nullptr;
+  }
+  for (uint32_t i = 0; i < kColorTargetCount; ++i) {
+    if (!(flags & (1u << i)) || !surfaces[i]) {
+      continue;
+    }
+    xreg::RB_SURFACE_INFO surface_info;
+    surface_info.value = header_dword(i, 0x18);
+    xreg::RB_COLOR_INFO color_info;
+    color_info.value = header_dword(i, 0x1C);
+    EdramKey key;
+    key.base_tiles = uint16_t(color_info.color_base | (color_info.color_base_bit_11 << 11));
+    key.pitch = uint16_t(surface_info.surface_pitch);
+    key.depth = 0;
+    key.format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
+    key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+    if (bound_.framebuffer) {
+      list->setFramebuffer(nullptr);
+      bound_.framebuffer = nullptr;
+    }
+    bool unset = false;
+    EdramTargets::Target* target = edram_->Get(key, uint32_t(y1), list, &unset);
+    if (!target) {
+      ++window_.clears_failed;
+      continue;
+    }
+    // What the hardware stores: the colour times 2^exp_bias, in the format;
+    // the host's SNORM 16-bit targets hold value/32, its gamma targets linear.
+    const int32_t bias = color_info.color_exp_bias;
+    float scale = std::ldexp(1.0f, bias);
+    const uint32_t fmt = key.format;
+    if (fmt == 4 || fmt == 5) {
+      scale *= 1.0f / 32.0f;
+    }
+    float value[4];
+    for (uint32_t c = 0; c < 4; ++c) {
+      value[c] = color[c] * scale;
+      if (fmt == 1) {
+        value[c] = std::clamp(value[c], 0.0f, 1.0f);
+      }
+    }
+    edram_->Transition(list, *target, plume::RenderTextureLayout::COLOR_WRITE);
+    EdramTargets::Target* only[1] = {target};
+    plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
+    if (!framebuffer) {
+      ++window_.clears_failed;
+      continue;
+    }
+    BindFramebuffer(list, framebuffer);
+    const plume::RenderRect rect(x0, y0, std::min(x1, int32_t(target->width)),
+                                 std::min(y1, int32_t(target->height)));
+    list->clearColor(0, plume::RenderColor(value[0], value[1], value[2], value[3]), &rect, 1);
+    ++window_.clears_color;
+  }
+  if (flags & 0x30u) {
+    xreg::RB_SURFACE_INFO surface_info;
+    surface_info.value = header_dword(4, 0x18);
+    xreg::RB_DEPTH_INFO depth_info;
+    depth_info.value = header_dword(4, 0x1C);
+    EdramKey key;
+    key.base_tiles = uint16_t(depth_info.depth_base | (depth_info.depth_base_bit_11 << 11));
+    key.pitch = uint16_t(surface_info.surface_pitch);
+    key.depth = 1;
+    key.format = uint8_t(depth_info.depth_format);
+    key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+    if (bound_.framebuffer) {
+      list->setFramebuffer(nullptr);
+      bound_.framebuffer = nullptr;
+    }
+    bool unset = false;
+    EdramTargets::Target* target = edram_->Get(key, uint32_t(y1), list, &unset);
+    if (!target) {
+      ++window_.clears_failed;
+      return;
+    }
+    edram_->Transition(list, *target, plume::RenderTextureLayout::DEPTH_WRITE);
+    plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(nullptr, 0, target);
+    if (!framebuffer) {
+      ++window_.clears_failed;
+      return;
+    }
+    BindFramebuffer(list, framebuffer);
+    const plume::RenderRect rect(x0, y0, std::min(x1, int32_t(target->width)),
+                                 std::min(y1, int32_t(target->height)));
+    list->clearDepthStencil((flags & 0x10u) != 0, (flags & 0x20u) != 0, record.z,
+                            record.stencil & 0xFFu, &rect, 1);
+    ++window_.clears_depth;
+  }
 }
 
 void Scene::OnResolve(const ResolveRecord&, plume::RenderCommandList*) {
@@ -473,7 +836,12 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.upload_bytes += from.upload_bytes;
   into.fetches += from.fetches;
   into.fetch_not_texture += from.fetch_not_texture;
+  into.recorded += from.recorded;
   into.clears += from.clears;
+  into.clears_color += from.clears_color;
+  into.clears_depth += from.clears_depth;
+  into.clears_empty += from.clears_empty;
+  into.clears_failed += from.clears_failed;
   into.resolves += from.resolves;
   into.tiling_begins += from.tiling_begins;
   into.tiling_ends += from.tiling_ends;
@@ -503,7 +871,8 @@ void Scene::Finish() {
                 for (uint64_t v : t.skips) n += v;
                 return n;
               }(),
-              t.no_effect[0] + t.no_effect[1] + t.no_effect[2], pipelines_->size(),
+              t.no_effect[0] + t.no_effect[1] + t.no_effect[2] + t.no_effect[3],
+              pipelines_->size(),
               t.pipelines_failed,
               double(t.pipeline_create_ns) / 1e6, double(t.upload_bytes) / frames / 1048576.0,
               double(t.prepare_ns) / frames / 1e6);
@@ -541,17 +910,20 @@ void Scene::Report(const char* why) {
     }
   }
   REXLOG_INFO(
-      "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, skipped [{}], geometry "
-      "[{}], no effect {} (no target {}, culled {}, no primitive {}) | conversions [{}] | alpha "
+      "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, {} recorded, skipped [{}], "
+      "geometry [{}], no effect {} (no target {}, culled {}, no primitive {}, empty scissor {}) | "
+      "clears {} ({} colour, {} depth, {} empty, {} failed) | conversions [{}] | alpha "
       "test {}, clip disabled "
       "{}, depth bias {}, alpha to mask {} (1x {}, biased {}) | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
       "ms) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | clears {}, resolves {}, tiling {}/{} | prepare "
       "{:.2f} ms/frame",
-      why, w.frames, double(w.draws) / frames, w.prepared, skips.empty() ? "none" : skips,
-      geometry.empty() ? "ok" : geometry, w.no_effect[0] + w.no_effect[1] + w.no_effect[2],
-      w.no_effect[0], w.no_effect[1], w.no_effect[2],
+      why, w.frames, double(w.draws) / frames, w.prepared, w.recorded,
+      skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
+      w.no_effect[0] + w.no_effect[1] + w.no_effect[2] + w.no_effect[3], w.no_effect[0],
+      w.no_effect[1], w.no_effect[2], w.no_effect[3], w.clears, w.clears_color, w.clears_depth,
+      w.clears_empty, w.clears_failed,
       conversions.empty() ? "none" : conversions, w.alpha_test_draws, w.clip_disabled_draws,
       w.depth_bias_draws, w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased,
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
@@ -560,6 +932,7 @@ void Scene::Report(const char* why) {
       w.shared_uploads, w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
       double(w.prepare_ns) / frames / 1e6);
   REXLOG_INFO("[gpu] scene ({}): {}", why, geometry_->TakeSummary(w.frames));
+  REXLOG_INFO("[gpu] scene ({}): {}", why, edram_->TakeSummary());
   Add(total_, window_);
   window_ = Stats{};
 }

@@ -33,7 +33,6 @@ enum ReportKind : uint32_t {
   kReportPointFill = 1u << 2,
   kReportEdramMode = 1u << 3,
   kReportColorGap = 1u << 4,
-  kReportBiasedAlphaToCoverage = 1u << 5,
   kReportAlphaTestFunction = 1u << 6,
   kReportAlphaTestNoVariant = 1u << 7,
 };
@@ -363,16 +362,11 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
     }
   }
   const bool depth_clip = !state.clip.clip_disable;
-  const bool alpha_to_coverage =
-      state.color_control.alpha_to_mask_enable && key.sample_count > 1 && color_count > 0;
-  if (alpha_to_coverage && state.color[0].exp_bias != 0) {
-    // The hardware tests the unbiased alpha; the host tests what the shader
-    // returns, which carries the bias (constants.h).
-    Report(kReportBiasedAlphaToCoverage,
-           "alpha to coverage on a target with an exponent bias (coverage uses the biased alpha)");
-  }
+  // Alpha to coverage is the pixel shader's (contract v5, constants.h
+  // AlphaToMaskParameters): the host's would test the alpha after the
+  // exponent bias, never the one the hardware tests.
   key.raster = uint32_t(cull) | (uint32_t(front_ccw) << 4) | (uint32_t(fill) << 5) |
-               (uint32_t(depth_clip) << 8) | (uint32_t(alpha_to_coverage) << 9);
+               (uint32_t(depth_clip) << 8);
   return KeyResult::kOk;
 }
 
@@ -441,7 +435,7 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
                                               : plume::RenderFrontFace::CLOCKWISE;
     desc.fillMode = plume::RenderFillMode((key.raster >> 5) & 0x7);
     desc.depthClipEnabled = ((key.raster >> 8) & 1u) != 0;
-    desc.alphaToCoverageEnabled = ((key.raster >> 9) & 1u) != 0;
+    desc.alphaToCoverageEnabled = false;  // the shader's (contract v5)
     desc.dynamicDepthBiasEnabled = dynamic_depth_bias_;
     desc.depthBias = key.depth_bias;
     desc.slopeScaledDepthBias = key.slope_scaled_depth_bias;

@@ -15,6 +15,7 @@ add_library(larecomp_gpu OBJECT
     descriptors.cpp
     device.cpp
     draw_state.cpp
+    edram.cpp
     format.cpp
     frame_trace.cpp
     frame.cpp

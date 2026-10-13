@@ -71,7 +71,7 @@ struct PipelineKey {
   uint32_t depth = 0;    // enable | write | func
   uint32_t stencil = 0;  // enable | func, fail, zpass, zfail front; func, fail, zpass back (4 bits)
   uint32_t stencil_masks = 0;  // read | write | ref, 8 bits each
-  uint32_t raster = 0;   // cull | front ccw | fill | depth clip | alpha to coverage
+  uint32_t raster = 0;   // cull | front ccw | fill | depth clip
   int32_t depth_bias = 0;  // static depth bias only (0 with the dynamic one)
   float slope_scaled_depth_bias = 0.0f;
   uint32_t reserved = 0;  // keeps the struct free of padding: it is hashed and compared as bytes

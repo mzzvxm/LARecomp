@@ -126,7 +126,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
          geometry_.Initialize(device_, frames_, upload_, guest_memory_);
   }
   if (ok) {
-    scene_.Initialize(upload_, pipelines_, samplers_, geometry_);
+    edram_.Initialize(device_, frames_);
+    scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, guest_layout_, heap_);
     ok = swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
                              swap_chain_.format());
@@ -144,6 +145,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     timing_.Shutdown();
     overlay_.Shutdown();
     swap_chain_.Shutdown();
+    edram_.Shutdown();
     geometry_.Shutdown();
     upload_.Shutdown();
     pipelines_.Shutdown();
@@ -192,6 +194,14 @@ void Renderer::Shutdown() {
   trace_.Finish();
   // Nothing reads or watches guest memory any more.
   guest_memory_.Shutdown();
+  // A guest frame the render thread was recording when it stopped: its list is
+  // closed without executing, now -- closing it after the components below
+  // destroyed what it names is a use after free (a D3D12 Close reads every
+  // object the list recorded; seen as debug layer id 921 and a driver crash).
+  if (frames_.is_open()) {
+    scene_.EndFrame(nullptr);
+    frames_.Abandon();
+  }
   // 2. Drain. Every retirement is released here, release actions included,
   //    while all the components they name are still alive. Skipped by
   //    FrameRing when the device is lost.
@@ -203,6 +213,7 @@ void Renderer::Shutdown() {
   timing_.Shutdown();
   overlay_.Shutdown();
   swap_chain_.Shutdown();
+  edram_.Shutdown();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
@@ -324,6 +335,7 @@ void Renderer::MaybeFlushBatch() {
   if (batch_draws_ == 0 || !frames_.is_open() || scene_.draws_since_flush() < batch_draws_) {
     return;
   }
+  scene_.BeforeFlush(frames_.list());
   scene_.OnListChanged(frames_.FlushBatch());
 }
 

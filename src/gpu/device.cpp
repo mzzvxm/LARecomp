@@ -219,6 +219,21 @@ std::unique_ptr<plume::RenderQueryPool> Device::CreateQueryPool(uint32_t query_c
   return pool;
 }
 
+std::unique_ptr<plume::RenderFramebuffer> Device::CreateFramebuffer(
+    const plume::RenderFramebufferDesc& desc, const char* name) {
+  if (!device_ || IsLost()) {
+    return nullptr;
+  }
+  auto framebuffer = device_->createFramebuffer(desc);
+  if (backend::IsNullBacked(framebuffer.get())) {
+    REXLOG_ERROR("[gpu] framebuffer '{}' of {} colour targets{} failed", name ? name : "?",
+                 desc.colorAttachmentsCount, desc.depthAttachment ? " and depth" : "");
+    ReportCreationFailure("framebuffer", name);
+    return nullptr;
+  }
+  return framebuffer;
+}
+
 std::unique_ptr<plume::RenderBuffer> Device::CreateBuffer(const plume::RenderBufferDesc& desc,
                                                           const char* name) {
   if (!device_ || IsLost()) {

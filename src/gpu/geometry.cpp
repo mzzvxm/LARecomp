@@ -85,17 +85,23 @@ void ApplyEndian(uint8_t* dst, const uint8_t* src, uint32_t length, uint32_t end
 // a vertex in 32-bit units.
 void SwapVertices(const StreamPlan& plan, const uint8_t* src, uint32_t length, uint8_t* dst) {
   bool all32 = true;
+  uint32_t extent = 0;  // end of the last element
   for (const SwapRange& r : plan.swaps) {
     all32 &= r.unit == 4;
+    extent = std::max<uint32_t>(extent, uint32_t(r.offset) + r.size);
   }
-  if (all32 || plan.stride == 0) {
+  if (all32 || extent == 0) {
     ApplyEndian(dst, src, length & ~3u, kEndian8in32);
     std::memcpy(dst + (length & ~3u), src + (length & ~3u), length & 3u);
     return;
   }
-  // Per-byte unit map of one vertex.
+  // Per-byte unit map of one vertex. A stride-0 stream (every vertex reads the
+  // same bytes) is one vertex as long as its elements reach; the rest of the
+  // range goes in 32-bit units like any byte outside an element.
   uint8_t unit[1024];
-  const uint32_t stride = std::min<uint32_t>(plan.stride, sizeof(unit));
+  const uint32_t stride =
+      std::min<uint32_t>(plan.stride != 0 ? plan.stride : std::min(extent, length),
+                         sizeof(unit));
   std::memset(unit, 4, stride);
   for (const SwapRange& r : plan.swaps) {
     for (uint32_t b = r.offset; b < uint32_t(r.offset) + r.size && b < stride; ++b) {
@@ -770,9 +776,16 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
   if (rects && r.kind == DrawKind::kIndexed) {
     return Result::kIndexedRectList;
   }
+  // Inline vertices are one stream whose stride is the record's: the device's
+  // stride table holds 0 for them (24.23 item 3), and the Scene builds the
+  // input layout with the record's stride -- which a stride table byte (dwords)
+  // cannot hold beyond 1020 bytes. A plan with any other stride would draw
+  // every vertex from one place and swap 16-bit elements as 32-bit ones.
   if (r.kind == DrawKind::kInline &&
-      (layout.streams.size() > 1 || r.inline_stride == 0 || (r.inline_stride & 3u) != 0)) {
-    *detail = std::format("{} streams, stride {}", layout.streams.size(), r.inline_stride);
+      (layout.streams.size() > 1 || r.inline_stride == 0 || (r.inline_stride & 3u) != 0 ||
+       (!layout.streams.empty() && layout.streams[0].stride != r.inline_stride))) {
+    *detail = std::format("{} streams, record stride {}, layout stride {}", layout.streams.size(),
+                          r.inline_stride, layout.streams.empty() ? 0u : layout.streams[0].stride);
     return Result::kInlineLayout;
   }
 

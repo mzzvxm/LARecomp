@@ -18,9 +18,10 @@
 //   uploaded: VS bank, PS bank (each only when it changed since the last
 //   upload of the frame) and SharedConstants (only when it differs from the
 //   previous draw's).
-// Recording the draw needs the vertex and index buffers (M4.4) and the EDRAM
-// targets (M4.5); until then a prepared draw is counted and not recorded.
-// The texture tables point at the heap's null textures until M4.6.
+// Record then binds the draw's EDRAM targets (edram.h) and records it; state
+// already bound in the list is not bound again. Clears are recorded from
+// their records. The texture tables point at the heap's null
+// textures until M4.6.
 //
 // A draw that cannot be drawn correctly is skipped, never drawn with a
 // guess: the reason is counted, its first occurrences logged with the draw's
@@ -41,6 +42,7 @@
 #include <plume_render_interface.h>
 
 #include "constants.h"
+#include "edram.h"
 #include "geometry.h"
 #include "input_layout.h"
 #include "pipelines.h"
@@ -52,6 +54,8 @@
 
 namespace mcla::gpu {
 
+class BindlessHeap;
+class GuestLayout;
 class Samplers;
 
 class Scene {
@@ -63,7 +67,8 @@ class Scene {
   Scene& operator=(const Scene&) = delete;
 
   void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
-                  GeometryCache& geometry);
+                  GeometryCache& geometry, EdramTargets& edram, const GuestLayout& layout,
+                  const BindlessHeap& heap);
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -71,7 +76,9 @@ class Scene {
   // (the geometry's promotions are recorded into it); null: the frame is
   // abandoned.
   void EndFrame(plume::RenderCommandList* list);
-  // A batch flush replaced the open list.
+  // Before a batch flush ends `list`: closes the render pass.
+  void BeforeFlush(plume::RenderCommandList* list);
+  // A batch flush replaced the open list: everything is bound again.
   void OnListChanged(plume::RenderCommandList* list);
 
   // `list`: the frame's open list, null when the device is lost (the banks are
@@ -108,10 +115,12 @@ class Scene {
     kColorGap,
     kPipeline,
     kUpload,
-    kGeometry,  // GeometryCache::Result, counted per result
+    kGeometry,     // GeometryCache::Result, counted per result
+    kTarget,       // an EDRAM target the host could not make
+    kFramebuffer,  // the framebuffer of its targets could not be made
     kCount,
   };
-  enum class NoEffect : uint8_t { kNoTarget, kCulled, kNoPrimitive, kCount };
+  enum class NoEffect : uint8_t { kNoTarget, kCulled, kNoPrimitive, kEmptyScissor, kCount };
 
   // Everything a draw needs once its buffers and targets exist.
   struct PreparedDraw {
@@ -135,6 +144,13 @@ class Scene {
   Skip Prepare(const DrawView& view, const ConstantBanks::Banks& banks, PreparedDraw& d,
                bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
   void FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedConstants& sc);
+  // Records a prepared draw. kCount when recorded; kTarget/kFramebuffer when
+  // not; *no_effect for an empty scissor.
+  Skip Record(PreparedDraw& d, plume::RenderCommandList* list, bool* no_effect,
+              std::string* detail);
+  // Binds `framebuffer` (closing the open render pass first) unless bound.
+  void BindFramebuffer(plume::RenderCommandList* list, plume::RenderFramebuffer* framebuffer);
+  void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
@@ -147,6 +163,9 @@ class Scene {
   Pipelines* pipelines_ = nullptr;
   Samplers* samplers_ = nullptr;
   GeometryCache* geometry_ = nullptr;
+  EdramTargets* edram_ = nullptr;
+  const GuestLayout* layout_ = nullptr;
+  const BindlessHeap* heap_ = nullptr;
   SharedConstants base_shared_{};  // the texture tables on the null textures
 
   // The frame being recorded.
@@ -162,6 +181,17 @@ class Scene {
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
   uint64_t draws_since_flush_ = 0;
+  // What the open list has bound (ResetListState forgets it).
+  struct ListState {
+    bool layout_bound = false;
+    plume::RenderFramebuffer* framebuffer = nullptr;
+    const plume::RenderPipeline* pipeline = nullptr;
+    plume::RenderBufferReference constants[3];
+    bool constants_bound = false;
+    bool depth_bias_bound = false;
+    DepthBias depth_bias;
+  };
+  ListState bound_;
 
   // Statistics: the current window and the whole run.
   struct Stats {
@@ -188,7 +218,12 @@ class Scene {
     uint64_t upload_bytes = 0;
     uint64_t fetches = 0;  // fetch constants resolved to samplers
     uint64_t fetch_not_texture = 0;
+    uint64_t recorded = 0;           // draws recorded into the list
     uint64_t clears = 0;
+    uint64_t clears_color = 0;       // colour targets cleared
+    uint64_t clears_depth = 0;       // depth/stencil targets cleared
+    uint64_t clears_empty = 0;       // rectangle empty after the viewport/scissor
+    uint64_t clears_failed = 0;      // unreadable record or target not made
     uint64_t resolves = 0;
     uint64_t tiling_begins = 0;
     uint64_t tiling_ends = 0;

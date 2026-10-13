@@ -98,6 +98,7 @@ bool IsNullBacked(const plume::RenderShader* shader);
 bool IsNullBacked(const plume::RenderSampler* sampler);
 bool IsNullBacked(const plume::RenderQueryPool* pool);
 bool IsNullBacked(const plume::RenderCommandQueue* queue);
+bool IsNullBacked(const plume::RenderFramebuffer* framebuffer);
 
 // Whether a descriptor set really got its descriptors. Plume's D3D12 set reports
 // a full shader-visible heap only on stderr and keeps a zero-sized allocation

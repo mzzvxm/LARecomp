@@ -7,16 +7,16 @@
 //
 //   Initialize:  Device -> FrameRing -> BindlessHeap -> GuestLayout ->
 //                ShaderStore -> Samplers -> Pipelines -> UploadRing ->
-//                GeometryCache -> Scene -> SwapChain -> OverlayRenderer ->
-//                GpuTiming -> FrameCapture -> RenderThread
+//                GeometryCache -> EdramTargets -> Scene -> SwapChain ->
+//                OverlayRenderer -> GpuTiming -> FrameCapture -> RenderThread
 //   Shutdown:    RenderThread stopped (deadline) -> FrameValidator::Finish ->
 //                Scene::Finish -> MemoryCensus::Finish -> GuestMemory
 //                (callback unregistered) -> FrameRing::WaitIdle (drains every
 //                retirement, running release actions while everything they
 //                name is alive) -> FrameCapture -> GpuTiming -> OverlayRenderer
-//                -> SwapChain -> GeometryCache -> UploadRing -> Pipelines ->
-//                Samplers -> ShaderStore -> GuestLayout -> BindlessHeap ->
-//                FrameRing -> Device
+//                -> SwapChain -> EdramTargets -> GeometryCache -> UploadRing ->
+//                Pipelines -> Samplers -> ShaderStore -> GuestLayout ->
+//                BindlessHeap -> FrameRing -> Device
 //
 // Members are declared in creation order, so the destructor (which calls
 // Shutdown) cannot release a component while one built on it is alive. After
@@ -48,6 +48,7 @@
 #include "capture.h"
 #include "descriptors.h"
 #include "device.h"
+#include "edram.h"
 #include "frame.h"
 #include "frame_trace.h"
 #include "geometry.h"
@@ -155,6 +156,7 @@ class Renderer final : public RenderThread::Executor {
   Pipelines pipelines_;
   UploadRing upload_;
   GeometryCache geometry_;  // reads guest memory through guest_memory_
+  EdramTargets edram_;
   SwapChain swap_chain_;
   OverlayRenderer overlay_;
   GpuTiming timing_;
