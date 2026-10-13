@@ -12,9 +12,12 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "format.h"
+#include "native_gfx/vertex_declaration.h"
 #include "samplers.h"
 
 namespace mcla::gpu {
+
+namespace nfx = mcla::native_gfx;
 
 namespace {
 
@@ -43,6 +46,7 @@ const char* SkipName(uint32_t skip) {
       "colour target gap",
       "pipeline not created",
       "constant upload failed",
+      "geometry",
   };
   return skip < std::size(kNames) ? kNames[skip] : "?";
 }
@@ -64,10 +68,12 @@ const char* ConversionName(uint32_t conversion) {
 
 }  // namespace
 
-void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers) {
+void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
+                       GeometryCache& geometry) {
   upload_ = &upload;
   pipelines_ = &pipelines;
   samplers_ = &samplers;
+  geometry_ = &geometry;
   base_shared_ = SharedConstants{};
   for (uint32_t i = 0; i < kFetchSlotCount; ++i) {
     base_shared_.texture_2d[i] = kNullTexture2DSlot;
@@ -80,13 +86,15 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
+  geometry_->BeginFrame(slot);
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
   draws_since_flush_ = 0;
 }
 
-void Scene::EndFrame() {
+void Scene::EndFrame(plume::RenderCommandList* list) {
+  geometry_->EndFrame(list);
   list_ = nullptr;
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
@@ -231,17 +239,48 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     }
   }
 
-  // Input layout.
-  d.input_layout = input_layouts_.Get(*d.vs, view.decl_records(), r.decl_count, r.stream_strides);
+  // Input layout. Inline vertices carry their stride in the record (the
+  // device's stride table is zero for them).
+  uint8_t strides[guest::kStreamCount];
+  std::memcpy(strides, r.stream_strides, sizeof(strides));
+  if (r.kind == DrawKind::kInline && r.inline_stride % 4 == 0 && r.inline_stride / 4 <= 0xFF) {
+    for (uint32_t k = 0; k < r.decl_count; ++k) {
+      const nfx::DeclarationElement e = nfx::ReadDeclarationElement(view.decl_records(), k);
+      if (e.stream == 0xFF) {
+        break;
+      }
+      if (e.stream < guest::kStreamCount) {
+        strides[e.stream] = uint8_t(r.inline_stride / 4);
+      }
+    }
+  }
+  d.input_layout = input_layouts_.Get(*d.vs, view.decl_records(), r.decl_count, strides);
   if (d.input_layout->problems != 0) {
     *detail = std::format("VS {:016X}, {} problem(s)", r.vs_identity, d.input_layout->problems);
     return Skip::kInputLayout;
   }
 
+  // Geometry: vertex and index data, and the final host topology (an indexed
+  // strip whose restart differs from the host's becomes a list).
+  const bool computed_fetch = (d.vs->flags & ShaderStore::kComputedFetchIndex) != 0;
+  const GeometryCache::Result geometry = geometry_->Prepare(
+      view, s, *d.input_layout, d.primitive, computed_fetch, d.geometry, detail);
+  if (geometry != GeometryCache::Result::kOk) {
+    ++window_.geometry_results[size_t(geometry)];
+    if (geometry == GeometryCache::Result::kEmpty) {
+      *no_effect = true;
+      *no_effect_reason = NoEffect::kNoPrimitive;
+      return Skip::kCount;
+    }
+    *detail = std::string(GeometryCache::ResultName(geometry)) +
+              (detail->empty() ? std::string() : ": " + *detail);
+    return Skip::kGeometry;
+  }
+
   // Pipeline.
   const PipelineInputs inputs{d.vs, d.ps, d.input_layout};
-  switch (pipelines_->BuildKey(s, inputs, d.primitive.topology, color_formats, depth_format, d.key,
-                               d.bias)) {
+  switch (pipelines_->BuildKey(s, inputs, d.geometry.topology, IsPolygonal(r.primitive),
+                               color_formats, depth_format, d.key, d.bias)) {
     case KeyResult::kOk:
       break;
     case KeyResult::kNoEffect:
@@ -418,6 +457,9 @@ void Scene::Add(Stats& into, const Stats& from) const {
   for (size_t i = 0; i < into.skips.size(); ++i) into.skips[i] += from.skips[i];
   for (size_t i = 0; i < into.no_effect.size(); ++i) into.no_effect[i] += from.no_effect[i];
   for (size_t i = 0; i < into.conversions.size(); ++i) into.conversions[i] += from.conversions[i];
+  for (size_t i = 0; i < into.geometry_results.size(); ++i) {
+    into.geometry_results[i] += from.geometry_results[i];
+  }
   into.bank_checks += from.bank_checks;
   into.bank_mismatches += from.bank_mismatches;
   into.alpha_test_draws += from.alpha_test_draws;
@@ -461,7 +503,8 @@ void Scene::Finish() {
                 for (uint64_t v : t.skips) n += v;
                 return n;
               }(),
-              t.no_effect[0] + t.no_effect[1], pipelines_->size(), t.pipelines_failed,
+              t.no_effect[0] + t.no_effect[1] + t.no_effect[2], pipelines_->size(),
+              t.pipelines_failed,
               double(t.pipeline_create_ns) / 1e6, double(t.upload_bytes) / frames / 1048576.0,
               double(t.prepare_ns) / frames / 1e6);
 }
@@ -489,16 +532,26 @@ void Scene::Report(const char* why) {
                                  ConversionName(uint32_t(i)), w.conversions[i]);
     }
   }
+  std::string geometry;
+  for (size_t i = 1; i < w.geometry_results.size(); ++i) {
+    if (w.geometry_results[i]) {
+      geometry += std::format("{}{} {}", geometry.empty() ? "" : ", ",
+                              GeometryCache::ResultName(GeometryCache::Result(i)),
+                              w.geometry_results[i]);
+    }
+  }
   REXLOG_INFO(
-      "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, skipped [{}], no effect "
-      "{} (no target {}, culled {}) | conversions for M4.4 [{}] | alpha test {}, clip disabled "
+      "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, skipped [{}], geometry "
+      "[{}], no effect {} (no target {}, culled {}, no primitive {}) | conversions [{}] | alpha "
+      "test {}, clip disabled "
       "{}, depth bias {}, alpha to mask {} (1x {}, biased {}) | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
       "ms) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | clears {}, resolves {}, tiling {}/{} | prepare "
       "{:.2f} ms/frame",
       why, w.frames, double(w.draws) / frames, w.prepared, skips.empty() ? "none" : skips,
-      w.no_effect[0] + w.no_effect[1], w.no_effect[0], w.no_effect[1],
+      geometry.empty() ? "ok" : geometry, w.no_effect[0] + w.no_effect[1] + w.no_effect[2],
+      w.no_effect[0], w.no_effect[1], w.no_effect[2],
       conversions.empty() ? "none" : conversions, w.alpha_test_draws, w.clip_disabled_draws,
       w.depth_bias_draws, w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased,
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
@@ -506,6 +559,7 @@ void Scene::Report(const char* why) {
       w.fetch_not_texture, double(w.upload_bytes) / frames / 1048576.0, w.constant_uploads,
       w.shared_uploads, w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
       double(w.prepare_ns) / frames / 1e6);
+  REXLOG_INFO("[gpu] scene ({}): {}", why, geometry_->TakeSummary(w.frames));
   Add(total_, window_);
   window_ = Stats{};
 }

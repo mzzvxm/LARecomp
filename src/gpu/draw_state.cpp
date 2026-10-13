@@ -68,6 +68,7 @@ XenosState DecodeXenosState(const DrawView& view) {
   s.vtx = Decode<xreg::PA_SU_VTX_CNTL>(regs, xg::XE_GPU_REG_PA_SU_VTX_CNTL);
   s.aa_config = regs.Register(xg::XE_GPU_REG_PA_SC_AA_CONFIG);
   s.aa_mask = regs.Register(xg::XE_GPU_REG_PA_SC_AA_MASK);
+  s.reset_index = regs.Register(xg::XE_GPU_REG_VGT_MULTI_PRIM_IB_RESET_INDX);
 
   s.viewport[0] = regs.RegisterFloat(xg::XE_GPU_REG_PA_CL_VPORT_XSCALE);
   s.viewport[1] = regs.RegisterFloat(xg::XE_GPU_REG_PA_CL_VPORT_XOFFSET);

@@ -41,6 +41,7 @@
 #include <plume_render_interface.h>
 
 #include "constants.h"
+#include "geometry.h"
 #include "input_layout.h"
 #include "pipelines.h"
 #include "records.h"
@@ -61,12 +62,15 @@ class Scene {
   Scene(const Scene&) = delete;
   Scene& operator=(const Scene&) = delete;
 
-  void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers);
+  void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
+                  GeometryCache& geometry);
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
-  // The frame's last list is about to be submitted (or abandoned).
-  void EndFrame();
+  // The frame's last list is about to be submitted, outside any render pass
+  // (the geometry's promotions are recorded into it); null: the frame is
+  // abandoned.
+  void EndFrame(plume::RenderCommandList* list);
   // A batch flush replaced the open list.
   void OnListChanged(plume::RenderCommandList* list);
 
@@ -104,9 +108,10 @@ class Scene {
     kColorGap,
     kPipeline,
     kUpload,
+    kGeometry,  // GeometryCache::Result, counted per result
     kCount,
   };
-  enum class NoEffect : uint8_t { kNoTarget, kCulled, kCount };
+  enum class NoEffect : uint8_t { kNoTarget, kCulled, kNoPrimitive, kCount };
 
   // Everything a draw needs once its buffers and targets exist.
   struct PreparedDraw {
@@ -115,6 +120,7 @@ class Scene {
     const ShaderStore::Entry* ps = nullptr;
     const InputLayout* input_layout = nullptr;
     HostPrimitive primitive;
+    DrawGeometry geometry;
     plume::RenderPipeline* pipeline = nullptr;
     PipelineKey key;
     DepthBias bias;
@@ -140,6 +146,7 @@ class Scene {
   UploadRing* upload_ = nullptr;
   Pipelines* pipelines_ = nullptr;
   Samplers* samplers_ = nullptr;
+  GeometryCache* geometry_ = nullptr;
   SharedConstants base_shared_{};  // the texture tables on the null textures
 
   // The frame being recorded.
@@ -163,7 +170,8 @@ class Scene {
     uint64_t prepared = 0;
     std::array<uint64_t, size_t(Skip::kCount)> skips{};
     std::array<uint64_t, size_t(NoEffect::kCount)> no_effect{};
-    std::array<uint64_t, 7> conversions{};  // by PrimitiveConversion
+    std::array<uint64_t, kPrimitiveConversionCount> conversions{};
+    std::array<uint64_t, size_t(GeometryCache::Result::kCount)> geometry_results{};
     uint64_t bank_checks = 0;
     uint64_t bank_mismatches = 0;
     uint64_t alpha_test_draws = 0;

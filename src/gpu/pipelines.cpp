@@ -183,7 +183,7 @@ void Pipelines::Report(uint32_t kind, const char* what) {
 }
 
 KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inputs,
-                              plume::RenderPrimitiveTopology topology,
+                              plume::RenderPrimitiveTopology topology, bool polygonal,
                               const plume::RenderFormat color_formats[kColorTargetCount],
                               plume::RenderFormat depth_format, PipelineKey& key,
                               DepthBias& bias) {
@@ -313,12 +313,12 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
     }
   }
 
-  // Raster state.
+  // Raster state. Only polygonal primitives are culled, filled by mode and
+  // offset by face (Xenia): a rectangle list is drawn as triangles on the host
+  // but is none of these.
   const xreg::PA_SU_SC_MODE_CNTL& sc = state.sc_mode;
-  const bool triangles = topology == plume::RenderPrimitiveTopology::TRIANGLE_LIST ||
-                         topology == plume::RenderPrimitiveTopology::TRIANGLE_STRIP;
   plume::RenderCullMode cull = plume::RenderCullMode::NONE;
-  if (triangles) {
+  if (polygonal) {
     if (sc.cull_front && sc.cull_back) {
       return KeyResult::kNoEffect;
     }
@@ -328,7 +328,7 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   // `face`: 0 = front is counter-clockwise, 1 = clockwise.
   const bool front_ccw = sc.face == 0;
   plume::RenderFillMode fill = plume::RenderFillMode::SOLID;
-  if (triangles && sc.poly_mode == xe::PolygonModeEnable::kDualMode) {
+  if (polygonal && sc.poly_mode == xe::PolygonModeEnable::kDualMode) {
     const xe::PolygonType type =
         sc.cull_front ? sc.polymode_back_ptype : sc.polymode_front_ptype;
     if (type == xe::PolygonType::kLines) {
@@ -341,7 +341,7 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   float poly_scale = 0.0f;
   float poly_offset = 0.0f;
   if (state.depth_bound) {
-    if (triangles) {
+    if (polygonal) {
       if (!sc.cull_front && sc.poly_offset_front_enable) {
         poly_scale = state.poly_offset[0];
         poly_offset = state.poly_offset[1];

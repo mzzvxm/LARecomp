@@ -65,6 +65,45 @@ bool GuestMemory::Arm(uint32_t physical, uint32_t length) {
   return true;
 }
 
+bool GuestMemory::IsWatchable(uint32_t physical, uint32_t length) {
+  if (length == 0 || !Attach()) {
+    return false;
+  }
+  const uint64_t end = uint64_t(physical) + length;
+  if (end > 0x20000000ull) {
+    return false;
+  }
+  // The three physical aliases each keep their own page table (the same walk
+  // as nfx::IsPhysicalRangeReadable): 0xE0000000 is one page off (virtual
+  // 0xE0000000 + v is physical v + 0x1000), 0xC0000000 and 0xA0000000 are not.
+  struct Alias {
+    uint32_t base;
+    uint32_t page_offset;
+  };
+  static constexpr Alias kAliases[] = {{0xE0000000u, 0x1000u}, {0xC0000000u, 0}, {0xA0000000u, 0}};
+  const uint32_t last = uint32_t(end - 1);
+  for (const Alias& alias : kAliases) {
+    if (physical < alias.page_offset) {
+      continue;
+    }
+    const uint32_t low = alias.base + (physical - alias.page_offset);
+    const uint32_t high = alias.base + (last - alias.page_offset);
+    rex::memory::BaseHeap* heap = memory_->LookupHeap(low);
+    if (!heap || memory_->LookupHeap(high) != heap) {
+      continue;
+    }
+    switch (heap->QueryRangeAccess(low, high)) {
+      case rex::memory::PageAccess::kReadWrite:
+        return true;
+      case rex::memory::PageAccess::kReadOnly:
+        return false;  // the SDK will not watch these pages
+      default:
+        break;  // not committed in this alias
+    }
+  }
+  return false;
+}
+
 void GuestMemory::Drain(std::vector<Range>& out) {
   if (!pending_flag_.load(std::memory_order_acquire)) {
     return;

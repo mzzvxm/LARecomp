@@ -118,9 +118,12 @@ class Pipelines {
   void Shutdown();
 
   // Fills `key` (and the draw's depth bias, which the caller sets on the list
-  // when it is dynamic) from the draw. Anything but kOk: the draw is skipped.
+  // when it is dynamic) from the draw. `topology` is the host's (after any
+  // conversion); `polygonal` the guest primitive's (topology.h IsPolygonal),
+  // which decides culling, fill mode and the face whose polygon offset applies.
+  // Anything but kOk: the draw is skipped.
   KeyResult BuildKey(const XenosState& state, const PipelineInputs& inputs,
-                     plume::RenderPrimitiveTopology topology,
+                     plume::RenderPrimitiveTopology topology, bool polygonal,
                      const plume::RenderFormat color_formats[kColorTargetCount],
                      plume::RenderFormat depth_format, PipelineKey& key, DepthBias& bias);
 

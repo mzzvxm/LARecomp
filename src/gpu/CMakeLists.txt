@@ -9,6 +9,7 @@
 
 add_library(larecomp_gpu OBJECT
     backend.cpp
+    buffer_heap.cpp
     capture.cpp
     constants.cpp
     descriptors.cpp
@@ -17,6 +18,7 @@ add_library(larecomp_gpu OBJECT
     format.cpp
     frame_trace.cpp
     frame.cpp
+    geometry.cpp
     guest_capture.cpp
     guest_memory.cpp
     input_layout.cpp

@@ -61,6 +61,9 @@ struct XenosState {
   xreg::PA_SU_VTX_CNTL vtx{};
   uint32_t aa_config = 0;  // PA_SC_AA_CONFIG
   uint32_t aa_mask = 0;    // PA_SC_AA_MASK
+  // VGT_MULTI_PRIM_IB_RESET_INDX: the strip reset index while
+  // PA_SU_SC_MODE_CNTL.multi_prim_ib_ena is on.
+  uint32_t reset_index = 0;
 
   // PA_CL_VPORT_XSCALE, XOFFSET, YSCALE, YOFFSET, ZSCALE, ZOFFSET as stored
   // (whether each applies is PA_CL_VTE_CNTL's).

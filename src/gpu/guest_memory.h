@@ -20,8 +20,9 @@
 // notifying for a neighbouring watched range).
 //
 // A page the guest keeps read-only or inaccessible is not watched by the SDK
-// (EnableAccessCallbacks skips it); a cache must not rely on the watch for
-// such a range (pending for M4.4).
+// (EnableAccessCallbacks neither protects nor flags it, and a later Protect
+// that makes it writable only notifies flagged pages): IsWatchable tells a
+// cache whether it may rely on the watch for a range.
 //
 // The renderer starts before the guest, when the runtime has no memory system
 // yet, so the callback is registered the first time a range is armed.
@@ -79,6 +80,10 @@ class GuestMemory {
   // Watches the pages of [physical, physical + length) until the next write.
   // False (logged once) when there is no memory system to watch with.
   bool Arm(uint32_t physical, uint32_t length);
+
+  // True when every page of the range is committed read-write in the
+  // physical heap alias that holds it, i.e. Arm really watches all of it.
+  bool IsWatchable(uint32_t physical, uint32_t length);
 
   // True when ranges were queued since the last Drain (one atomic load).
   bool HasInvalidations() const { return pending_flag_.load(std::memory_order_acquire); }

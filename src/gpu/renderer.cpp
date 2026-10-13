@@ -122,10 +122,11 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   if (ok) {
     samplers_.Initialize(device_, heap_);
     pipelines_.Initialize(device_, guest_layout_, shaders_);
-    ok = upload_.Initialize(device_);
+    ok = upload_.Initialize(device_) &&
+         geometry_.Initialize(device_, frames_, upload_, guest_memory_);
   }
   if (ok) {
-    scene_.Initialize(upload_, pipelines_, samplers_);
+    scene_.Initialize(upload_, pipelines_, samplers_, geometry_);
     ok = swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
                              swap_chain_.format());
@@ -143,6 +144,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     timing_.Shutdown();
     overlay_.Shutdown();
     swap_chain_.Shutdown();
+    geometry_.Shutdown();
     upload_.Shutdown();
     pipelines_.Shutdown();
     samplers_.Shutdown();
@@ -201,6 +203,7 @@ void Renderer::Shutdown() {
   timing_.Shutdown();
   overlay_.Shutdown();
   swap_chain_.Shutdown();
+  geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
   samplers_.Shutdown();
@@ -330,7 +333,7 @@ void Renderer::SubmitFrameWithoutPresent() {
   }
   plume::RenderCommandList* list = frames_.list();
   const uint32_t slot = frames_.slot();
-  scene_.EndFrame();
+  scene_.EndFrame(list);
   timing_.CompleteFrame(list, slot);
   if (frames_.Submit(nullptr, 0, nullptr, 0)) {
     timing_.OnSubmitted(slot);
@@ -376,7 +379,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   if (device_.IsLost()) {
     // Nothing recorded will run: drop the guest frame being recorded.
     if (frames_.is_open()) {
-      scene_.EndFrame();
+      scene_.EndFrame(nullptr);
       frames_.Abandon();
     }
     return;
@@ -420,8 +423,9 @@ void Renderer::ExecutePresent(PresentSource source) {
     return;
   }
   const uint32_t slot = frames_.slot();
-  scene_.EndFrame();
-  // Outside any render pass: overlay texture uploads.
+  // Outside any render pass: the scene's last work (geometry promotions), then
+  // the overlay's texture uploads.
+  scene_.EndFrame(list);
   overlay_.Prepare(list, slot);
   RecordPresentPass(list, slot, image);
 
