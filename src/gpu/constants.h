@@ -12,8 +12,9 @@
 // The replay and the optional validator (validation.h) each keep their own
 // ConstantBanks.
 //
-// SharedConstants. The block of shader contract v5 (LAR-XenosRecomp
-// shader_common.h, 592 bytes) the translated shaders read besides the banks:
+// SharedConstants. The block of shader contract v6 (LAR-XenosRecomp
+// shader_common.h, 592 bytes, laid out as in v5) the translated shaders read
+// besides the banks:
 // the bindless texture indices per fetch constant slot (bit 31 = PWL gamma on
 // read) and sampler indices, the VS bools, the alpha test threshold, the
 // alpha to coverage parameters, the MIN/MAX source factor and RT0's exponent
@@ -26,6 +27,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 
 #include "draw_decode.h"
@@ -52,12 +54,12 @@ struct SharedConstants {
   float alpha_threshold;                   // 528
   uint32_t blend_premult_rgb;              // 532
   uint32_t blend_premult_a;                // 536
-  uint32_t alpha_to_mask;                  // 540, v5: AlphaToMaskParameters
+  uint32_t alpha_to_mask;                  // 540, since v5: AlphaToMaskParameters
   float blend_premult_constant[4];         // 544
   float pos_scale[4];                      // 560
   float pos_offset[4];                     // 576
 };
-static_assert(sizeof(SharedConstants) == 592, "SharedConstants is shader contract v4");
+static_assert(sizeof(SharedConstants) == 592, "SharedConstants is shader contract v4-v6");
 static_assert(offsetof(SharedConstants, sampler) == 384);
 static_assert(offsetof(SharedConstants, booleans) == 512);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 528);
@@ -92,22 +94,26 @@ class ConstantBanks {
 void SwapBankToHost(const uint8_t* guest_bank, uint8_t* host_out);
 
 // The alpha test as the translated pixel shader runs it -- clip(alpha -
-// threshold), "keep alpha >= threshold", behind the ALPHA_TEST spec variant --
-// for the guest's function and reference (the legacy runtime's rule,
-// guest/render_state.cpp). ALWAYS needs no variant (a negative alpha would be
-// discarded by clip), and a function that is not a lower bound (LESS, EQUAL,
-// LESS_EQUAL, NOT_EQUAL with a reference other than 0) cannot be run: nothing
-// is discarded and the caller reports it.
+// threshold), "keep alpha >= threshold", in the pixel shader's ALPHA_TEST
+// variant -- for the guest's function and reference (the legacy runtime's
+// rule, guest/render_state.cpp). That variant is the one whose coverage
+// depends on alpha (contract v6): the pipelines pick it for this test, for
+// alpha to coverage, or both, so when nothing is to be discarded (test off,
+// ALWAYS, or a function that cannot be run) the threshold is -infinity, which
+// clip never discards, not even a negative alpha. A function that is not a
+// lower bound (LESS, EQUAL, LESS_EQUAL, NOT_EQUAL with a reference other than
+// 0) cannot be run: nothing is discarded and the caller reports it.
 struct AlphaTest {
-  bool discard = false;  // the ALPHA_TEST variant is needed
-  float threshold = 0.0f;
+  bool discard = false;  // the test discards: the ALPHA_TEST variant is needed
+  float threshold = -std::numeric_limits<float>::infinity();
   bool unsupported = false;
 };
 AlphaTest ComputeAlphaTest(const XenosState& state);
 
-// g_AlphaToMask of contract v5 (the generated computeAlphaToMask, Xenia's
+// g_AlphaToMask (contract v5 and v6; the generated computeAlphaToMask, Xenia's
 // rule): bits 0-7 RB_COLORCONTROL's alpha_to_mask_offset0..3,
-// bit 8 enabled, bits 9-10 the sample count log2. 0 = off.
+// bit 8 enabled, bits 9-10 the sample count log2. 0 = off (every sample
+// covered). Read by the ALPHA_TEST variant only.
 uint32_t AlphaToMaskParameters(const XenosState& state);
 
 // What FillSharedConstants could not express; the caller reports each kind.

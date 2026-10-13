@@ -43,9 +43,12 @@ class Samplers {
   void Shutdown();
 
   // The bindless sampler slot for the texture fetch constant `fetch` (six
-  // host-order dwords). Falls back to the fixed linear-wrap sampler, logged,
-  // when one cannot be made.
-  uint32_t Get(const uint32_t fetch[6]);
+  // host-order dwords), with the mip range the texture really has: `mip_min`
+  // and `mip_max` as texture_util::GetSubresourcesFromFetchConstant leaves
+  // them (clamped to the size, the base excluded when it is absent), which
+  // the raw fetch fields are not. Falls back to the fixed
+  // linear-wrap sampler, logged, when one cannot be made.
+  uint32_t Get(const uint32_t fetch[6], uint32_t mip_min, uint32_t mip_max);
 
   size_t size() const { return slots_.size(); }
 

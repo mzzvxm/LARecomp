@@ -1,16 +1,16 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the guest shader store (shader pack v5)
+// MCLA GPU renderer -- the guest shader store (shader pack v6)
 // ===========================================================================
 // The translated guest shaders (LAR-XenosRecomp HLSL compiled offline by
-// tools/build_shader_pack_v5.py), keyed by the runtime shader identity
+// tools/build_shader_pack_v6.py), keyed by the runtime shader identity
 // (FNV-1a 64 of the vfetch-normalized microcode, native_gfx/shader_identity.h).
-// Layout of the file: (unchanged since
-// v3) and the builder's header. v5 is the shader contract this renderer is
-// written against: v4's (-- SharedConstants of 592 bytes with
-// g_PosScale / g_PosOffset, structured control flow, conditional exec blocks
-// that test their condition) plus alpha to coverage in the pixel shader
-// (24.27: g_AlphaToMask at byte 540, SV_Coverage beside oC0). The legacy
+// Layout of the file: the builder's header (for v3, 24.27 for what v6 changes). v6 is the shader contract this
+// renderer is written against: v4's (-- SharedConstants of 592 bytes
+// with g_PosScale / g_PosOffset, structured control flow, conditional exec
+// blocks that test their condition) plus alpha to coverage in the pixel shader
+// (24.27: g_AlphaToMask at byte 540; SV_Coverage beside oC0 only in the pixel
+// shader variant 1, the one whose coverage depends on alpha). The legacy
 // runtime's v2 pack keeps the old contract.
 //
 // The pack is memory-mapped read-only from <exe folder>/assets (the legacy
@@ -22,8 +22,10 @@
 //
 // Shaders: one plume::RenderShader per blob, created on first use on the
 // render thread through Device::CreateShader (which rejects a null-backed
-// result). D3D12 has one DXIL blob per spec variant present; Vulkan has one
-// SPIR-V blob per shader, its spec constants set when a pipeline is created.
+// result). Both backends have one blob per spec variant present (DXIL for
+// D3D12, SPIR-V for Vulkan): the spec constants are fixed when the pack is
+// compiled, because the variants differ in their outputs, which a
+// specialization constant cannot change.
 //
 // Threading: render thread only, after Initialize.
 // ===========================================================================
@@ -46,8 +48,8 @@ class Device;
 
 class ShaderStore {
  public:
-  static constexpr const char* kPackFileName = "mcla_shaders.v5.pack";
-  static constexpr uint32_t kPackVersion = 5;
+  static constexpr const char* kPackFileName = "mcla_shaders.v6.pack";
+  static constexpr uint32_t kPackVersion = 6;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
@@ -73,14 +75,17 @@ class ShaderStore {
   struct Entry {
     uint64_t key = 0;
     Stage stage = Stage::kVertex;
-    uint8_t spec_mask = 0;  // spec bits the shader uses (VS 0x1 R11G11B10_NORMAL, PS 0x2 ALPHA_TEST)
+    // Spec bits the shader uses: VS 0x1 R11G11B10_NORMAL, PS 0x2 ALPHA_TEST (the
+    // variant whose coverage depends on alpha: alpha test and/or alpha to
+    // coverage, constants.h).
+    uint8_t spec_mask = 0;
     uint16_t velem_count = 0;
     uint32_t velem_offset = 0;
     uint32_t flags = 0;
     uint8_t ps_outputs = 0;           // PixelOutputs; 0 for vertex shaders
     uint32_t texture_fetch_mask = 0;  // bit i: a texture instruction reads fetch constant i
-    Blob dxil[2];  // spec 0 / spec = spec_mask
-    Blob spirv;
+    Blob dxil[2];   // variant 0 (no spec bit) / variant 1 (spec_mask)
+    Blob spirv[2];  // the same variants
   };
 
   struct VertexElement {
@@ -139,7 +144,7 @@ class ShaderStore {
   std::filesystem::path path_;
   std::unique_ptr<rex::memory::MappedMemory> file_;
   std::unordered_map<uint64_t, Entry> entries_;
-  std::unordered_map<uint64_t, Slot> slots_;  // (identity, variant) for DXIL, identity for SPIR-V
+  std::unordered_map<uint64_t, Slot> slots_[2];  // per variant, by identity
   Stats stats_;
 };
 

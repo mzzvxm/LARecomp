@@ -21,17 +21,20 @@
 //   - the depth bias is dynamic where the device has it (Vulkan always,
 //     D3D12 with options16 and Plume's Agility SDK build), as reblue does, and
 //     part of the key otherwise;
-//   - the ALPHA_TEST variant only when the test can be run as the shader's
-//     "alpha >= threshold" (constants.h AlphaTest).
+//   - the pixel shader's ALPHA_TEST variant (contract v6: the one whose
+//     coverage depends on alpha) only for an alpha test the shader can run as
+//     "alpha >= threshold" (constants.h AlphaTest), alpha to coverage, or
+//     both; every other draw keeps variant 0, which has no discard or
+//     SV_Coverage of its own and so keeps the host's early depth/stencil test.
 // Disabled blending is declared as the copy blend (ONE, ZERO, ADD): Plume
 // translates every field whether blending is on or not, and UNKNOWN is not a
 // valid D3D12 or Vulkan value.
 // What the host cannot express is reported once per kind: a constant blend
 // factor (Plume has no setBlendFactor), separate back-face stencil masks or
 // reference (one set of masks in a D3D12 pipeline), point fill, an alpha
-// test function that is not a lower bound, alpha test on a pixel shader
-// compiled without the variant. Both faces culled is not a failure: the
-// draw has no effect (the caller skips it).
+// test function that is not a lower bound, alpha test or alpha to coverage on
+// a pixel shader compiled without the variant. Both faces culled is not a
+// failure: the draw has no effect (the caller skips it).
 //
 // Pipelines are created synchronously on the render thread on first use and
 // kept for the life of the renderer (persistence and precache are M5).

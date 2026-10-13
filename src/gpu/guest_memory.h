@@ -13,10 +13,12 @@
 // next guest write to any of them -- or a file read into them, or the range
 // being freed or made writable -- calls OnInvalidate on the writing thread,
 // inside the memory system's global lock, and unprotects the touched pages:
-// one notification per arm. OnInvalidate only queues the range; the render
-// thread takes the queue with Drain() before it resolves the resources of a
-// record. The callback hands back exactly the range it was told about, so the
-// SDK unprotects nothing beyond the written pages (anything more would stop
+// one notification per arm. OnInvalidate only queues the range -- in the queue
+// of every subscriber, so each cache that keeps copies (geometry, textures,
+// resolve products, the census) sees every write whoever armed the page; the
+// render thread takes its queue with Drain() before it resolves the resources
+// of a record. The callback hands back exactly the range it was told about, so
+// the SDK unprotects nothing beyond the written pages (anything more would stop
 // notifying for a neighbouring watched range).
 //
 // A page the guest keeps read-only or inaccessible is not watched by the SDK
@@ -58,6 +60,10 @@ class GuestMemory {
     uint64_t notified_bytes = 0;
   };
 
+  // A cache's own queue of written ranges.
+  using Subscriber = uint32_t;
+  static constexpr uint32_t kMaxSubscribers = 4;
+
   GuestMemory() = default;
   ~GuestMemory();
   GuestMemory(const GuestMemory&) = delete;
@@ -85,10 +91,19 @@ class GuestMemory {
   // physical heap alias that holds it, i.e. Arm really watches all of it.
   bool IsWatchable(uint32_t physical, uint32_t length);
 
-  // True when ranges were queued since the last Drain (one atomic load).
-  bool HasInvalidations() const { return pending_flag_.load(std::memory_order_acquire); }
-  // Moves the queued ranges into `out` (appended).
-  void Drain(std::vector<Range>& out);
+  // Render thread, during initialization (before anything is armed): a queue
+  // that receives every notified range from now on. `name` is for the stats.
+  // Every subscriber must drain regularly. kMaxSubscribers is a hard limit
+  // (logged, and the caller gets no queue: it must not rely on the watch).
+  static constexpr Subscriber kNoSubscriber = UINT32_MAX;
+  Subscriber Subscribe(const char* name);
+
+  // True when ranges were queued for `s` since its last Drain (one atomic load).
+  bool HasInvalidations(Subscriber s) const {
+    return s < kMaxSubscribers && queues_[s].flag.load(std::memory_order_acquire);
+  }
+  // Moves the ranges queued for `s` into `out` (appended).
+  void Drain(Subscriber s, std::vector<Range>& out);
 
   // Since the previous call.
   Stats TakeStats();
@@ -102,9 +117,14 @@ class GuestMemory {
   void* callback_ = nullptr;
   bool reported_no_memory_ = false;
 
-  std::mutex mutex_;  // guards pending_
-  std::vector<Range> pending_;
-  std::atomic<bool> pending_flag_{false};
+  struct Queue {
+    std::vector<Range> pending;  // guarded by mutex_
+    std::atomic<bool> flag{false};
+    const char* name = nullptr;
+  };
+  std::mutex mutex_;  // guards the queues' pending vectors and subscriber_count_
+  Queue queues_[kMaxSubscribers];
+  uint32_t subscriber_count_ = 0;
   std::atomic<uint64_t> notifications_{0};
   std::atomic<uint64_t> notified_bytes_{0};
 

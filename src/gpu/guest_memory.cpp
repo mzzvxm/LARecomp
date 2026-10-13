@@ -42,8 +42,23 @@ void GuestMemory::Shutdown() {
   callback_ = nullptr;
   memory_ = nullptr;
   std::lock_guard lock(mutex_);
-  pending_.clear();
-  pending_flag_.store(false, std::memory_order_release);
+  for (Queue& q : queues_) {
+    q.pending.clear();
+    q.flag.store(false, std::memory_order_release);
+  }
+}
+
+GuestMemory::Subscriber GuestMemory::Subscribe(const char* name) {
+  std::lock_guard lock(mutex_);
+  if (subscriber_count_ >= kMaxSubscribers) {
+    REXLOG_ERROR("[gpu] guest memory: no write-watch queue left for {} ({} in use); it cannot "
+                 "rely on the watch",
+                 name, kMaxSubscribers);
+    return kNoSubscriber;
+  }
+  const Subscriber s = subscriber_count_++;
+  queues_[s].name = name;
+  return s;
 }
 
 const uint8_t* GuestMemory::Read(uint32_t physical, uint32_t length) const {
@@ -104,14 +119,15 @@ bool GuestMemory::IsWatchable(uint32_t physical, uint32_t length) {
   return false;
 }
 
-void GuestMemory::Drain(std::vector<Range>& out) {
-  if (!pending_flag_.load(std::memory_order_acquire)) {
+void GuestMemory::Drain(Subscriber s, std::vector<Range>& out) {
+  if (s >= kMaxSubscribers || !queues_[s].flag.load(std::memory_order_acquire)) {
     return;
   }
   std::lock_guard lock(mutex_);
-  out.insert(out.end(), pending_.begin(), pending_.end());
-  pending_.clear();
-  pending_flag_.store(false, std::memory_order_release);
+  Queue& q = queues_[s];
+  out.insert(out.end(), q.pending.begin(), q.pending.end());
+  q.pending.clear();
+  q.flag.store(false, std::memory_order_release);
 }
 
 GuestMemory::Stats GuestMemory::TakeStats() {
@@ -131,8 +147,11 @@ std::pair<uint32_t, uint32_t> GuestMemory::OnInvalidate(void* context, uint32_t 
   auto* self = static_cast<GuestMemory*>(context);
   {
     std::lock_guard lock(self->mutex_);
-    self->pending_.push_back(Range{start, length});
-    self->pending_flag_.store(true, std::memory_order_release);
+    for (uint32_t s = 0; s < self->subscriber_count_; ++s) {
+      Queue& q = self->queues_[s];
+      q.pending.push_back(Range{start, length});
+      q.flag.store(true, std::memory_order_release);
+    }
   }
   self->notifications_.fetch_add(1, std::memory_order_relaxed);
   self->notified_bytes_.fetch_add(length, std::memory_order_relaxed);

@@ -47,6 +47,7 @@ const char* PlumeFormatName(RenderFormat format) {
     case RenderFormat::BC2_UNORM: return "BC2_UNORM";
     case RenderFormat::BC3_UNORM: return "BC3_UNORM";
     case RenderFormat::D24_UNORM_S8_UINT: return "D24_UNORM_S8_UINT";
+    case RenderFormat::B5G5R5A1_UNORM: return "B5G5R5A1_UNORM";
     default: return "other";
   }
 }
@@ -105,27 +106,61 @@ Mapping DepthTargetFormat(uint32_t depth_format) {
   }
 }
 
-Mapping TextureFormat(uint32_t texture_format) {
+TextureHostFormat TextureHost(uint32_t texture_format) {
+  const auto ok = [](RenderFormat format, const char* name, uint16_t swizzle,
+                     TextureLoad load = TextureLoad::kCopy,
+                     TextureDecompress decompress = TextureDecompress::kNone) {
+    TextureHostFormat f;
+    f.format = format;
+    f.status = Status::kOk;
+    f.guest_name = name;
+    f.host_swizzle = swizzle;
+    f.load = load;
+    f.decompress = decompress;
+    return f;
+  };
   switch (texture_format) {
-    case 2: return Ok(RenderFormat::R8_UNORM, "k_8");
-    // Expanded exactly to 8 bits per channel when decoded: the
-    // host format B5G5R5A1 is not in Plume, and the expansion makes it moot.
-    case 3: return Ok(RenderFormat::R8G8B8A8_UNORM, "k_1_5_5_5");
-    case 6: return Ok(RenderFormat::R8G8B8A8_UNORM, "k_8_8_8_8");
-    case 18: return Ok(RenderFormat::BC1_UNORM, "k_DXT1");
-    case 19: return Ok(RenderFormat::BC2_UNORM, "k_DXT2_3");
-    case 20: return Ok(RenderFormat::BC3_UNORM, "k_DXT4_5");
-    case 32: return Ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_FLOAT");
+    case 2: return ok(RenderFormat::R8_UNORM, "k_8", kHostSwizzleRRRR);
+    // Xenia: "Red and blue swapped in the load shader for simplicity" -- the
+    // Xenos keeps X in bits 0-4, B5G5R5A1 (DXGI) / A1R5G5B5_PACK16 (Vulkan) keep
+    // blue there. Sampling the 5-bit UNORM gives v/31 exactly, which no 8-bit
+    // expansion can (corrects 24.14).
+    case 3:
+      return ok(RenderFormat::B5G5R5A1_UNORM, "k_1_5_5_5", kHostSwizzleRGBA,
+                TextureLoad::kR5G5B5A1ToB5G5R5A1);
+    case 6: return ok(RenderFormat::R8G8B8A8_UNORM, "k_8_8_8_8", kHostSwizzleRGBA);
+    case 18:
+      return ok(RenderFormat::BC1_UNORM, "k_DXT1", kHostSwizzleRGBA, TextureLoad::kCopy,
+                TextureDecompress::kDXT1);
+    case 19:
+      return ok(RenderFormat::BC2_UNORM, "k_DXT2_3", kHostSwizzleRGBA, TextureLoad::kCopy,
+                TextureDecompress::kDXT2_3);
+    case 20:
+      return ok(RenderFormat::BC3_UNORM, "k_DXT4_5", kHostSwizzleRGBA, TextureLoad::kCopy,
+                TextureDecompress::kDXT4_5);
+    // Depth read as a texture: one float channel (Xenia: "R32_FLOAT for depth
+    // because shaders would require an additional SRV to sample stencil"). A
+    // resolve product serves it normally (resolve.h); decoded from memory only
+    // when the guest wrote one itself.
+    case 22:
+      return ok(RenderFormat::R32_FLOAT, "k_24_8", kHostSwizzleRRRR, TextureLoad::kDepthUnorm24);
+    case 23:
+      return ok(RenderFormat::R32_FLOAT, "k_24_8_FLOAT", kHostSwizzleRRRR,
+                TextureLoad::kDepthFloat20e4);
     // EXPAND is float16 per channel (the SDK's format table, and what the
     // guest's own resolves write into it); M3 had SNORM, which was wrong.
-    case 29: return Ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_EXPAND");
-    case 36: return Ok(RenderFormat::R32_FLOAT, "k_32_FLOAT");
-    // Depth read back as a texture: one float channel, served by the render
-    // target path (M5), never decoded from guest memory.
-    case 22: return Ok(RenderFormat::R32_FLOAT, "k_24_8");
-    case 23: return Ok(RenderFormat::R32_FLOAT, "k_24_8_FLOAT");
-    default: return Mapping{};
+    case 29:
+      return ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_EXPAND", kHostSwizzleRGBA);
+    case 32:
+      return ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_FLOAT", kHostSwizzleRGBA);
+    case 36: return ok(RenderFormat::R32_FLOAT, "k_32_FLOAT", kHostSwizzleRRRR);
+    default: return TextureHostFormat{};
   }
+}
+
+Mapping TextureFormat(uint32_t texture_format) {
+  const TextureHostFormat f = TextureHost(texture_format);
+  return Mapping{f.format, f.status, f.guest_name};
 }
 
 const char* UsageSemantic(uint32_t usage) {

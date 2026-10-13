@@ -204,11 +204,14 @@ class Scene {
     std::array<uint64_t, size_t(GeometryCache::Result::kCount)> geometry_results{};
     uint64_t bank_checks = 0;
     uint64_t bank_mismatches = 0;
+    // Draws with the pixel shader's ALPHA_TEST variant (coverage depends on
+    // alpha), and of them those whose alpha test discards.
+    uint64_t alpha_coverage_draws = 0;
     uint64_t alpha_test_draws = 0;
     uint64_t clip_disabled_draws = 0;
-    // Alpha to mask (RB_COLORCONTROL) on a draw that writes colour: in all,
-    // on single-sampled targets (no host alpha to coverage), with RT0's
-    // exponent bias (the host would test the biased alpha).
+    // Alpha to mask (RB_COLORCONTROL) on a draw that writes colour: in all, on
+    // single-sampled targets (a dithered per-pixel threshold), with RT0's
+    // exponent bias (the shader tests the alpha before it, as the hardware).
     uint64_t alpha_to_mask_draws = 0;
     uint64_t alpha_to_mask_1x = 0;
     uint64_t alpha_to_mask_biased = 0;

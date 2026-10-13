@@ -229,6 +229,7 @@ class GeometryCache {
   FrameRing* frames_ = nullptr;
   UploadRing* upload_ = nullptr;
   GuestMemory* memory_ = nullptr;
+  GuestMemory::Subscriber subscriber_ = GuestMemory::kNoSubscriber;
   BufferHeap vertex_heap_;
   BufferHeap index_heap_;
   BufferHeap::Allocation zero_buffer_;

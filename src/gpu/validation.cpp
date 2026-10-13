@@ -127,7 +127,7 @@ const ShaderStore::Entry* FrameValidator::NoteShader(uint64_t identity, bool pix
     info.entry = shaders_.Find(identity);
     if (info.entry) {
       info.stage_mismatch = (info.entry->stage == ShaderStore::Stage::kPixel) != pixel;
-      info.blob_bytes = kDxil ? info.entry->dxil[0].size : info.entry->spirv.size;
+      info.blob_bytes = kDxil ? info.entry->dxil[0].size : info.entry->spirv[0].size;
     }
   }
   ++info.draws;
@@ -311,10 +311,14 @@ void FrameValidator::OnDraw(const uint8_t* payload) {
     CheckShaderObject(*vs, packed_normal ? 1 : 0);
   }
   if (ps) {
-    // RB_COLORCONTROL bit 3: alpha test, which the PS does itself (ALPHA_TEST).
-    const bool alpha_test = (regs.Register(guest::reg::kRbColorControl) & 0x8u) != 0;
-    if (alpha_test) Count(kPsVariant1);
-    CheckShaderObject(*ps, alpha_test ? 1 : 0);
+    // The ALPHA_TEST variant: coverage depends on alpha (contract v6, Xenia's
+    // DoesCoverageDependOnAlpha) -- RB_COLORCONTROL alpha test (bit 3) with a
+    // function (bits 0-2) other than ALWAYS (7), or alpha to mask (bit 4).
+    const uint32_t color_control = regs.Register(guest::reg::kRbColorControl);
+    const bool alpha_coverage = ((color_control & 0x8u) != 0 && (color_control & 0x7u) != 7u) ||
+                                (color_control & 0x10u) != 0;
+    if (alpha_coverage) Count(kPsVariant1);
+    CheckShaderObject(*ps, alpha_coverage ? 1 : 0);
   }
 
   // Render targets: a colour target is live when its RB_COLOR_MASK nibble is

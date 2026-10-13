@@ -212,13 +212,17 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
              "an alpha test function that is not a lower bound (LESS, EQUAL, LESS_EQUAL, or "
              "NOT_EQUAL with a reference other than 0); nothing is discarded");
     }
-    if (alpha_test.discard) {
+    // Variant 1 (ALPHA_TEST) is the one whose coverage depends on alpha: the
+    // alpha test, alpha to coverage, or both (Xenia's DoesCoverageDependOnAlpha;
+    // contract v6). Variant 0 has no discard and no SV_Coverage of its own, so
+    // the host keeps its early depth/stencil test.
+    if (alpha_test.discard || state.color_control.alpha_to_mask_enable) {
       if (ps->spec_mask != 0) {
         key.ps_variant = 1;
       } else {
         Report(kReportAlphaTestNoVariant,
-               "alpha test on a pixel shader compiled without the ALPHA_TEST variant; nothing is "
-               "discarded");
+               "alpha test or alpha to coverage on a pixel shader compiled without the ALPHA_TEST "
+               "variant; nothing is discarded and every sample is covered");
       }
     }
   }
@@ -362,9 +366,9 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
     }
   }
   const bool depth_clip = !state.clip.clip_disable;
-  // Alpha to coverage is the pixel shader's (contract v5, constants.h
-  // AlphaToMaskParameters): the host's would test the alpha after the
-  // exponent bias, never the one the hardware tests.
+  // Alpha to coverage is the pixel shader's (contract v6: its ALPHA_TEST
+  // variant, constants.h AlphaToMaskParameters): the host's would test the
+  // alpha after the exponent bias, never the one the hardware tests.
   key.raster = uint32_t(cull) | (uint32_t(front_ccw) << 4) | (uint32_t(fill) << 5) |
                (uint32_t(depth_clip) << 8);
   return KeyResult::kOk;
@@ -385,17 +389,8 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   if (key.ps != 0 && inputs.ps) {
     desc.pixelShader = shaders_->GetShader(*inputs.ps, key.ps_variant, &ps_result);
   }
-  plume::RenderSpecConstant spec;
-  uint32_t spec_value = 0;
-  if (kHostShaderFormat == plume::RenderShaderFormat::SPIRV) {
-    // One SPIR-V module per shader: the variant is the spec constant (id 0),
-    // per pipeline. Both stages read the same constant.
-    if (key.vs_variant) spec_value |= inputs.vs->spec_mask;
-    if (key.ps_variant && inputs.ps) spec_value |= inputs.ps->spec_mask;
-    spec = plume::RenderSpecConstant(0, spec_value);
-    desc.specConstants = &spec;
-    desc.specConstantsCount = 1;
-  }
+  // No specialization constants: each variant is its own blob on both backends
+  // (shaders.h, contract v6).
 
   std::unique_ptr<plume::RenderPipeline> pipeline;
   if (desc.vertexShader && (key.ps == 0 || desc.pixelShader)) {
@@ -435,7 +430,7 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
                                               : plume::RenderFrontFace::CLOCKWISE;
     desc.fillMode = plume::RenderFillMode((key.raster >> 5) & 0x7);
     desc.depthClipEnabled = ((key.raster >> 8) & 1u) != 0;
-    desc.alphaToCoverageEnabled = false;  // the shader's (contract v5)
+    desc.alphaToCoverageEnabled = false;  // the shader's (contract v6)
     desc.dynamicDepthBiasEnabled = dynamic_depth_bias_;
     desc.depthBias = key.depth_bias;
     desc.slopeScaledDepthBias = key.slope_scaled_depth_bias;

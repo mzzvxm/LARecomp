@@ -19,7 +19,7 @@ namespace mcla::gpu {
 namespace {
 
 constexpr uint32_t kHeaderBytes = 32;
-constexpr uint32_t kEntryBytes = 72;
+constexpr uint32_t kEntryBytes = 88;
 constexpr uint32_t kFormatDxil = 1u << 0;
 constexpr uint32_t kFormatSpirv = 1u << 1;
 constexpr uint32_t kSpirvMagic = 0x07230203u;
@@ -65,7 +65,7 @@ bool ShaderStore::Initialize(Device& device) {
   file_ = rex::memory::MappedMemory::Open(path_, rex::memory::MappedMemory::Mode::kRead);
   if (!file_ || !file_->data()) {
     REXLOG_ERROR("[gpu] shader pack: cannot open {} (build it with "
-                 "tools/build_shader_pack_v4.py; the build copies src/assets next to the exe)",
+                 "tools/build_shader_pack_v6.py; the build copies src/assets next to the exe)",
                  rex::path_to_utf8(path_));
     file_.reset();
     return false;
@@ -120,7 +120,8 @@ bool ShaderStore::Validate() {
     entry.texture_fetch_mask = ReadU32(e + 20);
     entry.dxil[0] = ReadBlob(e + 24);
     entry.dxil[1] = ReadBlob(e + 40);
-    entry.spirv = ReadBlob(e + 56);
+    entry.spirv[0] = ReadBlob(e + 56);
+    entry.spirv[1] = ReadBlob(e + 72);
     if (stage != 'v' && stage != 'p') {
       return fail("entry " + std::to_string(i) + " has stage " + std::to_string(stage));
     }
@@ -133,15 +134,15 @@ bool ShaderStore::Validate() {
         !in_file(entry.velem_offset, uint64_t(entry.velem_count) * 4)) {
       return fail("vertex elements of entry " + std::to_string(i) + " past the end");
     }
-    for (const Blob* blob : {&entry.dxil[0], &entry.dxil[1], &entry.spirv}) {
+    for (const Blob* blob : {&entry.dxil[0], &entry.dxil[1], &entry.spirv[0], &entry.spirv[1]}) {
       if (blob->size != 0 && !in_file(blob->offset, blob->size)) {
         return fail("a blob of entry " + std::to_string(i) + " is past the end");
       }
     }
     // What this backend needs must be present: variant 0 always, variant 1
     // whenever the shader has spec bits.
-    if (kDxil ? (entry.dxil[0].size == 0 || (entry.spec_mask != 0 && entry.dxil[1].size == 0))
-              : entry.spirv.size == 0) {
+    const Blob* blobs = kDxil ? entry.dxil : entry.spirv;
+    if (blobs[0].size == 0 || (entry.spec_mask != 0 && blobs[1].size == 0)) {
       return fail("entry " + std::to_string(i) + " lacks a blob this backend needs");
     }
     entries_.emplace(entry.key, entry);
@@ -150,7 +151,9 @@ bool ShaderStore::Validate() {
 }
 
 void ShaderStore::Shutdown() {
-  slots_.clear();
+  for (auto& slots : slots_) {
+    slots.clear();
+  }
   entries_.clear();
   file_.reset();
   device_ = nullptr;
@@ -199,12 +202,10 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
     out = ShaderResult::kNoVariant;
     return nullptr;
   }
-  // One SPIR-V module serves both variants (specialized per pipeline).
-  const uint64_t slot_key = kDxil ? entry.key * 2 + variant : entry.key;
-  Slot& slot = slots_[slot_key];
+  Slot& slot = slots_[variant][entry.key];
   if (!slot.done) {
     slot.done = true;
-    const Blob& blob = kDxil ? entry.dxil[variant] : entry.spirv;
+    const Blob& blob = kDxil ? entry.dxil[variant] : entry.spirv[variant];
     if (!VerifyBlob(entry, blob, !kDxil)) {
       slot.result = ShaderResult::kBadBlob;
     } else {

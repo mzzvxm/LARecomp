@@ -71,11 +71,15 @@ void MemoryCensus::OnDraw(const uint8_t* payload) {
 }
 
 void MemoryCensus::ApplyInvalidations() {
-  if (!memory_.HasInvalidations()) {
+  if (subscriber_ == GuestMemory::kNoSubscriber) {
+    // Subscribed on the first use: a census that is off keeps no queue.
+    subscriber_ = memory_.Subscribe("memory census");
+  }
+  if (!memory_.HasInvalidations(subscriber_)) {
     return;
   }
   drained_.clear();
-  memory_.Drain(drained_);
+  memory_.Drain(subscriber_, drained_);
   for (const GuestMemory::Range& range : drained_) {
     regions_.ForEachOverlap(range.start, range.length, [&](RegionIndex::Id id) {
       RegionState& state = state_[id];

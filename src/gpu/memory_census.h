@@ -61,6 +61,7 @@ class MemoryCensus {
   void Report(const char* when);
 
   GuestMemory& memory_;
+  GuestMemory::Subscriber subscriber_ = GuestMemory::kNoSubscriber;
   bool enabled_ = false;
   RegionIndex regions_;
   std::vector<RegionState> state_;  // by region id

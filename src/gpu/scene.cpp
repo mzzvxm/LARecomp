@@ -6,6 +6,7 @@
 #include <cstring>
 #include <format>
 
+#include <rex/graphics/pipeline/texture/util.h>
 #include <rex/logging.h>
 
 #include "backend.h"
@@ -369,7 +370,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
 
   ++window_.conversions[size_t(d.primitive.conversion)];
-  if (d.key.ps_variant) ++window_.alpha_test_draws;
+  if (d.key.ps_variant) {
+    ++window_.alpha_coverage_draws;
+    if (ComputeAlphaTest(s).discard) ++window_.alpha_test_draws;
+  }
   if (s.clip.clip_disable) ++window_.clip_disabled_draws;
   if (d.bias.constant != 0 || d.bias.slope != 0.0f) ++window_.depth_bias_draws;
   if (s.color_control.alpha_to_mask_enable && d.key.color_count > 0 && d.ps &&
@@ -395,7 +399,10 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       continue;
     }
     ++window_.fetches;
-    sc.sampler[slot] = samplers_->Get(dwords);
+    uint32_t mip_min = 0, mip_max = 0;
+    rex::graphics::texture_util::GetSubresourcesFromFetchConstant(
+        fetch, nullptr, nullptr, nullptr, nullptr, nullptr, &mip_min, &mip_max);
+    sc.sampler[slot] = samplers_->Get(dwords, mip_min, mip_max);
     // Textures are M4.6: the index stays the null of the fetch's dimension,
     // with the gamma request of the fetch's signs already in place.
     const bool gamma = fetch.sign_x == xe::TextureSign::kGamma &&
@@ -825,6 +832,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
   }
   into.bank_checks += from.bank_checks;
   into.bank_mismatches += from.bank_mismatches;
+  into.alpha_coverage_draws += from.alpha_coverage_draws;
   into.alpha_test_draws += from.alpha_test_draws;
   into.clip_disabled_draws += from.clip_disabled_draws;
   into.alpha_to_mask_draws += from.alpha_to_mask_draws;
@@ -913,8 +921,8 @@ void Scene::Report(const char* why) {
       "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, {} recorded, skipped [{}], "
       "geometry [{}], no effect {} (no target {}, culled {}, no primitive {}, empty scissor {}) | "
       "clears {} ({} colour, {} depth, {} empty, {} failed) | conversions [{}] | alpha "
-      "test {}, clip disabled "
-      "{}, depth bias {}, alpha to mask {} (1x {}, biased {}) | banks {} checks, {} mismatches | "
+      "coverage variant {} (alpha test {}, alpha to mask {}: 1x {}, biased {}), clip disabled "
+      "{}, depth bias {} | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
       "ms) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | clears {}, resolves {}, tiling {}/{} | prepare "
@@ -924,8 +932,9 @@ void Scene::Report(const char* why) {
       w.no_effect[0] + w.no_effect[1] + w.no_effect[2] + w.no_effect[3], w.no_effect[0],
       w.no_effect[1], w.no_effect[2], w.no_effect[3], w.clears, w.clears_color, w.clears_depth,
       w.clears_empty, w.clears_failed,
-      conversions.empty() ? "none" : conversions, w.alpha_test_draws, w.clip_disabled_draws,
-      w.depth_bias_draws, w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased,
+      conversions.empty() ? "none" : conversions, w.alpha_coverage_draws, w.alpha_test_draws,
+      w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased, w.clip_disabled_draws,
+      w.depth_bias_draws,
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
       double(ps.create_ns) / 1e6, input_layouts_.size(), samplers_->size(), w.fetches,
       w.fetch_not_texture, double(w.upload_bytes) / frames / 1048576.0, w.constant_uploads,

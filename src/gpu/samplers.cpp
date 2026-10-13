@@ -74,7 +74,7 @@ void Samplers::Shutdown() {
   heap_ = nullptr;
 }
 
-uint32_t Samplers::Get(const uint32_t fetch_dwords[6]) {
+uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_t mip_max) {
   xe::xe_gpu_texture_fetch_t fetch;
   std::memcpy(&fetch, fetch_dwords, sizeof(fetch));
 
@@ -94,8 +94,8 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6]) {
     d.mip_linear = mip_filter == xe::TextureFilter::kLinear;
   }
   d.border = uint8_t(fetch.border_color);
-  d.mip_min = uint8_t(fetch.mip_min_level);
-  d.mip_max = uint8_t(fetch.mip_max_level);
+  d.mip_min = uint8_t(mip_min);
+  d.mip_max = uint8_t(mip_max);
   d.lod_bias = int16_t(fetch.lod_bias);
 
   const uint64_t key = d.Key();

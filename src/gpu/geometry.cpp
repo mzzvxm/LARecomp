@@ -231,6 +231,7 @@ bool GeometryCache::Initialize(Device& device, FrameRing& frames, UploadRing& up
   frames_ = &frames;
   upload_ = &upload;
   memory_ = &memory;
+  subscriber_ = memory.Subscribe("geometry");
   vertex_heap_.Initialize(device, frames, plume::RenderBufferFlag::VERTEX, "guest vertices");
   index_heap_.Initialize(device, frames, plume::RenderBufferFlag::INDEX, "guest indices");
   zero_buffer_ = vertex_heap_.Allocate(kZeroBufferBytes);
@@ -277,11 +278,11 @@ UploadSpan GeometryCache::Ring(uint64_t size, uint64_t alignment) {
 // ---------------------------------------------------------------------------
 
 void GeometryCache::DrainInvalidations() {
-  if (!memory_->HasInvalidations()) {
+  if (!memory_->HasInvalidations(subscriber_)) {
     return;
   }
   drained_.clear();
-  memory_->Drain(drained_);
+  memory_->Drain(subscriber_, drained_);
   for (const GuestMemory::Range& range : drained_) {
     index_.ForEachOverlap(range.start, range.length, [&](RegionIndex::Id id) {
       Region& r = regions_[id];
