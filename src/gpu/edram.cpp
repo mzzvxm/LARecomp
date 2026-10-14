@@ -4,11 +4,13 @@
 #include "edram.h"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 
 #include <rex/hash.h>
 #include <rex/logging.h>
 
+#include "descriptors.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
@@ -43,6 +45,20 @@ uint32_t FoldColorFormat(uint32_t color_format) {
   }
 }
 
+void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color[4],
+                      float out[4]) {
+  float scale = std::ldexp(1.0f, exp_bias);
+  if (color_format == 4 || color_format == 5) {
+    scale *= 1.0f / 32.0f;  // k_16_16, k_16_16_16_16: SNORM +-1 on the host = +-32
+  }
+  for (uint32_t c = 0; c < 4; ++c) {
+    out[c] = color[c] * scale;
+    if (color_format == 1) {
+      out[c] = std::clamp(out[c], 0.0f, 1.0f);  // k_8_8_8_8_GAMMA, kept linear
+    }
+  }
+}
+
 size_t EdramTargets::KeyHash::operator()(const EdramKey& k) const {
   const uint64_t v = uint64_t(k.base_tiles) | (uint64_t(k.pitch) << 16) |
                      (uint64_t(k.depth) << 32) | (uint64_t(k.format) << 40) |
@@ -70,17 +86,111 @@ EdramTargets::~EdramTargets() {
   Shutdown();
 }
 
-void EdramTargets::Initialize(Device& device, FrameRing& frames) {
+void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap) {
   device_ = &device;
   frames_ = &frames;
+  heap_ = &heap;
 }
 
 void EdramTargets::Shutdown() {
+  // The GPU is idle and the heap goes next: the views die without handing
+  // their slots back.
   framebuffers_.clear();
   targets_.clear();
   failed_.clear();
   device_ = nullptr;
   frames_ = nullptr;
+  heap_ = nullptr;
+}
+
+void EdramTargets::ReleaseViews(Target& t) {
+  if (t.sample_slot != 0xFFFFFFFFu) {
+    heap_->ReleaseTexture(t.sample_slot, TextureDimension::k2D);
+    t.sample_slot = 0xFFFFFFFFu;
+  }
+  if (t.stencil_slot != 0xFFFFFFFFu) {
+    heap_->ReleaseTexture(t.stencil_slot, TextureDimension::k2D);
+    t.stencil_slot = 0xFFFFFFFFu;
+  }
+  frames_->Retire(std::move(t.sample_view));
+  frames_->Retire(std::move(t.stencil_view));
+}
+
+bool EdramTargets::SampleSlots(Target& t, uint32_t* sample_slot, uint32_t* stencil_slot) {
+  if (!t.texture) {
+    return false;
+  }
+  if (t.views_generation != t.generation) {
+    ReleaseViews(t);
+    t.views_generation = t.generation;
+  }
+  if (t.sample_slot == 0xFFFFFFFFu) {
+    // The texture's own format: Plume views a depth format through its depth
+    // plane (R32_FLOAT_X8X24 / R24_UNORM_X8 on D3D12, the DEPTH aspect on Vulkan).
+    plume::RenderTextureViewDesc desc = plume::RenderTextureViewDesc::Texture2D(t.format);
+    desc.mipLevels = 1;
+    t.sample_view = device_->CreateTextureView(*t.texture, desc, "edram shader view");
+    if (!t.sample_view) {
+      return false;
+    }
+    t.sample_slot = heap_->AllocateTexture(*t.texture, *t.sample_view);
+    if (t.sample_slot == 0xFFFFFFFFu) {
+      return false;
+    }
+  }
+  if (t.key.depth && t.stencil_slot == 0xFFFFFFFFu) {
+    plume::RenderTextureViewDesc desc = plume::RenderTextureViewDesc::Texture2D(t.format);
+    desc.mipLevels = 1;
+    desc.planeSlice = 1;
+    t.stencil_view = device_->CreateTextureView(*t.texture, desc, "edram stencil view");
+    if (!t.stencil_view) {
+      return false;
+    }
+    t.stencil_slot = heap_->AllocateTexture(*t.texture, *t.stencil_view);
+    if (t.stencil_slot == 0xFFFFFFFFu) {
+      return false;
+    }
+  }
+  *sample_slot = t.sample_slot;
+  *stencil_slot = t.key.depth ? t.stencil_slot : 0xFFFFFFFFu;
+  return true;
+}
+
+plume::RenderFramebuffer* EdramTargets::ClearColor(plume::RenderCommandList* list, Target& t,
+                                                   plume::RenderRect rect, const float value[4]) {
+  rect.right = std::min(rect.right, int32_t(t.width));
+  rect.bottom = std::min(rect.bottom, int32_t(t.height));
+  if (rect.right <= rect.left || rect.bottom <= rect.top) {
+    return nullptr;
+  }
+  Transition(list, t, plume::RenderTextureLayout::COLOR_WRITE);
+  Target* only[1] = {&t};
+  plume::RenderFramebuffer* framebuffer = Framebuffer(only, 1, nullptr);
+  if (!framebuffer) {
+    return nullptr;
+  }
+  list->setFramebuffer(framebuffer);
+  list->clearColor(0, plume::RenderColor(value[0], value[1], value[2], value[3]), &rect, 1);
+  return framebuffer;
+}
+
+plume::RenderFramebuffer* EdramTargets::ClearDepthStencil(plume::RenderCommandList* list,
+                                                          Target& t, plume::RenderRect rect,
+                                                          bool depth, bool stencil, float z,
+                                                          uint32_t stencil_value) {
+  rect.right = std::min(rect.right, int32_t(t.width));
+  rect.bottom = std::min(rect.bottom, int32_t(t.height));
+  if (rect.right <= rect.left || rect.bottom <= rect.top || (!depth && !stencil)) {
+    return nullptr;
+  }
+  Transition(list, t, plume::RenderTextureLayout::DEPTH_WRITE);
+  plume::RenderFramebuffer* framebuffer = Framebuffer(nullptr, 0, &t);
+  if (!framebuffer) {
+    return nullptr;
+  }
+  list->setFramebuffer(framebuffer);
+  list->clearDepthStencil(depth, stencil, z, stencil_value & 0xFFu, &rect, 1);
+  return framebuffer;
 }
 
 bool EdramTargets::Create(Target& target, uint32_t height) {
@@ -203,6 +313,9 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
   stats_.grown_bytes += uint64_t(t.width) * (wanted - old_height) * BytesPerPixel(t.format) *
                         t.key.samples;
   RetireFramebuffersOf(&t);
+  // Views of the old texture: their slots go null before it dies.
+  ReleaseViews(t);
+  t.views_generation = t.generation;
   frames_->Retire(std::move(old));
   return &t;
 }

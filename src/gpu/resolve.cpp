@@ -1,30 +1,87 @@
 // MCLA GPU renderer -- the resolve bridge. See resolve.h.
+//
+// Semantics: the guest's D3DDevice_Resolve (sub_82420BA8, read in the IDB,
+// and 24.28) for the arguments, the rectangle and the clears;
+// Xenia's resolve (ReXGlue SDK src/graphics/util/draw.cpp GetResolveInfo and
+// SanitizeCopySampleSelect; Xenia's shaders resolve.xesli, resolve_full_*.xesli
+// and host_depth_store_*.xesli for the sample order; Copyright Ben Vanik and
+// the Xenia authors, BSD-3-Clause) for what the copy writes.
 
 #include "resolve.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <format>
 
+#include <rex/graphics/registers.h>
+#include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
 #include "descriptors.h"
 #include "device.h"
+#include "draw_decode.h"
+#include "draw_state.h"
+#include "edram.h"
+#include "format.h"
 #include "frame.h"
+#include "host_passes.h"
+#include "host_shaders.h"
 
 namespace mcla::gpu {
+
+namespace xe = rex::graphics::xenos;
+namespace xreg = rex::graphics::reg;
+
+namespace {
+
+const char* FailureName(uint32_t f) {
+  static const char* const kNames[] = {
+      "device lost",           "record unreadable",       "source surface not bound",
+      "source target not made", "destination not handled", "no conversion for the pair",
+      "product not made",      "source views not made",   "pipeline not made",
+  };
+  return f < std::size(kNames) ? kNames[f] : "?";
+}
+
+const char* ModeName(uint32_t m) {
+  static const char* const kNames[] = {"8888",       "1555",      "8",    "float",
+                                       "red32",      "depth",     "depth->8888 raw",
+                                       "depth->32f bits"};
+  return m < std::size(kNames) ? kNames[m] : "?";
+}
+
+int32_t FloorTo8(int32_t v) {
+  return v >= 0 ? (v & ~7) : -((-v + 7) & ~7);
+}
+
+}  // namespace
 
 ResolveCache::~ResolveCache() {
   Shutdown();
 }
 
-void ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
-                              GuestMemory& memory, TextureCache& textures) {
+bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
+                              GuestMemory& memory, TextureCache& textures, EdramTargets& edram,
+                              HostPasses& passes) {
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
   memory_ = &memory;
   textures_ = &textures;
+  edram_ = &edram;
+  passes_ = &passes;
   subscriber_ = memory.Subscribe("resolve products");
+  for (uint32_t depth = 0; depth < 2; ++depth) {
+    for (uint32_t msaa = 0; msaa < 2; ++msaa) {
+      const HostShaderBlob blob = ResolvePixelShader(depth != 0, msaa != 0);
+      shaders_[depth][msaa] = passes.CreateShader(blob.data, blob.size, blob.name);
+      if (!shaders_[depth][msaa]) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 void ResolveCache::Shutdown() {
@@ -33,13 +90,22 @@ void ResolveCache::Shutdown() {
     product->views.Drop();
   }
   products_.clear();
+  active_by_image_.clear();
   regions_.Clear();
   region_owners_.clear();
+  pipelines_.clear();
+  for (auto& row : shaders_) {
+    for (auto& shader : row) {
+      shader.reset();
+    }
+  }
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
   memory_ = nullptr;
   textures_ = nullptr;
+  edram_ = nullptr;
+  passes_ = nullptr;
 }
 
 void ResolveCache::BeginFrame() {
@@ -48,6 +114,21 @@ void ResolveCache::BeginFrame() {
     EvictSome();
   }
 }
+
+void ResolveCache::Fail(Failure failure, const std::string& detail) {
+  ++stats_.failures[size_t(failure)];
+  uint32_t& logged = failures_logged_[size_t(failure)];
+  if (logged < 4) {
+    ++logged;
+    REXLOG_ERROR("[gpu] resolve: not copied -- {}{}{}{}", FailureName(uint32_t(failure)),
+                 detail.empty() ? "" : ": ", detail,
+                 logged == 4 ? " (further ones counted, not logged)" : "");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// products
+// ---------------------------------------------------------------------------
 
 void ResolveCache::IndexRanges(Product& p) {
   for (uint32_t i = 0; i < 2; ++i) {
@@ -82,13 +163,25 @@ void ResolveCache::UnindexRanges(Product& p) {
   }
 }
 
+TextureKey ResolveCache::ImageKey(const TextureKey& key) {
+  TextureKey image = key;
+  image.mip_page = 0;
+  image.mip_max_level = 0;
+  image.packed_mips = 0;
+  return image;
+}
+
 void ResolveCache::Deactivate(Product& p) {
   if (!p.active) {
     return;
   }
   p.active = false;
   UnindexRanges(p);
-  textures_->BumpEpoch();
+  const auto it = active_by_image_.find(ImageKey(p.key));
+  if (it != active_by_image_.end() && it->second == &p) {
+    active_by_image_.erase(it);
+  }
+  textures_->BumpProductGeneration(p.key.base_page);
 }
 
 void ResolveCache::DrainInvalidations() {
@@ -97,17 +190,17 @@ void ResolveCache::DrainInvalidations() {
   }
   drained_.clear();
   memory_->Drain(subscriber_, drained_);
-  std::vector<Product*> hit;
+  scratch_hits_.clear();
   for (const GuestMemory::Range& range : drained_) {
     regions_.ForEachOverlap(range.start, range.length, [&](RegionIndex::Id id) {
       if (id < region_owners_.size()) {
         for (Product* p : region_owners_[id]) {
-          hit.push_back(p);
+          scratch_hits_.push_back(p);
         }
       }
     });
   }
-  for (Product* p : hit) {
+  for (Product* p : scratch_hits_) {
     if (p->active) {
       // The guest wrote into what it rendered: its own bytes win (M5 writes the
       // image back so a partial write merges instead).
@@ -122,13 +215,30 @@ void ResolveCache::DrainInvalidations() {
 
 ResolveCache::Product* ResolveCache::Find(const TextureKey& key) {
   ++stats_.finds;
+  Product* p = nullptr;
   const auto it = products_.find(key);
-  if (it == products_.end() || !it->second->active) {
+  if (it != products_.end() && it->second->active) {
+    p = it->second.get();
+  } else {
+    const auto image = active_by_image_.find(ImageKey(key));
+    if (image != active_by_image_.end()) {
+      Product* candidate = image->second;
+      // The fetch's levels must be among the product's, read from the same
+      // mip memory (a fetch without mips reads the base alone).
+      if (key.mip_max_level <= candidate->key.mip_max_level &&
+          (key.mip_page == 0 || (key.mip_page == candidate->key.mip_page &&
+                                 key.packed_mips == candidate->key.packed_mips))) {
+        p = candidate;
+        ++stats_.found_by_image;
+      }
+    }
+  }
+  if (!p) {
     return nullptr;
   }
   ++stats_.found;
-  it->second->last_frame = frame_;
-  return it->second.get();
+  p->last_frame = frame_;
+  return p;
 }
 
 const ResolveCache::Product* ResolveCache::FindOverlap(uint32_t start, uint32_t length) {
@@ -141,11 +251,493 @@ const ResolveCache::Product* ResolveCache::FindOverlap(uint32_t start, uint32_t 
   return found;
 }
 
+void ResolveCache::TransitionProduct(plume::RenderCommandList* list, Product& p,
+                                     plume::RenderTextureLayout layout) {
+  if (p.layout == layout) {
+    return;
+  }
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(p.texture.get(), layout));
+  p.layout = layout;
+}
+
+plume::RenderFramebuffer* ResolveCache::LevelFramebuffer(Product& p, uint32_t level) {
+  if (level >= p.level_framebuffers.size()) {
+    return nullptr;
+  }
+  if (!p.level_framebuffers[level]) {
+    const plume::RenderTexture* textures[1] = {p.texture.get()};
+    const plume::RenderTextureView* views[1] = {p.level_views[level].get()};
+    plume::RenderFramebufferDesc desc(textures, 1);
+    desc.colorAttachmentViews = views;
+    p.level_framebuffers[level] = device_->CreateFramebuffer(desc, "resolve product level");
+  }
+  return p.level_framebuffers[level].get();
+}
+
+ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::RenderFormat format,
+                                              plume::RenderCommandList* list, std::string* why) {
+  auto it = products_.find(key);
+  Product* p = it != products_.end() ? it->second.get() : nullptr;
+  if (!p) {
+    auto product = std::make_unique<Product>();
+    product->key = key;
+    product->format = format;
+    plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
+        key.width, key.height, key.levels(), format, plume::RenderTextureFlag::RENDER_TARGET);
+    const std::string name = std::format("resolve product {}", key.Describe());
+    product->texture = device_->CreateTexture(desc, name.c_str());
+    if (!product->texture) {
+      *why = std::format("{} {}x{} with {} levels", format::PlumeFormatName(format), key.width,
+                         key.height, key.levels());
+      return nullptr;
+    }
+    product->level_views.resize(key.levels());
+    product->level_framebuffers.resize(key.levels());
+    for (uint32_t level = 0; level < key.levels(); ++level) {
+      plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(format);
+      view.mipSlice = level;
+      view.mipLevels = 1;
+      product->level_views[level] =
+          device_->CreateTextureView(*product->texture, view, "resolve product level view");
+      if (!product->level_views[level]) {
+        *why = std::format("render target view of level {}", level);
+        return nullptr;
+      }
+    }
+    TextureGuestRanges(key, product->ranges);
+    // Every level cleared before anything reads or writes it: a render target
+    // from an unzeroed heap must be (D3D12 debug layer id 1422), and memory the
+    // guest never wrote reads as zeros here.
+    TransitionProduct(list, *product, plume::RenderTextureLayout::COLOR_WRITE);
+    for (uint32_t level = 0; level < key.levels(); ++level) {
+      plume::RenderFramebuffer* framebuffer = LevelFramebuffer(*product, level);
+      if (!framebuffer) {
+        list->setFramebuffer(nullptr);
+        *why = std::format("framebuffer of level {}", level);
+        return nullptr;
+      }
+      list->setFramebuffer(framebuffer);
+      list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+    }
+    list->setFramebuffer(nullptr);
+    ++stats_.created;
+    p = product.get();
+    products_.emplace(key, std::move(product));
+  }
+  p->last_frame = frame_;
+  if (!p->active) {
+    // Versioned in time: whatever product covers these bytes with another key
+    // is what the guest had there before this resolve.
+    scratch_hits_.clear();
+    for (const auto& r : p->ranges) {
+      if (!r[1]) {
+        continue;
+      }
+      regions_.ForEachOverlap(r[0], r[1], [&](RegionIndex::Id id) {
+        if (id < region_owners_.size()) {
+          for (Product* other : region_owners_[id]) {
+            if (other != p) {
+              scratch_hits_.push_back(other);
+            }
+          }
+        }
+      });
+    }
+    for (Product* other : scratch_hits_) {
+      if (other->active) {
+        ++stats_.deactivated_by_overlap;
+        Deactivate(*other);
+      }
+    }
+    p->active = true;
+    IndexRanges(*p);
+    active_by_image_[ImageKey(p->key)] = p;
+    // A CPU write into these bytes from now on deactivates the product.
+    for (const auto& r : p->ranges) {
+      if (r[1]) {
+        memory_->Arm(r[0], r[1]);
+      }
+    }
+    ++stats_.activated;
+    textures_->BumpProductGeneration(p->key.base_page);
+  }
+  return p;
+}
+
+plume::RenderPipeline* ResolveCache::Pipeline(bool depth, bool msaa, plume::RenderFormat format) {
+  const uint32_t key = (uint32_t(depth) << 9) | (uint32_t(msaa) << 8) | uint32_t(format);
+  auto it = pipelines_.find(key);
+  if (it != pipelines_.end()) {
+    return it->second.get();
+  }
+  const std::string name = std::format("resolve {}{} -> {}", depth ? "depth" : "colour",
+                                       msaa ? " msaa" : "", format::PlumeFormatName(format));
+  std::unique_ptr<plume::RenderPipeline> pipeline =
+      passes_->CreatePipeline(*shaders_[depth][msaa], format, name.c_str());
+  plume::RenderPipeline* raw = pipeline.get();
+  pipelines_.emplace(key, std::move(pipeline));
+  return raw;
+}
+
+// ---------------------------------------------------------------------------
+// execution
+// ---------------------------------------------------------------------------
+
+void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* list) {
+  ++stats_.resolves;
+  if (!list) {
+    Fail(Failure::kDeviceLost, "");
+    return;
+  }
+  if (r.flags & (kEventSurfaceUnreadable | kEventStackUnreadable)) {
+    Fail(Failure::kUnreadable, std::format("event flags {:#x}", r.flags));
+    return;
+  }
+  const uint32_t flags = r.resolve_flags;
+  const uint32_t source = flags & 7;
+  const bool depth_source = source == 4;
+  const bool copy = (flags & 0x2000) == 0;
+  const RegisterWindow pre(r.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  const uint32_t surfaces[guest::kSurfaceCount] = {
+      pre.DeviceDword(guest::kDevColorSurfaces), pre.DeviceDword(guest::kDevColorSurfaces + 4),
+      pre.DeviceDword(guest::kDevColorSurfaces + 8),
+      pre.DeviceDword(guest::kDevColorSurfaces + 12), pre.DeviceDword(guest::kDevDepthSurface)};
+  const auto header_dword = [&](uint32_t surface, uint32_t offset) {
+    return LoadBe32(r.state.surfaces[surface] + offset);
+  };
+  // The EDRAM identity of a surface slot: from the bound surface's header
+  // (+0x18 RB_SURFACE_INFO, +0x1C RB_COLOR_INFO or RB_DEPTH_INFO), which the
+  // call flushes before the copy; with no surface bound there, from the
+  // registers the device holds -- what the GPU copies from either way.
+  const auto info_register = [](uint32_t surface) -> uint32_t {
+    if (surface == 4) return guest::reg::kRbDepthInfo;
+    return surface == 0 ? guest::reg::kRbColorInfo : guest::reg::kRbColor1Info + surface - 1;
+  };
+  const auto key_of = [&](uint32_t surface, EdramKey* key, uint32_t* format,
+                          int32_t* exp_bias) {
+    const bool bound = surfaces[surface] != 0;
+    if (!bound) {
+      ++stats_.from_registers;
+    }
+    const auto header_or_register = [&](uint32_t offset, uint32_t reg) {
+      return bound ? header_dword(surface, offset) : pre.Register(reg);
+    };
+    xreg::RB_SURFACE_INFO surface_info;
+    surface_info.value = header_or_register(0x18, guest::reg::kRbSurfaceInfo);
+    key->pitch = uint16_t(surface_info.surface_pitch);
+    key->samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+    if (surface == 4) {
+      xreg::RB_DEPTH_INFO depth_info;
+      depth_info.value = header_or_register(0x1C, info_register(surface));
+      key->base_tiles = uint16_t(depth_info.depth_base | (depth_info.depth_base_bit_11 << 11));
+      key->depth = 1;
+      key->format = uint8_t(depth_info.depth_format);
+      *exp_bias = 0;
+    } else {
+      xreg::RB_COLOR_INFO color_info;
+      color_info.value = header_or_register(0x1C, info_register(surface));
+      key->base_tiles = uint16_t(color_info.color_base | (color_info.color_base_bit_11 << 11));
+      key->depth = 0;
+      key->format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
+      *exp_bias = color_info.color_exp_bias;
+    }
+    *format = key->format;
+  };
+
+  // The rectangle: the guest's, or the destination level's whole extent.
+  TextureFetch dest;
+  bool have_dest = false;
+  if ((r.flags & kEventHasDest) && !(r.flags & kEventDestUnreadable)) {
+    uint32_t d[6];
+    for (uint32_t i = 0; i < 6; ++i) {
+      d[i] = LoadBe32(r.dest_header + guest::kTextureFetchOffset + 4 * i);
+    }
+    dest = ReadTextureFetch(d);
+    have_dest = dest.is_texture;
+  }
+  const uint32_t level = r.dest_level;
+  const uint32_t level_width = have_dest ? std::max(uint32_t(dest.key.width) >> level, 1u) : 0;
+  const uint32_t level_height = have_dest ? std::max(uint32_t(dest.key.height) >> level, 1u) : 0;
+  int32_t x0 = 0, y0 = 0, x1 = int32_t(level_width), y1 = int32_t(level_height);
+  if (r.flags & kEventHasRect) {
+    x0 = int32_t(LoadBe32(r.src_rect + 0));
+    y0 = int32_t(LoadBe32(r.src_rect + 4));
+    x1 = int32_t(LoadBe32(r.src_rect + 8));
+    y1 = int32_t(LoadBe32(r.src_rect + 12));
+  } else if (!have_dest) {
+    Fail(Failure::kUnreadable, "no rectangle and no destination to size it");
+    return;
+  }
+  int32_t px = 0, py = 0;
+  if (r.flags & kEventHasPoint) {
+    px = int32_t(LoadBe32(r.dest_point + 0));
+    py = int32_t(LoadBe32(r.dest_point + 4));
+  }
+  // The hardware's 8x8 granularity (Xenia; the IDB rounds x1/y1 up itself).
+  const int32_t ax0 = std::max(FloorTo8(x0), 0);
+  const int32_t ay0 = std::max(FloorTo8(y0), 0);
+  const int32_t ax1 = (x1 + 7) & ~7;
+  const int32_t ay1 = (y1 + 7) & ~7;
+
+  if (copy) {
+    do {
+      if (source > 4) {
+        Fail(Failure::kNoSource, std::format("source {}", source));
+        break;
+      }
+      if (!have_dest) {
+        Fail(Failure::kUnreadable, "destination texture header");
+        break;
+      }
+      const TextureKey& key = dest.key;
+      if (key.dimension != uint8_t(xe::DataDimension::k2DOrStacked) || key.stacked ||
+          r.dest_slice != 0 || level > key.mip_max_level) {
+        Fail(Failure::kDestination,
+             std::format("{}: dimension {}, stacked {}, slice {}, level {} (TODO M5)",
+                         key.Describe(), key.dimension, key.stacked, r.dest_slice, level));
+        break;
+      }
+      EdramKey src_key;
+      uint32_t src_format = 0;
+      int32_t src_bias = 0;
+      key_of(source, &src_key, &src_format, &src_bias);
+      // The conversion: what the destination's fetch reads.
+      uint32_t mode = kModeCount;
+      switch (key.format) {
+        case 6: mode = depth_source ? kModeDepthRaw8888 : kModeUnorm8888; break;
+        case 3: mode = depth_source ? kModeCount : kModeUnorm1555; break;
+        case 2: mode = depth_source ? kModeCount : kModeUnorm8; break;
+        case 29:
+        case 32: mode = depth_source ? kModeCount : kModeFloat; break;
+        case 36: mode = depth_source ? kModeDepthFloatBits : kModeRed32; break;
+        case 22: mode = depth_source ? kModeDepthFloat : kModeCount; break;
+        case 23:
+          mode = depth_source ? uint32_t(kModeDepthFloat) | uint32_t(kFlagDestFloat24)
+                              : uint32_t(kModeCount);
+          break;
+        default: break;
+      }
+      const format::TextureHostFormat host = format::TextureHost(key.format);
+      if (mode == kModeCount || host.status != format::Status::kOk) {
+        Fail(Failure::kConversion, std::format("{} from {} format {}", key.Describe(),
+                                               depth_source ? "depth" : "colour", src_format));
+        break;
+      }
+      uint32_t full_mode = mode;
+      if (!depth_source) {
+        // copy_dest_swap: the destination's swizzle does not start with X (IDB).
+        if ((dest.swizzle & 7) != 0) {
+          full_mode |= kFlagSwapRedBlue;
+        }
+        if (src_format == 1) {
+          full_mode |= kFlagGammaSource;  // k_8_8_8_8_GAMMA, kept linear on the host
+        }
+      } else if (src_format == uint32_t(xe::DepthRenderTargetFormat::kD24FS8)) {
+        full_mode |= kFlagSourceFloat24;
+      }
+
+      // Samples: bits 4-6 of the flags, 0 = by the source's MSAA (IDB: 1x k0,
+      // 2x k01, 4x k0123), else the value - 1; Xenia's sanitizing; guest ->
+      // host order (2x: guest 0 is host 1; 4x: guest s is host
+      // ((s & 1) << 1) | (s >> 1)).
+      const uint32_t samples = src_key.samples;
+      uint32_t select = (flags >> 4) & 7;
+      if (select == 0) {
+        select = samples >= 4 ? 6 : (samples >= 2 ? 4 : 0);
+      } else {
+        select -= 1;
+      }
+      if (samples >= 4) {
+        select = std::min(select, 6u);
+        if (depth_source) {
+          if (select == 4 || select == 6) select = 0;
+          if (select == 5) select = 2;
+        }
+      } else if (samples >= 2) {
+        if (select == 2) select = 0;
+        else if (select == 3) select = 1;
+        else if (select > 4) select = 4;
+        if (depth_source && select == 4) select = 0;
+      } else {
+        select = 0;
+      }
+      uint32_t host_samples[4] = {};
+      uint32_t count = 1;
+      const auto host_of = [&](uint32_t s) -> uint32_t {
+        if (samples >= 4) return ((s & 1) << 1) | (s >> 1);
+        if (samples >= 2) return s == 0 ? 1u : 0u;
+        return 0u;
+      };
+      if (select <= 3) {
+        host_samples[0] = host_of(select);
+      } else if (select == 4) {
+        host_samples[0] = host_of(0);
+        host_samples[1] = host_of(1);
+        count = 2;
+      } else if (select == 5) {
+        host_samples[0] = host_of(2);
+        host_samples[1] = host_of(3);
+        count = 2;
+      } else {
+        for (uint32_t s = 0; s < 4; ++s) host_samples[s] = host_of(s);
+        count = 4;
+      }
+
+      // Destination rectangle in the level: source - (x0, y0) + point.
+      const int32_t dx = px - x0, dy = py - y0;
+      if ((dx & 31) != 0 || (dy & 31) != 0) {
+        ++stats_.misaligned;
+        if (stats_.misaligned == 1) {
+          REXLOG_WARN("[gpu] resolve: destination offset ({}, {}) is not whole 32x32 tiles; "
+                      "copied as a plain offset (the console's tiled addressing would scatter "
+                      "it; reported once)",
+                      dx, dy);
+        }
+      }
+      // Source columns stop at the target's pitch (its width on the host): the
+      // pass never loads outside the texture.
+      const int32_t sx1 = std::min(ax1, int32_t(src_key.pitch));
+      const int32_t tx0 = std::max(ax0 + dx, 0);
+      const int32_t ty0 = std::max(ay0 + dy, 0);
+      const int32_t tx1 = std::min(sx1 + dx, int32_t(level_width));
+      const int32_t ty1 = std::min(ay1 + dy, int32_t(level_height));
+      if (tx1 <= tx0 || ty1 <= ty0) {
+        break;  // nothing lands in the level
+      }
+      if (tx0 > 0 || ty0 > 0 || tx1 < int32_t(level_width) || ty1 < int32_t(level_height)) {
+        ++stats_.partial;
+      }
+
+      // The source target, at least as tall as the copy reads.
+      bool unset = false;
+      EdramTargets::Target* src = edram_->Get(src_key, uint32_t(ty1 - dy), list, &unset);
+      if (!src) {
+        Fail(Failure::kSourceFormat, std::format("{} format {} at tile {} pitch {} {}x",
+                                                 depth_source ? "depth" : "colour", src_format,
+                                                 src_key.base_tiles, src_key.pitch,
+                                                 src_key.samples));
+        break;
+      }
+      uint32_t sample_slot = 0, stencil_slot = 0;
+      if (!edram_->SampleSlots(*src, &sample_slot, &stencil_slot)) {
+        Fail(Failure::kSourceView, std::format("tile {}", src_key.base_tiles));
+        break;
+      }
+      std::string why;
+      Product* p = Activate(key, host.format, list, &why);
+      if (!p) {
+        Fail(Failure::kProduct, std::format("{}: {}", key.Describe(), why));
+        break;
+      }
+      plume::RenderFramebuffer* framebuffer = LevelFramebuffer(*p, level);
+      plume::RenderPipeline* pipeline = Pipeline(depth_source, samples > 1, host.format);
+      if (!framebuffer || !pipeline) {
+        Fail(framebuffer ? Failure::kPipeline : Failure::kProduct, key.Describe());
+        break;
+      }
+      edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
+      TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
+      list->setFramebuffer(framebuffer);
+      const plume::RenderViewport viewport(0.0f, 0.0f, float(level_width), float(level_height));
+      list->setViewports(&viewport, 1);
+      const plume::RenderRect scissor(tx0, ty0, tx1, ty1);
+      list->setScissors(&scissor, 1);
+      passes_->Bind(list);
+      list->setPipeline(pipeline);
+      Push push{};
+      push.source = sample_slot;
+      push.stencil = depth_source ? stencil_slot : sample_slot;
+      push.offset_x = -dx;
+      push.offset_y = -dy;
+      push.samples = count;
+      for (uint32_t i = 0; i < count; ++i) {
+        push.samples |= host_samples[i] << (8 + 2 * i);
+      }
+      float scale = std::ldexp(1.0f, int32_t(int8_t(uint8_t((flags >> 26) << 2)) >> 2));
+      if (!depth_source && (src_format == 4 || src_format == 5)) {
+        scale *= 32.0f;  // k_16_16(_16_16): the host's SNORM +-1 is +-32 (Xenia: bias + 5)
+      }
+      push.scale = scale / float(count);
+      push.mode = full_mode;
+      list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+      list->drawInstanced(3, 1, 0, 0);
+      list->setFramebuffer(nullptr);
+      TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
+      ++stats_.copies;
+      ++stats_.modes[mode & 0xFF];
+      stats_.pixels += uint64_t(tx1 - tx0) * uint64_t(ty1 - ty0);
+    } while (false);
+  } else {
+    ++stats_.clear_only;
+  }
+
+  // The clears the call asked for, after the copy, on the aligned rectangle.
+  if (flags & 0x100) {
+    if (depth_source || source > 3) {
+      Fail(Failure::kNoSource, std::format("colour clear of source {}", source));
+    } else {
+      EdramKey key;
+      uint32_t format = 0;
+      int32_t bias = 0;
+      key_of(source, &key, &format, &bias);
+      bool unset = false;
+      EdramTargets::Target* target = edram_->Get(key, uint32_t(ay1), list, &unset);
+      if (target) {
+        float color[4] = {};
+        if (r.flags & kEventHasColor) {
+          for (uint32_t i = 0; i < 4; ++i) {
+            const uint32_t bits = LoadBe32(r.clear_color + 4 * i);
+            std::memcpy(&color[i], &bits, 4);
+          }
+        }
+        float value[4];
+        EncodeColorClear(format, bias, color, value);
+        if (edram_->ClearColor(list, *target, plume::RenderRect(ax0, ay0, ax1, ay1), value)) {
+          ++stats_.color_clears;
+        }
+        list->setFramebuffer(nullptr);
+      } else {
+        Fail(Failure::kSourceFormat, "colour clear target");
+      }
+    }
+  }
+  if (flags & 0x200) {
+    {
+      EdramKey key;
+      uint32_t format = 0;
+      int32_t bias = 0;
+      key_of(4, &key, &format, &bias);
+      bool unset = false;
+      EdramTargets::Target* target = edram_->Get(key, uint32_t(ay1), list, &unset);
+      if (target) {
+        if (edram_->ClearDepthStencil(list, *target, plume::RenderRect(ax0, ay0, ax1, ay1), true,
+                                      true, r.clear_z, r.clear_stencil)) {
+          ++stats_.depth_clears;
+        }
+        list->setFramebuffer(nullptr);
+      } else {
+        Fail(Failure::kSourceFormat, "depth clear target");
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// housekeeping
+// ---------------------------------------------------------------------------
+
 void ResolveCache::EvictSome() {
   for (auto it = products_.begin(); it != products_.end();) {
     Product& p = *it->second;
     if (!p.active && p.last_frame + kEvictFrames < frame_) {
       p.views.Release(*frames_, *heap_);
+      for (auto& framebuffer : p.level_framebuffers) {
+        frames_->Retire(std::move(framebuffer));
+      }
+      for (auto& view : p.level_views) {
+        frames_->Retire(std::move(view));
+      }
       frames_->Retire(std::move(p.texture));
       ++stats_.evicted;
       it = products_.erase(it);
@@ -156,16 +748,35 @@ void ResolveCache::EvictSome() {
 }
 
 std::string ResolveCache::TakeSummary(uint64_t frames) {
-  (void)frames;
+  const double f = frames ? double(frames) : 1.0;
   size_t active = 0;
   for (const auto& [key, p] : products_) {
     active += p->active;
   }
+  std::string modes;
+  for (uint32_t m = 0; m < kModeCount; ++m) {
+    if (stats_.modes[m]) {
+      modes += std::format("{}{} {}", modes.empty() ? "" : ", ", ModeName(m), stats_.modes[m]);
+    }
+  }
+  std::string failures;
+  for (uint32_t i = 0; i < uint32_t(Failure::kCount); ++i) {
+    if (stats_.failures[i]) {
+      failures += std::format("{}{} {}", failures.empty() ? "" : ", ", FailureName(i),
+                              stats_.failures[i]);
+    }
+  }
   std::string text = std::format(
-      "resolve products: {} ({} active) | fetch lookups {}, found {} | deactivated by CPU "
-      "writes {}, evicted {}",
-      products_.size(), active, stats_.finds, stats_.found, stats_.deactivated_by_cpu,
-      stats_.evicted);
+      "resolves {:.1f}/frame: {} copied ({:.2f} Mpixel/frame), {} clear only, clears {} colour {} "
+      "depth | conversions [{}] | failed [{}] | products {} ({} active), created {}, activated "
+      "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, misaligned {}, source "
+      "from registers {} | fetch lookups {}, found {} ({} by image)",
+      double(stats_.resolves) / f, stats_.copies, double(stats_.pixels) / f / 1e6,
+      stats_.clear_only, stats_.color_clears, stats_.depth_clears,
+      modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
+      active, stats_.created, stats_.activated, stats_.deactivated_by_overlap,
+      stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.misaligned,
+      stats_.from_registers, stats_.finds, stats_.found, stats_.found_by_image);
   stats_ = Stats{};
   return text;
 }

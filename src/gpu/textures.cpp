@@ -133,6 +133,21 @@ TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
   return out;
 }
 
+void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
+  ranges[0][0] = ranges[0][1] = ranges[1][0] = ranges[1][1] = 0;
+  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
+      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
+      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
+  if (key.base_page) {
+    ranges[0][0] = key.base_page << 12;
+    ranges[0][1] = layout.base.level_data_extent_bytes;
+  }
+  if (key.mip_page && key.mip_max_level > 0) {
+    ranges[1][0] = key.mip_page << 12;
+    ranges[1][1] = layout.mips_total_extent_bytes;
+  }
+}
+
 uint16_t GuestToHostSwizzle(uint16_t fetch_swizzle, uint16_t host_format_swizzle) {
   uint16_t host = 0;
   for (uint32_t i = 0; i < 4; ++i) {
@@ -157,7 +172,7 @@ uint32_t TextureViews::Slot(Device& device, BindlessHeap& heap,
                             const plume::RenderTexture& texture, plume::RenderFormat format,
                             uint32_t levels, uint16_t host_swizzle, const char* name) {
   for (const View& v : views_) {
-    if (v.host_swizzle == host_swizzle) {
+    if (v.host_swizzle == host_swizzle && v.levels == levels) {
       return v.slot;
     }
   }
@@ -176,6 +191,7 @@ uint32_t TextureViews::Slot(Device& device, BindlessHeap& heap,
   }
   View v;
   v.host_swizzle = host_swizzle;
+  v.levels = levels;
   v.view = std::move(view);
   v.slot = slot;
   views_.push_back(std::move(v));
@@ -324,7 +340,8 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
   }
   const uint16_t host_swizzle = GuestToHostSwizzle(fetch.swizzle, host.host_swizzle);
 
-  // A resolve product of this very key: what the guest rendered there.
+  // A resolve product of this image: what the guest rendered there (all its
+  // levels, or the first ones when the fetch names fewer, resolve.h).
   if (ResolveCache::Product* product = resolve_->Find(key)) {
     ++stats_.product_hits;
     const uint32_t slot =
@@ -458,17 +475,7 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
                     (key.height & (info->block_height - 1)) != 0);
   e.host_format = e.decompressed ? plume::RenderFormat::R8G8B8A8_UNORM : e.host.format;
 
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
-      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
-  if (key.base_page) {
-    e.ranges[0][0] = key.base_page << 12;
-    e.ranges[0][1] = layout.base.level_data_extent_bytes;
-  }
-  if (key.mip_page && key.mip_max_level > 0) {
-    e.ranges[1][0] = key.mip_page << 12;
-    e.ranges[1][1] = layout.mips_total_extent_bytes;
-  }
+  TextureGuestRanges(key, e.ranges);
   // The watch covers what the layout names; the exact reach only shortens a
   // level the layout's padding runs past committed memory (Upload).
   e.watchable = true;

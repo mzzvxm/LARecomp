@@ -29,6 +29,14 @@
 // Layout: each target remembers its last layout; Transition records a
 // barrier only when it changes.
 //
+// Shader views (M4.6): a resolve reads a target through bindless
+// slots -- the colour or depth plane, and the stencil plane of a depth target
+// (Plume's planeSlice, a fork addition) -- made on the first resolve that asks
+// (SampleSlots) and remade when the texture is replaced by growth. Clears
+// (ClearColor/ClearDepthStencil) are shared by the Scene's clear records and
+// the clears a resolve does after its copy, with one value rule
+// (EncodeColorClear).
+//
 // Threading: render thread only, after Initialize.
 // ===========================================================================
 
@@ -42,6 +50,7 @@
 
 namespace mcla::gpu {
 
+class BindlessHeap;
 class Device;
 class FrameRing;
 
@@ -62,6 +71,13 @@ struct EdramKey {
 // storage of their base format (24.12).
 uint32_t FoldColorFormat(uint32_t color_format);
 
+// What a colour clear stores in a target of (folded) `color_format` with
+// RB_COLOR_INFO's `exp_bias` (IDB sub_824206A8): the colour times
+// 2^bias; the host's SNORM 16-bit targets hold value/32; the _GAMMA targets,
+// kept linear, saturated.
+void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color[4],
+                      float out[4]);
+
 class EdramTargets {
  public:
   static constexpr uint32_t kHeightAlignment = 32;
@@ -76,6 +92,12 @@ class EdramTargets {
     uint32_t generation = 0;  // bumped when the texture is replaced
     plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
     uint64_t last_frame = 0;
+    // Shader views (SampleSlots), valid for texture generation `views_generation`.
+    std::unique_ptr<plume::RenderTextureView> sample_view;
+    std::unique_ptr<plume::RenderTextureView> stencil_view;
+    uint32_t sample_slot = 0xFFFFFFFFu;
+    uint32_t stencil_slot = 0xFFFFFFFFu;
+    uint32_t views_generation = 0;
   };
 
   EdramTargets() = default;
@@ -83,7 +105,7 @@ class EdramTargets {
   EdramTargets(const EdramTargets&) = delete;
   EdramTargets& operator=(const EdramTargets&) = delete;
 
-  void Initialize(Device& device, FrameRing& frames);
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap);
   // The GPU must be idle and the FrameRing drained.
   void Shutdown();
 
@@ -106,6 +128,21 @@ class EdramTargets {
   // Records a barrier moving `target` to `layout` when it is elsewhere.
   void Transition(plume::RenderCommandList* list, Target& target,
                   plume::RenderTextureLayout layout);
+
+  // The bindless slots of `target`'s shader views: the colour or depth plane,
+  // and (depth targets) the stencil plane; made on first use. False when a
+  // view or a slot cannot be had (logged).
+  bool SampleSlots(Target& target, uint32_t* sample_slot, uint32_t* stencil_slot);
+
+  // Clears `rect` (clipped to the target) of a colour target to `value`
+  // (already encoded, EncodeColorClear), or of a depth target's depth and/or
+  // stencil; moves it to its write layout and binds a framebuffer of it alone,
+  // which it returns (the caller's binding state); null on failure.
+  plume::RenderFramebuffer* ClearColor(plume::RenderCommandList* list, Target& target,
+                                       plume::RenderRect rect, const float value[4]);
+  plume::RenderFramebuffer* ClearDepthStencil(plume::RenderCommandList* list, Target& target,
+                                              plume::RenderRect rect, bool depth, bool stencil,
+                                              float z, uint32_t stencil_value);
 
   // The framebuffer of `color_count` colour targets (slots 0..n-1) and an
   // optional depth target, created on first use. Null on failure (logged).
@@ -132,9 +169,12 @@ class EdramTargets {
   bool Create(Target& target, uint32_t height);
   void Clear(Target& target, plume::RenderCommandList* list);
   void RetireFramebuffersOf(const Target* target);
+  // Gives the shader views' slots back (deferred) and retires the views.
+  void ReleaseViews(Target& target);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
+  BindlessHeap* heap_ = nullptr;
   std::unordered_map<EdramKey, std::unique_ptr<Target>, KeyHash> targets_;
   std::unordered_map<FramebufferKey, std::unique_ptr<plume::RenderFramebuffer>,
                      FramebufferKeyHash>

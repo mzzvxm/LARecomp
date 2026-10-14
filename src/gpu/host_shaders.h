@@ -16,12 +16,22 @@
 #include "backend.h"
 
 #if defined(LARECOMP_GPU_D3D12)
+#include "fullscreen_vs.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
+#include "resolve_color_ms_ps.hlsl.dxil.h"
+#include "resolve_color_ps.hlsl.dxil.h"
+#include "resolve_depth_ms_ps.hlsl.dxil.h"
+#include "resolve_depth_ps.hlsl.dxil.h"
 #define MCLA_GPU_HOST_SHADER(stem) g_##stem##_dxil
 #else
+#include "fullscreen_vs.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
+#include "resolve_color_ms_ps.hlsl.spirv.h"
+#include "resolve_color_ps.hlsl.spirv.h"
+#include "resolve_depth_ms_ps.hlsl.spirv.h"
+#include "resolve_depth_ps.hlsl.spirv.h"
 #define MCLA_GPU_HOST_SHADER(stem) g_##stem##_spirv
 #endif
 
@@ -42,6 +52,20 @@ inline HostShaderBlob OverlayVertexShader() {
 
 inline HostShaderBlob OverlayPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(overlay_ps);
+}
+
+inline HostShaderBlob FullscreenVertexShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fullscreen_vs);
+}
+
+// The resolve conversion (resolve_ps.hlsl) by source kind.
+inline HostShaderBlob ResolvePixelShader(bool depth, bool msaa) {
+  if (depth) {
+    return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_ms_ps)
+                : MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_ps);
+  }
+  return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_color_ms_ps)
+              : MCLA_GPU_HOST_SHADER_BLOB(resolve_color_ps);
 }
 
 }  // namespace mcla::gpu

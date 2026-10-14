@@ -210,6 +210,8 @@ class Scene {
     uint32_t sampler = 0;
     uint8_t dimension = 0;  // xenos::DataDimension
     bool is_texture = false;
+    uint32_t page = 0;        // physical page whose product generation it saw
+    uint32_t generation = 0;
     uint64_t used = 0;      // replacement: the least recently used way goes
   };
   // 4-way set associative: ~2000 distinct fetch constants a frame thrash a

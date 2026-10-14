@@ -126,8 +126,11 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
          geometry_.Initialize(device_, frames_, upload_, guest_memory_);
   }
   if (ok) {
-    edram_.Initialize(device_, frames_);
-    resolve_.Initialize(device_, frames_, heap_, guest_memory_, textures_);
+    edram_.Initialize(device_, frames_, heap_);
+    ok = passes_.Initialize(device_, heap_) &&
+         resolve_.Initialize(device_, frames_, heap_, guest_memory_, textures_, edram_, passes_);
+  }
+  if (ok) {
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_);
@@ -150,6 +153,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     swap_chain_.Shutdown();
     textures_.Shutdown();
     resolve_.Shutdown();
+    passes_.Shutdown();
     edram_.Shutdown();
     geometry_.Shutdown();
     upload_.Shutdown();
@@ -220,6 +224,7 @@ void Renderer::Shutdown() {
   swap_chain_.Shutdown();
   textures_.Shutdown();
   resolve_.Shutdown();
+  passes_.Shutdown();
   edram_.Shutdown();
   geometry_.Shutdown();
   upload_.Shutdown();

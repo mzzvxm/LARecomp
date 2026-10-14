@@ -20,6 +20,7 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     geometry.cpp
+    host_passes.cpp
     guest_capture.cpp
     guest_memory.cpp
     input_layout.cpp
@@ -83,7 +84,17 @@ endforeach()
 set(LARECOMP_GPU_HLSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/hlsl")
 file(GLOB LARECOMP_GPU_HLSL_INCLUDES CONFIGURE_DEPENDS "${LARECOMP_GPU_HLSL_DIR}/*.hlsli")
 
+# larecomp_gpu_host_shader(<stem> <profile> [SOURCE <hlsl stem>] [DEFINES NAME=VALUE...]):
+# the same source compiled more than once (variants) under different stems.
 function(larecomp_gpu_host_shader STEM PROFILE)
+    cmake_parse_arguments(ARG "" "SOURCE" "DEFINES" ${ARGN})
+    if(NOT ARG_SOURCE)
+        set(ARG_SOURCE "${STEM}")
+    endif()
+    set(define_args "")
+    foreach(_define IN LISTS ARG_DEFINES)
+        list(APPEND define_args -D "${_define}")
+    endforeach()
     if(LARECOMP_GPU_BACKEND STREQUAL "D3D12")
         set(ext dxil)
         set(format_args "")
@@ -101,15 +112,25 @@ function(larecomp_gpu_host_shader STEM PROFILE)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${LARECOMP_GPU_SHADER_DIR}"
         COMMAND ${LARECOMP_GPU_DXC}
                 -T ${PROFILE} -HV 2021 -all-resources-bound -Wno-ignored-attributes
-                ${format_args}
+                ${format_args} ${define_args}
                 -I "${LARECOMP_GPU_HLSL_DIR}"
                 -Fh "${out}" -Vn g_${STEM}_${ext}
-                "${LARECOMP_GPU_HLSL_DIR}/${STEM}.hlsl"
-        DEPENDS "${LARECOMP_GPU_HLSL_DIR}/${STEM}.hlsl" ${LARECOMP_GPU_HLSL_INCLUDES}
-        COMMENT "Compiling host shader ${STEM}.hlsl (${PROFILE}, ${ext})"
+                "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl"
+        DEPENDS "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl" ${LARECOMP_GPU_HLSL_INCLUDES}
+        COMMENT "Compiling host shader ${STEM} from ${ARG_SOURCE}.hlsl (${PROFILE}, ${ext})"
         VERBATIM)
     target_sources(larecomp_gpu PRIVATE "${out}")
 endfunction()
 
 larecomp_gpu_host_shader(overlay_vs vs_6_0)
 larecomp_gpu_host_shader(overlay_ps ps_6_0)
+# M4.6: full-screen passes -- resolve conversions, present.
+larecomp_gpu_host_shader(fullscreen_vs vs_6_0)
+larecomp_gpu_host_shader(resolve_color_ps ps_6_0 SOURCE resolve_ps
+                         DEFINES RESOLVE_DEPTH=0 RESOLVE_MSAA=0)
+larecomp_gpu_host_shader(resolve_color_ms_ps ps_6_0 SOURCE resolve_ps
+                         DEFINES RESOLVE_DEPTH=0 RESOLVE_MSAA=1)
+larecomp_gpu_host_shader(resolve_depth_ps ps_6_0 SOURCE resolve_ps
+                         DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=0)
+larecomp_gpu_host_shader(resolve_depth_ms_ps ps_6_0 SOURCE resolve_ps
+                         DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)

@@ -429,6 +429,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       FetchMemo& candidate = set[way];
       if (candidate.epoch == textures_->epoch() &&
           (candidate.frame == 0 || candidate.frame == frame_serial_) &&
+          candidate.generation == textures_->ProductGeneration(candidate.page) &&
           std::memcmp(candidate.dwords, dwords, sizeof(dwords)) == 0) {
         hit = &candidate;
         break;
@@ -478,6 +479,8 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
           break;
       }
       fresh.frame = bound.per_frame ? frame_serial_ : 0;
+      fresh.page = fetch.key.base_page ? fetch.key.base_page : fetch.key.mip_page;
+      fresh.generation = textures_->ProductGeneration(fresh.page);
     }
     fresh.epoch = textures_->epoch();
     fresh.used = ++fetch_memo_clock_;
@@ -803,32 +806,16 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       ++window_.clears_failed;
       continue;
     }
-    // What the hardware stores: the colour times 2^exp_bias, in the format;
-    // the host's SNORM 16-bit targets hold value/32, its gamma targets linear.
-    const int32_t bias = color_info.color_exp_bias;
-    float scale = std::ldexp(1.0f, bias);
-    const uint32_t fmt = key.format;
-    if (fmt == 4 || fmt == 5) {
-      scale *= 1.0f / 32.0f;
-    }
+    // What the hardware stores: the colour times 2^exp_bias, in the format.
     float value[4];
-    for (uint32_t c = 0; c < 4; ++c) {
-      value[c] = color[c] * scale;
-      if (fmt == 1) {
-        value[c] = std::clamp(value[c], 0.0f, 1.0f);
-      }
-    }
-    edram_->Transition(list, *target, plume::RenderTextureLayout::COLOR_WRITE);
-    EdramTargets::Target* only[1] = {target};
-    plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
+    EncodeColorClear(key.format, color_info.color_exp_bias, color, value);
+    plume::RenderFramebuffer* framebuffer =
+        edram_->ClearColor(list, *target, plume::RenderRect(x0, y0, x1, y1), value);
+    bound_.framebuffer = framebuffer;
     if (!framebuffer) {
       ++window_.clears_failed;
       continue;
     }
-    BindFramebuffer(list, framebuffer);
-    const plume::RenderRect rect(x0, y0, std::min(x1, int32_t(target->width)),
-                                 std::min(y1, int32_t(target->height)));
-    list->clearColor(0, plume::RenderColor(value[0], value[1], value[2], value[3]), &rect, 1);
     ++window_.clears_color;
   }
   if (flags & 0x30u) {
@@ -852,23 +839,29 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       ++window_.clears_failed;
       return;
     }
-    edram_->Transition(list, *target, plume::RenderTextureLayout::DEPTH_WRITE);
-    plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(nullptr, 0, target);
+    plume::RenderFramebuffer* framebuffer = edram_->ClearDepthStencil(
+        list, *target, plume::RenderRect(x0, y0, x1, y1), (flags & 0x10u) != 0,
+        (flags & 0x20u) != 0, record.z, record.stencil);
+    bound_.framebuffer = framebuffer;
     if (!framebuffer) {
       ++window_.clears_failed;
       return;
     }
-    BindFramebuffer(list, framebuffer);
-    const plume::RenderRect rect(x0, y0, std::min(x1, int32_t(target->width)),
-                                 std::min(y1, int32_t(target->height)));
-    list->clearDepthStencil((flags & 0x10u) != 0, (flags & 0x20u) != 0, record.z,
-                            record.stencil & 0xFFu, &rect, 1);
     ++window_.clears_depth;
   }
 }
 
-void Scene::OnResolve(const ResolveRecord&, plume::RenderCommandList*) {
+void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
   ++window_.resolves;
+  // The copy reads targets the open render pass may be writing.
+  if (list && bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+    bound_.framebuffer = nullptr;
+  }
+  resolve_->Execute(record, list);
+  // It bound its own layout, pipeline and push constants: the next draw binds
+  // everything again.
+  ResetListState();
 }
 
 void Scene::OnTilingBegin(const TilingBeginRecord&, plume::RenderCommandList*) {

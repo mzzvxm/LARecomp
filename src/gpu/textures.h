@@ -35,13 +35,17 @@
 //
 // Lookups: a draw reads ~2 fetch constants, a bench frame ~12000. The Scene
 // memoizes what Bind2D returns by the fetch's raw dwords and reuses it while
-// epoch() is unchanged: every write notification that touches an entry or a
-// product, every product activated, deactivated or written, and every
-// eviction bump it, and so does BeginFrame every kRefreshFrames frames, which
-// keeps the entries' last use current for the eviction. A binding of a hashed
-// entry, or a failure, is only good for the frame it was made in (per_frame):
-// those are compared, or retried, once per frame of use. Sync() takes the
-// write notifications; the Scene calls it once per draw before the memo.
+// two counters are unchanged: epoch() -- every write notification that touches
+// an entry, every eviction, and BeginFrame every kRefreshFrames frames (which
+// keeps the entries' last use current for the eviction) -- and the product
+// generation of the fetch's base page (ProductGeneration), which the resolve
+// bridge bumps when a product of that page is activated or deactivated: the
+// ~13 product changes a frame then invalidate only their own fetches, not the
+// whole memo (measured: a global epoch there dropped the memo from 99% to
+// 83%). A binding of a hashed entry, or a failure, is only good for the frame
+// it was made in (per_frame): those are compared, or retried, once per frame
+// of use. Sync() takes the write notifications; the Scene calls it once per
+// draw before the memo.
 //
 // What is not done (logged once per key, the null texture bound; none of it
 // in the measured frames): formats outside format.h's table,
@@ -102,6 +106,10 @@ struct TextureKeyHash {
   size_t operator()(const TextureKey& key) const;
 };
 
+// The guest memory a 2D texture's contents occupy, from the SDK's layout:
+// [0] the base level, [1] the mips (address, bytes; bytes 0 when absent).
+void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]);
+
 // A texture fetch constant read for binding.
 struct TextureFetch {
   bool is_texture = false;  // fetch constant type kTexture
@@ -124,15 +132,16 @@ TextureFetch ReadTextureFetch(const uint32_t dwords[6]);
 // format's swizzle names.
 uint16_t GuestToHostSwizzle(uint16_t fetch_swizzle, uint16_t host_format_swizzle);
 
-// The views of one host texture, one per host swizzle, each in its own
-// bindless slot -- shared by memory textures and resolve products.
+// The views of one host texture, one per (host swizzle, mip count), each in
+// its own bindless slot -- shared by memory textures and resolve products (a
+// fetch may read a product's first levels only, resolve.h).
 class TextureViews {
  public:
   TextureViews() = default;
   TextureViews(const TextureViews&) = delete;
   TextureViews& operator=(const TextureViews&) = delete;
 
-  // The slot of `texture` (2D, `levels` mips, `format`) seen with
+  // The slot of `texture` (2D, its first `levels` mips, `format`) seen with
   // `host_swizzle`, created on first use. kInvalidBindlessSlot on failure
   // (logged by the caller).
   uint32_t Slot(Device& device, BindlessHeap& heap, const plume::RenderTexture& texture,
@@ -148,6 +157,7 @@ class TextureViews {
  private:
   struct View {
     uint16_t host_swizzle = 0;
+    uint32_t levels = 0;
     std::unique_ptr<plume::RenderTextureView> view;
     uint32_t slot = kInvalidBindlessSlot;
   };
@@ -188,8 +198,21 @@ class TextureCache {
   // Takes the write notifications of textures and resolve products.
   void Sync();
   uint64_t epoch() const { return epoch_; }
-  // A resolve wrote, or a product was (de)activated: memoized bindings go.
+  // Every memoized binding goes.
   void BumpEpoch() { ++epoch_; }
+
+  // The generation of the products at physical page `page` (a bucket of
+  // pages): bumped by the resolve bridge whenever a product whose base is
+  // there is activated or deactivated, which changes what fetches of that
+  // page bind.
+  static constexpr uint32_t kGenerationBuckets = 4096;
+  static uint32_t GenerationBucket(uint32_t page) {
+    return (page * 2654435761u) >> (32 - 12);
+  }
+  uint32_t ProductGeneration(uint32_t page) const {
+    return product_generations_[GenerationBucket(page)];
+  }
+  void BumpProductGeneration(uint32_t page) { ++product_generations_[GenerationBucket(page)]; }
 
   // One line of statistics since the last call.
   std::string TakeSummary(uint64_t frames);
@@ -249,6 +272,7 @@ class TextureCache {
   std::vector<GuestMemory::Range> drained_;
   std::vector<uint8_t> scratch_;
   uint64_t epoch_ = 1;
+  std::array<uint32_t, kGenerationBuckets> product_generations_{};
   uint32_t slot_ = 0;
   uint64_t frame_ = 1;
   std::vector<TextureKey> evict_scan_;
