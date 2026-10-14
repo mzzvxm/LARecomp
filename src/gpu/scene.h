@@ -20,8 +20,10 @@
 //   previous draw's).
 // Record then binds the draw's EDRAM targets (edram.h) and records it; state
 // already bound in the list is not bound again. Clears are recorded from
-// their records. The texture tables point at the heap's null
-// textures until M4.6.
+// their records. The texture tables name the bindless slots the
+// TextureCache gives for each fetch constant the shaders read (textures.h,
+//): a resolve product, or a texture decoded from guest memory,
+// whose uploads are recorded into the frame's list right there.
 //
 // A draw that cannot be drawn correctly is skipped, never drawn with a
 // guess: the reason is counted, its first occurrences logged with the draw's
@@ -56,7 +58,9 @@ namespace mcla::gpu {
 
 class BindlessHeap;
 class GuestLayout;
+class ResolveCache;
 class Samplers;
+class TextureCache;
 
 class Scene {
  public:
@@ -67,8 +71,8 @@ class Scene {
   Scene& operator=(const Scene&) = delete;
 
   void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
-                  GeometryCache& geometry, EdramTargets& edram, const GuestLayout& layout,
-                  const BindlessHeap& heap);
+                  GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
+                  ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap);
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -164,6 +168,8 @@ class Scene {
   Samplers* samplers_ = nullptr;
   GeometryCache* geometry_ = nullptr;
   EdramTargets* edram_ = nullptr;
+  TextureCache* textures_ = nullptr;
+  ResolveCache* resolve_ = nullptr;
   const GuestLayout* layout_ = nullptr;
   const BindlessHeap* heap_ = nullptr;
   SharedConstants base_shared_{};  // the texture tables on the null textures
@@ -193,6 +199,29 @@ class Scene {
   };
   ListState bound_;
 
+  // What FillTextureTables resolved for a fetch constant, by its raw dwords:
+  // reused while the TextureCache's epoch is unchanged (textures.h) and, for a
+  // binding good for one frame only, within that frame.
+  struct FetchMemo {
+    uint32_t dwords[6] = {};
+    uint64_t epoch = 0;     // 0 = empty
+    uint64_t frame = 0;     // the frame a per-frame binding was made in, 0 = any
+    uint32_t texture = 0;   // table value (bindless slot | gamma bit)
+    uint32_t sampler = 0;
+    uint8_t dimension = 0;  // xenos::DataDimension
+    bool is_texture = false;
+    uint64_t used = 0;      // replacement: the least recently used way goes
+  };
+  // 4-way set associative: ~2000 distinct fetch constants a frame thrash a
+  // direct-mapped table (measured: 748 resolutions/frame with 4096 slots).
+  static constexpr size_t kFetchMemoWays = 4;
+  static constexpr size_t kFetchMemoSets = 2048;
+  std::array<FetchMemo, kFetchMemoWays * kFetchMemoSets> fetch_memo_{};
+  uint64_t fetch_memo_clock_ = 0;
+  uint64_t frame_serial_ = 0;
+  // Writes one fetch constant's table entries from `memo`.
+  static void ApplyFetch(const FetchMemo& memo, uint32_t slot, SharedConstants& sc);
+
   // Statistics: the current window and the whole run.
   struct Stats {
     uint64_t frames = 0;
@@ -221,6 +250,7 @@ class Scene {
     uint64_t upload_bytes = 0;
     uint64_t fetches = 0;  // fetch constants resolved to samplers
     uint64_t fetch_not_texture = 0;
+    uint64_t fetch_memo_hits = 0;
     uint64_t recorded = 0;           // draws recorded into the list
     uint64_t clears = 0;
     uint64_t clears_color = 0;       // colour targets cleared

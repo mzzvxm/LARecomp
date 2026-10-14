@@ -31,11 +31,14 @@ add_library(larecomp_gpu OBJECT
     region_index.cpp
     render_thread.cpp
     renderer.cpp
+    resolve.cpp
     samplers.cpp
     scene.cpp
     shaders.cpp
     stream.cpp
     swap_chain.cpp
+    texture_decode.cpp
+    textures.cpp
     timing.cpp
     topology.cpp
     upload.cpp

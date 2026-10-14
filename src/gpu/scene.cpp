@@ -16,7 +16,9 @@
 #include "format.h"
 #include "layout.h"
 #include "native_gfx/vertex_declaration.h"
+#include "resolve.h"
 #include "samplers.h"
+#include "textures.h"
 
 namespace mcla::gpu {
 
@@ -74,13 +76,16 @@ const char* ConversionName(uint32_t conversion) {
 }  // namespace
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
-                       GeometryCache& geometry, EdramTargets& edram, const GuestLayout& layout,
+                       GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
+                       ResolveCache& resolve, const GuestLayout& layout,
                        const BindlessHeap& heap) {
   upload_ = &upload;
   pipelines_ = &pipelines;
   samplers_ = &samplers;
   geometry_ = &geometry;
   edram_ = &edram;
+  textures_ = &textures;
+  resolve_ = &resolve;
   layout_ = &layout;
   heap_ = &heap;
   base_shared_ = SharedConstants{};
@@ -101,6 +106,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   slot_ = slot;
   geometry_->BeginFrame(slot);
   edram_->BeginFrame();
+  textures_->BeginFrame(slot);
+  resolve_->BeginFrame();
+  ++frame_serial_;
   ResetListState();
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
@@ -385,41 +393,96 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   return Skip::kCount;
 }
 
+void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
+  if (!m.is_texture) {
+    return;
+  }
+  sc.sampler[slot] = m.sampler;
+  switch (xe::DataDimension(m.dimension)) {
+    case xe::DataDimension::k3D:
+      sc.texture_3d[slot] = m.texture;
+      break;
+    case xe::DataDimension::kCube:
+      sc.texture_cube[slot] = m.texture;
+      break;
+    default:  // k1D (refused by the cache: the 2D null), k2DOrStacked
+      sc.texture_2d[slot] = m.texture;
+      break;
+  }
+}
+
 void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedConstants& sc) {
+  // Write notifications first: a memoized binding must not outlive a write.
+  textures_->Sync();
   for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
     const uint32_t slot = uint32_t(std::countr_zero(mask));
     uint32_t dwords[6];
     view.FetchGroup(slot, dwords);
-    xe::xe_gpu_texture_fetch_t fetch;
-    std::memcpy(&fetch, dwords, sizeof(fetch));
-    if (fetch.type != xe::FetchConstantType::kTexture) {
+    uint64_t h = 0;
+    for (uint32_t d : dwords) {
+      h = (h ^ d) * 0x9E3779B97F4A7C15ull;
+    }
+    FetchMemo* set = &fetch_memo_[(size_t(h >> 40) & (kFetchMemoSets - 1)) * kFetchMemoWays];
+    FetchMemo* hit = nullptr;
+    FetchMemo* victim = set;
+    for (size_t way = 0; way < kFetchMemoWays; ++way) {
+      FetchMemo& candidate = set[way];
+      if (candidate.epoch == textures_->epoch() &&
+          (candidate.frame == 0 || candidate.frame == frame_serial_) &&
+          std::memcmp(candidate.dwords, dwords, sizeof(dwords)) == 0) {
+        hit = &candidate;
+        break;
+      }
+      if (candidate.used < victim->used) {
+        victim = &candidate;
+      }
+    }
+    if (hit) {
+      hit->used = ++fetch_memo_clock_;
+      ++window_.fetch_memo_hits;
+      if (hit->is_texture) {
+        ++window_.fetches;
+      } else {
+        ++window_.fetch_not_texture;
+      }
+      ApplyFetch(*hit, slot, sc);
+      continue;
+    }
+    FetchMemo& m = *victim;
+    const TextureFetch fetch = ReadTextureFetch(dwords);
+    FetchMemo fresh;
+    std::memcpy(fresh.dwords, dwords, sizeof(dwords));
+    fresh.is_texture = fetch.is_texture;
+    if (!fetch.is_texture) {
       // The shader samples a slot the guest left without a texture: the null
       // texture is read, as an invalid fetch reads zeros.
       ++window_.fetch_not_texture;
-      continue;
+    } else {
+      ++window_.fetches;
+      fresh.sampler = samplers_->Get(dwords, fetch.mip_min, fetch.mip_max);
+      // Only 2D textures are made (100% of the measured fetches);
+      // the cache logs any other dimension once and the null of its dimension
+      // is bound.
+      const TextureCache::Binding bound = textures_->Bind2D(fetch, list_);
+      const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
+      fresh.dimension = fetch.key.dimension;
+      switch (xe::DataDimension(fetch.key.dimension)) {
+        case xe::DataDimension::k3D:
+          fresh.texture = kNullTexture3DSlot | gamma_bit;
+          break;
+        case xe::DataDimension::kCube:
+          fresh.texture = kNullTextureCubeSlot | gamma_bit;
+          break;
+        default:
+          fresh.texture = bound.slot;
+          break;
+      }
+      fresh.frame = bound.per_frame ? frame_serial_ : 0;
     }
-    ++window_.fetches;
-    uint32_t mip_min = 0, mip_max = 0;
-    rex::graphics::texture_util::GetSubresourcesFromFetchConstant(
-        fetch, nullptr, nullptr, nullptr, nullptr, nullptr, &mip_min, &mip_max);
-    sc.sampler[slot] = samplers_->Get(dwords, mip_min, mip_max);
-    // Textures are M4.6: the index stays the null of the fetch's dimension,
-    // with the gamma request of the fetch's signs already in place.
-    const bool gamma = fetch.sign_x == xe::TextureSign::kGamma &&
-                       fetch.sign_y == xe::TextureSign::kGamma &&
-                       fetch.sign_z == xe::TextureSign::kGamma;
-    const uint32_t gamma_bit = gamma ? kTextureGammaBit : 0u;
-    switch (fetch.dimension) {
-      case xe::DataDimension::k3D:
-        sc.texture_3d[slot] = kNullTexture3DSlot | gamma_bit;
-        break;
-      case xe::DataDimension::kCube:
-        sc.texture_cube[slot] = kNullTextureCubeSlot | gamma_bit;
-        break;
-      default:  // k1D, k2DOrStacked
-        sc.texture_2d[slot] = kNullTexture2DSlot | gamma_bit;
-        break;
-    }
+    fresh.epoch = textures_->epoch();
+    fresh.used = ++fetch_memo_clock_;
+    m = fresh;
+    ApplyFetch(m, slot, sc);
   }
 }
 
@@ -844,6 +907,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.upload_bytes += from.upload_bytes;
   into.fetches += from.fetches;
   into.fetch_not_texture += from.fetch_not_texture;
+  into.fetch_memo_hits += from.fetch_memo_hits;
   into.recorded += from.recorded;
   into.clears += from.clears;
   into.clears_color += from.clears_color;
@@ -925,7 +989,8 @@ void Scene::Report(const char* why) {
       "{}, depth bias {} | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
       "ms) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
-      "MiB/frame ({} bank, {} shared uploads) | clears {}, resolves {}, tiling {}/{} | prepare "
+      "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
+      "tiling {}/{} | prepare "
       "{:.2f} ms/frame",
       why, w.frames, double(w.draws) / frames, w.prepared, w.recorded,
       skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
@@ -938,10 +1003,16 @@ void Scene::Report(const char* why) {
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
       double(ps.create_ns) / 1e6, input_layouts_.size(), samplers_->size(), w.fetches,
       w.fetch_not_texture, double(w.upload_bytes) / frames / 1048576.0, w.constant_uploads,
-      w.shared_uploads, w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
+      w.shared_uploads,
+      (w.fetches + w.fetch_not_texture)
+          ? 100.0 * double(w.fetch_memo_hits) / double(w.fetches + w.fetch_not_texture)
+          : 0.0,
+      w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
       double(w.prepare_ns) / frames / 1e6);
   REXLOG_INFO("[gpu] scene ({}): {}", why, geometry_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, edram_->TakeSummary());
+  REXLOG_INFO("[gpu] scene ({}): {}", why, textures_->TakeSummary(w.frames));
+  REXLOG_INFO("[gpu] scene ({}): {}", why, resolve_->TakeSummary(w.frames));
   Add(total_, window_);
   window_ = Stats{};
 }
