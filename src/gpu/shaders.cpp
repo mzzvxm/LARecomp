@@ -39,7 +39,10 @@ ShaderStore::Blob ReadBlob(const uint8_t* p) {
   return ShaderStore::Blob{ReadU32(p), ReadU32(p + 4), ReadU64(p + 8)};
 }
 
-constexpr bool kDxil = kHostShaderFormat == plume::RenderShaderFormat::DXIL;
+// The pack carries both formats; the active backend's is the one used.
+bool Dxil() {
+  return HostShaderFormat() == plume::RenderShaderFormat::DXIL;
+}
 
 }  // namespace
 
@@ -76,7 +79,7 @@ bool ShaderStore::Initialize(Device& device) {
     return false;
   }
   REXLOG_INFO("[gpu] shader pack: {} shaders from {} ({} MiB, {})", entries_.size(),
-              rex::path_to_utf8(path_), file_->size() >> 20, kDxil ? "DXIL" : "SPIR-V");
+              rex::path_to_utf8(path_), file_->size() >> 20, Dxil() ? "DXIL" : "SPIR-V");
   return true;
 }
 
@@ -96,8 +99,8 @@ bool ShaderStore::Validate() {
   if (version != kPackVersion) {
     return fail("version " + std::to_string(version) + ", expected " + std::to_string(kPackVersion));
   }
-  if ((formats & (kDxil ? kFormatDxil : kFormatSpirv)) == 0) {
-    return fail(std::string("carries no ") + (kDxil ? "DXIL" : "SPIR-V"));
+  if ((formats & (Dxil() ? kFormatDxil : kFormatSpirv)) == 0) {
+    return fail(std::string("carries no ") + (Dxil() ? "DXIL" : "SPIR-V"));
   }
   if (uint64_t(kHeaderBytes) + uint64_t(count) * kEntryBytes > size) {
     return fail("entry table past the end of the file");
@@ -141,7 +144,7 @@ bool ShaderStore::Validate() {
     }
     // What this backend needs must be present: variant 0 always, variant 1
     // whenever the shader has spec bits.
-    const Blob* blobs = kDxil ? entry.dxil : entry.spirv;
+    const Blob* blobs = Dxil() ? entry.dxil : entry.spirv;
     if (blobs[0].size == 0 || (entry.spec_mask != 0 && blobs[1].size == 0)) {
       return fail("entry " + std::to_string(i) + " lacks a blob this backend needs");
     }
@@ -205,8 +208,8 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
   Slot& slot = slots_[variant][entry.key];
   if (!slot.done) {
     slot.done = true;
-    const Blob& blob = kDxil ? entry.dxil[variant] : entry.spirv[variant];
-    if (!VerifyBlob(entry, blob, !kDxil)) {
+    const Blob& blob = Dxil() ? entry.dxil[variant] : entry.spirv[variant];
+    if (!VerifyBlob(entry, blob, !Dxil())) {
       slot.result = ShaderResult::kBadBlob;
     } else {
       char name[48];

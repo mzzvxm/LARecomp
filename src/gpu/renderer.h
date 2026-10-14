@@ -93,6 +93,7 @@ class Renderer final : public RenderThread::Executor {
   static constexpr std::chrono::milliseconds kStopDeadline{2000};
 
   Renderer() : validator_(shaders_), scene_(shaders_), census_(guest_memory_) {}
+  const Device& device() const { return device_; }
   ~Renderer() override;
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;

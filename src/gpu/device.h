@@ -39,6 +39,8 @@ class Device {
     // Passed to RenderInterface::createDevice; empty picks Plume's default.
     std::string preferred_adapter;
     bool debug_layer = false;
+    // The backend asked for (graphics_backend); must be compiled.
+    Backend backend = kDefaultBackend;
   };
 
   Device() = default;
@@ -46,6 +48,10 @@ class Device {
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
 
+  // Selects options.backend and opens it. If its interface, device, required
+  // capabilities or queue cannot be had, the other backend the build has is
+  // tried -- logged as an error, and fell_back() says so to the caller, who
+  // tells the user. False when no backend opens.
   bool Initialize(const Options& options);
   // Releases the queue, the device and the interface, in that order. Everything
   // created from this device must already be gone.
@@ -56,6 +62,9 @@ class Device {
   const plume::RenderDeviceCapabilities& capabilities() const { return device_->getCapabilities(); }
   const plume::RenderDeviceDescription& description() const { return device_->getDescription(); }
   const std::string& backend_info() const { return backend_info_; }
+  // The backend Initialize was asked for, and whether another one runs instead.
+  Backend requested_backend() const { return requested_backend_; }
+  bool fell_back() const { return device_ && ActiveBackend() != requested_backend_; }
 
   // Validated creation. Null on failure, never a null-backed wrapper. `name`
   // becomes the debug name (RenderDoc, PIX, validation messages) where Plume
@@ -76,8 +85,9 @@ class Device {
       uint32_t sampler_count, const char* name);
   std::unique_ptr<plume::RenderPipelineLayout> CreatePipelineLayout(
       const plume::RenderPipelineLayoutBuilder& builder, const char* name);
-  // A shader blob in kHostShaderFormat: the host shaders built with the
-  // renderer, and the guest shaders of the pack (shaders.h).
+  // A shader blob in HostShaderFormat() (the active backend's): the host
+  // shaders built with the renderer, and the guest shaders of the pack
+  // (shaders.h).
   std::unique_ptr<plume::RenderShader> CreateShader(const void* data, uint64_t size,
                                                     const char* entry_point, const char* name);
   std::unique_ptr<plume::RenderPipeline> CreateGraphicsPipeline(
@@ -95,6 +105,8 @@ class Device {
   backend::VideoMemory QueryVideoMemory() const;
 
  private:
+  // One attempt on the active backend; leaves nothing behind on failure.
+  bool Open(const Options& options);
   void ReportCreationFailure(const char* what, const char* name);
 
   // Declaration order is destruction order in reverse: queue, device, interface.
@@ -102,6 +114,7 @@ class Device {
   std::unique_ptr<plume::RenderDevice> device_;
   std::unique_ptr<plume::RenderCommandQueue> queue_;
   std::string backend_info_;
+  Backend requested_backend_ = kDefaultBackend;
   bool debug_layer_ = false;
   std::atomic<bool> lost_{false};
 };

@@ -107,7 +107,9 @@ double Percent(uint64_t part, uint64_t whole) {
   return whole == 0 ? 100.0 : 100.0 * double(part) / double(whole);
 }
 
-constexpr bool kDxil = kHostShaderFormat == plume::RenderShaderFormat::DXIL;
+bool Dxil() {
+  return HostShaderFormat() == plume::RenderShaderFormat::DXIL;
+}
 
 }  // namespace
 
@@ -127,7 +129,7 @@ const ShaderStore::Entry* FrameValidator::NoteShader(uint64_t identity, bool pix
     info.entry = shaders_.Find(identity);
     if (info.entry) {
       info.stage_mismatch = (info.entry->stage == ShaderStore::Stage::kPixel) != pixel;
-      info.blob_bytes = kDxil ? info.entry->dxil[0].size : info.entry->spirv[0].size;
+      info.blob_bytes = Dxil() ? info.entry->dxil[0].size : info.entry->spirv[0].size;
     }
   }
   ++info.draws;

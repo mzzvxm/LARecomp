@@ -650,7 +650,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, plume::RenderCommandList* list, bool*
                         constants[i].offset != bound_.constants[i].offset;
   }
   if (constants_changed) {
-    if constexpr (kBackend == Backend::kD3D12) {
+    if (ActiveBackend() == Backend::kD3D12) {
       list->setGraphicsRootDescriptor(constants[0], GuestLayout::kVertexConstants);
       list->setGraphicsRootDescriptor(constants[1], GuestLayout::kPixelConstants);
       list->setGraphicsRootDescriptor(constants[2], GuestLayout::kSharedConstants);

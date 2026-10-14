@@ -3,9 +3,10 @@
 # larecomp_gpu is an OBJECT library so the renderer compiles with its own
 # include order and definitions: plume's headers (its Vulkan-Headers and VMA)
 # ahead of rex::runtime's, which arrive as system includes, and
-# LARECOMP_GPU_<backend> visible to these files only. larecomp links the
+# LARECOMP_GPU_HAS_<backend> visible to these files only. larecomp links the
 # objects. Expects the caller to have added thirdparty/plume and
-# thirdparty/dxc-bin and to set LARECOMP_GPU_BACKEND (D3D12 or VULKAN).
+# thirdparty/dxc-bin and to set LARECOMP_GPU_BACKENDS (D3D12 and/or VULKAN; the
+# one that runs is picked at startup).
 
 add_library(larecomp_gpu OBJECT
     backend.cpp
@@ -47,6 +48,13 @@ add_library(larecomp_gpu OBJECT
     validation.cpp
     viewport.cpp
 )
+# The only translation units that see a backend's own objects (backend.h).
+if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+    target_sources(larecomp_gpu PRIVATE backend_d3d12.cpp)
+endif()
+if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+    target_sources(larecomp_gpu PRIVATE backend_vulkan.cpp)
+endif()
 
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 # src/ too: the guest decoders the renderer reuses from the legacy runtime are
@@ -59,13 +67,15 @@ target_include_directories(larecomp_gpu PRIVATE
 )
 # plume first: see the note at the top.
 target_link_libraries(larecomp_gpu PRIVATE plume rex::runtime rex::renderdoc)
-target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_GPU_${LARECOMP_GPU_BACKEND})
+foreach(_backend IN LISTS LARECOMP_GPU_BACKENDS)
+    target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_GPU_HAS_${_backend}=1)
+endforeach()
 # The same flags the SDK applies to its own object library (larecomp_recomp).
 rexglue_apply_target_settings(larecomp_gpu)
 
 # ---------------------------------------------------------------------------
 # Host shaders: hlsl/<stem>.hlsl -> shaders/<stem>.hlsl.<dxil|spirv>.h with
-# g_<stem>_<dxil|spirv>, in this build's backend format only. Rule as in reeot
+# g_<stem>_<dxil|spirv>, once per backend the build has. Rule as in reeot
 # cmake/host_shaders.cmake (BSD-3-Clause): dxc-bin's DIRECTX_DXC_TOOL is a
 # plain path on Windows and "VAR=value;<dxc>" elsewhere; the VAR=value parts go
 # through `cmake -E env` so the command works under every generator.
@@ -96,31 +106,33 @@ function(larecomp_gpu_host_shader STEM PROFILE)
     foreach(_define IN LISTS ARG_DEFINES)
         list(APPEND define_args -D "${_define}")
     endforeach()
-    if(LARECOMP_GPU_BACKEND STREQUAL "D3D12")
-        set(ext dxil)
-        set(format_args "")
-    else()
-        set(ext spirv)
-        # D3D cbuffer packing on Vulkan too, and D3D clip-space y.
-        set(format_args -spirv -fvk-use-dx-layout)
-        if(PROFILE MATCHES "^vs")
-            list(APPEND format_args -fvk-invert-y)
+    foreach(_backend IN LISTS LARECOMP_GPU_BACKENDS)
+        if(_backend STREQUAL "D3D12")
+            set(ext dxil)
+            set(format_args "")
+        else()
+            set(ext spirv)
+            # D3D cbuffer packing on Vulkan too, and D3D clip-space y.
+            set(format_args -spirv -fvk-use-dx-layout)
+            if(PROFILE MATCHES "^vs")
+                list(APPEND format_args -fvk-invert-y)
+            endif()
         endif()
-    endif()
-    set(out "${LARECOMP_GPU_SHADER_DIR}/${STEM}.hlsl.${ext}.h")
-    add_custom_command(
-        OUTPUT "${out}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${LARECOMP_GPU_SHADER_DIR}"
-        COMMAND ${LARECOMP_GPU_DXC}
-                -T ${PROFILE} -HV 2021 -all-resources-bound -Wno-ignored-attributes
-                ${format_args} ${define_args}
-                -I "${LARECOMP_GPU_HLSL_DIR}"
-                -Fh "${out}" -Vn g_${STEM}_${ext}
-                "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl"
-        DEPENDS "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl" ${LARECOMP_GPU_HLSL_INCLUDES}
-        COMMENT "Compiling host shader ${STEM} from ${ARG_SOURCE}.hlsl (${PROFILE}, ${ext})"
-        VERBATIM)
-    target_sources(larecomp_gpu PRIVATE "${out}")
+        set(out "${LARECOMP_GPU_SHADER_DIR}/${STEM}.hlsl.${ext}.h")
+        add_custom_command(
+            OUTPUT "${out}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${LARECOMP_GPU_SHADER_DIR}"
+            COMMAND ${LARECOMP_GPU_DXC}
+                    -T ${PROFILE} -HV 2021 -all-resources-bound -Wno-ignored-attributes
+                    ${format_args} ${define_args}
+                    -I "${LARECOMP_GPU_HLSL_DIR}"
+                    -Fh "${out}" -Vn g_${STEM}_${ext}
+                    "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl"
+            DEPENDS "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl" ${LARECOMP_GPU_HLSL_INCLUDES}
+            COMMENT "Compiling host shader ${STEM} from ${ARG_SOURCE}.hlsl (${PROFILE}, ${ext})"
+            VERBATIM)
+        target_sources(larecomp_gpu PRIVATE "${out}")
+    endforeach()
 endfunction()
 
 larecomp_gpu_host_shader(overlay_vs vs_6_0)

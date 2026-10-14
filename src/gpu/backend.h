@@ -1,58 +1,104 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the graphics backend this build targets
+// MCLA GPU renderer -- the graphics backend this process runs
 // ===========================================================================
-// One backend per build, chosen by CMake (LARECOMP_GPU_BACKEND), the way both
-// reference recomps do it (reblue gpu/backend.h, reeot gpu/backend.h). Plume
-// can host several backends in one process, but the two things that differ
-// between them -- the host shader blob format and how constant buffers reach
-// a shader (D3D12 root CBVs, Vulkan buffer device addresses in a push constant)
-// -- are decided at build time anyway, so a runtime switch would only carry the
-// unused half along.
+// Every backend the platform has is built in (CMake LARECOMP_GPU_BACKENDS:
+// D3D12 and Vulkan on Windows, Vulkan elsewhere) and one of them runs, picked
+// at startup from the SDK's graphics_backend cvar -- the same cvar that picks
+// the backend of the SDK's emulated GPU. Device::Initialize selects it before the interface exists, and it is
+// fixed for the process from then on. The two things that differ per backend
+// -- the host shader blob format and how constant buffers reach a guest
+// shader (D3D12 root CBVs, Vulkan buffer device addresses in a push constant)
+// -- are asked of ActiveBackend() where they are used.
 //
 // Everything here is backend-neutral to include. The code that has to reach
-// past the Plume interface into a backend's own objects lives in exactly one
-// translation unit, backend.cpp, behind the functions declared at the bottom.
-// No other file under gpu/ includes plume_d3d12.h or plume_vulkan.h.
+// past the Plume interface into a backend's own objects lives in exactly two
+// translation units, backend_d3d12.cpp and backend_vulkan.cpp, behind the
+// functions declared at the bottom (backend.cpp picks the active one). No other
+// file under gpu/ includes plume_d3d12.h or plume_vulkan.h.
 // ===========================================================================
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <plume_render_interface.h>
 
-#if defined(LARECOMP_GPU_D3D12) + defined(LARECOMP_GPU_VULKAN) != 1
-#error "exactly one of LARECOMP_GPU_D3D12 / LARECOMP_GPU_VULKAN must be defined (CMake LARECOMP_GPU_BACKEND)"
+#if !defined(LARECOMP_GPU_HAS_D3D12) && !defined(LARECOMP_GPU_HAS_VULKAN)
+#error "no backend: CMake LARECOMP_GPU_BACKENDS defines LARECOMP_GPU_HAS_D3D12 and/or _VULKAN"
 #endif
 
 namespace mcla::gpu {
 
 enum class Backend : uint8_t { kD3D12, kVulkan };
 
-#if defined(LARECOMP_GPU_D3D12)
-inline constexpr Backend kBackend = Backend::kD3D12;
-inline constexpr plume::RenderShaderFormat kHostShaderFormat = plume::RenderShaderFormat::DXIL;
-#else
-inline constexpr Backend kBackend = Backend::kVulkan;
-inline constexpr plume::RenderShaderFormat kHostShaderFormat = plume::RenderShaderFormat::SPIRV;
+// Whether this build carries `backend`.
+constexpr bool BackendCompiled(Backend backend) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (backend == Backend::kD3D12) {
+    return true;
+  }
 #endif
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+  if (backend == Backend::kVulkan) {
+    return true;
+  }
+#endif
+  return false;
+}
+
+// What graphics_backend = "auto" runs: D3D12 where the build has it.
+inline constexpr Backend kDefaultBackend =
+    BackendCompiled(Backend::kD3D12) ? Backend::kD3D12 : Backend::kVulkan;
+
+namespace detail {
+// Written once, by SelectBackend on the UI thread before the render thread
+// exists; only read after that.
+inline Backend g_active_backend = kDefaultBackend;
+}  // namespace detail
+
+// The backend this process runs (kDefaultBackend before Device::Initialize).
+inline Backend ActiveBackend() {
+  return detail::g_active_backend;
+}
+
+// Device::Initialize only, before the interface exists, with a compiled backend.
+void SelectBackend(Backend backend);
+
+// "D3D12" / "Vulkan".
+const char* BackendName(Backend backend);
+inline const char* BackendName() {
+  return BackendName(ActiveBackend());
+}
+
+// graphics_backend's text as a backend: "auto" is kDefaultBackend, "d3d12" and
+// "vulkan" themselves. False for anything else, with kDefaultBackend in `out`.
+bool ParseBackend(std::string_view text, Backend& out);
+
+// The format of the active backend's shader blobs: DXIL on D3D12, SPIR-V on
+// Vulkan.
+inline plume::RenderShaderFormat HostShaderFormat() {
+  return ActiveBackend() == Backend::kD3D12 ? plume::RenderShaderFormat::DXIL
+                                            : plume::RenderShaderFormat::SPIRV;
+}
 
 // Plume's Vulkan swap chain creates its VkSwapchainKHR in resize(), so a fresh
 // one is empty until resized; the D3D12 one creates it in the constructor.
 // (plume_vulkan.cpp VulkanSwapChain, reblue gpu/device.cpp CreateHostDevice.)
-inline constexpr bool kSwapChainNeedsInitialResize = kBackend == Backend::kVulkan;
+inline bool SwapChainNeedsInitialResize() {
+  return ActiveBackend() == Backend::kVulkan;
+}
 
-const char* BackendName();
-
+// Everything below acts on the active backend.
 namespace backend {
 
 // Enables the D3D12 debug layer before the interface exists. Plume only does
 // it itself when its own translation unit is built without NDEBUG, which no
 // RelWithDebInfo build is. Returns false, and says why, when the request cannot
-// be honoured (another backend, or no SDK layers installed). With the Agility
-// SDK the layers DLL must be the one from the same release, next to
-// D3D12Core.dll in .\D3D12\; the system's copy belongs to the OS runtime.
+// be honoured (Vulkan, or no SDK layers installed). With the Agility SDK the
+// layers DLL must be the one from the same release, next to D3D12Core.dll in
+// .\D3D12\; the system's copy belongs to the OS runtime.
 bool EnableDebugLayer();
 
 // After the device exists, with the debug layer on: routes the layer's

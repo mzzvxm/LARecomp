@@ -3,11 +3,12 @@
 // MCLA GPU renderer -- host shader blobs
 // ===========================================================================
 // The renderer's own shaders (src/gpu/hlsl), compiled at build time by the dxc
-// of thirdparty/dxc-bin into the format of this build's backend: DXIL for
-// D3D12, SPIR-V for Vulkan (src/gpu/CMakeLists.txt larecomp_gpu_host_shader).
-// Each generated header defines one byte array, g_<stem>_<dxil|spirv>; they
-// have internal linkage, so this header is included by the one translation unit
-// that creates the shaders of a subsystem.
+// of thirdparty/dxc-bin once per backend the build has: DXIL for D3D12, SPIR-V
+// for Vulkan (src/gpu/CMakeLists.txt larecomp_gpu_host_shader). Each generated
+// header defines one byte array, g_<stem>_<dxil|spirv>; they have internal
+// linkage, so this header is included by the one translation unit that creates
+// the shaders of a subsystem. The blob handed out is the active backend's
+// (backend.h), so these are called after Device::Initialize.
 // ===========================================================================
 
 #include <cstddef>
@@ -15,7 +16,7 @@
 
 #include "backend.h"
 
-#if defined(LARECOMP_GPU_D3D12)
+#if defined(LARECOMP_GPU_HAS_D3D12)
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
@@ -24,8 +25,8 @@
 #include "resolve_color_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
 #include "resolve_depth_ps.hlsl.dxil.h"
-#define MCLA_GPU_HOST_SHADER(stem) g_##stem##_dxil
-#else
+#endif
+#if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
@@ -34,7 +35,6 @@
 #include "resolve_color_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
 #include "resolve_depth_ps.hlsl.spirv.h"
-#define MCLA_GPU_HOST_SHADER(stem) g_##stem##_spirv
 #endif
 
 namespace mcla::gpu {
@@ -45,8 +45,20 @@ struct HostShaderBlob {
   const char* name;
 };
 
-#define MCLA_GPU_HOST_SHADER_BLOB(stem) \
-  HostShaderBlob{MCLA_GPU_HOST_SHADER(stem), sizeof(MCLA_GPU_HOST_SHADER(stem)), #stem}
+#define MCLA_GPU_HOST_SHADER_DXIL(stem) \
+  HostShaderBlob{g_##stem##_dxil, sizeof(g_##stem##_dxil), #stem}
+#define MCLA_GPU_HOST_SHADER_SPIRV(stem) \
+  HostShaderBlob{g_##stem##_spirv, sizeof(g_##stem##_spirv), #stem}
+// The active backend's blob of `stem`.
+#if defined(LARECOMP_GPU_HAS_D3D12) && defined(LARECOMP_GPU_HAS_VULKAN)
+#define MCLA_GPU_HOST_SHADER_BLOB(stem)                                \
+  (ActiveBackend() == Backend::kD3D12 ? MCLA_GPU_HOST_SHADER_DXIL(stem) \
+                                      : MCLA_GPU_HOST_SHADER_SPIRV(stem))
+#elif defined(LARECOMP_GPU_HAS_D3D12)
+#define MCLA_GPU_HOST_SHADER_BLOB(stem) MCLA_GPU_HOST_SHADER_DXIL(stem)
+#else
+#define MCLA_GPU_HOST_SHADER_BLOB(stem) MCLA_GPU_HOST_SHADER_SPIRV(stem)
+#endif
 
 inline HostShaderBlob OverlayVertexShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(overlay_vs);

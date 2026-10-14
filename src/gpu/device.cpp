@@ -14,6 +14,32 @@ bool Device::Initialize(const Options& options) {
   if (device_) {
     return true;
   }
+  requested_backend_ = options.backend;
+  // The backend asked for, then the other one the build has. Running another
+  // than the one asked for is never quiet: logged here, and the caller tells
+  // the user (fell_back()).
+  const Backend order[2] = {
+      options.backend,
+      options.backend == Backend::kD3D12 ? Backend::kVulkan : Backend::kD3D12};
+  for (const Backend backend : order) {
+    if (!BackendCompiled(backend)) {
+      continue;
+    }
+    if (backend != options.backend) {
+      REXLOG_ERROR("[gpu] {} could not be started (graphics_backend asks for it; the reason is "
+                   "above); trying {}",
+                   BackendName(options.backend), BackendName(backend));
+    }
+    SelectBackend(backend);
+    if (Open(options)) {
+      return true;
+    }
+  }
+  REXLOG_ERROR("[gpu] no graphics backend could be started");
+  return false;
+}
+
+bool Device::Open(const Options& options) {
   // After nothing, before the interface: the debug layer has to be enabled
   // before the first D3D12 device of the process exists.
   const bool debug_layer = options.debug_layer && backend::EnableDebugLayer();
@@ -48,7 +74,7 @@ bool Device::Initialize(const Options& options) {
   // sets (descriptors.h), which need descriptor indexing. A device without
   // either cannot run a single draw, so it is refused here rather than at the
   // first one. D3D12 has both by definition at the feature level Plume asks for.
-  if (kBackend == Backend::kVulkan) {
+  if (ActiveBackend() == Backend::kVulkan) {
     const auto& caps = device_->getCapabilities();
     const char* missing = !caps.bufferDeviceAddress ? "buffer device address"
                           : !caps.descriptorIndexing ? "descriptor indexing"
@@ -191,10 +217,11 @@ std::unique_ptr<plume::RenderShader> Device::CreateShader(const void* data, uint
     REXLOG_ERROR("[gpu] shader '{}' has no bytecode", name ? name : "?");
     return nullptr;
   }
-  auto shader = device_->createShader(data, size, entry_point, kHostShaderFormat);
+  const plume::RenderShaderFormat format = HostShaderFormat();
+  auto shader = device_->createShader(data, size, entry_point, format);
   if (backend::IsNullBacked(shader.get())) {
     REXLOG_ERROR("[gpu] shader '{}' failed: {} bytes of {}", name ? name : "?", size,
-                 kHostShaderFormat == plume::RenderShaderFormat::DXIL ? "DXIL" : "SPIR-V");
+                 format == plume::RenderShaderFormat::DXIL ? "DXIL" : "SPIR-V");
     ReportCreationFailure("shader", name);
     return nullptr;
   }

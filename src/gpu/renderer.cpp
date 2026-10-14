@@ -9,6 +9,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
+#include <rex/system.h>
 #include <rex/ui/keybinds.h>
 
 #include "gpu.h"
@@ -574,6 +575,30 @@ std::atomic<bool> g_holds_retired_fence{false};
 std::shared_ptr<OverlayChannel> g_overlay_channel;
 OverlayDrawer* g_overlay_drawer = nullptr;  // owned by the SDK (immediate_drawer_)
 std::shared_ptr<OverlayHost> g_overlay_host;
+// What graphics_backend asks this renderer for (RequestedBackend), decided with
+// Enabled().
+Backend g_requested_backend = kDefaultBackend;
+
+// The SDK's graphics_backend -- the cvar that also picks the
+// emulated GPU's backend -- as a backend this build has.
+Backend RequestedBackend() {
+  if (!rex::cvar::GetFlagInfo("graphics_backend")) {
+    REXLOG_INFO("[gpu] this SDK has no graphics_backend cvar; {} runs",
+                BackendName(kDefaultBackend));
+    return kDefaultBackend;
+  }
+  const std::string text = rex::cvar::GetFlagByName("graphics_backend");
+  Backend backend = kDefaultBackend;
+  if (!ParseBackend(text, backend)) {
+    REXLOG_ERROR("[gpu] graphics_backend = \"{}\" is not auto, d3d12 or vulkan; {} runs", text,
+                 BackendName(backend));
+  } else if (!BackendCompiled(backend)) {
+    REXLOG_ERROR("[gpu] graphics_backend = \"{}\", but this build has no {}; {} runs", text,
+                 BackendName(backend), BackendName(kDefaultBackend));
+    backend = kDefaultBackend;
+  }
+  return backend;
+}
 
 bool ResolveEnabled() {
   if (!REXCVAR_GET(mcla_gpu)) {
@@ -592,7 +617,9 @@ bool ResolveEnabled() {
     REXLOG_ERROR("[gpu] mcla_gpu is set but needs {}; staying on the existing renderer", missing);
     return false;
   }
-  REXLOG_INFO("[gpu] mcla_gpu: the Plume renderer ({}) owns presentation", BackendName());
+  g_requested_backend = RequestedBackend();
+  REXLOG_INFO("[gpu] mcla_gpu: the Plume renderer ({}) owns presentation",
+              BackendName(g_requested_backend));
   return true;
 }
 
@@ -638,11 +665,22 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   options.device.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
   options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
   options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
+  options.device.backend = g_requested_backend;
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");
     g_overlay_host->Disconnect();
     return false;
+  }
+  if (g_renderer->device().fell_back()) {
+    // The log has the reason; the player chose the API in the menu and would
+    // otherwise never learn that another one runs.
+    rex::ShowSimpleMessageBox(
+        rex::SimpleMessageBoxType::Warning,
+        std::string(BackendName(g_renderer->device().requested_backend())) +
+            " could not be started on this machine, so the game runs on " + BackendName() +
+            ". The reason is in the log. The API is chosen in the pause menu: RENDERER OPTIONS, "
+            "GRAPHICS API (graphics_backend in larecomp.toml).");
   }
   g_active.store(g_renderer, std::memory_order_release);
 

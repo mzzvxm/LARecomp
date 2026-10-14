@@ -35,7 +35,7 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
     return false;
   }
   swap_chain_->setVsyncEnabled(options.vsync);
-  if constexpr (kSwapChainNeedsInitialResize) {
+  if (SwapChainNeedsInitialResize()) {
     swap_chain_->resize();
   }
   if (swap_chain_->isEmpty()) {
