@@ -58,6 +58,7 @@ namespace mcla::gpu {
 
 class BindlessHeap;
 class GuestLayout;
+class PassTiming;
 class ResolveCache;
 class Samplers;
 class TextureCache;
@@ -72,7 +73,8 @@ class Scene {
 
   void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
                   GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
-                  ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap);
+                  ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap,
+                  PassTiming& pass_timing);
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -172,6 +174,11 @@ class Scene {
   ResolveCache* resolve_ = nullptr;
   const GuestLayout* layout_ = nullptr;
   const BindlessHeap* heap_ = nullptr;
+  PassTiming* pass_timing_ = nullptr;
+  // The target the last pass mark named (PassTiming): a clear or a resolve in
+  // between leaves the same framebuffer bound, and the draws after it are a new
+  // stretch of that pass.
+  plume::RenderFramebuffer* marked_framebuffer_ = nullptr;
   SharedConstants base_shared_{};  // the texture tables on the null textures
 
   // The frame being recorded.

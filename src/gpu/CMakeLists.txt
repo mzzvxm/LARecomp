@@ -29,6 +29,7 @@ add_library(larecomp_gpu OBJECT
     memory_census.cpp
     native_window.cpp
     overlay.cpp
+    pass_timing.cpp
     pipelines.cpp
     present.cpp
     region_index.cpp

@@ -69,6 +69,7 @@ class Device;
 class EdramTargets;
 class FrameRing;
 class HostPasses;
+class PassTiming;
 
 class ResolveCache {
  public:
@@ -96,7 +97,8 @@ class ResolveCache {
   ResolveCache& operator=(const ResolveCache&) = delete;
 
   bool Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, GuestMemory& memory,
-                  TextureCache& textures, EdramTargets& edram, HostPasses& passes);
+                  TextureCache& textures, EdramTargets& edram, HostPasses& passes,
+                  PassTiming& pass_timing);
   // GPU idle, FrameRing drained, before the BindlessHeap shuts down.
   void Shutdown();
 
@@ -188,6 +190,7 @@ class ResolveCache {
   TextureCache* textures_ = nullptr;
   EdramTargets* edram_ = nullptr;
   HostPasses* passes_ = nullptr;
+  PassTiming* pass_timing_ = nullptr;
   // Pixel shaders: [depth][msaa].
   std::unique_ptr<plume::RenderShader> shaders_[2][2];
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> pipelines_;

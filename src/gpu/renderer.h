@@ -60,6 +60,7 @@
 #include "layout.h"
 #include "memory_census.h"
 #include "overlay.h"
+#include "pass_timing.h"
 #include "pipelines.h"
 #include "present.h"
 #include "render_thread.h"
@@ -172,6 +173,7 @@ class Renderer final : public RenderThread::Executor {
   PresentPass present_;     // the guest's front buffer on the window
   OverlayRenderer overlay_;
   GpuTiming timing_;
+  PassTiming pass_timing_;  // per-pass GPU time, mcla_gpu_pass_timing
   FrameCapture capture_;
   RenderThread thread_;
 

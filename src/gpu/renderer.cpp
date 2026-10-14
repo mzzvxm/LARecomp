@@ -37,6 +37,14 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
+    mcla_gpu_pass_timing, false, "MCLA/GPU",
+    "Measure GPU time per pass: a timestamp at every pass boundary (target change, resolve, "
+    "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
+    "A measurement for the performance work, off by "
+    "default.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
     mcla_gpu_present_wait, false, "MCLA/GPU",
     "Pace presents with the swap chain's latency wait (DXGI waitable object / "
     "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
@@ -131,12 +139,13 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   if (ok) {
     edram_.Initialize(device_, frames_, heap_);
     ok = passes_.Initialize(device_, heap_) &&
-         resolve_.Initialize(device_, frames_, heap_, guest_memory_, textures_, edram_, passes_);
+         resolve_.Initialize(device_, frames_, heap_, guest_memory_, textures_, edram_, passes_,
+                             pass_timing_);
   }
   if (ok) {
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
-                      guest_layout_, heap_);
+                      guest_layout_, heap_, pass_timing_);
     ok = swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_,
                              swap_chain_.format()) &&
@@ -145,6 +154,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     timing_.Initialize(device_);
+    pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     capture_.Initialize();
     census_.SetEnabled(REXCVAR_GET(mcla_gpu_memory_census));
     validate_ = REXCVAR_GET(mcla_gpu_validate);
@@ -153,6 +163,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (!ok) {
     capture_.Shutdown();
+    pass_timing_.Shutdown();
     timing_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
@@ -225,6 +236,7 @@ void Renderer::Shutdown() {
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
   capture_.Shutdown();
+  pass_timing_.Shutdown();
   timing_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
@@ -346,6 +358,7 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   const uint32_t slot = frames_.slot();
   // Outside any render pass: timestamp pool reset, one-time heap transitions.
   timing_.BeginFrame(list, slot);
+  pass_timing_.BeginFrame(list, slot);
   heap_.RecordPendingBarriers(list);
   scene_.BeginFrame(list, slot);
   return list;
@@ -367,8 +380,10 @@ void Renderer::SubmitFrameWithoutPresent() {
   const uint32_t slot = frames_.slot();
   scene_.EndFrame(list);
   timing_.CompleteFrame(list, slot);
+  pass_timing_.CompleteFrame(list, slot);
   if (frames_.Submit(nullptr, 0, nullptr, 0)) {
     timing_.OnSubmitted(slot);
+    pass_timing_.OnSubmitted(slot);
   }
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
@@ -471,6 +486,7 @@ void Renderer::ExecutePresent(PresentSource source) {
     return;
   }
   timing_.OnSubmitted(slot);
+  pass_timing_.OnSubmitted(slot);
 
   if (!swap_chain_.Present(image)) {
     // DXGI and Vulkan both report a chain that no longer matches the window
@@ -496,6 +512,7 @@ void Renderer::ExecutePresent(PresentSource source) {
 void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image) {
   // Outside the back buffer's pass: the front buffer's texture (an upload when
   // it comes from memory) and the gamma table.
+  pass_timing_.Mark(list, "present");
   present_.Prepare(list, slot);
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -505,12 +522,14 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
   present_.Draw(list, swap_chain_.width(), swap_chain_.height());
   timing_.Mark(list, slot, GpuTiming::kOverlayBegin);
+  pass_timing_.Mark(list, "overlay");
   overlay_draws_ += overlay_.Draw(list, slot, swap_chain_.width(), swap_chain_.height());
   timing_.Mark(list, slot, GpuTiming::kOverlayEnd);
   list->setFramebuffer(nullptr);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
   timing_.Mark(list, slot, GpuTiming::kFrameEnd);
+  pass_timing_.CompleteFrame(list, slot);
 }
 
 void Renderer::ReportFrameStats() {
@@ -544,6 +563,9 @@ void Renderer::ReportFrameStats() {
       last_fence_.load(std::memory_order_relaxed), fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
+  if (pass_timing_.enabled()) {
+    REXLOG_INFO("[gpu] {}", pass_timing_.TakeSummary());
+  }
   overlay_draws_ = 0;
   for (uint64_t& count : records_) {
     count = 0;

@@ -24,6 +24,7 @@
 #include "draw_state.h"
 #include "edram.h"
 #include "format.h"
+#include "pass_timing.h"
 #include "frame.h"
 #include "host_passes.h"
 #include "host_shaders.h"
@@ -63,7 +64,8 @@ ResolveCache::~ResolveCache() {
 
 bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                               GuestMemory& memory, TextureCache& textures, EdramTargets& edram,
-                              HostPasses& passes) {
+                              HostPasses& passes, PassTiming& pass_timing) {
+  pass_timing_ = &pass_timing;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -645,6 +647,13 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       }
       edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
       TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
+      if (pass_timing_->enabled()) {
+        const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
+                                        : format::ColorTargetFormat(src_format).guest_name;
+        const char* to = format::TextureHost(key.format).guest_name;
+        pass_timing_->Mark(list, std::format("resolve {} {}x -> {} {}x{}", from, samples, to,
+                                             key.width, key.height));
+      }
       list->setFramebuffer(framebuffer);
       const plume::RenderViewport viewport(0.0f, 0.0f, float(level_width), float(level_height));
       list->setViewports(&viewport, 1);

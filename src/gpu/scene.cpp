@@ -16,6 +16,7 @@
 #include "format.h"
 #include "layout.h"
 #include "native_gfx/vertex_declaration.h"
+#include "pass_timing.h"
 #include "resolve.h"
 #include "samplers.h"
 #include "textures.h"
@@ -73,12 +74,30 @@ const char* ConversionName(uint32_t conversion) {
   return conversion < std::size(kNames) ? kNames[conversion] : "?";
 }
 
+// The pass a draw opens, for PassTiming: the targets' pitch and
+// samples, then each colour target and the depth one as format@base.
+std::string PassLabel(EdramTargets::Target* const* colors, uint32_t count,
+                      const EdramTargets::Target* depth) {
+  const EdramKey& first = count ? colors[0]->key : depth->key;
+  std::string label = std::format("{} {}x", first.pitch, first.samples);
+  for (uint32_t i = 0; i < count; ++i) {
+    const char* name = format::ColorTargetFormat(colors[i]->key.format).guest_name;
+    label += std::format(" {}@{}", name, colors[i]->key.base_tiles);
+  }
+  if (depth) {
+    const char* name = format::DepthTargetFormat(depth->key.format).guest_name;
+    label += std::format(" / {}@{}", name, depth->key.base_tiles);
+  }
+  return label;
+}
+
 }  // namespace
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
                        GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                        ResolveCache& resolve, const GuestLayout& layout,
-                       const BindlessHeap& heap) {
+                       const BindlessHeap& heap, PassTiming& pass_timing) {
+  pass_timing_ = &pass_timing;
   upload_ = &upload;
   pipelines_ = &pipelines;
   samplers_ = &samplers;
@@ -110,6 +129,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   resolve_->BeginFrame();
   ++frame_serial_;
   ResetListState();
+  marked_framebuffer_ = nullptr;
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
@@ -121,6 +141,8 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
   }
+  pass_timing_->Mark(list, "end-of-frame copies");
+  marked_framebuffer_ = nullptr;
   geometry_->EndFrame(list);
   ResetListState();
   list_ = nullptr;
@@ -141,6 +163,7 @@ void Scene::OnListChanged(plume::RenderCommandList* list) {
   list_ = list;
   draws_since_flush_ = 0;
   ResetListState();
+  marked_framebuffer_ = nullptr;
 }
 
 void Scene::BindFramebuffer(plume::RenderCommandList* list,
@@ -627,6 +650,10 @@ Scene::Skip Scene::Record(PreparedDraw& d, plume::RenderCommandList* list, bool*
   if (!framebuffer) {
     return Skip::kFramebuffer;
   }
+  if (pass_timing_->enabled() && marked_framebuffer_ != framebuffer) {
+    pass_timing_->Mark(list, PassLabel(colors, d.key.color_count, depth));
+    marked_framebuffer_ = framebuffer;
+  }
   BindFramebuffer(list, framebuffer);
 
   if (!bound_.layout_bound) {
@@ -782,6 +809,8 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     list->setFramebuffer(nullptr);
     bound_.framebuffer = nullptr;
   }
+  pass_timing_->Mark(list, "clear");
+  marked_framebuffer_ = nullptr;
   for (uint32_t i = 0; i < kColorTargetCount; ++i) {
     if (!(flags & (1u << i)) || !surfaces[i]) {
       continue;
@@ -862,6 +891,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
   ResetListState();
+  marked_framebuffer_ = nullptr;
 }
 
 void Scene::OnTilingBegin(const TilingBeginRecord&, plume::RenderCommandList*) {
