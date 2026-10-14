@@ -34,7 +34,10 @@
 // (re-creating textures twice a frame would be the wrong cost) and dies after
 // kEvictFrames frames unused. A CPU write into an active product's range (the
 // write watch, armed at every activation) deactivates it too: the fetch goes
-// back to memory, which is what the guest wrote there.
+// back to memory, which is what the guest wrote there (logged four times,
+// counted). Seen while driving: the vinyl work area (1024x1024 and 512x512 at
+// one address), which the CPU locks and distills in place -- it reads memory
+// that does not hold the image until M5's write-back.
 //
 // Not done (logged once, counted; none in the measured frames): 3D or array
 // destinations, a slice other than 0, destination formats outside the
@@ -198,6 +201,7 @@ class ResolveCache {
   std::vector<Product*> scratch_hits_;
   uint64_t frame_ = 1;
   std::array<uint32_t, size_t(Failure::kCount)> failures_logged_{};
+  uint32_t cpu_writes_logged_ = 0;
 
   struct Stats {
     uint64_t resolves = 0;

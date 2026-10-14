@@ -350,7 +350,9 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
     if (slot == kInvalidBindlessSlot) {
       return Fail(key, "no view or bindless slot for the resolve product", "");
     }
-    return bound(slot, false);
+    Binding binding = bound(slot, false);
+    binding.from_product = true;
+    return binding;
   }
   // Another active product over the same memory: the guest reads rendered
   // memory with another shape (M5's reinterpretation). Reported; memory is

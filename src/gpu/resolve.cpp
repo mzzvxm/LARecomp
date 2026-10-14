@@ -203,11 +203,18 @@ void ResolveCache::DrainInvalidations() {
   for (Product* p : scratch_hits_) {
     if (p->active) {
       // The guest wrote into what it rendered: its own bytes win (M5 writes the
-      // image back so a partial write merges instead).
+      // image back so a partial write merges instead). MCLA's vinyl work area
+      // is locked and distilled in place by the CPU: what it read
+      // there was not the image, since memory does not hold it until M5.
       ++stats_.deactivated_by_cpu;
-      REXLOG_WARN("[gpu] resolve: the CPU wrote into the product {}; it is deactivated and the "
-                  "texture is decoded from memory again",
-                  p->key.Describe());
+      if (cpu_writes_logged_ < 4) {
+        ++cpu_writes_logged_;
+        REXLOG_WARN("[gpu] resolve: the CPU wrote into the product {}; it is deactivated and the "
+                    "texture is decoded from memory again -- whatever the CPU read there was not "
+                    "the image (write-back on Lock, M5){}",
+                    p->key.Describe(),
+                    cpu_writes_logged_ == 4 ? " (further ones counted, not logged)" : "");
+      }
       Deactivate(*p);
     }
   }

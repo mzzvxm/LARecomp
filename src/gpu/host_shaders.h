@@ -19,6 +19,7 @@
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
+#include "present_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
 #include "resolve_color_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
@@ -28,6 +29,7 @@
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
+#include "present_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
 #include "resolve_color_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
@@ -56,6 +58,10 @@ inline HostShaderBlob OverlayPixelShader() {
 
 inline HostShaderBlob FullscreenVertexShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(fullscreen_vs);
+}
+
+inline HostShaderBlob PresentPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(present_ps);
 }
 
 // The resolve conversion (resolve_ps.hlsl) by source kind.

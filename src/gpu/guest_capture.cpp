@@ -859,6 +859,16 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
           !CopyGuest(base, front_buffer, r->front_buffer_header, sizeof(r->front_buffer_header))) {
         r->flags |= kPresentFrontBufferUnreadable;
       }
+      // What the Swap programs the display with besides the front buffer: the fetch's swizzle and signs, and the gamma table.
+      uint8_t control[4];
+      if (CopyGuest(base, device + guest::kDevSwapControl, control, sizeof(control))) {
+        r->swap_control = LoadBe32(control);
+      } else {
+        r->flags |= kPresentSwapControlUnreadable;
+      }
+      if (!CopyGuest(base, device + guest::kDevGammaRamp, r->gamma_ramp, sizeof(r->gamma_ramp))) {
+        r->flags |= kPresentGammaRampUnreadable;
+      }
       CountRecord(sizeof(PresentRecord));
       frame_.capture_ns += ElapsedNs(t0);
       r->stats = frame_;

@@ -19,8 +19,13 @@
 // clears, resolves, tiled rendering, the present), shader identities are exact,
 // constants travel as versioned 64-byte blocks, and the render thread decodes
 // and validates all of it against the shader pack (v4 since M4.1), the guest shader layout
-// and the format tables. Nothing is drawn from it yet: each frame is still
-// cleared to black under the overlays until M4..
+// and the format tables..
+//
+// Milestone M4: the render thread draws it -- geometry
+// (M4.4), the EDRAM targets with clears and tiling (M4.5), textures from guest
+// memory, the resolve bridge and the guest's front buffer through the display
+// gamma table (M4.6). Resolves written back into guest memory for the CPU, and
+// memory read in another shape than it was resolved in, are M5.
 //
 // Call order (all on the UI thread except where noted):
 //   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer

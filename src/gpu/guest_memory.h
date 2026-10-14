@@ -91,8 +91,9 @@ class GuestMemory {
   // physical heap alias that holds it, i.e. Arm really watches all of it.
   bool IsWatchable(uint32_t physical, uint32_t length);
 
-  // Render thread, during initialization (before anything is armed): a queue
-  // that receives every notified range from now on. `name` is for the stats.
+  // Render thread: a queue that receives every range notified from now on --
+  // not the ones before, so a cache subscribes before it arms anything (the
+  // census subscribes on its first use). `name` is for the stats.
   // Every subscriber must drain regularly. kMaxSubscribers is a hard limit
   // (logged, and the caller gets no queue: it must not rely on the watch).
   static constexpr Subscriber kNoSubscriber = UINT32_MAX;

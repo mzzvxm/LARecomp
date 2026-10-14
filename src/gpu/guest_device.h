@@ -128,6 +128,14 @@ inline constexpr uint32_t kDevTileCount = 12748;          // BeginTiling sub_824
 inline constexpr uint32_t kDevTileRects = 12752;          // up to 15 x 16 B
 inline constexpr uint32_t kMaxTiles = 15;
 inline constexpr uint32_t kDevTilingExtent = 13180;       // max x1, max y1 over the tiles
+// D3DDevice_Swap (sub_82419E98): the dword whose bits 9-16 become
+// the front buffer fetch's signs, 17 its num_format and 18-29 its swizzle
+// (written once, by the device's creation sub_82426028: format | 0x28280100);
+// and the display's gamma table, 3 x 256 big-endian uint16 (R, G, B), 10 bits
+// << 6, written by D3DDevice_SetGammaRamp (sub_82416000).
+inline constexpr uint32_t kDevSwapControl = 13608;
+inline constexpr uint32_t kDevGammaRamp = 15004;
+inline constexpr uint32_t kGammaRampBytes = 3 * 256 * 2;
 
 // --- guest objects
 inline constexpr uint32_t kSurfaceHeaderBytes = 48;   // D3DSurface (memory: project_mcla_edram_surface_model)

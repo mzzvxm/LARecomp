@@ -81,6 +81,8 @@ constexpr uint32_t AlignRecord(uint32_t bytes) {
 
 enum PresentFlags : uint32_t {
   kPresentFrontBufferUnreadable = 1u << 0,
+  kPresentSwapControlUnreadable = 1u << 1,
+  kPresentGammaRampUnreadable = 1u << 2,
 };
 
 // The guest capture's own measurements for the frame this present ends, so the
@@ -103,9 +105,10 @@ struct PresentRecord {
   uint32_t device = 0;
   uint32_t front_buffer = 0;  // D3DDevice_Swap r4: the D3DTexture EndFrame resolved RT0 into
   uint32_t flags = 0;
-  uint32_t reserved = 0;
+  uint32_t swap_control = 0;  // dev+13608, host order (guest_device.h kDevSwapControl)
   GuestFrameStats stats;
   uint8_t front_buffer_header[guest::kTextureHeaderBytes] = {};
+  uint8_t gamma_ramp[guest::kGammaRampBytes] = {};  // dev+15004, raw big-endian
 };
 
 // --- draw ----------------------------------------------------------------------

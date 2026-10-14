@@ -175,6 +175,7 @@ class TextureCache {
   struct Binding {
     uint32_t slot = kNullTexture2DSlot;  // with kTextureGammaBit when asked
     bool per_frame = false;              // good for this frame only
+    bool from_product = false;           // a resolve product, not guest memory
   };
 
   TextureCache() = default;

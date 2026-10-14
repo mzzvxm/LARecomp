@@ -23,10 +23,12 @@ REXCVAR_DEFINE_BOOL(
     mcla_gpu, false, "MCLA/GPU",
     "Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs "
     "mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so "
-    "neither the SDK presenter nor the legacy runtime can run beside it. Milestone M4 in "
-    "progress: every guest draw is prepared on the render thread (state, constants, pipeline, "
-    "samplers) but not drawn yet, so each frame is still cleared to black under the SDK "
-    "overlays.")
+    "neither the SDK presenter nor the legacy runtime can run beside it. Since milestone M4.6 it "
+    "draws the guest's frames: draws into the EDRAM targets, textures from guest memory and "
+    "from resolves, the front buffer through the display's gamma table. Not yet (logged when "
+    "met): resolves written back into guest memory for the CPU to read (photos, vinyls) and "
+    "memory read in another shape than it was resolved in -- milestone M5. "
+    "")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
@@ -135,6 +137,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_);
     ok = swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
+         present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_,
+                             swap_chain_.format()) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
                              swap_chain_.format());
   }
@@ -150,6 +154,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     capture_.Shutdown();
     timing_.Shutdown();
     overlay_.Shutdown();
+    present_.Shutdown();
     swap_chain_.Shutdown();
     textures_.Shutdown();
     resolve_.Shutdown();
@@ -221,6 +226,7 @@ void Renderer::Shutdown() {
   capture_.Shutdown();
   timing_.Shutdown();
   overlay_.Shutdown();
+  present_.Shutdown();
   swap_chain_.Shutdown();
   textures_.Shutdown();
   resolve_.Shutdown();
@@ -256,6 +262,7 @@ void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
       }
       scene_.OnPresent();
       census_.OnPresent();
+      present_.OnGuestPresent(*reinterpret_cast<const PresentRecord*>(payload));
       ExecutePresent(PresentSource::kGuest);
       return;
     case RecordType::kDraw:
@@ -486,18 +493,16 @@ void Renderer::ExecutePresent(PresentSource source) {
 }
 
 void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image) {
-  if (!reported_no_scene_) {
-    reported_no_scene_ = true;
-    REXLOG_WARN(
-        "[gpu] the guest's draws are prepared but not drawn yet (milestone M4 in progress: "
-        "buffers M4.4, EDRAM targets M4.5, textures and present M4.6): each frame is cleared to "
-        "black under the SDK overlays.");
-  }
+  // Outside the back buffer's pass: the front buffer's texture (an upload when
+  // it comes from memory) and the gamma table.
+  present_.Prepare(list, slot);
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::COLOR_WRITE));
   list->setFramebuffer(swap_chain_.framebuffer(image));
+  // Black around the letterboxed front buffer.
   list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
+  present_.Draw(list, swap_chain_.width(), swap_chain_.height());
   timing_.Mark(list, slot, GpuTiming::kOverlayBegin);
   overlay_draws_ += overlay_.Draw(list, slot, swap_chain_.width(), swap_chain_.height());
   timing_.Mark(list, slot, GpuTiming::kOverlayEnd);
@@ -537,6 +542,7 @@ void Renderer::ReportFrameStats() {
       records_[size_t(RecordType::kTilingEnd)], records_[size_t(RecordType::kFence)],
       last_fence_.load(std::memory_order_relaxed), fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
+  REXLOG_INFO("[gpu] {}", present_.TakeSummary());
   overlay_draws_ = 0;
   for (uint64_t& count : records_) {
     count = 0;

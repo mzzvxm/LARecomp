@@ -4,8 +4,9 @@
 // at itself plus `offset` and writes what the console's resolve writes to
 // memory, as the texture fetch of the destination then reads it
 // (Xenia's resolve.xesli and
-// resolve_full_*.xesli: sum of the selected samples, times the exponent bias
-// halved per averaging step, red/blue swapped after the bias, packed with the
+// resolve_full_*.xesli, Copyright Ben Vanik and the Xenia authors,
+// BSD-3-Clause: sum of the selected samples, times the exponent bias halved
+// per averaging step, red/blue swapped after the bias, packed with the
 // D3D11.3 UNORM rule; depth copied raw as depth24 << 8 | stencil).
 //
 // Variants (compile-time): RESOLVE_DEPTH (a depth/stencil source) and

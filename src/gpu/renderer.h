@@ -8,14 +8,15 @@
 //   Initialize:  Device -> FrameRing -> BindlessHeap -> GuestLayout ->
 //                ShaderStore -> Samplers -> Pipelines -> UploadRing ->
 //                GeometryCache -> EdramTargets -> HostPasses -> ResolveCache ->
-//                TextureCache -> Scene -> SwapChain ->
+//                TextureCache -> Scene -> SwapChain -> PresentPass ->
 //                OverlayRenderer -> GpuTiming -> FrameCapture -> RenderThread
 //   Shutdown:    RenderThread stopped (deadline) -> FrameValidator::Finish ->
 //                Scene::Finish -> MemoryCensus::Finish -> GuestMemory
 //                (callback unregistered) -> FrameRing::WaitIdle (drains every
 //                retirement, running release actions while everything they
 //                name is alive) -> FrameCapture -> GpuTiming -> OverlayRenderer
-//                -> SwapChain -> TextureCache -> ResolveCache -> HostPasses ->
+//                -> PresentPass -> SwapChain -> TextureCache -> ResolveCache ->
+//                HostPasses ->
 //                EdramTargets -> GeometryCache -> UploadRing ->
 //                Pipelines -> Samplers -> ShaderStore -> GuestLayout ->
 //                BindlessHeap -> FrameRing -> Device
@@ -60,6 +61,7 @@
 #include "memory_census.h"
 #include "overlay.h"
 #include "pipelines.h"
+#include "present.h"
 #include "render_thread.h"
 #include "resolve.h"
 #include "samplers.h"
@@ -166,6 +168,7 @@ class Renderer final : public RenderThread::Executor {
   ResolveCache resolve_;    // resolve products (owns their textures and views)
   TextureCache textures_;   // textures decoded from guest memory
   SwapChain swap_chain_;
+  PresentPass present_;     // the guest's front buffer on the window
   OverlayRenderer overlay_;
   GpuTiming timing_;
   FrameCapture capture_;
@@ -196,7 +199,6 @@ class Renderer final : public RenderThread::Executor {
   std::atomic<uint64_t> fences_published_{0};
   std::atomic<uint32_t> last_fence_{0};
   std::chrono::steady_clock::time_point last_guest_present_{};
-  bool reported_no_scene_ = false;
 };
 
 }  // namespace mcla::gpu

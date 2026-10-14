@@ -29,6 +29,7 @@ add_library(larecomp_gpu OBJECT
     native_window.cpp
     overlay.cpp
     pipelines.cpp
+    present.cpp
     region_index.cpp
     render_thread.cpp
     renderer.cpp
@@ -134,3 +135,4 @@ larecomp_gpu_host_shader(resolve_depth_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=0)
 larecomp_gpu_host_shader(resolve_depth_ms_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
+larecomp_gpu_host_shader(present_ps ps_6_0)
