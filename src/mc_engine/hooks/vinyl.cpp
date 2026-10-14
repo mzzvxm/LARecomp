@@ -50,9 +50,10 @@ REXCVAR_DEFINE_STRING(import_vinyl, "", "MCLA/Garage",
 REXCVAR_DEFINE_BOOL(vinyl_auto_readback, true, "MCLA/Garage",
     "Fix: car vinyls only load outside the Vinyl Editor when GPU readback is on "
     "(the game builds the decal texture on the CPU from a GPU composite). This "
-    "briefly enables d3d12_readback_resolve for ~1.5s around each vinyl "
-    "(re)composite (garage entry / edits) so decals appear everywhere, while "
-    "keeping readback OFF during racing for full performance. Leave ON.")
+    "briefly enables the emulated GPU's resolve readback (d3d12_ or "
+    "vulkan_readback_resolve) for ~1.5s around each vinyl (re)composite "
+    "(garage entry / edits) so decals appear everywhere, while keeping readback "
+    "OFF during racing for full performance. Leave ON.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Vinyl (decal) layer caps. MCLA stores car decals in a fixed 288-slot layer

@@ -1,10 +1,10 @@
 // The global resolve readback, held open for a while on behalf of whichever
 // feature needs the GPU's result in guest memory right now.
 //
-// d3d12_readback_resolve copies every resolve of every frame back to guest
-// memory, which costs a GPU drain per resolve, so it stays off -- larecomp_app
-// sets it false at startup -- and is only turned on around the moments that
-// read a GPU result on the CPU:
+// The emulated GPU's resolve readback copies every resolve of every frame back
+// to guest memory, which costs a GPU drain per resolve, so it stays off --
+// larecomp_app sets it false at startup -- and is only turned on around the
+// moments that read a GPU result on the CPU:
 //
 //   * vinyls: the game builds the car's decal texture on the CPU from a GPU
 //     composite (vinyl.cpp holds it while that composite runs);
@@ -16,6 +16,11 @@
 // them have run out, so a photo taken during a vinyl composite cannot close the
 // window under it, or the other way round. If the user has turned the cvar on
 // themselves, none of this touches it.
+//
+// The switch is per backend in the SDK -- d3d12_readback_resolve and
+// vulkan_readback_resolve, the same "fast" mode -- and graphics_backend decides
+// which command processor runs, so
+// both are moved together: the running one reads its own, the other is inert.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
@@ -29,7 +34,7 @@
 
 namespace {
 
-constexpr const char* kReadbackFlag = "d3d12_readback_resolve";
+constexpr const char* kReadbackFlags[] = {"d3d12_readback_resolve", "vulkan_readback_resolve"};
 
 // Hold and Tick come from different guest threads (the vinyl regen hook, the
 // photo album update, the frame), and a hold landing between Tick's "all
@@ -50,10 +55,15 @@ int64_t NowNs() {
 void HoldGlobalReadback(ReadbackClient client, int64_t hold_ns) {
     std::lock_guard lock(g_mutex);
     if (!g_forced) {
-        if (rex::cvar::GetFlagByName(kReadbackFlag) == "true") return;  // the user's choice
-        // Absent when no emulated GPU is loaded (the native renderer's no-CP
-        // mode): nothing to turn on, and nothing to turn back off later.
-        if (!rex::cvar::SetFlagByName(kReadbackFlag, "true")) return;
+        for (const char* flag : kReadbackFlags)
+            if (rex::cvar::GetFlagByName(flag) == "true") return;  // the user's choice
+        // Absent when no emulated GPU is loaded (the native renderers' no-CP
+        // mode): nothing to turn on, and nothing to turn back off later. A
+        // plugin built without one of the backends lacks that one's switch.
+        bool any = false;
+        for (const char* flag : kReadbackFlags)
+            any |= rex::cvar::SetFlagByName(flag, "true");
+        if (!any) return;
         g_forced = true;
     }
     int64_t& deadline = g_deadline_ns[size_t(client)];
@@ -67,7 +77,8 @@ void TickGlobalReadback() {
     for (int64_t deadline : g_deadline_ns) {
         if (now < deadline) return;
     }
-    rex::cvar::SetFlagByName(kReadbackFlag, "false");
+    for (const char* flag : kReadbackFlags)
+        rex::cvar::SetFlagByName(flag, "false");
     g_forced = false;
     g_deadline_ns.fill(0);
 }

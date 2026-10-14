@@ -60,7 +60,9 @@ REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
 // deletion - set it true in larecomp.toml to measure that.
 REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
     "Drive the SDK's d3d12_submit_on_primary_buffer_end. Ends a D3D12 submission at every PM4 "
-    "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650.")
+    "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650. "
+    "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
+    "default) applies instead; not measured here, so it is left alone.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Function to apply/revert the Aspect Ratio patch in GPU memory

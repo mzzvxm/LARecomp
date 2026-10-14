@@ -117,6 +117,7 @@ class LarecompApp : public rex::ReXApp {
         "readback_memexport_fast", "d3d12_pipeline_creation_threads",
         "d3d12_allow_variable_refresh_rate_and_tearing", "d3d12_tiled_shared_memory",
         "d3d12_submit_on_primary_buffer_end",
+        "graphics_backend", "vulkan_readback_resolve", "vulkan_submit_on_primary_buffer_end",
         "render_target_path_d3d12", "texture_cache_memory_limit_soft",
         "texture_cache_memory_limit_hard",
         "texture_cache_memory_limit_render_to_texture",
@@ -268,6 +269,10 @@ class LarecompApp : public rex::ReXApp {
     SetFlag("async_shader_compilation", "true");
     SetFlag("d3d12_bindless", "true");
     SetFlag("d3d12_readback_resolve", "false");
+    // Same switch for the Vulkan command processor (graphics_backend picks
+    // which one runs): off, and only opened around vinyls and photos
+    // (mc_engine/hooks/readback_window.cpp).
+    SetFlag("vulkan_readback_resolve", "false");
     SetFlag("readback_memexport_fast", "true");
 
     // BadassBaboon: Asynchronously submit D3D12 command lists as primary PM4 buffers finish.
