@@ -441,6 +441,10 @@ extern "C" REX_FUNC(D3DResource_Lock) {
       }
     }
   }
+  // The Plume renderer: a lock of a resolve destination.
+  if (mcla::gpu::Enabled()) {
+    mcla::gpu::OnGuestLock(ctx.r3.u32, ctx.r6.u32, ctx.r9.u32, ctx.r10.u32);
+  }
   // TEMP DIAG: level 0 of a locked mipped k_8_8_8_8 texture, in either renderer.
   mcla::native_gfx::DumpLockedMippedTextureForDiag(base, ctx.r3.u32, ctx.r6.u32);
   __imp__D3DResource_Lock(ctx, base);
