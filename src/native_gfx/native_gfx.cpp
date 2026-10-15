@@ -396,6 +396,14 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_continuous, false, "MCLA/NativeGfx",
                     "underneath. Requires mcla_native_gfx.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_UINT32(mcla_native_gfx_present_interval, 0, "MCLA/NativeGfx",
+                      "Sync interval for mcla_native_gfx_own_swapchain's Present: 0 = immediate "
+                      "(tearing allowed, the old behaviour), 1 = every vblank, 2 = every second "
+                      "vblank (the console's 30 FPS on a 60 Hz display). With fps_limit_auto, 1 "
+                      "makes each frame last exactly the whole number of refreshes it paces at.")
+    .range(0, 4)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
                       "Transient upload ring per in-flight frame, in MiB. 0 uses the built-in "
                       "default. Geometry region uploads share this ring with constants and "
@@ -2852,7 +2860,7 @@ bool PresentDisplayNow(ID3D12Resource* display, uint32_t fmt, uint32_t w, uint32
       g_draw_context.FlushWorker();
     }
 
-    const bool presented = sc.Present(/*vsync=*/false);
+    const bool presented = sc.Present(REXCVAR_GET(mcla_native_gfx_present_interval));
     if (presented && ended) {
       g_present_ok.fetch_add(1, std::memory_order_relaxed);
       return true;
