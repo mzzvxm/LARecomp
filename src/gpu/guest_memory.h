@@ -82,6 +82,12 @@ class GuestMemory {
   // Host pointer to `length` bytes at physical `address`, or null when any of
   // the range is not committed guest memory.
   const uint8_t* Read(uint32_t physical, uint32_t length) const;
+  // The same pointer, for writing (the write-back of a resolve
+  // product). It is the physical view, which the watch does not protect (the
+  // SDK protects the guest's virtual views): a write through it notifies no
+  // cache, so the caller only writes what the caches that hold the range
+  // already have.
+  uint8_t* WritablePhysical(uint32_t physical, uint32_t length) const;
 
   // Watches the pages of [physical, physical + length) until the next write.
   // False (logged once) when there is no memory system to watch with.

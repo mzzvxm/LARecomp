@@ -198,6 +198,12 @@ void FrameTrace::OnRecord(uint64_t frames, const RecordHeader& header, const uin
       Printf("FN seq=%" PRIu64 " dev=%08x value=%u\n", header.sequence, r.device, r.value);
       break;
     }
+    case RecordType::kLock: {
+      const auto& r = *reinterpret_cast<const LockRecord*>(payload);
+      Printf("LK seq=%" PRIu64 " res=%08x level=%u addr=%08x size=%u\n", header.sequence,
+             r.resource, r.level, r.address, r.size);
+      break;
+    }
     default:
       Printf("? type=%u seq=%" PRIu64 " size=%u\n", unsigned(header.type), header.sequence,
              header.size);

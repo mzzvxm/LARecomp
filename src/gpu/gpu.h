@@ -143,6 +143,14 @@ void OnGuestGpuHangCheck(const uint8_t* base, uint32_t device);
 // waited. Any guest thread.
 void NoteGuestFenceWait(uint64_t wait_ns);
 
+// --- CPU access to resolve destinations (M5.1) ---------------------
+
+// D3DResource_Lock (sub_82421CA0), BEFORE the original: r3 the resource, r6
+// the level, r9 the level's address (with its window), r10 its size. A range
+// that holds the destination of a resolve the capture recorded becomes a lock
+// record. Any guest thread.
+void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t size);
+
 // UI thread, on a window pixel-size change. The rebuild happens on the render
 // thread at the next present (an idle one if the guest is not swapping).
 void RequestResize();

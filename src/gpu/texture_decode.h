@@ -74,4 +74,16 @@ uint32_t HostRows(const Request& request);
 // block lay beyond `readable` (it was written as zeros).
 bool Decode(const Request& request, uint8_t* out, uint32_t out_pitch);
 
+// The inverse, for the write-back of a resolve product (M5.1):
+// host rows `in_pitch` bytes apart become the level's blocks in guest storage
+// at `out` (the request's source geometry; `data` and `readable` are unused),
+// the format's load undone and the fetch's endian swap applied, with no byte
+// written beyond `writable`. Only the loads that are their own inverse on the
+// stored bits: kCopy and kR5G5B5A1ToB5G5R5A1, without decompression, with
+// blocks no smaller than the endian's swap unit. False (nothing written)
+// otherwise, or when a block lay beyond `writable`.
+bool CanEncode(const Request& request);
+bool Encode(const Request& request, const uint8_t* in, uint32_t in_pitch, uint8_t* out,
+            uint64_t writable);
+
 }  // namespace mcla::gpu::texture_decode

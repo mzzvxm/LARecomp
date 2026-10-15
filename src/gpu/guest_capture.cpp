@@ -15,7 +15,10 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#include "draw_decode.h"
+#include "guest_memory.h"
 #include "native_gfx/guest/guest_fence.h"
+#include "textures.h"
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
 
@@ -727,11 +730,35 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
                       ? kEventHasDest
                       : kEventDestUnreadable;
     }
+    if (r->flags & kEventHasDest) {
+      NoteResolveDestination(r->dest_header);
+    }
     CopyEventState(*s, base, device, r->state, &r->flags);
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ResolveRecord));
   }
   frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+}
+
+void GuestCapture::NoteResolveDestination(const uint8_t* header) {
+  uint32_t dwords[6];
+  TextureHeaderFetch(header, dwords);
+  const TextureFetch fetch = ReadTextureFetch(dwords);
+  if (!fetch.is_texture) {
+    return;
+  }
+  uint32_t ranges[2][2];
+  TextureGuestRanges(fetch.key, ranges);
+  for (const auto& range : ranges) {
+    if (range[1] == 0) {
+      continue;
+    }
+    const std::pair<uint32_t, uint32_t> span{range[0], range[0] + range[1]};
+    if (std::find(resolve_destinations_.begin(), resolve_destinations_.end(), span) ==
+        resolve_destinations_.end()) {
+      resolve_destinations_.push_back(span);
+    }
+  }
 }
 
 void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* base,
@@ -935,6 +962,49 @@ bool GuestCapture::FenceCatchUp(const uint8_t* base, uint32_t device) {
   CountRecord(sizeof(FenceRecord));
   ++frame_.fences;
   writer.Commit(Publication::kNow);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// locks (M5.1)
+// ---------------------------------------------------------------------------
+
+bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uint32_t size) {
+  if (!enabled() || size == 0) {
+    return false;
+  }
+  const uint32_t start = GuestMemory::ToPhysical(address);
+  const uint64_t end = uint64_t(start) + size;
+  uint64_t sequence = 0;
+  {
+    std::lock_guard lock(mutex_);
+    bool destination = false;
+    for (const auto& [s, e] : resolve_destinations_) {
+      if (s < end && start < e) {
+        destination = true;
+        break;
+      }
+    }
+    if (!destination) {
+      return false;
+    }
+    // Not a draw-state event, like a fence: a pending inline draw stays open.
+    CommandStream::Writer writer(stream_);
+    uint8_t* payload = writer.Begin(RecordType::kLock, sizeof(LockRecord));
+    if (!payload) {
+      return false;
+    }
+    auto* r = new (payload) LockRecord();
+    r->resource = resource;
+    r->level = level;
+    r->address = start;
+    r->size = size;
+    CountRecord(sizeof(LockRecord));
+    sequence = writer.Commit(Publication::kWaited);
+  }
+  // The render thread writes the GPU's image of the range into memory before
+  // the CPU reads it (M5.1).
+  stream_.WaitExecuted(sequence);
   return true;
 }
 

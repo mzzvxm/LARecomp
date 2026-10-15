@@ -112,6 +112,12 @@ class GuestCapture {
   // ring not set up). Published at once.
   bool FenceCatchUp(const uint8_t* base, uint32_t device);
 
+  // D3DResource_Lock, before the original (M5.1): a lock of a range
+  // that holds the destination of a resolve recorded here becomes a lock
+  // record (true); any other lock writes nothing. `address` is the level's,
+  // with its window. Any guest thread.
+  bool Lock(uint32_t resource, uint32_t level, uint32_t address, uint32_t size);
+
  private:
   struct DeviceState {
     uint32_t device = 0;
@@ -185,6 +191,9 @@ class GuestCapture {
   void FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated);
   bool CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes);
   void CountRecord(uint32_t payload_bytes);
+  // Adds the guest ranges of a resolve's destination (its texture header) to
+  // resolve_destinations_. Under mutex_.
+  void NoteResolveDestination(const uint8_t* header);
 
   CommandStream& stream_;
   const bool verify_constants_;
@@ -197,6 +206,9 @@ class GuestCapture {
   PendingInline pending_;
   GuestFrameStats frame_;
   bool reported_device_count_ = false;
+  // Physical [start, end) of every resolve destination recorded so far (base
+  // and mips apart): what a lock is checked against. A few dozen.
+  std::vector<std::pair<uint32_t, uint32_t>> resolve_destinations_;
 };
 
 }  // namespace mcla::gpu

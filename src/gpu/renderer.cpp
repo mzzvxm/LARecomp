@@ -96,6 +96,10 @@ namespace {
 // they waited (gpu.h NoteGuestFenceWait); taken by the stats line.
 std::atomic<uint64_t> g_fence_waits{0};
 std::atomic<uint64_t> g_fence_wait_ns{0};
+// D3DResource_Lock calls, and those on a resolve destination (gpu.h
+// OnGuestLock); taken by the stats line.
+std::atomic<uint64_t> g_guest_locks{0};
+std::atomic<uint64_t> g_guest_locks_on_destinations{0};
 
 }  // namespace
 
@@ -320,6 +324,16 @@ void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
     }
     case RecordType::kFence:
       ExecuteFence(*reinterpret_cast<const FenceRecord*>(payload));
+      return;
+    case RecordType::kLock:
+      // The write-back reads the products on the GPU: what this frame recorded
+      // so far (the resolves among it) goes to the queue first, as a batch.
+      resolve_.OnLock(*reinterpret_cast<const LockRecord*>(payload), [this] {
+        if (frames_.is_open()) {
+          scene_.BeforeFlush(frames_.list());
+          scene_.OnListChanged(frames_.FlushBatch());
+        }
+      });
       return;
     case RecordType::kPad:
     case RecordType::kCount:
@@ -546,12 +560,15 @@ void Renderer::ReportFrameStats() {
   CommandStream& stream = thread_.stream();
   const uint64_t fence_waits = g_fence_waits.exchange(0, std::memory_order_relaxed);
   const uint64_t fence_wait_ns = g_fence_wait_ns.exchange(0, std::memory_order_relaxed);
+  const uint64_t locks = g_guest_locks.exchange(0, std::memory_order_relaxed);
+  const uint64_t locks_on_destinations =
+      g_guest_locks_on_destinations.exchange(0, std::memory_order_relaxed);
   REXLOG_INFO(
       "[gpu] {} presents ({} guest, {} idle), {} skipped | {} | overlay {} draws, {} textures | "
       "bindless {} of {}, samplers {} | upload {} chunks | {} batch flushes | {} retired pending "
       "| VRAM {} | {}x{} | records: {} draws, {} clears, {} resolves, {}/{} tiling, {} fences "
-      "(last {}) | guest fence waits {} ({:.1f} ms) | stream {} MiB total, {} consumer wakes, {} "
-      "producer waits",
+      "(last {}), {} locks | guest locks {} ({} on resolve destinations) | guest fence waits {} "
+      "({:.1f} ms) | stream {} MiB total, {} consumer wakes, {} producer waits",
       presented_, guest_presents_, idle_presents_, skipped_, timing_.TakeSummary(),
       overlay_draws_, overlay_.texture_count(), heap_.textures_in_use(),
       kBindlessTextureCount - kFirstAllocatableTextureSlot, heap_.samplers_in_use(),
@@ -560,7 +577,8 @@ void Renderer::ReportFrameStats() {
       records_[size_t(RecordType::kDraw)], records_[size_t(RecordType::kClear)],
       records_[size_t(RecordType::kResolve)], records_[size_t(RecordType::kTilingBegin)],
       records_[size_t(RecordType::kTilingEnd)], records_[size_t(RecordType::kFence)],
-      last_fence_.load(std::memory_order_relaxed), fence_waits, double(fence_wait_ns) / 1e6,
+      last_fence_.load(std::memory_order_relaxed), records_[size_t(RecordType::kLock)], locks,
+      locks_on_destinations, fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
   if (pass_timing_.enabled()) {
@@ -865,6 +883,15 @@ void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
 void OnGuestFenceInserted(uint32_t device, uint32_t value) {
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
     c->Fence(device, value);
+  }
+}
+
+void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t size) {
+  if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
+    g_guest_locks.fetch_add(1, std::memory_order_relaxed);
+    if (c->Lock(resource, level, address, size)) {
+      g_guest_locks_on_destinations.fetch_add(1, std::memory_order_relaxed);
+    }
   }
 }
 

@@ -43,6 +43,7 @@ const char* RecordTypeName(RecordType type) {
     case RecordType::kTilingBegin: return "tiling begin";
     case RecordType::kTilingEnd: return "tiling end";
     case RecordType::kFence: return "fence";
+    case RecordType::kLock: return "lock";
     case RecordType::kCount: break;
   }
   return "unknown";

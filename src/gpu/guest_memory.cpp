@@ -68,6 +68,15 @@ const uint8_t* GuestMemory::Read(uint32_t physical, uint32_t length) const {
   return nfx::TranslatePhysicalGuest(physical);
 }
 
+uint8_t* GuestMemory::WritablePhysical(uint32_t physical, uint32_t length) const {
+  if (length == 0 || !nfx::IsPhysicalRangeReadable(physical, length)) {
+    return nullptr;
+  }
+  auto* runtime = rex::Runtime::instance();
+  rex::memory::Memory* memory = runtime ? runtime->memory() : nullptr;
+  return memory ? memory->TranslatePhysical<uint8_t*>(physical) : nullptr;
+}
+
 bool GuestMemory::Arm(uint32_t physical, uint32_t length) {
   if (length == 0 || !Attach()) {
     return false;

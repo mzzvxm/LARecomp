@@ -42,6 +42,7 @@ enum class RecordType : uint8_t {
   kTilingBegin,
   kTilingEnd,
   kFence,
+  kLock,
   kCount,  // number of types; not a record
 };
 
@@ -320,12 +321,25 @@ struct FenceRecord {
   uint32_t value = 0;  // the device's issued counter before the insertion
 };
 
+// --- lock --------------------------------------------------------------------------
+
+// D3DResource_Lock (sub_82421CA0) of a range that holds the destination of a
+// resolve the capture recorded (M5.1): the CPU is about to read or
+// write memory the GPU's image of which lives in a resolve product.
+struct LockRecord {
+  uint32_t resource = 0;  // r3
+  uint32_t level = 0;     // r6
+  uint32_t address = 0;   // r9, made physical
+  uint32_t size = 0;      // r10
+};
+
 static_assert(std::is_trivially_copyable_v<ClearRecord>);
 static_assert(std::is_trivially_copyable_v<ResolveRecord>);
 static_assert(std::is_trivially_copyable_v<TilingBeginRecord>);
 static_assert(std::is_trivially_copyable_v<TilingEndRecord>);
 static_assert(std::is_trivially_copyable_v<PresentRecord>);
 static_assert(std::is_trivially_copyable_v<FenceRecord>);
+static_assert(std::is_trivially_copyable_v<LockRecord>);
 
 // Raw guest reads, for decoders.
 inline uint32_t LoadBe32(const uint8_t* p) {
