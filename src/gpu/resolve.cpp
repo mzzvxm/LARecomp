@@ -415,16 +415,22 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
   const auto header_dword = [&](uint32_t surface, uint32_t offset) {
     return LoadBe32(r.state.surfaces[surface] + offset);
   };
-  // The EDRAM identity of a surface slot: from the bound surface's header
-  // (+0x18 RB_SURFACE_INFO, +0x1C RB_COLOR_INFO or RB_DEPTH_INFO), which the
-  // call flushes before the copy; with no surface bound there, from the
-  // registers the device holds -- what the GPU copies from either way.
+  // The EDRAM identity of a surface slot. Pitch and samples: the device's
+  // RB_SURFACE_INFO (dev+10368) for every source -- the copy reads the
+  // registers the call flushes, and SetRenderTarget(0) writes that one from
+  // RT0's header +0x18, SetDepthStencilSurface from the depth's only while no
+  // RT0 is bound (sub_824165E0). The source's own +0x18 is the pitch it was
+  // made with, which a depth surface shared between passes does not keep;
+  // Resolve (sub_82420BA8) reads it only for the default sample select
+  // (*header_samples). Base and format: the bound surface's header +0x1C,
+  // which SetRenderTarget/SetDepthStencilSurface copy into
+  // RB_COLOR*_INFO/RB_DEPTH_INFO; with no surface bound there, those registers.
   const auto info_register = [](uint32_t surface) -> uint32_t {
     if (surface == 4) return guest::reg::kRbDepthInfo;
     return surface == 0 ? guest::reg::kRbColorInfo : guest::reg::kRbColor1Info + surface - 1;
   };
-  const auto key_of = [&](uint32_t surface, EdramKey* key, uint32_t* format,
-                          int32_t* exp_bias) {
+  const auto key_of = [&](uint32_t surface, EdramKey* key, uint32_t* format, int32_t* exp_bias,
+                          uint32_t* header_samples = nullptr) {
     const bool bound = surfaces[surface] != 0;
     if (!bound) {
       ++stats_.from_registers;
@@ -433,9 +439,16 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       return bound ? header_dword(surface, offset) : pre.Register(reg);
     };
     xreg::RB_SURFACE_INFO surface_info;
-    surface_info.value = header_or_register(0x18, guest::reg::kRbSurfaceInfo);
+    surface_info.value = pre.Register(guest::reg::kRbSurfaceInfo);
     key->pitch = uint16_t(surface_info.surface_pitch);
     key->samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+    xreg::RB_SURFACE_INFO own;
+    own.value = header_or_register(0x18, guest::reg::kRbSurfaceInfo);
+    const bool other_pitch = own.surface_pitch != surface_info.surface_pitch ||
+                             own.msaa_samples != surface_info.msaa_samples;
+    if (header_samples) {
+      *header_samples = MsaaSampleCount(own.msaa_samples);
+    }
     if (surface == 4) {
       xreg::RB_DEPTH_INFO depth_info;
       depth_info.value = header_or_register(0x1C, info_register(surface));
@@ -452,6 +465,23 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       *exp_bias = color_info.color_exp_bias;
     }
     *format = key->format;
+    if (other_pitch) {
+      ++stats_.other_pitch;
+      const uint64_t id = uint64_t(surface) | uint64_t(key->base_tiles) << 4 |
+                          uint64_t(key->format) << 16 | uint64_t(own.surface_pitch) << 24 |
+                          uint64_t(own.msaa_samples) << 38 | uint64_t(key->pitch) << 40 |
+                          uint64_t(surface_info.msaa_samples) << 54;
+      if (other_pitch_logged_.size() < 16 && other_pitch_logged_.insert(id).second) {
+        const char* name = surface == 4 ? format::DepthTargetFormat(key->format).guest_name
+                                        : format::ColorTargetFormat(key->format).guest_name;
+        REXLOG_INFO(
+            "[gpu] resolve: source {} ({}@{}) was made at pitch {} {}x and is read at the "
+            "device's pitch {} {}x",
+            surface == 4 ? "depth" : std::format("colour {}", surface), name, key->base_tiles,
+            uint32_t(own.surface_pitch), MsaaSampleCount(own.msaa_samples), key->pitch,
+            key->samples);
+      }
+    }
   };
 
   // The rectangle: the guest's, or the destination level's whole extent.
@@ -510,7 +540,8 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       EdramKey src_key;
       uint32_t src_format = 0;
       int32_t src_bias = 0;
-      key_of(source, &src_key, &src_format, &src_bias);
+      uint32_t src_header_samples = 1;
+      key_of(source, &src_key, &src_format, &src_bias, &src_header_samples);
       // The conversion: what the destination's fetch reads.
       uint32_t mode = kModeCount;
       switch (key.format) {
@@ -546,14 +577,15 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         full_mode |= kFlagSourceFloat24;
       }
 
-      // Samples: bits 4-6 of the flags, 0 = by the source's MSAA (IDB: 1x k0,
-      // 2x k01, 4x k0123), else the value - 1; Xenia's sanitizing; guest ->
-      // host order (2x: guest 0 is host 1; 4x: guest s is host
+      // Samples: bits 4-6 of the flags, 0 = by the MSAA of the source
+      // surface's own header (IDB: 1x k0, 2x k01, 4x k0123), else the value
+      // - 1; Xenia's sanitizing by the MSAA the copy reads; guest -> host
+      // order (2x: guest 0 is host 1; 4x: guest s is host
       // ((s & 1) << 1) | (s >> 1)).
       const uint32_t samples = src_key.samples;
       uint32_t select = (flags >> 4) & 7;
       if (select == 0) {
-        select = samples >= 4 ? 6 : (samples >= 2 ? 4 : 0);
+        select = src_header_samples >= 4 ? 6 : (src_header_samples >= 2 ? 4 : 0);
       } else {
         select -= 1;
       }
@@ -786,13 +818,14 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       "resolves {:.1f}/frame: {} copied ({:.2f} Mpixel/frame), {} clear only, clears {} colour {} "
       "depth | conversions [{}] | failed [{}] | products {} ({} active), created {}, activated "
       "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, misaligned {}, source "
-      "from registers {} | fetch lookups {}, found {} ({} by image)",
+      "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image)",
       double(stats_.resolves) / f, stats_.copies, double(stats_.pixels) / f / 1e6,
       stats_.clear_only, stats_.color_clears, stats_.depth_clears,
       modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
       active, stats_.created, stats_.activated, stats_.deactivated_by_overlap,
       stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.misaligned,
-      stats_.from_registers, stats_.finds, stats_.found, stats_.found_by_image);
+      stats_.from_registers, stats_.other_pitch, stats_.finds, stats_.found,
+      stats_.found_by_image);
   stats_ = Stats{};
   return text;
 }

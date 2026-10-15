@@ -40,6 +40,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <plume_render_interface.h>
 
@@ -179,6 +180,9 @@ class Scene {
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.
   plume::RenderFramebuffer* marked_framebuffer_ = nullptr;
+  // Cleared surfaces whose header was made at another pitch/MSAA than the
+  // device's RB_SURFACE_INFO, logged once each (the first 16).
+  std::unordered_set<uint64_t> clear_other_pitch_logged_;
   SharedConstants base_shared_{};  // the texture tables on the null textures
 
   // The frame being recorded.
@@ -266,6 +270,8 @@ class Scene {
     uint64_t clears_depth = 0;       // depth/stencil targets cleared
     uint64_t clears_empty = 0;       // rectangle empty after the viewport/scissor
     uint64_t clears_failed = 0;      // unreadable record or target not made
+    uint64_t clears_other_pitch = 0; // targets whose surface header was made at another
+                                     // pitch/MSAA than the device's RB_SURFACE_INFO
     uint64_t resolves = 0;
     uint64_t tiling_begins = 0;
     uint64_t tiling_ends = 0;

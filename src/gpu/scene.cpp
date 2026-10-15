@@ -804,6 +804,40 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       std::memcpy(&color[i], &bits, 4);
     }
   }
+  // Pitch and samples of every target cleared: the device's RB_SURFACE_INFO
+  // (dev+10368), which sub_824188E0 hands to each colour clear and to the depth
+  // one alike. SetRenderTarget(0) writes it from RT0's header +0x18, and
+  // SetDepthStencilSurface from the depth's only while no RT0 is bound
+  // (sub_824165E0). A surface's own +0x18 is the pitch it was made with, which
+  // RAGE does not keep: the impostor passes pair RT0 at pitch 160 with a depth
+  // surface made at 280, and a clear by the header's pitch went to a target no
+  // draw reads -- the impostor depth stayed uncleared and the trees failed
+  // their depth test (24.31).
+  xreg::RB_SURFACE_INFO surface_info;
+  surface_info.value = pre.Register(guest::reg::kRbSurfaceInfo);
+  const auto note_other_pitch = [&](uint32_t surface, const EdramKey& key) {
+    xreg::RB_SURFACE_INFO own;
+    own.value = header_dword(surface, 0x18);
+    if (own.surface_pitch == surface_info.surface_pitch &&
+        own.msaa_samples == surface_info.msaa_samples) {
+      return;
+    }
+    ++window_.clears_other_pitch;
+    const uint64_t id = uint64_t(surface) | uint64_t(key.base_tiles) << 4 |
+                        uint64_t(key.format) << 16 | uint64_t(own.surface_pitch) << 24 |
+                        uint64_t(own.msaa_samples) << 38 | uint64_t(key.pitch) << 40 |
+                        uint64_t(surface_info.msaa_samples) << 54;
+    if (clear_other_pitch_logged_.size() < 16 && clear_other_pitch_logged_.insert(id).second) {
+      const char* name = surface == 4 ? format::DepthTargetFormat(key.format).guest_name
+                                      : format::ColorTargetFormat(key.format).guest_name;
+      REXLOG_INFO(
+          "[gpu] clear: {} ({}@{}) was made at pitch {} {}x and is cleared at the device's "
+          "pitch {} {}x",
+          surface == 4 ? "depth" : std::format("colour {}", surface), name, key.base_tiles,
+          uint32_t(own.surface_pitch), MsaaSampleCount(own.msaa_samples), key.pitch,
+          key.samples);
+    }
+  };
   // Growth copies sit outside a render pass.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
@@ -815,8 +849,6 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     if (!(flags & (1u << i)) || !surfaces[i]) {
       continue;
     }
-    xreg::RB_SURFACE_INFO surface_info;
-    surface_info.value = header_dword(i, 0x18);
     xreg::RB_COLOR_INFO color_info;
     color_info.value = header_dword(i, 0x1C);
     EdramKey key;
@@ -846,10 +878,9 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       continue;
     }
     ++window_.clears_color;
+    note_other_pitch(i, key);
   }
   if (flags & 0x30u) {
-    xreg::RB_SURFACE_INFO surface_info;
-    surface_info.value = header_dword(4, 0x18);
     xreg::RB_DEPTH_INFO depth_info;
     depth_info.value = header_dword(4, 0x1C);
     EdramKey key;
@@ -877,6 +908,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       return;
     }
     ++window_.clears_depth;
+    note_other_pitch(4, key);
   }
 }
 
@@ -937,6 +969,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.clears_depth += from.clears_depth;
   into.clears_empty += from.clears_empty;
   into.clears_failed += from.clears_failed;
+  into.clears_other_pitch += from.clears_other_pitch;
   into.resolves += from.resolves;
   into.tiling_begins += from.tiling_begins;
   into.tiling_ends += from.tiling_ends;
@@ -1007,7 +1040,8 @@ void Scene::Report(const char* why) {
   REXLOG_INFO(
       "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, {} recorded, skipped [{}], "
       "geometry [{}], no effect {} (no target {}, culled {}, no primitive {}, empty scissor {}) | "
-      "clears {} ({} colour, {} depth, {} empty, {} failed) | conversions [{}] | alpha "
+      "clears {} ({} colour, {} depth, {} empty, {} failed, {} of a surface made at another "
+      "pitch) | conversions [{}] | alpha "
       "coverage variant {} (alpha test {}, alpha to mask {}: 1x {}, biased {}), clip disabled "
       "{}, depth bias {} | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
@@ -1019,7 +1053,7 @@ void Scene::Report(const char* why) {
       skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
       w.no_effect[0] + w.no_effect[1] + w.no_effect[2] + w.no_effect[3], w.no_effect[0],
       w.no_effect[1], w.no_effect[2], w.no_effect[3], w.clears, w.clears_color, w.clears_depth,
-      w.clears_empty, w.clears_failed,
+      w.clears_empty, w.clears_failed, w.clears_other_pitch,
       conversions.empty() ? "none" : conversions, w.alpha_coverage_draws, w.alpha_test_draws,
       w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased, w.clip_disabled_draws,
       w.depth_bias_draws,

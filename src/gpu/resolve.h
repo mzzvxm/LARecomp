@@ -205,6 +205,9 @@ class ResolveCache {
   uint64_t frame_ = 1;
   std::array<uint32_t, size_t(Failure::kCount)> failures_logged_{};
   uint32_t cpu_writes_logged_ = 0;
+  // Sources whose surface header was made at another pitch/MSAA than the
+  // device's RB_SURFACE_INFO, logged once each (the first 16).
+  std::unordered_set<uint64_t> other_pitch_logged_;
 
   struct Stats {
     uint64_t resolves = 0;
@@ -221,6 +224,8 @@ class ResolveCache {
     uint64_t partial = 0;             // copies that do not cover their whole level
     uint64_t misaligned = 0;          // destination offset not in whole 32x32 tiles
     uint64_t from_registers = 0;      // source surface not bound: taken from the registers
+    uint64_t other_pitch = 0;         // source surface made at another pitch/MSAA than the
+                                      // device's RB_SURFACE_INFO, which the copy reads
     uint64_t found_by_image = 0;      // fetches served the first levels of a product
     uint64_t pixels = 0;
     uint64_t finds = 0;
