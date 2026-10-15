@@ -120,8 +120,12 @@ class ResolveCache {
   // very key, or the active product of the same image (the key without its
   // mip fields) whose levels include the fetch's -- the reflection's resolve
   // writes a 4-level texture and a pass reads its base through a fetch with no
-  // mips. Its first key.levels() levels are what the fetch sees.
-  Product* Find(const TextureKey& key);
+  // mips. Its first key.levels() levels are what the fetch sees. A key without
+  // a base (the SDK drops it when the fetch's mip range starts above level 0)
+  // is looked up again with `image_base_page`, the fetch's own base: the
+  // game's mip chain pass reads level N-1 that way, and the
+  // sampler keeps level 0 unread.
+  Product* Find(const TextureKey& key, uint32_t image_base_page);
   // The key without its mip fields (base, size, format, layout).
   static TextureKey ImageKey(const TextureKey& key);
   // An active product whose guest range shares a byte with [start, start +
@@ -192,6 +196,10 @@ class ResolveCache {
   void Fail(Failure failure, const std::string& detail);
   void DrainInvalidations();
   void Deactivate(Product& product);
+  // Find without the counters: the exact key, then the same image.
+  Product* FindImage(const TextureKey& key);
+  // What fetches of the product's pages bind changed (the Scene's memo).
+  void BumpGenerations(const Product& product);
   // The write-back of OnLock: one level's place in the readback buffer.
   struct WriteBackItem {
     Product* product = nullptr;
@@ -248,6 +256,7 @@ class ResolveCache {
   std::vector<Product*> lock_hits_;
   uint32_t write_back_logged_ = 0;
   uint32_t write_back_failures_logged_ = 0;
+  uint32_t write_back_serial_ = 0;  // WriteBack calls, for mcla_gpu_lock_dump's file names
 
   struct Stats {
     uint64_t resolves = 0;
@@ -275,6 +284,7 @@ class ResolveCache {
     uint64_t write_back_max_ns = 0;
     uint64_t write_back_failures = 0; // levels that could not be written (logged)
     uint64_t found_by_image = 0;      // fetches served the first levels of a product
+    uint64_t found_by_image_base = 0; // ... of which by the base the SDK dropped
     uint64_t pixels = 0;
     uint64_t finds = 0;
     uint64_t found = 0;

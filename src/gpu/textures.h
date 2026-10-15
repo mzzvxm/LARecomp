@@ -120,6 +120,10 @@ struct TextureFetch {
   uint32_t mip_max = 0;
   int32_t exp_adjust = 0;
   bool gamma = false;       // signs x, y, z all kGamma (shader_common.h bit 31)
+  // The fetch's own base page (physical), before the SDK's cleanup drops it
+  // from the key when the mip range starts above level 0: the image the
+  // guest made, which a resolve product of it is keyed by.
+  uint32_t image_base_page = 0;
 };
 // `dwords`: the six host-order dwords of the fetch constant, from the device
 // (physical addresses) or from a texture header (windowed): both normalize.

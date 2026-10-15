@@ -15,7 +15,11 @@
 #include <format>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 
+#include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/registers.h>
@@ -33,6 +37,12 @@
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "texture_decode.h"
+
+REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
+                    "Diagnostic: every level a Lock write-back puts into guest memory (8888 "
+                    "products) is also written as mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga "
+                    "next to the executable (the vinyl's mip chain).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -120,6 +130,41 @@ bool StoredLevelOf(const TextureKey& key, uint32_t level, StoredLevel* out) {
   r.load = format::TextureHost(key.format).load;
   r.decompress = format::TextureDecompress::kNone;  // a product is a render target
   return true;
+}
+
+// mcla_gpu_lock_dump: one written-back level of an R8G8B8A8 product as a
+// 32-bit top-down TGA (BGRA), from the readback rows.
+void DumpLevelTga(uint32_t serial, const TextureKey& key, uint32_t level, uint32_t width,
+                  uint32_t height, const uint8_t* rgba, uint32_t row_pitch) {
+  const std::filesystem::path path =
+      rex::filesystem::GetExecutableFolder() /
+      std::format("mcla_gpu_lock_{:04}_{:08x}_{}x{}_L{}.tga", serial, key.base_page << 12,
+                  key.width, key.height, level);
+  std::ofstream out(path, std::ios::binary);
+  if (!out) {
+    REXLOG_ERROR("[gpu] lock dump: {} could not be written", path.string());
+    return;
+  }
+  uint8_t header[18] = {};
+  header[2] = 2;  // uncompressed true colour
+  header[12] = uint8_t(width);
+  header[13] = uint8_t(width >> 8);
+  header[14] = uint8_t(height);
+  header[15] = uint8_t(height >> 8);
+  header[16] = 32;
+  header[17] = 0x28;  // 8 alpha bits, top-left origin
+  out.write(reinterpret_cast<const char*>(header), sizeof(header));
+  std::vector<uint8_t> row(size_t(width) * 4);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t* src = rgba + size_t(y) * row_pitch;
+    for (uint32_t x = 0; x < width; ++x) {
+      row[x * 4 + 0] = src[x * 4 + 2];
+      row[x * 4 + 1] = src[x * 4 + 1];
+      row[x * 4 + 2] = src[x * 4 + 0];
+      row[x * 4 + 3] = src[x * 4 + 3];
+    }
+    out.write(reinterpret_cast<const char*>(row.data()), std::streamsize(row.size()));
+  }
 }
 
 }  // namespace
@@ -258,7 +303,16 @@ void ResolveCache::Deactivate(Product& p) {
   if (it != active_by_image_.end() && it->second == &p) {
     active_by_image_.erase(it);
   }
+  BumpGenerations(p);
+}
+
+void ResolveCache::BumpGenerations(const Product& p) {
+  // A fetch is memoized by its base page, or by its mip page when it has no
+  // base (Scene::FillTextureTables): both kinds may bind this product.
   textures_->BumpProductGeneration(p.key.base_page);
+  if (p.key.mip_page) {
+    textures_->BumpProductGeneration(p.key.mip_page);
+  }
 }
 
 void ResolveCache::DrainInvalidations() {
@@ -297,24 +351,38 @@ void ResolveCache::DrainInvalidations() {
   }
 }
 
-ResolveCache::Product* ResolveCache::Find(const TextureKey& key) {
-  ++stats_.finds;
-  Product* p = nullptr;
+ResolveCache::Product* ResolveCache::FindImage(const TextureKey& key) {
   const auto it = products_.find(key);
   if (it != products_.end() && it->second->active) {
-    p = it->second.get();
-  } else {
-    const auto image = active_by_image_.find(ImageKey(key));
-    if (image != active_by_image_.end()) {
-      Product* candidate = image->second;
-      // The fetch's levels must be among the product's, read from the same
-      // mip memory (a fetch without mips reads the base alone).
-      if (key.mip_max_level <= candidate->key.mip_max_level &&
-          (key.mip_page == 0 || (key.mip_page == candidate->key.mip_page &&
-                                 key.packed_mips == candidate->key.packed_mips))) {
-        p = candidate;
-        ++stats_.found_by_image;
-      }
+    return it->second.get();
+  }
+  const auto image = active_by_image_.find(ImageKey(key));
+  if (image == active_by_image_.end()) {
+    return nullptr;
+  }
+  Product* candidate = image->second;
+  // The fetch's levels must be among the product's, read from the same mip
+  // memory (a fetch without mips reads the base alone).
+  if (key.mip_max_level <= candidate->key.mip_max_level &&
+      (key.mip_page == 0 || (key.mip_page == candidate->key.mip_page &&
+                             key.packed_mips == candidate->key.packed_mips))) {
+    ++stats_.found_by_image;
+    return candidate;
+  }
+  return nullptr;
+}
+
+ResolveCache::Product* ResolveCache::Find(const TextureKey& key, uint32_t image_base_page) {
+  ++stats_.finds;
+  Product* p = FindImage(key);
+  if (!p && key.base_page == 0 && key.mip_page != 0 && image_base_page != 0) {
+    // The SDK dropped the base because the fetch's mips start above level 0;
+    // the guest's image still has it, and so does its product's key.
+    TextureKey with_base = key;
+    with_base.base_page = image_base_page;
+    p = FindImage(with_base);
+    if (p) {
+      ++stats_.found_by_image_base;
     }
   }
   if (!p) {
@@ -448,6 +516,7 @@ bool ResolveCache::EnsureReadback(uint64_t bytes) {
 }
 
 bool ResolveCache::WriteBack(std::vector<WriteBackItem>& items) {
+  ++write_back_serial_;
   plume::RenderCommandList* list = readback_list_.get();
   list->begin();
   for (const WriteBackItem& item : items) {
@@ -520,6 +589,10 @@ bool ResolveCache::WriteBack(std::vector<WriteBackItem>& items) {
         stats_.write_back_bytes +=
             uint64_t(r.width_blocks) * r.height_blocks * r.source.bytes_per_block;
         d = {};
+        if (REXCVAR_GET(mcla_gpu_lock_dump) && p.format == plume::RenderFormat::R8G8B8A8_UNORM) {
+          DumpLevelTga(write_back_serial_, p.key, item.level, item.width, item.height,
+                       mapped + item.offset, item.row_pitch);
+        }
         continue;
       }
       why = "a block beyond the level's storage";
@@ -648,7 +721,7 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
       }
     }
     ++stats_.activated;
-    textures_->BumpProductGeneration(p->key.base_page);
+    BumpGenerations(*p);
   }
   return p;
 }
@@ -1105,7 +1178,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       "resolves {:.1f}/frame: {} copied ({:.2f} Mpixel/frame), {} clear only, clears {} colour {} "
       "depth | conversions [{}] | failed [{}] | products {} ({} active), created {}, activated "
       "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, misaligned {}, source "
-      "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image) | "
+      "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image, {} "
+      "by image base) | "
       "locks {} ({} of an active product, {} written back: {} levels, {:.2f} MiB, {:.2f} ms "
       "total, {:.2f} ms max, {} failed)",
       double(stats_.resolves) / f, stats_.copies, double(stats_.pixels) / f / 1e6,
@@ -1114,7 +1188,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       active, stats_.created, stats_.activated, stats_.deactivated_by_overlap,
       stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.misaligned,
       stats_.from_registers, stats_.other_pitch, stats_.finds, stats_.found,
-      stats_.found_by_image, stats_.locks, stats_.locks_on_products, stats_.locks_written_back,
+      stats_.found_by_image, stats_.found_by_image_base, stats_.locks, stats_.locks_on_products,
+      stats_.locks_written_back,
       stats_.levels_written_back, double(stats_.write_back_bytes) / 1048576.0,
       double(stats_.write_back_ns) / 1e6, double(stats_.write_back_max_ns) / 1e6,
       stats_.write_back_failures);

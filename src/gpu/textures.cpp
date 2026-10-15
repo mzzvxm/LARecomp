@@ -102,6 +102,7 @@ TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
   if (f.mip_address) {
     f.mip_address = GuestMemory::ToPhysical(uint32_t(f.mip_address) << 12) >> 12;
   }
+  out.image_base_page = uint32_t(f.base_address) & 0x1FFFF;
   uint32_t width_minus_1 = 0, height_minus_1 = 0, depth_minus_1 = 0;
   uint32_t base_page = 0, mip_page = 0, mip_min = 0, mip_max = 0;
   tu::GetSubresourcesFromFetchConstant(f, &width_minus_1, &height_minus_1, &depth_minus_1,
@@ -341,8 +342,9 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
   const uint16_t host_swizzle = GuestToHostSwizzle(fetch.swizzle, host.host_swizzle);
 
   // A resolve product of this image: what the guest rendered there (all its
-  // levels, or the first ones when the fetch names fewer, resolve.h).
-  if (ResolveCache::Product* product = resolve_->Find(key)) {
+  // levels, or the first ones when the fetch names fewer; a fetch whose mip
+  // range starts above level 0 by the base the SDK dropped, resolve.h).
+  if (ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page)) {
     ++stats_.product_hits;
     const uint32_t slot =
         product->views.Slot(*device_, *heap_, *product->texture, product->format,
@@ -354,16 +356,25 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
     binding.from_product = true;
     return binding;
   }
-  // Another active product over the same memory: the guest reads rendered
-  // memory with another shape (M5's reinterpretation). Reported; memory is
-  // decoded, which does not hold the rendered image.
-  if (key.base_page) {
-    if (const ResolveCache::Product* other =
-            resolve_->FindOverlap(key.base_page << 12, 1u << 12)) {
+  // Another active product over the memory the fetch reads (its base or its
+  // mips): the guest reads rendered memory with another shape (M5.2's
+  // reinterpretation). Reported; memory is decoded, which does
+  // not hold the rendered image.
+  {
+    uint32_t ranges[2][2];
+    TextureGuestRanges(key, ranges);
+    const ResolveCache::Product* other = nullptr;
+    for (const auto& r : ranges) {
+      if (!other && r[1]) {
+        other = resolve_->FindOverlap(r[0], r[1]);
+      }
+    }
+    if (other) {
       ++stats_.reinterpretations;
       if (reported_.insert(key).second) {
         REXLOG_ERROR("[gpu] textures: {} reads memory a resolve rendered as {}: decoded from "
-                     "memory, which does not hold the image (reinterpretation, M5; reported once)",
+                     "memory, which does not hold the image (reinterpretation, M5.2; reported "
+                     "once)",
                      key.Describe(), other->key.Describe());
       }
     }
