@@ -88,7 +88,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
     return 0;
   }
   uint32_t v;
-  std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+  std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
   return __builtin_bswap32(v);
 }
 
@@ -96,8 +96,7 @@ inline uint8_t R8(const uint8_t* base, uint32_t ea) {
   if (ea < 0x1000u) {
     return 0;
   }
-  return *reinterpret_cast<const uint8_t*>(
-      rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea));
+  return *GuestReadPtr(base, ea, 1);
 }
 
 // DeclUsage -> the semantic names XenosRecomp emits (USAGE_TYPES order).
@@ -230,6 +229,29 @@ static double g_geometry_phase_us[5] = {};
 
 const double* GeometryPhaseMicroseconds() { return g_geometry_phase_us; }
 
+namespace {
+// Vector storage handed back by the per-draw caller (RecycleGeometrySnapshot)
+// and reused by the next snapshot on the same thread, so a draw no longer
+// allocates and frees its three vectors (Wine's heap takes a lock per call;
+// ~3% of the render thread while driving).
+thread_local GeometrySnapshot t_spare;
+
+void TakeSpareGeometryStorage(GeometrySnapshot& s) {
+  s.input_layout.swap(t_spare.input_layout);
+  s.streams.swap(t_spare.streams);
+  s.unsupplied.swap(t_spare.unsupplied);
+  s.input_layout.clear();
+  s.streams.clear();
+  s.unsupplied.clear();
+}
+}  // namespace
+
+void RecycleGeometrySnapshot(GeometrySnapshot& s) {
+  t_spare.input_layout.swap(s.input_layout);
+  t_spare.streams.swap(s.streams);
+  t_spare.unsupplied.swap(s.unsupplied);
+}
+
 GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                                        uint32_t element_count, uint32_t start_element,
                                        int32_t base_vertex, bool indexed, ShaderDatabase& shaders,
@@ -251,6 +273,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
   };
 
   GeometrySnapshot s;
+  TakeSpareGeometryStorage(s);
   s.primitive_type = primitive_type;
   s.element_count = element_count;
   s.start_element = start_element;
@@ -686,6 +709,20 @@ bool ResolveGeometryBuffers(GeometrySnapshot& s, uint32_t element_count,
       // mesh. Its region was keyed by the windowed address (0xB0710270) while
       // the write watch reports physical ones, so it was uploaded once and
       // never invalidated again; see BufferCache::Resolve.
+      if (inline_geometry && inline_geometry->captured) {
+        // Uploaded the way the BufferCache would, from the copy.
+        D3D12Context::UploadAlloc a;
+        if (!context->AllocateUpload(stream.guest_size, 16, a,
+                                     D3D12Context::UploadTag::kGeometry)) {
+          s.failure = "inline vertex upload failed";
+          return false;
+        }
+        SwapCopyBytes(static_cast<uint8_t*>(a.cpu), inline_geometry->captured, stream.guest_size,
+                      SwapForEndian(stream.endian));
+        stream.gpu_address = a.gpu;
+        stream.resolved = true;
+        continue;
+      }
       BufferBinding b;
       if (!buffers->Resolve(*context, cl, stream.guest_base, stream.guest_size,
                             SwapForEndian(stream.endian), b, inline_geometry != nullptr)) {

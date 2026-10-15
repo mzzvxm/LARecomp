@@ -16,6 +16,8 @@ REXCVAR_DECLARE(uint32_t, mcla_native_gfx_fetch_size_unit);
 
 namespace mcla::native_gfx {
 
+thread_local GuestReadRedirect t_guest_read_redirect;
+
 bool IsGuestRangeReadable(uint32_t guest_address, uint64_t size) {
   if (guest_address < 0x1000u || size == 0 ||
       uint64_t(guest_address) + size > 0x100000000ull) {
@@ -96,7 +98,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
     return 0;
   }
   uint32_t v;
-  std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+  std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
   return __builtin_bswap32(v);
 }
 
