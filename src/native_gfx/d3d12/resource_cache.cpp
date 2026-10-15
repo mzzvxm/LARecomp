@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/hash.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -235,24 +236,13 @@ void BufferCache::Shutdown(D3D12Context& context) {
 }
 
 namespace {
-// TEMP DIAG (MESHSTALE): FNV-1a over guest bytes. Cheap enough to run on every
+// TEMP DIAG (MESHSTALE): a hash of guest bytes. Cheap enough to run on every
 // upload and on a handful of draws a frame; the point is only "same or not".
 uint64_t HashGuestBytes(const uint8_t* p, uint32_t size) {
-  // Eight bytes at a time. Byte-at-a-time FNV was a third of the cost of the
-  // whole-region verification it was written for; this is change detection, not
-  // cryptography, so mixing whole words is enough and is several times faster.
-  uint64_t h = 1469598103934665603ull;
-  const uint32_t whole = size & ~7u;
-  for (uint32_t i = 0; i < whole; i += 8) {
-    uint64_t v;
-    std::memcpy(&v, p + i, 8);
-    h = (h ^ v) * 1099511628211ull;
-    h ^= h >> 29;
-  }
-  for (uint32_t i = whole; i < size; ++i) {
-    h = (h ^ p[i]) * 1099511628211ull;
-  }
-  return h;
+  // XXH3. The word-at-a-time FNV this replaces serialised every 8 bytes on a
+  // multiply and was ~6% of the render thread while driving (hashing bound
+  // geometry blocks every frame). Only compared within a run, never stored.
+  return XXH3_64bits(p, size);
 }
 }  // namespace
 
@@ -270,14 +260,18 @@ uint64_t HashBlockSampled(const uint8_t* p, uint32_t len) {
   // MESHSTALE still reported one region whose changed bytes missed all three.
   constexpr uint32_t kSlice = 64;
   constexpr uint32_t kSlices = 8;
-  uint64_t h = uint64_t(len) * 1099511628211ull;
-  for (uint32_t i = 0; i < kSlices; ++i) {
-    const uint32_t off = len > kSlice ? uint32_t(uint64_t(len - kSlice) * i / (kSlices - 1)) : 0u;
-    h ^= HashGuestBytes(p + off, std::min(kSlice, len - off));
-    h *= 1099511628211ull;
-    h ^= h >> 31;
+  // The slices are gathered and hashed in one XXH3 call: eight separate
+  // 64-byte hashes each took XXH3's short-input path plus a call, which cost
+  // as much as the old per-slice FNV.
+  if (len < kSlice) {
+    return XXH3_64bits_withSeed(p, len, len);
   }
-  return h;
+  alignas(16) uint8_t gathered[kSlice * kSlices];
+  for (uint32_t i = 0; i < kSlices; ++i) {
+    const uint32_t off = uint32_t(uint64_t(len - kSlice) * i / (kSlices - 1));
+    std::memcpy(gathered + i * kSlice, p + off, kSlice);
+  }
+  return XXH3_64bits_withSeed(gathered, sizeof(gathered), len);
 }
 }  // namespace
 
