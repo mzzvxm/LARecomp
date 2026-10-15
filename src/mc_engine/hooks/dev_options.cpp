@@ -21,6 +21,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+#include <sys/mman.h>
+#include <cstdio>
 #endif
 
 #include "hooks.h"
@@ -104,7 +107,21 @@ static bool EnsureDebugScratchWritable() {
         }
         return true;
 #else
-        return false;
+        // The same check from /proc/self/maps: every byte of the range must lie
+        // in a mapping whose permissions include 'w'.
+        std::ifstream maps("/proc/self/maps");
+        uintptr_t want = reinterpret_cast<uintptr_t>(base + lo);
+        const uintptr_t want_end = reinterpret_cast<uintptr_t>(base + hi);
+        std::string line;
+        while (want < want_end && std::getline(maps, line)) {
+            unsigned long long start = 0, end = 0;
+            char perms[5] = {};
+            if (std::sscanf(line.c_str(), "%llx-%llx %4s", &start, &end, perms) != 3) continue;
+            if (end <= want || start > want) continue;
+            if (perms[1] != 'w') return false;
+            want = uintptr_t(end);
+        }
+        return want >= want_end;
 #endif
     };
 
@@ -129,6 +146,13 @@ static bool EnsureDebugScratchWritable() {
         state = State::kOk;
         LARECOMP_APP_INFO("[DbgOpt] scratch 0x{:08X}-0x{:08X} writable (host, was 0x{:X})",
                           lo, hi, uint32_t(old));
+        return true;
+    }
+#else
+    // Same as above: the arena is an ordinary host mapping, so protect it directly.
+    if (mprotect(base + lo, hi - lo, PROT_READ | PROT_WRITE) == 0 && range_is_writable()) {
+        state = State::kOk;
+        LARECOMP_APP_INFO("[DbgOpt] scratch 0x{:08X}-0x{:08X} writable (host)", lo, hi);
         return true;
     }
 #endif
