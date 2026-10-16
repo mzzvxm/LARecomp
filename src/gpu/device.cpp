@@ -232,14 +232,15 @@ std::unique_ptr<plume::RenderShader> Device::CreateShader(const void* data, uint
 }
 
 std::unique_ptr<plume::RenderQueryPool> Device::CreateQueryPool(uint32_t query_count,
-                                                                const char* name) {
+                                                                const char* name,
+                                                                plume::RenderQueryType type) {
   if (!device_ || IsLost()) {
     return nullptr;
   }
-  auto pool = device_->createQueryPool(query_count);
-  if (backend::IsNullBacked(pool.get())) {
-    REXLOG_ERROR("[gpu] query pool '{}' of {} timestamps failed", name ? name : "?",
-                 query_count);
+  auto pool = device_->createQueryPool(query_count, type);
+  if (!pool || backend::IsNullBacked(pool.get())) {
+    REXLOG_ERROR("[gpu] query pool '{}' of {} {} queries failed", name ? name : "?", query_count,
+                 type == plume::RenderQueryType::OCCLUSION ? "occlusion" : "timestamp");
     ReportCreationFailure("query pool", name);
     return nullptr;
   }

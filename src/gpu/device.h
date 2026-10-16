@@ -94,7 +94,9 @@ class Device {
       const plume::RenderGraphicsPipelineDesc& desc, const char* name);
   std::unique_ptr<plume::RenderPipeline> CreateComputePipeline(
       const plume::RenderComputePipelineDesc& desc, const char* name);
-  std::unique_ptr<plume::RenderQueryPool> CreateQueryPool(uint32_t query_count, const char* name);
+  std::unique_ptr<plume::RenderQueryPool> CreateQueryPool(
+      uint32_t query_count, const char* name,
+      plume::RenderQueryType type = plume::RenderQueryType::TIMESTAMP);
   std::unique_ptr<plume::RenderFramebuffer> CreateFramebuffer(
       const plume::RenderFramebufferDesc& desc, const char* name);
 

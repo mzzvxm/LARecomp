@@ -878,6 +878,23 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
                                                  src_key.samples));
         break;
       }
+      // EDRAM ownership: the copy reads every bit of the source's
+      // words -- a depth source's stencil too, which the resolve memory keeps.
+      if (edram_->aliasing()) {
+        const plume::RenderRect read(tx0 - dx, ty0 - dy, tx1 - dx, ty1 - dy);
+        EdramTargets::Accesses access;
+        access.aspect[EdramTargets::kMain] = EdramTargets::Access::kRead;
+        access.aspect[EdramTargets::kStencil] = EdramTargets::Access::kRead;
+        if (!edram_->Settled(*src, read, access)) {
+          EdramEvent event;
+          event.kind = EdramEvent::Kind::kResolve;
+          event.dest_page = key.base_page;
+          event.dest_format = key.format;
+          event.dest_width = key.width;
+          event.dest_height = key.height;
+          edram_->Note(*src, read, access, event);
+        }
+      }
       uint32_t sample_slot = 0, stencil_slot = 0;
       if (!edram_->SampleSlots(*src, &sample_slot, &stencil_slot)) {
         Fail(Failure::kSourceView, std::format("tile {}", src_key.base_tiles));

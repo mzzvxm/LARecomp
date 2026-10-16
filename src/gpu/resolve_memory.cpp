@@ -159,6 +159,7 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   chunk_slot_.assign(kChunkCount, kNoChunk);
   page_flags_.assign(kPageCount, 0);
   page_sequence_.assign(kPageCount, 0);
+  page_writer_.assign(kPageCount, 0xFF);
 
   encode_set_builder_.begin();
   encode_pool_index_ = encode_set_builder_.addReadWriteByteAddressBuffer(0);  // u0
@@ -255,6 +256,9 @@ void ResolveMemory::Shutdown() {
   chunk_slot_.clear();
   page_flags_.clear();
   page_sequence_.clear();
+  page_writer_.clear();
+  decode_logged_.clear();
+  late_logged_.clear();
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
@@ -338,7 +342,7 @@ void ResolveMemory::Sync() {
       any = true;
     }
     if (any) {
-      TouchDecoded(range.start, range.length);
+      TouchDecoded(range.start, range.length, true);
     }
   }
 }
@@ -525,12 +529,22 @@ void ResolveMemory::ArmPages(const std::vector<uint32_t>& pages) {
   flush();
 }
 
-void ResolveMemory::TouchDecoded(uint32_t start, uint32_t length) {
+void ResolveMemory::TouchDecoded(uint32_t start, uint32_t length, bool cpu) {
   decoded_regions_.ForEachOverlap(start, length, [&](RegionIndex::Id id) {
     if (id >= decoded_owners_.size()) {
       return;
     }
     for (Decoded* d : decoded_owners_[id]) {
+      if (cpu && d->decoded_sequence != 0 && frame_ - d->decoded_frame <= 2 &&
+          late_logged_.size() < 16 &&
+          std::find(late_logged_.begin(), late_logged_.end(), d->key) == late_logged_.end()) {
+        // What was drawn with it until now came from the resolve's bytes.
+        late_logged_.push_back(d->key);
+        REXLOG_WARN("[gpu] resolve memory: the CPU wrote into {} {} frame(s) after it was "
+                    "decoded from the resolve memory, at {:#010x} +{} (reported once "
+                    "per key)",
+                    d->key.Describe(), frame_ - d->decoded_frame, start, length);
+      }
       if (d->key.base_page) {
         textures_->BumpProductGeneration(d->key.base_page);
       }
@@ -727,12 +741,13 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     }
     flags |= kNewer;
     page_sequence_[page] = ++sequence_;
+    page_writer_[page] = uint8_t(key.format);
     newer_low_page_ = std::min(newer_low_page_, page);
     newer_high_page_ = std::max(newer_high_page_, page);
     pages_.push_back(page);
   }
   ArmPages(pages_);
-  TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)));
+  TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)), false);
   ++stats_.encodes;
   stats_.encoded_bytes += (uint64_t(copy.x1 - copy.x0) * uint64_t(copy.y1 - copy.y0)) << bpb_log2;
   return true;
@@ -927,9 +942,11 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
   d->last_frame = frame_;
 
   // The pages of its range: the ones not valid come from guest memory first,
-  // and the newest write says whether the texture is current.
+  // and the newest write says whether the texture is current. The formats of
+  // the resolves that wrote them last, for the report below.
   pages_.clear();
   uint64_t newest = 0;
+  uint64_t writers = 0;
   for (const auto& r : d->ranges) {
     if (!r[1]) {
       continue;
@@ -942,6 +959,32 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
         pages_.push_back(page);
       }
       newest = std::max(newest, page_sequence_[page]);
+      if ((page_flags_[page] & kNewer) && page_writer_[page] != 0xFF) {
+        writers |= uint64_t(1) << (page_writer_[page] & 63);
+      }
+    }
+  }
+  if (decode_logged_.size() < 32 &&
+      std::find(decode_logged_.begin(), decode_logged_.end(), key) == decode_logged_.end()) {
+    // The first decode of each key, with the formats of the resolves whose
+    // bytes it reads. Another format's bytes are read in this texture's
+    // format, as the console reads them -- a float16 read as 8888, for one,
+    // comes out green.
+    decode_logged_.push_back(key);
+    std::string names;
+    for (uint32_t f = 0; f < 64; ++f) {
+      if ((writers >> f) & 1) {
+        names += std::format("{}{}", names.empty() ? "" : ", ", format::TextureHost(f).guest_name);
+      }
+    }
+    if ((writers & ~(uint64_t(1) << (key.format & 63))) != 0) {
+      REXLOG_WARN("[gpu] resolve memory: {} is decoded from pages that resolves of {} wrote "
+                  "last, read as this texture's format (reported once per key)",
+                  key.Describe(), names);
+    } else {
+      REXLOG_INFO("[gpu] resolve memory: {} is decoded from pages that resolves of {} wrote "
+                  "last (reported once per key)",
+                  key.Describe(), names.empty() ? std::string("none (guest memory)") : names);
     }
   }
   if (d->decoded_sequence != 0 && pages_.empty() && newest <= d->decoded_sequence) {
@@ -1012,6 +1055,7 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
                                              plume::RenderTextureLayout::SHADER_READ));
   d->layout = plume::RenderTextureLayout::SHADER_READ;
   d->decoded_sequence = std::max<uint64_t>(newest, 1);
+  d->decoded_frame = frame_;
   *state_changed = true;
   ++stats_.decodes;
   *slot = d->views.Slot(*device_, *heap_, *d->texture, d->format, key.levels(), host_swizzle,

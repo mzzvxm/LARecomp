@@ -133,6 +133,7 @@ class GuestCapture {
     std::vector<uint8_t> normalized;
     uint64_t identity = 0;
     bool computed_fetch_index = false;
+    bool kills_pixels = false;
   };
 
   struct ShaderRead {
@@ -141,6 +142,7 @@ class GuestCapture {
     uint32_t size = 0;
     uint64_t identity = 0;
     bool computed_fetch_index = false;
+    bool kills_pixels = false;
     bool readable = false;
   };
 

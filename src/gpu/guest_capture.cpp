@@ -11,6 +11,8 @@
 #include <cstring>
 #include <new>
 
+#include <rex/cvar.h>
+#include <rex/graphics/format/ucode.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
@@ -22,11 +24,101 @@
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
 
+REXCVAR_DECLARE(bool, mcla_gpu_edram_aliasing);
+
 namespace mcla::gpu {
 
 namespace nfx = mcla::native_gfx;
 
 namespace {
+
+// Whether a pixel shader can kill pixels: a kill opcode -- vector
+// kKillEq..kKillNe, scalar kKillsEq..kKillsOne -- in an ALU instruction of any
+// exec clause. The walk is the SDK's Shader::AnalyzeUcode (control flow pairs
+// up to the first clause's instructions) and the test its
+// GatherAluInstructionInformation (kAluOpChangedStatePixelKill), made on the
+// opcodes themselves: the opcode tables live in the SDK's sources. A clause
+// beyond the microcode counts as killing: the EDRAM detector may report too
+// much, never too little.
+bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
+  namespace ucode = rex::graphics::ucode;
+  const uint32_t dword_count = size / 4;
+  const auto load = [&](uint32_t first, uint32_t* out) {
+    for (uint32_t k = 0; k < 3; ++k) {
+      out[k] = LoadBe32(bytes + 4 * (first + k));
+    }
+  };
+  uint32_t cf_bound = dword_count / 3;  // control flow pairs, 3 dwords each
+  for (uint32_t pair = 0; pair < cf_bound; ++pair) {
+    uint32_t dwords[3];
+    load(pair * 3, dwords);
+    ucode::ControlFlowInstruction cf[2];
+    ucode::UnpackControlFlowInstructions(dwords, cf);
+    for (const ucode::ControlFlowInstruction& c : cf) {
+      uint32_t address = 0;
+      uint32_t count = 0;
+      uint32_t sequence = 0;
+      switch (c.opcode()) {
+        case ucode::ControlFlowOpcode::kExec:
+        case ucode::ControlFlowOpcode::kExecEnd:
+          address = c.exec.address();
+          count = c.exec.count();
+          sequence = c.exec.sequence();
+          break;
+        case ucode::ControlFlowOpcode::kCondExec:
+        case ucode::ControlFlowOpcode::kCondExecEnd:
+        case ucode::ControlFlowOpcode::kCondExecPredClean:
+        case ucode::ControlFlowOpcode::kCondExecPredCleanEnd:
+          address = c.cond_exec.address();
+          count = c.cond_exec.count();
+          sequence = c.cond_exec.sequence();
+          break;
+        case ucode::ControlFlowOpcode::kCondExecPred:
+        case ucode::ControlFlowOpcode::kCondExecPredEnd:
+          address = c.cond_exec_pred.address();
+          count = c.cond_exec_pred.count();
+          sequence = c.cond_exec_pred.sequence();
+          break;
+        default:
+          continue;
+      }
+      cf_bound = std::min(cf_bound, address);
+      for (uint32_t k = 0; k < count; ++k) {
+        if ((sequence >> (2 * k)) & 1u) {
+          continue;  // a fetch
+        }
+        if ((address + k + 1) * 3 > dword_count) {
+          return true;
+        }
+        uint32_t alu_dwords[3];
+        load((address + k) * 3, alu_dwords);
+        ucode::AluInstruction alu;
+        static_assert(sizeof(alu) == sizeof(alu_dwords));
+        std::memcpy(&alu, alu_dwords, sizeof(alu));
+        switch (alu.vector_opcode()) {
+          case ucode::AluVectorOpcode::kKillEq:
+          case ucode::AluVectorOpcode::kKillGt:
+          case ucode::AluVectorOpcode::kKillGe:
+          case ucode::AluVectorOpcode::kKillNe:
+            return true;
+          default:
+            break;
+        }
+        switch (alu.scalar_opcode()) {
+          case ucode::AluScalarOpcode::kKillsEq:
+          case ucode::AluScalarOpcode::kKillsGt:
+          case ucode::AluScalarOpcode::kKillsGe:
+          case ucode::AluScalarOpcode::kKillsNe:
+          case ucode::AluScalarOpcode::kKillsOne:
+            return true;
+          default:
+            break;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 using Clock = std::chrono::steady_clock;
 
@@ -215,6 +307,7 @@ void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool
       if (std::memcmp(it->data(), ucode, shader.size) == 0) {
         shader.identity = e.identity;
         shader.computed_fetch_index = e.computed_fetch_index;
+        shader.kills_pixels = e.kills_pixels;
         return;
       }
     }
@@ -230,6 +323,7 @@ void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool
       ++frame_.identity_renormalized;
       shader.identity = e.identity;
       shader.computed_fetch_index = e.computed_fetch_index;
+      shader.kills_pixels = e.kills_pixels;
       return;
     }
     identities_.erase(found);
@@ -249,8 +343,12 @@ void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool
   e.normalized = scratch_;
   e.identity = nfx::Fnv1a64(scratch_.data(), scratch_.size());
   e.computed_fetch_index = vertex && nfx::ProbeComputedVertexFetchIndex(ucode, shader.size);
+  // Only the EDRAM detector asks.
+  e.kills_pixels = !vertex && REXCVAR_GET(mcla_gpu_edram_aliasing) &&
+                   ProbePixelKill(ucode, shader.size);
   shader.identity = e.identity;
   shader.computed_fetch_index = e.computed_fetch_index;
+  shader.kills_pixels = e.kills_pixels;
   identities_.emplace(key, std::move(e));
   ++frame_.identity_new;
 }
@@ -280,6 +378,9 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
     c.ps = ReadPixelShader(base, ps_object);
     if (c.ps.readable) {
       ResolveIdentity(base, c.ps, false);
+      if (c.ps.kills_pixels) {
+        c.flags |= kDrawPsKills;
+      }
     } else {
       c.flags |= kDrawPsUnreadable;
     }

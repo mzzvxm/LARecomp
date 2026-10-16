@@ -69,6 +69,99 @@ const char* DrawKindName(DrawKind kind) {
   return "?";
 }
 
+// EDRAM ownership. A blend whose result does not depend on what
+// the target held: the destination factor ZERO in both parts, no MIN/MAX
+// (they ignore the factors), no source factor that reads the destination.
+bool BlendIgnoresDestination(const xreg::RB_BLENDCONTROL& b) {
+  const auto reads = [](xe::BlendFactor f) {
+    return f == xe::BlendFactor::kDstColor || f == xe::BlendFactor::kOneMinusDstColor ||
+           f == xe::BlendFactor::kDstAlpha || f == xe::BlendFactor::kOneMinusDstAlpha ||
+           f == xe::BlendFactor::kSrcAlphaSaturate;
+  };
+  const auto min_max = [](xe::BlendOp op) {
+    return op == xe::BlendOp::kMin || op == xe::BlendOp::kMax;
+  };
+  return b.color_destblend == xe::BlendFactor::kZero &&
+         b.alpha_destblend == xe::BlendFactor::kZero && !min_max(b.color_comb_fcn) &&
+         !min_max(b.alpha_comb_fcn) && !reads(b.color_srcblend) && !reads(b.alpha_srcblend);
+}
+
+// Whether a draw can be taken to write every sample inside its scissor: one
+// rectangle (the census's full-target rect, 24.3) or a quad of two triangles,
+// every sample of PA_SC_AA_MASK, and nothing that can reject a sample -- a
+// kill in the pixel shader, alpha test, alpha to mask, a depth or stencil
+// test. Whether it really spans its scissor is for its coverage check
+// (EdramTargets).
+bool TakeCandidate(const XenosState& s, const DrawRecord& r, uint32_t samples) {
+  bool shape = false;
+  switch (xe::PrimitiveType(r.primitive)) {
+    case xe::PrimitiveType::kRectangleList:
+      shape = r.count == 3;
+      break;
+    case xe::PrimitiveType::kTriangleList:
+      shape = r.count == 6;
+      break;
+    case xe::PrimitiveType::kTriangleStrip:
+    case xe::PrimitiveType::kTriangleFan:
+    case xe::PrimitiveType::kQuadList:
+      shape = r.count == 4;
+      break;
+    default:
+      break;
+  }
+  if (!shape || (r.flags & kDrawPsKills)) {
+    return false;
+  }
+  if ((s.color_control.alpha_test_enable &&
+       s.color_control.alpha_func != xe::CompareFunction::kAlways) ||
+      s.color_control.alpha_to_mask_enable) {
+    return false;
+  }
+  const uint32_t all_samples = (1u << samples) - 1;
+  if ((s.aa_mask & all_samples) != all_samples) {
+    return false;
+  }
+  if (s.depth_bound) {
+    const xreg::RB_DEPTHCONTROL& dc = s.depth_control;
+    if (dc.z_enable && dc.zfunc != xe::CompareFunction::kAlways) {
+      return false;
+    }
+    if (dc.stencil_enable &&
+        (dc.stencilfunc != xe::CompareFunction::kAlways ||
+         (dc.backface_enable && dc.stencilfunc_bf != xe::CompareFunction::kAlways))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Whether a draw writes the stencil at all, and whether it writes all of it
+// with a value that does not depend on what it held: ALWAYS, REPLACE when it
+// passes (with no failing depth test, TakeCandidate), all 8 bits, both faces.
+bool StencilWrites(const XenosState& s) {
+  const xreg::RB_DEPTHCONTROL& dc = s.depth_control;
+  const auto face = [](xe::StencilOp fail, xe::StencilOp zfail, xe::StencilOp zpass,
+                       uint32_t write_mask) {
+    return (write_mask & 0xFFu) != 0 &&
+           (fail != xe::StencilOp::kKeep || zfail != xe::StencilOp::kKeep ||
+            zpass != xe::StencilOp::kKeep);
+  };
+  return face(dc.stencilfail, dc.stencilzfail, dc.stencilzpass, s.stencil.stencilwritemask) ||
+         (dc.backface_enable && face(dc.stencilfail_bf, dc.stencilzfail_bf, dc.stencilzpass_bf,
+                                     s.stencil_bf.stencilwritemask));
+}
+
+bool StencilReplacesAll(const XenosState& s) {
+  const xreg::RB_DEPTHCONTROL& dc = s.depth_control;
+  const auto face = [](xe::CompareFunction func, xe::StencilOp zpass, uint32_t write_mask) {
+    return func == xe::CompareFunction::kAlways && zpass == xe::StencilOp::kReplace &&
+           (write_mask & 0xFFu) == 0xFFu;
+  };
+  return face(dc.stencilfunc, dc.stencilzpass, s.stencil.stencilwritemask) &&
+         (!dc.backface_enable ||
+          face(dc.stencilfunc_bf, dc.stencilzpass_bf, s.stencil_bf.stencilwritemask));
+}
+
 const char* ConversionName(uint32_t conversion) {
   static const char* const kNames[] = {"none",       "quad list", "quad strip", "fan/polygon",
                                        "rect list",  "line loop", "unsupported"};
@@ -125,7 +218,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
   geometry_->BeginFrame(slot);
-  edram_->BeginFrame();
+  edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
   ++frame_serial_;
@@ -220,7 +313,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     } else {
       ++window_.prepared;
       bool empty = false;
-      const Skip recorded = Record(d, list, &empty, &detail);
+      const Skip recorded = Record(d, r, list, &empty, &detail);
       if (empty) {
         ++window_.no_effect[size_t(NoEffect::kEmptyScissor)];
       } else if (recorded != Skip::kCount) {
@@ -564,6 +657,146 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
   return true;
 }
 
+uint32_t Scene::NoteEdramAccess(const PreparedDraw& d, const DrawRecord& r,
+                                EdramTargets::Target* const* colors, EdramTargets::Target* depth,
+                                const plume::RenderRect& scissor) {
+  if (!edram_->aliasing()) {
+    return EdramTargets::kNoCheck;
+  }
+  EdramNoteKey key;
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    key.targets[i] = colors[i];
+  }
+  key.targets[4] = depth;
+  key.scissor[0] = scissor.left;
+  key.scissor[1] = scissor.top;
+  key.scissor[2] = scissor.right;
+  key.scissor[3] = scissor.bottom;
+  key.pipeline = d.pipeline;
+  key.primitive = r.primitive;
+  key.count = r.count;
+  key.kills = r.flags & kDrawPsKills;
+  key.aa_mask = d.state.aa_mask;
+  key.color_control = d.state.color_control.value;
+  key.serial = edram_->serial();
+  if (key == last_edram_note_) {
+    return EdramTargets::kNoCheck;
+  }
+  const uint32_t check = NoteEdramTargets(d, r, colors, depth, scissor);
+  key.serial = edram_->serial();
+  last_edram_note_ = key;
+  return check;
+}
+
+uint32_t Scene::NoteEdramTargets(const PreparedDraw& d, const DrawRecord& r,
+                                 EdramTargets::Target* const* colors,
+                                 EdramTargets::Target* depth, const plume::RenderRect& scissor) {
+  using Access = EdramTargets::Access;
+  const XenosState& s = d.state;
+  const xreg::RB_DEPTHCONTROL& dc = s.depth_control;
+  // The depth target's aspects: untouched, read (a test) or written. Which
+  // writes take their aspect needs the rest of the draw, worked out only when
+  // the tile map has something to say.
+  Access depth_main = Access::kNone;
+  Access depth_stencil = Access::kNone;
+  if (depth) {
+    if (dc.z_enable) {
+      depth_main = dc.z_write_enable ? Access::kDepend : Access::kRead;
+    }
+    if (dc.stencil_enable) {
+      depth_stencil = StencilWrites(s) ? Access::kDepend : Access::kRead;
+    }
+  }
+  bool settled = true;
+  for (uint32_t i = 0; i < d.key.color_count && settled; ++i) {
+    settled = edram_->Settled(*colors[i], scissor, EdramTargets::kMain, false) &&
+              edram_->Settled(*colors[i], scissor, EdramTargets::kStencil, false);
+  }
+  if (settled && depth) {
+    settled = (depth_main == Access::kNone ||
+               edram_->Settled(*depth, scissor, EdramTargets::kMain,
+                               depth_main == Access::kRead)) &&
+              (depth_stencil == Access::kNone ||
+               edram_->Settled(*depth, scissor, EdramTargets::kStencil,
+                               depth_stencil == Access::kRead));
+  }
+  if (settled) {
+    return EdramTargets::kNoCheck;
+  }
+  // A draw that may take tiles on the strength of its extent gets a coverage
+  // check when the checks are on; with none left this frame it is noted as
+  // depending on them. With the checks off its takes go unchecked.
+  bool covers = TakeCandidate(s, r, MsaaSampleCount(s.msaa));
+  uint32_t check = EdramTargets::kNoCheck;
+  if (covers && edram_->coverage_queries()) {
+    check = edram_->ReserveCoverageCheck();
+    covers = check != EdramTargets::kNoCheck;
+  }
+  EdramEvent event;
+  event.check = check;
+  event.kind = EdramEvent::Kind::kDraw;
+  event.draw_kind = DrawKindName(r.kind);
+  event.primitive = PrimitiveName(r.primitive);
+  event.count = r.count;
+  event.blend = s.color[0].blend.value;
+  event.write_mask = s.color[0].write_mask;
+  event.depth_control = dc.value;
+  event.color_control = s.color_control.value;
+  event.stencil = s.stencil.value;
+  event.stencil_bf = s.stencil_bf.value;
+  event.aa_mask = s.aa_mask;
+  event.scissor = scissor;
+  event.vs = r.vs_identity;
+  event.ps = r.ps_identity;
+  edram_->DescribeCoverageCheck(check, event);
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    // A colour write writes the whole word: both aspects alike.
+    const ColorTargetState& c = s.color[i];
+    const uint32_t channels = (1u << xe::GetColorRenderTargetFormatComponentCount(c.format)) - 1;
+    const Access a = covers && BlendIgnoresDestination(c.blend) &&
+                             (c.write_mask & channels) == channels
+                         ? Access::kTake
+                         : Access::kDepend;
+    EdramTargets::Accesses access;
+    access.aspect[EdramTargets::kMain] = a;
+    access.aspect[EdramTargets::kStencil] = a;
+    if (!edram_->Settled(*colors[i], scissor, access)) {
+      edram_->Note(*colors[i], scissor, access, event);
+    }
+  }
+  if (depth && (depth_main != Access::kNone || depth_stencil != Access::kNone)) {
+    if (depth_main == Access::kDepend && covers && dc.zfunc == xe::CompareFunction::kAlways) {
+      depth_main = Access::kTake;
+    }
+    if (depth_stencil == Access::kDepend && covers && StencilReplacesAll(s)) {
+      depth_stencil = Access::kTake;
+    }
+    EdramTargets::Accesses access;
+    access.aspect[EdramTargets::kMain] = depth_main;
+    access.aspect[EdramTargets::kStencil] = depth_stencil;
+    if (!edram_->Settled(*depth, scissor, access)) {
+      edram_->Note(*depth, scissor, access, event);
+    }
+  }
+  return check;
+}
+
+bool Scene::EdramNoteKey::operator==(const EdramNoteKey& o) const {
+  for (uint32_t i = 0; i < 5; ++i) {
+    if (targets[i] != o.targets[i]) {
+      return false;
+    }
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (scissor[i] != o.scissor[i]) {
+      return false;
+    }
+  }
+  return pipeline == o.pipeline && primitive == o.primitive && count == o.count &&
+         kills == o.kills && aa_mask == o.aa_mask && color_control == o.color_control &&
+         serial == o.serial;
+}
+
 void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail) {
   ++window_.skips[size_t(skip)];
   uint32_t& logged = skip_logged_[size_t(skip)];
@@ -581,8 +814,8 @@ void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail)
 // clears, resolves, tiling (M4.5 and M4.6 execute them)
 // ---------------------------------------------------------------------------
 
-Scene::Skip Scene::Record(PreparedDraw& d, plume::RenderCommandList* list, bool* no_effect,
-                          std::string* detail) {
+Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
+                          bool* no_effect, std::string* detail) {
   const XenosState& s = d.state;
   // D3D's effective window scissor bounds every pixel the draw can touch.
   const uint32_t scissor_br_x = s.scissor_br & 0x7FFFu;
@@ -642,6 +875,11 @@ Scene::Skip Scene::Record(PreparedDraw& d, plume::RenderCommandList* list, bool*
       return Skip::kTarget;
     }
   }
+  const uint32_t coverage_check =
+      NoteEdramAccess(d, r, colors, depth,
+                      plume::RenderRect(int32_t(scissor_tl_x), int32_t(scissor_tl_y),
+                                        int32_t(scissor_br_x), int32_t(scissor_br_y)));
+
   // Layouts (a barrier closes an open render pass on Vulkan; Plume reopens it).
   uint32_t target_height = EdramTargets::kMaxExtent;
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
@@ -717,11 +955,22 @@ Scene::Skip Scene::Record(PreparedDraw& d, plume::RenderCommandList* list, bool*
     list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count,
                            d.input_layout->slots.data());
   }
+  if (coverage_check != EdramTargets::kNoCheck) {
+    // Every sample of the scissor the host draws in.
+    const int64_t width = std::min(scissor.right, int32_t(pitch)) - scissor.left;
+    const int64_t height = scissor.bottom - scissor.top;
+    edram_->BeginCoverageCheck(list, coverage_check,
+                               uint64_t(std::max<int64_t>(width, 0) *
+                                        std::max<int64_t>(height, 0) * samples));
+  }
   if (g.indexed) {
     list->setIndexBuffer(&g.index_view);
     list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
   } else {
     list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  if (coverage_check != EdramTargets::kNoCheck) {
+    edram_->EndCoverageCheck(list, coverage_check);
   }
   return Skip::kCount;
 }
@@ -938,10 +1187,29 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
 
 void Scene::OnTilingBegin(const TilingBeginRecord&, plume::RenderCommandList*) {
   ++window_.tiling_begins;
+  if (edram_->aliasing()) {
+    edram_->BeginTiling();
+  }
 }
 
-void Scene::OnTilingEnd(const TilingEndRecord&, plume::RenderCommandList*) {
+void Scene::OnTilingEnd(const TilingEndRecord& record, plume::RenderCommandList*) {
   ++window_.tiling_ends;
+  if (!edram_->aliasing()) {
+    return;
+  }
+  // The section's tiles, as BeginTiling left them in the device.
+  const RegisterWindow pre(record.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  const uint32_t count = std::min(pre.DeviceDword(guest::kDevTileCount), guest::kMaxTiles);
+  EdramTile tiles[guest::kMaxTiles];
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t at = guest::kDevTileRects + 16 * i;
+    tiles[i].rect = plume::RenderRect(
+        int32_t(pre.DeviceDword(at)), int32_t(pre.DeviceDword(at + 4)),
+        int32_t(pre.DeviceDword(at + 8)), int32_t(pre.DeviceDword(at + 12)));
+    tiles[i].origin_x = int32_t(pre.DeviceDword(guest::kDevTileOrigins + 8 * i));
+    tiles[i].origin_y = int32_t(pre.DeviceDword(guest::kDevTileOrigins + 8 * i + 4));
+  }
+  edram_->EndTiling(tiles, count);
 }
 
 // ---------------------------------------------------------------------------

@@ -175,6 +175,7 @@ class ResolveMemory {
     uint32_t ranges[2][2] = {};
     RegionIndex::Id region_ids[2] = {RegionIndex::kNone, RegionIndex::kNone};
     uint64_t decoded_sequence = 0;  // 0 = never decoded
+    uint64_t decoded_frame = 0;     // the frame of its last decode
     uint64_t last_frame = 0;
   };
 
@@ -190,8 +191,10 @@ class ResolveMemory {
   void PoolBarrier(plume::RenderCommandList* list, PoolAccess access);
   void ArmPages(const std::vector<uint32_t>& pages);
   // Every decoded texture over [start, start + length): its memoized bindings
-  // are dropped (TextureCache::BumpProductGeneration of its pages).
-  void TouchDecoded(uint32_t start, uint32_t length);
+  // are dropped (TextureCache::BumpProductGeneration of its pages). `cpu`: the
+  // CPU wrote the range (Sync), reported when it lands on a texture decoded in
+  // the last frames.
+  void TouchDecoded(uint32_t start, uint32_t length, bool cpu);
   plume::RenderPipeline* DecodePipeline(plume::RenderFormat format);
   void DestroyDecoded(Decoded& decoded, bool for_shutdown);
   void EvictSome();
@@ -255,6 +258,11 @@ class ResolveMemory {
   std::vector<uint32_t> chunk_slot_;   // by chunk: its place in the pool, or kNoChunk
   std::vector<uint8_t> page_flags_;    // by page: PageFlag
   std::vector<uint64_t> page_sequence_;  // by page: the sequence of its last write
+  // By page: the xenos TextureFormat of the resolve that wrote it last (0xFF:
+  // none since the CPU's), for the report of a texture read in another format.
+  std::vector<uint8_t> page_writer_;
+  std::vector<TextureKey> decode_logged_;  // keys whose first decode was reported (32 at most)
+  std::vector<TextureKey> late_logged_;    // keys reported written by the CPU after a decode
   uint64_t sequence_ = 0;
   uint32_t newer_low_page_ = UINT32_MAX;  // bounds of the pages ever marked newer
   uint32_t newer_high_page_ = 0;

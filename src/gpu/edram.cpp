@@ -7,6 +7,8 @@
 #include <cmath>
 #include <format>
 
+#include <rex/cvar.h>
+#include <rex/graphics/xenos.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
 
@@ -14,6 +16,22 @@
 #include "device.h"
 #include "format.h"
 #include "frame.h"
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_edram_aliasing, false, "MCLA/GPU",
+    "EDRAM inheritance detector (M5.2d): per EDRAM "
+    "tile and aspect, the identity that wrote it last, reporting a draw or a resolve that would "
+    "see another identity's bytes on the console -- which the host does not carry over. Off: "
+    "none of its work is done.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_coverage_queries, false, "MCLA/GPU",
+    "With mcla_gpu_edram_aliasing: an occlusion query around each opaque draw the detector "
+    "takes to cover its scissor, checking that it did. Costs GPU time, for "
+    "checking a report. Off: no query pool is made, read or reset, and such takes go "
+    "unchecked (listed once per pair).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -43,6 +61,13 @@ uint32_t FoldColorFormat(uint32_t color_format) {
     case 12: return 3;  // k_2_10_10_10_FLOAT_AS_16_16_16_16
     default: return color_format;
   }
+}
+
+std::string DescribeEdramKey(const EdramKey& k) {
+  const format::Mapping m = k.depth ? format::DepthTargetFormat(k.format)
+                                    : format::ColorTargetFormat(k.format);
+  return std::format("{} {}@{} pitch {} {}x", k.depth ? "depth" : "colour", m.guest_name,
+                     k.base_tiles, k.pitch, k.samples);
 }
 
 void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color[4],
@@ -90,6 +115,40 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
+  // The detector and its checks are chosen at start.
+  aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);
+  if (!aliasing_) {
+    return;
+  }
+  for (auto& owners : tile_owner_) {
+    owners.fill(kNoOwner);
+  }
+  if (!REXCVAR_GET(mcla_gpu_coverage_queries)) {
+    REXLOG_INFO("[gpu] edram: inheritance detector on; opaque draws it takes to cover their "
+                "scissor go unchecked (mcla_gpu_coverage_queries off)");
+    return;
+  }
+  if (!device.capabilities().occlusionQueries) {
+    REXLOG_ERROR("[gpu] edram: mcla_gpu_coverage_queries needs occlusion queries that count "
+                 "samples exactly, which this device has not: opaque draws the detector takes "
+                 "to cover their scissor go unchecked");
+    return;
+  }
+  coverage_pools_.resize(kFramesInFlight);
+  coverage_checks_.resize(kFramesInFlight);
+  coverage_capacity_ = 256;
+  coverage_ = true;
+  for (uint32_t slot = 0; slot < kFramesInFlight && coverage_; ++slot) {
+    coverage_pools_[slot] = device.CreateQueryPool(coverage_capacity_, "edram coverage checks",
+                                                   plume::RenderQueryType::OCCLUSION);
+    coverage_ = coverage_pools_[slot] != nullptr;
+  }
+  if (!coverage_) {
+    coverage_pools_.clear();
+    coverage_checks_.clear();
+    REXLOG_ERROR("[gpu] edram: the coverage checks' query pools could not be made: opaque draws "
+                 "the detector takes to cover their scissor go unchecked");
+  }
 }
 
 void EdramTargets::Shutdown() {
@@ -98,6 +157,22 @@ void EdramTargets::Shutdown() {
   framebuffers_.clear();
   targets_.clear();
   failed_.clear();
+  for (auto& owners : tile_owner_) {
+    owners.fill(kNoOwner);
+  }
+  owner_keys_.clear();
+  epoch_ = 1;
+  reported_pairs_.clear();
+  listed_takes_.clear();
+  tiling_ = false;
+  pending_.clear();
+  coverage_pools_.clear();
+  coverage_checks_.clear();
+  coverage_capacity_ = 0;
+  coverage_wanted_ = 0;
+  coverage_reported_.clear();
+  aliasing_ = false;
+  coverage_ = false;
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
@@ -163,6 +238,18 @@ plume::RenderFramebuffer* EdramTargets::ClearColor(plume::RenderCommandList* lis
   if (rect.right <= rect.left || rect.bottom <= rect.top) {
     return nullptr;
   }
+  if (aliasing_) {
+    // Every bit of every texel in the rectangle: its tiles are this
+    // identity's from now on.
+    Accesses access;
+    access.aspect[kMain] = Access::kTake;
+    access.aspect[kStencil] = Access::kTake;
+    if (!Settled(t, rect, access)) {
+      EdramEvent event;
+      event.kind = EdramEvent::Kind::kClear;
+      Note(t, rect, access, event);
+    }
+  }
   Transition(list, t, plume::RenderTextureLayout::COLOR_WRITE);
   Target* only[1] = {&t};
   plume::RenderFramebuffer* framebuffer = Framebuffer(only, 1, nullptr);
@@ -182,6 +269,18 @@ plume::RenderFramebuffer* EdramTargets::ClearDepthStencil(plume::RenderCommandLi
   rect.bottom = std::min(rect.bottom, int32_t(t.height));
   if (rect.right <= rect.left || rect.bottom <= rect.top || (!depth && !stencil)) {
     return nullptr;
+  }
+  if (aliasing_) {
+    // Each aspect cleared is this identity's from now on; one not cleared
+    // keeps its owner.
+    Accesses access;
+    access.aspect[kMain] = depth ? Access::kTake : Access::kNone;
+    access.aspect[kStencil] = stencil ? Access::kTake : Access::kNone;
+    if (!Settled(t, rect, access)) {
+      EdramEvent event;
+      event.kind = EdramEvent::Kind::kClear;
+      Note(t, rect, access, event);
+    }
   }
   Transition(list, t, plume::RenderTextureLayout::DEPTH_WRITE);
   plume::RenderFramebuffer* framebuffer = Framebuffer(nullptr, 0, &t);
@@ -264,6 +363,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
       return nullptr;
     }
     ++stats_.created;
+    AssignOwner(*target);
     it = targets_.emplace(key, std::move(target)).first;
     Clear(*it->second, list);
     *framebuffer_unset = true;
@@ -318,6 +418,419 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
   t.views_generation = t.generation;
   frames_->Retire(std::move(old));
   return &t;
+}
+
+void EdramTargets::AssignOwner(Target& t) {
+  if (!aliasing_) {
+    return;
+  }
+  // Tile columns of one row of tiles: the pitch in samples over 80 at 32 bpp,
+  // doubled for a 64 bpp format (Xenia's RenderTargetKey::GetPitchTiles). 4x
+  // doubles the samples across, 2x and 4x down.
+  const uint32_t across = t.key.samples >= 4 ? 2 : 1;
+  const bool wide = !t.key.depth && rex::graphics::xenos::IsColorRenderTargetFormat64bpp(
+                                        rex::graphics::xenos::ColorRenderTargetFormat(t.key.format));
+  t.columns_per_texel = wide ? 2 : 1;
+  t.pitch_tiles = ((uint32_t(t.key.pitch) * across + 79) / 80) * t.columns_per_texel;
+  if (owner_keys_.size() >= kNoOwner) {
+    if (!owners_exhausted_logged_) {
+      owners_exhausted_logged_ = true;
+      REXLOG_ERROR("[gpu] edram: more than {} identities; the newer ones are not watched for "
+                   "EDRAM inheritance (reported once)",
+                   uint32_t(kNoOwner));
+    }
+    return;
+  }
+  t.owner = uint16_t(owner_keys_.size());
+  owner_keys_.push_back(t.key);
+}
+
+EdramTargets::Inheritance EdramTargets::Apply(Target& t, const plume::RenderRect& px,
+                                              const Accesses& access) {
+  Inheritance result;
+  if (t.owner == kNoOwner || px.right <= px.left || px.bottom <= px.top) {
+    return result;
+  }
+  // The rectangle in the identity's tiles (80x16 samples).
+  const uint32_t across = (t.key.samples >= 4 ? 2 : 1) * t.columns_per_texel;
+  const uint32_t down = t.key.samples >= 2 ? 2 : 1;
+  const uint32_t col0 = uint32_t(std::max(px.left, 0)) * across / 80;
+  const uint32_t col1 =
+      std::min((uint32_t(std::max(px.right, 0)) * across + 79) / 80, t.pitch_tiles);
+  const uint32_t row0 = uint32_t(std::max(px.top, 0)) * down / 16;
+  const uint32_t row1 = (uint32_t(std::max(px.bottom, 0)) * down + 15) / 16;
+  ++stats_.walks;
+  bool changed = false;
+  bool own[kAspectCount] = {true, true};
+  uint32_t depend_tiles = 0;
+  uint32_t read_tiles = 0;
+  uint16_t from = kNoOwner;
+  uint16_t taken_from = kNoOwner;
+  for (uint32_t a = 0; a < kAspectCount; ++a) {
+    const Access acc = access.aspect[a];
+    if (acc == Access::kNone) {
+      continue;
+    }
+    std::array<uint16_t, kTileCount>& owners = tile_owner_[a];
+    for (uint32_t row = row0; row < row1; ++row) {
+      // The EDRAM's addressing wraps at its last tile.
+      const uint32_t first = uint32_t(t.key.base_tiles) + row * t.pitch_tiles;
+      for (uint32_t col = col0; col < col1; ++col) {
+        uint16_t& owner = owners[(first + col) & (kTileCount - 1)];
+        if (owner == t.owner) {
+          continue;
+        }
+        if (owner != kNoOwner) {
+          if (acc == Access::kTake) {
+            ++stats_.tiles_taken;
+            ++result.taken;
+            if (taken_from == kNoOwner) {
+              taken_from = owner;
+              result.taken_owner = owner;
+            }
+          } else {
+            ++(acc == Access::kRead ? read_tiles : depend_tiles);
+            if (from == kNoOwner) {
+              from = owner;
+              result.aspect = Aspect(a);
+            }
+          }
+        }
+        if (acc == Access::kRead) {
+          own[a] = false;
+        } else {
+          owner = t.owner;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) {
+    ++epoch_;
+  }
+  // What is known now, per aspect: the larger rectangle of the epoch.
+  const auto area = [](const plume::RenderRect& r) {
+    return int64_t(r.right - r.left) * int64_t(r.bottom - r.top);
+  };
+  for (uint32_t a = 0; a < kAspectCount; ++a) {
+    const Access acc = access.aspect[a];
+    if (acc == Access::kNone) {
+      continue;
+    }
+    if (own[a]) {
+      if (t.own_epoch[a] != epoch_ || area(px) > area(t.own_rect[a])) {
+        t.own_rect[a] = px;
+      }
+      t.own_epoch[a] = epoch_;
+    } else if (acc == Access::kRead) {
+      if (t.read_epoch[a] != epoch_ || area(px) > area(t.read_rect[a])) {
+        t.read_rect[a] = px;
+      }
+      t.read_epoch[a] = epoch_;
+    }
+  }
+  if (taken_from != kNoOwner) {
+    const uint32_t pair = uint32_t(taken_from) << 16 | t.owner;
+    if (listed_takes_.size() < 32 &&
+        std::find(listed_takes_.begin(), listed_takes_.end(), pair) == listed_takes_.end()) {
+      listed_takes_.push_back(pair);
+      result.taken_from = &owner_keys_[taken_from];
+    }
+  }
+  result.tiles = depend_tiles + read_tiles;
+  if (result.tiles != 0) {
+    if (depend_tiles != 0) {
+      ++stats_.depend_events;
+    } else {
+      ++stats_.read_events;
+    }
+    stats_.depend_tiles += depend_tiles;
+    stats_.read_tiles += read_tiles;
+    const uint32_t pair = uint32_t(from) << 16 | t.owner;
+    if (reported_pairs_.size() < kReportedPairs &&
+        std::find(reported_pairs_.begin(), reported_pairs_.end(), pair) == reported_pairs_.end()) {
+      reported_pairs_.push_back(pair);
+      result.from = &owner_keys_[from];
+    }
+  }
+  return result;
+}
+
+void EdramTargets::Note(Target& t, const plume::RenderRect& px, const Accesses& access,
+                        const EdramEvent& event) {
+  if (tiling_) {
+    // A repeat of the access kept last changes nothing when the tiles replay
+    // it: one is enough.
+    if (!pending_.empty()) {
+      const Pending& last = pending_.back();
+      if (last.target == &t && last.access == access && last.rect.left == px.left &&
+          last.rect.top == px.top && last.rect.right == px.right &&
+          last.rect.bottom == px.bottom) {
+        return;
+      }
+    }
+    pending_.push_back(Pending{&t, px, access, event});
+    ++stats_.tiled_kept;
+    return;
+  }
+  const Inheritance found = Apply(t, px, access);
+  Report(t, access, found, event, -1);
+}
+
+void EdramTargets::BeginTiling() {
+  if (!aliasing_) {
+    return;
+  }
+  if (tiling_ && !tiling_mismatch_logged_) {
+    tiling_mismatch_logged_ = true;
+    REXLOG_ERROR("[gpu] edram: a tiled section began inside another; the EDRAM ownership of "
+                 "the first is noted with the second's tiles (reported once)");
+  }
+  tiling_ = true;
+  ++stats_.tiled_sections;
+}
+
+void EdramTargets::EndTiling(const EdramTile* tiles, uint32_t count) {
+  if (!aliasing_) {
+    return;
+  }
+  if (!tiling_) {
+    if (!tiling_mismatch_logged_) {
+      tiling_mismatch_logged_ = true;
+      REXLOG_ERROR("[gpu] edram: a tiled section ended that did not begin ("
+                   "reported once)");
+    }
+    return;
+  }
+  tiling_ = false;
+  if (count == 0 && !pending_.empty()) {
+    if (!tiling_mismatch_logged_) {
+      tiling_mismatch_logged_ = true;
+      REXLOG_ERROR("[gpu] edram: a tiled section ended without tiles; its {} accesses are noted "
+                   "in surface pixels, as if untiled (TODO M5.2d; reported once)",
+                   pending_.size());
+    }
+    for (const Pending& p : pending_) {
+      if (!Settled(*p.target, p.rect, p.access)) {
+        Report(*p.target, p.access, Apply(*p.target, p.rect, p.access), p.event, -1);
+      }
+    }
+  }
+  // The GPU runs the whole section for one tile before the next.
+  for (uint32_t i = 0; i < count; ++i) {
+    const EdramTile& tile = tiles[i];
+    for (const Pending& p : pending_) {
+      plume::RenderRect r(std::max(p.rect.left, tile.rect.left),
+                          std::max(p.rect.top, tile.rect.top),
+                          std::min(p.rect.right, tile.rect.right),
+                          std::min(p.rect.bottom, tile.rect.bottom));
+      if (r.right <= r.left || r.bottom <= r.top) {
+        continue;
+      }
+      r.left -= tile.origin_x;
+      r.right -= tile.origin_x;
+      r.top -= tile.origin_y;
+      r.bottom -= tile.origin_y;
+      ++stats_.tiled_noted;
+      if (!Settled(*p.target, r, p.access)) {
+        Report(*p.target, p.access, Apply(*p.target, r, p.access), p.event, int32_t(i));
+      }
+    }
+  }
+  pending_.clear();
+}
+
+void EdramTargets::Report(const Target& t, const Accesses& access, const Inheritance& found,
+                          const EdramEvent& e, int32_t tile) {
+  if (found.taken != 0 && e.check == kNoCheck && e.kind == EdramEvent::Kind::kDraw) {
+    ++stats_.takes_unchecked;
+  }
+  if (found.taken != 0 && e.check != kNoCheck) {
+    // Rests on the draw's extent until its check is read.
+    std::vector<CoverageCheck>& checks = coverage_checks_[e.check >> 24];
+    const uint32_t index = e.check & 0xFFFFFFu;
+    if (index < checks.size()) {
+      CoverageCheck& check = checks[index];
+      if (check.taken_owner == kNoOwner) {
+        check.taken_owner = found.taken_owner;
+        check.target = t.owner;
+      }
+      check.taken += found.taken;
+    }
+  }
+  if (!found.from && !found.taken_from) {
+    return;
+  }
+  std::string what;
+  switch (e.kind) {
+    case EdramEvent::Kind::kDraw:
+      what = std::format(
+          "a draw: {} {} n={}, blend {:08X} mask {:X}, RB_DEPTHCONTROL {:08X}, RB_COLORCONTROL "
+          "{:08X}, stencil {:08X}/{:08X}, AA mask {:X}, scissor ({}, {})-({}, {}), VS {:016X} PS "
+          "{:016X}",
+          e.draw_kind, e.primitive, e.count, e.blend, e.write_mask, e.depth_control,
+          e.color_control, e.stencil, e.stencil_bf, e.aa_mask, e.scissor.left, e.scissor.top,
+          e.scissor.right, e.scissor.bottom, e.vs, e.ps);
+      break;
+    case EdramEvent::Kind::kClear:
+      what = "a clear";
+      break;
+    case EdramEvent::Kind::kResolve:
+      what = std::format("a resolve into {:#010x}, texture format {} {}x{}", e.dest_page << 12,
+                         e.dest_format, e.dest_width, e.dest_height);
+      break;
+  }
+  const std::string where = tile < 0 ? std::string() : std::format(", tile {}", tile);
+  if (found.from) {
+    const char* aspect = t.key.depth ? (found.aspect == kMain ? "depth" : "stencil")
+                                     : "colour words";
+    const char* how = access.aspect[found.aspect] == Access::kRead ? "reads" : "keeps or blends";
+    REXLOG_ERROR("[gpu] edram: {} {} the {} of {} aspect-tiles {} wrote last{}: on the console "
+                 "it sees that identity's bytes, which the host does not carry over between "
+                 "EDRAM identities (TODO M5.2d; pair reported once) -- {}",
+                 DescribeEdramKey(t.key), how, aspect, found.tiles,
+                 DescribeEdramKey(*found.from), where, what);
+  }
+  if (found.taken_from && e.kind == EdramEvent::Kind::kDraw) {
+    REXLOG_INFO("[gpu] edram: {} takes {} aspect-tiles of {}{} with an opaque draw taken to "
+                "cover its scissor, {} (pair listed once) -- {}",
+                DescribeEdramKey(t.key), found.taken, DescribeEdramKey(*found.taken_from), where,
+                e.check != kNoCheck ? "checked by an occlusion query"
+                : coverage_         ? "UNCHECKED (no query left this frame)"
+                                    : "UNCHECKED (mcla_gpu_coverage_queries off)",
+                what);
+  }
+}
+
+uint32_t EdramTargets::ReserveCoverageCheck() {
+  if (!coverage_) {
+    return kNoCheck;
+  }
+  std::vector<CoverageCheck>& checks = coverage_checks_[slot_];
+  if (checks.size() >= coverage_capacity_) {
+    // The pools grow at their next frame; until then such draws depend.
+    coverage_wanted_ = std::max(coverage_wanted_, coverage_capacity_ * 2);
+    ++stats_.checks_wanting;
+    return kNoCheck;
+  }
+  checks.emplace_back();
+  return slot_ << 24 | uint32_t(checks.size() - 1);
+}
+
+void EdramTargets::DescribeCoverageCheck(uint32_t check, const EdramEvent& event) {
+  if (check == kNoCheck || (check >> 24) != slot_) {
+    return;
+  }
+  coverage_checks_[slot_][check & 0xFFFFFFu].event = event;
+}
+
+void EdramTargets::BeginCoverageCheck(plume::RenderCommandList* list, uint32_t check,
+                                      uint64_t expected_samples) {
+  if (check == kNoCheck || (check >> 24) != slot_) {
+    return;
+  }
+  CoverageCheck& c = coverage_checks_[slot_][check & 0xFFFFFFu];
+  c.expected = expected_samples;
+  c.recorded = true;
+  list->beginOcclusionQuery(coverage_pools_[slot_].get(), check & 0xFFFFFFu);
+}
+
+void EdramTargets::EndCoverageCheck(plume::RenderCommandList* list, uint32_t check) {
+  if (check == kNoCheck || (check >> 24) != slot_) {
+    return;
+  }
+  list->endOcclusionQuery(coverage_pools_[slot_].get(), check & 0xFFFFFFu);
+}
+
+void EdramTargets::HarvestCoverage(uint32_t slot) {
+  std::vector<CoverageCheck>& checks = coverage_checks_[slot];
+  if (checks.empty() || !coverage_pools_[slot]) {
+    checks.clear();
+    return;
+  }
+  coverage_pools_[slot]->queryResults();
+  const uint64_t* passed = coverage_pools_[slot]->getResults();
+  for (size_t i = 0; i < checks.size(); ++i) {
+    const CoverageCheck& c = checks[i];
+    if (!c.recorded) {
+      ++stats_.checks_unrecorded;
+      continue;
+    }
+    ++stats_.checks;
+    if (passed[i] == c.expected) {
+      ++stats_.checks_full;
+      continue;
+    }
+    if (passed[i] > c.expected) {
+      // Two triangles that overlap: the count proves nothing either way.
+      ++stats_.checks_over;
+      if (!coverage_over_logged_) {
+        coverage_over_logged_ = true;
+        REXLOG_ERROR("[gpu] edram: a draw taken to cover its scissor counted {} samples of {}: "
+                     "its triangles overlap, and the count cannot tell whether it covered it "
+                     "(reported once) -- {} {} n={}, VS {:016X} PS {:016X}",
+                     passed[i], c.expected, c.event.draw_kind, c.event.primitive,
+                     c.event.count, c.event.vs, c.event.ps);
+      }
+      if (c.taken == 0) {
+        continue;
+      }
+    } else {
+      ++stats_.checks_partial;
+      if (c.taken == 0) {
+        continue;  // nothing of another identity rested on it
+      }
+    }
+    ++stats_.checks_partial_taken;
+    const uint32_t pair = uint32_t(c.taken_owner) << 16 | c.target;
+    if (c.taken_owner < owner_keys_.size() && c.target < owner_keys_.size() &&
+        coverage_reported_.size() < kReportedPairs &&
+        std::find(coverage_reported_.begin(), coverage_reported_.end(), pair) ==
+            coverage_reported_.end()) {
+      coverage_reported_.push_back(pair);
+      const EdramEvent& e = c.event;
+      REXLOG_ERROR(
+          "[gpu] edram: an opaque draw on {} took {} aspect-tiles of {} as if it covered its "
+          "scissor, and wrote {} of its {} samples: on the console what it left keeps that "
+          "identity's bytes, which the host does not carry over between EDRAM identities (TODO "
+          "M5.2d; pair reported once) -- {} {} n={}, scissor ({}, {})-({}, {}), VS {:016X} PS "
+          "{:016X}",
+          DescribeEdramKey(owner_keys_[c.target]), c.taken,
+          DescribeEdramKey(owner_keys_[c.taken_owner]), passed[i], c.expected, e.draw_kind,
+          e.primitive, e.count, e.scissor.left, e.scissor.top, e.scissor.right, e.scissor.bottom,
+          e.vs, e.ps);
+    }
+  }
+  checks.clear();
+}
+
+void EdramTargets::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
+  ++frame_;
+  if (!coverage_ || slot >= coverage_checks_.size()) {
+    return;  // no pool to read or reset
+  }
+  slot_ = slot;
+  HarvestCoverage(slot);
+  if (!list) {
+    return;
+  }
+  if (coverage_wanted_ > coverage_capacity_ && device_) {
+    // The other slots' pools grow when their frames come back.
+    std::unique_ptr<plume::RenderQueryPool> pool = device_->CreateQueryPool(
+        coverage_wanted_, "edram coverage checks", plume::RenderQueryType::OCCLUSION);
+    if (pool) {
+      // The slot's frame is complete: its old pool is no longer in use.
+      coverage_pools_[slot] = std::move(pool);
+      bool all = true;
+      for (const auto& p : coverage_pools_) {
+        all &= p && p->getCount() >= coverage_wanted_;
+      }
+      if (all) {
+        coverage_capacity_ = coverage_wanted_;
+      }
+    }
+  }
+  list->resetQueryPool(coverage_pools_[slot].get(), 0, coverage_pools_[slot]->getCount());
 }
 
 void EdramTargets::Transition(plume::RenderCommandList* list, Target& target,
@@ -396,6 +909,22 @@ std::string EdramTargets::TakeSummary() {
       targets_.size(), double(bytes) / 1048576.0, framebuffers_.size(), stats_.created,
       stats_.grown, double(stats_.grown_bytes) / 1048576.0, stats_.cleared,
       stats_.framebuffers_created, stats_.barriers);
+  if (aliasing_) {
+    text += std::format(
+        " | ownership: {} aspect-tiles taken over ({} draws unchecked), inherited {} "
+        "aspect-tiles in {} writes and {} in {} reads ({} pairs so far), {} walks; tiled "
+        "sections {}, {} accesses kept, {} noted per tile",
+        stats_.tiles_taken, stats_.takes_unchecked, stats_.depend_tiles, stats_.depend_events,
+        stats_.read_tiles, stats_.read_events, reported_pairs_.size(), stats_.walks,
+        stats_.tiled_sections, stats_.tiled_kept, stats_.tiled_noted);
+  }
+  if (coverage_) {
+    text += std::format(
+        "; coverage checks {} ({} full, {} partial, {} of them over another identity's tiles, "
+        "{} overlapping, {} not recorded, {} candidates without a check)",
+        stats_.checks, stats_.checks_full, stats_.checks_partial, stats_.checks_partial_taken,
+        stats_.checks_over, stats_.checks_unrecorded, stats_.checks_wanting);
+  }
   stats_ = Stats{};
   return text;
 }

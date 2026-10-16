@@ -127,6 +127,7 @@ inline constexpr uint32_t kDevSurfaceCache = 12728;       // last flushed surfac
 inline constexpr uint32_t kDevTileCount = 12748;          // BeginTiling sub_8241BE78
 inline constexpr uint32_t kDevTileRects = 12752;          // up to 15 x 16 B
 inline constexpr uint32_t kMaxTiles = 15;
+inline constexpr uint32_t kDevTileOrigins = 12992;        // per tile x1 & ~31, y1 & ~31 (8 B)
 inline constexpr uint32_t kDevTilingExtent = 13180;       // max x1, max y1 over the tiles
 // D3DDevice_Swap (sub_82419E98): the dword whose bits 9-16 become
 // the front buffer fetch's signs, 17 its num_format and 18-29 its swizzle

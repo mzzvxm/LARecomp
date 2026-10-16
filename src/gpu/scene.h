@@ -153,8 +153,34 @@ class Scene {
   void FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedConstants& sc);
   // Records a prepared draw. kCount when recorded; kTarget/kFramebuffer when
   // not; *no_effect for an empty scissor.
-  Skip Record(PreparedDraw& d, plume::RenderCommandList* list, bool* no_effect,
-              std::string* detail);
+  Skip Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
+              bool* no_effect, std::string* detail);
+  // EDRAM ownership (M5.2d): how the draw treats what its
+  // targets' tiles held, noted in EdramTargets' tile map, and reported when
+  // it depends on another identity's bytes.
+  // Returns the draw's coverage check (EdramTargets::kNoCheck when it has
+  // none), for Record to wrap the draw with.
+  uint32_t NoteEdramAccess(const PreparedDraw& d, const DrawRecord& r,
+                           EdramTargets::Target* const* colors, EdramTargets::Target* depth,
+                           const plume::RenderRect& scissor);
+  uint32_t NoteEdramTargets(const PreparedDraw& d, const DrawRecord& r,
+                            EdramTargets::Target* const* colors, EdramTargets::Target* depth,
+                            const plume::RenderRect& scissor);
+  // The last draw NoteEdramAccess noted: a draw equal to it in everything the
+  // notes depend on, with the map's serial unchanged, notes nothing new.
+  struct EdramNoteKey {
+    const void* targets[5] = {};
+    int32_t scissor[4] = {};
+    const void* pipeline = nullptr;
+    uint32_t primitive = 0;
+    uint32_t count = 0;
+    uint32_t kills = 0;
+    uint32_t aa_mask = 0;
+    uint32_t color_control = 0;
+    uint64_t serial = 0;
+    bool operator==(const EdramNoteKey& o) const;
+  };
+  EdramNoteKey last_edram_note_;
   // Binds `framebuffer` (closing the open render pass first) unless bound.
   void BindFramebuffer(plume::RenderCommandList* list, plume::RenderFramebuffer* framebuffer);
   void ResetListState();

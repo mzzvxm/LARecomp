@@ -127,6 +127,7 @@ enum DrawFlags : uint32_t {
   kDrawInlineUnterminated = 1u << 7,   // closed by another event, not by EndVertices
   kDrawVsComputedFetchIndex = 1u << 8, // from the VS microcode (ProbeComputedVertexFetchIndex)
   kDrawBankCheck = 1u << 9,            // bank_check_vs/ps are valid
+  kDrawPsKills = 1u << 10,             // the PS microcode can kill pixels
 };
 
 struct DrawRecord {
