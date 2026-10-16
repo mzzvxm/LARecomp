@@ -53,6 +53,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -142,6 +143,16 @@ class ResolveMemory {
   BindResult Bind(const TextureKey& key, uint16_t host_swizzle, plume::RenderCommandList* list,
                   uint32_t* slot, bool* state_changed, std::string* why);
 
+  // A CPU lock of [address, address + size): the
+  // pages of the range with bytes guest memory lacks are copied from the pool
+  // into guest memory, whole, before the CPU reads them -- the resolves' bytes
+  // in their order, whatever product made them. `submit_recorded` sends what
+  // the frame recorded so far to the queue; the caller records the encode
+  // batch first (Flush). Waits for the GPU. The pages written, or -1 when the
+  // copy could not be made (logged).
+  int64_t WriteBack(uint32_t address, uint32_t size,
+                    const std::function<void()>& submit_recorded);
+
   std::string TakeSummary(uint64_t frames);
 
  private:
@@ -150,7 +161,7 @@ class ResolveMemory {
     kNewer = 1u << 1,
     kArmed = 1u << 2,
   };
-  enum class PoolAccess : uint8_t { kNone, kCopyWrite, kComputeWrite, kGraphicsRead };
+  enum class PoolAccess : uint8_t { kNone, kCopyWrite, kCopyRead, kComputeWrite, kGraphicsRead };
   // A texture decoded from the resolve memory.
   struct Decoded {
     TextureKey key;
@@ -197,6 +208,13 @@ class ResolveMemory {
     std::array<uint32_t, 16> push{};
   };
   std::vector<Pending> pending_;
+  // The lock write-back's own list, fence and readback buffer: the copy runs
+  // after the work it reads, and the CPU waits for it.
+  bool EnsureReadback(uint64_t bytes);
+  std::unique_ptr<plume::RenderCommandList> readback_list_;
+  std::unique_ptr<plume::RenderCommandFence> readback_fence_;
+  std::unique_ptr<plume::RenderBuffer> readback_buffer_;
+  uint64_t readback_bytes_ = 0;
   std::vector<std::pair<uint32_t, uint32_t>> wave_;  // page ranges of the current wave
 
   Device* device_ = nullptr;
@@ -272,6 +290,9 @@ class ResolveMemory {
     uint64_t cpu_writes = 0;        // pages the CPU wrote that the pool held
     uint64_t cpu_writes_newer = 0;  // ... of which with bytes guest memory did not hold
     uint64_t evicted = 0;
+    uint64_t lock_write_backs = 0;     // locks that copied pages back
+    uint64_t lock_pages = 0;           // pages copied back
+    uint64_t lock_pages_unknown = 0;   // newer pages the pool does not hold whole (logged)
   };
   Stats stats_;
 };

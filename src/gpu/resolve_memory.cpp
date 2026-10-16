@@ -231,6 +231,10 @@ void ResolveMemory::Shutdown() {
     d->views.Drop();
   }
   pending_.clear();
+  readback_buffer_.reset();
+  readback_bytes_ = 0;
+  readback_fence_.reset();
+  readback_list_.reset();
   decoded_.clear();
   decoded_regions_.Clear();
   decoded_owners_.clear();
@@ -423,6 +427,12 @@ void ResolveMemory::PoolBarrier(plume::RenderCommandList* list, PoolAccess acces
     case PoolAccess::kGraphicsRead:
       if (pool_access_ != PoolAccess::kGraphicsRead) {
         list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                       plume::RenderBufferBarrier(pool_.get(), plume::RenderBufferAccess::READ));
+      }
+      break;
+    case PoolAccess::kCopyRead:
+      if (pool_access_ != PoolAccess::kCopyRead) {
+        list->barriers(plume::RenderBarrierStage::COPY,
                        plume::RenderBufferBarrier(pool_.get(), plume::RenderBufferAccess::READ));
       }
       break;
@@ -1010,6 +1020,134 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
 }
 
 // ---------------------------------------------------------------------------
+// lock write-back
+// ---------------------------------------------------------------------------
+
+bool ResolveMemory::EnsureReadback(uint64_t bytes) {
+  if (!readback_list_) {
+    readback_list_ = device_->queue()->createCommandList();
+    readback_fence_ = device_->device()->createCommandFence();
+    if (!readback_list_ || !readback_fence_) {
+      readback_list_.reset();
+      readback_fence_.reset();
+      Fail("the lock write-back's list or fence could not be made", "");
+      return false;
+    }
+  }
+  if (bytes > readback_bytes_) {
+    // No copy is in flight: every write-back waited for its fence.
+    readback_buffer_.reset();
+    const uint64_t size = (bytes + (uint64_t(4) << 20) - 1) / (uint64_t(4) << 20) * (uint64_t(4) << 20);
+    readback_buffer_ = device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(size),
+                                             "resolve memory lock readback");
+    if (!readback_buffer_) {
+      readback_bytes_ = 0;
+      Fail("the lock write-back's readback buffer could not be made", std::format("{} bytes", size));
+      return false;
+    }
+    readback_bytes_ = size;
+  }
+  return true;
+}
+
+int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
+                                 const std::function<void()>& submit_recorded) {
+  Sync();
+  if (size == 0) {
+    return 0;
+  }
+  const uint32_t first = address >> kPageShift;
+  const uint32_t last =
+      std::min(uint32_t((uint64_t(address) + size - 1) >> kPageShift), kPageCount - 1);
+  pages_.clear();
+  for (uint32_t page = first; page <= last; ++page) {
+    const uint8_t flags = page_flags_[page];
+    if (!(flags & kNewer)) {
+      continue;
+    }
+    if (!(flags & kValid)) {
+      // Its bytes outside what the resolves wrote never reached the pool (the
+      // guest page could not be read): guest memory keeps them.
+      ++stats_.lock_pages_unknown;
+      Fail("a locked page the resolve memory does not hold whole",
+           std::format("{:#010x}", page << kPageShift));
+      continue;
+    }
+    pages_.push_back(page);
+  }
+  if (pages_.empty()) {
+    return 0;
+  }
+  if (device_->IsLost()) {
+    return -1;
+  }
+  submit_recorded();
+  if (!EnsureReadback(uint64_t(pages_.size()) * kPageBytes)) {
+    return -1;
+  }
+  plume::RenderCommandList* list = readback_list_.get();
+  list->begin();
+  PoolBarrier(list, PoolAccess::kCopyRead);
+  // Runs of pages next to each other in the pool, one copy each.
+  size_t run_begin = 0;
+  uint64_t run_pool = 0;
+  uint32_t run_pages = 0;
+  const auto flush = [&]() {
+    if (run_pages) {
+      list->copyBufferRegion(plume::RenderBufferReference(readback_buffer_.get(),
+                                                          uint64_t(run_begin) * kPageBytes),
+                             plume::RenderBufferReference(pool_.get(), run_pool),
+                             uint64_t(run_pages) * kPageBytes);
+    }
+  };
+  for (size_t i = 0; i < pages_.size(); ++i) {
+    const uint32_t page = pages_[i];
+    const uint64_t pool = (uint64_t(chunk_slot_[page >> (kChunkShift - kPageShift)])
+                           << kChunkShift) |
+                          (uint64_t(page & (kPagesPerChunk - 1)) << kPageShift);
+    if (run_pages && pool == run_pool + uint64_t(run_pages) * kPageBytes) {
+      ++run_pages;
+    } else {
+      flush();
+      run_begin = i;
+      run_pool = pool;
+      run_pages = 1;
+    }
+  }
+  flush();
+  list->end();
+  const plume::RenderCommandList* lists[] = {list};
+  device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, readback_fence_.get());
+  if (device_->CheckLost("lock write-back")) {
+    return -1;
+  }
+  device_->queue()->waitForCommandFence(readback_fence_.get());
+  const auto* mapped = static_cast<const uint8_t*>(readback_buffer_->map());
+  if (!mapped) {
+    Fail("the lock write-back's readback buffer could not be mapped", "");
+    return -1;
+  }
+  int64_t written = 0;
+  for (size_t i = 0; i < pages_.size(); ++i) {
+    const uint32_t page = pages_[i];
+    // The physical view: the watch does not see this write, and guest memory
+    // now holds what the pool holds.
+    uint8_t* out = memory_->WritablePhysical(page << kPageShift, kPageBytes);
+    if (!out) {
+      Fail("a locked page that cannot be written", std::format("{:#010x}", page << kPageShift));
+      continue;
+    }
+    std::memcpy(out, mapped + i * kPageBytes, kPageBytes);
+    page_flags_[page] &= uint8_t(~kNewer);
+    ++written;
+  }
+  readback_buffer_->unmap();
+  ++stats_.lock_write_backs;
+  stats_.lock_pages += uint64_t(written);
+  return written;
+}
+
+// ---------------------------------------------------------------------------
 // housekeeping
 // ---------------------------------------------------------------------------
 
@@ -1066,7 +1204,8 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
       "running | batches {:.2f}/frame, {} barriers inside them | pool {} of {} chunks ({:.1f} of "
       "{} MiB), grown {}, chunks placed {}, pages uploaded {} | fetches over it {} checked, {} "
       "bound, {} decoded ({} levels), {} unsupported, {} failed | decoded textures {} live, {} "
-      "evicted | CPU writes into its pages {} ({} with bytes guest memory lacked)",
+      "evicted | CPU writes into its pages {} ({} with bytes guest memory lacked) | locks "
+      "written back {} ({} pages, {} not held whole)",
       double(stats_.encodes) / f, double(stats_.encoded_bytes) / f / 1048576.0,
       stats_.encode_failures, stats_.encodes_dropped, double(stats_.flushes) / f, stats_.waves,
       used_chunks_, pool_chunks_,
@@ -1074,7 +1213,8 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
       uint64_t(pool_chunks_) * kChunkBytes >> 20, stats_.pool_growths, stats_.chunks_placed,
       stats_.pages_uploaded, stats_.holds_checks, stats_.binds, stats_.decodes,
       stats_.decoded_levels, stats_.bind_unsupported, stats_.bind_failures, decoded_.size(),
-      stats_.evicted, stats_.cpu_writes, stats_.cpu_writes_newer);
+      stats_.evicted, stats_.cpu_writes, stats_.cpu_writes_newer, stats_.lock_write_backs,
+      stats_.lock_pages, stats_.lock_pages_unknown);
   stats_ = Stats{};
   return text;
 }

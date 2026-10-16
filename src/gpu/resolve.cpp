@@ -10,6 +10,7 @@
 #include "resolve.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -40,9 +41,10 @@
 #include "texture_decode.h"
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
-                    "Diagnostic: every level a Lock write-back puts into guest memory (8888 "
-                    "products) is also written as mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga "
-                    "next to the executable (the vinyl's mip chain).")
+                    "Diagnostic: after a Lock write-back, every 8888 level the locked range "
+                    "covers is decoded from guest memory and written as "
+                    "mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga next to the executable "
+                    "(the vinyl's mip chain).")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
@@ -157,10 +159,6 @@ void ResolveCache::Shutdown() {
   regions_.Clear();
   region_owners_.clear();
   pipelines_.clear();
-  readback_buffer_.reset();
-  readback_bytes_ = 0;
-  readback_fence_.reset();
-  readback_list_.reset();
   for (auto& row : shaders_) {
     for (auto& shader : row) {
       shader.reset();
@@ -244,11 +242,6 @@ void ResolveCache::Deactivate(Product& p) {
     return;
   }
   p.active = false;
-  // Memory is the CPU's (or another product's) from now on: what the levels
-  // still hold is not what a later write-back may put back.
-  for (auto& d : p.dirty) {
-    d = {};
-  }
   UnindexRanges(p);
   const auto it = active_by_image_.find(ImageKey(p.key));
   if (it != active_by_image_.end() && it->second == &p) {
@@ -341,6 +334,22 @@ ResolveCache::Product* ResolveCache::Find(const TextureKey& key, uint32_t image_
   }
   ++stats_.found;
   p->last_frame = frame_;
+  for (uint32_t level = 0; level < key.levels() && level < p->coverage.size(); ++level) {
+    if ((level == 0 && key.base_page == 0) || p->coverage[level].complete()) {
+      continue;
+    }
+    ++stats_.found_incomplete;
+    if (incomplete_logged_.size() < 16 && incomplete_logged_.insert(p->key).second) {
+      // TODO(M5.2): refresh such a level from the resolve memory before the read
+      // (0 in the measured scenes).
+      REXLOG_ERROR("[gpu] resolve: {} is read with level {} not wholly written since the product "
+                   "was activated ({} of {} 8x8 cells); the rest is what the product held, not "
+                   "what memory holds there (TODO M5.2; reported once)",
+                   p->key.Describe(), level, p->coverage[level].covered,
+                   p->coverage[level].cells_x * p->coverage[level].cells_y);
+    }
+    break;
+  }
   return p;
 }
 
@@ -356,7 +365,7 @@ const ResolveCache::Product* ResolveCache::FindOverlap(uint32_t start, uint32_t 
 
 void ResolveCache::OnLock(const LockRecord& record,
                           const std::function<void()>& submit_recorded) {
-  // A CPU write since the resolve already took the range from the product.
+  // A CPU write since the resolve already took the range from the products.
   DrainInvalidations();
   ++stats_.locks;
   lock_hits_.clear();
@@ -373,193 +382,83 @@ void ResolveCache::OnLock(const LockRecord& record,
   if (!lock_hits_.empty()) {
     ++stats_.locks_on_products;
   }
-  // Every level of the products hit that holds texels memory lacks, not only
-  // the levels in the range: the CPU's next write anywhere in a product
-  // deactivates all of it (the watch covers its whole range), and MCLA's vinyl
-  // compressor locks level 0, distills it in place, then locks level 1 -- by
-  // then the product is gone and only memory has the levels.
-  write_back_.clear();
-  uint64_t bytes = 0;
-  for (Product* p : lock_hits_) {
-    for (uint32_t level = 0; level < p->dirty.size(); ++level) {
-      const std::array<uint32_t, 4>& d = p->dirty[level];
-      if (d[2] <= d[0] || d[3] <= d[1]) {
-        continue;
-      }
-      TextureLevelStorage stored;
-      if (!GetTextureLevelStorage(p->key, level, &stored)) {
-        continue;
-      }
-      WriteBackItem item;
-      item.product = p;
-      item.level = level;
-      item.width = stored.request.width;
-      item.height = stored.request.height;
-      const uint32_t texel_bytes = plume::RenderFormatSize(p->format);
-      item.row_pitch = uint32_t(AlignUp(uint64_t(item.width) * texel_bytes, 256));
-      item.row_width = item.row_pitch / texel_bytes;
-      item.offset = AlignUp(bytes, 512);
-      bytes = item.offset + uint64_t(item.row_pitch) * item.height;
-      write_back_.push_back(item);
-    }
-  }
-  const uint64_t id = uint64_t(record.address) << 32 | record.size;
-  if (locks_logged_.size() < 32 && locks_logged_.insert(id).second) {
-    std::string what = "no active product (the CPU's memory already)";
-    if (!lock_hits_.empty()) {
-      what = std::format("{} level(s) of {} to write back", write_back_.size(),
-                         lock_hits_.front()->key.Describe());
-    }
-    REXLOG_INFO("[gpu] lock: {:#010x} +{} (level {}, resource {:#010x}): {}", record.address,
-                record.size, record.level, record.resource, what);
-  }
-  if (write_back_.empty() || device_->IsLost()) {
-    return;
-  }
+  // The pages of the range, not the products: a level the CPU locks after it
+  // distilled the one before (MCLA's vinyl compressor) still has its bytes in
+  // the resolve memory when its product is gone, and a product reactivated
+  // over another's bytes owes guest memory only what the resolves wrote.
   const auto t0 = Clock::now();
-  submit_recorded();
-  if (EnsureReadback(bytes) && WriteBack(write_back_)) {
-    ++stats_.locks_written_back;
-  }
+  const int64_t pages = resolve_memory_->WriteBack(record.address, record.size, submit_recorded);
   const uint64_t ns = uint64_t(
       std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
+  const uint64_t id = uint64_t(record.address) << 32 | record.size;
+  if (locks_logged_.size() < 32 && locks_logged_.insert(id).second) {
+    std::string what = "nothing newer than guest memory";
+    if (pages > 0) {
+      what = std::format("{} page(s) written back from the resolve memory", pages);
+    } else if (pages < 0) {
+      what = "the write-back failed";
+    }
+    REXLOG_INFO("[gpu] lock: {:#010x} +{} (level {}, resource {:#010x}{}{}): {}", record.address,
+                record.size, record.level, record.resource, lock_hits_.empty() ? "" : ", ",
+                lock_hits_.empty() ? std::string() : lock_hits_.front()->key.Describe(), what);
+  }
+  if (pages < 0) {
+    ++stats_.write_back_failures;
+    return;
+  }
+  if (pages == 0) {
+    return;
+  }
+  ++stats_.locks_written_back;
+  stats_.pages_written_back += uint64_t(pages);
   stats_.write_back_ns += ns;
   stats_.write_back_max_ns = std::max(stats_.write_back_max_ns, ns);
+  ++write_back_serial_;
   if (write_back_logged_ < 8) {
     ++write_back_logged_;
-    REXLOG_INFO("[gpu] lock write-back: {:#010x} +{}: {} level(s) of {} in {:.2f} ms{}",
-                record.address, record.size, write_back_.size(),
-                write_back_.front().product->key.Describe(), double(ns) / 1e6,
+    REXLOG_INFO("[gpu] lock write-back: {:#010x} +{}: {} page(s) in {:.2f} ms{}", record.address,
+                record.size, pages, double(ns) / 1e6,
                 write_back_logged_ == 8 ? " (further ones counted, not logged)" : "");
   }
-}
-
-bool ResolveCache::EnsureReadback(uint64_t bytes) {
-  if (!readback_list_) {
-    readback_list_ = device_->queue()->createCommandList();
-    readback_fence_ = device_->device()->createCommandFence();
-    if (!readback_list_ || !readback_fence_) {
-      readback_list_.reset();
-      readback_fence_.reset();
-      ++stats_.write_back_failures;
-      REXLOG_ERROR("[gpu] lock write-back: the readback list or fence could not be made; the CPU "
-                   "reads memory without the GPU's image");
-      return false;
-    }
-  }
-  if (bytes > readback_bytes_) {
-    // No copy is in flight: every write-back waited for its fence.
-    readback_buffer_.reset();
-    const uint64_t size = AlignUp(bytes, uint64_t(4) << 20);
-    readback_buffer_ = device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(size),
-                                             "resolve write-back readback");
-    if (!readback_buffer_) {
-      readback_bytes_ = 0;
-      ++stats_.write_back_failures;
-      REXLOG_ERROR("[gpu] lock write-back: a readback buffer of {} bytes could not be made; the "
-                   "CPU reads memory without the GPU's image",
-                   size);
-      return false;
-    }
-    readback_bytes_ = size;
-  }
-  return true;
-}
-
-bool ResolveCache::WriteBack(std::vector<WriteBackItem>& items) {
-  ++write_back_serial_;
-  plume::RenderCommandList* list = readback_list_.get();
-  list->begin();
-  for (const WriteBackItem& item : items) {
-    Product& p = *item.product;
-    if (p.layout != plume::RenderTextureLayout::COPY_SOURCE) {
-      list->barriers(plume::RenderBarrierStage::COPY,
-                     plume::RenderTextureBarrier(p.texture.get(),
-                                                 plume::RenderTextureLayout::COPY_SOURCE));
-      p.layout = plume::RenderTextureLayout::COPY_SOURCE;
-    }
-    list->copyTextureRegion(
-        plume::RenderTextureCopyLocation::PlacedFootprint(readback_buffer_.get(), p.format,
-                                                          item.width, item.height, 1,
-                                                          item.row_width, item.offset),
-        plume::RenderTextureCopyLocation::Subresource(p.texture.get(), item.level, 0));
-  }
-  // Back to the layout every reader of a product expects (Execute leaves it so).
-  for (const WriteBackItem& item : items) {
-    TransitionProduct(list, *item.product, plume::RenderTextureLayout::SHADER_READ);
-  }
-  list->end();
-  const plume::RenderCommandList* lists[] = {list};
-  device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, readback_fence_.get());
-  if (device_->CheckLost("lock write-back")) {
-    return false;
-  }
-  device_->queue()->waitForCommandFence(readback_fence_.get());
-
-  const auto* mapped = static_cast<const uint8_t*>(readback_buffer_->map());
-  if (!mapped) {
-    ++stats_.write_back_failures;
-    REXLOG_ERROR("[gpu] lock write-back: the readback buffer could not be mapped");
-    return false;
-  }
-  bool ok = true;
-  for (const WriteBackItem& item : items) {
-    Product& p = *item.product;
-    std::array<uint32_t, 4>& d = p.dirty[item.level];
-    const FormatInfo* info = FormatInfo::Get(p.key.format);
-    TextureLevelStorage stored;
-    std::string why;
-    if (!GetTextureLevelStorage(p.key, item.level, &stored)) {
-      why = "no storage for the level";
-    } else if (plume::RenderFormatSize(p.format) != stored.request.source.bytes_per_block) {
-      why = std::format("host texel of {} bytes for a guest block of {}",
-                        plume::RenderFormatSize(p.format), stored.request.source.bytes_per_block);
-    } else if (!texture_decode::CanEncode(stored.request)) {
-      why = std::format("format {} has no inverse load yet (TODO M5.1b)",
-                        format::TextureHost(p.key.format).guest_name);
-    }
-    uint8_t* out = why.empty() ? memory_->WritablePhysical(stored.address, uint32_t(stored.extent))
-                               : nullptr;
-    if (why.empty() && !out) {
-      why = std::format("{} bytes at {:#010x} not writable", stored.extent, stored.address);
-    }
-    if (why.empty()) {
-      // Only the blocks the resolves wrote: memory keeps the rest.
-      const uint32_t bw = info->block_width, bh = info->block_height;
-      const uint32_t bx0 = d[0] / bw, by0 = d[1] / bh;
-      const uint32_t bx1 = (d[2] + bw - 1) / bw, by1 = (d[3] + bh - 1) / bh;
-      texture_decode::Request r = stored.request;
-      r.source.offset_x += bx0;
-      r.source.offset_y += by0;
-      r.width_blocks = bx1 - bx0;
-      r.height_blocks = by1 - by0;
-      const uint8_t* in = mapped + item.offset + uint64_t(by0) * item.row_pitch +
-                          uint64_t(bx0) * r.source.bytes_per_block;
-      if (texture_decode::Encode(r, in, item.row_pitch, out, stored.extent)) {
-        ++stats_.levels_written_back;
-        stats_.write_back_bytes +=
-            uint64_t(r.width_blocks) * r.height_blocks * r.source.bytes_per_block;
-        d = {};
-        if (REXCVAR_GET(mcla_gpu_lock_dump) && p.format == plume::RenderFormat::R8G8B8A8_UNORM) {
-          DumpLevelTga(write_back_serial_, p.key, item.level, item.width, item.height,
-                       mapped + item.offset, item.row_pitch);
-        }
-        continue;
+  if (REXCVAR_GET(mcla_gpu_lock_dump)) {
+    // What the CPU reads now: every level of the locked texture (an 8888 one)
+    // whose storage the lock covers, decoded from guest memory. The key comes
+    // from the resource's own header: the product may be gone already (the
+    // vinyl's levels after the first).
+    const uint8_t* header =
+        memory_->Read(GuestMemory::ToPhysical(record.resource) + guest::kTextureFetchOffset, 24);
+    TextureFetch fetch;
+    if (header) {
+      uint32_t d[6];
+      for (uint32_t i = 0; i < 6; ++i) {
+        d[i] = LoadBe32(header + 4 * i);
       }
-      why = "a block beyond the level's storage";
+      fetch = ReadTextureFetch(d);
     }
-    ok = false;
-    ++stats_.write_back_failures;
-    if (write_back_failures_logged_ < 8) {
-      ++write_back_failures_logged_;
-      REXLOG_ERROR("[gpu] lock write-back: level {} of {} not written ({}); the CPU reads memory "
-                   "without the GPU's image{}",
-                   item.level, p.key.Describe(), why,
-                   write_back_failures_logged_ == 8 ? " (further ones counted, not logged)" : "");
+    const TextureKey& key = fetch.key;
+    if (fetch.is_texture && key.format == uint8_t(xe::TextureFormat::k_8_8_8_8)) {
+      for (uint32_t level = 0; level < key.levels(); ++level) {
+        TextureLevelStorage stored;
+        if (!GetTextureLevelStorage(key, level, &stored) ||
+            stored.address >= uint64_t(record.address) + record.size ||
+            uint64_t(stored.address) + stored.extent <= record.address) {
+          continue;
+        }
+        texture_decode::Request r = stored.request;
+        r.source.data = memory_->Read(stored.address, uint32_t(stored.extent));
+        r.source.readable = stored.extent;
+        if (!r.source.data) {
+          continue;
+        }
+        const uint32_t pitch = r.width_blocks * 4;
+        dump_scratch_.assign(size_t(pitch) * r.height_blocks, 0);
+        if (texture_decode::Decode(r, dump_scratch_.data(), pitch)) {
+          DumpLevelTga(write_back_serial_, key, level, r.width, r.height, dump_scratch_.data(),
+                       pitch);
+        }
+      }
     }
   }
-  readback_buffer_->unmap();
-  return ok;
 }
 
 void ResolveCache::TransitionProduct(plume::RenderCommandList* list, Product& p,
@@ -610,7 +509,13 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     }
     product->level_views.resize(key.levels());
     product->level_framebuffers.resize(key.levels());
-    product->dirty.assign(key.levels(), {});
+    product->coverage.resize(key.levels());
+    for (uint32_t level = 0; level < key.levels(); ++level) {
+      Product::Coverage& c = product->coverage[level];
+      c.cells_x = (std::max(uint32_t(key.width) >> level, 1u) + 7) / 8;
+      c.cells_y = (std::max(uint32_t(key.height) >> level, 1u) + 7) / 8;
+      c.bits.assign((size_t(c.cells_x) * c.cells_y + 63) / 64, 0);
+    }
     for (uint32_t level = 0; level < key.levels(); ++level) {
       plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(format);
       view.mipSlice = level;
@@ -644,6 +549,11 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
   }
   p->last_frame = frame_;
   if (!p->active) {
+    // A new activation: nothing of it written yet.
+    for (Product::Coverage& c : p->coverage) {
+      std::fill(c.bits.begin(), c.bits.end(), 0);
+      c.covered = 0;
+    }
     // Versioned in time: whatever product covers these bytes with another key
     // is what the guest had there before this resolve.
     scratch_hits_.clear();
@@ -1023,6 +933,28 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       list->drawInstanced(3, 1, 0, 0);
       list->setFramebuffer(nullptr);
       TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
+      // The cells this activation now holds (the rectangle is 8-aligned
+      // except where it stops at the level's edge).
+      if (level < p->coverage.size()) {
+        Product::Coverage& c = p->coverage[level];
+        const uint32_t cx0 = uint32_t(tx0) / 8, cy0 = uint32_t(ty0) / 8;
+        const uint32_t cx1 = std::min((uint32_t(tx1) + 7) / 8, c.cells_x);
+        const uint32_t cy1 = std::min((uint32_t(ty1) + 7) / 8, c.cells_y);
+        for (uint32_t cy = cy0; cy < cy1 && cx0 < cx1 && !c.complete(); ++cy) {
+          // Bits [begin, end) of the row, a word at a time.
+          size_t bit = size_t(cy) * c.cells_x + cx0;
+          const size_t end = size_t(cy) * c.cells_x + cx1;
+          while (bit < end) {
+            const uint32_t shift = uint32_t(bit & 63);
+            const size_t take = std::min<size_t>(64 - shift, end - bit);
+            const uint64_t mask = (take == 64 ? ~uint64_t(0) : ((uint64_t(1) << take) - 1)) << shift;
+            uint64_t& word = c.bits[bit >> 6];
+            c.covered += uint32_t(std::popcount(mask & ~word));
+            word |= mask;
+            bit += take;
+          }
+        }
+      }
       // The same bytes into the resolve memory: colour from the
       // product just written, depth from the EDRAM target (with stencil).
       ResolveMemory::Copy memory_copy;
@@ -1053,14 +985,6 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
           pass_timing_->Mark(list, "resolve memory encode (depth)");
         }
         resolve_memory_->Encode(list, memory_copy);
-      }
-      // What a write-back of this level owes guest memory.
-      std::array<uint32_t, 4>& d = p->dirty[level];
-      if (d[2] <= d[0] || d[3] <= d[1]) {
-        d = {uint32_t(tx0), uint32_t(ty0), uint32_t(tx1), uint32_t(ty1)};
-      } else {
-        d = {std::min(d[0], uint32_t(tx0)), std::min(d[1], uint32_t(ty0)),
-             std::max(d[2], uint32_t(tx1)), std::max(d[3], uint32_t(ty1))};
       }
       ++stats_.copies;
       ++stats_.modes[mode & 0xFF];
@@ -1169,20 +1093,20 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       "depth | conversions [{}] | failed [{}] | products {} ({} active), created {}, activated "
       "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, misaligned {}, source "
       "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image, {} "
-      "by image base) | "
-      "locks {} ({} of an active product, {} written back: {} levels, {:.2f} MiB, {:.2f} ms "
-      "total, {:.2f} ms max, {} failed)",
+      "by image base, {} of a level not wholly written) | "
+      "locks {} ({} of an active product, {} written back: {} pages, {:.2f} ms total, {:.2f} ms "
+      "max, {} failed)",
       double(stats_.resolves) / f, stats_.copies, double(stats_.pixels) / f / 1e6,
       stats_.clear_only, stats_.color_clears, stats_.depth_clears,
       modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
       active, stats_.created, stats_.activated, stats_.deactivated_by_overlap,
       stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.misaligned,
       stats_.from_registers, stats_.other_pitch, stats_.finds, stats_.found,
-      stats_.found_by_image, stats_.found_by_image_base, stats_.locks, stats_.locks_on_products,
+      stats_.found_by_image, stats_.found_by_image_base, stats_.found_incomplete, stats_.locks,
+      stats_.locks_on_products,
       stats_.locks_written_back,
-      stats_.levels_written_back, double(stats_.write_back_bytes) / 1048576.0,
-      double(stats_.write_back_ns) / 1e6, double(stats_.write_back_max_ns) / 1e6,
-      stats_.write_back_failures);
+      stats_.pages_written_back, double(stats_.write_back_ns) / 1e6,
+      double(stats_.write_back_max_ns) / 1e6, stats_.write_back_failures);
   stats_ = Stats{};
   return text;
 }

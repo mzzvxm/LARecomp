@@ -304,42 +304,4 @@ bool Decode(const Request& r, uint8_t* out, uint32_t out_pitch) {
   return complete;
 }
 
-bool CanEncode(const Request& r) {
-  const Source& s = r.source;
-  return r.decompress == format::TextureDecompress::kNone &&
-         (r.load == format::TextureLoad::kCopy ||
-          r.load == format::TextureLoad::kR5G5B5A1ToB5G5R5A1) &&
-         s.bytes_per_block != 0 && s.bytes_per_block >= SwapUnit(s.endian);
-}
-
-bool Encode(const Request& r, const uint8_t* in, uint32_t in_pitch, uint8_t* out,
-            uint64_t writable) {
-  if (!CanEncode(r)) {
-    return false;
-  }
-  const Source& s = r.source;
-  const uint32_t bpb = s.bytes_per_block;
-  // Every block within reach first: a partial level is worse than none.
-  if (Reach(s, r.width_blocks, r.height_blocks) > writable) {
-    return false;
-  }
-  uint8_t block[16];
-  for (uint32_t y = 0; y < r.height_blocks; ++y) {
-    const uint8_t* row = in + uint64_t(y) * in_pitch;
-    for (uint32_t x = 0; x < r.width_blocks; ++x) {
-      std::memcpy(block, row + x * bpb, bpb);
-      if (r.load == format::TextureLoad::kR5G5B5A1ToB5G5R5A1) {
-        // The load swaps the 5-bit R and B fields; swapping them again restores them.
-        const uint16_t v = LoadLe16(block);
-        const uint16_t swapped =
-            uint16_t((v & 0x83E0u) | ((v & 0x1Fu) << 10) | ((v >> 10) & 0x1Fu));
-        std::memcpy(block, &swapped, 2);
-      }
-      Swap(block, bpb, s.endian);  // its own inverse
-      std::memcpy(out + BlockOffset(s, s.offset_x + x, s.offset_y + y), block, bpb);
-    }
-  }
-  return true;
-}
-
 }  // namespace mcla::gpu::texture_decode

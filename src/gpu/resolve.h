@@ -91,10 +91,18 @@ class ResolveCache {
     uint32_t ranges[2][2] = {};
     RegionIndex::Id region_ids[2] = {RegionIndex::kNone, RegionIndex::kNone};
     uint64_t last_frame = 0;
-    // Per level, the texels resolves wrote since the level was last written
-    // back to guest memory: x0, y0, x1, y1, empty when x1 <= x0.
-    // Emptied on deactivation: from then on memory is the CPU's.
-    std::vector<std::array<uint32_t, 4>> dirty;
+    // Per level, the 8x8 cells resolves wrote since the product was last
+    // activated: a fetch of a level with cells missing reads
+    // texels the product does not hold for this activation -- on the console,
+    // whatever memory had there.
+    struct Coverage {
+      uint32_t cells_x = 0;
+      uint32_t cells_y = 0;
+      uint32_t covered = 0;
+      std::vector<uint64_t> bits;  // row-major, cells_x per row, 64 per word
+      bool complete() const { return covered == cells_x * cells_y; }
+    };
+    std::vector<Coverage> coverage;
   };
 
   ResolveCache() = default;
@@ -134,13 +142,12 @@ class ResolveCache {
   // length), or null (the reinterpretation report).
   const Product* FindOverlap(uint32_t start, uint32_t length);
 
-  // A lock record (M5.1): the CPU locked a range that holds a
-  // resolve destination. Every level of an active product in the range with
-  // texels the resolves wrote since its last write-back is copied back from
-  // the GPU and written into guest memory, in the guest's storage, before the
-  // guest thread (which waits for this record) reads it. `submit_recorded`
-  // sends the GPU work recorded so far to the queue (the resolves among it);
-  // it is called only when there is something to write. Waits for the GPU.
+  // A lock record (24.33 M5.2c): the CPU locked a range that
+  // holds a resolve destination. The resolve memory copies the range's pages
+  // with bytes guest memory lacks into guest memory before the guest thread
+  // (which waits for this record) reads them. `submit_recorded` sends the GPU
+  // work recorded so far to the queue (the resolves and the encode batch among
+  // it); it is called only when there is something to write. Waits for the GPU.
   void OnLock(const LockRecord& record, const std::function<void()>& submit_recorded);
 
   std::string TakeSummary(uint64_t frames);
@@ -202,20 +209,6 @@ class ResolveCache {
   Product* FindImage(const TextureKey& key);
   // What fetches of the product's pages bind changed (the Scene's memo).
   void BumpGenerations(const Product& product);
-  // The write-back of OnLock: one level's place in the readback buffer.
-  struct WriteBackItem {
-    Product* product = nullptr;
-    uint32_t level = 0;
-    uint32_t width = 0;      // texels of the level
-    uint32_t height = 0;
-    uint32_t row_width = 0;  // texels per footprint row (256-byte rows)
-    uint32_t row_pitch = 0;  // bytes per footprint row
-    uint64_t offset = 0;     // of the level in the buffer
-  };
-  bool EnsureReadback(uint64_t bytes);
-  // Copies the items' levels to the readback buffer, waits, and encodes them
-  // into guest memory. False when any could not be; each failure logged.
-  bool WriteBack(std::vector<WriteBackItem>& items);
   void IndexRanges(Product& product);
   void UnindexRanges(Product& product);
   void EvictSome();
@@ -244,22 +237,18 @@ class ResolveCache {
   uint64_t frame_ = 1;
   std::array<uint32_t, size_t(Failure::kCount)> failures_logged_{};
   uint32_t cpu_writes_logged_ = 0;
+  // Keys found with a level not wholly written since activation, logged once
+  // each (the first 16).
+  std::unordered_set<TextureKey, TextureKeyHash> incomplete_logged_;
   // Sources whose surface header was made at another pitch/MSAA than the
   // device's RB_SURFACE_INFO, logged once each (the first 16).
   std::unordered_set<uint64_t> other_pitch_logged_;
   // Locked ranges (address << 32 | size), logged once each (the first 32).
   std::unordered_set<uint64_t> locks_logged_;
-  // The write-back's own list, fence and readback buffer: the
-  // copy runs on the queue after the work it reads, and the CPU waits for it.
-  std::unique_ptr<plume::RenderCommandList> readback_list_;
-  std::unique_ptr<plume::RenderCommandFence> readback_fence_;
-  std::unique_ptr<plume::RenderBuffer> readback_buffer_;
-  uint64_t readback_bytes_ = 0;
-  std::vector<WriteBackItem> write_back_;
   std::vector<Product*> lock_hits_;
   uint32_t write_back_logged_ = 0;
-  uint32_t write_back_failures_logged_ = 0;
-  uint32_t write_back_serial_ = 0;  // WriteBack calls, for mcla_gpu_lock_dump's file names
+  uint32_t write_back_serial_ = 0;  // write-backs, for mcla_gpu_lock_dump's file names
+  std::vector<uint8_t> dump_scratch_;
 
   struct Stats {
     uint64_t resolves = 0;
@@ -281,13 +270,13 @@ class ResolveCache {
     uint64_t locks = 0;               // lock records (CPU locks of resolve destinations)
     uint64_t locks_on_products = 0;   // ... of a range an active product covers
     uint64_t locks_written_back = 0;  // ... that wrote something back
-    uint64_t levels_written_back = 0;
-    uint64_t write_back_bytes = 0;    // guest bytes written
+    uint64_t pages_written_back = 0;
     uint64_t write_back_ns = 0;       // the guest's wait, submit to written
     uint64_t write_back_max_ns = 0;
-    uint64_t write_back_failures = 0; // levels that could not be written (logged)
+    uint64_t write_back_failures = 0; // locks whose copy could not be made (logged)
     uint64_t found_by_image = 0;      // fetches served the first levels of a product
     uint64_t found_by_image_base = 0; // ... of which by the base the SDK dropped
+    uint64_t found_incomplete = 0;    // ... of a level not wholly written since activation
     uint64_t pixels = 0;
     uint64_t finds = 0;
     uint64_t found = 0;

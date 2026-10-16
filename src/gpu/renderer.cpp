@@ -336,6 +336,8 @@ void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
       resolve_.OnLock(*reinterpret_cast<const LockRecord*>(payload), [this] {
         if (frames_.is_open()) {
           scene_.BeforeFlush(frames_.list());
+          // The encodes still waiting write bytes the write-back copies.
+          resolve_memory_.Flush(frames_.list());
           scene_.OnListChanged(frames_.FlushBatch());
         }
       });
