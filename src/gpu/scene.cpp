@@ -6,6 +6,13 @@
 #include <cstring>
 #include <format>
 
+#if defined(_WIN32)
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/logging.h>
 
@@ -21,6 +28,13 @@
 #include "resolve_memory.h"
 #include "samplers.h"
 #include "textures.h"
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_scene_profile, false, "MCLA/GPU",
+    "Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, "
+    "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
+    "draw), one line per window of 600 frames. Off: nothing is timed.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -208,6 +222,55 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
     base_shared_.texture_cube[i] = kNullTextureCubeSlot;
     base_shared_.sampler[i] = kSamplerLinearWrap;
   }
+  profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
+  if (profile_) {
+    profile_tsc0_ = __rdtsc();
+    profile_ns0_ = uint64_t(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+            .count());
+  }
+}
+
+void Scene::LapStart() {
+  if (profile_) {
+    lap_ = __rdtsc();
+  }
+}
+
+void Scene::Lap(Stage stage) {
+  if (profile_) {
+    const uint64_t now = __rdtsc();
+    stage_cycles_[size_t(stage)] += now - lap_;
+    lap_ = now;
+  }
+}
+
+void Scene::ReportProfile(const char* why, double frames) {
+  if (!profile_) {
+    return;
+  }
+  // The window's TSC rate against the steady clock.
+  const uint64_t tsc = __rdtsc();
+  const uint64_t ns = uint64_t(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+          .count());
+  const double ns_per_cycle =
+      tsc > profile_tsc0_ ? double(ns - profile_ns0_) / double(tsc - profile_tsc0_) : 0.0;
+  static const char* const kNames[] = {"banks",     "decode",   "shaders", "geometry",
+                                       "pipeline",  "constants", "textures", "upload",
+                                       "targets",   "draw"};
+  static_assert(std::size(kNames) == size_t(Stage::kCount));
+  std::string text;
+  double sum = 0.0;
+  for (size_t i = 0; i < stage_cycles_.size(); ++i) {
+    const double ms = double(stage_cycles_[i]) * ns_per_cycle / frames / 1e6;
+    sum += ms;
+    text += std::format("{}{} {:.3f}", text.empty() ? "" : ", ", kNames[i], ms);
+  }
+  REXLOG_INFO("[gpu] scene ({}): profile ms/frame: {} | sum {:.3f}", why, text, sum);
+  stage_cycles_.fill(0);
+  profile_tsc0_ = tsc;
+  profile_ns0_ = ns;
 }
 
 void Scene::ResetListState() {
@@ -278,12 +341,14 @@ void Scene::BindFramebuffer(plume::RenderCommandList* list,
 
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   const auto t0 = Clock::now();
+  LapStart();
   const DrawView view(payload);
   const DrawRecord& r = view.record();
   ++window_.draws;
 
   ConstantBanks::Check check;
   const ConstantBanks::Banks& banks = banks_.Apply(view, &check);
+  Lap(Stage::kBanks);
   if (check.done) {
     ++window_.bank_checks;
     if (!check.vs_matches || !check.ps_matches) {
@@ -388,6 +453,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     }
     depth_format = m.format;
   }
+  Lap(Stage::kDecode);
 
   // Shaders.
   d.vs = shaders_.Find(r.vs_identity);
@@ -433,6 +499,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     *detail = std::format("VS {:016X}, {} problem(s)", r.vs_identity, d.input_layout->problems);
     return Skip::kInputLayout;
   }
+  Lap(Stage::kShaders);
 
   // Geometry: vertex and index data, and the final host topology (an indexed
   // strip whose restart differs from the host's becomes a list).
@@ -450,6 +517,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
               (detail->empty() ? std::string() : ": " + *detail);
     return Skip::kGeometry;
   }
+  Lap(Stage::kGeometry);
 
   // Pipeline.
   const PipelineInputs inputs{d.vs, d.ps, d.input_layout};
@@ -472,6 +540,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     *detail = std::format("VS {:016X} PS {:016X}", d.key.vs, d.key.ps);
     return Skip::kPipeline;
   }
+  Lap(Stage::kPipeline);
 
   // Viewport and constants.
   const bool ps_writes_depth = d.ps && (d.ps->ps_outputs & ShaderStore::kOutputDepth) != 0;
@@ -491,11 +560,14 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
                    "(reported once)");
     }
   }
+  Lap(Stage::kConstants);
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
   FillTextureTables(view, fetch_mask, shared);
+  Lap(Stage::kTextures);
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
   }
+  Lap(Stage::kUpload);
 
   ++window_.conversions[size_t(d.primitive.conversion)];
   if (d.key.ps_variant) {
@@ -908,6 +980,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     marked_framebuffer_ = framebuffer;
   }
   BindFramebuffer(list, framebuffer);
+  Lap(Stage::kTargets);
 
   if (!bound_.layout_bound) {
     list->setGraphicsPipelineLayout(layout_->layout());
@@ -977,6 +1050,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   if (coverage_check != EdramTargets::kNoCheck) {
     edram_->EndCoverageCheck(list, coverage_check);
   }
+  Lap(Stage::kDraw);
   return Skip::kCount;
 }
 
@@ -1352,6 +1426,7 @@ void Scene::Report(const char* why) {
           : 0.0,
       w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
       double(w.prepare_ns) / frames / 1e6);
+  ReportProfile(why, frames);
   REXLOG_INFO("[gpu] scene ({}): {}", why, geometry_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, edram_->TakeSummary());
   REXLOG_INFO("[gpu] scene ({}): {}", why, textures_->TakeSummary(w.frames));

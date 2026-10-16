@@ -309,6 +309,32 @@ class Scene {
   void Add(Stats& into, const Stats& from) const;
   Stats window_;
   Stats total_;
+
+  // mcla_gpu_scene_profile (M6a): the TSC cycles each stage of a
+  // draw took, summed over the window, and the TSC/steady-clock pair at the
+  // window's start to turn them into time. Off (read at start): each Lap is a
+  // branch.
+  enum class Stage : uint8_t {
+    kBanks,      // the constant banks (ConstantBanks::Apply)
+    kDecode,     // the Xenos state, primitive and target formats
+    kShaders,    // the pack's shaders and the input layout
+    kGeometry,   // GeometryCache::Prepare
+    kPipeline,   // the pipeline key and its lookup
+    kConstants,  // viewport and SharedConstants
+    kTextures,   // the texture and sampler tables
+    kUpload,     // the constants into the upload ring
+    kTargets,    // EDRAM targets, their notes, barriers, framebuffer
+    kDraw,       // the rest of the recording, the draw call included
+    kCount,
+  };
+  void LapStart();
+  void Lap(Stage stage);
+  void ReportProfile(const char* why, double frames);
+  bool profile_ = false;
+  uint64_t lap_ = 0;
+  std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
+  uint64_t profile_tsc0_ = 0;
+  uint64_t profile_ns0_ = 0;
   std::array<uint32_t, size_t(Skip::kCount)> skip_logged_{};
   uint32_t constants_issues_reported_ = 0;
   uint32_t mismatches_logged_ = 0;
