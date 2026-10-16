@@ -64,6 +64,11 @@ bool IsNullBacked(const plume::RenderPipeline* graphics_pipeline) {
              VK_NULL_HANDLE;
 }
 
+bool IsNullBackedCompute(const plume::RenderPipeline* compute_pipeline) {
+  return !compute_pipeline ||
+         static_cast<const plume::VulkanComputePipeline*>(compute_pipeline)->vk == VK_NULL_HANDLE;
+}
+
 bool IsNullBacked(const plume::RenderPipelineLayout* layout) {
   return !layout ||
          static_cast<const plume::VulkanPipelineLayout*>(layout)->vk == VK_NULL_HANDLE;

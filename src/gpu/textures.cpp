@@ -25,6 +25,7 @@
 #include "device.h"
 #include "frame.h"
 #include "resolve.h"
+#include "resolve_memory.h"
 #include "texture_decode.h"
 #include "upload.h"
 
@@ -149,6 +150,52 @@ void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
   }
 }
 
+bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage* out) {
+  const FormatInfo* info = FormatInfo::Get(key.format);
+  if (!info || info->bytes_per_block() == 0) {
+    return false;
+  }
+  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
+      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
+      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
+  const tu::TextureGuestLayout::Level* stored;
+  if (level == 0) {
+    if (!key.base_page) {
+      return false;
+    }
+    stored = &layout.base;
+    out->address = key.base_page << 12;
+  } else {
+    if (!key.mip_page) {
+      return false;
+    }
+    const uint32_t stored_level = std::min(level, layout.packed_level);
+    stored = &layout.mips[stored_level];
+    out->address = (key.mip_page << 12) + layout.mip_offsets_bytes[stored_level];
+  }
+  out->extent = stored->level_data_extent_bytes;
+  texture_decode::Request& r = out->request;
+  r = texture_decode::Request{};
+  r.source.row_pitch_bytes = stored->row_pitch_bytes;
+  r.source.bytes_per_block = info->bytes_per_block();
+  r.source.tiled = key.tiled != 0;
+  r.source.endian = key.endian;
+  if (key.packed_mips && level >= layout.packed_level) {
+    uint32_t ox = 0, oy = 0, oz = 0;
+    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
+                           oz);
+    r.source.offset_x = ox;
+    r.source.offset_y = oy;
+  }
+  r.width = std::max(uint32_t(key.width) >> level, 1u);
+  r.height = std::max(uint32_t(key.height) >> level, 1u);
+  r.width_blocks = (r.width + info->block_width - 1) / info->block_width;
+  r.height_blocks = (r.height + info->block_height - 1) / info->block_height;
+  r.load = format::TextureHost(key.format).load;
+  r.decompress = format::TextureDecompress::kNone;
+  return true;
+}
+
 uint16_t GuestToHostSwizzle(uint16_t fetch_swizzle, uint16_t host_format_swizzle) {
   uint16_t host = 0;
   for (uint32_t i = 0; i < 4; ++i) {
@@ -216,7 +263,9 @@ TextureCache::~TextureCache() {
 }
 
 void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
-                              UploadRing& upload, GuestMemory& memory, ResolveCache& resolve) {
+                              UploadRing& upload, GuestMemory& memory, ResolveCache& resolve,
+                              ResolveMemory& resolve_memory) {
+  resolve_memory_ = &resolve_memory;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -242,6 +291,7 @@ void TextureCache::Shutdown() {
   upload_ = nullptr;
   memory_ = nullptr;
   resolve_ = nullptr;
+  resolve_memory_ = nullptr;
 }
 
 void TextureCache::BeginFrame(uint32_t slot) {
@@ -258,6 +308,7 @@ void TextureCache::BeginFrame(uint32_t slot) {
 void TextureCache::Sync() {
   DrainInvalidations();
   resolve_->Sync();
+  resolve_memory_->Sync();
 }
 
 void TextureCache::DrainInvalidations() {
@@ -356,10 +407,41 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
     binding.from_product = true;
     return binding;
   }
+  // Memory a resolve wrote that guest memory does not hold, read with another
+  // shape (M5.2's reinterpretation): decoded from the resolve
+  // memory, which holds the console's bytes.
+  if (resolve_memory_->Holds(key)) {
+    uint32_t slot = kInvalidBindlessSlot;
+    bool state_changed = false;
+    std::string why;
+    switch (resolve_memory_->Bind(key, host_swizzle, list, &slot, &state_changed, &why)) {
+      case ResolveMemory::BindResult::kOk: {
+        ++stats_.from_resolve_memory;
+        // A page of its range may change before the frame ends: compared once
+        // per frame of use (and the resolve memory drops the memo on writes).
+        Binding binding = bound(slot, true);
+        binding.from_product = true;
+        binding.list_state_changed = state_changed;
+        return binding;
+      }
+      case ResolveMemory::BindResult::kUnsupported:
+        ++stats_.resolve_memory_unsupported;
+        if (reported_.insert(key).second) {
+          REXLOG_ERROR("[gpu] textures: {} reads memory a resolve wrote, but {}; decoded from "
+                       "guest memory, which does not hold those bytes (reported once)",
+                       key.Describe(), why);
+        }
+        break;
+      case ResolveMemory::BindResult::kFailed: {
+        Binding failed = Fail(key, "decode from the resolve memory failed", why);
+        failed.list_state_changed = state_changed;
+        return failed;
+      }
+    }
+  }
   // Another active product over the memory the fetch reads (its base or its
-  // mips): the guest reads rendered memory with another shape (M5.2's
-  // reinterpretation). Reported; memory is decoded, which does
-  // not hold the rendered image.
+  // mips), which the resolve memory does not hold: its encode failed (logged
+  // there). Reported; memory is decoded, which does not hold the image.
   {
     uint32_t ranges[2][2];
     TextureGuestRanges(key, ranges);
@@ -372,9 +454,9 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
     if (other) {
       ++stats_.reinterpretations;
       if (reported_.insert(key).second) {
-        REXLOG_ERROR("[gpu] textures: {} reads memory a resolve rendered as {}: decoded from "
-                     "memory, which does not hold the image (reinterpretation, M5.2; reported "
-                     "once)",
+        REXLOG_ERROR("[gpu] textures: {} reads memory a resolve rendered as {}, which the "
+                     "resolve memory does not hold: decoded from guest memory, which does not "
+                     "hold the image (reported once)",
                      key.Describe(), other->key.Describe());
       }
     }
@@ -714,13 +796,15 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
       "textures: {} live ({:.1f} MiB, {} hashed) | resolutions {:.0f}/frame: products {}, "
       "memory {} | created {}, uploads {} ({:.2f} MiB/frame, {:.2f} ms/frame), "
       "decompressed {} | writes seen {}, hashes {} ({:.2f} MiB/frame), to hashed {}, to watched "
-      "{} | evicted {}, failures {}, reinterpretations {}",
+      "{} | evicted {}, failures {} | from the resolve memory {} ({} unsupported), memory read "
+      "under a product {}",
       entries_.size(), double(bytes) / 1048576.0, hashed, double(stats_.lookups) / f,
       stats_.product_hits, stats_.memory_hits, stats_.created, stats_.uploads,
       double(stats_.upload_bytes) / f / 1048576.0, double(stats_.decode_ns) / f / 1e6,
       stats_.decompressed, stats_.invalidations, stats_.hashes,
       double(stats_.hashed_bytes) / f / 1048576.0, stats_.to_hashed, stats_.to_watched,
-      stats_.evicted, stats_.failures, stats_.reinterpretations);
+      stats_.evicted, stats_.failures, stats_.from_resolve_memory,
+      stats_.resolve_memory_unsupported, stats_.reinterpretations);
   stats_ = Stats{};
   return text;
 }

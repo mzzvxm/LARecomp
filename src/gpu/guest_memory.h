@@ -62,7 +62,7 @@ class GuestMemory {
 
   // A cache's own queue of written ranges.
   using Subscriber = uint32_t;
-  static constexpr uint32_t kMaxSubscribers = 4;
+  static constexpr uint32_t kMaxSubscribers = 6;
 
   GuestMemory() = default;
   ~GuestMemory();

@@ -52,8 +52,14 @@ std::unique_ptr<plume::RenderShader> HostPasses::CreateShader(const void* data, 
 
 std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
     const plume::RenderShader& pixel_shader, plume::RenderFormat format, const char* name) {
+  return CreatePipeline(*layout_, pixel_shader, format, name);
+}
+
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    plume::RenderFormat format, const char* name) {
   plume::RenderGraphicsPipelineDesc desc;
-  desc.pipelineLayout = layout_.get();
+  desc.pipelineLayout = &layout;
   desc.vertexShader = vertex_shader_.get();
   desc.pixelShader = &pixel_shader;
   desc.depthClipEnabled = false;

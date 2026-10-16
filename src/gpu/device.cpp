@@ -297,6 +297,23 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateGraphicsPipeline(
   return pipeline;
 }
 
+std::unique_ptr<plume::RenderPipeline> Device::CreateComputePipeline(
+    const plume::RenderComputePipelineDesc& desc, const char* name) {
+  if (!device_ || IsLost()) {
+    return nullptr;
+  }
+  auto pipeline = device_->createComputePipeline(desc);
+  if (backend::IsNullBackedCompute(pipeline.get())) {
+    REXLOG_ERROR("[gpu] compute pipeline '{}' failed", name ? name : "?");
+    ReportCreationFailure("compute pipeline", name);
+    return nullptr;
+  }
+  if (name) {
+    pipeline->setName(name);
+  }
+  return pipeline;
+}
+
 bool Device::CheckLost(const char* context) {
   if (IsLost()) {
     return true;

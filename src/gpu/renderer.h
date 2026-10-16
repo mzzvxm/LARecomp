@@ -7,7 +7,8 @@
 //
 //   Initialize:  Device -> FrameRing -> BindlessHeap -> GuestLayout ->
 //                ShaderStore -> Samplers -> Pipelines -> UploadRing ->
-//                GeometryCache -> EdramTargets -> HostPasses -> ResolveCache ->
+//                GeometryCache -> EdramTargets -> HostPasses -> ResolveMemory ->
+//                ResolveCache ->
 //                TextureCache -> Scene -> SwapChain -> PresentPass ->
 //                OverlayRenderer -> GpuTiming -> FrameCapture -> RenderThread
 //   Shutdown:    RenderThread stopped (deadline) -> FrameValidator::Finish ->
@@ -16,7 +17,7 @@
 //                retirement, running release actions while everything they
 //                name is alive) -> FrameCapture -> GpuTiming -> OverlayRenderer
 //                -> PresentPass -> SwapChain -> TextureCache -> ResolveCache ->
-//                HostPasses ->
+//                ResolveMemory -> HostPasses ->
 //                EdramTargets -> GeometryCache -> UploadRing ->
 //                Pipelines -> Samplers -> ShaderStore -> GuestLayout ->
 //                BindlessHeap -> FrameRing -> Device
@@ -65,6 +66,7 @@
 #include "present.h"
 #include "render_thread.h"
 #include "resolve.h"
+#include "resolve_memory.h"
 #include "samplers.h"
 #include "scene.h"
 #include "shaders.h"
@@ -167,6 +169,7 @@ class Renderer final : public RenderThread::Executor {
   GeometryCache geometry_;  // reads guest memory through guest_memory_
   EdramTargets edram_;
   HostPasses passes_;       // layout and vertex shader of the full-screen passes
+  ResolveMemory resolve_memory_;  // what resolves write, as guest bytes
   ResolveCache resolve_;    // resolve products (owns their textures and views)
   TextureCache textures_;   // textures decoded from guest memory
   SwapChain swap_chain_;

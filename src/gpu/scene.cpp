@@ -18,6 +18,7 @@
 #include "native_gfx/vertex_declaration.h"
 #include "pass_timing.h"
 #include "resolve.h"
+#include "resolve_memory.h"
 #include "samplers.h"
 #include "textures.h"
 
@@ -126,7 +127,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   geometry_->BeginFrame(slot);
   edram_->BeginFrame();
   textures_->BeginFrame(slot);
-  resolve_->BeginFrame();
+  resolve_->BeginFrame(slot);
   ++frame_serial_;
   ResetListState();
   marked_framebuffer_ = nullptr;
@@ -141,6 +142,9 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
   }
+  // The colour encodes of the frame into the resolve memory, as one batch.
+  pass_timing_->Mark(list, "resolve memory encode (batch)");
+  resolve_->memory().Flush(list);
   pass_timing_->Mark(list, "end-of-frame copies");
   marked_framebuffer_ = nullptr;
   geometry_->EndFrame(list);
@@ -488,6 +492,12 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       // the cache logs any other dimension once and the null of its dimension
       // is bound.
       const TextureCache::Binding bound = textures_->Bind2D(fetch, list_);
+      if (bound.list_state_changed) {
+        // A decode from the resolve memory drew into its own target with its
+        // own pipeline state: the draw binds everything again.
+        ResetListState();
+        marked_framebuffer_ = nullptr;
+      }
       const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
       fresh.dimension = fetch.key.dimension;
       switch (xe::DataDimension(fetch.key.dimension)) {
@@ -1070,6 +1080,7 @@ void Scene::Report(const char* why) {
   REXLOG_INFO("[gpu] scene ({}): {}", why, edram_->TakeSummary());
   REXLOG_INFO("[gpu] scene ({}): {}", why, textures_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, resolve_->TakeSummary(w.frames));
+  REXLOG_INFO("[gpu] scene ({}): {}", why, resolve_->memory().TakeSummary(w.frames));
   Add(total_, window_);
   window_ = Stats{};
 }

@@ -46,6 +46,12 @@ class HostPasses {
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
                                                         plume::RenderFormat format,
                                                         const char* name);
+  // The same with another pipeline layout, for a pass with resources of its
+  // own (resolve_memory.h's decode). The full-screen vertex shader reads none.
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,
+                                                        const plume::RenderShader& pixel_shader,
+                                                        plume::RenderFormat format,
+                                                        const char* name);
 
   // Binds the layout and the four texture sets on `list`.
   void Bind(plume::RenderCommandList* list) const;

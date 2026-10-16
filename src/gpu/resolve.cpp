@@ -33,6 +33,7 @@
 #include "edram.h"
 #include "format.h"
 #include "pass_timing.h"
+#include "resolve_memory.h"
 #include "frame.h"
 #include "host_passes.h"
 #include "host_shaders.h"
@@ -79,59 +80,6 @@ uint64_t AlignUp(uint64_t v, uint64_t a) {
   return (v + a - 1) / a * a;
 }
 
-// Where level `level` of `key` lives in guest memory and how its blocks are
-// laid out there: what TextureCache::Upload reads, for the write-back. The request's data and readable are unused.
-struct StoredLevel {
-  uint32_t address = 0;  // physical origin of the level's storage (base, mip or packed tail)
-  uint64_t extent = 0;   // bytes the storage spans from the origin
-  texture_decode::Request request;
-};
-
-bool StoredLevelOf(const TextureKey& key, uint32_t level, StoredLevel* out) {
-  const FormatInfo* info = FormatInfo::Get(key.format);
-  if (!info || info->bytes_per_block() == 0) {
-    return false;
-  }
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
-      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
-  const tu::TextureGuestLayout::Level* stored;
-  if (level == 0) {
-    if (!key.base_page) {
-      return false;
-    }
-    stored = &layout.base;
-    out->address = key.base_page << 12;
-  } else {
-    if (!key.mip_page) {
-      return false;
-    }
-    const uint32_t stored_level = std::min(level, layout.packed_level);
-    stored = &layout.mips[stored_level];
-    out->address = (key.mip_page << 12) + layout.mip_offsets_bytes[stored_level];
-  }
-  out->extent = stored->level_data_extent_bytes;
-  texture_decode::Request& r = out->request;
-  r.source.row_pitch_bytes = stored->row_pitch_bytes;
-  r.source.bytes_per_block = info->bytes_per_block();
-  r.source.tiled = key.tiled != 0;
-  r.source.endian = key.endian;
-  if (key.packed_mips && level >= layout.packed_level) {
-    uint32_t ox = 0, oy = 0, oz = 0;
-    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
-                           oz);
-    r.source.offset_x = ox;
-    r.source.offset_y = oy;
-  }
-  r.width = std::max(uint32_t(key.width) >> level, 1u);
-  r.height = std::max(uint32_t(key.height) >> level, 1u);
-  r.width_blocks = (r.width + info->block_width - 1) / info->block_width;
-  r.height_blocks = (r.height + info->block_height - 1) / info->block_height;
-  r.load = format::TextureHost(key.format).load;
-  r.decompress = format::TextureDecompress::kNone;  // a product is a render target
-  return true;
-}
-
 // mcla_gpu_lock_dump: one written-back level of an R8G8B8A8 product as a
 // 32-bit top-down TGA (BGRA), from the readback rows.
 void DumpLevelTga(uint32_t serial, const TextureKey& key, uint32_t level, uint32_t width,
@@ -175,8 +123,10 @@ ResolveCache::~ResolveCache() {
 
 bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                               GuestMemory& memory, TextureCache& textures, EdramTargets& edram,
-                              HostPasses& passes, PassTiming& pass_timing) {
+                              HostPasses& passes, PassTiming& pass_timing,
+                              ResolveMemory& resolve_memory) {
   pass_timing_ = &pass_timing;
+  resolve_memory_ = &resolve_memory;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -225,7 +175,8 @@ void ResolveCache::Shutdown() {
   passes_ = nullptr;
 }
 
-void ResolveCache::BeginFrame() {
+void ResolveCache::BeginFrame(uint32_t slot) {
+  resolve_memory_->BeginFrame(slot);
   ++frame_;
   if (frame_ % 60 == 0) {
     EvictSome();
@@ -435,8 +386,8 @@ void ResolveCache::OnLock(const LockRecord& record,
       if (d[2] <= d[0] || d[3] <= d[1]) {
         continue;
       }
-      StoredLevel stored;
-      if (!StoredLevelOf(p->key, level, &stored)) {
+      TextureLevelStorage stored;
+      if (!GetTextureLevelStorage(p->key, level, &stored)) {
         continue;
       }
       WriteBackItem item;
@@ -556,9 +507,9 @@ bool ResolveCache::WriteBack(std::vector<WriteBackItem>& items) {
     Product& p = *item.product;
     std::array<uint32_t, 4>& d = p.dirty[item.level];
     const FormatInfo* info = FormatInfo::Get(p.key.format);
-    StoredLevel stored;
+    TextureLevelStorage stored;
     std::string why;
-    if (!StoredLevelOf(p.key, item.level, &stored)) {
+    if (!GetTextureLevelStorage(p.key, item.level, &stored)) {
       why = "no storage for the level";
     } else if (plume::RenderFormatSize(p.format) != stored.request.source.bytes_per_block) {
       why = std::format("host texel of {} bytes for a guest block of {}",
@@ -616,8 +567,13 @@ void ResolveCache::TransitionProduct(plume::RenderCommandList* list, Product& p,
   if (p.layout == layout) {
     return;
   }
-  list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                 plume::RenderTextureBarrier(p.texture.get(), layout));
+  // Read by the graphics passes and by the resolve memory's encode (compute).
+  const plume::RenderBarrierStages stages =
+      layout == plume::RenderTextureLayout::SHADER_READ
+          ? plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS |
+                                       plume::RenderBarrierStage::COMPUTE)
+          : plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS);
+  list->barriers(stages, plume::RenderTextureBarrier(p.texture.get(), layout));
   p.layout = layout;
 }
 
@@ -1029,6 +985,9 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         Fail(framebuffer ? Failure::kPipeline : Failure::kProduct, key.Describe());
         break;
       }
+      // An encode still waiting to read this level's texels runs first, or is
+      // replaced when this copy writes all of them again.
+      resolve_memory_->BeforeResolve(list, key, level, tx0, ty0, tx1, ty1);
       edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
       TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
       if (pass_timing_->enabled()) {
@@ -1064,6 +1023,37 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       list->drawInstanced(3, 1, 0, 0);
       list->setFramebuffer(nullptr);
       TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
+      // The same bytes into the resolve memory: colour from the
+      // product just written, depth from the EDRAM target (with stencil).
+      ResolveMemory::Copy memory_copy;
+      memory_copy.key = &key;
+      memory_copy.level = level;
+      memory_copy.x0 = tx0;
+      memory_copy.y0 = ty0;
+      memory_copy.x1 = tx1;
+      memory_copy.y1 = ty1;
+      memory_copy.mode = full_mode;
+      if (depth_source) {
+        memory_copy.depth = true;
+        memory_copy.msaa = samples > 1;
+        memory_copy.source_slot = sample_slot;
+        memory_copy.stencil_slot = stencil_slot;
+        memory_copy.offset_x = -dx;
+        memory_copy.offset_y = -dy;
+        memory_copy.samples = push.samples;
+      } else {
+        memory_copy.product_slot =
+            p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
+                          format::kHostSwizzleRGBA, "resolve product view");
+      }
+      if (!depth_source && memory_copy.product_slot == kInvalidBindlessSlot) {
+        Fail(Failure::kProduct, std::format("{}: no view for the resolve memory", key.Describe()));
+      } else {
+        if (depth_source && pass_timing_->enabled()) {
+          pass_timing_->Mark(list, "resolve memory encode (depth)");
+        }
+        resolve_memory_->Encode(list, memory_copy);
+      }
       // What a write-back of this level owes guest memory.
       std::array<uint32_t, 4>& d = p->dirty[level];
       if (d[2] <= d[0] || d[3] <= d[1]) {

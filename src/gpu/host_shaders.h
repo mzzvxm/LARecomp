@@ -25,6 +25,10 @@
 #include "resolve_color_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
 #include "resolve_depth_ps.hlsl.dxil.h"
+#include "resolve_memory_color_cs.hlsl.dxil.h"
+#include "resolve_memory_depth_cs.hlsl.dxil.h"
+#include "resolve_memory_depth_ms_cs.hlsl.dxil.h"
+#include "resolve_memory_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "fullscreen_vs.hlsl.spirv.h"
@@ -35,6 +39,10 @@
 #include "resolve_color_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
 #include "resolve_depth_ps.hlsl.spirv.h"
+#include "resolve_memory_color_cs.hlsl.spirv.h"
+#include "resolve_memory_depth_cs.hlsl.spirv.h"
+#include "resolve_memory_depth_ms_cs.hlsl.spirv.h"
+#include "resolve_memory_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -84,6 +92,21 @@ inline HostShaderBlob ResolvePixelShader(bool depth, bool msaa) {
   }
   return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_color_ms_ps)
               : MCLA_GPU_HOST_SHADER_BLOB(resolve_color_ps);
+}
+
+// A resolve's bytes into the resolve memory (resolve_memory_cs.hlsl): colour
+// from the product, depth from the EDRAM target (multisampled or not).
+inline HostShaderBlob ResolveMemoryEncodeShader(bool depth, bool msaa) {
+  if (depth) {
+    return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_depth_ms_cs)
+                : MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_depth_cs);
+  }
+  return MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_color_cs);
+}
+
+// A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).
+inline HostShaderBlob ResolveMemoryDecodeShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_ps);
 }
 
 }  // namespace mcla::gpu

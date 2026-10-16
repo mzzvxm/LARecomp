@@ -3,39 +3,15 @@
 // Draws over the product level's rectangle; each pixel reads the EDRAM target
 // at itself plus `offset` and writes what the console's resolve writes to
 // memory, as the texture fetch of the destination then reads it
-// (Xenia's resolve.xesli and
-// resolve_full_*.xesli, Copyright Ben Vanik and the Xenia authors,
-// BSD-3-Clause: sum of the selected samples, times the exponent bias halved
-// per averaging step, red/blue swapped after the bias, packed with the
-// D3D11.3 UNORM rule; depth copied raw as depth24 << 8 | stencil).
+//: the colour of resolve_common.hlsli
+// packed with the D3D11.3 UNORM rule, depth from its raw dword. The resolve
+// memory gets the same values as guest bytes (resolve_memory_cs.hlsl).
 //
 // Variants (compile-time): RESOLVE_DEPTH (a depth/stencil source) and
 // RESOLVE_MSAA (a multisampled source).
 
 #include "host_pass_common.hlsli"
 #include "xenos_formats.hlsli"
-
-#ifndef RESOLVE_DEPTH
-#define RESOLVE_DEPTH 0
-#endif
-#ifndef RESOLVE_MSAA
-#define RESOLVE_MSAA 0
-#endif
-
-// Conversions (resolve.cpp ResolveMode), bits 0-7 of `mode`.
-#define kModeUnorm8888 0u
-#define kModeUnorm1555 1u
-#define kModeUnorm8 2u
-#define kModeFloat 3u
-#define kModeRed32 4u
-#define kModeDepthFloat 5u
-#define kModeDepthRaw8888 6u
-#define kModeDepthFloatBits 7u
-// Flags.
-#define kFlagSwapRedBlue (1u << 8)
-#define kFlagGammaSource (1u << 9)
-#define kFlagSourceFloat24 (1u << 10)
-#define kFlagDestFloat24 (1u << 11)
 
 struct ResolvePush {
   uint source;   // bindless slot: the colour or depth plane view
@@ -54,27 +30,14 @@ struct ResolvePush {
 ConstantBuffer<ResolvePush> g_push : register(b0, space4);
 #endif
 
-uint HostSample(uint i) {
-  return (g_push.samples >> (8u + 2u * i)) & 3u;
-}
+#include "resolve_common.hlsli"
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 source = int2(position.xy) + int2(g_push.offset_x, g_push.offset_y);
   const uint mode = g_push.mode & 0xFFu;
 #if RESOLVE_DEPTH
-  // Depth is never averaged (SanitizeCopySampleSelect): one sample.
-#if RESOLVE_MSAA
-  const float depth = g_textures_ms[g_push.source].Load(source, HostSample(0u)).r;
-  const uint stencil = StencilOf(g_utextures_ms[g_push.stencil].Load(source, HostSample(0u)));
-#else
-  const float depth = g_textures[g_push.source].Load(int3(source, 0)).r;
-  const uint stencil = StencilOf(g_utextures[g_push.stencil].Load(int3(source, 0)));
-#endif
-  // The EDRAM's 24 bits: 20e4 (truncated, Xenia's default) for kD24FS8, the
-  // UNORM rounded to nearest even for kD24S8.
-  const uint d24 = (g_push.mode & kFlagSourceFloat24) != 0u
-                       ? XeFloat32To20e4(asuint(depth), false)
-                       : uint(round(saturate(depth) * 16777215.0f));
+  uint stencil;
+  const uint d24 = ResolveDepth24(source, stencil);
   const uint dword = (d24 << 8u) | stencil;
   if (mode == kModeDepthFloat) {
     const float value = (g_push.mode & kFlagDestFloat24) != 0u ? XeFloat20e4To32(d24)
@@ -91,24 +54,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // kModeDepthFloatBits: the dword as a k_32_FLOAT texel.
   return float4(asfloat(dword), 0.0f, 0.0f, 0.0f);
 #else
-  const uint count = g_push.samples & 7u;
-  float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
-  [loop] for (uint i = 0u; i < count; ++i) {
-#if RESOLVE_MSAA
-    float4 c = g_textures_ms[g_push.source].Load(source, HostSample(i));
-#else
-    float4 c = g_textures[g_push.source].Load(int3(source, 0));
-#endif
-    if ((g_push.mode & kFlagGammaSource) != 0u) {
-      // The host keeps _GAMMA targets linear; the EDRAM holds the PWL value.
-      c.rgb = XeLinearToPWLGamma3(c.rgb);
-    }
-    sum += c;
-  }
-  float4 c = sum * g_push.scale;
-  if ((g_push.mode & kFlagSwapRedBlue) != 0u) {
-    c = c.bgra;
-  }
+  const float4 c = ResolveColor(source);
   switch (mode) {
     case kModeUnorm8888:
       return XeQuantizeUNorm(c, float4(255.0f, 255.0f, 255.0f, 255.0f));

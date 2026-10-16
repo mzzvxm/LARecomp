@@ -100,6 +100,10 @@ bool IsNullBacked(const plume::RenderPipeline* graphics_pipeline) {
   return MCLA_GPU_ACTIVE(IsNullBacked(graphics_pipeline));
 }
 
+bool IsNullBackedCompute(const plume::RenderPipeline* compute_pipeline) {
+  return MCLA_GPU_ACTIVE(IsNullBackedCompute(compute_pipeline));
+}
+
 bool IsNullBacked(const plume::RenderPipelineLayout* layout) {
   return MCLA_GPU_ACTIVE(IsNullBacked(layout));
 }

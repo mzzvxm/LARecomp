@@ -146,6 +146,11 @@ bool IsNullBacked(const plume::RenderPipeline* graphics_pipeline) {
          static_cast<const plume::D3D12GraphicsPipeline*>(graphics_pipeline)->d3d == nullptr;
 }
 
+bool IsNullBackedCompute(const plume::RenderPipeline* compute_pipeline) {
+  return !compute_pipeline ||
+         static_cast<const plume::D3D12ComputePipeline*>(compute_pipeline)->d3d == nullptr;
+}
+
 bool IsNullBacked(const plume::RenderPipelineLayout* layout) {
   return !layout ||
          static_cast<const plume::D3D12PipelineLayout*>(layout)->rootSignature == nullptr;

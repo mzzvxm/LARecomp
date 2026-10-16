@@ -139,6 +139,7 @@ bool IsNullBacked(const plume::RenderTexture* texture);
 bool IsNullBacked(const plume::RenderTextureView* view);
 bool IsNullBacked(const plume::RenderBuffer* buffer);
 bool IsNullBacked(const plume::RenderPipeline* graphics_pipeline);
+bool IsNullBackedCompute(const plume::RenderPipeline* compute_pipeline);
 bool IsNullBacked(const plume::RenderPipelineLayout* layout);
 bool IsNullBacked(const plume::RenderShader* shader);
 bool IsNullBacked(const plume::RenderSampler* sampler);

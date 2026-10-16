@@ -69,12 +69,14 @@
 #include "format.h"
 #include "guest_memory.h"
 #include "region_index.h"
+#include "texture_decode.h"
 
 namespace mcla::gpu {
 
 class Device;
 class FrameRing;
 class ResolveCache;
+class ResolveMemory;
 class UploadRing;
 
 // The identity of a guest texture's contents.
@@ -109,6 +111,21 @@ struct TextureKeyHash {
 // The guest memory a 2D texture's contents occupy, from the SDK's layout:
 // [0] the base level, [1] the mips (address, bytes; bytes 0 when absent).
 void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]);
+
+// Where level `level` of a 2D `key` lives in guest memory and how its blocks
+// are laid out there -- what TextureCache::Upload reads, and what a resolve or
+// a write-back writes: the physical origin of the level's
+// storage (base, mip or packed tail), the bytes the storage spans from it, and
+// the decode request (pitch, block size, tiling, endian, tail offset, size in
+// blocks; `decompress` kNone, `data`/`readable` unset). False when the level
+// has no storage (no base for level 0, no mips above it) or the SDK has no
+// block size for the format.
+struct TextureLevelStorage {
+  uint32_t address = 0;
+  uint64_t extent = 0;
+  texture_decode::Request request;
+};
+bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage* out);
 
 // A texture fetch constant read for binding.
 struct TextureFetch {
@@ -180,6 +197,10 @@ class TextureCache {
     uint32_t slot = kNullTexture2DSlot;  // with kTextureGammaBit when asked
     bool per_frame = false;              // good for this frame only
     bool from_product = false;           // a resolve product, not guest memory
+    // The binding recorded a pass of its own (a decode from the resolve
+    // memory): the list has no framebuffer and another pipeline state, and the
+    // caller binds its own again.
+    bool list_state_changed = false;
   };
 
   TextureCache() = default;
@@ -188,7 +209,7 @@ class TextureCache {
   TextureCache& operator=(const TextureCache&) = delete;
 
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, UploadRing& upload,
-                  GuestMemory& memory, ResolveCache& resolve);
+                  GuestMemory& memory, ResolveCache& resolve, ResolveMemory& resolve_memory);
   // GPU idle, FrameRing drained, before the BindlessHeap shuts down.
   void Shutdown();
 
@@ -266,6 +287,7 @@ class TextureCache {
   GuestMemory* memory_ = nullptr;
   GuestMemory::Subscriber subscriber_ = GuestMemory::kNoSubscriber;
   ResolveCache* resolve_ = nullptr;
+  ResolveMemory* resolve_memory_ = nullptr;
 
   std::unordered_map<TextureKey, std::unique_ptr<Entry>, TextureKeyHash> entries_;
   RegionIndex regions_;
@@ -298,7 +320,10 @@ class TextureCache {
     uint64_t to_watched = 0;
     uint64_t evicted = 0;
     uint64_t failures = 0;
-    uint64_t reinterpretations = 0;
+    uint64_t reinterpretations = 0;  // memory read under an active product (not held by
+                                     // the resolve memory)
+    uint64_t from_resolve_memory = 0;      // decoded from the resolve memory
+    uint64_t resolve_memory_unsupported = 0;
     uint64_t decode_ns = 0;
   };
   Stats stats_;

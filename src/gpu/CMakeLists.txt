@@ -36,6 +36,7 @@ add_library(larecomp_gpu OBJECT
     render_thread.cpp
     renderer.cpp
     resolve.cpp
+    resolve_memory.cpp
     samplers.cpp
     scene.cpp
     shaders.cpp
@@ -149,3 +150,12 @@ larecomp_gpu_host_shader(resolve_depth_ps ps_6_0 SOURCE resolve_ps
 larecomp_gpu_host_shader(resolve_depth_ms_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
 larecomp_gpu_host_shader(present_ps ps_6_0)
+# M5.2b: the resolve memory -- a resolve's bytes (colour from the
+# product, depth from the EDRAM) and a texture decoded from them.
+larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs
+                         DEFINES RESOLVE_DEPTH=0 RESOLVE_MSAA=0)
+larecomp_gpu_host_shader(resolve_memory_depth_cs cs_6_0 SOURCE resolve_memory_cs
+                         DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=0)
+larecomp_gpu_host_shader(resolve_memory_depth_ms_cs cs_6_0 SOURCE resolve_memory_cs
+                         DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
+larecomp_gpu_host_shader(resolve_memory_ps ps_6_0)

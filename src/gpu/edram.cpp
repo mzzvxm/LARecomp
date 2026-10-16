@@ -326,7 +326,14 @@ void EdramTargets::Transition(plume::RenderCommandList* list, Target& target,
     return;
   }
   const plume::RenderTextureBarrier barrier(target.texture.get(), layout);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS, &barrier, 1);
+  // A target read as a texture is read by the resolve passes (graphics) and by
+  // the resolve memory's depth encode (compute).
+  const plume::RenderBarrierStages stages =
+      layout == plume::RenderTextureLayout::SHADER_READ
+          ? plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS |
+                                       plume::RenderBarrierStage::COMPUTE)
+          : plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS);
+  list->barriers(stages, &barrier, 1);
   target.layout = layout;
   ++stats_.barriers;
 }
