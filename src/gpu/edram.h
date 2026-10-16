@@ -53,11 +53,19 @@
 // (no owners, no tile map, no notes, no query pool); its coverage checks
 // only with mcla_gpu_coverage_queries as well.
 //
+// Reach (the M5.2d closure): whether inherited bytes leave the
+// EDRAM. A write that keeps or blends another identity's tiles marks them
+// (taint, per tile and aspect) until something takes them; a resolve whose
+// source had another identity's tiles or marked ones is an inherited resolve,
+// handed to the ResolveCache by its number (TakeInheritedResolves), which
+// marks what it wrote and reports the readers of it through NoteReach.
+//
 // Threading: render thread only, after Initialize.
 // ===========================================================================
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -117,11 +125,13 @@ struct EdramEvent {
   plume::RenderRect scissor;
   uint64_t vs = 0;
   uint64_t ps = 0;
-  // kResolve: the destination
+  // kResolve: the destination, and the ResolveCache's number for the copy
+  // (0: none), handed back when the copy turns out inherited.
   uint32_t dest_page = 0;
   uint32_t dest_format = 0;
   uint32_t dest_width = 0;
   uint32_t dest_height = 0;
+  uint32_t resolve = 0;
   // The coverage check of a draw whose takes rest on its extent
   // (EdramTargets::ReserveCoverageCheck), or 0xFFFFFFFF.
   uint32_t check = 0xFFFFFFFFu;
@@ -268,12 +278,36 @@ class EdramTargets {
     }
     return true;
   }
+  // True when `aspect` (every aspect `access` touches) is `target`'s own,
+  // unmarked, in every tile of `pixels` at this map epoch. A resolve, and the
+  // depth target of a draw with colour outputs, ask this instead of Settled:
+  // a read already counted is still a copy or a test of inherited bytes, whose
+  // result has to be marked again (reach).
+  bool SettledClean(const Target& target, const plume::RenderRect& pixels,
+                    Aspect aspect) const {
+    return !tiling_ && target.own_epoch[aspect] == epoch_ &&
+           Inside(pixels, target.own_rect[aspect]);
+  }
+  bool SettledClean(const Target& target, const plume::RenderRect& pixels,
+                    const Accesses& access) const {
+    for (uint32_t a = 0; a < kAspectCount; ++a) {
+      if (access.aspect[a] != Access::kNone && !SettledClean(target, pixels, Aspect(a))) {
+        return false;
+      }
+    }
+    return true;
+  }
   // Notes an access in the tile map -- inside a tiled section,
   // keeps it for EndTiling. kTake and kDepend make the aspect `target`'s; a
   // kDepend or kRead that met an aspect another identity wrote last is counted
   // and, the first time for a pair (16 at most), reported with `event`.
+  // `outputs` (a draw's colour targets, noted before its depth target): when
+  // this access met another identity's bytes or marked ones -- a depth or
+  // stencil test over them -- what the draw writes depends on them, and the
+  // outputs' tiles inside `pixels` are marked (reach).
   void Note(Target& target, const plume::RenderRect& pixels, const Accesses& access,
-            const EdramEvent& event);
+            const EdramEvent& event, Target* const* outputs = nullptr,
+            uint32_t output_count = 0);
   // Predicated tiling: the guest emits each draw once and
   // the GPU runs the section once per tile, the tile's rectangle moved to the
   // EDRAM's origin -- the host draws it once at full size. Inside a section
@@ -287,6 +321,29 @@ class EdramTargets {
   uint64_t serial() const {
     return tiling_ ? (uint64_t(1) << 63) | uint64_t(pending_.size()) : uint64_t(epoch_);
   }
+
+  // Reach. The numbers (EdramEvent::resolve) of the resolves
+  // found inherited since the last call: right after their Note, or at the
+  // EndTiling of their section. The ResolveCache takes them.
+  bool has_inherited_resolves() const { return !inherited_resolves_.empty(); }
+  void TakeInheritedResolves(std::vector<uint32_t>* out) {
+    out->clear();
+    out->swap(inherited_resolves_);
+  }
+  // A reader of what an inherited resolve wrote: a fetch served by its
+  // product, a texture decoded from its pages of the resolve memory, a lock
+  // that hands them to the CPU. Counted; logged once per (kind, id), the
+  // first 16, with describe()'s text.
+  enum class Reach : uint8_t { kFetch, kDecode, kLock, kCount };
+  void NoteReach(Reach kind, uint64_t id, const std::function<std::string()>& describe);
+  // mcla_gpu_edram_capture: `request` asks for a RenderDoc capture of the next
+  // frame (FrameCapture::Request). Called, for the kinds the cvar's bits pick,
+  // on the first report of a pair and on the first reach of each kind, 4
+  // times at most.
+  static constexpr uint32_t kCaptureWritePair = 1;  // a write kept another identity's bytes
+  static constexpr uint32_t kCaptureReadPair = 2;   // a read met them
+  static constexpr uint32_t kCaptureReach = 4;      // a reader of inherited bytes
+  void SetCaptureRequest(std::function<void()> request) { request_capture_ = std::move(request); }
 
   // Coverage checks. An access noted kTake because a draw is
   // taken to reach every sample of its rectangle -- one rect, or a quad of two
@@ -334,6 +391,8 @@ class EdramTargets {
     uint32_t tiles = 0;              // aspect-tiles another identity wrote last that the access met
     const EdramKey* from = nullptr;  // that identity, when the pair is reported for the first time
     Aspect aspect = kMain;           // where `from` was met
+    uint32_t tainted = 0;            // aspect-tiles of its own, marked, that it read or kept
+    bool tainted_new = false;        // ... read, by a target not reported for that yet
     uint32_t taken = 0;                    // aspect-tiles of another identity a kTake took
     uint16_t taken_owner = 0xFFFF;         // the first of them
     const EdramKey* taken_from = nullptr;  // that identity, when the take pair is new (32 at most)
@@ -351,16 +410,34 @@ class EdramTargets {
     plume::RenderRect rect;
     Accesses access;
     EdramEvent event;
+    Target* outputs[4] = {};
+    uint32_t output_count = 0;
   };
 
   bool Create(Target& target, uint32_t height);
   void AssignOwner(Target& target);
+  // The tiles of `pixels` in `target`'s rows: columns [col0, col1), rows
+  // [row0, row1); the tile is base + row * pitch_tiles + col, wrapped.
+  static void TileSpan(const Target& target, const plume::RenderRect& pixels, uint32_t* col0,
+                       uint32_t* col1, uint32_t* row0, uint32_t* row1);
   Inheritance Apply(Target& target, const plume::RenderRect& pixels, const Accesses& access);
+  // Marks both aspects of `target`'s own tiles inside `pixels` (reach).
+  void Taint(const Target& target, const plume::RenderRect& pixels);
+  // Apply, the outputs' marks when it met inherited bytes, and Report.
+  void Account(Target& target, const plume::RenderRect& pixels, const Accesses& access,
+               const EdramEvent& event, Target* const* outputs, uint32_t output_count,
+               int32_t tile);
+  // Whether a kept access needs no walk at EndTiling (SettledClean for a
+  // resolve or a test with outputs, Settled otherwise).
+  bool SettledFor(const Pending& pending, const plume::RenderRect& pixels) const;
   // Logs what Apply found that is to be reported; `tile` < 0 outside tiling.
   // A take that took another identity's tiles is kept for its coverage check.
   void Report(const Target& target, const Accesses& access, const Inheritance& found,
               const EdramEvent& event, int32_t tile);
   void HarvestCoverage(uint32_t slot);
+  // mcla_gpu_edram_capture: a capture of the next frame when the cvar's bits
+  // hold `why` (kCapture*), 4 at most.
+  void RequestCapture(uint32_t why);
   void Clear(Target& target, plume::RenderCommandList* list);
   void RetireFramebuffersOf(const Target* target);
   // Gives the shader views' slots back (deferred) and retires the views.
@@ -386,6 +463,18 @@ class EdramTargets {
   std::vector<uint32_t> reported_pairs_;
   std::vector<uint32_t> listed_takes_;  // (from << 16 | to) of kTake over another identity
   bool owners_exhausted_logged_ = false;
+  // Reach: per aspect and tile, 1 when the bytes there are, on
+  // the console, partly another identity's (a write kept or blended them);
+  // the inherited resolves not taken yet; the readers reported (kind << 62 |
+  // id), the identities whose marked tiles a read was reported for.
+  std::array<std::array<uint8_t, kTileCount>, kAspectCount> tile_taint_{};
+  std::vector<uint32_t> inherited_resolves_;
+  std::vector<uint64_t> reach_reported_;
+  std::vector<uint16_t> tainted_reported_;
+  std::array<bool, size_t(Reach::kCount)> reach_seen_{};
+  std::function<void()> request_capture_;
+  uint32_t capture_ = 0;  // mcla_gpu_edram_capture's bits
+  uint32_t captures_ = 0;
   // Coverage checks: per frame slot, an occlusion query pool and what each
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
@@ -426,6 +515,11 @@ class EdramTargets {
     uint64_t checks_unrecorded = 0;  // reserved, the draw not recorded
     uint64_t checks_wanting = 0;  // candidates with no check left (noted kDepend)
     uint64_t takes_unchecked = 0;  // draws that took another identity's tiles, unchecked
+    uint64_t tainted = 0;          // aspect-tiles marked (a write kept another identity's bytes)
+    uint64_t untainted = 0;        // ... taken again
+    uint64_t tainted_reads = 0;    // marked aspect-tiles of its own an access read
+    uint64_t inherited_resolves = 0;
+    std::array<uint64_t, size_t(Reach::kCount)> reach{};
   };
   Stats stats_;
 };

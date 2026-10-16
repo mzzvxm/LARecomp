@@ -37,15 +37,38 @@
 // failure: the draw has no effect (the caller skips it).
 //
 // Pipelines are created synchronously on the render thread on first use and
-// kept for the life of the renderer (persistence and precache are M5).
+// kept for the life of the renderer.
 //
-// Threading: render thread only.
+// Persistence (M5.3; mcla_gpu_pipeline_cache): every pipeline
+// created is recorded -- its key, with the input layout by content (the
+// session's InputLayout::id means nothing to the next one) -- and on Shutdown
+// the records go to cache/mcla_gpu_pipelines_<backend>.bin beside the
+// executable, the earlier ones first, read back at the next Initialize.
+// Precache (M5.3b): workers make the records' pipelines ahead of use, in the
+// file's order; Get takes one that is ready, waits for one being made, and
+// makes one no worker has taken yet itself (the workers then skip it). A
+// pipeline is taken only for a layout equal to its record's, byte for byte.
+// Session layouts with other ids and the same content share a persistent key,
+// and so the pipeline: the later keys alias the first one's.
+//
+// Threading: the render thread; the precache workers touch only their own
+// records, the ShaderStore (GetShader locks) and the device.
 // ===========================================================================
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <filesystem>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <plume_render_interface.h>
 
@@ -138,15 +161,59 @@ class Pipelines {
   plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs);
 
   struct Stats {
-    uint64_t created = 0;
+    uint64_t created = 0;      // on the render thread, at draw time
     uint64_t failed = 0;
     uint64_t create_ns = 0;
+    uint64_t precache_taken = 0;    // made by a worker, ready when asked for
+    uint64_t precache_waits = 0;    // ... being made when asked for: waited
+    uint64_t precache_wait_ns = 0;
+    uint64_t precache_claimed = 0;  // in the file, no worker at it yet: made here
+    uint64_t shared = 0;            // keys whose persistent key another key's pipeline serves
   };
   Stats TakeStats();
   size_t size() const { return pipelines_.size(); }
 
  private:
+  // An input layout by content, the persistent stand-in of InputLayout::id:
+  // the elements (their semantic names owned by names_) and slots, and the
+  // hash of their serialized form.
+  struct StoredLayout {
+    uint64_t hash = 0;
+    std::vector<plume::RenderInputElement> elements;
+    std::vector<plume::RenderInputSlot> slots;
+  };
+  // A pipeline the game asked for, as the file keeps it: the key with
+  // input_layout | reserved << 32 = its layout's hash.
+  struct Record {
+    PipelineKey key;
+    uint32_t layout = 0;  // index in stored_layouts_
+  };
+
   void Report(uint32_t kind, const char* what);
+  // The layout's content as written to the file (and hashed).
+  static void SerializeLayout(const plume::RenderInputElement* elements, size_t element_count,
+                              const plume::RenderInputSlot* slots, size_t slot_count,
+                              std::vector<uint8_t>& out);
+  // The stored layout of a session layout (made on first use).
+  uint32_t StoreLayout(const InputLayout& layout);
+  void RecordPipeline(const PipelineKey& key, const InputLayout& layout);
+  void LoadRecords();
+  void SaveRecords();
+
+  // The description of `key`'s pipeline with the given shaders and layout;
+  // false (the results say why) when a shader cannot be had.
+  bool BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
+                 const ShaderStore::Entry* ps, const StoredLayout& layout,
+                 plume::RenderGraphicsPipelineDesc& desc, ShaderStore::ShaderResult* vs_result,
+                 ShaderStore::ShaderResult* ps_result);
+  // The persistent key of a session key with the layout `stored`.
+  PipelineKey PersistentKey(const PipelineKey& key, uint32_t stored) const;
+  void StartPrecache();
+  void StopPrecache();
+  void PrecacheWorker();
+  // A ready precached pipeline for `key` (moved into pipelines_), or null:
+  // none, being claimed now for the render thread to make, or failed.
+  plume::RenderPipeline* TakePrecached(const PipelineKey& key, const PipelineInputs& inputs);
 
   Device* device_ = nullptr;
   const GuestLayout* layout_ = nullptr;
@@ -156,6 +223,46 @@ class Pipelines {
   Stats stats_;
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;
+
+  // Persistence: the file, the layouts and records it holds plus
+  // the session's new ones, the persistent keys recorded, and how many of the
+  // records came from the file.
+  bool persist_ = false;
+  std::filesystem::path cache_path_;
+  std::deque<std::string> names_;
+  std::vector<std::unique_ptr<StoredLayout>> stored_layouts_;
+  std::unordered_map<uint64_t, uint32_t> stored_layout_index_;  // hash -> stored_layouts_
+  std::unordered_map<uint32_t, uint32_t> session_layouts_;      // InputLayout::id -> stored
+  std::vector<Record> records_;
+  std::unordered_set<PipelineKey, PipelineKeyHash> recorded_;
+  size_t loaded_records_ = 0;
+  static constexpr uint32_t kNoLayout = 0xFFFFFFFFu;  // a layout that cannot be persisted
+
+  // Precache: one entry per loaded record, its state moved by
+  // compare-exchange (queued -> building or claimed; building -> ready or
+  // failed, under precache_mutex_ for the waiter).
+  enum PrecacheState : uint8_t { kQueued, kBuilding, kReady, kFailed, kClaimed };
+  struct Precached {
+    PipelineKey key;                  // persistent
+    const StoredLayout* layout = nullptr;
+    std::unique_ptr<plume::RenderPipeline> pipeline;
+    std::atomic<uint8_t> state{kQueued};
+    PipelineKey taken_as;             // the session key it went to (claimed or taken)
+    bool taken = false;
+  };
+  std::vector<std::unique_ptr<Precached>> precached_;
+  // Session keys served by another key's pipeline (same persistent key).
+  std::unordered_map<PipelineKey, plume::RenderPipeline*, PipelineKeyHash> aliases_;
+  std::unordered_map<PipelineKey, Precached*, PipelineKeyHash> precached_by_key_;
+  std::vector<std::thread> workers_;
+  std::atomic<size_t> next_precache_{0};
+  std::atomic<bool> stop_precache_{false};
+  std::atomic<uint32_t> precache_ready_{0};
+  std::atomic<uint32_t> precache_failed_{0};
+  std::atomic<uint32_t> workers_running_{0};
+  std::chrono::steady_clock::time_point precache_start_;
+  std::mutex precache_mutex_;
+  std::condition_variable precache_done_;
 };
 
 }  // namespace mcla::gpu

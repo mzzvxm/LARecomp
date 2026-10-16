@@ -103,6 +103,10 @@ class ResolveCache {
       bool complete() const { return covered == cells_x * cells_y; }
     };
     std::vector<Coverage> coverage;
+    // Reach (only with mcla_gpu_edram_aliasing): per level, the
+    // 8x8 cells an inherited resolve wrote and no clean one wrote since --
+    // texels that are, on the console, another EDRAM identity's bytes.
+    std::vector<Coverage> inherited;
   };
 
   ResolveCache() = default;
@@ -149,6 +153,12 @@ class ResolveCache {
   // work recorded so far to the queue (the resolves and the encode batch among
   // it); it is called only when there is something to write. Waits for the GPU.
   void OnLock(const LockRecord& record, const std::function<void()>& submit_recorded);
+
+  // Reach: the resolves the EDRAM map found inherited -- right
+  // after their Note (Execute calls it) or at their section's EndTiling (the
+  // Scene does) -- mark what they wrote: the product's cells and the resolve
+  // memory's pages. Their readers are reported through EdramTargets::NoteReach.
+  void DrainInherited();
 
   std::string TakeSummary(uint64_t frames);
 
@@ -249,6 +259,22 @@ class ResolveCache {
   uint32_t write_back_logged_ = 0;
   uint32_t write_back_serial_ = 0;  // write-backs, for mcla_gpu_lock_dump's file names
   std::vector<uint8_t> dump_scratch_;
+  // Reach (only with the detector): the last copies by number
+  // (EdramEvent::resolve), long enough to outlive a tiled section; the
+  // numbers taken from the map; the destinations reported inherited (the
+  // first 16).
+  struct RecentResolve {
+    uint32_t id = 0;
+    TextureKey key;
+    uint32_t level = 0;
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  };
+  static constexpr uint32_t kRecentResolves = 64;
+  std::array<RecentResolve, kRecentResolves> recent_{};
+  uint32_t resolve_serial_ = 0;
+  std::vector<uint32_t> inherited_ids_;
+  std::unordered_set<TextureKey, TextureKeyHash> inherited_logged_;
+  bool recent_lost_logged_ = false;
 
   struct Stats {
     uint64_t resolves = 0;

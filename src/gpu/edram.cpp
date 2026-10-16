@@ -33,6 +33,14 @@ REXCVAR_DEFINE_BOOL(
     "unchecked (listed once per pair).")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_edram_capture, 0, "MCLA/GPU",
+    "With mcla_gpu_edram_aliasing: a RenderDoc capture of the frame after the first report of "
+    "each kind picked by these bits, 4 at most: 1 a pair met by a write that keeps "
+    "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
+    "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace mcla::gpu {
 
 namespace {
@@ -123,6 +131,7 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   for (auto& owners : tile_owner_) {
     owners.fill(kNoOwner);
   }
+  capture_ = REXCVAR_GET(mcla_gpu_edram_capture);
   if (!REXCVAR_GET(mcla_gpu_coverage_queries)) {
     REXLOG_INFO("[gpu] edram: inheritance detector on; opaque draws it takes to cover their "
                 "scissor go unchecked (mcla_gpu_coverage_queries off)");
@@ -164,6 +173,16 @@ void EdramTargets::Shutdown() {
   epoch_ = 1;
   reported_pairs_.clear();
   listed_takes_.clear();
+  for (auto& taint : tile_taint_) {
+    taint.fill(0);
+  }
+  inherited_resolves_.clear();
+  reach_reported_.clear();
+  tainted_reported_.clear();
+  reach_seen_.fill(false);
+  request_capture_ = nullptr;
+  capture_ = 0;
+  captures_ = 0;
   tiling_ = false;
   pending_.clear();
   coverage_pools_.clear();
@@ -445,25 +464,32 @@ void EdramTargets::AssignOwner(Target& t) {
   owner_keys_.push_back(t.key);
 }
 
+void EdramTargets::TileSpan(const Target& t, const plume::RenderRect& px, uint32_t* col0,
+                            uint32_t* col1, uint32_t* row0, uint32_t* row1) {
+  // The rectangle in the identity's tiles (80x16 samples).
+  const uint32_t across = (t.key.samples >= 4 ? 2 : 1) * t.columns_per_texel;
+  const uint32_t down = t.key.samples >= 2 ? 2 : 1;
+  *col0 = uint32_t(std::max(px.left, 0)) * across / 80;
+  *col1 = std::min((uint32_t(std::max(px.right, 0)) * across + 79) / 80, t.pitch_tiles);
+  *row0 = uint32_t(std::max(px.top, 0)) * down / 16;
+  *row1 = (uint32_t(std::max(px.bottom, 0)) * down + 15) / 16;
+}
+
 EdramTargets::Inheritance EdramTargets::Apply(Target& t, const plume::RenderRect& px,
                                               const Accesses& access) {
   Inheritance result;
   if (t.owner == kNoOwner || px.right <= px.left || px.bottom <= px.top) {
     return result;
   }
-  // The rectangle in the identity's tiles (80x16 samples).
-  const uint32_t across = (t.key.samples >= 4 ? 2 : 1) * t.columns_per_texel;
-  const uint32_t down = t.key.samples >= 2 ? 2 : 1;
-  const uint32_t col0 = uint32_t(std::max(px.left, 0)) * across / 80;
-  const uint32_t col1 =
-      std::min((uint32_t(std::max(px.right, 0)) * across + 79) / 80, t.pitch_tiles);
-  const uint32_t row0 = uint32_t(std::max(px.top, 0)) * down / 16;
-  const uint32_t row1 = (uint32_t(std::max(px.bottom, 0)) * down + 15) / 16;
+  uint32_t col0 = 0, col1 = 0, row0 = 0, row1 = 0;
+  TileSpan(t, px, &col0, &col1, &row0, &row1);
   ++stats_.walks;
   bool changed = false;
   bool own[kAspectCount] = {true, true};
   uint32_t depend_tiles = 0;
   uint32_t read_tiles = 0;
+  uint32_t tainted_tiles = 0;
+  bool tainted_read = false;
   uint16_t from = kNoOwner;
   uint16_t taken_from = kNoOwner;
   for (uint32_t a = 0; a < kAspectCount; ++a) {
@@ -472,33 +498,67 @@ EdramTargets::Inheritance EdramTargets::Apply(Target& t, const plume::RenderRect
       continue;
     }
     std::array<uint16_t, kTileCount>& owners = tile_owner_[a];
+    std::array<uint8_t, kTileCount>& taint = tile_taint_[a];
     for (uint32_t row = row0; row < row1; ++row) {
       // The EDRAM's addressing wraps at its last tile.
       const uint32_t first = uint32_t(t.key.base_tiles) + row * t.pitch_tiles;
       for (uint32_t col = col0; col < col1; ++col) {
-        uint16_t& owner = owners[(first + col) & (kTileCount - 1)];
-        if (owner == t.owner) {
-          continue;
-        }
-        if (owner != kNoOwner) {
-          if (acc == Access::kTake) {
+        const uint32_t tile = (first + col) & (kTileCount - 1);
+        uint16_t& owner = owners[tile];
+        uint8_t& marked = taint[tile];
+        if (acc == Access::kTake) {
+          // Every texel replaced: whatever the tile held is gone.
+          if (marked) {
+            marked = 0;
+            ++stats_.untainted;
+            changed = true;
+          }
+          if (owner == t.owner) {
+            continue;
+          }
+          if (owner != kNoOwner) {
             ++stats_.tiles_taken;
             ++result.taken;
             if (taken_from == kNoOwner) {
               taken_from = owner;
               result.taken_owner = owner;
             }
-          } else {
-            ++(acc == Access::kRead ? read_tiles : depend_tiles);
-            if (from == kNoOwner) {
-              from = owner;
-              result.aspect = Aspect(a);
-            }
+          }
+          owner = t.owner;
+          changed = true;
+          continue;
+        }
+        // kDepend or kRead: what the tile holds may reach the result.
+        if (owner == t.owner) {
+          if (marked) {
+            // Its own tile, holding another identity's bytes since a write
+            // kept them: walked again until something takes it.
+            ++tainted_tiles;
+            tainted_read |= acc == Access::kRead;
+            own[a] = false;
+          }
+          continue;
+        }
+        if (owner != kNoOwner) {
+          ++(acc == Access::kRead ? read_tiles : depend_tiles);
+          if (from == kNoOwner) {
+            from = owner;
+            result.aspect = Aspect(a);
           }
         }
         if (acc == Access::kRead) {
           own[a] = false;
         } else {
+          if (owner != kNoOwner) {
+            // It keeps or blends another identity's bytes: they stay in the
+            // tile (an unowned tile holds the EDRAM's undefined first bytes,
+            // no identity's).
+            if (!marked) {
+              marked = 1;
+              ++stats_.tainted;
+            }
+            own[a] = false;
+          }
           owner = t.owner;
           changed = true;
         }
@@ -507,6 +567,14 @@ EdramTargets::Inheritance EdramTargets::Apply(Target& t, const plume::RenderRect
   }
   if (changed) {
     ++epoch_;
+  }
+  result.tainted = tainted_tiles;
+  stats_.tainted_reads += tainted_tiles;
+  if (tainted_read && tainted_reported_.size() < kReportedPairs &&
+      std::find(tainted_reported_.begin(), tainted_reported_.end(), t.owner) ==
+          tainted_reported_.end()) {
+    tainted_reported_.push_back(t.owner);
+    result.tainted_new = true;
   }
   // What is known now, per aspect: the larger rectangle of the epoch.
   const auto area = [](const plume::RenderRect& r) {
@@ -557,24 +625,75 @@ EdramTargets::Inheritance EdramTargets::Apply(Target& t, const plume::RenderRect
 }
 
 void EdramTargets::Note(Target& t, const plume::RenderRect& px, const Accesses& access,
-                        const EdramEvent& event) {
+                        const EdramEvent& event, Target* const* outputs,
+                        uint32_t output_count) {
+  output_count = outputs ? std::min<uint32_t>(output_count, 4) : 0;
   if (tiling_) {
     // A repeat of the access kept last changes nothing when the tiles replay
-    // it: one is enough.
-    if (!pending_.empty()) {
+    // it: one is enough. A resolve is never a repeat: each copy's destination
+    // is marked on its own (reach).
+    if (!pending_.empty() && event.kind != EdramEvent::Kind::kResolve) {
       const Pending& last = pending_.back();
-      if (last.target == &t && last.access == access && last.rect.left == px.left &&
-          last.rect.top == px.top && last.rect.right == px.right &&
-          last.rect.bottom == px.bottom) {
+      bool same = last.target == &t && last.access == access && last.rect.left == px.left &&
+                  last.rect.top == px.top && last.rect.right == px.right &&
+                  last.rect.bottom == px.bottom && last.output_count == output_count &&
+                  last.event.kind == event.kind;
+      for (uint32_t i = 0; i < output_count && same; ++i) {
+        same = last.outputs[i] == outputs[i];
+      }
+      if (same) {
         return;
       }
     }
-    pending_.push_back(Pending{&t, px, access, event});
+    Pending p{&t, px, access, event};
+    for (uint32_t i = 0; i < output_count; ++i) {
+      p.outputs[i] = outputs[i];
+    }
+    p.output_count = output_count;
+    pending_.push_back(p);
     ++stats_.tiled_kept;
     return;
   }
+  Account(t, px, access, event, outputs, output_count, -1);
+}
+
+void EdramTargets::Account(Target& t, const plume::RenderRect& px, const Accesses& access,
+                           const EdramEvent& event, Target* const* outputs,
+                           uint32_t output_count, int32_t tile) {
   const Inheritance found = Apply(t, px, access);
-  Report(t, access, found, event, -1);
+  if (output_count != 0 && (found.tiles != 0 || found.tainted != 0)) {
+    // A test over inherited bytes decides what the draw writes.
+    for (uint32_t i = 0; i < output_count; ++i) {
+      Taint(*outputs[i], px);
+    }
+  }
+  Report(t, access, found, event, tile);
+}
+
+void EdramTargets::Taint(const Target& t, const plume::RenderRect& px) {
+  if (t.owner == kNoOwner || px.right <= px.left || px.bottom <= px.top) {
+    return;
+  }
+  uint32_t col0 = 0, col1 = 0, row0 = 0, row1 = 0;
+  TileSpan(t, px, &col0, &col1, &row0, &row1);
+  bool changed = false;
+  for (uint32_t a = 0; a < kAspectCount; ++a) {
+    for (uint32_t row = row0; row < row1; ++row) {
+      const uint32_t first = uint32_t(t.key.base_tiles) + row * t.pitch_tiles;
+      for (uint32_t col = col0; col < col1; ++col) {
+        const uint32_t tile = (first + col) & (kTileCount - 1);
+        // Only what the output wrote: a tile it does not own is not its result.
+        if (tile_owner_[a][tile] == t.owner && !tile_taint_[a][tile]) {
+          tile_taint_[a][tile] = 1;
+          ++stats_.tainted;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) {
+    ++epoch_;  // what was known clean of these tiles is not any more
+  }
 }
 
 void EdramTargets::BeginTiling() {
@@ -611,8 +730,8 @@ void EdramTargets::EndTiling(const EdramTile* tiles, uint32_t count) {
                    pending_.size());
     }
     for (const Pending& p : pending_) {
-      if (!Settled(*p.target, p.rect, p.access)) {
-        Report(*p.target, p.access, Apply(*p.target, p.rect, p.access), p.event, -1);
+      if (!SettledFor(p, p.rect)) {
+        Account(*p.target, p.rect, p.access, p.event, p.outputs, p.output_count, -1);
       }
     }
   }
@@ -632,12 +751,20 @@ void EdramTargets::EndTiling(const EdramTile* tiles, uint32_t count) {
       r.top -= tile.origin_y;
       r.bottom -= tile.origin_y;
       ++stats_.tiled_noted;
-      if (!Settled(*p.target, r, p.access)) {
-        Report(*p.target, p.access, Apply(*p.target, r, p.access), p.event, int32_t(i));
+      if (!SettledFor(p, r)) {
+        Account(*p.target, r, p.access, p.event, p.outputs, p.output_count, int32_t(i));
       }
     }
   }
   pending_.clear();
+}
+
+bool EdramTargets::SettledFor(const Pending& p, const plume::RenderRect& r) const {
+  // A copy, or a test with outputs, of bytes already counted still carries
+  // them into its result (reach).
+  return p.event.kind == EdramEvent::Kind::kResolve || p.output_count != 0
+             ? SettledClean(*p.target, r, p.access)
+             : Settled(*p.target, r, p.access);
 }
 
 void EdramTargets::Report(const Target& t, const Accesses& access, const Inheritance& found,
@@ -658,7 +785,14 @@ void EdramTargets::Report(const Target& t, const Accesses& access, const Inherit
       check.taken += found.taken;
     }
   }
-  if (!found.from && !found.taken_from) {
+  if (e.kind == EdramEvent::Kind::kResolve && e.resolve != 0 &&
+      (found.tiles != 0 || found.tainted != 0)) {
+    // Its destination holds what the console would copy from another
+    // identity: the ResolveCache marks it and watches its readers.
+    inherited_resolves_.push_back(e.resolve);
+    ++stats_.inherited_resolves;
+  }
+  if (!found.from && !found.taken_from && !found.tainted_new) {
     return;
   }
   std::string what;
@@ -690,6 +824,15 @@ void EdramTargets::Report(const Target& t, const Accesses& access, const Inherit
                  "EDRAM identities (TODO M5.2d; pair reported once) -- {}",
                  DescribeEdramKey(t.key), how, aspect, found.tiles,
                  DescribeEdramKey(*found.from), where, what);
+    RequestCapture(access.aspect[found.aspect] == Access::kRead ? kCaptureReadPair
+                                                                 : kCaptureWritePair);
+  }
+  if (found.tainted_new) {
+    REXLOG_ERROR("[gpu] edram: {} reads {} aspect-tiles of its own that hold another identity's "
+                 "bytes (a write kept or blended them, or a test of them decided it){}: on the "
+                 "console the result carries those bytes (TODO M5.2d; reported once per "
+                 "identity) -- {}",
+                 DescribeEdramKey(t.key), found.tainted, where, what);
   }
   if (found.taken_from && e.kind == EdramEvent::Kind::kDraw) {
     REXLOG_INFO("[gpu] edram: {} takes {} aspect-tiles of {}{} with an opaque draw taken to "
@@ -700,6 +843,36 @@ void EdramTargets::Report(const Target& t, const Accesses& access, const Inherit
                                     : "UNCHECKED (mcla_gpu_coverage_queries off)",
                 what);
   }
+}
+
+void EdramTargets::NoteReach(Reach kind, uint64_t id, const std::function<std::string()>& describe) {
+  ++stats_.reach[size_t(kind)];
+  const uint64_t key = uint64_t(kind) << 62 | (id & ((uint64_t(1) << 62) - 1));
+  if (reach_reported_.size() < kReportedPairs &&
+      std::find(reach_reported_.begin(), reach_reported_.end(), key) == reach_reported_.end()) {
+    reach_reported_.push_back(key);
+    static const char* const kWhat[] = {"a fetch", "a texture decoded from the resolve memory",
+                                        "a CPU lock"};
+    REXLOG_ERROR("[gpu] edram: inherited bytes reach {}: {} -- on the console they are another "
+                 "EDRAM identity's, which the host does not carry over (TODO M5.2d; reported "
+                 "once)",
+                 kWhat[size_t(kind)], describe());
+  }
+  if (!reach_seen_[size_t(kind)]) {
+    reach_seen_[size_t(kind)] = true;
+    RequestCapture(kCaptureReach);
+  }
+}
+
+void EdramTargets::RequestCapture(uint32_t why) {
+  if (!(capture_ & why) || !request_capture_ || captures_ >= 4) {
+    return;
+  }
+  ++captures_;
+  request_capture_();
+  REXLOG_INFO("[gpu] edram: RenderDoc capture of the next frame requested ({} of 4, "
+              "mcla_gpu_edram_capture bit {})",
+              captures_, why);
 }
 
 uint32_t EdramTargets::ReserveCoverageCheck() {
@@ -917,6 +1090,12 @@ std::string EdramTargets::TakeSummary() {
         stats_.tiles_taken, stats_.takes_unchecked, stats_.depend_tiles, stats_.depend_events,
         stats_.read_tiles, stats_.read_events, reported_pairs_.size(), stats_.walks,
         stats_.tiled_sections, stats_.tiled_kept, stats_.tiled_noted);
+    text += std::format(
+        "; reach: {} aspect-tiles marked, {} taken back, {} marked read, {} inherited resolves, "
+        "readers {} fetches {} decodes {} locks",
+        stats_.tainted, stats_.untainted, stats_.tainted_reads, stats_.inherited_resolves,
+        stats_.reach[size_t(Reach::kFetch)], stats_.reach[size_t(Reach::kDecode)],
+        stats_.reach[size_t(Reach::kLock)]);
   }
   if (coverage_) {
     text += std::format(

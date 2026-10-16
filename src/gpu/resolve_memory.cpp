@@ -19,6 +19,7 @@
 
 #include "descriptors.h"
 #include "device.h"
+#include "edram.h"
 #include "format.h"
 #include "frame.h"
 #include "host_passes.h"
@@ -160,6 +161,8 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   page_flags_.assign(kPageCount, 0);
   page_sequence_.assign(kPageCount, 0);
   page_writer_.assign(kPageCount, 0xFF);
+  page_writer_key_.assign(kPageCount, 0);
+  page_writer_frame_.assign(kPageCount, 0);
 
   encode_set_builder_.begin();
   encode_pool_index_ = encode_set_builder_.addReadWriteByteAddressBuffer(0);  // u0
@@ -257,6 +260,12 @@ void ResolveMemory::Shutdown() {
   page_flags_.clear();
   page_sequence_.clear();
   page_writer_.clear();
+  page_writer_key_.clear();
+  page_writer_frame_.clear();
+  writer_keys_.clear();
+  writer_key_index_.clear();
+  edram_ = nullptr;
+  reach_ = false;
   decode_logged_.clear();
   late_logged_.clear();
   device_ = nullptr;
@@ -480,7 +489,7 @@ void ResolveMemory::UploadPages(plume::RenderCommandList* list,
     uint8_t* dst = span.cpu + i * kPageBytes;
     if (src) {
       std::memcpy(dst, src, kPageBytes);
-      page_flags_[page] |= kValid;
+      page_flags_[page] = uint8_t((page_flags_[page] | kValid) & ~kInherited);
       ++stats_.pages_uploaded;
     } else {
       // Not committed for the guest either; what the GPU writes there stays
@@ -559,48 +568,21 @@ void ResolveMemory::TouchDecoded(uint32_t start, uint32_t length, bool cpu) {
 // encode
 // ---------------------------------------------------------------------------
 
-bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
-  const TextureKey& key = *copy.key;
-  const auto fail = [&](const char* what) {
-    ++stats_.encode_failures;
-    Fail(what, std::format("{} level {}", key.Describe(), copy.level));
-    return false;
-  };
-  if (!list) {
-    return fail("no command list");
-  }
-  if (copy.x1 <= copy.x0 || copy.y1 <= copy.y0) {
-    return true;
-  }
-  if (copy.depth) {
-    // Recorded now, after every colour encode waiting: their pages may overlap.
-    Flush(list);
-  }
-  TextureLevelStorage storage;
-  if (!GetTextureLevelStorage(key, copy.level, &storage)) {
-    return fail("the destination level has no storage");
-  }
+bool ResolveMemory::TouchPages(const TextureLevelStorage& storage, uint32_t bpb_log2,
+                               uint32_t pitch, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                               uint32_t* first_page_out, uint32_t* page_span_out) {
   const texture_decode::Source& source = storage.request.source;
-  const uint32_t bpb_log2 = BlockLog2(source.bytes_per_block);
-  if (bpb_log2 == UINT32_MAX) {
-    return fail("a destination block size the encode does not write");
-  }
-  if (copy.depth && bpb_log2 != 2) {
-    return fail("a depth copy into a destination that is not 32 bpp");
-  }
-  const uint32_t pitch = LevelPitch(source, bpb_log2);
-
-  // The pages the rectangle writes, and how many of their bytes: a page every
-  // byte of which is written needs no upload. Storage coordinates (blocks,
-  // with the packed tail's offset).
-  const int32_t sx0 = copy.x0 + int32_t(source.offset_x);
-  const int32_t sx1 = copy.x1 + int32_t(source.offset_x);
-  const int32_t sy0 = copy.y0 + int32_t(source.offset_y);
-  const int32_t sy1 = copy.y1 + int32_t(source.offset_y);
+  // Storage coordinates (blocks, with the packed tail's offset).
+  const int32_t sx0 = x0 + int32_t(source.offset_x);
+  const int32_t sx1 = x1 + int32_t(source.offset_x);
+  const int32_t sy0 = y0 + int32_t(source.offset_y);
+  const int32_t sy1 = y1 + int32_t(source.offset_y);
   const uint32_t first_page = storage.address >> kPageShift;
   const uint32_t page_span =
       uint32_t(((uint64_t(storage.address) + storage.extent + kPageBytes - 1) >> kPageShift) -
                first_page);
+  *first_page_out = first_page;
+  *page_span_out = page_span;
   touched_.assign(page_span, {0u, 0u});  // (touched, bytes covered)
   const auto touch = [&](uint64_t address, uint32_t covered) {
     const uint64_t page = address >> kPageShift;
@@ -644,7 +626,45 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
       }
     }
   }
-  if (!inside) {
+  return inside;
+}
+
+bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
+  const TextureKey& key = *copy.key;
+  const auto fail = [&](const char* what) {
+    ++stats_.encode_failures;
+    Fail(what, std::format("{} level {}", key.Describe(), copy.level));
+    return false;
+  };
+  if (!list) {
+    return fail("no command list");
+  }
+  if (copy.x1 <= copy.x0 || copy.y1 <= copy.y0) {
+    return true;
+  }
+  if (copy.depth) {
+    // Recorded now, after every colour encode waiting: their pages may overlap.
+    Flush(list);
+  }
+  TextureLevelStorage storage;
+  if (!GetTextureLevelStorage(key, copy.level, &storage)) {
+    return fail("the destination level has no storage");
+  }
+  const texture_decode::Source& source = storage.request.source;
+  const uint32_t bpb_log2 = BlockLog2(source.bytes_per_block);
+  if (bpb_log2 == UINT32_MAX) {
+    return fail("a destination block size the encode does not write");
+  }
+  if (copy.depth && bpb_log2 != 2) {
+    return fail("a depth copy into a destination that is not 32 bpp");
+  }
+  const uint32_t pitch = LevelPitch(source, bpb_log2);
+
+  // The pages the rectangle writes, and how many of their bytes: a page every
+  // byte of which is written needs no upload.
+  uint32_t first_page = 0, page_span = 0;
+  if (!TouchPages(storage, bpb_log2, pitch, copy.x0, copy.y0, copy.x1, copy.y1, &first_page,
+                  &page_span)) {
     return fail("a rectangle beyond the destination level's storage");
   }
   pages_.clear();
@@ -729,6 +749,14 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
 
   // Every page written: the resolve's bytes are there and not in guest
   // memory; a page written whole, or uploaded first, holds the console's bytes.
+  uint32_t writer = 0;
+  if (const auto known = writer_key_index_.find(key); known != writer_key_index_.end()) {
+    writer = known->second;
+  } else {
+    writer = uint32_t(writer_keys_.size());
+    writer_keys_.push_back(key);
+    writer_key_index_.emplace(key, writer);
+  }
   pages_.clear();
   for (uint32_t i = 0; i < page_span; ++i) {
     if (!touched_[i].first) {
@@ -737,11 +765,15 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     const uint32_t page = first_page + i;
     uint8_t& flags = page_flags_[page];
     if (touched_[i].second >= kPageBytes) {
-      flags |= kValid;
+      // Written whole: the console's bytes, and only this copy's (an
+      // inherited one marks them again, MarkInherited).
+      flags = uint8_t((flags | kValid) & ~kInherited);
     }
     flags |= kNewer;
     page_sequence_[page] = ++sequence_;
     page_writer_[page] = uint8_t(key.format);
+    page_writer_key_[page] = writer;
+    page_writer_frame_[page] = uint32_t(frame_);
     newer_low_page_ = std::min(newer_low_page_, page);
     newer_high_page_ = std::max(newer_high_page_, page);
     pages_.push_back(page);
@@ -947,6 +979,11 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
   pages_.clear();
   uint64_t newest = 0;
   uint64_t writers = 0;
+  // The last writers of its pages (destination, frames ago), for the report.
+  uint32_t writer_list[4] = {};
+  uint32_t writer_age[4] = {};
+  uint32_t writer_count = 0;
+  uint32_t inherited_pages = 0;
   for (const auto& r : d->ranges) {
     if (!r[1]) {
       continue;
@@ -958,11 +995,31 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
       if (!(page_flags_[page] & kValid)) {
         pages_.push_back(page);
       }
+      if (reach_) {
+        inherited_pages += (page_flags_[page] & kInherited) != 0;
+      }
       newest = std::max(newest, page_sequence_[page]);
       if ((page_flags_[page] & kNewer) && page_writer_[page] != 0xFF) {
         writers |= uint64_t(1) << (page_writer_[page] & 63);
+        const uint32_t w = page_writer_key_[page];
+        bool seen = false;
+        for (uint32_t i = 0; i < writer_count; ++i) {
+          seen |= writer_list[i] == w;
+        }
+        if (!seen && writer_count < 4) {
+          writer_list[writer_count] = w;
+          writer_age[writer_count] = uint32_t(frame_) - page_writer_frame_[page];
+          ++writer_count;
+        }
       }
     }
+  }
+  if (inherited_pages != 0) {
+    // Reach: pages an inherited resolve wrote.
+    edram_->NoteReach(EdramTargets::Reach::kDecode, TextureKeyHash{}(key), [&] {
+      return std::format("{} reads {} page(s) an inherited resolve wrote", key.Describe(),
+                         inherited_pages);
+    });
   }
   if (decode_logged_.size() < 32 &&
       std::find(decode_logged_.begin(), decode_logged_.end(), key) == decode_logged_.end()) {
@@ -976,6 +1033,10 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
       if ((writers >> f) & 1) {
         names += std::format("{}{}", names.empty() ? "" : ", ", format::TextureHost(f).guest_name);
       }
+    }
+    for (uint32_t i = 0; i < writer_count; ++i) {
+      names += std::format("{} {} ({} frame(s) ago)", i == 0 ? ": the last into" : ";",
+                           writer_keys_[writer_list[i]].Describe(), writer_age[i]);
     }
     if ((writers & ~(uint64_t(1) << (key.format & 63))) != 0) {
       REXLOG_WARN("[gpu] resolve memory: {} is decoded from pages that resolves of {} wrote "
@@ -1104,6 +1165,7 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   const uint32_t last =
       std::min(uint32_t((uint64_t(address) + size - 1) >> kPageShift), kPageCount - 1);
   pages_.clear();
+  uint32_t inherited_pages = 0;
   for (uint32_t page = first; page <= last; ++page) {
     const uint8_t flags = page_flags_[page];
     if (!(flags & kNewer)) {
@@ -1117,7 +1179,17 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
            std::format("{:#010x}", page << kPageShift));
       continue;
     }
+    if (reach_) {
+      inherited_pages += (flags & kInherited) != 0;
+    }
     pages_.push_back(page);
+  }
+  if (inherited_pages != 0) {
+    // Reach: the CPU gets bytes an inherited resolve wrote.
+    edram_->NoteReach(EdramTargets::Reach::kLock, uint64_t(address) << 32 | size, [&] {
+      return std::format("{:#010x} +{}: {} page(s) an inherited resolve wrote", address, size,
+                         inherited_pages);
+    });
   }
   if (pages_.empty()) {
     return 0;
@@ -1192,6 +1264,41 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
 }
 
 // ---------------------------------------------------------------------------
+// reach
+// ---------------------------------------------------------------------------
+
+void ResolveMemory::SetEdram(EdramTargets* edram) {
+  edram_ = edram;
+  reach_ = edram && edram->aliasing();
+}
+
+void ResolveMemory::MarkInherited(const TextureKey& key, uint32_t level, int32_t x0, int32_t y0,
+                                  int32_t x1, int32_t y1) {
+  if (!reach_ || x1 <= x0 || y1 <= y0) {
+    return;
+  }
+  TextureLevelStorage storage;
+  if (!GetTextureLevelStorage(key, level, &storage)) {
+    return;  // no storage: the encode wrote nothing there either
+  }
+  const uint32_t bpb_log2 = BlockLog2(storage.request.source.bytes_per_block);
+  if (bpb_log2 == UINT32_MAX) {
+    return;
+  }
+  uint32_t first_page = 0, page_span = 0;
+  TouchPages(storage, bpb_log2, LevelPitch(storage.request.source, bpb_log2), x0, y0, x1, y1,
+             &first_page, &page_span);
+  for (uint32_t i = 0; i < page_span; ++i) {
+    if (touched_[i].first && first_page + i < kPageCount) {
+      page_flags_[first_page + i] |= kInherited;
+      ++stats_.inherited_marked;
+    }
+  }
+  // Textures decoded from these pages bind again, through Bind's check.
+  TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)), false);
+}
+
+// ---------------------------------------------------------------------------
 // housekeeping
 // ---------------------------------------------------------------------------
 
@@ -1259,6 +1366,9 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
       stats_.decoded_levels, stats_.bind_unsupported, stats_.bind_failures, decoded_.size(),
       stats_.evicted, stats_.cpu_writes, stats_.cpu_writes_newer, stats_.lock_write_backs,
       stats_.lock_pages, stats_.lock_pages_unknown);
+  if (reach_) {
+    text += std::format(" | reach: {} pages marked by inherited resolves", stats_.inherited_marked);
+  }
   stats_ = Stats{};
   return text;
 }

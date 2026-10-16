@@ -69,6 +69,7 @@ namespace mcla::gpu {
 
 class BindlessHeap;
 class Device;
+class EdramTargets;
 class FrameRing;
 class HostPasses;
 class UploadRing;
@@ -153,6 +154,16 @@ class ResolveMemory {
   int64_t WriteBack(uint32_t address, uint32_t size,
                     const std::function<void()>& submit_recorded);
 
+  // Reach (only with mcla_gpu_edram_aliasing). The ResolveCache
+  // hands over the EDRAM map at its Initialize. MarkInherited: the pages an
+  // inherited resolve wrote into `level` over [x0, x1) x [y0, y1) hold, on
+  // the console, another identity's bytes; a page written whole again
+  // (encode, upload, CPU) loses the mark. A decode or a lock over a marked
+  // page is reported (EdramTargets::NoteReach).
+  void SetEdram(EdramTargets* edram);
+  void MarkInherited(const TextureKey& key, uint32_t level, int32_t x0, int32_t y0, int32_t x1,
+                     int32_t y1);
+
   std::string TakeSummary(uint64_t frames);
 
  private:
@@ -160,6 +171,7 @@ class ResolveMemory {
     kValid = 1u << 0,
     kNewer = 1u << 1,
     kArmed = 1u << 2,
+    kInherited = 1u << 3,  // reach: an inherited resolve wrote it (MarkInherited)
   };
   enum class PoolAccess : uint8_t { kNone, kCopyWrite, kCopyRead, kComputeWrite, kGraphicsRead };
   // A texture decoded from the resolve memory.
@@ -182,6 +194,12 @@ class ResolveMemory {
   // Places `chunk` in the pool (growing it when full). False when the pool
   // could not grow (logged).
   bool EnsureChunk(plume::RenderCommandList* list, uint32_t chunk);
+  // The pages [x0, x1) x [y0, y1) of a level writes, into touched_ (from
+  // *first_page, *page_span entries: touched, and bytes covered). False when
+  // the rectangle reaches beyond the level's storage.
+  bool TouchPages(const TextureLevelStorage& storage, uint32_t bpb_log2, uint32_t pitch,
+                  int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t* first_page,
+                  uint32_t* page_span);
   bool GrowPool(plume::RenderCommandList* list);
   bool MakeSets();
   void UploadTable(plume::RenderCommandList* list);
@@ -228,6 +246,8 @@ class ResolveMemory {
   GuestMemory::Subscriber subscriber_ = GuestMemory::kNoSubscriber;
   HostPasses* passes_ = nullptr;
   TextureCache* textures_ = nullptr;
+  EdramTargets* edram_ = nullptr;
+  bool reach_ = false;  // the detector is on: pages carry kInherited
 
   // Descriptor sets and layouts: the encode's (pool read-write, table) and
   // the decode's (pool and table read-only).
@@ -259,8 +279,13 @@ class ResolveMemory {
   std::vector<uint8_t> page_flags_;    // by page: PageFlag
   std::vector<uint64_t> page_sequence_;  // by page: the sequence of its last write
   // By page: the xenos TextureFormat of the resolve that wrote it last (0xFF:
-  // none since the CPU's), for the report of a texture read in another format.
+  // none since the CPU's), and which destination and in which frame, for the
+  // report of a texture read in another shape or format.
   std::vector<uint8_t> page_writer_;
+  std::vector<uint32_t> page_writer_key_;    // index in writer_keys_
+  std::vector<uint32_t> page_writer_frame_;  // frame_, low 32 bits
+  std::vector<TextureKey> writer_keys_;      // destinations seen (a few hundred)
+  std::unordered_map<TextureKey, uint32_t, TextureKeyHash> writer_key_index_;
   std::vector<TextureKey> decode_logged_;  // keys whose first decode was reported (32 at most)
   std::vector<TextureKey> late_logged_;    // keys reported written by the CPU after a decode
   uint64_t sequence_ = 0;
@@ -301,6 +326,7 @@ class ResolveMemory {
     uint64_t lock_write_backs = 0;     // locks that copied pages back
     uint64_t lock_pages = 0;           // pages copied back
     uint64_t lock_pages_unknown = 0;   // newer pages the pool does not hold whole (logged)
+    uint64_t inherited_marked = 0;     // reach: pages marked by inherited resolves
   };
   Stats stats_;
 };

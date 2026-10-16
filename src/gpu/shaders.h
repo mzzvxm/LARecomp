@@ -27,10 +27,12 @@
 // compiled, because the variants differ in their outputs, which a
 // specialization constant cannot change.
 //
-// Threading: render thread only, after Initialize.
+// Threading: after Initialize, GetShader from any thread (the pipeline
+// precache's workers call it); the rest from the render thread.
 // ===========================================================================
 
 #include <cstdint>
+#include <mutex>
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
@@ -141,6 +143,7 @@ class ShaderStore {
   bool VerifyBlob(const Entry& entry, const Blob& blob, bool spirv);
 
   Device* device_ = nullptr;
+  std::mutex mutex_;  // GetShader's slots and stats
   std::filesystem::path path_;
   std::unique_ptr<rex::memory::MappedMemory> file_;
   std::unordered_map<uint64_t, Entry> entries_;

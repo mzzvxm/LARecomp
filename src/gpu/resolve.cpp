@@ -117,6 +117,44 @@ void DumpLevelTga(uint32_t serial, const TextureKey& key, uint32_t level, uint32
   }
 }
 
+// Reach: sets the 8x8 cells [x0, x1) x [y0, y1) of a level of
+// `level_width` x `level_height` texels touches, or clears the ones it covers
+// whole (a cell at the level's edge is whole when the rectangle reaches the
+// edge).
+void UpdateInheritedCells(ResolveCache::Product::Coverage& c, uint32_t level_width,
+                          uint32_t level_height, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                          bool set) {
+  if (x1 <= x0 || y1 <= y0 || c.bits.empty()) {
+    return;
+  }
+  const uint32_t ux0 = uint32_t(std::max(x0, 0)), uy0 = uint32_t(std::max(y0, 0));
+  const uint32_t ux1 = uint32_t(x1), uy1 = uint32_t(y1);
+  const uint32_t cx0 = set ? ux0 / 8 : (ux0 + 7) / 8;
+  const uint32_t cy0 = set ? uy0 / 8 : (uy0 + 7) / 8;
+  const uint32_t cx1 =
+      std::min(set || ux1 >= level_width ? (ux1 + 7) / 8 : ux1 / 8, c.cells_x);
+  const uint32_t cy1 =
+      std::min(set || uy1 >= level_height ? (uy1 + 7) / 8 : uy1 / 8, c.cells_y);
+  for (uint32_t cy = cy0; cy < cy1 && cx0 < cx1; ++cy) {
+    size_t bit = size_t(cy) * c.cells_x + cx0;
+    const size_t end = size_t(cy) * c.cells_x + cx1;
+    while (bit < end) {
+      const uint32_t shift = uint32_t(bit & 63);
+      const size_t take = std::min<size_t>(64 - shift, end - bit);
+      const uint64_t mask = (take == 64 ? ~uint64_t(0) : ((uint64_t(1) << take) - 1)) << shift;
+      uint64_t& word = c.bits[bit >> 6];
+      if (set) {
+        c.covered += uint32_t(std::popcount(mask & ~word));
+        word |= mask;
+      } else {
+        c.covered -= uint32_t(std::popcount(mask & word));
+        word &= ~mask;
+      }
+      bit += take;
+    }
+  }
+}
+
 }  // namespace
 
 ResolveCache::~ResolveCache() {
@@ -136,6 +174,8 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   textures_ = &textures;
   edram_ = &edram;
   passes_ = &passes;
+  // The resolve memory reports the readers of inherited pages (reach).
+  resolve_memory.SetEdram(&edram);
   subscriber_ = memory.Subscribe("resolve products");
   for (uint32_t depth = 0; depth < 2; ++depth) {
     for (uint32_t msaa = 0; msaa < 2; ++msaa) {
@@ -159,6 +199,10 @@ void ResolveCache::Shutdown() {
   regions_.Clear();
   region_owners_.clear();
   pipelines_.clear();
+  recent_ = {};
+  resolve_serial_ = 0;
+  inherited_ids_.clear();
+  inherited_logged_.clear();
   for (auto& row : shaders_) {
     for (auto& shader : row) {
       shader.reset();
@@ -350,6 +394,19 @@ ResolveCache::Product* ResolveCache::Find(const TextureKey& key, uint32_t image_
     }
     break;
   }
+  // Reach (the cells exist only with the detector): a level the
+  // fetch reads holds what an inherited resolve copied.
+  for (uint32_t level = 0; level < key.levels() && level < p->inherited.size(); ++level) {
+    const Product::Coverage& c = p->inherited[level];
+    if ((level == 0 && key.base_page == 0) || c.covered == 0) {
+      continue;
+    }
+    edram_->NoteReach(EdramTargets::Reach::kFetch, TextureKeyHash{}(p->key), [&] {
+      return std::format("{} level {}: {} of {} 8x8 cells", p->key.Describe(), level, c.covered,
+                         c.cells_x * c.cells_y);
+    });
+    break;
+  }
   return p;
 }
 
@@ -461,6 +518,46 @@ void ResolveCache::OnLock(const LockRecord& record,
   }
 }
 
+void ResolveCache::DrainInherited() {
+  if (!edram_ || !edram_->has_inherited_resolves()) {
+    return;
+  }
+  edram_->TakeInheritedResolves(&inherited_ids_);
+  // A copy split over tiles comes back once per tile.
+  std::sort(inherited_ids_.begin(), inherited_ids_.end());
+  inherited_ids_.erase(std::unique(inherited_ids_.begin(), inherited_ids_.end()),
+                       inherited_ids_.end());
+  for (const uint32_t id : inherited_ids_) {
+    const RecentResolve& r = recent_[id % kRecentResolves];
+    if (r.id != id) {
+      if (!recent_lost_logged_) {
+        recent_lost_logged_ = true;
+        REXLOG_ERROR("[gpu] resolve: inherited copy number {} left the last {} copies before the "
+                     "EDRAM map answered; what it wrote is not marked (TODO M5.2d; reported "
+                     "once)",
+                     id, kRecentResolves);
+      }
+      continue;
+    }
+    const auto it = products_.find(r.key);
+    if (it != products_.end() && r.level < it->second->inherited.size()) {
+      Product& p = *it->second;
+      UpdateInheritedCells(p.inherited[r.level], std::max(uint32_t(r.key.width) >> r.level, 1u),
+                           std::max(uint32_t(r.key.height) >> r.level, 1u), r.x0, r.y0, r.x1,
+                           r.y1, true);
+      // Fetches of it bind again, through Find's check.
+      BumpGenerations(p);
+    }
+    resolve_memory_->MarkInherited(r.key, r.level, r.x0, r.y0, r.x1, r.y1);
+    if (inherited_logged_.size() < 16 && inherited_logged_.insert(r.key).second) {
+      REXLOG_INFO("[gpu] resolve: {} level {} ({}, {})-({}, {}) holds bytes copied from EDRAM "
+                  "tiles another identity wrote; its readers are reported (logged "
+                  "once per destination)",
+                  r.key.Describe(), r.level, r.x0, r.y0, r.x1, r.y1);
+    }
+  }
+}
+
 void ResolveCache::TransitionProduct(plume::RenderCommandList* list, Product& p,
                                      plume::RenderTextureLayout layout) {
   if (p.layout == layout) {
@@ -515,6 +612,10 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
       c.cells_x = (std::max(uint32_t(key.width) >> level, 1u) + 7) / 8;
       c.cells_y = (std::max(uint32_t(key.height) >> level, 1u) + 7) / 8;
       c.bits.assign((size_t(c.cells_x) * c.cells_y + 63) / 64, 0);
+    }
+    if (edram_->aliasing()) {
+      // Reach: the same cells, for what inherited resolves wrote.
+      product->inherited = product->coverage;
     }
     for (uint32_t level = 0; level < key.levels(); ++level) {
       plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(format);
@@ -880,18 +981,32 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       }
       // EDRAM ownership: the copy reads every bit of the source's
       // words -- a depth source's stencil too, which the resolve memory keeps.
+      // Unless all of it is the source's own and unmarked, the map sees it:
+      // an inherited copy comes back by its number (reach).
       if (edram_->aliasing()) {
         const plume::RenderRect read(tx0 - dx, ty0 - dy, tx1 - dx, ty1 - dy);
         EdramTargets::Accesses access;
         access.aspect[EdramTargets::kMain] = EdramTargets::Access::kRead;
         access.aspect[EdramTargets::kStencil] = EdramTargets::Access::kRead;
-        if (!edram_->Settled(*src, read, access)) {
+        if (!edram_->SettledClean(*src, read, access)) {
+          if (++resolve_serial_ == 0) {
+            resolve_serial_ = 1;
+          }
+          RecentResolve& recent = recent_[resolve_serial_ % kRecentResolves];
+          recent.id = resolve_serial_;
+          recent.key = key;
+          recent.level = level;
+          recent.x0 = tx0;
+          recent.y0 = ty0;
+          recent.x1 = tx1;
+          recent.y1 = ty1;
           EdramEvent event;
           event.kind = EdramEvent::Kind::kResolve;
           event.dest_page = key.base_page;
           event.dest_format = key.format;
           event.dest_width = key.width;
           event.dest_height = key.height;
+          event.resolve = resolve_serial_;
           edram_->Note(*src, read, access, event);
         }
       }
@@ -972,6 +1087,12 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
           }
         }
       }
+      // Reach: the copy rewrote these cells; an inherited copy marks them again
+      // when the map hands its number back (DrainInherited).
+      if (level < p->inherited.size()) {
+        UpdateInheritedCells(p->inherited[level], level_width, level_height, tx0, ty0, tx1, ty1,
+                             false);
+      }
       // The same bytes into the resolve memory: colour from the
       // product just written, depth from the EDRAM target (with stencil).
       ResolveMemory::Copy memory_copy;
@@ -1007,6 +1128,10 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       ++stats_.modes[mode & 0xFF];
       stats_.pixels += uint64_t(tx1 - tx0) * uint64_t(ty1 - ty0);
     } while (false);
+    if (edram_->aliasing()) {
+      // Outside a tiled section the map answered at the Note (reach).
+      DrainInherited();
+    }
   } else {
     ++stats_.clear_only;
   }

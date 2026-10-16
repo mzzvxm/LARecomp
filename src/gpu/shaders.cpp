@@ -205,6 +205,7 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
     out = ShaderResult::kNoVariant;
     return nullptr;
   }
+  std::lock_guard<std::mutex> lock(mutex_);
   Slot& slot = slots_[variant][entry.key];
   if (!slot.done) {
     slot.done = true;

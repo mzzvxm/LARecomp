@@ -142,6 +142,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     edram_.Initialize(device_, frames_, heap_);
+    // mcla_gpu_edram_capture: the detector asks for a RenderDoc capture.
+    edram_.SetCaptureRequest([this] { capture_.Request(); });
     ok = passes_.Initialize(device_, heap_) &&
          resolve_memory_.Initialize(device_, frames_, heap_, upload_, guest_memory_, passes_,
                                     textures_) &&

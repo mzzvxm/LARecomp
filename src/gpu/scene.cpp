@@ -712,13 +712,17 @@ uint32_t Scene::NoteEdramTargets(const PreparedDraw& d, const DrawRecord& r,
     settled = edram_->Settled(*colors[i], scissor, EdramTargets::kMain, false) &&
               edram_->Settled(*colors[i], scissor, EdramTargets::kStencil, false);
   }
+  // With colour outputs, a depth or stencil test of inherited bytes decides
+  // what they get, every time (reach): only the clean case is skipped.
+  const bool outputs = d.key.color_count != 0;
+  const auto depth_settled = [&](EdramTargets::Aspect aspect, Access a) {
+    return a == Access::kNone ||
+           (outputs ? edram_->SettledClean(*depth, scissor, aspect)
+                    : edram_->Settled(*depth, scissor, aspect, a == Access::kRead));
+  };
   if (settled && depth) {
-    settled = (depth_main == Access::kNone ||
-               edram_->Settled(*depth, scissor, EdramTargets::kMain,
-                               depth_main == Access::kRead)) &&
-              (depth_stencil == Access::kNone ||
-               edram_->Settled(*depth, scissor, EdramTargets::kStencil,
-                               depth_stencil == Access::kRead));
+    settled = depth_settled(EdramTargets::kMain, depth_main) &&
+              depth_settled(EdramTargets::kStencil, depth_stencil);
   }
   if (settled) {
     return EdramTargets::kNoCheck;
@@ -774,8 +778,9 @@ uint32_t Scene::NoteEdramTargets(const PreparedDraw& d, const DrawRecord& r,
     EdramTargets::Accesses access;
     access.aspect[EdramTargets::kMain] = depth_main;
     access.aspect[EdramTargets::kStencil] = depth_stencil;
-    if (!edram_->Settled(*depth, scissor, access)) {
-      edram_->Note(*depth, scissor, access, event);
+    if (outputs ? !edram_->SettledClean(*depth, scissor, access)
+                : !edram_->Settled(*depth, scissor, access)) {
+      edram_->Note(*depth, scissor, access, event, colors, d.key.color_count);
     }
   }
   return check;
@@ -1210,6 +1215,8 @@ void Scene::OnTilingEnd(const TilingEndRecord& record, plume::RenderCommandList*
     tiles[i].origin_y = int32_t(pre.DeviceDword(guest::kDevTileOrigins + 8 * i + 4));
   }
   edram_->EndTiling(tiles, count);
+  // The section's resolves found inherited at their tiles (reach).
+  resolve_->DrainInherited();
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,7 +1330,7 @@ void Scene::Report(const char* why) {
       "coverage variant {} (alpha test {}, alpha to mask {}: 1x {}, biased {}), clip disabled "
       "{}, depth bias {} | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
-      "ms) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
+      "ms; precache {} taken, {} waited {:.1f} ms, {} made here, {} shared) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
       "tiling {}/{} | prepare "
       "{:.2f} ms/frame",
@@ -1336,7 +1343,8 @@ void Scene::Report(const char* why) {
       w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased, w.clip_disabled_draws,
       w.depth_bias_draws,
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
-      double(ps.create_ns) / 1e6, input_layouts_.size(), samplers_->size(), w.fetches,
+      double(ps.create_ns) / 1e6, ps.precache_taken, ps.precache_waits,
+      double(ps.precache_wait_ns) / 1e6, ps.precache_claimed, ps.shared, input_layouts_.size(), samplers_->size(), w.fetches,
       w.fetch_not_texture, double(w.upload_bytes) / frames / 1048576.0, w.constant_uploads,
       w.shared_uploads,
       (w.fetches + w.fetch_not_texture)
