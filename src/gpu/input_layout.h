@@ -38,6 +38,7 @@
 // Threading: render thread only.
 // ===========================================================================
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -45,6 +46,7 @@
 
 #include <plume_render_interface_types.h>
 
+#include "guest_device.h"
 #include "shaders.h"
 
 namespace mcla::gpu {
@@ -61,6 +63,10 @@ struct StreamPlan {
   uint32_t stride = 0;        // bytes (dev+12528 byte x 4)
   std::vector<SwapRange> swaps;  // sorted, disjoint; for the 8in32 endian (24.3: always)
   uint64_t plan_hash = 0;     // of stride + swaps, part of the buffer cache key
+  // The byte offset of a float3/float4 POSITION (semantic index 0) in the
+  // stream, or -1: the geometry checks its first vertex when it copies the
+  // stream. Not in plan_hash -- it changes no byte of the copy.
+  int32_t position_offset = -1;
 };
 
 struct InputLayout {
@@ -85,6 +91,17 @@ class InputLayouts {
 
   size_t size() const { return layouts_.size(); }
 
+  // How often the last Get's answer was reused, since the last call.
+  struct MemoStats {
+    uint64_t tries = 0;
+    uint64_t hits = 0;
+  };
+  MemoStats TakeMemoStats() {
+    const MemoStats s = memo_stats_;
+    memo_stats_ = MemoStats{};
+    return s;
+  }
+
  private:
   struct Key {
     uint64_t vs = 0;
@@ -97,6 +114,9 @@ class InputLayouts {
 
   std::unique_ptr<InputLayout> Build(const ShaderStore::Entry& vs, const uint8_t* decl,
                                      uint32_t decl_count, const uint8_t* stream_strides);
+  // Get without the repeat check: the key, the map, or Build.
+  const InputLayout* Lookup(const ShaderStore::Entry& vs, const uint8_t* decl,
+                            uint32_t decl_count, const uint8_t* stream_strides);
 
   const ShaderStore& shaders_;
   std::unordered_map<Key, std::unique_ptr<InputLayout>, KeyHash> layouts_;
@@ -104,6 +124,13 @@ class InputLayouts {
   Key scratch_key_;
   uint32_t next_id_ = 1;
   uint32_t reported_ = 0;
+  // The last Get's arguments and answer: a repeat skips the
+  // key build and the hash lookup. The layouts live for the session.
+  const InputLayout* last_layout_ = nullptr;
+  uint64_t last_vs_ = 0;
+  std::vector<uint8_t> last_decl_;
+  std::array<uint8_t, guest::kStreamCount> last_strides_{};
+  MemoStats memo_stats_;
 };
 
 }  // namespace mcla::gpu

@@ -90,6 +90,8 @@ struct DrawGeometry {
 
 class GeometryCache {
  public:
+  // mcla_gpu_scene_profile: time the stages of Prepare (the Scene sets it).
+  void SetProfile(bool on) { profile_ = on; }
   // Frames of use in a row with a change before a watched region is hashed.
   static constexpr uint32_t kDynamicStreak = 3;
   // Frames of use in a row without a change before a hashed region is watched
@@ -271,14 +273,25 @@ class GeometryCache {
     uint64_t positions_checked = 0;
     uint64_t positions_nonfinite = 0;
     uint64_t evicted = 0;
-    // Render-thread time, ns: all of Prepare, and inside it the hashing of
-    // hashed regions, the copies of regions into the ring and the folds.
-    uint64_t prepare_ns = 0;
-    uint64_t hash_ns = 0;
-    uint64_t copy_ns = 0;
-    uint64_t fold_ns = 0;
+    // Render-thread time in TSC cycles (cycles.h): all of Prepare, and inside
+    // it the hashing of hashed regions, the copies of regions into the ring and
+    // the folds.
+    uint64_t prepare_cycles = 0;
+    uint64_t hash_cycles = 0;
+    uint64_t copy_cycles = 0;
+    uint64_t fold_cycles = 0;
+    // mcla_gpu_scene_profile: TSC cycles of the invalidation
+    // drain, the stream sources, the region lookups and the rest of UseView.
+    uint64_t profile_cycles[4] = {};
+    // Region views asked for (vertex, index), and how many repeat the range
+    // of the same stream (or the index range) of the draw before.
+    uint64_t profile_views[2] = {};
+    uint64_t profile_repeats[2] = {};
   };
   Stats stats_;
+  bool profile_ = false;
+  std::array<uint64_t, guest::kStreamCount> profile_last_stream_{};  // start << 32 | size
+  uint64_t profile_last_index_ = 0;
   uint32_t reported_upload_failure_ = 0;
 };
 

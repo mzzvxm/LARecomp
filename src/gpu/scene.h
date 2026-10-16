@@ -233,6 +233,17 @@ class Scene {
     bool constants_bound = false;
     bool depth_bias_bound = false;
     DepthBias depth_bias;
+    // Rasterizer and input state as last set (reblue's
+    // dirtyStates): a draw sets only what differs.
+    bool viewport_bound = false;
+    plume::RenderViewport viewport;
+    bool scissor_bound = false;
+    plume::RenderRect scissor;
+    uint32_t vertex_slot_count = 0;  // 0: no vertex buffers set on the list
+    std::array<plume::RenderVertexBufferView, DrawGeometry::kMaxSlots> vertex_views{};
+    std::array<plume::RenderInputSlot, DrawGeometry::kMaxSlots> vertex_slots{};
+    bool index_bound = false;
+    plume::RenderIndexBufferView index_view;
   };
   ListState bound_;
 
@@ -301,7 +312,7 @@ class Scene {
     uint64_t resolves = 0;
     uint64_t tiling_begins = 0;
     uint64_t tiling_ends = 0;
-    uint64_t prepare_ns = 0;
+    uint64_t prepare_cycles = 0;  // TSC cycles (cycles.h)
     uint64_t pipelines_created = 0;
     uint64_t pipelines_failed = 0;
     uint64_t pipeline_create_ns = 0;
@@ -310,10 +321,64 @@ class Scene {
   Stats window_;
   Stats total_;
 
+  // The last draw's lookups: consecutive draws mostly name
+  // the same targets, shaders and pipeline. Each memo holds only while what it
+  // answered from is unchanged.
+  //  - targets and their framebuffer: the same EDRAM keys, a scissor that fits
+  //    the targets' heights (no growth), and EdramTargets::change_serial;
+  //  - pipeline: the same PipelineKey (it names the shaders and the layout);
+  //  - shaders: the same identity (the pack's entries live for the session).
+  struct TargetsMemo {
+    uint64_t serial = 0;  // EdramTargets::change_serial when made; 0 = empty
+    uint32_t color_count = 0;
+    EdramKey color_keys[kColorTargetCount];
+    bool has_depth = false;
+    EdramKey depth_key;
+    uint32_t height = 0;  // the smallest of the targets' heights
+    EdramTargets::Target* colors[kColorTargetCount] = {};
+    EdramTargets::Target* depth = nullptr;
+    plume::RenderFramebuffer* framebuffer = nullptr;
+  };
+  TargetsMemo targets_memo_;
+  // The last draw's Xenos state and what Prepare made from it (
+  // M6a.7). Three draws in four repeat the previous draw's window R and
+  // surfaces byte for byte -- the bytes stand in for the dirty states reblue
+  // keeps at its Set* hooks -- and then the decode, the target formats, the
+  // pipeline key (for the same shaders, layout and topology), the viewport
+  // and the state part of the shared constants are the previous draw's.
+  struct StateMemo {
+    bool valid = false;
+    uint32_t device = 0;
+    uint8_t registers[guest::kRegisterWindowBytes] = {};
+    uint32_t surfaces[guest::kSurfaceCount] = {};
+    XenosState state;
+    bool formats_valid = false;
+    plume::RenderFormat color_formats[kColorTargetCount] = {};
+    plume::RenderFormat depth_format = plume::RenderFormat::UNKNOWN;
+    bool key_valid = false;
+    const ShaderStore::Entry* key_vs = nullptr;
+    const ShaderStore::Entry* key_ps = nullptr;
+    const InputLayout* key_layout = nullptr;
+    plume::RenderPrimitiveTopology key_topology = {};
+    bool key_polygonal = false;
+    PipelineKey key;
+    DepthBias bias;
+    bool constants_valid = false;
+    bool ps_writes_depth = false;
+    ViewportInfo viewport;
+    SharedConstants shared;  // before the texture tables
+  };
+  StateMemo state_memo_;
+  PipelineKey pipeline_memo_key_{};
+  plume::RenderPipeline* pipeline_memo_ = nullptr;
+  uint64_t vs_memo_identity_ = 0;
+  const ShaderStore::Entry* vs_memo_ = nullptr;
+  uint64_t ps_memo_identity_ = 0;
+  const ShaderStore::Entry* ps_memo_ = nullptr;
+
   // mcla_gpu_scene_profile (M6a): the TSC cycles each stage of a
-  // draw took, summed over the window, and the TSC/steady-clock pair at the
-  // window's start to turn them into time. Off (read at start): each Lap is a
-  // branch.
+  // draw took, summed over the window (cycles.h turns them into time). Off
+  // (read at start): each Lap is a branch.
   enum class Stage : uint8_t {
     kBanks,      // the constant banks (ConstantBanks::Apply)
     kDecode,     // the Xenos state, primitive and target formats
@@ -333,8 +398,16 @@ class Scene {
   bool profile_ = false;
   uint64_t lap_ = 0;
   std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
-  uint64_t profile_tsc0_ = 0;
-  uint64_t profile_ns0_ = 0;
+  // How often each memo of the last draw answered (M6a.3), for the profile.
+  enum class Memo : uint8_t { kTargets, kPipeline, kVertexShader, kPixelShader, kState, kCount };
+  std::array<uint64_t, size_t(Memo::kCount)> memo_hits_{};
+  std::array<uint64_t, size_t(Memo::kCount)> memo_tries_{};
+  // mcla_gpu_ab_interleave (ab.h): each variant's prepare ns/draw summed
+  // over its interval windows, the first window (warm-up) left out.
+  double ab_sum_[2] = {};
+  double ab_cpu_sum_[2] = {};  // the render thread's CPU ms/frame
+  uint32_t ab_count_[2] = {};
+  uint32_t ab_windows_ = 0;
   std::array<uint32_t, size_t(Skip::kCount)> skip_logged_{};
   uint32_t constants_issues_reported_ = 0;
   uint32_t mismatches_logged_ = 0;

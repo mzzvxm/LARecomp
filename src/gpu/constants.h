@@ -90,8 +90,12 @@ class ConstantBanks {
   std::unordered_map<uint32_t, Banks> devices_;
 };
 
-// Swaps a big-endian bank into host floats (4096 bytes in, 4096 out).
+// Swaps a big-endian bank into host floats (4096 bytes in, 4096 out), 16 bytes
+// at a time on x64 (reblue's swap).
 void SwapBankToHost(const uint8_t* guest_bank, uint8_t* host_out);
+// Checks the vector swap against the scalar one on a pattern, once at start:
+// false (logged) when they differ, and the scalar swap is used from then on.
+bool VerifySwapBankToHost();
 
 // The alpha test as the translated pixel shader runs it -- clip(alpha -
 // threshold), "keep alpha >= threshold", in the pixel shader's ALPHA_TEST

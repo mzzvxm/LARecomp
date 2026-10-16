@@ -9,10 +9,12 @@
 # one that runs is picked at startup).
 
 add_library(larecomp_gpu OBJECT
+    ab.cpp
     backend.cpp
     buffer_heap.cpp
     capture.cpp
     constants.cpp
+    cycles.cpp
     descriptors.cpp
     device.cpp
     draw_state.cpp
@@ -44,6 +46,7 @@ add_library(larecomp_gpu OBJECT
     swap_chain.cpp
     texture_decode.cpp
     textures.cpp
+    thread_load.cpp
     timing.cpp
     topology.cpp
     upload.cpp

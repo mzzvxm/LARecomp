@@ -166,6 +166,7 @@ void EdramTargets::Shutdown() {
   framebuffers_.clear();
   targets_.clear();
   failed_.clear();
+  ++change_serial_;
   for (auto& owners : tile_owner_) {
     owners.fill(kNoOwner);
   }
@@ -335,6 +336,7 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   target.height = height;
   target.layout = plume::RenderTextureLayout::UNKNOWN;
   ++target.generation;
+  ++change_serial_;
   return true;
 }
 
@@ -1056,6 +1058,7 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
 }
 
 void EdramTargets::RetireFramebuffersOf(const Target* target) {
+  ++change_serial_;
   for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
     bool names = false;
     for (const Target* t : it->first.targets) {

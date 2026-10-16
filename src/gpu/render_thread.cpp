@@ -9,6 +9,9 @@
 #include <rex/logging.h>
 #include <rex/thread.h>
 
+#include "cycles.h"
+#include "thread_load.h"
+
 namespace mcla::gpu {
 
 RenderThread::~RenderThread() {
@@ -58,6 +61,14 @@ void RenderThread::Main() {
   rex::thread::set_current_thread_name("larecomp gpu render");
   using Clock = std::chrono::steady_clock;
   auto next_idle = Clock::now() + idle_period_;
+  // While records keep coming the idle deadline is checked every
+  // kRecordsPerClockRead of them: the clock (QueryPerformanceFrequency +
+  // QueryPerformanceCounter in MSVC's steady_clock) read after every record
+  // cost a measurable share of the thread at ~8000 records a frame. A record takes microseconds: the check stays far finer than
+  // the 16 ms period.
+  constexpr uint32_t kRecordsPerClockRead = 64;
+  uint32_t records_since_clock = 0;
+  ThreadLoad& load = CurrentThreadLoad();
   while (!stream_.stopped()) {
     const RecordHeader* record = stream_.Next();
     if (record) {
@@ -68,11 +79,17 @@ void RenderThread::Main() {
       if (sync) {
         stream_.MarkExecuted(sequence);
       }
+      if (++records_since_clock < kRecordsPerClockRead) {
+        continue;
+      }
+      records_since_clock = 0;
     } else {
       const auto now = Clock::now();
       if (now < next_idle) {
+        const uint64_t idle_start = cycles::Now();
         stream_.WaitForWork(std::chrono::duration_cast<std::chrono::milliseconds>(next_idle - now) +
                             std::chrono::milliseconds(1));
+        load.AddIdle(cycles::Now() - idle_start);
         continue;
       }
     }

@@ -366,6 +366,11 @@ class EdramTargets {
   size_t size() const { return targets_.size(); }
   std::string TakeSummary();
 
+  // Changes whenever a Target* or a framebuffer handed out before may be
+  // stale: a target created or its texture replaced (growth), framebuffers
+  // retired (the Scene's memo of the last draw's targets).
+  uint64_t change_serial() const { return change_serial_; }
+
  private:
   struct KeyHash {
     size_t operator()(const EdramKey& k) const;
@@ -452,6 +457,7 @@ class EdramTargets {
       framebuffers_;
   std::vector<EdramKey> failed_;  // identities reported as impossible
   uint64_t frame_ = 0;
+  uint64_t change_serial_ = 1;
 
   // Ownership: per aspect and EDRAM tile, the index of the
   // identity that wrote it last; the identities by index; the epoch, bumped

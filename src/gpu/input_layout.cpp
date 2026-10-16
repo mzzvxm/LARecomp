@@ -99,6 +99,24 @@ size_t InputLayouts::KeyHash::operator()(const Key& k) const {
 
 const InputLayout* InputLayouts::Get(const ShaderStore::Entry& vs, const uint8_t* decl,
                                      uint32_t decl_count, const uint8_t* stream_strides) {
+  const size_t decl_bytes = size_t(decl_count) * guest::kDeclElementBytes;
+  ++memo_stats_.tries;
+  if (last_layout_ && last_vs_ == vs.key && last_decl_.size() == decl_bytes &&
+      std::memcmp(last_decl_.data(), decl, decl_bytes) == 0 &&
+      std::memcmp(last_strides_.data(), stream_strides, last_strides_.size()) == 0) {
+    ++memo_stats_.hits;
+    return last_layout_;
+  }
+  const InputLayout* layout = Lookup(vs, decl, decl_count, stream_strides);
+  last_layout_ = layout;
+  last_vs_ = vs.key;
+  last_decl_.assign(decl, decl + decl_bytes);
+  std::memcpy(last_strides_.data(), stream_strides, last_strides_.size());
+  return layout;
+}
+
+const InputLayout* InputLayouts::Lookup(const ShaderStore::Entry& vs, const uint8_t* decl,
+                                        uint32_t decl_count, const uint8_t* stream_strides) {
   scratch_key_.vs = vs.key;
   scratch_key_.bytes.assign(decl, decl + size_t(decl_count) * guest::kDeclElementBytes);
   // The strides of the streams the declaration names.
@@ -292,6 +310,17 @@ std::unique_ptr<InputLayout> InputLayouts::Build(const ShaderStore::Entry& vs,
   }
   for (const Pending& p : pending) {
     layout->elements.push_back(p.element);
+  }
+  // Each stream's float POSITION, found here once instead of per draw; the last such element of a stream wins, as it did there.
+  for (uint32_t i = 0; i < layout->streams.size(); ++i) {
+    for (const plume::RenderInputElement& e : layout->elements) {
+      if (e.slotIndex == i && e.semanticIndex == 0 &&
+          std::strcmp(e.semanticName, "POSITION") == 0 &&
+          (e.format == plume::RenderFormat::R32G32B32_FLOAT ||
+           e.format == plume::RenderFormat::R32G32B32A32_FLOAT)) {
+        layout->streams[i].position_offset = int32_t(e.alignedByteOffset);
+      }
+    }
   }
   return layout;
 }

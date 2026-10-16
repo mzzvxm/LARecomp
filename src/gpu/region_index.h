@@ -12,12 +12,19 @@
 // Ids are small integers, reused after Remove, so a cache can keep its own
 // per-region state in a plain vector indexed by id.
 //
+// The exact index is an open-addressing table (linear probing, power-of-two
+// size, at most half full): a lookup on the draw path costs
+// one cache line where std::unordered_map chased a bucket and a node. A region
+// never wraps the 32-bit space (start + length <= 2^32, length > 0), so the
+// two keys the table reserves (start 0xFFFFFFFF with length 0xFFFFFFFF or
+// 0xFFFFFFFE) never name one.
+//
 // Threading: one thread (the render thread).
 // ===========================================================================
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
-#include <unordered_map>
 #include <vector>
 
 namespace mcla::gpu {
@@ -39,7 +46,7 @@ class RegionIndex {
   void Clear();
 
   const Region& region(Id id) const { return regions_[id]; }
-  size_t size() const { return exact_.size(); }
+  size_t size() const { return exact_count_; }
   // One past the largest id ever handed out: the size a per-id vector needs.
   size_t id_bound() const { return regions_.size(); }
 
@@ -66,9 +73,24 @@ class RegionIndex {
     return (uint64_t(start) << 32) | length;
   }
 
+  struct Slot {
+    uint64_t key;
+    Id id;
+  };
+  static constexpr uint64_t kEmptyKey = ~0ull;
+  static constexpr uint64_t kTombstoneKey = ~0ull - 1;
+  // Fibonacci hashing: the top bits of key * 2^64/phi.
+  size_t Home(uint64_t key) const { return size_t((key * 0x9E3779B97F4A7C15ull) >> shift_); }
+  // The slot holding `key`, or SIZE_MAX.
+  size_t FindSlot(uint64_t key) const;
+  void Rehash(size_t capacity);
+
   std::vector<Region> regions_;
   std::vector<Id> free_;
-  std::unordered_map<uint64_t, Id> exact_;
+  std::vector<Slot> slots_;  // empty until the first Insert
+  uint32_t shift_ = 64;      // 64 - log2(slots_.size())
+  size_t exact_count_ = 0;
+  size_t tombstones_ = 0;
   std::multimap<uint32_t, Id> by_start_;
   // Longest region ever inserted. Never shrinks: a stale larger value only
   // makes the overlap scan start earlier, never miss a region.

@@ -2,9 +2,11 @@
 
 #include "scene.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 #include <format>
+#include <string_view>
 
 #if defined(_WIN32)
 #include <intrin.h>
@@ -17,6 +19,8 @@
 #include <rex/logging.h>
 
 #include "backend.h"
+#include "ab.h"
+#include "cycles.h"
 #include "descriptors.h"
 #include "draw_decode.h"
 #include "draw_state.h"
@@ -28,6 +32,7 @@
 #include "resolve_memory.h"
 #include "samplers.h"
 #include "textures.h"
+#include "thread_load.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_scene_profile, false, "MCLA/GPU",
@@ -176,6 +181,41 @@ bool StencilReplacesAll(const XenosState& s) {
           face(dc.stencilfunc_bf, dc.stencilzpass_bf, s.stencil_bf.stencilwritemask));
 }
 
+// The recording state a draw would set equals what the list holds.
+bool SameViewport(const plume::RenderViewport& a, const plume::RenderViewport& b) {
+  return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height &&
+         a.minDepth == b.minDepth && a.maxDepth == b.maxDepth;
+}
+
+bool SameRect(const plume::RenderRect& a, const plume::RenderRect& b) {
+  return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+bool SameBuffer(const plume::RenderBufferReference& a, const plume::RenderBufferReference& b) {
+  return a.ref == b.ref && a.offset == b.offset;
+}
+
+bool SameIndexBuffer(const plume::RenderIndexBufferView& a, const plume::RenderIndexBufferView& b) {
+  return SameBuffer(a.buffer, b.buffer) && a.size == b.size && a.format == b.format;
+}
+
+bool SameVertexBuffers(uint32_t bound_count, const plume::RenderVertexBufferView* bound_views,
+                       const plume::RenderInputSlot* bound_slots, const DrawGeometry& g,
+                       const plume::RenderInputSlot* slots) {
+  if (bound_count != g.slot_count) {
+    return false;
+  }
+  for (uint32_t i = 0; i < g.slot_count; ++i) {
+    if (!SameBuffer(bound_views[i].buffer, g.vertex_views[i].buffer) ||
+        bound_views[i].size != g.vertex_views[i].size || bound_slots[i].index != slots[i].index ||
+        bound_slots[i].stride != slots[i].stride ||
+        bound_slots[i].classification != slots[i].classification) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const char* ConversionName(uint32_t conversion) {
   static const char* const kNames[] = {"none",       "quad list", "quad strip", "fan/polygon",
                                        "rect list",  "line loop", "unsupported"};
@@ -222,13 +262,12 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
     base_shared_.texture_cube[i] = kNullTextureCubeSlot;
     base_shared_.sampler[i] = kSamplerLinearWrap;
   }
+  // The vector bank swap against the scalar one, once.
+  VerifySwapBankToHost();
+  cycles::Measure();  // the base of the first window's TSC rate
+  ab::Initialize();
   profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
-  if (profile_) {
-    profile_tsc0_ = __rdtsc();
-    profile_ns0_ = uint64_t(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
-            .count());
-  }
+  geometry_->SetProfile(profile_);
 }
 
 void Scene::LapStart() {
@@ -249,13 +288,6 @@ void Scene::ReportProfile(const char* why, double frames) {
   if (!profile_) {
     return;
   }
-  // The window's TSC rate against the steady clock.
-  const uint64_t tsc = __rdtsc();
-  const uint64_t ns = uint64_t(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
-          .count());
-  const double ns_per_cycle =
-      tsc > profile_tsc0_ ? double(ns - profile_ns0_) / double(tsc - profile_tsc0_) : 0.0;
   static const char* const kNames[] = {"banks",     "decode",   "shaders", "geometry",
                                        "pipeline",  "constants", "textures", "upload",
                                        "targets",   "draw"};
@@ -263,14 +295,25 @@ void Scene::ReportProfile(const char* why, double frames) {
   std::string text;
   double sum = 0.0;
   for (size_t i = 0; i < stage_cycles_.size(); ++i) {
-    const double ms = double(stage_cycles_[i]) * ns_per_cycle / frames / 1e6;
+    const double ms = cycles::ToNs(stage_cycles_[i]) / frames / 1e6;
     sum += ms;
     text += std::format("{}{} {:.3f}", text.empty() ? "" : ", ", kNames[i], ms);
   }
-  REXLOG_INFO("[gpu] scene ({}): profile ms/frame: {} | sum {:.3f}", why, text, sum);
+  static const char* const kMemoNames[] = {"targets", "pipeline", "vs", "ps", "state"};
+  static_assert(std::size(kMemoNames) == size_t(Memo::kCount));
+  std::string memos;
+  for (size_t i = 0; i < memo_hits_.size(); ++i) {
+    memos += std::format("{}{} {:.1f}%", memos.empty() ? "" : ", ", kMemoNames[i],
+                         memo_tries_[i] ? 100.0 * double(memo_hits_[i]) / double(memo_tries_[i]) : 0.0);
+  }
+  const InputLayouts::MemoStats layouts = input_layouts_.TakeMemoStats();
+  memos += std::format(", layout {:.1f}%",
+                       layouts.tries ? 100.0 * double(layouts.hits) / double(layouts.tries) : 0.0);
+  REXLOG_INFO("[gpu] scene ({}): profile ms/frame: {} | sum {:.3f} | memo hits: {}", why, text,
+              sum, memos);
   stage_cycles_.fill(0);
-  profile_tsc0_ = tsc;
-  profile_ns0_ = ns;
+  memo_hits_.fill(0);
+  memo_tries_.fill(0);
 }
 
 void Scene::ResetListState() {
@@ -340,7 +383,7 @@ void Scene::BindFramebuffer(plume::RenderCommandList* list,
 // ---------------------------------------------------------------------------
 
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
-  const auto t0 = Clock::now();
+  const uint64_t c0 = cycles::Now();
   LapStart();
   const DrawView view(payload);
   const DrawRecord& r = view.record();
@@ -389,8 +432,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       }
     }
   }
-  window_.prepare_ns +=
-      uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
+  window_.prepare_cycles += cycles::Now() - c0;
 }
 
 Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -408,7 +450,26 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     if (r.flags & kDrawInlineUnterminated) return Skip::kInlineUnterminated;
   }
 
-  d.state = DecodeXenosState(view);
+  // The state: the last draw's when its window R and surfaces repeat (M6a.7).
+  StateMemo& memo = state_memo_;
+  ++memo_tries_[size_t(Memo::kState)];
+  const bool state_same = memo.valid && r.device == memo.device &&
+                          std::memcmp(r.registers, memo.registers, sizeof(r.registers)) == 0 &&
+                          std::memcmp(r.surfaces, memo.surfaces, sizeof(r.surfaces)) == 0;
+  if (state_same) {
+    ++memo_hits_[size_t(Memo::kState)];
+    d.state = memo.state;
+  } else {
+    d.state = DecodeXenosState(view);
+    memo.valid = true;
+    memo.device = r.device;
+    std::memcpy(memo.registers, r.registers, sizeof(r.registers));
+    std::memcpy(memo.surfaces, r.surfaces, sizeof(r.surfaces));
+    memo.state = d.state;
+    memo.formats_valid = false;
+    memo.key_valid = false;
+    memo.constants_valid = false;
+  }
   const XenosState& s = d.state;
 
   d.primitive = HostPrimitiveFor(r.primitive);
@@ -431,32 +492,50 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     return Skip::kCount;
   }
   plume::RenderFormat color_formats[kColorTargetCount] = {};
-  if (!depth_only) {
-    for (uint32_t i = 0; i < kColorTargetCount; ++i) {
-      if (!s.color[i].bound) {
-        continue;
+  plume::RenderFormat depth_format = plume::RenderFormat::UNKNOWN;
+  if (state_same && memo.formats_valid) {
+    std::memcpy(color_formats, memo.color_formats, sizeof(color_formats));
+    depth_format = memo.depth_format;
+  } else {
+    if (!depth_only) {
+      for (uint32_t i = 0; i < kColorTargetCount; ++i) {
+        if (!s.color[i].bound) {
+          continue;
+        }
+        const format::Mapping m = format::ColorTargetFormat(uint32_t(s.color[i].format));
+        if (m.status != format::Status::kOk) {
+          *detail = std::format("RT{} {} ({})", i, m.guest_name, format::StatusName(m.status));
+          return Skip::kTargetFormat;
+        }
+        color_formats[i] = m.format;
       }
-      const format::Mapping m = format::ColorTargetFormat(uint32_t(s.color[i].format));
+    }
+    if (s.depth_bound) {
+      const format::Mapping m = format::DepthTargetFormat(uint32_t(s.depth_format));
       if (m.status != format::Status::kOk) {
-        *detail = std::format("RT{} {} ({})", i, m.guest_name, format::StatusName(m.status));
+        *detail = std::format("depth {} ({})", m.guest_name, format::StatusName(m.status));
         return Skip::kTargetFormat;
       }
-      color_formats[i] = m.format;
+      depth_format = m.format;
     }
-  }
-  plume::RenderFormat depth_format = plume::RenderFormat::UNKNOWN;
-  if (s.depth_bound) {
-    const format::Mapping m = format::DepthTargetFormat(uint32_t(s.depth_format));
-    if (m.status != format::Status::kOk) {
-      *detail = std::format("depth {} ({})", m.guest_name, format::StatusName(m.status));
-      return Skip::kTargetFormat;
-    }
-    depth_format = m.format;
+    std::memcpy(memo.color_formats, color_formats, sizeof(color_formats));
+    memo.depth_format = depth_format;
+    memo.formats_valid = true;
   }
   Lap(Stage::kDecode);
 
-  // Shaders.
-  d.vs = shaders_.Find(r.vs_identity);
+  // Shaders (the last draw's when the identity repeats, M6a.3).
+  ++memo_tries_[size_t(Memo::kVertexShader)];
+  if (vs_memo_ && r.vs_identity == vs_memo_identity_) {
+    ++memo_hits_[size_t(Memo::kVertexShader)];
+    d.vs = vs_memo_;
+  } else {
+    d.vs = shaders_.Find(r.vs_identity);
+    if (d.vs) {
+      vs_memo_identity_ = r.vs_identity;
+      vs_memo_ = d.vs;
+    }
+  }
   if (!d.vs) {
     *detail = std::format("{:016X}", r.vs_identity);
     return Skip::kVsNotInPack;
@@ -466,7 +545,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     return Skip::kStageMismatch;
   }
   if (!depth_only && (r.flags & kDrawNoPixelShader) == 0) {
-    d.ps = shaders_.Find(r.ps_identity);
+    ++memo_tries_[size_t(Memo::kPixelShader)];
+    if (ps_memo_ && r.ps_identity == ps_memo_identity_) {
+      ++memo_hits_[size_t(Memo::kPixelShader)];
+      d.ps = ps_memo_;
+    } else {
+      d.ps = shaders_.Find(r.ps_identity);
+      if (d.ps) {
+        ps_memo_identity_ = r.ps_identity;
+        ps_memo_ = d.ps;
+      }
+    }
     if (!d.ps) {
       *detail = std::format("{:016X}", r.ps_identity);
       return Skip::kPsNotInPack;
@@ -519,10 +608,32 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   Lap(Stage::kGeometry);
 
-  // Pipeline.
+  // Pipeline. The key is the last draw's for the same state, shaders, layout
+  // and topology (M6a.7); BuildKey reads nothing else.
   const PipelineInputs inputs{d.vs, d.ps, d.input_layout};
-  switch (pipelines_->BuildKey(s, inputs, d.geometry.topology, IsPolygonal(r.primitive),
-                               color_formats, depth_format, d.key, d.bias)) {
+  const bool polygonal = IsPolygonal(r.primitive);
+  KeyResult key_result;
+  if (state_same && memo.key_valid && memo.key_vs == d.vs && memo.key_ps == d.ps &&
+      memo.key_layout == d.input_layout && memo.key_topology == d.geometry.topology &&
+      memo.key_polygonal == polygonal) {
+    d.key = memo.key;
+    d.bias = memo.bias;
+    key_result = KeyResult::kOk;
+  } else {
+    key_result = pipelines_->BuildKey(s, inputs, d.geometry.topology, polygonal, color_formats,
+                                      depth_format, d.key, d.bias);
+    if (key_result == KeyResult::kOk) {
+      memo.key_valid = true;
+      memo.key_vs = d.vs;
+      memo.key_ps = d.ps;
+      memo.key_layout = d.input_layout;
+      memo.key_topology = d.geometry.topology;
+      memo.key_polygonal = polygonal;
+      memo.key = d.key;
+      memo.bias = d.bias;
+    }
+  }
+  switch (key_result) {
     case KeyResult::kOk:
       break;
     case KeyResult::kNoEffect:
@@ -535,7 +646,19 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     case KeyResult::kColorGap:
       return Skip::kColorGap;
   }
-  d.pipeline = pipelines_->Get(d.key, inputs);
+  // The last draw's pipeline when the key repeats (M6a.3); the key names the
+  // shaders, their variants and the input layout.
+  ++memo_tries_[size_t(Memo::kPipeline)];
+  if (pipeline_memo_ && d.key == pipeline_memo_key_) {
+    ++memo_hits_[size_t(Memo::kPipeline)];
+    d.pipeline = pipeline_memo_;
+  } else {
+    d.pipeline = pipelines_->Get(d.key, inputs);
+    if (d.pipeline) {
+      pipeline_memo_key_ = d.key;
+      pipeline_memo_ = d.pipeline;
+    }
+  }
   if (!d.pipeline) {
     *detail = std::format("VS {:016X} PS {:016X}", d.key.vs, d.key.ps);
     return Skip::kPipeline;
@@ -544,9 +667,20 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
 
   // Viewport and constants.
   const bool ps_writes_depth = d.ps && (d.ps->ps_outputs & ShaderStore::kOutputDepth) != 0;
-  d.viewport = ComputeViewport(s, ps_writes_depth);
-  SharedConstants shared = base_shared_;
-  const uint32_t issues = FillSharedConstants(s, d.viewport, shared);
+  SharedConstants shared;
+  uint32_t issues = 0;
+  if (state_same && memo.constants_valid && memo.ps_writes_depth == ps_writes_depth) {
+    d.viewport = memo.viewport;
+    shared = memo.shared;
+  } else {
+    d.viewport = ComputeViewport(s, ps_writes_depth);
+    shared = base_shared_;
+    issues = FillSharedConstants(s, d.viewport, shared);
+    memo.constants_valid = true;
+    memo.ps_writes_depth = ps_writes_depth;
+    memo.viewport = d.viewport;
+    memo.shared = shared;
+  }
   if (issues & ~constants_issues_reported_) {
     const uint32_t fresh = issues & ~constants_issues_reported_;
     constants_issues_reported_ |= issues;
@@ -907,49 +1041,77 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   EdramTargets::Target* colors[kColorTargetCount] = {};
   EdramTargets::Target* depth = nullptr;
   const uint32_t pitch = s.surface_pitch;
-  // A target that has to grow copies its contents first, outside a render pass.
+  // The draw's EDRAM identities.
+  EdramKey color_keys[kColorTargetCount];
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
-    EdramKey key;
+    EdramKey& key = color_keys[i];
     key.base_tiles = uint16_t(s.color[i].base_tiles);
     key.pitch = uint16_t(pitch);
     key.depth = 0;
     key.format = uint8_t(FoldColorFormat(uint32_t(s.color[i].format)));
     key.samples = uint8_t(samples);
-    const EdramTargets::Target* existing = edram_->Find(key);
-    if ((!existing || existing->height < scissor_br_y) && bound_.framebuffer) {
-      list->setFramebuffer(nullptr);
-      bound_.framebuffer = nullptr;
-    }
-    bool unset = false;
-    colors[i] = edram_->Get(key, scissor_br_y, list, &unset);
-    if (unset) {
-      bound_.framebuffer = nullptr;
-    }
-    if (!colors[i]) {
-      *detail = std::format("colour {} format {} at tile {}", i, key.format, key.base_tiles);
-      return Skip::kTarget;
-    }
   }
-  if (d.key.depth_format != 0) {
-    EdramKey key;
-    key.base_tiles = uint16_t(s.depth_base_tiles);
-    key.pitch = uint16_t(pitch);
-    key.depth = 1;
-    key.format = uint8_t(s.depth_format);
-    key.samples = uint8_t(samples);
-    const EdramTargets::Target* existing = edram_->Find(key);
-    if ((!existing || existing->height < scissor_br_y) && bound_.framebuffer) {
-      list->setFramebuffer(nullptr);
-      bound_.framebuffer = nullptr;
+  const bool has_depth = d.key.depth_format != 0;
+  EdramKey depth_key;
+  if (has_depth) {
+    depth_key.base_tiles = uint16_t(s.depth_base_tiles);
+    depth_key.pitch = uint16_t(pitch);
+    depth_key.depth = 1;
+    depth_key.format = uint8_t(s.depth_format);
+    depth_key.samples = uint8_t(samples);
+  }
+  // The last draw's targets, while nothing they rest on changed (M6a.3).
+  const TargetsMemo& memo = targets_memo_;
+  bool memo_hit = memo.serial != 0 && memo.serial == edram_->change_serial() &&
+                  memo.color_count == d.key.color_count && memo.has_depth == has_depth &&
+                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key);
+  for (uint32_t i = 0; i < d.key.color_count && memo_hit; ++i) {
+    memo_hit = memo.color_keys[i] == color_keys[i];
+  }
+  plume::RenderFramebuffer* framebuffer = nullptr;
+  ++memo_tries_[size_t(Memo::kTargets)];
+  if (memo_hit) {
+    ++memo_hits_[size_t(Memo::kTargets)];
+    for (uint32_t i = 0; i < d.key.color_count; ++i) {
+      colors[i] = memo.colors[i];
     }
-    bool unset = false;
-    depth = edram_->Get(key, scissor_br_y, list, &unset);
-    if (unset) {
-      bound_.framebuffer = nullptr;
+    depth = memo.depth;
+    framebuffer = memo.framebuffer;
+  } else {
+    // A target that has to grow copies its contents first, outside a render pass.
+    for (uint32_t i = 0; i < d.key.color_count; ++i) {
+      const EdramKey& key = color_keys[i];
+      const EdramTargets::Target* existing = edram_->Find(key);
+      if ((!existing || existing->height < scissor_br_y) && bound_.framebuffer) {
+        list->setFramebuffer(nullptr);
+        bound_.framebuffer = nullptr;
+      }
+      bool unset = false;
+      colors[i] = edram_->Get(key, scissor_br_y, list, &unset);
+      if (unset) {
+        bound_.framebuffer = nullptr;
+      }
+      if (!colors[i]) {
+        *detail = std::format("colour {} format {} at tile {}", i, key.format, key.base_tiles);
+        return Skip::kTarget;
+      }
     }
-    if (!depth) {
-      *detail = std::format("depth format {} at tile {}", key.format, key.base_tiles);
-      return Skip::kTarget;
+    if (has_depth) {
+      const EdramTargets::Target* existing = edram_->Find(depth_key);
+      if ((!existing || existing->height < scissor_br_y) && bound_.framebuffer) {
+        list->setFramebuffer(nullptr);
+        bound_.framebuffer = nullptr;
+      }
+      bool unset = false;
+      depth = edram_->Get(depth_key, scissor_br_y, list, &unset);
+      if (unset) {
+        bound_.framebuffer = nullptr;
+      }
+      if (!depth) {
+        *detail = std::format("depth format {} at tile {}", depth_key.format,
+                              depth_key.base_tiles);
+        return Skip::kTarget;
+      }
     }
   }
   const uint32_t coverage_check =
@@ -971,9 +1133,23 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     target_height = std::min(target_height, depth->height);
   }
-  plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth);
   if (!framebuffer) {
-    return Skip::kFramebuffer;
+    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth);
+    if (!framebuffer) {
+      return Skip::kFramebuffer;
+    }
+    TargetsMemo& m = targets_memo_;
+    m.serial = edram_->change_serial();
+    m.color_count = d.key.color_count;
+    for (uint32_t i = 0; i < d.key.color_count; ++i) {
+      m.color_keys[i] = color_keys[i];
+      m.colors[i] = colors[i];
+    }
+    m.has_depth = has_depth;
+    m.depth_key = depth_key;
+    m.depth = depth;
+    m.height = target_height;
+    m.framebuffer = framebuffer;
   }
   if (pass_timing_->enabled() && marked_framebuffer_ != framebuffer) {
     pass_timing_->Mark(list, PassLabel(colors, d.key.color_count, depth));
@@ -1004,9 +1180,16 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   }
   if (constants_changed) {
     if (ActiveBackend() == Backend::kD3D12) {
-      list->setGraphicsRootDescriptor(constants[0], GuestLayout::kVertexConstants);
-      list->setGraphicsRootDescriptor(constants[1], GuestLayout::kPixelConstants);
-      list->setGraphicsRootDescriptor(constants[2], GuestLayout::kSharedConstants);
+      // Each root descriptor only when it moved.
+      static constexpr uint32_t kRoots[3] = {GuestLayout::kVertexConstants,
+                                             GuestLayout::kPixelConstants,
+                                             GuestLayout::kSharedConstants};
+      for (uint32_t i = 0; i < 3; ++i) {
+        if (!bound_.constants_bound || constants[i].ref != bound_.constants[i].ref ||
+            constants[i].offset != bound_.constants[i].offset) {
+          list->setGraphicsRootDescriptor(constants[i], kRoots[i]);
+        }
+      }
     } else {
       const uint64_t addresses[3] = {
           d.vs_constants.buffer->getDeviceAddress() + d.vs_constants.offset,
@@ -1019,9 +1202,18 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     bound_.constants_bound = true;
   }
-  list->setViewports(&d.viewport.viewport, 1);
+  // Only what differs from the list's state.
+  if (!bound_.viewport_bound || !SameViewport(bound_.viewport, d.viewport.viewport)) {
+    list->setViewports(&d.viewport.viewport, 1);
+    bound_.viewport = d.viewport.viewport;
+    bound_.viewport_bound = true;
+  }
   const plume::RenderRect scissor = ComputeScissor(s, target_height);
-  list->setScissors(&scissor, 1);
+  if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
+    list->setScissors(&scissor, 1);
+    bound_.scissor = scissor;
+    bound_.scissor_bound = true;
+  }
   if (pipelines_->dynamic_depth_bias() &&
       (!bound_.depth_bias_bound || !(bound_.depth_bias == d.bias))) {
     list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);
@@ -1029,9 +1221,16 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.depth_bias_bound = true;
   }
   const DrawGeometry& g = d.geometry;
-  if (g.slot_count) {
+  if (g.slot_count &&
+      !SameVertexBuffers(bound_.vertex_slot_count, bound_.vertex_views.data(),
+                         bound_.vertex_slots.data(), g, d.input_layout->slots.data())) {
     list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count,
                            d.input_layout->slots.data());
+    bound_.vertex_slot_count = g.slot_count;
+    for (uint32_t i = 0; i < g.slot_count; ++i) {
+      bound_.vertex_views[i] = g.vertex_views[i];
+      bound_.vertex_slots[i] = d.input_layout->slots[i];
+    }
   }
   if (coverage_check != EdramTargets::kNoCheck) {
     // Every sample of the scissor the host draws in.
@@ -1042,7 +1241,11 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                                         std::max<int64_t>(height, 0) * samples));
   }
   if (g.indexed) {
-    list->setIndexBuffer(&g.index_view);
+    if (!bound_.index_bound || !SameIndexBuffer(bound_.index_view, g.index_view)) {
+      list->setIndexBuffer(&g.index_view);
+      bound_.index_view = g.index_view;
+      bound_.index_bound = true;
+    }
     list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
   } else {
     list->drawInstanced(g.count, 1, g.first, 0);
@@ -1332,7 +1535,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.resolves += from.resolves;
   into.tiling_begins += from.tiling_begins;
   into.tiling_ends += from.tiling_ends;
-  into.prepare_ns += from.prepare_ns;
+  into.prepare_cycles += from.prepare_cycles;
   into.pipelines_created += from.pipelines_created;
   into.pipelines_failed += from.pipelines_failed;
   into.pipeline_create_ns += from.pipeline_create_ns;
@@ -1362,10 +1565,14 @@ void Scene::Finish() {
               pipelines_->size(),
               t.pipelines_failed,
               double(t.pipeline_create_ns) / 1e6, double(t.upload_bytes) / frames / 1048576.0,
-              double(t.prepare_ns) / frames / 1e6);
+              cycles::ToNs(t.prepare_cycles) / frames / 1e6);
 }
 
 void Scene::Report(const char* why) {
+  // The TSC rate over this window, for every per-draw time below (cycles.h),
+  // and the render thread's time split (thread_load.h; Report runs on it).
+  cycles::Measure();
+  const ThreadLoad::Sample load = CurrentThreadLoad().Take();
   const Pipelines::Stats ps = pipelines_->TakeStats();
   window_.pipelines_created += ps.created;
   window_.pipelines_failed += ps.failed;
@@ -1375,6 +1582,17 @@ void Scene::Report(const char* why) {
     return;
   }
   const double frames = w.frames ? double(w.frames) : 1.0;
+  const uint64_t busy = load.total_cycles - std::min(load.total_cycles,
+                                                    load.idle_cycles + load.gpu_wait_cycles);
+  const double thread_cpu_ms = cycles::ToNs(busy) / frames / 1e6;
+  // The final report runs on the thread that shuts the renderer down, whose
+  // load is not the render thread's.
+  const std::string thread_text =
+      load.total_cycles
+          ? std::format("thread cpu {:.2f} ms/frame, gpu waits {:.2f}, idle {:.2f}", thread_cpu_ms,
+                        cycles::ToNs(load.gpu_wait_cycles) / frames / 1e6,
+                        cycles::ToNs(load.idle_cycles) / frames / 1e6)
+          : std::string("thread time not on the render thread");
   std::string skips;
   for (size_t i = 0; i < w.skips.size(); ++i) {
     if (w.skips[i]) {
@@ -1407,7 +1625,7 @@ void Scene::Report(const char* why) {
       "ms; precache {} taken, {} waited {:.1f} ms, {} made here, {} shared) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
       "tiling {}/{} | prepare "
-      "{:.2f} ms/frame",
+      "{:.2f} ms/frame | {}",
       why, w.frames, double(w.draws) / frames, w.prepared, w.recorded,
       skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
       w.no_effect[0] + w.no_effect[1] + w.no_effect[2] + w.no_effect[3], w.no_effect[0],
@@ -1425,7 +1643,28 @@ void Scene::Report(const char* why) {
           ? 100.0 * double(w.fetch_memo_hits) / double(w.fetches + w.fetch_not_texture)
           : 0.0,
       w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
-      double(w.prepare_ns) / frames / 1e6);
+      cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text);
+  if (ab::Enabled() && std::string_view(why) == "interval") {
+    // Per draw: the scene's draw count moves a few percent between windows.
+    const double ms = cycles::ToNs(w.prepare_cycles) / frames / 1e6;
+    const double ns_per_draw = w.draws ? cycles::ToNs(w.prepare_cycles) / double(w.draws) : 0.0;
+    const size_t v = ab::B() ? 1 : 0;
+    if (ab_windows_++ > 0) {
+      ab_sum_[v] += ns_per_draw;
+      ab_cpu_sum_[v] += thread_cpu_ms;
+      ++ab_count_[v];
+    }
+    const auto mean = [&](const double* sums, size_t i) {
+      return ab_count_[i] ? sums[i] / ab_count_[i] : 0.0;
+    };
+    REXLOG_INFO("[gpu] scene ({}): ab window {} prepare {:.3f} ms/frame, {:.1f} ns/draw, thread "
+                "cpu {:.3f} ms/frame | means A {:.1f} ns/draw {:.3f} ms ({}), B {:.1f} ns/draw "
+                "{:.3f} ms ({})",
+                why, v ? "B" : "A", ms, ns_per_draw, thread_cpu_ms, mean(ab_sum_, 0),
+                mean(ab_cpu_sum_, 0), ab_count_[0], mean(ab_sum_, 1), mean(ab_cpu_sum_, 1),
+                ab_count_[1]);
+    ab::NextWindow();
+  }
   ReportProfile(why, frames);
   REXLOG_INFO("[gpu] scene ({}): {}", why, geometry_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, edram_->TakeSummary());

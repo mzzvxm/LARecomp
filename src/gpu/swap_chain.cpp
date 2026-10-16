@@ -9,6 +9,7 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "thread_load.h"
 
 namespace mcla::gpu {
 
@@ -105,11 +106,13 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
   if (empty()) {
     return false;
   }
+  const ScopedGpuWait wait;  // may block for a free image
   return swap_chain_->acquireTexture(signal, image);
 }
 
 bool SwapChain::Present(uint32_t image) {
   plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
+  const ScopedGpuWait wait;  // may block on the queue of presents
   return swap_chain_->present(image, waits, 1);
 }
 
@@ -121,6 +124,7 @@ void SwapChain::SetVsync(bool vsync) {
 
 void SwapChain::WaitForPresentSlot() {
   if (present_wait_ && swap_chain_ && !swap_chain_->isEmpty()) {
+    const ScopedGpuWait wait;
     swap_chain_->wait();
   }
 }

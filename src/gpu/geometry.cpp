@@ -17,6 +17,7 @@
 #include <rex/hash.h>
 #include <rex/logging.h>
 
+#include "cycles.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
@@ -28,11 +29,6 @@ namespace nfx = mcla::native_gfx;
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
-
-uint64_t NsSince(Clock::time_point t0) {
-  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
-}
 
 constexpr uint64_t kVertexAlignment = 16;
 constexpr uint64_t kIndexAlignment = 16;
@@ -367,11 +363,25 @@ void GeometryCache::Convert(const Interpretation& how, const uint8_t* src, uint3
 bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretation& how,
                             plume::RenderBufferReference* ref, View** out_view,
                             Result* failure) {
+  const uint64_t view_start = profile_ ? cycles::Now() : 0;
   uint32_t id = 0;
   Region* region = FindOrCreateRegion(start, length, &id, failure);
   if (!region) {
     return false;
   }
+  const uint64_t region_end = profile_ ? cycles::Now() : 0;
+  if (profile_) {
+    stats_.profile_cycles[2] += region_end - view_start;
+  }
+  struct RestTimer {
+    GeometryCache* cache;
+    uint64_t start;
+    ~RestTimer() {
+      if (cache->profile_) {
+        cache->stats_.profile_cycles[3] += cycles::Now() - start;
+      }
+    }
+  } rest_timer{this, region_end};
   Region& r = *region;
   const uint64_t key = how.Key();
   uint32_t view_index = 0;
@@ -432,9 +442,9 @@ bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretatio
         *failure = Result::kUpload;
         return false;
       }
-      const auto t_copy = Clock::now();
+      const uint64_t copy_start = cycles::Now();
       Convert(how, src, length, span.cpu, v);
-      stats_.copy_ns += NsSince(t_copy);
+      stats_.copy_cycles += cycles::Now() - copy_start;
       stats_.ring_bytes += length;
       v.ring = span;
       v.ring_frame = frame_;
@@ -462,9 +472,9 @@ bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretatio
   }
   if (r.hash_frame != frame_) {
     r.hash_frame = frame_;
-    const auto t_hash = Clock::now();
+    const uint64_t hash_start = cycles::Now();
     r.frame_hash = XXH3_64bits(src, length);
-    stats_.hash_ns += NsSince(t_hash);
+    stats_.hash_cycles += cycles::Now() - hash_start;
     ++stats_.hashes;
     const bool unchanged = r.last_hash_valid && r.last_hash == r.frame_hash;
     r.stable_streak = unchanged ? r.stable_streak + 1 : 0;
@@ -498,9 +508,9 @@ bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretatio
     *failure = Result::kUpload;
     return false;
   }
-  const auto t_copy = Clock::now();
+  const uint64_t copy_start = cycles::Now();
   Convert(how, src, length, span.cpu, v);
-  stats_.copy_ns += NsSince(t_copy);
+  stats_.copy_cycles += cycles::Now() - copy_start;
   stats_.ring_bytes += length;
   v.ring = span;
   v.ring_frame = frame_;
@@ -746,9 +756,9 @@ GeometryCache::Result GeometryCache::Prepare(const DrawView& view, const XenosSt
                                              const InputLayout& layout, HostPrimitive primitive,
                                              bool computed_fetch, DrawGeometry& out,
                                              std::string* detail) {
-  const auto t0 = Clock::now();
+  const uint64_t c0 = cycles::Now();
   const Result result = PrepareDraw(view, state, layout, primitive, computed_fetch, out, detail);
-  stats_.prepare_ns += NsSince(t0);
+  stats_.prepare_cycles += cycles::Now() - c0;
   return result;
 }
 
@@ -756,7 +766,11 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
                                                  const InputLayout& layout,
                                                  HostPrimitive primitive, bool computed_fetch,
                                                  DrawGeometry& out, std::string* detail) {
+  const uint64_t drain_start = profile_ ? cycles::Now() : 0;
   DrainInvalidations();
+  if (profile_) {
+    stats_.profile_cycles[0] += cycles::Now() - drain_start;
+  }
   const DrawRecord& r = view.record();
   out = DrawGeometry{};
   out.topology = primitive.topology;
@@ -827,8 +841,12 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
       stats_.host_made_bytes += bytes;
     } else {
       uint32_t address = 0, size = 0;
+      const uint64_t source_start = profile_ ? cycles::Now() : 0;
       if (!StreamSource(view, plan, &address, &size, &failure, detail)) {
         return failure;
+      }
+      if (profile_) {
+        stats_.profile_cycles[1] += cycles::Now() - source_start;
       }
       if (plan.stride != 0) {
         min_vertices = std::min(min_vertices, size / plan.stride);
@@ -844,7 +862,7 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
         if (!span) {
           return Result::kUpload;
         }
-        const auto t_fold = Clock::now();
+        const uint64_t fold_start = cycles::Now();
         const uint32_t first_source = r.start / 4;
         const uint32_t last_source = (r.start + r.count - 1) / 4;
         const uint32_t available = stride ? size / stride : 0;
@@ -872,7 +890,7 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
             ++stats_.fold_out_of_range;
           }
         }
-        stats_.fold_ns += NsSince(t_fold);
+        stats_.fold_cycles += cycles::Now() - fold_start;
         ++stats_.folds;
         stats_.host_made_bytes += bytes;
         ref = span.reference();
@@ -902,17 +920,16 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
       } else {
         Interpretation how;
         how.plan = &plan;
-        for (const plume::RenderInputElement& e : layout.elements) {
-          if (e.slotIndex == i && e.semanticIndex == 0 &&
-              std::strcmp(e.semanticName, "POSITION") == 0 &&
-              (e.format == plume::RenderFormat::R32G32B32_FLOAT ||
-               e.format == plume::RenderFormat::R32G32B32A32_FLOAT)) {
-            how.position_offset = int32_t(e.alignedByteOffset);
-          }
-        }
+        how.position_offset = plan.position_offset;
         View* v = nullptr;
         if (size == 0) {
           return Result::kEmpty;
+        }
+        if (profile_ && i < profile_last_stream_.size()) {
+          const uint64_t range = (uint64_t(address) << 32) | size;
+          ++stats_.profile_views[0];
+          stats_.profile_repeats[0] += profile_last_stream_[i] == range;
+          profile_last_stream_[i] = range;
         }
         if (!UseView(address, size, how, &ref, &v, &failure)) {
           return failure;
@@ -997,6 +1014,12 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
         how.endian = endian;
         plume::RenderBufferReference ref;
         View* v = nullptr;
+        if (profile_) {
+          const uint64_t range = (uint64_t(address) << 32) | (r.count * size);
+          ++stats_.profile_views[1];
+          stats_.profile_repeats[1] += profile_last_index_ == range;
+          profile_last_index_ = range;
+        }
         if (!UseView(address, r.count * size, how, &ref, &v, &failure)) {
           return failure;
         }
@@ -1247,8 +1270,20 @@ std::string GeometryCache::TakeSummary(uint64_t frames) {
       double(s.invalidations) / f, double(s.hashes) / f, s.to_hashed, s.to_watched, s.evicted,
       s.strip_lists, s.rect_clamped, s.rect_int_mismatch, double(s.folds) / f,
       s.fold_out_of_range, s.index_out_of_range, s.positions_nonfinite, s.positions_checked,
-      double(s.prepare_ns) / f / 1e6, double(s.hash_ns) / f / 1e6, double(s.copy_ns) / f / 1e6,
-      double(s.fold_ns) / f / 1e6);
+      cycles::ToNs(s.prepare_cycles) / f / 1e6, cycles::ToNs(s.hash_cycles) / f / 1e6,
+      cycles::ToNs(s.copy_cycles) / f / 1e6, cycles::ToNs(s.fold_cycles) / f / 1e6);
+  if (profile_) {
+    text += std::format(" | views/frame: vertex {:.0f} ({:.1f}% repeat), index {:.0f} ({:.1f}% repeat)",
+                        double(s.profile_views[0]) / f,
+                        s.profile_views[0] ? 100.0 * double(s.profile_repeats[0]) / double(s.profile_views[0]) : 0.0,
+                        double(s.profile_views[1]) / f,
+                        s.profile_views[1] ? 100.0 * double(s.profile_repeats[1]) / double(s.profile_views[1]) : 0.0);
+    text += std::format(" | profile ms/frame: drain {:.3f}, sources {:.3f}, regions {:.3f}, views {:.3f}",
+                        cycles::ToNs(s.profile_cycles[0]) / f / 1e6,
+                        cycles::ToNs(s.profile_cycles[1]) / f / 1e6,
+                        cycles::ToNs(s.profile_cycles[2]) / f / 1e6,
+                        cycles::ToNs(s.profile_cycles[3]) / f / 1e6);
+  }
   stats_ = Stats{};
   return text;
 }

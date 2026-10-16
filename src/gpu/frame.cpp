@@ -7,6 +7,7 @@
 #include <rex/logging.h>
 
 #include "device.h"
+#include "thread_load.h"
 
 namespace mcla::gpu {
 
@@ -163,6 +164,7 @@ void FrameRing::WaitSlot(Slot& slot) {
   // A removed device never signals: waiting would hang the render thread
   // forever (reblue and reeot skip the drain for the same reason).
   if (!device_->CheckLost("fence wait")) {
+    const ScopedGpuWait wait;
     device_->queue()->waitForCommandFence(slot.fence.get());
     completed_serial_ = std::max(completed_serial_, slot.serial);
   }
@@ -201,6 +203,7 @@ void FrameRing::WaitIdle() {
     idle_list_->end();
     const plume::RenderCommandList* lists[] = {idle_list_.get()};
     device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, idle_fence_.get());
+    const ScopedGpuWait wait;
     device_->queue()->waitForCommandFence(idle_fence_.get());
     // Every serial handed out so far belongs to a submission before the idle
     // one, so all of them are complete.

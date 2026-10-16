@@ -5,13 +5,20 @@
 // command_processor.cpp: fixed 16-bit targets lose 5 more on the host;
 // Copyright Ben Vanik, the Xenia authors, BSD-3-Clause). The premult and
 // alpha test rules are the legacy runtime's (d3d12/constant_upload.cpp,
-// guest/render_state.cpp).
+// guest/render_state.cpp). The bank byte swap is reblue's
+// (gpu/constant_buffers.cpp CopyByteSwap32Impl; Copyright Tom Clay,
+// BSD-3-Clause), without its NaN flush: the bytes stay the guest's.
 
 #include "constants.h"
 
 #include <cstring>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
+
 #include <rex/hash.h>
+#include <rex/logging.h>
 
 namespace mcla::gpu {
 
@@ -89,11 +96,56 @@ const ConstantBanks::Banks& ConstantBanks::Apply(const DrawView& view, Check* ch
   return banks;
 }
 
-void SwapBankToHost(const uint8_t* guest_bank, uint8_t* host_out) {
+namespace {
+
+void SwapBankToHostScalar(const uint8_t* guest_bank, uint8_t* host_out) {
   for (uint32_t i = 0; i < guest::kConstantBankBytes; i += 4) {
     const uint32_t v = LoadBe32(guest_bank + i);
     std::memcpy(host_out + i, &v, 4);
   }
+}
+
+// Set by VerifySwapBankToHost when the vector path ever disagrees with the
+// scalar one (logged): the scalar path is used from then on.
+bool g_swap_scalar = false;
+
+}  // namespace
+
+void SwapBankToHost(const uint8_t* guest_bank, uint8_t* host_out) {
+#if defined(__x86_64__) || defined(_M_X64)
+  if (!g_swap_scalar) {
+    // 16 bytes at a time into the upload ring (write-combined memory takes
+    // whole 16-byte stores far better than 4-byte ones): the bytes of each
+    // 16-bit half swapped, then the halves.
+    for (uint32_t i = 0; i < guest::kConstantBankBytes; i += 16) {
+      __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(guest_bank + i));
+      v = _mm_or_si128(_mm_slli_epi16(v, 8), _mm_srli_epi16(v, 8));
+      v = _mm_shufflelo_epi16(v, _MM_SHUFFLE(2, 3, 0, 1));
+      v = _mm_shufflehi_epi16(v, _MM_SHUFFLE(2, 3, 0, 1));
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(host_out + i), v);
+    }
+    return;
+  }
+#endif
+  SwapBankToHostScalar(guest_bank, host_out);
+}
+
+bool VerifySwapBankToHost() {
+  alignas(16) uint8_t guest[guest::kConstantBankBytes];
+  alignas(16) uint8_t vector_out[guest::kConstantBankBytes];
+  alignas(16) uint8_t scalar_out[guest::kConstantBankBytes];
+  for (uint32_t i = 0; i < guest::kConstantBankBytes; ++i) {
+    guest[i] = uint8_t(i * 151u + (i >> 7) * 13u + 7u);
+  }
+  SwapBankToHost(guest, vector_out);
+  SwapBankToHostScalar(guest, scalar_out);
+  if (std::memcmp(vector_out, scalar_out, sizeof(scalar_out)) == 0) {
+    return true;
+  }
+  g_swap_scalar = true;
+  REXLOG_ERROR("[gpu] constants: the vector bank swap differs from the scalar one; the scalar "
+               "swap is used from now on (M6a.1)");
+  return false;
 }
 
 AlphaTest ComputeAlphaTest(const XenosState& state) {
