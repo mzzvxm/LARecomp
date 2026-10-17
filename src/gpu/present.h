@@ -67,10 +67,21 @@ class PresentPass {
   // front buffer fitted into `width` x `height`. Nothing before the first
   // guest present.
   void Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
+  // The same pass 1:1 into a target of source_width() x source_height()
+  // (the flicker probe); not counted in the summary.
+  void DrawUnscaled(plume::RenderCommandList* list);
+
+  // What Prepare bound for this frame.
+  bool source_ready() const { return source_ready_; }
+  uint32_t source_width() const { return source_width_; }
+  uint32_t source_height() const { return source_height_; }
 
   std::string TakeSummary();
 
  private:
+  // Draw's body: false when there is nothing to draw.
+  bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
+
   struct Push {
     uint32_t source;
     uint32_t ramp;

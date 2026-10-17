@@ -53,6 +53,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "edram.h"
+#include "flicker_probe.h"
 #include "frame.h"
 #include "frame_trace.h"
 #include "geometry.h"
@@ -151,7 +152,8 @@ class Renderer final : public RenderThread::Executor {
   void SubmitFrameWithoutPresent();
   void ExecutePresent(PresentSource source);
   bool RebuildSwapChain();
-  void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image);
+  void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
+                         PresentSource source);
   void ReportFrameStats();
 
   GuestMemory guest_memory_;  // attaches on first use; detached after the render thread stops
@@ -175,6 +177,7 @@ class Renderer final : public RenderThread::Executor {
   TextureCache textures_;   // textures decoded from guest memory
   SwapChain swap_chain_;
   PresentPass present_;     // the guest's front buffer on the window
+  FlickerProbe flicker_probe_;  // diagnostic, mcla_gpu_flicker_probe
   OverlayRenderer overlay_;
   GpuTiming timing_;
   PassTiming pass_timing_;  // per-pass GPU time, mcla_gpu_pass_timing

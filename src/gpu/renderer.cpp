@@ -165,6 +165,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                              swap_chain_.format());
   }
   if (ok) {
+    flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     capture_.Initialize();
@@ -178,6 +179,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     capture_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
+    flicker_probe_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
     swap_chain_.Shutdown();
@@ -252,6 +254,7 @@ void Renderer::Shutdown() {
   capture_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
+  flicker_probe_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
   swap_chain_.Shutdown();
@@ -519,7 +522,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   // the overlay's texture uploads.
   scene_.EndFrame(list);
   overlay_.Prepare(list, slot);
-  RecordPresentPass(list, slot, image);
+  RecordPresentPass(list, slot, image, source);
 
   plume::RenderCommandSemaphore* waits[] = {frames_.acquire_semaphore()};
   plume::RenderCommandSemaphore* signals[] = {swap_chain_.render_semaphore(image)};
@@ -554,11 +557,16 @@ void Renderer::ExecutePresent(PresentSource source) {
   overlay_host_->RequestPass();
 }
 
-void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image) {
+void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
+                                 PresentSource source) {
   // Outside the back buffer's pass: the front buffer's texture (an upload when
   // it comes from memory) and the gamma table.
   pass_timing_.Mark(list, "present");
   present_.Prepare(list, slot);
+  if (source == PresentSource::kGuest) {
+    // An idle present shows the same front buffer again: not a new frame.
+    flicker_probe_.Record(list, present_, guest_presents_ + 1);
+  }
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::COLOR_WRITE));
@@ -612,6 +620,9 @@ void Renderer::ReportFrameStats() {
       locks_on_destinations, fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
+  if (flicker_probe_.enabled()) {
+    REXLOG_INFO("[gpu] {}", flicker_probe_.TakeSummary());
+  }
   if (pass_timing_.enabled()) {
     REXLOG_INFO("[gpu] {}", pass_timing_.TakeSummary());
   }

@@ -17,8 +17,10 @@ add_library(larecomp_gpu OBJECT
     cycles.cpp
     descriptors.cpp
     device.cpp
+    draw_census.cpp
     draw_state.cpp
     edram.cpp
+    flicker_probe.cpp
     format.cpp
     frame_trace.cpp
     frame.cpp

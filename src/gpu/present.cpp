@@ -210,8 +210,18 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot) {
 }
 
 void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
+  if (RecordDraw(list, width, height)) {
+    ++stats_.drawn;
+  }
+}
+
+void PresentPass::DrawUnscaled(plume::RenderCommandList* list) {
+  RecordDraw(list, source_width_, source_height_);
+}
+
+bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
-    return;
+    return false;
   }
   // Letterbox: the largest rectangle of the source's aspect, centred, on
   // whole pixels.
@@ -237,7 +247,7 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
   push.scale_y = float(source_height_) / float(h);
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
-  ++stats_.drawn;
+  return true;
 }
 
 std::string PresentPass::TakeSummary() {

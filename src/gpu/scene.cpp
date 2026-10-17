@@ -272,6 +272,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   ab::Initialize();
   profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
   geometry_->SetProfile(profile_);
+  draw_census_.Configure();
 }
 
 void Scene::LapStart() {
@@ -410,6 +411,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   const DrawView view(payload);
   const DrawRecord& r = view.record();
   ++window_.draws;
+  if (draw_census_.active()) {
+    draw_census_.OnDraw(r.ps_identity, r.count);
+  }
 
   ConstantBanks::Check check;
   const ConstantBanks::Banks& banks = banks_.Apply(view, &check);
@@ -1602,6 +1606,7 @@ void Scene::OnPresent() {
   }
   last_present_ = now;
   ++window_.frames;
+  draw_census_.OnPresent();
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }
@@ -1744,6 +1749,9 @@ void Scene::Report(const char* why) {
   REXLOG_INFO("[gpu] scene ({}): {}", why, textures_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, resolve_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, resolve_->memory().TakeSummary(w.frames));
+  if (draw_census_.active()) {
+    REXLOG_INFO("[gpu] scene ({}): {}", why, draw_census_.TakeReport());
+  }
   Add(total_, window_);
   window_ = Stats{};
 }

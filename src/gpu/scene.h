@@ -46,6 +46,7 @@
 #include <plume_render_interface.h>
 
 #include "constants.h"
+#include "draw_census.h"
 #include "edram.h"
 #include "geometry.h"
 #include "input_layout.h"
@@ -326,6 +327,7 @@ class Scene {
   void Add(Stats& into, const Stats& from) const;
   Stats window_;
   Stats total_;
+  DrawCensus draw_census_;  // diagnostic, mcla_gpu_census_ps
 
   // The last draw's lookups: consecutive draws mostly name
   // the same targets, shaders and pipeline. Each memo holds only while what it
