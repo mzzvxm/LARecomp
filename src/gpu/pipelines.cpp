@@ -27,7 +27,8 @@ REXCVAR_DEFINE_BOOL(
     mcla_gpu_pipeline_cache, true, "MCLA/GPU",
     "Keep the pipelines the game asked for across sessions ("
     "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
-    "executable on exit, and are read back at start. Off: nothing is read, recorded or written.")
+    "executable on exit, and are read back at start -- the other backend's file too, so what one "
+    "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
@@ -227,6 +228,11 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
                    [](unsigned char ch) { return char(std::tolower(ch)); });
     cache_path_ = shaders.path().parent_path().parent_path() / "cache" /
                   std::format("mcla_gpu_pipelines_{}.bin", backend);
+    std::string other = BackendName(ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan
+                                                                       : Backend::kD3D12);
+    std::transform(other.begin(), other.end(), other.begin(),
+                   [](unsigned char ch) { return char(std::tolower(ch)); });
+    other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
     LoadRecords();
     StartPrecache();
   }
@@ -245,6 +251,7 @@ void Pipelines::Shutdown() {
   session_layouts_.clear();
   names_.clear();
   loaded_records_ = 0;
+  own_file_records_ = 0;
   persist_ = false;
   device_ = nullptr;
   layout_ = nullptr;
@@ -475,33 +482,44 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key,
 }
 
 void Pipelines::LoadRecords() {
-  std::ifstream file(cache_path_, std::ios::binary);
+  // This API's file, then the other API's: a key names guest
+  // state, shaders of the pack, Plume formats and a layout by its content's
+  // hash -- nothing of the API -- so what one API saw precaches the other.
+  // The one exception is a static depth bias (D3D12 without dynamic bias),
+  // part of the key: an API with a dynamic bias zeroes it.
+  const Backend other = ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan : Backend::kD3D12;
+  own_file_records_ = LoadFile(cache_path_, ActiveBackend(), false);
+  LoadFile(other_cache_path_, other, dynamic_depth_bias_);
+  loaded_records_ = records_.size();
+}
+
+size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias) {
+  std::ifstream file(path, std::ios::binary);
   if (!file) {
-    REXLOG_INFO("[gpu] pipelines: no cache at {} yet", cache_path_.string());
-    return;
+    REXLOG_INFO("[gpu] pipelines: no cache at {} yet", path.string());
+    return 0;
   }
   const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)),
                                   std::istreambuf_iterator<char>());
   Reader in(data.data(), data.size());
   CacheHeader header;
-  const auto discard = [&](const char* why) {
-    REXLOG_ERROR("[gpu] pipelines: the cache {} is discarded: {}",
-                 cache_path_.string(), why);
-    records_.clear();
-    recorded_.clear();
-    stored_layouts_.clear();
-    stored_layout_index_.clear();
-    names_.clear();
+  const auto discard = [&](const char* why) -> size_t {
+    REXLOG_ERROR("[gpu] pipelines: the cache {} is discarded: {}", path.string(),
+                 why);
+    return 0;
   };
   if (!in.Get(&header, sizeof(header)) ||
       std::memcmp(header.magic, kCacheMagic, sizeof(kCacheMagic)) != 0) {
     return discard("not a pipeline cache");
   }
   if (header.version != kCacheVersion || header.key_size != sizeof(PipelineKey) ||
-      header.backend != uint32_t(ActiveBackend())) {
+      header.backend != uint32_t(backend)) {
     return discard("written by another version or backend");
   }
-  std::vector<uint32_t> layout_of_file;  // file layout index -> stored_layouts_
+  // Everything is read before anything is kept: a fault anywhere adds nothing.
+  // (Semantic names go to names_ as they are read; a discarded file leaves a
+  // few unused strings there.)
+  std::vector<std::unique_ptr<StoredLayout>> layouts;
   for (uint32_t i = 0; i < header.layout_count; ++i) {
     uint64_t hash = 0;
     uint32_t element_count = 0;
@@ -542,41 +560,54 @@ void Pipelines::LoadRecords() {
     if (XXH3_64bits(bytes.data(), bytes.size()) != hash) {
       return discard("a layout does not match its hash");
     }
-    const auto known = stored_layout_index_.find(hash);
+    layouts.push_back(std::move(s));
+  }
+  std::vector<Record> records(header.record_count);
+  for (Record& r : records) {
+    if (!in.Get(&r.key, sizeof(r.key)) || !in.Get32(&r.layout) || r.layout >= layouts.size()) {
+      return discard("a record is cut short or names no layout");
+    }
+  }
+  // Kept: the layouts not known yet, then the records not known yet.
+  std::vector<uint32_t> layout_of_file;  // file layout index -> stored_layouts_
+  for (std::unique_ptr<StoredLayout>& s : layouts) {
+    const auto known = stored_layout_index_.find(s->hash);
     if (known != stored_layout_index_.end()) {
       layout_of_file.push_back(known->second);
       continue;
     }
     layout_of_file.push_back(uint32_t(stored_layouts_.size()));
-    stored_layout_index_.emplace(hash, uint32_t(stored_layouts_.size()));
+    stored_layout_index_.emplace(s->hash, uint32_t(stored_layouts_.size()));
     stored_layouts_.push_back(std::move(s));
   }
+  size_t added = 0;
   uint32_t dropped = 0;
-  for (uint32_t i = 0; i < header.record_count; ++i) {
-    Record r;
-    uint32_t layout = 0;
-    if (!in.Get(&r.key, sizeof(r.key)) || !in.Get32(&layout) || layout >= layout_of_file.size()) {
-      return discard("a record is cut short or names no layout");
-    }
-    r.layout = layout_of_file[layout];
+  for (Record r : records) {
+    r.layout = layout_of_file[r.layout];
     // A shader the pack no longer has: the pipeline cannot be made.
     if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !shaders_->Find(r.key.ps))) {
       ++dropped;
       continue;
     }
+    if (zero_bias) {
+      r.key.depth_bias = 0;
+      r.key.slope_scaled_depth_bias = 0.0f;
+    }
     if (recorded_.insert(r.key).second) {
       records_.push_back(r);
+      ++added;
     }
   }
-  loaded_records_ = records_.size();
-  REXLOG_INFO("[gpu] pipelines: {} records and {} layouts read from {} ({} dropped: a shader "
-              "the pack does not have)",
-              records_.size(), stored_layouts_.size(), cache_path_.string(), dropped);
+  REXLOG_INFO("[gpu] pipelines: {} records and {} layouts in {}: {} new here ({} dropped: a "
+              "shader the pack does not have{})",
+              header.record_count, header.layout_count, path.string(), added, dropped,
+              zero_bias ? "; static depth bias zeroed" : "");
+  return added;
 }
 
 void Pipelines::SaveRecords() {
-  if (records_.size() == loaded_records_) {
-    return;  // nothing new: the file already holds them
+  if (records_.size() == own_file_records_) {
+    return;  // nothing beyond what this API's file already holds
   }
   CacheHeader header;
   std::memcpy(header.magic, kCacheMagic, sizeof(kCacheMagic));
@@ -617,9 +648,10 @@ void Pipelines::SaveRecords() {
                  cache_path_.string(), ec.message());
     return;
   }
-  REXLOG_INFO("[gpu] pipelines: {} records ({} new this session) and {} layouts written to {}",
-              records_.size(), records_.size() - loaded_records_, stored_layouts_.size(),
-              cache_path_.string());
+  REXLOG_INFO("[gpu] pipelines: {} records ({} new this session, {} from the other API's file) "
+              "and {} layouts written to {}",
+              records_.size(), records_.size() - loaded_records_,
+              loaded_records_ - own_file_records_, stored_layouts_.size(), cache_path_.string());
 }
 
 void Pipelines::Report(uint32_t kind, const char* what) {

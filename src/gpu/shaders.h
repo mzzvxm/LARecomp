@@ -1,12 +1,15 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the guest shader store (shader pack v6)
+// MCLA GPU renderer -- the guest shader store (shader pack v7)
 // ===========================================================================
 // The translated guest shaders (LAR-XenosRecomp HLSL compiled offline by
-// tools/build_shader_pack_v6.py), keyed by the runtime shader identity
+// tools/build_shader_pack_v7.py), keyed by the runtime shader identity
 // (FNV-1a 64 of the vfetch-normalized microcode, native_gfx/shader_identity.h).
-// Layout of the file: the builder's header (for v3, 24.27 for what v6 changes). v6 is the shader contract this
-// renderer is written against: v4's (-- SharedConstants of 592 bytes
+// Layout of the file: the builder's header (for v3, 24.27 for what v6 changes, 24.41 for v7). v7 is the shader
+// contract this renderer is written against: v6's plus the host target's
+// resolution scale (24.41: g_InvResolutionScale at byte 592, SharedConstants
+// of 608 bytes; the pixel position a pixel shader receives is in guest
+// pixels). v6 is v4's (-- SharedConstants of 592 bytes
 // with g_PosScale / g_PosOffset, structured control flow, conditional exec
 // blocks that test their condition) plus alpha to coverage in the pixel shader
 // (24.27: g_AlphaToMask at byte 540; SV_Coverage beside oC0 only in the pixel
@@ -50,8 +53,8 @@ class Device;
 
 class ShaderStore {
  public:
-  static constexpr const char* kPackFileName = "mcla_shaders.v6.pack";
-  static constexpr uint32_t kPackVersion = 6;
+  static constexpr const char* kPackFileName = "mcla_shaders.v7.pack";
+  static constexpr uint32_t kPackVersion = 7;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

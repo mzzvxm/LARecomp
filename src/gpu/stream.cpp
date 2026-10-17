@@ -71,6 +71,7 @@ bool CommandStream::Initialize(uint32_t capacity) {
   head_.store(0, std::memory_order_relaxed);
   executed_sequence_.store(0, std::memory_order_relaxed);
   read_ = 0;
+  released_ = 0;
   stop_.store(false, std::memory_order_release);
   return true;
 }
@@ -223,6 +224,20 @@ const RecordHeader* CommandStream::Next() {
 
 void CommandStream::Release(const RecordHeader* record) {
   read_ += record->size;
+  // head_ bounds the producers' free space and they read it at every record:
+  // stored at every record, its cache line moved between the two cores twice
+  // a record. It is stored once kReleaseBytes went by,
+  // at once when a producer waits for space (it then waits on the consumer,
+  // which is behind and still has records to run), and before the consumer
+  // waits for work (WaitForWork). Space runs out only with the consumer far
+  // behind, never within kReleaseBytes of it.
+  if (read_ - released_ >= kReleaseBytes || producer_waiting_.load(std::memory_order_seq_cst)) {
+    ReleaseNow();
+  }
+}
+
+void CommandStream::ReleaseNow() {
+  released_ = read_;
   head_.store(read_, std::memory_order_seq_cst);
   if (producer_waiting_.load(std::memory_order_seq_cst)) {
     {
@@ -233,6 +248,9 @@ void CommandStream::Release(const RecordHeader* record) {
 }
 
 bool CommandStream::WaitForWork(std::chrono::milliseconds timeout) {
+  if (released_ != read_) {
+    ReleaseNow();
+  }
   const auto spin_until = std::chrono::steady_clock::now() + kSpinBeforeSleep;
   for (;;) {
     for (int i = 0; i < 64; ++i) {

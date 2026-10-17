@@ -136,6 +136,7 @@ class Renderer final : public RenderThread::Executor {
   enum class PresentSource : uint8_t { kGuest, kIdle };
 
   void Execute(const RecordHeader& header, const uint8_t* payload) override;
+  void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);
   void OnIdle() override;
   void ExecuteFence(const FenceRecord& record);
   // The guest frame's open list, opening it (and starting the frame's
@@ -186,6 +187,7 @@ class Renderer final : public RenderThread::Executor {
   bool initialized_ = false;
   bool validate_ = false;       // mcla_gpu_validate, read at Initialize
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
+  bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
 
   // Render thread only.
   uint64_t presented_ = 0;

@@ -48,6 +48,9 @@ struct UploadSpan {
   uint64_t offset = 0;
   uint8_t* cpu = nullptr;
   uint64_t size = 0;
+  // The GPU address of the span's first byte: its chunk's, read once when
+  // the chunk was made, plus the offset (reblue's gpuBase).
+  uint64_t device_address = 0;
 
   explicit operator bool() const { return buffer != nullptr; }
   plume::RenderBufferReference reference() const { return {buffer, offset}; }
@@ -81,6 +84,7 @@ class UploadRing {
   struct Chunk {
     std::unique_ptr<plume::RenderBuffer> buffer;
     uint8_t* cpu = nullptr;
+    uint64_t device_address = 0;
     uint64_t size = 0;
     uint64_t used = 0;
     uint32_t idle_resets = 0;

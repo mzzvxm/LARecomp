@@ -3,6 +3,7 @@
 
 #include "renderer.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -19,6 +20,7 @@
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
+#include "thread_load.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu, false, "MCLA/GPU",
@@ -89,6 +91,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
 REXCVAR_DECLARE(bool, mcla_native_gfx);
 REXCVAR_DECLARE(bool, mcla_native_gfx_nocp);
 REXCVAR_DECLARE(bool, mcla_gpu_memory_census);
+REXCVAR_DECLARE(bool, mcla_gpu_scene_profile);
 
 namespace {
 
@@ -168,6 +171,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     census_.SetEnabled(REXCVAR_GET(mcla_gpu_memory_census));
     validate_ = REXCVAR_GET(mcla_gpu_validate);
     batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
+    profile_records_ = REXCVAR_GET(mcla_gpu_scene_profile);
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -271,11 +275,29 @@ void Renderer::Shutdown() {
 }
 
 void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
+  if (!profile_records_) {
+    ExecuteRecord(header, payload);
+    return;
+  }
+  // The record's CPU time: its time less the GPU waits inside it (the totals only grow, so a Take inside the record is harmless).
+  ThreadLoad& load = CurrentThreadLoad();
+  const uint64_t start = cycles::Now();
+  const uint64_t gpu_wait_start = load.gpu_wait_total();
+  ExecuteRecord(header, payload);
+  const uint64_t elapsed = cycles::Now() - start;
+  const uint64_t waited = load.gpu_wait_total() - gpu_wait_start;
+  load.AddRecord(uint32_t(header.type), elapsed - std::min(elapsed, waited));
+}
+
+void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload) {
   const auto type = static_cast<size_t>(header.type);
   if (type < std::size(records_)) {
     ++records_[type];
   }
-  records_executed_.fetch_add(1, std::memory_order_relaxed);
+  // The render thread is the only writer: a plain store, not a locked add
+  // (the hang check reads it from another thread).
+  records_executed_.store(records_executed_.load(std::memory_order_relaxed) + 1,
+                          std::memory_order_relaxed);
   trace_.OnRecord(guest_frames_, header, payload);
   // Scene records open the guest frame's list; the present closes it.
   switch (header.type) {

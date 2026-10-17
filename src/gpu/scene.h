@@ -41,6 +41,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <plume_render_interface.h>
 
@@ -49,6 +50,7 @@
 #include "geometry.h"
 #include "input_layout.h"
 #include "pipelines.h"
+#include "thread_load.h"
 #include "records.h"
 #include "shaders.h"
 #include "topology.h"
@@ -268,6 +270,10 @@ class Scene {
   static constexpr size_t kFetchMemoSets = 2048;
   std::array<FetchMemo, kFetchMemoWays * kFetchMemoSets> fetch_memo_{};
   uint64_t fetch_memo_clock_ = 0;
+  // The entry each fetch slot used last (reblue's
+  // SamplerSlotCache): a slot whose fetch constant repeats skips the hash and
+  // the set search; the entry is checked as the search checks a way.
+  std::array<FetchMemo*, guest::kFetchGroupCount> last_fetch_{};
   uint64_t frame_serial_ = 0;
   // Writes one fetch constant's table entries from `memo`.
   static void ApplyFetch(const FetchMemo& memo, uint32_t slot, SharedConstants& sc);
@@ -389,12 +395,16 @@ class Scene {
     kTextures,   // the texture and sampler tables
     kUpload,     // the constants into the upload ring
     kTargets,    // EDRAM targets, their notes, barriers, framebuffer
-    kDraw,       // the rest of the recording, the draw call included
+    kBindPipeline,   // pipeline layout and pipeline
+    kBindConstants,  // root descriptors (D3D12) or push constants (Vulkan)
+    kBindState,      // viewport, scissor, depth bias
+    kBindStreams,    // vertex and index buffers
+    kDraw,           // the draw call (and a coverage check around it)
     kCount,
   };
   void LapStart();
   void Lap(Stage stage);
-  void ReportProfile(const char* why, double frames);
+  void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   uint64_t lap_ = 0;
   std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
@@ -404,6 +414,11 @@ class Scene {
   std::array<uint64_t, size_t(Memo::kCount)> memo_tries_{};
   // mcla_gpu_ab_interleave (ab.h): each variant's prepare ns/draw summed
   // over its interval windows, the first window (warm-up) left out.
+  // The intervals between the guest's presents as the render thread runs them
+  // (TSC cycles), per window: the frame pacing a hitch shows in (
+  // V3), whoever caused it -- the guest, a pipeline made on the spot, a wait.
+  std::vector<uint64_t> present_intervals_;
+  uint64_t last_present_ = 0;
   double ab_sum_[2] = {};
   double ab_cpu_sum_[2] = {};  // the render thread's CPU ms/frame
   uint32_t ab_count_[2] = {};

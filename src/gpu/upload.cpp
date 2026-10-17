@@ -80,6 +80,8 @@ bool UploadRing::CreateChunk(uint32_t slot, uint64_t size, Chunk& out) {
     out.buffer.reset();
     return false;
   }
+  // Once per chunk: on Vulkan every query is a vkGetBufferDeviceAddress call.
+  out.device_address = out.buffer->getDeviceAddress();
   out.size = size;
   out.used = 0;
   out.idle_resets = 0;
@@ -113,7 +115,7 @@ UploadSpan UploadRing::Allocate(uint32_t slot, uint64_t size, uint64_t alignment
     chunk.used = size;
     s.oversized.push_back(std::move(chunk));
     Chunk& c = s.oversized.back();
-    return {c.buffer.get(), 0, c.cpu, size};
+    return {c.buffer.get(), 0, c.cpu, size, c.device_address};
   }
 
   while (s.current < s.chunks.size()) {
@@ -121,7 +123,7 @@ UploadSpan UploadRing::Allocate(uint32_t slot, uint64_t size, uint64_t alignment
     const uint64_t offset = AlignUp(c.used, alignment);
     if (offset + size <= c.size) {
       c.used = offset + size;
-      return {c.buffer.get(), offset, c.cpu + offset, size};
+      return {c.buffer.get(), offset, c.cpu + offset, size, c.device_address + offset};
     }
     ++s.current;
   }
@@ -134,7 +136,7 @@ UploadSpan UploadRing::Allocate(uint32_t slot, uint64_t size, uint64_t alignment
   s.chunks.push_back(std::move(chunk));
   s.current = s.chunks.size() - 1;
   Chunk& c = s.chunks.back();
-  return {c.buffer.get(), 0, c.cpu, size};
+  return {c.buffer.get(), 0, c.cpu, size, c.device_address};
 }
 
 void UploadRing::ResetSlot(uint32_t slot) {

@@ -12,14 +12,16 @@
 // The replay and the optional validator (validation.h) each keep their own
 // ConstantBanks.
 //
-// SharedConstants. The block of shader contract v6 (LAR-XenosRecomp
-// shader_common.h, 592 bytes, laid out as in v5) the translated shaders read
+// SharedConstants. The block of shader contract v7 (LAR-XenosRecomp
+// shader_common.h, 608 bytes: v6's 592 laid out as in v5, then the inverse
+// resolution scale) the translated shaders read
 // besides the banks:
 // the bindless texture indices per fetch constant slot (bit 31 = PWL gamma on
 // read) and sampler indices, the VS bools, the alpha test threshold, the
 // alpha to coverage parameters, the MIN/MAX source factor and RT0's exponent
-// bias (both through the premult modes), and the vertex position transform
-// g_PosScale/g_PosOffset.
+// bias (both through the premult modes), the vertex position transform
+// g_PosScale/g_PosOffset, and 1 / the host target's resolution scale (the
+// pixel position a pixel shader receives is in guest pixels).
 //
 // Threading: render thread only.
 // ===========================================================================
@@ -58,8 +60,10 @@ struct SharedConstants {
   float blend_premult_constant[4];         // 544
   float pos_scale[4];                      // 560
   float pos_offset[4];                     // 576
+  float inv_resolution_scale[2];           // 592, since v7: 1 / the host target's scale
+  float reserved_v7[2];                    // 600
 };
-static_assert(sizeof(SharedConstants) == 592, "SharedConstants is shader contract v4-v6");
+static_assert(sizeof(SharedConstants) == 608, "SharedConstants is shader contract v7");
 static_assert(offsetof(SharedConstants, sampler) == 384);
 static_assert(offsetof(SharedConstants, booleans) == 512);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 528);
@@ -67,6 +71,7 @@ static_assert(offsetof(SharedConstants, alpha_to_mask) == 540);
 static_assert(offsetof(SharedConstants, blend_premult_constant) == 544);
 static_assert(offsetof(SharedConstants, pos_scale) == 560);
 static_assert(offsetof(SharedConstants, pos_offset) == 576);
+static_assert(offsetof(SharedConstants, inv_resolution_scale) == 592);
 
 class ConstantBanks {
  public:

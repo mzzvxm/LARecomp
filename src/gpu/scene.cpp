@@ -262,6 +262,10 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
     base_shared_.texture_cube[i] = kNullTextureCubeSlot;
     base_shared_.sampler[i] = kSamplerLinearWrap;
   }
+  // Host targets at the guest's size for now: the pixel position in guest
+  // pixels is the host's (contract v7; M6b.2 sets it per target).
+  base_shared_.inv_resolution_scale[0] = 1.0f;
+  base_shared_.inv_resolution_scale[1] = 1.0f;
   // The vector bank swap against the scalar one, once.
   VerifySwapBankToHost();
   cycles::Measure();  // the base of the first window's TSC rate
@@ -284,13 +288,14 @@ void Scene::Lap(Stage stage) {
   }
 }
 
-void Scene::ReportProfile(const char* why, double frames) {
+void Scene::ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load) {
   if (!profile_) {
     return;
   }
   static const char* const kNames[] = {"banks",     "decode",   "shaders", "geometry",
                                        "pipeline",  "constants", "textures", "upload",
-                                       "targets",   "draw"};
+                                       "targets",   "bind pipeline", "bind constants",
+                                       "bind state", "bind streams", "draw"};
   static_assert(std::size(kNames) == size_t(Stage::kCount));
   std::string text;
   double sum = 0.0;
@@ -311,6 +316,23 @@ void Scene::ReportProfile(const char* why, double frames) {
                        layouts.tries ? 100.0 * double(layouts.hits) / double(layouts.tries) : 0.0);
   REXLOG_INFO("[gpu] scene ({}): profile ms/frame: {} | sum {:.3f} | memo hits: {}", why, text,
               sum, memos);
+  // The render thread's CPU by record type, and its loop (the rest).
+  if (load.total_cycles) {
+    std::string records;
+    uint64_t record_sum = 0;
+    for (uint32_t i = 0; i < uint32_t(RecordType::kCount); ++i) {
+      record_sum += load.record_cycles[i];
+      if (load.record_cycles[i]) {
+        records += std::format("{}{} {:.3f}", records.empty() ? "" : ", ",
+                               RecordTypeName(RecordType(i)),
+                               cycles::ToNs(load.record_cycles[i]) / frames / 1e6);
+      }
+    }
+    const uint64_t busy =
+        load.total_cycles - std::min(load.total_cycles, load.idle_cycles + load.gpu_wait_cycles);
+    REXLOG_INFO("[gpu] scene ({}): thread cpu ms/frame by record: {} | loop {:.3f}", why, records,
+                cycles::ToNs(busy - std::min(busy, record_sum)) / frames / 1e6);
+  }
   stage_cycles_.fill(0);
   memo_hits_.fill(0);
   memo_tries_.fill(0);
@@ -744,27 +766,36 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
     const uint32_t slot = uint32_t(std::countr_zero(mask));
     uint32_t dwords[6];
     view.FetchGroup(slot, dwords);
-    uint64_t h = 0;
-    for (uint32_t d : dwords) {
-      h = (h ^ d) * 0x9E3779B97F4A7C15ull;
-    }
-    FetchMemo* set = &fetch_memo_[(size_t(h >> 40) & (kFetchMemoSets - 1)) * kFetchMemoWays];
+    const auto holds = [&](const FetchMemo& m) {
+      return m.epoch == textures_->epoch() && (m.frame == 0 || m.frame == frame_serial_) &&
+             m.generation == textures_->ProductGeneration(m.page) &&
+             std::memcmp(m.dwords, dwords, sizeof(dwords)) == 0;
+    };
+    // The slot's last entry first (M6a.10), then the set.
     FetchMemo* hit = nullptr;
-    FetchMemo* victim = set;
-    for (size_t way = 0; way < kFetchMemoWays; ++way) {
-      FetchMemo& candidate = set[way];
-      if (candidate.epoch == textures_->epoch() &&
-          (candidate.frame == 0 || candidate.frame == frame_serial_) &&
-          candidate.generation == textures_->ProductGeneration(candidate.page) &&
-          std::memcmp(candidate.dwords, dwords, sizeof(dwords)) == 0) {
-        hit = &candidate;
-        break;
+    FetchMemo* victim = nullptr;
+    if (last_fetch_[slot] && holds(*last_fetch_[slot])) {
+      hit = last_fetch_[slot];
+    } else {
+      uint64_t h = 0;
+      for (uint32_t d : dwords) {
+        h = (h ^ d) * 0x9E3779B97F4A7C15ull;
       }
-      if (candidate.used < victim->used) {
-        victim = &candidate;
+      FetchMemo* set = &fetch_memo_[(size_t(h >> 40) & (kFetchMemoSets - 1)) * kFetchMemoWays];
+      victim = set;
+      for (size_t way = 0; way < kFetchMemoWays; ++way) {
+        FetchMemo& candidate = set[way];
+        if (holds(candidate)) {
+          hit = &candidate;
+          break;
+        }
+        if (candidate.used < victim->used) {
+          victim = &candidate;
+        }
       }
     }
     if (hit) {
+      last_fetch_[slot] = hit;
       hit->used = ++fetch_memo_clock_;
       ++window_.fetch_memo_hits;
       if (hit->is_texture) {
@@ -817,6 +848,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
     fresh.epoch = textures_->epoch();
     fresh.used = ++fetch_memo_clock_;
     m = fresh;
+    last_fetch_[slot] = &m;
     ApplyFetch(m, slot, sc);
   }
 }
@@ -1171,6 +1203,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     list->setPipeline(d.pipeline);
     bound_.pipeline = d.pipeline;
   }
+  Lap(Stage::kBindPipeline);
   const plume::RenderBufferReference constants[3] = {
       d.vs_constants.reference(), d.ps_constants.reference(), d.shared_constants.reference()};
   bool constants_changed = !bound_.constants_bound;
@@ -1191,10 +1224,10 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
         }
       }
     } else {
-      const uint64_t addresses[3] = {
-          d.vs_constants.buffer->getDeviceAddress() + d.vs_constants.offset,
-          d.ps_constants.buffer->getDeviceAddress() + d.ps_constants.offset,
-          d.shared_constants.buffer->getDeviceAddress() + d.shared_constants.offset};
+      // The addresses the upload ring read once per chunk.
+      const uint64_t addresses[3] = {d.vs_constants.device_address,
+                                     d.ps_constants.device_address,
+                                     d.shared_constants.device_address};
       list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
     }
     for (uint32_t i = 0; i < 3; ++i) {
@@ -1202,6 +1235,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     bound_.constants_bound = true;
   }
+  Lap(Stage::kBindConstants);
   // Only what differs from the list's state.
   if (!bound_.viewport_bound || !SameViewport(bound_.viewport, d.viewport.viewport)) {
     list->setViewports(&d.viewport.viewport, 1);
@@ -1220,6 +1254,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.depth_bias = d.bias;
     bound_.depth_bias_bound = true;
   }
+  Lap(Stage::kBindState);
   const DrawGeometry& g = d.geometry;
   if (g.slot_count &&
       !SameVertexBuffers(bound_.vertex_slot_count, bound_.vertex_views.data(),
@@ -1246,8 +1281,10 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
       bound_.index_view = g.index_view;
       bound_.index_bound = true;
     }
+    Lap(Stage::kBindStreams);
     list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
   } else {
+    Lap(Stage::kBindStreams);
     list->drawInstanced(g.count, 1, g.first, 0);
   }
   if (coverage_check != EdramTargets::kNoCheck) {
@@ -1542,6 +1579,11 @@ void Scene::Add(Stats& into, const Stats& from) const {
 }
 
 void Scene::OnPresent() {
+  const uint64_t now = cycles::Now();
+  if (last_present_) {
+    present_intervals_.push_back(now - last_present_);
+  }
+  last_present_ = now;
   ++window_.frames;
   if (window_.frames >= kReportInterval) {
     Report("interval");
@@ -1665,7 +1707,21 @@ void Scene::Report(const char* why) {
                 ab_count_[1]);
     ab::NextWindow();
   }
-  ReportProfile(why, frames);
+  if (present_intervals_.size() >= 2) {
+    // Frame pacing: the median, the 99th percentile, the longest, and how many
+    // frames took more than twice the median (V3).
+    std::vector<uint64_t>& v = present_intervals_;
+    std::sort(v.begin(), v.end());
+    const uint64_t median = v[v.size() / 2];
+    const uint64_t p99 = v[std::min(v.size() - 1, (v.size() * 99) / 100)];
+    const size_t over = size_t(v.end() - std::upper_bound(v.begin(), v.end(), median * 2));
+    REXLOG_INFO("[gpu] scene ({}): frame pacing: median {:.2f} ms, p99 {:.2f}, max {:.2f}, {} of "
+                "{} frames over 2x the median",
+                why, cycles::ToNs(median) / 1e6, cycles::ToNs(p99) / 1e6,
+                cycles::ToNs(v.back()) / 1e6, over, v.size());
+  }
+  present_intervals_.clear();
+  ReportProfile(why, frames, load);
   REXLOG_INFO("[gpu] scene ({}): {}", why, geometry_->TakeSummary(w.frames));
   REXLOG_INFO("[gpu] scene ({}): {}", why, edram_->TakeSummary());
   REXLOG_INFO("[gpu] scene ({}): {}", why, textures_->TakeSummary(w.frames));

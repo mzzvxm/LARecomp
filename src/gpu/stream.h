@@ -49,6 +49,8 @@ class CommandStream {
   static constexpr uint32_t kDefaultCapacity = 64u << 20;
   static constexpr uint32_t kPublishRecords = 32;
   static constexpr uint32_t kPublishBytes = 256u << 10;
+  // The consumer gives space back once this much went by (Release).
+  static constexpr uint32_t kReleaseBytes = 64u << 10;
 
   CommandStream() = default;
   CommandStream(const CommandStream&) = delete;
@@ -113,6 +115,8 @@ class CommandStream {
   uint8_t* At(uint64_t position) const { return buffer_.get() + (position % capacity_); }
   bool WaitForSpace(std::unique_lock<std::mutex>& producer_lock, uint64_t end);
   void Publish(uint64_t tail);
+  // Stores head_ = read_ and wakes a producer waiting for space.
+  void ReleaseNow();
 
   std::unique_ptr<uint8_t[]> buffer_;
   uint32_t capacity_ = 0;
@@ -140,8 +144,10 @@ class CommandStream {
   std::condition_variable done_cv_;
   std::atomic<uint64_t> executed_sequence_{0};
 
-  // Consumer-side cursor (render thread only).
+  // Consumer-side cursor (render thread only), and where head_ was last
+  // stored (Release).
   uint64_t read_ = 0;
+  uint64_t released_ = 0;
 
   std::atomic<uint64_t> consumer_wakes_{0};
   std::atomic<uint64_t> producer_waits_{0};

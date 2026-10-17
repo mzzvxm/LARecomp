@@ -72,6 +72,7 @@
 
 #include <plume_render_interface.h>
 
+#include "backend.h"
 #include "draw_state.h"
 #include "input_layout.h"
 #include "shaders.h"
@@ -198,6 +199,11 @@ class Pipelines {
   uint32_t StoreLayout(const InputLayout& layout);
   void RecordPipeline(const PipelineKey& key, const InputLayout& layout);
   void LoadRecords();
+  // Reads one cache file and adds the records it holds that are not known
+  // yet; a file with any fault adds nothing. `zero_bias` zeroes the static
+  // depth bias of its keys (another API's file read by one with a dynamic
+  // bias). Returns the records added.
+  size_t LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias);
   void SaveRecords();
 
   // The description of `key`'s pipeline with the given shaders and layout;
@@ -224,11 +230,13 @@ class Pipelines {
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;
 
-  // Persistence: the file, the layouts and records it holds plus
-  // the session's new ones, the persistent keys recorded, and how many of the
-  // records came from the file.
+  // Persistence: this API's file and the other API's (read too,
+  //), the layouts and records they hold plus the session's new
+  // ones, the persistent keys recorded, how many records came from the files
+  // and how many from this API's own.
   bool persist_ = false;
   std::filesystem::path cache_path_;
+  std::filesystem::path other_cache_path_;
   std::deque<std::string> names_;
   std::vector<std::unique_ptr<StoredLayout>> stored_layouts_;
   std::unordered_map<uint64_t, uint32_t> stored_layout_index_;  // hash -> stored_layouts_
@@ -236,6 +244,7 @@ class Pipelines {
   std::vector<Record> records_;
   std::unordered_set<PipelineKey, PipelineKeyHash> recorded_;
   size_t loaded_records_ = 0;
+  size_t own_file_records_ = 0;
   static constexpr uint32_t kNoLayout = 0xFFFFFFFFu;  // a layout that cannot be persisted
 
   // Precache: one entry per loaded record, its state moved by
