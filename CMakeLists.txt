@@ -100,6 +100,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/online_common.cpp
     src/mc_engine/online/tournament.cpp
     src/mc_engine/online/system_link.cpp
+    src/mc_engine/online/relay_info.cpp
+    src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
 
     # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).

@@ -25,6 +25,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
+#include "mc_engine/online/online_toast.h"
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -795,6 +796,9 @@ class LarecompApp : public rex::ReXApp {
     LARECOMP_Discord_Init();
     mc::ui::InitGraphicsButtonPatch();
     InitPauseMenuHooks();
+    // UI thread (the build's completion is handed back here), as the dialog
+    // has to be created on it.
+    larecomp::StartOnlineToast(imgui_drawer(), immediate_drawer());
     InitMapMouse();
     InitStringTableTools();
     InitHooks();  // its own modloader::Init call is a no-op after the build
