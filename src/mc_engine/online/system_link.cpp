@@ -13,10 +13,13 @@
 //
 
 #include "online_common.h"
+#include "system_link.h"
 
+#include <atomic>
 #include <cstring>
 
 #include <rex/cvar.h>
+#include <rex/system/xmemory.h>
 
 REXCVAR_DEFINE_BOOL(online_ignore_content_check, true, "MCLA/Multiplayer",
                     "Ignore the session DLC/content compatibility check when joining or hosting "
@@ -483,6 +486,194 @@ void Hook_PromptDropped() {
     LARECOMP_APP_INFO("[challenge-probe] prompt DROPPED (fallback path, no popup)");
 }
 
+// ── Online switched on and off without a restart ────────────────────────
+//
+// The game takes its network identity when it opens its sockets. The bind is
+// where the SDK routes a socket through the relay -- only if mcla_online_enable
+// is on at that moment -- and getsockname is where the socket learns its own
+// address. A signed-in player's record keeps the XNADDR it was built with. A
+// process that booted offline and switched online later therefore had a port
+// 1000 the relay never knew and a 127.0.0.1 in its own records, and joins timed
+// out after 13 s.
+//
+// The game's own cable-unplugged path redoes all of it, so a switch makes it
+// run:
+//
+//   sub_82272370, the net manager update (*0x8286D800), every frame:
+//     sub_824FB560 socket manager -> sub_82500F98 net hardware state 0/1/2
+//       state 2, link down  -> sub_82500EA0, state 0: every socket closed
+//       state 0, link up    -> state 1, then 2: every socket reopened
+//                              (sub_8252FD78: socket, bind, getsockname)
+//     sub_824E8D70 -> sub_824E88A0 presence: a signed-in player's record with
+//       bit 0x10 set is rebuilt from a fresh XNetGetTitleXnAddr -- what the
+//       game does for XN_SYS_PROFILESETTINGCHANGED
+//
+// The MAC is read once and cached (sub_824E6148, flag byte 0x828D75A2), and
+// the gamer handle is derived from it, so that cache goes first.
+//
+// A switch on needs nothing more than that: with the cvar on, the player
+// records rebuilt in the same update ask the SDK for the title's address, and
+// that first ask is where the SDK starts its client and waits for the server's
+// first answer (up to mcla_online_connect_timeout_ms, with the game frozen) --
+// switching the cvar back off if none comes, before the sockets reopen. Either
+// way they reopen consistent with the cvar.
+//
+// Off has to close the sockets while online is still on: the SDK only takes a
+// socket out of the relay's table when it is closed with online on, and a
+// relayed packet for one left there is written into a freed object. So off is
+// link down (closed, online on -- put back on if the F4 overlay already turned
+// it off), then the cvar, then link up.
+
+namespace {
+
+constexpr const char* kOnlineCvar = "mcla_online_enable";
+
+constexpr uint32_t kNetMgrGlobal       = 0x8286D800;
+constexpr uint32_t kPresenceOffset     = 1184;  // presence manager in the net manager
+constexpr uint32_t kPresenceRecords    = 16;    // four 104-byte player records
+constexpr uint32_t kPresenceRecordSize = 104;
+constexpr uint32_t kRecordSignedIn     = 92;    // u8, 0x80 = signed in (sub_824E70E0)
+constexpr uint32_t kRecordFlags        = 100;   // u8, 0x10 = rebuild (sub_824E88A0)
+constexpr uint32_t kMacCachedFlag      = 0x828D75A2;
+
+enum LinkRequest : int {
+    kLinkNone,
+    kLinkOnline,       // reset the network with online on
+    kLinkOffline,      // close the sockets while still online
+    kLinkOfflineFlip,  // sockets closed: switch the cvar off before they reopen
+};
+
+std::atomic<int> g_link_request{kLinkNone};
+// Net updates seen (Hook_NetLinkWhileUp) and the count when the last request
+// came in. A switch on is taken two updates later: the wait for the server
+// freezes the game in that update, and the menu's CONNECTING frame has to be
+// on screen first.
+std::atomic<uint32_t> g_net_updates{0};
+std::atomic<uint32_t> g_request_update{0};
+// What the game's sockets were last set up with: -1 = not known yet, 0 =
+// offline, 1 = online.
+std::atomic<int> g_link_applied{-1};
+// Set while this file writes the cvar itself, so the change callback in
+// pause_menu.cpp does not take that for the player's own switch.
+thread_local bool t_setting_cvar = false;
+
+rex::memory::Memory* Mem() {
+    auto* rt = rex::Runtime::instance();
+    return rt ? rt->memory() : nullptr;
+}
+
+bool OnlineLive() { return rex::cvar::GetFlagByName(kOnlineCvar) == "true"; }
+
+void SetOnlineCvar(bool on) {
+    t_setting_cvar = true;
+    rex::cvar::SetFlagByName(kOnlineCvar, on ? "true" : "false");
+    t_setting_cvar = false;
+}
+
+// Unknown until the first switch says otherwise: by the time anything asks,
+// the boot (and the SDK's own switch-off, if the server was down) is done, so
+// the cvar is what the sockets were opened with.
+int Applied() {
+    int a = g_link_applied.load();
+    if (a < 0) {
+        a = OnlineLive() ? 1 : 0;
+        g_link_applied.store(a);
+    }
+    return a;
+}
+
+// Drops the MAC cache and flags every signed-in player record for a rebuild,
+// which the presence manager does later in the same net update.
+void RefreshLocalPlayers(rex::memory::Memory* mem) {
+    GuestWrite8(mem, kMacCachedFlag, 0);
+    const uint32_t netmgr = GuestRead32(mem, kNetMgrGlobal);
+    if (!IsGuestPtr(netmgr)) return;
+    for (uint32_t i = 0; i < 4; ++i) {
+        const uint32_t rec =
+            netmgr + kPresenceOffset + kPresenceRecords + i * kPresenceRecordSize;
+        if (!(*mem->TranslateVirtual<const uint8_t*>(rec + kRecordSignedIn) & 0x80)) continue;
+        const uint8_t flags = *mem->TranslateVirtual<const uint8_t*>(rec + kRecordFlags);
+        GuestWrite8(mem, rec + kRecordFlags, uint8_t(flags | 0x10));
+    }
+}
+
+}  // namespace
+
+void SystemLinkOnlineRequest(bool on) {
+    // A request is always a flip of what is set up now; the first one is
+    // also how that becomes known if the overlay changed the cvar first.
+    int unknown = -1;
+    g_link_applied.compare_exchange_strong(unknown, on ? 0 : 1);
+    g_request_update.store(g_net_updates.load());
+    g_link_request.store(on ? kLinkOnline : kLinkOffline);
+    LARECOMP_APP_INFO("[online] switch {} requested: the network resets on the next update",
+                      on ? "on" : "off");
+}
+
+int SystemLinkOnlinePending() {
+    switch (g_link_request.load()) {
+    case kLinkOnline:      return 1;
+    case kLinkOffline:
+    case kLinkOfflineFlip: return -1;
+    default:               return 0;
+    }
+}
+
+bool SystemLinkOnlineConnected() { return OnlineLive() && Applied() == 1; }
+
+bool SystemLinkOnlineSettingCvar() { return t_setting_cvar; }
+
+// 0x82500FC8 in sub_82500F98, reached while the net hardware is up (state !=
+// 0), right after `bl sub_8244A680`: r3 is XNetGetEthernetLinkStatus. A zero
+// here is the game's own cable-unplugged path -- sub_82500EA0 drops the state
+// to 0 and sub_824FB560 closes every socket in this same update.
+void Hook_NetLinkWhileUp(PPCRegister& r3) {
+    const uint32_t update = g_net_updates.fetch_add(1) + 1;
+    int req = g_link_request.load();
+    if (req != kLinkOnline && req != kLinkOffline) return;
+    const bool on = req == kLinkOnline;
+    if (on && update - g_request_update.load() < 2) return;
+    auto* mem = Mem();
+    if (!mem) return;
+
+    const bool live = OnlineLive();
+    // Already the way it was asked for: nothing to reset.
+    const bool done = on ? (live && Applied() == 1) : (!live && Applied() == 0);
+    // Taken with a compare: a newer request from the overlay's thread stays
+    // queued for the next update instead of being dropped.
+    if (!g_link_request.compare_exchange_strong(
+            req, done ? kLinkNone : (on ? kLinkNone : kLinkOfflineFlip)))
+        return;
+    if (done) return;
+
+    if (!live) SetOnlineCvar(true);
+    if (on) {
+        RefreshLocalPlayers(mem);
+        g_link_applied.store(1);
+    }
+    r3.u64 = 0;
+    LARECOMP_APP_INFO("[online] network reset ({}): sockets close now and reopen two updates later",
+                      on ? "on" : "off");
+}
+
+// 0x82500FEC in sub_82500F98, reached while the net hardware is down (state
+// 0), right after the second `bl sub_8244A680`. Every socket is closed at this
+// point and this update brings the link back, so this is where online goes
+// off: the reopen two updates later binds with it off, and the player records
+// are rebuilt from the offline address.
+void Hook_NetLinkWhileDown(PPCRegister& r3) {
+    (void)r3;
+    int expected = kLinkOfflineFlip;
+    if (!g_link_request.compare_exchange_strong(expected, kLinkNone)) return;
+    auto* mem = Mem();
+    if (!mem) return;
+
+    SetOnlineCvar(false);
+    RefreshLocalPlayers(mem);
+    g_link_applied.store(0);
+    LARECOMP_APP_INFO("[online] switched off; sockets reopen offline");
+}
+
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
@@ -512,4 +703,6 @@ void Hook_ClockOwnerRecord(PPCRegister& r31) {}
 void Hook_ClockResolveOwner(PPCRegister& r3) {}
 void Hook_ClockStarting(PPCRegister& r5, PPCRegister& r7) {}
 void Hook_ChallengeProposeRoute(PPCRegister& r3, PPCRegister& r29) {}
+void Hook_NetLinkWhileUp(PPCRegister& r3) {}
+void Hook_NetLinkWhileDown(PPCRegister& r3) {}
 #endif // REXGLUE_HAS_XEO3_TARGET

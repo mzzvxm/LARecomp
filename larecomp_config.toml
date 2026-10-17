@@ -25221,6 +25221,23 @@ name = "Hook_DumpJoinBlob"
 registers = ["r4"]
 after_instruction = false
 
+# Online ligado/desligado sem reiniciar (system_link.cpp). Os dois pontos ficam
+# logo depois das duas chamadas a XNetGetEthernetLinkStatus (sub_8244A680) em
+# sub_82500F98, o estado do hardware de rede: r3 = status do link. Um 0 no
+# primeiro (estado != 0) é o caminho de cabo desligado do próprio jogo, que
+# fecha todos os sockets; o segundo (estado 0) é o update antes de reabrir.
+[[midasm_hook]]
+address = 0x82500FC8
+name = "Hook_NetLinkWhileUp"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82500FEC
+name = "Hook_NetLinkWhileDown"
+registers = ["r3"]
+after_instruction = false
+
 # Discord RPC: cache the current district. r3 holds mc::LookupDistrict's return
 # right after the bl inside Racer_GetCurrentDistrict (sub_822ADEC0). Read-only.
 [[midasm_hook]]
