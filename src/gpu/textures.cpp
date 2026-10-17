@@ -405,6 +405,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
     }
     Binding binding = bound(slot, false);
     binding.from_product = true;
+    binding.scale = product->scale;
     return binding;
   }
   // Memory a resolve wrote that guest memory does not hold, read with another

@@ -695,9 +695,14 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     d.viewport = memo.viewport;
     shared = memo.shared;
   } else {
-    d.viewport = ComputeViewport(s, ps_writes_depth);
+    // The draw's targets' scale follows from the pitch (EdramTargets::ScaleFor).
+    const uint32_t scale = edram_->ScaleForPitch(s.surface_pitch);
+    d.viewport = ComputeViewport(s, ps_writes_depth, scale);
     shared = base_shared_;
     issues = FillSharedConstants(s, d.viewport, shared);
+    // The pixel position a pixel shader receives, in guest pixels (v7).
+    shared.inv_resolution_scale[0] = 1.0f / float(scale);
+    shared.inv_resolution_scale[1] = 1.0f / float(scale);
     memo.constants_valid = true;
     memo.ps_writes_depth = ps_writes_depth;
     memo.viewport = d.viewport;
@@ -1151,6 +1156,18 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                       plume::RenderRect(int32_t(scissor_tl_x), int32_t(scissor_tl_y),
                                         int32_t(scissor_br_x), int32_t(scissor_br_y)));
 
+  // The targets' scale: one for all of them, as the policy gives
+  // a colour and the depth of one pitch the same.
+  const uint32_t target_scale =
+      d.key.color_count ? colors[0]->scale : (depth ? depth->scale : 1u);
+  bool scales_agree = !depth || depth->scale == target_scale;
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    scales_agree &= colors[i]->scale == target_scale;
+  }
+  if (!scales_agree) {
+    *detail = std::format("targets of different resolution scales (pitch {})", pitch);
+    return Skip::kTarget;
+  }
   // Layouts (a barrier closes an open render pass on Vulkan; Plume reopens it).
   uint32_t target_height = EdramTargets::kMaxExtent;
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
@@ -1242,7 +1259,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.viewport = d.viewport.viewport;
     bound_.viewport_bound = true;
   }
-  const plume::RenderRect scissor = ComputeScissor(s, target_height);
+  const plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
     list->setScissors(&scissor, 1);
     bound_.scissor = scissor;

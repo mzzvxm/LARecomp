@@ -155,8 +155,9 @@ class EdramTargets {
     EdramKey key;
     std::unique_ptr<plume::RenderTexture> texture;
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
-    uint32_t width = 0;
-    uint32_t height = 0;
+    uint32_t width = 0;   // guest pixels (the host texture is width * scale)
+    uint32_t height = 0;  // guest pixels
+    uint32_t scale = 1;   // host pixels per guest pixel, each way
     uint32_t generation = 0;  // bumped when the texture is replaced
     plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
     uint64_t last_frame = 0;
@@ -213,6 +214,23 @@ class EdramTargets {
   // (mcla_gpu_coverage_queries, on a device that counts samples exactly).
   // Callers do no ownership work at all while aliasing() is false.
   bool aliasing() const { return aliasing_; }
+  // The internal resolution scale and the one a target of this
+  // identity gets: the scene's (pitch 1280: its colour, its depth, the UI)
+  // are scaled; the post-processing, shadow, reflection and impostor targets
+  // keep the guest's size for now. A draw's colour and depth share the
+  // pitch, hence the scale.
+  static constexpr uint32_t kMaxResolutionScale = 3;
+  static constexpr uint32_t kScaledPitch = 1280;
+  uint32_t resolution_scale() const { return resolution_scale_; }
+  uint32_t ScaleForPitch(uint32_t pitch) const {
+    return pitch == kScaledPitch ? resolution_scale_ : 1;
+  }
+  uint32_t ScaleFor(const EdramKey& key) const { return ScaleForPitch(key.pitch); }
+  // A rectangle in guest pixels, in a target's host pixels.
+  static plume::RenderRect ScaledRect(const plume::RenderRect& guest, uint32_t scale) {
+    const int32_t s = int32_t(scale);
+    return plume::RenderRect(guest.left * s, guest.top * s, guest.right * s, guest.bottom * s);
+  }
   bool coverage_queries() const { return coverage_; }
 
   // The target of `key`, at least `height` rows tall: created (and cleared),
@@ -484,6 +502,7 @@ class EdramTargets {
   // Coverage checks: per frame slot, an occlusion query pool and what each
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
+  uint32_t resolution_scale_ = 1;
   bool coverage_ = false;
   uint32_t slot_ = 0;
   std::vector<std::unique_ptr<plume::RenderQueryPool>> coverage_pools_;

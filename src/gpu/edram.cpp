@@ -40,6 +40,12 @@ REXCVAR_DEFINE_UINT32(
     "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
     "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_resolution_scale, 1, "MCLA/GPU",
+    "Internal resolution scale (M6b): the host render targets of the scene are this "
+    "many times the guest's in each direction (1, 2 or 3; 2 = 2560x1440, 3 = 3840x2160 from "
+    "720p). The guest keeps seeing its own sizes. M6b in progress: keep 1.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -123,6 +129,18 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
+  // The internal resolution scale, chosen at start.
+  resolution_scale_ = REXCVAR_GET(mcla_gpu_resolution_scale);
+  if (resolution_scale_ < 1 || resolution_scale_ > kMaxResolutionScale) {
+    REXLOG_ERROR("[gpu] edram: mcla_gpu_resolution_scale = {} is not 1 to {}; the targets keep "
+                 "the guest's size",
+                 resolution_scale_, kMaxResolutionScale);
+    resolution_scale_ = 1;
+  }
+  if (resolution_scale_ > 1) {
+    REXLOG_INFO("[gpu] edram: the scene's targets at {}x the guest's size",
+                resolution_scale_);
+  }
   // The detector and its checks are chosen at start.
   aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);
   if (!aliasing_) {
@@ -277,7 +295,10 @@ plume::RenderFramebuffer* EdramTargets::ClearColor(plume::RenderCommandList* lis
     return nullptr;
   }
   list->setFramebuffer(framebuffer);
-  list->clearColor(0, plume::RenderColor(value[0], value[1], value[2], value[3]), &rect, 1);
+  // The rectangle is the guest's (the tile map above); the host clears it
+  // at the target's scale.
+  const plume::RenderRect host = ScaledRect(rect, t.scale);
+  list->clearColor(0, plume::RenderColor(value[0], value[1], value[2], value[3]), &host, 1);
   return framebuffer;
 }
 
@@ -308,7 +329,8 @@ plume::RenderFramebuffer* EdramTargets::ClearDepthStencil(plume::RenderCommandLi
     return nullptr;
   }
   list->setFramebuffer(framebuffer);
-  list->clearDepthStencil(depth, stencil, z, stencil_value & 0xFFu, &rect, 1);
+  const plume::RenderRect host = ScaledRect(rect, t.scale);
+  list->clearDepthStencil(depth, stencil, z, stencil_value & 0xFFu, &host, 1);
   return framebuffer;
 }
 
@@ -319,13 +341,14 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   if (m.status != format::Status::kOk) {
     return false;
   }
+  // The host texture: the guest's size times the target's scale.
   plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-      k.pitch, height, 1, m.format,
+      k.pitch * target.scale, height * target.scale, 1, m.format,
       k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
   desc.multisampling.sampleCount = plume::RenderSampleCounts(k.samples);
   const std::string name =
-      std::format("edram {} {}@{} pitch {} {}x", k.depth ? "depth" : "colour", m.guest_name,
-                  k.base_tiles, k.pitch, k.samples);
+      std::format("edram {} {}@{} pitch {} {}x scale {}", k.depth ? "depth" : "colour",
+                  m.guest_name, k.base_tiles, k.pitch, k.samples, target.scale);
   std::unique_ptr<plume::RenderTexture> texture = device_->CreateTexture(desc, name.c_str());
   if (!texture) {
     return false;
@@ -375,6 +398,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
     }
     auto target = std::make_unique<Target>();
     target->key = key;
+    target->scale = ScaleFor(key);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
       REXLOG_ERROR("[gpu] edram: no host target for {} format {} at tile {} pitch {} {}x "
@@ -1077,7 +1101,7 @@ std::string EdramTargets::TakeSummary() {
   uint64_t bytes = 0;
   for (const auto& [key, target] : targets_) {
     bytes += uint64_t(target->width) * target->height * BytesPerPixel(target->format) *
-             target->key.samples;
+             target->key.samples * target->scale * target->scale;
   }
   std::string text = std::format(
       "edram: {} targets ({:.1f} MiB), {} framebuffers | created {}, grown {} ({:.1f} MiB "

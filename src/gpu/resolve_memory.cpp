@@ -49,7 +49,7 @@ struct EncodePush {
   uint32_t rect0;
   uint32_t rect1;
   int32_t group_x0;
-  uint32_t reserved;
+  uint32_t resolution_scale;  //
 };
 static_assert(sizeof(EncodePush) == 64);
 
@@ -697,6 +697,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     push.source = copy.product_slot;
   }
   push.level = copy.level;
+  push.resolution_scale = copy.resolution_scale;
   push.address = storage.address;
   push.pitch = pitch;
   push.layout = LayoutBits(source, bpb_log2);

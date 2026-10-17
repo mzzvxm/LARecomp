@@ -202,8 +202,10 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot) {
     ++stats_.from_memory;
   }
   source_slot_ = bound.slot & ~kTextureGammaBit;
-  source_width_ = fetch.key.width;
-  source_height_ = fetch.key.height;
+  // The pass reads texels: a resolve product made at the internal resolution
+  // scale holds the guest's size times it.
+  source_width_ = fetch.key.width * bound.scale;
+  source_height_ = fetch.key.height * bound.scale;
   source_ready_ = true;
 }
 

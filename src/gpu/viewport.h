@@ -42,11 +42,18 @@ struct ViewportInfo {
 inline constexpr uint32_t kMaxViewportExtent = 8192;
 
 // `pixel_shader_writes_depth`: the depth range is then the full 0..1, the
-// guest having no viewport Z clamp.
-ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_depth);
+// guest having no viewport Z clamp. `resolution_scale`: host pixels per guest
+// pixel of the target -- the viewport is found in guest pixels
+// and only its integer offset and extent are scaled, as Xenia's
+// GetHostViewportInfo does; NDC stays in guest units.
+ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_depth,
+                             uint32_t resolution_scale);
 
 // D3D's effective window scissor (draw_state.h), clamped to the surface pitch
 // and to [0, height), as Xenia's draw_util::GetScissor does for the pitch.
-plume::RenderRect ComputeScissor(const XenosState& state, uint32_t target_height);
+// `target_height` in guest pixels; the rect returned is in host pixels
+// (`resolution_scale` per guest pixel).
+plume::RenderRect ComputeScissor(const XenosState& state, uint32_t target_height,
+                                 uint32_t resolution_scale);
 
 }  // namespace mcla::gpu

@@ -197,6 +197,10 @@ class TextureCache {
     uint32_t slot = kNullTexture2DSlot;  // with kTextureGammaBit when asked
     bool per_frame = false;              // good for this frame only
     bool from_product = false;           // a resolve product, not guest memory
+    // Host texels per guest texel of what is bound: a resolve product's scale
+    //, 1 for everything made from guest memory. A reader in
+    // texel units (the present) multiplies the guest size by it.
+    uint32_t scale = 1;
     // The binding recorded a pass of its own (a decode from the resolve
     // memory): the list has no framebuffer and another pipeline state, and the
     // caller binds its own again.

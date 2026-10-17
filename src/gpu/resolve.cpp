@@ -588,20 +588,41 @@ plume::RenderFramebuffer* ResolveCache::LevelFramebuffer(Product& p, uint32_t le
 }
 
 ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::RenderFormat format,
-                                              plume::RenderCommandList* list, std::string* why) {
+                                              uint32_t scale, plume::RenderCommandList* list,
+                                              std::string* why) {
   auto it = products_.find(key);
   Product* p = it != products_.end() ? it->second.get() : nullptr;
+  if (p && p->scale != scale) {
+    // A resolve from a target of another scale: the product is
+    // made again at this one. The encodes still waiting (any may read it)
+    // are recorded first; its objects die after the frames that use them.
+    resolve_memory_->Flush(list);
+    Deactivate(*p);
+    p->views.Release(*frames_, *heap_);
+    for (auto& framebuffer : p->level_framebuffers) {
+      frames_->Retire(std::move(framebuffer));
+    }
+    for (auto& view : p->level_views) {
+      frames_->Retire(std::move(view));
+    }
+    frames_->Retire(std::move(p->texture));
+    products_.erase(it);
+    p = nullptr;
+    ++stats_.remade_for_scale;
+  }
   if (!p) {
     auto product = std::make_unique<Product>();
     product->key = key;
     product->format = format;
+    product->scale = scale;
     plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-        key.width, key.height, key.levels(), format, plume::RenderTextureFlag::RENDER_TARGET);
+        key.width * scale, key.height * scale, key.levels(), format,
+        plume::RenderTextureFlag::RENDER_TARGET);
     const std::string name = std::format("resolve product {}", key.Describe());
     product->texture = device_->CreateTexture(desc, name.c_str());
     if (!product->texture) {
-      *why = std::format("{} {}x{} with {} levels", format::PlumeFormatName(format), key.width,
-                         key.height, key.levels());
+      *why = std::format("{} {}x{} with {} levels", format::PlumeFormatName(format),
+                         key.width * scale, key.height * scale, key.levels());
       return nullptr;
     }
     product->level_views.resize(key.levels());
@@ -1016,7 +1037,10 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         break;
       }
       std::string why;
-      Product* p = Activate(key, host.format, list, &why);
+      // The product at the source target's scale: the copy is
+      // then 1:1 in host pixels.
+      const uint32_t resolution_scale = src->scale;
+      Product* p = Activate(key, host.format, resolution_scale, list, &why);
       if (!p) {
         Fail(Failure::kProduct, std::format("{}: {}", key.Describe(), why));
         break;
@@ -1040,17 +1064,19 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
                                              key.width, key.height));
       }
       list->setFramebuffer(framebuffer);
-      const plume::RenderViewport viewport(0.0f, 0.0f, float(level_width), float(level_height));
+      const plume::RenderViewport viewport(0.0f, 0.0f, float(level_width * resolution_scale),
+                                           float(level_height * resolution_scale));
       list->setViewports(&viewport, 1);
-      const plume::RenderRect scissor(tx0, ty0, tx1, ty1);
+      const plume::RenderRect scissor =
+          EdramTargets::ScaledRect(plume::RenderRect(tx0, ty0, tx1, ty1), resolution_scale);
       list->setScissors(&scissor, 1);
       passes_->Bind(list);
       list->setPipeline(pipeline);
       Push push{};
       push.source = sample_slot;
       push.stencil = depth_source ? stencil_slot : sample_slot;
-      push.offset_x = -dx;
-      push.offset_y = -dy;
+      push.offset_x = -dx * int32_t(resolution_scale);
+      push.offset_y = -dy * int32_t(resolution_scale);
       push.samples = count;
       for (uint32_t i = 0; i < count; ++i) {
         push.samples |= host_samples[i] << (8 + 2 * i);
@@ -1103,6 +1129,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       memory_copy.x1 = tx1;
       memory_copy.y1 = ty1;
       memory_copy.mode = full_mode;
+      memory_copy.resolution_scale = resolution_scale;
       if (depth_source) {
         memory_copy.depth = true;
         memory_copy.msaa = samples > 1;
@@ -1232,7 +1259,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
   }
   std::string text = std::format(
       "resolves {:.1f}/frame: {} copied ({:.2f} Mpixel/frame), {} clear only, clears {} colour {} "
-      "depth | conversions [{}] | failed [{}] | products {} ({} active), created {}, activated "
+      "depth | conversions [{}] | failed [{}] | products {} ({} active), created {} ({} made "
+      "again at another scale), activated "
       "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, misaligned {}, source "
       "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image, {} "
       "by image base, {} of a level not wholly written) | "
@@ -1241,7 +1269,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       double(stats_.resolves) / f, stats_.copies, double(stats_.pixels) / f / 1e6,
       stats_.clear_only, stats_.color_clears, stats_.depth_clears,
       modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
-      active, stats_.created, stats_.activated, stats_.deactivated_by_overlap,
+      active, stats_.created, stats_.remade_for_scale, stats_.activated,
+      stats_.deactivated_by_overlap,
       stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.misaligned,
       stats_.from_registers, stats_.other_pitch, stats_.finds, stats_.found,
       stats_.found_by_image, stats_.found_by_image_base, stats_.found_incomplete, stats_.locks,

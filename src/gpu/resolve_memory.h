@@ -117,6 +117,10 @@ class ResolveMemory {
     int32_t offset_x = 0;  // EDRAM pixel = destination texel + offset
     int32_t offset_y = 0;
     uint32_t samples = 0;  // as resolve_ps.hlsl takes them
+    // Host texels per guest texel of what the encode reads: the product's
+    // (colour: the guest texel is the mean of its block) or the EDRAM
+    // target's (depth: the sample at the block's centre).
+    uint32_t resolution_scale = 1;
   };
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not

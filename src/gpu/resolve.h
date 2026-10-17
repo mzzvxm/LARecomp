@@ -80,6 +80,9 @@ class ResolveCache {
   struct Product {
     TextureKey key;
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+    // Host texels per guest texel, each way: the scale of the
+    // EDRAM targets its resolves read. The texture is key.width * scale wide.
+    uint32_t scale = 1;
     std::unique_ptr<plume::RenderTexture> texture;
     TextureViews views;  // sampling views, per host swizzle
     // Render target views and framebuffers, per level.
@@ -206,8 +209,10 @@ class ResolveCache {
     kCount,
   };
 
-  Product* Activate(const TextureKey& key, plume::RenderFormat format, plume::RenderCommandList* list,
-                    std::string* why);
+  // `scale`: the source target's; a product made at another
+  // scale is made again.
+  Product* Activate(const TextureKey& key, plume::RenderFormat format, uint32_t scale,
+                    plume::RenderCommandList* list, std::string* why);
   plume::RenderFramebuffer* LevelFramebuffer(Product& product, uint32_t level);
   plume::RenderPipeline* Pipeline(bool depth, bool msaa, plume::RenderFormat format);
   void TransitionProduct(plume::RenderCommandList* list, Product& product,
@@ -285,6 +290,7 @@ class ResolveCache {
     std::array<uint64_t, kModeCount> modes{};
     std::array<uint64_t, size_t(Failure::kCount)> failures{};
     uint64_t created = 0;
+    uint64_t remade_for_scale = 0;    // a resolve of another scale into a product (24.41)
     uint64_t activated = 0;           // products found by fetches again (new or back)
     uint64_t deactivated_by_overlap = 0;
     uint64_t deactivated_by_cpu = 0;

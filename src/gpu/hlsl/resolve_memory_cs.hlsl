@@ -38,7 +38,7 @@ struct EncodePush {
   uint rect0;     // the rectangle in level texels: x0 bits 0-15, y0 bits 16-31
   uint rect1;     //                                 x1, y1 (exclusive)
   int group_x0;   // level x of the first dword group of the dispatch (storage-aligned)
-  uint reserved;
+  uint resolution_scale;  // host texels per guest texel of the source read
 };
 
 #ifdef __spirv__
@@ -74,10 +74,22 @@ uint2 TexelBits(int2 texel) {
   // Every depth destination (k_24_8, k_24_8_FLOAT, k_8_8_8_8, k_32_FLOAT) gets
   // the raw dword.
   uint stencil;
-  const uint d24 = ResolveDepth24(texel + int2(g_push.offset_x, g_push.offset_y), stencil);
+  // The EDRAM sample at the centre of the guest pixel's s x s block (a mean
+  // of depths is no depth).
+  const int s = int(g_push.resolution_scale);
+  const int2 source = (texel + int2(g_push.offset_x, g_push.offset_y)) * s + (s >> 1);
+  const uint d24 = ResolveDepth24(source, stencil);
   return uint2((d24 << 8u) | stencil, 0u);
 #else
-  const float4 v = g_textures[g_push.source].Load(int3(texel, int(g_push.level)));
+  // The guest texel: the mean of its s x s block of the product (s = 1 reads the one texel).
+  const int s = int(g_push.resolution_scale);
+  float4 v = 0.0f;
+  for (int by = 0; by < s; ++by) {
+    for (int bx = 0; bx < s; ++bx) {
+      v += g_textures[g_push.source].Load(int3(texel * s + int2(bx, by), int(g_push.level)));
+    }
+  }
+  v /= float(s * s);
   switch (g_push.mode & 0xFFu) {
     case kModeUnorm8888: {
       const uint4 q = QuantizeUNorm(v, float4(255.0f, 255.0f, 255.0f, 255.0f));
