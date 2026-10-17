@@ -169,6 +169,8 @@ set(LARECOMP_SOURCES
     src/isoinstaller/larecomp_iso_installer.cpp
     src/isoinstaller/install_wizard_dialog.cpp
     src/saveporter/larecomp_save_porter.cpp
+    src/profile/larecomp_profile_store.cpp
+    src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)

@@ -1,0 +1,489 @@
+#ifndef REXGLUE_HAS_XEO3_TARGET
+// larecomp - Save picker
+#include "larecomp_profile_picker.h"
+
+#include "larecomp_profile_store.h"
+
+#include <algorithm>
+#include <chrono>
+#include <ctime>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#include <imgui.h>
+
+#include <rex/cvar.h>
+#include <rex/logging.h>
+#include <rex/system/xam/user_profile.h>
+#include <rex/ui/imgui_dialog.h>
+#include <rex/ui/imgui_drawer.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+REXCVAR_DEFINE_BOOL(profile_auto_select, false, "MCLA",
+    "Start with the save named by user_name and never show the save picker, even when several "
+    "saves exist. The picker's 'Always use this save' box sets it; hold Shift while the game "
+    "starts to see the picker once anyway.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace larecomp {
+
+namespace {
+
+namespace fs = std::filesystem;
+namespace pf = larecomp::profiles;
+
+constexpr char kUserName[] = "user_name";
+
+// What a typed name becomes before it names a directory. The fork has the real
+// function; the stock SDK has no profile names at all and never reaches this
+// file's logic (see PrepareProfileChoice). Detected at compile time, like the
+// save porter's ProfileDirName, so one source builds against both.
+template <typename Profile>
+std::string SanitizeWith(std::string_view raw) {
+  if constexpr (requires { Profile::SanitizeName(raw); }) {
+    return std::string(Profile::SanitizeName(raw));
+  } else {
+    return pf::SanitizeName(raw);
+  }
+}
+
+std::string Sanitize(std::string_view raw) {
+  return SanitizeWith<rex::system::xam::UserProfile>(raw);
+}
+
+// True when user_name came from the command line or the environment: someone
+// asked for that exact profile, so there is nothing to ask. The source tracking
+// is the fork's; without it every value counts as coming from the config.
+bool NameGivenFromOutside() {
+  auto probe = [](auto name) -> bool {
+    if constexpr (requires { rex::cvar::GetFlagSource(name); }) {
+      using Source = decltype(rex::cvar::GetFlagSource(name));
+      const Source source = rex::cvar::GetFlagSource(name);
+      return source == Source::kCommandLine || source == Source::kEnvironment;
+    } else {
+      return false;
+    }
+  };
+  return probe(std::string_view(kUserName));
+}
+
+// Shift held at launch brings the picker back for a player who ticked "always".
+bool ShiftHeld() {
+#if defined(_WIN32)
+  return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+#else
+  return false;
+#endif
+}
+
+bool DirExists(const fs::path& root, const std::string& name) {
+  std::error_code ec;
+  return !name.empty() && fs::exists(root / pf::PathFromUtf8(name), ec);
+}
+
+int IndexOf(const std::vector<pf::Profile>& choices, std::string_view name) {
+  for (size_t i = 0; i < choices.size(); ++i) {
+    if (pf::SameName(choices[i].name, name)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+struct Plan {
+  bool ask = false;
+  bool forced = false;               // Shift was held
+  bool remember = false;             // profile_auto_select as found
+  fs::path root;                     // the user data root
+  std::vector<pf::Profile> choices;  // newest first, a not-yet-saved user_name ahead of them
+  std::string preselect;
+};
+
+Plan g_plan;
+
+std::string FormatTime(fs::file_time_type when) {
+  using namespace std::chrono;
+  const std::time_t t = system_clock::to_time_t(clock_cast<system_clock>(when));
+  std::tm local{};
+#if defined(_WIN32)
+  localtime_s(&local, &t);
+#else
+  localtime_r(&t, &local);
+#endif
+  char buffer[40];
+  std::strftime(buffer, sizeof(buffer), "%d %b %Y  %H:%M", &local);
+  return buffer;
+}
+
+class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
+ public:
+  ProfilePickerDialog(rex::ui::ImGuiDrawer* drawer, Plan plan, fs::path config_path,
+                      std::function<void()> on_finished)
+      : ImGuiDialog(drawer),
+        plan_(std::move(plan)),
+        config_path_(std::move(config_path)),
+        on_finished_(std::move(on_finished)),
+        remember_(plan_.remember) {
+    selected_ = std::max(0, IndexOf(plan_.choices, plan_.preselect));
+  }
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    if (!logged_first_draw_) {
+      logged_first_draw_ = true;
+      REXLOG_INFO("Save picker: first draw, display {}x{}", io.DisplaySize.x, io.DisplaySize.y);
+    }
+
+    const float width = std::min(600.0f, std::max(440.0f, io.DisplaySize.x - 64.0f));
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+
+    // The same look as the SDK's name prompt this replaces.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 22.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 9.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
+    ImGui::PushFont(nullptr, 18.0f);
+
+    bool accept = false;
+    if (ImGui::Begin("Choose your save##larecomp_profile_picker", nullptr,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_AlwaysAutoResize)) {
+      accept = DrawBody(io);
+    }
+    // Begin/End are paired unconditionally: Begin returns false for a clipped or
+    // collapsed window, and skipping End there unbalances the window stack.
+    ImGui::End();
+
+    ImGui::PopFont();
+    ImGui::PopStyleVar(3);
+
+    if (accept) {
+      Accept();
+    }
+  }
+
+ private:
+  int NewRow() const { return static_cast<int>(plan_.choices.size()); }
+
+  // Why the typed name cannot start a new save, or empty when it can.
+  std::string ProblemWith(const std::string& name, bool typed_anything) const {
+    if (name.empty()) {
+      return typed_anything ? "Enter at least one usable character." : std::string();
+    }
+    if (pf::IsReservedName(name)) {
+      return "That name is taken by one of the game's own folders.";
+    }
+    if (const int i = IndexOf(plan_.choices, name); i >= 0) {
+      return "A save named '" + plan_.choices[i].name + "' already exists - pick it in the list.";
+    }
+    return {};
+  }
+
+  // Returns true when the player asked to go ahead with the current selection.
+  bool DrawBody(ImGuiIO& io) {
+    ImGui::TextWrapped("%s", plan_.forced
+                                 ? "Pick the save to play, or start a new one. (You held Shift to "
+                                   "see this window again.)"
+                                 : "Pick the save to play, or start a new one.");
+    ImGui::Spacing();
+
+    bool accept = false;
+
+    // --- the saves ------------------------------------------------------------------
+    // Sized from the rows themselves: the dialog's roomy item spacing and window
+    // padding apply inside the list too, and a list sized without them hides the
+    // last row ("New save") behind a scrollbar.
+    const int rows = NewRow() + 1;
+    const int shown = std::min(rows, 7);
+    const float row_height = ImGui::GetTextLineHeight() + 16.0f;
+    const float row_gap = 4.0f;
+    const float list_pad = 6.0f;
+    const float list_height = row_height * static_cast<float>(shown) +
+                              row_gap * static_cast<float>(shown - 1) + 2.0f * list_pad + 4.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, row_gap));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(list_pad, list_pad));
+    ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();  // the padding is read as the child opens
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    for (int i = 0; i < rows; ++i) {
+      const bool is_new = i == NewRow();
+      ImGui::PushID(i);
+      if (ImGui::Selectable("##row", selected_ == i, ImGuiSelectableFlags_AllowDoubleClick,
+                            ImVec2(0.0f, row_height))) {
+        selected_ = i;
+        if (is_new) {
+          focus_name_ = true;
+        } else if (ImGui::IsMouseDoubleClicked(0)) {
+          accept = true;
+        }
+      }
+      if (selected_ == i && scroll_to_selected_) {
+        ImGui::SetScrollHereY(0.5f);
+        scroll_to_selected_ = false;
+      }
+      const ImVec2 low = ImGui::GetItemRectMin();
+      const ImVec2 high = ImGui::GetItemRectMax();
+      const float text_y = low.y + (high.y - low.y - ImGui::GetTextLineHeight()) * 0.5f;
+      const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+      const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+
+      if (is_new) {
+        draw->AddText(ImVec2(low.x + 12.0f, text_y), text, "+  New save");
+      } else {
+        const pf::Profile& save = plan_.choices[i];
+        draw->AddText(ImVec2(low.x + 12.0f, text_y), text, save.name.c_str());
+        const std::string right = save.has_save ? FormatTime(save.last_played) : "nothing saved yet";
+        const float right_width = ImGui::CalcTextSize(right.c_str()).x;
+        draw->AddText(ImVec2(high.x - right_width - 12.0f, text_y), dim, right.c_str());
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();  // item spacing
+
+    // --- a new gamertag ---------------------------------------------------------------
+    bool submitted = false;
+    std::string new_name;
+    std::string problem;
+    if (selected_ == NewRow()) {
+      if (focus_name_) {
+        ImGui::SetKeyboardFocusHere();
+        focus_name_ = false;
+      }
+      ImGui::SetNextItemWidth(-1.0f);
+      submitted = ImGui::InputTextWithHint("##new_name", "Gamertag for the new save", name_buffer_,
+                                           sizeof(name_buffer_),
+                                           ImGuiInputTextFlags_EnterReturnsTrue);
+      new_name = Sanitize(name_buffer_);
+      problem = ProblemWith(new_name, name_buffer_[0] != '\0');
+      if (!problem.empty()) {
+        // Wrapped: the message names the clashing save and outgrows the window.
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.97f, 0.72f, 0.33f, 1.0f));
+        ImGui::TextWrapped("%s", problem.c_str());
+        ImGui::PopStyleColor();
+      } else if (!new_name.empty()) {
+        ImGui::TextDisabled("Saved as: %s", new_name.c_str());
+      } else {
+        ImGui::TextDisabled("Starts from the beginning, in a folder of its own.");
+      }
+    }
+
+    // --- remember + go ----------------------------------------------------------------
+    ImGui::Checkbox("Always use this save (do not ask again)", &remember_);
+    ImGui::TextDisabled("Hold Shift while the game starts to pick again.");
+
+    const bool can_play = selected_ != NewRow() || (!new_name.empty() && problem.empty());
+    ImGui::BeginDisabled(!can_play);
+    const bool clicked = ImGui::Button("Play", ImVec2(-1.0f, 44.0f));
+    ImGui::EndDisabled();
+
+    // --- keyboard ---------------------------------------------------------------------
+    if (!io.WantTextInput) {
+      const int step = (ImGui::IsKeyPressed(ImGuiKey_DownArrow) ? 1 : 0) -
+                       (ImGui::IsKeyPressed(ImGuiKey_UpArrow) ? 1 : 0);
+      if (step != 0) {
+        selected_ = std::clamp(selected_ + step, 0, NewRow());
+        scroll_to_selected_ = true;
+        focus_name_ = selected_ == NewRow();
+      }
+    }
+    const bool enter = !io.WantTextInput && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                                             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+
+    return can_play && (accept || clicked || submitted || enter);
+  }
+
+  void Accept() {
+    const bool fresh = selected_ == NewRow();
+    const std::string name = fresh ? Sanitize(name_buffer_) : plan_.choices[selected_].name;
+
+    rex::cvar::SetFlagByName(kUserName, name);
+    rex::cvar::SetFlagByName("profile_auto_select", remember_ ? "true" : "false");
+
+    // The content manager renames the directory the marker names to user_name
+    // whenever user_name is a directory that does not exist yet. With several
+    // saves that is the wrong move: a NEW save would take over the last-used one
+    // under another name, and the old name would vanish from the list. Naming
+    // the choice in the marker first makes the move a no-op, and keeps the
+    // manager from overwriting the marker with a name it merely warned about.
+    if (!pf::WriteMarker(plan_.root, name)) {
+      REXLOG_WARN("Save picker: could not write {}; the SDK may rename a save",
+                  (plan_.root / ".profile").string());
+    }
+
+    // Only the two lines this dialog owns. SaveConfig would persist every cvar
+    // that differs from its default whatever set it, and drop the lines of cvars
+    // this process has not registered. Without the tick nothing about the choice
+    // is written, so the next launch asks again.
+    std::vector<pf::ConfigEdit> edits;
+    if (remember_) {
+      edits.push_back({kUserName, pf::QuoteTomlString(name)});
+      edits.push_back({"profile_auto_select", std::string("true")});
+    } else if (plan_.remember) {
+      edits.push_back({"profile_auto_select", std::nullopt});
+    }
+    if (!edits.empty() && !config_path_.empty() && !pf::EditConfig(config_path_, edits)) {
+      REXLOG_WARN("Save picker: could not update {}", config_path_.string());
+    }
+
+    REXLOG_INFO("Save picker: playing '{}' ({}), always use: {}", name,
+                fresh ? "new save" : "existing save", remember_ ? "yes" : "no");
+
+    auto done = std::move(on_finished_);
+    Close();
+    if (done) {
+      done();
+    }
+  }
+
+  Plan plan_;
+  fs::path config_path_;
+  std::function<void()> on_finished_;
+  bool remember_ = false;
+  int selected_ = 0;
+  char name_buffer_[64] = {};
+  bool focus_name_ = false;
+  bool scroll_to_selected_ = true;
+  bool logged_first_draw_ = false;
+};
+
+}  // namespace
+
+void PrepareProfileChoice(const fs::path& user_data_root) {
+  g_plan = {};
+
+  // Only the SDK fork files saves under a profile name. The stock SDK uses the
+  // hex XUID and has no user_name cvar, so there is nothing to choose between.
+  if (!rex::cvar::GetFlagInfo(kUserName)) {
+    REXLOG_INFO("Save picker: off, this SDK has no user_name profile");
+    return;
+  }
+  if (rex::cvar::Query<bool>("headless")) {
+    return;
+  }
+  if (NameGivenFromOutside()) {
+    REXLOG_INFO("Save picker: off, user_name was given on the command line or environment");
+    return;
+  }
+
+  // The content manager resolves its root to an absolute path; so must the marker.
+  std::error_code ec;
+  fs::path root = fs::absolute(user_data_root, ec);
+  if (ec || root.empty()) {
+    root = user_data_root;
+  }
+
+  const std::string configured = Sanitize(rex::cvar::GetFlagByName(kUserName));
+  const std::string marker = pf::ReadMarker(root);
+  std::vector<pf::Profile> choices = pf::Enumerate(root, &Sanitize);
+  const size_t saves = choices.size();
+  const bool forced = ShiftHeld();
+  const bool remember = REXCVAR_GET(profile_auto_select);
+
+  // user_name names a directory that is not there while the marker points at one
+  // that is: the content manager will rename the second to the first. That is
+  // what editing user_name (or renaming in Settings) has always meant, so a
+  // picker has no business in it.
+  const bool rename_pending = !configured.empty() && !DirExists(root, configured) &&
+                              !marker.empty() && !pf::SameName(marker, configured) &&
+                              DirExists(root, marker);
+
+  // A name chosen earlier whose save was never written (a new save the player
+  // quit before saving) is still one of the saves to pick from.
+  if (!configured.empty() && !rename_pending && IndexOf(choices, configured) < 0) {
+    pf::Profile pending;
+    pending.name = configured;
+    choices.insert(choices.begin(), std::move(pending));
+  }
+
+  bool ask = false;
+  const char* reason = "";
+  if (saves == 0) {
+    reason = "no saves yet, the SDK asks for a name";
+  } else if (forced) {
+    ask = true;
+    reason = "Shift held";
+  } else if (configured.empty()) {
+    ask = true;
+    reason = "no user_name";
+  } else if (rename_pending) {
+    reason = "user_name was edited, the SDK renames the old save to it";
+  } else if (remember) {
+    reason = "profile_auto_select";
+  } else if (choices.size() >= 2) {
+    ask = true;
+    reason = "several saves";
+  } else {
+    reason = "a single save";
+  }
+
+  std::string names;
+  for (const pf::Profile& p : choices) {
+    names += (names.empty() ? "" : ", ") + p.name + (p.has_save ? "" : " (no save yet)");
+  }
+  REXLOG_INFO("Save picker: {} save(s) under '{}' [{}], user_name='{}', .profile='{}': {} ({})",
+              saves, root.string(), names, configured, marker, ask ? "asking" : "not asking",
+              reason);
+  if (!ask) {
+    return;
+  }
+
+  g_plan.ask = true;
+  g_plan.forced = forced;
+  g_plan.remember = remember;
+  g_plan.root = std::move(root);
+  // The first row: the save played last, which is what pressing Enter should
+  // continue. user_name is not the better guess: it is also whatever an earlier
+  // session's settings save happened to write down, and a name left over from a
+  // test run would send the player into a stale save. A name chosen but not yet
+  // saved sits ahead of them, being the newest intent.
+  g_plan.preselect = choices.front().name;
+  g_plan.choices = std::move(choices);
+
+  // The base's own prompt opens whenever user_name is empty. Seeding it keeps
+  // that prompt shut, and keeps a real save in place should the picker never get
+  // a window to draw on.
+  if (configured.empty()) {
+    rex::cvar::SetFlagByName(kUserName, g_plan.preselect);
+  }
+}
+
+bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+                       std::function<void()> on_finished) {
+  if (!g_plan.ask) {
+    return false;
+  }
+  Plan plan = std::move(g_plan);
+  g_plan = {};
+  if (!drawer) {
+    REXLOG_WARN("Save picker: no UI to show it on, keeping '{}'",
+                rex::cvar::GetFlagByName(kUserName));
+    return false;
+  }
+  REXLOG_INFO("Save picker: showing {} choice(s), '{}' preselected", plan.choices.size(),
+              plan.preselect);
+  // Shows itself on construction and deletes itself when closed, like every
+  // rex::ui::ImGuiDialog.
+  (void)new ProfilePickerDialog(drawer, std::move(plan), paths.config_path, std::move(on_finished));
+  return true;
+}
+
+}  // namespace larecomp
+
+#endif  // REXGLUE_HAS_XEO3_TARGET

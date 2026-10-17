@@ -29,6 +29,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
+#include "profile/larecomp_profile_picker.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "mc_engine/modloader/modloader.h"
 
@@ -445,6 +446,17 @@ class LarecompApp : public rex::ReXApp {
     std::_Exit(0);
   }
 
+  // Whether the player has to pick a save is decided here: the base has just
+  // read larecomp.toml, and its own name prompt (which only knows how to ask for
+  // one text) has not yet looked at user_name.
+  bool SetupEnvironment() override {
+    if (!rex::ReXApp::SetupEnvironment()) {
+      return false;
+    }
+    larecomp::PrepareProfileChoice(user_data_root());
+    return true;
+  }
+
   void OnConfigurePaths(rex::PathConfig& paths) override {
     const auto root = ExeDir();
 
@@ -530,13 +542,31 @@ class LarecompApp : public rex::ReXApp {
   // Filled by OnConfigurePaths, which runs before logging exists.
   std::vector<std::string> path_notes_;
 
-  // First-launch wizards: install the game files from an ISO, then offer to
-  // import a save. Both are asynchronous -- rex::ReXApp lets this hook return
-  // std::nullopt and call `resume` later from the UI thread -- because a nested
-  // message loop never drains the SDL event queue the window lives on, and the
-  // stock SDK offers no way to pump it at all. While a wizard is up, the app's
-  // own loop keeps drawing it.
+  // First-launch dialogs: which save to play, install the game files from an
+  // ISO, then offer to import a save. All asynchronous -- rex::ReXApp lets this
+  // hook return std::nullopt and call `resume` later from the UI thread --
+  // because a nested message loop never drains the SDL event queue the window
+  // lives on, and the stock SDK offers no way to pump it at all. While one is
+  // up, the app's own loop keeps drawing it.
   std::optional<rex::PathConfig> OnFinalizePaths(const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
+    // The save comes first: the save check below and the content manager both
+    // key on the profile name it settles.
+    if (larecomp::ShowProfilePicker(imgui_drawer(), defaults, [this, defaults, resume]() {
+          // Called from the dialog's own draw: step out of it first.
+          app_context().CallInUIThreadDeferred([this, defaults, resume]() {
+            if (auto paths = FinalizePathsAfterProfile(defaults, resume)) {
+              resume(std::move(*paths));
+            }
+          });
+        })) {
+      return std::nullopt;
+    }
+    return FinalizePathsAfterProfile(defaults, resume);
+  }
+
+  // The ISO wizard, then the save offer: the paths when nothing is up, or
+  // std::nullopt when a wizard is and will call `resume` itself.
+  std::optional<rex::PathConfig> FinalizePathsAfterProfile(const rex::PathConfig& defaults, const std::function<void(rex::PathConfig)>& resume) {
     rex::PathConfig paths = defaults;
 
     if (!larecomp::IsGameInstalled(paths.game_data_root)) {
