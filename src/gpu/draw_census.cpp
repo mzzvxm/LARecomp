@@ -18,7 +18,54 @@ REXCVAR_DEFINE_STRING(
     "distribution. Empty: off.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_census_targets, false, "MCLA/GPU",
+    "Diagnostic: per report window, every pass the frames drew into (its EDRAM "
+    "targets) with its draws per frame and the pixel shaders that drew there.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace mcla::gpu {
+
+void TargetCensus::Configure() {
+  active_ = REXCVAR_GET(mcla_gpu_census_targets);
+  if (active_) {
+    REXLOG_WARN("[gpu] census ON (diagnostic): passes by EDRAM targets, with their pixel shaders");
+  }
+}
+
+std::string TargetCensus::TakeReport() {
+  if (!active_ || passes_.empty()) {
+    return {};
+  }
+  const double frames = frames_ ? double(frames_) : 1.0;
+  std::vector<std::pair<const std::string*, const Pass*>> order;
+  order.reserve(passes_.size());
+  for (const auto& [label, pass] : passes_) {
+    order.emplace_back(&label, &pass);
+  }
+  std::sort(order.begin(), order.end(),
+            [](const auto& a, const auto& b) { return a.second->draws > b.second->draws; });
+  std::string text = std::format("census of passes over {} frames, {} passes:", frames_,
+                                 order.size());
+  for (const auto& [label, pass] : order) {
+    std::vector<std::pair<uint64_t, uint64_t>> shaders(pass->shaders.begin(), pass->shaders.end());
+    std::sort(shaders.begin(), shaders.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string list;
+    for (size_t i = 0; i < shaders.size() && i < kShadersListed; ++i) {
+      list += std::format("{}{:016x} {:.1f}", i ? ", " : "", shaders[i].first,
+                          double(shaders[i].second) / frames);
+    }
+    if (shaders.size() > kShadersListed) {
+      list += std::format(" (+{} more)", shaders.size() - kShadersListed);
+    }
+    text += std::format("\n  [pass] {} | {:.1f} draws/frame | PS {}", *label,
+                        double(pass->draws) / frames, list);
+  }
+  passes_.clear();
+  frames_ = 0;
+  return text;
+}
 
 void DrawCensus::Configure() {
   shader_count_ = 0;

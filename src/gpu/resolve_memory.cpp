@@ -14,6 +14,7 @@
 #include <cstring>
 #include <format>
 
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/logging.h>
 
@@ -24,8 +25,18 @@
 #include "frame.h"
 #include "host_passes.h"
 #include "host_shaders.h"
+#include "pass_timing.h"
 #include "upload.h"
 #include "watch.h"
+
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_resolve_memory_encode_delay, 0, "MCLA/GPU",
+    "Frames a colour resolve's encode into the resolve memory may wait. 0: every "
+    "encode of a frame is recorded at its end (as before). N: recorded once a reader or writer "
+    "of its pages needs it, or after N frames; a resolve that rewrites the same rectangle "
+    "replaces it before it runs. At most 120. Hot reload.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
 
 namespace mcla::gpu {
 
@@ -152,6 +163,25 @@ uint32_t LevelPitch(const texture_decode::Source& source, uint32_t bpb_log2) {
   return source.tiled ? source.row_pitch_bytes >> bpb_log2 : source.row_pitch_bytes;
 }
 
+// By ResolveMemory::FlushReason: the pass-timing label of a batch (the
+// end-of-frame one is Scene's) and the summary's name.
+constexpr const char* kBatchLabels[] = {
+    "resolve memory encode (batch)",
+    "resolve memory encode (batch before depth)",
+    "resolve memory encode (batch before a decode)",
+    "resolve memory encode (batch before a vertex copy)",
+    "resolve memory encode (batch before a resolve over it)",
+    "resolve memory encode (batch before an upload under it)",
+    "resolve memory encode (batch before a lock)",
+    "resolve memory encode (batch before a product remake)",
+};
+constexpr const char* kReasonNames[] = {
+    "end of frame", "depth", "decode",  "vertex copy", "resolve over one",
+    "upload",       "lock",  "remake",
+};
+static_assert(std::size(kBatchLabels) == size_t(ResolveMemory::FlushReason::kCount));
+static_assert(std::size(kReasonNames) == size_t(ResolveMemory::FlushReason::kCount));
+
 }  // namespace
 
 ResolveMemory::~ResolveMemory() {
@@ -160,7 +190,7 @@ ResolveMemory::~ResolveMemory() {
 
 bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                                UploadRing& upload, GuestMemory& memory, HostPasses& passes,
-                               TextureCache& textures) {
+                               TextureCache& textures, PassTiming& pass_timing) {
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -168,6 +198,7 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   memory_ = &memory;
   passes_ = &passes;
   textures_ = &textures;
+  pass_timing_ = &pass_timing;
   subscriber_ = memory.Subscribe("resolve memory");
   if (subscriber_ == GuestMemory::kNoSubscriber) {
     // Without the watch a CPU write would never reach the pages: no silent
@@ -278,6 +309,9 @@ void ResolveMemory::Shutdown() {
     d->views.Drop();
   }
   pending_.clear();
+  chosen_.clear();
+  choose_spans_.clear();
+  last_batch_.clear();
   readback_buffer_.reset();
   readback_bytes_ = 0;
   readback_fence_.reset();
@@ -322,6 +356,7 @@ void ResolveMemory::Shutdown() {
   memory_ = nullptr;
   passes_ = nullptr;
   textures_ = nullptr;
+  pass_timing_ = nullptr;
 }
 
 bool ResolveMemory::MakeSets() {
@@ -350,6 +385,12 @@ bool ResolveMemory::MakeSets() {
 void ResolveMemory::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
+  // mcla_gpu_work_17oct off: as before 17/10 -- every encode at the end of its frame,
+  // no batch counters.
+  counters_ = REXCVAR_GET(mcla_gpu_work_17oct);
+  delay_ = counters_ ? std::min<uint32_t>(REXCVAR_GET(mcla_gpu_resolve_memory_encode_delay),
+                                          kMaxEncodeDelay)
+                     : 0;
   // The slot's last frame has completed (FrameRing::Advance waited for it):
   // its vertex copies are free again.
   if (slot < vertex_chunks_.size()) {
@@ -702,10 +743,6 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
   if (copy.x1 <= copy.x0 || copy.y1 <= copy.y0) {
     return true;
   }
-  if (copy.depth) {
-    // Recorded now, after every colour encode waiting: their pages may overlap.
-    Flush(list);
-  }
   TextureLevelStorage storage;
   if (!GetTextureLevelStorage(key, copy.level, &storage)) {
     return fail("the destination level has no storage");
@@ -728,16 +765,50 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     return fail("a rectangle beyond the destination level's storage");
   }
   pages_.clear();
+  uint32_t low_page = UINT32_MAX, high_page = 0;
   for (uint32_t i = 0; i < page_span; ++i) {
     if (!touched_[i].first) {
       continue;
     }
     const uint32_t page = first_page + i;
+    low_page = std::min(low_page, page);
+    high_page = std::max(high_page, page);
     if (!EnsureChunk(list, page >> (kChunkShift - kPageShift))) {
       return fail("no pool chunk for the destination");
     }
     if (touched_[i].second < kPageBytes && !(page_flags_[page] & kValid)) {
       pages_.push_back(page);
+    }
+  }
+  if (copy.depth) {
+    // Recorded now, after every colour encode waiting: their pages may overlap.
+    const PageSpan span{low_page, high_page};
+    FlushFor(list, FlushReason::kDepthEncode, &span, 1);
+  } else if (counters_ && !pending_.empty() && !pages_.empty()) {
+    // A page uploaded now under a waiting encode's: recorded
+    // later, that encode lays its bytes over these. Counted; with a delay the
+    // encodes over them are recorded first (with 0, as before).
+    upload_spans_.clear();
+    for (const uint32_t page : pages_) {
+      bool under = false;
+      for (const Pending& p : pending_) {
+        if (page >= p.first_page && page <= p.last_page) {
+          under = true;
+          break;
+        }
+      }
+      if (!under) {
+        continue;
+      }
+      ++stats_.uploads_under_waiting;
+      if (!upload_spans_.empty() && upload_spans_.back().last + 1 == page) {
+        upload_spans_.back().last = page;
+      } else {
+        upload_spans_.push_back(PageSpan{page, page});
+      }
+    }
+    if (delay_ > 0 && !upload_spans_.empty()) {
+      FlushFor(list, FlushReason::kUpload, upload_spans_.data(), upload_spans_.size());
     }
   }
   if (table_dirty_) {
@@ -772,13 +843,6 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
       (uint32_t(copy.x1 - push.group_x0) + uint32_t(group) - 1) / uint32_t(group);
   const uint32_t dispatch_x = (groups_x + 7) / 8;
   const uint32_t dispatch_y = (uint32_t(copy.y1 - copy.y0) + 7) / 8;
-  uint32_t low_page = UINT32_MAX, high_page = 0;
-  for (uint32_t i = 0; i < page_span; ++i) {
-    if (touched_[i].first) {
-      low_page = std::min(low_page, first_page + i);
-      high_page = std::max(high_page, first_page + i);
-    }
-  }
   if (copy.depth) {
     PoolBarrier(list, PoolAccess::kComputeWrite);
     list->setComputePipelineLayout(encode_layout_.get());
@@ -803,6 +867,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     p.last_page = high_page;
     p.groups_x = dispatch_x;
     p.groups_y = dispatch_y;
+    p.frame = frame_;
     static_assert(sizeof(p.push) == sizeof(push));
     std::memcpy(p.push.data(), &push, sizeof(push));
     pending_.push_back(p);
@@ -848,6 +913,21 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
 
 void ResolveMemory::BeforeResolve(plume::RenderCommandList* list, const TextureKey& key,
                                   uint32_t level, int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+  if (counters_ && !last_batch_.empty()) {
+    // The count of the last end-of-frame batch's encodes that a resolve of
+    // the next frame writes again whole.
+    size_t kept = 0;
+    for (size_t i = 0; i < last_batch_.size(); ++i) {
+      const Recorded& r = last_batch_[i];
+      if (r.level == level && r.key == key && x0 <= r.x0 && y0 <= r.y0 && x1 >= r.x1 &&
+          y1 >= r.y1) {
+        ++stats_.rewritten_next_frame;
+        continue;
+      }
+      last_batch_[kept++] = r;
+    }
+    last_batch_.resize(kept);
+  }
   bool overlap = false;
   size_t kept = 0;
   for (size_t i = 0; i < pending_.size(); ++i) {
@@ -863,15 +943,131 @@ void ResolveMemory::BeforeResolve(plume::RenderCommandList* list, const TextureK
     pending_[kept++] = pending_[i];
   }
   pending_.resize(kept);
-  if (overlap) {
+  if (overlap && !counters_) {
     // The product is about to lose texels a waiting encode still has to read.
-    Flush(list);
+    Record(list, FlushReason::kResolveOverlap, SIZE_MAX, true);
+  } else if (overlap) {
+    // The product is about to lose texels a waiting encode still has to read.
+    const size_t needed = Choose([&](const Pending& p) {
+      return p.level == level && p.key == key && x0 < p.x1 && p.x0 < x1 && y0 < p.y1 && p.y0 < y1;
+    });
+    Record(list, FlushReason::kResolveOverlap, needed, delay_ == 0);
   }
 }
 
-void ResolveMemory::Flush(plume::RenderCommandList* list) {
+bool ResolveMemory::Waiting(const TextureKey& key) const {
+  for (const Pending& p : pending_) {
+    if (p.key == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename Seed>
+size_t ResolveMemory::Choose(Seed&& seed) {
+  chosen_.assign(pending_.size(), 0);
+  choose_spans_.clear();
+  size_t count = 0;
+  // Newest first: an older encode over a chosen one's pages runs before it.
+  for (size_t i = pending_.size(); i-- > 0;) {
+    const Pending& p = pending_[i];
+    bool pick = seed(p);
+    for (size_t s = 0; !pick && s < choose_spans_.size(); ++s) {
+      pick = p.first_page <= choose_spans_[s].last && choose_spans_[s].first <= p.last_page;
+    }
+    if (pick) {
+      chosen_[i] = 1;
+      ++count;
+      choose_spans_.push_back({p.first_page, p.last_page});
+    }
+  }
+  return count;
+}
+
+void ResolveMemory::Flush(plume::RenderCommandList* list, FlushReason reason) {
+  if (reason == FlushReason::kEndOfFrame && delay_ > 0) {
+    // The ones that waited `delay_` frames: a prefix of the list (it is in the
+    // order they were made), so every older one over their pages comes along.
+    Choose([&](const Pending& p) { return p.frame + delay_ <= frame_; });
+    Record(list, reason, SIZE_MAX, false);
+  } else {
+    Record(list, reason, SIZE_MAX, true);
+  }
+  if (reason == FlushReason::kEndOfFrame) {
+    stats_.waiting_sum += pending_.size();
+    stats_.waiting_max = std::max<uint64_t>(stats_.waiting_max, pending_.size());
+  }
+}
+
+void ResolveMemory::FlushFor(plume::RenderCommandList* list, FlushReason reason,
+                             const PageSpan* spans, size_t count) {
   if (pending_.empty() || !list) {
     return;
+  }
+  if (!counters_) {
+    // mcla_gpu_work_17oct off: the whole batch, uncounted, as before 17/10.
+    Record(list, reason, SIZE_MAX, true);
+    return;
+  }
+  const size_t needed = Choose([&](const Pending& p) {
+    for (size_t i = 0; i < count; ++i) {
+      if (p.first_page <= spans[i].last && spans[i].first <= p.last_page) {
+        return true;
+      }
+    }
+    return false;
+  });
+  Record(list, reason, needed, delay_ == 0);
+}
+
+void ResolveMemory::FlushForLock(plume::RenderCommandList* list, uint32_t address, uint32_t size) {
+  if (size == 0) {
+    Flush(list, FlushReason::kLock);
+    return;
+  }
+  const PageSpan span{address >> kPageShift,
+                      uint32_t((uint64_t(address) + size - 1) >> kPageShift)};
+  FlushFor(list, FlushReason::kLock, &span, 1);
+}
+
+void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, size_t needed,
+                           bool all) {
+  const auto recorded = [&](size_t i) { return all || chosen_[i] != 0; };
+  if (reason == FlushReason::kEndOfFrame && counters_) {
+    // For the count of the ones the next frame writes again (BeforeResolve).
+    last_batch_.clear();
+    for (size_t i = 0; i < pending_.size(); ++i) {
+      if (recorded(i)) {
+        const Pending& p = pending_[i];
+        last_batch_.push_back({p.key, p.level, p.x0, p.y0, p.x1, p.y1});
+      }
+    }
+  }
+  if (pending_.empty() || !list) {
+    return;
+  }
+  size_t count = pending_.size();
+  if (!all) {
+    count = 0;
+    for (size_t i = 0; i < pending_.size(); ++i) {
+      count += chosen_[i] != 0;
+    }
+  }
+  if (count == 0) {
+    return;
+  }
+  const size_t r = size_t(reason);
+  ++stats_.batches_by[r];
+  stats_.recorded_by[r] += count;
+  if (needed != SIZE_MAX) {
+    stats_.needed_by[r] += needed;
+  }
+  // The end-of-frame batch has Scene's mark; the others are timed apart from
+  // what they come before.
+  const bool timed = pass_timing_ && pass_timing_->enabled() && reason != FlushReason::kEndOfFrame;
+  if (timed) {
+    pass_timing_->Mark(list, kBatchLabels[r]);
   }
   ++stats_.flushes;
   PoolBarrier(list, PoolAccess::kComputeWrite);
@@ -882,7 +1078,17 @@ void ResolveMemory::Flush(plume::RenderCommandList* list) {
   list->setComputeDescriptorSet(encode_set_.get(), 4);
   list->setPipeline(encode_pipelines_[0].get());
   wave_.clear();
-  for (const Pending& p : pending_) {
+  size_t kept = 0;
+  for (size_t i = 0; i < pending_.size(); ++i) {
+    if (!recorded(i)) {
+      // Waits on, in its place in the order.
+      if (kept != i) {
+        pending_[kept] = pending_[i];
+      }
+      ++kept;
+      continue;
+    }
+    const Pending& p = pending_[i];
     // Encodes over the same pages keep the order the resolves had.
     bool overlaps = false;
     for (const auto& range : wave_) {
@@ -900,7 +1106,10 @@ void ResolveMemory::Flush(plume::RenderCommandList* list) {
     list->setComputePushConstants(0, p.push.data(), 0, uint32_t(sizeof(p.push)));
     list->dispatch(p.groups_x, p.groups_y, 1);
   }
-  pending_.clear();
+  pending_.resize(kept);
+  if (timed && reason == FlushReason::kDepthEncode) {
+    pass_timing_->Mark(list, "resolve memory encode (depth)");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1206,8 @@ bool ResolveMemory::CopyVertices(const VertexCopy& c, plume::RenderCommandList* 
   // The source vertices the dispatch reads; their pages must hold the
   // console's bytes (the ones not valid come from guest memory).
   pages_.clear();
+  PageSpan source_span;
+  size_t source_spans = 0;
   if (c.sources != 0) {
     const uint32_t first_source = c.fold ? c.first / 4 : c.first;
     const uint32_t last_wanted = c.fold ? (c.first + c.vertices - 1) / 4 : c.first + c.vertices - 1;
@@ -1011,6 +1222,8 @@ bool ResolveMemory::CopyVertices(const VertexCopy& c, plume::RenderCommandList* 
           pages_.push_back(page);
         }
       }
+      source_span = PageSpan{first_page, last_page};
+      source_spans = 1;
     }
   }
   VertexChunk* chunk = VertexChunkFor(bytes);
@@ -1018,7 +1231,10 @@ bool ResolveMemory::CopyVertices(const VertexCopy& c, plume::RenderCommandList* 
     return failed("no destination");
   }
   // Encodes still waiting write the bytes this reads.
-  Flush(list);
+  FlushFor(list, FlushReason::kVertexCopy, &source_span, source_spans);
+  if (pass_timing_->enabled()) {
+    pass_timing_->Mark(list, "resolve memory vertex copy");
+  }
   for (uint32_t page : pages_) {
     if (!EnsureChunk(list, page >> (kChunkShift - kPageShift))) {
       return failed("no pool chunk for the stream's pages");
@@ -1276,7 +1492,18 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
     watch::MaybeCapture(watch::Moment::kDecode);
   }
   // Encodes still waiting write the bytes this reads.
-  Flush(list);
+  PageSpan read_spans[2];
+  size_t read_span_count = 0;
+  for (const auto& r : d->ranges) {
+    if (r[1]) {
+      read_spans[read_span_count++] =
+          PageSpan{r[0] >> kPageShift, uint32_t((uint64_t(r[0]) + r[1] - 1) >> kPageShift)};
+    }
+  }
+  FlushFor(list, FlushReason::kDecode, read_spans, read_span_count);
+  if (pass_timing_->enabled()) {
+    pass_timing_->Mark(list, "resolve memory decode");
+  }
   for (uint32_t page : pages_) {
     if (!EnsureChunk(list, page >> (kChunkShift - kPageShift))) {
       *why = "no pool chunk for the texture's pages";
@@ -1593,6 +1820,33 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
                         double(stats_.vertex_copies) / f,
                         double(stats_.vertex_copy_bytes) / f / 1048576.0,
                         stats_.vertex_copy_failures);
+  }
+  // Batches by reason: encodes recorded, and the ones the reason
+  // needed -- for the end of the frame, the ones a resolve of the next frame
+  // wrote again whole.
+  std::string reasons;
+  for (size_t r = 0; r < size_t(FlushReason::kCount); ++r) {
+    if (!stats_.batches_by[r]) {
+      continue;
+    }
+    reasons += std::format("{}{} {:.2f}/frame ({:.1f} encodes", reasons.empty() ? "" : ", ",
+                           kReasonNames[r], double(stats_.batches_by[r]) / f,
+                           double(stats_.recorded_by[r]) / f);
+    if (r == size_t(FlushReason::kEndOfFrame)) {
+      reasons += std::format(", {:.1f} written again whole in the next frame)",
+                             double(stats_.rewritten_next_frame) / f);
+    } else if (r == size_t(FlushReason::kRemake)) {
+      reasons += ")";
+    } else {
+      reasons += std::format(", {:.1f} needed)", double(stats_.needed_by[r]) / f);
+    }
+  }
+  text += std::format(" | batches by reason: {} | pages uploaded under a waiting encode {}",
+                      reasons.empty() ? std::string("none") : reasons,
+                      stats_.uploads_under_waiting);
+  if (delay_ > 0 || stats_.waiting_max > 0) {
+    text += std::format(" | encode delay {}: {:.1f} waiting after each frame (max {})", delay_,
+                        double(stats_.waiting_sum) / f, stats_.waiting_max);
   }
   if (reach_) {
     text += std::format(" | reach: {} pages marked by inherited resolves", stats_.inherited_marked);

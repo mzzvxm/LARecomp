@@ -58,6 +58,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
+REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
 
 namespace mcla::gpu {
 
@@ -611,7 +612,7 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     // A resolve from a target of another scale: the product is
     // made again at this one. The encodes still waiting (any may read it)
     // are recorded first; its objects die after the frames that use them.
-    resolve_memory_->Flush(list);
+    resolve_memory_->Flush(list, ResolveMemory::FlushReason::kRemake);
     if (watch::Active() && watch::TouchesKey(key)) {
       watch::Log(std::format("product {} made again: {}x -> {}x", key.Describe(), p->scale, scale));
     }
@@ -1143,7 +1144,8 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       // here by the target's origin, not the copy's: the surface is drawn whole
       // at once and a tile's rectangle starts inside covered pixels.
       push.fill = 0;
-      if (resolution_scale > 1 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel)) {
+      if (resolution_scale > 1 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel) &&
+          REXCVAR_GET(mcla_gpu_work_17oct)) {
         bool present = false;
         xreg::PA_SU_VTX_CNTL vtx;
         vtx.value = pre.Register(guest::reg::kPaSuVtxCntl, &present);
@@ -1329,6 +1331,13 @@ void ResolveCache::EvictSome() {
   for (auto it = products_.begin(); it != products_.end();) {
     Product& p = *it->second;
     if (!p.active && p.last_frame + kEvictFrames < frame_) {
+      if (resolve_memory_->Waiting(p.key)) {
+        // An encode still waiting reads it through its slot: it
+        // lives until that encode is recorded.
+        ++stats_.evictions_put_off;
+        ++it;
+        continue;
+      }
       p.views.Release(*frames_, *heap_);
       for (auto& framebuffer : p.level_framebuffers) {
         frames_->Retire(std::move(framebuffer));
@@ -1368,7 +1377,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       "resolves {:.1f}/frame: {} copied ({:.2f} Mpixel/frame), {} clear only, clears {} colour {} "
       "depth | conversions [{}] | failed [{}] | products {} ({} active), created {} ({} made "
       "again at another scale), activated "
-      "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, half-pixel filled {}, "
+      "{}, deactivated by overlap {} / CPU {}, evicted {} ({} put off) | partial {}, half-pixel "
+      "filled {}, "
       "misaligned {}, source "
       "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image, {} "
       "by image base, {} of a level not wholly written) | "
@@ -1379,7 +1389,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
       active, stats_.created, stats_.remade_for_scale, stats_.activated,
       stats_.deactivated_by_overlap,
-      stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.half_pixel_filled,
+      stats_.deactivated_by_cpu, stats_.evicted, stats_.evictions_put_off, stats_.partial,
+      stats_.half_pixel_filled,
       stats_.misaligned,
       stats_.from_registers, stats_.other_pitch, stats_.finds, stats_.found,
       stats_.found_by_image, stats_.found_by_image_base, stats_.found_incomplete, stats_.locks,

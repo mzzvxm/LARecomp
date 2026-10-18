@@ -108,7 +108,8 @@ class FrameRing {
 
   // Waits until the queue is idle -- every submission, and the queue work that
   // follows the last one (the swap chain's present), which no frame fence
-  // covers -- and destroys every retired object no open list can name. Used
+  // covers -- then waits each slot's outstanding fence (consuming its signal,
+  // see above), and destroys every retired object no open list can name. Used
   // around swap-chain rebuilds and at shutdown; valid with a list open (the
   // guest frame being recorded). With the device lost the waits are skipped
   // (a removed device never signals a fence).

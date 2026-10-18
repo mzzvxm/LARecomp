@@ -215,17 +215,24 @@ class EdramTargets {
   // Callers do no ownership work at all while aliasing() is false.
   bool aliasing() const { return aliasing_; }
   // The internal resolution scale and the one a target of this
-  // identity gets: the scene's (pitch 1280: its colour, its depth, the UI)
-  // are scaled; the post-processing, shadow, reflection and impostor targets
-  // keep the guest's size for now. A draw's colour and depth share the
-  // pitch, hence the scale.
+  // identity gets, by its class (the census of passes): the
+  // scene's (pitch 1280: its colour, its depth, the UI) always; the sun's
+  // shadow (pitch 640 4x), the reflection with the night shadow sharing its
+  // depth (pitch 520 4x) and the bloom chain (colour 1x: pitch 640
+  // 2_10_10_10_FLOAT or 16_16_16_16_FLOAT, pitch 320 2_10_10_10_FLOAT) each
+  // only with its cvar (mcla_gpu_scale_shadow, _reflection, _post); the rest
+  // -- luminance, noise, impostors, the rain's particle state -- at the
+  // guest's size. The shadow and reflection classes go by pitch and samples
+  // so that a draw's colour and depth never get different scales.
   static constexpr uint32_t kMaxResolutionScale = 3;
-  static constexpr uint32_t kScaledPitch = 1280;
+  static constexpr uint32_t kScenePitch = 1280;
+  enum class ScaleClass : uint8_t { kBase, kScene, kShadow, kReflection, kPost };
+  static ScaleClass ClassOf(const EdramKey& key);
+  static const char* ScaleClassName(ScaleClass c);
   uint32_t resolution_scale() const { return resolution_scale_; }
-  uint32_t ScaleForPitch(uint32_t pitch) const {
-    return pitch == kScaledPitch ? resolution_scale_ : 1;
+  uint32_t ScaleFor(const EdramKey& key) const {
+    return class_scale_[size_t(ClassOf(key))];
   }
-  uint32_t ScaleFor(const EdramKey& key) const { return ScaleForPitch(key.pitch); }
   // A rectangle in guest pixels, in a target's host pixels.
   static plume::RenderRect ScaledRect(const plume::RenderRect& guest, uint32_t scale) {
     const int32_t s = int32_t(scale);
@@ -503,6 +510,7 @@ class EdramTargets {
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
   uint32_t resolution_scale_ = 1;
+  std::array<uint32_t, 5> class_scale_{1, 1, 1, 1, 1};  // by ScaleClass, chosen at start
   bool coverage_ = false;
   uint32_t slot_ = 0;
   std::vector<std::unique_ptr<plume::RenderQueryPool>> coverage_pools_;

@@ -53,6 +53,22 @@ REXCVAR_DEFINE_UINT32(
     "many times the guest's in each direction (1, 2 or 3; 2 = 2560x1440, 3 = 3840x2160 from "
     "720p). The guest keeps seeing its own sizes. M6b in progress: keep 1.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_scale_shadow, false, "MCLA/GPU",
+    "With mcla_gpu_resolution_scale above 1: the sun's shadow map (pitch 640 4x) at "
+    "the internal scale too -- sharper shadows, more GPU time and memory. Off: the guest's size.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_scale_reflection, false, "MCLA/GPU",
+    "With mcla_gpu_resolution_scale above 1: the reflection pass and the night shadow "
+    "that shares its depth (pitch 520 4x) at the internal scale too. Off: the guest's size.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_scale_post, false, "MCLA/GPU",
+    "With mcla_gpu_resolution_scale above 1: the bloom chain (colour 1x, pitch 640 "
+    "and 320) at the internal scale too. Off: the guest's size.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
 
 namespace mcla::gpu {
 
@@ -82,6 +98,38 @@ uint32_t FoldColorFormat(uint32_t color_format) {
     case 12: return 3;  // k_2_10_10_10_FLOAT_AS_16_16_16_16
     default: return color_format;
   }
+}
+
+EdramTargets::ScaleClass EdramTargets::ClassOf(const EdramKey& key) {
+  // The census of passes: what draws into each identity.
+  constexpr uint8_t k2101010Float = 3;  // xenos ColorRenderTargetFormat
+  constexpr uint8_t k16161616Float = 7;
+  if (key.pitch == kScenePitch) {
+    return ScaleClass::kScene;
+  }
+  if (key.samples == 4 && key.pitch == 640) {
+    return ScaleClass::kShadow;  // kD24S8@0, PS_ShadowDepthAlpha
+  }
+  if (key.samples == 4 && key.pitch == 520) {
+    return ScaleClass::kReflection;  // the *Env pass and PS_ShadowNight, one depth
+  }
+  if (key.samples == 1 && !key.depth &&
+      ((key.pitch == 640 && (key.format == k2101010Float || key.format == k16161616Float)) ||
+       (key.pitch == 320 && key.format == k2101010Float))) {
+    return ScaleClass::kPost;  // PSInitialScaleBuffer, PSStreakMotionBlur, PSBrightPass, PSGauss*
+  }
+  return ScaleClass::kBase;
+}
+
+const char* EdramTargets::ScaleClassName(ScaleClass c) {
+  switch (c) {
+    case ScaleClass::kBase: return "base";
+    case ScaleClass::kScene: return "scene";
+    case ScaleClass::kShadow: return "shadow";
+    case ScaleClass::kReflection: return "reflection";
+    case ScaleClass::kPost: return "post";
+  }
+  return "?";
 }
 
 std::string DescribeEdramKey(const EdramKey& k) {
@@ -147,6 +195,23 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   if (resolution_scale_ > 1) {
     REXLOG_INFO("[gpu] edram: the scene's targets at {}x the guest's size",
                 resolution_scale_);
+  }
+  // The classes: the scene's always, the others by their cvars --
+  // and only with mcla_gpu_work_17oct on at start (off: as before 17/10).
+  class_scale_.fill(1);
+  class_scale_[size_t(ScaleClass::kScene)] = resolution_scale_;
+  const bool work_17_10 = REXCVAR_GET(mcla_gpu_work_17oct);
+  const std::pair<ScaleClass, bool> classes[] = {
+      {ScaleClass::kShadow, REXCVAR_GET(mcla_gpu_scale_shadow)},
+      {ScaleClass::kReflection, REXCVAR_GET(mcla_gpu_scale_reflection)},
+      {ScaleClass::kPost, REXCVAR_GET(mcla_gpu_scale_post)},
+  };
+  for (const auto& [c, on] : classes) {
+    if (on && work_17_10 && resolution_scale_ > 1) {
+      class_scale_[size_t(c)] = resolution_scale_;
+      REXLOG_INFO("[gpu] edram: the {} targets at {}x too", ScaleClassName(c),
+                  resolution_scale_);
+    }
   }
   // The detector and its checks are chosen at start.
   aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);

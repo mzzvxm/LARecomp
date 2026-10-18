@@ -153,7 +153,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     watch::SetCaptureRequest([this] { capture_.Request(); });
     ok = passes_.Initialize(device_, heap_) &&
          resolve_memory_.Initialize(device_, frames_, heap_, upload_, guest_memory_, passes_,
-                                    textures_) &&
+                                    textures_, pass_timing_) &&
          resolve_.Initialize(device_, frames_, heap_, guest_memory_, textures_, edram_, passes_,
                              pass_timing_, resolve_memory_);
   }
@@ -362,18 +362,21 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
     case RecordType::kFence:
       ExecuteFence(*reinterpret_cast<const FenceRecord*>(payload));
       return;
-    case RecordType::kLock:
+    case RecordType::kLock: {
       // The write-back reads the products on the GPU: what this frame recorded
       // so far (the resolves among it) goes to the queue first, as a batch.
-      resolve_.OnLock(*reinterpret_cast<const LockRecord*>(payload), [this] {
+      const auto& lock = *reinterpret_cast<const LockRecord*>(payload);
+      resolve_.OnLock(lock, [this, &lock] {
         if (frames_.is_open()) {
           scene_.BeforeFlush(frames_.list());
           // The encodes still waiting write bytes the write-back copies.
-          resolve_memory_.Flush(frames_.list());
+          resolve_memory_.FlushForLock(frames_.list(), lock.address, lock.size);
+          pass_timing_.Mark(frames_.list(), "lock write-back");
           scene_.OnListChanged(frames_.FlushBatch());
         }
       });
       return;
+    }
     case RecordType::kPad:
     case RecordType::kCount:
       break;

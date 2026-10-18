@@ -41,6 +41,24 @@ REXCVAR_DEFINE_BOOL(
     "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
     "draw), one line per window of 600 frames. Off: nothing is timed.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// The switch over the renderer work of 17/10/2026, asked for by
+// the user, live: on, every part of it runs as its own cvar says; off, the
+// renderer does what it did before that day.
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_work_17oct, true, "MCLA/GPU",
+    "On/off for all of the renderer work of 17/10/2026: the half-pixel fill of "
+    "scaled resolves (mcla_gpu_resolve_fill_half_pixel), the depth bias times the scale "
+    "(mcla_gpu_scale_depth_bias), the delayed colour encodes "
+    "(mcla_gpu_resolve_memory_encode_delay), the scale classes (mcla_gpu_scale_shadow, "
+    "_reflection, _post; these at the next start) and the encode batch counters. Off: as before "
+    "that day. Hot reload.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_scale_depth_bias, true, "MCLA/GPU",
+    "With a resolution scale above 1 (M6b.3c): the slope-scaled depth bias times the "
+    "scale of the draw's targets, as Xenia does -- a host pixel is 1/scale of the guest's. Off: "
+    "the guest's factor unchanged (for A/B). Hot reload.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
@@ -225,6 +243,27 @@ const char* ConversionName(uint32_t conversion) {
   return conversion < std::size(kNames) ? kNames[conversion] : "?";
 }
 
+// The resolution scale of a draw's targets: the class of its
+// first identity -- RT0, or the depth target when it writes no colour -- as
+// Scene::Record finds them (and checks that every other target agrees).
+uint32_t DrawScale(const EdramTargets& edram, const XenosState& s, const PipelineKey& key) {
+  EdramKey first;
+  first.pitch = uint16_t(s.surface_pitch);
+  first.samples = uint8_t(MsaaSampleCount(s.msaa));
+  if (key.color_count) {
+    first.base_tiles = uint16_t(s.color[0].base_tiles);
+    first.depth = 0;
+    first.format = uint8_t(FoldColorFormat(uint32_t(s.color[0].format)));
+  } else if (key.depth_format != 0) {
+    first.base_tiles = uint16_t(s.depth_base_tiles);
+    first.depth = 1;
+    first.format = uint8_t(s.depth_format);
+  } else {
+    return 1;
+  }
+  return edram.ScaleFor(first);
+}
+
 // The pass a draw opens, for PassTiming: the targets' pitch and
 // samples, then each colour target and the depth one as format@base.
 std::string PassLabel(EdramTargets::Target* const* colors, uint32_t count,
@@ -276,6 +315,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
   geometry_->SetProfile(profile_);
   draw_census_.Configure();
+  target_census_.Configure();
 }
 
 void Scene::LapStart() {
@@ -349,6 +389,7 @@ void Scene::ResetListState() {
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
+  scale_depth_bias_ = REXCVAR_GET(mcla_gpu_scale_depth_bias) && REXCVAR_GET(mcla_gpu_work_17oct);
   geometry_->BeginFrame(slot);
   edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
@@ -370,7 +411,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   }
   // The colour encodes of the frame into the resolve memory, as one batch.
   pass_timing_->Mark(list, "resolve memory encode (batch)");
-  resolve_->memory().Flush(list);
+  resolve_->memory().Flush(list, ResolveMemory::FlushReason::kEndOfFrame);
   pass_timing_->Mark(list, "end-of-frame copies");
   marked_framebuffer_ = nullptr;
   geometry_->EndFrame(list);
@@ -685,6 +726,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     case KeyResult::kColorGap:
       return Skip::kColorGap;
   }
+  // The scale of the draw's targets, and the slope-scaled depth
+  // bias in its host pixels (M6b.3c): a host pixel is 1/scale of the guest's,
+  // so is the depth slope across it -- Xenia multiplies the slope factor by
+  // the scale. The constant part is in depth units and stays.
+  const uint32_t scale = DrawScale(*edram_, s, d.key);
+  if (scale != 1 && d.bias.slope != 0.0f && scale_depth_bias_) {
+    d.bias.slope *= float(scale);
+    if (!pipelines_->dynamic_depth_bias()) {
+      d.key.slope_scaled_depth_bias = d.bias.slope;
+    }
+  }
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
@@ -708,12 +760,12 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   const bool ps_writes_depth = d.ps && (d.ps->ps_outputs & ShaderStore::kOutputDepth) != 0;
   SharedConstants shared;
   uint32_t issues = 0;
-  if (state_same && memo.constants_valid && memo.ps_writes_depth == ps_writes_depth) {
+  if (state_same && memo.constants_valid && memo.ps_writes_depth == ps_writes_depth &&
+      memo.scale == scale) {
     d.viewport = memo.viewport;
     shared = memo.shared;
   } else {
-    // The draw's targets' scale follows from the pitch (EdramTargets::ScaleFor).
-    const uint32_t scale = edram_->ScaleForPitch(s.surface_pitch);
+    // At the scale of the draw's targets (DrawScale above).
     d.viewport = ComputeViewport(s, ps_writes_depth, scale);
     shared = base_shared_;
     issues = FillSharedConstants(s, d.viewport, shared);
@@ -722,6 +774,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     shared.inv_resolution_scale[1] = 1.0f / float(scale);
     memo.constants_valid = true;
     memo.ps_writes_depth = ps_writes_depth;
+    memo.scale = scale;
     memo.viewport = d.viewport;
     memo.shared = shared;
   }
@@ -1186,8 +1239,9 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                       plume::RenderRect(int32_t(scissor_tl_x), int32_t(scissor_tl_y),
                                         int32_t(scissor_br_x), int32_t(scissor_br_y)));
 
-  // The targets' scale: one for all of them, as the policy gives
-  // a colour and the depth of one pitch the same.
+  // The targets' scale: one for all of them, as the
+  // classes give a draw's colour and depth targets the same (DrawScale made the
+  // viewport for the first one's).
   const uint32_t target_scale =
       d.key.color_count ? colors[0]->scale : (depth ? depth->scale : 1u);
   bool scales_agree = !depth || depth->scale == target_scale;
@@ -1195,7 +1249,11 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     scales_agree &= colors[i]->scale == target_scale;
   }
   if (!scales_agree) {
-    *detail = std::format("targets of different resolution scales (pitch {})", pitch);
+    const EdramTargets::Target* first = d.key.color_count ? colors[0] : depth;
+    *detail = std::format("targets of different resolution scales (pitch {}): {} at {}x, {} at {}x",
+                          pitch, DescribeEdramKey(first->key), first->scale,
+                          depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
+                          depth ? depth->scale : 0u);
     return Skip::kTarget;
   }
   // Layouts (a barrier closes an open render pass on Vulkan; Plume reopens it).
@@ -1233,6 +1291,9 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   if (pass_timing_->enabled() && marked_framebuffer_ != framebuffer) {
     pass_timing_->Mark(list, PassLabel(colors, d.key.color_count, depth));
     marked_framebuffer_ = framebuffer;
+  }
+  if (target_census_.active()) {
+    target_census_.OnDraw(PassLabel(colors, d.key.color_count, depth), r.ps_identity);
   }
   BindFramebuffer(list, framebuffer);
   Lap(Stage::kTargets);
@@ -1657,6 +1718,7 @@ void Scene::OnPresent() {
   last_present_ = now;
   ++window_.frames;
   draw_census_.OnPresent();
+  target_census_.OnPresent();
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }
@@ -1801,6 +1863,11 @@ void Scene::Report(const char* why) {
   REXLOG_INFO("[gpu] scene ({}): {}", why, resolve_->memory().TakeSummary(w.frames));
   if (draw_census_.active()) {
     REXLOG_INFO("[gpu] scene ({}): {}", why, draw_census_.TakeReport());
+  }
+  if (target_census_.active()) {
+    if (const std::string text = target_census_.TakeReport(); !text.empty()) {
+      REXLOG_INFO("[gpu] scene ({}): {}", why, text);
+    }
   }
   Add(total_, window_);
   window_ = Stats{};

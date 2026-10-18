@@ -209,8 +209,20 @@ void FrameRing::WaitIdle() {
     // one, so all of them are complete.
     completed_serial_ = next_serial_ - 1;
   }
+  // The slot fences are waited as well, although the idle wait proved them
+  // complete: a Plume fence is consumed by its wait. On D3D12 it is an
+  // auto-reset event armed by the submission that stays signalled until a wait
+  // takes it, so dropping the submission (clearing `submitted` alone) left it
+  // signalled and the slot's next wait returned at once -- one submission
+  // early, from then on. Its lists were reset and its upload memory reused
+  // while the GPU still ran them: "ID3D12CommandAllocator::Reset ... before
+  // previous executions ... have completed", then DXGI_ERROR_DEVICE_HUNG a
+  // frame after a window resize whenever the GPU is the bottleneck (17/10, 3x).
+  // On Vulkan the VkFence stayed signalled and was submitted again, which is
+  // invalid, with the same early wait. Nothing blocks here, the queue being
+  // idle; with the device lost WaitSlot skips the wait.
   for (Slot& s : slots_) {
-    s.submitted = false;
+    WaitSlot(s);
   }
   if (device_->IsLost() || !open_) {
     // Every submission is complete (or, with the device lost, will never run)

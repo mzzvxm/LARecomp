@@ -324,6 +324,7 @@ class ResolveCache {
     uint64_t finds = 0;
     uint64_t found = 0;
     uint64_t evicted = 0;
+    uint64_t evictions_put_off = 0;  // an encode still waiting reads the product (24.45)
   };
   Stats stats_;
 };

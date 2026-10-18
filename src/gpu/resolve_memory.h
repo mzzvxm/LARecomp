@@ -77,6 +77,7 @@ class Device;
 class EdramTargets;
 class FrameRing;
 class HostPasses;
+class PassTiming;
 class UploadRing;
 
 class ResolveMemory {
@@ -97,8 +98,26 @@ class ResolveMemory {
   ResolveMemory(const ResolveMemory&) = delete;
   ResolveMemory& operator=(const ResolveMemory&) = delete;
 
+  // Why the waiting colour encodes are recorded. The summary
+  // counts, for each reason, its batches, the encodes they recorded and how
+  // many of those the reason needed: the encodes over the pages it reads or
+  // writes, and every older one over theirs (recorded later, it would lay
+  // older bytes over newer ones).
+  enum class FlushReason : uint8_t {
+    kEndOfFrame,      // Scene::EndFrame
+    kDepthEncode,     // a depth encode, recorded at once (Encode)
+    kDecode,          // a texture decoded from the pool (Bind)
+    kVertexCopy,      // a vertex stream built from the pool (CopyVertices)
+    kResolveOverlap,  // a resolve rewrites texels a waiting encode reads (BeforeResolve)
+    kUpload,          // a colour encode uploads guest pages a waiting encode writes
+    kLock,            // a CPU lock's write-back (Renderer)
+    kRemake,          // a product made again at another scale (ResolveCache::Activate)
+    kCount,
+  };
+
   bool Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, UploadRing& upload,
-                  GuestMemory& memory, HostPasses& passes, TextureCache& textures);
+                  GuestMemory& memory, HostPasses& passes, TextureCache& textures,
+                  PassTiming& pass_timing);
   // GPU idle, FrameRing drained, before the BindlessHeap shuts down.
   void Shutdown();
 
@@ -138,8 +157,18 @@ class ResolveMemory {
   void BeforeResolve(plume::RenderCommandList* list, const TextureKey& key, uint32_t level,
                      int32_t x0, int32_t y0, int32_t x1, int32_t y1);
   // Records every waiting encode (end of frame, and before anything reads the
-  // pool). Leaves no render pass open.
-  void Flush(plume::RenderCommandList* list);
+  // pool). Leaves no render pass open. With mcla_gpu_resolve_memory_encode_delay
+  // above 0 the end of a frame records only the encodes that
+  // waited that many frames, and a reader or writer of the pool only the ones
+  // over its pages (and every older one over theirs); a product made again at
+  // another scale still records them all.
+  void Flush(plume::RenderCommandList* list, FlushReason reason);
+  // Whether an encode still waiting reads the product of `key`:
+  // the product must outlive it (ResolveCache::EvictSome).
+  bool Waiting(const TextureKey& key) const;
+  // The same before a CPU lock of [address, address + size): the encodes over
+  // its pages are the ones it needed (counted).
+  void FlushForLock(plume::RenderCommandList* list, uint32_t address, uint32_t size);
 
   // Whether a fetch of `key` (its base and mip ranges) reads bytes a resolve
   // wrote that guest memory does not hold.
@@ -283,9 +312,43 @@ class ResolveMemory {
     uint32_t last_page = 0;
     uint32_t groups_x = 0;
     uint32_t groups_y = 0;
+    uint64_t frame = 0;  // frame_ when it was made
     std::array<uint32_t, 16> push{};
   };
   std::vector<Pending> pending_;
+  // mcla_gpu_resolve_memory_encode_delay, read at each BeginFrame.
+  static constexpr uint32_t kMaxEncodeDelay = 120;  // well below kEvictFrames
+  uint32_t delay_ = 0;
+  bool counters_ = true;  // mcla_gpu_work_17oct: the batch counters; off = as before 17/10
+  // Pages a batch's cause reads or writes, first and last inclusive.
+  struct PageSpan {
+    uint32_t first = 0;
+    uint32_t last = 0;
+  };
+  // Marks in chosen_ the waiting encodes a batch needs: the ones
+  // `seed` picks and every older one whose pages meet a chosen one's.
+  // Returns how many.
+  template <typename Seed>
+  size_t Choose(Seed&& seed);
+  // Records for `reason` every waiting encode (`all`) or the ones chosen_
+  // marks, the rest waiting on in their order; `needed` of the recorded were
+  // needed (counted; SIZE_MAX when the reason names no pages).
+  void Record(plume::RenderCommandList* list, FlushReason reason, size_t needed, bool all);
+  // The batch before something over `spans` (a depth encode, a decode, a
+  // vertex copy, a lock): counted with the encodes it needed.
+  void FlushFor(plume::RenderCommandList* list, FlushReason reason, const PageSpan* spans,
+                size_t count);
+  std::vector<uint8_t> chosen_;         // Choose's marks, by waiting encode
+  std::vector<PageSpan> choose_spans_;  // Choose's scratch: the chosen ones' pages
+  std::vector<PageSpan> upload_spans_;  // a colour encode's uploaded pages, as runs
+  // The encodes of the last end-of-frame batch, for the count of the ones a
+  // resolve of the next frame writes again whole.
+  struct Recorded {
+    TextureKey key;
+    uint32_t level = 0;
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  };
+  std::vector<Recorded> last_batch_;
   // The lock write-back's own list, fence and readback buffer: the copy runs
   // after the work it reads, and the CPU waits for it.
   bool EnsureReadback(uint64_t bytes);
@@ -303,6 +366,7 @@ class ResolveMemory {
   GuestMemory::Subscriber subscriber_ = GuestMemory::kNoSubscriber;
   HostPasses* passes_ = nullptr;
   TextureCache* textures_ = nullptr;
+  PassTiming* pass_timing_ = nullptr;
   EdramTargets* edram_ = nullptr;
   bool reach_ = false;  // the detector is on: pages carry kInherited
 
@@ -395,6 +459,15 @@ class ResolveMemory {
     uint64_t vertex_copies = 0;        // vertex streams built from the pool
     uint64_t vertex_copy_bytes = 0;
     uint64_t vertex_copy_failures = 0;
+    // Batches by reason: recorded, the encodes they recorded,
+    // and of those the ones the reason needed.
+    std::array<uint64_t, size_t(FlushReason::kCount)> batches_by{};
+    std::array<uint64_t, size_t(FlushReason::kCount)> recorded_by{};
+    std::array<uint64_t, size_t(FlushReason::kCount)> needed_by{};
+    uint64_t rewritten_next_frame = 0;   // end-of-frame encodes a next-frame resolve wrote whole
+    uint64_t uploads_under_waiting = 0;  // pages uploaded under a waiting encode's
+    uint64_t waiting_sum = 0;            // encodes still waiting after each end of frame
+    uint64_t waiting_max = 0;
   };
   Stats stats_;
 };

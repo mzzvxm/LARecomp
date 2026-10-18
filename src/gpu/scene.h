@@ -327,7 +327,8 @@ class Scene {
   void Add(Stats& into, const Stats& from) const;
   Stats window_;
   Stats total_;
-  DrawCensus draw_census_;  // diagnostic, mcla_gpu_census_ps
+  DrawCensus draw_census_;      // diagnostic, mcla_gpu_census_ps
+  TargetCensus target_census_;  // diagnostic, mcla_gpu_census_targets
 
   // The last draw's lookups: consecutive draws mostly name
   // the same targets, shaders and pipeline. Each memo holds only while what it
@@ -373,6 +374,7 @@ class Scene {
     DepthBias bias;
     bool constants_valid = false;
     bool ps_writes_depth = false;
+    uint32_t scale = 1;  // the targets' resolution scale the viewport was made for (24.45)
     ViewportInfo viewport;
     SharedConstants shared;  // before the texture tables
   };
@@ -408,6 +410,7 @@ class Scene {
   void Lap(Stage stage);
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
+  bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame
   uint64_t lap_ = 0;
   std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
   // How often each memo of the last draw answered (M6a.3), for the profile.

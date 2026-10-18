@@ -214,6 +214,18 @@ std::string PassTiming::TakeSummary() {
     }
     text += std::format(" | {} more {:.3f} ms", order.size() - kReportedLabels,
                         double(rest) / double(frames_) / 1e6);
+    // The resolve memory's labels among them, which compares
+    // between runs however small they get.
+    std::string memory;
+    for (size_t i = kReportedLabels; i < order.size(); ++i) {
+      if (names_[order[i]].starts_with("resolve memory")) {
+        memory += std::format("{}{} {:.3f} ms", memory.empty() ? "" : ", ", names_[order[i]],
+                              double(label_ns_[order[i]]) / double(frames_) / 1e6);
+      }
+    }
+    if (!memory.empty()) {
+      text += " (among them " + memory + ")";
+    }
   }
   if (lost_marks_) {
     text += std::format(" | {} marks lost to a full pool", lost_marks_);
