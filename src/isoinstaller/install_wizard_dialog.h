@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <rex/ui/imgui_dialog.h>
 
@@ -22,12 +23,13 @@ namespace larecomp {
 class InstallWizardDialog final : public rex::ui::ImGuiDialog {
  public:
   using PickSourceCallback = std::function<std::filesystem::path()>;
-  using InstallCallback = std::function<bool(const std::filesystem::path& source,
+  using InstallCallback = std::function<bool(const std::filesystem::path& destination,
+                                            const std::filesystem::path& source,
                                             std::atomic<uint64_t>& copied_bytes,
                                             std::atomic<uint64_t>& total_bytes,
                                             std::function<void(std::string)> set_current_file,
                                             std::string& error)>;
-  using CompleteCallback = std::function<void()>;
+  using CompleteCallback = std::function<void(std::filesystem::path)>;
 
   // Shows itself on construction and deletes itself when closed, like every
   // rex::ui::ImGuiDialog. `complete` runs on the UI thread, from the dialog's
@@ -55,6 +57,7 @@ class InstallWizardDialog final : public rex::ui::ImGuiDialog {
   std::string title_;
   std::string intro_;
   std::string install_directory_;
+  std::vector<char> install_directory_input_;
   PickSourceCallback pick_source_;
   InstallCallback install_;
   CompleteCallback complete_;
@@ -65,6 +68,7 @@ class InstallWizardDialog final : public rex::ui::ImGuiDialog {
   std::atomic<uint64_t> total_bytes_{0};
   State state_ = State::kWaitingForSource;
   std::filesystem::path source_path_;
+  std::filesystem::path target_path_;
   std::string status_;
   std::string error_;
   std::mutex current_file_mutex_;

@@ -6,6 +6,7 @@
 #include "install_wizard_dialog.h"
 
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 #include <imgui.h>
@@ -29,10 +30,14 @@ InstallWizardDialog::InstallWizardDialog(rex::ui::ImGuiDrawer* drawer, std::stri
       title_(std::move(title)),
       intro_(std::move(intro)),
       install_directory_(std::move(install_directory)),
+      install_directory_input_(32768, '\0'),
       pick_source_(std::move(pick_source)),
       install_(std::move(install)),
       complete_(std::move(complete)),
-      status_(intro_) {}
+      status_(intro_) {
+  std::memcpy(install_directory_input_.data(), install_directory_.data(),
+              std::min(install_directory_.size(), install_directory_input_.size() - 1));
+}
 
 void InstallWizardDialog::OnClose() {
   if (install_thread_.joinable()) {
@@ -41,6 +46,13 @@ void InstallWizardDialog::OnClose() {
 }
 
 void InstallWizardDialog::PickSourceAndInstall() {
+  install_directory_ = install_directory_input_.data();
+  if (install_directory_.empty()) {
+    state_ = State::kFailed;
+    status_ = "Installation failed.";
+    error_ = "Choose an install directory.";
+    return;
+  }
   if (!pick_source_) {
     return;
   }
@@ -57,6 +69,15 @@ void InstallWizardDialog::StartInstall(std::filesystem::path source_path) {
   }
 
   source_path_ = std::move(source_path);
+  try {
+    target_path_ = std::filesystem::path(
+        std::u8string(install_directory_.begin(), install_directory_.end()));
+  } catch (const std::filesystem::filesystem_error&) {
+    state_ = State::kFailed;
+    status_ = "Installation failed.";
+    error_ = "The install directory is not a valid path.";
+    return;
+  }
   copied_bytes_ = 0;
   total_bytes_ = 0;
   install_done_ = false;
@@ -72,7 +93,7 @@ void InstallWizardDialog::StartInstall(std::filesystem::path source_path) {
       current_file_ = std::move(status);
     };
     const bool ok =
-        install_ && install_(source_path_, copied_bytes_, total_bytes_, update_status, error);
+        install_ && install_(target_path_, source_path_, copied_bytes_, total_bytes_, update_status, error);
     error_ = std::move(error);
     install_ok_ = ok;
     install_done_ = true;
@@ -113,7 +134,12 @@ void InstallWizardDialog::OnDraw(ImGuiIO& io) {
                        ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextWrapped("%s", status_.c_str());
     ImGui::Spacing();
-    ImGui::TextWrapped("Install directory: %s", install_directory_.c_str());
+    if (state_ == State::kWaitingForSource || state_ == State::kFailed) {
+      ImGui::InputText("Install directory", install_directory_input_.data(),
+                       install_directory_input_.size());
+    } else {
+      ImGui::TextWrapped("Install directory: %s", install_directory_.c_str());
+    }
 
     if (!source_path_.empty()) {
       ImGui::TextWrapped("Source: %s", PathUtf8(source_path_).c_str());
@@ -149,7 +175,7 @@ void InstallWizardDialog::OnDraw(ImGuiIO& io) {
         auto complete = std::move(complete_);
         Close();
         if (complete) {
-          complete();
+          complete(std::move(target_path_));
         }
       }
     }

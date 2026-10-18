@@ -508,6 +508,12 @@ class LarecompApp : public rex::ReXApp {
       }
     }
 
+    const auto remembered = larecomp::RememberedGameInstall(paths.user_data_root);
+    if (!remembered.empty() && is_valid_game_root(remembered)) {
+      paths.game_data_root = remembered;
+      return;
+    }
+
     // BadassBaboon's Recomp Adjustments: walk up from the exe looking for the
     // game data, so a portable layout works without --game_data_root. Checked
     // at every level, nearest first: MCLA_Game_Files/, game/, assets/, then the

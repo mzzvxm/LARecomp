@@ -52,6 +52,7 @@ constexpr std::array<uint64_t, 5> kPossibleGameOffsets = {
     0x00000000ull, 0x0000FB20ull, 0x00020600ull, 0x02080000ull, 0x0FD90000ull};
 constexpr std::string_view kXdvdfsMagic = "MICROSOFT*XBOX*MEDIA";
 constexpr std::string_view kDefaultXex = "default.xex";
+constexpr std::string_view kInstallPathFile = "game_install_path.txt";
 
 uint16_t ReadLe16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
@@ -291,7 +292,8 @@ class XboxIsoReader {
     std::error_code ec;
     std::filesystem::create_directories(target_root, ec);
     if (ec) {
-      error = "Unable to create the game directory.";
+      error = "Unable to create the game directory: " + ec.message() +
+              ". Enter another install directory and retry.";
       return false;
     }
 
@@ -308,7 +310,7 @@ class XboxIsoReader {
       const auto target = target_root / std::filesystem::path(entry.path);
       std::filesystem::create_directories(target.parent_path(), ec);
       if (ec) {
-        error = "Unable to create an install subdirectory.";
+        error = "Unable to create an install subdirectory: " + ec.message();
         return false;
       }
 
@@ -445,13 +447,27 @@ bool IsGameInstalled(const std::filesystem::path& game_root) {
   return complete;
 }
 
+std::filesystem::path RememberedGameInstall(const std::filesystem::path& user_data_root) {
+  std::ifstream input(user_data_root / kInstallPathFile);
+  std::string utf8_path;
+  if (!std::getline(input, utf8_path) || utf8_path.empty()) {
+    return {};
+  }
+  try {
+    return std::filesystem::path(std::u8string(utf8_path.begin(), utf8_path.end()));
+  } catch (const std::filesystem::filesystem_error&) {
+    return {};
+  }
+}
+
 namespace {
 
 // Extracts the ISO into `game_root` and verifies the result. Shared by the
 // wizard and the unattended LARECOMP_INSTALL_ISO path.
-InstallWizardDialog::InstallCallback MakeIsoInstall(std::filesystem::path game_root) {
-  return [game_root = std::move(game_root)](
-             const std::filesystem::path& source, std::atomic<uint64_t>& copied_bytes,
+InstallWizardDialog::InstallCallback MakeIsoInstall(std::filesystem::path user_data_root) {
+  return [user_data_root = std::move(user_data_root)](
+             const std::filesystem::path& game_root, const std::filesystem::path& source,
+             std::atomic<uint64_t>& copied_bytes,
              std::atomic<uint64_t>& total_bytes, std::function<void(std::string)> update_status,
              std::string& error) {
     XboxIsoReader iso;
@@ -466,6 +482,19 @@ InstallWizardDialog::InstallCallback MakeIsoInstall(std::filesystem::path game_r
       error = "Installation completed, but game files are missing from the install directory (see the log for which).";
       return false;
     }
+    std::error_code ec;
+    std::filesystem::create_directories(user_data_root, ec);
+    if (!ec) {
+      std::ofstream output(user_data_root / kInstallPathFile, std::ios::trunc);
+      const std::u8string utf8_path = game_root.u8string();
+      output.write(reinterpret_cast<const char*>(utf8_path.data()),
+                   static_cast<std::streamsize>(utf8_path.size()));
+      if (!output) ec = std::make_error_code(std::errc::io_error);
+    }
+    if (ec) {
+      REXLOG_WARN("Could not remember game install directory '{}': {}",
+                  game_root.string(), ec.message());
+    }
     return true;
   };
 }
@@ -475,13 +504,16 @@ InstallWizardDialog::InstallCallback MakeIsoInstall(std::filesystem::path game_r
 void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig runtime_paths,
                                  std::function<void(rex::PathConfig)> complete) {
   const std::u8string install_dir = runtime_paths.game_data_root.u8string();
+  auto install = MakeIsoInstall(runtime_paths.user_data_root);
   new InstallWizardDialog(
       drawer, "MCLA: CE Setup",
       "MCLA: CE game files were not found. Select your Xbox 360 ISO to install them.",
       std::string(install_dir.begin(), install_dir.end()), []() { return PickIsoFile(); },
-      MakeIsoInstall(runtime_paths.game_data_root),
-      [runtime_paths = std::move(runtime_paths), complete = std::move(complete)]() mutable {
+      std::move(install),
+      [runtime_paths = std::move(runtime_paths), complete = std::move(complete)](
+          std::filesystem::path installed_dir) mutable {
         if (complete) {
+          runtime_paths.game_data_root = std::move(installed_dir);
           complete(std::move(runtime_paths));
         }
       });
@@ -498,7 +530,7 @@ bool TryAutomatedIsoInstall(const rex::PathConfig& runtime_paths, bool& attempte
   std::atomic<uint64_t> total_bytes{0};
   std::string error;
   REXLOG_INFO("Installing MCLA: CE game files from LARECOMP_INSTALL_ISO={}", automated_iso);
-  if (!MakeIsoInstall(runtime_paths.game_data_root)(std::filesystem::path(automated_iso),
+  if (!MakeIsoInstall(runtime_paths.user_data_root)(runtime_paths.game_data_root, std::filesystem::path(automated_iso),
                                                     copied_bytes, total_bytes, nullptr, error)) {
     REXLOG_ERROR("Automated ISO installation failed: {}", error);
     return false;

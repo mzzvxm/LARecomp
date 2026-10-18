@@ -8,6 +8,7 @@
 namespace larecomp {
 
 bool IsGameInstalled(const std::filesystem::path& game_root);
+std::filesystem::path RememberedGameInstall(const std::filesystem::path& user_data_root);
 
 // Shows the ISO install wizard and returns at once; `complete` runs on the UI
 // thread, from the dialog's draw, after a successful install. Nothing pumps the
