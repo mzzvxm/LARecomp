@@ -765,7 +765,7 @@ class LarecompApp : public rex::ReXApp {
     LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}",
                       reinterpret_cast<std::uintptr_t>(g_guest_mem));
 
-    window()->SetTitle("LARecomp (60 FPS Enhanced)");
+    window()->SetTitle("LARecomp");
 
     // No window icon is set: the build ships no .ico, so the window keeps the
     // default one the window class provides.
