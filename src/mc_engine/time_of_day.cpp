@@ -91,6 +91,7 @@ namespace {
 constexpr uint32_t kLightingMgrPtr = 0x8287E26C;  // mcLightingManager global
 constexpr uint32_t kTodCurrent = 14540;  // float, hours
 constexpr uint32_t kTodAuto = 14545;     // byte
+constexpr uint32_t kGarageLight = 14546; // byte: the TODGarage<sky> light sets (sub_82205248)
 constexpr uint32_t kTodRate = 14548;     // float, hours per second
 constexpr uint32_t kTodWarping = 14552;  // byte
 constexpr uint32_t kTodTarget = 14556;   // float, hours
@@ -240,12 +241,31 @@ void Hook_TimeOfDay(PPCRegister& r3) {
                       ? shot_wx
                       : (real ? RealWeather_GetIndex()
                               : WeatherNameToIndex(want_weather));
+        // A garage is lit as Nice whatever the sky outside: the game writes
+        // the index back to 0 every frame there (Weather_SetCurrentWeather,
+        // loc_822E9098, picks the TODGarage<sky> set), so the console never
+        // shows a garage under another sky. Forcing ours over it swapped the
+        // two every frame and lit the garage with the outdoor set: the
+        // foggy/stormy flashbang.
+        // Nothing is written while the garage light is on; on the way out the
+        // index differs from ours again and the check below forces it once.
+        static bool s_garage = false;
+        const bool garage = base[mgr + kGarageLight] != 0;
+        if (garage != s_garage) {
+            s_garage = garage;
+            LARECOMP_APP_INFO("[Weather] garage lighting {}: {}", garage ? "on" : "off",
+                              garage ? "the game's own sky until it ends"
+                                     : "the requested sky again");
+        }
+
         if (idx < 0) {
             if (s_forced) {
                 base[kWeatherAuto] = s_saved_auto;
                 s_forced = false;
                 s_forced_idx = -1;
             }
+        } else if (garage) {
+            // The game's sky (see above).
         } else {
             if (!s_forced) {
                 s_saved_auto = base[kWeatherAuto];
