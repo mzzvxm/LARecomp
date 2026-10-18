@@ -68,7 +68,7 @@ const char* FailureName(uint32_t f) {
 const char* ModeName(uint32_t m) {
   static const char* const kNames[] = {"8888",       "1555",      "8",    "float",
                                        "red32",      "depth",     "depth->8888 raw",
-                                       "depth->32f bits"};
+                                       "depth->32f bits", "float32x2"};
   return m < std::size(kNames) ? kNames[m] : "?";
 }
 
@@ -891,6 +891,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         case 29:
         case 32: mode = depth_source ? kModeCount : kModeFloat; break;
         case 36: mode = depth_source ? kModeDepthFloatBits : kModeRed32; break;
+        case 37: mode = depth_source ? kModeCount : kModeFloat32; break;
         case 22: mode = depth_source ? kModeDepthFloat : kModeCount; break;
         case 23:
           mode = depth_source ? uint32_t(kModeDepthFloat) | uint32_t(kFlagDestFloat24)

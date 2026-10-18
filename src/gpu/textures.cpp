@@ -373,8 +373,10 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
   // Reported, not handled (none in the measured frames).
   for (uint32_t c = 0; c < 4; ++c) {
     const auto sign = xe::TextureSign(fetch.signs[c]);
+    // A float host format reads a signed component as it is.
     const bool unorm_host = host.format != plume::RenderFormat::R16G16B16A16_FLOAT &&
-                            host.format != plume::RenderFormat::R32_FLOAT;
+                            host.format != plume::RenderFormat::R32_FLOAT &&
+                            host.format != plume::RenderFormat::R32G32_FLOAT;
     if ((sign == xe::TextureSign::kSigned && unorm_host) ||
         sign == xe::TextureSign::kUnsignedBiased) {
       if (reported_.insert(key).second) {

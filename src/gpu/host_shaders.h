@@ -29,6 +29,7 @@
 #include "resolve_memory_depth_cs.hlsl.dxil.h"
 #include "resolve_memory_depth_ms_cs.hlsl.dxil.h"
 #include "resolve_memory_ps.hlsl.dxil.h"
+#include "resolve_memory_vertex_cs.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "fullscreen_vs.hlsl.spirv.h"
@@ -43,6 +44,7 @@
 #include "resolve_memory_depth_cs.hlsl.spirv.h"
 #include "resolve_memory_depth_ms_cs.hlsl.spirv.h"
 #include "resolve_memory_ps.hlsl.spirv.h"
+#include "resolve_memory_vertex_cs.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -107,6 +109,11 @@ inline HostShaderBlob ResolveMemoryEncodeShader(bool depth, bool msaa) {
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).
 inline HostShaderBlob ResolveMemoryDecodeShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_ps);
+}
+
+// A vertex stream built from the resolve memory (resolve_memory_vertex_cs.hlsl,).
+inline HostShaderBlob ResolveMemoryVertexShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_vertex_cs);
 }
 
 }  // namespace mcla::gpu

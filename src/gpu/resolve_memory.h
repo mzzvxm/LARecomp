@@ -48,6 +48,11 @@
 // Formats: the uncompressed ones of format.h's table; block-compressed reads
 // are reported (kUnsupported) and left to the guest-memory path.
 //
+// Vertex copy (hlsl/resolve_memory_vertex_cs.hlsl): a vertex
+// stream over pages a resolve wrote is built from the pool on the GPU -- the
+// console's resolve-to-vertex-buffer -- swapped by the stream's plan into a
+// device buffer of the frame, which the draw binds.
+//
 // Threading: render thread only, after Initialize.
 // ===========================================================================
 
@@ -140,6 +145,33 @@ class ResolveMemory {
   // wrote that guest memory does not hold.
   bool Holds(const TextureKey& key);
 
+  // Vertex streams over memory a resolve wrote: the console's
+  // resolve-to-vertex-buffer. MCLA's rain renders its particle state with
+  // xrain_system ParticleUpdatePS, resolves it as k_32_32_FLOAT and draws the
+  // drops with ParticleRenderVS, which reads that memory as four vertex
+  // streams. Whether a page of [address, address + length) holds bytes guest
+  // memory does not.
+  bool HoldsRange(uint32_t address, uint32_t length) const;
+  static constexpr uint32_t kMaxVertexCopyStride = 256;  // bytes: 2 mode bits x 64 dwords
+  struct VertexCopy {
+    uint32_t address = 0;   // the stream's guest physical address (source vertex 0)
+    uint32_t stride = 0;    // bytes: a multiple of 4, at most kMaxVertexCopyStride
+    uint32_t sources = 0;   // source vertices the fetch covers (its size / stride)
+    uint32_t first = 0;     // source vertex of destination vertex 0 (fold: the draw's start)
+    uint32_t vertices = 0;  // destination vertices
+    bool fold = false;      // destination vertex v reads source (first + v) / 4 (geometry.h)
+    // 2 bits per dword of a vertex: 0 as is, 1 8in16, 2 8in32 (the swap plan's units).
+    std::array<uint32_t, 4> modes{};
+  };
+  // The stream built on the GPU from the pool: the pages of its source range
+  // that are not valid come from guest memory first, the waiting encodes are
+  // recorded, and a compute dispatch writes the swapped bytes into a device
+  // buffer of this frame, *out. Leaves the list with its own compute state
+  // (the caller binds its own again). False with *why when it could not
+  // (counted).
+  bool CopyVertices(const VertexCopy& copy, plume::RenderCommandList* list,
+                    plume::RenderBufferReference* out, std::string* why);
+
   enum class BindResult : uint8_t { kOk, kUnsupported, kFailed };
   // `key` decoded from the resolve memory, its views by `host_swizzle`:
   // *slot = the bindless slot. Records the decode into `list` when the texture
@@ -177,7 +209,14 @@ class ResolveMemory {
     kArmed = 1u << 2,
     kInherited = 1u << 3,  // reach: an inherited resolve wrote it (MarkInherited)
   };
-  enum class PoolAccess : uint8_t { kNone, kCopyWrite, kCopyRead, kComputeWrite, kGraphicsRead };
+  enum class PoolAccess : uint8_t {
+    kNone,
+    kCopyWrite,
+    kCopyRead,
+    kComputeWrite,
+    kComputeRead,  // the vertex copy reads it
+    kGraphicsRead,
+  };
   // A texture decoded from the resolve memory.
   struct Decoded {
     TextureKey key;
@@ -219,6 +258,20 @@ class ResolveMemory {
   void TouchDecoded(uint32_t start, uint32_t length, bool cpu);
   plume::RenderPipeline* DecodePipeline(plume::RenderFormat format);
   void DestroyDecoded(Decoded& decoded, bool for_shutdown);
+  // The vertex copies' destination: per frame slot, device
+  // buffers (VERTEX | UNORDERED_ACCESS) used from the start each time the
+  // slot comes round, each with its descriptor set (u0, space 1).
+  struct VertexChunk {
+    std::unique_ptr<plume::RenderBuffer> buffer;
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+    uint64_t size = 0;
+    uint64_t used = 0;
+  };
+  static constexpr uint64_t kVertexChunkBytes = uint64_t(4) << 20;
+  static constexpr uint64_t kVertexCopyAlignment = 256;
+  // A chunk of this frame with `bytes` free (made when none has), or null
+  // (logged).
+  VertexChunk* VertexChunkFor(uint64_t bytes);
   void EvictSome();
   void Fail(const char* what, const std::string& detail);
   // A colour encode waiting in the batch.
@@ -270,6 +323,14 @@ class ResolveMemory {
   std::unique_ptr<plume::RenderPipeline> encode_pipelines_[3];
   std::unique_ptr<plume::RenderShader> decode_shader_;
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> decode_pipelines_;
+  // The vertex copy: the decode's set (pool and table, space 0), the
+  // destination's (space 1), the push range (b0, space 2).
+  plume::RenderDescriptorSetBuilder vertex_set_builder_;
+  uint32_t vertex_buffer_index_ = 0;
+  std::unique_ptr<plume::RenderPipelineLayout> vertex_layout_;
+  std::unique_ptr<plume::RenderShader> vertex_shader_;
+  std::unique_ptr<plume::RenderPipeline> vertex_pipeline_;
+  std::vector<std::vector<VertexChunk>> vertex_chunks_;  // by frame slot
 
   std::unique_ptr<plume::RenderBuffer> pool_;
   uint32_t pool_chunks_ = 0;  // capacity
@@ -331,6 +392,9 @@ class ResolveMemory {
     uint64_t lock_pages = 0;           // pages copied back
     uint64_t lock_pages_unknown = 0;   // newer pages the pool does not hold whole (logged)
     uint64_t inherited_marked = 0;     // reach: pages marked by inherited resolves
+    uint64_t vertex_copies = 0;        // vertex streams built from the pool
+    uint64_t vertex_copy_bytes = 0;
+    uint64_t vertex_copy_failures = 0;
   };
   Stats stats_;
 };

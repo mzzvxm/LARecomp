@@ -154,6 +154,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                              pass_timing_, resolve_memory_);
   }
   if (ok) {
+    geometry_.SetResolveMemory(&resolve_memory_);  //
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_,
                          resolve_memory_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,

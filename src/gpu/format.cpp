@@ -154,6 +154,10 @@ TextureHostFormat TextureHost(uint32_t texture_format) {
     case 32:
       return ok(RenderFormat::R16G16B16A16_FLOAT, "k_16_16_16_16_FLOAT", kHostSwizzleRGBA);
     case 36: return ok(RenderFormat::R32_FLOAT, "k_32_FLOAT", kHostSwizzleRRRR);
+    // The rain's particle state (xrain_system: position and velocity, 128x128
+    // each, rendered and resolved every frame). 64 bpp, the two
+    // floats of a texel in two dwords; the SDK's table (Xenia) maps it the same.
+    case 37: return ok(RenderFormat::R32G32_FLOAT, "k_32_32_FLOAT", kHostSwizzleRGGG);
     default: return TextureHostFormat{};
   }
 }

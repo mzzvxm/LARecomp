@@ -72,7 +72,23 @@ enum DecodeKind : uint32_t {
   kDecodeR32F = 4,
   kDecodeDepthUnorm24 = 5,
   kDecodeDepthFloat20e4 = 6,
+  kDecodeR32G32F = 7,
 };
+
+// hlsl/resolve_memory_vertex_cs.hlsl VertexPush, dword for dword.
+struct VertexPush {
+  uint32_t address;
+  uint32_t stride;
+  uint32_t first;
+  uint32_t vertices;
+  uint32_t sources;
+  uint32_t flags;  // bit 0: fold
+  uint32_t dst_offset;
+  uint32_t reserved;
+  uint32_t modes[4];
+  uint32_t reserved2[4];
+};
+static_assert(sizeof(VertexPush) == 64);
 
 uint32_t BlockLog2(uint32_t bytes_per_block) {
   switch (bytes_per_block) {
@@ -115,6 +131,7 @@ bool DecodeOf(const TextureKey& key, uint32_t* kind, plume::RenderFormat* format
         case plume::RenderFormat::R8G8B8A8_UNORM: *kind = kDecodeR8G8B8A8; return true;
         case plume::RenderFormat::R16G16B16A16_FLOAT: *kind = kDecodeR16G16B16A16F; return true;
         case plume::RenderFormat::R32_FLOAT: *kind = kDecodeR32F; return true;
+        case plume::RenderFormat::R32G32_FLOAT: *kind = kDecodeR32G32F; return true;
         default: break;
       }
       break;
@@ -172,6 +189,9 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   decode_pool_index_ = decode_set_builder_.addByteAddressBuffer(0);   // t0
   decode_table_index_ = decode_set_builder_.addByteAddressBuffer(1);  // t1
   decode_set_builder_.end();
+  vertex_set_builder_.begin();
+  vertex_buffer_index_ = vertex_set_builder_.addReadWriteByteAddressBuffer(0);  // u0
+  vertex_set_builder_.end();
 
   // The encode: the bindless texture set four times (spaces 0-3, the EDRAM's
   // and the products' views, as the host passes bind them), the memory
@@ -192,7 +212,16 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   decode_builder.addPushConstant(0, 1, sizeof(DecodePush), plume::RenderShaderStageFlag::PIXEL);
   decode_builder.end();
   decode_layout_ = device.CreatePipelineLayout(decode_builder, "resolve memory decode layout");
-  if (!encode_layout_ || !decode_layout_) {
+  // The vertex copy: the decode's set (pool and table, space 0),
+  // the destination (space 1), the push range (b0, space 2).
+  plume::RenderPipelineLayoutBuilder vertex_builder;
+  vertex_builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  vertex_builder.addDescriptorSet(decode_set_builder_);
+  vertex_builder.addDescriptorSet(vertex_set_builder_);
+  vertex_builder.addPushConstant(0, 2, sizeof(VertexPush), plume::RenderShaderStageFlag::COMPUTE);
+  vertex_builder.end();
+  vertex_layout_ = device.CreatePipelineLayout(vertex_builder, "resolve memory vertex layout");
+  if (!encode_layout_ || !decode_layout_ || !vertex_layout_) {
     return false;
   }
   for (uint32_t i = 0; i < 3; ++i) {
@@ -213,6 +242,19 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   if (!decode_shader_) {
     return false;
   }
+  const HostShaderBlob vertex = ResolveMemoryVertexShader();
+  vertex_shader_ = device.CreateShader(vertex.data, vertex.size, "main", vertex.name);
+  if (!vertex_shader_) {
+    return false;
+  }
+  vertex_pipeline_ = device.CreateComputePipeline(
+      plume::RenderComputePipelineDesc(vertex_layout_.get(), vertex_shader_.get(), 64, 1, 1),
+      vertex.name);
+  if (!vertex_pipeline_) {
+    return false;
+  }
+  vertex_chunks_.clear();
+  vertex_chunks_.resize(kFramesInFlight);
 
   pool_ = device.CreateBuffer(
       plume::RenderBufferDesc::DefaultBuffer(
@@ -244,6 +286,10 @@ void ResolveMemory::Shutdown() {
   decoded_owners_.clear();
   decode_pipelines_.clear();
   decode_shader_.reset();
+  vertex_chunks_.clear();
+  vertex_pipeline_.reset();
+  vertex_shader_.reset();
+  vertex_layout_.reset();
   for (auto& pipeline : encode_pipelines_) {
     pipeline.reset();
   }
@@ -303,6 +349,13 @@ bool ResolveMemory::MakeSets() {
 void ResolveMemory::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
+  // The slot's last frame has completed (FrameRing::Advance waited for it):
+  // its vertex copies are free again.
+  if (slot < vertex_chunks_.size()) {
+    for (VertexChunk& c : vertex_chunks_[slot]) {
+      c.used = 0;
+    }
+  }
   if (frame_ % 60 == 0) {
     EvictSome();
   }
@@ -436,6 +489,12 @@ void ResolveMemory::PoolBarrier(plume::RenderCommandList* list, PoolAccess acces
       list->barriers(plume::RenderBarrierStage::COMPUTE,
                      plume::RenderBufferBarrier(pool_.get(), plume::RenderBufferAccess::READ |
                                                                  plume::RenderBufferAccess::WRITE));
+      break;
+    case PoolAccess::kComputeRead:
+      if (pool_access_ != PoolAccess::kComputeRead) {
+        list->barriers(plume::RenderBarrierStage::COMPUTE,
+                       plume::RenderBufferBarrier(pool_.get(), plume::RenderBufferAccess::READ));
+      }
       break;
     case PoolAccess::kGraphicsRead:
       if (pool_access_ != PoolAccess::kGraphicsRead) {
@@ -868,6 +927,136 @@ bool ResolveMemory::Holds(const TextureKey& key) {
     }
   }
   return false;
+}
+
+bool ResolveMemory::HoldsRange(uint32_t address, uint32_t length) const {
+  if (length == 0 || newer_low_page_ > newer_high_page_) {
+    return false;
+  }
+  const uint32_t first = std::max(address >> kPageShift, newer_low_page_);
+  const uint32_t last = std::min(uint32_t((uint64_t(address) + length - 1) >> kPageShift),
+                                 std::min(newer_high_page_, kPageCount - 1));
+  for (uint32_t page = first; page <= last; ++page) {
+    if (page_flags_[page] & kNewer) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ResolveMemory::VertexChunk* ResolveMemory::VertexChunkFor(uint64_t bytes) {
+  std::vector<VertexChunk>& chunks = vertex_chunks_[slot_];
+  for (VertexChunk& c : chunks) {
+    const uint64_t offset = (c.used + kVertexCopyAlignment - 1) & ~(kVertexCopyAlignment - 1);
+    if (offset + bytes <= c.size) {
+      return &c;
+    }
+  }
+  VertexChunk fresh;
+  fresh.size = std::max(kVertexChunkBytes, (bytes + kVertexChunkBytes - 1) & ~(kVertexChunkBytes - 1));
+  fresh.buffer = device_->CreateBuffer(
+      plume::RenderBufferDesc::DefaultBuffer(
+          fresh.size, plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::STORAGE |
+                          plume::RenderBufferFlag::UNORDERED_ACCESS),
+      "resolve memory vertex streams");
+  if (fresh.buffer) {
+    fresh.set = device_->CreateDescriptorSet(vertex_set_builder_, 1, 0,
+                                             "resolve memory vertex streams set");
+  }
+  if (!fresh.buffer || !fresh.set) {
+    Fail("the vertex copies' destination could not be made",
+         std::format("{} bytes", fresh.size));
+    return nullptr;
+  }
+  fresh.set->setBuffer(vertex_buffer_index_, fresh.buffer.get(), fresh.size);
+  chunks.push_back(std::move(fresh));
+  return &chunks.back();
+}
+
+bool ResolveMemory::CopyVertices(const VertexCopy& c, plume::RenderCommandList* list,
+                                 plume::RenderBufferReference* out, std::string* why) {
+  ++stats_.vertex_copies;
+  const auto failed = [&](std::string text) {
+    *why = std::move(text);
+    ++stats_.vertex_copy_failures;
+    return false;
+  };
+  if (!list || !vertex_pipeline_) {
+    return failed("no command list or no pipeline");
+  }
+  if (c.stride == 0 || (c.stride & 3u) != 0 || c.stride > kMaxVertexCopyStride ||
+      (c.address & 3u) != 0) {
+    return failed(std::format("stride {} at {:08X}", c.stride, c.address));
+  }
+  const uint64_t bytes = uint64_t(c.vertices) * c.stride;
+  const uint64_t threads = bytes / 4;
+  if (bytes == 0 || (threads + 63) / 64 > 65535) {
+    return failed(std::format("{} vertices of {} bytes", c.vertices, c.stride));
+  }
+  // The source vertices the dispatch reads; their pages must hold the
+  // console's bytes (the ones not valid come from guest memory).
+  pages_.clear();
+  if (c.sources != 0) {
+    const uint32_t first_source = c.fold ? c.first / 4 : c.first;
+    const uint32_t last_wanted = c.fold ? (c.first + c.vertices - 1) / 4 : c.first + c.vertices - 1;
+    const uint32_t last_source = std::min(last_wanted, c.sources - 1);
+    if (first_source <= last_source) {
+      const uint64_t start = uint64_t(c.address) + uint64_t(first_source) * c.stride;
+      const uint64_t end = uint64_t(c.address) + uint64_t(last_source + 1) * c.stride;
+      const uint32_t first_page = uint32_t(start >> kPageShift);
+      const uint32_t last_page = std::min(uint32_t((end - 1) >> kPageShift), kPageCount - 1);
+      for (uint32_t page = first_page; page <= last_page; ++page) {
+        if (!(page_flags_[page] & kValid)) {
+          pages_.push_back(page);
+        }
+      }
+    }
+  }
+  VertexChunk* chunk = VertexChunkFor(bytes);
+  if (!chunk) {
+    return failed("no destination");
+  }
+  // Encodes still waiting write the bytes this reads.
+  Flush(list);
+  for (uint32_t page : pages_) {
+    if (!EnsureChunk(list, page >> (kChunkShift - kPageShift))) {
+      return failed("no pool chunk for the stream's pages");
+    }
+  }
+  if (table_dirty_) {
+    UploadTable(list);
+  }
+  UploadPages(list, pages_);
+  ArmPages(pages_);
+  PoolBarrier(list, PoolAccess::kComputeRead);
+
+  const uint64_t offset =
+      (chunk->used + kVertexCopyAlignment - 1) & ~(kVertexCopyAlignment - 1);
+  chunk->used = offset + bytes;
+  list->barriers(plume::RenderBarrierStage::COMPUTE,
+                 plume::RenderBufferBarrier(chunk->buffer.get(), plume::RenderBufferAccess::WRITE));
+  list->setComputePipelineLayout(vertex_layout_.get());
+  list->setComputeDescriptorSet(decode_set_.get(), 0);
+  list->setComputeDescriptorSet(chunk->set.get(), 1);
+  list->setPipeline(vertex_pipeline_.get());
+  VertexPush push{};
+  push.address = c.address;
+  push.stride = c.stride;
+  push.first = c.first;
+  push.vertices = c.vertices;
+  push.sources = c.sources;
+  push.flags = c.fold ? 1u : 0u;
+  push.dst_offset = uint32_t(offset);
+  for (uint32_t i = 0; i < 4; ++i) {
+    push.modes[i] = c.modes[i];
+  }
+  list->setComputePushConstants(0, &push, 0, sizeof(push));
+  list->dispatch(uint32_t((threads + 63) / 64), 1, 1);
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderBufferBarrier(chunk->buffer.get(), plume::RenderBufferAccess::READ));
+  *out = plume::RenderBufferReference(chunk->buffer.get(), offset);
+  stats_.vertex_copy_bytes += bytes;
+  return true;
 }
 
 plume::RenderPipeline* ResolveMemory::DecodePipeline(plume::RenderFormat format) {
@@ -1367,6 +1556,12 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
       stats_.decoded_levels, stats_.bind_unsupported, stats_.bind_failures, decoded_.size(),
       stats_.evicted, stats_.cpu_writes, stats_.cpu_writes_newer, stats_.lock_write_backs,
       stats_.lock_pages, stats_.lock_pages_unknown);
+  if (stats_.vertex_copies) {
+    text += std::format(" | vertex streams built from it {:.1f}/frame ({:.2f} MiB/frame), {} failed",
+                        double(stats_.vertex_copies) / f,
+                        double(stats_.vertex_copy_bytes) / f / 1048576.0,
+                        stats_.vertex_copy_failures);
+  }
   if (reach_) {
     text += std::format(" | reach: {} pages marked by inherited resolves", stats_.inherited_marked);
   }

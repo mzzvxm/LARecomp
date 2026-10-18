@@ -39,6 +39,7 @@
 #define kModeDepthFloat 5u
 #define kModeDepthRaw8888 6u
 #define kModeDepthFloatBits 7u
+#define kModeFloat32 8u  // k_32_32_FLOAT: X and Y as 32-bit floats
 // Flags.
 #define kFlagSwapRedBlue (1u << 8)
 #define kFlagGammaSource (1u << 9)

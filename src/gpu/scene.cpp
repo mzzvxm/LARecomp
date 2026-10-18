@@ -620,7 +620,13 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // strip whose restart differs from the host's becomes a list).
   const bool computed_fetch = (d.vs->flags & ShaderStore::kComputedFetchIndex) != 0;
   const GeometryCache::Result geometry = geometry_->Prepare(
-      view, s, *d.input_layout, d.primitive, computed_fetch, d.geometry, detail);
+      view, s, *d.input_layout, d.primitive, computed_fetch, d.geometry, detail, list_);
+  if (d.geometry.list_state_changed) {
+    // A stream built on the GPU recorded its compute pass: the
+    // draw binds everything again.
+    ResetListState();
+    marked_framebuffer_ = nullptr;
+  }
   if (geometry != GeometryCache::Result::kOk) {
     ++window_.geometry_results[size_t(geometry)];
     if (geometry == GeometryCache::Result::kEmpty) {

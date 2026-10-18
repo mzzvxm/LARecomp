@@ -66,6 +66,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
                     0.0f, 0.0f);
     case kModeRed32:
       return float4(c.r, 0.0f, 0.0f, 0.0f);
+    case kModeFloat32:
+      // The R32G32_FLOAT product keeps X and Y exactly.
+      return float4(c.r, c.g, 0.0f, 0.0f);
     default:  // kModeFloat: the float16 target rounds to nearest even, as pack_half does.
       return c;
   }

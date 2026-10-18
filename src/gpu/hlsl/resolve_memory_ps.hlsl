@@ -26,6 +26,7 @@ struct DecodePush {
 #define kDecodeR32F 4u            // k_32_FLOAT
 #define kDecodeDepthUnorm24 5u    // k_24_8: UNorm24To32(v >> 8)
 #define kDecodeDepthFloat20e4 6u  // k_24_8_FLOAT: Float20e4To32(v >> 8)
+#define kDecodeR32G32F 7u         // k_32_32_FLOAT: X and Y in two dwords
 
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<DecodePush> g_push;
@@ -67,6 +68,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
     case kDecodeR32F:
       return float4(asfloat(dword), 0.0f, 0.0f, 0.0f);
+    case kDecodeR32G32F: {
+      const uint high = XeEndianSwap32(ResolveMemoryLoad(address + 4u), l.endian);
+      return float4(asfloat(dword), asfloat(high), 0.0f, 0.0f);
+    }
     case kDecodeDepthUnorm24:
       return float4(XeUNorm24To32(dword >> 8u), 0.0f, 0.0f, 0.0f);
     default:  // kDecodeDepthFloat20e4

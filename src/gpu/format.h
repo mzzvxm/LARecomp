@@ -73,6 +73,8 @@ enum class TextureDecompress : uint8_t { kNone, kDXT1, kDXT2_3, kDXT4_5 };
 // reads in the host texture before the fetch constant's own swizzle.
 inline constexpr uint16_t kHostSwizzleRGBA = 0 | 1 << 3 | 2 << 6 | 3 << 9;  // 0x688
 inline constexpr uint16_t kHostSwizzleRRRR = 0;
+// Two-component formats (Xenia's XE_GPU_TEXTURE_SWIZZLE_RGGG): Z and W read G.
+inline constexpr uint16_t kHostSwizzleRGGG = 0 | 1 << 3 | 1 << 6 | 1 << 9;  // 0x248
 
 struct TextureHostFormat {
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;

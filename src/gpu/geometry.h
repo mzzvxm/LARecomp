@@ -49,6 +49,13 @@
 // than 0xFFFF -- is drawn as a list converted on the CPU; the final topology is
 // the geometry's, which the pipeline key then uses.
 //
+// Memory a resolve wrote: a vertex stream over pages the resolve
+// memory holds newer than guest memory -- the console's resolve-to-vertex-
+// buffer, MCLA's rain -- is built on the GPU from there (ResolveMemory::
+// CopyVertices: the same swap plan, the same fold), every frame, uncached.
+// Rectangle lists and index buffers over such pages are reported (TODO 24.42)
+// and read from guest memory.
+//
 // Threading: render thread only, after Initialize.
 // ===========================================================================
 
@@ -74,6 +81,7 @@ namespace mcla::gpu {
 
 class Device;
 class FrameRing;
+class ResolveMemory;
 
 struct DrawGeometry {
   static constexpr uint32_t kMaxSlots = guest::kStreamCount + 1;
@@ -86,6 +94,9 @@ struct DrawGeometry {
   uint32_t count = 0;       // host indices (indexed) or vertices
   uint32_t first = 0;       // first index (indexed) or first vertex
   int32_t base_vertex = 0;  // indexed only
+  // A stream was built on the GPU: the list holds the copy's
+  // compute state, and the caller binds its own again.
+  bool list_state_changed = false;
 };
 
 class GeometryCache {
@@ -111,6 +122,7 @@ class GeometryCache {
     kRectNoPosition,    // rectangle list without a float POSITION to pick the diagonal
     kIndexedRectList,   // its fourth vertex has no place in the guest's buffer
     kInlineLayout,      // inline vertices with another stream or a stride not in dwords
+    kResolveStream,     // a stream over resolve memory could not be built
     kCount,
   };
   static const char* ResultName(Result result);
@@ -121,6 +133,8 @@ class GeometryCache {
   GeometryCache& operator=(const GeometryCache&) = delete;
 
   bool Initialize(Device& device, FrameRing& frames, UploadRing& upload, GuestMemory& memory);
+  // The resolve memory, for streams over memory a resolve wrote.
+  void SetResolveMemory(ResolveMemory* resolve_memory) { resolve_memory_ = resolve_memory; }
   // The GPU must be idle and the FrameRing drained.
   void Shutdown();
 
@@ -130,10 +144,12 @@ class GeometryCache {
   void EndFrame(plume::RenderCommandList* list);
 
   // `primitive`: the host primitive of the guest's type (topology.h);
-  // `computed_fetch`: the vertex shader takes a vfetch index from a register.
+  // `computed_fetch`: the vertex shader takes a vfetch index from a register;
+  // `list`: the frame's list, outside any render pass use, for a stream built
+  // on the GPU.
   Result Prepare(const DrawView& view, const XenosState& state, const InputLayout& layout,
                  HostPrimitive primitive, bool computed_fetch, DrawGeometry& out,
-                 std::string* detail);
+                 std::string* detail, plume::RenderCommandList* list);
 
   // Regions unused for this many frames give their device memory back.
   static constexpr uint64_t kEvictFrames = 600;
@@ -208,7 +224,14 @@ class GeometryCache {
 
   Result PrepareDraw(const DrawView& view, const XenosState& state, const InputLayout& layout,
                      HostPrimitive primitive, bool computed_fetch, DrawGeometry& out,
-                     std::string* detail);
+                     std::string* detail, plume::RenderCommandList* list);
+  // A stream over memory a resolve wrote, built on the GPU. Not
+  // handled (reported once, read from guest memory): *handled = false.
+  Result ResolveStream(const DrawRecord& r, const StreamPlan& plan, uint32_t address,
+                       uint32_t size, bool computed_fetch, plume::RenderCommandList* list,
+                       plume::RenderBufferReference* ref, uint32_t* bytes, bool* handled,
+                       std::string* detail);
+  void ReportResolveRange(const char* what, uint32_t address, uint32_t size);
   void DrainInvalidations();
   void EvictSome();
   bool ReadIndices(uint32_t address, uint32_t count, bool index32, uint32_t endian,
@@ -231,6 +254,7 @@ class GeometryCache {
   FrameRing* frames_ = nullptr;
   UploadRing* upload_ = nullptr;
   GuestMemory* memory_ = nullptr;
+  ResolveMemory* resolve_memory_ = nullptr;
   GuestMemory::Subscriber subscriber_ = GuestMemory::kNoSubscriber;
   BufferHeap vertex_heap_;
   BufferHeap index_heap_;
@@ -273,6 +297,9 @@ class GeometryCache {
     uint64_t positions_checked = 0;
     uint64_t positions_nonfinite = 0;
     uint64_t evicted = 0;
+    uint64_t resolve_streams = 0;       // streams built from the resolve memory (24.42)
+    uint64_t resolve_stream_bytes = 0;
+    uint64_t resolve_ranges_reported = 0;  // over it, not handled, read from guest memory
     // Render-thread time in TSC cycles (cycles.h): all of Prepare, and inside
     // it the hashing of hashed regions, the copies of regions into the ring and
     // the folds.
@@ -293,6 +320,7 @@ class GeometryCache {
   std::array<uint64_t, guest::kStreamCount> profile_last_stream_{};  // start << 32 | size
   uint64_t profile_last_index_ = 0;
   uint32_t reported_upload_failure_ = 0;
+  uint32_t reported_resolve_ranges_ = 0;
 };
 
 }  // namespace mcla::gpu

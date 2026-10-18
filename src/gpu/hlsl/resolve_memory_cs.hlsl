@@ -105,6 +105,8 @@ uint2 TexelBits(int2 texel) {
       return uint2(QuantizeUNorm(v.rrrr, float4(255.0f, 255.0f, 255.0f, 255.0f)).r, 0u);
     case kModeRed32:
       return uint2(asuint(v.r), 0u);
+    case kModeFloat32:  // 64 bpp: the bits of X, then of Y
+      return uint2(asuint(v.r), asuint(v.g));
     default: {  // kModeFloat: the product's float16 values, X and Y, Z and W.
       const uint4 h = f32tof16(v);
       return uint2(h.r | (h.g << 16u), h.b | (h.a << 16u));

@@ -164,3 +164,5 @@ larecomp_gpu_host_shader(resolve_memory_depth_cs cs_6_0 SOURCE resolve_memory_cs
 larecomp_gpu_host_shader(resolve_memory_depth_ms_cs cs_6_0 SOURCE resolve_memory_cs
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
 larecomp_gpu_host_shader(resolve_memory_ps ps_6_0)
+# a vertex stream over memory a resolve wrote (the rain's particle state).
+larecomp_gpu_host_shader(resolve_memory_vertex_cs cs_6_0)

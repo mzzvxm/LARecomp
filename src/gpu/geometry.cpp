@@ -18,6 +18,7 @@
 #include <rex/logging.h>
 
 #include "cycles.h"
+#include "resolve_memory.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
@@ -205,6 +206,7 @@ const char* GeometryCache::ResultName(Result result) {
     case Result::kRectNoPosition: return "rectangle list without a float POSITION";
     case Result::kIndexedRectList: return "indexed rectangle list";
     case Result::kInlineLayout: return "inline vertices with another stream or stride";
+    case Result::kResolveStream: return "stream over resolve memory not built";
     case Result::kCount: break;
   }
   return "?";
@@ -755,17 +757,91 @@ bool GeometryCache::SynthesizeRects(const DrawView& view, const uint8_t* be, uin
 GeometryCache::Result GeometryCache::Prepare(const DrawView& view, const XenosState& state,
                                              const InputLayout& layout, HostPrimitive primitive,
                                              bool computed_fetch, DrawGeometry& out,
-                                             std::string* detail) {
+                                             std::string* detail,
+                                             plume::RenderCommandList* list) {
   const uint64_t c0 = cycles::Now();
-  const Result result = PrepareDraw(view, state, layout, primitive, computed_fetch, out, detail);
+  const Result result =
+      PrepareDraw(view, state, layout, primitive, computed_fetch, out, detail, list);
   stats_.prepare_cycles += cycles::Now() - c0;
   return result;
+}
+
+void GeometryCache::ReportResolveRange(const char* what, uint32_t address, uint32_t size) {
+  ++stats_.resolve_ranges_reported;
+  if (reported_resolve_ranges_ < 8) {
+    ++reported_resolve_ranges_;
+    REXLOG_ERROR("[gpu] geometry: {} over memory a resolve wrote ({:08X}, {} bytes) is read "
+                 "from guest memory, which does not hold those bytes (TODO){}",
+                 what, address, size,
+                 reported_resolve_ranges_ == 8 ? " (further ones counted, not logged)" : "");
+  }
+}
+
+GeometryCache::Result GeometryCache::ResolveStream(const DrawRecord& r, const StreamPlan& plan,
+                                                   uint32_t address, uint32_t size,
+                                                   bool computed_fetch,
+                                                   plume::RenderCommandList* list,
+                                                   plume::RenderBufferReference* ref,
+                                                   uint32_t* bytes, bool* handled,
+                                                   std::string* detail) {
+  *handled = false;
+  // The swap plan as 2 bits per dword (resolve_memory_vertex_cs.hlsl): every
+  // byte of a dword must swap by the same unit, as SwapVertices does it.
+  const uint32_t stride = plan.stride;
+  if (stride == 0 || (stride & 3u) != 0 || stride > ResolveMemory::kMaxVertexCopyStride) {
+    ReportResolveRange("a stream of this stride", address, size);
+    return Result::kOk;
+  }
+  uint8_t unit[ResolveMemory::kMaxVertexCopyStride];
+  std::memset(unit, 4, stride);
+  for (const SwapRange& s : plan.swaps) {
+    for (uint32_t b = s.offset; b < uint32_t(s.offset) + s.size && b < stride; ++b) {
+      unit[b] = s.unit;
+    }
+  }
+  ResolveMemory::VertexCopy copy;
+  for (uint32_t d = 0; d < stride / 4; ++d) {
+    const uint8_t u = unit[d * 4];
+    if (unit[d * 4 + 1] != u || unit[d * 4 + 2] != u || unit[d * 4 + 3] != u ||
+        (u != 2 && u != 4)) {
+      ReportResolveRange("a stream whose swap units split a dword", address, size);
+      return Result::kOk;
+    }
+    copy.modes[d >> 4] |= (u == 4 ? 2u : 1u) << ((d & 15u) * 2u);
+  }
+  copy.address = address;
+  copy.stride = stride;
+  copy.sources = size / stride;
+  if (computed_fetch) {
+    // The fold's layout (destination vertex v = source (start + v) / 4).
+    copy.first = r.start;
+    copy.vertices = r.count;
+    copy.fold = true;
+  } else {
+    // The whole fetch range, bound as the CPU copy binds it.
+    copy.first = 0;
+    copy.vertices = copy.sources;
+  }
+  *bytes = copy.vertices * stride;
+  if (*bytes == 0) {
+    return Result::kEmpty;
+  }
+  std::string why;
+  if (!resolve_memory_->CopyVertices(copy, list, ref, &why)) {
+    *detail = std::format("stream {} at {:08X}: {}", plan.stream, address, why);
+    return Result::kResolveStream;
+  }
+  *handled = true;
+  ++stats_.resolve_streams;
+  stats_.resolve_stream_bytes += *bytes;
+  return Result::kOk;
 }
 
 GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const XenosState& state,
                                                  const InputLayout& layout,
                                                  HostPrimitive primitive, bool computed_fetch,
-                                                 DrawGeometry& out, std::string* detail) {
+                                                 DrawGeometry& out, std::string* detail,
+                                                 plume::RenderCommandList* list) {
   const uint64_t drain_start = profile_ ? cycles::Now() : 0;
   DrainInvalidations();
   if (profile_) {
@@ -851,7 +927,24 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
       if (plan.stride != 0) {
         min_vertices = std::min(min_vertices, size / plan.stride);
       }
-      if (computed_fetch) {
+      // Memory a resolve wrote that guest memory does not hold:
+      // the stream is built on the GPU from the resolve memory.
+      bool built = false;
+      if (resolve_memory_ && size != 0 && resolve_memory_->HoldsRange(address, size)) {
+        if (rects) {
+          ReportResolveRange("a rectangle list", address, size);
+        } else {
+          const Result resolved = ResolveStream(r, plan, address, size, computed_fetch, list,
+                                                &ref, &bytes, &built, detail);
+          if (resolved != Result::kOk) {
+            return resolved;
+          }
+          out.list_state_changed |= built;
+        }
+      }
+      if (built) {
+        // Bound below like any other stream.
+      } else if (computed_fetch) {
         // Vertex v of the draw reads source vertex (start + v) / 4.
         const uint32_t stride = plan.stride;
         bytes = r.count * stride;
@@ -1014,6 +1107,9 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
         how.endian = endian;
         plume::RenderBufferReference ref;
         View* v = nullptr;
+        if (resolve_memory_ && resolve_memory_->HoldsRange(address, r.count * size)) {
+          ReportResolveRange("an index buffer", address, r.count * size);
+        }
         if (profile_) {
           const uint64_t range = (uint64_t(address) << 32) | (r.count * size);
           ++stats_.profile_views[1];
@@ -1272,6 +1368,12 @@ std::string GeometryCache::TakeSummary(uint64_t frames) {
       s.fold_out_of_range, s.index_out_of_range, s.positions_nonfinite, s.positions_checked,
       cycles::ToNs(s.prepare_cycles) / f / 1e6, cycles::ToNs(s.hash_cycles) / f / 1e6,
       cycles::ToNs(s.copy_cycles) / f / 1e6, cycles::ToNs(s.fold_cycles) / f / 1e6);
+  if (s.resolve_streams || s.resolve_ranges_reported) {
+    text += std::format(" | streams from the resolve memory {:.1f}/frame ({:.3f} MB/frame), "
+                        "ranges over it read from guest memory {}",
+                        double(s.resolve_streams) / f, double(s.resolve_stream_bytes) * kMb / f,
+                        s.resolve_ranges_reported);
+  }
   if (profile_) {
     text += std::format(" | views/frame: vertex {:.0f} ({:.1f}% repeat), index {:.0f} ({:.1f}% repeat)",
                         double(s.profile_views[0]) / f,

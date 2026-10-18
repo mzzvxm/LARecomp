@@ -176,6 +176,7 @@ class ResolveCache {
     kModeDepthFloat = 5,
     kModeDepthRaw8888 = 6,
     kModeDepthFloatBits = 7,
+    kModeFloat32 = 8,  // k_32_32_FLOAT: X and Y as 32-bit floats
     kModeCount,
   };
   enum ModeFlags : uint32_t {
