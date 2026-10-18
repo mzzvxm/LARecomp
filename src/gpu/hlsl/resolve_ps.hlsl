@@ -21,7 +21,7 @@ struct ResolvePush {
   uint samples;  // bits 0-2 count, bits 8 + 2i the host index of sample i
   float scale;   // 2^exp_bias (x32 for the 16-bit EDRAM formats) / count
   uint mode;
-  uint reserved;
+  uint fill;     // host pixels of a scaled source's half-pixel gap (0: none)
 };
 
 #ifdef __spirv__
@@ -33,7 +33,12 @@ ConstantBuffer<ResolvePush> g_push : register(b0, space4);
 #include "resolve_common.hlsli"
 
 float4 main(float4 position : SV_Position) : SV_Target {
-  const int2 source = int2(position.xy) + int2(g_push.offset_x, g_push.offset_y);
+  // The first `fill` columns and rows of a scaled source no full-screen draw
+  // covers (the half pixel at a scale) are read from the first
+  // one covered, as Xenia's resolve does. 0 leaves every pixel as it is (the
+  // source pixel is never negative).
+  const int2 source = max(int2(position.xy) + int2(g_push.offset_x, g_push.offset_y),
+                          int2(int(g_push.fill), int(g_push.fill)));
   const uint mode = g_push.mode & 0xFFu;
 #if RESOLVE_DEPTH
   uint stencil;

@@ -33,6 +33,7 @@
 #include "samplers.h"
 #include "textures.h"
 #include "thread_load.h"
+#include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_scene_profile, false, "MCLA/GPU",
@@ -40,6 +41,8 @@ REXCVAR_DEFINE_BOOL(
     "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
     "draw), one line per window of 600 frames. Off: nothing is timed.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
 namespace mcla::gpu {
 
@@ -351,6 +354,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
   ++frame_serial_;
+  watch::BeginFrame(frame_serial_);
   ResetListState();
   marked_framebuffer_ = nullptr;
   // Uploads of the previous frame live in another slot's memory.
@@ -411,6 +415,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   const DrawView view(payload);
   const DrawRecord& r = view.record();
   ++window_.draws;
+  if (watch::Active()) {
+    watch::OnDraw(r.ps_identity);
+  }
   if (draw_census_.active()) {
     draw_census_.OnDraw(r.ps_identity, r.count);
   }
@@ -810,6 +817,13 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       }
     }
     if (hit) {
+      if (watch::Active() && hit->is_texture) {
+        const TextureFetch fetch = ReadTextureFetch(dwords);
+        if (watch::TouchesKey(fetch.key)) {
+          watch::Log(std::format("fetch s{} ps {:016x} {} -> memoized texture slot {}", slot,
+                                 watch::CurrentPs(), fetch.key.Describe(), hit->texture));
+        }
+      }
       last_fetch_[slot] = hit;
       hit->used = ++fetch_memo_clock_;
       ++window_.fetch_memo_hits;
@@ -837,6 +851,12 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       // the cache logs any other dimension once and the null of its dimension
       // is bound.
       const TextureCache::Binding bound = textures_->Bind2D(fetch, list_);
+      if (watch::Active() && watch::TouchesKey(fetch.key)) {
+        watch::Log(std::format("fetch s{} ps {:016x} {} -> texture slot {}{}{}", slot,
+                               watch::CurrentPs(), fetch.key.Describe(), bound.slot,
+                               bound.from_product ? " (product or resolve memory)" : "",
+                               bound.per_frame ? ", per frame" : ""));
+      }
       if (bound.list_state_changed) {
         // A decode from the resolve memory drew into its own target with its
         // own pipeline state: the draw binds everything again.
@@ -1337,6 +1357,9 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
   const auto header_dword = [&](uint32_t surface, uint32_t offset) {
     return LoadBe32(record.state.surfaces[surface] + offset);
   };
+  const uint8_t device_flags = pre.DeviceByte(guest::kDevFlags);
+  bool tiling_detected = false;
+  int32_t header_height = 0;
   int32_t x0, y0, x1, y1;
   if (record.flags & kEventHasRect) {
     x0 = int32_t(LoadBe32(record.rect + 0));
@@ -1356,7 +1379,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     y0 = 0;
     x1 = int32_t((size_bits >> 18) + 1);
     y1 = int32_t(((size_bits >> 3) & 0x7FFFu) + 1);
-    const uint8_t device_flags = pre.DeviceByte(guest::kDevFlags);
+    header_height = y1;
     bool tiling = (device_flags & 0x10) != 0;
     if (!tiling && (device_flags & 0x20) != 0) {
       tiling = true;
@@ -1371,6 +1394,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       x1 = int32_t(pre.DeviceDword(guest::kDevTilingExtent));
       y1 = int32_t(pre.DeviceDword(guest::kDevTilingExtent + 4));
     }
+    tiling_detected = tiling;
   }
   // The D3D viewport (floats X, Y, W, H, truncated as the guest does) and the
   // user scissor when it is on.
@@ -1472,6 +1496,16 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       ++window_.clears_failed;
       continue;
     }
+    const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+    if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
+        key.base_tiles == 1024) {
+      REXLOG_INFO("[gpu] ghost clear frame {} {} flags {:02x}/{:04x} explicit {} "
+                  "header height {} tiling {} rect ({},{})-({},{}) target {} texture {} height {}",
+                  frame_serial_, DescribeEdramKey(key), device_flags, record.clear_flags,
+                  (record.flags & kEventHasRect) != 0, header_height, tiling_detected, x0, y0,
+                  x1, y1, static_cast<const void*>(target),
+                  static_cast<const void*>(target->texture.get()), target->height);
+    }
     // What the hardware stores: the colour times 2^exp_bias, in the format.
     float value[4];
     EncodeColorClear(key.format, color_info.color_exp_bias, color, value);
@@ -1503,6 +1537,16 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     if (!target) {
       ++window_.clears_failed;
       return;
+    }
+    const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+    if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
+        key.base_tiles == 0) {
+      REXLOG_INFO("[gpu] ghost clear frame {} {} flags {:02x}/{:04x} explicit {} "
+                  "header height {} tiling {} rect ({},{})-({},{}) target {} texture {} height {}",
+                  frame_serial_, DescribeEdramKey(key), device_flags, record.clear_flags,
+                  (record.flags & kEventHasRect) != 0, header_height, tiling_detected, x0, y0,
+                  x1, y1, static_cast<const void*>(target),
+                  static_cast<const void*>(target->texture.get()), target->height);
     }
     plume::RenderFramebuffer* framebuffer = edram_->ClearDepthStencil(
         list, *target, plume::RenderRect(x0, y0, x1, y1), (flags & 0x10u) != 0,

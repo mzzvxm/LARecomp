@@ -21,6 +21,7 @@
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
 #include "thread_load.h"
+#include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu, false, "MCLA/GPU",
@@ -147,6 +148,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     edram_.Initialize(device_, frames_, heap_);
     // mcla_gpu_edram_capture: the detector asks for a RenderDoc capture.
     edram_.SetCaptureRequest([this] { capture_.Request(); });
+    // mcla_gpu_watch_base: the diagnostic watch, and its capture.
+    watch::Configure();
+    watch::SetCaptureRequest([this] { capture_.Request(); });
     ok = passes_.Initialize(device_, heap_) &&
          resolve_memory_.Initialize(device_, frames_, heap_, upload_, guest_memory_, passes_,
                                     textures_) &&

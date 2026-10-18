@@ -40,6 +40,13 @@ REXCVAR_DEFINE_UINT32(
     "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
     "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_ghost_log_interval, 0, "MCLA/GPU",
+    "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
+    "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
+    "frame. Hot reload for reproducing the frame ghost.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_UINT32(
     mcla_gpu_resolution_scale, 1, "MCLA/GPU",
     "Internal resolution scale (M6b): the host render targets of the scene are this "
@@ -410,6 +417,12 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
     ++stats_.created;
     AssignOwner(*target);
     it = targets_.emplace(key, std::move(target)).first;
+    if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
+      const Target& made = *it->second;
+      REXLOG_INFO("[gpu] ghost target create frame {} {} target {} texture {} height {} gen {}",
+                  frame_, DescribeEdramKey(key), static_cast<const void*>(&made),
+                  static_cast<const void*>(made.texture.get()), made.height, made.generation);
+    }
     Clear(*it->second, list);
     *framebuffer_unset = true;
   }
@@ -455,6 +468,13 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
     stats_.barriers += 2;
   }
   ++stats_.grown;
+  if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
+    REXLOG_INFO("[gpu] ghost target grow frame {} {} target {} texture {} -> {} height {} -> {} "
+                "gen {}",
+                frame_, DescribeEdramKey(key), static_cast<const void*>(&t),
+                static_cast<const void*>(old.get()), static_cast<const void*>(t.texture.get()),
+                old_height, t.height, t.generation);
+  }
   stats_.grown_bytes += uint64_t(t.width) * (wanted - old_height) * BytesPerPixel(t.format) *
                         t.key.samples;
   RetireFramebuffersOf(&t);

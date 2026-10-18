@@ -10,6 +10,7 @@
 
 #include <format>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <plume_d3d12.h>
@@ -17,6 +18,12 @@
 namespace plume {
 extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
 }  // namespace plume
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_gpu_based_validation, false, "MCLA/GPU",
+    "With mcla_gpu_debug_layer on D3D12, enable GPU-based validation before device creation. "
+    "Diagnostic; requires the matching D3D12SDKLayers.dll and a restart.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu::backend::d3d12 {
 
@@ -28,6 +35,20 @@ bool EnableDebugLayer() {
     return false;
   }
   debug->EnableDebugLayer();
+  if (REXCVAR_GET(mcla_gpu_gpu_based_validation)) {
+    ID3D12Debug1* debug1 = nullptr;
+    const HRESULT hr = debug->QueryInterface(IID_PPV_ARGS(&debug1));
+    if (FAILED(hr) || !debug1) {
+      REXLOG_ERROR("[gpu] GPU-based validation requested but ID3D12Debug1 is unavailable "
+                   "({:#010x})",
+                   static_cast<uint32_t>(hr));
+      debug->Release();
+      return false;
+    }
+    debug1->SetEnableGPUBasedValidation(TRUE);
+    debug1->Release();
+    REXLOG_INFO("[gpu] D3D12 GPU-based validation enabled before device creation");
+  }
   debug->Release();
   return true;
 }

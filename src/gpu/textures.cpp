@@ -28,6 +28,7 @@
 #include "resolve_memory.h"
 #include "texture_decode.h"
 #include "upload.h"
+#include "watch.h"
 
 namespace mcla::gpu {
 
@@ -397,8 +398,13 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
   // A resolve product of this image: what the guest rendered there (all its
   // levels, or the first ones when the fetch names fewer; a fetch whose mip
   // range starts above level 0 by the base the SDK dropped, resolve.h).
+  const bool watched = watch::Active() && watch::TouchesKey(key);
   if (ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page)) {
     ++stats_.product_hits;
+    if (watched) {
+      watch::Log(std::format("  bind {}: product {} at {}x", key.Describe(),
+                             product->key.Describe(), product->scale));
+    }
     const uint32_t slot =
         product->views.Slot(*device_, *heap_, *product->texture, product->format,
                             key.levels(), host_swizzle, "resolve product view");
@@ -420,6 +426,10 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
     switch (resolve_memory_->Bind(key, host_swizzle, list, &slot, &state_changed, &why)) {
       case ResolveMemory::BindResult::kOk: {
         ++stats_.from_resolve_memory;
+        if (watched) {
+          watch::Log(std::format("  bind {}: no active product, from the resolve memory{}",
+                                 key.Describe(), state_changed ? " (decoded now)" : ""));
+        }
         // A page of its range may change before the frame ends: compared once
         // per frame of use (and the resolve memory drops the memo on writes).
         Binding binding = bound(slot, true);
@@ -466,6 +476,10 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
   }
 
   ++stats_.memory_hits;
+  if (watched) {
+    watch::Log(std::format("  bind {}: no product, not in the resolve memory: guest memory",
+                           key.Describe()));
+  }
   auto it = entries_.find(key);
   Entry* e = it != entries_.end() ? it->second.get() : nullptr;
   if (!e) {

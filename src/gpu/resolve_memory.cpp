@@ -25,6 +25,7 @@
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "upload.h"
+#include "watch.h"
 
 namespace mcla::gpu {
 
@@ -1242,6 +1243,37 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
     *slot = d->views.Slot(*device_, *heap_, *d->texture, d->format, key.levels(), host_swizzle,
                           "resolve memory view");
     return *slot == kInvalidBindlessSlot ? BindResult::kFailed : BindResult::kOk;
+  }
+  if (watch::Active() && watch::TouchesKey(key)) {
+    // who wrote the pages this decode reads, by sixteenths of the
+    // base range: the newest page of each slice, its writer and age.
+    std::string slices;
+    const uint32_t first = d->ranges[0][0] >> kPageShift;
+    const uint32_t count = d->ranges[0][1] ? ((d->ranges[0][1] + kPageBytes - 1) >> kPageShift) : 0;
+    for (uint32_t s = 0; s < 16 && count != 0; ++s) {
+      const uint32_t begin = first + count * s / 16;
+      const uint32_t end = std::max(first + count * (s + 1) / 16, begin + 1);
+      uint32_t newest_page = begin;
+      for (uint32_t page = begin; page < end && page < kPageCount; ++page) {
+        if (page_sequence_[page] > page_sequence_[newest_page]) {
+          newest_page = page;
+        }
+      }
+      const uint8_t flags = page_flags_[newest_page];
+      std::string writer = "guest memory";
+      if ((flags & kNewer) && page_writer_[newest_page] != 0xFF) {
+        const TextureKey& w = writer_keys_[page_writer_key_[newest_page]];
+        writer = std::format("{} {}x{} p{} @{:08x} {}f ago",
+                             format::TextureHost(w.format).guest_name, w.width, w.height, w.pitch,
+                             w.base_page << kPageShift,
+                             uint32_t(frame_) - page_writer_frame_[newest_page]);
+      }
+      slices += std::format("{}[{}] {}{}", s ? " | " : "", s, writer,
+                            (flags & kValid) ? "" : " (not valid)");
+    }
+    watch::Flush("first decode of the range from the resolve memory");
+    watch::Log(std::format("decode {} from the resolve memory: {}", key.Describe(), slices));
+    watch::MaybeCapture(watch::Moment::kDecode);
   }
   // Encodes still waiting write the bytes this reads.
   Flush(list);

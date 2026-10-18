@@ -39,6 +39,7 @@
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "texture_decode.h"
+#include "watch.h"
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
                     "Diagnostic: after a Lock write-back, every 8888 level the locked range "
@@ -46,6 +47,17 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
                     "mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga next to the executable "
                     "(the vinyl's mip chain).")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
+                    "With mcla_gpu_resolution_scale above 1, a resolve of a scaled target reads "
+                    "its first host columns and rows -- the half-pixel gap no full-screen draw "
+                    "covers -- from the first one surely covered, as Xenia's "
+                    "resolve_resolution_scale_fill_half_pixel_offset does. Off: "
+                    "the gap keeps whatever was there, a 1-pixel line on the top and left "
+                    "edges. A/B switch.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
 namespace mcla::gpu {
 
@@ -326,6 +338,9 @@ void ResolveCache::DrainInvalidations() {
       // is locked and distilled in place by the CPU: what it read
       // there was not the image, since memory does not hold it until M5.
       ++stats_.deactivated_by_cpu;
+      if (watch::Active() && watch::TouchesKey(p->key)) {
+        watch::Log(std::format("product {} deactivated: the CPU wrote into it", p->key.Describe()));
+      }
       if (cpu_writes_logged_ < 4) {
         ++cpu_writes_logged_;
         REXLOG_WARN("[gpu] resolve: the CPU wrote into the product {}; it is deactivated and the "
@@ -597,6 +612,9 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     // made again at this one. The encodes still waiting (any may read it)
     // are recorded first; its objects die after the frames that use them.
     resolve_memory_->Flush(list);
+    if (watch::Active() && watch::TouchesKey(key)) {
+      watch::Log(std::format("product {} made again: {}x -> {}x", key.Describe(), p->scale, scale));
+    }
     Deactivate(*p);
     p->views.Release(*frames_, *heap_);
     for (auto& framebuffer : p->level_framebuffers) {
@@ -693,11 +711,20 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
         }
       });
     }
+    const bool watched = watch::Active();
     for (Product* other : scratch_hits_) {
       if (other->active) {
         ++stats_.deactivated_by_overlap;
+        if (watched && (watch::TouchesKey(other->key) || watch::TouchesKey(key))) {
+          watch::Log(std::format("product {} deactivated: its memory overlaps {}, activated now",
+                                 other->key.Describe(), key.Describe()));
+          watch::MaybeCapture(watch::Moment::kDeactivatedByOverlap);
+        }
         Deactivate(*other);
       }
+    }
+    if (watched && watch::TouchesKey(key)) {
+      watch::Log(std::format("product {} activated at {}x", key.Describe(), p->scale));
     }
     p->active = true;
     IndexRanges(*p);
@@ -992,6 +1019,13 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       }
 
       // The source target, at least as tall as the copy reads.
+      const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+      const bool ghost_sample = ghost_interval != 0 && frame_ % ghost_interval == 0 &&
+                                key.width == 1280 && key.height == 720 && tx0 == 0 && tx1 == 1280;
+      const EdramTargets::Target* prior_src = ghost_sample ? edram_->Find(src_key) : nullptr;
+      const uint32_t prior_generation = prior_src ? prior_src->generation : 0;
+      const uint32_t prior_height = prior_src ? prior_src->height : 0;
+      const void* prior_texture = prior_src ? prior_src->texture.get() : nullptr;
       bool unset = false;
       EdramTargets::Target* src = edram_->Get(src_key, uint32_t(ty1 - dy), list, &unset);
       if (!src) {
@@ -1041,6 +1075,13 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       // The product at the source target's scale: the copy is
       // then 1:1 in host pixels.
       const uint32_t resolution_scale = src->scale;
+      if (watch::Active() && watch::TouchesKey(key)) {
+        watch::Log(std::format(
+            "resolve into {} level {} rect ({}, {})-({}, {}) from {} {}@{} pitch {} {}x at {}x{}",
+            key.Describe(), level, tx0, ty0, tx1, ty1, depth_source ? "depth" : "colour",
+            src_format, src_key.base_tiles, src_key.pitch, src_key.samples, resolution_scale,
+            (r.flags & kEventInsideEndTiling) ? ", inside EndTiling" : ""));
+      }
       Product* p = Activate(key, host.format, resolution_scale, list, &why);
       if (!p) {
         Fail(Failure::kProduct, std::format("{}: {}", key.Describe(), why));
@@ -1055,6 +1096,17 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       // An encode still waiting to read this level's texels runs first, or is
       // replaced when this copy writes all of them again.
       resolve_memory_->BeforeResolve(list, key, level, tx0, ty0, tx1, ty1);
+      if (ghost_sample) {
+        REXLOG_INFO(
+            "[gpu] ghost resolve frame {} stripe {}..{} dst {:08x} fmt {} source {} "
+            "target {} texture {} height {} gen {} layout {} slots {}/{} product {} texture {} "
+            "previous texture {} height {} gen {} changed {}",
+            frame_, ty0, ty1, key.base_page << 12, key.format, DescribeEdramKey(src_key),
+            static_cast<const void*>(src), static_cast<const void*>(src->texture.get()),
+            src->height, src->generation, static_cast<uint32_t>(src->layout), sample_slot,
+            stencil_slot, static_cast<const void*>(p), static_cast<const void*>(p->texture.get()),
+            prior_texture, prior_height, prior_generation, src->generation != prior_generation);
+      }
       edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
       TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
       if (pass_timing_->enabled()) {
@@ -1081,6 +1133,60 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       push.samples = count;
       for (uint32_t i = 0; i < count; ++i) {
         push.samples |= host_samples[i] << (8 + 2 * i);
+      }
+      // The half-pixel gap at a scale. With the D3D pixel centre
+      // the viewport adds half a guest pixel, s/2 host pixels: a full-screen
+      // quad leaves the first s>>1 host columns and rows of a scaled target
+      // uncovered, holding whatever was there. As Xenia
+      // (resolve_resolution_scale_fill_half_pixel_offset, PA_SU_VTX_CNTL at the
+      // resolve), the copy reads them from the first column/row surely covered;
+      // here by the target's origin, not the copy's: the surface is drawn whole
+      // at once and a tile's rectangle starts inside covered pixels.
+      push.fill = 0;
+      if (resolution_scale > 1 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel)) {
+        bool present = false;
+        xreg::PA_SU_VTX_CNTL vtx;
+        vtx.value = pre.Register(guest::reg::kPaSuVtxCntl, &present);
+        if (!present) {
+          if (!fill_no_register_logged_) {
+            fill_no_register_logged_ = true;
+            REXLOG_ERROR("[gpu] resolve: PA_SU_VTX_CNTL is not in the event window; the half-pixel "
+                         "gap of scaled targets is not filled");
+          }
+        } else if (vtx.pix_center == xe::PixelCenter::kD3DZero) {
+          push.fill = resolution_scale >> 1;
+          ++stats_.half_pixel_filled;
+        }
+        if (!fill_first_logged_ && present) {
+          fill_first_logged_ = true;
+          REXLOG_INFO("[gpu] resolve: first copy of a {}x target: PA_SU_VTX_CNTL {:#010x} (pixel "
+                      "centre {}), the first {} host columns and rows read from the next one",
+                      resolution_scale, vtx.value,
+                      vtx.pix_center == xe::PixelCenter::kD3DZero ? "D3D" : "OpenGL", push.fill);
+        }
+        const int32_t sx0 = tx0 - dx, sy0 = ty0 - dy;  // the copy's origin in the target
+        // A tile of predicated tiling resolves its own band (from y 256 or 512)
+        // of the surface drawn whole: covered pixels, no gap there. The tiles
+        // are the device's (BeginTiling); the game also resolves them itself.
+        bool tile_origin = (r.flags & kEventInsideEndTiling) != 0;
+        const uint32_t tiles = std::min(pre.DeviceDword(guest::kDevTileCount), guest::kMaxTiles);
+        for (uint32_t i = 0; i < tiles && !tile_origin; ++i) {
+          const uint32_t at = guest::kDevTileRects + 16 * i;
+          tile_origin = int32_t(pre.DeviceDword(at)) == sx0 &&
+                        int32_t(pre.DeviceDword(at + 4)) == sy0;
+        }
+        if (push.fill && (sx0 > 0 || sy0 > 0) && !tile_origin) {
+          const uint64_t id = uint64_t(src_key.base_tiles) | uint64_t(src_key.format) << 16 |
+                              uint64_t(src_key.pitch) << 24 | uint64_t(src_key.samples) << 40 |
+                              uint64_t(depth_source) << 48;
+          if (fill_offset_logged_.size() < 16 && fill_offset_logged_.insert(id).second) {
+            REXLOG_WARN("[gpu] resolve: a {}x copy of {} {}@{} pitch {} {}x starts at ({}, {}), "
+                        "not at the target's origin: a half-pixel gap at its own origin is not "
+                        "filled (logged once per source)",
+                        resolution_scale, depth_source ? "depth" : "colour", src_format,
+                        src_key.base_tiles, src_key.pitch, src_key.samples, sx0, sy0);
+          }
+        }
       }
       float scale = std::ldexp(1.0f, int32_t(int8_t(uint8_t((flags >> 26) << 2)) >> 2));
       if (!depth_source && (src_format == 4 || src_format == 5)) {
@@ -1262,7 +1368,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       "resolves {:.1f}/frame: {} copied ({:.2f} Mpixel/frame), {} clear only, clears {} colour {} "
       "depth | conversions [{}] | failed [{}] | products {} ({} active), created {} ({} made "
       "again at another scale), activated "
-      "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, misaligned {}, source "
+      "{}, deactivated by overlap {} / CPU {}, evicted {} | partial {}, half-pixel filled {}, "
+      "misaligned {}, source "
       "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image, {} "
       "by image base, {} of a level not wholly written) | "
       "locks {} ({} of an active product, {} written back: {} pages, {:.2f} ms total, {:.2f} ms "
@@ -1272,7 +1379,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
       active, stats_.created, stats_.remade_for_scale, stats_.activated,
       stats_.deactivated_by_overlap,
-      stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.misaligned,
+      stats_.deactivated_by_cpu, stats_.evicted, stats_.partial, stats_.half_pixel_filled,
+      stats_.misaligned,
       stats_.from_registers, stats_.other_pitch, stats_.finds, stats_.found,
       stats_.found_by_image, stats_.found_by_image_base, stats_.found_incomplete, stats_.locks,
       stats_.locks_on_products,

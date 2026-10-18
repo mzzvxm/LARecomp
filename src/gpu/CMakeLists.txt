@@ -54,6 +54,7 @@ add_library(larecomp_gpu OBJECT
     upload.cpp
     validation.cpp
     viewport.cpp
+    watch.cpp
 )
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

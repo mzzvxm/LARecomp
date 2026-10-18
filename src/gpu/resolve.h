@@ -193,7 +193,9 @@ class ResolveCache {
     uint32_t samples;
     float scale;
     uint32_t mode;
-    uint32_t reserved;
+    // Host pixels of the half-pixel gap of a scaled source: the
+    // copy reads its first columns and rows from column/row `fill`. 0 = none.
+    uint32_t fill;
   };
   static_assert(sizeof(Push) == 32);
 
@@ -259,6 +261,13 @@ class ResolveCache {
   // Sources whose surface header was made at another pitch/MSAA than the
   // device's RB_SURFACE_INFO, logged once each (the first 16).
   std::unordered_set<uint64_t> other_pitch_logged_;
+  // Half-pixel fill: the first scaled copy's PA_SU_VTX_CNTL,
+  // logged once; sources a scaled copy reads away from the target's origin
+  // outside a tiled section, once each (the first 16) -- there a gap at the
+  // copy's own origin is not the target's and the fill does not reach it.
+  bool fill_first_logged_ = false;
+  bool fill_no_register_logged_ = false;
+  std::unordered_set<uint64_t> fill_offset_logged_;
   // Locked ranges (address << 32 | size), logged once each (the first 32).
   std::unordered_set<uint64_t> locks_logged_;
   std::vector<Product*> lock_hits_;
@@ -296,6 +305,7 @@ class ResolveCache {
     uint64_t deactivated_by_overlap = 0;
     uint64_t deactivated_by_cpu = 0;
     uint64_t partial = 0;             // copies that do not cover their whole level
+    uint64_t half_pixel_filled = 0;   // copies of a scaled source with the gap filled (24.43)
     uint64_t misaligned = 0;          // destination offset not in whole 32x32 tiles
     uint64_t from_registers = 0;      // source surface not bound: taken from the registers
     uint64_t other_pitch = 0;         // source surface made at another pitch/MSAA than the

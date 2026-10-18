@@ -211,6 +211,7 @@ inline constexpr uint32_t kRbDepthControl = 0x2200;
 inline constexpr uint32_t kRbColorControl = 0x2202;
 inline constexpr uint32_t kPaSuScModeCntl = 0x2205;
 inline constexpr uint32_t kRbModeControl = 0x2208;
+inline constexpr uint32_t kPaSuVtxCntl = 0x2302;
 inline constexpr uint32_t kPaSuPolyOffsetFrontScale = 0x2380;
 inline constexpr uint32_t kRbSampleCountCtl = 0x2324;
 }  // namespace reg
