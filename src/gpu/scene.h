@@ -63,6 +63,7 @@ namespace mcla::gpu {
 class BindlessHeap;
 class GuestLayout;
 class PassTiming;
+class PostAa;
 class ResolveCache;
 class Samplers;
 class TextureCache;
@@ -78,7 +79,7 @@ class Scene {
   void Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
                   GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                   ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap,
-                  PassTiming& pass_timing);
+                  PassTiming& pass_timing, PostAa& post);
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -98,6 +99,10 @@ class Scene {
   void OnResolve(const ResolveRecord& record, plume::RenderCommandList* list);
   void OnTilingBegin(const TilingBeginRecord& record, plume::RenderCommandList* list);
   void OnTilingEnd(const TilingEndRecord& record, plume::RenderCommandList* list);
+  // The scene's image is composed: what the frame draws from here
+  // on is screen-space. M6c.0 notes where (the census); `list` is the frame's
+  // open list, for the passes that run at this point.
+  void OnComposite(const CompositeRecord& record, plume::RenderCommandList* list);
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
@@ -329,6 +334,15 @@ class Scene {
   Stats total_;
   DrawCensus draw_census_;      // diagnostic, mcla_gpu_census_ps
   TargetCensus target_census_;  // diagnostic, mcla_gpu_census_targets
+  CompositeCensus composite_census_;  // the scene's composition, always on
+  // The colour target 0 of the frame's last recorded draw (null: none yet) and
+  // the guest rectangle from the origin its draws covered since it became the
+  // last: the target and region the scene is composed into when the composite
+  // record comes.
+  EdramTargets::Target* last_color0_ = nullptr;
+  uint32_t last_color0_width_ = 0;
+  uint32_t last_color0_height_ = 0;
+  PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
 
   // The last draw's lookups: consecutive draws mostly name
   // the same targets, shaders and pipeline. Each memo holds only while what it

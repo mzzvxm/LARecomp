@@ -118,6 +118,11 @@ class GuestCapture {
   // with its window. Any guest thread.
   bool Lock(uint32_t resource, uint32_t level, uint32_t address, uint32_t size);
 
+  // The scene's image is composed (sub_8260EFD0 returned): a
+  // composite record, batched behind the draws that composed it. Guest render
+  // thread.
+  void Composite(uint32_t bucket);
+
  private:
   struct DeviceState {
     uint32_t device = 0;

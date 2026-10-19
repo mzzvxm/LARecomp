@@ -204,6 +204,12 @@ void FrameTrace::OnRecord(uint64_t frames, const RecordHeader& header, const uin
              r.resource, r.level, r.address, r.size);
       break;
     }
+    case RecordType::kComposite: {
+      const auto& r = *reinterpret_cast<const CompositeRecord*>(payload);
+      Printf("CM seq=%" PRIu64 " bucket=%08x after_draws=%" PRIu64 "\n", header.sequence,
+             r.bucket, draws_);
+      break;
+    }
     default:
       Printf("? type=%u seq=%" PRIu64 " size=%u\n", unsigned(header.type), header.sequence,
              header.size);

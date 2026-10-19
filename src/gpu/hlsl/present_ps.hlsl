@@ -8,6 +8,10 @@
 // four texels a bilinear scale reads, then mixed -- the table before the
 // scaler, as on the display -- into the letterboxed viewport the renderer set.
 // A 1:1 present reads exactly one texel per pixel.
+//
+// PRESENT_NO_RAMP (present_stretch_ps): the same bilinear stretch
+// of an image the table was already applied to (FSR1's output, when its passes
+// stopped short of the letterbox).
 
 #include "host_pass_common.hlsli"
 
@@ -38,7 +42,12 @@ float3 Ramp(float3 color) {
 
 float3 Texel(int2 at) {
   const int2 limit = int2(g_push.source_width, g_push.source_height) - 1;
-  return Ramp(g_textures[g_push.source].Load(int3(clamp(at, int2(0, 0), limit), 0)).rgb);
+  const float3 texel = g_textures[g_push.source].Load(int3(clamp(at, int2(0, 0), limit), 0)).rgb;
+#if PRESENT_NO_RAMP
+  return texel;
+#else
+  return Ramp(texel);
+#endif
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {

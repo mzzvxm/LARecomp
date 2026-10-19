@@ -5,7 +5,8 @@
 // One record per guest event that produces GPU work: draws, clears, resolves, the two ends of tiled
 // rendering, and the present. Each carries the device state its event
 // consumed, copied at the moment it was valid. Plus the guest's GPU fences
-// (24.20), which the render thread retires as it executes.
+// (24.20), which the render thread retires as it executes, the CPU locks of
+// resolve destinations (24.32) and the end of the scene's composition (24.47).
 //
 // Conventions:
 //  - Blocks copied out of guest memory (register and fetch windows, constant
@@ -43,6 +44,7 @@ enum class RecordType : uint8_t {
   kTilingEnd,
   kFence,
   kLock,
+  kComposite,
   kCount,  // number of types; not a record
 };
 
@@ -334,6 +336,18 @@ struct LockRecord {
   uint32_t size = 0;      // r10
 };
 
+// --- composite ---------------------------------------------------------------------
+
+// The scene's image is composed (M6c.0): the end of the post chain,
+// sub_8260EFD0, returned inside the post object's bucket-28 draw (sub_82307618)
+// -- tone map into the UI target, halos -- before anything copies that target.
+// What the frame draws after it is screen-space. Batched, in order with the
+// draws around it.
+struct CompositeRecord {
+  uint32_t bucket = 0;  // the bucket's bit (bucket 28: 0x10000000)
+  uint32_t reserved = 0;
+};
+
 static_assert(std::is_trivially_copyable_v<ClearRecord>);
 static_assert(std::is_trivially_copyable_v<ResolveRecord>);
 static_assert(std::is_trivially_copyable_v<TilingBeginRecord>);
@@ -341,6 +355,7 @@ static_assert(std::is_trivially_copyable_v<TilingEndRecord>);
 static_assert(std::is_trivially_copyable_v<PresentRecord>);
 static_assert(std::is_trivially_copyable_v<FenceRecord>);
 static_assert(std::is_trivially_copyable_v<LockRecord>);
+static_assert(std::is_trivially_copyable_v<CompositeRecord>);
 
 // Raw guest reads, for decoders.
 inline uint32_t LoadBe32(const uint8_t* p) {

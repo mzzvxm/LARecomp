@@ -353,6 +353,23 @@ extern "C" REX_FUNC(rex_sub_82411CD0) {
   }
 }
 
+// The end of the post chain -- sub_8260EFD0(postfx), called only by the post
+// object's bucket-28 draw sub_82307618 (vtable 0x820429A0 +8):
+// after the tone map into the UI target and the halos, before that draw's
+// last step, the copy of the UI target into a texture (the factory's +0x10
+// with r4 = 1) when mgr+375 is set -- the pause, the photo mode and the garage
+// draw their UI on that copy in another target. When this returns, the
+// scene's image is composed and nothing has read it yet; what the frame draws
+// next is screen-space. For the Plume renderer: a composite record after the
+// original. Pass-through otherwise.
+extern "C" REX_FUNC(rex_sub_8260EFD0) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_8260EFD0");
+  __imp__rex_sub_8260EFD0(ctx, base);
+  if (mcla::gpu::Enabled()) {
+    mcla::gpu::OnGuestSceneComposited(0x10000000u);  // bucket 28's bit
+  }
+}
+
 // The guest's "GPU is hung" detector -- sub_82425C18(dev), called only from the
 // fence spin (sub_82412F98) after ~5000 ticks without the retired value
 // moving. It prints and __traps outside the crash-dump mode; returning 0 makes

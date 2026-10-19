@@ -151,6 +151,15 @@ void NoteGuestFenceWait(uint64_t wait_ns);
 // record. Any guest thread.
 void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t size);
 
+// --- the scene's composition (M6c) ---------------------------------
+
+// sub_8260EFD0 (the end of the post chain, inside the post object's bucket-28
+// draw), AFTER the original: the scene's image is composed, nothing has copied
+// it yet, and what the frame draws after it is screen-space. `bucket`: the
+// bucket's bit. Becomes a composite record when the capture is on. Guest
+// render thread.
+void OnGuestSceneComposited(uint32_t bucket);
+
 // UI thread, on a window pixel-size change. The rebuild happens on the render
 // thread at the next present (an idle one if the guest is not swapping).
 void RequestResize();

@@ -28,6 +28,7 @@
 #include "layout.h"
 #include "native_gfx/vertex_declaration.h"
 #include "pass_timing.h"
+#include "post.h"
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
@@ -281,13 +282,25 @@ std::string PassLabel(EdramTargets::Target* const* colors, uint32_t count,
   return label;
 }
 
+// A colour target for the composite census: its key and scale in
+// one word.
+uint64_t CompositeTarget(const EdramTargets::Target* target) {
+  if (!target) {
+    return CompositeCensus::kNoTarget;
+  }
+  const EdramKey& k = target->key;
+  return CompositeCensus::Pack(k.base_tiles, k.pitch, k.depth, k.format, k.samples,
+                               target->scale);
+}
+
 }  // namespace
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
                        GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                        ResolveCache& resolve, const GuestLayout& layout,
-                       const BindlessHeap& heap, PassTiming& pass_timing) {
+                       const BindlessHeap& heap, PassTiming& pass_timing, PostAa& post) {
   pass_timing_ = &pass_timing;
+  post_ = &post;
   upload_ = &upload;
   pipelines_ = &pipelines;
   samplers_ = &samplers;
@@ -1295,6 +1308,19 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   if (target_census_.active()) {
     target_census_.OnDraw(PassLabel(colors, d.key.color_count, depth), r.ps_identity);
   }
+  // The frame's last colour target and the guest rectangle its draws covered
+  // since it became the last: where the scene is composed.
+  EdramTargets::Target* const color0 = d.key.color_count ? colors[0] : nullptr;
+  if (color0 != last_color0_) {
+    last_color0_ = color0;
+    last_color0_width_ = 0;
+    last_color0_height_ = 0;
+  }
+  last_color0_width_ = std::max(last_color0_width_, scissor_br_x);
+  last_color0_height_ = std::max(last_color0_height_, scissor_br_y);
+  if (composite_census_.after()) {
+    composite_census_.OnDrawAfter(CompositeTarget(last_color0_), r.ps_identity);
+  }
   BindFramebuffer(list, framebuffer);
   Lap(Stage::kTargets);
 
@@ -1624,6 +1650,9 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
 
 void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
   ++window_.resolves;
+  if (composite_census_.after()) {
+    composite_census_.OnResolveAfter();
+  }
   // The copy reads targets the open render pass may be writing.
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
@@ -1663,6 +1692,27 @@ void Scene::OnTilingEnd(const TilingEndRecord& record, plume::RenderCommandList*
   edram_->EndTiling(tiles, count);
   // The section's resolves found inherited at their tiles (reach).
   resolve_->DrainInherited();
+}
+
+void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) {
+  // Where the scene was composed -- the frame's last colour target -- counted
+  // against what the frame draws after it (M6c.0).
+  composite_census_.OnComposite(CompositeTarget(last_color0_));
+  if (!last_color0_ || !list || PostAa::CurrentMode() == PostAa::Mode::kOff) {
+    return;
+  }
+  // The anti-aliasing reads and writes that target (M6c.2/M6c.3): the scene's
+  // render pass ends first.
+  if (bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+    bound_.framebuffer = nullptr;
+  }
+  if (post_->Apply(list, slot_, *last_color0_, last_color0_width_, last_color0_height_)) {
+    // It bound its own layout, pipelines, viewport and scissor: the next draw
+    // binds everything again (the M6a caches skip nothing).
+    ResetListState();
+    marked_framebuffer_ = nullptr;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1719,6 +1769,10 @@ void Scene::OnPresent() {
   ++window_.frames;
   draw_census_.OnPresent();
   target_census_.OnPresent();
+  composite_census_.OnPresent();
+  last_color0_ = nullptr;
+  last_color0_width_ = 0;
+  last_color0_height_ = 0;
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }
@@ -1869,6 +1923,7 @@ void Scene::Report(const char* why) {
       REXLOG_INFO("[gpu] scene ({}): {}", why, text);
     }
   }
+  REXLOG_INFO("[gpu] scene ({}): {}", why, composite_census_.TakeReport());
   Add(total_, window_);
   window_ = Stats{};
 }

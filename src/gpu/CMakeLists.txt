@@ -35,6 +35,7 @@ add_library(larecomp_gpu OBJECT
     overlay.cpp
     pass_timing.cpp
     pipelines.cpp
+    post.cpp
     present.cpp
     region_index.cpp
     render_thread.cpp
@@ -68,9 +69,12 @@ set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 # src/ too: the guest decoders the renderer reuses from the legacy runtime are
 # included as "native_gfx/...", which keeps every such dependency visible by
 # its path. Their definitions come from larecomp itself at link.
+# thirdparty/ too: post.cpp uploads SMAA's lookup textures from the vendored
+# headers, included as "smaa/...".
 target_include_directories(larecomp_gpu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty"
     "${LARECOMP_GPU_SHADER_DIR}"
 )
 # plume first: see the note at the top.
@@ -102,13 +106,28 @@ endforeach()
 
 set(LARECOMP_GPU_HLSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/hlsl")
 file(GLOB LARECOMP_GPU_HLSL_INCLUDES CONFIGURE_DEPENDS "${LARECOMP_GPU_HLSL_DIR}/*.hlsli")
+# M6c: the vendored post-processing sources the host shaders
+# include by their directory -- "ffx-fsr1/ffx_a.h", "smaa/SMAA.hlsl",
+# "fxaa/FXAA3_11.h" -- unchanged, each with its licence.
+set(LARECOMP_GPU_THIRDPARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty")
+file(GLOB LARECOMP_GPU_THIRDPARTY_SHADER_SOURCES CONFIGURE_DEPENDS
+     "${LARECOMP_GPU_THIRDPARTY_DIR}/ffx-fsr1/*.h"
+     "${LARECOMP_GPU_THIRDPARTY_DIR}/smaa/*.h"
+     "${LARECOMP_GPU_THIRDPARTY_DIR}/smaa/*.hlsl"
+     "${LARECOMP_GPU_THIRDPARTY_DIR}/fxaa/*.h")
 
-# larecomp_gpu_host_shader(<stem> <profile> [SOURCE <hlsl stem>] [DEFINES NAME=VALUE...]):
+# larecomp_gpu_host_shader(<stem> <profile> [SOURCE <hlsl stem>] [HLSL_VERSION <year>]
+#                          [DEFINES NAME=VALUE...]):
 # the same source compiled more than once (variants) under different stems.
+# HLSL 2021 unless HLSL_VERSION says otherwise: AMD's ffx_a.h uses the vector
+# ternaries 2021 rejects, so the FSR1 passes build as 2018.
 function(larecomp_gpu_host_shader STEM PROFILE)
-    cmake_parse_arguments(ARG "" "SOURCE" "DEFINES" ${ARGN})
+    cmake_parse_arguments(ARG "" "SOURCE;HLSL_VERSION" "DEFINES" ${ARGN})
     if(NOT ARG_SOURCE)
         set(ARG_SOURCE "${STEM}")
+    endif()
+    if(NOT ARG_HLSL_VERSION)
+        set(ARG_HLSL_VERSION 2021)
     endif()
     set(define_args "")
     foreach(_define IN LISTS ARG_DEFINES)
@@ -131,12 +150,14 @@ function(larecomp_gpu_host_shader STEM PROFILE)
             OUTPUT "${out}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${LARECOMP_GPU_SHADER_DIR}"
             COMMAND ${LARECOMP_GPU_DXC}
-                    -T ${PROFILE} -HV 2021 -all-resources-bound -Wno-ignored-attributes
+                    -T ${PROFILE} -HV ${ARG_HLSL_VERSION} -all-resources-bound
+                    -Wno-ignored-attributes
                     ${format_args} ${define_args}
-                    -I "${LARECOMP_GPU_HLSL_DIR}"
+                    -I "${LARECOMP_GPU_HLSL_DIR}" -I "${LARECOMP_GPU_THIRDPARTY_DIR}"
                     -Fh "${out}" -Vn g_${STEM}_${ext}
                     "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl"
             DEPENDS "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl" ${LARECOMP_GPU_HLSL_INCLUDES}
+                    ${LARECOMP_GPU_THIRDPARTY_SHADER_SOURCES}
             COMMENT "Compiling host shader ${STEM} from ${ARG_SOURCE}.hlsl (${PROFILE}, ${ext})"
             VERBATIM)
         target_sources(larecomp_gpu PRIVATE "${out}")
@@ -156,6 +177,18 @@ larecomp_gpu_host_shader(resolve_depth_ps ps_6_0 SOURCE resolve_ps
 larecomp_gpu_host_shader(resolve_depth_ms_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
 larecomp_gpu_host_shader(present_ps ps_6_0)
+# M6c.1: FSR1 on the present -- EASU passes, RCAS, and the
+# present's bilinear stretch without the gamma table (it was applied first).
+larecomp_gpu_host_shader(fsr_easu_ps ps_6_0 HLSL_VERSION 2018)
+larecomp_gpu_host_shader(fsr_rcas_ps ps_6_0 HLSL_VERSION 2018)
+larecomp_gpu_host_shader(present_stretch_ps ps_6_0 SOURCE present_ps DEFINES PRESENT_NO_RAMP=1)
+# M6c.2/M6c.3: the scene's anti-aliasing before the UI -- the copy
+# (luma in alpha), FXAA 3.11, SMAA 1x's three passes.
+larecomp_gpu_host_shader(post_luma_ps ps_6_0)
+larecomp_gpu_host_shader(fxaa_ps ps_6_0)
+larecomp_gpu_host_shader(smaa_edges_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=1)
+larecomp_gpu_host_shader(smaa_weights_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=2)
+larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

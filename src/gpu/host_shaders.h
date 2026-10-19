@@ -17,10 +17,15 @@
 #include "backend.h"
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
+#include "fsr_easu_ps.hlsl.dxil.h"
+#include "fxaa_ps.hlsl.dxil.h"
+#include "fsr_rcas_ps.hlsl.dxil.h"
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
+#include "post_luma_ps.hlsl.dxil.h"
 #include "present_ps.hlsl.dxil.h"
+#include "present_stretch_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
 #include "resolve_color_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
@@ -30,12 +35,20 @@
 #include "resolve_memory_depth_ms_cs.hlsl.dxil.h"
 #include "resolve_memory_ps.hlsl.dxil.h"
 #include "resolve_memory_vertex_cs.hlsl.dxil.h"
+#include "smaa_blend_ps.hlsl.dxil.h"
+#include "smaa_edges_ps.hlsl.dxil.h"
+#include "smaa_weights_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
+#include "fsr_easu_ps.hlsl.spirv.h"
+#include "fxaa_ps.hlsl.spirv.h"
+#include "fsr_rcas_ps.hlsl.spirv.h"
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
+#include "post_luma_ps.hlsl.spirv.h"
 #include "present_ps.hlsl.spirv.h"
+#include "present_stretch_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
 #include "resolve_color_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
@@ -45,6 +58,9 @@
 #include "resolve_memory_depth_ms_cs.hlsl.spirv.h"
 #include "resolve_memory_ps.hlsl.spirv.h"
 #include "resolve_memory_vertex_cs.hlsl.spirv.h"
+#include "smaa_blend_ps.hlsl.spirv.h"
+#include "smaa_edges_ps.hlsl.spirv.h"
+#include "smaa_weights_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -84,6 +100,38 @@ inline HostShaderBlob FullscreenVertexShader() {
 
 inline HostShaderBlob PresentPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(present_ps);
+}
+
+// FSR1 on the present (M6c.1): an EASU pass, the RCAS pass, and
+// the present's bilinear stretch of an image the gamma table already went into.
+inline HostShaderBlob FsrEasuPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fsr_easu_ps);
+}
+
+inline HostShaderBlob FsrRcasPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fsr_rcas_ps);
+}
+
+inline HostShaderBlob PresentStretchPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(present_stretch_ps);
+}
+
+// The scene's anti-aliasing before the UI (M6c.2/M6c.3): the copy
+// with the luma in alpha, FXAA, and SMAA's passes (1 edges, 2 weights, 3 blend).
+inline HostShaderBlob PostLumaPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(post_luma_ps);
+}
+
+inline HostShaderBlob FxaaPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fxaa_ps);
+}
+
+inline HostShaderBlob SmaaPixelShader(int pass) {
+  if (pass == 1) {
+    return MCLA_GPU_HOST_SHADER_BLOB(smaa_edges_ps);
+  }
+  return pass == 2 ? MCLA_GPU_HOST_SHADER_BLOB(smaa_weights_ps)
+                   : MCLA_GPU_HOST_SHADER_BLOB(smaa_blend_ps);
 }
 
 // The resolve conversion (resolve_ps.hlsl) by source kind.

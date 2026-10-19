@@ -64,6 +64,7 @@
 #include "overlay.h"
 #include "pass_timing.h"
 #include "pipelines.h"
+#include "post.h"
 #include "present.h"
 #include "render_thread.h"
 #include "resolve.h"
@@ -177,6 +178,7 @@ class Renderer final : public RenderThread::Executor {
   TextureCache textures_;   // textures decoded from guest memory
   SwapChain swap_chain_;
   PresentPass present_;     // the guest's front buffer on the window
+  PostAa post_;             // the scene's anti-aliasing before the UI
   FlickerProbe flicker_probe_;  // diagnostic, mcla_gpu_flicker_probe
   OverlayRenderer overlay_;
   GpuTiming timing_;

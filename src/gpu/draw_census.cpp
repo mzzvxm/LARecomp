@@ -11,6 +11,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "edram.h"
+
 REXCVAR_DEFINE_STRING(
     mcla_gpu_census_ps, "", "MCLA/GPU",
     "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
@@ -146,6 +148,62 @@ std::string DrawCensus::TakeReport() {
     v.clear();
     window_draws_[i] = 0;
   }
+  return text;
+}
+
+std::string CompositeCensus::Describe(uint64_t packed) {
+  if (packed == kNoTarget) {
+    return "no colour target";
+  }
+  EdramKey key;
+  key.base_tiles = uint16_t(packed & 0xFFFFu);
+  key.pitch = uint16_t((packed >> 16) & 0xFFFFu);
+  key.depth = uint8_t((packed >> 32) & 1u);
+  key.format = uint8_t((packed >> 33) & 0xFFu);
+  key.samples = uint8_t((packed >> 41) & 0xFFu);
+  return std::format("{} at {}x", DescribeEdramKey(key), uint32_t((packed >> 49) & 0xFFu));
+}
+
+void CompositeCensus::OnPresent() {
+  ++frames_;
+  ++frames_by_markers_[std::min<uint32_t>(frame_markers_, 2)];
+  frame_markers_ = 0;
+}
+
+std::string CompositeCensus::TakeReport() {
+  const auto top = [](const std::unordered_map<uint64_t, uint64_t>& counts, size_t listed,
+                      double frames, bool targets) {
+    std::vector<std::pair<uint64_t, uint64_t>> order(counts.begin(), counts.end());
+    std::sort(order.begin(), order.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string list;
+    for (size_t i = 0; i < order.size() && i < listed; ++i) {
+      list += targets ? std::format("{}{} {:.2f}", i ? "; " : "", Describe(order[i].first),
+                                    double(order[i].second) / frames)
+                      : std::format("{}{:016x} {:.1f}", i ? ", " : "", order[i].first,
+                                    double(order[i].second) / frames);
+    }
+    if (order.size() > listed) {
+      list += std::format(" (+{} more)", order.size() - listed);
+    }
+    return list.empty() ? std::string("none") : list;
+  };
+  const double frames = frames_ ? double(frames_) : 1.0;
+  std::string text = std::format(
+      "composite: {} frames with no marker, {} with one, {} with more | at the marker: {} | "
+      "after it, per frame: {:.1f} draws, {:.2f} resolves; colour 0 of those draws: {} | their "
+      "PS: {}",
+      frames_by_markers_[0], frames_by_markers_[1], frames_by_markers_[2],
+      top(at_marker_, kListed, frames, true), double(draws_after_) / frames,
+      double(resolves_after_) / frames, top(targets_after_, kListed, frames, true),
+      top(shaders_after_, kListed, frames, false));
+  frames_ = 0;
+  frames_by_markers_[0] = frames_by_markers_[1] = frames_by_markers_[2] = 0;
+  draws_after_ = 0;
+  resolves_after_ = 0;
+  at_marker_.clear();
+  targets_after_.clear();
+  shaders_after_.clear();
   return text;
 }
 

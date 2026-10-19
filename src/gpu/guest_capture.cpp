@@ -1109,4 +1109,28 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// the scene's composition (M6c.0)
+// ---------------------------------------------------------------------------
+
+void GuestCapture::Composite(uint32_t bucket) {
+  if (!enabled()) {
+    return;
+  }
+  const auto t0 = Clock::now();
+  std::lock_guard lock(mutex_);
+  // Not a draw-state event, like a fence: a pending inline draw stays open (none
+  // is, at the end of the post object's draw).
+  CommandStream::Writer writer(stream_);
+  uint8_t* payload = writer.Begin(RecordType::kComposite, sizeof(CompositeRecord));
+  if (!payload) {
+    return;
+  }
+  auto* r = new (payload) CompositeRecord();
+  r->bucket = bucket;
+  CountRecord(sizeof(CompositeRecord));
+  frame_.capture_ns += ElapsedNs(t0);
+  writer.Commit(Publication::kBatched);
+}
+
 }  // namespace mcla::gpu

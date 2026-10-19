@@ -151,7 +151,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // mcla_gpu_watch_base: the diagnostic watch, and its capture.
     watch::Configure();
     watch::SetCaptureRequest([this] { capture_.Request(); });
-    ok = passes_.Initialize(device_, heap_) &&
+    ok = passes_.Initialize(device_, frames_, heap_) &&
          resolve_memory_.Initialize(device_, frames_, heap_, upload_, guest_memory_, passes_,
                                     textures_, pass_timing_) &&
          resolve_.Initialize(device_, frames_, heap_, guest_memory_, textures_, edram_, passes_,
@@ -162,9 +162,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_,
                          resolve_memory_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
-                      guest_layout_, heap_, pass_timing_);
-    ok = swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
-         present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_,
+                      guest_layout_, heap_, pass_timing_, post_);
+    ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
+         swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
+         present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format()) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
                              swap_chain_.format());
@@ -188,6 +189,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     overlay_.Shutdown();
     present_.Shutdown();
     swap_chain_.Shutdown();
+    post_.Shutdown();
     textures_.Shutdown();
     resolve_.Shutdown();
     resolve_memory_.Shutdown();
@@ -263,6 +265,7 @@ void Renderer::Shutdown() {
   overlay_.Shutdown();
   present_.Shutdown();
   swap_chain_.Shutdown();
+  post_.Shutdown();
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
@@ -377,6 +380,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       });
       return;
     }
+    case RecordType::kComposite:
+      scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), OpenFrameList());
+      return;
     case RecordType::kPad:
     case RecordType::kCount:
       break;
@@ -568,9 +574,10 @@ void Renderer::ExecutePresent(PresentSource source) {
 void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                                  PresentSource source) {
   // Outside the back buffer's pass: the front buffer's texture (an upload when
-  // it comes from memory) and the gamma table.
+  // it comes from memory), the gamma table and FSR1's passes
+  // before the back buffer's.
   pass_timing_.Mark(list, "present");
-  present_.Prepare(list, slot);
+  present_.Prepare(list, slot, swap_chain_.width(), swap_chain_.height());
   if (source == PresentSource::kGuest) {
     // An idle present shows the same front buffer again: not a new frame.
     flicker_probe_.Record(list, present_, guest_presents_ + 1);
@@ -628,6 +635,7 @@ void Renderer::ReportFrameStats() {
       locks_on_destinations, fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
+  REXLOG_INFO("[gpu] {}", post_.TakeSummary());
   if (flicker_probe_.enabled()) {
     REXLOG_INFO("[gpu] {}", flicker_probe_.TakeSummary());
   }
@@ -942,6 +950,12 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
     if (c->Lock(resource, level, address, size)) {
       g_guest_locks_on_destinations.fetch_add(1, std::memory_order_relaxed);
     }
+  }
+}
+
+void OnGuestSceneComposited(uint32_t bucket) {
+  if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
+    c->Composite(bucket);
   }
 }
 
