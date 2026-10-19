@@ -1,0 +1,4 @@
+AMD FidelityFX Super Resolution 1.0 (FSR1), the two headers the shaders use, unchanged.
+Origin: https://github.com/GPUOpen-Effects/FidelityFX-FSR at a21ffb8f6c13233ba336352bdff293894c706575
+        (ffx-fsr/ffx_a.h, ffx-fsr/ffx_fsr1.h; license.txt saved as LICENSE.txt). MIT.
+Used by src/gpu/hlsl/fsr_easu_ps.hlsl and fsr_rcas_ps.hlsl (docs/gpu_renderer_architecture.md 24.47).
