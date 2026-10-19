@@ -382,21 +382,23 @@ void MCLACameraShakeFilter(PPCRegister& f31, PPCRegister& f30, PPCRegister& f29,
 
 // BadassBaboon's Recomp Adjustments: Continuous camera transition interpolation & wrap fix
 // In sub_8271F438 at 0x8271F920:
-// When transitioning between camera modes (e.g. boot orbit mcTrackCS -> car chase camBoomCS),
-// the engine decomposes source and destination matrices into Euler angles ("zxy") and interpolates
-// yaw. When (source_yaw - dest_yaw) crosses +/- pi mid-transition, the engine flips dest_yaw by 2*pi,
-// causing a violent 180-degree flip in interpolated yaw (delta = 2*pi * t) and teleporting the camera
-// across the car.
-// Here we latch the shortest angular trajectory at transition start and track vehicle drift smoothly,
-// guaranteeing a strictly continuous, monotonic transition arc across all framerates.
+// When transitioning between camera modes (e.g. boot orbit mcTrackCS -> car chase camBoomCS,
+// or driving camera -> burnout/cinematic mcCinematicCS), the engine decomposes source and destination
+// matrices into Euler angles ("zxy") and interpolates yaw.
+// In the original game, when (source_yaw - dest_yaw) crosses +/- pi mid-transition, the engine flips
+// dest_yaw by 2*pi, causing a violent 180-degree flip in interpolated yaw (delta = 2*pi * t) and teleporting
+// the camera across the car.
+// Here we continuously unwrap the live relative angle delta across frames of the active transition.
+// This allows both cameras to move, rotate, slew, and spin (e.g. 360-degree donuts/burnouts) dynamically,
+// while mathematically guaranteeing a strictly continuous, monotonic transition arc without any
+// hemisphere-flipping, stutter, or snapping.
 static bool s_cam_trans_active = false;
 static uint32_t s_cam_trans_obj = 0;
 static uint32_t s_cam_trans_src = 0;
 static uint32_t s_cam_trans_dst = 0;
 static float s_cam_trans_last_t = 0.0f;
-static float s_cam_trans_start_src_yaw = 0.0f;
-static float s_cam_trans_start_dst_yaw = 0.0f;
-static float s_cam_trans_latched_delta = 0.0f;
+static float s_unwrapped_delta = 0.0f;
+static float s_prev_raw_delta = 0.0f;
 
 void MCLACameraTransitionSmoothing(PPCRegister& r27, PPCRegister& r26, PPCRegister& r4, PPCRegister& r1) {
     if (!REXCVAR_GET(smooth_camera_transitions)) return;
@@ -428,36 +430,45 @@ void MCLACameraTransitionSmoothing(PPCRegister& r27, PPCRegister& r26, PPCRegist
     constexpr float kPi = 3.14159265358979323846f;
     constexpr float kTwoPi = 2.0f * kPi;
 
-    const bool is_new_trans = !s_cam_trans_active ||
-                              trans_obj != s_cam_trans_obj ||
-                              src_cam != s_cam_trans_src ||
-                              dst_cam != s_cam_trans_dst ||
-                              t < s_cam_trans_last_t ||
-                              (t <= 0.05f && s_cam_trans_last_t > 0.5f);
+    auto normalize_angle = [kPi, kTwoPi](float a) {
+        while (a > kPi)  a -= kTwoPi;
+        while (a < -kPi) a += kTwoPi;
+        return a;
+    };
 
-    if (is_new_trans) {
-        float delta = dst_yaw - src_yaw;
-        while (delta > kPi)  delta -= kTwoPi;
-        while (delta < -kPi) delta += kTwoPi;
+    const float raw_delta = normalize_angle(dst_yaw - src_yaw);
 
+    const bool is_same_trans = s_cam_trans_active && (trans_obj == s_cam_trans_obj);
+    const bool is_reversed = is_same_trans && (src_cam == s_cam_trans_dst) && (dst_cam == s_cam_trans_src);
+    const bool is_restarted = is_same_trans && !is_reversed && (t < s_cam_trans_last_t - 0.2f);
+
+    if (is_reversed) {
+        // Native sub_8271F348 reversed this transition in-flight (e.g. user released or tapped 'A').
+        // Source and destination cameras swapped, and native engine inverted t = 1.0 - t.
+        // Invert our unwrapped delta so the angular path stays 100% continuous without snapping.
+        s_unwrapped_delta = -s_unwrapped_delta;
+        s_prev_raw_delta = raw_delta;
+        s_cam_trans_src = src_cam;
+        s_cam_trans_dst = dst_cam;
+    } else if (!is_same_trans || is_restarted || src_cam != s_cam_trans_src || dst_cam != s_cam_trans_dst) {
+        // Brand new transition starting: latch initial shortest-arc delta
         s_cam_trans_active = true;
         s_cam_trans_obj = trans_obj;
         s_cam_trans_src = src_cam;
         s_cam_trans_dst = dst_cam;
-        s_cam_trans_start_src_yaw = src_yaw;
-        s_cam_trans_start_dst_yaw = dst_yaw;
-        s_cam_trans_latched_delta = delta;
+        s_unwrapped_delta = raw_delta;
+        s_prev_raw_delta = raw_delta;
+    } else {
+        // Active transition continuing: unwrap raw_delta changes to guarantee no branch flips mid-arc
+        float d_delta = normalize_angle(raw_delta - s_prev_raw_delta);
+        s_unwrapped_delta += d_delta;
+        s_prev_raw_delta = raw_delta;
     }
 
     s_cam_trans_last_t = t;
 
-    // Track vehicle / target heading drift relative to transition start
-    float car_drift = dst_yaw - s_cam_trans_start_dst_yaw;
-    while (car_drift > kPi)  car_drift -= kTwoPi;
-    while (car_drift < -kPi) car_drift += kTwoPi;
-
     const float t_clamped = (t < 0.0f) ? 0.0f : ((t > 1.0f) ? 1.0f : t);
-    const float smooth_yaw = s_cam_trans_start_src_yaw + t_clamped * (s_cam_trans_latched_delta + car_drift);
+    const float smooth_yaw = src_yaw + t_clamped * s_unwrapped_delta;
 
     // Overwrite interpolated yaw at p_angles + 4 (sp + 0x74) before sub_821B9B28 builds matrix
     WriteGuestF32(base, p_angles + 4, smooth_yaw);
@@ -467,28 +478,16 @@ void MCLACameraTransitionSmoothing(PPCRegister& r27, PPCRegister& r26, PPCRegist
 }
 
 // In sub_8271F3B0 at 0x8271F3B0:
-// Transition is finished and dest_camera is activated. Setting snap flag on camBoomCS
-// ensures 0-frame handover lag without slewing delay hitch.
+// Transition is finished and dest_camera is activated.
+// Cleanly reset transition state without hard-snapping destination camera.
 void MCLACameraTransitionComplete(PPCRegister& r3) {
     s_cam_trans_active = false;
     s_cam_trans_obj = 0;
+    s_cam_trans_src = 0;
+    s_cam_trans_dst = 0;
     s_cam_trans_last_t = 0.0f;
-
-    if (!REXCVAR_GET(smooth_camera_transitions)) return;
-
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-
-    const uint32_t trans_obj = static_cast<uint32_t>(r3.u64);
-    if (!trans_obj) return;
-
-    const uint32_t dst_cam = ReadGuestU32(base, trans_obj + 196);
-    if (dst_cam) {
-        const uint32_t vtable = ReadGuestU32(base, dst_cam);
-        if (vtable == 0x82044DB4 || vtable == 0x82044DF4) {
-            base[dst_cam + 664] = 1;
-        }
-    }
+    s_unwrapped_delta = 0.0f;
+    s_prev_raw_delta = 0.0f;
 }
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.

@@ -26675,12 +26675,10 @@ address = 0x8271F920
 name = "MCLACameraTransitionSmoothing"
 registers = ["r27", "r26", "r4", "r1"]
 
-# Camera transition completion: snap destination camBoomCS to eliminate handover hitch
+# Camera transition completion: reset transition tracking state
 #
 # sub_8271F3B0 finishes cameraTransition by activating dest_camera via
-# sub_8271E930. Setting the snap flag (cam + 664 = 1) on camBoomCS / camDynamicBoomCS
-# allows it to immediately align to the vehicle on frame 0 instead of slewing at
-# low tracking speed (25 * dt = ~0.4 units/frame).
+# sub_8271E930. Cleanly resets host transition state.
 [[midasm_hook]]
 address = 0x8271F3B0
 name = "MCLACameraTransitionComplete"
