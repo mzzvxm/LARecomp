@@ -21,6 +21,7 @@
 #include "../modloader/features/mod_glows.h"
 #include "../modloader/modloader.h"
 #include "../mp3custom/mp3custom.h"
+#include "../online/race_props.h"
 
 REXCVAR_DECLARE(std::string, aspect_ratio);  // graphics.cpp
 
@@ -159,6 +160,7 @@ void Patch_DeltaTimePre() {
     TickMapWarp();              // warp console command / F9: a mod's warp point <-> back
     TickModGlows();             // guest scratch for the mods' light glows
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit
+    TickRaceProps();            // online race props: the watched owner word, if any
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
     RpcOnRaceTick();            // Discord RPC: race name + series/tournament standings
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved

@@ -26701,3 +26701,49 @@ address = 0x8271F3B0
 name = "MCLACameraTransitionComplete"
 registers = ["r3"]
 
+# Online race start, prop owners (src/mc_engine/online/race_props.cpp).
+# A fragInst keeps the owner the prop manager made for it at +0x8C (32 bytes,
+# vtable 0x820CC6C0, +16 = the inst). Starting an online race resets the world
+# and re-syncs every race prop through the per-update owner functor
+# (sim+0x34C, fn sim+0x358 = sub_82728BB8); with mods installed one owner holds
+# garbage at +16 and the read at +68 crashes the Release build.
+#   0x82728A30  sub_827289E8 built an owner: r3 = owner, r31 = inst
+#   0x82728A98  sub_82728A68 frees an owner: r31 = owner, r1 = frame
+#   0x8248CE88  sub_8248CE08, mtctr before the owner functor: r31 = inst,
+#               r4 = owner; true skips the call (0x8248CE90)
+#   0x8248C31C  sub_8248C228, same functor at its tail; true skips (0x8248C324)
+[[midasm_hook]]
+address = 0x82728A30
+name = "Hook_PropOwnerCreated"
+registers = ["r3", "r31"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82728A98
+name = "Hook_PropOwnerFreed"
+registers = ["r31", "r1"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8248CE88
+name = "Patch_PropOwnerSyncGuard"
+registers = ["r31", "r4"]
+jump_address_on_true = 0x8248CE90
+
+[[midasm_hook]]
+address = 0x8248C31C
+name = "Patch_PropOwnerPoseGuard"
+registers = ["r31", "r4"]
+jump_address_on_true = 0x8248C324
+
+# XSessionCreate's guest wrapper sub_8274B440 (every online session, System Link
+# and LIVE, host and joiner) stores XAM's session object into the request at
+# 0x8274B584 (`stw r11, buffer+0`). XAM's object is a placeholder (0xDEADF00D)
+# and the 0xB0010 handler writes 0xDEADF00D at that address, which lands in the
+# game's heap through another view of the same physical page (0xBEADF00D).
+# Hook_SessionCreateObject (online/xbox_live.cpp) sends 0 instead.
+[[midasm_hook]]
+address = 0x8274B584
+name = "Hook_SessionCreateObject"
+registers = ["r11"]
+after_instruction = false

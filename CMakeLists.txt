@@ -103,6 +103,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/relay_info.cpp
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
+    src/mc_engine/online/race_props.cpp
 
     # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).
     # Remove this line and the src/native_probe/ directory once the Native
