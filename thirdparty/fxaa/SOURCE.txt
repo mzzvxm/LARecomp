@@ -1,0 +1,4 @@
+NVIDIA FXAA 3.11 (Timothy Lottes), unchanged.
+Origin: https://github.com/xenia-project/xenia at 95a5c3ee250f80c3b9d139658649d9ffb6db3eec
+        (third_party/fxaa/FXAA3_11.h and third_party/fxaa/LICENSE). BSD-3-Clause, NVIDIA 2014-2015.
+Used by src/gpu/hlsl/fxaa_ps.hlsl (docs/gpu_renderer_architecture.md 24.47).
