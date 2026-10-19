@@ -1,0 +1,4 @@
+SMAA 1x (Jimenez et al.), the shader and its two lookup textures, unchanged.
+Origin: https://github.com/iryoku/smaa at 71c806a838bdd7d517df19192a20f0c61b3ca29d
+        (SMAA.hlsl, Textures/AreaTex.h, Textures/SearchTex.h, LICENSE.txt). MIT.
+Used by src/gpu/hlsl/smaa_*.hlsl and src/gpu/post.cpp (docs/gpu_renderer_architecture.md 24.47).
