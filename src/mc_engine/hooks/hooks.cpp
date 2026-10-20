@@ -162,6 +162,7 @@ void Patch_DeltaTimePre() {
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit
     TickRaceProps();            // online race props: the watched owner word, if any
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
+    TickRearView();             // rearview: the mirror's visible bit + placement, live
     RpcOnRaceTick();            // Discord RPC: race name + series/tournament standings
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides

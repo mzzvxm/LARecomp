@@ -230,6 +230,13 @@ static constexpr PerfDebugOption kPerfDebugOptions[] = {
 };
 
 void ApplyPerfDebugOptions() {
+    // `rearview` is forced on for the whole session and never follows a cvar. The
+    // mcRearView ctor loads its four meshes only when it is non-zero and the dtor
+    // frees them on the same test, so it has to read one value from start to end;
+    // ApplyLoadTimeDevOptions only rewrites kPerfDebugOptions, so it is left alone.
+    // Showing and hiding the mirror is rear_view.cpp's job (the `rearview` cvar).
+    QueueDebugOption("rearview", "1");
+
     for (const auto& p : kPerfDebugOptions) {
         if (rex::cvar::GetFlagByName(p.cvar) != "true") continue;
         QueueDebugOption(p.option, "1");

@@ -25170,6 +25170,44 @@ name = "Patch_DevOptionRegistered"
 registers = ["r3"]
 after_instruction = false
 
+# 0x822340F4: the `lwzx r3, r9, r31` in mcRearView::Draw (sub_82233E18) that loads the
+# frame mesh (rear_view_1bg) for its vtbl+32 draw at 0x82234104. True jumps to
+# 0x82234108, past the draw -- the frame is skipped and the mirror's scene viewport,
+# a separate phase, is untouched. See hooks/rear_view.cpp (rearview_frame).
+[[midasm_hook]]
+address = 0x822340F4
+name = "Patch_RearViewFrameSkip"
+jump_address_on_true = 0x82234108
+
+# 0x8236051C: the `bl __savegprlr_14` of mcCarModel's draw (sub_82360518), r4 = the
+# phase (the entry itself, 0x82360518, already carries Hook_SquashSelectVehicle and the
+# recompiler takes one hook per address). It knows the colour pass 0x10000 but not the
+# mirror's 0x1000000, for which it draws nothing; the hook passes it 0x10000 in the
+# mirror's phase so cars show up. rear_view.cpp.
+[[midasm_hook]]
+address = 0x8236051C
+name = "Patch_RearViewCarPhase"
+registers = ["r3", "r4"]
+after_instruction = false
+
+# 0x82308178: entry of the mirror phase's begin (sub_82308178). Diagnostic only
+# (rearview_diag): logs what each render client holds when the phase starts.
+[[midasm_hook]]
+address = 0x82308178
+name = "Patch_RearViewDiag"
+after_instruction = false
+
+# 0x8235F9EC: right after `bl sub_82175F20` in sub_8235F738 (a car's visibility prep), r3 =
+# the result. That query tests the car against the frustums kept for the main view and the
+# prep zeroes the car's visible word on the "outside"/"occluded" bits. During the mirror's own
+# run of the prep (rear_view.cpp) the hook clears those bits so only the current-camera
+# frustum test decides.
+[[midasm_hook]]
+address = 0x8235F9EC
+name = "Patch_RearViewCullBits"
+registers = ["r3"]
+after_instruction = false
+
 # 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
 #
 # sub_8230D988 hunts for the next impostor to refresh with two nested loops that

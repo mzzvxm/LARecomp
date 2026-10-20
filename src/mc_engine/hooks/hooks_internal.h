@@ -100,6 +100,9 @@ void ApplyRenderPhaseMask();
 void LogRenderPhaseMaskOnce();
 void StartFreezeWatchdog();
 
+// rear_view.cpp
+void TickRearView();
+
 // world_tuning.cpp
 void ApplyAmbientDensityTuning();
 void ApplyFragTuneOverrides();
