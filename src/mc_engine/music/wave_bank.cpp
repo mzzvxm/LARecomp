@@ -126,6 +126,37 @@ std::vector<Mp3Frame> ScanMp3Frames(const std::vector<uint8_t>& blob, uint32_t& 
     return frames;
 }
 
+// Give decoded MP3 peaks 3 dB of headroom before the runtime converts them
+// to signed 16-bit PCM. One MPEG-1 Layer III global_gain step is about 1.5 dB.
+// Adjusting the four granule/channel fields does not re-encode the audio or
+// alter the user's MP3; only the bank's copy is changed. CRC-protected frames
+// are left intact because changing their side info would invalidate the CRC.
+void AddMp3Headroom(std::vector<uint8_t>& blob, const std::vector<Mp3Frame>& frames) {
+    for (const Mp3Frame& frame : frames) {
+        uint8_t* header = blob.data() + frame.offset;
+        if ((header[1] & 0x19) != 0x19) continue;  // MPEG-1, no CRC
+        const bool mono = (header[3] >> 6) == 3;
+        const uint32_t first_bit = mono ? 39 : 41;
+        const uint32_t fields = mono ? 2 : 4;
+        const size_t side_bit = static_cast<size_t>(frame.offset + 4) * 8;
+        if (frame.length < (mono ? 21u : 36u)) continue;
+        for (uint32_t field = 0; field < fields; ++field) {
+            const size_t bit = side_bit + first_bit + 59 * field;
+            uint8_t gain = 0;
+            for (uint32_t i = 0; i < 8; ++i)
+                gain = static_cast<uint8_t>((gain << 1) |
+                    ((blob[(bit + i) / 8] >> (7 - (bit + i) % 8)) & 1));
+            gain = gain >= 2 ? static_cast<uint8_t>(gain - 2) : 0;
+            for (uint32_t i = 0; i < 8; ++i) {
+                const size_t byte = (bit + i) / 8;
+                const uint8_t mask = static_cast<uint8_t>(1u << (7 - (bit + i) % 8));
+                blob[byte] = static_cast<uint8_t>((blob[byte] & ~mask) |
+                    ((gain & (1u << (7 - i))) ? mask : 0));
+            }
+        }
+    }
+}
+
 // One wave: the whole MP3 bitstream sliced into packet payloads. A frame is
 // allowed to straddle a packet boundary -- the runtime keeps a byte buffer and
 // drains whole frames out of it -- because at 320 kbps a frame is 1044 bytes and
@@ -357,10 +388,15 @@ bool BuildMp3Bank(const std::vector<uint8_t>& mp3, uint32_t left_hash, uint32_t 
 
     // Both waves hold the same stereo bitstream; the packet names the channel,
     // because a bank wave is mono and an MP3 does not split without re-encoding.
-    const Wave waves[2] = {
-        BuildMp3Wave(mp3, frames, left_hash, rate, samples_per_frame, 0),
-        BuildMp3Wave(mp3, frames, right_hash, rate, samples_per_frame, channels > 1 ? 1 : 0),
+    std::vector<uint8_t> adjusted = mp3;
+    AddMp3Headroom(adjusted, frames);
+    Wave waves[2] = {
+        BuildMp3Wave(adjusted, frames, left_hash, rate, samples_per_frame, 0),
+        BuildMp3Wave(adjusted, frames, right_hash, rate, samples_per_frame, channels > 1 ? 1 : 0),
     };
+    // The guest expects the wave table in unsigned hash order. A bank whose
+    // left hash is above its right hash otherwise resolves only one channel.
+    if (waves[0].hash > waves[1].hash) std::swap(waves[0], waves[1]);
 
     out = BuildBank(waves, header_budget, info);
     if (out.empty()) {
