@@ -26,6 +26,12 @@ set(LARECOMP_SOURCES
 
     src/mc_engine/threading.cpp
 
+    # Steering wheel support.
+    src/mc_engine/wheel/wheel_fake.cpp
+    src/mc_engine/wheel/wheel_input.cpp
+    src/mc_engine/wheel/wheel_ffb.cpp
+    src/mc_engine/wheel/wheel_dinput.cpp
+
     # Guest hooks, one file per category. hooks.cpp holds InitHooks and the
     # per-frame Patch_DeltaTimePre; hooks_internal.h is what the files share.
     src/mc_engine/hooks/hooks.cpp

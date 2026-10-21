@@ -23073,6 +23073,7 @@ out_directory_path = "generated"
 0x8275CA40 = { name = "rex_sub_8275CA40", size = 0x60 }
 0x8275CAA0 = { name = "rex_sub_8275CAA0", size = 0x68 }
 0x8275CB08 = { name = "rex_sub_8275CB08", size = 0x64 }
+0x8275CB70 = { name = "rex_sub_8275CB70", size = 0x4 } # XamInputGetCapabilities thunk; hooked by wheel/wheel_fake.cpp
 0x8275CB78 = { name = "rex_sub_8275CB78", size = 0xC }
 0x8275CB88 = { name = "rex_sub_8275CB88", size = 0xC8 }
 0x8275CC50 = { name = "rex_sub_8275CC50", size = 0x3C }
@@ -25282,6 +25283,15 @@ after_instruction = false
 address = 0x822ADEE0
 name = "Hook_CaptureDistrict"
 registers = ["r3"]
+after_instruction = false
+
+# Steering wheel (wheel/wheel_input.cpp): the HUD update sub_822112A8 hands the current gear to the
+# "GearValue" swf variable. At the bl to sub_8223FF00, r4 = the gear (-1 reverse, 0 neutral, 1..N) and
+# r5 = the vehicle the HUD is showing. Read-only; feeds the H-shifter emulation.
+[[midasm_hook]]
+address = 0x822118D4
+name = "Hook_WheelHudGear"
+registers = ["r4", "r5"]
 after_instruction = false
 
 # Online Tournament: short-circuit the mcOnlineTournament state machine

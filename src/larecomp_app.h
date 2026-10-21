@@ -33,6 +33,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "profile/larecomp_profile_picker.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "mc_engine/modloader/modloader.h"
+#include "mc_engine/wheel/wheel_input.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -455,6 +456,8 @@ class LarecompApp : public rex::ReXApp {
       return false;
     }
     larecomp::PrepareProfileChoice(user_data_root());
+    // Before the window starts SDL's joystick layer: keeps known wheels out of the gamepad layer.
+    larecomp::wheel::EarlyInit();
     return true;
   }
 
