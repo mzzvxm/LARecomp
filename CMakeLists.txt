@@ -36,6 +36,7 @@ set(LARECOMP_SOURCES
     # per-frame Patch_DeltaTimePre; hooks_internal.h is what the files share.
     src/mc_engine/hooks/hooks.cpp
     src/mc_engine/hooks/ui.cpp
+    src/mc_engine/hooks/ui_theme.cpp
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/frame_timing.cpp

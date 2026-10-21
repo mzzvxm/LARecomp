@@ -26795,3 +26795,32 @@ address = 0x8274B584
 name = "Hook_SessionCreateObject"
 registers = ["r11"]
 after_instruction = false
+
+# UI theme (hooks/ui_theme.cpp). The five places the game's Flash player
+# (swfTEXT, swfEDITTEXT, swfSHAPE fill/line) publish the final ARGB vertex color
+# of whatever it draws next: `stw r11, dword_828396F4@l(rX)`. The hook runs
+# BEFORE the store, so editing r11 recolors the draw. r11 = 0xAARRGGBB.
+[[midasm_hook]]
+address = 0x82603E18
+name = "Hook_UiColor_TextInit"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x82604020
+name = "Hook_UiColor_TextRun"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x8260474C
+name = "Hook_UiColor_Edit"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x82607C88
+name = "Hook_UiColor_Fill"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x82607E28
+name = "Hook_UiColor_Line"
+registers = ["r11"]
