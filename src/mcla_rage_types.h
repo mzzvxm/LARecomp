@@ -105,7 +105,8 @@ struct AABB_BE {
 //   +0x08 = flt_82018B1C = 180.0     spawn_max
 //   +0x10 = flt_8201CD44 = 400.0     unspawn_max
 //   +0x14 = flt_8204E11C = 700.0     cull_max
-//   +0x60 = flt_82007F9C = 15.0      ped_density
+//   +0x60 = flt_82007F9C = 15.0      NOT ped_density (unidentified)
+//   +0x5C = flt_82082810             ped_density (fPedDensity, offset slot = 92)
 //   +0x98 = flt_82008DD0 = 0.25      parked_factor  (last store in the ctor)
 struct mcAmbientDensityTuning {
   uint32_t vtable;             // +0x00
@@ -114,9 +115,9 @@ struct mcAmbientDensityTuning {
   uint32_t unk_0c;             // +0x0C
   float unspawn_max;           // +0x10
   float cull_max;              // +0x14
-  uint8_t pad_18[72];          // +0x18 .. +0x5F
-  float ped_density;           // +0x60
-  uint8_t pad_64[52];          // +0x64 .. +0x97
+  uint8_t pad_18[68];          // +0x18 .. +0x5B
+  float ped_density;           // +0x5C  fPedDensity (parser record, sub_826F65B0)
+  uint8_t pad_60[56];          // +0x60 .. +0x97
   float parked_factor;         // +0x98
 
   float GetSpawnMax() const { return ReadBEFloat(reinterpret_cast<const uint8_t*>(&spawn_max)); }
@@ -258,7 +259,7 @@ constexpr uint32_t kLodSpeedScaleAddr      = 0x827E0DEC; // float: velocity-inte
 static_assert(offsetof(mcAmbientDensityTuning, spawn_max)     == 0x08);
 static_assert(offsetof(mcAmbientDensityTuning, unspawn_max)   == 0x10);
 static_assert(offsetof(mcAmbientDensityTuning, cull_max)      == 0x14);
-static_assert(offsetof(mcAmbientDensityTuning, ped_density)   == 0x60);
+static_assert(offsetof(mcAmbientDensityTuning, ped_density)   == 0x5C);
 static_assert(offsetof(mcAmbientDensityTuning, parked_factor) == 0x98);
 
 // VERIFIED in sub_8260EBB8. Not accessed by displacement, which is why an

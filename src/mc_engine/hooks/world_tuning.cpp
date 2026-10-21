@@ -83,42 +83,67 @@ struct DensityTuningValues {
     float parked = 0.0f;
 };
 
+struct DensityZone {
+    DensityTuningValues orig;     // what the game itself last left in the zone
+    DensityTuningValues written;  // what this code last pushed into it
+    bool has_written = false;
+};
+
 static std::mutex g_density_mutex;
-static std::map<uint32_t, DensityTuningValues> g_density_orig;  // zone address -> XML values
+static std::map<uint32_t, DensityZone> g_density_zones;  // zone address -> state
+static uint32_t g_density_manager = 0;
 
-// Last state pushed into guest memory, so the per-frame tick only writes when a
-// cvar actually moved.
-static bool g_density_applied_valid = false;
-static bool g_density_applied_enabled = false;
-static DensityTuningValues g_density_applied;
+// The ambient manager singleton (dword_8286D8E4), built by sub_822D3D38 and
+// followed straight away by sub_826D89F0, which re-parses density_tuning.xml
+// into all 31 zones at manager + 225904 (stride 5936). That parse runs AFTER the
+// constructor hook below, so anything the constructor hook writes is wiped; the
+// per-frame tick is what makes the scales stick.
+static constexpr uint32_t kAmbientManagerPtr = 0x8286D8E4u;
+static constexpr uint32_t kAmbientZoneBase   = 225904u;
+static constexpr uint32_t kAmbientZoneStride = 5936u;
+static constexpr uint32_t kAmbientZoneCount  = 31u;
 
-// Writes one zone. Caller holds g_density_mutex.
+// Last cvar state pushed, so unchanged frames only compare guest floats.
+static bool g_density_logged_state = false;
+static bool g_density_last_enabled = false;
+static DensityTuningValues g_density_last_want;
+
 // Offsets verified via rage::mcAmbientDensityTuning in mcla_rage_types.h:
 //   +0x08 = spawn_max
 //   +0x10 = unspawn_max
 //   +0x14 = cull_max
-//   +0x60 = ped_density (96)
-//   +0x98 = parked_factor (152)
-static void WriteDensityZone(uint8_t* base, uint32_t a, const DensityTuningValues& orig,
-                             bool enabled, const DensityTuningValues& want) {
-    if (!enabled) {
-        WriteGuestF32(base, a + 8, orig.spawn);
-        WriteGuestF32(base, a + 16, orig.unspawn);
-        WriteGuestF32(base, a + 20, orig.cull);
-        WriteGuestF32(base, a + 96, orig.ped);
-        WriteGuestF32(base, a + 152, orig.parked);
-        return;
-    }
-    float unspawn_val = want.unspawn > 0.0f ? want.unspawn : orig.unspawn;
-    WriteGuestF32(base, a + 16, unspawn_val);
-    if (orig.spawn > 0.0f) {
-        WriteGuestF32(base, a + 8, orig.spawn * 0.75f);
-    }
-    if (orig.cull > 0.0f) {
-        WriteGuestF32(base, a + 20, orig.cull * 0.75f);
-    }
-    WriteGuestF32(base, a + 96, orig.ped * want.ped);
-    WriteGuestF32(base, a + 152, orig.parked * want.parked);
+//   +0x5C = fPedDensity (92)   -- offset slot of the parser record in sub_826F65B0;
+//                                 read by sub_826F3038, which sets the zone's ped
+//                                 target (+0x864) from it. +0x60 is a different field.
+//   +0x98 = fParkedCarDensityFactor (152) -- read by sub_826F23A0 (parked spawner)
+static DensityTuningValues ReadZoneValues(uint8_t* base, uint32_t a) {
+    DensityTuningValues v;
+    v.spawn = ReadGuestF32(base, a + 8);
+    v.unspawn = ReadGuestF32(base, a + 16);   // 400.0 stock
+    v.cull = ReadGuestF32(base, a + 20);
+    v.ped = ReadGuestF32(base, a + 92);
+    v.parked = ReadGuestF32(base, a + 152);   // 0.25 stock
+    return v;
+}
+
+static DensityTuningValues ComputeDensity(const DensityTuningValues& orig, bool enabled,
+                                          const DensityTuningValues& want) {
+    if (!enabled) return orig;
+    DensityTuningValues out = orig;
+    if (want.unspawn > 0.0f) out.unspawn = want.unspawn;
+    out.spawn = orig.spawn > 0.0f ? orig.spawn * 0.75f : orig.spawn;
+    out.cull = orig.cull > 0.0f ? orig.cull * 0.75f : orig.cull;
+    out.ped = orig.ped * want.ped;
+    out.parked = orig.parked * want.parked;
+    return out;
+}
+
+static void WriteZoneValues(uint8_t* base, uint32_t a, const DensityTuningValues& v) {
+    WriteGuestF32(base, a + 8, v.spawn);
+    WriteGuestF32(base, a + 16, v.unspawn);
+    WriteGuestF32(base, a + 20, v.cull);
+    WriteGuestF32(base, a + 92, v.ped);
+    WriteGuestF32(base, a + 152, v.parked);
 }
 
 static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
@@ -128,10 +153,32 @@ static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
     want.parked = static_cast<float>(REXCVAR_GET(parked_car_scale));
 }
 
+// Brings one zone to the wanted state. If the game moved a field since our last
+// write (the XML parse, a tune reload) that value is the new original, so the
+// scale is always applied to the XML value and never compounds. Caller holds
+// g_density_mutex. Returns true when the zone was (re)captured from the game.
+static bool ReconcileZone(uint8_t* base, uint32_t a, bool enabled,
+                          const DensityTuningValues& want, bool force) {
+    DensityZone& z = g_density_zones[a];
+    const DensityTuningValues cur = ReadZoneValues(base, a);
+    bool captured = false;
+    if (!z.has_written || cur.spawn != z.written.spawn || cur.unspawn != z.written.unspawn ||
+        cur.cull != z.written.cull || cur.ped != z.written.ped || cur.parked != z.written.parked) {
+        z.orig = cur;
+        captured = true;
+    } else if (!force) {
+        return false;
+    }
+    const DensityTuningValues out = ComputeDensity(z.orig, enabled, want);
+    WriteZoneValues(base, a, out);
+    z.written = out;
+    z.has_written = true;
+    return captured;
+}
+
 // 0x826F5CA0, in the epilogue of the mcAmbientDensityTuning constructor
-// sub_826F5B18, after the last field write. r3 holds the ambient zone, i.e.
-// the tuning object. See larecomp_config.toml for why this is NOT hooked at
-// the density_tuning.xml parse - that path never executes.
+// sub_826F5B18. r3 holds the ambient zone. Only registers the zone early; the
+// XML parse that follows overwrites these fields and the tick below re-captures.
 void MCLAAmbientDensityTuning(PPCRegister& r3) {
     const uint32_t a = static_cast<uint32_t>(r3.u64);
     if (a == 0) return;
@@ -144,58 +191,95 @@ void MCLAAmbientDensityTuning(PPCRegister& r3) {
     ReadDensityCvars(enabled, want);
 
     std::lock_guard<std::mutex> lock(g_density_mutex);
+    ReconcileZone(base, a, enabled, want, true);
+}
 
-    // The parse just restored this zone to its XML values, so re-reading here
-    // is what keeps the scale from compounding across reloads.
-    DensityTuningValues orig;
-    orig.spawn = ReadGuestF32(base, a + 8);
-    orig.unspawn = ReadGuestF32(base, a + 16);   // 400.0 stock
-    orig.cull = ReadGuestF32(base, a + 20);
-    orig.ped = ReadGuestF32(base, a + 96);       // 15.0 / XML stock
-    orig.parked = ReadGuestF32(base, a + 152);   // 0.25 stock
-    const bool first = g_density_orig.find(a) == g_density_orig.end();
-    g_density_orig[a] = orig;
+// Global enables of the ambient spawners (bytes written by sub_826D5E20 /
+// sub_826D5EB0). sub_826F3038 (pedestrians) and sub_826F23A0 (parked cars) bail
+// out at the top when their byte is 0. The parked spawner's limit is
+// max(1..2, factor * n) for small n, so a 0 factor alone still leaves a couple of
+// cars per zone -- a scale of 0 therefore also closes the spawner outright.
+static constexpr uint32_t kPedSpawnEnable    = 0x8282A7C9u;
+static constexpr uint32_t kParkedSpawnEnable = 0x8282A7CAu;
 
-    WriteDensityZone(base, a, orig, enabled, want);
+struct SpawnGate {
+    uint32_t addr;
+    bool forcing = false;
+    uint8_t saved = 1;  // what the game last had there while we were not forcing
+};
+static SpawnGate g_ped_gate{kPedSpawnEnable};
+static SpawnGate g_parked_gate{kParkedSpawnEnable};
 
-    // One line per zone the first time it is seen; reloads are silent, since 31
-    // identical lines every district change is noise.
-    if (first) {
-        LARECOMP_APP_INFO(
-            "[Ambient Tuning] zone {} at 0x{:08X}: unspawn {:.1f} -> {:.1f}, "
-            "ped {:.4f} -> {:.4f}, parked {:.2f} -> {:.2f}",
-            g_density_orig.size(), a, orig.unspawn, ReadGuestF32(base, a + 16), orig.ped,
-            ReadGuestF32(base, a + 96), orig.parked, ReadGuestF32(base, a + 152));
+static void UpdateSpawnGate(uint8_t* base, SpawnGate& g, bool close, const char* label) {
+    uint8_t v = base[g.addr];
+    if (close) {
+        if (!g.forcing) {
+            g.saved = v;
+            g.forcing = true;
+            LARECOMP_APP_INFO("[Ambient Tuning] {} spawner closed (scale 0)", label);
+        }
+        if (v != 0) base[g.addr] = 0;
+    } else if (g.forcing) {
+        base[g.addr] = g.saved;
+        g.forcing = false;
+        LARECOMP_APP_INFO("[Ambient Tuning] {} spawner restored", label);
     }
 }
 
-// Per-frame, so the cvars behave as the kHotReload they are declared to be.
-// Costs a compare per frame and touches guest memory only when one moved.
+// Per-frame: walks the 31 zones of the live manager. Costs ~155 guest float
+// compares and writes only what the game or a cvar changed.
 void ApplyAmbientDensityTuning() {
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+
+    const uint32_t mgr = ReadGuestU32(base, kAmbientManagerPtr);
+
+    std::lock_guard<std::mutex> lock(g_density_mutex);
+    {
+        bool en = false;
+        DensityTuningValues w;
+        ReadDensityCvars(en, w);
+        UpdateSpawnGate(base, g_ped_gate, en && w.ped <= 0.0f, "pedestrian");
+        UpdateSpawnGate(base, g_parked_gate, en && w.parked <= 0.0f, "parked car");
+    }
+    if (mgr != g_density_manager) {
+        g_density_zones.clear();  // a new manager: nothing captured applies to it
+        g_density_manager = mgr;
+    }
+    if (mgr == 0) return;
+
     bool enabled = false;
     DensityTuningValues want;
     ReadDensityCvars(enabled, want);
 
-    std::lock_guard<std::mutex> lock(g_density_mutex);
-    if (g_density_applied_valid && g_density_applied_enabled == enabled &&
-        g_density_applied.unspawn == want.unspawn && g_density_applied.ped == want.ped &&
-        g_density_applied.parked == want.parked) {
-        return;
+    const bool cvars_moved = !g_density_logged_state || g_density_last_enabled != enabled ||
+                             g_density_last_want.unspawn != want.unspawn ||
+                             g_density_last_want.ped != want.ped ||
+                             g_density_last_want.parked != want.parked;
+    g_density_logged_state = true;
+    g_density_last_enabled = enabled;
+    g_density_last_want = want;
+
+    uint32_t recaptured = 0;
+    DensityTuningValues first{};
+    for (uint32_t i = 0; i < kAmbientZoneCount; ++i) {
+        const uint32_t a = mgr + kAmbientZoneBase + i * kAmbientZoneStride;
+        if (ReconcileZone(base, a, enabled, want, cvars_moved)) {
+            if (recaptured == 0) first = g_density_zones[a].orig;
+            ++recaptured;
+        }
     }
-    g_density_applied_enabled = enabled;
-    g_density_applied = want;
-    g_density_applied_valid = true;
-
-    if (g_density_orig.empty()) return;
-
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-
-    for (const auto& [addr, orig] : g_density_orig) {
-        WriteDensityZone(base, addr, orig, enabled, want);
+    if (recaptured != 0) {
+        LARECOMP_APP_INFO(
+            "[Ambient Tuning] {} zones captured from the game (zone 0: unspawn {:.1f}, "
+            "ped {:.4f}, parked {:.3f}); enabled={}, ped x{:.2f}, parked x{:.2f}",
+            recaptured, first.unspawn, first.ped, first.parked, enabled, want.ped, want.parked);
+    } else if (cvars_moved) {
+        LARECOMP_APP_INFO(
+            "[Ambient Tuning] cvars applied to {} zones (enabled={}, unspawn={:.1f}, "
+            "ped x{:.2f}, parked x{:.2f})",
+            kAmbientZoneCount, enabled, want.unspawn, want.ped, want.parked);
     }
-    LARECOMP_APP_INFO("[Ambient Tuning] {} zones updated (enabled={}, unspawn={:.1f}, ped={:.2f}, parked={:.2f})",
-                      g_density_orig.size(), enabled, want.unspawn, want.ped, want.parked);
 }
 
 // ── rage::fragTuneStruct overrides ──────────────────────────────────────────
