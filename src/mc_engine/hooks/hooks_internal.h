@@ -75,6 +75,9 @@ void TickGlobalReadback();
 // photo_album.cpp
 // From TakePicture until the grab is done (snapshot vhsm phase 6 or 3).
 bool PhotoCaptureInProgress(const uint8_t* base);
+// A tenth of a second from photoAlbum.EnableCity: the city draws again while the
+// album movie still shows the full-screen photo.
+bool PhotoCityReturning();
 // photo_ui_trace is on and the photo album scene is up.
 bool PhotoUiTracing(const uint8_t* base);
 

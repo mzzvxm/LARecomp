@@ -534,7 +534,9 @@ void ReportPacing(const uint8_t* base, int64_t now) {
 // counting on the movie having stepped -- and so hidden itself -- in every one of
 // them. Held to 30 steps a second the movie could still be on screen when the grab
 // comes at a few hundred FPS, so for that tenth of a second it steps every update as
-// it always did.
+// it always did. The same for a tenth of a second after a discarded photo brings the
+// city back (PhotoCityReturning): the step that hides the full-screen photo must not
+// wait for the next 30 Hz period while the city overwrites the photo's memory.
 extern "C" REX_FUNC(rex_sub_82720898) {
     const uint32_t entry = ctx.r3.u32;
     uint32_t held = 0;
@@ -542,7 +544,7 @@ extern "C" REX_FUNC(rex_sub_82720898) {
         std::lock_guard<std::mutex> lock(g_pacing_mutex);
         if (PacedMovie* m = PacingFor(base, entry)) {
             const int64_t now = SteadyNowNs();
-            if (PhotoCaptureInProgress(base)) {
+            if (PhotoCaptureInProgress(base) || PhotoCityReturning()) {
                 m->next_due_ns = 0;  // back on the 30 Hz schedule from the next update
                 ++m->advanced;
             } else if (AdvanceDue(*m, now)) {

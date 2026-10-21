@@ -7,7 +7,8 @@
 //   - photo_ui_trace logs the UI statechart while the album scene is up.
 // The gallery's speed -- every Flash movie steps once per rendered frame, so above
 // 30 FPS it plays fast -- is paced in ui.cpp (ui_movie_pacing), which asks
-// PhotoCaptureInProgress() here to leave the capture alone.
+// PhotoCaptureInProgress() and PhotoCityReturning() here to leave the capture and
+// the city's return alone.
 //
 // RE map (default.xex, 04-05/10/2026):
 //
@@ -83,6 +84,7 @@
 #include <rex/runtime.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -289,6 +291,29 @@ bool PhotoUiTracing(const uint8_t* base) {
     return Tracing(base);
 }
 
+// Discarding a photo runs photoAlbum.EnableCity: from that update the city draws
+// again and resolves its scene (1280x720, tiled) into 0x06ACD000 -- the memory the
+// full-screen photo, a linear 1280x720 texture, is read from. The album movie hides
+// the photo when it next steps. Held to 30 steps a second, that step could come one
+// rendered frame after the city's first, and that frame showed the photo read over
+// the scene: a green mosaic (the renderer's resolve memory showed it, logs 435, 437,
+// 444; none in 22 discards with ui_movie_pacing=NONE, log 445). So for
+// a tenth of a second after EnableCity the movie steps every update, as the capture
+// does.
+namespace {
+std::atomic<int64_t> g_city_return_until_ns{0};
+
+int64_t NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+}  // namespace
+
+bool PhotoCityReturning() {
+    return NowNs() < g_city_return_until_ns.load(std::memory_order_relaxed);
+}
+
 // The snapshot vhsm update (r3 = album+456). Only remembered here, for
 // PhotoCaptureInProgress; photo_mode.cpp's Hook_PhotoModeCapture runs inside it.
 extern "C" REX_FUNC(rex_sub_8263CB78) {
@@ -399,8 +424,11 @@ extern "C" REX_FUNC(rex_sub_821F8A58) {
 
 // "photoAlbum" commands: (obj, ?, cmd).
 extern "C" REX_FUNC(rex_sub_8263FA10) {
+    const std::string name = CommandName(base, ctx.r3.u32, R16(base, ctx.r5.u32 + 2));
     if (Tracing(base))
-        MC_INFO("[photo-ui] {}", CommandName(base, ctx.r3.u32, R16(base, ctx.r5.u32 + 2)));
+        MC_INFO("[photo-ui] {}", name);
+    if (name == "photoAlbum.EnableCity")
+        g_city_return_until_ns.store(NowNs() + 100'000'000, std::memory_order_relaxed);
     __imp__rex_sub_8263FA10(ctx, base);
 }
 
