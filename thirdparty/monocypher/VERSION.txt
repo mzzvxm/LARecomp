@@ -1,0 +1,1 @@
+Monocypher 4.0.3 (https://monocypher.org/download/monocypher-4.0.3.tar.gz, sha512 40904ada5c7ee4f7...880f8965, matches the GitHub release asset). src/monocypher.{c,h} + LICENCE.md, unmodified.

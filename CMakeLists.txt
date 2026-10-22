@@ -19,6 +19,10 @@ endif()
 include(generated/rexglue.cmake)
 
 # Sources
+# Monocypher (nick keys and tickets, thirdparty/monocypher) is C99 that also
+# compiles as C++; the project only enables CXX.
+set_source_files_properties(thirdparty/monocypher/monocypher.c PROPERTIES LANGUAGE CXX)
+
 set(LARECOMP_SOURCES
     src/main.cpp
     src/spdlog_console.cpp
