@@ -55,7 +55,7 @@ The blanket jump also skips the block that advances `[r3+20]` and `[r3+24]`, the
 |---|---|---|
 | `MCLAUseRealDelta` | `0x821BDB58` | Jumps to `loc_821BDC34`, skipping only the fixed-step overwrite. The `[r3+56]` reset guard at `0x821BDB08` still runs. |
 | `MCLAFixedStepPath` | `0x821BDB90` | Replaces the freshly loaded fixed step in `f11` with the measured unscaled delta from `[r3+0x58]`. Everything downstream then does the right thing on its own, and the accumulators keep advancing. |
-| `MCLAFrameDelta` | `0x821BDAB0` | Clamps how far one frame can advance the clock, so a streaming stall cannot feed an unbounded delta into physics and audio. |
+| `MCLAFrameDelta` | `0x821BDAB0` | Clamps how far one frame can advance the clock, so a streaming stall cannot feed an unbounded delta into physics and audio. Runs the frame limiter and, when it paced the frame, replaces the delta with the interval between its releases (section 3). |
 | `Patch_60FPS_Byte` | `0x82419AA0` | Present interval 2 to 1. |
 
 Keeping the `[r3+56]` reset guard matters. On a reset frame the last-tick field is stale, so the measured delta is garbage. Skipping the guard the way the Xenia patch does, with the clamp also removed, produced a loud audio blowout.
@@ -84,6 +84,28 @@ Both changes are needed. `timeBeginPeriod(1)` on its own hands pacing to real vs
 Quantization costs frame rate, not only smoothness. A frame that overruns its quantum by 1 ms waits another full 15.6 ms.
 
 Taking vsync away also removes the only throttle, so the frame limiter sleeps to a wall-clock deadline. A vblank-based limiter would put the grid straight back. The guest's present-interval field cannot do this job, because it only means anything to DXGI when vsync is on.
+
+### The delta has to be measured after the limiter's wait
+
+`sub_821BDA90` reads the timebase at its top, and `MCLAFrameDelta` runs the limiter after that read. The guest's delta for frame N is therefore `period + work(N) - work(N-1)`: frames reach the screen at even intervals, but each one simulates a step that is off by however much the game thread's workload changed since the last frame. Everything moving shuffles forward and back. At speed in cockpit view the camera looks like it brakes and accelerates, and traffic jumps.
+
+Measured on the title screen at a 30 FPS cap the machine holds easily, tracing `[0x827D7508]` per frame: steps of 27 to 40 ms with a standard deviation of 4 to 6 ms. After the fix, 33.4 ms with a standard deviation of 0.22 ms.
+
+When the limiter paces a frame, `MCLAFrameDelta` replaces `r8` with the interval between the moments the limiter released the previous frame and this one, converted to guest ticks and clamped by the same hitch cap. Both deltas sum to the same wall time over a run, so the rate-invariance check above still holds. Uncapped, or on threads other than the one the limiter is bound to, the guest's own delta stays. `frame_delta_after_limit=false` restores the old behaviour.
+
+### A steady cap above 30: `fps_limit_auto`
+
+The step stays even only while the cap holds. Uncapped, or at a cap the machine misses some of the time, frame times swing from one frame to the next (17 to 34 ms measured while driving), and each frame still moves the world by the previous frame's length. A frame that stays on screen briefly carries a large move and a long one a small move, so traffic and the cockpit camera lurch, worse with speed. A 30 FPS cap removes it completely.
+
+`fps_limit_auto` finds the highest cap that holds. It paces at a whole number of display refreshes, `n`, so every frame on a fixed refresh display lasts the same time and simulates the same step (144 Hz: 6.9, 13.9, 20.8, 27.8 ms...):
+
+- One step slower (`n + 1`) when 3 of the last 10 frames took more than 2% over the period. One hitch does not do it. A frame longer than the slowest step (about 100 ms) counts as a stall and is ignored, so a loading burst does not push the rate down.
+- One step faster (`n - 1`) after 2 s of consecutive frames whose work would fit 75% of the faster period. The game thread's time does not show when the renderer will run out at the faster rate, so a climb that falls back within 5 s makes the next try at that rate wait four times longer: 2, 8, 32, then 60 s. Without that it flipped between 72 and 48 every 2 s.
+- `fps_limit` or `MCLA_FPS_CAP` above 0 is the fastest step it may pick.
+
+The refresh rate comes from `QueryDisplayConfig` for the primary display, as a fraction, falling back to `EnumDisplaySettingsW`, which rounds 59.94 Hz down to 59. Pacing at 59 on a 59.94 Hz display with vsync on repeats a frame about every second. It is read once at startup. Off Windows it assumes 60 Hz; `fps_limit_auto_refresh_hz` overrides both. The pacer stays a wall-clock limiter. With the native renderer's own swapchain, `mcla_native_gfx_present_interval=1` presents on the vblank, so each paced frame lasts exactly `n` refreshes instead of tearing; 0 keeps the immediate, tearing present.
+
+Measured under Proton on a 144 Hz fixed refresh display with the native renderer, uncapped, `fps_limit_auto` and present interval 1. Title screen: settled at 48 FPS, the simulated step over the last 400 frames 20.9 ms with a standard deviation of 0.01 ms, MangoHud 48.0 FPS; two tries at 72 fell back within 0.1 s and backed off. Driving in cockpit view on the highway, 4224 frames: 2861 at 27.8 ms (36 FPS), 1116 at 20.9 ms (48 FPS), 86 at 34.8 ms (28.8 FPS), and no lurching where the same drive uncapped lurched badly.
 
 ---
 
