@@ -10,6 +10,7 @@
 #include <set>
 
 #include <rex/cvar.h>
+#include <rex/hash.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
@@ -43,13 +44,9 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
 }
 
 uint64_t Hash64(const void* data, size_t size) {
-  const auto* p = static_cast<const uint8_t*>(data);
-  uint64_t h = 0xCBF29CE484222325ull;
-  for (size_t i = 0; i < size; ++i) {
-    h ^= p[i];
-    h *= 0x100000001B3ull;
-  }
-  return h;
+  // XXH3 instead of byte-at-a-time FNV: this keys cache lookups several times
+  // per draw. In-memory keys only, never stored.
+  return XXH3_64bits(data, size);
 }
 
 // Slot cache key hash: the six fetch dwords as three 64-bit words, mixed with

@@ -264,6 +264,37 @@ namespace mcla::native_gfx {
 
 namespace {
 
+// Equality of two buffers whose size is a multiple of 16, 64 bytes a step.
+// Replaces memcmp for the per-draw constant-bank checks: under Wine memcmp is
+// ucrtbase's 8-bytes-a-loop version, and ~4000 draws a frame compare 8.5 KiB
+// each, which measured ~3% of the render thread while driving.
+bool BlocksEqual16(const uint8_t* a, const uint8_t* b, size_t size) {
+  size_t i = 0;
+  for (; i + 64 <= size; i += 64) {
+    const __m128i d0 = _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i)),
+                                     _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i)));
+    const __m128i d1 =
+        _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i + 16)),
+                      _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i + 16)));
+    const __m128i d2 =
+        _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i + 32)),
+                      _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i + 32)));
+    const __m128i d3 =
+        _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i + 48)),
+                      _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i + 48)));
+    const __m128i any = _mm_or_si128(_mm_or_si128(d0, d1), _mm_or_si128(d2, d3));
+    if (!_mm_testz_si128(any, any)) return false;
+  }
+  for (; i < size; i += 16) {
+    const __m128i d = _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i)),
+                                    _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i)));
+    if (!_mm_testz_si128(d, d)) return false;
+  }
+  return true;
+}
+static_assert(kAluBankBytes % 16 == 0 && kSharedConstantsBytes % 16 == 0,
+              "BlocksEqual16 compares whole 16-byte blocks");
+
 constexpr float kClearColor[4] = {0.02f, 0.02f, 0.04f, 0.0f};
 // The guest viewport decides the target size; this only bounds a nonsensical
 // register read so a bad value cannot ask for a gigabyte of render target.
@@ -3822,7 +3853,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // flushes only the registers it changed, and most draws change none of the
     // 256. Re-uploading 8 KiB per draw into write-combined memory was both the
     // bandwidth and the reason the 16 MiB ring ran out every ~1800 draws, which
-    // forced a batch submit. A mirror plus a memcmp reuses the previous
+    // forced a batch submit. A mirror plus a compare reuses the previous
     // allocation whenever the bank is byte-identical.
     //
     // The reuse is only valid inside one batch: the ring is a bump allocator
@@ -3837,11 +3868,11 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                           ps_mirror.size() == kAluBankBytes &&
                           shared_mirror.size() == kSharedConstantsBytes;
     const bool vs_same =
-        epoch_ok && std::memcmp(vs_mirror.data(), vs_bank.data(), kAluBankBytes) == 0;
+        epoch_ok && BlocksEqual16(vs_mirror.data(), vs_bank.data(), kAluBankBytes);
     const bool ps_same =
-        epoch_ok && std::memcmp(ps_mirror.data(), ps_bank.data(), kAluBankBytes) == 0;
+        epoch_ok && BlocksEqual16(ps_mirror.data(), ps_bank.data(), kAluBankBytes);
     const bool shared_same =
-        epoch_ok && std::memcmp(shared_mirror.data(), shared.data(), kSharedConstantsBytes) == 0;
+        epoch_ok && BlocksEqual16(shared_mirror.data(), shared.data(), kSharedConstantsBytes);
     // Any early return below leaves the mirror describing an allocation this
     // draw abandoned, so drop it rather than hand it to the next draw.
     const auto invalidate_mirror = [&]() { mirror_epoch = UINT64_MAX; };
