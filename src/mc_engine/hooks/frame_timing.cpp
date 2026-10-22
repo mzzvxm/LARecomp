@@ -44,6 +44,12 @@ REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(intro_original_speed, true, "MCLA/Patches",
+    "Hold the start-up legal screens and logos to their original 30 presents per "
+    "second. They are drawn in a loop that never reaches the engine timer, so the "
+    "frame limiter does not pace them. Off lets them run as fast as the host presents.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(frame_limit_spin, true, "MCLA/Performance",
     "Hit the frame-limit deadline with a PAUSE spin. Off restores the sleep-then-yield wait, "
     "which gives the core back instead of burning it.")
@@ -120,11 +126,50 @@ bool Patch_FenceSpinThrottle() {
     return true;
 }
 
+// Set by MCLAFrameDelta each time the engine timer (sub_821BDA90) runs, cleared
+// by each swap. See PaceUntimedSwap.
+static std::atomic<bool> g_engine_timer_ran_since_swap{false};
+
+// Intro pacing.
+//
+// The start-up legal screens and publisher logos are not Bink video. They are
+// drawn in a loop that never calls the engine timer, so MCLAFrameDelta and its
+// frame limiter never run while they are on screen. On the console that loop
+// was paced only by the present interval of two vblanks, which the runtime
+// ignores, so the sequence runs as fast as the host presents. That is why
+// fps_limit at 30, 45 or 60 made no difference to its speed.
+//
+// A swap that follows another swap with no pass through the engine timer in
+// between is therefore held to the original 30 per second. Gameplay frames
+// always pass through the timer first and are left to fps_limit.
+static void PaceUntimedSwap() {
+    static std::atomic<uint64_t> last_swap_us{0};
+    constexpr uint64_t kPeriodUs = 1000000ull / 30;
+    auto now_us = [] {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+    const bool timed = g_engine_timer_ran_since_swap.exchange(false, std::memory_order_relaxed) ||
+                       !REXCVAR_GET(intro_original_speed);
+    const uint64_t last = last_swap_us.load(std::memory_order_relaxed);
+    uint64_t now = now_us();
+    if (!timed && last && now - last < kPeriodUs) {
+        std::this_thread::sleep_for(std::chrono::microseconds(kPeriodUs - (now - last)));
+        now = now_us();
+    }
+    last_swap_us.store(now, std::memory_order_relaxed);
+}
+
 // Swap-interval patch at 0x82419AA0 ("li r11, 2"): the game always requests
 // D3D interval TWO (30 FPS); replacing with 1 requests 60 Hz. Note the current
 // RexGlue command processor ignores the guest swap interval (host vblank is a
 // fixed 60 Hz timer), so this is kept only for correctness of the swap packet.
 bool Patch_60FPS_Byte(PPCRegister& r11) {
+    // This instruction runs once per swap, which makes it the one place that
+    // sees the frames the engine timer does not.
+    PaceUntimedSwap();
     if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
@@ -263,6 +308,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
     EnforceFrameLimit();
+    g_engine_timer_ran_since_swap.store(true, std::memory_order_relaxed);
     UpdateCityLODMemory();
     RecordFrameTime();
     TickGuestProfiler();

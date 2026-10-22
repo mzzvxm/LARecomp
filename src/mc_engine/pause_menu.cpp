@@ -938,6 +938,10 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
+    // PaceUntimedSwap in hooks/frame_timing.cpp. Live, but the intro has
+    // already played by the time this menu can be opened, so a change shows
+    // on the next launch.
+    Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options

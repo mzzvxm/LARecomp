@@ -156,7 +156,7 @@ class LarecompApp : public rex::ReXApp {
       // by cvar name so the mapping stays discoverable.
       fprintf(f, "\n=== settings that are cvars, not env vars ===\n");
       for (const char* c : {"real_frame_delta", "fps_limit", "lod_city_scale",
-                            "lod_traffic_scale", "skip_intro", "disable_dof",
+                            "lod_traffic_scale", "skip_intro", "intro_original_speed", "disable_dof",
                             "disable_msaa", "disable_motion_blur",
                             "disable_imposter_shadows", "disable_rubberbanding",
                             "smooth_chassis_depth", "smooth_chase_cam",

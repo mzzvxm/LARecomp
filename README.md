@@ -20,29 +20,34 @@ The game boots to the menu, free roam and races work, and saves load. On top of 
 
 **A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
 
+**Intro at its original speed.** The legal screens and logos at start-up are drawn in a loop that never reaches the engine timer, so no frame cap paced them. They are now held to 30 presents per second at the swap. ORIGINAL INTRO SPEED under Recomp Settings, or `intro_original_speed=false`, turns that off.
+
 **Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker that reaches the German and Italian translations the retail NTSC/U build region-gates out.
 
-Under the hood there are 112 mid-asm hooks, 155 settings, and 24,927 named function hints driving codegen.
+Under the hood there are 112 mid-asm hooks, 156 settings, and 24,927 named function hints driving codegen.
 
 ## Known issues
 
 | Issue | Detail |
 |---|---|
 | Dithered alpha on shadows and foliage | Visible as a dither pattern on shadow edges and on vegetation leaves. Cause not pinned down: either the GPU plugin's handling of the dither pattern, or the game's own shaders dithering at a pattern scale that assumes the 1280x720 console output and does not hold at higher resolutions. This is the only rendering issue left; car body reflections and the occasional HUD glitches were both fixed by the custom ReXGlue build LARecomp uses. |
-| Intro movies play fast | Playback pacing follows the frame rate unlock. Capping to 30, 45 or 60 FPS produces identical speed, so a frame cap does not help. Press A to skip, or turn on `skip_intro`. |
-| Frame rate collapses below 10 FPS after long sessions | Traced to a bug in the SDK's vblank timer, not to this project. See below. |
+| Frame rate collapses below 10 FPS after long sessions | Traced to a bug in the SDK's vblank timer, not to this project. An SDK patch is in `patches/`; a command-line workaround covers unpatched SDK builds. See below. |
 
 ### The frame rate collapse
 
-After anywhere from 7 to 30 minutes, the frame rate could fall under 10 FPS and stay there for the rest of the session. It is fixed by a workaround while the SDK issue is addressed upstream:
+After anywhere from 7 to 30 minutes, the frame rate could fall under 10 FPS and stay there for the rest of the session.
+
+**The fix** is a 13-line change to the SDK, in [`patches/rexglue-vblank-resync.patch`](patches/rexglue-vblank-resync.patch). Apply it to the ReXGlue checkout and rebuild the SDK; see [`patches/README.md`](patches/README.md).
+
+**The workaround**, for an SDK built without the patch:
 
 ```powershell
 Start-Process larecomp.exe -ArgumentList "--clock_no_scaling=true"
 ```
 
-The cause is an unsigned underflow in the SDK's vblank catch-up loop. Once the guest tick clock steps backwards by even one tick, the loop's exit condition can never be satisfied again, and it dispatches guest interrupts continuously. Measured: 1,010 vblank interrupts per second while healthy, 11,766,658 per second once stuck. `clock_no_scaling=true` makes the guest tick count a plain function of the host clock, which removes the backwards step. A 33 minute test run with it set never dropped below 24 FPS.
+The cause is an unsigned underflow in the SDK's vblank catch-up loop. Once the guest tick clock steps backwards by even one tick, the loop's exit condition can never be satisfied again, and it dispatches guest interrupts continuously. Measured: 1,010 vblank interrupts per second while healthy, 11,766,658 per second once stuck. The patch makes the loop resynchronise on a backwards step and caps how much backlog it replays, so the clock itself is left alone. `clock_no_scaling=true` makes the guest tick count a plain function of the host clock, which removes the backwards step. A 33 minute test run with it set never dropped below 24 FPS.
 
-Whether the flag costs frame rate is **not settled**. It does not change the interrupt load: vblank rate under it averaged 1,014 per second against a 1,010 baseline. It does change what `QueryGuestSystemTime` returns, so anything pacing off guest system time behaves differently. If you want to know for certain, run the same route twice with `MCLA_TIMING_LOG=1` and compare the histograms.
+Whether the flag costs frame rate is **not settled**, which is the reason to prefer the patch. It does not change the interrupt load: vblank rate under it averaged 1,014 per second against a 1,010 baseline. It does change what `QueryGuestSystemTime` returns, so anything pacing off guest system time behaves differently. If you want to know for certain, run the same route twice with `MCLA_TIMING_LOG=1` and compare the histograms.
 
 Full write-up in [`TECHNICAL_NOTES.md`](documentation/TECHNICAL_NOTES.md).
 

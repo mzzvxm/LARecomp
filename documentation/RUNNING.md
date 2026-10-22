@@ -19,7 +19,7 @@ On first launch, an ISO install wizard appears if the game data is missing, and 
 
 ### If the frame rate collapses after a long session
 
-Add `--clock_no_scaling=true`:
+Build against an SDK with [`patches/rexglue-vblank-resync.patch`](../patches/rexglue-vblank-resync.patch) applied. If the SDK you have is not patched, add `--clock_no_scaling=true`:
 
 ```powershell
 $env:REX_LOG_LEVEL="warn"; Start-Process larecomp.exe -ArgumentList "--clock_no_scaling=true"
@@ -51,7 +51,7 @@ Press Start or Escape and open **Options**. Seven tabs:
 | Tab | Contents |
 |---|---|
 | ReXGlue Settings | Fullscreen, vsync, resolution, resolution scale |
-| Recomp Settings | Real frame delta, FPS limit, MSAA, foliage shadows, AI rubberband, extra vinyl layers, depth of field, motion blur, suspension fix, traffic and city LOD, speed units |
+| Recomp Settings | Real frame delta, FPS limit, original intro speed, MSAA, foliage shadows, AI rubberband, extra vinyl layers, depth of field, motion blur, suspension fix, traffic and city LOD, speed units |
 | Performance | Shadows, shadow phases, cheap car shadow, tree impostors, foliage, screen blur, single tile, ambient culling, traffic range, pedestrians, parked cars, prop draw distance, break FPS floor |
 | Fidelity FX | Upscaler, FSR quality, CAS sharpness, FSR sharpness reduction |
 | Debug Camera | Smooth chase cam, camera smoothing factor, freecam, camera speed |
@@ -131,7 +131,7 @@ The `interrupts` split is what diagnoses a frame rate collapse:
 
 | Pattern | Meaning |
 |---|---|
-| `vblank` in the millions | The SDK vblank underflow. Use `--clock_no_scaling=true`. |
+| `vblank` in the millions | The SDK vblank underflow. Apply `patches/rexglue-vblank-resync.patch` to the SDK, or use `--clock_no_scaling=true`. |
 | `cpu` climbing, `poison` above 0 | Corrupt command buffer, by the game's own check. |
 | Everything flat while fps falls | Guest CPU. Compare `dispatched` against the GPU counters. |
 
