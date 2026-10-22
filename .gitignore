@@ -76,3 +76,9 @@ Thumbs.db
 # version. Nothing in the directory is tracked.
 src/assets/
 translations/
+
+# Nick registry of a master run from the tree: its signing key and database.
+# The key must never be published (anyone with it can mint nick tickets).
+identity_master.key
+identity_db.txt
+identity_db.txt.tmp

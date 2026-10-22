@@ -116,6 +116,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
+    # Online identity (F7): the key that owns the gamertag, its XUID, the
+    # nick proof to relays that check, backup and recovery code.
+    src/mc_engine/online/identity/identity_store.cpp
+    thirdparty/monocypher/monocypher.c
 
     # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).
     # Remove this line and the src/native_probe/ directory once the Native

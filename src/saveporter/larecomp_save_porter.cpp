@@ -65,8 +65,9 @@ namespace fs = std::filesystem;
 // X_STATUS_SUCCESS expands to a bare X_STATUS cast; bring the type into scope.
 using rex::X_STATUS;
 
-// Emulated console/profile identity. Matches rex::system user_profile xuid, so
-// the content path resolves to the same folder the guest kernel reads from.
+// The XUID every profile shared before per-profile XUIDs (the fork's
+// UserProfile::kLegacyXuid; still the only one on the stock SDK). Names the
+// legacy hex content folder, and the stock SDK's current one.
 constexpr uint64_t kProfileXuid = 0xB13EBABEBABEBABEull;
 constexpr uint32_t kTitleId = 0x545407F8u;
 

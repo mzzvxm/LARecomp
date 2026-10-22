@@ -25,6 +25,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
+#include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/string_table.h"
@@ -456,6 +457,7 @@ class LarecompApp : public rex::ReXApp {
       return false;
     }
     larecomp::PrepareProfileChoice(user_data_root());
+    larecomp::identity::SetUserDataRoot(user_data_root());
     // Before the window starts SDL's joystick layer: keeps known wheels out of the gamepad layer.
     larecomp::wheel::EarlyInit();
     return true;
@@ -672,6 +674,10 @@ class LarecompApp : public rex::ReXApp {
         fs->RegisterSymbolicLink("t:", "\\Device\\Harddisk0\\Partition1");
       }
     }
+
+    // The online identity's XUID has to reach the profile before the guest
+    // first asks for it (the guest starts in LaunchModule).
+    larecomp::identity::ApplyProfileIdentity();
 
     auto* fd = rex::Runtime::instance()->function_dispatcher();
     uint8_t* base = rex::Runtime::instance()->virtual_membase();
