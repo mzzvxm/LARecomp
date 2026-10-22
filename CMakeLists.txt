@@ -119,6 +119,7 @@ set(LARECOMP_SOURCES
     # Online identity (F7): the key that owns the gamertag, its XUID, the
     # nick proof to relays that check, backup and recovery code.
     src/mc_engine/online/identity/identity_store.cpp
+    src/mc_engine/online/identity/identity_client.cpp
     thirdparty/monocypher/monocypher.c
 
     # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).
