@@ -130,6 +130,12 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/rate_my_ride/rmr_store.cpp
     src/mc_engine/online/rate_my_ride/rmr_net.cpp
 
+    # Leaderboards: the LIVE stats views served by the same backend.
+    src/mc_engine/online/leaderboards/leaderboards.cpp
+    src/mc_engine/online/leaderboards/lb_client.cpp
+    src/mc_engine/online/leaderboards/lb_protocol.cpp
+    src/mc_engine/online/leaderboards/lb_store.cpp
+
     # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).
     # Remove this line and the src/native_probe/ directory once the Native
     # Graphics Runtime research is closed.
