@@ -26923,3 +26923,32 @@ registers = ["r11"]
 address = 0x82607E28
 name = "Hook_UiColor_Line"
 registers = ["r11"]
+
+
+# Server browser (src/mc_engine/online/server_browser).
+# System Link search answer about to be kept (r27 = 1); r1+0x58 = sender vip.
+[[midasm_hook]]
+address = 0x824FD3A0
+name = "Hook_BrowserLanResult"
+registers = ["r1", "r27"]
+
+# Live search result past its first check (r3); r30 = XSESSION_SEARCHRESULT.
+[[midasm_hook]]
+address = 0x824FC8D0
+name = "Hook_BrowserLiveResult"
+registers = ["r30", "r3"]
+
+# CreateGame while a picked room is being joined: leave through its own
+# failure exit (posts net.error, returns 0) instead of hosting.
+[[midasm_hook]]
+address = 0x8226BB2C
+name = "Hook_BrowserCreateGameVeto"
+registers = ["r27"]
+jump_address_on_true = 0x8226BCCC
+
+# JoinSession: the picked room was found and the game joins it.
+[[midasm_hook]]
+address = 0x8226BCF0
+name = "Hook_BrowserJoinSession"
+registers = ["r3"]
+

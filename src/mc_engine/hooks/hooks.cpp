@@ -17,6 +17,7 @@
 #include "../hud_units.h"
 #include "../map_mouse.h"
 #include "../map_warp.h"
+#include "../online/server_browser/browser_join.h"
 #include "../modloader/features/mod_breakables.h"
 #include "../modloader/features/mod_glows.h"
 #include "../modloader/modloader.h"
@@ -158,6 +159,7 @@ void Patch_DeltaTimePre() {
     TickCutsceneGallery();      // cutscene replay: close the menu, start the script
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
     TickMapWarp();              // warp console command / F9: a mod's warp point <-> back
+    larecomp::browser::TickServerBrowserJoin();  // server browser: drive the picked join
     TickModGlows();             // guest scratch for the mods' light glows
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit
     TickRaceProps();            // online race props: the watched owner word, if any

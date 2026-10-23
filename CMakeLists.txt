@@ -116,6 +116,9 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
+    # Server browser (F6): relay list, rooms, joining a picked room.
+    src/mc_engine/online/server_browser/browser_client.cpp
+    src/mc_engine/online/server_browser/browser_join.cpp
     # Online identity (F7): the key that owns the gamertag, its XUID, the
     # nick proof to relays that check, backup and recovery code.
     src/mc_engine/online/identity/identity_store.cpp
