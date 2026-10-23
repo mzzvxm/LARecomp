@@ -28,6 +28,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
+#include "mc_engine/online/server_browser/browser_ui.h"
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -815,6 +816,8 @@ class LarecompApp : public rex::ReXApp {
     // UI thread (the build's completion is handed back here), as the dialog
     // has to be created on it.
     larecomp::StartOnlineToast(imgui_drawer(), immediate_drawer());
+    larecomp::StartServerBrowser(imgui_drawer(), immediate_drawer(),
+                                 runtime() ? runtime()->input_system() : nullptr);
     larecomp::StartIdentity(imgui_drawer());
     InitMapMouse();
     InitStringTableTools();
