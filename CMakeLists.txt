@@ -123,6 +123,7 @@ set(LARECOMP_SOURCES
     # nick proof to relays that check, backup and recovery code.
     src/mc_engine/online/identity/identity_store.cpp
     src/mc_engine/online/identity/identity_client.cpp
+    src/mc_engine/online/identity/identity_ui.cpp
     thirdparty/monocypher/monocypher.c
     # Mod browser (F5) and the mod check/download the server browser uses too.
     src/mc_engine/modloader/modsbrowser/mod_download.cpp
