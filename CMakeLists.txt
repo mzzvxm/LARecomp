@@ -122,6 +122,14 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/identity/identity_client.cpp
     thirdparty/monocypher/monocypher.c
 
+    # Rate My Ride: the rlUpload "RateMyRide" table served by our own backend
+    # (local store, or larecomp_rmr_server shared with the other players).
+    src/mc_engine/online/rate_my_ride/rate_my_ride.cpp
+    src/mc_engine/online/rate_my_ride/rmr_client.cpp
+    src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+    src/mc_engine/online/rate_my_ride/rmr_store.cpp
+    src/mc_engine/online/rate_my_ride/rmr_net.cpp
+
     # MILESTONE 0 - temporary passive instrumentation, cvar-gated (default off).
     # Remove this line and the src/native_probe/ directory once the Native
     # Graphics Runtime research is closed.
@@ -310,6 +318,8 @@ else()
             mfreadwrite
             mfuuid
             ole32
+            # Rate My Ride client sockets (mc_engine/online/rate_my_ride)
+            ws2_32
         )
     endif()
 

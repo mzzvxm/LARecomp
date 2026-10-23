@@ -25060,6 +25060,7 @@ address = 0x8263CB78
 name = "Hook_PhotoModeCapture"
 registers = ["r3"]
 
+
 [[midasm_hook]]
 address = 0x82233EB4
 name = "Patch_AspectRatio_82233EB4"
@@ -25328,6 +25329,93 @@ address = 0x822BC658
 name = "Patch_BrainRacingResetNullGuard"
 registers = ["r3"]
 return_on_true = true
+after_instruction = false
+
+# Rate My Ride (src/mc_engine/online/rate_my_ride/). The mode talks to the dead
+# rage::rlUpload service through nine functions that queue a task; each hook sits
+# on the function's first instruction and, for the "RateMyRide" table only, sends
+# the request to our backend instead and returns r3 = 1 ("queued"). The reply is
+# written back at the top of mcRateMyRide's status poll (sub_826B2328), the way
+# the rlUpload worker would have filled the task outputs. r1 = caller stack for
+# the arguments past r10.
+[[midasm_hook]]
+address = 0x824F6DE8
+name = "Hook_RmrGetTableSize"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F6EA0
+name = "Hook_RmrReadByGamer"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F6FA0
+name = "Hook_RmrReadRandom"
+registers = ["r1", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F70A8
+name = "Hook_RmrReadByRank"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F7188
+name = "Hook_RmrRateRecord"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F7308
+name = "Hook_RmrUploadFile"
+registers = ["r1", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F7468
+name = "Hook_RmrOverwriteFile"
+registers = ["r1", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F7578
+name = "Hook_RmrDownloadFile"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9"]
+return_on_true = true
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824F7638
+name = "Hook_RmrOverwriteUserData"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9"]
+return_on_true = true
+after_instruction = false
+
+# Rate My Ride reply pump: mcRateMyRide's per-frame status poll. Applying the
+# replies here (and not when they arrive) keeps them after the code that queued
+# the task, which RefreshCurrentRecord depends on. r3 = the mcRateMyRide object.
+[[midasm_hook]]
+address = 0x826B2328
+name = "Hook_RmrPump"
+registers = ["r3"]
+after_instruction = false
+
+# Rate My Ride entry ("[rmr] Entering Rate My Ride", sub_826B15B8): replies
+# still in flight from a previous visit are dropped.
+[[midasm_hook]]
+address = 0x826B15B8
+name = "Hook_RmrEnter"
+registers = ["r3"]
 after_instruction = false
 
 # [invite-probe] Log online session net-event ids (guest sub_8226D8F8). The
