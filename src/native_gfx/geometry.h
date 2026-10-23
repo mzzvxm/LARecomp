@@ -115,6 +115,11 @@ struct InlineGeometry {
   // is neither what was synthesised nor the right vertex count.
   uint64_t host_gpu_address = 0;
   uint32_t host_size_bytes = 0;
+
+  // Guest-order copy of the vertices, taken when the draw was queued for the
+  // async renderer: by the time it runs, the command-ring slot may hold
+  // another draw's vertices. Read instead of guest memory when set.
+  const uint8_t* captured = nullptr;
 };
 
 struct GeometrySnapshot {
@@ -181,6 +186,10 @@ struct GeometrySnapshot {
 // frame with only 1.8ms inside UploadRegion, so the build itself is the cost
 // and this says which part of it.
 const double* GeometryPhaseMicroseconds();
+
+// Returns a snapshot's vector storage for reuse by the next BuildGeometrySnapshot
+// on this thread. Call when the snapshot is no longer needed.
+void RecycleGeometrySnapshot(GeometrySnapshot& s);
 
 GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                                        uint32_t element_count, uint32_t start_element,

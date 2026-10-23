@@ -53,6 +53,11 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags,
 // Called from the rage::grcDevice::EndFrame hook.
 void NotifyFrameBoundary();
 
+// Async renderer (mcla_native_gfx_async): the newest guest fence value that may
+// be published as retired, given the commands still queued and the value the
+// game is still issuing under. False when async is off and nothing limits it.
+bool AsyncRetireLimit(uint32_t issued_now, uint32_t* limit);
+
 // D3DResource_Lock (sub_82421CA0), the funnel every lock reaches.
 // Observation only: the lock is where the guest waits on the resource fence,
 // which is the machinery a future ownership step has to take over.

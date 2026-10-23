@@ -311,7 +311,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
     return 0;
   }
   uint32_t v;
-  std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+  std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
   return __builtin_bswap32(v);
 }
 
@@ -1841,6 +1841,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   GeometrySnapshot geom =
       BuildGeometrySnapshot(base, dev, primitive_type, element_count, start_element, base_vertex,
                             indexed, shaders, nullptr, nullptr, nullptr, inline_geom);
+  // Hands the vectors back on every return path below (declared after geom,
+  // so it runs before geom is destroyed).
+  struct RecycleOnExit {
+    GeometrySnapshot& g;
+    ~RecycleOnExit() { RecycleGeometrySnapshot(g); }
+  } recycle_geom{geom};
   ProfileAdd(g_profile.state_us, t_state);
   if (!geom.complete || geom.streams.empty()) {
     ++g_cap.rej_geometry;
@@ -2046,10 +2052,11 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     const bool src_sane = inline_geom->address >= 0x1000u &&
                           uint64_t(inline_geom->address) + element_count * inline_geom->stride <
                               0x100000000ull;
-    const uint8_t* src = (dst && src_sane)
-                             ? rex::memory::GuestPtr(const_cast<uint8_t*>(base),
-                                                     inline_geom->address)
-                             : nullptr;
+    const uint8_t* src = !(dst && src_sane) ? nullptr
+                         : inline_geom->captured
+                             ? inline_geom->captured
+                             : rex::memory::GuestPtr(const_cast<uint8_t*>(base),
+                                                     inline_geom->address);
     if (!dst || !src ||
         !SynthesiseRectList(src, element_count, inline_geom->stride, geom.input_layout, dst)) {
       ++g_cap.fail_bind;
@@ -6712,7 +6719,7 @@ void CaptureInlineDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_typ
                        uint32_t draw_limit, D3D12Context& context, ShaderDatabase& shaders,
                        BufferCache& buffers, TextureCache& textures, TextureBinder& binder,
                        PipelineCache& pipelines, RenderTargetPool& render_targets,
-                       uint32_t aux_stage) {
+                       uint32_t aux_stage, const uint8_t* captured) {
   ++g_inline_draws;
   g_inline_verts += vertex_count;
   if (primitive_type < 16) {
@@ -6727,6 +6734,7 @@ void CaptureInlineDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_typ
   // so BeginVertices stores (count * stride) >> 2 dwords back as bytes.
   geom.size_bytes = ((vertex_count * stride) >> 2) * 4u;
   geom.stride = stride;
+  geom.captured = captured;
   const auto t_draw = ProfileClock::now();
   CaptureDrawImpl(base, dev, primitive_type, vertex_count, /*start_element=*/0, /*base_vertex=*/0,
                   /*indexed=*/false, draw_limit, context, shaders, buffers, textures, binder,

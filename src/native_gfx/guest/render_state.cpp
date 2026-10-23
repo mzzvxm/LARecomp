@@ -3,6 +3,7 @@
 // See render_state.h for how each shadow address was derived.
 
 #include "render_state.h"
+#include "guest_resources.h"
 
 #include <cstring>
 
@@ -22,7 +23,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
     return 0;
   }
   uint32_t v;
-  std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+  std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
   return __builtin_bswap32(v);
 }
 

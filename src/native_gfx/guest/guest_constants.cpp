@@ -16,7 +16,7 @@ namespace {
 
 inline uint32_t LoadBe32At(const uint8_t* base, uint32_t ea) {
   uint32_t v;
-  std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+  std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
   return __builtin_bswap32(v);
 }
 
@@ -41,8 +41,8 @@ bool ReadConstantBank(const uint8_t* base, uint32_t bank_ea, void* dst) {
   if (!base || !dst || !IsGuestRangeReadable(bank_ea, kAluBankBytes)) {
     return false;
   }
-  const auto* src = reinterpret_cast<const uint32_t*>(
-      rex::memory::GuestPtr(const_cast<uint8_t*>(base), bank_ea));
+  const auto* src =
+      reinterpret_cast<const uint32_t*>(GuestReadPtr(base, bank_ea, kAluBankBytes));
   auto* out = static_cast<uint32_t*>(dst);
   for (uint32_t i = 0; i < kAluBankBytes / 4; ++i) {
     uint32_t v;
