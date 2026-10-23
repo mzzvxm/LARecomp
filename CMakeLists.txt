@@ -124,6 +124,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/identity/identity_store.cpp
     src/mc_engine/online/identity/identity_client.cpp
     thirdparty/monocypher/monocypher.c
+    # Mod browser (F5) and the mod check/download the server browser uses too.
+    src/mc_engine/modloader/modsbrowser/mod_download.cpp
 
     # Rate My Ride: the rlUpload "RateMyRide" table served by our own backend
     # (local store, or larecomp_rmr_server shared with the other players).
