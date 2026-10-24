@@ -360,6 +360,41 @@ else()
         )
     endif()
 
+    # The shared Rate My Ride server players reach on TCP 31002. Standalone: the
+    # store and protocol sources only, no SDK.
+    add_executable(larecomp_rmr_server
+        src/mc_engine/online/rate_my_ride/rmr_server_main.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+        src/mc_engine/online/rate_my_ride/rmr_store.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/leaderboards/lb_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_store.cpp
+    )
+    if(WIN32)
+        target_compile_definitions(larecomp_rmr_server PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(larecomp_rmr_server PRIVATE ws2_32)
+    endif()
+
+    # The online relay (UDP 31000) anyone can host, and the master server
+    # (UDP+TCP 31003) that lists those relays in the in-game server browser.
+    # Standalone, no SDK.
+    add_executable(larecomp_relay_server
+        src/mc_engine/online/relay_server/relay_server.cpp
+        thirdparty/monocypher/monocypher.c
+    )
+    add_executable(larecomp_master_server
+        src/mc_engine/online/master_server/master_server_main.cpp
+        src/mc_engine/online/master_server/identity_registry.cpp
+        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+        thirdparty/monocypher/monocypher.c
+    )
+    if(WIN32)
+        target_link_libraries(larecomp_relay_server PRIVATE ws2_32)
+        target_compile_definitions(larecomp_master_server PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(larecomp_master_server PRIVATE ws2_32)
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
