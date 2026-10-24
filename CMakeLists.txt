@@ -117,6 +117,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/online/online_toast.cpp
     src/mc_engine/online/xbox_live.cpp
     src/mc_engine/online/race_props.cpp
+    src/mc_engine/online/session_limits.cpp
     # Server browser (F6): relay list, rooms, joining a picked room.
     src/mc_engine/online/server_browser/browser_client.cpp
     src/mc_engine/online/server_browser/browser_join.cpp

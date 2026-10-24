@@ -26996,3 +26996,16 @@ address = 0x8226BCF0
 name = "Hook_BrowserJoinSession"
 registers = ["r3"]
 
+
+# Big sessions (src/mc_engine/online/session_limits.cpp): the "MaxPlayers > 8" tests of
+# CreateGame (flag at netMgr+756) and of the session defaults (jumptable case 3).
+# r11 is zeroed before use when net_lift_big_session_limits is on.
+[[midasm_hook]]
+address = 0x8226BBE4
+name = "Hook_NetBigSessionFlag"
+registers = ["r11"]
+
+[[midasm_hook]]
+address = 0x8228A0F0
+name = "Hook_NetBigSessionDefault"
+registers = ["r11"]
