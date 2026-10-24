@@ -1,0 +1,52 @@
+# Copy next to the relay exe as server.toml. Re-read every few seconds:
+# edits show up in the server browser without restarting the relay.
+
+# Shown in the server browser (UTF-8).
+name = "Meu Servidor"
+description = "Corridas toda noite.\nRegras: sem bater de propósito."
+region = "BR"
+tags = "Tokyo, drift, JDM"
+
+# Square PNG next to the exe, 64 KB and 512x512 at most.
+icon = "relay_icon.png"
+
+# Where players reach this relay, if not this machine's own public IP and
+# the relay port (a playit.gg tunnel, a DNS name, a forwarded port).
+public_address = ""
+
+# The server list to appear on. Empty = not listed (players can still add
+# this relay by address).
+master = ""
+
+# Mods this server plays with, offered to players for download. One
+# sub-folder per mod inside mods_dir (mods/<mod>/..., the same layout as the
+# game's models/<mod>/). The folder sits next to the exe. Folders and files
+# whose names start with '.' are ignored, and programs/scripts (.exe, .dll,
+# .bat, ...) are never served.
+mods_dir = "mods"
+
+# Mods a player must have, comma-separated, or "*" = every mod in mods_dir.
+# Every other mod in mods_dir is optional.
+mods_required = ""
+
+# The TCP port players reach the mod downloads on (HTTP), when a tunnel maps
+# it elsewhere. 0 = the relay port + 1.
+public_http_port = 0
+
+# Nick check. With the master's key here, a gamertag only plays on this relay
+# from a PC that proves it owns it on that master (first come, first served;
+# a recovery code or a backup moves it to another PC). Copy the key the master
+# prints on start, or from http://<master>:31003/identity/v1/pubkey.
+# Empty = no check: anyone plays under any gamertag.
+identity_master_key = ""
+
+# Where players get their proof. Empty = the master above.
+identity_master = ""
+
+# Names players type to reach this relay, besides public_address and this
+# machine's own IPs (comma-separated host:port). A proof is only accepted for
+# a name this relay knows as its own.
+identity_names = ""
+
+# Seconds a new game session plays before its gamertag must be proved.
+identity_grace_sec = 20
