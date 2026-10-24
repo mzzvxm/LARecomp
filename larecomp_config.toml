@@ -26924,6 +26924,50 @@ address = 0x82607E28
 name = "Hook_UiColor_Line"
 registers = ["r11"]
 
+# Native keyboard (src/mc_engine/keyboard_native.cpp). The poll sub_82614C70 asks
+# XamInputGetKeystrokeEx for key events, which the SDK refuses, so the game's key
+# table (byte_82905738 -> byte_82905538, read by ioMapper type 0 / 14) is always
+# empty. This hook sits where every path out of the poll converges, just before the
+# table is published, and writes the host keyboard into it.
+[[midasm_hook]]
+address = 0x82614CFC
+name = "Hook_KeyboardFeed"
+
+# sub_822A4DE8 clears the player's mapper and refills it from the control map
+# (xenon_controls*.map); at its return r30 is the controller struct, and the
+# keyboard entries go on the end of the list.
+[[midasm_hook]]
+address = 0x822A4EB4
+name = "Hook_ControlMapRebuilt"
+registers = ["r30"]
+
+# The pad struct's bits are final here (r31 = pad). Title/sign-in screens read them
+# directly, not through the UI mapper, so until the game is entered the menu keys are
+# added to pad 0's bits (keyboard_native.cpp).
+[[midasm_hook]]
+address = 0x82615048
+name = "Hook_PadBitsFinalize"
+registers = ["r31"]
+
+# Options > Controller > Customize: the "press a button" capture (sub_82727010) only looks at
+# the raw pad, so with a keyboard it never finishes and swallows every key. After its
+# prologue (r28 = out type ptr, r24 = out value ptr), a key that just went down answers it:
+# type 0 (keyboard), value r11, then the function's own tail `stw r11,0(r24); li r3,1; ret`.
+[[midasm_hook]]
+address = 0x82727044
+name = "Hook_ControlCaptureKey"
+registers = ["r11", "r28"]
+jump_address_on_true = 0x8272737C
+
+# Custom Controls row label (sub_82679678(type, value, &isIcon), a leaf with no prologue). A
+# keyboard binding (type 0) came back empty; the hook answers with a key cap iconID or the
+# name of the key and returns through the own blr of the function.
+[[midasm_hook]]
+address = 0x82679678
+name = "Hook_ControlLabel"
+registers = ["r3", "r4", "r5"]
+jump_address_on_true = 0x82679BD4
+
 
 # Server browser (src/mc_engine/online/server_browser).
 # System Link search answer about to be kept (r27 = 1); r1+0x58 = sender vip.

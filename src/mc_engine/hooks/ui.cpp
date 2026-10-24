@@ -49,8 +49,11 @@ REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
     "the game's own UI movies and texture dictionary, so this only flips the "
     "'platform' flag their ActionScript reads - no asset is swapped or reloaded. "
     "Menus already on screen keep their old glyphs until reopened, and the boot "
-    "legal screen switches to its PS3 text page.")
-    .allowed({"xbox", "playstation"})
+    "legal screen switches to its PS3 text page.\n"
+    "keyboard = key caps. The movies have no third glyph strip, so this stays on "
+    "platform 0 and keyboard_native.cpp paints a key cap over the pixels of the "
+    "Xbox A/B/X/Y/LB/RB/LT/RT bitmaps (the key bound to that menu button, kb_ui_*).")
+    .allowed({"xbox", "playstation", "keyboard"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
