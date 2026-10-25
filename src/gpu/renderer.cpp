@@ -777,7 +777,7 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
         rex::SimpleMessageBoxType::Warning,
         std::string(BackendName(g_renderer->device().requested_backend())) +
             " could not be started on this machine, so the game runs on " + BackendName() +
-            ". The reason is in the log. The API is chosen in the pause menu: RENDERER OPTIONS, "
+            ". The reason is in the log. The API is chosen in the pause menu: RENDERER, "
             "GRAPHICS API (graphics_backend in larecomp.toml).");
   }
   g_active.store(g_renderer, std::memory_order_release);
