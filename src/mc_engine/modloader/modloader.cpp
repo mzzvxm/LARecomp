@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cctype>
@@ -20,6 +22,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -580,6 +583,22 @@ namespace {
 
 constexpr const char* kModArchiveName = "xarchive_mods.rpf";
 constexpr const char* kSourceArchiveName = "xarchive_cache.rpf";
+// An RPF3 file offset has only 21 sector bits. Keep each music archive well
+// below that limit, including its TOC and alignment padding.
+constexpr uint64_t kMusicArchivePayloadLimit = 3ull * 1024 * 1024 * 1024;
+constexpr size_t kMaxMusicArchives = 12;
+// Every archive is another device on the one mount point "a:/archive/", and the
+// game crashes with a guest read of 0x7 right after the list is mounted once
+// there are nine of them (measured 24/10: 5 music + audlo, cache and mods boots,
+// 6 does not). Music is split only because one RPF3 cannot hold more than ~4 GB,
+// so it is capped at four archives, which leaves a slot free for a DLC or
+// another archive. Slots past it are only ever cleaned up.
+constexpr size_t kMusicArchiveCap = 4;
+
+std::string MusicArchiveName(size_t index) {
+    return "xarchive_music_" + std::string(index < 10 ? "0" : "") +
+           std::to_string(index) + ".rpf";
+}
 
 // Side of one atlas cell. Four materials land in a 2x2 grid of these, which is
 // exactly the 512x512 the character's diffuse map measures, so the common case
@@ -597,6 +616,7 @@ constexpr uint32_t kResourceTailSlack = 65536;
 constexpr uint32_t kCarPageShift = 8;
 
 bool g_mod_archive_ready = false;
+std::vector<std::string> g_archives_to_mount;
 
 // Driver animation name of each new car -> the name whose animations it borrows.
 // Filled while the cars are built, read by the guest's path formatters.
@@ -4728,12 +4748,13 @@ void AppendModArchiveTo(uint32_t buffer, size_t capacity) {
     if (length >= capacity) return;
 
     const std::string current(reinterpret_cast<const char*>(list), length);
-    if (current.find(kModArchiveName) != std::string::npos) return;
-
-    const std::string suffix = std::string(";game:/") + kModArchiveName;
+    std::string suffix;
+    for (const std::string& name : g_archives_to_mount) {
+        if (current.find(name) == std::string::npos) suffix += ";game:/" + name;
+    }
     if (length + suffix.size() + 1 > capacity) {
-        LARECOMP_APP_ERROR("[mods] archive list is full, {} will not be mounted",
-                           kModArchiveName);
+        LARECOMP_APP_ERROR("[mods] archive list is full, {} custom archive(s) will not be mounted",
+                           g_archives_to_mount.size());
         return;
     }
 
@@ -4810,14 +4831,15 @@ void Init() {
     built = true;
 
     g_mod_archive_ready = false;
+    g_archives_to_mount.clear();
 
-    if (!REXCVAR_GET(model_mods)) return;
+    const bool enable_models = REXCVAR_GET(model_mods);
 
     const std::filesystem::path exe_dir = ExeDir();
     const std::filesystem::path models_dir = exe_dir / "models";
 
     std::error_code ec;
-    if (!std::filesystem::is_directory(models_dir, ec)) return;
+    const bool have_models = std::filesystem::is_directory(models_dir, ec);
 
     auto* runtime = rex::Runtime::instance();
     if (!runtime) {
@@ -4830,7 +4852,8 @@ void Init() {
     std::vector<ModEntry> mods, rim_mods;
     std::vector<VehicleMod> car_mods;
     std::vector<RawFile> raw_files;
-    ScanMods(models_dir, mods, rim_mods, car_mods, raw_files);
+    if (enable_models && have_models)
+        ScanMods(models_dir, mods, rim_mods, car_mods, raw_files);
 
     // Native custom music builds its three files (the .dat pair and one bank per
     // track) into a cache folder and rides in as raw files, so it inherits the
@@ -4842,6 +4865,8 @@ void Init() {
 
     if (mods.empty() && rim_mods.empty() && car_mods.empty() && raw_files.empty()) {
         std::filesystem::remove(game_root / kModArchiveName, ec);
+        for (size_t i = 0; i < kMaxMusicArchives; ++i)
+            std::filesystem::remove(game_root / MusicArchiveName(i), ec);
         return;
     }
     const bool has_meshes = !mods.empty() || !rim_mods.empty() || !car_mods.empty();
@@ -4903,6 +4928,11 @@ void Init() {
     }
 
     Rpf3Writer writer;
+    // Banks fill one archive up to the payload limit and only then open the
+    // next, so a normal library is a single archive.
+    std::vector<Rpf3Writer> music_writers(kMaxMusicArchives);
+    std::array<uint64_t, kMaxMusicArchives> music_shard_bytes{};
+    size_t music_current = 0;
     const std::filesystem::path cache_dir = models_dir / ".cache";
 
     // Rpf3Writer::Write refuses an archive that names the same path twice, and
@@ -4979,8 +5009,28 @@ void Init() {
         }
 
         if (!is_resource_file) {
-            writer.AddFromFile(file.archive_path, file.source, size,
-                               static_cast<uint32_t>(size), 0);
+            Rpf3Writer* destination = &writer;
+            if (file.mod_name == "music" &&
+                file.archive_path.rfind("audio/x360/sfx/music/", 0) == 0) {
+                // The metadata and other mods stay in xarchive_mods.rpf. Banks
+                // are split into independent archives, then all are mounted
+                // before the metadata archive.
+                const uint64_t accounted = (size + 2047ull) & ~2047ull;
+                if (music_shard_bytes[music_current] + accounted > kMusicArchivePayloadLimit &&
+                    music_shard_bytes[music_current] > 0) {
+                    if (music_current + 1 == kMusicArchiveCap) {
+                        LARECOMP_APP_ERROR("[music] more than {} music archives are required; "
+                                           "custom music will not be mounted", kMusicArchiveCap);
+                        boot::EndPhase();
+                        return;
+                    }
+                    ++music_current;
+                }
+                destination = &music_writers[music_current];
+                music_shard_bytes[music_current] += accounted;
+            }
+            destination->AddFromFile(file.archive_path, file.source, size,
+                                     static_cast<uint32_t>(size), 0);
             taken_paths.push_back(std::move(key));
             LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, verbatim)", file.mod_name,
                               file.archive_path, size);
@@ -5242,27 +5292,74 @@ void Init() {
         BuildVehicleMods(car_mods, archive, cache_dir, passthrough, writer);
 
     const std::filesystem::path mod_archive = game_root / kModArchiveName;
-    boot::BeginPhase("Archive", 1);
+    size_t music_archives = 0;
+    for (const Rpf3Writer& shard : music_writers)
+        if (!shard.empty()) ++music_archives;
+    boot::BeginPhase("Archive", static_cast<int>(music_archives + 1));
 
     if (writer.empty()) {
         // Leaving a stale archive behind would silently keep an old mod alive.
         std::filesystem::remove(mod_archive, ec);
+        for (size_t i = 0; i < kMaxMusicArchives; ++i)
+            std::filesystem::remove(game_root / MusicArchiveName(i), ec);
         LARECOMP_APP_ERROR("[mods] nothing built, model replacement disabled");
         boot::EndPhase();
         return;
     }
 
-    if (!writer.Write(mod_archive)) {
+    // The shards are independent files, so they are written side by side. Only
+    // the ones that changed cost anything (WriteIfChanged). Two at a time: more
+    // only helps on an SSD and costs seeks on a spinning disk.
+    const auto archive_started = std::chrono::steady_clock::now();
+    {
+        std::array<char, kMaxMusicArchives> failed_shard{};
+        std::atomic<size_t> next_shard{0};
+        auto worker = [&]() {
+            for (size_t i = next_shard++; i < kMaxMusicArchives; i = next_shard++) {
+                if (music_writers[i].empty()) continue;
+                const std::string name = MusicArchiveName(i);
+                if (!music_writers[i].WriteIfChanged(game_root / name)) failed_shard[i] = 1;
+                boot::Step(name);
+            }
+        };
+        const size_t thread_count = std::clamp<size_t>(std::thread::hardware_concurrency(), 1, 2);
+        std::vector<std::thread> threads;
+        for (size_t t = 1; t < thread_count; ++t) threads.emplace_back(worker);
+        worker();
+        for (std::thread& thread : threads) thread.join();
+
+        for (size_t i = 0; i < kMaxMusicArchives; ++i) {
+            if (music_writers[i].empty()) continue;
+            if (failed_shard[i]) {
+                LARECOMP_APP_ERROR("[music] cannot write {}",
+                                   (game_root / MusicArchiveName(i)).string());
+                boot::EndPhase();
+                return;
+            }
+            g_archives_to_mount.push_back(MusicArchiveName(i));
+        }
+    }
+    if (!writer.WriteIfChanged(mod_archive)) {
         LARECOMP_APP_ERROR("[mods] cannot write {}", mod_archive.string());
         boot::EndPhase();
         return;
     }
     boot::Step(kModArchiveName);
     boot::EndPhase();
+    LARECOMP_APP_INFO("[mods] archives written in {} ms",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - archive_started).count());
 
+    for (size_t i = 0; i < kMaxMusicArchives; ++i) {
+        if (!music_writers[i].empty()) continue;
+        std::filesystem::remove(game_root / MusicArchiveName(i), ec);
+        std::filesystem::remove(game_root / (MusicArchiveName(i) + ".stamp"), ec);
+    }
+
+    g_archives_to_mount.push_back(kModArchiveName);
     g_mod_archive_ready = true;
-    LARECOMP_APP_INFO("[mods] {} with {} replacement(s), mounted last", kModArchiveName,
-                      writer.size());
+    LARECOMP_APP_INFO("[mods] {} with {} replacement(s) and {} music archive(s), mounted last",
+                       kModArchiveName, writer.size(), music_archives);
 }
 
 }  // namespace mc::modloader

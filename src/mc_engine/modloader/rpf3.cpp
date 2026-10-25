@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <map>
 
 #include "aes256.h"
@@ -341,6 +342,7 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
     file = std::fopen(out_path.string().c_str(), "wb");
 #endif
     if (!file) return false;
+    std::setvbuf(file, nullptr, _IOFBF, 4u << 20);
 
     const uint32_t header[5] = {kMagicRpf3, toc_size, entry_count, 0, 0xFFFFFFFFu};
     bool ok = std::fwrite(header, 4, 5, file) == 5;
@@ -368,9 +370,9 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
         if (!ok) break;
 
         if (node.file->on_disk()) {
-            // Streamed a megabyte at a time: a music bank is several megabytes
+            // Streamed four megabytes at a time: a music bank is several megabytes
             // and there can be hundreds of them in one archive.
-            if (copy_buffer.empty()) copy_buffer.resize(1u << 20);
+            if (copy_buffer.empty()) copy_buffer.resize(4u << 20);
             FILE* input = nullptr;
 #if defined(_WIN32)
             if (_wfopen_s(&input, node.file->source.wstring().c_str(), L"rb") != 0) input = nullptr;
@@ -406,6 +408,83 @@ bool Rpf3Writer::Write(const std::filesystem::path& out_path) const {
 
     std::fclose(file);
     return ok;
+}
+
+uint64_t Rpf3Writer::Fingerprint() const {
+    // Bump when Write lays the archive out differently, so a stamp written by
+    // the old layout can never vouch for an archive in the new one.
+    constexpr uint64_t kLayoutVersion = 1;
+    uint64_t h = 0xCBF29CE484222325ull;
+    auto mix = [&h](const void* data, size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < size; ++i) {
+            h ^= bytes[i];
+            h *= 0x100000001B3ull;
+        }
+    };
+    auto mix_u64 = [&](uint64_t value) { mix(&value, sizeof(value)); };
+
+    mix_u64(kLayoutVersion);
+    mix_u64(files_.size());
+    // Hashed in path order: the entries are filed by hash anyway, and a
+    // directory listing that comes back in another order (Linux does not
+    // sort) is the same archive.
+    std::vector<const PendingFile*> ordered;
+    ordered.reserve(files_.size());
+    for (const PendingFile& file : files_) ordered.push_back(&file);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const PendingFile* a, const PendingFile* b) { return a->path < b->path; });
+    for (const PendingFile* entry : ordered) {
+        const PendingFile& file = *entry;
+        mix(file.path.data(), file.path.size());
+        mix_u64(file.hashed ? file.name_hash : 0xFFFFFFFF00000000ull);
+        mix_u64(file.flag);
+        mix_u64(file.resource_type);
+        mix_u64(file.payload_size());
+        if (file.on_disk()) {
+            const std::string source = file.source.generic_string();
+            mix(source.data(), source.size());
+            std::error_code ec;
+            const auto written = std::filesystem::last_write_time(file.source, ec);
+            mix_u64(ec ? 0 : static_cast<uint64_t>(written.time_since_epoch().count()));
+        } else {
+            mix(file.data.data(), file.data.size());
+        }
+    }
+    return h;
+}
+
+bool Rpf3Writer::WriteIfChanged(const std::filesystem::path& out_path) const {
+    std::filesystem::path stamp_path = out_path;
+    stamp_path += ".stamp";
+
+    const uint64_t fingerprint = Fingerprint();
+    const auto stamp_text = [&](uint64_t size) {
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "%016llx %llu",
+                      static_cast<unsigned long long>(fingerprint),
+                      static_cast<unsigned long long>(size));
+        return std::string(buffer);
+    };
+
+    std::error_code ec;
+    const auto existing = std::filesystem::file_size(out_path, ec);
+    if (!ec) {
+        std::ifstream input(stamp_path);
+        std::string saved;
+        std::getline(input, saved);
+        if (input && saved == stamp_text(existing)) return true;
+    }
+
+    std::filesystem::remove(stamp_path, ec);
+    if (!Write(out_path)) return false;
+
+    const auto written = std::filesystem::file_size(out_path, ec);
+    if (!ec) {
+        std::ofstream output(stamp_path, std::ios::trunc);
+        output << stamp_text(written) << "\n";
+    }
+    return true;
 }
 
 }  // namespace mc::modloader

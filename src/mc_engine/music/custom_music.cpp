@@ -53,16 +53,12 @@ constexpr int kGroupOfGenre[kGenreCount] = {6, 2, 0, 4, 1, 3, 5};
 // 7 x 255 = 1785 songs instead of 255.
 constexpr int kGroupCapacity = 255;
 
-// How far the slot header budget is allowed to be pushed. Not a taste call: a
-// bank goes into the archive as one plain file, and the modloader refuses an
-// entry over 0x3FFFFFFF bytes. Both waves carry the whole bitstream, so a bank
-// stays under a gigabyte while the MP3 is under ~512 MB -- about three and a
-// half hours at 320 kbps -- and the header for that is a shade under 2 MB.
-//
-// Reaching it would grow the seven STREAM slots by about 2 MB each, on a slot
-// pool that ships at 20 MB -- and only a folder that really holds a track that
-// long ever pays it.
-constexpr uint32_t kHeaderBudgetCeiling = 0x200000;
+// The last observed boot with all slot allocations succeeding used a 21,540,864
+// byte slot pool. Keep the patched pool within that measured budget until a
+// larger allocation has been proved in-game. The music bank header is only
+// loaded through the four AMBIENCE_STREAM slots.
+constexpr uint64_t kVerifiedSlotPoolBytes = 21540864;
+constexpr int kMusicSlotCount = 4;
 
 std::vector<std::pair<std::string, std::string>> g_titles;
 std::vector<std::string> g_claimed;
@@ -86,6 +82,11 @@ std::string Trim(std::string_view text) {
     while (a < b && std::isspace(static_cast<unsigned char>(text[a]))) ++a;
     while (b > a && std::isspace(static_cast<unsigned char>(text[b - 1]))) --b;
     return std::string(text.substr(a, b - a));
+}
+
+std::string PathUtf8(const fs::path& path) {
+    const std::u8string utf8 = path.u8string();
+    return std::string(utf8.begin(), utf8.end());
 }
 
 // Anything a person types -> something RAGE can carry as a name.
@@ -142,6 +143,16 @@ bool ReadFile(const fs::path& path, std::vector<uint8_t>& out) {
 bool WriteFile(const fs::path& path, const std::vector<uint8_t>& data) {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
+    // Left alone when it already holds these bytes: the file's mtime goes into
+    // the fingerprint of the archive it ships in, and a rewrite of identical
+    // content would have the whole archive copied again every boot.
+    {
+        std::error_code size_ec;
+        if (fs::file_size(path, size_ec) == data.size() && !size_ec) {
+            std::vector<uint8_t> existing;
+            if (ReadFile(path, existing) && existing == data) return true;
+        }
+    }
     std::ofstream output(path, std::ios::binary);
     if (!output) return false;
     output.write(reinterpret_cast<const char*>(data.data()),
@@ -157,7 +168,7 @@ bool ReadArchiveFile(const modloader::Rpf3Reader& archive, const std::string& pa
                      std::vector<uint8_t>& out) {
     modloader::Rpf3Entry entry;
     if (!archive.Find(path, entry)) {
-        LARECOMP_APP_ERROR("[music] {} has no {}", archive.path().string(), path);
+        LARECOMP_APP_ERROR("[music] {} has no {}", PathUtf8(archive.path()), path);
         return false;
     }
     if (!archive.ReadFile(entry, out)) {
@@ -184,7 +195,7 @@ bool LoadShippedDat(const fs::path& archive_path, AudioDat& game, AudioDat& soun
                     std::string& wave_slots) {
     modloader::Rpf3Reader archive;
     if (!archive.Open(archive_path)) {
-        LARECOMP_APP_ERROR("[music] cannot open {}", archive_path.string());
+        LARECOMP_APP_ERROR("[music] cannot open {}", PathUtf8(archive_path));
         return false;
     }
 
@@ -236,16 +247,15 @@ bool FindSlotValue(const std::string& slot, const char* key, size_t& first, size
     return true;
 }
 
-// Raises the header budget of every STREAM slot in waveslots.xml.
+// Raises the header budget of the four slots used by music banks.
 //
 // A slot's `Size` is NOT its header budget: it is the header plus the streaming
 // window that follows it -- 2 x 0x20000 for the music slots, 0x10000 for the
 // others -- and all 41 slots share one 20 MB pool. So the window is preserved
 // and only the header part grows, which is what the extra heap actually buys.
 //
-// Only STREAM slots are touched: those are the ones a music bank loads into,
-// and one of them also stages the header read in audWaveSlot::RequestLoad. WAVE
-// and BANK slots, and any slot already roomier than the budget, are left alone.
+// The other STREAM slots load landmark and vehicle banks; growing them spends
+// guest heap without making a music header fit.
 std::string PatchWaveSlots(const std::string& xml, uint32_t budget, int& patched,
                            uint32_t& added_bytes) {
     patched = 0;
@@ -268,7 +278,8 @@ std::string PatchWaveSlots(const std::string& xml, uint32_t budget, int& patched
 
         size_t header_first = 0, header_last = 0, size_first = 0, size_last = 0;
         uint32_t header = 0, size = 0;
-        if (slot.find(">STREAM<") == std::string::npos ||
+        if (slot.find("<Name content=\"ascii\">AMBIENCE_STREAM_") == std::string::npos ||
+            slot.find(">STREAM<") == std::string::npos ||
             !FindSlotValue(slot, "<MaxHeaderSize value=\"", header_first, header_last, header) ||
             !FindSlotValue(slot, "<Size value=\"", size_first, size_last, size) ||
             header >= budget || size < header) {
@@ -288,6 +299,24 @@ std::string PatchWaveSlots(const std::string& xml, uint32_t budget, int& patched
     }
     out.append(xml, at, std::string::npos);
     return out;
+}
+
+uint64_t SlotPoolBytes(const std::string& xml) {
+    uint64_t total = 0;
+    size_t at = 0;
+    while (true) {
+        const size_t open = xml.find("<Slot>", at);
+        if (open == std::string::npos) break;
+        const size_t close = xml.find("</Slot>", open);
+        if (close == std::string::npos) return 0;
+        const std::string slot = xml.substr(open, close + 7 - open);
+        size_t first = 0, last = 0;
+        uint32_t size = 0;
+        if (!FindSlotValue(slot, "<Size value=\"", first, last, size)) return 0;
+        total += size;
+        at = close + 7;
+    }
+    return total;
 }
 
 // ------------------------------------------------------------------ the records
@@ -572,7 +601,7 @@ int GenreFromName(const std::string& text, int fallback) {
 // Fills in everything a song needs from its file name, read as
 // "Artist - Title" -- the convention the shipped names follow.
 Song SongFromFile(const fs::path& path, const Override& defaults, const Override& own) {
-    const std::string stem = path.stem().string();
+    const std::string stem = PathUtf8(path.stem());
     std::string artist, title = stem;
     const size_t dash = stem.find(" - ");
     if (dash != std::string::npos) {
@@ -632,17 +661,17 @@ std::vector<Song> ScanSongs(const fs::path& exe_dir) {
         std::vector<fs::path> files;
         for (const fs::directory_entry& entry : fs::directory_iterator(folder, ec)) {
             if (!entry.is_regular_file(ec)) continue;
-            if (Lower(entry.path().extension().string()) == ".mp3") files.push_back(entry.path());
+            if (Lower(PathUtf8(entry.path().extension())) == ".mp3") files.push_back(entry.path());
         }
         std::sort(files.begin(), files.end());
 
         for (const fs::path& file : files) {
-            const auto found = per_file.find(Lower(file.filename().string()));
+            const auto found = per_file.find(Lower(PathUtf8(file.filename())));
             const Override own = found == per_file.end() ? Override{} : found->second;
             Song song = SongFromFile(file, defaults, own);
             if (std::find(taken.begin(), taken.end(), song.bank) != taken.end()) {
                 LARECOMP_APP_ERROR("[music] {}: another track already claims the bank name {}",
-                                   file.filename().string(), song.bank);
+                                   PathUtf8(file.filename()), song.bank);
                 continue;
             }
             taken.push_back(song.bank);
@@ -673,7 +702,7 @@ std::string SourceStamp(const fs::path& path) {
     const auto size = fs::file_size(path, ec);
     const auto written = fs::last_write_time(path, ec);
     if (ec) return {};
-    return std::to_string(size) + ":" +
+    return "wave-order-v3:" + std::to_string(size) + ":" +
            std::to_string(written.time_since_epoch().count());
 }
 
@@ -682,7 +711,7 @@ std::string SourceStamp(const fs::path& path) {
 const std::vector<std::pair<std::string, std::string>>& Titles() { return g_titles; }
 
 bool Claimed(const fs::path& audio) {
-    const std::string key = Lower(audio.string());
+    const std::string key = Lower(PathUtf8(audio));
     return std::find(g_claimed.begin(), g_claimed.end(), key) != g_claimed.end();
 }
 
@@ -737,15 +766,23 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
                            "header budget",
                            kWaveSlots, kStockHeaderSize);
     } else {
+        const uint64_t stock_pool = SlotPoolBytes(wave_slots);
+        const uint64_t headroom = stock_pool && stock_pool < kVerifiedSlotPoolBytes
+                                      ? kVerifiedSlotPoolBytes - stock_pool : 0;
+        const uint64_t allowed = kStockHeaderSize + headroom / kMusicSlotCount;
+        const uint32_t candidate = static_cast<uint32_t>(
+            std::min<uint64_t>(0x200000u, allowed & ~uint64_t(0x7FF)));
         int probe_patched = 0;
         uint32_t probe_bytes = 0;
-        PatchWaveSlots(wave_slots, kHeaderBudgetCeiling, probe_patched, probe_bytes);
-        if (probe_patched > 0) {
-            budget_ceiling = kHeaderBudgetCeiling;
+        if (candidate > kStockHeaderSize)
+            PatchWaveSlots(wave_slots, candidate, probe_patched, probe_bytes);
+        if (probe_patched == kMusicSlotCount &&
+            stock_pool + probe_bytes <= kVerifiedSlotPoolBytes) {
+            budget_ceiling = candidate;
         } else {
-            LARECOMP_APP_ERROR("[music] {} has no STREAM slot to raise, so tracks stay inside the "
-                               "stock {} byte header budget",
-                               kWaveSlots, kStockHeaderSize);
+            LARECOMP_APP_ERROR("[music] cannot raise all four music slots within the verified "
+                               "audio pool budget; tracks stay inside the stock {} byte header",
+                               kStockHeaderSize);
         }
     }
     uint32_t needed_header = kStockHeaderSize;
@@ -755,7 +792,19 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
     const fs::path config_dir = cache_dir / "files" / "audio" / "x360" / "config";
     std::error_code ec;
     fs::create_directories(banks_dir, ec);
+    if (ec) {
+        LARECOMP_APP_ERROR("[music] cannot create bank cache {}: {}", PathUtf8(banks_dir),
+                           ec.message());
+        boot::EndPhase();
+        return {};
+    }
     fs::create_directories(config_dir, ec);
+    if (ec) {
+        LARECOMP_APP_ERROR("[music] cannot create metadata cache {}: {}", PathUtf8(config_dir),
+                           ec.message());
+        boot::EndPhase();
+        return {};
+    }
 
     const fs::path index_path = cache_dir / "cache.txt";
     const std::map<std::string, std::string> cached = ReadCacheIndex(index_path);
@@ -793,7 +842,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
         if (!reusable) {
             std::vector<uint8_t> mp3;
             if (!ReadFile(song.audio, mp3)) {
-                LARECOMP_APP_ERROR("[music] cannot read {}", song.audio.string());
+                LARECOMP_APP_ERROR("[music] cannot read {}", PathUtf8(song.audio));
                 ++failed;
                 continue;
             }
@@ -803,18 +852,18 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
             if (!BuildMp3Bank(mp3, modloader::RageHash(song.bank + "_left"),
                               modloader::RageHash(song.bank + "_right"), budget_ceiling, bank,
                               info, error)) {
-                LARECOMP_APP_ERROR("[music] {}: {}", song.audio.filename().string(), error);
+                LARECOMP_APP_ERROR("[music] {}: {}", PathUtf8(song.audio.filename()), error);
                 ++failed;
                 continue;
             }
             if (!WriteFile(bank_path, bank)) {
-                LARECOMP_APP_ERROR("[music] cannot write {}", bank_path.string());
+                LARECOMP_APP_ERROR("[music] cannot write {}", PathUtf8(bank_path));
                 ++failed;
                 continue;
             }
             LARECOMP_APP_INFO(
                 "[music] {} -> {} ({:.1f} s, {} Hz, {} ch, {} packets, {:.1f} MB, header {:#x})",
-                song.audio.filename().string(), song.bank,
+                PathUtf8(song.audio.filename()), song.bank,
                 static_cast<double>(info.samples) / info.sample_rate, info.sample_rate,
                 info.channels, info.packets, static_cast<double>(bank.size()) / (1024.0 * 1024.0),
                 info.header_end);
@@ -837,7 +886,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
         files.push_back(GeneratedFile{"audio/x360/sfx/music/" + song.bank, bank_path});
         g_titles.emplace_back(song.title,
                               song.display.empty() ? DefaultDisplay(song.title) : song.display);
-        g_claimed.push_back(Lower(song.audio.string()));
+        g_claimed.push_back(Lower(PathUtf8(song.audio)));
     }
 
     if (files.empty()) {
@@ -879,17 +928,21 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
                 PatchWaveSlots(wave_slots, needed_header, patched, added_bytes);
             const fs::path slots_out = config_dir / "waveslots.xml";
             const std::vector<uint8_t> bytes(xml.begin(), xml.end());
-            if (patched > 0 && WriteFile(slots_out, bytes)) {
+            if (patched == kMusicSlotCount && WriteFile(slots_out, bytes)) {
                 files.push_back(GeneratedFile{kWaveSlots, slots_out});
                 LARECOMP_APP_INFO(
-                    "[music] slot header budget raised to {} bytes on {} streaming slot(s) "
+                    "[music] slot header budget raised to {} bytes on {} music slot(s) "
                     "(stock is {}), {:.2f} MB more guest heap",
                     needed_header, patched, kStockHeaderSize,
                     static_cast<double>(added_bytes) / (1024.0 * 1024.0));
             } else {
-                LARECOMP_APP_ERROR("[music] cannot write the patched {} -- tracks with a header "
-                                   "past {} bytes will not stream correctly this boot",
-                                   kWaveSlots, kStockHeaderSize);
+                LARECOMP_APP_ERROR("[music] cannot write the patched {} -- custom music is "
+                                   "disabled this boot to avoid truncated bank headers",
+                                   kWaveSlots);
+                g_titles.clear();
+                g_claimed.clear();
+                boot::EndPhase();
+                return {};
             }
         }
     }
@@ -898,6 +951,8 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
     const fs::path sounds_out = config_dir / "sounds.dat";
     if (!WriteFile(game_out, game.Serialize()) || !WriteFile(sounds_out, sounds.Serialize())) {
         LARECOMP_APP_ERROR("[music] cannot write the rebuilt .dat pair");
+        g_titles.clear();
+        g_claimed.clear();
         boot::EndPhase();
         return {};
     }

@@ -126,10 +126,20 @@ class Rpf3Writer {
 
     bool Write(const std::filesystem::path& out_path) const;
 
+    // Write, unless `out_path` already holds exactly what this writer would
+    // produce. The archive is a pure function of the entries, so a fingerprint
+    // of them (paths, hashes, sizes and, for files on disk, source path and
+    // mtime) is kept in `<out_path>.stamp`. With hundreds of music banks the
+    // copy is gigabytes, and it used to run on every boot even when nothing
+    // had changed.
+    bool WriteIfChanged(const std::filesystem::path& out_path) const;
+
     bool empty() const { return files_.empty(); }
     size_t size() const { return files_.size(); }
 
  private:
+    uint64_t Fingerprint() const;
+
     struct PendingFile {
         std::string path;
         std::vector<uint8_t> data;
