@@ -82,3 +82,6 @@ translations/
 identity_master.key
 identity_db.txt
 identity_db.txt.tmp
+
+# Design notes and RE maps are kept local, out of the repository.
+docs/
