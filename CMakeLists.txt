@@ -65,6 +65,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/carbon_parts.cpp
     src/mc_engine/graphics_button.cpp
     src/mc_engine/pause_menu.cpp
+    src/mc_engine/ui_palette.cpp
+    src/mc_engine/swf_dom.cpp
+    src/mc_engine/swf_import.cpp
+    src/mc_engine/ui_forms.cpp
     src/mc_engine/string_table.cpp
     src/mc_engine/string_dumper.cpp
     src/mc_engine/menu_camera.cpp

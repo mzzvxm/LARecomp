@@ -5,9 +5,15 @@
 #include "cutscene_gallery.h"
 #include "menu_items.h"
 #include "logging.h"
+#include "online/online_toast.h"
+#include "online/server_browser/browser_ui.h"
+#include "ui_forms.h"
+#include "ui_palette.h"
+#include "online/system_link.h"
 
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <functional>
 #include <cstdint>
 #include <cstdio>
@@ -43,7 +49,6 @@ namespace {
 
 std::atomic<uint32_t> g_pausetab_addr{0};
 std::atomic<uint32_t> g_settingsmenu_addr{0};
-std::atomic<uint32_t> g_quit_btn_key{0};
 
 constexpr uint32_t kStringTableGlobal  = 0x8286D7FC;
 constexpr uint32_t kVHSMGlobal         = 0x8286D804;
@@ -51,7 +56,6 @@ constexpr uint32_t kAllocStateFn       = 0x8268D578;
 constexpr uint32_t kUIObjectCtorFn     = 0x8263AD60;
 constexpr uint32_t kUIMenuVtable       = 0x82020654;
 constexpr uint32_t kGuestMallocFn      = 0x82130528;
-constexpr uint32_t kStackPushFn        = 0x8268F6A8;
 constexpr uint32_t kStackPopFn         = 0x8268DFF0;
 constexpr uint32_t kIsButtonClickedFn  = 0x82661508;
 
@@ -59,9 +63,7 @@ constexpr uint32_t kFindMovieFn       = 0x821F9FB8;
 constexpr uint32_t kSetFlashIntFn     = 0x825EE0E0;
 constexpr uint32_t kGetFlashIntFn     = 0x825EE270;
 constexpr uint32_t kStringLookupFn    = 0x82218310;
-constexpr uint32_t kGetFlashObjFn     = 0x825ED480;
 constexpr uint32_t kPopulateMenuFn    = 0x82220308;
-constexpr uint32_t kSetFlashStrFn     = 0x827227B8;
 constexpr uint32_t kSetFlashPropIntFn = 0x82722678;
 constexpr uint32_t kShowMovieClipFn   = 0x82720E28;
 constexpr uint32_t kPopulateCallback  = 0x82762488;
@@ -134,14 +136,8 @@ constexpr uint32_t kRowSelect       = 208;  // current value index
 constexpr uint32_t kListRows        = 176;  // row pointer array
 constexpr uint32_t kListCountCap    = 180;  // count:u16 then capacity:u16
 constexpr uint32_t kListSelect      = 184;
-constexpr uint32_t kListTableSource = 192;
-constexpr uint32_t kListStateSource = 196;
-constexpr uint32_t kListScroll      = 256;  // first visible row (vfunc660)
 
 constexpr uint32_t kStr_PAUSEMOVIE      = 0x8201D028;
-constexpr uint32_t kStr_menu            = 0x82030A34;
-constexpr uint32_t kStr_tabs_count      = 0x8208D4DC;
-constexpr uint32_t kStr_name            = 0x8200CC24;
 constexpr uint32_t kStr_select          = 0x8202026C;
 constexpr uint32_t kStr_count           = 0x8201D7BC;
 constexpr uint32_t kStr_template        = 0x8200CC2C;
@@ -156,21 +152,9 @@ constexpr uint32_t kStr_update          = 0x8201D7C4;
 
 // ── RexGlue submenu state ──────────────────────────────────────────────
 
-// mcListViewFixed instance driving the pause menu Flash list. +196 =
-// optional vhsm-state adapter: when set, the list renders that state's
-// children on every re-render. g_last_list tracks the most recently
-// populated list; g_pauselist_addr is pinned from it at click time so the
-// adapter is only ever forced onto the pause tab's own list.
+// The mcListViewFixed most recently rendered (Hook_ListViewPopulate); the
+// garage carbon diagnostics read its selection.
 std::atomic<uint32_t> g_last_list{0};
-std::atomic<uint32_t> g_pauselist_addr{0};
-std::atomic<uint32_t> g_saved_list_adapter{0};
-std::atomic<uint32_t> g_saved_list_select{0};
-// The rest of the list's row state, saved alongside the adapter because the
-// native rows are installed by swapping the row array itself.
-std::atomic<uint32_t> g_saved_list_rows{0};
-std::atomic<uint32_t> g_saved_list_countcap{0};
-std::atomic<uint32_t> g_saved_list_table{0};
-std::atomic<uint32_t> g_saved_list_scroll{0};
 
 // ── Guest memory helpers ────────────────────────────────────────────────
 
@@ -408,23 +392,6 @@ uint32_t GetEnginePtr() {
     return rootNode + 4;
 }
 
-
-bool GuestStackPush(uint32_t statePtr) {
-    uint32_t rootNode = GetRootNode();
-    if (!rootNode) return false;
-    uint32_t navStack = rootNode + 776;
-    uint32_t engine   = rootNode + 4;
-
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return false;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kStackPushFn);
-    if (!fn) return false;
-
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, navStack, engine, statePtr, 0u);
-    MC_INFO("[pause-menu] stackPush state 0x{:08X}", statePtr);
-    return true;
-}
-
 bool GuestStackPop() {
     uint32_t rootNode = GetRootNode();
     if (!rootNode) return false;
@@ -629,62 +596,6 @@ uint32_t CreateUIMenuState(const char* name) {
     return state;
 }
 
-// ── Pause list control ────────────────────────────────────────────────
-
-uint32_t GetPauseMovieFlashCtx() {
-    uint32_t root = ReadGuestBE32(kVHSMGlobal);
-    if (!root) return 0;
-    uint32_t movieObj = CallGuestFn2(kFindMovieFn, root, kStr_PAUSEMOVIE);
-    if (!movieObj) return 0;
-    return ReadGuestBE32(movieObj + 56);
-}
-
-void SetMenuTitle(uint32_t titleStr) {
-    if (!titleStr) return;
-    uint32_t flashCtx = GetPauseMovieFlashCtx();
-    if (!flashCtx) return;
-    uint32_t menuHash = MCLAHashString("menu");
-    uint32_t menuObj = CallGuestFn3(kGetFlashObjFn, flashCtx, menuHash, kStr_menu);
-    if (menuObj) CallGuestFn3(kSetFlashStrFn, menuObj, kStr_name, titleStr);
-}
-
-// Re-render the pause list through its own vtable[44] (sub_826326D0 →
-// sub_82631FD0). With list+196 pointing at one of our menus, the list renders
-// its children; with it restored, it renders the current tab again.
-void RefreshPauseList() {
-    uint32_t list = g_pauselist_addr.load(std::memory_order_relaxed);
-    if (!list) {
-        MC_WARN("[pause-menu] pause list not captured yet");
-        return;
-    }
-    uint32_t vtable = ReadGuestBE32(list);
-    uint32_t fn = vtable ? ReadGuestBE32(vtable + 176) : 0;
-    if (fn) CallGuestFn1(fn, list);
-}
-
-void RestoreTabDisplay(uint32_t controller) {
-    (void)controller;
-
-    uint32_t list = g_pauselist_addr.load(std::memory_order_relaxed);
-    if (list) {
-        WriteGuestBE32(list + kListRows,
-                       g_saved_list_rows.load(std::memory_order_relaxed));
-        WriteGuestBE32(list + kListCountCap,
-                       g_saved_list_countcap.load(std::memory_order_relaxed));
-        WriteGuestBE32(list + kListTableSource,
-                       g_saved_list_table.load(std::memory_order_relaxed));
-        WriteGuestBE32(list + kListStateSource,
-                       g_saved_list_adapter.load(std::memory_order_relaxed));
-        WriteGuestBE32(list + kListSelect,
-                       g_saved_list_select.load(std::memory_order_relaxed));
-        WriteGuestBE32(list + kListScroll,
-                       g_saved_list_scroll.load(std::memory_order_relaxed));
-        RefreshPauseList();
-
-    }
-    MC_INFO("[pause-menu] tab display restored");
-}
-
 // ── CVar access by name (uniform for larecomp AND SDK cvars) ───────────
 
 // ── Restart-only cvars: held here, never applied live ──────────────────
@@ -696,26 +607,24 @@ void RestoreTabDisplay(uint32_t controller) {
 // path or mix sample counts. A menu change to one of these is therefore kept
 // in g_deferred, shown on the row, and only written into larecomp.toml when the
 // submenu saves; it takes effect on the next launch, as the (RESTART) suffix
-// says. RENDERER carries its two companions along: the native runtime only
-// makes sense with no emulated GPU in the process and rendering every frame,
-// and the emulated path is broken by either.
-struct DeferredCvar {
-    const char* name;
-    const char* linked[2];  // set to the same value alongside it
-};
-const DeferredCvar kDeferredCvars[] = {
-    {"mcla_native_gfx", {"mcla_native_gfx_nocp", "mcla_native_gfx_continuous"}},
-    {"mcla_native_gfx_msaa", {nullptr, nullptr}},
-    {"mcla_native_gfx_aniso", {nullptr, nullptr}},
+// says. RENDERER is four of them behind one row (kRendererChoices, below).
+const char* const kDeferredCvars[] = {
+    "mcla_native_gfx_msaa",
+    "mcla_native_gfx_aniso",
+    // The SDK's API switch, read at startup by the emulated GPU's plugin and by
+    // the Plume renderer alike.
+    "graphics_backend",
+    // The Plume renderer sizes its targets once, when the EDRAM is created.
+    "mcla_gpu_resolution_scale",
 };
 
 std::mutex g_deferred_mutex;
 std::vector<std::pair<std::string, std::string>> g_deferred;
 
-const DeferredCvar* FindDeferredCvar(std::string_view name) {
-    for (const auto& d : kDeferredCvars)
-        if (name == d.name) return &d;
-    return nullptr;
+bool IsDeferredCvar(std::string_view name) {
+    for (const char* d : kDeferredCvars)
+        if (name == d) return true;
+    return false;
 }
 
 void SetDeferred(const char* name, const char* value) {
@@ -727,6 +636,21 @@ void SetDeferred(const char* name, const char* value) {
         }
     }
     g_deferred.emplace_back(name, value);
+}
+
+// A held value as a TOML value: quoted for a string cvar, as SaveConfig writes
+// it (the SDK's SerializeToTOML); bare for the rest. A bare word such as
+// `graphics_backend = vulkan` is not TOML, and the whole file would fail to
+// load on the next launch.
+std::string TomlValue(const std::string& key, const std::string& value) {
+    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(key);
+    if (!info || info->type != rex::cvar::FlagType::String) return value;
+    std::string quoted = "\"";
+    for (const char c : value) {
+        if (c == '"' || c == '\\') quoted += '\\';
+        quoted += c;
+    }
+    return quoted + "\"";
 }
 
 // SaveConfig has just written the live values; replace the deferred keys'
@@ -746,7 +670,8 @@ void WriteDeferredCvars(const std::filesystem::path& path) {
         std::string line;
         while (std::getline(in, line)) lines.push_back(line);
     }
-    for (const auto& [key, value] : pending) {
+    for (const auto& [key, held] : pending) {
+        const std::string value = TomlValue(key, held);
         bool found = false;
         for (auto& l : lines) {
             const size_t p = l.find_first_not_of(" \t");
@@ -767,7 +692,116 @@ void WriteDeferredCvars(const std::filesystem::path& path) {
             pending.size(), path.string());
 }
 
+// The key of a flat `key = value` line, or empty for anything else.
+std::string TomlLineKey(const std::string& line) {
+    const size_t p = line.find_first_not_of(" \t");
+    if (p == std::string::npos || line[p] == '#' || line[p] == '[') return {};
+    size_t e = p;
+    while (e < line.size() && line[e] != '=' && line[e] != ' ' && line[e] != '\t') ++e;
+    const size_t q = line.find_first_not_of(" \t", e);
+    if (e == p || q == std::string::npos || line[q] != '=') return {};
+    return line.substr(p, e - p);
+}
+
+// Lines of the toml whose key no cvar of this process answers to. The config
+// loader parks those as deferred (rex cvar.cpp, ApplyTomlTable) and SaveConfig
+// serializes the registry, so a save drops them. In the Plume and legacy modes
+// the emulated GPU's plugin is never loaded and its cvars (vsync,
+// anisotropic_override, texture_cache_memory_limit_*,
+// gpu_allow_invalid_fetch_constants) are exactly that: a settings save there
+// erased them, and the Xenia mode came back without them.
+std::vector<std::pair<std::string, std::string>> UnregisteredConfigLines(
+    const std::filesystem::path& path) {
+    std::vector<std::pair<std::string, std::string>> kept;
+    std::ifstream in(path, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string key = TomlLineKey(line);
+        if (!key.empty() && !rex::cvar::GetFlagInfo(key)) kept.emplace_back(std::move(key), line);
+    }
+    return kept;
+}
+
+// Puts back the lines UnregisteredConfigLines kept that the save left out.
+void KeepUnregisteredConfigLines(const std::filesystem::path& path,
+                                 const std::vector<std::pair<std::string, std::string>>& kept) {
+    if (kept.empty()) return;
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::string line;
+        while (std::getline(in, line)) lines.push_back(line);
+    }
+    uint32_t restored = 0;
+    for (const auto& [key, original] : kept) {
+        bool present = false;
+        for (const auto& l : lines) present |= TomlLineKey(l) == key;
+        if (!present) {
+            lines.push_back(original);
+            ++restored;
+        }
+    }
+    if (!restored) return;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    for (const auto& l : lines) out << l << '\n';
+    MC_INFO("[pause-menu] {} setting(s) of code not loaded in this mode kept in {}", restored,
+            path.string());
+}
+
+// RENDERER picks one of three renderers, and which one runs is four
+// restart-only cvars: mcla_gpu (the Plume renderer, src/gpu) and
+// mcla_native_gfx (the legacy native runtime) select, both need the
+// no-command-processor mode, and the legacy one renders continuously. The row's
+// cvar, "renderer", is not a cvar: CvarGet and CvarSet read and write the four
+// through it, held for the next launch like every restart-only row. NATIVE is
+// the Plume renderer; the legacy runtime stays reachable as LEGACY. A build
+// without the Plume renderer has no mcla_gpu and no NATIVE.
+constexpr const char* kRendererCvar = "renderer";
+struct RendererChoice {
+    const char* value;       // the row's value
+    const char* gpu;         // mcla_gpu, or null when the build has none
+    const char* native;      // mcla_native_gfx
+    const char* nocp;        // mcla_native_gfx_nocp
+    const char* continuous;  // mcla_native_gfx_continuous
+};
+#if defined(LARECOMP_HAS_GPU)
+constexpr const char* kNoGpu = "false";
+#else
+constexpr const char* kNoGpu = nullptr;
+#endif
+const RendererChoice kRendererChoices[] = {
+    {"xenia",  kNoGpu, "false", "false", "false"},
+#if defined(LARECOMP_HAS_GPU)
+    {"plume",  "true",  "false", "true",  "false"},
+#endif
+};
+
+std::string CvarGet(const char* name);
+
+std::string RendererGet() {
+#if defined(LARECOMP_HAS_GPU)
+    if (CvarGet("mcla_gpu") == "true") return "plume";
+#endif
+    // The legacy runtime is no longer offered; a toml that still asks for it
+    // shows up as XENIA, which is what the next save will write.
+    return "xenia";
+}
+
+void RendererSet(std::string_view value) {
+    for (const RendererChoice& c : kRendererChoices) {
+        if (value != c.value) continue;
+        MC_INFO("[pause-menu] renderer -> '{}' held for the next launch", value);
+        if (c.gpu) SetDeferred("mcla_gpu", c.gpu);
+        SetDeferred("mcla_native_gfx", c.native);
+        SetDeferred("mcla_native_gfx_nocp", c.nocp);
+        SetDeferred("mcla_native_gfx_continuous", c.continuous);
+        return;
+    }
+    MC_ERROR("[pause-menu] renderer '{}' is not one this build offers; nothing changed", value);
+}
+
 std::string CvarGet(const char* name) {
+    if (std::string_view(name) == kRendererCvar) return RendererGet();
     {
         std::lock_guard<std::mutex> lock(g_deferred_mutex);
         for (const auto& [k, v] : g_deferred)
@@ -785,11 +819,13 @@ double CvarGetDouble(const char* name) {
 }
 
 void CvarSet(const char* name, const char* value) {
-    if (const DeferredCvar* d = FindDeferredCvar(name)) {
+    if (std::string_view(name) == kRendererCvar) {
+        RendererSet(value);
+        return;
+    }
+    if (IsDeferredCvar(name)) {
         MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
         SetDeferred(name, value);
-        for (const char* l : d->linked)
-            if (l) SetDeferred(l, value);
         return;
     }
     // Logged before the write, not after: a cvar's change callbacks run
@@ -805,6 +841,341 @@ void CvarSetDouble(const char* name, double v) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%g", v);
     CvarSet(name, buf);
+}
+
+// ── SYSTEM LINK ONLINE ─────────────────────────────────────────────────
+//
+// mcla_online_enable / _server belong to the fork SDK's online client
+// (src/kernel/xam/mcla_online.cpp) and are reached by name only: the stock SDK
+// has none of them, and declaring them is a link error there (see rmr_client).
+//
+// The game takes its network identity when it opens its sockets, and the SDK
+// only routes a socket through the relay if online was on when that socket was
+// bound. Flipping the cvar in a running game therefore left a process that
+// finds sessions but cannot join or host one: the logs of 28/08 have four joins
+// out of four timing out after 13 s from such a process, and the same host
+// joined in 0.12 s from one that booted online, and the F4 overlay offered
+// exactly that flip as a live checkbox. Both the ONLINE checkbox below and
+// the overlay row now switch through system_link.cpp, which has the game
+// close and reopen its sockets and rebuild its player records around the
+// change, so it applies at once -- the overlay's own flip is only the request.
+//
+// The SDK also switches it off on its own when the server misses its first ack
+// (3 s, xam_net.cpp). The next settings save then wrote the live value -- off,
+// i.e. no line at all -- and the next launch came up offline. So the choice in
+// larecomp.toml is held like a restart-only row: every save from here writes it
+// back, and the pause menu puts it back if another save dropped it.
+//
+// The checkbox lives in the game's own SYSTEM LINK menu, the "LAN" state that
+// PM_Lan opens (sub_82667630 -> sub_8265F3C8): a UIMenu of QUICK CRUISE,
+// QUICK MATCH and CREATE MATCH (LAN.s0..s2). An ONLINE state is appended to
+// it, and the list is drawn through native rows so that row can be a real
+// checkbox (see "The SYSTEM LINK list, drawn as native rows" below). An
+// injected state carries no command, so the UIMenu never acts on A for it: A
+// is taken where the game hands its keys to the list (Hook_MenuKeyDispatch,
+// key '7'). The connection itself is shown by online_toast.cpp.
+constexpr const char* kOnlineEnableCvar = "mcla_online_enable";
+constexpr const char* kOnlineServerCvar = "mcla_online_server";
+
+// -1 = no online client in this build, else whether it booted online.
+std::atomic<int> g_online_boot{-1};
+
+std::filesystem::path ConfigPath() {
+    return rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+}
+
+// The value the pause menu holds for `name`, empty when it holds none.
+std::string HeldValue(const char* name) {
+    std::lock_guard<std::mutex> lock(g_deferred_mutex);
+    for (const auto& [k, v] : g_deferred)
+        if (k == name) return v;
+    return {};
+}
+
+// The value text of `key` in the flat toml, empty when the key is absent.
+std::string TomlLineValue(const std::filesystem::path& path, const std::string& key) {
+    std::ifstream in(path, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (TomlLineKey(line) != key) continue;
+        const size_t b = line.find_first_not_of(" \t", line.find('=') + 1);
+        const size_t e = line.find_last_not_of(" \t\r");
+        return (b == std::string::npos || e < b) ? std::string() : line.substr(b, e - b + 1);
+    }
+    return {};
+}
+
+// Sampled before the guest starts: the SDK's own switch-off happens inside
+// the guest's first XNetGetTitleXnAddr, so any later read could already be the
+// flipped value. What is held is larecomp.toml's line, not the boot value: a
+// --mcla_online_enable on the command line decides this run only, and must
+// not end up written into the file.
+void InitOnlineSettings() {
+    if (!rex::cvar::GetFlagInfo(kOnlineEnableCvar)) return;
+
+    const bool on = rex::cvar::GetFlagByName(kOnlineEnableCvar) == "true";
+    g_online_boot.store(on ? 1 : 0, std::memory_order_relaxed);
+    if (TomlLineValue(ConfigPath(), kOnlineEnableCvar) == "true")
+        SetDeferred(kOnlineEnableCvar, "true");
+
+    // The F4 overlay's row stays Live: a change there is held for
+    // larecomp.toml and handed to system_link.cpp, exactly like the checkbox,
+    // instead of being the bare flip that left the game half online. This
+    // runs on the overlay's thread with the cvar registry locked, so it only
+    // stores -- the net update does the rest.
+    rex::cvar::RegisterChangeCallback(
+        kOnlineEnableCvar, [](std::string_view, std::string_view value) {
+            if (SystemLinkOnlineSettingCvar()) return;
+            const bool on = value == "true";
+            SetDeferred(kOnlineEnableCvar, on ? "true" : "false");
+            SystemLinkOnlineRequest(on);
+        });
+
+    MC_INFO("[online] booted {}; switched from SYSTEM LINK > ONLINE in the pause menu "
+            "or from F4", on ? "online" : "offline");
+}
+
+// The overlay's "Save to config" writes the live value, so once the SDK has
+// switched online off a save there drops the player's line. Only possible
+// while the live value and the held choice disagree; checked when the pause
+// menu comes up, at most every few seconds.
+void KeepOnlineChoiceInConfig() {
+    if (g_online_boot.load(std::memory_order_relaxed) < 0) return;
+
+    const std::string held = HeldValue(kOnlineEnableCvar);
+    if (held.empty() || rex::cvar::GetFlagByName(kOnlineEnableCvar) == held) return;
+
+    static std::chrono::steady_clock::time_point last{};
+    const auto now = std::chrono::steady_clock::now();
+    if (last != std::chrono::steady_clock::time_point{} &&
+        now - last < std::chrono::seconds(5))
+        return;
+    last = now;
+
+    const auto path = ConfigPath();
+    const std::string on_disk = TomlLineValue(path, kOnlineEnableCvar);
+    if (on_disk == held || (on_disk.empty() && held == "false")) return;
+
+    MC_INFO("[online] larecomp.toml has {} = '{}', the choice is '{}'; writing it back",
+            kOnlineEnableCvar, on_disk, held);
+    WriteDeferredCvars(path);
+}
+
+// The same write as leaving a settings submenu (Hook_RexGlueCancel).
+void SaveSettingsNow() {
+    const auto path = ConfigPath();
+    const auto unregistered = UnregisteredConfigLines(path);
+    rex::cvar::SaveConfig(path);
+    WriteDeferredCvars(path);
+    KeepUnregisteredConfigLines(path, unregistered);
+    MC_INFO("[pause-menu] settings saved to {}", path.string());
+}
+
+// ── SYSTEM LINK > ONLINE ─────────────────────────────────────────────────
+//
+// The SYSTEM LINK window is not a list widget. "LAN" is a UIMenu under
+// MenuStylePaused that FlashNavigator draws into the "menu" object of the
+// pop-up movie (popup.xsf): sub_82220308 writes one element per visible child
+// -- text1 = label, property1 = enabled, count/select = its own sub-options --
+// and never a `type`. The movie's Fillmenu shows checkboxMC[] for an element
+// whose type is 4 (6 = greyed out), ticked when its select is 1, so the ONLINE
+// element gets type 4 and its select right after the game fills it
+// (Hook_LanFillElement). A goes to the menu's own event handler
+// (sub_8263B9A0, event 52), where Hook_LanAccept takes it when the highlighted
+// child is ONLINE. Redraws go through the movie's TransitionLevel, which is
+// what FlashNavigator's fill command sets after filling (sub_82220FE0 case 0).
+
+constexpr const char* kLanMenuName  = "LAN";
+constexpr const char* kLanOnlineKey = "PM_RxLanOnline";
+constexpr uint32_t kFindStateByNameFn = 0x82691650;  // (engine, name) -> state, 0 if none
+
+constexpr uint32_t kGetFlashPropIntFn = 0x82722398;  // (object, name, int* out)
+constexpr uint32_t kPlaySoundFn     = 0x821E6800;  // (sound name)
+constexpr uint32_t kMenuSelectSound = 0x8282600C;  // -> "UI_MENU_SELECT"
+constexpr uint32_t kStr_POPUPMOVIE = 0x8208D58C;
+// UIMenu vtable (0x82020654) slots.
+constexpr uint32_t kMenuRefreshVfunc  = 0xB0;   // sub_8263BF18: refill its movie's "menu"
+constexpr uint32_t kMenuSelectedVfunc = 0x150;  // highlighted row, -1 for none
+constexpr uint32_t kMenuMovieVfunc    = 0x1D4;  // the movie it draws into, 0 = FlashNavigator's
+constexpr uint32_t kMenuChildAtVfunc  = 0x1E0;  // (menu, row) -> the child shown on that row
+constexpr uint32_t kMenuEventAccept   = 52;     // A, from the menu input
+constexpr int kElementTypeCheckbox    = 4;
+
+std::atomic<uint32_t> g_lan_state{0};    // the SYSTEM LINK menu
+std::atomic<uint32_t> g_lan_online{0};   // its ONLINE row
+// SERVER BROWSER rows (server_browser/browser_ui.h): one in SYSTEM LINK, one
+// in the XBOX LIVE menu ("Online"), each its own state (a state has one parent).
+constexpr const char* kLiveMenuName = "Online";
+constexpr const char* kLanBrowserKey = "PM_RxServerBrowserLan";
+constexpr const char* kLiveBrowserKey = "PM_RxServerBrowserLive";
+std::atomic<uint32_t> g_live_state{0};
+std::atomic<uint32_t> g_lan_browser{0};
+std::atomic<uint32_t> g_live_browser{0};
+std::atomic<bool> g_lan_items_added{false};
+// The highlight is in the SYSTEM LINK menu: a row of it was the last state
+// activated (activation follows the highlight). Keeps the online pop-up up.
+std::atomic<bool> g_lan_active{false};
+// A on ONLINE switched online; the next front-end tick writes larecomp.toml.
+std::atomic<bool> g_lan_save_asked{false};
+int g_lan_drawn_checked = -1;            // the box the pop-up was last given, guest thread only
+int64_t g_lan_redraw_ms = 0;             // last redraw asked for, guest thread only
+
+int64_t SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// Checked while a switch on is under way, unchecked while a switch off is,
+// otherwise whether online is really up.
+bool LanOnlineChecked() {
+    const int pending = SystemLinkOnlinePending();
+    if (pending) return pending > 0;
+    return SystemLinkOnlineConnected();
+}
+
+// The ONLINE row goes at the end of the SYSTEM LINK menu, once, the first
+// time the pause menu comes up.
+void EnsureLanOnlineItems() {
+    if (g_online_boot.load(std::memory_order_relaxed) < 0) return;
+    if (g_lan_items_added.exchange(true)) return;
+
+    const uint32_t engine = GetEnginePtr();
+    const uint32_t name = engine ? AllocGuestString(kLanMenuName) : 0;
+    const uint32_t lan = name ? CallGuestFn2(kFindStateByNameFn, engine, name) : 0;
+    if (!lan) {
+        MC_WARN("[online] no '{}' state: the SYSTEM LINK menu gets no ONLINE row",
+                kLanMenuName);
+        return;
+    }
+    const uint32_t online = CreateNewMenuState(kLanOnlineKey);
+    if (!online) return;
+
+    EnsureStringTableText(kLanOnlineKey, "ONLINE");
+    GuestAppendMenuItem(lan, online);
+    g_lan_online.store(online, std::memory_order_relaxed);
+    g_lan_state.store(lan, std::memory_order_relaxed);
+    MC_INFO("[online] ONLINE row added to the SYSTEM LINK menu ('{}' 0x{:08X})",
+            kLanMenuName, lan);
+
+    if (const uint32_t row = CreateNewMenuState(kLanBrowserKey)) {
+        EnsureStringTableText(kLanBrowserKey, "SERVER BROWSER");
+        GuestAppendMenuItem(lan, row);
+        g_lan_browser.store(row, std::memory_order_relaxed);
+    }
+    const uint32_t live_name = AllocGuestString(kLiveMenuName);
+    const uint32_t live = live_name ? CallGuestFn2(kFindStateByNameFn, engine, live_name) : 0;
+    if (!live) {
+        MC_WARN("[online] no '{}' state: the XBOX LIVE menu gets no SERVER BROWSER row",
+                kLiveMenuName);
+        return;
+    }
+    if (const uint32_t row = CreateNewMenuState(kLiveBrowserKey)) {
+        EnsureStringTableText(kLiveBrowserKey, "SERVER BROWSER");
+        GuestAppendMenuItem(live, row);
+        g_live_browser.store(row, std::memory_order_relaxed);
+        g_live_state.store(live, std::memory_order_relaxed);
+        MC_INFO("[online] SERVER BROWSER rows added (SYSTEM LINK, XBOX LIVE 0x{:08X})", live);
+    }
+}
+
+// Two guest ints, for the setters and getters that take the value by address.
+uint32_t GuestIntCells() {
+    static std::atomic<uint32_t> cells{0};
+    uint32_t c = cells.load(std::memory_order_relaxed);
+    if (!c) {
+        c = CallGuestFn1(kGuestMallocFn, 16);
+        cells.store(c, std::memory_order_relaxed);
+    }
+    return c;
+}
+
+void SwfSetInt(uint32_t object, uint32_t name, int32_t value) {
+    const uint32_t cell = GuestIntCells();
+    if (!cell) return;
+    WriteGuestBE32(cell, uint32_t(value));
+    CallGuestFn3(kSetFlashPropIntFn, object, name, cell);
+}
+
+int32_t SwfGetInt(uint32_t object, uint32_t name) {
+    const uint32_t cell = GuestIntCells();
+    if (!cell) return -1;
+    WriteGuestBE32(cell + 4, 0xFFFFFFFFu);
+    CallGuestFn3(kGetFlashPropIntFn, object, name, cell + 4);
+    return int32_t(ReadGuestBE32(cell + 4));
+}
+
+uint32_t MenuVfunc(uint32_t menu, uint32_t slot) {
+    const uint32_t vtable = menu ? ReadGuestBE32(menu) : 0;
+    return vtable ? ReadGuestBE32(vtable + slot) : 0;
+}
+
+// The movie the SYSTEM LINK menu draws into, found the way its refresh
+// (sub_8263BF18) finds it: its own, else FlashNavigator's current one.
+uint32_t LanMovie(uint32_t lan) {
+    const uint32_t fn = MenuVfunc(lan, kMenuMovieVfunc);
+    if (const uint32_t movie = fn ? CallGuestFn1(fn, lan) : 0) return movie;
+    const uint32_t ui = ReadGuestBE32(kVHSMGlobal);
+    const uint32_t mgr = ui ? ReadGuestBE32(ui + 0x34) : 0;
+    const uint32_t holder = mgr ? ReadGuestBE32(mgr + 0x40710) : 0;
+    return holder ? ReadGuestBE32(holder + 0x38) : 0;
+}
+
+const char* MovieName(uint32_t movie) {
+    const uint32_t ui = ReadGuestBE32(kVHSMGlobal);
+    if (!ui || !movie) return "?";
+    for (const auto& [name, label] : {std::pair{kStr_POPUPMOVIE, "POPUPMOVIE"},
+                                      std::pair{kStr_PAUSEMOVIE, "PAUSEMOVIE"}}) {
+        const uint32_t holder = CallGuestFn2(kFindMovieFn, ui, name);
+        if (holder && ReadGuestBE32(holder + 0x38) == movie) return label;
+    }
+    return "another movie";
+}
+
+// Refills the SYSTEM LINK pop-up and has its movie redraw the rows. The
+// refill comes back through Hook_LanFillElement with the current box.
+// TransitionLevel 1 keeps the scroll position (0 would reset it).
+void RefreshLanPopup() {
+    const uint32_t lan = g_lan_state.load(std::memory_order_relaxed);
+    // Only while the window is up (vhsm active bit, +16 & 0x80): a refill
+    // otherwise lands in whatever screen owns that movie's "menu" now.
+    if (!lan || !(ReadGuestBE32(lan + 16) & 0x80)) return;
+    const uint32_t refresh = MenuVfunc(lan, kMenuRefreshVfunc);
+    const uint32_t movie = lan ? LanMovie(lan) : 0;
+    if (!refresh || !movie) return;
+    g_lan_redraw_ms = SteadyMs();
+    CallGuestFn1(refresh, lan);
+    CallGuestFn3(kSetFlashIntFn, movie, kStr_TransitionLevel, 1);
+    static std::atomic<bool> told{false};
+    if (!told.exchange(true))
+        MC_INFO("[online] SYSTEM LINK pop-up redrawn (movie 0x{:08X} = {})", movie,
+                MovieName(movie));
+}
+
+// A on ONLINE: the switch itself is a request the next net update carries
+// out (online/system_link.cpp), so it is made right here; writing the config
+// waits for the front-end tick.
+void LanOnlineToggle() {
+    const bool on = !LanOnlineChecked();
+    MC_INFO("[online] ONLINE {} from the SYSTEM LINK menu", on ? "on" : "off");
+    SetDeferred(kOnlineEnableCvar, on ? "true" : "false");
+    SystemLinkOnlineRequest(on);
+    g_lan_save_asked.store(true, std::memory_order_relaxed);
+}
+
+// Front-end tick (Hook_CarbonUiTick). The box moves on its own -- the switch
+// takes a net update or two, and the SDK can give up on the server -- so while
+// the SYSTEM LINK menu is up the pop-up is redrawn whenever its box is stale.
+// At most twice a second, in case a refill does not come back.
+void LanOnlineTick() {
+    if (g_lan_save_asked.exchange(false)) SaveSettingsNow();
+    if (!g_lan_active.load(std::memory_order_relaxed)) return;
+    larecomp::OnlineToastPoke();
+    const int checked = LanOnlineChecked() ? 1 : 0;
+    if (g_lan_drawn_checked < 0 || checked == g_lan_drawn_checked) return;
+    if (SteadyMs() - g_lan_redraw_ms < 500) return;
+    g_lan_drawn_checked = checked;
+    RefreshLanPopup();
 }
 
 // Which .strtbl language block the `language` cvar asks for. -1 = auto, i.e.
@@ -838,17 +1209,24 @@ using mcla_menu::Action;
 using mcla_menu::ActionId;
 using mcla_menu::Bool;
 using mcla_menu::Carbon;
+using mcla_menu::Color;
 using mcla_menu::Dbl;
 using mcla_menu::ItemDef;
 using mcla_menu::ItemKind;
 using mcla_menu::kActionPlayCutscene;
+using mcla_menu::kActionQuitNo;
+using mcla_menu::kActionQuitYes;
+using mcla_menu::NativeOnly;
 using mcla_menu::Str;
+using mcla_menu::Submenu;
+using mcla_menu::XeniaOnly;
 
 // ── Value tables ───────────────────────────────────────────────────────
 
 constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
 constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
+constexpr double kGpuResScaleVals[] = {1.0, 2.0, 3.0};
 
 constexpr const char* kEffectVals[]  = {"bilinear", "cas", "fsr", "fsr2", "fsr3"};
 constexpr const char* kEffectNames[] = {"BILINEAR", "CAS", "FSR 1", "FSR 2", "FSR 3"};
@@ -919,33 +1297,38 @@ constexpr const char* kWeatherNames[] = {"GAME", "REAL (LIVE)", "NICE", "CLOUDY"
 // Every row the game ships stays inside A-Z, 0-9, space, '+', '.', parens.
 constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
 constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
+constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"};
+constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
+// Rows tagged XeniaOnly / NativeOnly are listed only when that renderer is the
+// one this launch runs (MenuItemCount): RES SCALE and VSYNC are two different
+// mechanisms, the emulated path's and the Plume renderer's own.
 const ItemDef kVideoItems[] = {
     Bool("PM_RxFullscreen", "fullscreen", "FULLSCREEN: "),
-    Bool("PM_RxVsync",      "vsync",      "VSYNC: "),
+    XeniaOnly(Bool("PM_RxVsync", "vsync", "VSYNC: ")),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Bool("PM_RxGpuVsync", "mcla_gpu_vsync", "VSYNC: ")),
+#endif
     Str ("PM_RxResolution", "resolution", "RESOLUTION: ",
          kResVals, kResNames, 5, " (RESTART)"),
-    Dbl ("PM_RxResScale",   "resolution_scale", "RES SCALE: ",
-         kResScaleVals, 4, "%gX", " (RESTART)"),
+    XeniaOnly(Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ",
+                  kResScaleVals, 4, "%gX", " (RESTART)")),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale", "RES SCALE: ",
+                   kGpuResScaleVals, 3, "%gX", " (RESTART)")),
+#endif
+    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 };
 
 const ItemDef kRecompItems[] = {
-    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
-    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
-    Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
-    Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
-    Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
-    Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
-    Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
-         kSpeedUnitVals, kSpeedUnitNames, 3),
 };
 
 // Everything that trades image quality for framerate, in one place.
@@ -997,50 +1380,96 @@ const ItemDef kPerfItems[] = {
     Dbl ("PM_RxBreakFps",    "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
          kBreakFpsVals, int(sizeof(kBreakFpsVals) / sizeof(kBreakFpsVals[0])),
          "%g", "", "STOCK"),
+    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
+    Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
+    Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
 };
 
 const ItemDef kFfxItems[] = {
-    Str ("PM_RxUpscaler",   "present_effect", "UPSCALER: ",
-         kEffectVals, kEffectNames, 5),
-    Str ("PM_RxFsrQuality", "present_fsr_quality_mode", "FSR QUALITY: ",
-         kFsrQVals, kFsrQNames, 6),
-    Dbl ("PM_RxCasSharp",   "present_cas_additional_sharpness",
-         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g"),
-    Dbl ("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
-         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g"),
+    XeniaOnly(Str("PM_RxUpscaler",   "present_effect", "UPSCALER: ",
+         kEffectVals, kEffectNames, 5)),
+    XeniaOnly(Str("PM_RxFsrQuality", "present_fsr_quality_mode", "FSR QUALITY: ",
+         kFsrQVals, kFsrQNames, 6)),
+    XeniaOnly(Dbl("PM_RxCasSharp",   "present_cas_additional_sharpness",
+         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g")),
+    XeniaOnly(Dbl("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
+         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g")),
 };
 
-// Native renderer. RENDERER picks between the emulated path (Xenia's command
-// processor) and the native D3D12 runtime; NATIVE also brings the no-CP mode
-// and continuous rendering with it (see kDeferredCvars), so neither has a row
-// of its own. Everything but FXAA is read at startup or baked into targets and
-// samplers as they are created, so those rows only take effect on a restart.
-const char* const kRendererVals[]  = {"false", "true"};
+// Renderer. RENDERER picks the emulated path (Xenia's command processor) or the
+// Plume renderer (NATIVE), and brings the no-CP mode and continuous rendering
+// along (kRendererChoices), so neither has a row of its own. GRAPHICS API is the
+// SDK's graphics_backend, which both read. NATIVE AA and FSR are the Plume
+// renderer's own and only listed while it runs; the legacy runtime is no longer
+// offered here.
+const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
+const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
+#if defined(LARECOMP_HAS_GPU)
+const char* const kRendererVals[]  = {"xenia", "plume"};
 const char* const kRendererNames[] = {"XENIA", "NATIVE"};
-const char* const kMsaaVals[]      = {"0", "2", "4", "8"};
-const char* const kMsaaNames[]     = {"OFF", "2X", "4X", "8X"};
-// Same numbering as the emulated path's anisotropic_override.
-const char* const kAnisoVals[]     = {"-1", "0", "1", "2", "3", "4", "5"};
-const char* const kAnisoNames[]    = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
+constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
+// The NATIVE (Plume) renderer's post (M6c), all live: the scene's
+// anti-aliasing before the UI, and FSR1 on the present.
+const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
+const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
+#endif
 
 const ItemDef kNativeItems[] = {
-    Str ("PM_RxRenderer",    "mcla_native_gfx",       "RENDERER: ",
-         kRendererVals, kRendererNames, 2, " (RESTART)"),
-    Str ("PM_RxNativeMsaa",  "mcla_native_gfx_msaa",  "MSAA: ",
-         kMsaaVals, kMsaaNames, 4, " (RESTART)"),
-    Bool("PM_RxNativeFxaa",  "mcla_native_gfx_fxaa",  "FXAA: "),
-    Str ("PM_RxNativeAniso", "mcla_native_gfx_aniso", "ANISOTROPIC: ",
-         kAnisoVals, kAnisoNames, 7, " (RESTART)"),
+#if defined(LARECOMP_HAS_GPU)
+    Str ("PM_RxRenderer",    kRendererCvar,           "RENDERER: ",
+         kRendererVals, kRendererNames, kNumRenderers, " (RESTART)"),
+#endif
+    Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
+         kApiVals, kApiNames, 3, " (RESTART)"),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
+                    kNativeAaVals, kNativeAaNames, 3)),
+    NativeOnly(Bool("PM_RxGpuFsr",      "mcla_gpu_fsr",          "NATIVE FSR1: ")),
+    NativeOnly(Dbl ("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "NATIVE FSR SHARP REDUCE: ",
+                    kFsrSharpVals, 5, "%g")),
+#endif
 };
 
-const ItemDef kCamItems[] = {
+// Where the rear view mirror sits (rearview_position, rear_view.cpp).
+constexpr const char* kRearViewPosVals[]  = {"stock", "left_top", "middle_top",
+                                             "left_down", "middle_footer", "right_down"};
+constexpr const char* kRearViewPosNames[] = {"STOCK", "LEFT TOP", "MIDDLE TOP",
+                                             "LEFT DOWN", "MIDDLE FOOTER", "RIGHT DOWN"};
+
+// The camera hub (CAMERA) opens one menu per part of the camera. The free-look
+// rows come from camera_look.cpp, next to the code that reads them.
+const ItemDef kCamHubItems[] = {
+    Submenu("PM_RxSubCamChase", "CHASE CAMERA", "RxCamChaseMenu"),
+    Submenu("PM_RxSubCamFov",   "FOV",          "RxCamFovMenu"),
+    Submenu("PM_RxSubCamFree",  "FREECAM",      "RxCamFreeMenu"),
+    Submenu("PM_RxSubCamRear",  "REAR VIEW",    "RxCamRearMenu"),
+    Submenu("PM_RxSubCamLook",  "LOOK AROUND",  "RxCamLookMenu"),
+    Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
+};
+
+const ItemDef kCamChaseItems[] = {
     // BadassBaboon's Recomp Adjustments: in-game pause menu smooth chase camera toggle
     Bool("PM_RxSmoothCam",    "smooth_chase_cam", "SMOOTH CHASE CAM: "),
     Dbl ("PM_RxSmoothFactor", "chase_cam_smoothing_factor", "CAM SMOOTH FACTOR: ", kCamSmoothVals, 7, "%.1fX"),
+};
+
+const ItemDef kCamFovItems[] = {
     Dbl ("PM_RxFov1P",        "fov_1p_scale", "1P FOV: ", kFovValues, 13, "%.1fX"),
     Dbl ("PM_RxFov3P",        "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
+};
+
+const ItemDef kCamFreeItems[] = {
     Str ("PM_RxFreecam",      "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
     Dbl ("PM_RxCamSpeed",     "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
+};
+
+// The rear view mirror the retail game shipped switched off (rear_view.cpp).
+// All three are live.
+const ItemDef kCamRearItems[] = {
+    Bool("PM_RxRearView",     "rearview",          "REAR VIEW: "),
+    Str ("PM_RxRearViewPos",  "rearview_position", "REAR VIEW POS: ",
+         kRearViewPosVals, kRearViewPosNames, 6),
+    Bool("PM_RxRearViewFrm",  "rearview_frame",    "REAR VIEW FRAME: "),
 };
 
 const ItemDef kTodItems[] = {
@@ -1094,10 +1523,74 @@ const ItemDef kCutsceneItems[] = {
     Action("PM_RxCutPlay", kActionPlayCutscene),
 };
 
+// UI OPTIONS: the ui_theme_* cvars (hooks/ui_theme.cpp). Value 0 is "" (the
+// game's own color); 1..24 are the swatches of ui_palette.cpp, filled in by
+// InitThemePalette() before the rows are built. Labels stay inside A-Z, 0-9 and
+// space like every row label (see the speed-unit note above); the swatches
+// themselves are a grid ui_palette.cpp builds inside the pause movie, under the
+// panel, outlining the selected row's color.
+constexpr int kNumThemeColors = 1 + larecomp::kUiPaletteColors;
+const char* g_theme_vals[kNumThemeColors] = {};
+
+void InitThemePalette() {
+    larecomp::UiPaletteInit();
+    for (int k = 0; k < kNumThemeColors; ++k) g_theme_vals[k] = larecomp::UiPaletteHex(k);
+}
+
+const ItemDef kUiItems[] = {
+    Color("PM_RxUiAccent", "ui_theme_accent", "MENU BLUE", g_theme_vals, kNumThemeColors),
+    Color("PM_RxUiTitle",  "ui_theme_title",  "TITLES AND GLOBE", g_theme_vals,
+          kNumThemeColors),
+    Color("PM_RxUiFrame",  "ui_theme_frame",  "FRAME GRAY", g_theme_vals, kNumThemeColors),
+    Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
+         kSpeedUnitVals, kSpeedUnitNames, 3),
+    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
+         kButtonLayoutVals, kButtonLayoutNames, 3),
+};
+
+// The SETTINGS tab holds a handful of hubs, each a list of Submenu rows. Their
+// children are ordinary menus below; a menu some row opens gets no button of
+// its own (MenuIsNested).
+const ItemDef kGfxHubItems[] = {
+    Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
+    Submenu("PM_RxSubNative", "RENDERER",    "RxNativeMenu"),
+    XeniaOnly(Submenu("PM_RxSubFfx", "FIDELITY FX", "RxFfxMenu")),
+    Submenu("PM_RxSubPerf",   "PERFORMANCE", "RxPerfMenu"),
+};
+const ItemDef kGameHubItems[] = {
+    Submenu("PM_RxSubRecomp", "RECOMP SETTINGS", "RxRecompMenu"),
+    Submenu("PM_RxSubCam",    "CAMERA",          "RxCamMenu"),
+    Submenu("PM_RxSubTod",    "TIME OF DAY",     "RxTodMenu"),
+    Submenu("PM_RxSubCarbon", "CARBON FIBER",    "RxCarbonMenu"),
+};
+const ItemDef kIfaceHubItems[] = {
+    Submenu("PM_RxSubUi",   "UI",        "RxUiMenu"),
+    Submenu("PM_RxSubLang", "LANGUAGES", "RxLangMenu"),
+};
+const ItemDef kExtrasHubItems[] = {
+    Submenu("PM_RxSubCut", "CUTSCENES", "RxCutMenu"),
+    Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
+    Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
+         " (NEXT HOST)"),
+};
+// NO first: the cursor starts on the first row, so a stray A keeps the game.
+const ItemDef kQuitItems[] = {
+    Action("PM_RxQuitNo",  kActionQuitNo),
+    Action("PM_RxQuitYes", kActionQuitYes),
+};
+
+// One RexGlue menu: a native list form (ui_forms.h) of `items` rows. A menu no
+// Submenu row opens gets a button on the pause SETTINGS tab and opens from the
+// pause screen, the way OPTIONS does; one that a Submenu row opens is reached
+// only through that row, the way CONTROLLER is.
 struct MenuDef {
-    const char* btn_key;   // button state name + its string-table key
-    const char* label;     // button label AND submenu title
-    const char* menu_key;  // UIMenu state name
+    const char* btn_key;   // SETTINGS-tab button: state name + string-table key
+    const char* label;     // button label AND form title
+    // The line the form shows under its list, where OPTIONS says "What do you
+    // want to adjust?". Short and plain ASCII like the game's own (about 40
+    // characters fit). Null = that same OPTIONS line.
+    const char* desc;
+    const char* menu_key;  // the form's title key; what a Submenu row names
     const ItemDef* items;
     int num_items;
     // Rows contributed by the feature's own translation unit, appended after
@@ -1107,20 +1600,37 @@ struct MenuDef {
     const ItemDef* (*extra)(int& count);
 };
 
-// A submenu's rows are `items` followed by whatever `extra` returns. These two
-// are the only way the rest of the file is allowed to reach either, so a tab
-// with contributed rows behaves exactly like one without.
-int MenuItemCount(const MenuDef& md) {
+// The renderer this launch runs, as a RendererMask. The renderer is a
+// restart-only choice (RendererSet only holds the new one), so it cannot change
+// under an open menu and the rows listed never move. Read from the live cvar,
+// not CvarGet, which would answer with the choice held for the next launch.
+uint8_t RunningRendererMask() {
+    static const uint8_t mask = [] {
+#if defined(LARECOMP_HAS_GPU)
+        if (rex::cvar::GetFlagByName("mcla_gpu") == "true")
+            return uint8_t(mcla_menu::kRendNative);
+#endif
+        return uint8_t(mcla_menu::kRendXenia);
+    }();
+    return mask;
+}
+
+// A submenu's rows are `items` followed by whatever `extra` returns, less the
+// rows of the renderer this launch is not running. These helpers are the only
+// way the rest of the file is allowed to reach any of it, so a tab with
+// contributed or filtered rows behaves exactly like a plain one and the
+// list's selected index keeps naming the right row.
+int MenuRawCount(const MenuDef& md) {
     int extra = 0;
     if (md.extra) md.extra(extra);
     return md.num_items + extra;
 }
 
-const ItemDef& MenuItemAt(const MenuDef& md, int i) {
+const ItemDef& MenuRawAt(const MenuDef& md, int i) {
     if (i < md.num_items) return md.items[i];
     int extra = 0;
     const ItemDef* tail = md.extra ? md.extra(extra) : nullptr;
-    // Callers all bound i by MenuItemCount, but a row table that shrank between
+    // Callers all bound i by MenuRawCount, but a row table that shrank between
     // the two calls would be a crash rather than a wrong label, so clamp.
     int at = i - md.num_items;
     if (!tail || extra <= 0) return md.items[0];
@@ -1128,43 +1638,143 @@ const ItemDef& MenuItemAt(const MenuDef& md, int i) {
     return tail[at];
 }
 
+int MenuItemCount(const MenuDef& md) {
+    const uint8_t mask = RunningRendererMask();
+    int n = 0;
+    for (int i = 0; i < MenuRawCount(md); ++i)
+        if (MenuRawAt(md, i).renderers & mask) ++n;
+    return n;
+}
+
+const ItemDef& MenuItemAt(const MenuDef& md, int i) {
+    const uint8_t mask = RunningRendererMask();
+    const int raw = MenuRawCount(md);
+    for (int r = 0; r < raw; ++r) {
+        const ItemDef& it = MenuRawAt(md, r);
+        if (!(it.renderers & mask)) continue;
+        if (i-- == 0) return it;
+    }
+    return MenuRawAt(md, 0);
+}
+
 const MenuDef kMenus[] = {
-    {"PM_RxTabVideo",  "REXGLUE SETTINGS", "RxVideoMenu",
-     kVideoItems,  int(sizeof(kVideoItems)  / sizeof(kVideoItems[0]))},
-    {"PM_RxTabRecomp", "RECOMP SETTINGS",  "RxRecompMenu",
+    // Hubs: the buttons of the SETTINGS tab.
+    {"PM_RxTabGfx", "GRAPHICS", "Display, renderer and performance.",
+     "RxGfxMenu",
+     kGfxHubItems, int(sizeof(kGfxHubItems) / sizeof(kGfxHubItems[0]))},
+    {"PM_RxTabGame", "GAMEPLAY", "Recomp fixes, camera, time and cars.",
+     "RxGameMenu",
+     kGameHubItems, int(sizeof(kGameHubItems) / sizeof(kGameHubItems[0]))},
+    {"PM_RxTabIface", "INTERFACE", "Menu colors and language.",
+     "RxIfaceMenu",
+     kIfaceHubItems, int(sizeof(kIfaceHubItems) / sizeof(kIfaceHubItems[0]))},
+    {"PM_RxTabExtras", "EXTRAS", "Extra things to watch and do.",
+     "RxExtrasMenu",
+     kExtrasHubItems, int(sizeof(kExtrasHubItems) / sizeof(kExtrasHubItems[0]))},
+    // Reached through a hub.
+    {"PM_RxTabVideo", "DISPLAY", "Window, resolution and vsync.",
+     "RxVideoMenu",
+     kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0]))},
+    {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
+     "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
-    {"PM_RxTabPerf",   "PERFORMANCE",      "RxPerfMenu",
-     kPerfItems,   int(sizeof(kPerfItems)   / sizeof(kPerfItems[0]))},
-    {"PM_RxTabFfx",    "FIDELITY FX",      "RxFfxMenu",
-     kFfxItems,    int(sizeof(kFfxItems)    / sizeof(kFfxItems[0]))},
-    {"PM_RxTabNative", "RENDERER OPTIONS",  "RxNativeMenu",
+    {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
+     "RxPerfMenu",
+     kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
+    {"PM_RxTabFfx", "FIDELITY FX", "Upscaling and sharpening of the image.",
+     "RxFfxMenu",
+     kFfxItems, int(sizeof(kFfxItems) / sizeof(kFfxItems[0]))},
+    {"PM_RxTabNative", "RENDERER", "Renderer and graphics API.",
+     "RxNativeMenu",
      kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
-    // The free-look rows come from camera_look.cpp, next to the code that
-    // reads them.
-    {"PM_RxTabCam",    "DEBUG CAMERA",     "RxCamMenu",
-     kCamItems,    int(sizeof(kCamItems)    / sizeof(kCamItems[0])),
+    {"PM_RxTabCam", "CAMERA", "Chase camera, free camera and rear view.",
+     "RxCamMenu",
+     kCamHubItems, int(sizeof(kCamHubItems) / sizeof(kCamHubItems[0]))},
+    {"PM_RxTabCamChase", "CHASE CAMERA", "Smoothing of the chase camera.",
+     "RxCamChaseMenu",
+     kCamChaseItems, int(sizeof(kCamChaseItems) / sizeof(kCamChaseItems[0]))},
+    {"PM_RxTabCamFov", "FOV", "Field of view, cockpit and chase.",
+     "RxCamFovMenu",
+     kCamFovItems, int(sizeof(kCamFovItems) / sizeof(kCamFovItems[0]))},
+    {"PM_RxTabCamFree", "FREECAM", "Free camera and its speed.",
+     "RxCamFreeMenu",
+     kCamFreeItems, int(sizeof(kCamFreeItems) / sizeof(kCamFreeItems[0]))},
+    {"PM_RxTabCamRear", "REAR VIEW", "The rear view mirror.",
+     "RxCamRearMenu",
+     kCamRearItems, int(sizeof(kCamRearItems) / sizeof(kCamRearItems[0]))},
+    // The free-look rows come from camera_look.cpp, next to the code that reads
+    // them.
+    {"PM_RxTabCamLook", "LOOK AROUND", "Free look with the right stick.",
+     "RxCamLookMenu",
+     nullptr, 0,
      CameraLookMenuItems},
-    {"PM_RxTabTod",    "TIME OF DAY",      "RxTodMenu",
-     kTodItems,    int(sizeof(kTodItems)    / sizeof(kTodItems[0]))},
-    {"PM_RxTabCarbon", "CARBON FIBER",     "RxCarbonMenu",
+    {"PM_RxTabTod", "TIME OF DAY", "Time of day, clock and weather.",
+     "RxTodMenu",
+     kTodItems, int(sizeof(kTodItems) / sizeof(kTodItems[0]))},
+    {"PM_RxTabCarbon", "CARBON FIBER", "Carbon fiber parts of this car.",
+     "RxCarbonMenu",
      kCarbonItems, int(sizeof(kCarbonItems) / sizeof(kCarbonItems[0]))},
-    {"PM_RxTabLang",   "LANGUAGES",        "RxLangMenu",
-     kLangItems,   int(sizeof(kLangItems)   / sizeof(kLangItems[0]))},
-    {"PM_RxTabCut",    "CUTSCENES",        "RxCutMenu",
+    {"PM_RxTabLang", "LANGUAGES", "Language of the game's text.",
+     "RxLangMenu",
+     kLangItems, int(sizeof(kLangItems) / sizeof(kLangItems[0]))},
+    {"PM_RxTabCut", "CUTSCENES", "Watch the story cutscenes again.",
+     "RxCutMenu",
      kCutsceneItems, int(sizeof(kCutsceneItems) / sizeof(kCutsceneItems[0]))},
+    {"PM_RxTabUi", "UI", "Colors of the menus.",
+     "RxUiMenu",
+     kUiItems, int(sizeof(kUiItems) / sizeof(kUiItems[0]))},
+    // Last, so its button ends the SETTINGS tab.
+    {"PM_RxQuit", "QUIT", "Close the game and return to the desktop?",
+     "RxQuitMenu",
+     kQuitItems, int(sizeof(kQuitItems) / sizeof(kQuitItems[0]))},
 };
 constexpr int kNumMenus = int(sizeof(kMenus) / sizeof(kMenus[0]));
 
 // Per-menu runtime state (guest addresses).
 std::atomic<uint32_t> g_menu_btn_key[kNumMenus] = {};  // guest key string for IsButtonClicked
-std::atomic<uint32_t> g_menu_state[kNumMenus]   = {};  // UIMenu guest state
-std::atomic<uint32_t> g_menu_title[kNumMenus]   = {};  // guest title string
+std::atomic<uint32_t> g_menu_form[kNumMenus]    = {};  // its form, built on first open
+
+// The menu `menu_key` names, -1 if none.
+int MenuByKey(const char* menu_key) {
+    if (!menu_key) return -1;
+    for (int m = 0; m < kNumMenus; ++m)
+        if (std::strcmp(kMenus[m].menu_key, menu_key) == 0) return m;
+    return -1;
+}
+
+// True when some Submenu row opens menu m: it then lives inside that menu and
+// has no button of its own on the SETTINGS tab.
+bool MenuIsNested(int m) {
+    for (int p = 0; p < kNumMenus; ++p)
+        for (int i = 0; i < MenuRawCount(kMenus[p]); ++i) {
+            const ItemDef& it = MenuRawAt(kMenus[p], i);
+            if (it.kind == ItemKind::kSubmenu && MenuByKey(it.cvar) == m) return true;
+        }
+    return false;
+}
+
+int MenuOfForm(uint32_t form) {
+    if (!form) return -1;
+    for (int m = 0; m < kNumMenus; ++m)
+        if (g_menu_form[m].load(std::memory_order_relaxed) == form) return m;
+    return -1;
+}
+
+int MenuOfList(uint32_t list) {
+    for (int m = 0; m < kNumMenus; ++m) {
+        const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed);
+        if (form && larecomp::ui::FormList(form) == list) return m;
+    }
+    return -1;
+}
+
+// The menu on top of the pause screen -- the one the pad goes to -- or -1.
+int TopMenu() { return MenuOfForm(larecomp::ui::TopForm()); }
 
 // Pause-menu probe: armed only while the pause menu is actually being shown.
 std::atomic<bool> g_pm_probe_armed{false};
 uint32_t g_pm_seen[64] = {};
 int g_pm_seen_count = 0;
-std::atomic<int>  g_active_menu{-1};                   // -1 = not in any submenu
 std::atomic<bool> g_menus_created{false};
 // False means a cvar moved since the last write, i.e. larecomp.toml is stale.
 // Starts clean: entering and leaving a submenu without touching anything
@@ -1206,9 +1816,12 @@ int FindStringIndex(const std::string& value, const char* const* vals, int count
 bool ItemIsToggle(const ItemDef& it) { return it.kind == ItemKind::kBool; }
 
 // Rows with no value list at all: they render as a plain label and a click
-// runs them rather than stepping anything.
+// runs them rather than stepping anything. A color button is one too: its
+// value is drawn as a swatch beside the label (ui_palette.cpp), not as text.
+// So is a submenu row, like the rows of OPTIONS.
 bool ItemIsLabelOnly(const ItemDef& it) {
-    return it.kind == ItemKind::kAction;
+    return it.kind == ItemKind::kAction || it.kind == ItemKind::kColor ||
+           it.kind == ItemKind::kSubmenu;
 }
 
 int ItemValueCount(const ItemDef& it) {
@@ -1216,8 +1829,10 @@ int ItemValueCount(const ItemDef& it) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kStrCycle:
-    case ItemKind::kDblCycle:  return it.nvals;
-    case ItemKind::kAction:    return 0;
+    case ItemKind::kDblCycle:
+    case ItemKind::kColor:     return it.nvals;
+    case ItemKind::kAction:
+    case ItemKind::kSubmenu:   return 0;
     }
     return 0;
 }
@@ -1233,7 +1848,9 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
         std::snprintf(buf, sizeof(buf), it.dfmt, it.dvals[i]);
         return buf;
     }
-    case ItemKind::kAction:    break;
+    case ItemKind::kAction:
+    case ItemKind::kColor:
+    case ItemKind::kSubmenu:   break;
     }
     return "";
 }
@@ -1249,10 +1866,12 @@ int ItemValueIndex(const ItemDef& it) {
     case ItemKind::kCarbonBit:
         return (CarbonHaveCar() && CarbonHasGroup(uint8_t(it.nvals))) ? 1 : 0;
     case ItemKind::kStrCycle:
+    case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle:
         return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
-    case ItemKind::kAction:    break;
+    case ItemKind::kAction:
+    case ItemKind::kSubmenu:   break;
     }
     return 0;
 }
@@ -1270,6 +1889,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         break;
     }
     case ItemKind::kStrCycle:
+    case ItemKind::kColor:
         CvarSet(it.cvar, it.svals[i]);
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
@@ -1284,6 +1904,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
             CarbonToggleGroup(uint8_t(it.nvals));
         break;
     case ItemKind::kAction:
+    case ItemKind::kSubmenu:
         break;
     }
 }
@@ -1298,6 +1919,8 @@ std::string ItemRowLabel(const ItemDef& it) {
             // scene owns the screen, and if it refuses to start the log is the
             // only other place that says so.
             return CutsceneReplayBusy() ? "PLAYING..." : "PLAY CUTSCENE";
+        case kActionQuitYes: return "YES";
+        case kActionQuitNo:  return "NO";
         }
         return "";
     }
@@ -1311,7 +1934,7 @@ std::string ItemRowLabel(const ItemDef& it) {
     return label + it.suffix;
 }
 
-// dir is +1 for A / right and -1 for left. The pause list is a real
+// dir is +1 for A / right and -1 for left. Each menu's list is a real
 // mcListViewFixed whose select index at +184 tracks the highlight, so a value
 // can be stepped without the item having to be re-entered.
 void ApplyItem(const ItemDef& it, int dir) {
@@ -1340,16 +1963,34 @@ void ApplyItem(const ItemDef& it, int dir) {
     case ItemKind::kAction:
         switch (ActionId(it.nvals)) {
         case kActionPlayCutscene:
-            // Leave the submenu ourselves so the gallery only has the pause
-            // tab left to pop, then let it drive the rest from the frame tick.
-            // This goes through the shared exit so the hijacked list is handed
-            // back exactly as a B press hands it back -- doing the pop inline
-            // here skipped the restore and left the game's list pointing at our
-            // rows, which killed the pause menu the next time it opened.
+            // Close our menus first, the way B would, so the pause screen is
+            // all the gallery has left to take down; it drives the rest from
+            // the frame tick.
             PauseMenuLeaveSubmenu();
             CutsceneRequestPlay();
             break;
+        case kActionQuitYes: {
+            // Same as leaving a menu: settings that moved are written first.
+            if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+            auto* runtime = rex::Runtime::instance();
+            auto* app_context = runtime ? runtime->app_context() : nullptr;
+            if (app_context) {
+                MC_INFO("[pause-menu] quit requested from the QUIT menu");
+                app_context->RequestDeferredQuit();
+            } else {
+                MC_WARN("[pause-menu] quit requested, but app context is unavailable");
+            }
+            break;
         }
+        case kActionQuitNo:
+            // Closes the QUIT form the way B does; the select sound is the A's.
+            larecomp::ui::CloseForm(larecomp::ui::TopForm());
+            break;
+        }
+        break;
+    case ItemKind::kColor:
+    case ItemKind::kSubmenu:
+        // Both need the form they are on; MenuFormAccept handles them.
         break;
     }
 }
@@ -1364,10 +2005,9 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // the other route entirely and stops using states as rows: real row objects
 // of the game's own value class, handed to the list through its widget array.
 
-constexpr int kMaxRowsPerMenu = 16;
+constexpr int kMaxRowsPerMenu = 17;  // DEBUG CAMERA is 6 + 3 (rear view) + 8 (free look)
 
 struct NativeRows {
-    uint32_t array = 0;                     // guest array of row pointers
     uint32_t row[kMaxRowsPerMenu] = {};     // guest row objects
     uint32_t name[kMaxRowsPerMenu] = {};    // guest key string, kept for relabels
     int last_index[kMaxRowsPerMenu] = {};   // last select we pushed to the cvar
@@ -1444,7 +2084,7 @@ void CentreRowWindow(NativeRows& nr, int i, const ItemDef& it, int idx) {
 
 bool BuildNativeRows(int m) {
     NativeRows& nr = g_rows[m];
-    if (nr.array) return true;
+    if (nr.count > 0) return true;
 
     const MenuDef& md = kMenus[m];
     if (MenuItemCount(md) > kMaxRowsPerMenu) {
@@ -1454,8 +2094,7 @@ bool BuildNativeRows(int m) {
     }
 
     uint8_t* base = GetMembase();
-    uint32_t arr = CallGuestFn1(kGuestMallocFn, uint32_t(4 * MenuItemCount(md)));
-    if (!base || !arr) return false;
+    if (!base) return false;
 
     for (int i = 0; i < MenuItemCount(md); ++i) {
         const ItemDef& it = MenuItemAt(md, i);
@@ -1493,11 +2132,9 @@ bool BuildNativeRows(int m) {
         nr.last_label[i] = label;
         if (!ItemIsLabelOnly(it) && !ItemIsToggle(it))
             CentreRowWindow(nr, i, it, ItemValueIndex(it));
-        WriteGuestBE32(arr + uint32_t(4 * i), row);
     }
 
     nr.count = MenuItemCount(md);
-    nr.array = arr;
     MC_INFO("[pause-menu] '{}' native rows built ({} rows)",
             md.label, nr.count);
     return true;
@@ -1512,27 +2149,6 @@ void RelabelRow(NativeRows& nr, int i, const ItemDef& it) {
     nr.last_label[i] = label;
     EnsureStringTableText(it.key, label.c_str());
     CallGuestFn2(kSetRowLabelFn, nr.row[i], nr.name[i]);
-}
-
-// Point the list at our rows. Also clears both higher-priority row sources,
-// because sub_82631FD0 only reaches the widget array when they are null.
-void InstallNativeRows(int m, uint32_t list) {
-    NativeRows& nr = g_rows[m];
-    if (!list || !nr.array || nr.count <= 0) return;
-
-    const uint32_t count_cap =
-        (uint32_t(nr.count) << 16) | uint32_t(nr.count);
-
-    if (ReadGuestBE32(list + kListRows) == nr.array &&
-        ReadGuestBE32(list + kListCountCap) == count_cap &&
-        ReadGuestBE32(list + kListStateSource) == 0 &&
-        ReadGuestBE32(list + kListTableSource) == 0)
-        return;
-
-    WriteGuestBE32(list + kListStateSource, 0);
-    WriteGuestBE32(list + kListTableSource, 0);
-    WriteGuestBE32(list + kListRows, nr.array);
-    WriteGuestBE32(list + kListCountCap, count_cap);
 }
 
 // Rows own their value while the menu is open, so this only runs where the
@@ -1619,42 +2235,227 @@ void PollNativeRows(int m) {
     }
 }
 
-// ── Flash display ──────────────────────────────────────────────────────
+// ── Color buttons ──────────────────────────────────────────────────────
+//
+// The garage's PickColor on a menu row (garage/paint.sc.xml, Color_A_Closed /
+// PickColorA): closed, the row shows its color beside the label; A opens the
+// strip; left/right walk it with the theme following live; A keeps the color
+// and B puts the old one back. Up/down are held while the strip is open, the
+// way PickColorA blocks them. ui_palette.cpp draws it, reading the state
+// through PauseMenuColorButtons. Guest thread.
 
-void PopulateSubmenuFlash() {
-    int m = g_active_menu.load(std::memory_order_relaxed);
-    if (m < 0) return;
-    uint32_t sub  = g_menu_state[m].load(std::memory_order_relaxed);
-    uint32_t list = g_pauselist_addr.load(std::memory_order_relaxed);
-    if (!sub || !list) return;
+// Sound names the game's own menus play (.rdata strings, so guest pointers).
+constexpr uint32_t kSoundBack     = 0x8208BA28;  // "UI_MENU_BACK"
+constexpr uint32_t kSoundNavLeft  = 0x8208F1C0;  // "UI_MENU_NAV_LEFT"
+constexpr uint32_t kSoundNavRight = 0x8208F1D4;  // "UI_MENU_NAV_RIGHT"
 
-    InstallNativeRows(m, list);
-    RefreshPauseList();
+uint32_t g_color_form = 0;  // form whose strip is open
+int g_color_open = -1;      // its list row, -1 = no strip open
+int g_color_cursor = 0;     // value index under the strip's cursor
+int g_color_orig = 0;       // value index the row had when the strip opened
 
-    // TodMenu onenter: game.setInt('PAUSEMOVIE','tabs_count',0) — hides the
-    // tab strip so Flash presents a submenu instead of the SettingsMenu tab.
-    uint32_t flashCtx = GetPauseMovieFlashCtx();
-    if (flashCtx)
-        CallGuestFn3(kSetFlashIntFn, flashCtx, kStr_tabs_count, 0);
+const ItemDef* ActiveColorItem(int row) {
+    const int m = MenuOfForm(g_color_form);
+    if (m < 0 || row < 0 || row >= MenuItemCount(kMenus[m])) return nullptr;
+    const ItemDef& it = MenuItemAt(kMenus[m], row);
+    return it.kind == ItemKind::kColor ? &it : nullptr;
+}
 
-    uint32_t title = g_menu_title[m].load(std::memory_order_relaxed);
-    if (!title) {
-        title = AllocGuestString(kMenus[m].label);
-        g_menu_title[m].store(title, std::memory_order_relaxed);
+void PlayMenuSound(uint32_t name) { CallGuestFn1(kPlaySoundFn, name); }
+
+void ColorStripClose(bool keep) {
+    if (g_color_open < 0) return;
+    if (const ItemDef* it = ActiveColorItem(g_color_open)) {
+        if (!keep) ItemSetValueIndex(*it, g_color_orig);
+        MC_INFO("[pause-menu] color strip on row {} closed, {} '{}'", g_color_open,
+                keep ? "kept" : "back to", CvarGet(it->cvar));
     }
-    SetMenuTitle(title);
+    g_color_open = -1;
+    g_color_form = 0;
+}
+
+void ColorStripOpen(uint32_t form, int row, const ItemDef& it) {
+    ColorStripClose(false);
+    g_color_form = form;
+    g_color_open = row;
+    g_color_orig = g_color_cursor = ItemValueIndex(it);
+    MC_INFO("[pause-menu] color strip on row {} opened at value {}", row, g_color_cursor);
+}
+
+// Walks the open strip; no wrap, the strip has an end like the garage's.
+void ColorStripStep(int dir) {
+    const ItemDef* it = ActiveColorItem(g_color_open);
+    if (!it) {
+        g_color_open = -1;
+        g_color_form = 0;
+        return;
+    }
+    const int last = ItemValueCount(*it) - 1;
+    int next = g_color_cursor + dir;
+    if (next < 0) next = 0;
+    if (next > last) next = last;
+    if (next == g_color_cursor) return;
+    g_color_cursor = next;
+    ItemSetValueIndex(*it, next);
+    PlayMenuSound(dir < 0 ? kSoundNavLeft : kSoundNavRight);
+}
+
+// ── Native forms ───────────────────────────────────────────────────────
+//
+// Each menu is a list form of its own (ui_forms.h), the class OPTIONS and
+// CONTROLLER are, built the first time it opens: the rows above go into the
+// form's list and the form is the screen -- title, description, prompts and
+// list, all drawn by the game. A SETTINGS-tab button opens its menu on top of
+// the pause screen the way PM_GameOptions opens OPTIONS (sub_82668660); a
+// Submenu row opens its menu on top of the one it is on, the way OPTIONS opens
+// CONTROLLER (sub_8264C9F8). B is the game's own: the form closes and the one
+// under it renders itself again, tabs and title included.
+
+bool MenuFormAccept(uint32_t form, int row);
+bool MenuFormCancel(uint32_t form);
+void MenuFormClosed(uint32_t form);
+bool MenuFormKey(uint32_t form, uint32_t key);
+
+uint32_t EnsureMenuForm(int m) {
+    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) return form;
+    if (!BuildNativeRows(m)) return 0;
+
+    const MenuDef& md = kMenus[m];
+    // Title and description are resolved through the string table once, by
+    // the ctor. The description's key is the title's plus "_desc", the way
+    // the game pairs "options" with "options_desc".
+    EnsureStringTableText(md.menu_key, md.label);
+    const std::string desc_key = std::string(md.menu_key) + "_desc";
+    if (md.desc) EnsureStringTableText(desc_key.c_str(), md.desc);
+
+    larecomp::ui::FormHandler handler;
+    handler.accept = MenuFormAccept;
+    handler.cancel = MenuFormCancel;
+    handler.closed = MenuFormClosed;
+    handler.key = MenuFormKey;
+
+    const NativeRows& nr = g_rows[m];
+    const uint32_t form = larecomp::ui::CreateListForm(
+        md.menu_key, md.desc ? desc_key.c_str() : nullptr, nr.count, handler);
+    if (!form) return 0;
+    for (int i = 0; i < nr.count; ++i) {
+        if (!larecomp::ui::AddFormRow(form, nr.row[i])) {
+            MC_WARN("[pause-menu] '{}': row {} did not fit in the form", md.label, i);
+            break;
+        }
+    }
+    g_menu_form[m].store(form, std::memory_order_relaxed);
+    return form;
+}
+
+// Opens menu m on top of `from`: the pause screen, or the form of the menu
+// whose Submenu row was picked.
+bool OpenMenu(int m, uint32_t from) {
+    const uint32_t form = EnsureMenuForm(m);
+    if (!form || !from) return false;
+    SyncNativeRowsFromCvars(m);  // pick up F4-menu changes made meanwhile
+    larecomp::ui::OpenForm(form, from);
+    MC_INFO("[pause-menu] opened '{}'", kMenus[m].label);
+    return true;
+}
+
+bool MenuFormAccept(uint32_t form, int row) {
+    const int m = MenuOfForm(form);
+    if (m < 0 || row < 0 || row >= MenuItemCount(kMenus[m])) return false;
+    const ItemDef& it = MenuItemAt(kMenus[m], row);
+
+    if (it.kind == ItemKind::kSubmenu) {
+        const int child = MenuByKey(it.cvar);
+        if (child < 0) {
+            MC_WARN("[pause-menu] '{}' row {} opens '{}', which is no menu", kMenus[m].label,
+                    row, it.cvar ? it.cvar : "");
+            return false;
+        }
+        return OpenMenu(child, form);
+    }
+    if (it.kind == ItemKind::kColor) {
+        if (g_color_open == row && g_color_form == form)
+            ColorStripClose(true);
+        else
+            ColorStripOpen(form, row, it);
+        return true;
+    }
+
+    // A steps the value forward, the same as right. The row holds the select
+    // itself, so the cvar move has to be mirrored back into it. Only the list
+    // is drawn again, the way CONTROLLER redraws after a change: the whole
+    // form's render is a full transition, and the list faded out and back in
+    // on every checkbox. An action can close the menu (PLAY CUTSCENE does),
+    // and then there is nothing to redraw.
+    ClickItem(it);
+    if (larecomp::ui::FormIsOpen(form)) {
+        SyncNativeRowsFromCvars(m);
+        larecomp::ui::RefreshFormList(form);
+    }
+    return true;
+}
+
+// B on an open color strip is the strip's: the old color comes back and the
+// menu stays where it is. Any other B closes the form, the game's way.
+bool MenuFormCancel(uint32_t form) {
+    if (g_color_open < 0 || g_color_form != form) return false;
+    ColorStripClose(false);
+    PlayMenuSound(kSoundBack);
+    return true;
+}
+
+// Settings persist on the way out instead of through a SAVE SETTINGS row.
+//
+// Every cvar here already applies the instant it changes - the row only
+// ever controlled whether larecomp.toml was rewritten, which is not a
+// distinction worth a menu entry. Writing on each change was the other
+// option and is worse: SaveConfig rewrites the whole file, and scrubbing a
+// value moves it several times a second, so it would put a full file write
+// in the middle of gameplay. Saving once per menu left, and only when
+// something actually moved, costs one write and no menu row.
+void MenuFormClosed(uint32_t form) {
+    if (g_color_form == form) ColorStripClose(false);
+    const int m = MenuOfForm(form);
+    MC_INFO("[pause-menu] left '{}'", m >= 0 ? kMenus[m].label : "?");
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+}
+
+// An open strip owns the d-pad: left/right walk it, the rest of the list's
+// keys are held so the highlight cannot leave the row while it is open. The
+// list's own codes (sub_826334D0): '/' '1' up, '0' '2' down, '3' '5' left,
+// '4' '6' right; '9' ':' are the other repeating ones (sub_82631E20).
+bool MenuFormKey(uint32_t form, uint32_t key) {
+    if (g_color_open < 0 || g_color_form != form) return false;
+    switch (key & 0xFF) {
+    case '3':
+    case '5': ColorStripStep(-1); return true;
+    case '4':
+    case '6': ColorStripStep(+1); return true;
+    case '/':
+    case '0':
+    case '1':
+    case '2':
+    case '9':
+    case ':': return true;
+    default:  return false;
+    }
 }
 
 // ── Submenu creation ───────────────────────────────────────────────────
 
+// The SETTINGS-tab buttons, once, the first time the pause menu comes up. The
+// forms themselves wait for their first open.
 void EnsureSubmenus() {
     if (g_menus_created.load(std::memory_order_relaxed)) return;
+    InitThemePalette();
 
     uint32_t settings = g_settingsmenu_addr.load(std::memory_order_relaxed);
     if (!settings) return;
 
     for (int m = 0; m < kNumMenus; ++m) {
         const MenuDef& md = kMenus[m];
+        // Reached through the Submenu row that opens it, not from here.
+        if (MenuIsNested(m)) continue;
 
         uint32_t btn = CreateNewMenuState(md.btn_key);
         if (!btn) return;
@@ -1662,73 +2463,11 @@ void EnsureSubmenus() {
         EnsureStringTableText(md.btn_key, md.label);
         g_menu_btn_key[m].store(AllocGuestString(md.btn_key),
                                 std::memory_order_relaxed);
-
-        uint32_t sub = CreateUIMenuState(md.menu_key);
-        if (!sub) return;
-
-        // Give the submenu an owner. vhsmState's "find my root" virtual
-        // (vtable+204, sub_8268D638) walks up the +32 parent chain; a state
-        // with no parent falls through to a lookup that returns NULL, and
-        // sub_82224678 dereferences that result without checking:
-        //
-        //     v5 = vfunc204(state, ...);
-        //     v7 = *(uint8_t **)(*(_DWORD *)v5 + 20);   // NULL -> access violation
-        //
-        // Any state transition started from inside a submenu (opening the
-        // camera, for one) takes that path, so a parentless submenu is a
-        // crash waiting to happen. Only the back-pointer is set: `settings`
-        // keeps its own child list untouched (the submenu is entered through
-        // GuestStackPush, not by being listed), so this stays invisible while
-        // making the root walk terminate.
-        WriteGuestBE32(sub + 32, settings);
-
-        g_menu_state[m].store(sub, std::memory_order_relaxed);
-        EnsureStringTableText(md.menu_key, md.label);
-
-        // One child state per item. These are no longer what the list draws —
-        // the native rows are — but the submenu is entered through the state
-        // stack and Hook_PopulateRedirect still resolves against them, so the
-        // tree stays the shape the engine expects.
-        for (int i = 0; i < MenuItemCount(md); ++i) {
-            const ItemDef& it = MenuItemAt(md, i);
-            uint32_t st = CreateNewMenuState(it.key);
-            if (!st) continue;
-            GuestAppendMenuItem(sub, st);
-        }
-
-        // Rows come after the states so the string-table labels they cache
-        // are the final ones.
-        BuildNativeRows(m);
-
-        MC_INFO("[pause-menu] submenu '{}' created ({} items)",
-                md.label, MenuItemCount(md));
+        MC_INFO("[pause-menu] '{}' button added to SETTINGS ({} rows)", md.label,
+                MenuItemCount(md));
     }
 
-    constexpr const char* kQuitButtonKey = "PM_RxQuit";
-    uint32_t quit = CreateNewMenuState(kQuitButtonKey);
-    uint32_t quit_key = AllocGuestString(kQuitButtonKey);
-    if (!quit || !quit_key) return;
-    GuestAppendMenuItem(settings, quit);
-    EnsureStringTableText(kQuitButtonKey, "QUIT");
-    g_quit_btn_key.store(quit_key, std::memory_order_relaxed);
-
     g_menus_created.store(true, std::memory_order_relaxed);
-}
-
-// ── Submenu item click handler ─────────────────────────────────────────
-
-bool HandleSubmenuIndexClick(uint32_t idx) {
-    int m = g_active_menu.load(std::memory_order_relaxed);
-    if (m < 0) return false;
-    const MenuDef& md = kMenus[m];
-    if (idx >= uint32_t(MenuItemCount(md))) return false;
-
-    // A steps the value forward, the same as right. The row holds the select
-    // itself, so the cvar move has to be mirrored back into it.
-    ClickItem(MenuItemAt(md, int(idx)));
-    SyncNativeRowsFromCvars(m);
-    PopulateSubmenuFlash();
-    return true;
 }
 
 // ── Options > Controller: extra "PLAYSTATION BUTTONS" row ──────────────
@@ -1774,6 +2513,11 @@ void RefreshList(uint32_t list) {
 // afterwards. Re-runs cleanly if the screen object is rebuilt, because the
 // fresh ctor puts the count back to 8 and the array slot no longer matches.
 void EnsureControllerButtonRow(uint32_t list) {
+    // The row moved to the RexGlue SETTINGS > INTERFACE > UI menu as "BUTTON LAYOUT" (three
+    // values -- xbox, playstation, keyboard -- where this checkbox only had two, and a click
+    // here silently left the keyboard layout). Nothing is added to the controller screen now.
+    constexpr bool kRowOnControllerScreen = false;
+    if (!kRowOnControllerScreen) return;
     if (list <= kCtrlListOffset) return;
     uint32_t screen = list - kCtrlListOffset;
     if (ReadGuestBE32(screen) != kCtrlScreenVtable) return;
@@ -1840,6 +2584,9 @@ void InitPauseMenuHooks() {
             if (idx >= 0)
                 g_pending_language.store(idx, std::memory_order_relaxed);
         });
+    // Runs from FinishSetupAfterBootBuild, before ReXApp::LaunchModule starts
+    // the guest -- the only point where the online cvar is still the player's.
+    InitOnlineSettings();
     MC_INFO("[pause-menu] hooks registered");
 }
 
@@ -1888,6 +2635,8 @@ bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) {
     }
 
     EnsureSubmenus();
+    EnsureLanOnlineItems();
+    KeepOnlineChoiceInConfig();
 
     {
         const int lang =
@@ -1917,66 +2666,25 @@ bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4) {
     return true;
 }
 
+// A on the pause screen (0x826686B8, sub_82668660 right before its own
+// PM_GameOptions check). Our SETTINGS buttons open their menus the way that
+// one opens OPTIONS: form->vfunc+0x2C0(form, pause form). The pause screen only
+// gets the pad while it is the top form, so A inside one of our menus never
+// lands here -- that is the menu's own handler (MenuFormAccept). true leaves
+// through 0x82668704, the handler's `return 1`.
 bool Hook_PMLodTrafficClick(PPCRegister& r3, PPCRegister& r31) {
     (void)r31;
-
-    if (g_active_menu.load(std::memory_order_relaxed) >= 0) {
-        uint32_t list = g_pauselist_addr.load(std::memory_order_relaxed);
-        uint32_t idx = list ? ReadGuestBE32(list + 184) : 0xFFFFFFFFu;
-        HandleSubmenuIndexClick(idx);
-        // Consume every action press inside the submenu so the game's own
-        // handler never resolves the selection against SettingsMenu items.
-        r3.u64 = 1;
-        return true;
-    }
-
-    uint32_t quit_key = g_quit_btn_key.load(std::memory_order_relaxed);
-    if (quit_key && IsGuestButtonClicked(quit_key)) {
-        auto* runtime = rex::Runtime::instance();
-        auto* app_context = runtime ? runtime->app_context() : nullptr;
-        if (app_context) {
-            MC_INFO("[pause-menu] quit requested from Settings");
-            app_context->RequestDeferredQuit();
-        } else {
-            MC_WARN("[pause-menu] quit requested, but app context is unavailable");
-        }
-        r3.u64 = 1;
-        return true;
-    }
 
     for (int m = 0; m < kNumMenus; ++m) {
         uint32_t btn_key = g_menu_btn_key[m].load(std::memory_order_relaxed);
         if (!btn_key || !IsGuestButtonClicked(btn_key)) continue;
 
-        uint32_t sub = g_menu_state[m].load(std::memory_order_relaxed);
-        uint32_t list = g_last_list.load(std::memory_order_relaxed);
-        if (!sub || !list) return false;
-        if (!BuildNativeRows(m)) return false;
-
-        g_pauselist_addr.store(list, std::memory_order_relaxed);
-
-        // Every row source the list has, saved together: the tab is put back
-        // by restoring all of them, not just the adapter.
-        g_saved_list_adapter.store(ReadGuestBE32(list + kListStateSource),
-                                   std::memory_order_relaxed);
-        g_saved_list_select.store(ReadGuestBE32(list + kListSelect),
-                                  std::memory_order_relaxed);
-        g_saved_list_rows.store(ReadGuestBE32(list + kListRows),
-                                std::memory_order_relaxed);
-        g_saved_list_countcap.store(ReadGuestBE32(list + kListCountCap),
-                                    std::memory_order_relaxed);
-        g_saved_list_table.store(ReadGuestBE32(list + kListTableSource),
-                                 std::memory_order_relaxed);
-        g_saved_list_scroll.store(ReadGuestBE32(list + kListScroll),
-                                  std::memory_order_relaxed);
-        WriteGuestBE32(list + kListSelect, 0);
-        WriteGuestBE32(list + kListScroll, 0);
-
-        g_active_menu.store(m, std::memory_order_relaxed);
-        SyncNativeRowsFromCvars(m);  // pick up F4-menu changes made meanwhile
-        GuestStackPush(sub);
-        PopulateSubmenuFlash();
-        MC_INFO("[pause-menu] entered '{}' submenu", kMenus[m].label);
+        const uint32_t pause = larecomp::ui::PauseForm();
+        if (!OpenMenu(m, pause)) {
+            MC_WARN("[pause-menu] could not open '{}' (pause form 0x{:08X})",
+                    kMenus[m].label, pause);
+            return false;
+        }
         r3.u64 = 1;
         return true;
     }
@@ -2094,15 +2802,12 @@ bool Hook_ListViewPopulate(PPCRegister& r3) {
         }
     }
 
-    // While inside a RexGlue submenu, every re-render of the pause tab's own
-    // list (and only that one) draws the active menu's native rows. This runs
-    // at the top of the renderer, before a single row is written, so reading
-    // the rows' select here is what carries a left/right through to the cvar
-    // in the same frame it is drawn.
-    int m = g_active_menu.load(std::memory_order_relaxed);
-    if (m >= 0 && list == g_pauselist_addr.load(std::memory_order_relaxed)) {
+    // One of our menus' own lists. This runs at the top of the renderer,
+    // before a single row is written, so reading the rows' select here is what
+    // carries a left/right through to the cvar in the same frame it is drawn.
+    const int m = MenuOfList(list);
+    if (m >= 0) {
         PollNativeRows(m);
-        InstallNativeRows(m, list);
 
         if (CvarGetBool("carbon_menu_diag")) {
             const NativeRows& nr = g_rows[m];
@@ -2815,6 +3520,8 @@ void Hook_CarbonGarageSelect(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
 void Hook_CarbonUiTick(PPCRegister& r3) {
     (void)r3;
 
+    LanOnlineTick();
+
     // Pad edges are tracked once and shared by both consumers.
     static uint16_t prev_buttons = 0;
     uint16_t pressed = 0;
@@ -3118,6 +3825,10 @@ static bool TireOffsetOnStateActivate(const char* name) {
 }
 
 void CarbonOnStateActivate(const char* name, uint32_t state) {
+    if (const uint32_t lan = g_lan_state.load(std::memory_order_relaxed); lan && state)
+        g_lan_active.store(state == lan || ReadGuestBE32(state + 32) == lan,
+                           std::memory_order_relaxed);
+
     if (name && CvarGetBool("carbon_menu_diag")) {
         // Arming by state name does not work: the whole tree activates once
         // while it is built at boot, PM_GameOptions included, so the dump
@@ -3191,104 +3902,91 @@ void CarbonOnStateActivate(const char* name, uint32_t state) {
     }
 }
 
-// sub_826309E0 is the container key dispatch: it walks the children at +68
-// (count u16 at +72) and stops at the first one whose vfunc32 consumes the
-// key. The pause screen lists the tab strip before its list, so left and
-// right are eaten there and the list — and with it the selected row — never
-// sees them. That is why the arrows work on the game's own Options > Game
-// rows but not on ours: that screen is a different one, with no tab strip
-// in front of its list.
-//
-// Hooked past the prologue, where r31 is the container, r28 the key and r27
-// the dispatch argument; returning true jumps to the "consumed" exit. While
-// a RexGlue submenu is open, left and right go straight to the pause list,
-// skipping every sibling ahead of it. Nothing reads the pad here — this is
-// still the game routing its own key to its own widget.
-// Two child arrays have to be walked, not one. sub_82667D88 builds the pause
-// screen like this:
-//
-//   screen+68   -> { screen+2192, screen+176 (the tab strip) }
-//   tabstrip+180 -> { pause_tab_mainmenu, _gamemodes, _settings, ... }
-//   pause_tab_settings+68 -> { the list we drive }
-//
-// so the tab strip keeps its tabs at +180/+184 while everything else uses
-// +68/+72. Walking only +68 stopped at the tab strip, which is exactly the
-// widget that eats left and right — and why the first attempt reported
-// holds=false for every container.
-//
-// +180 is a plain dword on other classes (on the list itself it is the
-// packed row count), so it is only followed when it reads as a heap pointer
-// with a sane count behind it.
-static bool NodeReachesList(uint32_t node, uint32_t list, int depth,
-                            int& budget) {
-    if (!node || depth > 8 || --budget < 0) return false;
-
-    const uint32_t arrays[2] = {68, 180};
-    for (uint32_t off : arrays) {
-        uint32_t arr = ReadGuestBE32(node + off);
-        uint16_t n = ReadGuestBE16(node + off + 4);
-        if (arr < 0xB0000000 || !n || n > 64) continue;
-        for (uint16_t i = 0; i < n; ++i) {
-            uint32_t child = ReadGuestBE32(arr + uint32_t(4 * i));
-            if (child == list) return true;
-            if (child >= 0xB0000000 &&
-                NodeReachesList(child, list, depth + 1, budget))
-                return true;
-        }
-    }
-    return false;
+// 0x8222064C, sub_82220308 (FlashNavigator filling a menu's "menu" object),
+// right after the element of one child was written and its fs_ attributes
+// applied (sub_8221EF60) -- past the select it writes for every element.
+// r27 = the menu, r28 = the element, r30 = the child.
+void Hook_LanFillElement(PPCRegister& r27, PPCRegister& r28, PPCRegister& r30) {
+    (void)r27;
+    const uint32_t online = g_lan_online.load(std::memory_order_relaxed);
+    if (!online || r30.u32 != online) return;
+    const uint32_t element = r28.u32;
+    const int checked = LanOnlineChecked() ? 1 : 0;
+    SwfSetInt(element, kStr_type, kElementTypeCheckbox);
+    SwfSetInt(element, kStr_select, checked);
+    g_lan_drawn_checked = checked;
+    static std::atomic<bool> told{false};
+    if (!told.exchange(true))
+        MC_INFO("[online] SYSTEM LINK pop-up: ONLINE drawn as a checkbox "
+                "(element 0x{:08X} type {} select {})",
+                element, SwfGetInt(element, kStr_type), SwfGetInt(element, kStr_select));
 }
 
-bool Hook_MenuKeyDispatch(PPCRegister& r31, PPCRegister& r28,
-                          PPCRegister& r27) {
-    if (g_active_menu.load(std::memory_order_relaxed) < 0) return false;
+// 0x8263B9F0, sub_8263B9A0 (UIMenu's event handler), once the event is known
+// to come from the menu input; r30 = the menu, r28 = the event (code first).
+// The ONLINE child has no transition behind it, so the game does nothing with
+// A there. Every A that reaches the SYSTEM LINK menu is logged with the row it
+// lands on. true leaves through loc_8263BBC0 (li r3, 1): handled.
+bool Hook_LanAccept(PPCRegister& r30, PPCRegister& r28) {
+    const uint32_t lan = g_lan_state.load(std::memory_order_relaxed);
+    const uint32_t live = g_live_state.load(std::memory_order_relaxed);
+    const uint32_t menu = r30.u32;
+    if (!menu || (menu != lan && menu != live) || ReadGuestBE32(r28.u32) != kMenuEventAccept)
+        return false;
 
-    const uint32_t key = uint32_t(r28.u64) & 0xFF;
-    if (key < '3' || key > '6') return false;  // left '3'/'5', right '4'/'6'
+    const uint32_t online = g_lan_online.load(std::memory_order_relaxed);
+    const uint32_t selected_fn = MenuVfunc(menu, kMenuSelectedVfunc);
+    const uint32_t child_fn = MenuVfunc(menu, kMenuChildAtVfunc);
+    const int32_t row = selected_fn ? int32_t(CallGuestFn1(selected_fn, menu)) : -1;
+    const uint32_t child =
+        (row >= 0 && child_fn) ? CallGuestFn2(child_fn, menu, uint32_t(row)) : 0;
+    const uint32_t browser = (menu == lan ? g_lan_browser : g_live_browser).load(std::memory_order_relaxed);
+    if (browser && child == browser) {
+        MC_INFO("[online] SERVER BROWSER from the {} menu", menu == lan ? "SYSTEM LINK" : "XBOX LIVE");
+        larecomp::ServerBrowserOpen();
+        if (const uint32_t sound = ReadGuestBE32(kMenuSelectSound))
+            CallGuestFn1(kPlaySoundFn, sound);
+        return true;
+    }
+    if (menu != lan) return false;
+    MC_INFO("[online] A in SYSTEM LINK on row {} (0x{:08X}{})", row, child,
+            child && child == online ? ", ONLINE" : "");
+    if (!online || child != online) return false;
 
-    uint32_t list = g_pauselist_addr.load(std::memory_order_relaxed);
-    if (!list) return false;
-
-    uint32_t container = static_cast<uint32_t>(r31.u64);
-    int budget = 512;
-    const bool holds = NodeReachesList(container, list, 0, budget);
-
-    if (CvarGetBool("carbon_menu_diag"))
-        MC_INFO("[pm-key] key='{}' container=0x{:08X} list=0x{:08X} holds={}",
-                char(key), container, list, holds);
-
-    if (!holds) return false;
-
-    uint32_t vtable = ReadGuestBE32(list);
-    uint32_t fn = vtable ? ReadGuestBE32(vtable + 32) : 0;
-    if (!fn) return false;
-
-    CallGuestFn3(fn, list, key, static_cast<uint32_t>(r27.u64));
+    LanOnlineToggle();
+    if (const uint32_t sound = ReadGuestBE32(kMenuSelectSound))
+        CallGuestFn1(kPlaySoundFn, sound);
     return true;
 }
 
+// sub_826309E0, the container key dispatch (0x82630A14, past the prologue: r31
+// container, r28 key, r27 the dispatch argument). It used to send left/right
+// past the pause screen's tab strip into the list a RexGlue submenu borrowed;
+// our menus are forms of their own now (ui_forms.h), with no tab strip in
+// front of their lists, so the game's dispatch already gets every key to the
+// right widget. Kept, inert, for the toml entry that names it.
+bool Hook_MenuKeyDispatch(PPCRegister& r31, PPCRegister& r28,
+                          PPCRegister& r27) {
+    (void)r31;
+    (void)r28;
+    (void)r27;
+    return false;
+}
+
+// sub_82220308 (FlashNavigator populate, 0x82220314). It redirected the
+// SettingsMenu populate to the UIMenu state a submenu was pushed as; a form
+// renders its own list, so there is nothing to redirect. Kept, inert, for the
+// toml entry that names it.
 bool Hook_PopulateRedirect(PPCRegister& r3) {
-    int m = g_active_menu.load(std::memory_order_relaxed);
-    uint32_t settings = g_settingsmenu_addr.load(std::memory_order_relaxed);
-    uint32_t state = static_cast<uint32_t>(r3.u64);
-
-    if (m < 0 || !settings || state != settings)
-        return false;
-
-    uint32_t sub = g_menu_state[m].load(std::memory_order_relaxed);
-    if (sub) {
-        r3.u64 = sub;
-        MC_INFO("[pause-menu] populate redirected to '{}' 0x{:08X}",
-                kMenus[m].label, sub);
-    }
+    (void)r3;
     return false;
 }
 
 // Null-guard for sub_82661210, which loads the list table-source pointer from
-// [list+0xC0] and dereferences it at +0xC with no null check. Our native rows
-// deliberately clear that field (see InstallNativeRows), so it is legitimately
-// null while a RexGlue submenu is open. Returning true jumps to 0x82661290,
-// the function's own `li r3, 0` early-out.
+// [list+0xC0] and dereferences it at +0xC with no null check. A list whose rows
+// are row objects (ours, in their forms) has no table source at all, so it is
+// legitimately null there. Returning true jumps to 0x82661290, the function's
+// own `li r3, 0` early-out.
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30) {
     return r30.u32 == 0;
 }
@@ -3324,71 +4022,101 @@ bool PauseMenuPopStack() {
     return GuestStackPop();
 }
 
-// While g_active_menu is set our hooks consume every action press so the game's
-// own handler never sees a click meant for one of our submenus. That is right
-// while the submenu is on screen, and very wrong once it is not: the cutscene
-// gallery leaves the menu by unpausing the game rather than by a B press, so
-// nothing ever cleared the flag and the pause menu went on eating input with
-// nothing drawn -- the game ran, and no button did anything.
+// Closes whatever of ours is open, top first, the way B would, for the exits
+// that are not a B press. The cutscene gallery is one: it unpauses the game to
+// play a scene, and a menu of ours left open over the pause screen would keep
+// the pad after the pause menu itself went away.
 void PauseMenuLeaveSubmenu() {
-    if (g_active_menu.exchange(-1, std::memory_order_relaxed) < 0) return;
-    MC_INFO("[pause-menu] left the submenu without a cancel press "
-            "(a replay took the menu away)");
-    // A RexGlue submenu does not own a list: it HIJACKS the pause menu's own
-    // one, saving its row source, table source, selection, scroll and caps and
-    // writing ours over them. Hook_RexGlueCancel puts them back on a B press --
-    // and for a long time that was the only route out, so nothing else had to.
-    // Leaving through here without restoring left the game's list pointing at
-    // our rows; the next time the pause menu was opened it walked that and
-    // died on a null vtable. Same restore, any exit.
-    // Exactly one pop, and only because g_active_menu was set -- that means our
-    // own submenu really is the top of the stack, the same thing a B press would
-    // take off. Leaving it there is what crashed sub_82224678 (a submenu with no
-    // parent, vfunc204 null) the next time the player opened the pause menu.
-    // Popping any further is what took the HUD away. Pop first, then restore,
-    // in that order, because that is the order the B press has always used.
-    GuestStackPop();
-    RestoreTabDisplay(0);
+    ColorStripClose(false);
+    int closed = 0;
+    for (uint32_t form = larecomp::ui::TopmostOurForm(); form && closed < kNumMenus;
+         form = larecomp::ui::TopmostOurForm()) {
+        larecomp::ui::CloseForm(form);
+        ++closed;
+    }
+    if (!closed) return;
+    MC_INFO("[pause-menu] {} menu(s) of ours closed without a B press", closed);
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
 }
 
+// Once per UI update, guest thread (swf_dom.cpp's mcUIManager::Update wrapper).
+// Our menus only ever open over the pause screen; if the game takes the pause
+// screen away under them on its own, they go with it instead of being left on
+// the open-form stack holding the pad. The color strip closes as soon as its
+// form is not the top one.
+
+void PauseMenuFormsTick() {
+    if (g_color_open >= 0 && larecomp::ui::TopForm() != g_color_form) ColorStripClose(false);
+    if (!larecomp::ui::TopmostOurForm()) return;
+    if (larecomp::ui::FormIsOpen(larecomp::ui::PauseForm())) return;
+    MC_WARN("[pause-menu] the pause screen closed under our menus; closing them");
+    PauseMenuLeaveSubmenu();
+}
+
+// B on the pause screen (0x82669864). It used to take a borrowed list back
+// from a RexGlue submenu; our menus are forms now, and B on them is the game's
+// own (sub_82653EF8, reached through ui_forms.cpp). Kept, inert, for the toml
+// entry that names it.
 bool Hook_RexGlueCancel(PPCRegister& r31) {
-    if (g_active_menu.load(std::memory_order_relaxed) < 0)
-        return false;
+    (void)r31;
+    return false;
+}
 
-    g_active_menu.store(-1, std::memory_order_relaxed);
-    GuestStackPop();
+bool PauseMenuUiOptionsOpen() {
+    const int m = TopMenu();
+    return m >= 0 && std::string_view(kMenus[m].menu_key) == "RxUiMenu";
+}
 
-    uint32_t controller = static_cast<uint32_t>(r31.u64);
-    RestoreTabDisplay(controller);
+// Guest thread, like the rows themselves. Values are read back from the cvars,
+// except the open strip's, which is the cursor (it is also the live cvar).
+bool PauseMenuColorButtons(PauseMenuColorRows* out) {
+    if (!out) return false;
+    *out = PauseMenuColorRows{};
+    const uint32_t form = larecomp::ui::TopForm();
+    const int m = MenuOfForm(form);
+    if (m < 0) return false;
+    const MenuDef& md = kMenus[m];
+    const bool strip_here = g_color_open >= 0 && g_color_form == form;
 
-    // Settings persist on the way out instead of through a SAVE SETTINGS row.
-    //
-    // Every cvar here already applies the instant it changes - the row only
-    // ever controlled whether larecomp.toml was rewritten, which is not a
-    // distinction worth a menu entry. Writing on each change was the other
-    // option and is worse: SaveConfig rewrites the whole file, and scrubbing a
-    // slider moves a value several times a second, so it would put a full file
-    // write in the middle of gameplay. Saving once per submenu visit, and only
-    // when something actually moved, costs one write and no menu row.
-    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) {
-        auto config_path =
-            rex::filesystem::GetExecutableFolder() / "larecomp.toml";
-        rex::cvar::SaveConfig(config_path);
-        WriteDeferredCvars(config_path);
-        MC_INFO("[pause-menu] settings saved to {}", config_path.string());
+    // Up/down are held while a strip is open (MenuFormKey). Should one get
+    // past that anyway, the strip must not stay drawn on a row the highlight
+    // has left, nor be confirmed from another one.
+    if (strip_here) {
+        const int sel = larecomp::ui::FormSelectedRow(form);
+        if (sel != g_color_open) {
+            MC_INFO("[pause-menu] color strip closed: the highlight moved to row {}", sel);
+            ColorStripClose(false);
+        }
     }
-
-    MC_INFO("[pause-menu] left RexGlue submenu");
-    return true;
+    const int open = g_color_open >= 0 && g_color_form == form ? g_color_open : -1;
+    for (int i = 0; i < MenuItemCount(md) && out->count < PauseMenuColorRows::kMax; ++i) {
+        const ItemDef& it = MenuItemAt(md, i);
+        if (it.kind != ItemKind::kColor) continue;
+        const int k = out->count++;
+        out->row[k] = i;
+        out->cvar[k] = it.cvar;
+        out->value[k] = open == i ? g_color_cursor : ItemValueIndex(it);
+        if (open == i) out->open = k;
+    }
+    out->values = out->count ? ItemValueCount(MenuItemAt(md, out->row[0])) : 0;
+    out->scroll = larecomp::ui::FormScroll(form);
+    return out->count > 0;
 }
 
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include "pause_menu.h"
 
 bool PauseMenuPopStack() { return false; }
+bool PauseMenuUiOptionsOpen() { return false; }
+bool PauseMenuColorButtons(PauseMenuColorRows* out) {
+    if (out) *out = PauseMenuColorRows{};
+    return false;
+}
 void PauseMenuLeaveSubmenu() {}
+void PauseMenuFormsTick() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) { return false; }
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4) { return false; }
@@ -3401,6 +4129,8 @@ void Hook_CarbonGarageProbe(PPCRegister& r3) {}
 void Hook_CarbonGarageSelect(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
                              PPCRegister& r6) {}
 void Hook_CarbonUiTick(PPCRegister& r3) {}
+void Hook_LanFillElement(PPCRegister& r27, PPCRegister& r28, PPCRegister& r30) {}
+bool Hook_LanAccept(PPCRegister& r30, PPCRegister& r28) { return false; }
 void CarbonOnStateActivate(const char* name, uint32_t state) {}
 bool Hook_FlashCommandLog(PPCRegister& r5) { return false; }
 bool Hook_PopulateRedirect(PPCRegister& r3) { return false; }

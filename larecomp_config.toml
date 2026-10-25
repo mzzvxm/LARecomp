@@ -25818,6 +25818,28 @@ name = "Hook_MenuKeyDispatch"
 registers = ["r31", "r28", "r27"]
 jump_address_on_true = 0x82630A98
 
+# SYSTEM LINK > ONLINE (pause_menu.cpp). A janela SYSTEM LINK não é lista: é o
+# UIMenu "LAN" desenhado pelo FlashNavigator no filme popup.xsf, e sub_82220308
+# escreve um elemento por filho (text1, property1, count, select; nunca type).
+# 0x8222064C = logo depois do elemento de um filho ficar pronto (passou o select
+# de 0x82220638 e os atributos fs_ de sub_8221EF60). r27 = menu, r28 = elemento,
+# r30 = filho. O do ONLINE ganha type 4 (checkbox do Fillmenu) e select 0/1.
+[[midasm_hook]]
+address = 0x8222064C
+name = "Hook_LanFillElement"
+registers = ["r27", "r28", "r30"]
+after_instruction = false
+
+# A no SYSTEM LINK: sub_8263B9A0 (tratador de eventos do UIMenu, vtable
+# 0x82020654 +0x124), já sabendo que o evento vem da entrada de menu. r30 =
+# menu, r28 = evento (código 52 = A). true sai por loc_8263BBC0 (li r3, 1:
+# tratado) com o quadro já montado.
+[[midasm_hook]]
+address = 0x8263B9F0
+name = "Hook_LanAccept"
+registers = ["r30", "r28"]
+jump_address_on_true = 0x8263BBC0
+
 # LZX streaming decompression probe (lzx_stats cvar). Brackets the
 # XMemDecompressStream call (bl sub_8244FF20 at 0x821D5EB8) inside
 # zlibInflater::InflateBegin (sub_821D5E10), which runs on the two
