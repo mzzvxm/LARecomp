@@ -44,6 +44,12 @@ REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(frame_delta_after_limit, true, "MCLA/Performance",
+    "Measure the frame delta after the frame limiter's wait instead of before it, so the "
+    "simulated step matches the interval frames are shown at. Off feeds the guest's own "
+    "delta, which it reads before the limiter sleeps. Has no effect when uncapped.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(frame_limit_spin, true, "MCLA/Performance",
     "Hit the frame-limit deadline with a PAUSE spin. Off restores the sleep-then-yield wait, "
     "which gives the core back instead of burning it.")
@@ -137,7 +143,10 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
 std::atomic<uint64_t> g_limiter_spin_us{0};
 std::atomic<uint64_t> g_limiter_spins{0};
 
-static void EnforceFrameLimit() {
+// Returns the wall time, in microseconds, between the moments the limiter
+// released the previous frame and this one. 0 when it did not pace this frame:
+// uncapped, another thread, or the first frame after the cap turned on.
+static uint64_t EnforceFrameLimit() {
     // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
     // change after process start, and this runs on every single frame.
     static const int32_t env_limit = [] {
@@ -150,18 +159,22 @@ static void EnforceFrameLimit() {
     // bottom does recover from that in one frame, but relying on it means the
     // stale value is load-bearing; clearing it here keeps the invariant simple.
     static uint64_t next_us = 0;
+    // When the previous paced frame was released. Only read once next_us is
+    // set, and set together with it, so it cannot go stale across an
+    // UNCAPPED period either.
+    static uint64_t last_release_us = 0;
 
     const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
     if (limit <= 0) {
         next_us = 0;
-        return;
+        return 0;
     }
 
     const double period_us = 1000000.0 / static_cast<double>(limit);
 
     // sub_821BDA90 has multiple callers across threads; bind limiter to main thread
     static const std::thread::id owner = std::this_thread::get_id();
-    if (std::this_thread::get_id() != owner) return;
+    if (std::this_thread::get_id() != owner) return 0;
 
     auto now_us = [] {
         return static_cast<uint64_t>(
@@ -173,7 +186,8 @@ static void EnforceFrameLimit() {
     uint64_t now = now_us();
     if (next_us == 0) {
         next_us = now + static_cast<uint64_t>(period_us);
-        return;
+        last_release_us = now;
+        return 0;
     }
 
     if (now < next_us) {
@@ -202,6 +216,9 @@ static void EnforceFrameLimit() {
     uint64_t after = now_us();
     next_us += static_cast<uint64_t>(period_us);
     if (next_us < after) next_us = after + static_cast<uint64_t>(period_us);
+    const uint64_t interval_us = after - last_release_us;
+    last_release_us = after;
+    return interval_us;
 }
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
@@ -262,7 +279,24 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // also silently disabled the FPS LIMIT row and the CITY LOD slider, which
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
-    EnforceFrameLimit();
+    //
+    // The guest read its timer at the top of sub_821BDA90, before the limiter
+    // sleeps, so its delta is period + this frame's work - the previous
+    // frame's work. Frames reach the screen evenly, but each one simulates a
+    // step that is off by however much the workload changed, and everything
+    // moving shuffles back and forth. Measured at a 30 FPS cap the machine
+    // holds easily: steps of 27-40 ms. The interval between the limiter's
+    // releases is the interval the frames are shown at, so that goes to the
+    // guest instead. Over many frames both sum to the same wall time; only
+    // the per-frame split differs. Uncapped there is no wait to measure
+    // around, and the guest's own delta stays.
+    const uint64_t released_us = EnforceFrameLimit();
+    if (released_us != 0 && REXCVAR_GET(frame_delta_after_limit)) {
+        uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+        if (hz == 0) hz = 50000000;
+        const uint64_t ticks = released_us * hz / 1000000u;
+        r8.u64 = ticks > cap ? cap : ticks;
+    }
     UpdateCityLODMemory();
     RecordFrameTime();
     TickGuestProfiler();
