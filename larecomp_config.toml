@@ -24934,6 +24934,31 @@ out_directory_path = "generated"
 0x8220B7D0 = { name = "SimpleListForm_SetEnabled", size = 0x40 }
 0x822B88B8 = { name = "OpponentManager_LoadOpponentByCarConfig", size = 0x10 }
 
+# Code-referenced functions whose address is built in code (lis + addi) for callbacks
+# (e.g. delivery missions, script bindings). Discovered by Brandon's code pointer scanner.
+0x821BA0AC = { name = "sub_821BA0AC" }
+0x82203E28 = { name = "sub_82203E28" }
+0x8225BEE8 = { name = "sub_8225BEE8" }
+0x822C9828 = { name = "sub_822C9828" }
+0x822C9DC8 = { name = "sub_822C9DC8" }
+0x82338AFC = { name = "sub_82338AFC" }
+0x82435AA0 = { name = "sub_82435AA0" }
+0x82435AB0 = { name = "sub_82435AB0" }
+0x8249CA48 = { name = "sub_8249CA48" }
+0x8249CA68 = { name = "sub_8249CA68" }
+0x8249CA88 = { name = "sub_8249CA88" }
+0x8249CAA8 = { name = "sub_8249CAA8" }
+0x8249CAC8 = { name = "sub_8249CAC8" }
+0x8249CC10 = { name = "sub_8249CC10" }
+0x82554060 = { name = "sub_82554060" }
+0x82554DC0 = { name = "sub_82554DC0" }
+0x826555C8 = { name = "sub_826555C8" }
+0x826809E0 = { name = "sub_826809E0" }
+0x826C06A8 = { name = "sub_826C06A8" }
+0x8271C200 = { name = "sub_8271C200" }
+0x827363D0 = { name = "sub_827363D0" }
+0x827B8728 = { name = "sub_827B8728" }
+
 [[midasm_hook]]
 address = 0x822C2F08
 name = "SkipIntro"
