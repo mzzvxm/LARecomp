@@ -77,8 +77,9 @@ REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
     .allowed({"auto", "en", "es", "fr", "de", "it", "pt"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_ui_timing_fix, true, "MCLA/UI",
-    "Pace UI Flash movies (menus, popups, pause menu) to native 30 Hz")
+REXCVAR_DEFINE_BOOL(mcla_ui_timing_fix, false, "MCLA/UI",
+    "Pace UI Flash movies (menus, popups, pause menu) to native 30 Hz. Disabled by default "
+    "to ensure fluid high-refresh UI rendering (60/120+ FPS) and prevent race finish slowdowns.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(mcla_ui_hud_rate, 60, "MCLA/UI",
@@ -541,13 +542,10 @@ void ReportPacing(const uint8_t* base, int64_t now) {
 }
 }  // namespace
 
-// Whether a player context belongs to one of the UI manager's screens other
-// than the HUD map.
-static bool IsUiScreen(const uint8_t* base, uint32_t context) {
+// Look up a movie's registered name from its player context.
+static std::string MovieNameForContext(const uint8_t* base, uint32_t context) {
     const uint32_t manager = ReadGuestU32(base, kUiManagerPtr);
-    if (!manager) {
-        return false;
-    }
+    if (!manager) return {};
     const uint32_t buckets = ReadGuestU32(base, manager + 60);
     const uint32_t count = ReadGuestU32(base, manager + 64) >> 16;
     for (uint32_t i = 0; buckets && i < count && i < 256; i++) {
@@ -558,20 +556,58 @@ static bool IsUiScreen(const uint8_t* base, uint32_t context) {
             if (movie && ReadGuestU32(base, movie + 56) == context) {
                 const uint32_t name_ptr = ReadGuestU32(base, node);
                 if (name_ptr >= 0x10000) {
-                    const char* s = reinterpret_cast<const char*>(base + name_ptr);
-                    return std::strncmp(s, "HUDMAPMOVIE", 11) != 0;
+                    return GuestString(base, name_ptr, 64);
                 }
-                return true;
+                return {};
             }
         }
     }
-    return false;
+    return {};
+}
+
+// Whether a Flash movie should be throttled to 30 Hz.
+static bool ShouldPaceMovie(std::string_view name) {
+    if (name.empty()) return false;
+
+    // Check ui_movie_pacing cvar first (default: "PHOTOALBUMMOVIE")
+    const std::string list = REXCVAR_GET(ui_movie_pacing);
+    if (!list.empty()) {
+        if (list == "*") return true;
+        size_t pos = 0;
+        while (pos <= list.size()) {
+            size_t end = list.find(',', pos);
+            if (end == std::string::npos) end = list.size();
+            std::string_view item(list.data() + pos, end - pos);
+            while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
+            while (!item.empty() && item.back() == ' ') item.remove_suffix(1);
+            if (!item.empty() && item == name) return true;
+            pos = end + 1;
+        }
+    }
+
+    if (!REXCVAR_GET(mcla_ui_timing_fix)) {
+        return false;
+    }
+
+    // When mcla_ui_timing_fix is explicitly enabled, exempt HUD and post-race / results / cutscene
+    // movies so gameplay and race finish cutscenes never slow down into slow motion.
+    if (name.find("HUD") != std::string_view::npos ||
+        name.find("RACE") != std::string_view::npos ||
+        name.find("POST") != std::string_view::npos ||
+        name.find("RESULT") != std::string_view::npos ||
+        name.find("PODIUM") != std::string_view::npos ||
+        name.find("CINE") != std::string_view::npos ||
+        name.find("END") != std::string_view::npos) {
+        return false;
+    }
+
+    return true;
 }
 
 // 0x825EDC6C: beq cr6,0x825EDC78 in sub_825EDC08, the movie advance.
 // r31 is the movie's player context. Jumping to 0x825EDD44 holds the advance back.
 bool mcla_ui_movie_advance(PPCRegister& r25, PPCRegister& r31) {
-    if (!REXCVAR_GET(mcla_ui_timing_fix) || r25.u32 == 0) {
+    if (r25.u32 == 0) {
         return false;
     }
     auto* runtime = rex::Runtime::instance();
@@ -588,7 +624,7 @@ bool mcla_ui_movie_advance(PPCRegister& r25, PPCRegister& r31) {
         uint32_t context;
         uint64_t next_us;
         uint64_t checked_us;
-        bool screen;
+        bool should_pace;
     };
     static std::mutex mutex;
     static std::array<Schedule, 32> schedules{};
@@ -612,16 +648,13 @@ bool mcla_ui_movie_advance(PPCRegister& r25, PPCRegister& r31) {
     }
     if (now - schedule->checked_us > 1'000'000) {
         schedule->checked_us = now;
-        schedule->screen = IsUiScreen(base, context);
+        const std::string name = MovieNameForContext(base, context);
+        schedule->should_pace = ShouldPaceMovie(name);
     }
-    uint64_t period_us = kScreenPeriodMicros;
-    if (!schedule->screen) {
-        const int32_t hud_rate = REXCVAR_GET(mcla_ui_hud_rate);
-        if (hud_rate <= 0) {
-            return false;
-        }
-        period_us = 1'000'000ull / uint64_t(hud_rate);
+    if (!schedule->should_pace) {
+        return false;
     }
+    const uint64_t period_us = kScreenPeriodMicros;
     if (schedule->next_us && now + period_us / 4 < schedule->next_us) {
         return true;  // hold back advance
     }

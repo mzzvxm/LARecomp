@@ -174,11 +174,13 @@ class LarecompApp : public rex::ReXApp {
       // settable live from the pause menu instead of needing a relaunch. Listed
       // by cvar name so the mapping stays discoverable.
       fprintf(f, "\n=== settings that are cvars, not env vars ===\n");
-      for (const char* c : {"real_frame_delta", "fps_limit", "lod_city_scale",
+      for (const char* c : {"real_frame_delta", "fps_limit", "pace_at_swap", "lod_city_scale",
                             "lod_traffic_scale", "skip_intro", "intro_original_speed", "disable_dof",
                             "disable_msaa", "disable_motion_blur",
                             "disable_imposter_shadows", "disable_rubberbanding",
-                            "smooth_chassis_depth", "smooth_chase_cam",
+                            "smooth_chassis_depth", "smooth_bike_gyro", "smooth_chase_cam",
+                            "smooth_camera_transitions", "scale_camera_shake", "camera_shake_scale",
+                            "camera_shake_smoothing", "mcla_ui_timing_fix",
                             "chase_cam_smoothing_factor", "enable_ambient_tuning",
                             "traffic_unspawn_dist", "ped_density_scale",
                             "parked_car_scale", "speed_units"}) {
