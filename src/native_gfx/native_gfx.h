@@ -57,6 +57,11 @@ void NotifyFrameBoundary();
 // the render gate. No per-frame serialization or disk writes are performed.
 void NotifyWindowCloseRequested();
 
+// Async renderer (mcla_native_gfx_async): the newest guest fence value that may
+// be published as retired, given the commands still queued and the value the
+// game is still issuing under. False when async is off and nothing limits it.
+bool AsyncRetireLimit(uint32_t issued_now, uint32_t* limit);
+
 // D3DResource_Lock (sub_82421CA0), the funnel every lock reaches.
 // Observation only: the lock is where the guest waits on the resource fence,
 // which is the machinery a future ownership step has to take over.

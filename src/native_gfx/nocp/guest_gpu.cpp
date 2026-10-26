@@ -4,6 +4,7 @@
 
 #include "guest_gpu.h"
 #include "nocp_app.h"
+#include "../native_gfx.h"
 
 #include <algorithm>
 #include <atomic>
@@ -214,7 +215,14 @@ void RetireGuestFences(uint8_t* base, uint32_t device_va) {
   if (s.fence_acquired) {
     return;
   }
-  PublishRetiredFence(base, device_va, fence.issued);
+  // With the async renderer, "handed out" is not "done": retire a value only
+  // once every draw gathered under it has executed (AsyncRetireLimit).
+  uint32_t publish = fence.issued;
+  uint32_t limit = 0;
+  if (AsyncRetireLimit(fence.issued, &limit)) {
+    publish = limit;
+  }
+  PublishRetiredFence(base, device_va, publish);
   s.fence_publishes.fetch_add(1, std::memory_order_relaxed);
 }
 
