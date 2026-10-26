@@ -33,6 +33,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/online/server_browser/browser_ui.h"
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/save_protect.h"
+#include "mc_engine/achievement_toast.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
@@ -428,6 +429,16 @@ class LarecompApp : public rex::ReXApp {
     }
     return mcla::native_gfx::nocp::AttachPresentation(window(), imgui_drawer(),
                                                       immediate_drawer());
+  }
+
+  // Achievement pop-ups, registered with the ImGui drawer only while one is
+  // on screen (src/mc_engine/achievement_toast.h). The SDK's toast is registered for the
+  // whole session, which made the presenter repaint at the monitor's refresh
+  // rate whatever the frame cap.
+  std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog()
+      override {
+    return mcla::MakeOnDemandToast(rex::ReXApp::CreateAchievementNotificationDialog(),
+                                   imgui_drawer(), app_context());
   }
 
   void OnWindowPixelSizeChanged(uint32_t pixel_width, uint32_t pixel_height) override {
