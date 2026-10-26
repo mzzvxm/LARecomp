@@ -229,6 +229,29 @@ static double g_geometry_phase_us[5] = {};
 
 const double* GeometryPhaseMicroseconds() { return g_geometry_phase_us; }
 
+namespace {
+// Vector storage handed back by the per-draw caller (RecycleGeometrySnapshot)
+// and reused by the next snapshot on the same thread, so a draw no longer
+// allocates and frees its three vectors (Wine's heap takes a lock per call;
+// ~3% of the render thread while driving).
+thread_local GeometrySnapshot t_spare;
+
+void TakeSpareGeometryStorage(GeometrySnapshot& s) {
+  s.input_layout.swap(t_spare.input_layout);
+  s.streams.swap(t_spare.streams);
+  s.unsupplied.swap(t_spare.unsupplied);
+  s.input_layout.clear();
+  s.streams.clear();
+  s.unsupplied.clear();
+}
+}  // namespace
+
+void RecycleGeometrySnapshot(GeometrySnapshot& s) {
+  t_spare.input_layout.swap(s.input_layout);
+  t_spare.streams.swap(s.streams);
+  t_spare.unsupplied.swap(s.unsupplied);
+}
+
 GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                                        uint32_t element_count, uint32_t start_element,
                                        int32_t base_vertex, bool indexed, ShaderDatabase& shaders,
@@ -250,6 +273,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
   };
 
   GeometrySnapshot s;
+  TakeSpareGeometryStorage(s);
   s.primitive_type = primitive_type;
   s.element_count = element_count;
   s.start_element = start_element;

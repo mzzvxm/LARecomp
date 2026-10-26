@@ -187,6 +187,10 @@ struct GeometrySnapshot {
 // and this says which part of it.
 const double* GeometryPhaseMicroseconds();
 
+// Returns a snapshot's vector storage for reuse by the next BuildGeometrySnapshot
+// on this thread. Call when the snapshot is no longer needed.
+void RecycleGeometrySnapshot(GeometrySnapshot& s);
+
 GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                                        uint32_t element_count, uint32_t start_element,
                                        int32_t base_vertex, bool indexed, ShaderDatabase& shaders,

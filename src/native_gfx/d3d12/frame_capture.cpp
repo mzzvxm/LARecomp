@@ -1874,6 +1874,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   GeometrySnapshot geom =
       BuildGeometrySnapshot(base, dev, primitive_type, element_count, start_element, base_vertex,
                             indexed, shaders, nullptr, nullptr, nullptr, inline_geom);
+  // Hands the vectors back on every return path below (declared after geom,
+  // so it runs before geom is destroyed).
+  struct RecycleOnExit {
+    GeometrySnapshot& g;
+    ~RecycleOnExit() { RecycleGeometrySnapshot(g); }
+  } recycle_geom{geom};
   ProfileAdd(g_profile.state_us, t_state);
   if (!geom.complete || geom.streams.empty()) {
     ++g_cap.rej_geometry;
