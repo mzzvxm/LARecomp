@@ -22,7 +22,9 @@ class NativeSwapChain {
   bool IsInitialized() const { return swap_chain_ != nullptr; }
 
   bool ResizeBuffers(DeviceManager& dm, uint32_t width, uint32_t height);
-  bool Present(bool vsync);
+  // sync_interval: 0 presents immediately (tearing allowed when supported),
+  // N waits for the Nth vblank.
+  bool Present(uint32_t sync_interval);
 
   // Synchronizes with GPU frame latency to prevent queue buildup. Call before recording next frame.
   void WaitForNextFrameBuffer();

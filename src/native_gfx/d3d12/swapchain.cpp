@@ -196,14 +196,13 @@ D3D12_CPU_DESCRIPTOR_HANDLE NativeSwapChain::GetCurrentBackBufferRTV() const {
   return handle;
 }
 
-bool NativeSwapChain::Present(bool vsync) {
+bool NativeSwapChain::Present(uint32_t sync_interval) {
   if (!IsInitialized()) {
     return false;
   }
 
-  UINT sync_interval = vsync ? 1 : 0;
   UINT flags = 0;
-  if (!vsync && tearing_supported_) {
+  if (sync_interval == 0 && tearing_supported_) {
     flags |= DXGI_PRESENT_ALLOW_TEARING;
   }
 
