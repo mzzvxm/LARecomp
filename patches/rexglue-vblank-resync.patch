@@ -1,0 +1,25 @@
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..a9ea8e2 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -162,9 +162,19 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+           uint64_t interval_ticks =
+               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+-          while (current_time - last_frame_time >= interval_ticks) {
++          // The guest tick count can step backwards when clock scaling re-bases,
++          // which made the unsigned difference wrap and this loop fire vblanks
++          // without end. Resync instead, and never replay more than a quarter
++          // second of missed vblanks.
++          int64_t behind = int64_t(current_time - last_frame_time);
++          if (behind < 0 || uint64_t(behind) > guest_tick_frequency / 4) {
++            last_frame_time = current_time;
++            behind = 0;
++          }
++          while (uint64_t(behind) >= interval_ticks) {
+             MarkVblank();
+             last_frame_time += interval_ticks;
++            behind -= int64_t(interval_ticks);
+           }
+           rex::thread::Sleep(std::chrono::milliseconds(1));
+         }
