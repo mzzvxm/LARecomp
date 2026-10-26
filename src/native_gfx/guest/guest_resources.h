@@ -39,6 +39,8 @@
 
 #include <cstdint>
 
+#include <rex/system/xmemory.h>
+
 namespace mcla::native_gfx {
 
 // --- vertex fetch constant -------------------------------------------------
@@ -157,6 +159,31 @@ inline constexpr uint32_t kGrcVbD3DObjectOffset = 28;
 
 inline constexpr uint32_t kDevPixelShaderOffset = 12692;
 inline constexpr uint32_t kDevVertexShaderOffset = 12696;
+
+// --- reads of device state (mcla_native_gfx_async) ---------------------------
+// With the async renderer a draw executes on the renderer thread after the
+// game has moved on, so the device bytes it was gathered from are copied with
+// it. While it executes, that thread's reads inside the copied range are served
+// from the copy instead of the live device. Per thread: the game thread's own
+// reads are untouched, and the redirect is empty (data == nullptr) everywhere
+// else, which makes GuestReadPtr the plain GuestPtr.
+struct GuestReadRedirect {
+  uint32_t lo = 0;
+  uint32_t hi = 0;
+  const uint8_t* data = nullptr;
+};
+extern thread_local GuestReadRedirect t_guest_read_redirect;
+
+// The host pointer for `size` bytes at guest address `ea`: the copy when the
+// redirect covers the whole span, otherwise live guest memory.
+inline const uint8_t* GuestReadPtr(const uint8_t* base, uint32_t ea, uint32_t size) {
+  const GuestReadRedirect& r = t_guest_read_redirect;
+  if (r.data && ea >= r.lo && ea < r.hi && size <= r.hi - ea) {
+    return r.data + (ea - r.lo);
+  }
+  return reinterpret_cast<const uint8_t*>(
+      rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea));
+}
 
 // --- guest memory validity --------------------------------------------------
 // The membase is a sparse 4 GiB reservation: an address being numerically in

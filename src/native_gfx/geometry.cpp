@@ -88,7 +88,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
     return 0;
   }
   uint32_t v;
-  std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+  std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
   return __builtin_bswap32(v);
 }
 
@@ -96,8 +96,7 @@ inline uint8_t R8(const uint8_t* base, uint32_t ea) {
   if (ea < 0x1000u) {
     return 0;
   }
-  return *reinterpret_cast<const uint8_t*>(
-      rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea));
+  return *GuestReadPtr(base, ea, 1);
 }
 
 // DeclUsage -> the semantic names XenosRecomp emits (USAGE_TYPES order).
