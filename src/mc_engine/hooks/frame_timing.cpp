@@ -80,6 +80,33 @@ REXCVAR_DEFINE_BOOL(frame_limit_spin, true, "MCLA/Performance",
     "which gives the core back instead of burning it.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// Where the frame limiter waits. At the start of the frame (the engine timer),
+// the simulation step is measured before the wait while the frame reaches the
+// screen after a variable amount of work, so at the cap moving objects advance
+// unevenly against their display times and the picture shakes. Holding the
+// finished frame at its swap instead is what vsync does, with a precise clock:
+// frames are presented at even intervals and each step measures one interval.
+REXCVAR_DEFINE_BOOL(pace_at_swap, true, "MCLA/Performance",
+    "Hold frames to the FPS target at presentation (the swap), like a precise vsync, "
+    "instead of before the game's update. Eliminates micro-judder and camera/car shake at capped framerates.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+enum PaceSite { kPaceAtTimer, kPaceAtSwap };
+
+template <PaceSite kSite>
+static uint64_t EnforceFrameLimit();
+
+static bool PaceAtSwapEnabled() {
+    static const bool env_pace = [] {
+        if (const char* e = std::getenv("MCLA_PACE_AT_SWAP")) {
+            return std::strcmp(e, "0") != 0 && std::strcmp(e, "false") != 0;
+        }
+        return true;
+    }();
+    if (!env_pace) return false;
+    return REXCVAR_GET(pace_at_swap);
+}
+
 REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
     "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
     "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
@@ -177,7 +204,7 @@ static std::atomic<bool> g_engine_timer_started{false};
 //
 // Fast intros leave such loops unpaced only until the engine timer first runs,
 // which is the start-up logos; loading screens after that keep the 30.
-static void PaceUntimedSwap() {
+static void PaceUntimedSwap(bool timed) {
     static std::atomic<uint64_t> last_swap_us{0};
     static std::atomic<bool> last_untimed{false};
     constexpr uint64_t kPeriodUs = 1000000ull / 30;
@@ -187,7 +214,6 @@ static void PaceUntimedSwap() {
                 std::chrono::steady_clock::now().time_since_epoch())
                 .count());
     };
-    const bool timed = g_engine_timer_ran_since_swap.exchange(false, std::memory_order_relaxed);
     const bool untimed_loop = !timed && last_untimed.exchange(true, std::memory_order_relaxed);
     if (timed) {
         last_untimed.store(false, std::memory_order_relaxed);
@@ -210,7 +236,13 @@ static void PaceUntimedSwap() {
 bool Patch_60FPS_Byte(PPCRegister& r11) {
     // This instruction runs once per swap, which makes it the one place that
     // sees the frames the engine timer does not.
-    PaceUntimedSwap();
+    // A swap that follows a pass through the engine timer is a gameplay frame:
+    // with pace_at_swap it is held here to the FPS target at presentation.
+    const bool timed = g_engine_timer_ran_since_swap.exchange(false, std::memory_order_relaxed);
+    if (timed && PaceAtSwapEnabled()) {
+        EnforceFrameLimit<kPaceAtSwap>();
+    }
+    PaceUntimedSwap(timed);
     if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
@@ -354,6 +386,7 @@ static double AutoPacePeriod(uint64_t work_us, double min_period_us) {
 // Returns the wall time, in microseconds, between the moments the limiter
 // released the previous frame and this one. 0 when it did not pace this frame:
 // uncapped, another thread, or the first frame after the cap turned on.
+template <PaceSite kSite>
 static uint64_t EnforceFrameLimit() {
     // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
     // change after process start, and this runs on every single frame.
@@ -381,9 +414,12 @@ static uint64_t EnforceFrameLimit() {
 
     double period_us = limit > 0 ? 1000000.0 / static_cast<double>(limit) : 0.0;
 
-    // sub_821BDA90 has multiple callers across threads; bind limiter to main thread
-    static const std::thread::id owner = std::this_thread::get_id();
-    if (std::this_thread::get_id() != owner) return 0;
+    // sub_821BDA90 has multiple callers across threads; bind timer-site limiter to main thread.
+    // kPaceAtSwap runs sequentially from the presenting thread at the swap.
+    if constexpr (kSite == kPaceAtTimer) {
+        static const std::thread::id owner = std::this_thread::get_id();
+        if (std::this_thread::get_id() != owner) return 0;
+    }
 
     auto now_us = [] {
         return static_cast<uint64_t>(
@@ -511,12 +547,14 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // guest instead. Over many frames both sum to the same wall time; only
     // the per-frame split differs. Uncapped there is no wait to measure
     // around, and the guest's own delta stays.
-    const uint64_t released_us = EnforceFrameLimit();
-    if (released_us != 0 && REXCVAR_GET(frame_delta_after_limit)) {
-        uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
-        if (hz == 0) hz = 50000000;
-        const uint64_t ticks = released_us * hz / 1000000u;
-        r8.u64 = ticks > cap ? cap : ticks;
+    if (!PaceAtSwapEnabled()) {
+        const uint64_t released_us = EnforceFrameLimit<kPaceAtTimer>();
+        if (released_us != 0 && REXCVAR_GET(frame_delta_after_limit)) {
+            uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+            if (hz == 0) hz = 50000000;
+            const uint64_t ticks = released_us * hz / 1000000u;
+            r8.u64 = ticks > cap ? cap : ticks;
+        }
     }
     g_engine_timer_ran_since_swap.store(true, std::memory_order_relaxed);
     g_engine_timer_started.store(true, std::memory_order_relaxed);

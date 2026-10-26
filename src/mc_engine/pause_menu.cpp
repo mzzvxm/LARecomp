@@ -1328,6 +1328,7 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, int(sizeof(kFpsCapVals) / sizeof(kFpsCapVals[0])), "%.0f", "", "UNCAPPED"),
+    Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // PaceUntimedSwap in hooks/frame_timing.cpp. Live, but the intro has
     // already played by the time this menu can be opened, so a change shows
     // on the next launch.

@@ -137,7 +137,7 @@ class LarecompApp : public rex::ReXApp {
         "texture_cache_memory_limit_hard",
         "texture_cache_memory_limit_render_to_texture",
         "anisotropic_override", "gpu_allow_invalid_fetch_constants", "log_level",
-        "audio_maxqframes", "audio_mute",
+        "audio_maxqframes", "audio_mute", "pace_at_swap",
     };
     std::filesystem::create_directories("logs");
     if (FILE* f = fopen("logs/effective_config.txt", "w")) {
