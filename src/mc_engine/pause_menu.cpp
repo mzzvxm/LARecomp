@@ -1336,6 +1336,8 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
+    Bool("PM_RxSmoothCam",     "smooth_chase_cam",       "CHASE CAM FIX: "),
+    Bool("PM_RxCameraShake",   "scale_camera_shake",     "CAMERA SHAKE FIX: "),
 };
 
 // Everything that trades image quality for framerate, in one place.

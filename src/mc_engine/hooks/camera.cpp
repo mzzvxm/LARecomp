@@ -50,14 +50,19 @@ REXCVAR_DEFINE_BOOL(smooth_camera_transitions, true, "MCLA/Camera",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 
-// BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling
+// BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling & low-pass filtering
 REXCVAR_DEFINE_BOOL(scale_camera_shake, true, "MCLA/Camera",
-    "Fix: Scale camera shake intensity across framerates (60+ FPS) to prevent violent noise jitter during drifts, burnouts, and crashes.")
+    "Fix: Scale and low-pass filter camera shake intensity across framerates (60+ FPS) to prevent violent high-frequency jitter during high speeds, drifts, burnouts, and crashes.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(camera_shake_scale, 0.6, "MCLA/Camera",
-    "Camera shake intensity multiplier (0.0 = disabled, 0.6 = balanced PC rumble, 1.0 = full console shake).")
+REXCVAR_DEFINE_DOUBLE(camera_shake_scale, 0.35, "MCLA/Camera",
+    "Camera shake intensity multiplier (0.0 = disabled, 0.35 = balanced smooth PC rumble, 1.0 = full console shake).")
     .range(0.0, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(camera_shake_smoothing, 25.0, "MCLA/Camera",
+    "Camera shake low-pass filter responsiveness in rad/s (10.0 = very smooth/damped, 25.0 = natural physical rumble, 50.0+ = snappy/raw).")
+    .range(5.0, 100.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(debug_cam, "off", "MCLA/Camera",
@@ -352,24 +357,60 @@ void MCLACameraLookAtSmoothing(PPCRegister& f0) {
     ApplyCameraSmoothing(f0);
 }
 
-// BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling
+// BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling & low-pass filtering
 // In sub_82315000 at 0x82315188:
 // The engine evaluates harmonic wave oscillations and discrete white noise from an LCG PRNG.
-// Scaling rotational shake displacements (f29 pitch, f30 roll, f31 yaw) eliminates excessive
-// high-frequency chatter at high framerates (60, 120, 240 FPS) while maintaining 100% natural
-// camera orientation and responsive feel.
+// At 60/120/144+ FPS, discrete PRNG noise fires 2x to 5x faster than on console, causing violent
+// high-frequency angular jerk and jarring screen jitter at high speeds.
+// By applying continuous-time exponential low-pass filtering:
+//   s(t + dt) = s(t) + (1 - exp(-lambda * dt)) * (target * scale - s(t))
+// and soft-compressing extreme high-speed spikes, the camera retains visceral physical rumble
+// while completely eliminating eye-straining high-frequency chatter.
+static double s_smooth_pitch = 0.0;
+static double s_smooth_roll  = 0.0;
+static double s_smooth_yaw   = 0.0;
+static bool   s_shake_init   = false;
+
 void MCLACameraShakeFilter(PPCRegister& f31, PPCRegister& f30, PPCRegister& f29, PPCRegister& f0, PPCRegister& r1) {
     if (!REXCVAR_GET(scale_camera_shake)) return;
-
-    const double user_scale = REXCVAR_GET(camera_shake_scale);
-    if (user_scale == 1.0) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    f29.f64 *= user_scale;
-    f30.f64 *= user_scale;
-    f31.f64 *= user_scale;
+    const double user_scale = REXCVAR_GET(camera_shake_scale);
+    const float dt = ReadGuestF32(base, kGuestFrameDelta);
+
+    // If game was paused, loading, or delta is anomalous, snap to target
+    if (!s_shake_init || dt <= 0.0f || dt > 0.15f) {
+        s_smooth_pitch = f29.f64 * user_scale;
+        s_smooth_roll  = f30.f64 * user_scale;
+        s_smooth_yaw   = f31.f64 * user_scale;
+        s_shake_init = true;
+    } else {
+        const double lambda = REXCVAR_GET(camera_shake_smoothing);
+        const double alpha = 1.0 - std::exp(-lambda * static_cast<double>(dt));
+
+        // Soft-compress large angular kicks at high speeds to prevent violent jolting
+        auto SoftCompress = [](double val, double max_val) -> double {
+            if (max_val <= 0.0) return val;
+            const double s = val / max_val;
+            return max_val * std::tanh(s);
+        };
+
+        // Comfort threshold in radians (~0.05 rad is ~2.86 deg)
+        constexpr double kMaxComfortAngle = 0.05;
+        const double target_p = SoftCompress(f29.f64 * user_scale, kMaxComfortAngle);
+        const double target_r = SoftCompress(f30.f64 * user_scale, kMaxComfortAngle);
+        const double target_y = SoftCompress(f31.f64 * user_scale, kMaxComfortAngle);
+
+        s_smooth_pitch += alpha * (target_p - s_smooth_pitch);
+        s_smooth_roll  += alpha * (target_r - s_smooth_roll);
+        s_smooth_yaw   += alpha * (target_y - s_smooth_yaw);
+    }
+
+    f29.f64 = s_smooth_pitch;
+    f30.f64 = s_smooth_roll;
+    f31.f64 = s_smooth_yaw;
     f0.f64 = f31.f64 * f31.f64;
 
     const uint32_t sp = static_cast<uint32_t>(r1.u64);
