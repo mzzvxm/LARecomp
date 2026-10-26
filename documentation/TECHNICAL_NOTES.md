@@ -93,6 +93,20 @@ Measured on the title screen at a 30 FPS cap the machine holds easily, tracing `
 
 When the limiter paces a frame, `MCLAFrameDelta` replaces `r8` with the interval between the moments the limiter released the previous frame and this one, converted to guest ticks and clamped by the same hitch cap. Both deltas sum to the same wall time over a run, so the rate-invariance check above still holds. Uncapped, or on threads other than the one the limiter is bound to, the guest's own delta stays. `frame_delta_after_limit=false` restores the old behaviour.
 
+### A steady cap above 30: `fps_limit_auto`
+
+The step stays even only while the cap holds. Uncapped, or at a cap the machine misses some of the time, frame times swing from one frame to the next (17 to 34 ms measured while driving), and each frame still moves the world by the previous frame's length. A frame that stays on screen briefly carries a large move and a long one a small move, so traffic and the cockpit camera lurch, worse with speed. A 30 FPS cap removes it completely.
+
+`fps_limit_auto` finds the highest cap that holds. It paces at a whole number of display refreshes, `n`, so every frame on a fixed refresh display lasts the same time and simulates the same step (144 Hz: 6.9, 13.9, 20.8, 27.8 ms...):
+
+- One step slower (`n + 1`) when 3 of the last 10 frames took more than 2% over the period. One hitch does not do it. A frame longer than the slowest step (about 100 ms) counts as a stall and is ignored, so a loading burst does not push the rate down.
+- One step faster (`n - 1`) after 2 s of consecutive frames whose work would fit 75% of the faster period. The game thread's time does not show when the renderer will run out at the faster rate, so a climb that falls back within 5 s makes the next try at that rate wait four times longer: 2, 8, 32, then 60 s. Without that it flipped between 72 and 48 every 2 s.
+- `fps_limit` or `MCLA_FPS_CAP` above 0 is the fastest step it may pick.
+
+The refresh rate comes from `QueryDisplayConfig` for the primary display, as a fraction, falling back to `EnumDisplaySettingsW`, which rounds 59.94 Hz down to 59. Pacing at 59 on a 59.94 Hz display with vsync on repeats a frame about every second. It is read once at startup. Off Windows it assumes 60 Hz; `fps_limit_auto_refresh_hz` overrides both. The pacer stays a wall-clock limiter. With the native renderer's own swapchain, `mcla_native_gfx_present_interval=1` presents on the vblank, so each paced frame lasts exactly `n` refreshes instead of tearing; 0 keeps the immediate, tearing present.
+
+Measured under Proton on a 144 Hz fixed refresh display with the native renderer, uncapped, `fps_limit_auto` and present interval 1. Title screen: settled at 48 FPS, the simulated step over the last 400 frames 20.9 ms with a standard deviation of 0.01 ms, MangoHud 48.0 FPS; two tries at 72 fell back within 0.1 s and backed off. Driving in cockpit view on the highway, 4224 frames: 2861 at 27.8 ms (36 FPS), 1116 at 20.9 ms (48 FPS), 86 at 34.8 ms (28.8 FPS), and no lurching where the same drive uncapped lurched badly.
+
 ---
 
 ## 4. The long-session frame rate collapse

@@ -42,6 +42,8 @@ Two rows sound similar and are not:
 | **REAL FRAME DELTA** (`real_frame_delta`) | Feeds the simulation the measured frame time instead of the fixed 30 Hz timestep, and unlocks presentation from every-other-vblank. This is what makes physics, camera and traffic correct above 30 FPS. It is not a frame rate cap. |
 | **FPS LIMIT** (`fps_limit`) | The cap itself: 30, 60, 120, 144 or UNCAPPED. A wall-clock limiter, so frame times stay evenly spaced, and the simulation steps by the interval the limiter releases frames at (`frame_delta_after_limit`). |
 
+`fps_limit_auto` (config or command line, not in the menu) replaces the fixed cap with one that follows the display: it paces at the refresh rate divided by a whole number (144 Hz: 144, 72, 48, 36...) and picks the highest of those the machine holds, dropping a step when frames run long and climbing back after about 2 s of headroom. Use it on a fixed refresh display when the frame rate swings, since uneven frame times make traffic and the camera lurch at speed. `fps_limit` (or `MCLA_FPS_CAP`) above 0 is the highest rate it may pick, so the default of 60 stops it at 48 on a 144 Hz display; set `fps_limit = 0` to let it reach 72. On Windows it reads the primary display's refresh rate at startup; set `fps_limit_auto_refresh_hz` if that is wrong or on another platform. With the native renderer's own swapchain, add `mcla_native_gfx_present_interval = 1` so each frame lasts exactly that many refreshes. A variable refresh (G-Sync/FreeSync) display does not need any of this.
+
 Turning REAL FRAME DELTA off puts the engine back on its original 30 Hz timestep. The hitch clamp, the FPS cap and the city LOD scale keep working either way; earlier builds gated all three behind it, so switching it off silently disabled the cap and the LOD slider too.
 
 ### Pause menu
@@ -68,7 +70,7 @@ Only these are read. Everything else is a cvar.
 |---|---|---|
 | `REX_LOG_LEVEL` | `trace` on non-Release | Set to `warn`. |
 | `MCLA_GAME_DATA` | auto-detect | Folder holding `default.xex`. An invalid path warns and falls back to auto-detection. |
-| `MCLA_FPS_CAP` | unset | Overrides the `fps_limit` cvar. |
+| `MCLA_FPS_CAP` | unset | Overrides the `fps_limit` cvar, including as the ceiling for `fps_limit_auto`. |
 | `MCLA_MAX_FRAME_MS` | `125` | Caps how far one frame can advance the clock. Clamped to 16-1000 ms; cannot be turned off. |
 | `MCLA_TIMING_LOG` | off | `1` writes the timing log described below. |
 | `MCLA_TEX_SOFT` / `MCLA_TEX_HARD` / `MCLA_TEX_RTT` | `1536` / `2048` / `64` | Texture cache limits in MB. |

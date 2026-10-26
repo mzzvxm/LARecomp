@@ -7,11 +7,15 @@
 #include <rex/cvar.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <thread>
+#include <vector>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
 #endif
@@ -28,6 +32,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../guest_profiler.h"
+#include "../logging.h"
 
 // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
 REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
@@ -42,6 +47,20 @@ REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
 REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
     "Frame rate cap (0 = uncapped, 60 = 60 FPS, 120 = 120 FPS, 144 = 144 FPS).")
     .range(0, 360)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(fps_limit_auto, false, "MCLA/Performance",
+    "Pace frames at the highest rate the machine holds steadily, chosen from the display's "
+    "refresh divided by a whole number (144 Hz: 72, 48, 36...). Drops a step when frames "
+    "run long and climbs back only after ~2 s of headroom, so frame times stay even and moving "
+    "things do not judder. fps_limit (or MCLA_FPS_CAP), when above 0, is the highest rate it "
+    "may pick. Pointless on a variable refresh display.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(fps_limit_auto_refresh_hz, 0, "MCLA/Performance",
+    "Display refresh rate for fps_limit_auto. 0 = ask Windows for the primary display's "
+    "rate once at startup (other platforms assume 60).")
+    .range(0, 500)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(frame_delta_after_limit, true, "MCLA/Performance",
@@ -143,6 +162,134 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
 std::atomic<uint64_t> g_limiter_spin_us{0};
 std::atomic<uint64_t> g_limiter_spins{0};
 
+// fps_limit_auto: the refresh period times a whole number of refreshes per
+// frame. Every frame then lasts the same number of refreshes and simulates the
+// same step, which is what a steady 30 FPS cap gets right and an uneven 40-60
+// gets wrong: each frame moves the world by the previous frame's length, so
+// frame times jumping between 17 and 34 ms make everything lurch.
+#if defined(_WIN32)
+// The primary display's refresh rate. QueryDisplayConfig gives it as a
+// fraction (59.94 Hz is 60000/1001); EnumDisplaySettingsW rounds it down to
+// whole hertz, and pacing at 59 on a 59.94 Hz display with vsync on shows one
+// frame twice about every second. 0 if neither answers.
+static double PrimaryDisplayRefreshHz() {
+    UINT32 path_count = 0;
+    UINT32 mode_count = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) ==
+        ERROR_SUCCESS) {
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count,
+                               modes.data(), nullptr) == ERROR_SUCCESS) {
+            for (UINT32 i = 0; i < path_count; ++i) {
+                const UINT32 src = paths[i].sourceInfo.modeInfoIdx;
+                if (src >= mode_count ||
+                    modes[src].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+                    continue;
+                }
+                // The primary display is the one at the desktop origin.
+                const POINTL pos = modes[src].sourceMode.position;
+                const DISPLAYCONFIG_RATIONAL rate = paths[i].targetInfo.refreshRate;
+                if (pos.x == 0 && pos.y == 0 && rate.Numerator != 0 && rate.Denominator != 0) {
+                    return static_cast<double>(rate.Numerator) / rate.Denominator;
+                }
+            }
+        }
+    }
+    DEVMODEW dm = {};
+    dm.dmSize = sizeof(dm);
+    if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) {
+        return static_cast<double>(dm.dmDisplayFrequency);
+    }
+    return 0.0;
+}
+#endif
+
+static double RefreshPeriodUs() {
+    const int32_t forced = REXCVAR_GET(fps_limit_auto_refresh_hz);
+    if (forced > 0) return 1000000.0 / forced;
+    // Read once: a refresh rate change while the game runs is not picked up.
+    static const double detected = [] {
+        double hz = 0.0;
+#if defined(_WIN32)
+        hz = PrimaryDisplayRefreshHz();
+#endif
+        if (hz < 1.0) {
+            hz = 60.0;
+            MC_INFO("[frame-timing] fps_limit_auto: display refresh unknown, assuming 60 Hz; "
+                    "set fps_limit_auto_refresh_hz");
+        } else {
+            MC_INFO("[frame-timing] fps_limit_auto: display refresh {:.3f} Hz", hz);
+        }
+        return 1000000.0 / hz;
+    }();
+    return detected;
+}
+
+// Called only from EnforceFrameLimit, after its owner-thread check, so the
+// state below belongs to one thread. `work_us`: how long the frame that just
+// reached the limiter took, release to arrival, or 0 if there was no previous
+// release to measure from. `min_period_us`: fps_limit's period, or 0.
+static double AutoPacePeriod(uint64_t work_us, double min_period_us) {
+    constexpr uint32_t kMaxRefreshesPerFrame = 64;
+    static uint32_t n = 0;              // refreshes per frame
+    static uint32_t overrun_mask = 0;   // last 10 frames, 1 = ran long
+    static uint32_t headroom_frames = 0;
+    // The game thread's own time says little about the renderer: at the faster
+    // step the renderer is what runs out and the game thread only then waits on
+    // it. So a step up that falls back within 5 s makes the next try at that
+    // rate wait four times longer (2 s, 8 s, 32 s, then 60 s). Indexed by the
+    // refreshes per frame being climbed to, minus one.
+    static std::array<double, kMaxRefreshesPerFrame> climb_wait_us = [] {
+        std::array<double, kMaxRefreshesPerFrame> w;
+        w.fill(2e6);
+        return w;
+    }();
+    static uint64_t frames_since_climb = ~0ull;  // ~0: no climb to blame
+    const double base = RefreshPeriodUs();
+    uint32_t n_min = 1;
+    while (n_min * base < min_period_us * 0.999) ++n_min;
+    // The slowest step it drops to is about 10 fps, unless fps_limit asks for
+    // slower still. Clamping n also covers fps_limit rising while n sits above
+    // the new n_min.
+    const uint32_t n_max = std::max(
+        n_min, std::clamp(static_cast<uint32_t>(100000.0 / base), 1u, kMaxRefreshesPerFrame));
+    n = std::clamp(n, n_min, n_max);
+    if (work_us == 0) return n * base;
+    // A frame too long for even the slowest step says nothing about which step
+    // fits: a load or streaming stall. Counted as an overrun, a few of those in
+    // a row would drop the rate and leave it to climb back at 2 s per step.
+    if (work_us > n_max * base) {
+        headroom_frames = 0;
+        return n * base;
+    }
+    const bool overran = work_us > n * base * 1.02;
+    overrun_mask = ((overrun_mask << 1) | (overran ? 1u : 0u)) & 0x3FFu;
+    if (frames_since_climb != ~0ull) ++frames_since_climb;
+    if (std::popcount(overrun_mask) >= 3 && n < n_max) {
+        if (frames_since_climb != ~0ull && frames_since_climb * n * base < 5e6) {
+            climb_wait_us[n - 1] = std::min(climb_wait_us[n - 1] * 4.0, 60e6);
+        }
+        frames_since_climb = ~0ull;
+        ++n;
+        overrun_mask = 0;
+        headroom_frames = 0;
+        MC_INFO("[frame-timing] fps_limit_auto: down to {:.1f} fps", 1000000.0 / (n * base));
+    } else if (n > n_min && work_us < (n - 1) * base * 0.75) {
+        // Frames that would also fit the faster step, for long enough.
+        if (++headroom_frames * n * base >= climb_wait_us[n - 2]) {
+            --n;
+            frames_since_climb = 0;
+            overrun_mask = 0;
+            headroom_frames = 0;
+            MC_INFO("[frame-timing] fps_limit_auto: up to {:.1f} fps", 1000000.0 / (n * base));
+        }
+    } else {
+        headroom_frames = 0;
+    }
+    return n * base;
+}
+
 // Returns the wall time, in microseconds, between the moments the limiter
 // released the previous frame and this one. 0 when it did not pace this frame:
 // uncapped, another thread, or the first frame after the cap turned on.
@@ -165,12 +312,13 @@ static uint64_t EnforceFrameLimit() {
     static uint64_t last_release_us = 0;
 
     const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
-    if (limit <= 0) {
+    const bool auto_pace = REXCVAR_GET(fps_limit_auto);
+    if (limit <= 0 && !auto_pace) {
         next_us = 0;
         return 0;
     }
 
-    const double period_us = 1000000.0 / static_cast<double>(limit);
+    double period_us = limit > 0 ? 1000000.0 / static_cast<double>(limit) : 0.0;
 
     // sub_821BDA90 has multiple callers across threads; bind limiter to main thread
     static const std::thread::id owner = std::this_thread::get_id();
@@ -184,6 +332,18 @@ static uint64_t EnforceFrameLimit() {
     };
 
     uint64_t now = now_us();
+    if (auto_pace) {
+        static double last_period_us = 0.0;
+        period_us = AutoPacePeriod(next_us != 0 ? now - last_release_us : 0, period_us);
+        // A new step re-plans the current frame's deadline from its release.
+        // The period is truncated to whole microseconds here and below, which
+        // keeps the pacer a fraction of a microsecond per frame ahead of the
+        // display rather than behind it.
+        if (next_us != 0 && period_us != last_period_us) {
+            next_us = last_release_us + static_cast<uint64_t>(period_us);
+        }
+        last_period_us = period_us;
+    }
     if (next_us == 0) {
         next_us = now + static_cast<uint64_t>(period_us);
         last_release_us = now;
