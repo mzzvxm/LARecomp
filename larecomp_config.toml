@@ -24934,6 +24934,18 @@ out_directory_path = "generated"
 0x8220B7D0 = { name = "SimpleListForm_SetEnabled", size = 0x40 }
 0x822B88B8 = { name = "OpponentManager_LoadOpponentByCarConfig", size = 0x10 }
 
+# Data-referenced standalone functions (vtables, initializer tables, callbacks)
+# Discovered by code pointer scanning in mcla-recomp.
+0x823F6F40 = { name = "sub_823F6F40" }
+0x823FB818 = { name = "sub_823FB818" }
+0x823FC880 = { name = "sub_823FC880" }
+0x823FDAD0 = { name = "sub_823FDAD0" }
+0x823FDAD8 = { name = "sub_823FDAD8" }
+0x823FDAE0 = { name = "sub_823FDAE0" }
+0x823FDB08 = { name = "sub_823FDB08" }
+0x823FDB10 = { name = "sub_823FDB10" }
+0x823FDB18 = { name = "sub_823FDB18" }
+
 # Code-referenced functions whose address is built in code (lis + addi) for callbacks
 # (e.g. delivery missions, script bindings). Discovered by Brandon's code pointer scanner.
 0x821BA0AC = { name = "sub_821BA0AC" }
