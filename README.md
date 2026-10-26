@@ -1,5 +1,9 @@
 # LARecomp
 
+> [!CAUTION]
+> At this point, I'm not granting permission to use LARecomp's features in your own recomps. Once we officially launch, feel free to use our code as a reference, but please don't copy and paste our code.
+> Contributions to the repository are welcome.
+
 A static recompilation of **Midnight Club: Los Angeles (Complete Edition)** for Windows x86-64, built on the [ReXGlue SDK](https://github.com/rexglue/rexglue).
 
 Static recompilation translates the Xbox 360 PowerPC code inside the game's `default.xex` into native C++ that compiles and runs on a PC. There is no emulator and no interpreter in the loop. File I/O, GPU commands, audio and threading go through the ReXGlue runtime.
