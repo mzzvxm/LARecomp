@@ -3,6 +3,7 @@
 void InitHooks();
 
 #include <rex/ppc/context.h>
+bool mcla_ui_movie_advance(PPCRegister& r25, PPCRegister& r31);
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0);
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10);
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12);

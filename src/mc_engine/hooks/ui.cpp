@@ -77,6 +77,17 @@ REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
     .allowed({"auto", "en", "es", "fr", "de", "it", "pt"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(mcla_ui_timing_fix, true, "MCLA/UI",
+    "Pace UI Flash movies (menus, popups, pause menu) to native 30 Hz")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(mcla_ui_hud_rate, 60, "MCLA/UI",
+    "How many times a second the in-game HUD advances (gauges, song ticker, "
+    "LOADING badge): 60 (the default) or 120 for smoother needles with a faster "
+    "ticker, 30 as on the console, 0 for every frame")
+    .range(0, 240)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
     "Flash movies advanced at the console's 30 frames a second instead of one frame "
     "per rendered frame. The game steps every UI movie exactly one frame per update, "
@@ -530,47 +541,93 @@ void ReportPacing(const uint8_t* base, int64_t now) {
 }
 }  // namespace
 
-// Movie per-update step. A paced movie that is not due holds back its advance this
-// update; the rest of the update (3D targets, commit) still runs.
-//
-// Except while a photo is being taken (photo_album.cpp): the game hides its whole UI
-// when the countdown ends and grabs the front buffer more than three updates later,
-// counting on the movie having stepped -- and so hidden itself -- in every one of
-// them. Held to 30 steps a second the movie could still be on screen when the grab
-// comes at a few hundred FPS, so for that tenth of a second it steps every update as
-// it always did. The same for a tenth of a second after a discarded photo brings the
-// city back (PhotoCityReturning): the step that hides the full-screen photo must not
-// wait for the next 30 Hz period while the city overwrites the photo's memory.
-extern "C" REX_FUNC(rex_sub_82720898) {
-    const uint32_t entry = ctx.r3.u32;
-    uint32_t held = 0;
-    if (entry && base[entry + kMovieEnabled]) {
-        std::lock_guard<std::mutex> lock(g_pacing_mutex);
-        if (PacedMovie* m = PacingFor(base, entry)) {
-            const int64_t now = SteadyNowNs();
-            if (PhotoCaptureInProgress(base) || PhotoCityReturning()) {
-                m->next_due_ns = 0;  // back on the 30 Hz schedule from the next update
-                ++m->advanced;
-            } else if (AdvanceDue(*m, now)) {
-                ++m->advanced;
-            } else {
-                ++m->held;
-                held = R32(base, entry + kMovieContext);
+// Whether a player context belongs to one of the UI manager's screens other
+// than the HUD map.
+static bool IsUiScreen(const uint8_t* base, uint32_t context) {
+    const uint32_t manager = ReadGuestU32(base, kUiManagerPtr);
+    if (!manager) {
+        return false;
+    }
+    const uint32_t buckets = ReadGuestU32(base, manager + 60);
+    const uint32_t count = ReadGuestU32(base, manager + 64) >> 16;
+    for (uint32_t i = 0; buckets && i < count && i < 256; i++) {
+        uint32_t node = ReadGuestU32(base, buckets + 4 * i);
+        for (int guard = 0; node && guard < 256; guard++, node = ReadGuestU32(base, node + 12)) {
+            const uint32_t holder = ReadGuestU32(base, node + 8);
+            const uint32_t movie = holder ? ReadGuestU32(base, holder) : 0;
+            if (movie && ReadGuestU32(base, movie + 56) == context) {
+                const uint32_t name_ptr = ReadGuestU32(base, node);
+                if (name_ptr >= 0x10000) {
+                    const char* s = reinterpret_cast<const char*>(base + name_ptr);
+                    return std::strncmp(s, "HUDMAPMOVIE", 11) != 0;
+                }
+                return true;
             }
-            ReportPacing(base, now);
         }
     }
-    const uint32_t outer = t_held_context;
-    t_held_context = held;
-    __imp__rex_sub_82720898(ctx, base);
-    t_held_context = outer;
+    return false;
 }
 
-// The swf advance. Only the per-update step above ever holds one back; every other
-// path (sub_82720288's double step on a movie's first frames, ...) runs untouched.
-extern "C" REX_FUNC(rex_sub_825EDC08) {
-    if (t_held_context && ctx.r3.u32 == t_held_context) return;
-    __imp__rex_sub_825EDC08(ctx, base);
+// 0x825EDC6C: beq cr6,0x825EDC78 in sub_825EDC08, the movie advance.
+// r31 is the movie's player context. Jumping to 0x825EDD44 holds the advance back.
+bool mcla_ui_movie_advance(PPCRegister& r25, PPCRegister& r31) {
+    if (!REXCVAR_GET(mcla_ui_timing_fix) || r25.u32 == 0) {
+        return false;
+    }
+    auto* runtime = rex::Runtime::instance();
+    const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+    if (!base) {
+        return false;
+    }
+    if (PhotoCaptureInProgress(base) || PhotoCityReturning()) {
+        return false;
+    }
+
+    constexpr uint64_t kScreenPeriodMicros = 1'000'000ull / 30;
+    struct Schedule {
+        uint32_t context;
+        uint64_t next_us;
+        uint64_t checked_us;
+        bool screen;
+    };
+    static std::mutex mutex;
+    static std::array<Schedule, 32> schedules{};
+    static size_t replace = 0;
+    const uint32_t context = r31.u32;
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    std::lock_guard lock(mutex);
+    Schedule* schedule = nullptr;
+    for (Schedule& s : schedules) {
+        if (s.context == context) {
+            schedule = &s;
+            break;
+        }
+    }
+    if (!schedule) {
+        schedule = &schedules[replace++ % schedules.size()];
+        *schedule = {context, 0, 0, false};
+    }
+    if (now - schedule->checked_us > 1'000'000) {
+        schedule->checked_us = now;
+        schedule->screen = IsUiScreen(base, context);
+    }
+    uint64_t period_us = kScreenPeriodMicros;
+    if (!schedule->screen) {
+        const int32_t hud_rate = REXCVAR_GET(mcla_ui_hud_rate);
+        if (hud_rate <= 0) {
+            return false;
+        }
+        period_us = 1'000'000ull / uint64_t(hud_rate);
+    }
+    if (schedule->next_us && now + period_us / 4 < schedule->next_us) {
+        return true;  // hold back advance
+    }
+    const bool behind = !schedule->next_us || now > schedule->next_us + period_us;
+    schedule->next_us = behind ? now + period_us : schedule->next_us + period_us;
+    return false;
 }
 
 // ── Menu cursor auto-repeat ──────────────────────────────────────────────

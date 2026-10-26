@@ -25692,6 +25692,16 @@ jump_address_on_true = 0x821F8164
 # argument; the handler pushes only into the context it is handed, and only when
 # that context's last known value differs, so nothing is ever cached to be
 # written later.
+# 0x825EDC6C: `beq cr6,0x825EDC78` in sub_825EDC08, the movie advance, right
+# after the length of one movie frame is computed and before the branch on the
+# one-frame flag (r25). r31 is the movie's player context. Jumping to
+# 0x825EDD44, the path taken when a movie is not yet due, holds the advance back.
+[[midasm_hook]]
+name = "mcla_ui_movie_advance"
+address = 0x825EDC6C
+registers = ["r25", "r31"]
+jump_address_on_true = 0x825EDD44
+
 [[midasm_hook]]
 address = 0x825EE980
 name = "Hook_SwfContextEnter"
