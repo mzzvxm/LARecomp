@@ -34,6 +34,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/save_protect.h"
 #include "mc_engine/achievement_toast.h"
+#include "mc_engine/audio_fallback.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
@@ -308,6 +309,8 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    config.audio_factory = &mcla::CreateMclaAudioSystem;
+
     // Every controller is player one. The SDK's default gives each pad its own
     // player in connection order and never reuses a number, so a second gamepad
     // device (Steam Input, DS4Windows, a wheel) or a pad that reconnects becomes
