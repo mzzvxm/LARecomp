@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/hash.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -45,13 +46,9 @@ constexpr uint32_t kUploadRowAlignment = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
 inline uint32_t Align(uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); }
 
 uint64_t Hash64(const void* data, size_t size) {
-  const auto* p = static_cast<const uint8_t*>(data);
-  uint64_t h = 0xCBF29CE484222325ull;
-  for (size_t i = 0; i < size; ++i) {
-    h ^= p[i];
-    h *= 0x100000001B3ull;
-  }
-  return h;
+  // XXH3 instead of byte-at-a-time FNV: this keys cache lookups several times
+  // per draw. In-memory keys only, never stored.
+  return XXH3_64bits(data, size);
 }
 
 }  // namespace
@@ -59,22 +56,21 @@ uint64_t Hash64(const void* data, size_t size) {
 uint64_t TextureCache::HashGuestSampled(const uint8_t* p, uint64_t size) {
   // Eight 64-byte slices spread evenly over the surface. Hashing every byte was
   // measured on the buffer cache at 25 MB a frame and doubled the frame time;
-  // sampling caught the same staleness for a fortieth of the cost. Mixes eight
-  // bytes at a time, and folds the size in so a resize alone is a mismatch.
+  // sampling caught the same staleness for a fortieth of the cost. The size is
+  // the seed, so a resize alone is a mismatch.
   constexpr uint64_t kSlice = 64;
   constexpr uint32_t kSlices = 8;
-  uint64_t h = size * 1099511628211ull;
-  for (uint32_t i = 0; i < kSlices; ++i) {
-    const uint64_t off = size > kSlice ? (size - kSlice) * i / (kSlices - 1) : 0;
-    const uint64_t len = size > kSlice ? kSlice : size;
-    for (uint64_t b = 0; b + 8 <= len; b += 8) {
-      uint64_t v;
-      std::memcpy(&v, p + off + b, 8);
-      h = (h ^ v) * 1099511628211ull;
-      h ^= h >> 29;
-    }
+  // Gathered and hashed in one XXH3 call (SIMD path) instead of 64 dependent
+  // FNV multiplies per surface.
+  if (size < kSlice) {
+    return XXH3_64bits_withSeed(p, size, size);
   }
-  return h;
+  alignas(16) uint8_t gathered[kSlice * kSlices];
+  for (uint32_t i = 0; i < kSlices; ++i) {
+    const uint64_t off = (size - kSlice) * i / (kSlices - 1);
+    std::memcpy(gathered + i * kSlice, p + off, kSlice);
+  }
+  return XXH3_64bits_withSeed(gathered, sizeof(gathered), size);
 }
 
 uint64_t TextureCache::MakeKey(const TextureFetch& f) {
