@@ -26116,19 +26116,19 @@ name = "MCLAChassisPushbackAccel"
 address = 0x82563850
 registers = ["f1"]
 
-# BadassBaboon's Recomp Adjustments: Vehicle chassis angular velocity continuous-time smoothing
-# 0x8236895C: loc_8236895C in sub_823688B8 (car physics solver).
-# f13 is the chassis angular velocity filter coefficient alpha (0.80 at 30 FPS, 0.40 at >= 60 FPS).
+# Motorcycle gyro: continuous-time position and velocity filters.
+# sub_823688B8 is mcBikeGyro::Update, slot 2 of the vtable at 0x820488C0 (from
+# its RTTI). It lerps [this+64] and [this+80] by fixed factors from 0x827E6740
+# (0.40) and 0x827E6744 (0.15), doubled by the 2.0 at 0x82040E94 below 60 FPS.
+# 0x8236895C: addi r8, r1, 100, where the two paths rejoin. f13 = position factor.
 [[midasm_hook]]
-name = "MCLACarAngularVelocitySmoothing"
+name = "MCLABikeGyroPosSmoothing"
 address = 0x8236895C
 registers = ["f13"]
 
-# BadassBaboon's Recomp Adjustments: Vehicle chassis angular acceleration / rotational G-forces continuous-time smoothing
-# 0x823689F0: loc_823689F0 in sub_823688B8 (car physics solver).
-# f0 is the chassis angular acceleration filter coefficient alpha (0.30 at 30 FPS, 0.15 at >= 60 FPS).
+# 0x823689F0: addi r9, r1, 100, same join for the velocity factor. f0 = factor.
 [[midasm_hook]]
-name = "MCLACarAngularAccelerationSmoothing"
+name = "MCLABikeGyroVelSmoothing"
 address = 0x823689F0
 registers = ["f0"]
 
@@ -26139,7 +26139,6 @@ registers = ["f0"]
 name = "MCLATireSlipSmoothing"
 address = 0x82369E40
 registers = ["f0"]
-
 # BadassBaboon's Recomp Adjustments: Dynamic ambient traffic and pedestrian density tuning
 # mcAmbientDensityTuning is the BASE of the ambient zone, not a separate object:
 # sub_826F5CB0 calls its constructor as `sub_826F5B18(a1)` with its own `this`.

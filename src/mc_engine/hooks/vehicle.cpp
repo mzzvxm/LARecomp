@@ -194,37 +194,6 @@ void MCLAChassisPushbackAccel(PPCRegister& f1) {
     f1.f64 = static_cast<double>(clamped_a * dt_scale);
 }
 
-// BadassBaboon's Recomp Adjustments: Vehicle chassis angular velocity continuous-time smoothing
-// 0x8236895C: loc_8236895C in sub_823688B8.
-// f13 is the chassis angular velocity filter coefficient alpha (0.80 at 30 FPS, 0.40 at >= 60 FPS).
-void MCLACarAngularVelocitySmoothing(PPCRegister& f13) {
-    if (!REXCVAR_GET(smooth_vehicle_physics)) return;
-
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-
-    const float dt = ReadGuestF32(base, kGuestFrameDelta);
-    if (dt > 0.0f && dt <= 0.25f) {
-        // Console reference: retention at 30 FPS = (1.0 - 0.80) = 0.20 per step.
-        f13.f64 = 1.0 - std::pow(0.20, static_cast<double>(dt) * 30.0);
-    }
-}
-
-// BadassBaboon's Recomp Adjustments: Vehicle chassis angular acceleration / rotational G-forces continuous-time smoothing
-// 0x823689F0: loc_823689F0 in sub_823688B8.
-// f0 is the chassis angular acceleration filter coefficient alpha (0.30 at 30 FPS, 0.15 at >= 60 FPS).
-void MCLACarAngularAccelerationSmoothing(PPCRegister& f0) {
-    if (!REXCVAR_GET(smooth_vehicle_physics)) return;
-
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-
-    const float dt = ReadGuestF32(base, kGuestFrameDelta);
-    if (dt > 0.0f && dt <= 0.25f) {
-        // Console reference: retention at 30 FPS = (1.0 - 0.30) = 0.70 per step.
-        f0.f64 = 1.0 - std::pow(0.70, static_cast<double>(dt) * 30.0);
-    }
-}
 
 // BadassBaboon's Recomp Adjustments: Lateral tire grip & slip velocity continuous-time smoothing
 // 0x82369E40: loc_82369E40 in sub_823688B8.
@@ -253,8 +222,6 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {}
 void MCLAChassisDepthSmoothing(PPCRegister& f0) {}
 void MCLAChassisGroundPushbackDamper(PPCRegister& f0, PPCRegister& f3) {}
 void MCLAChassisPushbackAccel(PPCRegister& f1) {}
-void MCLACarAngularVelocitySmoothing(PPCRegister& f13) {}
-void MCLACarAngularAccelerationSmoothing(PPCRegister& f0) {}
 void MCLATireSlipSmoothing(PPCRegister& f0) {}
 void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}

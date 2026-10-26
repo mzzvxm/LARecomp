@@ -82,9 +82,10 @@ void MCLACameraTransitionComplete(PPCRegister& r3);
 void MCLAChassisDepthSmoothing(PPCRegister& f0);
 void MCLAChassisGroundPushbackDamper(PPCRegister& f0, PPCRegister& f3);
 void MCLAChassisPushbackAccel(PPCRegister& f1);
-void MCLACarAngularVelocitySmoothing(PPCRegister& f13);
-void MCLACarAngularAccelerationSmoothing(PPCRegister& f0);
 void MCLATireSlipSmoothing(PPCRegister& f0);
+// mcBikeGyro::Update (sub_823688B8) position and velocity filters; see vehicle_smoothing.cpp.
+void MCLABikeGyroPosSmoothing(PPCRegister& f13);
+void MCLABikeGyroVelSmoothing(PPCRegister& f0);
 // Ambient density. Fires after the density_tuning.xml parse (hooking the
 // constructor is pointless -- the parse overwrites it), once per ambient zone;
 // r31 is the zone, whose base IS the mcAmbientDensityTuning.
