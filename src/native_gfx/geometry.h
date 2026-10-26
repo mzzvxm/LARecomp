@@ -115,6 +115,11 @@ struct InlineGeometry {
   // is neither what was synthesised nor the right vertex count.
   uint64_t host_gpu_address = 0;
   uint32_t host_size_bytes = 0;
+
+  // Guest-order copy of the vertices, taken when the draw was queued for the
+  // async renderer: by the time it runs, the command-ring slot may hold
+  // another draw's vertices. Read instead of guest memory when set.
+  const uint8_t* captured = nullptr;
 };
 
 struct GeometrySnapshot {

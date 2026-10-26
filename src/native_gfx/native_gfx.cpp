@@ -1393,7 +1393,7 @@ void LogMipResolveDiag(const char* outcome, const uint8_t* base, uint32_t dest,
   const auto rd = [&](uint32_t ea) -> int32_t {
     if (ea < 0x1000u) return 0;
     uint32_t v;
-    std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+    std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
     return int32_t(__builtin_bswap32(v));
   };
   const uint32_t raw_mip = fetch.mip_address;
@@ -1475,9 +1475,7 @@ void NotifyResolveNow(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_
   uint32_t d[6];
   for (uint32_t i = 0; i < 6; ++i) {
     uint32_t v;
-    std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base),
-                                          dest_texture + kDestFetchOffset + 4 * i),
-                4);
+    std::memcpy(&v, GuestReadPtr(base, dest_texture + kDestFetchOffset + 4 * i, 4), 4);
     d[i] = __builtin_bswap32(v);
   }
   const TextureFetch fetch = DecodeTextureFetch(d);
@@ -1604,7 +1602,7 @@ void NotifyResolveNow(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_
   const auto read_be32_early = [&](uint32_t ea) -> int32_t {
     if (ea < 0x1000u) return 0;
     uint32_t v;
-    std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+    std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
     return int32_t(__builtin_bswap32(v));
   };
   // A CLEAR-ONLY pass whose shape the pool already holds. The guest cleared the
@@ -1671,9 +1669,7 @@ void NotifyResolveNow(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_
       if (clear_color_ptr >= 0x1000u) {
         for (uint32_t i = 0; i < 4; ++i) {
           uint32_t v;
-          std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base),
-                                                clear_color_ptr + 4 * i),
-                      4);
+          std::memcpy(&v, GuestReadPtr(base, clear_color_ptr + 4 * i, 4), 4);
           v = __builtin_bswap32(v);
           std::memcpy(&rgba[i], &v, 4);
           if (!std::isfinite(rgba[i])) {
@@ -1837,7 +1833,7 @@ void NotifyResolveNow(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_
       return 0;
     }
     uint32_t v;
-    std::memcpy(&v, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), 4);
+    std::memcpy(&v, GuestReadPtr(base, ea, 4), 4);
     return int32_t(__builtin_bswap32(v));
   };
   ResolveRegion region;
@@ -2029,7 +2025,10 @@ void NoteBeginVertices(uint32_t dev, uint32_t primitive_type, uint32_t vertex_co
 }
 
 namespace {
-void NoteEndVerticesNow(const uint8_t* base, uint32_t dev, const PendingInlineDraw& d) {
+// `captured`: the vertices copied when the draw was queued, or null to read
+// guest memory.
+void NoteEndVerticesNow(const uint8_t* base, uint32_t dev, const PendingInlineDraw& d,
+                        const uint8_t* captured) {
   RenderGateGuard gate;
   // Inline geometry (BeginVertices/EndVertices) is how the guest issues the
   // fullscreen composite/tonemap pass AND the 2D/HUD/UI. It must be recorded in
@@ -2059,7 +2058,7 @@ void NoteEndVerticesNow(const uint8_t* base, uint32_t dev, const PendingInlineDr
   // read a page past the data and crashed with an access violation.
   CaptureInlineDraw(base, dev, d.primitive_type, d.vertex_count, d.stride, d.buffer, capture_limit,
                     g_draw_context, g_draw_shaders, g_buffers, g_textures, g_binder, g_pipelines,
-                    g_render_targets, aux_stage);
+                    g_render_targets, aux_stage, captured);
 }
 }  // namespace
 
@@ -3107,10 +3106,11 @@ bool PresentFrame() {
 //    objects behind the pointers) is memory the game only reuses after a GPU
 //    fence. RetireGuestFences (nocp) now retires a fence only once every draw
 //    gathered under it has executed (AsyncRetireLimit).
-//  - Work that reads transient guest memory or must be in step with the game
-//    (inline vertices in the command ring, resolves, lock write-backs), and
-//    anything issued from a thread other than the one that queues draws,
-//    drains the queue and runs synchronously, as before.
+//  - A resolve carries copies of the small guest objects it reads through its
+//    pointer arguments, and an inline draw a copy of its vertices, which live
+//    in the command ring the game reuses without a fence.
+//  - Lock write-backs, and anything issued from a thread other than the one
+//    that queues draws, drain the queue and run synchronously, as before.
 //  - The guest clear is queued as its own command so it reaches the draw that
 //    followed it, not whichever draw the renderer happens to be on.
 //
@@ -3126,7 +3126,7 @@ constexpr uint32_t kAsyncSnapBytes = kAsyncSnapHi - kAsyncSnapLo;
 constexpr uint64_t kAsyncCapacity = 2048;  // power of two; ~24 MB of slots
 
 struct AsyncCommand {
-  enum class Kind : uint8_t { kDraw, kClear, kFrameBoundary };
+  enum class Kind : uint8_t { kDraw, kClear, kFrameBoundary, kResolve, kInline };
   Kind kind = Kind::kDraw;
   bool indexed = false;
   uint32_t dev = 0;
@@ -3138,6 +3138,15 @@ struct AsyncCommand {
   uint32_t clear_flags = 0, clear_color = 0, clear_stencil = 0;
   uint32_t clear_color_surface = 0, clear_depth_surface = 0;
   float clear_z = 0.0f;
+  // kResolve: its arguments and the guest objects they point at.
+  uint32_t resolve_flags = 0, dest_texture = 0, source_rect = 0, dest_point = 0;
+  uint32_t clear_color_ptr = 0, dest_level = 0;
+  uint32_t extra_count = 0;
+  GuestReadRange extra[4];
+  alignas(16) uint8_t resolve_bytes[24 + 16 + 8 + 16];
+  // kInline: the draw and its vertices, which live in the reused command ring.
+  PendingInlineDraw inline_draw;
+  std::vector<uint8_t> inline_bytes;
   alignas(16) uint8_t snapshot[kAsyncSnapBytes];
 };
 
@@ -3176,12 +3185,37 @@ bool AsyncConfigured() {
 
 bool AsyncRunning() { return g_async.running.load(std::memory_order_acquire); }
 
+// Serves the renderer thread's reads of the device range from the command's
+// snapshot.
+GuestReadRedirect SnapshotRedirect(const AsyncCommand& c) {
+  GuestReadRedirect r;
+  r.lo = c.dev + kAsyncSnapLo;
+  r.hi = c.dev + kAsyncSnapHi;
+  r.data = c.snapshot;
+  return r;
+}
+
 void AsyncExecute(AsyncCommand& c) {
   switch (c.kind) {
     case AsyncCommand::Kind::kDraw:
-      t_guest_read_redirect = {c.dev + kAsyncSnapLo, c.dev + kAsyncSnapHi, c.snapshot};
+      t_guest_read_redirect = SnapshotRedirect(c);
       TryFirstDrawNow(g_async.base, c.dev, c.primitive_type, c.element_count, c.start_element,
                       c.base_vertex, c.indexed);
+      t_guest_read_redirect = {};
+      break;
+    case AsyncCommand::Kind::kResolve:
+      t_guest_read_redirect = SnapshotRedirect(c);
+      t_guest_read_redirect.extra_count = c.extra_count;
+      for (uint32_t i = 0; i < c.extra_count; ++i) {
+        t_guest_read_redirect.extra[i] = c.extra[i];
+      }
+      NotifyResolveNow(g_async.base, c.dev, c.resolve_flags, c.dest_texture, c.source_rect,
+                       c.dest_point, c.clear_color_ptr, c.dest_level);
+      t_guest_read_redirect = {};
+      break;
+    case AsyncCommand::Kind::kInline:
+      t_guest_read_redirect = SnapshotRedirect(c);
+      NoteEndVerticesNow(g_async.base, c.dev, c.inline_draw, c.inline_bytes.data());
       t_guest_read_redirect = {};
       break;
     case AsyncCommand::Kind::kClear:
@@ -3390,9 +3424,50 @@ void NotifyResolve(const uint8_t* base, uint32_t dev, uint32_t flags, uint32_t d
   if (!Active() || !dest_texture) {
     return;
   }
-  AsyncDrain();
-  NotifyResolveNow(base, dev, flags, dest_texture, source_rect, dest_point, clear_color_ptr,
-                   dest_level);
+  // Only a draw picks the producer thread: the first resolves come from a
+  // loading thread.
+  if (!AsyncRunning() ||
+      GetCurrentThreadId() != g_async.producer_thread.load(std::memory_order_relaxed) ||
+      dev < 0x1000u || uint64_t(dev) + kAsyncSnapHi >= 0xE0000000ull ||
+      !IsGuestRangeReadable(dev + kAsyncSnapLo, kAsyncSnapBytes)) {
+    AsyncDrain();
+    NotifyResolveNow(base, dev, flags, dest_texture, source_rect, dest_point, clear_color_ptr,
+                     dest_level);
+    return;
+  }
+  // The rect, point, colour and destination object can be stack or reused
+  // heap memory by the time the renderer gets here, so their bytes travel
+  // with the command, the same way the device state does.
+  g_async.last_dev = dev;
+  AsyncCommand& c = AsyncAcquireSlot();
+  c.kind = AsyncCommand::Kind::kResolve;
+  c.dev = dev;
+  c.resolve_flags = flags;
+  c.dest_texture = dest_texture;
+  c.source_rect = source_rect;
+  c.dest_point = dest_point;
+  c.clear_color_ptr = clear_color_ptr;
+  c.dest_level = dest_level;
+  c.extra_count = 0;
+  uint8_t* out = c.resolve_bytes;
+  const auto keep = [&](uint32_t ea, uint32_t size) {
+    if (ea < 0x1000u) {
+      return;
+    }
+    std::memcpy(out, rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea), size);
+    c.extra[c.extra_count++] = GuestReadRange{ea, ea + size, out};
+    out += size;
+  };
+  keep(dest_texture + 28, 24);
+  keep(source_rect, 16);
+  keep(dest_point, 8);
+  if (flags & 0x100u) {
+    keep(clear_color_ptr, 16);
+  }
+  std::memcpy(c.snapshot,
+              rex::memory::GuestPtr(const_cast<uint8_t*>(base), dev + kAsyncSnapLo),
+              kAsyncSnapBytes);
+  AsyncPublish(c, base, dev);
 }
 
 void NoteEndVertices(const uint8_t* base, uint32_t dev) {
@@ -3401,9 +3476,33 @@ void NoteEndVertices(const uint8_t* base, uint32_t dev) {
   }
   const PendingInlineDraw d = g_pending_inline;
   g_pending_inline.valid = false;
-  // Drawn synchronously, after every queued draw before it.
-  AsyncDrain();
-  NoteEndVerticesNow(base, dev, d);
+  // The whole vertices, as many bytes as the rect path reads. Only buffers in
+  // the 0xA0000000-0xDFFFFFFF windows, where the virtual address the guest
+  // writes through and the physical alias the BufferCache reads are the same
+  // bytes, so one copy serves both readers.
+  const uint64_t bytes = uint64_t(d.vertex_count) * d.stride;
+  if (!AsyncRunning() ||
+      GetCurrentThreadId() != g_async.producer_thread.load(std::memory_order_relaxed) ||
+      dev < 0x1000u || uint64_t(dev) + kAsyncSnapHi >= 0xE0000000ull ||
+      !IsGuestRangeReadable(dev + kAsyncSnapLo, kAsyncSnapBytes) || d.buffer < 0xA0000000u ||
+      bytes > (4u << 20) || uint64_t(d.buffer) + bytes > 0xE0000000ull ||
+      !IsPhysicalRangeReadable(d.buffer & 0x1FFFFFFFu, bytes)) {
+    // Drawn synchronously, after every queued draw before it.
+    AsyncDrain();
+    NoteEndVerticesNow(base, dev, d, nullptr);
+    return;
+  }
+  g_async.last_dev = dev;
+  AsyncCommand& c = AsyncAcquireSlot();
+  c.kind = AsyncCommand::Kind::kInline;
+  c.dev = dev;
+  c.inline_draw = d;
+  const uint8_t* src = TranslatePhysicalGuest(d.buffer & 0x1FFFFFFFu);
+  c.inline_bytes.assign(src, src + bytes);
+  std::memcpy(c.snapshot,
+              rex::memory::GuestPtr(const_cast<uint8_t*>(base), dev + kAsyncSnapLo),
+              kAsyncSnapBytes);
+  AsyncPublish(c, base, dev);
 }
 
 void NoteGuestClear(uint32_t flags, uint32_t color, float z, uint32_t stencil,

@@ -685,6 +685,20 @@ bool ResolveGeometryBuffers(GeometrySnapshot& s, uint32_t element_count,
       // mesh. Its region was keyed by the windowed address (0xB0710270) while
       // the write watch reports physical ones, so it was uploaded once and
       // never invalidated again; see BufferCache::Resolve.
+      if (inline_geometry && inline_geometry->captured) {
+        // Uploaded the way the BufferCache would, from the copy.
+        D3D12Context::UploadAlloc a;
+        if (!context->AllocateUpload(stream.guest_size, 16, a,
+                                     D3D12Context::UploadTag::kGeometry)) {
+          s.failure = "inline vertex upload failed";
+          return false;
+        }
+        SwapCopyBytes(static_cast<uint8_t*>(a.cpu), inline_geometry->captured, stream.guest_size,
+                      SwapForEndian(stream.endian));
+        stream.gpu_address = a.gpu;
+        stream.resolved = true;
+        continue;
+      }
       BufferBinding b;
       if (!buffers->Resolve(*context, cl, stream.guest_base, stream.guest_size,
                             SwapForEndian(stream.endian), b, inline_geometry != nullptr)) {

@@ -167,10 +167,20 @@ inline constexpr uint32_t kDevVertexShaderOffset = 12696;
 // from the copy instead of the live device. Per thread: the game thread's own
 // reads are untouched, and the redirect is empty (data == nullptr) everywhere
 // else, which makes GuestReadPtr the plain GuestPtr.
+struct GuestReadRange {
+  uint32_t lo = 0;
+  uint32_t hi = 0;
+  const uint8_t* data = nullptr;
+};
 struct GuestReadRedirect {
   uint32_t lo = 0;
   uint32_t hi = 0;
   const uint8_t* data = nullptr;
+  // Small objects a resolve reads through its pointer arguments (the
+  // destination texture's fetch constant, source rect, destination point,
+  // clear colour).
+  uint32_t extra_count = 0;
+  GuestReadRange extra[4];
 };
 extern thread_local GuestReadRedirect t_guest_read_redirect;
 
@@ -180,6 +190,12 @@ inline const uint8_t* GuestReadPtr(const uint8_t* base, uint32_t ea, uint32_t si
   const GuestReadRedirect& r = t_guest_read_redirect;
   if (r.data && ea >= r.lo && ea < r.hi && size <= r.hi - ea) {
     return r.data + (ea - r.lo);
+  }
+  for (uint32_t i = 0; i < r.extra_count; ++i) {
+    const GuestReadRange& x = r.extra[i];
+    if (ea >= x.lo && ea < x.hi && size <= x.hi - ea) {
+      return x.data + (ea - x.lo);
+    }
   }
   return reinterpret_cast<const uint8_t*>(
       rex::memory::GuestPtr(const_cast<uint8_t*>(base), ea));

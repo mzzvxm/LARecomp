@@ -117,7 +117,7 @@ void CaptureInlineDraw(const uint8_t* base, uint32_t dev, uint32_t primitive_typ
                        uint32_t draw_limit, D3D12Context& context, ShaderDatabase& shaders,
                        BufferCache& buffers, TextureCache& textures, TextureBinder& binder,
                        PipelineCache& pipelines, RenderTargetPool& render_targets,
-                       uint32_t aux_stage);
+                       uint32_t aux_stage, const uint8_t* captured = nullptr);
 
 // TEMP INSTRUMENTATION: a resolve whose SOURCE pass was never rendered, so the
 // destination could not be bridged and every later fetch of it falls back.
