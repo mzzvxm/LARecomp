@@ -3,6 +3,8 @@
 #include <rex/rex_app.h>
 #include <rex/system/flags.h>
 #include <rex/system/achievement_manager.h>
+#include <rex/input/device_assignment.h>
+#include <rex/input/input_system.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
@@ -304,6 +306,18 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // Every controller is player one. The SDK's default gives each pad its own
+    // player in connection order and never reuses a number, so a second gamepad
+    // device (Steam Input, DS4Windows, a wheel) or a pad that reconnects becomes
+    // player two, which has no profile: the game then says it is not signed in
+    // and never saves (issue #22). The game is single-player on one machine.
+    config.input_factory = [](bool tool_mode) -> std::unique_ptr<rex::system::IInputSystem> {
+      auto input = rex::input::CreateDefaultInputSystem(tool_mode);
+      if (input) {
+        input->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+      }
+      return input;
+    };
     // The one line that decides whether this process contains an emulated GPU
     // at all. ReXApp::SetupPresentation only calls LoadGpuPlugin when
     // gpu_plugin is non-empty, so leaving it empty means rexgpu-xenos is never
