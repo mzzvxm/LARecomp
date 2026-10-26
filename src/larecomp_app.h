@@ -43,6 +43,10 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 
+#include <rex/system.h>
+#include <fmt/format.h>
+#include <toml++/toml.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <memory>
@@ -495,6 +499,60 @@ class LarecompApp : public rex::ReXApp {
     return true;
   }
 
+  // What the game needs from its folder: the program and the archives.
+  static constexpr const char* kRequiredGameFiles[] = {
+      "default.xex", "xarchive_audio.rpf", "xarchive_audlo.rpf", "xarchive_cache.rpf", "xarchive_music.rpf"};
+
+  static std::filesystem::path GameDataRootFromConfig(const std::filesystem::path& config_path) {
+    std::error_code error;
+    if (config_path.empty() || !std::filesystem::exists(config_path, error)) {
+      return {};
+    }
+    try {
+      std::ifstream stream(config_path, std::ios::binary);
+      const auto table = toml::parse(stream);
+      if (const auto root = table["game_data_root"].value<std::string>(); root && !root->empty()) {
+        std::filesystem::path folder(std::u8string(root->begin(), root->end()));
+        if (folder.is_relative()) {
+          folder = std::filesystem::absolute(config_path.parent_path() / folder, error);
+        }
+        return folder.lexically_normal();
+      }
+    } catch (const toml::parse_error&) {
+    }
+    return {};
+  }
+
+  bool ConstructRuntime(const rex::PathConfig& paths) override {
+    if (!configured_game_root_.empty() && paths.game_data_root == configured_game_root_) {
+      std::error_code error;
+      std::string problem;
+      if (!std::filesystem::is_directory(configured_game_root_, error)) {
+        problem = "That folder is not there.";
+      } else {
+        for (const char* name : kRequiredGameFiles) {
+          if (!std::filesystem::exists(configured_game_root_ / name, error)) {
+            problem += (problem.empty() ? "These files are missing from it: " : ", ");
+            problem += name;
+          }
+        }
+        if (!problem.empty()) {
+          problem += ".";
+        }
+      }
+      if (!problem.empty()) {
+        const std::string message = fmt::format(
+            "The game's files are not where {} says they are.\n\n{}\n{}\n\nPut the game back there, or change game_data_root "
+            "in that file to where it is now (or delete the line to use the game inside this install).",
+            configured_game_root_file_.string(), configured_game_root_.string(), problem);
+        LARECOMP_APP_ERROR("{}", message);
+        rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, message);
+        return false;
+      }
+    }
+    return rex::ReXApp::ConstructRuntime(paths);
+  }
+
   void OnConfigurePaths(rex::PathConfig& paths) override {
     const auto root = ExeDir();
 
@@ -510,19 +568,28 @@ class LarecompApp : public rex::ReXApp {
              std::filesystem::exists(p / "xarchive_audlo.rpf", ec);
     };
 
-    // If the user has manually passed --game_data_root and it is valid,
-    // keeps the manual path.
+    // If the user has manually passed --game_data_root, keep the manual path
+    // and remember it so ConstructRuntime can validate its archives and report
+    // exact missing files instead of falling back unexpectedly.
     if (!paths.game_data_root.empty()) {
-      if (is_valid_game_root(paths.game_data_root)) {
-        return;
-      }
-      // Rejecting a configured path without a word is how you end up staring
-      // at an install wizard pointed somewhere you never named. Logging is not
-      // up yet here, so keep the note and print it in OnPostInitLogging.
-      path_notes_.push_back(
-          "game_data_root is set to '" + paths.game_data_root.string() +
-          "' but that directory has no default.xex plus xarchive_*.rpf; ignoring it and "
-          "auto-detecting instead");
+      configured_game_root_ = paths.game_data_root;
+      configured_game_root_file_ = "command-line (--game_data_root)";
+      return;
+    }
+
+    // A game kept where it is (the setup's "Use it where it is") is named by
+    // game_data_root in larecomp.toml. The SDK reads that file after it has decided the
+    // paths, so the line is read here; a value on the command line wins over it.
+    // A relative value is relative to the folder of larecomp.toml, not to wherever the
+    // game was started from. The folder is returned whether or not it exists: a
+    // folder that is gone must be reported (ConstructRuntime below), not replaced by
+    // another one. Empty when the file or the line is not there (or the file is not
+    // valid TOML), which leaves everything as it was.
+    paths.game_data_root = GameDataRootFromConfig(paths.config_path);
+    if (!paths.game_data_root.empty()) {
+      configured_game_root_ = paths.game_data_root;
+      configured_game_root_file_ = paths.config_path;
+      return;
     }
 
     // MCLA_GAME_DATA overrides auto-detection (parity with the midnightclub
@@ -586,6 +653,10 @@ class LarecompApp : public rex::ReXApp {
   // Filled by OnConfigurePaths, which runs before logging exists.
   std::vector<std::string> path_notes_;
 
+  // The game folder and the config file/source it came from, when explicitly configured (empty otherwise).
+  std::filesystem::path configured_game_root_;
+  std::filesystem::path configured_game_root_file_;
+
   // First-launch dialogs: which save to play, install the game files from an
   // ISO, then offer to import a save. All asynchronous -- rex::ReXApp lets this
   // hook return std::nullopt and call `resume` later from the UI thread --
@@ -612,6 +683,12 @@ class LarecompApp : public rex::ReXApp {
   // std::nullopt when a wizard is and will call `resume` itself.
   std::optional<rex::PathConfig> FinalizePathsAfterProfile(const rex::PathConfig& defaults, const std::function<void(rex::PathConfig)>& resume) {
     rex::PathConfig paths = defaults;
+
+    if (!configured_game_root_.empty() && !larecomp::IsGameInstalled(paths.game_data_root)) {
+      // Explicitly configured path that is missing files: bypass the ISO installer
+      // so ConstructRuntime can show the exact missing files message box.
+      return paths;
+    }
 
     if (!larecomp::IsGameInstalled(paths.game_data_root)) {
       bool attempted = false;
