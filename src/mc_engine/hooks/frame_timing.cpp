@@ -154,6 +154,8 @@ bool Patch_FenceSpinThrottle() {
 // Set by MCLAFrameDelta each time the engine timer (sub_821BDA90) runs, cleared
 // by each swap. See PaceUntimedSwap.
 static std::atomic<bool> g_engine_timer_ran_since_swap{false};
+// Set by the first pass through the engine timer: the start-up logos are over.
+static std::atomic<bool> g_engine_timer_started{false};
 
 // Intro pacing.
 //
@@ -164,11 +166,20 @@ static std::atomic<bool> g_engine_timer_ran_since_swap{false};
 // ignores, so the sequence runs as fast as the host presents. That is why
 // fps_limit at 30, 45 or 60 made no difference to its speed.
 //
-// A swap that follows another swap with no pass through the engine timer in
-// between is therefore held to the original 30 per second. Gameplay frames
-// always pass through the timer first and are left to fps_limit.
+// Such a loop shows as swaps with no pass through the frame limiter between them;
+// from the second of those in a row, swaps are held to the original 30 per second.
+//
+// A single one is not enough. The game updates and presents on different
+// threads, and when uncapped the two drift against each other: about one swap
+// in forty has no update before it and the next one has two. Holding those to
+// 33 ms each made uncapped play stutter (and, by delaying the presenting
+// thread, made the pattern ten times as frequent: a quarter of all frames).
+//
+// Fast intros leave such loops unpaced only until the engine timer first runs,
+// which is the start-up logos; loading screens after that keep the 30.
 static void PaceUntimedSwap() {
     static std::atomic<uint64_t> last_swap_us{0};
+    static std::atomic<bool> last_untimed{false};
     constexpr uint64_t kPeriodUs = 1000000ull / 30;
     auto now_us = [] {
         return static_cast<uint64_t>(
@@ -176,11 +187,16 @@ static void PaceUntimedSwap() {
                 std::chrono::steady_clock::now().time_since_epoch())
                 .count());
     };
-    const bool timed = g_engine_timer_ran_since_swap.exchange(false, std::memory_order_relaxed) ||
-                       !REXCVAR_GET(intro_original_speed);
+    const bool timed = g_engine_timer_ran_since_swap.exchange(false, std::memory_order_relaxed);
+    const bool untimed_loop = !timed && last_untimed.exchange(true, std::memory_order_relaxed);
+    if (timed) {
+        last_untimed.store(false, std::memory_order_relaxed);
+    }
+    const bool fast_logos = !REXCVAR_GET(intro_original_speed) &&
+                            !g_engine_timer_started.load(std::memory_order_relaxed);
     const uint64_t last = last_swap_us.load(std::memory_order_relaxed);
     uint64_t now = now_us();
-    if (!timed && last && now - last < kPeriodUs) {
+    if (untimed_loop && !fast_logos && last && now - last < kPeriodUs) {
         std::this_thread::sleep_for(std::chrono::microseconds(kPeriodUs - (now - last)));
         now = now_us();
     }
@@ -503,6 +519,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
         r8.u64 = ticks > cap ? cap : ticks;
     }
     g_engine_timer_ran_since_swap.store(true, std::memory_order_relaxed);
+    g_engine_timer_started.store(true, std::memory_order_relaxed);
     UpdateCityLODMemory();
     RecordFrameTime();
     TickGuestProfiler();
