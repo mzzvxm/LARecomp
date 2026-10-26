@@ -26,6 +26,24 @@ void EnableHighResTimer() {
 #if defined(_WIN32)
     static std::once_flag s_init;
     std::call_once(s_init, [] {
+        // Default Windows timer granularity is 15.6 ms; sleeps need 1 ms.
+        // Windows 11 stops honouring that request while none of the process's
+        // windows can be seen (minimized, covered, or the display asleep), and the
+        // limiter's sleeps then overshoot by up to 15.6 ms; opt out of that.
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+        PROCESS_POWER_THROTTLING_STATE throttling{};
+        throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        throttling.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+        throttling.StateMask = 0;
+        if (SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling,
+                                  sizeof(throttling))) {
+            MC_INFO("[threading] 1 ms timer resolution kept while window is hidden/unfocused");
+        } else {
+            MC_WARN("[threading] could not keep timer resolution while hidden (error {})",
+                    GetLastError());
+        }
         timeBeginPeriod(1);
         MC_INFO("[threading] high-res timer enabled");
     });
