@@ -10,6 +10,8 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/runtime.h>
+#include <rex/graphics/graphics_system.h>
 #include <rex/graphics/pipeline/texture/replacement.h>
 #include "mc_engine/logging.h"
 
@@ -253,6 +255,13 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
 
   MC_INFO("[texture-mods] Staged {} unique texture replacement(s) across {} mod(s) in {}",
           g_total_replacements, g_active_mods.size(), replace_dir.string());
+
+  // Notify ReXGlue graphics system to reload texture replacements and flush cache
+  if (auto* runtime = rex::Runtime::instance()) {
+    if (auto* gs = runtime->graphics_system()) {
+      gs->RescanTextureReplacements();
+    }
+  }
 
   return g_total_replacements;
 }

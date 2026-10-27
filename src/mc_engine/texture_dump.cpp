@@ -23,6 +23,7 @@
 #include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/conversion.h>
 #include <rex/graphics/pipeline/texture/info.h>
+#include <rex/graphics/pipeline/texture/util.h>
 
 #include "mc_engine/logging.h"
 #include <rex/filesystem.h>
@@ -490,12 +491,20 @@ size_t DumpAllLiveSceneTextures() {
     if (!guest_bytes) {
       return;
     }
-    const uint64_t content_hash = HashGuestTexture(guest_bytes, id.total_bytes);
     const uint32_t pitch_blocks = (id.width + 31) / 32;
+    auto layout = rex::graphics::texture_util::GetGuestTextureLayout(
+        xenos::DataDimension::k2DOrStacked, pitch_blocks, id.width, id.height, 1,
+        true, static_cast<xenos::TextureFormat>(id.format), false, true,
+        id.levels > 0 ? id.levels - 1 : 0);
+    uint32_t hash_bytes = layout.base.level_data_extent_bytes;
+    if (hash_bytes == 0 || hash_bytes > id.total_bytes) {
+      hash_bytes = id.total_bytes;
+    }
+    const uint64_t content_hash = HashGuestTexture(guest_bytes, hash_bytes);
 
     DumpGuestTexture(dump_dir, content_hash, id.width, id.height, pitch_blocks, true,
                      static_cast<xenos::TextureFormat>(id.format), xenos::Endian::k8in16,
-                     guest_bytes, id.total_bytes, id.name);
+                     guest_bytes, hash_bytes, id.name);
     ++dumped_count;
   });
 
