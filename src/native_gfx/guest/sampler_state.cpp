@@ -59,7 +59,7 @@ SamplerDescription DecodeSampler(const uint32_t d[6]) {
   return s;
 }
 
-void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
+void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out, bool is_replacement_with_mips) {
   auto& d = *static_cast<D3D12_SAMPLER_DESC*>(out);
   d = {};
 
@@ -85,7 +85,8 @@ void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
   // maior, que e o caso rasante da rua. Precisa dos DOIS cvars ligados de
   // proposito: e desvio do que o jogo pediu.
   const bool driver_override =
-      REXCVAR_GET(mcla_native_gfx_gen_mips) && REXCVAR_GET(mcla_native_gfx_aniso) >= 1;
+      (REXCVAR_GET(mcla_native_gfx_gen_mips) && REXCVAR_GET(mcla_native_gfx_aniso) >= 1) ||
+      is_replacement_with_mips;
   const bool eligible = (s.mip_filter != 2u /* kBaseMap */ || driver_override) &&
                         FilterIsLinear(s.min_filter) &&
                         FilterIsLinear(s.mag_filter);
@@ -114,7 +115,7 @@ void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
   } else {
     const bool min_lin = FilterIsLinear(s.min_filter);
     const bool mag_lin = FilterIsLinear(s.mag_filter);
-    const bool mip_lin = FilterIsLinear(s.mip_filter);
+    const bool mip_lin = FilterIsLinear(s.mip_filter) || is_replacement_with_mips;
     d.Filter = D3D12_FILTER(((min_lin ? 1 : 0) << 4) | ((mag_lin ? 1 : 0) << 2) |
                             ((mip_lin ? 1 : 0) << 0));
     d.MaxAnisotropy = 1;

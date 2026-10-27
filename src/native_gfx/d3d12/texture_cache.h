@@ -93,6 +93,7 @@ enum class TextureSource : uint32_t {
   // in the guest's post-endian component order, so the host-side reordering
   // that a decoded 8888 needs would be applied twice.
   kDepthAs8888,
+  kReplacement,
 };
 
 // One-character tag for the diagnostics, so a 9-slot dump stays on one line.
@@ -102,6 +103,7 @@ inline char TextureSourceTag(TextureSource s) {
     case TextureSource::kGuestDecode:        return 'G';
     case TextureSource::kFallback:           return 'F';
     case TextureSource::kDepthAs8888:        return 'D';
+    case TextureSource::kReplacement:        return 'M';
     default:                                 return 'U';
   }
 }
@@ -232,6 +234,9 @@ class TextureCache {
     // at all in one session.
     uint64_t content_hash = 0;
     uint64_t verified_frame = 0;
+    TextureSource source = TextureSource::kGuestDecode;
+    uint32_t repl_mip_levels = 0;
+    uint64_t replacement_hash = 0;
   };
   // Sampled so re-checking costs a few hundred bytes per entry per frame
   // instead of the whole surface; a recycled texture differs almost everywhere.

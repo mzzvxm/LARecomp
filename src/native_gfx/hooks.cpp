@@ -404,9 +404,7 @@ extern "C" REX_FUNC(rex_sub_82425C18) {
 extern "C" REX_FUNC(D3DDevice_CreateTexture) {
   mcla::native_gfx::nocp::NoteHook("D3DDevice_CreateTexture");
   __imp__D3DDevice_CreateTexture(ctx, base);
-  if (REXCVAR_GET(mcla_native_gfx)) {
-    mcla::native_gfx::NoteD3DTextureCreated(base, ctx.r3.u32);
-  }
+  mcla::native_gfx::NoteD3DTextureCreated(base, ctx.r3.u32);
 }
 
 // D3DResource_Lock -- sub_82421CA0, the funnel on the way in. Same three entry

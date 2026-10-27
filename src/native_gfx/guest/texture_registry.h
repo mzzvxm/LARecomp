@@ -55,6 +55,10 @@ struct TextureIdentity {
 // nothing when the registry is off or the object looks wrong.
 void NoteTextureCreated(const uint8_t* base, uint32_t grc_texture_va, uint32_t name_va);
 
+// Called when a raw D3DTexture is created directly via D3DDevice_CreateTexture
+// (e.g. by Scaleform GFx for Flash UI / speedometer / minimap).
+void RecordD3DTexture(const uint8_t* base, uint32_t d3d_texture_va);
+
 // Called from the grcTextureXenon_ResourceCtor hook (sub_82184458), AFTER the
 // original: the pointer fixups are what make the object readable at all.
 //

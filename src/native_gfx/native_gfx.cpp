@@ -53,6 +53,7 @@
 #include "guest/occlusion.h"
 #include "guest/render_state.h"
 #include "guest/resource_lock.h"
+#include "guest/texture_registry.h"
 #include "guest/texture_ownership.h"
 #include "guest/vblank_probe.h"
 #include "nocp/nocp_app.h"
@@ -2600,6 +2601,7 @@ void NoteResourceUnlocked(const uint8_t* base, uint32_t resource_va, uint32_t ba
 
 void NoteD3DTextureCreated(const uint8_t* base, uint32_t d3d_texture_va) {
   NoteTextureCreate(base, d3d_texture_va);
+  RecordD3DTexture(base, d3d_texture_va);
 }
 
 void NotifyWindowCloseRequested() {

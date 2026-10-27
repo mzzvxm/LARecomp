@@ -1,4 +1,5 @@
 #include "texture_mods.h"
+#include "texture_replacement.h"
 
 #include <algorithm>
 #include <atomic>
@@ -211,6 +212,9 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
   MC_INFO("[texture-mods] Staged {} unique texture replacement(s) across {} mod(s) in {}",
           g_total_replacements, g_active_mods.size(), replace_dir.string());
 
+  // Update LARecomp native texture replacement engine
+  TextureReplacement::Instance().Rescan();
+
   // Notify ReXGlue graphics system to reload texture replacements and flush cache
   if (auto* runtime = rex::Runtime::instance()) {
     if (auto* gs = runtime->graphics_system()) {
@@ -226,6 +230,8 @@ void InitTextureModding(const std::filesystem::path& modloader_dir) {
   const std::string modloader_str = modloader_dir.string();
   rex::cvar::SetFlagByName("texture_folder", modloader_str.c_str());
   rex::cvar::SetFlagByName("texture_replace_enabled", "true");
+
+  TextureReplacement::Instance().Initialize(modloader_dir / "textures_replace");
 
   RescanTextureMods(modloader_dir);
 }

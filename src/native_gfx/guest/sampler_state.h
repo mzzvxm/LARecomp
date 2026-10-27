@@ -51,6 +51,6 @@ SamplerDescription DecodeSampler(const uint32_t d[6]);
 
 // Fills a D3D12_SAMPLER_DESC-shaped output. Declared with raw types so this
 // header stays free of d3d12.h; `out` must point at a D3D12_SAMPLER_DESC.
-void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out);
+void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out, bool is_replacement_with_mips = false);
 
 }  // namespace mcla::native_gfx

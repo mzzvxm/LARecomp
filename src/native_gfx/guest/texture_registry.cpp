@@ -188,6 +188,83 @@ void NoteTextureCreated(const uint8_t* base, uint32_t grc_texture_va, uint32_t n
   RecordTexture(base, grc_texture_va, name_va, TextureOrigin::kUnknown);
 }
 
+void RecordD3DTexture(const uint8_t* base, uint32_t d3d_texture_va) {
+  if (!base || d3d_texture_va < 0x1000u ||
+      !IsGuestRangeReadable(d3d_texture_va, sizeof(D3DTexture))) {
+    return;
+  }
+
+  // If already registered by grcTextureXenon hooks, skip to preserve the grc asset name
+  {
+    Registry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    if (r.by_d3d_texture.find(d3d_texture_va) != r.by_d3d_texture.end()) {
+      return;
+    }
+  }
+
+  uint32_t d[6];
+  for (int i = 0; i < 6; ++i) {
+    d[i] = LoadBe32At(base, d3d_texture_va + offsetof(D3DTexture, Format) + i * 4);
+  }
+  TextureFetch fetch = DecodeTextureFetch(d);
+  if (!fetch.type_valid || fetch.width == 0 || fetch.height == 0) {
+    return;
+  }
+
+  TextureIdentity id;
+  id.d3d_texture_va = d3d_texture_va;
+  id.grc_texture_va = 0;
+  id.base_address = fetch.base_address;
+  id.width = fetch.width;
+  id.height = fetch.height;
+  id.levels = (fetch.mip_max_level > 0) ? (fetch.mip_max_level + 1) : 1;
+  id.format = fetch.format;
+  id.origin = TextureOrigin::kAllocated;
+
+  char name_buf[64];
+  std::snprintf(name_buf, sizeof(name_buf), "D3D_%ux%u_fmt%u", fetch.width, fetch.height, fetch.format);
+  id.name = name_buf;
+
+  const uint32_t pitch_blocks = (fetch.width + 31) / 32;
+  auto layout = rex::graphics::texture_util::GetGuestTextureLayout(
+      xenos::DataDimension::k2DOrStacked, pitch_blocks, fetch.width, fetch.height, 1,
+      fetch.tiled, static_cast<xenos::TextureFormat>(fetch.format), fetch.packed_mips, true,
+      fetch.mip_max_level);
+  id.total_bytes = layout.base.level_data_extent_bytes;
+
+  Registry& r = registry();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  if (id.base_address) {
+    r.base_to_d3d[id.base_address] = id.d3d_texture_va;
+  }
+  ++r.created;
+
+  // Auto-dump when texture_dump_enabled is active
+  if (rex::cvar::GetFlagByName("texture_dump_enabled") == "true") {
+    if (id.base_address != 0 && id.total_bytes > 0 && id.total_bytes <= 128 * 1024 * 1024) {
+      auto* rt = rex::Runtime::instance();
+      auto* mem = rt ? rt->memory() : nullptr;
+      const uint8_t* guest_bytes = mem ? mem->TranslatePhysical<const uint8_t*>(id.base_address) : nullptr;
+      if (guest_bytes) {
+        uint32_t hash_bytes = layout.base.level_data_extent_bytes;
+        if (hash_bytes == 0 || hash_bytes > id.total_bytes) {
+          hash_bytes = id.total_bytes;
+        }
+        const uint64_t hash = mcla::HashGuestTexture(guest_bytes, hash_bytes);
+        mcla::DumpGuestTexture(mcla::TextureDumpDir(), hash, id.width, id.height,
+                               pitch_blocks, fetch.tiled, static_cast<xenos::TextureFormat>(id.format),
+                               xenos::Endian::k8in16, guest_bytes, hash_bytes);
+      }
+    }
+  }
+
+  r.by_d3d_texture[id.d3d_texture_va] = std::move(id);
+  if (r.by_d3d_texture.size() > r.peak_live) {
+    r.peak_live = r.by_d3d_texture.size();
+  }
+}
+
 void NoteTextureFromResource(const uint8_t* base, uint32_t grc_texture_va) {
   // The resource constructor fixes up grc+24 only when it is non-null, so a
   // nameless texture is normal here and just records an empty name.

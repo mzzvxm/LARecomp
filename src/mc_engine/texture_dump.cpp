@@ -210,7 +210,7 @@ static bool TexelToRGBA8(const uint8_t* src, xenos::TextureFormat fmt, uint8_t o
     case F::k_8_8:
       out[0] = src[0];
       out[1] = src[1];
-      out[2] = 0;
+      out[2] = src[0];  // Neutral dual-channel mapping (preserves grayscale when R==G)
       out[3] = 255;
       return true;
     case F::k_5_6_5: {
@@ -406,6 +406,60 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
   }
 
   // Step 3 — write to DDS
+  if (format == F::k_CTX1) {
+    // CTX1: 8 bytes per 4x4 block, 2 channels (R and G).
+    // Decode directly to RGBA8 so it is a valid, uncorrupted DDS image.
+    const uint32_t out_row_bytes = width * 4;
+    std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
+
+    for (uint32_t by = 0; by < h_blocks; ++by) {
+      for (uint32_t bx = 0; bx < w_blocks; ++bx) {
+        const uint8_t* blk = linear.data() + (by * w_blocks + bx) * 8;
+        const uint8_t g0 = blk[0];
+        const uint8_t r0 = blk[1];
+        const uint8_t g1 = blk[2];
+        const uint8_t r1 = blk[3];
+        uint32_t indices;
+        std::memcpy(&indices, blk + 4, 4);
+
+        const uint8_t cr[4] = {
+            r0, r1,
+            static_cast<uint8_t>((2 * r0 + r1) / 3),
+            static_cast<uint8_t>((r0 + 2 * r1) / 3)
+        };
+        const uint8_t cg[4] = {
+            g0, g1,
+            static_cast<uint8_t>((2 * g0 + g1) / 3),
+            static_cast<uint8_t>((g0 + 2 * g1) / 3)
+        };
+
+        for (uint32_t py = 0; py < 4; ++py) {
+          const uint32_t ty = by * 4 + py;
+          if (ty >= height) break;
+          for (uint32_t px = 0; px < 4; ++px) {
+            const uint32_t tx = bx * 4 + px;
+            if (tx >= width) break;
+            const uint32_t shift = (py * 4 + px) * 2;
+            const uint8_t idx = (indices >> shift) & 3;
+            uint8_t* dst = rgba.data() + ty * out_row_bytes + tx * 4;
+            const uint8_t red = cr[idx];
+            const uint8_t green = cg[idx];
+            dst[0] = red;
+            dst[1] = green;
+            dst[2] = red; // Neutral channel representation (black & white when red == green)
+            dst[3] = 255;
+          }
+        }
+      }
+    }
+    if (!WriteDDS_RGBA8(dest, width, height, rgba.data(), out_row_bytes)) {
+      MC_WARN("texture dump: failed to write CTX1 dump {}", dest.string());
+    } else {
+      MC_DEBUG("texture dump: dumped CTX1 as RGBA8 {}", dest.filename().string());
+    }
+    return;
+  }
+
   if (fi->type == FormatType::kCompressed) {
     // Determine DDS FOURCC
     uint32_t fourcc = 0;

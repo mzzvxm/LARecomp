@@ -107,6 +107,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/modloader/rsc5.cpp
     src/mc_engine/modloader/texture.cpp
     src/mc_engine/modloader/texture_mods.cpp
+    src/mc_engine/modloader/texture_replacement.cpp
     src/mc_engine/modloader/modloader.cpp
 
     # Runtime features backed by per-mod sidecar data.

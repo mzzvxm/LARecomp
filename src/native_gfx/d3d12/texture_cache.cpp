@@ -22,6 +22,8 @@
 
 #include "../guest/guest_resources.h"
 #include "context.h"
+#include "mc_engine/modloader/texture_replacement.h"
+#include "mc_engine/texture_dump.h"
 
 REXCVAR_DECLARE(uint32_t, mcla_native_gfx_texcache_mb);
 REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
@@ -652,7 +654,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       it->second.last_use_frame = game_frame_;
       ++stats_.hits;
       if (out_source) {
-        *out_source = TextureSource::kGuestDecode;
+        *out_source = it->second.source;
       }
       return it->second.resource.Get();
     }
@@ -715,6 +717,133 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
           rex::graphics::xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height,
           /*depth_or_array_size=*/1u, fetch.tiled, rex::graphics::xenos::TextureFormat(fetch.format),
           fetch.packed_mips, /*has_base=*/true, guest_max_level);
+
+  const uint8_t* guest_bytes = TranslatePhysicalGuest(fetch.base_address);
+  uint32_t hash_bytes = guest_layout.base.level_data_extent_bytes;
+  if (hash_bytes == 0 || hash_bytes > src_size) {
+    hash_bytes = static_cast<uint32_t>(src_size);
+  }
+  const uint64_t replacement_hash =
+      (guest_bytes && hash_bytes > 0) ? mcla::HashGuestTexture(guest_bytes, hash_bytes) : 0;
+
+  // Auto-dump when texture_dump_enabled is active
+  if (rex::cvar::GetFlagByName("texture_dump_enabled") == "true" && guest_bytes && hash_bytes > 0) {
+    const uint32_t pitch_blocks = (fetch.width + fi.block_width - 1) / fi.block_width;
+    mcla::DumpGuestTexture(mcla::TextureDumpDir(), replacement_hash, fetch.width, fetch.height,
+                           pitch_blocks, fetch.tiled, static_cast<xenos::TextureFormat>(fetch.format),
+                           xenos::Endian::k8in16, guest_bytes, hash_bytes);
+  }
+
+  // Check if a disk replacement exists for this texture hash
+  const mc::modloader::TextureReplacementData* repl =
+      replacement_hash != 0 ? mc::modloader::FindTextureReplacement(replacement_hash) : nullptr;
+  if (repl && !repl->mips.empty() && repl->width > 0 && repl->height > 0) {
+    Entry e;
+    e.fetch = fetch;
+    e.host_generated_mips = false;
+    e.last_use_frame = game_frame_;
+    e.source = TextureSource::kReplacement;
+    e.repl_mip_levels = repl->mip_levels;
+    e.guest_base = fetch.base_address;
+    e.guest_size = src_size;
+    e.content_hash = replacement_hash;
+    e.verified_frame = VerifyEpoch(context);
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = repl->width;
+    desc.Height = repl->height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = static_cast<UINT16>(repl->mip_levels);
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+
+    HRESULT hr = context.device()->CreateCommittedResource(
+        &rex::ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource));
+    if (SUCCEEDED(hr)) {
+      e.state = D3D12_RESOURCE_STATE_COPY_DEST;
+      const D3D12_RESOURCE_ALLOCATION_INFO info =
+          context.device()->GetResourceAllocationInfo(0, 1, &desc);
+      e.bytes = info.SizeInBytes;
+
+      constexpr uint64_t kPlacementAlignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+      struct ReplSubInfo {
+        uint32_t upload_pitch;
+        uint64_t upload_size;
+        uint64_t upload_offset;
+      };
+      std::vector<ReplSubInfo> sub_infos(repl->mips.size());
+      uint64_t repl_upload_total = 0;
+      for (size_t i = 0; i < repl->mips.size(); ++i) {
+        const auto& m = repl->mips[i];
+        const uint32_t upload_pitch = Align(m.width * 4u, kUploadRowAlignment);
+        const uint64_t upload_size = uint64_t(upload_pitch) * m.height;
+        repl_upload_total = (repl_upload_total + kPlacementAlignment - 1) & ~(kPlacementAlignment - 1);
+        sub_infos[i] = {upload_pitch, upload_size, repl_upload_total};
+        repl_upload_total += upload_size;
+      }
+
+      D3D12Context::UploadAlloc repl_upload;
+      if (context.AllocateUpload(repl_upload_total, kPlacementAlignment, repl_upload,
+                                 D3D12Context::UploadTag::kTexture)) {
+        for (size_t i = 0; i < repl->mips.size(); ++i) {
+          const auto& m = repl->mips[i];
+          const uint32_t upload_pitch = sub_infos[i].upload_pitch;
+          uint8_t* dst_cpu = static_cast<uint8_t*>(repl_upload.cpu) + sub_infos[i].upload_offset;
+          const uint8_t* src_pixels = m.pixels.data();
+          const uint32_t src_row_bytes = m.width * 4u;
+          for (uint32_t y = 0; y < m.height; ++y) {
+            std::memcpy(dst_cpu + y * upload_pitch, src_pixels + y * src_row_bytes, src_row_bytes);
+          }
+
+          D3D12_TEXTURE_COPY_LOCATION dst_loc = {};
+          dst_loc.pResource = e.resource.Get();
+          dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+          dst_loc.SubresourceIndex = static_cast<UINT>(i);
+
+          D3D12_TEXTURE_COPY_LOCATION src_loc = {};
+          src_loc.pResource = repl_upload.buffer;
+          src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+          src_loc.PlacedFootprint.Offset = repl_upload.offset + sub_infos[i].upload_offset;
+          src_loc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+          src_loc.PlacedFootprint.Footprint.Width = m.width;
+          src_loc.PlacedFootprint.Footprint.Height = m.height;
+          src_loc.PlacedFootprint.Footprint.Depth = 1;
+          src_loc.PlacedFootprint.Footprint.RowPitch = upload_pitch;
+
+          cl->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+        }
+
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = e.resource.Get();
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &barrier);
+        e.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+        WatchEntry(e);
+        IndexAdd(key, e);
+        entries_.emplace(key, std::move(e));
+        stats_.live_bytes += entries_[key].bytes;
+        ++stats_.hits;
+        if (out_source) {
+          *out_source = TextureSource::kReplacement;
+        }
+        REXLOG_INFO("[native_gfx] TextureReplacement: injected {}x{} ({} mips) for hash {:016x}",
+                    repl->width, repl->height, repl->mip_levels, replacement_hash);
+        return entries_[key].resource.Get();
+      } else {
+        context.DeferRelease(e.resource.Detach());
+        REXLOG_ERROR("[native_gfx] TextureReplacement: upload allocation failed for hash {:016x}",
+                     replacement_hash);
+      }
+    } else {
+      context.ReportCreateFailure("texture_replacement", hr);
+    }
+  }
 
   // Per-level source description, built once so the resource can be created
   // with exactly the number of levels that turn out to be readable. A level

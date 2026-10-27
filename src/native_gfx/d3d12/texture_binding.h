@@ -180,7 +180,7 @@ class TextureBinder {
   bool fallback_ready_ = false;      // fallback_texture_ has been created
   bool fallback_filled_ = false;     // white pixel uploaded + transitioned (one time)
   bool fallback_srv_valid_ = false;  // fallback SRV allocated in the CURRENT frame's half
-  uint32_t AcquireSampler(D3D12Context& context, const SamplerDescription& sampler);
+  uint32_t AcquireSampler(D3D12Context& context, const SamplerDescription& sampler, bool is_replacement_with_mips = false);
 
   static constexpr uint32_t kPersistentReservedSrvs = 256;
   static constexpr uint32_t kSrvRings = 4;

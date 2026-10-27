@@ -337,10 +337,14 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   // Derived from the resource, not from the fetch: a pooled depth target
   // is created TYPELESS so it can be both a DSV and an SRV, and a view
   // built from the guest format would not match it.
-  desc.Format = DXGI_FORMAT(SrvFormatForResource(resource, fetch.format));
+  desc.Format = (source == TextureSource::kReplacement)
+                    ? DXGI_FORMAT_R8G8B8A8_UNORM
+                    : DXGI_FORMAT(SrvFormatForResource(resource, fetch.format));
   desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   desc.Shader4ComponentMapping =
-      ShaderComponentMappingForSwizzle(fetch.swizzle, fetch.format, fetch.tiled, source);
+      (source == TextureSource::kReplacement)
+          ? D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING
+          : ShaderComponentMappingForSwizzle(fetch.swizzle, fetch.format, fetch.tiled, source);
   // Every level the resource has, not just the top one. Pinning this to 1
   // hides the mip chain the texture cache now uploads: the sampler would still
   // have a mip filter and a LOD range, but nothing below level 0 to read, so
@@ -356,8 +360,13 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   return index;
 }
 
-uint32_t TextureBinder::AcquireSampler(D3D12Context& context, const SamplerDescription& s) {
-  const uint64_t key = Hash64(&s, sizeof(s));
+uint32_t TextureBinder::AcquireSampler(D3D12Context& context, const SamplerDescription& s,
+                                       bool is_replacement_with_mips) {
+  struct {
+    SamplerDescription s;
+    uint32_t is_replacement_with_mips;
+  } key_data = {s, is_replacement_with_mips ? 1u : 0u};
+  const uint64_t key = Hash64(&key_data, sizeof(key_data));
   auto it = sampler_cache_.find(key);
   if (it != sampler_cache_.end()) {
     ++stats_.sampler_hits;
@@ -374,7 +383,7 @@ uint32_t TextureBinder::AcquireSampler(D3D12Context& context, const SamplerDescr
   }
   const uint32_t index = sampler_next_++;
   D3D12_SAMPLER_DESC desc = {};
-  BuildD3D12SamplerDesc(s, &desc);
+  BuildD3D12SamplerDesc(s, &desc, is_replacement_with_mips);
 
   D3D12_CPU_DESCRIPTOR_HANDLE handle = sampler_heap_->GetCPUDescriptorHandleForHeapStart();
   handle.ptr += SIZE_T(index) * sampler_increment_;
@@ -699,9 +708,11 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
       }
       continue;
     }
+    const bool is_replacement_with_mips =
+        (source == TextureSource::kReplacement && resource && resource->GetDesc().MipLevels > 1);
     const uint64_t exhausted_before = stats_.srv_exhausted + stats_.sampler_exhausted;
     const uint32_t srv_index = AcquireSrv(context, resource, fetch, source);
-    const uint32_t sampler_index = AcquireSampler(context, sampler);
+    const uint32_t sampler_index = AcquireSampler(context, sampler, is_replacement_with_mips);
     if (source == TextureSource::kRenderTargetBridge) {
       // Counted, not refused: see the memo notes in texture_binding.h. The
       // resource behind a bridge bind can change, but only when the pool
