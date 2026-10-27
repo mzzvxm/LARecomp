@@ -215,13 +215,6 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
   // Update LARecomp native texture replacement engine
   TextureReplacement::Instance().Rescan();
 
-  // Notify ReXGlue graphics system to reload texture replacements and flush cache
-  if (auto* runtime = rex::Runtime::instance()) {
-    if (auto* gs = runtime->graphics_system()) {
-      gs->RescanTextureReplacements();
-    }
-  }
-
   return g_total_replacements;
 }
 

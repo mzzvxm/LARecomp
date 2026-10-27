@@ -776,6 +776,7 @@ constexpr const char* kNoGpu = "false";
 constexpr const char* kNoGpu = nullptr;
 #endif
 const RendererChoice kRendererChoices[] = {
+    {"native", kNoGpu, "true",  "true",  "true"},
     {"xenia",  kNoGpu, "false", "false", "false"},
 #if defined(LARECOMP_HAS_GPU)
     {"plume",  "true",  "false", "true",  "false"},
@@ -788,8 +789,7 @@ std::string RendererGet() {
 #if defined(LARECOMP_HAS_GPU)
     if (CvarGet("mcla_gpu") == "true") return "plume";
 #endif
-    // The legacy runtime is no longer offered; a toml that still asks for it
-    // shows up as XENIA, which is what the next save will write.
+    if (CvarGet("mcla_native_gfx") == "true") return "native";
     return "xenia";
 }
 
@@ -1420,20 +1420,21 @@ const ItemDef kFfxItems[] = {
 const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
 const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
 #if defined(LARECOMP_HAS_GPU)
-const char* const kRendererVals[]  = {"xenia", "plume"};
-const char* const kRendererNames[] = {"XENIA", "NATIVE"};
-constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
+const char* const kRendererVals[]  = {"native", "xenia", "plume"};
+const char* const kRendererNames[] = {"NATIVE GFX", "XENIA", "PLUME"};
 // The NATIVE (Plume) renderer's post (M6c), all live: the scene's
 // anti-aliasing before the UI, and FSR1 on the present.
 const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
+#else
+const char* const kRendererVals[]  = {"native", "xenia"};
+const char* const kRendererNames[] = {"NATIVE GFX", "XENIA"};
 #endif
+constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
 
 const ItemDef kNativeItems[] = {
-#if defined(LARECOMP_HAS_GPU)
     Str ("PM_RxRenderer",    kRendererCvar,           "RENDERER: ",
          kRendererVals, kRendererNames, kNumRenderers, " (RESTART)"),
-#endif
     Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
          kApiVals, kApiNames, 3, " (RESTART)"),
 #if defined(LARECOMP_HAS_GPU)

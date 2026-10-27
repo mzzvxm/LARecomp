@@ -197,7 +197,7 @@ REXCVAR_DEFINE_BOOL(
     "is the reference the native write-back is compared against.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx, true, "MCLA/NativeGfx",
                     "MCLA Native Graphics Runtime. OFF (default): the game renders through the "
                     "normal Xenia-based path, nothing changes. ON: the native D3D12 backend is "
                     "initialized and the bring-up instrumentation runs (see "
@@ -395,7 +395,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_present, false, "MCLA/NativeGfx",
                     "itself and the guest command stream is empty.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_continuous, false, "MCLA/NativeGfx",
+REXCVAR_DEFINE_BOOL(mcla_native_gfx_continuous, true, "MCLA/NativeGfx",
                     "EXPERIMENTAL gameplay mode: render every guest frame through the native "
                     "pipeline and present it, instead of the one-shot capture. Keeps all caches "
                     "across frames, so the HDR exposure adaptation converges. Does NOT suppress "
