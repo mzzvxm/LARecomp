@@ -942,7 +942,7 @@ class LarecompApp : public rex::ReXApp {
     larecomp::StartIdentity(imgui_drawer());
     InitMapMouse();
     InitStringTableTools();
-    rex::ui::RegisterBind("bind_texture_dump", "F7", "Dump active scene textures",
+    rex::ui::RegisterBind("bind_texture_dump", "F2", "Dump active scene textures",
                           [] { mcla::DumpAllLiveSceneTextures(); });
     InitHooks();  // its own modloader::Init call is a no-op after the build
   }

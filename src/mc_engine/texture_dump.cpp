@@ -360,17 +360,10 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
   if (!IsDumpableFormat(format))
     return;
 
-  // Build filename: <hash16>_<w>x<h>_<format_name>[_<asset_name>].dds
-  char name[256];
-  if (!asset_name.empty()) {
-    std::string safe = mc::modloader::SanitizeTextureAssetName(asset_name);
-    std::snprintf(name, sizeof(name), "%016llx_%ux%u_%s_%s.dds",
-                  static_cast<unsigned long long>(content_hash), width, height, fi->name,
-                  safe.c_str());
-  } else {
-    std::snprintf(name, sizeof(name), "%016llx_%ux%u_%s.dds",
-                  static_cast<unsigned long long>(content_hash), width, height, fi->name);
-  }
+  // Build filename: <hash16>.dds (clean 16-hex hash matching Texture-Toolkit standard)
+  char name[64];
+  std::snprintf(name, sizeof(name), "%016llx.dds",
+                static_cast<unsigned long long>(content_hash));
   const auto dest = dump_dir / name;
 
   // Only write once per unique texture to avoid hammering the disk.
