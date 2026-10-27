@@ -18,7 +18,7 @@ struct ResolvePush {
   uint stencil;  // bindless slot: the stencil plane view (depth sources)
   int offset_x;  // source pixel = target pixel + offset
   int offset_y;
-  uint samples;  // bits 0-2 count, bits 8 + 2i the host index of sample i
+  uint samples;  // bits 0-3 count, bits 8 + 3i the host index of sample i
   float scale;   // 2^exp_bias (x32 for the 16-bit EDRAM formats) / count
   uint mode;
   uint fill;     // host pixels of a scaled source's half-pixel gap (0: none)

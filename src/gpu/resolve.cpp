@@ -69,6 +69,48 @@ using rex::graphics::FormatInfo;
 
 namespace {
 
+// The host's standard sample positions (D3D, also Vulkan's standard ones; the
+// host programs none, 24.38), in 1/16 pixel from the centre, by sample index.
+struct SamplePosition {
+  int8_t x, y;
+};
+constexpr SamplePosition kPositions2[2] = {{4, 4}, {-4, -4}};
+constexpr SamplePosition kPositions4[4] = {{-2, -6}, {6, -2}, {-6, 2}, {2, 6}};
+constexpr SamplePosition kPositions8[8] = {{1, -3}, {-1, 3}, {5, 1},  {-3, -5},
+                                           {-5, 5}, {-7, -1}, {3, 7}, {7, -7}};
+
+const SamplePosition* Positions(uint32_t samples) {
+  return samples >= 8 ? kPositions8 : samples >= 4 ? kPositions4 : kPositions2;
+}
+
+// Guest sample `s` of a `guest`-sample target: the host sample of a
+// `host`-sample texture that stands for it. With the guest's count it is
+// Xenia's order (2x: guest 0 is host 1; 4x: guest s is host
+// ((s & 1) << 1) | (s >> 1)); with more host samples (M6d.2) the host sample
+// nearest to where that one sits.
+uint32_t HostSampleOf(uint32_t s, uint32_t guest, uint32_t host) {
+  if (guest <= 1 || host <= 1) {
+    return 0;
+  }
+  const uint32_t same = guest >= 4 ? (((s & 1) << 1) | (s >> 1)) : (s == 0 ? 1u : 0u);
+  if (host == guest) {
+    return same;
+  }
+  const SamplePosition at = Positions(guest)[same];
+  const SamplePosition* candidates = Positions(host);
+  uint32_t best = 0;
+  int32_t best_distance = INT32_MAX;
+  for (uint32_t i = 0; i < host; ++i) {
+    const int32_t dx = candidates[i].x - at.x, dy = candidates[i].y - at.y;
+    const int32_t distance = dx * dx + dy * dy;
+    if (distance < best_distance) {
+      best_distance = distance;
+      best = i;
+    }
+  }
+  return best;
+}
+
 const char* FailureName(uint32_t f) {
   static const char* const kNames[] = {
       "device lost",           "record unreadable",       "source surface not bound",
@@ -1087,26 +1129,23 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       } else {
         select = 0;
       }
-      uint32_t host_samples[4] = {};
-      uint32_t count = 1;
-      const auto host_of = [&](uint32_t s) -> uint32_t {
-        if (samples >= 4) return ((s & 1) << 1) | (s >> 1);
-        if (samples >= 2) return s == 0 ? 1u : 0u;
-        return 0u;
-      };
+      // The guest samples the copy reads (host order chosen once the source
+      // target, and so its host samples, is known).
+      uint32_t guest_samples[4] = {};
+      uint32_t guest_count = 1;
       if (select <= 3) {
-        host_samples[0] = host_of(select);
+        guest_samples[0] = select;
       } else if (select == 4) {
-        host_samples[0] = host_of(0);
-        host_samples[1] = host_of(1);
-        count = 2;
+        guest_samples[0] = 0;
+        guest_samples[1] = 1;
+        guest_count = 2;
       } else if (select == 5) {
-        host_samples[0] = host_of(2);
-        host_samples[1] = host_of(3);
-        count = 2;
+        guest_samples[0] = 2;
+        guest_samples[1] = 3;
+        guest_count = 2;
       } else {
-        for (uint32_t s = 0; s < 4; ++s) host_samples[s] = host_of(s);
-        count = 4;
+        for (uint32_t s = 0; s < 4; ++s) guest_samples[s] = s;
+        guest_count = 4;
       }
 
       // Destination rectangle in the level: source - (x0, y0) + point.
@@ -1153,6 +1192,18 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
                                                  src_key.base_tiles, src_key.pitch,
                                                  src_key.samples));
         break;
+      }
+      // The host samples to read: all of them when the copy reads every guest
+      // sample; otherwise, for each guest sample, the host sample nearest to
+      // where it sits (the same one when the host has the guest's count).
+      uint32_t host_samples[8] = {};
+      uint32_t count = 0;
+      if (guest_count == samples && samples > 1 && src->host_samples > samples) {
+        for (uint32_t s = 0; s < src->host_samples; ++s) host_samples[count++] = s;
+      } else {
+        for (uint32_t i = 0; i < guest_count; ++i) {
+          host_samples[count++] = HostSampleOf(guest_samples[i], samples, src->host_samples);
+        }
       }
       // EDRAM ownership: the copy reads every bit of the source's
       // words -- a depth source's stencil too, which the resolve memory keeps.
@@ -1251,7 +1302,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       push.offset_y = -dy * int32_t(resolution_scale);
       push.samples = count;
       for (uint32_t i = 0; i < count; ++i) {
-        push.samples |= host_samples[i] << (8 + 2 * i);
+        push.samples |= host_samples[i] << (8 + 3 * i);
       }
       // The half-pixel gap at a scale. With the D3D pixel centre
       // the viewport adds half a guest pixel, s/2 host pixels: a full-screen

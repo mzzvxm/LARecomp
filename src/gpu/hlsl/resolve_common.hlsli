@@ -16,7 +16,7 @@
 // the same bytes as before the split):
 //   uint source;   bindless slot: the colour or depth plane view
 //   uint stencil;  bindless slot: the stencil plane view (depth sources)
-//   uint samples;  bits 0-2 count, bits 8 + 2i the host index of sample i
+//   uint samples;  bits 0-3 count, bits 8 + 3i the host index of sample i
 //   float scale;   2^exp_bias (x32 for the 16-bit EDRAM formats) / count
 //   uint mode;     the conversion (bits 0-7) and the flags below
 
@@ -47,7 +47,7 @@
 #define kFlagDestFloat24 (1u << 11)
 
 uint HostSample(uint i) {
-  return (g_push.samples >> (8u + 2u * i)) & 3u;
+  return (g_push.samples >> (8u + 3u * i)) & 7u;
 }
 
 #if RESOLVE_DEPTH
@@ -72,7 +72,7 @@ uint ResolveDepth24(int2 source, out uint stencil) {
 // quantizes it: the selected samples summed (in the EDRAM's PWL for a _GAMMA
 // target, which the host keeps linear), scaled, red and blue swapped when asked.
 float4 ResolveColor(int2 source) {
-  const uint count = g_push.samples & 7u;
+  const uint count = g_push.samples & 15u;
   float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   [loop] for (uint i = 0u; i < count; ++i) {
 #if RESOLVE_MSAA

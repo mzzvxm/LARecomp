@@ -4,8 +4,10 @@
 #include "edram.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <format>
+#include <string>
 
 #include <rex/cvar.h>
 #include <rex/graphics/xenos.h>
@@ -55,6 +57,13 @@ REXCVAR_DEFINE_UINT32(
     "(the scene, the UI, the post-processing sized from the screen) is this many times the "
     "guest's in each direction (1, 2 or 3; 2 = 2560x1440, 3 = 3840x2160 from 720p). The guest "
     "keeps seeing its own sizes.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_msaa, "2", "MCLA/GPU",
+    "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
+    "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
+    "own). Targets the game does not multisample, or that are not images of the screen, keep "
+    "the game's samples.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
@@ -147,6 +156,13 @@ uint32_t EdramTargets::ScaleForDeclared(uint32_t size_bits) {
   return IsScreenImage(size_bits) ? resolution_scale_ : 1;
 }
 
+uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
+  if (key.samples <= 1 || msaa_level_ <= key.samples) {
+    return key.samples;
+  }
+  return IsScreenImage(size_bits) ? msaa_level_ : key.samples;
+}
+
 void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
   const uint32_t scale = ScaleForDeclared(size_bits);
   if (scale == target.scale) {
@@ -230,6 +246,49 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   if (resolution_scale_ > 1) {
     REXLOG_INFO("[gpu] edram: the images of the screen at {}x the guest's size",
                 resolution_scale_);
+  }
+  // The host MSAA level, chosen at start, within what the device can do for
+  // every format an image of the screen is stored as.
+  {
+    std::string value = REXCVAR_GET(mcla_gpu_msaa);
+    std::string v;
+    for (unsigned char c : value) {
+      if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
+    }
+    if (!v.empty() && v.back() == 'x') v.pop_back();
+    uint32_t wanted = 2;
+    if (v == "4") {
+      wanted = 4;
+    } else if (v == "8") {
+      wanted = 8;
+    } else if (v != "2" && v != "off" && v != "1") {
+      REXLOG_ERROR("[gpu] edram: mcla_gpu_msaa = '{}' is not off, 2, 4 or 8; the console's 2x "
+                   "is kept",
+                   value);
+    }
+    // off is the game's own switch (Patch_DisableMSAA): its targets come 1x.
+    plume::RenderDevice* rd = device.device();
+    uint32_t supported = 0xFFu;
+    for (plume::RenderFormat f :
+         {plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R16G16B16A16_FLOAT,
+          plume::RenderFormat::D32_FLOAT_S8_UINT}) {
+      supported &= uint32_t(rd->getSampleCountsSupported(f));
+    }
+    uint32_t level = wanted;
+    while (level > 2 && (supported & level) == 0) {
+      level >>= 1;
+    }
+    if (level != wanted) {
+      REXLOG_ERROR("[gpu] edram: MSAA {}x asked, {}x used (device sample counts {:#x} for the "
+                   "screen formats)",
+                   wanted, level, supported);
+    }
+    msaa_level_ = level;
+    if (msaa_level_ > 2) {
+      REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples get {} samples on "
+                  "the host (mcla_gpu_msaa)",
+                  msaa_level_);
+    }
   }
   // The detector and its checks are chosen at start.
   aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);
@@ -435,10 +494,11 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
       k.pitch * target.scale, height * target.scale, 1, m.format,
       k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
-  desc.multisampling.sampleCount = plume::RenderSampleCounts(k.samples);
+  desc.multisampling.sampleCount = plume::RenderSampleCounts(target.host_samples);
   const std::string name =
-      std::format("edram {} {}@{} pitch {} {}x scale {}", k.depth ? "depth" : "colour",
-                  m.guest_name, k.base_tiles, k.pitch, k.samples, target.scale);
+      std::format("edram {} {}@{} pitch {} {}x scale {} host {}x", k.depth ? "depth" : "colour",
+                  m.guest_name, k.base_tiles, k.pitch, k.samples, target.scale,
+                  target.host_samples);
   std::unique_ptr<plume::RenderTexture> texture = device_->CreateTexture(desc, name.c_str());
   if (!texture) {
     return false;
@@ -490,6 +550,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, ui
     auto target = std::make_unique<Target>();
     target->key = key;
     target->scale = std::clamp<uint32_t>(scale, 1, resolution_scale_);
+    target->host_samples = HostSamplesFor(key, size_bits);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
       REXLOG_ERROR("[gpu] edram: no host target for {} format {} at tile {} pitch {} {}x "
@@ -503,6 +564,12 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, ui
       ++stats_.made_scaled;
     } else {
       ++stats_.made_unscaled;
+    }
+    if (target->host_samples != key.samples) {
+      ++stats_.made_host_msaa;
+      REXLOG_INFO("[gpu] edram: {} made with {} samples on the host (an image of the screen, "
+                  "first use {} rows)",
+                  DescribeEdramKey(key), target->host_samples, height);
     }
     if (resolution_scale_ > 1) {
       // The census of the rule: what each identity became, once.
@@ -573,7 +640,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, ui
                 old_height, t.height, t.generation);
   }
   stats_.grown_bytes += uint64_t(t.width) * (wanted - old_height) * BytesPerPixel(t.format) *
-                        t.key.samples;
+                        t.host_samples;
   RetireFramebuffersOf(&t);
   // Views of the old texture: their slots go null before it dies.
   ReleaseViews(t);
@@ -1218,7 +1285,7 @@ std::string EdramTargets::TakeSummary() {
   uint64_t bytes = 0;
   for (const auto& [key, target] : targets_) {
     bytes += uint64_t(target->width) * target->height * BytesPerPixel(target->format) *
-             target->key.samples * target->scale * target->scale;
+             target->host_samples * target->scale * target->scale;
   }
   std::string text = std::format(
       "edram: {} targets ({:.1f} MiB), {} framebuffers | created {}, grown {} ({:.1f} MiB "
@@ -1236,6 +1303,10 @@ std::string EdramTargets::TakeSummary() {
                         "at a scale other than their target's",
                         resolution_scale_, scaled, targets_.size(), stats_.made_scaled,
                         stats_.made_unscaled, stats_.declared_unknown, stats_.scale_conflicts);
+  }
+  if (msaa_level_ > 2) {
+    text += std::format(" | host MSAA {}x: {} targets made with it", msaa_level_,
+                        stats_.made_host_msaa);
   }
   if (aliasing_) {
     text += std::format(

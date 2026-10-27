@@ -399,9 +399,11 @@ class Scene {
     uint32_t draw_scale_colors = 0;
     uint32_t draw_scale_depth_format = 0;
     uint32_t draw_scale = 1;
+    uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
     bool constants_valid = false;
     bool ps_writes_depth = false;
     uint32_t scale = 1;  // the targets' resolution scale the viewport was made for (24.45)
+    uint32_t samples = 1;  // and their host samples, for g_AlphaToMask
     ViewportInfo viewport;
     SharedConstants shared;  // before the texture tables
   };

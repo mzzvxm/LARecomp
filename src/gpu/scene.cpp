@@ -247,9 +247,10 @@ const char* ConversionName(uint32_t conversion) {
 // the depth target when it writes no colour -- or, before that target exists,
 // the one the declared size of the surface binding it gives (EdramTargets::
 // ScaleOf); Scene::Record makes the targets at it and checks that every other
-// target agrees.
+// target agrees. `*host_samples`: that identity's samples on the host
+// (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take.
 uint32_t DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                   uint32_t size_bits) {
+                   uint32_t size_bits, uint32_t* host_samples) {
   EdramKey first;
   first.pitch = uint16_t(s.surface_pitch);
   first.samples = uint8_t(MsaaSampleCount(s.msaa));
@@ -262,8 +263,10 @@ uint32_t DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& 
     first.depth = 1;
     first.format = uint8_t(s.depth_format);
   } else {
+    *host_samples = first.samples;
     return 1;
   }
+  *host_samples = edram.HostSamplesOf(first, size_bits);
   return edram.ScaleOf(first, size_bits);
 }
 
@@ -753,19 +756,24 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // so is the depth slope across it -- Xenia multiplies the slope factor by
   // the scale. The constant part is in depth units and stays.
   uint32_t scale;
+  uint32_t host_samples;
   if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
       memo.draw_scale_colors == d.key.color_count &&
       memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
     scale = memo.draw_scale;
+    host_samples = memo.draw_samples;
   } else {
-    scale = DrawScale(*edram_, s, d.key, r.target_size_bits);
+    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples);
     memo.draw_scale_valid = true;
     memo.draw_scale_serial = edram_->change_serial();
     memo.draw_scale_colors = d.key.color_count;
     memo.draw_scale_depth_format = uint32_t(d.key.depth_format);
     memo.draw_scale = scale;
+    memo.draw_samples = host_samples;
   }
   d.scale = scale;
+  // The pipeline rasterizes at the targets' host samples (M6d.2).
+  d.key.sample_count = host_samples;
   if (scale != 1 && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= float(scale);
     if (!pipelines_->dynamic_depth_bias()) {
@@ -796,20 +804,21 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   SharedConstants shared;
   uint32_t issues = 0;
   if (state_same && memo.constants_valid && memo.ps_writes_depth == ps_writes_depth &&
-      memo.scale == scale) {
+      memo.scale == scale && memo.samples == host_samples) {
     d.viewport = memo.viewport;
     shared = memo.shared;
   } else {
     // At the scale of the draw's targets (DrawScale above).
     d.viewport = ComputeViewport(s, ps_writes_depth, scale);
     shared = base_shared_;
-    issues = FillSharedConstants(s, d.viewport, shared);
+    issues = FillSharedConstants(s, d.viewport, host_samples, shared);
     // The pixel position a pixel shader receives, in guest pixels (v7).
     shared.inv_resolution_scale[0] = 1.0f / float(scale);
     shared.inv_resolution_scale[1] = 1.0f / float(scale);
     memo.constants_valid = true;
     memo.ps_writes_depth = ps_writes_depth;
     memo.scale = scale;
+    memo.samples = host_samples;
     memo.viewport = d.viewport;
     memo.shared = shared;
   }
@@ -1298,6 +1307,22 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                           depth ? depth->scale : 0u);
     return Skip::kTarget;
   }
+  // And one sample count on the host, the one the pipeline was made for: a
+  // framebuffer cannot mix them (M6d.2; the rule gives colour and depth of a
+  // screen image the same).
+  bool samples_agree = !depth || depth->host_samples == d.key.sample_count;
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    samples_agree &= colors[i]->host_samples == d.key.sample_count;
+  }
+  if (!samples_agree) {
+    const EdramTargets::Target* first = d.key.color_count ? colors[0] : depth;
+    *detail = std::format("targets of different host samples (pitch {}): {} with {}, {} with {}, "
+                          "pipeline {}",
+                          pitch, DescribeEdramKey(first->key), first->host_samples,
+                          depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
+                          depth ? depth->host_samples : 0u, d.key.sample_count);
+    return Skip::kTarget;
+  }
   // Layouts (a barrier closes an open render pass on Vulkan; Plume reopens it).
   uint32_t target_height = EdramTargets::kMaxExtent;
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
@@ -1431,12 +1456,12 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
   }
   if (coverage_check != EdramTargets::kNoCheck) {
-    // Every sample of the scissor the host draws in.
+    // Every host sample of the scissor the host draws in.
     const int64_t width = std::min(scissor.right, int32_t(pitch)) - scissor.left;
     const int64_t height = scissor.bottom - scissor.top;
     edram_->BeginCoverageCheck(list, coverage_check,
                                uint64_t(std::max<int64_t>(width, 0) *
-                                        std::max<int64_t>(height, 0) * samples));
+                                        std::max<int64_t>(height, 0) * d.key.sample_count));
   }
   if (g.indexed) {
     if (!bound_.index_bound || !SameIndexBuffer(bound_.index_view, g.index_view)) {

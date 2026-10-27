@@ -1227,6 +1227,8 @@ constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
 constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
 constexpr double kGpuResScaleVals[] = {1.0, 2.0, 3.0};
+constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
+constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
 constexpr const char* kEffectVals[]  = {"bilinear", "cas", "fsr", "fsr2", "fsr3"};
 constexpr const char* kEffectNames[] = {"BILINEAR", "CAS", "FSR 1", "FSR 2", "FSR 3"};
@@ -1319,7 +1321,15 @@ const ItemDef kVideoItems[] = {
     NativeOnly(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale", "RES SCALE: ",
                    kGpuResScaleVals, 3, "%gX", " (RESTART)")),
 #endif
+#if defined(LARECOMP_HAS_GPU)
+    XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
+    // NATIVE: OFF is the game's own switch, 2X the console's, 4X more samples on
+    // the host for the images of the screen the game multisamples (M6d.2).
+    NativeOnly(Str("PM_RxGpuMsaa", "mcla_gpu_msaa", "MSAA: ",
+                   kGpuMsaaVals, kGpuMsaaNames, 4, " (RESTART)")),
+#else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
+#endif
 };
 
 const ItemDef kRecompItems[] = {

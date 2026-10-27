@@ -63,7 +63,7 @@ struct SharedConstants {
   float inv_resolution_scale[2];           // 592, since v7: 1 / the host target's scale
   float reserved_v7[2];                    // 600
 };
-static_assert(sizeof(SharedConstants) == 608, "SharedConstants is shader contract v7");
+static_assert(sizeof(SharedConstants) == 608, "SharedConstants is shader contract v7 and v8 (same layout)");
 static_assert(offsetof(SharedConstants, sampler) == 384);
 static_assert(offsetof(SharedConstants, booleans) == 512);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 528);
@@ -121,9 +121,11 @@ AlphaTest ComputeAlphaTest(const XenosState& state);
 
 // g_AlphaToMask (contract v5 and v6; the generated computeAlphaToMask, Xenia's
 // rule): bits 0-7 RB_COLORCONTROL's alpha_to_mask_offset0..3,
-// bit 8 enabled, bits 9-10 the sample count log2. 0 = off (every sample
-// covered). Read by the ALPHA_TEST variant only.
-uint32_t AlphaToMaskParameters(const XenosState& state);
+// bit 8 enabled, bits 9-10 the sample count log2 -- of the host target,
+// `host_samples` (M6d.2: a guest 2x target with 4 host samples takes the 4x
+// pattern; 8, contract v8, the generated 8-sample branch). 0 = off (every sample covered). Read by the ALPHA_TEST variant
+// only.
+uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples);
 
 // What FillSharedConstants could not express; the caller reports each kind.
 enum SharedConstantsIssue : uint32_t {
@@ -131,9 +133,9 @@ enum SharedConstantsIssue : uint32_t {
   kIssueExpBiasBeyondRt0 = 1u << 1,   // only RT0's bias reaches the shader
 };
 
-// Fills everything but the texture and sampler tables. Returns the issues
-// (SharedConstantsIssue bits).
+// Fills everything but the texture and sampler tables, for targets of
+// `host_samples` samples. Returns the issues (SharedConstantsIssue bits).
 uint32_t FillSharedConstants(const XenosState& state, const ViewportInfo& viewport,
-                             SharedConstants& out);
+                             uint32_t host_samples, SharedConstants& out);
 
 }  // namespace mcla::gpu

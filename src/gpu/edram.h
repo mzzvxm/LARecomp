@@ -158,6 +158,10 @@ class EdramTargets {
     uint32_t width = 0;   // guest pixels (the host texture is width * scale)
     uint32_t height = 0;  // guest pixels
     uint32_t scale = 1;   // host pixels per guest pixel, each way
+    // Samples of the host texture: the guest's (key.samples), or the host's
+    // MSAA level on an image of the screen the guest multisamples (M6d.2,
+    // HostSamplesFor). Fixed when it is made, like the scale.
+    uint32_t host_samples = 1;
     // The last declared size (D3DSurface SizeBits) seen binding it that
     // agreed with its scale or was reported (NoteDeclaredScale).
     uint32_t declared_size_bits = 0;
@@ -242,6 +246,19 @@ class EdramTargets {
   // (the screen >> k, k up to kMaxScreenShift), whatever the scale; false
   // when unknown.
   bool IsScreenImage(uint32_t size_bits);
+  // The host MSAA level (mcla_gpu_msaa, chosen at start, within what the
+  // device supports): 2 = the console's.
+  uint32_t msaa_level() const { return msaa_level_; }
+  // Samples a new target of `key` bound through a surface declared with
+  // `size_bits` gets on the host: the MSAA level when the guest multisamples
+  // it and it is an image of the screen, else the guest's.
+  uint32_t HostSamplesFor(const EdramKey& key, uint32_t size_bits);
+  // The host samples of `key`'s target: its own when it exists, otherwise
+  // HostSamplesFor.
+  uint32_t HostSamplesOf(const EdramKey& key, uint32_t size_bits) {
+    const auto it = targets_.find(key);
+    return it != targets_.end() ? it->second->host_samples : HostSamplesFor(key, size_bits);
+  }
   // The scale of `key`'s target: its own when it exists, otherwise the one
   // ScaleForDeclared gives `size_bits`.
   uint32_t ScaleOf(const EdramKey& key, uint32_t size_bits) {
@@ -541,6 +558,7 @@ class EdramTargets {
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
   uint32_t resolution_scale_ = 1;
+  uint32_t msaa_level_ = 2;
   // The game's screen (ScreenSize), 0 until read.
   uint32_t screen_width_ = 0;
   uint32_t screen_height_ = 0;
@@ -594,6 +612,7 @@ class EdramTargets {
     uint64_t made_unscaled = 0;     // ... at the guest's size
     uint64_t declared_unknown = 0;  // classifications with no declared size (guest's size)
     uint64_t scale_conflicts = 0;   // uses whose declared size gives another scale than the target's
+    uint64_t made_host_msaa = 0;    // targets made with more samples than the guest's (M6d.2)
   };
   Stats stats_;
 };

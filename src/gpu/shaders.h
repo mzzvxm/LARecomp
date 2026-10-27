@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the guest shader store (shader pack v7)
+// MCLA GPU renderer -- the guest shader store (shader pack v8)
 // ===========================================================================
 // The translated guest shaders (LAR-XenosRecomp HLSL compiled offline by
 // tools/build_shader_pack_v7.py), keyed by the runtime shader identity
@@ -53,8 +53,8 @@ class Device;
 
 class ShaderStore {
  public:
-  static constexpr const char* kPackFileName = "mcla_shaders.v7.pack";
-  static constexpr uint32_t kPackVersion = 7;
+  static constexpr const char* kPackFileName = "mcla_shaders.v8.pack";
+  static constexpr uint32_t kPackVersion = 8;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

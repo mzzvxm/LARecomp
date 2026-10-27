@@ -202,21 +202,23 @@ AlphaTest ComputeAlphaTest(const XenosState& state) {
   return test;
 }
 
-uint32_t AlphaToMaskParameters(const XenosState& state) {
+uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples) {
   if (!state.color_control.alpha_to_mask_enable) {
     return 0;
   }
   uint32_t samples_log2 = 0;
-  switch (state.msaa) {
-    case xe::MsaaSamples::k2X: samples_log2 = 1; break;
-    case xe::MsaaSamples::k4X: samples_log2 = 2; break;
-    default: break;
+  if (host_samples >= 8) {
+    samples_log2 = 3;  // contract v8
+  } else if (host_samples >= 4) {
+    samples_log2 = 2;
+  } else if (host_samples >= 2) {
+    samples_log2 = 1;
   }
   return (state.color_control.value >> 24) | 0x100u | (samples_log2 << 9);
 }
 
 uint32_t FillSharedConstants(const XenosState& state, const ViewportInfo& viewport,
-                             SharedConstants& out) {
+                             uint32_t host_samples, SharedConstants& out) {
   uint32_t issues = 0;
   out.booleans = state.bool_words[0] & 0xFFFFu;  // VS bools 0-15; PS half 0
   out.swapped_texcoords = 0;                      // swapped per element on upload (24.8)
@@ -259,7 +261,7 @@ uint32_t FillSharedConstants(const XenosState& state, const ViewportInfo& viewpo
   }
   out.blend_premult_rgb = mode_rgb;
   out.blend_premult_a = mode_a;
-  out.alpha_to_mask = AlphaToMaskParameters(state);
+  out.alpha_to_mask = AlphaToMaskParameters(state, host_samples);
 
   for (uint32_t i = 0; i < 3; ++i) {
     out.pos_scale[i] = viewport.ndc_scale[i];

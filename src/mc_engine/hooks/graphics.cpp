@@ -194,8 +194,19 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
     return false;
 }
 
+// The game's MSAA switch. Under the NATIVE renderer its MSAA row
+// (mcla_gpu_msaa, OFF/2X/4X/8X) owns it and disable_msaa -- the XENIA row,
+// hidden there -- is not read; both cvars are read by name or flag here, the
+// renderer's lives with the renderer.
+static bool MsaaOff() {
+    if (rex::cvar::GetFlagByName("mcla_gpu") == "true") {
+        return rex::cvar::GetFlagByName("mcla_gpu_msaa") == "off";
+    }
+    return REXCVAR_GET(disable_msaa);
+}
+
 bool Patch_DisableMSAA(PPCRegister& r11) {
-    if (REXCVAR_GET(disable_msaa)) {
+    if (MsaaOff()) {
         r11.u64 = 1; // li r11, 1
         return true;
     }
