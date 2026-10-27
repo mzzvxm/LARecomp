@@ -1412,6 +1412,9 @@ constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0
 // anti-aliasing before the UI, and FSR1 on the present.
 const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
+// Anisotropic filtering (M6d.1, live): the game's own or forced.
+const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
+const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
 #endif
 
 const ItemDef kNativeItems[] = {
@@ -1424,6 +1427,8 @@ const ItemDef kNativeItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
                     kNativeAaVals, kNativeAaNames, 3)),
+    NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
+                    kNativeAnisoVals, kNativeAnisoNames, 6)),
     NativeOnly(Bool("PM_RxGpuFsr",      "mcla_gpu_fsr",          "NATIVE FSR1: ")),
     NativeOnly(Dbl ("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "NATIVE FSR SHARP REDUCE: ",
                     kFsrSharpVals, 5, "%g")),

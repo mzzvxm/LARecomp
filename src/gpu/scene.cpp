@@ -407,6 +407,11 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
+  if (samplers_->FrameSettingChanged()) {
+    // The memoized fetches hold sampler slots of the old anisotropy.
+    fetch_memo_.fill(FetchMemo{});
+    last_fetch_.fill(nullptr);
+  }
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
   ResetListState();

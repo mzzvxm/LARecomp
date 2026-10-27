@@ -12,17 +12,55 @@
 #include <cfloat>
 #include <cstring>
 
+#include <cctype>
+#include <string>
+
+#include <rex/cvar.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
 #include "descriptors.h"
 #include "device.h"
 
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_anisotropy, "game", "MCLA/GPU",
+    "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
+    "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace xe = rex::graphics::xenos;
 
 namespace {
+
+// mcla_gpu_anisotropy as an xenos::AnisoFilter, -1 = the game's.
+int32_t ReadOverride() {
+  std::string value = REXCVAR_GET(mcla_gpu_anisotropy);
+  std::string v;
+  for (unsigned char c : value) {
+    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
+  }
+  if (!v.empty() && v.back() == 'x') v.pop_back();
+  if (v == "off" || v == "0" || v == "1") return int32_t(xe::AnisoFilter::kDisabled);
+  if (v == "2") return int32_t(xe::AnisoFilter::kMax_2_1);
+  if (v == "4") return int32_t(xe::AnisoFilter::kMax_4_1);
+  if (v == "8") return int32_t(xe::AnisoFilter::kMax_8_1);
+  if (v == "16") return int32_t(xe::AnisoFilter::kMax_16_1);
+  return -1;
+}
+
+const char* OverrideName(int32_t o) {
+  switch (o) {
+    case -1: return "game";
+    case int32_t(xe::AnisoFilter::kDisabled): return "off";
+    case int32_t(xe::AnisoFilter::kMax_2_1): return "2x";
+    case int32_t(xe::AnisoFilter::kMax_4_1): return "4x";
+    case int32_t(xe::AnisoFilter::kMax_8_1): return "8x";
+    case int32_t(xe::AnisoFilter::kMax_16_1): return "16x";
+  }
+  return "?";
+}
 
 plume::RenderTextureAddressMode AddressMode(uint32_t clamp) {
   switch (xe::ClampMode(clamp)) {
@@ -65,6 +103,21 @@ Samplers::~Samplers() {
 void Samplers::Initialize(Device& device, BindlessHeap& heap) {
   device_ = &device;
   heap_ = &heap;
+  override_ = ReadOverride();
+  REXLOG_INFO("[gpu] sampler: anisotropic filtering {} (mcla_gpu_anisotropy, live)",
+              OverrideName(override_));
+}
+
+bool Samplers::FrameSettingChanged() {
+  const int32_t o = ReadOverride();
+  if (o == override_) {
+    return false;
+  }
+  override_ = o;
+  REXLOG_INFO("[gpu] sampler: anisotropic filtering {}; so far {} sampler descriptions made, {} "
+              "with the game's anisotropy, {} able to take the setting",
+              OverrideName(o), made_, made_game_aniso_, made_eligible_);
+  return true;
 }
 
 void Samplers::Shutdown() {
@@ -85,6 +138,14 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   const xe::TextureFilter mip_filter = fetch.mip_filter;
   d.mip_base_map = mip_filter == xe::TextureFilter::kBaseMap;
   xe::AnisoFilter aniso = std::min(fetch.aniso_filter, xe::AnisoFilter::kMax_16_1);
+  const bool game_aniso = aniso != xe::AnisoFilter::kDisabled;
+  const bool eligible = mip_max > mip_min && !d.mip_base_map &&
+                        fetch.mag_filter == xe::TextureFilter::kLinear &&
+                        fetch.min_filter == xe::TextureFilter::kLinear &&
+                        mip_filter == xe::TextureFilter::kLinear;
+  if (override_ >= 0 && eligible) {
+    aniso = xe::AnisoFilter(override_);
+  }
   d.aniso = uint8_t(aniso);
   if (aniso != xe::AnisoFilter::kDisabled) {
     d.mag_linear = d.min_linear = d.mip_linear = 1;
@@ -103,6 +164,10 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   if (it != slots_.end()) {
     return it->second;
   }
+
+  ++made_;
+  made_game_aniso_ += game_aniso ? 1 : 0;
+  made_eligible_ += eligible ? 1 : 0;
 
   plume::RenderSamplerDesc desc;
   desc.magFilter = d.mag_linear ? plume::RenderFilter::LINEAR : plume::RenderFilter::NEAREST;

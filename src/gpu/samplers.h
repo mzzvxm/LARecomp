@@ -16,6 +16,15 @@
 // Each distinct description gets one sampler and one bindless sampler slot for
 // the life of the renderer (27 distinct in the measured frames).
 //
+// mcla_gpu_anisotropy (live): game | off | 2 | 4 | 8 | 16. Anything but game
+// replaces the fetch's anisotropy on a description that can take it --
+// mips to filter between (mip_max > mip_min), no base map, and min, mag and
+// mip filters all linear (reblue's rule: an anisotropic host filter is linear
+// in all three on Direct3D 12, so a point filter would turn linear there and
+// not on Vulkan). Render targets' products have no mips and never take it.
+// The descriptions are keyed with the result, so a change makes new samplers;
+// FrameSettingChanged tells the scene to forget the slots it memoized.
+//
 // Threading: render thread only.
 // ===========================================================================
 
@@ -52,6 +61,10 @@ class Samplers {
 
   size_t size() const { return slots_.size(); }
 
+  // mcla_gpu_anisotropy, read once a frame: true when it changed since the
+  // last frame (logged), and the samplers handed out before are stale.
+  bool FrameSettingChanged();
+
  private:
   struct Description {
     uint8_t clamp[3] = {};
@@ -68,6 +81,12 @@ class Samplers {
   std::unordered_map<uint64_t, uint32_t> slots_;  // description key -> bindless slot
   std::vector<std::unique_ptr<plume::RenderSampler>> samplers_;
   uint32_t reported_ = 0;
+  // xenos::AnisoFilter forced on the descriptions that can take it, -1 = the
+  // game's own.
+  int32_t override_ = -1;
+  // Descriptions made: in all, with an anisotropy from the game, able to take
+  // the override (the census of the setting).
+  uint32_t made_ = 0, made_game_aniso_ = 0, made_eligible_ = 0;
 };
 
 }  // namespace mcla::gpu
