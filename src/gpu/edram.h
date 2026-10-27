@@ -158,6 +158,9 @@ class EdramTargets {
     uint32_t width = 0;   // guest pixels (the host texture is width * scale)
     uint32_t height = 0;  // guest pixels
     uint32_t scale = 1;   // host pixels per guest pixel, each way
+    // The last declared size (D3DSurface SizeBits) seen binding it that
+    // agreed with its scale or was reported (NoteDeclaredScale).
+    uint32_t declared_size_bits = 0;
     uint32_t generation = 0;  // bumped when the texture is replaced
     plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
     uint64_t last_frame = 0;
@@ -214,24 +217,44 @@ class EdramTargets {
   // (mcla_gpu_coverage_queries, on a device that counts samples exactly).
   // Callers do no ownership work at all while aliasing() is false.
   bool aliasing() const { return aliasing_; }
-  // The internal resolution scale and the one a target of this
-  // identity gets, by its class (the census of passes): the
-  // scene's (pitch 1280: its colour, its depth, the UI) always; the sun's
-  // shadow (pitch 640 4x), the reflection with the night shadow sharing its
-  // depth (pitch 520 4x) and the bloom chain (colour 1x: pitch 640
-  // 2_10_10_10_FLOAT or 16_16_16_16_FLOAT, pitch 320 2_10_10_10_FLOAT) each
-  // only with its cvar (mcla_gpu_scale_shadow, _reflection, _post); the rest
-  // -- luminance, noise, impostors, the rain's particle state -- at the
-  // guest's size. The shadow and reflection classes go by pitch and samples
-  // so that a draw's colour and depth never get different scales.
+  // The internal resolution scale (mcla_gpu_resolution_scale) and the rule a
+  // target gets it by. A target is an image of the screen when the surface
+  // that binds it in a use -- RT0, or the depth surface when there is no RT0:
+  // the one whose header gives RB_SURFACE_INFO its pitch -- was declared by
+  // the game with the screen's size divided by 2^k, k from 0 to
+  // kMaxScreenShift (1280x720, 640x360, 320x180, 160x90): the scene, the UI
+  // and the post-processing the engine sizes from the screen. Those are made
+  // at the internal scale; every other target -- luminance, shadow,
+  // reflection, impostors, noise, the rain's particle state, the vinyl -- at
+  // the guest's size. The screen is the game's own (grcDevice's width and
+  // height, read on first use). A target's scale is fixed when it is made: a
+  // use whose surface classifies otherwise is counted and reported once per
+  // identity (NoteDeclaredScale).
   static constexpr uint32_t kMaxResolutionScale = 3;
-  static constexpr uint32_t kScenePitch = 1280;
-  enum class ScaleClass : uint8_t { kBase, kScene, kShadow, kReflection, kPost };
-  static ScaleClass ClassOf(const EdramKey& key);
-  static const char* ScaleClassName(ScaleClass c);
+  static constexpr uint32_t kMaxScreenShift = 3;
   uint32_t resolution_scale() const { return resolution_scale_; }
-  uint32_t ScaleFor(const EdramKey& key) const {
-    return class_scale_[size_t(ClassOf(key))];
+  // The scale a target bound through a surface declared with `size_bits`
+  // (D3DSurface+0x24: width - 1 in bits 31..18, height - 1 in bits 17..3)
+  // gets; 0 = unknown (no surface, or its header unreadable), which is the
+  // guest's size, counted.
+  uint32_t ScaleForDeclared(uint32_t size_bits);
+  // Whether a surface declared with `size_bits` holds an image of the screen
+  // (the screen >> k, k up to kMaxScreenShift), whatever the scale; false
+  // when unknown.
+  bool IsScreenImage(uint32_t size_bits);
+  // The scale of `key`'s target: its own when it exists, otherwise the one
+  // ScaleForDeclared gives `size_bits`.
+  uint32_t ScaleOf(const EdramKey& key, uint32_t size_bits) {
+    const auto it = targets_.find(key);
+    return it != targets_.end() ? it->second->scale : ScaleForDeclared(size_bits);
+  }
+  // A use of `target` through a surface declared with `size_bits`: when that
+  // size classifies at another scale than the target was made at, counted and
+  // reported once per identity (the target keeps its scale).
+  void NoteDeclaredScale(Target& target, uint32_t size_bits) {
+    if (size_bits != 0 && size_bits != target.declared_size_bits) {
+      CheckDeclaredScale(target, size_bits);
+    }
   }
   // A rectangle in guest pixels, in a target's host pixels.
   static plume::RenderRect ScaledRect(const plume::RenderRect& guest, uint32_t scale) {
@@ -240,13 +263,16 @@ class EdramTargets {
   }
   bool coverage_queries() const { return coverage_; }
 
-  // The target of `key`, at least `height` rows tall: created (and cleared),
-  // or grown with its contents copied -- recorded into `list`, which must not
-  // be inside a render pass the caller still needs: when anything is recorded
-  // *framebuffer_unset is set and no framebuffer is left bound. Null when the
-  // host cannot make it (logged once per identity).
-  Target* Get(const EdramKey& key, uint32_t height, plume::RenderCommandList* list,
-              bool* framebuffer_unset);
+  // The target of `key`, at least `height` rows tall: created (and cleared)
+  // at `scale` -- the use's, from ScaleOf -- or grown with its contents
+  // copied -- recorded into `list`, which must not be inside a render pass the
+  // caller still needs: when anything is recorded *framebuffer_unset is set
+  // and no framebuffer is left bound. An existing target keeps its own scale.
+  // Null when the host cannot make it (logged once per identity).
+  // `size_bits`: the declared size the use's scale came from (0: none), for
+  // the report of what each identity became.
+  Target* Get(const EdramKey& key, uint32_t height, uint32_t scale, uint32_t size_bits,
+              plume::RenderCommandList* list, bool* framebuffer_unset);
 
   // The target of `key` if it exists (nothing is created).
   const Target* Find(const EdramKey& key) const {
@@ -445,6 +471,11 @@ class EdramTargets {
   };
 
   bool Create(Target& target, uint32_t height);
+  // The screen's size from the game (grcDevice's width and height): false
+  // until the game has set it (read again on the next call).
+  bool ScreenSize(uint32_t* width, uint32_t* height);
+  // NoteDeclaredScale's slow path: a size not seen with this target before.
+  void CheckDeclaredScale(Target& target, uint32_t size_bits);
   void AssignOwner(Target& target);
   // The tiles of `pixels` in `target`'s rows: columns [col0, col1), rows
   // [row0, row1); the tile is base + row * pitch_tiles + col, wrapped.
@@ -510,7 +541,13 @@ class EdramTargets {
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
   uint32_t resolution_scale_ = 1;
-  std::array<uint32_t, 5> class_scale_{1, 1, 1, 1, 1};  // by ScaleClass, chosen at start
+  // The game's screen (ScreenSize), 0 until read.
+  uint32_t screen_width_ = 0;
+  uint32_t screen_height_ = 0;
+  bool screen_unset_logged_ = false;
+  // Identities whose uses classify at two scales (NoteDeclaredScale), each
+  // reported once.
+  std::vector<EdramKey> scale_conflicts_reported_;
   bool coverage_ = false;
   uint32_t slot_ = 0;
   std::vector<std::unique_ptr<plume::RenderQueryPool>> coverage_pools_;
@@ -553,6 +590,10 @@ class EdramTargets {
     uint64_t tainted_reads = 0;    // marked aspect-tiles of its own an access read
     uint64_t inherited_resolves = 0;
     std::array<uint64_t, size_t(Reach::kCount)> reach{};
+    uint64_t made_scaled = 0;       // targets made at the internal scale (images of the screen)
+    uint64_t made_unscaled = 0;     // ... at the guest's size
+    uint64_t declared_unknown = 0;  // classifications with no declared size (guest's size)
+    uint64_t scale_conflicts = 0;   // uses whose declared size gives another scale than the target's
   };
   Stats stats_;
 };

@@ -152,13 +152,17 @@ class Scene {
     UploadSpan vs_constants;
     UploadSpan ps_constants;
     UploadSpan shared_constants;
+    uint32_t scale = 1;  // the resolution scale its targets are (or are made) at
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
   // draw that changes nothing.
   Skip Prepare(const DrawView& view, const ConstantBanks::Banks& banks, PreparedDraw& d,
                bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
-  void FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedConstants& sc);
+  // `scale`: the draw's targets' resolution scale; a resolve product made at a
+  // larger one is read through its reduced copy (TextureCache::Bind2D).
+  void FillTextureTables(const DrawView& view, uint32_t fetch_mask, uint32_t scale,
+                         SharedConstants& sc);
   // Records a prepared draw. kCount when recorded; kTarget/kFramebuffer when
   // not; *no_effect for an empty scissor.
   Skip Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
@@ -268,6 +272,7 @@ class Scene {
     bool is_texture = false;
     uint32_t page = 0;        // physical page whose product generation it saw
     uint32_t generation = 0;
+    uint32_t scale = 0;     // the reading draw's targets' scale (a product may bind reduced)
     uint64_t used = 0;      // replacement: the least recently used way goes
   };
   // 4-way set associative: ~2000 distinct fetch constants a frame thrash a
@@ -386,6 +391,14 @@ class Scene {
     bool key_polygonal = false;
     PipelineKey key;
     DepthBias bias;
+    // The draw's targets' scale (DrawScale), good while the targets are those
+    // EdramTargets had at change serial `draw_scale_serial` and the key names
+    // the same first target.
+    bool draw_scale_valid = false;
+    uint64_t draw_scale_serial = 0;
+    uint32_t draw_scale_colors = 0;
+    uint32_t draw_scale_depth_format = 0;
+    uint32_t draw_scale = 1;
     bool constants_valid = false;
     bool ps_writes_depth = false;
     uint32_t scale = 1;  // the targets' resolution scale the viewport was made for (24.45)

@@ -59,6 +59,7 @@
 #include <plume_render_interface.h>
 
 #include "guest_memory.h"
+#include "host_passes.h"
 #include "records.h"
 #include "region_index.h"
 #include "textures.h"
@@ -110,6 +111,20 @@ class ResolveCache {
     // 8x8 cells an inherited resolve wrote and no clean one wrote since --
     // texels that are, on the console, another EDRAM identity's bytes.
     std::vector<Coverage> inherited;
+    // Copies for readers at a smaller resolution scale (ReducedSlot): level 0
+    // at `scale` host texels per guest texel, each texel the mean of the
+    // product's block over it -- or, for a product a depth source made, the
+    // block's centre texel (a mean of depths is no depth) -- remade after each
+    // resolve into the product.
+    struct Reduced {
+      uint32_t scale = 0;
+      HostImage image;
+      TextureViews views;   // sampling views, per host swizzle
+      uint64_t made_from = 0;  // the product's `writes` it was made from
+    };
+    std::vector<std::unique_ptr<Reduced>> reduced;
+    uint64_t writes = 0;        // resolves into it
+    bool depth_source = false;  // the last resolve into it read an EDRAM depth target
   };
 
   ResolveCache() = default;
@@ -145,6 +160,13 @@ class ResolveCache {
   Product* Find(const TextureKey& key, uint32_t image_base_page);
   // The key without its mip fields (base, size, format, layout).
   static TextureKey ImageKey(const TextureKey& key);
+  // The bindless slot of `product` seen at `scale` (below its own) with
+  // `host_swizzle`: its reduced copy, made -- or made again after a resolve
+  // into the product -- into `list` (outside any render pass; *recorded tells
+  // that the list's framebuffer and pipeline state were changed). Only level 0
+  // is reduced: a fetch of more levels gets kInvalidBindlessSlot and *why.
+  uint32_t ReducedSlot(Product& product, uint32_t scale, uint32_t levels, uint16_t host_swizzle,
+                       plume::RenderCommandList* list, bool* recorded, std::string* why);
   // An active product whose guest range shares a byte with [start, start +
   // length), or null (the reinterpretation report).
   const Product* FindOverlap(uint32_t start, uint32_t length);
@@ -227,6 +249,10 @@ class ResolveCache {
   Product* FindImage(const TextureKey& key);
   // What fetches of the product's pages bind changed (the Scene's memo).
   void BumpGenerations(const Product& product);
+  // The reduction pass's pipeline for a target of `format`; null on failure.
+  plume::RenderPipeline* ReducePipeline(plume::RenderFormat format);
+  // Hands the reduced copies back (slots to the heap, objects to the FrameRing).
+  void ReleaseReduced(Product& product);
   void IndexRanges(Product& product);
   void UnindexRanges(Product& product);
   void EvictSome();
@@ -244,6 +270,12 @@ class ResolveCache {
   // Pixel shaders: [depth][msaa].
   std::unique_ptr<plume::RenderShader> shaders_[2][2];
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> pipelines_;
+  // The reduction pass (hlsl/reduce_ps.hlsl) and its pipelines by format.
+  std::unique_ptr<plume::RenderShader> reduce_shader_;
+  std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> reduce_pipelines_;
+  // Products read at a smaller scale with more than one level, logged once
+  // each (the first 16).
+  std::unordered_set<TextureKey, TextureKeyHash> reduced_levels_logged_;
 
   std::unordered_map<TextureKey, std::unique_ptr<Product>, TextureKeyHash> products_;
   // Active products by ImageKey (at most one: two would overlap).
@@ -325,6 +357,8 @@ class ResolveCache {
     uint64_t found = 0;
     uint64_t evicted = 0;
     uint64_t evictions_put_off = 0;  // an encode still waiting reads the product (24.45)
+    uint64_t reduced_made = 0;       // reduced copies made (or made again after a resolve)
+    uint64_t reduced_created = 0;    // ... of which new images
   };
   Stats stats_;
 };

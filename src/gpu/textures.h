@@ -222,8 +222,13 @@ class TextureCache {
   // The bindless slot (kTextureGammaBit when the fetch asks for the PWL gamma)
   // of the 2D texture `fetch` names, its decode and upload recorded into
   // `list` when needed. The null 2D slot when it cannot be had (counted, the
-  // reason logged once per key).
-  Binding Bind2D(const TextureFetch& fetch, plume::RenderCommandList* list);
+  // reason logged once per key). `reader_scale`: the resolution scale of the
+  // reading draw's targets -- a resolve product made at a larger one is read
+  // through its copy reduced to the reader's density (ResolveCache::
+  // ReducedSlot), as the console reads it; 0 binds the product as it is (the
+  // present, which samples it by its own size).
+  Binding Bind2D(const TextureFetch& fetch, uint32_t reader_scale,
+                 plume::RenderCommandList* list);
 
   // Takes the write notifications of textures and resolve products.
   void Sync();
@@ -312,6 +317,7 @@ class TextureCache {
   struct Stats {
     uint64_t lookups = 0;  // Bind2D calls (the Scene's memo misses)
     uint64_t product_hits = 0;
+    uint64_t product_reduced = 0;  // ... bound through a copy reduced to the reader's scale
     uint64_t memory_hits = 0;
     uint64_t created = 0;
     uint64_t uploads = 0;

@@ -177,6 +177,7 @@ larecomp_gpu_host_shader(resolve_depth_ps ps_6_0 SOURCE resolve_ps
 larecomp_gpu_host_shader(resolve_depth_ms_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
 larecomp_gpu_host_shader(present_ps ps_6_0)
+larecomp_gpu_host_shader(reduce_ps ps_6_0)
 # M6c.1: FSR1 on the present -- EASU passes, RCAS, and the
 # present's bilinear stretch without the gamma table (it was applied first).
 larecomp_gpu_host_shader(fsr_easu_ps ps_6_0 HLSL_VERSION 2018)

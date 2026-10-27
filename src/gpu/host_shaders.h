@@ -26,6 +26,7 @@
 #include "post_luma_ps.hlsl.dxil.h"
 #include "present_ps.hlsl.dxil.h"
 #include "present_stretch_ps.hlsl.dxil.h"
+#include "reduce_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
 #include "resolve_color_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
@@ -49,6 +50,7 @@
 #include "post_luma_ps.hlsl.spirv.h"
 #include "present_ps.hlsl.spirv.h"
 #include "present_stretch_ps.hlsl.spirv.h"
+#include "reduce_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
 #include "resolve_color_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
@@ -135,6 +137,12 @@ inline HostShaderBlob SmaaPixelShader(int pass) {
 }
 
 // The resolve conversion (resolve_ps.hlsl) by source kind.
+// A resolve product reduced to a reader at a smaller resolution scale
+// (ResolveCache::ReducedSlot).
+inline HostShaderBlob ReducePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(reduce_ps);
+}
+
 inline HostShaderBlob ResolvePixelShader(bool depth, bool msaa) {
   if (depth) {
     return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_ms_ps)

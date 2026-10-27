@@ -11,11 +11,13 @@
 #include <rex/graphics/xenos.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
 
 #include "descriptors.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
+#include "records.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_edram_aliasing, false, "MCLA/GPU",
@@ -49,30 +51,22 @@ REXCVAR_DEFINE_UINT32(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_UINT32(
     mcla_gpu_resolution_scale, 1, "MCLA/GPU",
-    "Internal resolution scale (M6b): the host render targets of the scene are this "
-    "many times the guest's in each direction (1, 2 or 3; 2 = 2560x1440, 3 = 3840x2160 from "
-    "720p). The guest keeps seeing its own sizes. M6b in progress: keep 1.")
+    "Internal resolution scale (M6b): every render target that is an image of the screen "
+    "(the scene, the UI, the post-processing sized from the screen) is this many times the "
+    "guest's in each direction (1, 2 or 3; 2 = 2560x1440, 3 = 3840x2160 from 720p). The guest "
+    "keeps seeing its own sizes.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scale_shadow, false, "MCLA/GPU",
-    "With mcla_gpu_resolution_scale above 1: the sun's shadow map (pitch 640 4x) at "
-    "the internal scale too -- sharper shadows, more GPU time and memory. Off: the guest's size.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scale_reflection, false, "MCLA/GPU",
-    "With mcla_gpu_resolution_scale above 1: the reflection pass and the night shadow "
-    "that shares its depth (pitch 520 4x) at the internal scale too. Off: the guest's size.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scale_post, false, "MCLA/GPU",
-    "With mcla_gpu_resolution_scale above 1: the bloom chain (colour 1x, pitch 640 "
-    "and 320) at the internal scale too. Off: the guest's size.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
 
 namespace mcla::gpu {
 
 namespace {
+
+// The game's screen size: grcDevice's width and height (IDB: 0x827D4274 and
+// 0x827D4278, set at start; the render setup sub_822E47E0 makes the scene's
+// tiling buffers that size and the post-processing sizes FrameBufferSize from
+// it, sub_8260E9A0).
+constexpr uint32_t kGuestScreenWidthAddress = 0x827D4274;
+constexpr uint32_t kGuestScreenHeightAddress = 0x827D4278;
 
 constexpr uint32_t AlignUp(uint32_t value, uint32_t alignment) {
   return (value + alignment - 1) / alignment * alignment;
@@ -100,36 +94,77 @@ uint32_t FoldColorFormat(uint32_t color_format) {
   }
 }
 
-EdramTargets::ScaleClass EdramTargets::ClassOf(const EdramKey& key) {
-  // The census of passes: what draws into each identity.
-  constexpr uint8_t k2101010Float = 3;  // xenos ColorRenderTargetFormat
-  constexpr uint8_t k16161616Float = 7;
-  if (key.pitch == kScenePitch) {
-    return ScaleClass::kScene;
+bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height) {
+  if (screen_width_ == 0) {
+    const rex::Runtime* runtime = rex::Runtime::instance();
+    const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+    if (!base) {
+      return false;
+    }
+    const uint32_t w = LoadBe32(base + kGuestScreenWidthAddress);
+    const uint32_t h = LoadBe32(base + kGuestScreenHeightAddress);
+    // Static 1x1 until the game sets it at start.
+    if (w < 64 || h < 64 || w > kMaxExtent || h > kMaxExtent) {
+      if (!screen_unset_logged_) {
+        screen_unset_logged_ = true;
+        REXLOG_ERROR("[gpu] edram: the game's screen size reads {}x{}, not set yet: targets made "
+                     "now get the guest's size (counted as unknown); read again on the next one",
+                     w, h);
+      }
+      return false;
+    }
+    screen_width_ = w;
+    screen_height_ = h;
+    REXLOG_INFO("[gpu] edram: the game's screen is {}x{}; its images (and halvings down to an "
+                "eighth) are made at {}x",
+                w, h, resolution_scale_);
   }
-  if (key.samples == 4 && key.pitch == 640) {
-    return ScaleClass::kShadow;  // kD24S8@0, PS_ShadowDepthAlpha
-  }
-  if (key.samples == 4 && key.pitch == 520) {
-    return ScaleClass::kReflection;  // the *Env pass and PS_ShadowNight, one depth
-  }
-  if (key.samples == 1 && !key.depth &&
-      ((key.pitch == 640 && (key.format == k2101010Float || key.format == k16161616Float)) ||
-       (key.pitch == 320 && key.format == k2101010Float))) {
-    return ScaleClass::kPost;  // PSInitialScaleBuffer, PSStreakMotionBlur, PSBrightPass, PSGauss*
-  }
-  return ScaleClass::kBase;
+  *width = screen_width_;
+  *height = screen_height_;
+  return true;
 }
 
-const char* EdramTargets::ScaleClassName(ScaleClass c) {
-  switch (c) {
-    case ScaleClass::kBase: return "base";
-    case ScaleClass::kScene: return "scene";
-    case ScaleClass::kShadow: return "shadow";
-    case ScaleClass::kReflection: return "reflection";
-    case ScaleClass::kPost: return "post";
+bool EdramTargets::IsScreenImage(uint32_t size_bits) {
+  uint32_t screen_width = 0, screen_height = 0;
+  if (size_bits == 0 || !ScreenSize(&screen_width, &screen_height)) {
+    ++stats_.declared_unknown;
+    return false;
   }
-  return "?";
+  const uint32_t width = (size_bits >> 18) + 1;
+  const uint32_t height = ((size_bits >> 3) & 0x7FFFu) + 1;
+  for (uint32_t k = 0; k <= kMaxScreenShift; ++k) {
+    if (width == (screen_width >> k) && height == (screen_height >> k)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint32_t EdramTargets::ScaleForDeclared(uint32_t size_bits) {
+  if (resolution_scale_ == 1) {
+    return 1;
+  }
+  return IsScreenImage(size_bits) ? resolution_scale_ : 1;
+}
+
+void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
+  const uint32_t scale = ScaleForDeclared(size_bits);
+  if (scale == target.scale) {
+    target.declared_size_bits = size_bits;
+    return;
+  }
+  ++stats_.scale_conflicts;
+  if (std::find(scale_conflicts_reported_.begin(), scale_conflicts_reported_.end(), target.key) ==
+      scale_conflicts_reported_.end()) {
+    scale_conflicts_reported_.push_back(target.key);
+    REXLOG_ERROR("[gpu] edram: {} was made at {}x and is now bound through a surface declared "
+                 "{}x{}, which classifies at {}x; it keeps {}x (TODO: an identity used as an "
+                 "image of the screen and as a target of its own size; reported once per "
+                 "identity)",
+                 DescribeEdramKey(target.key), target.scale, (size_bits >> 18) + 1,
+                 ((size_bits >> 3) & 0x7FFFu) + 1, scale, target.scale);
+  }
+  target.declared_size_bits = size_bits;  // reported: the next uses of this size stay quiet
 }
 
 std::string DescribeEdramKey(const EdramKey& k) {
@@ -193,25 +228,8 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
     resolution_scale_ = 1;
   }
   if (resolution_scale_ > 1) {
-    REXLOG_INFO("[gpu] edram: the scene's targets at {}x the guest's size",
+    REXLOG_INFO("[gpu] edram: the images of the screen at {}x the guest's size",
                 resolution_scale_);
-  }
-  // The classes: the scene's always, the others by their cvars --
-  // and only with mcla_gpu_work_17oct on at start (off: as before 17/10).
-  class_scale_.fill(1);
-  class_scale_[size_t(ScaleClass::kScene)] = resolution_scale_;
-  const bool work_17_10 = REXCVAR_GET(mcla_gpu_work_17oct);
-  const std::pair<ScaleClass, bool> classes[] = {
-      {ScaleClass::kShadow, REXCVAR_GET(mcla_gpu_scale_shadow)},
-      {ScaleClass::kReflection, REXCVAR_GET(mcla_gpu_scale_reflection)},
-      {ScaleClass::kPost, REXCVAR_GET(mcla_gpu_scale_post)},
-  };
-  for (const auto& [c, on] : classes) {
-    if (on && work_17_10 && resolution_scale_ > 1) {
-      class_scale_[size_t(c)] = resolution_scale_;
-      REXLOG_INFO("[gpu] edram: the {} targets at {}x too", ScaleClassName(c),
-                  resolution_scale_);
-    }
   }
   // The detector and its checks are chosen at start.
   aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);
@@ -456,8 +474,9 @@ void EdramTargets::Clear(Target& target, plume::RenderCommandList* list) {
   ++stats_.cleared;
 }
 
-EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
-                                        plume::RenderCommandList* list, bool* framebuffer_unset) {
+EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, uint32_t scale,
+                                        uint32_t size_bits, plume::RenderCommandList* list,
+                                        bool* framebuffer_unset) {
   if (key.pitch == 0 || key.pitch > kMaxExtent) {
     return nullptr;
   }
@@ -470,7 +489,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
     }
     auto target = std::make_unique<Target>();
     target->key = key;
-    target->scale = ScaleFor(key);
+    target->scale = std::clamp<uint32_t>(scale, 1, resolution_scale_);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
       REXLOG_ERROR("[gpu] edram: no host target for {} format {} at tile {} pitch {} {}x "
@@ -480,6 +499,19 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height,
       return nullptr;
     }
     ++stats_.created;
+    if (target->scale > 1) {
+      ++stats_.made_scaled;
+    } else {
+      ++stats_.made_unscaled;
+    }
+    if (resolution_scale_ > 1) {
+      // The census of the rule: what each identity became, once.
+      REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
+                  DescribeEdramKey(key), target->scale,
+                  target->scale > 1 ? "an image of the screen" : "the guest's size",
+                  size_bits ? (size_bits >> 18) + 1 : 0u,
+                  size_bits ? ((size_bits >> 3) & 0x7FFFu) + 1 : 0u, height);
+    }
     AssignOwner(*target);
     it = targets_.emplace(key, std::move(target)).first;
     if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
@@ -1194,6 +1226,17 @@ std::string EdramTargets::TakeSummary() {
       targets_.size(), double(bytes) / 1048576.0, framebuffers_.size(), stats_.created,
       stats_.grown, double(stats_.grown_bytes) / 1048576.0, stats_.cleared,
       stats_.framebuffers_created, stats_.barriers);
+  if (resolution_scale_ > 1) {
+    size_t scaled = 0;
+    for (const auto& [key, target] : targets_) {
+      scaled += target->scale > 1;
+    }
+    text += std::format(" | scale {}x: {} of {} targets images of the screen (made now {} scaled, {} "
+                        "at the guest's size), {} classifications without a declared size, {} uses "
+                        "at a scale other than their target's",
+                        resolution_scale_, scaled, targets_.size(), stats_.made_scaled,
+                        stats_.made_unscaled, stats_.declared_unknown, stats_.scale_conflicts);
+  }
   if (aliasing_) {
     text += std::format(
         " | ownership: {} aspect-tiles taken over ({} draws unchecked), inherited {} "

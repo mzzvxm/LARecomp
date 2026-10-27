@@ -350,7 +350,7 @@ TextureCache::Binding TextureCache::Fail(const TextureKey& key, const char* what
   return Binding{kNullTexture2DSlot, true};
 }
 
-TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
+TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t reader_scale,
                                            plume::RenderCommandList* list) {
   ++stats_.lookups;
   const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
@@ -402,8 +402,26 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch,
   if (ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page)) {
     ++stats_.product_hits;
     if (watched) {
-      watch::Log(std::format("  bind {}: product {} at {}x", key.Describe(),
-                             product->key.Describe(), product->scale));
+      watch::Log(std::format("  bind {}: product {} at {}x, read at {}x", key.Describe(),
+                             product->key.Describe(), product->scale, reader_scale));
+    }
+    if (reader_scale != 0 && product->scale > reader_scale) {
+      // A reader at a smaller scale samples the product at its own density:
+      // through a copy reduced to it (the guest's texels at 1x), never a
+      // sparse pick of the larger image.
+      bool recorded = false;
+      std::string why;
+      const uint32_t slot = resolve_->ReducedSlot(*product, reader_scale, key.levels(),
+                                                  host_swizzle, list, &recorded, &why);
+      if (slot == kInvalidBindlessSlot) {
+        return Fail(key, "no reduced copy of the resolve product", why);
+      }
+      ++stats_.product_reduced;
+      Binding binding = bound(slot, false);
+      binding.from_product = true;
+      binding.scale = reader_scale;
+      binding.list_state_changed = recorded;
+      return binding;
     }
     const uint32_t slot =
         product->views.Slot(*device_, *heap_, *product->texture, product->format,
@@ -810,13 +828,13 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
     hashed += e->mode == Mode::kHashed;
   }
   std::string text = std::format(
-      "textures: {} live ({:.1f} MiB, {} hashed) | resolutions {:.0f}/frame: products {}, "
-      "memory {} | created {}, uploads {} ({:.2f} MiB/frame, {:.2f} ms/frame), "
-      "decompressed {} | writes seen {}, hashes {} ({:.2f} MiB/frame), to hashed {}, to watched "
-      "{} | evicted {}, failures {} | from the resolve memory {} ({} unsupported), memory read "
-      "under a product {}",
+      "textures: {} live ({:.1f} MiB, {} hashed) | resolutions {:.0f}/frame: products {} ({} "
+      "through a reduced copy), memory {} | created {}, uploads {} ({:.2f} MiB/frame, {:.2f} "
+      "ms/frame), decompressed {} | writes seen {}, hashes {} ({:.2f} MiB/frame), to hashed {}, to "
+      "watched {} | evicted {}, failures {} | from the resolve memory {} ({} unsupported), memory "
+      "read under a product {}",
       entries_.size(), double(bytes) / 1048576.0, hashed, double(stats_.lookups) / f,
-      stats_.product_hits, stats_.memory_hits, stats_.created, stats_.uploads,
+      stats_.product_hits, stats_.product_reduced, stats_.memory_hits, stats_.created, stats_.uploads,
       double(stats_.upload_bytes) / f / 1048576.0, double(stats_.decode_ns) / f / 1e6,
       stats_.decompressed, stats_.invalidations, stats_.hashes,
       double(stats_.hashed_bytes) / f / 1048576.0, stats_.to_hashed, stats_.to_watched,

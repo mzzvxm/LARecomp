@@ -477,6 +477,40 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
     r->surfaces[i] = DeviceU32(base, device, guest::kDevColorSurfaces + 4 * i);
   }
   r->surfaces[4] = DeviceU32(base, device, guest::kDevDepthSurface);
+  {
+    // The size of the image the draw's targets hold: inside a predicated
+    // tiling section the section's extent (the surfaces declare one tile),
+    // otherwise the declared size of the surface that sizes them -- its header
+    // read when that surface changes. As EventImageSizeBits for the events.
+    const uint8_t tiling_flags = *DeviceBytes(base, device, guest::kDevFlags);
+    bool tiling = (tiling_flags & 0x10) != 0;
+    if (!tiling && (tiling_flags & 0x20) != 0) {
+      tiling = true;
+      for (uint32_t i = 0; i < guest::kSurfaceCount; ++i) {
+        if (r->surfaces[i] != 0 &&
+            DeviceU32(base, device, guest::kDevSurfaceCache + 4 * i) != r->surfaces[i]) {
+          tiling = false;
+        }
+      }
+    }
+    if (tiling) {
+      r->target_size_bits = SizeBitsOf(DeviceU32(base, device, guest::kDevTilingExtent),
+                                       DeviceU32(base, device, guest::kDevTilingExtent + 4));
+    } else {
+      DeviceState& sized = StateFor(device);
+      const uint32_t surface = r->surfaces[0] ? r->surfaces[0] : r->surfaces[4];
+      if (surface != sized.sized_surface) {
+        sized.sized_surface = surface;
+        sized.sized_surface_bits = 0;
+        if (surface >= 0x1000u &&
+            nfx::IsGuestRangeReadable(surface, guest::kSurfaceHeaderBytes)) {
+          sized.sized_surface_bits =
+              LoadBe32(GuestBytes(base, surface + guest::kSurfaceSizeBitsOffset));
+        }
+      }
+      r->target_size_bits = sized.sized_surface_bits;
+    }
+  }
   for (uint32_t i = 0; i < guest::kSamplerCount; ++i) {
     r->sampler_textures[i] = DeviceU32(base, device, guest::kDevSamplerTextures + 4 * i);
   }

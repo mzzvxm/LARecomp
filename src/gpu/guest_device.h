@@ -140,6 +140,7 @@ inline constexpr uint32_t kGammaRampBytes = 3 * 256 * 2;
 
 // --- guest objects
 inline constexpr uint32_t kSurfaceHeaderBytes = 48;   // D3DSurface (memory: project_mcla_edram_surface_model)
+inline constexpr uint32_t kSurfaceSizeBitsOffset = 0x24;  // width - 1 in bits 31..18, height - 1 in 17..3
 inline constexpr uint32_t kTextureHeaderBytes = 52;   // D3DBaseTexture, fetch constant at +28..+51
 inline constexpr uint32_t kTextureFetchOffset = 28;
 inline constexpr uint32_t kIndexBufferBytes = 28;     // +0 flags (bit 31 = 32-bit, 30..29 endian), +24 address

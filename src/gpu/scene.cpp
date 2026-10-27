@@ -50,8 +50,7 @@ REXCVAR_DEFINE_BOOL(
     "On/off for all of the renderer work of 17/10/2026: the half-pixel fill of "
     "scaled resolves (mcla_gpu_resolve_fill_half_pixel), the depth bias times the scale "
     "(mcla_gpu_scale_depth_bias), the delayed colour encodes "
-    "(mcla_gpu_resolve_memory_encode_delay), the scale classes (mcla_gpu_scale_shadow, "
-    "_reflection, _post; these at the next start) and the encode batch counters. Off: as before "
+    "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
     "that day. Hot reload.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
@@ -244,10 +243,13 @@ const char* ConversionName(uint32_t conversion) {
   return conversion < std::size(kNames) ? kNames[conversion] : "?";
 }
 
-// The resolution scale of a draw's targets: the class of its
-// first identity -- RT0, or the depth target when it writes no colour -- as
-// Scene::Record finds them (and checks that every other target agrees).
-uint32_t DrawScale(const EdramTargets& edram, const XenosState& s, const PipelineKey& key) {
+// The resolution scale of a draw's targets: its first identity's -- RT0, or
+// the depth target when it writes no colour -- or, before that target exists,
+// the one the declared size of the surface binding it gives (EdramTargets::
+// ScaleOf); Scene::Record makes the targets at it and checks that every other
+// target agrees.
+uint32_t DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
+                   uint32_t size_bits) {
   EdramKey first;
   first.pitch = uint16_t(s.surface_pitch);
   first.samples = uint8_t(MsaaSampleCount(s.msaa));
@@ -262,7 +264,7 @@ uint32_t DrawScale(const EdramTargets& edram, const XenosState& s, const Pipelin
   } else {
     return 1;
   }
-  return edram.ScaleFor(first);
+  return edram.ScaleOf(first, size_bits);
 }
 
 // The pass a draw opens, for PassTiming: the targets' pitch and
@@ -560,6 +562,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     memo.state = d.state;
     memo.formats_valid = false;
     memo.key_valid = false;
+    memo.draw_scale_valid = false;
     memo.constants_valid = false;
   }
   const XenosState& s = d.state;
@@ -744,11 +747,25 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     case KeyResult::kColorGap:
       return Skip::kColorGap;
   }
-  // The scale of the draw's targets, and the slope-scaled depth
+  // The scale of the draw's targets (the last draw's for the same state while
+  // no target was made or grown since), and the slope-scaled depth
   // bias in its host pixels (M6b.3c): a host pixel is 1/scale of the guest's,
   // so is the depth slope across it -- Xenia multiplies the slope factor by
   // the scale. The constant part is in depth units and stays.
-  const uint32_t scale = DrawScale(*edram_, s, d.key);
+  uint32_t scale;
+  if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
+      memo.draw_scale_colors == d.key.color_count &&
+      memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
+    scale = memo.draw_scale;
+  } else {
+    scale = DrawScale(*edram_, s, d.key, r.target_size_bits);
+    memo.draw_scale_valid = true;
+    memo.draw_scale_serial = edram_->change_serial();
+    memo.draw_scale_colors = d.key.color_count;
+    memo.draw_scale_depth_format = uint32_t(d.key.depth_format);
+    memo.draw_scale = scale;
+  }
+  d.scale = scale;
   if (scale != 1 && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= float(scale);
     if (!pipelines_->dynamic_depth_bias()) {
@@ -811,7 +828,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   Lap(Stage::kConstants);
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
-  FillTextureTables(view, fetch_mask, shared);
+  FillTextureTables(view, fetch_mask, scale, shared);
   Lap(Stage::kTextures);
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
@@ -852,7 +869,8 @@ void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
   }
 }
 
-void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedConstants& sc) {
+void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, uint32_t scale,
+                              SharedConstants& sc) {
   // Write notifications first: a memoized binding must not outlive a write.
   textures_->Sync();
   for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
@@ -861,7 +879,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
     view.FetchGroup(slot, dwords);
     const auto holds = [&](const FetchMemo& m) {
       return m.epoch == textures_->epoch() && (m.frame == 0 || m.frame == frame_serial_) &&
-             m.generation == textures_->ProductGeneration(m.page) &&
+             m.generation == textures_->ProductGeneration(m.page) && m.scale == scale &&
              std::memcmp(m.dwords, dwords, sizeof(dwords)) == 0;
     };
     // The slot's last entry first (M6a.10), then the set.
@@ -921,7 +939,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       // Only 2D textures are made (100% of the measured fetches);
       // the cache logs any other dimension once and the null of its dimension
       // is bound.
-      const TextureCache::Binding bound = textures_->Bind2D(fetch, list_);
+      const TextureCache::Binding bound = textures_->Bind2D(fetch, scale, list_);
       if (watch::Active() && watch::TouchesKey(fetch.key)) {
         watch::Log(std::format("fetch s{} ps {:016x} {} -> texture slot {}{}{}", slot,
                                watch::CurrentPs(), fetch.key.Describe(), bound.slot,
@@ -952,6 +970,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, SharedC
       fresh.generation = textures_->ProductGeneration(fresh.page);
     }
     fresh.epoch = textures_->epoch();
+    fresh.scale = scale;
     fresh.used = ++fetch_memo_clock_;
     m = fresh;
     last_fetch_[slot] = &m;
@@ -1225,7 +1244,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
         bound_.framebuffer = nullptr;
       }
       bool unset = false;
-      colors[i] = edram_->Get(key, scissor_br_y, list, &unset);
+      colors[i] = edram_->Get(key, scissor_br_y, d.scale, r.target_size_bits, list, &unset);
       if (unset) {
         bound_.framebuffer = nullptr;
       }
@@ -1241,7 +1260,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
         bound_.framebuffer = nullptr;
       }
       bool unset = false;
-      depth = edram_->Get(depth_key, scissor_br_y, list, &unset);
+      depth = edram_->Get(depth_key, scissor_br_y, d.scale, r.target_size_bits, list, &unset);
       if (unset) {
         bound_.framebuffer = nullptr;
       }
@@ -1257,9 +1276,14 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                       plume::RenderRect(int32_t(scissor_tl_x), int32_t(scissor_tl_y),
                                         int32_t(scissor_br_x), int32_t(scissor_br_y)));
 
-  // The targets' scale: one for all of them, as the
-  // classes give a draw's colour and depth targets the same (DrawScale made the
-  // viewport for the first one's).
+  // The targets' scale: one for all of them -- a draw makes its targets at its
+  // first one's (DrawScale, which made the viewport) -- and the declared size of
+  // the surface binding that first one checked against it (EdramTargets::
+  // NoteDeclaredScale: an identity used at two scales is reported).
+  EdramTargets::Target* const first_target = d.key.color_count ? colors[0] : depth;
+  if (first_target) {
+    edram_->NoteDeclaredScale(*first_target, r.target_size_bits);
+  }
   const uint32_t target_scale =
       d.key.color_count ? colors[0]->scale : (depth ? depth->scale : 1u);
   bool scales_agree = !depth || depth->scale == target_scale;
@@ -1472,16 +1496,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     x1 = int32_t((size_bits >> 18) + 1);
     y1 = int32_t(((size_bits >> 3) & 0x7FFFu) + 1);
     header_height = y1;
-    bool tiling = (device_flags & 0x10) != 0;
-    if (!tiling && (device_flags & 0x20) != 0) {
-      tiling = true;
-      for (uint32_t i = 0; i < guest::kSurfaceCount; ++i) {
-        const uint32_t tiled = pre.DeviceDword(guest::kDevSurfaceCache + 4 * i);
-        if (surfaces[i] != 0 && tiled != surfaces[i]) {
-          tiling = false;
-        }
-      }
-    }
+    const bool tiling = EventTiling(pre, surfaces);
     if (tiling) {
       x1 = int32_t(pre.DeviceDword(guest::kDevTilingExtent));
       y1 = int32_t(pre.DeviceDword(guest::kDevTilingExtent + 4));
@@ -1559,6 +1574,30 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
           key.samples);
     }
   };
+  // The scale a target this clear makes gets: the one a draw with these
+  // surfaces would make it at -- RT0's identity's, or the depth's without RT0,
+  // or before it exists the class of the image the targets hold
+  // (EventImageSizeBits; with no surface bound, the clear's rectangle).
+  const uint32_t sized_surface = surfaces[0] ? 0u : 4u;
+  const uint32_t declared_size =
+      EventImageSizeBits(pre, surfaces, record.state, SizeBitsOf(uint32_t(x1), uint32_t(y1)));
+  EdramKey first_key;
+  first_key.pitch = uint16_t(surface_info.surface_pitch);
+  first_key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+  if (sized_surface == 0) {
+    xreg::RB_COLOR_INFO first_info;
+    first_info.value = header_dword(0, 0x1C);
+    first_key.base_tiles = uint16_t(first_info.color_base | (first_info.color_base_bit_11 << 11));
+    first_key.depth = 0;
+    first_key.format = uint8_t(FoldColorFormat(uint32_t(first_info.color_format)));
+  } else {
+    xreg::RB_DEPTH_INFO first_info;
+    first_info.value = header_dword(4, 0x1C);
+    first_key.base_tiles = uint16_t(first_info.depth_base | (first_info.depth_base_bit_11 << 11));
+    first_key.depth = 1;
+    first_key.format = uint8_t(first_info.depth_format);
+  }
+  const uint32_t clear_scale = edram_->ScaleOf(first_key, declared_size);
   // Growth copies sit outside a render pass.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
@@ -1583,10 +1622,14 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       bound_.framebuffer = nullptr;
     }
     bool unset = false;
-    EdramTargets::Target* target = edram_->Get(key, uint32_t(y1), list, &unset);
+    EdramTargets::Target* target =
+        edram_->Get(key, uint32_t(y1), clear_scale, declared_size, list, &unset);
     if (!target) {
       ++window_.clears_failed;
       continue;
+    }
+    if (key == first_key) {
+      edram_->NoteDeclaredScale(*target, declared_size);
     }
     const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
     if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
@@ -1625,10 +1668,14 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       bound_.framebuffer = nullptr;
     }
     bool unset = false;
-    EdramTargets::Target* target = edram_->Get(key, uint32_t(y1), list, &unset);
+    EdramTargets::Target* target =
+        edram_->Get(key, uint32_t(y1), clear_scale, declared_size, list, &unset);
     if (!target) {
       ++window_.clears_failed;
       return;
+    }
+    if (key == first_key) {
+      edram_->NoteDeclaredScale(*target, declared_size);
     }
     const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
     if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&

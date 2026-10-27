@@ -264,7 +264,7 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
                  fetch.signs[0], fetch.signs[1], fetch.signs[2], fetch.signs[3]);
   }
   textures_->Sync();
-  const TextureCache::Binding bound = textures_->Bind2D(fetch, list);
+  const TextureCache::Binding bound = textures_->Bind2D(fetch, 0, list);
   if (!bound.from_product) {
     ++stats_.from_memory;
   }

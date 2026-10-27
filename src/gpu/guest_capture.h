@@ -129,6 +129,11 @@ class GuestCapture {
     bool shadows_valid = false;
     bool check_next = true;  // send a bank check with the next draw
     uint32_t draws_since_check = 0;
+    // The surface whose declared size the last draw carried (RT0, or the
+    // depth surface without RT0) and that size: read again only when the
+    // surface changes.
+    uint32_t sized_surface = 0;
+    uint32_t sized_surface_bits = 0;
     std::array<uint8_t, guest::kConstantBankBytes> vs_shadow{};
     std::array<uint8_t, guest::kConstantBankBytes> ps_shadow{};
   };

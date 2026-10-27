@@ -199,6 +199,11 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
       }
     }
   }
+  const HostShaderBlob reduce = ReducePixelShader();
+  reduce_shader_ = passes.CreateShader(reduce.data, reduce.size, reduce.name);
+  if (!reduce_shader_) {
+    return false;
+  }
   return true;
 }
 
@@ -206,12 +211,17 @@ void ResolveCache::Shutdown() {
   // The GPU is idle and the heap goes next: nothing is handed back to it.
   for (auto& [key, product] : products_) {
     product->views.Drop();
+    for (auto& reduced : product->reduced) {
+      reduced->views.Drop();
+    }
   }
   products_.clear();
   active_by_image_.clear();
   regions_.Clear();
   region_owners_.clear();
   pipelines_.clear();
+  reduce_pipelines_.clear();
+  reduce_shader_.reset();
   recent_ = {};
   resolve_serial_ = 0;
   inherited_ids_.clear();
@@ -617,6 +627,7 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
       watch::Log(std::format("product {} made again: {}x -> {}x", key.Describe(), p->scale, scale));
     }
     Deactivate(*p);
+    ReleaseReduced(*p);
     p->views.Release(*frames_, *heap_);
     for (auto& framebuffer : p->level_framebuffers) {
       frames_->Retire(std::move(framebuffer));
@@ -757,6 +768,104 @@ plume::RenderPipeline* ResolveCache::Pipeline(bool depth, bool msaa, plume::Rend
   return raw;
 }
 
+plume::RenderPipeline* ResolveCache::ReducePipeline(plume::RenderFormat format) {
+  const uint32_t key = uint32_t(format);
+  auto it = reduce_pipelines_.find(key);
+  if (it != reduce_pipelines_.end()) {
+    return it->second.get();
+  }
+  const std::string name =
+      std::format("resolve product reduced -> {}", format::PlumeFormatName(format));
+  std::unique_ptr<plume::RenderPipeline> pipeline =
+      passes_->CreatePipeline(*reduce_shader_, format, name.c_str());
+  plume::RenderPipeline* raw = pipeline.get();
+  if (raw) {
+    reduce_pipelines_.emplace(key, std::move(pipeline));
+  }
+  return raw;
+}
+
+void ResolveCache::ReleaseReduced(Product& product) {
+  for (auto& reduced : product.reduced) {
+    reduced->views.Release(*frames_, *heap_);
+    passes_->ReleaseImage(reduced->image);
+  }
+  product.reduced.clear();
+}
+
+uint32_t ResolveCache::ReducedSlot(Product& product, uint32_t scale, uint32_t levels,
+                                   uint16_t host_swizzle, plume::RenderCommandList* list,
+                                   bool* recorded, std::string* why) {
+  *recorded = false;
+  if (levels > 1) {
+    if (reduced_levels_logged_.size() < 16 && reduced_levels_logged_.insert(product.key).second) {
+      REXLOG_ERROR("[gpu] resolve: {} ({}x) is read with {} levels by a draw at {}x; only level 0 "
+                   "is reduced (TODO), the fetch binds null (logged once per product)",
+                   product.key.Describe(), product.scale, levels, scale);
+    }
+    *why = std::format("{} levels read at {}x of a {}x product", levels, scale, product.scale);
+    return kInvalidBindlessSlot;
+  }
+  if (scale == 0 || product.scale % scale != 0) {
+    *why = std::format("a {}x product read at {}x", product.scale, scale);
+    return kInvalidBindlessSlot;
+  }
+  Product::Reduced* reduced = nullptr;
+  for (auto& candidate : product.reduced) {
+    if (candidate->scale == scale) {
+      reduced = candidate.get();
+      break;
+    }
+  }
+  if (!reduced) {
+    product.reduced.push_back(std::make_unique<Product::Reduced>());
+    reduced = product.reduced.back().get();
+    reduced->scale = scale;
+  }
+  if (!reduced->image.texture || reduced->made_from != product.writes) {
+    const uint32_t width = uint32_t(product.key.width) * scale;
+    const uint32_t height = uint32_t(product.key.height) * scale;
+    if (!reduced->image.texture) {
+      ++stats_.reduced_created;
+      // The census of the reads across scales: each product and scale once.
+      REXLOG_INFO("[gpu] resolve: {} ({}x) is read by a draw at {}x: through a copy reduced by "
+                  "{} ({})",
+                  product.key.Describe(), product.scale, scale, product.scale / scale,
+                  product.depth_source ? "the centre of each block, a depth source"
+                                       : "the mean of each block");
+    }
+    if (!passes_->EnsureImage(reduced->image, width, height, product.format,
+                              "resolve product reduced")) {
+      *why = std::format("{} {}x{}", format::PlumeFormatName(product.format), width, height);
+      return kInvalidBindlessSlot;
+    }
+    plume::RenderPipeline* pipeline = ReducePipeline(product.format);
+    const uint32_t source =
+        product.views.Slot(*device_, *heap_, *product.texture, product.format,
+                           product.key.levels(), format::kHostSwizzleRGBA, "resolve product view");
+    if (!pipeline || source == kInvalidBindlessSlot) {
+      *why = pipeline ? "no view of the product" : "no pipeline for the reduction";
+      return kInvalidBindlessSlot;
+    }
+    TransitionProduct(list, product, plume::RenderTextureLayout::SHADER_READ);
+    if (pass_timing_->enabled()) {
+      pass_timing_->Mark(list, std::format("resolve product reduced {}x -> {}x {}x{}", product.scale,
+                                           scale, product.key.width, product.key.height));
+    }
+    struct ReducePush {
+      uint32_t source;
+      uint32_t ratio;
+      uint32_t centre;
+    } push{source, product.scale / scale, product.depth_source ? 1u : 0u};
+    passes_->DrawInto(list, reduced->image, pipeline, &push, sizeof(push));
+    reduced->made_from = product.writes;
+    *recorded = true;
+    ++stats_.reduced_made;
+  }
+  return reduced->views.Slot(*device_, *heap_, *reduced->image.texture, product.format, 1,
+                             host_swizzle, "resolve product reduced view");
+}
+
 // ---------------------------------------------------------------------------
 // execution
 // ---------------------------------------------------------------------------
@@ -782,6 +891,12 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       pre.DeviceDword(guest::kDevColorSurfaces + 12), pre.DeviceDword(guest::kDevDepthSurface)};
   const auto header_dword = [&](uint32_t surface, uint32_t offset) {
     return LoadBe32(r.state.surfaces[surface] + offset);
+  };
+  // The image size that classifies a target this call makes (one no draw made
+  // yet), as for a draw (EdramTargets::ScaleOf, EventImageSizeBits); with no
+  // surface bound, the call's own rectangle (`width` x `height`).
+  const auto declared_size = [&](uint32_t width, uint32_t height) {
+    return EventImageSizeBits(pre, surfaces, r.state, SizeBitsOf(width, height));
   };
   // The EDRAM identity of a surface slot. Pitch and samples: the device's
   // RB_SURFACE_INFO (dev+10368) for every source -- the copy reads the
@@ -1028,7 +1143,10 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       const uint32_t prior_height = prior_src ? prior_src->height : 0;
       const void* prior_texture = prior_src ? prior_src->texture.get() : nullptr;
       bool unset = false;
-      EdramTargets::Target* src = edram_->Get(src_key, uint32_t(ty1 - dy), list, &unset);
+      const uint32_t src_size = declared_size(uint32_t(tx1 - dx), uint32_t(ty1 - dy));
+      EdramTargets::Target* src = edram_->Get(src_key, uint32_t(ty1 - dy),
+                                              edram_->ScaleOf(src_key, src_size), src_size, list,
+                                              &unset);
       if (!src) {
         Fail(Failure::kSourceFormat, std::format("{} format {} at tile {} pitch {} {}x",
                                                  depth_source ? "depth" : "colour", src_format,
@@ -1200,6 +1318,13 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       list->drawInstanced(3, 1, 0, 0);
       list->setFramebuffer(nullptr);
       TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
+      // Its reduced copies are made again when next read; the fetches memoized
+      // with them bind again (the pages' generation).
+      ++p->writes;
+      p->depth_source = depth_source;
+      if (!p->reduced.empty()) {
+        BumpGenerations(*p);
+      }
       // The cells this activation now holds (the rectangle is 8-aligned
       // except where it stops at the level's edge).
       if (level < p->coverage.size()) {
@@ -1282,7 +1407,9 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       int32_t bias = 0;
       key_of(source, &key, &format, &bias);
       bool unset = false;
-      EdramTargets::Target* target = edram_->Get(key, uint32_t(ay1), list, &unset);
+      const uint32_t size = declared_size(uint32_t(ax1), uint32_t(ay1));
+      EdramTargets::Target* target =
+          edram_->Get(key, uint32_t(ay1), edram_->ScaleOf(key, size), size, list, &unset);
       if (target) {
         float color[4] = {};
         if (r.flags & kEventHasColor) {
@@ -1309,7 +1436,9 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       int32_t bias = 0;
       key_of(4, &key, &format, &bias);
       bool unset = false;
-      EdramTargets::Target* target = edram_->Get(key, uint32_t(ay1), list, &unset);
+      const uint32_t size = declared_size(uint32_t(ax1), uint32_t(ay1));
+      EdramTargets::Target* target =
+          edram_->Get(key, uint32_t(ay1), edram_->ScaleOf(key, size), size, list, &unset);
       if (target) {
         if (edram_->ClearDepthStencil(list, *target, plume::RenderRect(ax0, ay0, ax1, ay1), true,
                                       true, r.clear_z, r.clear_stencil)) {
@@ -1338,6 +1467,7 @@ void ResolveCache::EvictSome() {
         ++it;
         continue;
       }
+      ReleaseReduced(p);
       p.views.Release(*frames_, *heap_);
       for (auto& framebuffer : p.level_framebuffers) {
         frames_->Retire(std::move(framebuffer));
@@ -1383,7 +1513,7 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       "from registers {}, made at another pitch {} | fetch lookups {}, found {} ({} by image, {} "
       "by image base, {} of a level not wholly written) | "
       "locks {} ({} of an active product, {} written back: {} pages, {:.2f} ms total, {:.2f} ms "
-      "max, {} failed)",
+      "max, {} failed) | reduced copies for smaller scales: {} made ({} new)",
       double(stats_.resolves) / f, stats_.copies, double(stats_.pixels) / f / 1e6,
       stats_.clear_only, stats_.color_clears, stats_.depth_clears,
       modes.empty() ? "none" : modes, failures.empty() ? "none" : failures, products_.size(),
@@ -1397,7 +1527,8 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       stats_.locks_on_products,
       stats_.locks_written_back,
       stats_.pages_written_back, double(stats_.write_back_ns) / 1e6,
-      double(stats_.write_back_max_ns) / 1e6, stats_.write_back_failures);
+      double(stats_.write_back_max_ns) / 1e6, stats_.write_back_failures, stats_.reduced_made,
+      stats_.reduced_created);
   stats_ = Stats{};
   return text;
 }

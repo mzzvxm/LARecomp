@@ -163,6 +163,11 @@ struct DrawRecord {
   uint8_t reserved0[2] = {};
   uint32_t device_flags = 0;    // dword dev+10940, raw
   uint32_t surfaces[guest::kSurfaceCount] = {};
+  // The size of the image the draw's targets hold, as SizeBits (D3DSurface+
+  // 0x24): inside a predicated tiling section the section's extent, otherwise
+  // the size RT0's surface was declared with, or the depth surface's without
+  // RT0. 0 = no surface or its header unreadable.
+  uint32_t target_size_bits = 0;
   uint32_t sampler_textures[guest::kSamplerCount] = {};
   uint64_t bank_check_vs = 0;   // XXH3 of the device's VS bank, raw (kDrawBankCheck)
   uint64_t bank_check_ps = 0;
