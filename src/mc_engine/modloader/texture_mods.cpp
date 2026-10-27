@@ -131,8 +131,8 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
     return 0;
   }
 
-  const std::filesystem::path dump_dir = modloader_dir / "dump";
-  const std::filesystem::path replace_dir = modloader_dir / "replace";
+  const std::filesystem::path dump_dir = modloader_dir / "textures_dump";
+  const std::filesystem::path replace_dir = modloader_dir / "textures_replace";
 
   std::filesystem::create_directories(dump_dir, ec);
   std::filesystem::create_directories(replace_dir, ec);
@@ -196,20 +196,26 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
     }
   };
 
-  // 1. Check loose replacements directly in modloader/inject/ if present
+  // 1. Check loose replacements in modloader/textures/ or modloader/inject/
+  const std::filesystem::path loose_textures = modloader_dir / "textures";
+  if (std::filesystem::is_directory(loose_textures, ec)) {
+    process_inject_dir("textures", modloader_dir, loose_textures);
+  }
   const std::filesystem::path loose_inject = modloader_dir / "inject";
   if (std::filesystem::is_directory(loose_inject, ec)) {
     process_inject_dir("inject", modloader_dir, loose_inject);
   }
 
-  // 2. Enumerate mod directories in modloader_dir: modloader/<ModName>/inject/
+  // 2. Enumerate mod directories in modloader_dir: modloader/<ModName>/textures_replace/
   std::vector<std::filesystem::path> mod_dirs;
   for (const auto& entry : std::filesystem::directory_iterator(modloader_dir, ec)) {
     if (ec) break;
     if (!entry.is_directory()) continue;
 
     const std::string dir_name = entry.path().filename().string();
-    if (dir_name == "dump" || dir_name == "replace" || dir_name == "inject" ||
+    if (dir_name == "textures_dump" || dir_name == "textures_replace" ||
+        dir_name == "dump" || dir_name == "replace" || dir_name == "inject" ||
+        dir_name == "textures" || dir_name == "music" ||
         dir_name == ".cache" || dir_name.starts_with('.')) {
       continue;
     }
@@ -221,10 +227,19 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
 
   for (const auto& mod_dir : mod_dirs) {
     const std::string mod_name = mod_dir.filename().string();
-    process_inject_dir(mod_name, mod_dir, mod_dir / "inject");
+    const auto tr_dir = mod_dir / "textures_replace";
+    const auto tex_dir = mod_dir / "textures";
+    const auto inj_dir = mod_dir / "inject";
+    if (std::filesystem::is_directory(tr_dir, ec)) {
+      process_inject_dir(mod_name, mod_dir, tr_dir);
+    } else if (std::filesystem::is_directory(tex_dir, ec)) {
+      process_inject_dir(mod_name, mod_dir, tex_dir);
+    } else if (std::filesystem::is_directory(inj_dir, ec)) {
+      process_inject_dir(mod_name, mod_dir, inj_dir);
+    }
   }
 
-  // Clear previous staging in modloader/replace to avoid orphan files
+  // Clear previous staging in modloader/textures_replace to avoid orphan files
   for (const auto& entry : std::filesystem::directory_iterator(replace_dir, ec)) {
     if (ec) break;
     if (entry.is_regular_file()) {

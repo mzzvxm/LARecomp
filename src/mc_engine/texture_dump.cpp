@@ -50,13 +50,16 @@ std::filesystem::path TextureDumpDir() {
   }
   const auto exe = rex::filesystem::GetExecutableFolder();
   if (folder.empty() || folder == "textures" || folder == "modloader") {
-    return mc::modloader::ModloaderDir(exe) / "dump";
+    return mc::modloader::ModloaderDir(exe) / "textures_dump";
   }
   std::filesystem::path p(folder);
   if (p.is_relative()) {
     p = exe / p;
   }
-  return p / "dump";
+  if (p.filename() == "textures_dump") {
+    return p;
+  }
+  return p / "textures_dump";
 }
 
 namespace {

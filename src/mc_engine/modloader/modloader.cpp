@@ -964,6 +964,30 @@ void ScanRawFiles(const std::filesystem::path& files_dir, const std::string& mod
         std::string archive_path = relative.generic_string();
         if (archive_path.empty() || archive_path.front() == '.') continue;
 
+        // Skip any files belonging to texture replacement or other special mod folders
+        const auto first_sep = archive_path.find('/');
+        const std::string root_segment = (first_sep != std::string::npos)
+                                             ? archive_path.substr(0, first_sep)
+                                             : archive_path;
+        if (root_segment == "textures_replace" || root_segment == "textures_dump" ||
+            root_segment == "textures" || root_segment == "inject" ||
+            root_segment == "dump" || root_segment == "replace" ||
+            root_segment == "rims" || root_segment == "vehicles" ||
+            root_segment == ".cache" || root_segment == "files") {
+            continue;
+        }
+
+        // Skip non-game documentation / configuration files
+        const auto ext = file.path().extension().string();
+        if (ext == ".ini" || ext == ".txt" || ext == ".md" || ext == ".json" || ext == ".toml") {
+            continue;
+        }
+
+        // Skip character / vehicle mod meshes
+        if (ext == ".obj" || ext == ".mtl" || ext == ".glb" || ext == ".gltf") {
+            continue;
+        }
+
         if (std::filesystem::file_size(file.path(), rel_ec) == 0 || rel_ec) {
             LARECOMP_APP_ERROR("[mods] {}/files/{}: empty, skipped", mod_name, archive_path);
             continue;
@@ -981,9 +1005,16 @@ void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& ch
     for (const auto& mod_dir : std::filesystem::directory_iterator(models_dir, ec)) {
         if (ec) break;
         if (!mod_dir.is_directory()) continue;
-        if (mod_dir.path().filename().string().rfind('.', 0) == 0) continue;  // .cache etc
-
         const std::string mod_name = mod_dir.path().filename().string();
+
+        if (mod_name == "textures_dump" || mod_name == "textures_replace" ||
+            mod_name == "dump" || mod_name == "replace" || mod_name == "inject" ||
+            mod_name == "textures" || mod_name == "music" ||
+            mod_name == ".cache" || mod_name.rfind('.', 0) == 0) {
+            continue;
+        }
+
+
         ScanFolder(mod_dir.path(), mod_name, characters);
 
         // Its own error_code: a mod without a rims folder is the normal case,
@@ -996,7 +1027,13 @@ void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& ch
 
         const std::filesystem::path files_dir = mod_dir.path() / kFilesFolder;
         if (std::filesystem::is_directory(files_dir, sub_ec))
+        {
             ScanRawFiles(files_dir, mod_name, raw_files);
+        } else {
+            // Also scan mod_dir directly so users can place loose archive folders/files
+            // (e.g. resources/, tune/, common/) alongside textures_replace/
+            ScanRawFiles(mod_dir.path(), mod_name, raw_files);
+        }
 
         const std::filesystem::path vehicle_dir = mod_dir.path() / kVehicleFolder;
         if (!std::filesystem::is_directory(vehicle_dir, sub_ec)) continue;

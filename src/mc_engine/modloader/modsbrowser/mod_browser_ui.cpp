@@ -94,6 +94,11 @@ std::vector<LocalMod> ScanLocal() {
     for (const auto& e : fs::directory_iterator(ModelsDir(), ec)) {
         if (!e.is_directory()) continue;
         const std::string folder = Utf8(e.path().filename());
+        if (folder == "textures_dump" || folder == "textures_replace" ||
+            folder == "dump" || folder == "replace" || folder == "inject" ||
+            folder == "textures" || folder == "music" || folder.rfind('.', 0) == 0) {
+            continue;
+        }
         LocalMod m;
         m.folder = folder;
         if (folder.rfind(kDisabledPrefix, 0) == 0) {
