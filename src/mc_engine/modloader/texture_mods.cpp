@@ -34,13 +34,22 @@ std::string ToLower(std::string_view str) {
   return lower;
 }
 
-bool Parse16HexHash(std::string_view stem, uint64_t& out_hash) {
-  if (stem.size() < 16) {
+bool ParseDdsHash(std::string_view stem, uint64_t& out_hash, std::string& out_clean_stem,
+                  bool& out_prefixed) {
+  std::string_view s = stem;
+  out_prefixed = (s.starts_with("0x") || s.starts_with("0X"));
+  if (out_prefixed) {
+    s.remove_prefix(2);
+  }
+  if (s.size() < 16) {
+    return false;
+  }
+  if (s.size() > 16 && s[16] != '_' && s[16] != '-') {
     return false;
   }
   uint64_t hash = 0;
   for (size_t i = 0; i < 16; ++i) {
-    char c = stem[i];
+    char c = s[i];
     uint64_t nibble = 0;
     if (c >= '0' && c <= '9') {
       nibble = static_cast<uint64_t>(c - '0');
@@ -54,6 +63,7 @@ bool Parse16HexHash(std::string_view stem, uint64_t& out_hash) {
     hash = (hash << 4) | nibble;
   }
   out_hash = hash;
+  out_clean_stem = std::string(s);
   return true;
 }
 
@@ -127,21 +137,78 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
 
   // Map of unique 64-bit hash -> source file path (priority: first mod found keeps it)
   struct ReplacementFile {
-    uint64_t hash;
+    uint64_t hash = 0;
     std::filesystem::path source_path;
     std::string mod_name;
+    std::string clean_stem;
+    bool prefixed = false;
   };
   std::unordered_map<uint64_t, ReplacementFile> replacements;
 
-  // Enumerate mod directories in modloader_dir
+  auto process_inject_dir = [&](const std::string& mod_name,
+                                const std::filesystem::path& mod_dir,
+                                const std::filesystem::path& inject_dir) {
+    std::error_code dir_ec;
+    if (!std::filesystem::is_directory(inject_dir, dir_ec)) {
+      return;
+    }
+
+    size_t mod_texture_count = 0;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(inject_dir, dir_ec)) {
+      if (dir_ec) break;
+      if (!entry.is_regular_file()) continue;
+
+      const auto ext = ToLower(entry.path().extension().string());
+      if (ext != ".dds") {
+        // Strict DDS-only enforcement for high-resolution texture injection
+        continue;
+      }
+
+      const std::string stem = entry.path().stem().string();
+      uint64_t hash = 0;
+      std::string clean_stem;
+      bool prefixed = false;
+      if (!ParseDdsHash(stem, hash, clean_stem, prefixed)) {
+        MC_WARN("[texture-mods] [{}] skipping invalid texture filename (needs 16-hex hash prefix): {}",
+                mod_name, entry.path().filename().string());
+        continue;
+      }
+
+      auto existing = replacements.find(hash);
+      if (existing == replacements.end()) {
+        replacements.emplace(hash, ReplacementFile{hash, entry.path(), mod_name, clean_stem, prefixed});
+      } else if (!prefixed && existing->second.prefixed && existing->second.mod_name == mod_name) {
+        // Within the same mod, unprefixed spelling wins (Texture Toolkit rule)
+        existing->second = ReplacementFile{hash, entry.path(), mod_name, clean_stem, prefixed};
+      } else {
+        MC_DEBUG("[texture-mods] [{}] hash {:016x} shadowed by mod '{}'",
+                 mod_name, hash, existing->second.mod_name);
+      }
+      ++mod_texture_count;
+    }
+
+    if (mod_texture_count > 0) {
+      g_active_mods.push_back(TextureModInfo{mod_name, mod_dir, mod_texture_count});
+      MC_INFO("[texture-mods] Loaded mod '{}' with {} injected texture(s)",
+              mod_name, mod_texture_count);
+    }
+  };
+
+  // 1. Check loose replacements directly in modloader/inject/ if present
+  const std::filesystem::path loose_inject = modloader_dir / "inject";
+  if (std::filesystem::is_directory(loose_inject, ec)) {
+    process_inject_dir("inject", modloader_dir, loose_inject);
+  }
+
+  // 2. Enumerate mod directories in modloader_dir: modloader/<ModName>/inject/
   std::vector<std::filesystem::path> mod_dirs;
   for (const auto& entry : std::filesystem::directory_iterator(modloader_dir, ec)) {
     if (ec) break;
     if (!entry.is_directory()) continue;
 
     const std::string dir_name = entry.path().filename().string();
-    if (dir_name == "dump" || dir_name == "replace" || dir_name == ".cache" ||
-        dir_name.starts_with('.')) {
+    if (dir_name == "dump" || dir_name == "replace" || dir_name == "inject" ||
+        dir_name == ".cache" || dir_name.starts_with('.')) {
       continue;
     }
     mod_dirs.push_back(entry.path());
@@ -152,42 +219,7 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
 
   for (const auto& mod_dir : mod_dirs) {
     const std::string mod_name = mod_dir.filename().string();
-    const std::filesystem::path inject_dir = mod_dir / "inject";
-
-    if (!std::filesystem::is_directory(inject_dir, ec)) {
-      continue;
-    }
-
-    size_t mod_texture_count = 0;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(inject_dir, ec)) {
-      if (ec) break;
-      if (!entry.is_regular_file()) continue;
-
-      const auto ext = ToLower(entry.path().extension().string());
-      if (ext != ".dds" && ext != ".png") continue;
-
-      const std::string stem = entry.path().stem().string();
-      uint64_t hash = 0;
-      if (!Parse16HexHash(stem, hash)) {
-        MC_WARN("[texture-mods] [{}] skipping invalid texture filename (needs 16-hex prefix): {}",
-                mod_name, entry.path().filename().string());
-        continue;
-      }
-
-      if (replacements.find(hash) == replacements.end()) {
-        replacements.emplace(hash, ReplacementFile{hash, entry.path(), mod_name});
-      } else {
-        MC_DEBUG("[texture-mods] [{}] hash {:016x} shadowed by higher priority mod",
-                 mod_name, hash);
-      }
-      ++mod_texture_count;
-    }
-
-    if (mod_texture_count > 0) {
-      g_active_mods.push_back(TextureModInfo{mod_name, mod_dir, mod_texture_count});
-      MC_INFO("[texture-mods] Loaded mod '{}' with {} injected texture(s)",
-              mod_name, mod_texture_count);
-    }
+    process_inject_dir(mod_name, mod_dir, mod_dir / "inject");
   }
 
   // Clear previous staging in modloader/replace to avoid orphan files
@@ -198,9 +230,9 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
     }
   }
 
-  // Stage resolved replacement files into modloader/replace
+  // Stage resolved replacement files into modloader/replace without 0x prefix
   for (const auto& [hash, repl] : replacements) {
-    const std::filesystem::path target_file = replace_dir / repl.source_path.filename();
+    const std::filesystem::path target_file = replace_dir / (repl.clean_stem + ".dds");
 
     // Prefer fast NTFS hard links (zero disk copy, instantaneous, auto-updates on source edits)
     std::filesystem::create_hard_link(repl.source_path, target_file, ec);

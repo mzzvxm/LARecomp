@@ -25,9 +25,11 @@
 #include <rex/graphics/pipeline/texture/info.h>
 
 #include "mc_engine/logging.h"
+#include <rex/filesystem.h>
+#include "mc_engine/modloader/modloader.h"
 #include "mc_engine/modloader/texture_mods.h"
 
-REXCVAR_DEFINE_STRING(larecomp_texture_folder, "textures", "Graphics",
+REXCVAR_DEFINE_STRING(larecomp_texture_folder, "modloader", "Graphics",
                       "Folder for dumped and replacement textures; only consulted when "
                       "the SDK does not register texture_folder itself");
 
@@ -37,17 +39,23 @@ using rex::graphics::FormatInfo;
 using rex::graphics::FormatType;
 namespace texture_conversion = rex::graphics::texture_conversion;
 
-// Resolve the dump folder the same way whichever SDK is underneath: the fork
-// registers texture_folder, the stock one does not, so fall back to our own.
+
+
+// Resolve the dump folder: always targets modloader/dump/ by default.
 std::filesystem::path TextureDumpDir() {
   std::string folder = rex::cvar::GetFlagByName("texture_folder");
-  if (folder.empty()) {
+  if (folder.empty() || folder == "textures") {
     folder = rex::cvar::GetFlagByName("larecomp_texture_folder");
   }
-  if (folder.empty()) {
-    folder = "modloader";
+  const auto exe = rex::filesystem::GetExecutableFolder();
+  if (folder.empty() || folder == "textures" || folder == "modloader") {
+    return mc::modloader::ModloaderDir(exe) / "dump";
   }
-  return std::filesystem::path(folder) / "dump";
+  std::filesystem::path p(folder);
+  if (p.is_relative()) {
+    p = exe / p;
+  }
+  return p / "dump";
 }
 
 namespace {

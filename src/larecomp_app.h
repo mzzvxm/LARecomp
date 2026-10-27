@@ -43,6 +43,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "profile/larecomp_profile_picker.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "mc_engine/modloader/modloader.h"
+#include "mc_engine/modloader/texture_mods.h"
 #include "mc_engine/wheel/wheel_input.h"
 
 #include <rex/system.h>
@@ -94,6 +95,10 @@ class LarecompApp : public rex::ReXApp {
     InitLarecompLogging();
     LARECOMP_APP_INFO("LA Recompiled - @by mzzvxm");
     InstallCrashLogger();
+
+    const auto exe = rex::filesystem::GetExecutableFolder();
+    const auto modloader = mc::modloader::ModloaderDir(exe);
+    mc::modloader::InitTextureModding(modloader);
     if (auto* w = window()) {
       w->SetTitle("Midnight Club Los Angeles - by @mzzvxm");
     }
@@ -314,6 +319,11 @@ class LarecompApp : public rex::ReXApp {
 
     const char* rr = getenv("MCLA_REFRESH_RATE");
     SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
+
+    const auto exe = rex::filesystem::GetExecutableFolder();
+    const auto modloader = mc::modloader::ModloaderDir(exe);
+    SetFlag("texture_folder", modloader.string().c_str());
+    SetFlag("texture_replace_enabled", "true");
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
