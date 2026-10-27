@@ -56,23 +56,32 @@ uint64_t PackKey(const EdramKey& k) {
          uint64_t(k.format) << 40 | uint64_t(k.samples) << 48;
 }
 
+PostAa::Mode ReadMode() {
+  std::string value = REXCVAR_GET(mcla_gpu_aa);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  if (value == "fxaa") {
+    return PostAa::Mode::kFxaa;
+  }
+  if (value == "smaa") {
+    return PostAa::Mode::kSmaa;
+  }
+  return PostAa::Mode::kOff;
+}
+
 }  // namespace
 
 PostAa::~PostAa() {
   Shutdown();
 }
 
-PostAa::Mode PostAa::CurrentMode() {
-  std::string value = REXCVAR_GET(mcla_gpu_aa);
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  if (value == "fxaa") {
-    return Mode::kFxaa;
+PostAa::Mode PostAa::FrameMode() {
+  const Mode mode = ReadMode();
+  if (mode != reported_mode_) {
+    reported_mode_ = mode;
+    REXLOG_INFO("[gpu] post: scene anti-aliasing {}", ModeName(mode));
   }
-  if (value == "smaa") {
-    return Mode::kSmaa;
-  }
-  return Mode::kOff;
+  return mode;
 }
 
 bool PostAa::Initialize(Device& device, BindlessHeap& heap, UploadRing& upload, HostPasses& passes,
@@ -135,7 +144,7 @@ bool PostAa::Initialize(Device& device, BindlessHeap& heap, UploadRing& upload, 
   if (area_slot_ == kInvalidBindlessSlot || search_slot_ == kInvalidBindlessSlot) {
     return false;
   }
-  reported_mode_ = CurrentMode();
+  reported_mode_ = ReadMode();
   REXLOG_INFO("[gpu] post: scene anti-aliasing {} (mcla_gpu_aa, live)", ModeName(reported_mode_));
   return true;
 }
@@ -170,13 +179,8 @@ void PostAa::Shutdown() {
   pass_timing_ = nullptr;
 }
 
-bool PostAa::Apply(plume::RenderCommandList* list, uint32_t slot, EdramTargets::Target& target,
-                   uint32_t width, uint32_t height) {
-  const Mode mode = CurrentMode();
-  if (mode != reported_mode_) {
-    reported_mode_ = mode;
-    REXLOG_INFO("[gpu] post: scene anti-aliasing {}", ModeName(mode));
-  }
+bool PostAa::Apply(plume::RenderCommandList* list, uint32_t slot, Mode mode,
+                   EdramTargets::Target& target, uint32_t width, uint32_t height) {
   if (mode == Mode::kOff || !list || width == 0 || height == 0) {
     return false;
   }

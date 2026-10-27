@@ -65,14 +65,15 @@ class PostAa {
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
-  // mcla_gpu_aa, read now.
-  static Mode CurrentMode();
+  // mcla_gpu_aa, read once a frame at the composite record, off included: a
+  // change is logged and the summary names the mode of the last frame read.
+  Mode FrameMode();
 
   // The composed scene in `target`, `width` x `height` guest pixels from its
-  // origin: the mode's passes into `list` (outside a render pass; `slot` the
+  // origin: `mode`'s passes into `list` (outside a render pass; `slot` the
   // frame's upload slot). True when anything was recorded.
-  bool Apply(plume::RenderCommandList* list, uint32_t slot, EdramTargets::Target& target,
-             uint32_t width, uint32_t height);
+  bool Apply(plume::RenderCommandList* list, uint32_t slot, Mode mode,
+             EdramTargets::Target& target, uint32_t width, uint32_t height);
 
   std::string TakeSummary();
 

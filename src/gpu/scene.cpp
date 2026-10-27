@@ -1698,7 +1698,8 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // Where the scene was composed -- the frame's last colour target -- counted
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
-  if (!last_color0_ || !list || PostAa::CurrentMode() == PostAa::Mode::kOff) {
+  const PostAa::Mode mode = post_->FrameMode();
+  if (!last_color0_ || !list || mode == PostAa::Mode::kOff) {
     return;
   }
   // The anti-aliasing reads and writes that target (M6c.2/M6c.3): the scene's
@@ -1707,7 +1708,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
     list->setFramebuffer(nullptr);
     bound_.framebuffer = nullptr;
   }
-  if (post_->Apply(list, slot_, *last_color0_, last_color0_width_, last_color0_height_)) {
+  if (post_->Apply(list, slot_, mode, *last_color0_, last_color0_width_, last_color0_height_)) {
     // It bound its own layout, pipelines, viewport and scissor: the next draw
     // binds everything again (the M6a caches skip nothing).
     ResetListState();
