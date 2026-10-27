@@ -324,7 +324,7 @@ void Worker() {
 #endif
     std::string last_server;
     bool last_online = false;
-    auto next = Clock::now();
+    auto next = Clock::now() + std::chrono::seconds(2);
     Status s;
     for (;;) {
         {
@@ -333,8 +333,6 @@ void Worker() {
                             [] { return g_kick || !g_recover_code.empty() || g_cancel; });
         }
         const bool online = OnlineOn();
-        const std::string server = rex::cvar::GetFlagByName("mcla_online_server") + "|" +
-                                   rex::cvar::GetFlagByName("mcla_online_port");
         bool kick;
         bool requests;
         {
@@ -349,8 +347,11 @@ void Worker() {
                 Publish(s);
             }
             last_online = false;
+            next = Clock::now() + std::chrono::seconds(2);
             continue;
         }
+        const std::string server = rex::cvar::GetFlagByName("mcla_online_server") + "|" +
+                                   rex::cvar::GetFlagByName("mcla_online_port");
         if (requests) {
             HandleRequests(s);
             Publish(s);

@@ -607,7 +607,7 @@ static bool ShouldPaceMovie(std::string_view name) {
 // 0x825EDC6C: beq cr6,0x825EDC78 in sub_825EDC08, the movie advance.
 // r31 is the movie's player context. Jumping to 0x825EDD44 holds the advance back.
 bool mcla_ui_movie_advance(PPCRegister& r25, PPCRegister& r31) {
-    if (r25.u32 == 0) {
+    if (!REXCVAR_GET(mcla_ui_timing_fix) || r25.u32 == 0 || !EngineTimerStarted()) {
         return false;
     }
     auto* runtime = rex::Runtime::instance();

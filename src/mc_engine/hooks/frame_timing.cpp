@@ -184,6 +184,10 @@ static std::atomic<bool> g_engine_timer_ran_since_swap{false};
 // Set by the first pass through the engine timer: the start-up logos are over.
 static std::atomic<bool> g_engine_timer_started{false};
 
+bool EngineTimerStarted() {
+    return g_engine_timer_started.load(std::memory_order_relaxed);
+}
+
 // Intro pacing.
 //
 // The start-up legal screens and publisher logos are not Bink video. They are
@@ -223,7 +227,13 @@ static void PaceUntimedSwap(bool timed) {
     const uint64_t last = last_swap_us.load(std::memory_order_relaxed);
     uint64_t now = now_us();
     if (untimed_loop && !fast_logos && last && now - last < kPeriodUs) {
-        std::this_thread::sleep_for(std::chrono::microseconds(kPeriodUs - (now - last)));
+        const uint64_t remaining_us = kPeriodUs - (now - last);
+        if (remaining_us > 1500) {
+            std::this_thread::sleep_for(std::chrono::microseconds(remaining_us - 1000));
+        }
+        while (now_us() - last < kPeriodUs) {
+            YieldProcessor();
+        }
         now = now_us();
     }
     last_swap_us.store(now, std::memory_order_relaxed);
