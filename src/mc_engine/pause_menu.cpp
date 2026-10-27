@@ -1,5 +1,9 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "pause_menu.h"
+#include "mc_engine/modloader/texture_mods.h"
+#include "mc_engine/texture_dump.h"
+#include "mc_engine/modloader/modloader.h"
+#include <rex/filesystem.h>
 #include "carbon_parts.h"
 #include "camera_look.h"
 #include "cutscene_gallery.h"
@@ -1218,6 +1222,8 @@ using mcla_menu::ItemKind;
 using mcla_menu::kActionPlayCutscene;
 using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
+using mcla_menu::kActionDumpScene;
+using mcla_menu::kActionReloadTextures;
 using mcla_menu::NativeOnly;
 using mcla_menu::Str;
 using mcla_menu::Submenu;
@@ -1565,6 +1571,7 @@ const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubNative", "RENDERER",    "RxNativeMenu"),
     XeniaOnly(Submenu("PM_RxSubFfx", "FIDELITY FX", "RxFfxMenu")),
     Submenu("PM_RxSubPerf",   "PERFORMANCE", "RxPerfMenu"),
+    Submenu("PM_RxSubTex",    "TEXTURE MODS", "RxTexMenu"),
 };
 const ItemDef kGameHubItems[] = {
     Submenu("PM_RxSubRecomp", "RECOMP SETTINGS", "RxRecompMenu"),
@@ -1583,6 +1590,14 @@ const ItemDef kExtrasHubItems[] = {
          " (NEXT HOST)"),
 };
 // NO first: the cursor starts on the first row, so a stray A keeps the game.
+
+const ItemDef kTexItems[] = {
+    Bool("PM_RxTexEnable", "texture_replace_enabled", "TEXTURE REPLACEMENT: "),
+    Bool("PM_RxTexDump",   "texture_dump_enabled",    "TEXTURE AUTO-DUMP: "),
+    Action("PM_RxTexDumpScene", kActionDumpScene),
+    Action("PM_RxTexReload",    kActionReloadTextures),
+};
+
 const ItemDef kQuitItems[] = {
     Action("PM_RxQuitNo",  kActionQuitNo),
     Action("PM_RxQuitYes", kActionQuitYes),
@@ -1690,6 +1705,9 @@ const MenuDef kMenus[] = {
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
+    {"PM_RxTabTex", "TEXTURE MODS", "Texture injection and dumping.",
+     "RxTexMenu",
+     kTexItems, int(sizeof(kTexItems) / sizeof(kTexItems[0]))},
     {"PM_RxTabFfx", "FIDELITY FX", "Upscaling and sharpening of the image.",
      "RxFfxMenu",
      kFfxItems, int(sizeof(kFfxItems) / sizeof(kFfxItems[0]))},
@@ -1930,6 +1948,8 @@ std::string ItemRowLabel(const ItemDef& it) {
             return CutsceneReplayBusy() ? "PLAYING..." : "PLAY CUTSCENE";
         case kActionQuitYes: return "YES";
         case kActionQuitNo:  return "NO";
+        case kActionDumpScene: return "DUMP ACTIVE SCENE TEXTURES";
+        case kActionReloadTextures: return "RELOAD TEXTURE MODS";
         }
         return "";
     }
@@ -1978,6 +1998,14 @@ void ApplyItem(const ItemDef& it, int dir) {
             PauseMenuLeaveSubmenu();
             CutsceneRequestPlay();
             break;
+        case kActionDumpScene:
+            mcla::DumpAllLiveSceneTextures();
+            break;
+        case kActionReloadTextures: {
+            const std::filesystem::path mdir = mc::modloader::ModloaderDir(rex::filesystem::GetExecutableFolder());
+            mc::modloader::RescanTextureMods(mdir);
+            break;
+        }
         case kActionQuitYes: {
             // Same as leaving a menu: settings that moved are written first.
             if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
@@ -4124,6 +4152,10 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
 
 #include <rex/ppc/context.h>
 #include "pause_menu.h"
+#include "mc_engine/modloader/texture_mods.h"
+#include "mc_engine/texture_dump.h"
+#include "mc_engine/modloader/modloader.h"
+#include <rex/filesystem.h>
 
 bool PauseMenuPopStack() { return false; }
 bool PauseMenuUiOptionsOpen() { return false; }

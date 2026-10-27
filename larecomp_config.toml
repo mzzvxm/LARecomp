@@ -26136,6 +26136,12 @@ address = 0x82315188
 after_instruction = true
 registers = ["f31", "f30", "f29", "f0", "r1"]
 
+# BadassBaboon's Recomp Adjustments: Native Camera Shake OFF by default
+# In Settings -> Options -> Camera Options -> Camera Shake:
+# 0x82200D48 (sub_82200D20) & 0x82200F24 (sub_82200EA0 case 0):
+# Change default parameter from li r4, 1 (ON) to li r4, 0 (OFF) when creating new profiles
+# or resetting to defaults. Players can still manually enable Camera Shake in the menu anytime.
+
 
 
 # BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth filter continuous-time scaling

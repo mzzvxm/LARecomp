@@ -13,9 +13,21 @@ std::filesystem::path ModelsDir() {
     std::error_code ec;
 #if defined(_WIN32)
     wchar_t exe[MAX_PATH]{};
-    if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) return std::filesystem::path(exe).parent_path() / L"models";
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+        const std::filesystem::path exe_dir = std::filesystem::path(exe).parent_path();
+        const std::filesystem::path modloader_dir = exe_dir / L"modloader";
+        if (std::filesystem::is_directory(modloader_dir, ec)) return modloader_dir;
+        const std::filesystem::path models_dir = exe_dir / L"models";
+        if (std::filesystem::is_directory(models_dir, ec)) return models_dir;
+        return modloader_dir;
+    }
 #endif
-    return std::filesystem::current_path(ec) / "models";
+    const std::filesystem::path curr = std::filesystem::current_path(ec);
+    const std::filesystem::path modloader_dir = curr / "modloader";
+    if (std::filesystem::is_directory(modloader_dir, ec)) return modloader_dir;
+    const std::filesystem::path models_dir = curr / "models";
+    if (std::filesystem::is_directory(models_dir, ec)) return models_dir;
+    return modloader_dir;
 }
 
 }  // namespace

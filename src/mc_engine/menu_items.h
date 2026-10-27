@@ -19,7 +19,7 @@ namespace mcla_menu {
 enum class ItemKind { kBool, kStrCycle, kDblCycle, kCarbonBit, kAction, kColor, kSubmenu };
 
 // Action ids for ItemKind::kAction, carried in ItemDef::nvals.
-enum ActionId { kActionPlayCutscene = 1, kActionQuitYes, kActionQuitNo };
+enum ActionId { kActionPlayCutscene = 1, kActionQuitYes, kActionQuitNo, kActionDumpScene, kActionReloadTextures };
 
 // Which renderer a row belongs to. The renderer is a restart-only choice, so
 // the pause menu only lists the rows of the one this launch is running.

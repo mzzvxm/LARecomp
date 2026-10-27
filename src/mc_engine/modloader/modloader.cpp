@@ -1,4 +1,5 @@
 #include "modloader.h"
+#include "texture_mods.h"
 
 #include <rex/cvar.h>
 #include <rex/runtime.h>
@@ -4836,10 +4837,14 @@ void Init() {
     const bool enable_models = REXCVAR_GET(model_mods);
 
     const std::filesystem::path exe_dir = ExeDir();
-    const std::filesystem::path models_dir = exe_dir / "models";
-
     std::error_code ec;
+    std::filesystem::path models_dir = exe_dir / "modloader";
+    if (!std::filesystem::is_directory(models_dir, ec) && std::filesystem::is_directory(exe_dir / "models", ec)) {
+        models_dir = exe_dir / "models";
+    }
+
     const bool have_models = std::filesystem::is_directory(models_dir, ec);
+    InitTextureModding(models_dir);
 
     auto* runtime = rex::Runtime::instance();
     if (!runtime) {

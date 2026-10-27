@@ -60,7 +60,15 @@ const ImVec4 kBlue(0.45f, 0.75f, 1.0f, 1.0f);
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
-fs::path ModelsDir() { return rex::filesystem::GetExecutableFolder() / "models"; }
+fs::path ModelsDir() {
+    const fs::path base = rex::filesystem::GetExecutableFolder();
+    std::error_code ec;
+    const fs::path modloader = base / "modloader";
+    if (fs::is_directory(modloader, ec)) return modloader;
+    const fs::path models = base / "models";
+    if (fs::is_directory(models, ec)) return models;
+    return modloader;
+}
 
 std::string Utf8(const fs::path& p) {
     const auto u = p.u8string();

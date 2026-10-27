@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 
 namespace mc::modloader {
 
@@ -40,5 +41,16 @@ void AppendModArchiveTo(uint32_t buffer, size_t capacity);
 // animation name. Does nothing when no new car is named in it or the result
 // would not fit in `capacity` bytes, terminator included.
 void AliasDriverAnimName(uint32_t buffer, size_t capacity);
+
+// Resolves modloader/ with models/ fallback
+inline std::filesystem::path ModloaderDir(const std::filesystem::path& base) {
+    std::error_code ec;
+    const std::filesystem::path modloader = base / "modloader";
+    if (std::filesystem::is_directory(modloader, ec)) return modloader;
+    const std::filesystem::path models = base / "models";
+    if (std::filesystem::is_directory(models, ec)) return models;
+    return modloader;
+}
+
 
 }  // namespace mc::modloader

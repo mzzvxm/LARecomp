@@ -22,6 +22,7 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace mcla::native_gfx {
@@ -85,5 +86,9 @@ void DumpTextureRegistry();
 
 // Live count, for diagnostics.
 uint64_t TextureRegistryLiveCount();
+
+// Iterates over all live textures currently tracked in the registry.
+void ForEachLiveTexture(const std::function<void(const TextureIdentity&)>& fn);
+
 
 }  // namespace mcla::native_gfx

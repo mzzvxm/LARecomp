@@ -8,6 +8,9 @@
 // byte-for-byte because the vinyl extractor keys off them.
 
 #include "mc_engine/texture_dump.h"
+#include "native_gfx/guest/texture_registry.h"
+#include <rex/runtime.h>
+#include <rex/system/xmemory.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -22,6 +25,7 @@
 #include <rex/graphics/pipeline/texture/info.h>
 
 #include "mc_engine/logging.h"
+#include "mc_engine/modloader/texture_mods.h"
 
 REXCVAR_DEFINE_STRING(larecomp_texture_folder, "textures", "Graphics",
                       "Folder for dumped and replacement textures; only consulted when "
@@ -41,7 +45,7 @@ std::filesystem::path TextureDumpDir() {
     folder = rex::cvar::GetFlagByName("larecomp_texture_folder");
   }
   if (folder.empty()) {
-    folder = "textures";
+    folder = "modloader";
   }
   return std::filesystem::path(folder) / "dump";
 }
@@ -336,7 +340,8 @@ static bool IsDumpableFormat(xenos::TextureFormat format) {
 void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_hash,
                       uint32_t width, uint32_t height, uint32_t pitch_blocks, bool tiled,
                       xenos::TextureFormat format, xenos::Endian endianness,
-                      const uint8_t* guest_bytes, uint32_t guest_size) {
+                      const uint8_t* guest_bytes, uint32_t guest_size,
+                      const std::string& asset_name) {
   using F = xenos::TextureFormat;
 
   const FormatInfo* fi = FormatInfo::Get(format);
@@ -347,10 +352,17 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
   if (!IsDumpableFormat(format))
     return;
 
-  // Build filename: <hash16>_<w>x<h>_<format_name>.dds
-  char name[128];
-  std::snprintf(name, sizeof(name), "%016llx_%ux%u_%s.dds",
-                static_cast<unsigned long long>(content_hash), width, height, fi->name);
+  // Build filename: <hash16>_<w>x<h>_<format_name>[_<asset_name>].dds
+  char name[256];
+  if (!asset_name.empty()) {
+    std::string safe = mc::modloader::SanitizeTextureAssetName(asset_name);
+    std::snprintf(name, sizeof(name), "%016llx_%ux%u_%s_%s.dds",
+                  static_cast<unsigned long long>(content_hash), width, height, fi->name,
+                  safe.c_str());
+  } else {
+    std::snprintf(name, sizeof(name), "%016llx_%ux%u_%s.dds",
+                  static_cast<unsigned long long>(content_hash), width, height, fi->name);
+  }
   const auto dest = dump_dir / name;
 
   // Only write once per unique texture to avoid hammering the disk.
@@ -453,6 +465,41 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
       MC_DEBUG("texture dump: dumped RGBA8 {}", dest.filename().string());
     }
   }
+}
+
+
+size_t DumpAllLiveSceneTextures() {
+  const auto dump_dir = TextureDumpDir();
+  std::error_code ec;
+  std::filesystem::create_directories(dump_dir, ec);
+
+  auto* runtime = rex::Runtime::instance();
+  rex::memory::Memory* memory = runtime ? runtime->memory() : nullptr;
+  if (!memory) {
+    MC_WARN("[texture-dump] Cannot dump scene: runtime or memory not ready");
+    return 0;
+  }
+
+  size_t dumped_count = 0;
+  native_gfx::ForEachLiveTexture([&](const native_gfx::TextureIdentity& id) {
+    if (id.base_address == 0 || id.total_bytes == 0 || id.total_bytes > 128 * 1024 * 1024) {
+      return;
+    }
+    const uint8_t* guest_bytes = memory->TranslatePhysical<const uint8_t*>(id.base_address);
+    if (!guest_bytes) {
+      return;
+    }
+    const uint64_t content_hash = HashGuestTexture(guest_bytes, id.total_bytes);
+    const uint32_t pitch_blocks = (id.width + 31) / 32;
+
+    DumpGuestTexture(dump_dir, content_hash, id.width, id.height, pitch_blocks, true,
+                     static_cast<xenos::TextureFormat>(id.format), xenos::Endian::k8in16,
+                     guest_bytes, id.total_bytes, id.name);
+    ++dumped_count;
+  });
+
+  MC_INFO("[texture-dump] Dumped {} scene texture(s) to {}", dumped_count, dump_dir.string());
+  return dumped_count;
 }
 
 }  // namespace mcla

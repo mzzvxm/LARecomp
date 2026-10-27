@@ -27,6 +27,8 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
+#include "mc_engine/texture_dump.h"
+#include <rex/ui/keybinds.h>
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
@@ -930,6 +932,8 @@ class LarecompApp : public rex::ReXApp {
     larecomp::StartIdentity(imgui_drawer());
     InitMapMouse();
     InitStringTableTools();
+    rex::ui::RegisterBind("bind_texture_dump", "F7", "Dump active scene textures",
+                          [] { mcla::DumpAllLiveSceneTextures(); });
     InitHooks();  // its own modloader::Init call is a no-op after the build
   }
 };

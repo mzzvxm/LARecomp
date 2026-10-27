@@ -3,6 +3,8 @@
 // See texture_registry.h for the reverse-engineering provenance.
 
 #include "texture_registry.h"
+#include "mc_engine/modloader/texture_mods.h"
+#include "mc_engine/texture_dump.h"
 
 #include <cstdio>
 #include <cstring>
@@ -10,6 +12,7 @@
 #include <unordered_map>
 
 #include <rex/cvar.h>
+#include <rex/runtime.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
@@ -101,9 +104,6 @@ std::string ReadGuestString(const uint8_t* base, uint32_t ea, uint32_t max_len =
 // header rather than the road that produced the object.
 void RecordTexture(const uint8_t* base, uint32_t grc_texture_va, uint32_t name_va,
                    TextureOrigin forced_origin) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
-    return;
-  }
   if (!base || grc_texture_va < 0x1000u ||
       !IsGuestRangeReadable(grc_texture_va, kGrcTexHeight + 2)) {
     return;
@@ -151,6 +151,27 @@ void RecordTexture(const uint8_t* base, uint32_t grc_texture_va, uint32_t name_v
     r.base_to_d3d[id.base_address] = id.d3d_texture_va;
   }
   ++r.created;
+  // Register identity with modloader
+  if (id.base_address != 0 && !id.name.empty()) {
+    mc::modloader::RegisterTextureIdentity(id.base_address, id.name);
+  }
+
+  // Auto-dump when texture_dump_enabled is active
+  if (rex::cvar::GetFlagByName("texture_dump_enabled") == "true") {
+    if (id.base_address != 0 && id.total_bytes > 0 && id.total_bytes <= 128 * 1024 * 1024) {
+      auto* rt = rex::Runtime::instance();
+      auto* mem = rt ? rt->memory() : nullptr;
+      const uint8_t* guest_bytes = mem ? mem->TranslatePhysical<const uint8_t*>(id.base_address) : nullptr;
+      if (guest_bytes) {
+        const uint64_t hash = mcla::HashGuestTexture(guest_bytes, id.total_bytes);
+        const uint32_t pitch_blocks = (id.width + 31) / 32;
+        mcla::DumpGuestTexture(mcla::TextureDumpDir(), hash, id.width, id.height,
+                               pitch_blocks, true, static_cast<xenos::TextureFormat>(id.format),
+                               xenos::Endian::k8in16, guest_bytes, id.total_bytes, id.name);
+      }
+    }
+  }
+
   r.by_d3d_texture[id.d3d_texture_va] = std::move(id);
   if (r.by_d3d_texture.size() > r.peak_live) {
     r.peak_live = r.by_d3d_texture.size();
@@ -164,9 +185,6 @@ void NoteTextureCreated(const uint8_t* base, uint32_t grc_texture_va, uint32_t n
 }
 
 void NoteTextureFromResource(const uint8_t* base, uint32_t grc_texture_va) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
-    return;
-  }
   // The resource constructor fixes up grc+24 only when it is non-null, so a
   // nameless texture is normal here and just records an empty name.
   uint32_t name_va = 0;
@@ -178,9 +196,6 @@ void NoteTextureFromResource(const uint8_t* base, uint32_t grc_texture_va) {
 }
 
 void NoteTextureDestroyed(const uint8_t* base, uint32_t grc_texture_va) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
-    return;
-  }
   if (!base || grc_texture_va < 0x1000u ||
       !IsGuestRangeReadable(grc_texture_va + kGrcTexD3DTexture, 4)) {
     return;
@@ -276,6 +291,24 @@ void DumpTextureRegistry() {
   REXLOG_INFO("[native_gfx] texture {}", TextureOwnershipSummary());
 }
 
+void ForEachLiveTexture(const std::function<void(const TextureIdentity&)>& fn) {
+  Registry& r = registry();
+  std::vector<TextureIdentity> snapshot;
+  {
+    std::lock_guard<std::mutex> lock(r.mutex);
+    snapshot.reserve(r.by_d3d_texture.size());
+    for (const auto& [_, id] : r.by_d3d_texture) {
+      snapshot.push_back(id);
+    }
+  }
+  for (const auto& id : snapshot) {
+    fn(id);
+  }
+}
+
 }  // namespace mcla::native_gfx
 
 #endif  // REXGLUE_HAS_XEO3_TARGET
+
+
+
