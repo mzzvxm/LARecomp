@@ -3,7 +3,7 @@
 // See texture_registry.h for the reverse-engineering provenance.
 
 #include "texture_registry.h"
-#include "mc_engine/modloader/texture_mods.h"
+#include <rex/graphics/pipeline/texture/util.h>
 #include "mc_engine/texture_dump.h"
 
 #include <cstdio>
@@ -151,10 +151,6 @@ void RecordTexture(const uint8_t* base, uint32_t grc_texture_va, uint32_t name_v
     r.base_to_d3d[id.base_address] = id.d3d_texture_va;
   }
   ++r.created;
-  // Register identity with modloader
-  if (id.base_address != 0 && !id.name.empty()) {
-    mc::modloader::RegisterTextureIdentity(id.base_address, id.name);
-  }
 
   // Auto-dump when texture_dump_enabled is active
   if (rex::cvar::GetFlagByName("texture_dump_enabled") == "true") {
@@ -163,11 +159,19 @@ void RecordTexture(const uint8_t* base, uint32_t grc_texture_va, uint32_t name_v
       auto* mem = rt ? rt->memory() : nullptr;
       const uint8_t* guest_bytes = mem ? mem->TranslatePhysical<const uint8_t*>(id.base_address) : nullptr;
       if (guest_bytes) {
-        const uint64_t hash = mcla::HashGuestTexture(guest_bytes, id.total_bytes);
         const uint32_t pitch_blocks = (id.width + 31) / 32;
+        auto layout = rex::graphics::texture_util::GetGuestTextureLayout(
+            xenos::DataDimension::k2DOrStacked, pitch_blocks, id.width, id.height, 1,
+            true, static_cast<xenos::TextureFormat>(id.format), false, true,
+            id.levels > 0 ? id.levels - 1 : 0);
+        uint32_t hash_bytes = layout.base.level_data_extent_bytes;
+        if (hash_bytes == 0 || hash_bytes > id.total_bytes) {
+          hash_bytes = id.total_bytes;
+        }
+        const uint64_t hash = mcla::HashGuestTexture(guest_bytes, hash_bytes);
         mcla::DumpGuestTexture(mcla::TextureDumpDir(), hash, id.width, id.height,
                                pitch_blocks, true, static_cast<xenos::TextureFormat>(id.format),
-                               xenos::Endian::k8in16, guest_bytes, id.total_bytes, id.name);
+                               xenos::Endian::k8in16, guest_bytes, hash_bytes);
       }
     }
   }

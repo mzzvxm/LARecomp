@@ -24,9 +24,6 @@ std::mutex g_state_mutex;
 std::vector<TextureModInfo> g_active_mods;
 size_t g_total_replacements = 0;
 
-// Mapping of base_address -> asset_name
-std::mutex g_name_registry_mutex;
-std::unordered_map<uint32_t, std::string> g_texture_names_by_base;
 
 std::string ToLower(std::string_view str) {
   std::string lower(str);
@@ -43,10 +40,7 @@ bool ParseDdsHash(std::string_view stem, uint64_t& out_hash, std::string& out_cl
   if (out_prefixed) {
     s.remove_prefix(2);
   }
-  if (s.size() < 16) {
-    return false;
-  }
-  if (s.size() > 16 && s[16] != '_' && s[16] != '-') {
+  if (s.size() != 16) {
     return false;
   }
   uint64_t hash = 0;
@@ -65,47 +59,11 @@ bool ParseDdsHash(std::string_view stem, uint64_t& out_hash, std::string& out_cl
     hash = (hash << 4) | nibble;
   }
   out_hash = hash;
-  out_clean_stem = std::string(s);
+  out_clean_stem = ToLower(s);
   return true;
 }
 
 }  // namespace
-
-std::string SanitizeTextureAssetName(std::string_view name) {
-  std::string safe;
-  safe.reserve(name.size());
-  for (char c : name) {
-    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.') {
-      safe.push_back(c);
-    } else if (c == ' ' || c == '/' || c == '\\') {
-      safe.push_back('_');
-    }
-  }
-  // Trim leading/trailing underscores
-  while (!safe.empty() && safe.front() == '_') safe.erase(safe.begin());
-  while (!safe.empty() && safe.back() == '_') safe.pop_back();
-  return safe;
-}
-
-void RegisterTextureIdentity(uint32_t base_address, std::string_view name) {
-  if (base_address == 0 || name.empty()) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(g_name_registry_mutex);
-  g_texture_names_by_base[base_address] = std::string(name);
-}
-
-std::string GetTextureNameByBase(uint32_t base_address) {
-  if (base_address == 0) {
-    return {};
-  }
-  std::lock_guard<std::mutex> lock(g_name_registry_mutex);
-  auto it = g_texture_names_by_base.find(base_address);
-  if (it != g_texture_names_by_base.end()) {
-    return it->second;
-  }
-  return {};
-}
 
 void TriggerSceneTextureDump() {
   g_scene_dump_requested.store(true, std::memory_order_release);
@@ -196,17 +154,7 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
     }
   };
 
-  // 1. Check loose replacements in modloader/textures/ or modloader/inject/
-  const std::filesystem::path loose_textures = modloader_dir / "textures";
-  if (std::filesystem::is_directory(loose_textures, ec)) {
-    process_inject_dir("textures", modloader_dir, loose_textures);
-  }
-  const std::filesystem::path loose_inject = modloader_dir / "inject";
-  if (std::filesystem::is_directory(loose_inject, ec)) {
-    process_inject_dir("inject", modloader_dir, loose_inject);
-  }
-
-  // 2. Enumerate mod directories in modloader_dir: modloader/<ModName>/textures_replace/
+  // Enumerate mod directories in modloader_dir: modloader/<ModName>/textures_replace/
   std::vector<std::filesystem::path> mod_dirs;
   for (const auto& entry : std::filesystem::directory_iterator(modloader_dir, ec)) {
     if (ec) break;
@@ -214,9 +162,7 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
 
     const std::string dir_name = entry.path().filename().string();
     if (dir_name == "textures_dump" || dir_name == "textures_replace" ||
-        dir_name == "dump" || dir_name == "replace" || dir_name == "inject" ||
-        dir_name == "textures" || dir_name == "music" ||
-        dir_name == ".cache" || dir_name.starts_with('.')) {
+        dir_name == "music" || dir_name == ".cache" || dir_name.starts_with('.')) {
       continue;
     }
     mod_dirs.push_back(entry.path());
@@ -228,14 +174,8 @@ size_t RescanTextureMods(const std::filesystem::path& modloader_dir) {
   for (const auto& mod_dir : mod_dirs) {
     const std::string mod_name = mod_dir.filename().string();
     const auto tr_dir = mod_dir / "textures_replace";
-    const auto tex_dir = mod_dir / "textures";
-    const auto inj_dir = mod_dir / "inject";
     if (std::filesystem::is_directory(tr_dir, ec)) {
       process_inject_dir(mod_name, mod_dir, tr_dir);
-    } else if (std::filesystem::is_directory(tex_dir, ec)) {
-      process_inject_dir(mod_name, mod_dir, tex_dir);
-    } else if (std::filesystem::is_directory(inj_dir, ec)) {
-      process_inject_dir(mod_name, mod_dir, inj_dir);
     }
   }
 

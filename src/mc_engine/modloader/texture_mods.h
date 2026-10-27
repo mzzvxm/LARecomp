@@ -39,12 +39,4 @@ bool IsSceneTextureDumpRequested();
 // Clears the pending scene texture dump flag.
 void ClearSceneTextureDumpRequest();
 
-// Texture identity and name registry:
-// Associates a guest base address with a friendly asset name (e.g. "l_ho_ss_sign_billboard_12").
-void RegisterTextureIdentity(uint32_t base_address, std::string_view name);
-std::string GetTextureNameByBase(uint32_t base_address);
-
-// Sanitizes an asset name to be filesystem-safe.
-std::string SanitizeTextureAssetName(std::string_view name);
-
 }  // namespace mc::modloader

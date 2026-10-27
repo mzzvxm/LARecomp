@@ -352,8 +352,8 @@ static bool IsDumpableFormat(xenos::TextureFormat format) {
 void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_hash,
                       uint32_t width, uint32_t height, uint32_t pitch_blocks, bool tiled,
                       xenos::TextureFormat format, xenos::Endian endianness,
-                      const uint8_t* guest_bytes, uint32_t guest_size,
-                      const std::string& asset_name) {
+
+                      const uint8_t* guest_bytes, uint32_t guest_size) {
   using F = xenos::TextureFormat;
 
   const FormatInfo* fi = FormatInfo::Get(format);
@@ -507,7 +507,7 @@ size_t DumpAllLiveSceneTextures() {
 
     DumpGuestTexture(dump_dir, content_hash, id.width, id.height, pitch_blocks, true,
                      static_cast<xenos::TextureFormat>(id.format), xenos::Endian::k8in16,
-                     guest_bytes, hash_bytes, id.name);
+                     guest_bytes, hash_bytes);
     ++dumped_count;
   });
 

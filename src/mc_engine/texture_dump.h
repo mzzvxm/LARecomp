@@ -23,7 +23,7 @@ inline uint64_t HashGuestTexture(const uint8_t* data, size_t size) {
 // the SDK write to the same tree), otherwise larecomp_texture_folder.
 std::filesystem::path TextureDumpDir();
 
-// Writes <dump_dir>/<hash16>_<w>x<h>_<fmt>[_<asset_name>].dds, untiling and endian-swapping
+// Writes <dump_dir>/<hash16>.dds, untiling and endian-swapping first.
 // first. Compressed formats keep their blocks; everything else is expanded to
 // RGBA8. Depth and float render-target formats are skipped -- they are not
 // source art. A file that already exists is left alone.
@@ -34,7 +34,7 @@ size_t DumpAllLiveSceneTextures();
 void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_hash, uint32_t width,
                       uint32_t height, uint32_t pitch_blocks, bool tiled,
                       xenos::TextureFormat format, xenos::Endian endianness,
-                      const uint8_t* guest_bytes, uint32_t guest_size,
-                      const std::string& asset_name = "");
+                      const uint8_t* guest_bytes, uint32_t guest_size);
+
 
 }  // namespace mcla

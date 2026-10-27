@@ -970,8 +970,6 @@ void ScanRawFiles(const std::filesystem::path& files_dir, const std::string& mod
                                              ? archive_path.substr(0, first_sep)
                                              : archive_path;
         if (root_segment == "textures_replace" || root_segment == "textures_dump" ||
-            root_segment == "textures" || root_segment == "inject" ||
-            root_segment == "dump" || root_segment == "replace" ||
             root_segment == "rims" || root_segment == "vehicles" ||
             root_segment == ".cache" || root_segment == "files") {
             continue;
@@ -1008,9 +1006,7 @@ void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& ch
         const std::string mod_name = mod_dir.path().filename().string();
 
         if (mod_name == "textures_dump" || mod_name == "textures_replace" ||
-            mod_name == "dump" || mod_name == "replace" || mod_name == "inject" ||
-            mod_name == "textures" || mod_name == "music" ||
-            mod_name == ".cache" || mod_name.rfind('.', 0) == 0) {
+            mod_name == "music" || mod_name == ".cache" || mod_name.rfind('.', 0) == 0) {
             continue;
         }
 

@@ -95,8 +95,7 @@ std::vector<LocalMod> ScanLocal() {
         if (!e.is_directory()) continue;
         const std::string folder = Utf8(e.path().filename());
         if (folder == "textures_dump" || folder == "textures_replace" ||
-            folder == "dump" || folder == "replace" || folder == "inject" ||
-            folder == "textures" || folder == "music" || folder.rfind('.', 0) == 0) {
+            folder == "music" || folder.rfind('.', 0) == 0) {
             continue;
         }
         LocalMod m;
