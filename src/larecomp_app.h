@@ -30,6 +30,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/online/server_browser/browser_ui.h"
 #include "mc_engine/map_mouse.h"
+#include "mc_engine/audio_output.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
@@ -304,6 +305,8 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    config.audio_factory = &mcla::audio::CreateAudioSystem;
+
     // The one line that decides whether this process contains an emulated GPU
     // at all. ReXApp::SetupPresentation only calls LoadGpuPlugin when
     // gpu_plugin is non-empty, so leaving it empty means rexgpu-xenos is never
