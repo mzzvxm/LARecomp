@@ -28,6 +28,9 @@ REXCVAR_DEFINE_STRING(mcla_audio_output, "auto", "MCLA/Audio",
 
 namespace mcla::audio {
 
+// X_STATUS_SUCCESS expands to an unqualified X_STATUS.
+using rex::X_STATUS;
+
 // XAudio hands out 256-sample frames at 48 kHz: 5.333 ms each.
 inline constexpr std::chrono::nanoseconds kNullFramePeriod{256'000'000'000ll / 48'000};
 
