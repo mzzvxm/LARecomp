@@ -30,7 +30,12 @@ REXCVAR_DEFINE_BOOL(smooth_chassis_depth, true, "MCLA/Physics",
 
 // BadassBaboon's Recomp Adjustments: Continuous-time vehicle physics filters at 60+ FPS
 REXCVAR_DEFINE_BOOL(smooth_vehicle_physics, true, "MCLA/Physics",
-    "Fix: Continuous-time vehicle physics filters (angular velocity, rotational G-forces, tire slip) at 60+ FPS.")
+    "Fix: Continuous-time tire slip filter at 60+ FPS.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(smooth_bike_gyro, true, "MCLA/Physics",
+    "Fix: Step the motorcycle gyro's smoothing in continuous time, so bikes lean and settle "
+    "the same at any frame rate.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Traffic (va_) vehicles turned into player cars: chassis-bound substitution.
@@ -194,37 +199,32 @@ void MCLAChassisPushbackAccel(PPCRegister& f1) {
     f1.f64 = static_cast<double>(clamped_a * dt_scale);
 }
 
-// BadassBaboon's Recomp Adjustments: Vehicle chassis angular velocity continuous-time smoothing
-// 0x8236895C: loc_8236895C in sub_823688B8.
-// f13 is the chassis angular velocity filter coefficient alpha (0.80 at 30 FPS, 0.40 at >= 60 FPS).
-void MCLACarAngularVelocitySmoothing(PPCRegister& f13) {
-    if (!REXCVAR_GET(smooth_vehicle_physics)) return;
+// Motorcycle gyro: mcBikeGyro::Update (sub_823688B8, slot 2 of the vtable at
+// 0x820488C0). It runs only for bikes; cars use mcCarGyro::Update, which already
+// steps with dt. Each call lerps a smoothed position and a smoothed velocity by
+// a fixed factor that the game only knows for two rates: k below 60 FPS, k/2 at
+// 60 and above. At 120 or 144 FPS the 60 FPS factor is applied two to almost
+// five times as often and the bike settles that much faster. The <60 value is
+// the 30 FPS console tuning; stepping it in continuous time,
+//   k(dt) = 1 - (1 - k30)^(30 dt),
+// gives exactly k30 at 30 FPS and the same response at any other rate.
+static void StepBikeGyroFilter(PPCRegister& factor, double k30) {
+    if (!REXCVAR_GET(smooth_bike_gyro)) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
     if (dt > 0.0f && dt <= 0.25f) {
-        // Console reference: retention at 30 FPS = (1.0 - 0.80) = 0.20 per step.
-        f13.f64 = 1.0 - std::pow(0.20, static_cast<double>(dt) * 30.0);
+        factor.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0);
     }
 }
 
-// BadassBaboon's Recomp Adjustments: Vehicle chassis angular acceleration / rotational G-forces continuous-time smoothing
-// 0x823689F0: loc_823689F0 in sub_823688B8.
-// f0 is the chassis angular acceleration filter coefficient alpha (0.30 at 30 FPS, 0.15 at >= 60 FPS).
-void MCLACarAngularAccelerationSmoothing(PPCRegister& f0) {
-    if (!REXCVAR_GET(smooth_vehicle_physics)) return;
+// 0x8236895C: smoothed position, 0.40 x 2.0 = 0.80 at 30 FPS.
+void MCLABikeGyroPositionFilter(PPCRegister& f13) { StepBikeGyroFilter(f13, 0.80); }
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-
-    const float dt = ReadGuestF32(base, kGuestFrameDelta);
-    if (dt > 0.0f && dt <= 0.25f) {
-        // Console reference: retention at 30 FPS = (1.0 - 0.30) = 0.70 per step.
-        f0.f64 = 1.0 - std::pow(0.70, static_cast<double>(dt) * 30.0);
-    }
-}
+// 0x823689F0: smoothed velocity, 0.15 x 2.0 = 0.30 at 30 FPS.
+void MCLABikeGyroVelocityFilter(PPCRegister& f0) { StepBikeGyroFilter(f0, 0.30); }
 
 // BadassBaboon's Recomp Adjustments: Lateral tire grip & slip velocity continuous-time smoothing
 // 0x82369E40: loc_82369E40 in sub_823688B8.
@@ -253,8 +253,8 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {}
 void MCLAChassisDepthSmoothing(PPCRegister& f0) {}
 void MCLAChassisGroundPushbackDamper(PPCRegister& f0, PPCRegister& f3) {}
 void MCLAChassisPushbackAccel(PPCRegister& f1) {}
-void MCLACarAngularVelocitySmoothing(PPCRegister& f13) {}
-void MCLACarAngularAccelerationSmoothing(PPCRegister& f0) {}
+void MCLABikeGyroPositionFilter(PPCRegister& f13) {}
+void MCLABikeGyroVelocityFilter(PPCRegister& f0) {}
 void MCLATireSlipSmoothing(PPCRegister& f0) {}
 void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}
