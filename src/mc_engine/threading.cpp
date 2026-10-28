@@ -26,6 +26,23 @@ void EnableHighResTimer() {
 #if defined(_WIN32)
     static std::once_flag s_init;
     std::call_once(s_init, [] {
+        // Since Windows 11 a process none of whose windows is visible
+        // (minimized, fully covered, display off) loses its timeBeginPeriod
+        // request, and every 1 ms sleep in the frame limiter turns into up to
+        // 15.6 ms. Ask to keep the requested resolution regardless.
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+        PROCESS_POWER_THROTTLING_STATE state{};
+        state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        state.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+        state.StateMask = 0;  // controlled bit cleared: do not ignore our request
+        if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state,
+                                   sizeof(state))) {
+            // Windows 10 does not know the flag and does not need it.
+            MC_INFO("[threading] timer-resolution throttling opt-out unavailable ({})",
+                    GetLastError());
+        }
         timeBeginPeriod(1);
         MC_INFO("[threading] high-res timer enabled");
     });
