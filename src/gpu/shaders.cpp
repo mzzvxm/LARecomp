@@ -7,6 +7,7 @@
 #include <string>
 
 #include <rex/filesystem.h>
+#include <rex/hash.h>
 #include <rex/logging.h>
 #include <rex/memory/mapped_memory.h>
 
@@ -78,8 +79,10 @@ bool ShaderStore::Initialize(Device& device) {
     file_.reset();
     return false;
   }
-  REXLOG_INFO("[gpu] shader pack: {} shaders from {} ({} MiB, {})", entries_.size(),
-              rex::path_to_utf8(path_), file_->size() >> 20, Dxil() ? "DXIL" : "SPIR-V");
+  // The exact size and hash name the build of the pack a log was made with.
+  REXLOG_INFO("[gpu] shader pack: {} shaders from {} ({} bytes, xxh3 {:016x}, {})",
+              entries_.size(), rex::path_to_utf8(path_), file_->size(),
+              XXH3_64bits(file_->data(), file_->size()), Dxil() ? "DXIL" : "SPIR-V");
   return true;
 }
 
