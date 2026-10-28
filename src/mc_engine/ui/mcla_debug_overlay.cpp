@@ -43,18 +43,18 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
       ImVec2(io.DisplaySize.x * 0.50f, io.DisplaySize.y * 0.85f));
 
   // Authentic MCLA Card Styling
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 16.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 18.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 8.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
 
   ImGui::PushStyleColor(ImGuiCol_WindowBg, kColorDarkBg);
   ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
   ImGui::PushStyleColor(ImGuiCol_TitleBg, kColorDarkBg);
-  ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.08f, 0.10f, 0.13f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.07f, 0.07f, 0.07f, 1.0f));
   ImGui::PushStyleColor(ImGuiCol_Text, kColorTextWhite);
   ImGui::PushStyleColor(ImGuiCol_PlotLines, kColorCyan);
-  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.02f, 0.08f, 0.12f, 0.85f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.05f, 0.05f, 0.05f, 0.85f));
 
   bool open = true;
   if (ImGui::Begin("SYSTEM TELEMETRY##mcla_debug", &open,

@@ -148,20 +148,18 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       REXLOG_INFO("Save picker: first draw, display {}x{}", io.DisplaySize.x, io.DisplaySize.y);
     }
 
-    const float width = std::min(600.0f, std::max(440.0f, io.DisplaySize.x - 64.0f));
+    const float width = std::min(600.0f, std::max(460.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 22.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 9.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
-    ImFont* default_font = mcla::ui::GetDefaultFont();
-    if (default_font) {
-      ImGui::PushFont(default_font, 18.0f);
-    } else {
-      ImGui::PushFont(nullptr, 18.0f);
-    }
+    // Retail card: roomy padding, even row rhythm. Colors come from the global
+    // MCLA theme; only the list's selection fill is overridden here because the
+    // row highlight is drawn by hand (teal gradient + triangle cursor).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(26.0f, 20.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 10.0f));
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.05f, 0.35f, 0.35f, 0.55f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.08f, 0.50f, 0.48f, 0.70f));
 
     bool accept = false;
     if (ImGui::Begin("CHOOSE PROFILE##larecomp_profile_picker", nullptr,
@@ -174,8 +172,8 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     // collapsed window, and skipping End there unbalances the window stack.
     ImGui::End();
 
-    ImGui::PopFont();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(2);
 
     if (accept) {
       Accept();
@@ -213,13 +211,12 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     // last row ("New save") behind a scrollbar.
     const int rows = NewRow() + 1;
     const int shown = std::min(rows, 7);
-    const float row_height = ImGui::GetTextLineHeight() + 16.0f;
-    const float row_gap = 4.0f;
-    const float list_pad = 6.0f;
-    const float list_height = row_height * static_cast<float>(shown) +
-                              row_gap * static_cast<float>(shown - 1) + 2.0f * list_pad + 4.0f;
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, row_gap));
+    const float row_height = ImGui::GetTextLineHeight() + 18.0f;
+    const float list_pad = 8.0f;
+    const float list_height = row_height * static_cast<float>(shown) + 2.0f * list_pad;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(list_pad, list_pad));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
     ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar();  // the padding is read as the child opens
@@ -247,24 +244,38 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
       const bool is_selected = (selected_ == i);
-      const ImU32 text_col = is_selected ? IM_COL32(10, 15, 22, 255) : text;
-      const ImU32 dim_col = is_selected ? IM_COL32(30, 45, 60, 230) : dim;
+      // MCLA selection: teal text glowing over a dark teal bar, not a solid
+      // cyan fill with dark text on it.
+      const ImU32 sel_text = ImGui::GetColorU32(mcla::ui::kColorCyan);
+      const ImU32 text_col = is_selected ? sel_text : text;
+      const ImU32 dim_col = is_selected ? ImGui::GetColorU32(mcla::ui::kColorCyanGlow) : dim;
 
-      const float text_x = low.x + 12.0f;
+      if (is_selected) {
+        // The retail highlight: saturated teal at the cursor edge, fading
+        // left to right to a nearly transparent dark teal.
+        draw->AddRectFilledMultiColor(low, high,
+                                      IM_COL32(28, 155, 152, 215),   // #1C9B98
+                                      IM_COL32(12, 90, 90, 25),      // fades out right
+                                      IM_COL32(12, 90, 90, 25),
+                                      IM_COL32(28, 155, 152, 215));
+        // The right-pointing triangle cursor, drawn so it needs no font glyph.
+        const float cy = (low.y + high.y) * 0.5f;
+        draw->AddTriangleFilled(ImVec2(low.x + 10.0f, cy - 6.0f),
+                                ImVec2(low.x + 10.0f, cy + 6.0f),
+                                ImVec2(low.x + 20.0f, cy),
+                                ImGui::GetColorU32(mcla::ui::kColorCyanGlow));
+      } else {
+        // Hairline row separator, the white-at-14% rule between list entries.
+        draw->AddLine(ImVec2(low.x + 8.0f, high.y), ImVec2(high.x - 8.0f, high.y),
+                      IM_COL32(255, 255, 255, 36));
+      }
+
+      const float text_x = low.x + 28.0f;
       if (is_new) {
-        if (is_selected) {
-          draw->AddText(ImVec2(text_x, text_y), text_col, "â¶  +  New profile");
-        } else {
-          draw->AddText(ImVec2(text_x + 16.0f, text_y), text_col, "+  New profile");
-        }
+        draw->AddText(ImVec2(text_x, text_y), text_col, "+  New profile");
       } else {
         const pf::Profile& save = plan_.choices[i];
-        if (is_selected) {
-          draw->AddText(ImVec2(text_x, text_y), text_col, "â¶  ");
-          draw->AddText(ImVec2(text_x + 18.0f, text_y), text_col, save.name.c_str());
-        } else {
-          draw->AddText(ImVec2(text_x + 16.0f, text_y), text_col, save.name.c_str());
-        }
+        draw->AddText(ImVec2(text_x, text_y), text_col, save.name.c_str());
         const std::string right = save.has_save ? FormatTime(save.last_played) : "No save data";
         const float right_width = ImGui::CalcTextSize(right.c_str()).x;
         draw->AddText(ImVec2(high.x - right_width - 12.0f, text_y), dim_col, right.c_str());
@@ -272,7 +283,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       ImGui::PopID();
     }
     ImGui::EndChild();
-    ImGui::PopStyleVar();  // item spacing
+    ImGui::PopStyleVar(2);  // item spacing, child rounding
 
     // --- a new gamertag ---------------------------------------------------------------
     bool submitted = false;
@@ -291,7 +302,8 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       problem = ProblemWith(new_name, name_buffer_[0] != '\0');
       if (!problem.empty()) {
         // Wrapped: the message names the clashing save and outgrows the window.
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.97f, 0.72f, 0.33f, 1.0f));
+        // The game's warning color is its own yellow, not a separate orange.
+        ImGui::PushStyleColor(ImGuiCol_Text, mcla::ui::kColorYellow);
         ImGui::TextWrapped("%s", problem.c_str());
         ImGui::PopStyleColor();
       } else if (!new_name.empty()) {
@@ -306,9 +318,13 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     ImGui::TextDisabled("Hold Shift while the game starts to pick again.");
 
     const bool can_play = selected_ != NewRow() || (!new_name.empty() && problem.empty());
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, can_play ? mcla::ui::kColorYellow : ImVec4(0.45f, 0.45f, 0.42f, 1.0f));
     ImGui::BeginDisabled(!can_play);
-    const bool clicked = ImGui::Button("PLAY", ImVec2(-1.0f, 44.0f));
+    const bool clicked = ImGui::Button("PLAY", ImVec2(-1.0f, 46.0f));
     ImGui::EndDisabled();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     ImGui::Separator();
