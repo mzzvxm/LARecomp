@@ -3,6 +3,8 @@
 #include <rex/rex_app.h>
 #include <rex/system/flags.h>
 #include <rex/system/achievement_manager.h>
+#include <rex/input/device_assignment.h>
+#include <rex/input/input_system.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
@@ -306,6 +308,16 @@ class LarecompApp : public rex::ReXApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.audio_factory = &mcla::audio::CreateAudioSystem;
+
+    // One player, any number of pads. The SDK hands each new device the next
+    // free user slot, so a pad that reconnects, a wheel, or the second device
+    // Steam Input and DS4Windows add lands on user 1+. Those users have no
+    // profile, and the game then reports nobody signed in and stops saving.
+    config.input_factory = [](bool tool_mode) -> std::unique_ptr<rex::system::IInputSystem> {
+      std::unique_ptr<rex::input::InputSystem> input = rex::input::CreateDefaultInputSystem(tool_mode);
+      if (input) input->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+      return input;
+    };
 
     // The one line that decides whether this process contains an emulated GPU
     // at all. ReXApp::SetupPresentation only calls LoadGpuPlugin when
