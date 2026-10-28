@@ -220,6 +220,9 @@ set(LARECOMP_SOURCES
     src/profile/larecomp_profile_store.cpp
     src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
+    src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
+    src/mc_engine/ui/imgui_theme.cpp
+    src/mc_engine/ui/kerning.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

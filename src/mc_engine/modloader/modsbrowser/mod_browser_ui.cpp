@@ -36,6 +36,7 @@
 #include "larecomp_log.h"
 #include "../../online/server_browser/browser_client.h"
 #include "mod_download.h"
+#include "mc_engine/ui/imgui_theme.h"
 
 namespace fs = std::filesystem;
 
@@ -51,11 +52,12 @@ constexpr const char* kDisabledPrefix = ".disabled_";
 constexpr const char* kOldPrefix = ".old_";
 constexpr float kThumb = 72.0f;
 
-const ImVec4 kGold(1.0f, 0.86f, 0.25f, 1.0f);
-const ImVec4 kGreen(0.45f, 0.9f, 0.45f, 1.0f);
-const ImVec4 kAmber(1.0f, 0.8f, 0.3f, 1.0f);
-const ImVec4 kRed(0.95f, 0.4f, 0.4f, 1.0f);
-const ImVec4 kBlue(0.45f, 0.75f, 1.0f, 1.0f);
+// The MCLA palette (mc_engine/ui/imgui_theme.h) under this file's names.
+constexpr ImVec4 kGold = mcla::ui::kColorYellow;
+constexpr ImVec4 kGreen = mcla::ui::kColorGood;
+constexpr ImVec4 kAmber = mcla::ui::kColorWarn;
+constexpr ImVec4 kRed = mcla::ui::kColorBad;
+constexpr ImVec4 kBlue = mcla::ui::kColorCyanGlow;
 
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
@@ -211,7 +213,8 @@ protected:
         if (!g_mod_open.load()) return;
 
         bool b_pressed = false;
-        if (FeedBrowserGamepad(io, &b_pressed)) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+        const bool pad = FeedBrowserGamepad(io, &b_pressed);
+        if (pad) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard;
         TakeResults();
 
@@ -219,11 +222,14 @@ protected:
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing,
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
-        ImGui::SetNextWindowBgAlpha(0.96f);
-        bool keep_open = true;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-        if (ImGui::Begin("Mod Browser###larecomp_mod_browser", &keep_open,
-                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::SetNextWindowSizeConstraints(ImVec2(640.0f, 400.0f), io.DisplaySize);
+        const mcla::ui::Prompt prompts[] = {{"CLOSE", pad ? "B" : "ESC", mcla::ui::kPromptBack}};
+        // Dense screen: rows a step smaller, like the game's mission lists.
+        ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
+        if (mcla::ui::BeginPanel("###larecomp_mod_browser", "MOD BROWSER", mcla::ui::PanelIcon::kInfo,
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                                     ImGuiWindowFlags_NoScrollWithMouse,
+                                 prompts)) {
             if (first_frame_) {
                 ImGui::SetWindowFocus();
                 first_frame_ = false;
@@ -245,11 +251,11 @@ protected:
                 ImGui::EndTabBar();
             }
         }
-        ImGui::End();
-        ImGui::PopStyleVar();
+        const bool close_clicked = mcla::ui::EndPanel() == 0;
+        ImGui::PopFont();
 
         const bool typing = ImGui::GetIO().WantTextInput;
-        if (!keep_open || ((b_pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) && !typing)) Close_();
+        if (close_clicked || ((b_pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) && !typing)) Close_();
     }
 
 private:
@@ -342,11 +348,15 @@ private:
         }
         const ImVec2 p = ImGui::GetCursorScreenPos();
         auto* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(p, ImVec2(p.x + kThumb, p.y + kThumb), IM_COL32(60, 60, 70, 255), 6.0f);
+        // Dark glass with the frosted rim, the initial in the title face.
+        dl->AddRectFilled(p, ImVec2(p.x + kThumb, p.y + kThumb), IM_COL32(18, 18, 18, 255), 6.0f);
+        dl->AddRect(p, ImVec2(p.x + kThumb, p.y + kThumb), IM_COL32(214, 214, 207, 90), 6.0f, 0, 1.5f);
         const char initial[2] = {name.empty() ? '?' : char(std::toupper(static_cast<unsigned char>(name[0]))), 0};
+        ImGui::PushFont(mcla::ui::GetFonts().title, 34.0f);
         const ImVec2 ts = ImGui::CalcTextSize(initial);
-        dl->AddText(ImVec2(p.x + (kThumb - ts.x) * 0.5f, p.y + (kThumb - ts.y) * 0.5f), IM_COL32(200, 200, 210, 255),
-                    initial);
+        dl->AddText(ImVec2(p.x + (kThumb - ts.x) * 0.5f, p.y + (kThumb - ts.y) * 0.5f),
+                    ImGui::GetColorU32(mcla::ui::kColorYellow), initial);
+        ImGui::PopFont();
         ImGui::Dummy(ImVec2(kThumb, kThumb));
     }
 
@@ -452,15 +462,20 @@ private:
         return false;
     }
 
+    // Room for the button row under the cards and for the panel's footer bar.
     bool BeginCards(const char* id) {
         return ImGui::BeginTable(id, 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY,
-                                 ImVec2(0, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing()));
+                                 ImVec2(0, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() -
+                                               mcla::ui::PanelBottomReserve()));
     }
 
     void SetupCards() {
         ImGui::TableSetupColumn("##img", ImGuiTableColumnFlags_WidthFixed, kThumb + 4);
         ImGui::TableSetupColumn("##info", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("##act", ImGuiTableColumnFlags_WidthFixed, 230.0f);
+        // Wide enough for "Update: v1.2.3 -> v1.3.0" and the longest button.
+        ImGui::TableSetupColumn("##act", ImGuiTableColumnFlags_WidthFixed,
+                                std::max(ImGui::CalcTextSize("Update: v00.00.00 -> v00.00.00").x,
+                                         ImGui::GetContentRegionAvail().x * 0.26f));
     }
 
     void DrawInstalled() {

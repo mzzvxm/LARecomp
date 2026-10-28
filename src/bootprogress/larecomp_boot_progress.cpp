@@ -15,6 +15,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "mc_engine/boot_progress.h"
+#include "mc_engine/ui/imgui_theme.h"
 
 namespace larecomp {
 namespace {
@@ -64,17 +65,17 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
         const float margin = 16.0f;
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, io.DisplaySize.y - margin),
                                 ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-        ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.88f);
+        // Wide enough for the 52-character lines below in the small face.
+        ImGui::SetNextWindowSize(ImVec2(600.0f, 0.0f), ImGuiCond_Always);
 
-        if (ImGui::Begin("Preparing content##larecomp_boot_progress", nullptr,
-                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoFocusOnAppearing)) {
-            ImGui::TextUnformatted("Installing mods and music before the game starts.");
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            ImGui::Separator();
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        if (mcla::ui::BeginPanel("##larecomp_boot_progress", "PREPARING CONTENT",
+                                 mcla::ui::PanelIcon::kInfo,
+                                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoSavedSettings |
+                                     ImGuiWindowFlags_NoFocusOnAppearing,
+                                 {}, 27.0f)) {
+            mcla::ui::PanelSubtitle("Loading mods and music before launch.");
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
             if (phases.empty()) {
                 ImGui::TextDisabled("Looking for content...");
@@ -101,7 +102,7 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
                                    : (phase.total > 0 ? static_cast<float>(phase.done) /
                                                             static_cast<float>(phase.total)
                                                       : 0.0f);
-                ImGui::ProgressBar(fraction, ImVec2(-1.0f, 6.0f), "");
+                mcla::ui::SegmentMeter(fraction, ImGui::GetContentRegionAvail().x, 20);
 
                 ImGui::Dummy(ImVec2(0.0f, 4.0f));
             }
@@ -113,6 +114,7 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
             if (!recent.empty()) {
                 ImGui::Separator();
                 ImGui::Dummy(ImVec2(0.0f, 4.0f));
+                ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
                 for (size_t i = 0; i < recent.size(); ++i) {
                     std::string line = recent[i];
                     if (line.size() > 52) line = line.substr(0, 49) + "...";
@@ -124,9 +126,10 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
                         ImGui::TextDisabled("%s", line.c_str());
                     }
                 }
+                ImGui::PopFont();
             }
         }
-        ImGui::End();
+        mcla::ui::EndPanel();
     }
 
  private:

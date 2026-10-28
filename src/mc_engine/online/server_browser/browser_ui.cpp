@@ -41,6 +41,7 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
+#include "mc_engine/ui/imgui_theme.h"
 
 REXCVAR_DEFINE_STRING(online_master_server, "26.24.254.19:31003", "MCLA/Multiplayer",
                       "Server list for the server browser (F6): host or host:port of a "
@@ -126,10 +127,10 @@ std::string VipText(uint32_t vip) {
 }
 
 ImVec4 PingColor(int ms) {
-    if (ms < 0) return ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-    if (ms < 80) return ImVec4(0.45f, 0.9f, 0.45f, 1.0f);
-    if (ms < 160) return ImVec4(1.0f, 0.8f, 0.3f, 1.0f);
-    return ImVec4(0.95f, 0.4f, 0.4f, 1.0f);
+    if (ms < 0) return mcla::ui::kColorTextDim;
+    if (ms < 80) return mcla::ui::kColorGood;
+    if (ms < 160) return mcla::ui::kColorWarn;
+    return mcla::ui::kColorBad;
 }
 
 // ------------------------------------------------------------- gamepad ---
@@ -286,11 +287,14 @@ protected:
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing,
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
-        ImGui::SetNextWindowBgAlpha(0.96f);
-        bool keep_open = true;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-        if (ImGui::Begin("Server Browser###larecomp_server_browser", &keep_open,
-                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::SetNextWindowSizeConstraints(ImVec2(720.0f, 420.0f), io.DisplaySize);
+        const mcla::ui::Prompt prompts[] = {{"CLOSE", pad ? "B" : "ESC", mcla::ui::kPromptBack}};
+        // Dense screen: rows a step smaller, like the game's mission lists.
+        ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
+        if (mcla::ui::BeginPanel("###larecomp_server_browser", "SERVER BROWSER", mcla::ui::PanelIcon::kInfo,
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                                     ImGuiWindowFlags_NoScrollWithMouse,
+                                 prompts)) {
             if (first_frame_) {
                 ImGui::SetWindowFocus();
                 first_frame_ = false;
@@ -298,7 +302,9 @@ protected:
             DrawToolbar();
             ImGui::Separator();
             const float left_w = std::max(320.0f, ImGui::GetContentRegionAvail().x * 0.42f);
-            const float body_h = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 1.6f;
+            // The action row under the lists, then the panel's footer bar.
+            const float body_h = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 1.6f -
+                                 mcla::ui::PanelBottomReserve();
             ImGui::BeginChild("##servers", ImVec2(left_w, body_h), ImGuiChildFlags_Borders);
             DrawServerList();
             ImGui::EndChild();
@@ -310,12 +316,12 @@ protected:
             DrawSwitchPopup();
             DrawModsPopup();
         }
-        ImGui::End();
-        ImGui::PopStyleVar();
+        const bool close_clicked = mcla::ui::EndPanel() == 0;
+        ImGui::PopFont();
 
         const bool typing = ImGui::GetIO().WantTextInput;
         const bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-        if (!keep_open || ((b_pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) && !typing && !popup))
+        if (close_clicked || ((b_pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) && !typing && !popup))
             Close_();
     }
 
@@ -377,8 +383,9 @@ private:
     }
 
     void DrawToolbar() {
-        ImGui::SetNextItemWidth(260.0f);
-        ImGui::InputTextWithHint("##search", "Search name, tag, player...", search_, sizeof(search_));
+        const char* hint = "Search name, tag, player...";
+        ImGui::SetNextItemWidth(ImGui::CalcTextSize(hint).x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f);
+        ImGui::InputTextWithHint("##search", hint, search_, sizeof(search_));
         ImGui::SameLine();
         bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
         if (ImGui::Checkbox("Icons", &icons))
@@ -414,6 +421,9 @@ private:
         const bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
         const float row_h = icons ? 48.0f : ImGui::GetTextLineHeightWithSpacing() * 2.0f;
         const std::string current = CurrentRelay();
+        // The game's list row (teal bar and cursor) instead of the flat fill.
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         for (const br::ServerView* s : rows) {
             ImGui::PushID(s->address.c_str());
             const bool selected = selected_ == s->address;
@@ -421,7 +431,10 @@ private:
             if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap, ImVec2(0, row_h)))
                 selected_ = s->address;
             if (ImGui::IsItemFocused() && selected_.empty()) selected_ = s->address;
-            ImGui::SetCursorPos(start);
+            mcla::ui::DrawListRow(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                  selected);
+            // Past the cursor triangle.
+            ImGui::SetCursorPos(ImVec2(start.x + 22.0f, start.y));
             if (icons) {
                 const ImTextureID tex = Icon(s->address);
                 if (tex)
@@ -432,11 +445,11 @@ private:
             }
             ImGui::BeginGroup();
             const std::string name = s->name.empty() ? s->address : s->name;
-            ImGui::TextColored(s->answered ? ImVec4(1.0f, 0.86f, 0.25f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s%s",
+            ImGui::TextColored(s->answered ? mcla::ui::kColorYellow : mcla::ui::kColorTextDim, "%s%s",
                                name.c_str(), s->favorite ? "  [fav]" : "");
             if (s->address == current) {
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "(current)");
+                ImGui::TextColored(mcla::ui::kColorCyanGlow, "(current)");
             }
             if (s->answered) {
                 ImGui::TextDisabled("%s%s%d players  %d rooms", s->region.c_str(), s->region.empty() ? "" : "  ",
@@ -449,6 +462,7 @@ private:
             ImGui::EndGroup();
             ImGui::PopID();
         }
+        ImGui::PopStyleColor(2);
     }
 
     const br::ServerView* Selected() const {
@@ -471,7 +485,7 @@ private:
             }
         }
         ImGui::BeginGroup();
-        ImGui::TextColored(ImVec4(1.0f, 0.86f, 0.25f, 1.0f), "%s", s->name.empty() ? s->address.c_str() : s->name.c_str());
+        ImGui::TextColored(mcla::ui::kColorYellow, "%s", s->name.empty() ? s->address.c_str() : s->name.c_str());
         ImGui::TextDisabled("%s", s->address.c_str());
         if (!s->region.empty()) ImGui::Text("Region: %s", s->region.c_str());
         if (!s->tags.empty()) ImGui::Text("Tags: %s", s->tags.c_str());
@@ -481,7 +495,7 @@ private:
             ImGui::SameLine();
             ImGui::TextColored(PingColor(s->ping_ms), "%d ms", s->ping_ms);
         } else {
-            ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "Not answering");
+            ImGui::TextColored(mcla::ui::kColorBad, "Not answering");
         }
         ImGui::EndGroup();
         if (!s->description.empty()) {
@@ -679,7 +693,7 @@ private:
         }
 
         if (!mods_check_.ok) {
-            ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "Could not read the mods of %s:", server.c_str());
+            ImGui::TextColored(mcla::ui::kColorBad, "Could not read the mods of %s:", server.c_str());
             ImGui::TextWrapped("%s", mods_check_.error.c_str());
             if (ImGui::Button("Join anyway")) {
                 ImGui::CloseCurrentPopup();
@@ -701,13 +715,13 @@ private:
             ImGui::ProgressBar(frac, ImVec2(480, 0), label.c_str());
             ImGui::TextDisabled("%s", p.current.c_str());
             if (p.finished && p.failed) {
-                ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "Download failed: %s", p.error.c_str());
+                ImGui::TextColored(mcla::ui::kColorBad, "Download failed: %s", p.error.c_str());
                 if (ImGui::Button("Close")) {
                     mods_download_.reset();
                     ImGui::CloseCurrentPopup();
                 }
             } else if (p.finished) {
-                ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f), "Done. The game restarts to load them.");
+                ImGui::TextColored(mcla::ui::kColorGood, "Done. The game restarts to load them.");
                 // After the restart: this server, and what was asked for on it.
                 if (mods_server_.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty())
                     SaveString("mcla_online_server", mods_server_.address);
@@ -753,16 +767,16 @@ private:
                 }
                 ImGui::TableNextColumn();
                 if (m.required)
-                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "required");
+                    ImGui::TextColored(mcla::ui::kColorWarn, "required");
                 else
                     ImGui::TextDisabled("optional");
                 ImGui::TableNextColumn();
                 if (installed)
-                    ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f), "installed");
+                    ImGui::TextColored(mcla::ui::kColorGood, "installed");
                 else if (m.state == br::ModState::kOutdated)
-                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "other version");
+                    ImGui::TextColored(mcla::ui::kColorWarn, "other version");
                 else
-                    ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "missing");
+                    ImGui::TextColored(mcla::ui::kColorBad, "missing");
                 ImGui::TableNextColumn();
                 if (!installed) {
                     ImGui::Text("%s", br::FormatBytes(m.need_bytes).c_str());
@@ -814,7 +828,7 @@ private:
         }
         if (!ImGui::BeginPopupModal("Switch server", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
         ImGui::Text("This is on another server:");
-        ImGui::TextColored(ImVec4(1.0f, 0.86f, 0.25f, 1.0f), "%s", switch_.address.c_str());
+        ImGui::TextColored(mcla::ui::kColorYellow, "%s", switch_.address.c_str());
         ImGui::Spacing();
         ImGui::TextWrapped("The game connects to one server per run. Switch to it and restart the game; "
                            "the browser offers it again right after it is back.");
@@ -892,7 +906,6 @@ private:
             }
             ImGui::SameLine();
         }
-        ImGui::TextDisabled("F6 / Esc / B: close");
     }
 
     // While a join is under way the window is closed; this strip says how it goes.
@@ -900,16 +913,16 @@ private:
         const br::JoinStatus st = br::GetJoinStatus();
         if (st.text.empty()) return;
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 16.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-        ImGui::SetNextWindowBgAlpha(0.88f);
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs |
                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
-        if (ImGui::Begin("##larecomp_browser_join", nullptr, flags)) {
-            const ImVec4 color = st.phase == br::JoinPhase::kFailed ? ImVec4(0.95f, 0.4f, 0.4f, 1.0f)
-                                                                     : ImVec4(1.0f, 0.86f, 0.25f, 1.0f);
-            ImGui::TextColored(color, "%s", st.text.c_str());
+        const bool failed = st.phase == br::JoinPhase::kFailed;
+        if (mcla::ui::BeginPanel("##larecomp_browser_join", failed ? "JOIN FAILED" : "JOINING",
+                                 failed ? mcla::ui::PanelIcon::kAlert : mcla::ui::PanelIcon::kInfo, flags, {},
+                                 25.0f)) {
+            ImGui::TextColored(failed ? mcla::ui::kColorBad : mcla::ui::kColorTextWhite, "%s", st.text.c_str());
         }
-        ImGui::End();
+        mcla::ui::EndPanel();
         if (st.phase == br::JoinPhase::kFailed) {
             if (failed_since_ == Clock::time_point{}) failed_since_ = Clock::now();
             if (Clock::now() - failed_since_ > std::chrono::seconds(6)) {
