@@ -138,7 +138,7 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
             ImGuiWindowFlags_NoFocusOnAppearing;
 
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
         if (ImGui::Begin("##larecomp_online_toast", nullptr, flags)) {
             constexpr float kIcon = 56.0f;
             if (icon_) {

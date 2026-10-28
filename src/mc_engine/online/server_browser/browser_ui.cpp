@@ -288,7 +288,7 @@ protected:
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
         ImGui::SetNextWindowBgAlpha(0.96f);
         bool keep_open = true;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
         if (ImGui::Begin("Server Browser###larecomp_server_browser", &keep_open,
                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
             if (first_frame_) {

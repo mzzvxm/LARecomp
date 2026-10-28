@@ -21,6 +21,7 @@
 #include <rex/system/xam/user_profile.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
+#include "mc_engine/ui/mcla_imgui_theme.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -152,14 +153,18 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
 
-    // The same look as the SDK's name prompt this replaces.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 22.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 9.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
-    ImGui::PushFont(nullptr, 18.0f);
+    ImFont* default_font = mcla::ui::GetDefaultFont();
+    if (default_font) {
+      ImGui::PushFont(default_font, 18.0f);
+    } else {
+      ImGui::PushFont(nullptr, 18.0f);
+    }
 
     bool accept = false;
-    if (ImGui::Begin("Choose your save##larecomp_profile_picker", nullptr,
+    if (ImGui::Begin("CHOOSE PROFILE##larecomp_profile_picker", nullptr,
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -196,11 +201,9 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
 
   // Returns true when the player asked to go ahead with the current selection.
   bool DrawBody(ImGuiIO& io) {
-    ImGui::TextWrapped("%s", plan_.forced
-                                 ? "Pick the save to play, or start a new one. (You held Shift to "
-                                   "see this window again.)"
-                                 : "Pick the save to play, or start a new one.");
-    ImGui::Spacing();
+    mcla::ui::DrawCategoryHeader("SELECT PROFILE", plan_.forced
+                                  ? "Choose a profile to load, or create a new career. (Shift held)"
+                                  : "Choose a profile to load, or create a new career.");
 
     bool accept = false;
 
@@ -243,14 +246,28 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
       const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
+      const bool is_selected = (selected_ == i);
+      const ImU32 text_col = is_selected ? IM_COL32(10, 15, 22, 255) : text;
+      const ImU32 dim_col = is_selected ? IM_COL32(30, 45, 60, 230) : dim;
+
+      const float text_x = low.x + 12.0f;
       if (is_new) {
-        draw->AddText(ImVec2(low.x + 12.0f, text_y), text, "+  New save");
+        if (is_selected) {
+          draw->AddText(ImVec2(text_x, text_y), text_col, "â¶  +  New profile");
+        } else {
+          draw->AddText(ImVec2(text_x + 16.0f, text_y), text_col, "+  New profile");
+        }
       } else {
         const pf::Profile& save = plan_.choices[i];
-        draw->AddText(ImVec2(low.x + 12.0f, text_y), text, save.name.c_str());
-        const std::string right = save.has_save ? FormatTime(save.last_played) : "nothing saved yet";
+        if (is_selected) {
+          draw->AddText(ImVec2(text_x, text_y), text_col, "â¶  ");
+          draw->AddText(ImVec2(text_x + 18.0f, text_y), text_col, save.name.c_str());
+        } else {
+          draw->AddText(ImVec2(text_x + 16.0f, text_y), text_col, save.name.c_str());
+        }
+        const std::string right = save.has_save ? FormatTime(save.last_played) : "No save data";
         const float right_width = ImGui::CalcTextSize(right.c_str()).x;
-        draw->AddText(ImVec2(high.x - right_width - 12.0f, text_y), dim, right.c_str());
+        draw->AddText(ImVec2(high.x - right_width - 12.0f, text_y), dim_col, right.c_str());
       }
       ImGui::PopID();
     }
@@ -290,8 +307,13 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
 
     const bool can_play = selected_ != NewRow() || (!new_name.empty() && problem.empty());
     ImGui::BeginDisabled(!can_play);
-    const bool clicked = ImGui::Button("Play", ImVec2(-1.0f, 44.0f));
+    const bool clicked = ImGui::Button("PLAY", ImVec2(-1.0f, 44.0f));
     ImGui::EndDisabled();
+
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::TextDisabled("ENTER  ACCEPT   |   ESC  CANCEL   |   HOLD SHIFT ON START TO PICK SAVE");
 
     // --- keyboard ---------------------------------------------------------------------
     if (!io.WantTextInput) {

@@ -15,6 +15,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "mc_engine/boot_progress.h"
+#include "mc_engine/ui/mcla_imgui_theme.h"
 
 namespace larecomp {
 namespace {
@@ -67,12 +68,11 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
         ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.88f);
 
-        if (ImGui::Begin("Preparing content##larecomp_boot_progress", nullptr,
+        if (ImGui::Begin("PREPARING CONTENT##larecomp_boot_progress", nullptr,
                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                              ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                              ImGuiWindowFlags_NoFocusOnAppearing)) {
-            ImGui::TextUnformatted("Installing mods and music before the game starts.");
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+            mcla::ui::DrawCategoryHeader("SYSTEM INITIALIZATION", "Loading mods and music before launch.");
             ImGui::Separator();
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
 

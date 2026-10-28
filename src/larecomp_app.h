@@ -45,6 +45,8 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/modloader/texture_mods.h"
 #include "mc_engine/wheel/wheel_input.h"
+#include "mc_engine/ui/mcla_imgui_theme.h"
+#include "mc_engine/ui/mcla_debug_overlay.h"
 
 #include <rex/system.h>
 #include <fmt/format.h>
@@ -410,9 +412,24 @@ class LarecompApp : public rex::ReXApp {
   NativeSwapChainResizeListener swapchain_resize_listener_;
 #endif
 
+  void OnConfigureFonts(ImFontAtlas* atlas) override {
+    mcla::ui::LoadMclaFonts(atlas);
+  }
+
+  void OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) override {
+    mcla::ui::ApplyMclaTheme(imgui_style, &ui_style);
+  }
+
   bool SetupPresentation() override {
     if (!rex::ReXApp::SetupPresentation()) {
       return false;
+    }
+
+    if (imgui_drawer()) {
+      mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
+      rex::ui::RegisterBind("bind_debug_overlay", "F3", "Toggle debug overlay", [this] {
+        mcla::ui::ToggleDebugOverlay(imgui_drawer());
+      });
     }
 
 #if defined(LARECOMP_HAS_GPU)
