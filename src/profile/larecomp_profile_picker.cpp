@@ -460,7 +460,10 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     const float y = panel_pos_.y - kGap - w.bottom;
     // The credit's descender ('y') bottoms out where the p's does.
     const float credit_bottom = ink(script, credit_px, 'y', kBottom);
-    const ImVec2 credit_pos(x + w.r_left - ink(script, credit_px, credit[0], kLeft),
+    // Nudged left by eye (2px at a 150px logo) so the B reads as starting
+    // under the R rather than just after it.
+    const float nudge = px * 0.013f;
+    const ImVec2 credit_pos(x + w.r_left - ink(script, credit_px, credit[0], kLeft) - nudge,
                             y + w.bottom - credit_bottom);
 
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
