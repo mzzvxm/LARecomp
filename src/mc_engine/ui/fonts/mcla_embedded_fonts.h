@@ -13,4 +13,7 @@ extern const size_t kFontMidnightClubLogoSize;
 extern const unsigned char kFontLosAngelesScript[];
 extern const size_t kFontLosAngelesScriptSize;
 
+extern const unsigned char kFontMclaIngame[];
+extern const size_t kFontMclaIngameSize;
+
 } // namespace mcla::ui::fonts

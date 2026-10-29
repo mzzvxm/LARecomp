@@ -62,8 +62,19 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   font_cfg.OversampleV = 2;
   font_cfg.PixelSnapH = true;
 
-  g_fonts.body = LoadFace(atlas, dir, "Midnight Club Logo Font.ttf", fonts::kFontMidnightClubLogo,
-                          fonts::kFontMidnightClubLogoSize, kBodySize, font_cfg);
+  g_fonts.body = LoadFace(atlas, dir, "MCLA Ingame Font.ttf", fonts::kFontMclaIngame,
+                          fonts::kFontMclaIngameSize, kBodySize, font_cfg);
+
+  // The Ingame face has no '|' (it shows in a few settings descriptions);
+  // the Logo face lends its own, merged in so the body finds it.
+  static const ImWchar kPipe[] = {'|', '|', 0};
+  ImFontConfig pipe_cfg = font_cfg;
+  pipe_cfg.MergeMode = true;
+  pipe_cfg.GlyphRanges = kPipe;
+  if (g_fonts.body) {
+    LoadFace(atlas, dir, "Midnight Club Logo Font.ttf", fonts::kFontMidnightClubLogo,
+             fonts::kFontMidnightClubLogoSize, kBodySize, pipe_cfg);
+  }
 
 #if defined(_WIN32)
   // Optional Japanese font glyph merging from Windows system font, merged into
@@ -80,10 +91,19 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   }
 #endif
 
-  g_fonts.title = LoadFace(atlas, dir, "Midnight Club Font Alt.ttf", fonts::kFontMidnightClubAlt,
-                           fonts::kFontMidnightClubAltSize, kTitleSize, font_cfg);
-  g_fonts.script = LoadFace(atlas, dir, "MC Los Angeles Font.ttf", fonts::kFontLosAngelesScript,
-                            fonts::kFontLosAngelesScriptSize, 24.0f, font_cfg);
+  // The titles are the same face, loaded at title size and kerned when drawn
+  // (BeginPanel), so their bytes are kept for RegisterKerning.
+  static std::vector<unsigned char> title_ttf =
+      FaceBytes(dir, "MCLA Ingame Font.ttf", fonts::kFontMclaIngame, fonts::kFontMclaIngameSize);
+  ImFontConfig title_cfg = font_cfg;
+  title_cfg.FontDataOwnedByAtlas = false;
+  g_fonts.title = atlas->AddFontFromMemoryTTF(title_ttf.data(), static_cast<int>(title_ttf.size()),
+                                              kTitleSize, &title_cfg);
+  RegisterKerning(g_fonts.title, title_ttf);
+
+  g_fonts.version = LoadFace(atlas, dir, "Midnight Club Logo Font.ttf",
+                             fonts::kFontMidnightClubLogo, fonts::kFontMidnightClubLogoSize, 18.0f,
+                             font_cfg);
 
   // The banner faces (see MclaFonts::banner), rasterized near the size the
   // picker draws them at and limited to the banner's characters so the large
@@ -125,7 +145,7 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
     ImGui::GetIO().FontDefault = g_fonts.body;
   }
 
-  REXLOG_INFO("[ui] Loaded MCLA fonts (Logo body, Font Alt titles, Los Angeles script)");
+  REXLOG_INFO("[ui] Loaded MCLA fonts (Ingame body and titles, Logo version, Font Alt and Los Angeles banner)");
 }
 
 void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
@@ -302,6 +322,11 @@ constexpr float kGap = 5.0f;             // bezel showing between body and foote
 constexpr float kOuterRounding = 18.0f;
 constexpr float kBodyRounding = 10.0f;
 
+// How much wider than kerned the titles are spaced, as a share of their size:
+// the retail "RACE RESULTS" runs ~9.7 cap heights where the face alone gives 8.6.
+constexpr float kTitleTracking = 0.055f;
+ImU32 g_title_color = 0;  // for DrawKerned's color callback
+
 struct PanelState {
   bool visible = false;
   ImGuiWindowFlags flags = 0;
@@ -457,13 +482,26 @@ bool BeginPanel(const char* id, const char* title, PanelIcon icon, ImGuiWindowFl
       DrawIcon(draw, ImVec2(at.x + r, at.y + row_h * 0.5f), r, icon);
       ImGui::SameLine(0.0f, title_size * 0.3f);
     }
-    // Font Alt's caps sit centered on its line, so centering the line centers them.
-    ImGui::SetCursorPosY(row_y + (row_h - title_size) * 0.5f);
-    ImGui::PushFont(g_fonts.title, title_size);
-    ImGui::PushStyleColor(ImGuiCol_Text, kColorYellow);
-    ImGui::TextUnformatted(title);
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
+    // The retail titles are the menu face set heavier and wider than the
+    // rows: kerned, spaced out, and drawn twice a pixel apart for weight.
+    ImFont* font = g_fonts.title ? g_fonts.title : ImGui::GetFont();
+    const float tracking = title_size * kTitleTracking;
+    const float bold = std::max(1.0f, title_size / kTitleSize);
+    float width = 0.0f;
+    KernedOrigins(font, title_size, title, &width, tracking);
+    // Centered on the caps, not the line: the face's caps sit low on it.
+    ImFontBaked* baked = font->GetFontBaked(title_size);
+    const ImFontGlyph* cap = baked->FindGlyph('H');
+    const float cap_mid = (cap->Y0 + cap->Y1) * 0.5f * title_size / baked->Size;
+    // The cursor is at the row's top here (beside the ring, or on its own).
+    ImGui::SetCursorPosY(row_y);
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float y = at.y + row_h * 0.5f - cap_mid;
+    g_title_color = ImGui::GetColorU32(kColorYellow);
+    auto color = [](size_t) { return g_title_color; };
+    DrawKerned(draw, font, title_size, ImVec2(at.x, y), title, color, tracking);
+    DrawKerned(draw, font, title_size, ImVec2(at.x + bold, y), title, color, tracking);
+    ImGui::Dummy(ImVec2(width + bold, row_h));
   }
   return true;
 }

@@ -48,7 +48,8 @@ float ItalicSlant(const ImFont* font) {
   return std::tan(-angle * 3.14159265f / 180.0f);
 }
 
-std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width) {
+std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width,
+                                 float tracking) {
   std::vector<float> origins;
   const auto it = Registry().find(font);
   // ImGui sizes a face by ascent - descent, which is ScaleForPixelHeight.
@@ -57,6 +58,7 @@ std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float
   for (const char* c = text; *c; ++c) {
     origins.push_back(x);
     x += font->CalcTextSizeA(px, FLT_MAX, 0.0f, c, c + 1).x;
+    if (c[1]) x += tracking;
     if (scale != 0.0f && c[1]) {
       x += scale * static_cast<float>(stbtt_GetCodepointKernAdvance(
                        &it->second.info, static_cast<unsigned char>(c[0]),
@@ -68,8 +70,8 @@ std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float
 }
 
 void DrawKerned(ImDrawList* draw, ImFont* font, float px, ImVec2 pos, const char* text,
-                ImU32 (*color)(size_t index)) {
-  const std::vector<float> origins = KernedOrigins(font, px, text, nullptr);
+                ImU32 (*color)(size_t index), float tracking) {
+  const std::vector<float> origins = KernedOrigins(font, px, text, nullptr, tracking);
   for (size_t i = 0; text[i]; ++i) {
     draw->AddText(font, px, ImVec2(pos.x + origins[i], pos.y), color(i), text + i, text + i + 1);
   }

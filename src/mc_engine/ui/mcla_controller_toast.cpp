@@ -71,8 +71,8 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
                        bottom ? io.DisplaySize.y - kMargin - offset : kMargin + offset);
       ImGui::SetNextWindowPos(pos, ImGuiCond_Always,
                               ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
-      // As wide as the title needs: Font Alt runs wide, and a fixed width cut
-      // "CONTROLLER CONNECTED" off at the right edge.
+      // As wide as the title needs: a fixed width cut "CONTROLLER CONNECTED"
+      // off at the right edge, and the title's face may change.
       ImGui::SetNextWindowSizeConstraints(ImVec2(kMinWidth, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
 
@@ -84,7 +84,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_AlwaysAutoResize,
-                     {}, 20.0f)) {
+                     {}, 22.0f)) {
         height = ImGui::GetWindowHeight();
         if (toast.connected) {
           ImGui::TextUnformatted(toast.name.c_str());

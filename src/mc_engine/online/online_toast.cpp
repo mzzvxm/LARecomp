@@ -141,7 +141,7 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
         // The retail race-result card: the title says what this is, the server's
         // own name heads the body in the menu yellow.
         if (mcla::ui::BeginPanel("##larecomp_online_toast", "SYSTEM LINK", mcla::ui::PanelIcon::kInfo, flags,
-                                 {}, 20.0f)) {
+                                 {}, 22.0f)) {
             constexpr float kIcon = 56.0f;
             if (icon_) {
                 ImGui::Image(reinterpret_cast<ImTextureID>(icon_.get()), ImVec2(kIcon, kIcon));

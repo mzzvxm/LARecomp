@@ -919,7 +919,7 @@ private:
         const bool failed = st.phase == br::JoinPhase::kFailed;
         if (mcla::ui::BeginPanel("##larecomp_browser_join", failed ? "JOIN FAILED" : "JOINING",
                                  failed ? mcla::ui::PanelIcon::kAlert : mcla::ui::PanelIcon::kInfo, flags, {},
-                                 20.0f)) {
+                                 22.0f)) {
             ImGui::TextColored(failed ? mcla::ui::kColorBad : mcla::ui::kColorTextWhite, "%s", st.text.c_str());
         }
         mcla::ui::EndPanel();

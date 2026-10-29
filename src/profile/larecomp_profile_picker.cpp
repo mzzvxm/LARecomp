@@ -391,8 +391,9 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   // as the panel, or smaller when the screen is short.
   void DrawBanner() {
     const mcla::ui::MclaFonts& fonts = mcla::ui::GetFonts();
-    ImFont* logo = fonts.banner ? fonts.banner : fonts.title;
-    ImFont* script = fonts.banner_credit ? fonts.banner_credit : fonts.script;
+    // Its own faces only: the UI's are the Ingame face, which the artwork is not.
+    ImFont* logo = fonts.banner;
+    ImFont* script = fonts.banner_credit;
     if (!logo || !script || panel_size_.x <= 0.0f) return;
     const char* word = mcla::ui::kBannerWord;      // "LARecomp"
     const char* credit = mcla::ui::kBannerCredit;  // "By mzzvxm & BadassBaboon"
@@ -476,7 +477,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
 
   // The release, flush with the bottom-right corner whatever its length.
   static void DrawVersion(ImGuiIO& io) {
-    ImFont* font = mcla::ui::GetFonts().body;
+    ImFont* font = mcla::ui::GetFonts().version;
     if (!font) return;
     constexpr float kPx = 18.0f;
     constexpr float kMargin = 24.0f;

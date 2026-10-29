@@ -72,7 +72,7 @@ class AchievementToast final : public rex::ui::AchievementNotificationDialog {
                    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                        ImGuiWindowFlags_AlwaysAutoResize,
-                   {}, 20.0f)) {
+                   {}, 22.0f)) {
       const auto& a = toast.event.achievement;
       if (rex::ui::ImmediateTexture* icon = icons_.GetIcon(a)) {
         ImGui::Image(reinterpret_cast<ImTextureID>(icon), ImVec2(kIcon, kIcon));
@@ -170,8 +170,8 @@ class AchievementsDialog final : public rex::ui::ImGuiDialog {
                           ImVec2(0.0f, height))) {
       ImGui::TableSetupColumn("icon", ImGuiTableColumnFlags_WidthFixed, kIcon);
       ImGui::TableSetupColumn("text", ImGuiTableColumnFlags_WidthStretch);
-      // Room past the text: the body face is slanted and its last glyph leans
-      // out of its advance, which a column sized to the text cut off.
+      // Room past the text, so the score never sits on the panel's edge (and a
+      // slanted face's last glyph, leaning out of its advance, is not cut).
       ImGui::TableSetupColumn("score", ImGuiTableColumnFlags_WidthFixed,
                               ImGui::CalcTextSize("000G").x + kScoreSlack);
       for (const auto& a : list) {

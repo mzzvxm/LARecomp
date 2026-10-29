@@ -72,7 +72,7 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
                                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                      ImGuiWindowFlags_NoSavedSettings |
                                      ImGuiWindowFlags_NoFocusOnAppearing,
-                                 {}, 22.0f)) {
+                                 {}, 24.0f)) {
             mcla::ui::PanelSubtitle("Loading mods and music before launch.");
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
 

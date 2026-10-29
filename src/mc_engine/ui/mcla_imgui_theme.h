@@ -8,19 +8,16 @@
 
 namespace mcla::ui {
 
-// The retail menus use two faces: a wide heavy one for panel titles ("MODES",
-// "DISPLAY") and a narrower one for everything else. Until the community menu
-// fonts land, the Logo font stands in for the body -- its caps run ~7 cap
-// heights per "ARCADE" like the retail rows, where Font Alt runs ~9.3 -- and
-// Font Alt takes the titles.
+// The retail menus set everything in one face, MCLA Ingame Font: the rows and
+// labels at body size, the panel titles ("RACE RESULTS", "REWARDS") larger,
+// heavier and spaced wider (see BeginPanel). The SDK renderer keeps ImGui's
+// fixed atlas, so glyphs exist only at the sizes loaded here and other sizes
+// are scaled from them; each role is loaded near the size it is drawn at.
 struct MclaFonts {
-  ImFont* body = nullptr;    // Midnight Club Logo Font
-  ImFont* title = nullptr;   // Midnight Club Font Alt
-  ImFont* script = nullptr;  // MC Los Angeles Font
-  // The save picker banner's own large copies (Font Alt, Los Angeles), holding
-  // only the banner's characters. The SDK renderer keeps ImGui's fixed atlas,
-  // so glyphs exist only at the sizes loaded here and other sizes are scaled
-  // from them; a banner scaled up from the 28px titles would be a blur.
+  ImFont* body = nullptr;     // MCLA Ingame Font
+  ImFont* title = nullptr;    // MCLA Ingame Font, at title size
+  ImFont* version = nullptr;  // Midnight Club Logo Font: the save picker's version label
+  // The save picker banner (Font Alt, Los Angeles), holding only its characters.
   ImFont* banner = nullptr;
   ImFont* banner_credit = nullptr;
 };
@@ -37,14 +34,18 @@ void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf);
 // The face's declared slant (post.italicAngle) as run over rise, 0 when upright
 // or unregistered.
 float ItalicSlant(const ImFont* font);
-// Each character's x origin at `px`, and the total advance in `width`.
-std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width);
+// Each character's x origin at `px`, and the total advance in `width`;
+// `tracking` adds that many pixels between characters.
+std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width,
+                                 float tracking = 0.0f);
 void DrawKerned(ImDrawList* draw, ImFont* font, float px, ImVec2 pos, const char* text,
-                ImU32 (*color)(size_t index));
+                ImU32 (*color)(size_t index), float tracking = 0.0f);
 
-inline constexpr float kBodySize = 18.0f;
-inline constexpr float kSmallSize = 15.0f;
-inline constexpr float kTitleSize = 28.0f;
+// MCLA Ingame Font's caps are 0.53 of its size (the Logo font's were 0.58):
+// these keep the text the height it was.
+inline constexpr float kBodySize = 20.0f;
+inline constexpr float kSmallSize = 17.0f;
+inline constexpr float kTitleSize = 30.0f;
 
 // Returns loaded font instances
 MclaFonts& GetFonts();
