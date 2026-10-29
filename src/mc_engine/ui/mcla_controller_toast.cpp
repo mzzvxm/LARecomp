@@ -84,7 +84,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_AlwaysAutoResize,
-                     {}, 22.0f)) {
+                     {}, 25.0f)) {
         height = ImGui::GetWindowHeight();
         if (toast.connected) {
           ImGui::TextUnformatted(toast.name.c_str());

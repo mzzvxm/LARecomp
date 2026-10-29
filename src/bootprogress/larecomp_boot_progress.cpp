@@ -65,14 +65,15 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
         const float margin = 16.0f;
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, io.DisplaySize.y - margin),
                                 ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-        ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_Always);
+        // Wide enough for the 52-character lines below in the small face.
+        ImGui::SetNextWindowSize(ImVec2(600.0f, 0.0f), ImGuiCond_Always);
 
         if (mcla::ui::BeginPanel("##larecomp_boot_progress", "PREPARING CONTENT",
                                  mcla::ui::PanelIcon::kInfo,
                                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                      ImGuiWindowFlags_NoSavedSettings |
                                      ImGuiWindowFlags_NoFocusOnAppearing,
-                                 {}, 24.0f)) {
+                                 {}, 27.0f)) {
             mcla::ui::PanelSubtitle("Loading mods and music before launch.");
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
 

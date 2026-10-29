@@ -225,6 +225,8 @@ Fixes made directly in LARecomp:
 - **Adaptive texture cache limits & D3D12 primary buffer submission.** Replaced hardcoded texture cache overrides with a universally safe 2560 MB soft / 4096 MB hard baseline that prevents VRAM exhaustion on 6 GB and 8 GB GPUs while respecting user TOML overrides on high-VRAM cards (12 GB–24 GB). Enabled `d3d12_submit_on_primary_buffer_end = true` to allow asynchronous overlap of GPU rendering with CPU command recording, smoothing out pipeline bubbles.
 - **Guest profiler 144 FPS / GPU Commands call-stack sampling.** Added `profile_gpu_commands.ps1` helper for targeting `GPU Commands` with `RtlVirtualUnwind` stack sampling at 144 FPS / 7.0ms threshold.
 
+**Drew Trader**, for the fonts. The recreated Midnight Club: Los Angeles typefaces are what make LARecomp's own interface read like the game's menus: **MCLA Ingame Font**, the face of the menu rows and panel titles; **Midnight Club Font Alt** and **MC Los Angeles Font**, which set the LARecomp banner and its credit line on the save picker; and **Midnight Club Logo Font**, which carries the version label.
+
 **[Foxxyyy](https://github.com/Foxxyyy)**, for reverse-engineering work on **[CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)**: the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here.
 
 **[ReXGlue Team](https://github.com/rexglue/rexglue)**, for the Xbox 360 static recompilation toolkit and runtime.

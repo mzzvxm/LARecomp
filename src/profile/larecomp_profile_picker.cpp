@@ -190,7 +190,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     bool accept = false;
     // BeginPanel/EndPanel are paired unconditionally, like Begin/End.
     if (mcla::ui::BeginPanel("##larecomp_profile_picker", "SELECT PROFILE",
-                             mcla::ui::PanelIcon::kCheck,
+                             mcla::ui::PanelIcon::kSave,
                              ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                  ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_AlwaysAutoResize,

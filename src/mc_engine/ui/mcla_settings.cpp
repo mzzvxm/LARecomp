@@ -182,7 +182,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     if (BeginPanel("##mcla_settings", "SETTINGS", PanelIcon::kCheck,
                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
                        ImGuiWindowFlags_NoScrollWithMouse,
-                   prompts, 26.0f)) {
+                   prompts, 29.0f)) {
       DrawContents();
     }
     clicked = EndPanel();

@@ -1,5 +1,7 @@
 #include "online_toast.h"
 
+#include <cfloat>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -132,7 +134,8 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
         const float pad = 16.0f;
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - pad, pad), ImGuiCond_Always,
                                 ImVec2(1.0f, 0.0f));
-        ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f), ImGuiCond_Always);
+        // As wide as its lines need, at least 380.
+        ImGui::SetNextWindowSizeConstraints(ImVec2(380.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
         const ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
@@ -141,7 +144,7 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
         // The retail race-result card: the title says what this is, the server's
         // own name heads the body in the menu yellow.
         if (mcla::ui::BeginPanel("##larecomp_online_toast", "SYSTEM LINK", mcla::ui::PanelIcon::kInfo, flags,
-                                 {}, 22.0f)) {
+                                 {}, 25.0f)) {
             constexpr float kIcon = 56.0f;
             if (icon_) {
                 ImGui::Image(reinterpret_cast<ImTextureID>(icon_.get()), ImVec2(kIcon, kIcon));

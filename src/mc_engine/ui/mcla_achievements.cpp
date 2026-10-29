@@ -72,7 +72,7 @@ class AchievementToast final : public rex::ui::AchievementNotificationDialog {
                    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                        ImGuiWindowFlags_AlwaysAutoResize,
-                   {}, 22.0f)) {
+                   {}, 25.0f)) {
       const auto& a = toast.event.achievement;
       if (rex::ui::ImmediateTexture* icon = icons_.GetIcon(a)) {
         ImGui::Image(reinterpret_cast<ImTextureID>(icon), ImVec2(kIcon, kIcon));

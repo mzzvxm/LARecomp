@@ -41,11 +41,15 @@ std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float
 void DrawKerned(ImDrawList* draw, ImFont* font, float px, ImVec2 pos, const char* text,
                 ImU32 (*color)(size_t index), float tracking = 0.0f);
 
-// MCLA Ingame Font's caps are 0.53 of its size (the Logo font's were 0.58):
-// these keep the text the height it was.
-inline constexpr float kBodySize = 20.0f;
-inline constexpr float kSmallSize = 17.0f;
-inline constexpr float kTitleSize = 30.0f;
+// MCLA Ingame Font's caps are 0.53 of its size. Retail rows stand about two
+// thirds as tall as the panel titles and fill their panels; these match.
+inline constexpr float kBodySize = 24.0f;
+inline constexpr float kSmallSize = 20.0f;
+inline constexpr float kTitleSize = 34.0f;
+// The retail rows are set wider than the face's own spacing: "RANK: ROOKIE"
+// runs 9.6 cap heights where the kerned face gives 7.8. This much of the size
+// goes between every two letters of body text.
+inline constexpr float kBodyTracking = 0.089f;
 
 // Returns loaded font instances
 MclaFonts& GetFonts();
@@ -84,7 +88,7 @@ inline constexpr ImU32 kPromptY = IM_COL32(240, 196, 20, 255);
 inline constexpr ImU32 kPromptNeutral = IM_COL32(190, 190, 184, 255);
 
 // The pictogram inside the dashed yellow ring left of a panel title.
-enum class PanelIcon { kNone, kCheck, kAlert, kPause, kInfo, kGamepad };
+enum class PanelIcon { kNone, kCheck, kAlert, kPause, kInfo, kGamepad, kSave };
 
 // A button hint in a panel's footer bar: "ACCEPT (ENTER)".
 struct Prompt {

@@ -62,13 +62,17 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   font_cfg.OversampleV = 2;
   font_cfg.PixelSnapH = true;
 
+  // Body text carries the retail letter spacing in its advances, so every
+  // ImGui layout and measurement includes it.
+  ImFontConfig body_cfg = font_cfg;
+  body_cfg.GlyphExtraAdvanceX = kBodySize * kBodyTracking;
   g_fonts.body = LoadFace(atlas, dir, "MCLA Ingame Font.ttf", fonts::kFontMclaIngame,
-                          fonts::kFontMclaIngameSize, kBodySize, font_cfg);
+                          fonts::kFontMclaIngameSize, kBodySize, body_cfg);
 
   // The Ingame face has no '|' (it shows in a few settings descriptions);
   // the Logo face lends its own, merged in so the body finds it.
   static const ImWchar kPipe[] = {'|', '|', 0};
-  ImFontConfig pipe_cfg = font_cfg;
+  ImFontConfig pipe_cfg = body_cfg;
   pipe_cfg.MergeMode = true;
   pipe_cfg.GlyphRanges = kPipe;
   if (g_fonts.body) {
@@ -392,6 +396,24 @@ void DrawIcon(ImDrawList* draw, ImVec2 c, float r, PanelIcon icon) {
                           ImVec2(pad.x + s * 0.07f, pad.y + s * 0.24f), dark);
       draw->AddCircleFilled(ImVec2(c.x + s * 0.32f, c.y + s * 0.12f), s * 0.1f, dark);
       draw->AddCircleFilled(ImVec2(c.x + s * 0.55f, c.y - s * 0.08f), s * 0.1f, dark);
+      break;
+    }
+    case PanelIcon::kSave: {
+      // A floppy disk: the body with its clipped corner, the metal shutter
+      // (with its window) at the top, the label at the bottom.
+      const ImU32 dark = Col(16, 16, 16, 255);
+      const ImVec2 body[] = {ImVec2(c.x - s * 0.68f, c.y - s * 0.68f),
+                             ImVec2(c.x + s * 0.42f, c.y - s * 0.68f),
+                             ImVec2(c.x + s * 0.68f, c.y - s * 0.42f),
+                             ImVec2(c.x + s * 0.68f, c.y + s * 0.68f),
+                             ImVec2(c.x - s * 0.68f, c.y + s * 0.68f)};
+      draw->AddConvexPolyFilled(body, 5, white);
+      draw->AddRectFilled(ImVec2(c.x - s * 0.40f, c.y - s * 0.68f),
+                          ImVec2(c.x + s * 0.30f, c.y - s * 0.18f), dark);
+      draw->AddRectFilled(ImVec2(c.x + s * 0.06f, c.y - s * 0.60f),
+                          ImVec2(c.x + s * 0.20f, c.y - s * 0.26f), white);
+      draw->AddRectFilled(ImVec2(c.x - s * 0.46f, c.y + s * 0.10f),
+                          ImVec2(c.x + s * 0.46f, c.y + s * 0.56f), dark, s * 0.06f);
       break;
     }
     case PanelIcon::kNone:
