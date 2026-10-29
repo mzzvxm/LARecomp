@@ -325,16 +325,21 @@ void Worker() {
     std::string last_server;
     bool last_online = false;
     auto next = Clock::now();
+    // Whether the last pass was online with the identity loaded. A recover or
+    // cancel request only wakes the loop then: offline it stays queued until
+    // the game goes online, instead of waking the loop on every pass.
+    bool serving = false;
     Status s;
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(g_mtx);
             g_cv.wait_until(lk, (std::min)(next, Clock::now() + std::chrono::seconds(2)),
-                            [] { return g_kick || !g_recover_code.empty() || g_cancel; });
+                            [serving] {
+                                return g_kick ||
+                                       (serving && (!g_recover_code.empty() || g_cancel));
+                            });
         }
         const bool online = OnlineOn();
-        const std::string server = rex::cvar::GetFlagByName("mcla_online_server") + "|" +
-                                   rex::cvar::GetFlagByName("mcla_online_port");
         bool kick;
         bool requests;
         {
@@ -349,8 +354,16 @@ void Worker() {
                 Publish(s);
             }
             last_online = false;
+            serving = false;
+            // Offline the next look is 2 s away; `next` left in the past made
+            // the wait return at once and the loop spin a core for as long as
+            // the game stayed offline.
+            next = Clock::now() + std::chrono::seconds(2);
             continue;
         }
+        serving = true;
+        const std::string server = rex::cvar::GetFlagByName("mcla_online_server") + "|" +
+                                   rex::cvar::GetFlagByName("mcla_online_port");
         if (requests) {
             HandleRequests(s);
             Publish(s);
