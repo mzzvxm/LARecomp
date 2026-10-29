@@ -74,6 +74,7 @@
 #include "telemetry.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "../gpu/gpu.h"
+#include "../gpu/texture_names.h"
 #endif
 #include "../mc_engine/draw_stats.h"
 
@@ -180,6 +181,10 @@ extern "C" REX_FUNC(grcTextureXenon_Init) {
   // will actually be using from here on.
   mcla::native_gfx::AdoptInitTexture(base, grc_texture);
   mcla::native_gfx::NoteTextureCreated(base, grc_texture, name);
+#if defined(LARECOMP_HAS_GPU)
+  // The name the NATIVE renderer's texture dumps carry, whichever renderer runs.
+  mcla::gpu::texture_names::NoteInit(base, grc_texture, name);
+#endif
 }
 
 // grcTextureXenon::grcTextureXenon(datResource&) -- sub_82184458.
@@ -205,6 +210,10 @@ extern "C" REX_FUNC(grcTextureXenon_ResourceCtor) {
   // native_gfx for the rest of the session. The registry gates itself on its
   // own cvar, exactly as the Init hook above does.
   mcla::native_gfx::NoteTextureFromResource(base, grc_texture);
+#if defined(LARECOMP_HAS_GPU)
+  // Still inside the resource's fixup: r13's datResource names the dictionary.
+  mcla::gpu::texture_names::NoteResource(base, grc_texture, ctx.r13.u32);
+#endif
 }
 
 // grcTextureFactoryXenon::DestroyTexture(D3DTexture** ppTexture) -- sub_82177CB0.
@@ -228,6 +237,9 @@ extern "C" REX_FUNC(grcTextureFactoryXenon_DestroyTexture) {
 extern "C" REX_FUNC(grcTextureXenon_dtor) {
   mcla::native_gfx::nocp::NoteHook("grcTextureXenon_dtor");
   mcla::native_gfx::NoteTextureDestroyed(base, ctx.r3.u32);
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::texture_names::NoteDestroyed(base, ctx.r3.u32);
+#endif
   // Hand the header back BEFORE the original runs: DestroyTexture frees the
   // block through the guest allocator that produced it, and that allocator
   // knows nothing about the runtime's heap.
