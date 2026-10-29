@@ -33,6 +33,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,5 +58,9 @@ const std::vector<std::pair<std::string, std::string>>& Titles();
 // scans the same two folders, so without this every track would be listed twice
 // -- once as a real game object and once injected into the manager's array.
 bool Claimed(const std::filesystem::path& audio);
+
+// Cues installed by Build, for applying the custom radio gain only to native
+// custom tracks when the game starts a sound.
+bool IsCustomCue(uint32_t cue_hash);
 
 }  // namespace mc::music

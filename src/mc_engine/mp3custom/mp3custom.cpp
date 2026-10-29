@@ -6,6 +6,7 @@
 #include "../logging.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -57,6 +58,12 @@ REXCVAR_DEFINE_DOUBLE(custom_music_volume, 0.5, "MCLA/Audio",
     "Trim applied on top of the in-game music slider for custom MP3 tracks. "
     "The shipped radio goes through the RAGE mixer and its ducking curves, "
     "which the host player does not, so 1.0 comes out noticeably louder.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(custom_music_cue_gain_db, 4.0, "MCLA/Audio",
+    "Gain for native custom music in the game's audio mixer, after the bank's "
+    "3 dB MP3 decode headroom. Shipped songs keep their original gain.")
+    .range(0.0, 6.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(music_bank_log, false, "MCLA/Audio",
@@ -268,6 +275,12 @@ float ReadGuestBEFloat(uint32_t ea) {
     float    out;
     std::memcpy(&out, &bits, sizeof(out));
     return out;
+}
+
+void WriteGuestBEFloat(uint32_t ea, float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    WriteGuestBE32(ea, bits);
 }
 
 uint32_t CallGuest1(uint32_t fn_addr, uint32_t a0) {
@@ -858,6 +871,21 @@ bool MCLA_CustomMusic_StartSong(PPCRegister& r31) {
     return true;
 }
 
+// The game's cue starter calls sub_82549078 at either 0x821F505C or
+// 0x821F50EC. r4 is the cue hash and r6 points at its play parameters;
+// parameter +0 is the dB offset sent to sub_82148CB0. Raise only cues that
+// music::Build installed, so the shipped radio and other sounds keep their gain.
+void MCLA_CustomMusic_CueGain(PPCRegister& r4, PPCRegister& r6) {
+    if (!mc::music::IsCustomCue(static_cast<uint32_t>(r4.u32))) return;
+    const uint32_t params = static_cast<uint32_t>(r6.u32);
+    if (params < 0x1000u || params > 0xFFFFFFFBu) return;
+    const float gain = static_cast<float>(REXCVAR_GET(custom_music_cue_gain_db));
+    if (!(gain > 0.0f)) return;
+    const float original = ReadGuestBEFloat(params);
+    if (!std::isfinite(original)) return;
+    WriteGuestBEFloat(params, original + gain);
+}
+
 // 0x82146030, the store of the file handle in audStreamingWaveSlot::RequestLoad
 // (sub_82145F28). r3 is the handle, -1 when the open failed; r31 is the slot,
 // and its +0x42 carries the bank id the request was made with. The id is the
@@ -1028,6 +1056,7 @@ void InitCustomMusic() {}
 void TickCustomMusic() {}
 void MCLA_CustomMusic_Install(PPCRegister&) {}
 bool MCLA_CustomMusic_StartSong(PPCRegister&) { return false; }
+void MCLA_CustomMusic_CueGain(PPCRegister&, PPCRegister&) {}
 void MCLA_CustomMusic_SelectSong(PPCRegister&) {}
 void MCLA_CustomMusic_Announce(PPCRegister&) {}
 void MCLA_CustomMusic_Stop(PPCRegister&) {}

@@ -62,6 +62,7 @@ constexpr int kMusicSlotCount = 4;
 
 std::vector<std::pair<std::string, std::string>> g_titles;
 std::vector<std::string> g_claimed;
+std::vector<uint32_t> g_cues;
 
 // ------------------------------------------------------------------- helpers
 
@@ -715,9 +716,14 @@ bool Claimed(const fs::path& audio) {
     return std::find(g_claimed.begin(), g_claimed.end(), key) != g_claimed.end();
 }
 
+bool IsCustomCue(uint32_t cue_hash) {
+    return std::find(g_cues.begin(), g_cues.end(), cue_hash) != g_cues.end();
+}
+
 std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_root) {
     g_titles.clear();
     g_claimed.clear();
+    g_cues.clear();
 
     const std::vector<Song> songs = ScanSongs(exe_dir);
     if (songs.empty()) return {};
@@ -887,6 +893,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
         g_titles.emplace_back(song.title,
                               song.display.empty() ? DefaultDisplay(song.title) : song.display);
         g_claimed.push_back(Lower(PathUtf8(song.audio)));
+        g_cues.push_back(modloader::RageHash("SND_" + song.name));
     }
 
     if (files.empty()) {
@@ -941,6 +948,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
                                    kWaveSlots);
                 g_titles.clear();
                 g_claimed.clear();
+                g_cues.clear();
                 boot::EndPhase();
                 return {};
             }
@@ -953,6 +961,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
         LARECOMP_APP_ERROR("[music] cannot write the rebuilt .dat pair");
         g_titles.clear();
         g_claimed.clear();
+        g_cues.clear();
         boot::EndPhase();
         return {};
     }

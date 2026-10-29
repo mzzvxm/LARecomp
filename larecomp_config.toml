@@ -26190,6 +26190,18 @@ address = 0x821EFB5C
 registers = ["r31"]
 jump_address_on_true = 0x821EFB78
 
+# The cue starter reaches one of these two calls according to the selected
+# voice slot. r4 is the cue hash, r6 the play parameters (+0: dB offset).
+[[midasm_hook]]
+name = "MCLA_CustomMusic_CueGain"
+address = 0x821F505C
+registers = ["r4", "r6"]
+
+[[midasm_hook]]
+name = "MCLA_CustomMusic_CueGain"
+address = 0x821F50EC
+registers = ["r4", "r6"]
+
 # 0x821F0600: mcMusicManager::GotoSong(this, index), entry. r3 is the manager.
 # Every song change goes through here, so it is where the "no cue" flag at
 # mgr+24 gets cleared again before StartCurrentSong decides what to do with the
