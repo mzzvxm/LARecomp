@@ -5,6 +5,7 @@
 #include "larecomp_profile_store.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -25,6 +26,7 @@
 #include <rex/ui/imgui_drawer.h>
 #include "mc_engine/ui/mcla_gamepad.h"
 #include "mc_engine/ui/mcla_imgui_theme.h"
+#include "larecomp_version.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -155,10 +157,10 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     pad_.Feed(io);
 
     // Landscape like the retail menus: the list runs wide and short, the
-    // actions sit in the footer bar rather than in buttons. Drawn a tenth
-    // larger than the other panels: it is the first screen of the game.
-    constexpr float kScale = 1.1f;
-    const float width = std::min(836.0f, std::max(528.0f, io.DisplaySize.x - 64.0f));
+    // actions sit in the footer bar rather than in buttons. Drawn about a
+    // quarter larger than the other panels: it is the first screen of the game.
+    constexpr float kScale = 1.265f;
+    const float width = std::min(962.0f, std::max(600.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
@@ -192,6 +194,8 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
                                  ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_AlwaysAutoResize,
                              prompts, mcla::ui::kTitleSize * kScale)) {
+      panel_pos_ = ImGui::GetWindowPos();
+      panel_size_ = ImGui::GetWindowSize();
       accept = DrawBody(io);
     }
     const int clicked = mcla::ui::EndPanel();
@@ -203,6 +207,9 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
 
     ImGui::PopFont();
     ImGui::PopStyleColor(3);
+
+    DrawBanner();
+    DrawVersion(io);
 
     if (accept) {
       Accept();
@@ -373,6 +380,68 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     return can_play_ && (accept || submitted || enter || pad_accept);
   }
 
+  // The LARecomp banner above the panel: "LA" in the logo red and "Recomp"
+  // in the menu white, set in Font Alt, with the credit line under it in the
+  // Los Angeles face. The credit is sized to run from under the R to under the
+  // m, and sits with its baseline on the bottom of the p's descender. Every
+  // measure comes from the faces themselves, so a replacement font keeps the
+  // fit. As wide as the panel, or smaller when the screen is short.
+  void DrawBanner() {
+    const mcla::ui::MclaFonts& fonts = mcla::ui::GetFonts();
+    if (!fonts.title || !fonts.script || panel_size_.x <= 0.0f) return;
+    ImFont* logo = fonts.title;
+    ImFont* script = fonts.script;
+    constexpr char kWord[] = "LARecomp";
+    constexpr char kCredit[] = "By mzzvxm & BadassBaboon";
+    constexpr float kRef = 100.0f;  // laid out at this size, then scaled
+    constexpr float kGap = 14.0f;   // between the banner and the panel
+    constexpr float kTop = 16.0f;   // kept free above the banner
+
+    auto width = [](ImFont* font, float px, const char* text) {
+      return font->CalcTextSizeA(px, FLT_MAX, 0.0f, text).x;
+    };
+    // Credit size for a given logo size: as wide as "Recom" there.
+    auto credit_px = [&](float px) {
+      return width(logo, px, "Recom") * kRef / width(script, kRef, kCredit);
+    };
+    // Cap top of the logo, and how far the credit reaches below the logo's
+    // line top (its baseline on the p's descender, plus its own descender).
+    auto cap_top = [&](float px) { return logo->GetFontBaked(px)->FindGlyph('L')->Y0; };
+    auto credit_top = [&](float px) {
+      ImFontBaked* baked = script->GetFontBaked(credit_px(px));
+      return logo->GetFontBaked(px)->FindGlyph('p')->Y1 - baked->Ascent;
+    };
+    auto bottom = [&](float px) {
+      return credit_top(px) + script->GetFontBaked(credit_px(px))->FindGlyph('y')->Y1;
+    };
+
+    const float fit_width = panel_size_.x * 0.97f * kRef / width(logo, kRef, kWord);
+    const float fit_height = (panel_pos_.y - kGap - kTop) * kRef / (bottom(kRef) - cap_top(kRef));
+    const float px = std::min(fit_width, fit_height);
+    if (px < 12.0f) return;
+
+    const float x = panel_pos_.x + (panel_size_.x - width(logo, px, kWord)) * 0.5f;
+    const float y = panel_pos_.y - kGap - bottom(px);
+    const float r_x = x + width(logo, px, "LA");
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    const ImU32 white = IM_COL32(0xE8, 0xE8, 0xE0, 0xFF);
+    draw->AddText(logo, px, ImVec2(x, y), IM_COL32(0xEC, 0x04, 0x0B, 0xFF), "LA");
+    draw->AddText(logo, px, ImVec2(r_x, y), white, "Recomp");
+    draw->AddText(script, credit_px(px), ImVec2(r_x, y + credit_top(px)), white, kCredit);
+  }
+
+  // The release, flush with the bottom-right corner whatever its length.
+  static void DrawVersion(ImGuiIO& io) {
+    ImFont* font = mcla::ui::GetFonts().body;
+    if (!font) return;
+    constexpr float kPx = 18.0f;
+    constexpr float kMargin = 24.0f;
+    const float w = font->CalcTextSizeA(kPx, FLT_MAX, 0.0f, larecomp::kVersionLabel).x;
+    ImGui::GetBackgroundDrawList()->AddText(
+        font, kPx, ImVec2(io.DisplaySize.x - kMargin - w, io.DisplaySize.y - kMargin - kPx),
+        IM_COL32(0x8C, 0x8C, 0x85, 0xFF), larecomp::kVersionLabel);
+  }
+
   // The first free "Player", "Player2", ... for a new save made from the pad.
   void SuggestName() {
     for (int n = 1; n < 100; ++n) {
@@ -437,6 +506,9 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   bool scroll_to_selected_ = true;
   bool can_play_ = true;
   bool logged_first_draw_ = false;
+  // The panel's rect this frame, for the banner placed above it.
+  ImVec2 panel_pos_{};
+  ImVec2 panel_size_{};
   // Its destructor ends the SDL gamepad session as the dialog is deleted on
   // close, before the deferred resume lets the SDK input driver start its own.
   mcla::ui::MenuGamepad pad_;

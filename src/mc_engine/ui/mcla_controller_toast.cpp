@@ -9,6 +9,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cstdio>
 #include <deque>
@@ -58,7 +59,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
     const bool bottom = corner == "Bottom Left" || corner == "Bottom Right";
 
     constexpr float kMargin = 16.0f;
-    constexpr float kWidth = 380.0f;
+    constexpr float kMinWidth = 300.0f;
     constexpr float kGap = 8.0f;
     float offset = 0.0f;
     for (size_t i = 0; i < toasts_.size(); ++i) {
@@ -72,7 +73,9 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
                        bottom ? io.DisplaySize.y - kMargin - offset : kMargin + offset);
       ImGui::SetNextWindowPos(pos, ImGuiCond_Always,
                               ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
-      ImGui::SetNextWindowSize(ImVec2(kWidth, 0.0f), ImGuiCond_Always);
+      // As wide as the title needs: Font Alt runs wide, and a fixed width cut
+      // "CONTROLLER CONNECTED" off at the right edge.
+      ImGui::SetNextWindowSizeConstraints(ImVec2(kMinWidth, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
 
       char id[32];

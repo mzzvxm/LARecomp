@@ -71,6 +71,7 @@ void MenuGamepad::Release(ImGuiIO* io) {
   if (io && fed_) {
     for (const ButtonKey& b : kButtons) io->AddKeyEvent(b.key, false);
     for (ImGuiKey k : kStickKeys) io->AddKeyAnalogEvent(k, false, 0.0f);
+    io->BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
     fed_ = false;
   }
 }
@@ -124,6 +125,9 @@ void MenuGamepad::Feed(ImGuiIO& io) {
     const float v = std::clamp((stick[i] - kDead) / (1.0f - kDead), 0.0f, 1.0f);
     io.AddKeyAnalogEvent(kStickKeys[i], v > 0.0f, v);
   }
+  // Without it ImGui's NewFrame zeroes every gamepad key, so the events above
+  // would never reach IsKeyPressed.
+  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
   fed_ = true;
 }
 

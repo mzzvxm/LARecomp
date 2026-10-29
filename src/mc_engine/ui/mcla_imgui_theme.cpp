@@ -252,6 +252,7 @@ struct PanelState {
   bool visible = false;
   ImGuiWindowFlags flags = 0;
   std::span<const Prompt> prompts;
+  float footer_px = kSmallSize;  // the footer prompts' font size
 };
 PanelState g_panel;
 
@@ -261,7 +262,7 @@ ImU32 Col(int r, int g, int b, int a) {
 }
 
 float FooterHeight() {
-  return kSmallSize + 2.0f * kFooterPad;
+  return g_panel.footer_px + 2.0f * kFooterPad;
 }
 
 void DrawIcon(ImDrawList* draw, ImVec2 c, float r, PanelIcon icon) {
@@ -276,7 +277,7 @@ void DrawIcon(ImDrawList* draw, ImVec2 c, float r, PanelIcon icon) {
   }
 
   const ImU32 white = Col(240, 240, 235, 255);
-  const float s = r * 0.55f;
+  const float s = r * 0.6f;
   switch (icon) {
     case PanelIcon::kCheck: {
       const ImVec2 pts[] = {ImVec2(c.x - s * 0.65f, c.y + s * 0.05f),
@@ -322,7 +323,7 @@ void DrawIcon(ImDrawList* draw, ImVec2 c, float r, PanelIcon icon) {
 float PromptWidth(const Prompt& p) {
   const float label = ImGui::CalcTextSize(p.label).x;
   const float key = ImGui::CalcTextSize(p.key).x;
-  const float badge = std::strlen(p.key) == 1 ? kSmallSize + 4.0f : key + 12.0f;
+  const float badge = std::strlen(p.key) == 1 ? g_panel.footer_px + 4.0f : key + 12.0f;
   return label + 6.0f + badge;
 }
 
@@ -333,7 +334,7 @@ void DrawPrompt(ImDrawList* draw, ImVec2 pos, const Prompt& p, bool hovered) {
   draw->AddText(pos, hovered ? Col(255, 255, 255, 255) : Col(200, 200, 194, 255), p.label);
 
   const ImVec2 key_size = ImGui::CalcTextSize(p.key);
-  const float h = kSmallSize + 4.0f;
+  const float h = g_panel.footer_px + 4.0f;
   const float x = pos.x + label_w + 6.0f;
   const float y = pos.y - 2.0f;
   const bool round = std::strlen(p.key) == 1;
@@ -357,6 +358,9 @@ bool BeginPanel(const char* id, const char* title, PanelIcon icon, ImGuiWindowFl
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   g_panel.flags = flags;
   g_panel.prompts = prompts;
+  // A panel drawn larger than the body size (the save picker) gets larger
+  // prompts to match; smaller ones keep them readable at the small size.
+  g_panel.footer_px = std::max(kSmallSize, kSmallSize * ImGui::GetFontSize() / kBodySize);
   g_panel.visible = ImGui::Begin(id, nullptr,
                                  flags | ImGuiWindowFlags_NoTitleBar |
                                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoCollapse);
@@ -388,13 +392,19 @@ bool BeginPanel(const char* id, const char* title, PanelIcon icon, ImGuiWindowFl
   // Title row: the ring and the heavy yellow caps.
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (kInner * 0.6f - kFooterPad));
   if (title && title[0] != '\0') {
+    // The ring stands taller than the caps, as on the retail titles, with the
+    // title centered on it; small titles (toasts) keep a ring that still reads.
+    const float r = std::max(title_size * 0.5f, 13.0f);
+    const float row_h = std::max(r * 2.0f, title_size);
+    const float row_y = ImGui::GetCursorPosY();
     if (icon != PanelIcon::kNone) {
       const ImVec2 at = ImGui::GetCursorScreenPos();
-      const float r = title_size * 0.46f;
-      ImGui::Dummy(ImVec2(r * 2.0f, title_size));
-      DrawIcon(draw, ImVec2(at.x + r, at.y + title_size * 0.5f), r, icon);
+      ImGui::Dummy(ImVec2(r * 2.0f, row_h));
+      DrawIcon(draw, ImVec2(at.x + r, at.y + row_h * 0.5f), r, icon);
       ImGui::SameLine(0.0f, title_size * 0.3f);
     }
+    // Font Alt's caps sit centered on its line, so centering the line centers them.
+    ImGui::SetCursorPosY(row_y + (row_h - title_size) * 0.5f);
     ImGui::PushFont(g_fonts.title, title_size);
     ImGui::PushStyleColor(ImGuiCol_Text, kColorYellow);
     ImGui::TextUnformatted(title);
@@ -422,13 +432,13 @@ int EndPanel() {
       // The footer bar's text line, where BeginPanel painted the bar. An
       // auto-sized window settles on exactly that spot from the content's end;
       // a fixed-size one has it pinned to the bottom edge.
-      const float pinned = p1.y - kBezel - kFooterPad - kSmallSize;
+      const float pinned = p1.y - kBezel - kFooterPad - g_panel.footer_px;
       float text_y = content_end + kInner + kGap + kFooterPad;
       if (!(g_panel.flags & ImGuiWindowFlags_AlwaysAutoResize)) {
         text_y = std::max(text_y, pinned);
       }
 
-      ImGui::PushFont(g_fonts.body, kSmallSize);
+      ImGui::PushFont(g_fonts.body, g_panel.footer_px);
       float total = 0.0f;
       for (const Prompt& p : prompts) {
         total += PromptWidth(p);
@@ -440,7 +450,7 @@ int EndPanel() {
         const float w = PromptWidth(prompts[i]);
         ImGui::SetCursorScreenPos(ImVec2(x, text_y));
         ImGui::PushID(static_cast<int>(i));
-        if (ImGui::InvisibleButton("##prompt", ImVec2(w, kSmallSize))) {
+        if (ImGui::InvisibleButton("##prompt", ImVec2(w, g_panel.footer_px))) {
           clicked = static_cast<int>(i);
         }
         ImGui::PopID();
@@ -462,7 +472,7 @@ float PanelBottomReserve() {
   if (g_panel.prompts.empty()) {
     return kInner - kFooterPad;
   }
-  return kInner + kGap + kFooterPad + kSmallSize;
+  return kInner + kGap + kFooterPad + g_panel.footer_px;
 }
 
 void PanelSubtitle(const char* text) {

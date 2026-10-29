@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cstdio>
 #include <deque>
@@ -21,6 +22,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr float kIcon = 44.0f;
+constexpr float kScoreSlack = 10.0f;
 
 // --- Toast ----------------------------------------------------------------------------
 
@@ -63,7 +65,8 @@ class AchievementToast final : public rex::ui::AchievementNotificationDialog {
     constexpr float kMargin = 16.0f;
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - kMargin, io.DisplaySize.y - kMargin),
                             ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-    ImGui::SetNextWindowSize(ImVec2(400.0f, 0.0f), ImGuiCond_Always);
+    // As wide as the title needs (a fixed width cut it off), at least 360.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
     if (BeginPanel("##mcla_achievement_toast", "ACHIEVEMENT UNLOCKED", PanelIcon::kCheck,
                    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
@@ -76,7 +79,9 @@ class AchievementToast final : public rex::ui::AchievementNotificationDialog {
         ImGui::SameLine();
       }
       ImGui::BeginGroup();
-      ImGui::PushTextWrapPos(0.0f);
+      // An absolute wrap point: the window sizes itself to its content, so
+      // wrapping at its own edge would never wrap.
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 300.0f);
       ImGui::TextUnformatted(a.label.c_str());
       ImGui::PopTextWrapPos();
       ImGui::TextColored(kColorYellow, "%uG", a.gamerscore);
@@ -165,8 +170,10 @@ class AchievementsDialog final : public rex::ui::ImGuiDialog {
                           ImVec2(0.0f, height))) {
       ImGui::TableSetupColumn("icon", ImGuiTableColumnFlags_WidthFixed, kIcon);
       ImGui::TableSetupColumn("text", ImGuiTableColumnFlags_WidthStretch);
+      // Room past the text: the body face is slanted and its last glyph leans
+      // out of its advance, which a column sized to the text cut off.
       ImGui::TableSetupColumn("score", ImGuiTableColumnFlags_WidthFixed,
-                              ImGui::CalcTextSize("000G").x);
+                              ImGui::CalcTextSize("000G").x + kScoreSlack);
       for (const auto& a : list) {
         const bool done = achievements_->IsUnlocked(a.id);
         ImGui::TableNextRow(ImGuiTableRowFlags_None, kIcon);
@@ -193,7 +200,7 @@ class AchievementsDialog final : public rex::ui::ImGuiDialog {
         char score[16];
         std::snprintf(score, sizeof(score), "%uG", a.gamerscore);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x -
-                             ImGui::CalcTextSize(score).x);
+                             ImGui::CalcTextSize(score).x - kScoreSlack);
         ImGui::TextColored(done ? kColorYellow : kColorTextDim, "%s", score);
         ImGui::PopID();
       }

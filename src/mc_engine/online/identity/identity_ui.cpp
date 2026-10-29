@@ -241,8 +241,10 @@ private:
             return;
         }
         ImGui::Text("Gamertag: %s", id::Nick().c_str());
-        ImGui::TextColored(kDim, "XUID %016llX   key %s", static_cast<unsigned long long>(id::Xuid()),
-                           id::KeyFingerprint().c_str());
+        ImGui::TextColored(kDim, "XUID %016llX   key", static_cast<unsigned long long>(id::Xuid()));
+        // The key in the neon teal, so it stands out from the XUID.
+        ImGui::SameLine();
+        ImGui::TextColored(mcla::ui::kColorCyanGlow, "%s", id::KeyFingerprint().c_str());
         ImGui::TextWrapped(
             "Your gamertag is protected by a key kept on this PC, outside your save folder: "
             "sharing a save does not share it. Use a backup or your recovery code to keep "
