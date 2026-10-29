@@ -553,8 +553,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   // The panel's rect this frame, for the banner placed above it.
   ImVec2 panel_pos_{};
   ImVec2 panel_size_{};
-  // Its destructor ends the SDL gamepad session as the dialog is deleted on
-  // close, before the deferred resume lets the SDK input driver start its own.
+  // The SDK's input system does not exist yet, so the picker reads pads itself.
   mcla::ui::MenuGamepad pad_;
 };
 

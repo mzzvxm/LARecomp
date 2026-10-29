@@ -6,8 +6,6 @@
 #include <rex/ui/imgui_dialog.h>
 #include <imgui.h>
 
-#include <SDL3/SDL.h>
-
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
@@ -107,31 +105,12 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
     Clock::time_point arrived;
   };
 
-  // Diffs SDL's gamepad list against the last poll. Pads already there on the
+  // Diffs the pad list against the last poll. Pads already there on the
   // first poll toast as connected, as the SDK's toast did at startup.
   void Poll(Clock::time_point now) {
-    // The save picker runs its own SDL gamepad session before the SDK input
-    // driver starts one. Between them nothing is listed, and the driver's
-    // session hands out new ids for the same pads, so the first list after a
-    // hand-over is taken as it is instead of toasting every pad twice.
-    if (TakeGamepadSessionEnded()) {
-      rebaseline_ = true;
-    }
-    if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
-      return;
-    }
-    std::unordered_map<SDL_JoystickID, std::string> present;
-    int count = 0;
-    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
-      for (int i = 0; i < count; ++i) {
-        const char* name = SDL_GetGamepadNameForID(ids[i]);
-        present.emplace(ids[i], name && name[0] ? name : "Controller");
-      }
-      SDL_free(ids);
-    }
-    if (rebaseline_) {
-      rebaseline_ = false;
-    } else if (REXCVAR_GET(mcla_controller_toast)) {
+    std::unordered_map<uint32_t, std::string> present;
+    for (PadInfo& pad : ListPads()) present.emplace(pad.id, std::move(pad.name));
+    if (REXCVAR_GET(mcla_controller_toast)) {
       for (const auto& [id, name] : present) {
         if (!known_.contains(id)) Push(name, true, now);
       }
@@ -151,9 +130,8 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
 
   std::deque<Toast> toasts_;
   // Names are kept so a disconnect can still say which pad left.
-  std::unordered_map<SDL_JoystickID, std::string> known_;
+  std::unordered_map<uint32_t, std::string> known_;
   Clock::time_point next_poll_{};
-  bool rebaseline_ = false;
 };
 
 std::unique_ptr<ControllerToastDialog> g_toasts;
@@ -162,6 +140,9 @@ std::unique_ptr<ControllerToastDialog> g_toasts;
 
 void StartControllerToasts(rex::ui::ImGuiDrawer* drawer) {
   if (!drawer || g_toasts) return;
+  // For the whole session: the pads are listed from the exe's own SDL, which
+  // nothing else keeps running in game (the SDK's SDL is another instance).
+  EnsurePadLayer();
   g_toasts = std::make_unique<ControllerToastDialog>(drawer);
 }
 
