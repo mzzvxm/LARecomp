@@ -2,11 +2,14 @@
 #include "fonts/mcla_embedded_fonts.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <unordered_map>
 #include <vector>
+#include <imgui_internal.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
@@ -52,6 +55,38 @@ static std::vector<unsigned char> FaceBytes(const fs::path& dir, const char* fil
   return std::vector<unsigned char>(data, data + size);
 }
 
+// Widens a face's glyphs in place: quads, advances and the advance cache. The
+// SDK renderer keeps ImGui's fixed atlas, so each face has one baked set of
+// glyphs that every size is drawn from, loaded when the atlas is built;
+// widening that set widens the face everywhere. Each glyph is widened once:
+// a glyph loaded later (a fallback, say) is caught by the count, and a rebuilt
+// atlas (a new glyph set) starts over.
+static void StretchFace(ImFont* font, float px, float factor) {
+  struct Done {
+    const ImFontBaked* baked = nullptr;
+    int glyphs = 0;
+  };
+  static std::unordered_map<const ImFont*, Done> done;
+  if (!font || !font->OwnerAtlas || !font->OwnerAtlas->TexIsBuilt) return;
+  ImFontBaked* baked = font->GetFontBaked(px);
+  if (!baked) return;
+  Done& d = done[font];
+  if (d.baked != baked) {
+    d = {baked, 0};
+    baked->FallbackAdvanceX *= factor;
+  }
+  for (int i = d.glyphs; i < baked->Glyphs.Size; ++i) {
+    ImFontGlyph& g = baked->Glyphs[i];
+    g.X0 *= factor;
+    g.X1 *= factor;
+    g.AdvanceX *= factor;
+    if (static_cast<int>(g.Codepoint) < baked->IndexAdvanceX.Size) {
+      baked->IndexAdvanceX[g.Codepoint] = g.AdvanceX;
+    }
+  }
+  d.glyphs = baked->Glyphs.Size;
+}
+
 void LoadMclaFonts(ImFontAtlas* atlas) {
   if (!atlas) return;
 
@@ -66,6 +101,7 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   // ImGui layout and measurement includes it.
   ImFontConfig body_cfg = font_cfg;
   body_cfg.GlyphExtraAdvanceX = kBodySize * kBodyTracking;
+  body_cfg.RasterizerMultiply = kIngameWeight;
   g_fonts.body = LoadFace(atlas, dir, "MCLA Ingame Font.ttf", fonts::kFontMclaIngame,
                           fonts::kFontMclaIngameSize, kBodySize, body_cfg);
 
@@ -101,9 +137,10 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
       FaceBytes(dir, "MCLA Ingame Font.ttf", fonts::kFontMclaIngame, fonts::kFontMclaIngameSize);
   ImFontConfig title_cfg = font_cfg;
   title_cfg.FontDataOwnedByAtlas = false;
+  title_cfg.RasterizerMultiply = kIngameWeight;
   g_fonts.title = atlas->AddFontFromMemoryTTF(title_ttf.data(), static_cast<int>(title_ttf.size()),
                                               kTitleSize, &title_cfg);
-  RegisterKerning(g_fonts.title, title_ttf);
+  RegisterKerning(g_fonts.title, title_ttf, kIngameStretch);
 
   g_fonts.version = LoadFace(atlas, dir, "Midnight Club Logo Font.ttf",
                              fonts::kFontMidnightClubLogo, fonts::kFontMidnightClubLogoSize, 18.0f,
@@ -147,6 +184,21 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
 
   if (g_fonts.body) {
     ImGui::GetIO().FontDefault = g_fonts.body;
+  }
+
+  // The Ingame faces are stretched once their glyphs exist, which with the
+  // fixed atlas is after the SDK builds it: a hook after every NewFrame
+  // checks, and stretches again only if the atlas was rebuilt since.
+  static bool hooked = false;
+  if (!hooked) {
+    hooked = true;
+    ImGuiContextHook hook;
+    hook.Type = ImGuiContextHookType_NewFramePost;
+    hook.Callback = [](ImGuiContext*, ImGuiContextHook*) {
+      StretchFace(g_fonts.body, kBodySize, kIngameStretch);
+      StretchFace(g_fonts.title, kTitleSize, kIngameStretch);
+    };
+    ImGui::AddContextHook(ImGui::GetCurrentContext(), &hook);
   }
 
   REXLOG_INFO("[ui] Loaded MCLA fonts (Ingame body and titles, Logo version, Font Alt and Los Angeles banner)");
@@ -327,8 +379,9 @@ constexpr float kOuterRounding = 18.0f;
 constexpr float kBodyRounding = 10.0f;
 
 // How much wider than kerned the titles are spaced, as a share of their size:
-// the retail "RACE RESULTS" runs ~9.7 cap heights where the face alone gives 8.6.
-constexpr float kTitleTracking = 0.055f;
+// the retail "RACE RESULTS" runs ~9.7 cap heights where the face, kerned and
+// stretched (kIngameStretch), gives 9.0.
+constexpr float kTitleTracking = 0.033f;
 ImU32 g_title_color = 0;  // for DrawKerned's color callback
 
 struct PanelState {
@@ -421,11 +474,35 @@ void DrawIcon(ImDrawList* draw, ImVec2 c, float r, PanelIcon icon) {
   }
 }
 
+// The ink of a line in the current font and size, relative to where it is
+// drawn: its advance includes the body's letter spacing after the last glyph,
+// and the Ingame caps sit low on their line, so centering a key on its
+// advance and line box leaves it left and low of its badge.
+ImVec4 InkBox(const char* text) {
+  ImFontBaked* baked = ImGui::GetFont()->GetFontBaked(ImGui::GetFontSize());
+  const float k = ImGui::GetFontSize() / baked->Size;
+  ImVec4 box(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
+  float x = 0.0f;
+  for (const char* c = text; *c; ++c) {
+    const ImFontGlyph* g = baked->FindGlyph(static_cast<unsigned char>(*c));
+    if (g->Visible) {
+      box.x = std::min(box.x, x + g->X0 * k);
+      box.y = std::min(box.y, g->Y0 * k);
+      box.z = std::max(box.z, x + g->X1 * k);
+      box.w = std::max(box.w, g->Y1 * k);
+    }
+    x += g->AdvanceX * k;
+  }
+  return box.x <= box.z ? box : ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+float BadgeWidth(const char* key) {
+  const ImVec4 ink = InkBox(key);
+  return std::strlen(key) == 1 ? g_panel.footer_px + 4.0f : (ink.z - ink.x) + 14.0f;
+}
+
 float PromptWidth(const Prompt& p) {
-  const float label = ImGui::CalcTextSize(p.label).x;
-  const float key = ImGui::CalcTextSize(p.key).x;
-  const float badge = std::strlen(p.key) == 1 ? g_panel.footer_px + 4.0f : key + 12.0f;
-  return label + 6.0f + badge;
+  return ImGui::CalcTextSize(p.label).x + 6.0f + BadgeWidth(p.key);
 }
 
 // "ACCEPT (A)": a light label, then the key on a colored badge -- a circle for
@@ -434,12 +511,10 @@ void DrawPrompt(ImDrawList* draw, ImVec2 pos, const Prompt& p, bool hovered) {
   const float label_w = ImGui::CalcTextSize(p.label).x;
   draw->AddText(pos, hovered ? Col(255, 255, 255, 255) : Col(200, 200, 194, 255), p.label);
 
-  const ImVec2 key_size = ImGui::CalcTextSize(p.key);
   const float h = g_panel.footer_px + 4.0f;
   const float x = pos.x + label_w + 6.0f;
   const float y = pos.y - 2.0f;
-  const bool round = std::strlen(p.key) == 1;
-  const float w = round ? h : key_size.x + 12.0f;
+  const float w = BadgeWidth(p.key);
   const ImU32 fill = (p.key_color & ~IM_COL32_A_MASK) |
                      (static_cast<ImU32>(255 * ImGui::GetStyle().Alpha) << IM_COL32_A_SHIFT);
   draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), fill, h * 0.5f);
@@ -448,7 +523,10 @@ void DrawPrompt(ImDrawList* draw, ImVec2 pos, const Prompt& p, bool hovered) {
                     587 * static_cast<int>((p.key_color >> IM_COL32_G_SHIFT) & 0xFF) +
                     114 * static_cast<int>((p.key_color >> IM_COL32_B_SHIFT) & 0xFF)) / 1000;
   const ImU32 key_text = luma > 150 ? Col(16, 16, 16, 255) : Col(250, 250, 250, 255);
-  draw->AddText(ImVec2(x + (w - key_size.x) * 0.5f, pos.y), key_text, p.key);
+  // Centered on its ink, not its advance and line box.
+  const ImVec4 ink = InkBox(p.key);
+  draw->AddText(ImVec2(x + (w - (ink.z - ink.x)) * 0.5f - ink.x, y + (h - (ink.w - ink.y)) * 0.5f - ink.y),
+                key_text, p.key);
 }
 
 }  // namespace

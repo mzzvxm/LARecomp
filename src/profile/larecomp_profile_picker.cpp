@@ -169,7 +169,8 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.05f, 0.35f, 0.35f, 0.40f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.08f, 0.50f, 0.48f, 0.55f));
-    ImGui::PushFont(nullptr, mcla::ui::kBodySize * kScale);
+    // Its rows a further 2px up for reading at a distance.
+    ImGui::PushFont(nullptr, mcla::ui::kBodySize * kScale + 2.0f);
 
     const ImU32 play_color = can_play_ ? mcla::ui::kPromptAccept : IM_COL32(70, 70, 66, 255);
     const mcla::ui::Prompt pad_prompts[] = {

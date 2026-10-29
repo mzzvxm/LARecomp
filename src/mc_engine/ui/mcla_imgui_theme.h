@@ -30,7 +30,8 @@ inline constexpr char kBannerCredit[] = "By mzzvxm & BadassBaboon";
 // up a lot), which is what makes the banner read like the artwork. A font
 // gets kerning once its TTF bytes are registered; any other lays out as ImGui
 // would. Single-byte (ASCII) text only.
-void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf);
+// `stretch` is the face's horizontal stretch, if any (see kIngameStretch).
+void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf, float stretch = 1.0f);
 // The face's declared slant (post.italicAngle) as run over rise, 0 when upright
 // or unregistered.
 float ItalicSlant(const ImFont* font);
@@ -50,6 +51,11 @@ inline constexpr float kTitleSize = 34.0f;
 // runs 9.6 cap heights where the kerned face gives 7.8. This much of the size
 // goes between every two letters of body text.
 inline constexpr float kBodyTracking = 0.089f;
+// The retail letters are also wider and heavier than the face draws them:
+// every Ingame glyph is stretched this much wide (after the atlas is built,
+// see LoadMclaFonts) and rasterized this much darker at the edges.
+inline constexpr float kIngameStretch = 1.05f;
+inline constexpr float kIngameWeight = 1.3f;
 
 // Returns loaded font instances
 MclaFonts& GetFonts();

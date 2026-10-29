@@ -18,6 +18,7 @@ namespace {
 struct Kerning {
   std::vector<unsigned char> data;  // stbtt_fontinfo points into this
   stbtt_fontinfo info{};
+  float stretch = 1.0f;  // the face's horizontal stretch (StretchFace), applied to its pairs
 };
 
 std::unordered_map<const ImFont*, Kerning>& Registry() {
@@ -27,10 +28,11 @@ std::unordered_map<const ImFont*, Kerning>& Registry() {
 
 }  // namespace
 
-void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf) {
+void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf, float stretch) {
   if (!font || ttf.empty()) return;
   Kerning& k = Registry()[font];
   k.data = std::move(ttf);
+  k.stretch = stretch;
   if (!stbtt_InitFont(&k.info, k.data.data(), stbtt_GetFontOffsetForIndex(k.data.data(), 0))) {
     Registry().erase(font);
   }
@@ -53,7 +55,9 @@ std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float
   std::vector<float> origins;
   const auto it = Registry().find(font);
   // ImGui sizes a face by ascent - descent, which is ScaleForPixelHeight.
-  const float scale = it != Registry().end() ? stbtt_ScaleForPixelHeight(&it->second.info, px) : 0.0f;
+  const float scale = it != Registry().end()
+                          ? stbtt_ScaleForPixelHeight(&it->second.info, px) * it->second.stretch
+                          : 0.0f;
   float x = 0.0f;
   for (const char* c = text; *c; ++c) {
     origins.push_back(x);
