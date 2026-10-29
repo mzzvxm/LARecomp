@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <format>
 
@@ -274,6 +275,7 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   memory_ = &memory;
   resolve_ = &resolve;
   subscriber_ = memory.Subscribe("textures");
+  mods_.Initialize();
 }
 
 void TextureCache::Shutdown() {
@@ -282,6 +284,12 @@ void TextureCache::Shutdown() {
     entry->views.Drop();
   }
   entries_.clear();
+  for (auto& [hash, replacement] : replacements_) {
+    if (replacement) {
+      replacement->views.Drop();
+    }
+  }
+  replacements_.clear();
   regions_.Clear();
   region_owners_.clear();
   failed_.clear();
@@ -577,6 +585,24 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t r
     }
   }
 
+  if (Replacement* r = e->replacement) {
+    // A mod's replacement, read through the original format's swizzle: the
+    // dump the file was made from wrote guest component i into channel i,
+    // which is what that swizzle reads from the host format.
+    r->last_frame = frame_;
+    const uint32_t slot = r->views.Slot(*device_, *heap_, *r->texture, r->format, r->levels,
+                                        host_swizzle, "texture replacement view");
+    if (slot == kInvalidBindlessSlot) {
+      return Fail(key, "no view or bindless slot for the replacement", "");
+    }
+    ++stats_.replaced_binds;
+    Binding binding = bound(slot, e->mode == Mode::kHashed);
+    binding.replaced = true;
+    binding.levels = r->levels;
+    binding.lod_shift =
+        int32_t(std::lround(std::log2(double(r->width) / double(std::max<uint32_t>(key.width, 1)))));
+    return binding;
+  }
   const uint32_t slot = e->views.Slot(*device_, *heap_, *e->texture, e->host_format,
                                       key.levels(), host_swizzle, "guest texture view");
   if (slot == kInvalidBindlessSlot) {
@@ -657,6 +683,11 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
 }
 
 bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string* why) {
+  // New guest contents: the replacement they hash to, if a mod has one,
+  // holds the texture instead of a decode.
+  if (SelectReplacement(e, list)) {
+    return true;
+  }
   const auto t0 = Clock::now();
   const TextureKey& key = e.key;
   const FormatInfo* info = FormatInfo::Get(key.format);
@@ -763,6 +794,98 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
   return ok;
 }
 
+bool TextureCache::SelectReplacement(Entry& e, plume::RenderCommandList* list) {
+  e.base_hash = 0;
+  if (!mods_.empty() && e.ranges[0][1]) {
+    // The key every dump and replacement agrees on (SDK HashGuestData):
+    // XXH3-64 of the base level's whole extent at its address.
+    const uint8_t* src = memory_->Read(e.ranges[0][0], e.ranges[0][1]);
+    if (src) {
+      e.base_hash = XXH3_64bits(src, e.ranges[0][1]);
+    }
+  }
+  Replacement* r =
+      e.base_hash && !mods_.empty() ? ReplacementFor(e.base_hash, list) : nullptr;
+  if (r != e.replacement) {
+    e.replacement = r;
+    ++epoch_;  // what this texture's fetches bind changed
+  }
+  return r != nullptr;
+}
+
+TextureCache::Replacement* TextureCache::ReplacementFor(uint64_t hash,
+                                                        plume::RenderCommandList* list) {
+  const auto known = replacements_.find(hash);
+  if (known != replacements_.end()) {
+    return known->second.get();
+  }
+  const std::filesystem::path* path = mods_.Find(hash);
+  if (!path) {
+    return nullptr;
+  }
+  const auto refuse = [&](const std::string& why) -> Replacement* {
+    REXLOG_ERROR("[gpu] texture mods: {} is not used: {}; the game's texture {:016x} stays "
+                 "(reported once)",
+                 path->string(), why, hash);
+    replacements_.emplace(hash, nullptr);
+    return nullptr;
+  };
+  ReplacementImage image;
+  std::string why;
+  if (!TextureMods::LoadDds(*path, &image, &why)) {
+    return refuse(why);
+  }
+  auto r = std::make_unique<Replacement>();
+  r->format = image.format;
+  r->width = image.width;
+  r->height = image.height;
+  r->levels = uint32_t(image.levels.size());
+  const plume::RenderTextureDesc desc =
+      plume::RenderTextureDesc::Texture2D(r->width, r->height, r->levels, r->format);
+  const std::string name = std::format("texture replacement {:016x}", hash);
+  r->texture = device_->CreateTexture(desc, name.c_str());
+  if (!r->texture) {
+    return refuse(std::format("the host cannot make a {} {}x{} texture with {} levels",
+                              format::PlumeFormatName(r->format), r->width, r->height, r->levels));
+  }
+  list->barriers(plume::RenderBarrierStage::COPY,
+                 plume::RenderTextureBarrier(r->texture.get(), plume::RenderTextureLayout::COPY_DEST));
+  const uint32_t block_bytes = plume::RenderFormatSize(r->format);
+  const uint32_t block_width = plume::RenderFormatBlockWidth(r->format);
+  for (uint32_t level = 0; level < r->levels; ++level) {
+    const ReplacementImage::Level& l = image.levels[level];
+    const uint64_t pitch = AlignUp(l.row_bytes, kTextureCopyPitchAlignment);
+    const UploadSpan span =
+        upload_->Allocate(slot_, pitch * l.rows, kTextureCopyOffsetAlignment);
+    if (!span) {
+      // Recorded copies of the earlier levels still read their spans: the
+      // texture is retired with the frame, not freed now.
+      frames_->Retire(std::move(r->texture));
+      return refuse(std::format("no upload memory for level {} ({} bytes)", level,
+                                pitch * l.rows));
+    }
+    for (uint32_t row = 0; row < l.rows; ++row) {
+      std::memcpy(span.cpu + row * pitch, l.data.data() + size_t(row) * l.row_bytes,
+                  l.row_bytes);
+    }
+    r->bytes += l.data.size();
+    list->copyTextureRegion(
+        plume::RenderTextureCopyLocation::Subresource(r->texture.get(), level, 0),
+        plume::RenderTextureCopyLocation::PlacedFootprint(
+            span.buffer, r->format, l.width, l.height, 1,
+            uint32_t(pitch / block_bytes) * block_width, span.offset));
+  }
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(r->texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  ++stats_.replacements_loaded;
+  REXLOG_INFO("[gpu] texture mods: {:016x} replaced by {} ({} {}x{}, {} levels)", hash,
+              path->string(), format::PlumeFormatName(r->format), r->width, r->height, r->levels);
+  Replacement* raw = r.get();
+  replacements_.emplace(hash, std::move(r));
+  return raw;
+}
+
 uint64_t TextureCache::HashGuest(const Entry& e) {
   uint64_t hash = 0;
   for (const auto& r : e.ranges) {
@@ -814,6 +937,25 @@ void TextureCache::EvictSome() {
       ++it;
     }
   }
+  // Replacements no remaining entry has bound for as long: their textures go
+  // (a file refused stays remembered, null, so it is not read again).
+  for (auto it = replacements_.begin(); it != replacements_.end();) {
+    Replacement* r = it->second.get();
+    if (r && r->last_frame + kEvictFrames < frame_) {
+      bool held = false;
+      for (const auto& [key, entry] : entries_) {
+        held |= entry->replacement == r;
+      }
+      if (!held) {
+        r->views.Release(*frames_, *heap_);
+        frames_->Retire(std::move(r->texture));
+        any = true;
+        it = replacements_.erase(it);
+        continue;
+      }
+    }
+    ++it;
+  }
   if (any) {
     ++epoch_;  // no memoized binding may name a released slot
   }
@@ -840,6 +982,14 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
       double(stats_.hashed_bytes) / f / 1048576.0, stats_.to_hashed, stats_.to_watched,
       stats_.evicted, stats_.failures, stats_.from_resolve_memory,
       stats_.resolve_memory_unsupported, stats_.reinterpretations);
+  if (!mods_.empty()) {
+    size_t live = 0;
+    for (const auto& [hash, r] : replacements_) {
+      live += r != nullptr;
+    }
+    text += std::format(" | mods: {} files, {} replacements live ({} loaded now), {} binds",
+                        mods_.size(), live, stats_.replacements_loaded, stats_.replaced_binds);
+  }
   stats_ = Stats{};
   return text;
 }

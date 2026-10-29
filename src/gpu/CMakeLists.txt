@@ -48,6 +48,7 @@ add_library(larecomp_gpu OBJECT
     stream.cpp
     swap_chain.cpp
     texture_decode.cpp
+    texture_mods.cpp
     texture_names.cpp
     textures.cpp
     thread_load.cpp

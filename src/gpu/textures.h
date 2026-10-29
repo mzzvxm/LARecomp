@@ -70,6 +70,7 @@
 #include "guest_memory.h"
 #include "region_index.h"
 #include "texture_decode.h"
+#include "texture_mods.h"
 
 namespace mcla::gpu {
 
@@ -205,6 +206,12 @@ class TextureCache {
     // memory): the list has no framebuffer and another pipeline state, and the
     // caller binds its own again.
     bool list_state_changed = false;
+    // A texture mod's replacement is bound (texture_mods.h): its own size and
+    // mip chain. The sampler's mip range moves by `lod_shift` (log2 of the
+    // replacement's width over the guest's) and stays below `levels`.
+    bool replaced = false;
+    int32_t lod_shift = 0;
+    uint32_t levels = 0;
   };
 
   TextureCache() = default;
@@ -254,6 +261,18 @@ class TextureCache {
 
  private:
   enum class Mode : uint8_t { kWatched, kHashed };
+  // A mod's replacement, one per content hash, shared by every entry whose
+  // base level hashes to it; uploaded once when first needed.
+  struct Replacement {
+    std::unique_ptr<plume::RenderTexture> texture;
+    plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t levels = 0;
+    TextureViews views;
+    uint64_t bytes = 0;
+    uint64_t last_frame = 0;
+  };
   struct Entry {
     TextureKey key;
     format::TextureHostFormat host;
@@ -278,12 +297,24 @@ class TextureCache {
     uint32_t stable_streak = 0;
     uint32_t stable_required = kStableStreak;
     uint64_t bytes = 0;             // host bytes, for the statistics
+    // The content hash of the base level as last uploaded (0: not computed --
+    // no mods and no dumping, or no base); the replacement it selects, null
+    // when none: the guest's decode is what the entry holds then.
+    uint64_t base_hash = 0;
+    Replacement* replacement = nullptr;
   };
   Entry* Create(const TextureKey& key, const TextureFetch& fetch, std::string* why);
   // Decodes every level into the frame's ring and records the copies. False:
   // a level could not be read (logged by the caller).
   bool Upload(Entry& entry, plume::RenderCommandList* list, std::string* why);
   uint64_t HashGuest(const Entry& entry);
+  // Before a decode: hashes the base level when a mod may replace it and
+  // points the entry at its replacement. True when a replacement holds the
+  // texture (no decode then).
+  bool SelectReplacement(Entry& entry, plume::RenderCommandList* list);
+  // The replacement for `hash`, loaded and uploaded on first use; null when
+  // no mod has one or its file was refused (logged once).
+  Replacement* ReplacementFor(uint64_t hash, plume::RenderCommandList* list);
   void DrainInvalidations();
   void Destroy(Entry& entry, bool for_shutdown);
   void EvictSome();
@@ -314,6 +345,9 @@ class TextureCache {
   std::vector<TextureKey> evict_scan_;
   size_t evict_cursor_ = 0;
 
+  TextureMods mods_;
+  // By content hash; null = no file for it, or its file was refused.
+  std::unordered_map<uint64_t, std::unique_ptr<Replacement>> replacements_;
   struct Stats {
     uint64_t lookups = 0;  // Bind2D calls (the Scene's memo misses)
     uint64_t product_hits = 0;
@@ -335,6 +369,8 @@ class TextureCache {
     uint64_t from_resolve_memory = 0;      // decoded from the resolve memory
     uint64_t resolve_memory_unsupported = 0;
     uint64_t decode_ns = 0;
+    uint64_t replaced_binds = 0;       // bindings of a mod's replacement
+    uint64_t replacements_loaded = 0;  // replacement files uploaded
   };
   Stats stats_;
 };

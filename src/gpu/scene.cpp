@@ -944,11 +944,20 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, uint32_
       ++window_.fetch_not_texture;
     } else {
       ++window_.fetches;
-      fresh.sampler = samplers_->Get(dwords, fetch.mip_min, fetch.mip_max);
       // Only 2D textures are made (100% of the measured fetches);
       // the cache logs any other dimension once and the null of its dimension
       // is bound.
       const TextureCache::Binding bound = textures_->Bind2D(fetch, scale, list_);
+      // A texture mod's replacement has its own size and mips: the fetch's
+      // range moves by the size ratio and stays inside the replacement's chain.
+      uint32_t mip_min = fetch.mip_min;
+      uint32_t mip_max = fetch.mip_max;
+      if (bound.replaced) {
+        const int32_t top = int32_t(bound.levels) - 1;
+        mip_min = uint32_t(std::clamp(int32_t(mip_min) + bound.lod_shift, 0, top));
+        mip_max = uint32_t(std::clamp(int32_t(mip_max) + bound.lod_shift, 0, top));
+      }
+      fresh.sampler = samplers_->Get(dwords, mip_min, mip_max);
       if (watch::Active() && watch::TouchesKey(fetch.key)) {
         watch::Log(std::format("fetch s{} ps {:016x} {} -> texture slot {}{}{}", slot,
                                watch::CurrentPs(), fetch.key.Describe(), bound.slot,
