@@ -34,6 +34,9 @@ inline constexpr char kBannerCredit[] = "By mzzvxm & BadassBaboon";
 // gets kerning once its TTF bytes are registered; any other lays out as ImGui
 // would. Single-byte (ASCII) text only.
 void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf);
+// The face's declared slant (post.italicAngle) as run over rise, 0 when upright
+// or unregistered.
+float ItalicSlant(const ImFont* font);
 // Each character's x origin at `px`, and the total advance in `width`.
 std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width);
 void DrawKerned(ImDrawList* draw, ImFont* font, float px, ImVec2 pos, const char* text,

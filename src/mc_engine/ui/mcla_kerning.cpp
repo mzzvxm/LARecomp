@@ -1,6 +1,7 @@
 #include "mcla_imgui_theme.h"
 
 #include <cfloat>
+#include <cmath>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +34,18 @@ void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf) {
   if (!stbtt_InitFont(&k.info, k.data.data(), stbtt_GetFontOffsetForIndex(k.data.data(), 0))) {
     Registry().erase(font);
   }
+}
+
+float ItalicSlant(const ImFont* font) {
+  const auto it = Registry().find(font);
+  if (it == Registry().end()) return 0.0f;
+  const stbtt_fontinfo& info = it->second.info;
+  // post.italicAngle: a 16.16 fixed-point angle, negative for a right lean.
+  const stbtt_uint32 post = stbtt__find_table(info.data, info.fontstart, "post");
+  if (!post) return 0.0f;
+  const float angle = static_cast<float>(ttSHORT(info.data + post + 4)) +
+                      static_cast<float>(ttUSHORT(info.data + post + 6)) / 65536.0f;
+  return std::tan(-angle * 3.14159265f / 180.0f);
 }
 
 std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width) {

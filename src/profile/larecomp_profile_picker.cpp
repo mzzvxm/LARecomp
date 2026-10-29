@@ -384,11 +384,11 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   // The LARecomp banner above the panel, as in the artwork: "LA" in the logo
   // red and "Recomp" in the menu white, set in Font Alt with the face's own
   // kerning (which opens the gap between A and R), and the credit under it
-  // in the Los Angeles face, kerned too. The credit starts under the foot of
-  // the R and ends short of the p's descender by the same gap that separates
-  // A from R; its descenders bottom out with the p's. Every measure comes
-  // from the faces, so replacement fonts keep the fit. As wide as the panel,
-  // or smaller when the screen is short.
+  // in the Los Angeles face, kerned too. The credit runs from the foot of the
+  // R to the foot of the m: its B's bottom-left under the R's, its n's
+  // bottom-right under the m's. Its descenders bottom out with the p's. Every
+  // measure comes from the faces, so replacement fonts keep the fit. As wide
+  // as the panel, or smaller when the screen is short.
   void DrawBanner() {
     const mcla::ui::MclaFonts& fonts = mcla::ui::GetFonts();
     ImFont* logo = fonts.banner ? fonts.banner : fonts.title;
@@ -412,29 +412,38 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       return v[edge] * px / baked->Size;
     };
     enum { kLeft, kRight, kTopEdge, kBottom };
+    // A slanted glyph's right edge where it stands on the baseline: its ink
+    // box's right edge is the top corner, one slant-run further right. (The
+    // left edge needs nothing: a right lean puts the box's left at the foot.)
+    auto foot_right = [&](ImFont* font, float px, char c) {
+      ImFontBaked* baked = font->GetFontBaked(px);
+      const float baseline = baked->Ascent * px / baked->Size;
+      return ink(font, px, c, kRight) -
+             mcla::ui::ItalicSlant(font) * (baseline - ink(font, px, c, kTopEdge));
+    };
 
-    // The word at a size, relative to its origin: where the R's foot is, the
-    // gap A-R, where the p's descender starts, and the ink box.
+    // The word at a size, relative to its origin: where the R's and the m's
+    // feet are, and the ink box.
     struct Word {
       std::vector<float> at;
-      float r_left, gap, p_left, left, right, top, bottom;
+      float r_left, m_foot, left, right, top, bottom;
     };
     auto lay_word = [&](float px) {
       Word w;
       w.at = mcla::ui::KernedOrigins(logo, px, word, nullptr);
       w.r_left = w.at[2] + ink(logo, px, word[2], kLeft);
-      w.gap = w.r_left - (w.at[1] + ink(logo, px, word[1], kRight));
-      w.p_left = w.at[word_len - 1] + ink(logo, px, word[word_len - 1], kLeft);
+      w.m_foot = w.at[word_len - 2] + foot_right(logo, px, word[word_len - 2]);
       w.left = w.at[0] + ink(logo, px, word[0], kLeft);
       w.right = w.at[word_len - 1] + ink(logo, px, word[word_len - 1], kRight);
       w.top = ink(logo, px, word[0], kTopEdge);
       w.bottom = ink(logo, px, word[word_len - 1], kBottom);
       return w;
     };
-    // The credit's ink width per pixel of size (it scales linearly).
+    // The credit's width from its first foot to its last at a size (it
+    // scales linearly).
     auto credit_ink = [&](float px) {
       const std::vector<float> at = mcla::ui::KernedOrigins(script, px, credit, nullptr);
-      return at[credit_len - 1] + ink(script, px, credit[credit_len - 1], kRight) -
+      return at[credit_len - 1] + foot_right(script, px, credit[credit_len - 1]) -
              ink(script, px, credit[0], kLeft);
     };
 
@@ -446,9 +455,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     if (px < 12.0f) return;
 
     const Word w = lay_word(px);
-    // The gap is measured between the slanted glyphs' ink boxes, which is
-    // about twice what shows at the baseline, where the artwork's gaps match.
-    const float credit_px = (w.p_left - w.gap * 0.5f - w.r_left) * kRef / credit_ink(kRef);
+    const float credit_px = (w.m_foot - w.r_left) * kRef / credit_ink(kRef);
     const float x = panel_pos_.x + (panel_size_.x - (w.right - w.left)) * 0.5f - w.left;
     const float y = panel_pos_.y - kGap - w.bottom;
     // The credit's descender ('y') bottoms out where the p's does.
