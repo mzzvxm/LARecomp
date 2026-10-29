@@ -16,7 +16,16 @@ struct MclaFonts {
   ImFont* body = nullptr;    // Midnight Club Logo Font
   ImFont* title = nullptr;   // Midnight Club Font Alt
   ImFont* script = nullptr;  // MC Los Angeles Font
+  // The save picker banner's own large copies (Font Alt, Los Angeles), holding
+  // only the banner's characters. The SDK renderer keeps ImGui's fixed atlas,
+  // so glyphs exist only at the sizes loaded here and other sizes are scaled
+  // from them; a banner scaled up from the 28px titles would be a blur.
+  ImFont* banner = nullptr;
+  ImFont* banner_credit = nullptr;
 };
+
+inline constexpr char kBannerWord[] = "LARecomp";
+inline constexpr char kBannerCredit[] = "By mzzvxm & BadassBaboon";
 
 inline constexpr float kBodySize = 18.0f;
 inline constexpr float kSmallSize = 15.0f;

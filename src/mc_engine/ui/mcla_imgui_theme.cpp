@@ -67,6 +67,31 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   g_fonts.script = LoadFace(atlas, dir, "MC Los Angeles Font.ttf", fonts::kFontLosAngelesScript,
                             fonts::kFontLosAngelesScriptSize, 24.0f, font_cfg);
 
+  // The banner faces (see MclaFonts::banner), rasterized near the size the
+  // picker draws them at and limited to the banner's characters so the large
+  // glyphs cost little atlas space. The ranges must outlive the atlas build.
+  static ImVector<ImWchar> word_ranges;
+  static ImVector<ImWchar> credit_ranges;
+  if (word_ranges.empty()) {
+    ImFontGlyphRangesBuilder word;
+    word.AddText(kBannerWord);
+    word.BuildRanges(&word_ranges);
+    ImFontGlyphRangesBuilder credit;
+    credit.AddText(kBannerCredit);
+    credit.BuildRanges(&credit_ranges);
+  }
+  ImFontConfig banner_cfg = font_cfg;
+  banner_cfg.OversampleH = 1;
+  banner_cfg.OversampleV = 1;
+  banner_cfg.GlyphRanges = word_ranges.Data;
+  g_fonts.banner = LoadFace(atlas, dir, "Midnight Club Font Alt.ttf", fonts::kFontMidnightClubAlt,
+                            fonts::kFontMidnightClubAltSize, 128.0f, banner_cfg);
+  banner_cfg.OversampleH = 2;
+  banner_cfg.GlyphRanges = credit_ranges.Data;
+  g_fonts.banner_credit = LoadFace(atlas, dir, "MC Los Angeles Font.ttf",
+                                   fonts::kFontLosAngelesScript, fonts::kFontLosAngelesScriptSize,
+                                   32.0f, banner_cfg);
+
   if (g_fonts.body) {
     ImGui::GetIO().FontDefault = g_fonts.body;
   }

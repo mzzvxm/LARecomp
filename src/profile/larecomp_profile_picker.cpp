@@ -388,11 +388,11 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   // fit. As wide as the panel, or smaller when the screen is short.
   void DrawBanner() {
     const mcla::ui::MclaFonts& fonts = mcla::ui::GetFonts();
-    if (!fonts.title || !fonts.script || panel_size_.x <= 0.0f) return;
-    ImFont* logo = fonts.title;
-    ImFont* script = fonts.script;
-    constexpr char kWord[] = "LARecomp";
-    constexpr char kCredit[] = "By mzzvxm & BadassBaboon";
+    ImFont* logo = fonts.banner ? fonts.banner : fonts.title;
+    ImFont* script = fonts.banner_credit ? fonts.banner_credit : fonts.script;
+    if (!logo || !script || panel_size_.x <= 0.0f) return;
+    const char* kWord = mcla::ui::kBannerWord;
+    const char* kCredit = mcla::ui::kBannerCredit;
     constexpr float kRef = 100.0f;  // laid out at this size, then scaled
     constexpr float kGap = 14.0f;   // between the banner and the panel
     constexpr float kTop = 16.0f;   // kept free above the banner
@@ -400,20 +400,31 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     auto width = [](ImFont* font, float px, const char* text) {
       return font->CalcTextSizeA(px, FLT_MAX, 0.0f, text).x;
     };
+    // Glyph corners and ascent at a drawn size. The fixed atlas holds each
+    // face at one size only and GetFontBaked hands back that one, so its
+    // numbers are in the loaded size's pixels and are scaled to the drawn one.
+    auto glyph_y = [](ImFont* font, float px, ImWchar c, bool bottom) {
+      ImFontBaked* baked = font->GetFontBaked(px);
+      const ImFontGlyph* glyph = baked->FindGlyph(c);
+      return (bottom ? glyph->Y1 : glyph->Y0) * px / baked->Size;
+    };
+    auto ascent = [](ImFont* font, float px) {
+      ImFontBaked* baked = font->GetFontBaked(px);
+      return baked->Ascent * px / baked->Size;
+    };
     // Credit size for a given logo size: as wide as "Recom" there.
     auto credit_px = [&](float px) {
       return width(logo, px, "Recom") * kRef / width(script, kRef, kCredit);
     };
-    // Cap top of the logo, and how far the credit reaches below the logo's
-    // line top (its baseline on the p's descender, plus its own descender).
-    auto cap_top = [&](float px) { return logo->GetFontBaked(px)->FindGlyph('L')->Y0; };
+    // Where the credit's line starts below the logo's (its baseline on the
+    // p's descender), and where the banner ends (the credit's descender).
     auto credit_top = [&](float px) {
-      ImFontBaked* baked = script->GetFontBaked(credit_px(px));
-      return logo->GetFontBaked(px)->FindGlyph('p')->Y1 - baked->Ascent;
+      return glyph_y(logo, px, 'p', true) - ascent(script, credit_px(px));
     };
     auto bottom = [&](float px) {
-      return credit_top(px) + script->GetFontBaked(credit_px(px))->FindGlyph('y')->Y1;
+      return credit_top(px) + glyph_y(script, credit_px(px), 'y', true);
     };
+    auto cap_top = [&](float px) { return glyph_y(logo, px, 'L', false); };
 
     const float fit_width = panel_size_.x * 0.97f * kRef / width(logo, kRef, kWord);
     const float fit_height = (panel_pos_.y - kGap - kTop) * kRef / (bottom(kRef) - cap_top(kRef));
