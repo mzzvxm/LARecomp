@@ -8,3 +8,37 @@
 // Achievement metadata embedded in the exe (loaded at boot from the resource,
 // so it does not need to ship as a loose file under assets/).
 ACHIEVEMENTS_TOML RCDATA "achievements.toml"
+
+// Version resource. Besides Explorer's Details tab, it is how overlays that
+// do not know the game name it: the NVIDIA app / GeForce Experience file
+// captures under Videos\NVIDIA\<name> from it, and without one they fell back
+// to a folder name ("build").
+#include "larecomp_version.h"
+
+1 VERSIONINFO
+FILEVERSION 0,10,0,2
+PRODUCTVERSION 0,10,0,2
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "mzzvxm & BadassBaboon"
+            VALUE "FileDescription", LARECOMP_PRODUCT_NAME
+            VALUE "FileVersion", LARECOMP_VERSION_LABEL
+            VALUE "InternalName", "larecomp"
+            VALUE "OriginalFilename", "larecomp.exe"
+            VALUE "ProductName", LARECOMP_PRODUCT_NAME
+            VALUE "ProductVersion", LARECOMP_VERSION_LABEL
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

@@ -222,6 +222,7 @@ set(LARECOMP_SOURCES
     src/bootprogress/larecomp_boot_progress.cpp
     src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
     src/mc_engine/ui/imgui_theme.cpp
+    src/mc_engine/ui/gamepad.cpp
     src/mc_engine/ui/kerning.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)

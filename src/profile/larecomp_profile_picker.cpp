@@ -5,8 +5,12 @@
 #include "larecomp_profile_store.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
+#include <span>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +25,9 @@
 #include <rex/system/xam/user_profile.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
+#include "mc_engine/ui/gamepad.h"
+#include "mc_engine/ui/imgui_theme.h"
+#include "larecomp_version.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -147,30 +154,64 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       REXLOG_INFO("Save picker: first draw, display {}x{}", io.DisplaySize.x, io.DisplaySize.y);
     }
 
-    const float width = std::min(600.0f, std::max(440.0f, io.DisplaySize.x - 64.0f));
+    // The SDK's input driver does not exist yet, so the pad is read here.
+    pad_.Feed(io);
+
+    // Landscape like the game's menus: the list runs wide and short, the
+    // actions sit in the footer bar rather than in buttons. Drawn about a
+    // quarter larger than the other panels: it is the first screen of the game.
+    constexpr float kScale = 1.265f;
+    const float width = std::min(962.0f, std::max(600.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+    // The row highlight is drawn by hand, so the Selectable's own fill is off.
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.05f, 0.35f, 0.35f, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.08f, 0.50f, 0.48f, 0.55f));
+    // Its rows a further 2px up for reading at a distance.
+    ImGui::PushFont(nullptr, mcla::ui::kBodySize * kScale + 2.0f);
 
-    // The same look as the SDK's name prompt this replaces.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 22.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 9.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
-    ImGui::PushFont(nullptr, 18.0f);
+    const ImU32 play_color = can_play_ ? mcla::ui::kPromptAccept : IM_COL32(70, 70, 66, 255);
+    const mcla::ui::Prompt pad_prompts[] = {
+        {"SELECT", "D-PAD"},
+        {"ALWAYS USE", "Y", mcla::ui::kPromptY},
+        {"PLAY", "A", play_color},
+    };
+    const mcla::ui::Prompt key_prompts[] = {
+        {"SELECT", "UP/DOWN"},
+        {"PLAY", "ENTER", play_color},
+    };
+    const bool pad = pad_.connected();
+    const std::span<const mcla::ui::Prompt> prompts =
+        pad ? std::span<const mcla::ui::Prompt>(pad_prompts)
+            : std::span<const mcla::ui::Prompt>(key_prompts);
+    const int play_prompt = static_cast<int>(prompts.size()) - 1;
 
     bool accept = false;
-    if (ImGui::Begin("Choose your save##larecomp_profile_picker", nullptr,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_AlwaysAutoResize)) {
+    // BeginPanel/EndPanel are paired unconditionally, like Begin/End.
+    if (mcla::ui::BeginPanel("##larecomp_profile_picker", "SELECT PROFILE",
+                             mcla::ui::PanelIcon::kSave,
+                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_AlwaysAutoResize,
+                             prompts, mcla::ui::kTitleSize * kScale)) {
+      panel_pos_ = ImGui::GetWindowPos();
+      panel_size_ = ImGui::GetWindowSize();
       accept = DrawBody(io);
     }
-    // Begin/End are paired unconditionally: Begin returns false for a clipped or
-    // collapsed window, and skipping End there unbalances the window stack.
-    ImGui::End();
+    const int clicked = mcla::ui::EndPanel();
+    if (clicked == play_prompt && can_play_) {
+      accept = true;
+    } else if (pad && clicked == 1) {
+      remember_ = !remember_;
+    }
 
     ImGui::PopFont();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+
+    DrawBanner();
+    DrawVersion(io);
 
     if (accept) {
       Accept();
@@ -196,28 +237,24 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
 
   // Returns true when the player asked to go ahead with the current selection.
   bool DrawBody(ImGuiIO& io) {
-    ImGui::TextWrapped("%s", plan_.forced
-                                 ? "Pick the save to play, or start a new one. (You held Shift to "
-                                   "see this window again.)"
-                                 : "Pick the save to play, or start a new one.");
-    ImGui::Spacing();
+    mcla::ui::PanelSubtitle(plan_.forced
+                                ? "Choose a profile to load, or create a new career. (Shift held)"
+                                : "Choose a profile to load, or create a new career.");
 
     bool accept = false;
 
     // --- the saves ------------------------------------------------------------------
-    // Sized from the rows themselves: the dialog's roomy item spacing and window
-    // padding apply inside the list too, and a list sized without them hides the
-    // last row ("New save") behind a scrollbar.
+    // Sized from the rows themselves: a list sized without its padding hides
+    // the last row ("New profile") behind a scrollbar. The game's list has no
+    // box of its own; the rows sit straight on the panel glass.
     const int rows = NewRow() + 1;
-    const int shown = std::min(rows, 7);
-    const float row_height = ImGui::GetTextLineHeight() + 16.0f;
-    const float row_gap = 4.0f;
-    const float list_pad = 6.0f;
-    const float list_height = row_height * static_cast<float>(shown) +
-                              row_gap * static_cast<float>(shown - 1) + 2.0f * list_pad + 4.0f;
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, row_gap));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(list_pad, list_pad));
-    ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_Borders,
+    const int shown = std::min(rows, 6);
+    const float row_height = ImGui::GetTextLineHeight() + 14.0f;
+    const float list_pad = 2.0f;
+    const float list_height = row_height * static_cast<float>(shown) + 2.0f * list_pad;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, list_pad));
+    ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar();  // the padding is read as the child opens
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -240,17 +277,21 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       const ImVec2 low = ImGui::GetItemRectMin();
       const ImVec2 high = ImGui::GetItemRectMax();
       const float text_y = low.y + (high.y - low.y - ImGui::GetTextLineHeight()) * 0.5f;
-      const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
-      const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+      // MCLA selection: teal text glowing over a dark teal bar, not a solid
+      // cyan fill with dark text on it.
+      const bool is_selected = (selected_ == i);
+      const ImU32 text_col = mcla::ui::DrawListRow(draw, low, high, is_selected);
+      const ImU32 dim_col = is_selected ? text_col : ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
+      const float text_x = low.x + 26.0f;
       if (is_new) {
-        draw->AddText(ImVec2(low.x + 12.0f, text_y), text, "+  New save");
+        draw->AddText(ImVec2(text_x, text_y), text_col, "+  NEW PROFILE");
       } else {
         const pf::Profile& save = plan_.choices[i];
-        draw->AddText(ImVec2(low.x + 12.0f, text_y), text, save.name.c_str());
-        const std::string right = save.has_save ? FormatTime(save.last_played) : "nothing saved yet";
+        draw->AddText(ImVec2(text_x, text_y), text_col, save.name.c_str());
+        const std::string right = save.has_save ? FormatTime(save.last_played) : "No save data";
         const float right_width = ImGui::CalcTextSize(right.c_str()).x;
-        draw->AddText(ImVec2(high.x - right_width - 12.0f, text_y), dim, right.c_str());
+        draw->AddText(ImVec2(high.x - right_width - 12.0f, text_y), dim_col, right.c_str());
       }
       ImGui::PopID();
     }
@@ -274,24 +315,27 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       problem = ProblemWith(new_name, name_buffer_[0] != '\0');
       if (!problem.empty()) {
         // Wrapped: the message names the clashing save and outgrows the window.
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.97f, 0.72f, 0.33f, 1.0f));
+        // The game's warning color is its own yellow, not a separate orange.
+        ImGui::PushStyleColor(ImGuiCol_Text, mcla::ui::kColorYellow);
         ImGui::TextWrapped("%s", problem.c_str());
         ImGui::PopStyleColor();
       } else if (!new_name.empty()) {
         ImGui::TextDisabled("Saved as: %s", new_name.c_str());
+      } else if (pad_.connected()) {
+        // A pad has no keys to type with: A fills in a free name to start from.
+        ImGui::TextDisabled("Press A for a suggested name, or type one.");
       } else {
         ImGui::TextDisabled("Starts from the beginning, in a folder of its own.");
       }
     }
 
-    // --- remember + go ----------------------------------------------------------------
-    ImGui::Checkbox("Always use this save (do not ask again)", &remember_);
-    ImGui::TextDisabled("Hold Shift while the game starts to pick again.");
+    // --- remember ---------------------------------------------------------------------
+    ImGui::Checkbox("Always use this save", &remember_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(hold Shift while the game starts to pick again)");
 
-    const bool can_play = selected_ != NewRow() || (!new_name.empty() && problem.empty());
-    ImGui::BeginDisabled(!can_play);
-    const bool clicked = ImGui::Button("Play", ImVec2(-1.0f, 44.0f));
-    ImGui::EndDisabled();
+    // PLAY lives in the footer bar; OnDraw reads this to arm and color it.
+    can_play_ = selected_ != NewRow() || (!new_name.empty() && problem.empty());
 
     // --- keyboard ---------------------------------------------------------------------
     if (!io.WantTextInput) {
@@ -306,7 +350,153 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     const bool enter = !io.WantTextInput && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                                              ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
 
-    return can_play && (accept || clicked || submitted || enter);
+    // --- pad --------------------------------------------------------------------------
+    // Read even while the name field has the keyboard: the pad is not typing.
+    // Landing on "New profile" with the pad leaves the field unfocused; moving
+    // off it stops drawing the field, which drops its focus.
+    const int pad_step = (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) ||
+                                  ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown)
+                              ? 1
+                              : 0) -
+                         (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp) ||
+                                  ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp)
+                              ? 1
+                              : 0);
+    if (pad_step != 0) {
+      selected_ = std::clamp(selected_ + pad_step, 0, NewRow());
+      scroll_to_selected_ = true;
+      focus_name_ = false;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) {
+      remember_ = !remember_;
+    }
+    bool pad_accept = false;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+      if (selected_ == NewRow() && name_buffer_[0] == '\0') {
+        SuggestName();  // the next A plays it
+      } else {
+        pad_accept = true;
+      }
+    }
+
+    return can_play_ && (accept || submitted || enter || pad_accept);
+  }
+
+  // The LARecomp banner above the panel, as in the artwork: "LA" in the logo
+  // red and "Recomp" in the menu white, set in LARecomp Logo Font Alt with the face's own
+  // kerning (which opens the gap between A and R), and the credit under it
+  // in LARecomp Wide Font, kerned too. The credit runs from the foot of the
+  // R to the foot of the m: its B's bottom-left under the R's, its n's
+  // bottom-right under the m's. Its descenders bottom out with the p's. Every
+  // measure comes from the faces, so replacement fonts keep the fit. As wide
+  // as the panel, or smaller when the screen is short.
+  void DrawBanner() {
+    const mcla::ui::MclaFonts& fonts = mcla::ui::GetFonts();
+    // Its own faces only: the UI's is LARecomp Font, which the banner is not.
+    ImFont* logo = fonts.banner;
+    ImFont* script = fonts.banner_credit;
+    if (!logo || !script || panel_size_.x <= 0.0f) return;
+    const char* word = mcla::ui::kBannerWord;      // "LARecomp"
+    const char* credit = mcla::ui::kBannerCredit;  // "By mzzvxm & BadassBaboon"
+    const size_t word_len = std::strlen(word);
+    const size_t credit_len = std::strlen(credit);
+    constexpr float kRef = 100.0f;  // laid out at this size, then scaled
+    constexpr float kGap = 14.0f;   // between the banner and the panel
+    constexpr float kTop = 16.0f;   // kept free above the banner
+
+    // Glyph ink box edges at a drawn size. The fixed atlas holds each face at
+    // one size and GetFontBaked hands back that one, so its numbers are in
+    // the loaded size's pixels and are scaled to the drawn one.
+    auto ink = [](ImFont* font, float px, char c, int edge) {
+      ImFontBaked* baked = font->GetFontBaked(px);
+      const ImFontGlyph* g = baked->FindGlyph(static_cast<unsigned char>(c));
+      const float v[] = {g->X0, g->X1, g->Y0, g->Y1};
+      return v[edge] * px / baked->Size;
+    };
+    enum { kLeft, kRight, kTopEdge, kBottom };
+    // A slanted glyph's right edge where it stands on the baseline: its ink
+    // box's right edge is the top corner, one slant-run further right. (The
+    // left edge needs nothing: a right lean puts the box's left at the foot.)
+    auto foot_right = [&](ImFont* font, float px, char c) {
+      ImFontBaked* baked = font->GetFontBaked(px);
+      const float baseline = baked->Ascent * px / baked->Size;
+      return ink(font, px, c, kRight) -
+             mcla::ui::ItalicSlant(font) * (baseline - ink(font, px, c, kTopEdge));
+    };
+
+    // The word at a size, relative to its origin: where the R's and the m's
+    // feet are, and the ink box.
+    struct Word {
+      std::vector<float> at;
+      float r_left, m_foot, left, right, top, bottom;
+    };
+    auto lay_word = [&](float px) {
+      Word w;
+      w.at = mcla::ui::KernedOrigins(logo, px, word, nullptr);
+      w.r_left = w.at[2] + ink(logo, px, word[2], kLeft);
+      w.m_foot = w.at[word_len - 2] + foot_right(logo, px, word[word_len - 2]);
+      w.left = w.at[0] + ink(logo, px, word[0], kLeft);
+      w.right = w.at[word_len - 1] + ink(logo, px, word[word_len - 1], kRight);
+      w.top = ink(logo, px, word[0], kTopEdge);
+      w.bottom = ink(logo, px, word[word_len - 1], kBottom);
+      return w;
+    };
+    // The credit's width from its first foot to its last at a size (it
+    // scales linearly).
+    auto credit_ink = [&](float px) {
+      const std::vector<float> at = mcla::ui::KernedOrigins(script, px, credit, nullptr);
+      return at[credit_len - 1] + foot_right(script, px, credit[credit_len - 1]) -
+             ink(script, px, credit[0], kLeft);
+    };
+
+    // Fit: the word's ink as wide as the panel, or as tall as the room above.
+    const Word ref = lay_word(kRef);
+    const float fit_width = panel_size_.x * 0.97f * kRef / (ref.right - ref.left);
+    const float fit_height = (panel_pos_.y - kGap - kTop) * kRef / (ref.bottom - ref.top);
+    const float px = std::min(fit_width, fit_height);
+    if (px < 12.0f) return;
+
+    const Word w = lay_word(px);
+    const float credit_px = (w.m_foot - w.r_left) * kRef / credit_ink(kRef);
+    const float x = panel_pos_.x + (panel_size_.x - (w.right - w.left)) * 0.5f - w.left;
+    const float y = panel_pos_.y - kGap - w.bottom;
+    // The credit's descender ('y') bottoms out where the p's does.
+    const float credit_bottom = ink(script, credit_px, 'y', kBottom);
+    // Nudged left by eye (2px at a 150px logo) so the B reads as starting
+    // under the R rather than just after it.
+    const float nudge = px * 0.013f;
+    const ImVec2 credit_pos(x + w.r_left - ink(script, credit_px, credit[0], kLeft) - nudge,
+                            y + w.bottom - credit_bottom);
+
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    mcla::ui::DrawKerned(draw, logo, px, ImVec2(x, y), word, [](size_t i) -> ImU32 {
+      return i < 2 ? IM_COL32(0xEC, 0x04, 0x0B, 0xFF) : IM_COL32(0xE8, 0xE8, 0xE0, 0xFF);
+    });
+    mcla::ui::DrawKerned(draw, script, credit_px, credit_pos, credit,
+                         [](size_t) -> ImU32 { return IM_COL32(0xE8, 0xE8, 0xE0, 0xFF); });
+  }
+
+  // The release, flush with the bottom-right corner whatever its length.
+  static void DrawVersion(ImGuiIO& io) {
+    ImFont* font = mcla::ui::GetFonts().version;
+    if (!font) return;
+    constexpr float kPx = 18.0f;
+    constexpr float kMargin = 24.0f;
+    const float w = font->CalcTextSizeA(kPx, FLT_MAX, 0.0f, larecomp::kVersionLabel).x;
+    ImGui::GetBackgroundDrawList()->AddText(
+        font, kPx, ImVec2(io.DisplaySize.x - kMargin - w, io.DisplaySize.y - kMargin - kPx),
+        IM_COL32(0x8C, 0x8C, 0x85, 0xFF), larecomp::kVersionLabel);
+  }
+
+  // The first free "Player", "Player2", ... for a new save made from the pad.
+  void SuggestName() {
+    for (int n = 1; n < 100; ++n) {
+      const std::string candidate = n == 1 ? "Player" : "Player" + std::to_string(n);
+      if (ProblemWith(Sanitize(candidate), true).empty()) {
+        std::snprintf(name_buffer_, sizeof(name_buffer_), "%s", candidate.c_str());
+        return;
+      }
+    }
   }
 
   void Accept() {
@@ -360,7 +550,13 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   char name_buffer_[64] = {};
   bool focus_name_ = false;
   bool scroll_to_selected_ = true;
+  bool can_play_ = true;
   bool logged_first_draw_ = false;
+  // The panel's rect this frame, for the banner placed above it.
+  ImVec2 panel_pos_{};
+  ImVec2 panel_size_{};
+  // The SDK's input system does not exist yet, so the picker reads pads itself.
+  mcla::ui::MenuGamepad pad_;
 };
 
 }  // namespace
