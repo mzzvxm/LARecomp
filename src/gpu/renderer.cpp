@@ -824,6 +824,14 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
                                         "written");
                           }
                         });
+  // F2: every texture of the next frame to the dump folder, named after the
+  // game's texture and its dictionary, for texture mods (textures.h).
+  rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
+                        "Dump the textures of the next frame (Plume renderer)", [] {
+                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                            r->RequestTextureDump();
+                          }
+                        });
   return true;
 }
 

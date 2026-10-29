@@ -56,6 +56,7 @@
 // ===========================================================================
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -256,6 +257,12 @@ class TextureCache {
   }
   void BumpProductGeneration(uint32_t page) { ++product_generations_[GenerationBucket(page)]; }
 
+  // Texture dumps (texture_mods.h): every texture bound in the next frame is
+  // written to <texture_folder>/dump/<dictionary>/<name>__<hash16>.dds, once
+  // per hash per session. mcla_gpu_texture_dump does it for every texture
+  // uploaded, all the time. Any thread (a key bind).
+  void RequestDump() { dump_requested_.store(true, std::memory_order_relaxed); }
+
   // One line of statistics since the last call.
   std::string TakeSummary(uint64_t frames);
 
@@ -308,13 +315,15 @@ class TextureCache {
   // a level could not be read (logged by the caller).
   bool Upload(Entry& entry, plume::RenderCommandList* list, std::string* why);
   uint64_t HashGuest(const Entry& entry);
-  // Before a decode: hashes the base level when a mod may replace it and
-  // points the entry at its replacement. True when a replacement holds the
-  // texture (no decode then).
+  // Before a decode: hashes the base level when mods or dumps need it, dumps
+  // it when asked, and points the entry at its replacement. True when a
+  // replacement holds the texture (no decode then).
   bool SelectReplacement(Entry& entry, plume::RenderCommandList* list);
   // The replacement for `hash`, loaded and uploaded on first use; null when
   // no mod has one or its file was refused (logged once).
   Replacement* ReplacementFor(uint64_t hash, plume::RenderCommandList* list);
+  // Writes the entry's base level (hash computed) unless done this session.
+  void DumpEntry(const Entry& entry);
   void DrainInvalidations();
   void Destroy(Entry& entry, bool for_shutdown);
   void EvictSome();
@@ -348,6 +357,10 @@ class TextureCache {
   TextureMods mods_;
   // By content hash; null = no file for it, or its file was refused.
   std::unordered_map<uint64_t, std::unique_ptr<Replacement>> replacements_;
+  std::unordered_set<uint64_t> dumped_;  // hashes written this session
+  std::atomic<bool> dump_requested_{false};
+  uint64_t dump_frame_ = 0;  // the frame a requested dump covers (0: none)
+
   struct Stats {
     uint64_t lookups = 0;  // Bind2D calls (the Scene's memo misses)
     uint64_t product_hits = 0;
@@ -371,6 +384,7 @@ class TextureCache {
     uint64_t decode_ns = 0;
     uint64_t replaced_binds = 0;       // bindings of a mod's replacement
     uint64_t replacements_loaded = 0;  // replacement files uploaded
+    uint64_t dumped = 0;               // textures written to the dump folder
   };
   Stats stats_;
 };

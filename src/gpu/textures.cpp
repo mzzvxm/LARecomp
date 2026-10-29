@@ -16,6 +16,7 @@
 #include <cstring>
 #include <format>
 
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
@@ -25,11 +26,20 @@
 #include "constants.h"
 #include "device.h"
 #include "frame.h"
+#include "mc_engine/texture_dump.h"
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "texture_decode.h"
+#include "texture_names.h"
 #include "upload.h"
 #include "watch.h"
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_texture_dump, false, "MCLA/GPU",
+    "Write every texture the NATIVE renderer uploads to <texture_folder>/dump/<dictionary>/"
+    "<name>__<hash>.dds, once per texture per session (F2 does it for one frame). Texture mods "
+    "replace a texture by the hash at the end of the file name, from models/<Mod>/textures/.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -306,6 +316,14 @@ void TextureCache::Shutdown() {
 void TextureCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
+  if (dump_requested_.exchange(false, std::memory_order_relaxed)) {
+    // Every texture bound in this frame; the memoized bindings resolve again
+    // so each one passes through Bind2D.
+    dump_frame_ = frame_;
+    ++epoch_;
+    REXLOG_INFO("[gpu] textures: dumping the textures of this frame to {}",
+                mcla::TextureDumpDir().string());
+  }
   if (frame_ % kRefreshFrames == 0) {
     // Every memoized binding is resolved again once: the entries' last use
     // stays current for the eviction below.
@@ -517,6 +535,9 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t r
   }
   if (!list) {
     return Fail(key, "no command list to upload with", "");
+  }
+  if (dump_frame_ == frame_) {
+    DumpEntry(*e);
   }
 
   const bool first_use_in_frame = e->last_frame != frame_;
@@ -795,14 +816,18 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
 }
 
 bool TextureCache::SelectReplacement(Entry& e, plume::RenderCommandList* list) {
+  const bool dumping = REXCVAR_GET(mcla_gpu_texture_dump);
   e.base_hash = 0;
-  if (!mods_.empty() && e.ranges[0][1]) {
+  if ((!mods_.empty() || dumping) && e.ranges[0][1]) {
     // The key every dump and replacement agrees on (SDK HashGuestData):
     // XXH3-64 of the base level's whole extent at its address.
     const uint8_t* src = memory_->Read(e.ranges[0][0], e.ranges[0][1]);
     if (src) {
       e.base_hash = XXH3_64bits(src, e.ranges[0][1]);
     }
+  }
+  if (dumping && e.base_hash) {
+    DumpEntry(e);
   }
   Replacement* r =
       e.base_hash && !mods_.empty() ? ReplacementFor(e.base_hash, list) : nullptr;
@@ -884,6 +909,39 @@ TextureCache::Replacement* TextureCache::ReplacementFor(uint64_t hash,
   Replacement* raw = r.get();
   replacements_.emplace(hash, std::move(r));
   return raw;
+}
+
+void TextureCache::DumpEntry(const Entry& e) {
+  const TextureKey& key = e.key;
+  if (!e.ranges[0][1] || !mcla::IsDumpableTextureFormat(xe::TextureFormat(key.format))) {
+    return;
+  }
+  const uint8_t* src = memory_->Read(e.ranges[0][0], e.ranges[0][1]);
+  if (!src) {
+    return;
+  }
+  const uint64_t hash = e.base_hash ? e.base_hash : XXH3_64bits(src, e.ranges[0][1]);
+  if (!dumped_.insert(hash).second) {
+    return;
+  }
+  texture_names::Name name;
+  if (!texture_names::Lookup(key.base_page, &name)) {
+    name.texture = "unnamed";
+    name.dictionary = "unknown";
+  }
+  const std::filesystem::path folder = mcla::TextureDumpDir() / name.dictionary;
+  const std::filesystem::path file =
+      folder / std::format("{}__{:016x}.dds", name.texture, hash);
+  std::error_code ec;
+  if (std::filesystem::exists(file, ec)) {
+    return;  // an earlier session wrote it
+  }
+  std::filesystem::create_directories(folder, ec);
+  if (mcla::DumpGuestTextureTo(file, key.width, key.height, key.pitch, key.tiled != 0,
+                               xe::TextureFormat(key.format), xe::Endian(key.endian), src,
+                               e.ranges[0][1])) {
+    ++stats_.dumped;
+  }
 }
 
 uint64_t TextureCache::HashGuest(const Entry& e) {
@@ -982,13 +1040,15 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
       double(stats_.hashed_bytes) / f / 1048576.0, stats_.to_hashed, stats_.to_watched,
       stats_.evicted, stats_.failures, stats_.from_resolve_memory,
       stats_.resolve_memory_unsupported, stats_.reinterpretations);
-  if (!mods_.empty()) {
+  if (!mods_.empty() || stats_.dumped) {
     size_t live = 0;
     for (const auto& [hash, r] : replacements_) {
       live += r != nullptr;
     }
-    text += std::format(" | mods: {} files, {} replacements live ({} loaded now), {} binds",
-                        mods_.size(), live, stats_.replacements_loaded, stats_.replaced_binds);
+    text += std::format(" | mods: {} files, {} replacements live ({} loaded now), {} binds | "
+                        "dumped {}",
+                        mods_.size(), live, stats_.replacements_loaded, stats_.replaced_binds,
+                        stats_.dumped);
   }
   stats_ = Stats{};
   return text;
