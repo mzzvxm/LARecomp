@@ -148,32 +148,38 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       REXLOG_INFO("Save picker: first draw, display {}x{}", io.DisplaySize.x, io.DisplaySize.y);
     }
 
-    const float width = std::min(600.0f, std::max(460.0f, io.DisplaySize.x - 64.0f));
+    // Landscape like the retail menus: the list runs wide and short, the
+    // actions sit in the footer bar rather than in buttons.
+    const float width = std::min(760.0f, std::max(480.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
-    // Retail card: roomy padding, even row rhythm. Colors come from the global
-    // MCLA theme; only the list's selection fill is overridden here because the
-    // row highlight is drawn by hand (teal gradient + triangle cursor).
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(26.0f, 20.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 10.0f));
+    // The row highlight is drawn by hand, so the Selectable's own fill is off.
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.05f, 0.35f, 0.35f, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.08f, 0.50f, 0.48f, 0.70f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.05f, 0.35f, 0.35f, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.08f, 0.50f, 0.48f, 0.55f));
+
+    const mcla::ui::Prompt prompts[] = {
+        {"SELECT", "UP/DOWN"},
+        {"PLAY", "ENTER", can_play_ ? mcla::ui::kPromptAccept : IM_COL32(70, 70, 66, 255)},
+    };
+    constexpr int kPlayPrompt = 1;
 
     bool accept = false;
-    if (ImGui::Begin("CHOOSE PROFILE##larecomp_profile_picker", nullptr,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_AlwaysAutoResize)) {
+    // BeginPanel/EndPanel are paired unconditionally, like Begin/End.
+    if (mcla::ui::BeginPanel("##larecomp_profile_picker", "SELECT PROFILE",
+                             mcla::ui::PanelIcon::kCheck,
+                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_AlwaysAutoResize,
+                             prompts)) {
       accept = DrawBody(io);
     }
-    // Begin/End are paired unconditionally: Begin returns false for a clipped or
-    // collapsed window, and skipping End there unbalances the window stack.
-    ImGui::End();
+    if (mcla::ui::EndPanel() == kPlayPrompt && can_play_) {
+      accept = true;
+    }
 
     ImGui::PopStyleColor(3);
-    ImGui::PopStyleVar(2);
 
     if (accept) {
       Accept();
@@ -199,25 +205,24 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
 
   // Returns true when the player asked to go ahead with the current selection.
   bool DrawBody(ImGuiIO& io) {
-    mcla::ui::DrawCategoryHeader("SELECT PROFILE", plan_.forced
-                                  ? "Choose a profile to load, or create a new career. (Shift held)"
-                                  : "Choose a profile to load, or create a new career.");
+    mcla::ui::PanelSubtitle(plan_.forced
+                                ? "Choose a profile to load, or create a new career. (Shift held)"
+                                : "Choose a profile to load, or create a new career.");
 
     bool accept = false;
 
     // --- the saves ------------------------------------------------------------------
-    // Sized from the rows themselves: the dialog's roomy item spacing and window
-    // padding apply inside the list too, and a list sized without them hides the
-    // last row ("New save") behind a scrollbar.
+    // Sized from the rows themselves: a list sized without its padding hides
+    // the last row ("New profile") behind a scrollbar. The retail list has no
+    // box of its own; the rows sit straight on the panel glass.
     const int rows = NewRow() + 1;
-    const int shown = std::min(rows, 7);
-    const float row_height = ImGui::GetTextLineHeight() + 18.0f;
-    const float list_pad = 8.0f;
+    const int shown = std::min(rows, 6);
+    const float row_height = ImGui::GetTextLineHeight() + 14.0f;
+    const float list_pad = 2.0f;
     const float list_height = row_height * static_cast<float>(shown) + 2.0f * list_pad;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(list_pad, list_pad));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
-    ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_Borders,
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, list_pad));
+    ImGui::BeginChild("##saves", ImVec2(0.0f, list_height), ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar();  // the padding is read as the child opens
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -240,39 +245,15 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       const ImVec2 low = ImGui::GetItemRectMin();
       const ImVec2 high = ImGui::GetItemRectMax();
       const float text_y = low.y + (high.y - low.y - ImGui::GetTextLineHeight()) * 0.5f;
-      const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
-      const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-
-      const bool is_selected = (selected_ == i);
       // MCLA selection: teal text glowing over a dark teal bar, not a solid
       // cyan fill with dark text on it.
-      const ImU32 sel_text = ImGui::GetColorU32(mcla::ui::kColorCyan);
-      const ImU32 text_col = is_selected ? sel_text : text;
-      const ImU32 dim_col = is_selected ? ImGui::GetColorU32(mcla::ui::kColorCyanGlow) : dim;
+      const bool is_selected = (selected_ == i);
+      const ImU32 text_col = mcla::ui::DrawListRow(draw, low, high, is_selected);
+      const ImU32 dim_col = is_selected ? text_col : ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
-      if (is_selected) {
-        // The retail highlight: saturated teal at the cursor edge, fading
-        // left to right to a nearly transparent dark teal.
-        draw->AddRectFilledMultiColor(low, high,
-                                      IM_COL32(28, 155, 152, 215),   // #1C9B98
-                                      IM_COL32(12, 90, 90, 25),      // fades out right
-                                      IM_COL32(12, 90, 90, 25),
-                                      IM_COL32(28, 155, 152, 215));
-        // The right-pointing triangle cursor, drawn so it needs no font glyph.
-        const float cy = (low.y + high.y) * 0.5f;
-        draw->AddTriangleFilled(ImVec2(low.x + 10.0f, cy - 6.0f),
-                                ImVec2(low.x + 10.0f, cy + 6.0f),
-                                ImVec2(low.x + 20.0f, cy),
-                                ImGui::GetColorU32(mcla::ui::kColorCyanGlow));
-      } else {
-        // Hairline row separator, the white-at-14% rule between list entries.
-        draw->AddLine(ImVec2(low.x + 8.0f, high.y), ImVec2(high.x - 8.0f, high.y),
-                      IM_COL32(255, 255, 255, 36));
-      }
-
-      const float text_x = low.x + 28.0f;
+      const float text_x = low.x + 26.0f;
       if (is_new) {
-        draw->AddText(ImVec2(text_x, text_y), text_col, "+  New profile");
+        draw->AddText(ImVec2(text_x, text_y), text_col, "+  NEW PROFILE");
       } else {
         const pf::Profile& save = plan_.choices[i];
         draw->AddText(ImVec2(text_x, text_y), text_col, save.name.c_str());
@@ -283,7 +264,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       ImGui::PopID();
     }
     ImGui::EndChild();
-    ImGui::PopStyleVar(2);  // item spacing, child rounding
+    ImGui::PopStyleVar();  // item spacing
 
     // --- a new gamertag ---------------------------------------------------------------
     bool submitted = false;
@@ -313,23 +294,13 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       }
     }
 
-    // --- remember + go ----------------------------------------------------------------
-    ImGui::Checkbox("Always use this save (do not ask again)", &remember_);
-    ImGui::TextDisabled("Hold Shift while the game starts to pick again.");
+    // --- remember ---------------------------------------------------------------------
+    ImGui::Checkbox("Always use this save", &remember_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(hold Shift while the game starts to pick again)");
 
-    const bool can_play = selected_ != NewRow() || (!new_name.empty() && problem.empty());
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, can_play ? mcla::ui::kColorYellow : ImVec4(0.45f, 0.45f, 0.42f, 1.0f));
-    ImGui::BeginDisabled(!can_play);
-    const bool clicked = ImGui::Button("PLAY", ImVec2(-1.0f, 46.0f));
-    ImGui::EndDisabled();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    ImGui::TextDisabled("ENTER  ACCEPT   |   ESC  CANCEL   |   HOLD SHIFT ON START TO PICK SAVE");
+    // PLAY lives in the footer bar; OnDraw reads this to arm and color it.
+    can_play_ = selected_ != NewRow() || (!new_name.empty() && problem.empty());
 
     // --- keyboard ---------------------------------------------------------------------
     if (!io.WantTextInput) {
@@ -344,7 +315,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     const bool enter = !io.WantTextInput && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                                              ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
 
-    return can_play && (accept || clicked || submitted || enter);
+    return can_play_ && (accept || submitted || enter);
   }
 
   void Accept() {
@@ -398,6 +369,7 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   char name_buffer_[64] = {};
   bool focus_name_ = false;
   bool scroll_to_selected_ = true;
+  bool can_play_ = true;
   bool logged_first_draw_ = false;
 };
 

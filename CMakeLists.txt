@@ -226,6 +226,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/fonts/mcla_embedded_fonts.cpp
     src/mc_engine/ui/mcla_imgui_theme.cpp
     src/mc_engine/ui/mcla_debug_overlay.cpp
+    src/mc_engine/ui/mcla_controller_toast.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

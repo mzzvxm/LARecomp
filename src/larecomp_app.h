@@ -47,6 +47,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/ui/mcla_imgui_theme.h"
 #include "mc_engine/ui/mcla_debug_overlay.h"
+#include "mc_engine/ui/mcla_controller_toast.h"
 
 #include <rex/system.h>
 #include <fmt/format.h>
@@ -360,6 +361,10 @@ class LarecompApp : public rex::ReXApp {
     }
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
+
+    // LARecomp draws its own MCLA controller toast (mc_engine/ui); the SDK's
+    // would stack a second, unstyled card next to it.
+    SetFlag("controller_toast_enable", "false");
   }
 
   // Detached mode's hook: with no graphics system, ReXApp asks the app for the
@@ -427,9 +432,16 @@ class LarecompApp : public rex::ReXApp {
 
     if (imgui_drawer()) {
       mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
-      rex::ui::RegisterBind("bind_debug_overlay", "F3", "Toggle debug overlay", [this] {
-        mcla::ui::ToggleDebugOverlay(imgui_drawer());
-      });
+      // The SDK registered bind_debug_overlay first, and the first bind that
+      // matches a key wins, so a second bind on F3 never fired. Its callback
+      // is cleared instead, and the telemetry card gets a bind of its own (a
+      // cvar name can only be registered once), seeded with the old key.
+      const std::string telemetry_key = rex::cvar::GetFlagByName("bind_debug_overlay");
+      rex::ui::UnregisterBind("bind_debug_overlay");
+      rex::ui::RegisterBind("bind_mcla_telemetry", telemetry_key.empty() ? "F3" : telemetry_key,
+                            "Toggle the MCLA telemetry overlay",
+                            [this] { mcla::ui::ToggleDebugOverlay(imgui_drawer()); });
+      mcla::ui::StartControllerToasts(imgui_drawer());
     }
 
 #if defined(LARECOMP_HAS_GPU)
