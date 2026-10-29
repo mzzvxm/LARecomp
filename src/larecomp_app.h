@@ -41,6 +41,10 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/ui/imgui_theme.h"
+#include "mc_engine/ui/debug_overlay.h"
+#include "mc_engine/ui/settings.h"
+#include "mc_engine/ui/achievements.h"
+#include <rex/ui/keybinds.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -404,6 +408,34 @@ class LarecompApp : public rex::ReXApp {
 
     if (imgui_drawer()) {
       mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
+      // The SDK registered bind_debug_overlay first, and the first bind that
+      // matches a key wins, so a second bind on F3 never fired. Its callback
+      // is cleared instead, and the telemetry card gets a bind of its own (a
+      // cvar name can only be registered once), seeded with the old key.
+      const std::string telemetry_key = rex::cvar::GetFlagByName("bind_debug_overlay");
+      rex::ui::UnregisterBind("bind_debug_overlay");
+      rex::ui::RegisterBind("bind_mcla_telemetry", telemetry_key.empty() ? "F3" : telemetry_key,
+                            "Toggle the MCLA telemetry overlay",
+                            [this] { mcla::ui::ToggleDebugOverlay(imgui_drawer()); });
+      // The same swap for the SDK's settings overlay (see settings.h).
+      const std::string settings_key = rex::cvar::GetFlagByName("bind_settings");
+      rex::ui::UnregisterBind("bind_settings");
+      rex::ui::RegisterBind("bind_mcla_settings", settings_key.empty() ? "F4" : settings_key,
+                            "Toggle the MCLA settings panel", [this] {
+                              mcla::ui::ToggleSettings(imgui_drawer(), settings_config_path_);
+                            });
+      // And for the achievement list (see achievements.h). It needs the
+      // runtime, which does not exist before the save picker is done.
+      const std::string achievements_key = rex::cvar::GetFlagByName("bind_achievements");
+      rex::ui::UnregisterBind("bind_achievements");
+      rex::ui::RegisterBind(
+          "bind_mcla_achievements", achievements_key.empty() ? "F7" : achievements_key,
+          "Toggle the MCLA achievement list", [this] {
+            if (runtime() && runtime()->kernel_state()) {
+              mcla::ui::ToggleAchievements(imgui_drawer(), immediate_drawer(), runtime(),
+                                           &achievements());
+            }
+          });
     }
 
 #if defined(LARECOMP_HAS_GPU)
@@ -441,6 +473,13 @@ class LarecompApp : public rex::ReXApp {
     }
     return mcla::native_gfx::nocp::AttachPresentation(window(), imgui_drawer(),
                                                       immediate_drawer());
+  }
+
+  // The "ACHIEVEMENT UNLOCKED" toast as an MCLA panel (mc_engine/ui/
+  // achievements.h) in place of the SDK's fixed-size one.
+  std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog()
+      override {
+    return mcla::ui::MakeAchievementToast(imgui_drawer(), immediate_drawer(), runtime());
   }
 
   void OnWindowPixelSizeChanged(uint32_t pixel_width, uint32_t pixel_height) override {
@@ -494,6 +533,8 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    // The MCLA settings panel saves here, as the SDK's overlay does.
+    settings_config_path_ = paths.config_path;
     const auto root = ExeDir();
 
     // A bare default.xex is not enough to call a directory the game root: the
@@ -583,6 +624,9 @@ class LarecompApp : public rex::ReXApp {
 
   // Filled by OnConfigurePaths, which runs before logging exists.
   std::vector<std::string> path_notes_;
+
+  // The config file the settings panel saves to (ReXApp keeps its own private).
+  std::filesystem::path settings_config_path_;
 
   // First-launch dialogs: which save to play, install the game files from an
   // ISO, then offer to import a save. All asynchronous -- rex::ReXApp lets this
