@@ -31,4 +31,15 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
                       xenos::TextureFormat format, xenos::Endian endianness,
                       const uint8_t* guest_bytes, uint32_t guest_size);
 
+// The same conversion written to exactly `dest` (an existing file is
+// replaced). False when the format is not dumpable or the write failed.
+bool DumpGuestTextureTo(const std::filesystem::path& dest, uint32_t width, uint32_t height,
+                        uint32_t pitch_blocks, bool tiled, xenos::TextureFormat format,
+                        xenos::Endian endianness, const uint8_t* guest_bytes,
+                        uint32_t guest_size);
+
+// Whether DumpGuestTextureTo writes anything for `format`: block-compressed
+// and the plain colour layouts, not depth or float render targets.
+bool IsDumpableTextureFormat(xenos::TextureFormat format);
+
 }  // namespace mcla

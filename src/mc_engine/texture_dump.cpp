@@ -337,14 +337,8 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
                       uint32_t width, uint32_t height, uint32_t pitch_blocks, bool tiled,
                       xenos::TextureFormat format, xenos::Endian endianness,
                       const uint8_t* guest_bytes, uint32_t guest_size) {
-  using F = xenos::TextureFormat;
-
   const FormatInfo* fi = FormatInfo::Get(format);
-  if (!fi)
-    return;
-
-  // Skip depth/float/other GPU-internal formats — not authorable source art.
-  if (!IsDumpableFormat(format))
+  if (!fi || !IsDumpableFormat(format))
     return;
 
   // Build filename: <hash16>_<w>x<h>_<format_name>.dds
@@ -356,6 +350,27 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
   // Only write once per unique texture to avoid hammering the disk.
   if (std::filesystem::exists(dest))
     return;
+  DumpGuestTextureTo(dest, width, height, pitch_blocks, tiled, format, endianness, guest_bytes,
+                     guest_size);
+}
+
+bool IsDumpableTextureFormat(xenos::TextureFormat format) {
+  return FormatInfo::Get(format) && IsDumpableFormat(format);
+}
+
+bool DumpGuestTextureTo(const std::filesystem::path& dest, uint32_t width, uint32_t height,
+                        uint32_t pitch_blocks, bool tiled, xenos::TextureFormat format,
+                        xenos::Endian endianness, const uint8_t* guest_bytes,
+                        uint32_t guest_size) {
+  using F = xenos::TextureFormat;
+
+  const FormatInfo* fi = FormatInfo::Get(format);
+  if (!fi)
+    return false;
+
+  // Skip depth/float/other GPU-internal formats — not authorable source art.
+  if (!IsDumpableFormat(format))
+    return false;
 
   const uint32_t bpb = fi->bytes_per_block();
   const uint32_t w_blocks = (width + fi->block_width - 1) / fi->block_width;
@@ -423,9 +438,10 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
 
     if (!WriteDDS_BC(dest, width, height, linear.data(), bpb, fourcc)) {
       MC_WARN("texture dump: failed to write BC dump {}", dest.string());
-    } else {
-      MC_DEBUG("texture dump: dumped BC  {}", dest.filename().string());
+      return false;
     }
+    MC_DEBUG("texture dump: dumped BC  {}", dest.filename().string());
+    return true;
   } else {
     // Uncompressed — expand each texel to RGBA8
     const uint32_t out_row_bytes = w_blocks * 4;  // w_blocks == width for uncompressed
@@ -449,9 +465,10 @@ void DumpGuestTexture(const std::filesystem::path& dump_dir, uint64_t content_ha
 
     if (!WriteDDS_RGBA8(dest, width, height, rgba.data(), out_row_bytes)) {
       MC_WARN("texture dump: failed to write RGBA8 dump {}", dest.string());
-    } else {
-      MC_DEBUG("texture dump: dumped RGBA8 {}", dest.filename().string());
+      return false;
     }
+    MC_DEBUG("texture dump: dumped RGBA8 {}", dest.filename().string());
+    return true;
   }
 }
 
