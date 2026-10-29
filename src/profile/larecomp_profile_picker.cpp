@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <ctime>
+#include <span>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +23,7 @@
 #include <rex/system/xam/user_profile.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
+#include "mc_engine/ui/mcla_gamepad.h"
 #include "mc_engine/ui/mcla_imgui_theme.h"
 
 #if defined(_WIN32)
@@ -148,9 +151,14 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
       REXLOG_INFO("Save picker: first draw, display {}x{}", io.DisplaySize.x, io.DisplaySize.y);
     }
 
+    // The SDK's input driver does not exist yet, so the pad is read here.
+    pad_.Feed(io);
+
     // Landscape like the retail menus: the list runs wide and short, the
-    // actions sit in the footer bar rather than in buttons.
-    const float width = std::min(760.0f, std::max(480.0f, io.DisplaySize.x - 64.0f));
+    // actions sit in the footer bar rather than in buttons. Drawn a tenth
+    // larger than the other panels: it is the first screen of the game.
+    constexpr float kScale = 1.1f;
+    const float width = std::min(836.0f, std::max(528.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
@@ -158,12 +166,23 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.05f, 0.35f, 0.35f, 0.40f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.08f, 0.50f, 0.48f, 0.55f));
+    ImGui::PushFont(nullptr, mcla::ui::kBodySize * kScale);
 
-    const mcla::ui::Prompt prompts[] = {
-        {"SELECT", "UP/DOWN"},
-        {"PLAY", "ENTER", can_play_ ? mcla::ui::kPromptAccept : IM_COL32(70, 70, 66, 255)},
+    const ImU32 play_color = can_play_ ? mcla::ui::kPromptAccept : IM_COL32(70, 70, 66, 255);
+    const mcla::ui::Prompt pad_prompts[] = {
+        {"SELECT", "D-PAD"},
+        {"ALWAYS USE", "Y", mcla::ui::kPromptY},
+        {"PLAY", "A", play_color},
     };
-    constexpr int kPlayPrompt = 1;
+    const mcla::ui::Prompt key_prompts[] = {
+        {"SELECT", "UP/DOWN"},
+        {"PLAY", "ENTER", play_color},
+    };
+    const bool pad = pad_.connected();
+    const std::span<const mcla::ui::Prompt> prompts =
+        pad ? std::span<const mcla::ui::Prompt>(pad_prompts)
+            : std::span<const mcla::ui::Prompt>(key_prompts);
+    const int play_prompt = static_cast<int>(prompts.size()) - 1;
 
     bool accept = false;
     // BeginPanel/EndPanel are paired unconditionally, like Begin/End.
@@ -172,13 +191,17 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
                              ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                  ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_AlwaysAutoResize,
-                             prompts)) {
+                             prompts, mcla::ui::kTitleSize * kScale)) {
       accept = DrawBody(io);
     }
-    if (mcla::ui::EndPanel() == kPlayPrompt && can_play_) {
+    const int clicked = mcla::ui::EndPanel();
+    if (clicked == play_prompt && can_play_) {
       accept = true;
+    } else if (pad && clicked == 1) {
+      remember_ = !remember_;
     }
 
+    ImGui::PopFont();
     ImGui::PopStyleColor(3);
 
     if (accept) {
@@ -289,6 +312,9 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
         ImGui::PopStyleColor();
       } else if (!new_name.empty()) {
         ImGui::TextDisabled("Saved as: %s", new_name.c_str());
+      } else if (pad_.connected()) {
+        // A pad has no keys to type with: A fills in a free name to start from.
+        ImGui::TextDisabled("Press A for a suggested name, or type one.");
       } else {
         ImGui::TextDisabled("Starts from the beginning, in a folder of its own.");
       }
@@ -315,7 +341,47 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     const bool enter = !io.WantTextInput && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                                              ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
 
-    return can_play_ && (accept || submitted || enter);
+    // --- pad --------------------------------------------------------------------------
+    // Read even while the name field has the keyboard: the pad is not typing.
+    // Landing on "New profile" with the pad leaves the field unfocused; moving
+    // off it stops drawing the field, which drops its focus.
+    const int pad_step = (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) ||
+                                  ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown)
+                              ? 1
+                              : 0) -
+                         (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp) ||
+                                  ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp)
+                              ? 1
+                              : 0);
+    if (pad_step != 0) {
+      selected_ = std::clamp(selected_ + pad_step, 0, NewRow());
+      scroll_to_selected_ = true;
+      focus_name_ = false;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) {
+      remember_ = !remember_;
+    }
+    bool pad_accept = false;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+      if (selected_ == NewRow() && name_buffer_[0] == '\0') {
+        SuggestName();  // the next A plays it
+      } else {
+        pad_accept = true;
+      }
+    }
+
+    return can_play_ && (accept || submitted || enter || pad_accept);
+  }
+
+  // The first free "Player", "Player2", ... for a new save made from the pad.
+  void SuggestName() {
+    for (int n = 1; n < 100; ++n) {
+      const std::string candidate = n == 1 ? "Player" : "Player" + std::to_string(n);
+      if (ProblemWith(Sanitize(candidate), true).empty()) {
+        std::snprintf(name_buffer_, sizeof(name_buffer_), "%s", candidate.c_str());
+        return;
+      }
+    }
   }
 
   void Accept() {
@@ -371,6 +437,9 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
   bool scroll_to_selected_ = true;
   bool can_play_ = true;
   bool logged_first_draw_ = false;
+  // Its destructor ends the SDL gamepad session as the dialog is deleted on
+  // close, before the deferred resume lets the SDK input driver start its own.
+  mcla::ui::MenuGamepad pad_;
 };
 
 }  // namespace

@@ -22,6 +22,7 @@
 #include "larecomp_log.h"
 #include "relay_info.h"
 #include "system_link.h"
+#include "mc_engine/ui/mcla_imgui_theme.h"
 
 namespace larecomp {
 namespace {
@@ -131,15 +132,16 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
         const float pad = 16.0f;
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - pad, pad), ImGuiCond_Always,
                                 ImVec2(1.0f, 0.0f));
-        ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.88f);
+        ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f), ImGuiCond_Always);
         const ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
-            ImGuiWindowFlags_NoFocusOnAppearing;
+            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize;
 
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
-        if (ImGui::Begin("##larecomp_online_toast", nullptr, flags)) {
+        // The retail race-result card: the title says what this is, the server's
+        // own name heads the body in the menu yellow.
+        if (mcla::ui::BeginPanel("##larecomp_online_toast", "SYSTEM LINK", mcla::ui::PanelIcon::kInfo, flags,
+                                 {}, 20.0f)) {
             constexpr float kIcon = 56.0f;
             if (icon_) {
                 ImGui::Image(reinterpret_cast<ImTextureID>(icon_.get()), ImVec2(kIcon, kIcon));
@@ -148,17 +150,17 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
             ImGui::BeginGroup();
             const std::string name =
                 info.ok && !info.name.empty() ? info.name : std::string("System Link server");
-            ImGui::TextColored(ImVec4(1.0f, 0.86f, 0.25f, 1.0f), "%s", name.c_str());
+            ImGui::TextColored(mcla::ui::kColorYellow, "%s", name.c_str());
 
             switch (link) {
             case Link::kConnected:
-                ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f), "Connected");
+                ImGui::TextColored(mcla::ui::kColorGood, "Connected");
                 break;
             case Link::kConnecting:
-                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Connecting...");
+                ImGui::TextColored(mcla::ui::kColorWarn, "Connecting...");
                 break;
             case Link::kDisconnected:
-                ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "Disconnected");
+                ImGui::TextColored(mcla::ui::kColorBad, "Disconnected");
                 break;
             }
             ImGui::TextDisabled("%s:%u", host.c_str(), unsigned(port));
@@ -175,8 +177,7 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
                 ImGui::TextDisabled("No answer from the server's info service");
             }
         }
-        ImGui::End();
-        ImGui::PopStyleVar();
+        mcla::ui::EndPanel();
     }
 
  private:

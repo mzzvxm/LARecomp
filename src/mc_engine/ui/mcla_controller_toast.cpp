@@ -1,4 +1,5 @@
 #include "mcla_controller_toast.h"
+#include "mcla_gamepad.h"
 #include "mcla_imgui_theme.h"
 
 #include <rex/cvar.h>
@@ -106,6 +107,16 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
   // Diffs SDL's gamepad list against the last poll. Pads already there on the
   // first poll toast as connected, as the SDK's toast did at startup.
   void Poll(Clock::time_point now) {
+    // The save picker runs its own SDL gamepad session before the SDK input
+    // driver starts one. Between them nothing is listed, and the driver's
+    // session hands out new ids for the same pads, so the first list after a
+    // hand-over is taken as it is instead of toasting every pad twice.
+    if (TakeGamepadSessionEnded()) {
+      rebaseline_ = true;
+    }
+    if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
+      return;
+    }
     std::unordered_map<SDL_JoystickID, std::string> present;
     int count = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
@@ -115,7 +126,9 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
       }
       SDL_free(ids);
     }
-    if (REXCVAR_GET(mcla_controller_toast)) {
+    if (rebaseline_) {
+      rebaseline_ = false;
+    } else if (REXCVAR_GET(mcla_controller_toast)) {
       for (const auto& [id, name] : present) {
         if (!known_.contains(id)) Push(name, true, now);
       }
@@ -137,6 +150,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
   // Names are kept so a disconnect can still say which pad left.
   std::unordered_map<SDL_JoystickID, std::string> known_;
   Clock::time_point next_poll_{};
+  bool rebaseline_ = false;
 };
 
 std::unique_ptr<ControllerToastDialog> g_toasts;

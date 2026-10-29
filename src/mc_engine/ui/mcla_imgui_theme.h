@@ -44,9 +44,18 @@ inline constexpr ImVec4 kColorBorder{0.84f, 0.84f, 0.81f, 0.50f};          // fr
 inline constexpr ImVec4 kColorTextWhite{0.91f, 0.91f, 0.88f, 1.00f};       // warm off-white #E8E8E0
 inline constexpr ImVec4 kColorTextDim{0.55f, 0.55f, 0.52f, 1.00f};
 
-// Retail button colors for the footer prompts (B red, A green).
+// Status colors for the app's own windows, kept to the retail palette: the
+// game says "good" in its teal and "careful" in its yellow, and keeps red for
+// failures (the B button red, lifted for text on dark glass).
+inline constexpr ImVec4 kColorGood = kColorCyan;
+inline constexpr ImVec4 kColorWarn = kColorYellow;
+inline constexpr ImVec4 kColorBad{0.93f, 0.33f, 0.29f, 1.00f};
+
+// Retail button colors for the footer prompts (B red, A green, X blue, Y yellow).
 inline constexpr ImU32 kPromptBack = IM_COL32(222, 38, 38, 255);
 inline constexpr ImU32 kPromptAccept = IM_COL32(110, 190, 40, 255);
+inline constexpr ImU32 kPromptX = IM_COL32(40, 110, 220, 255);
+inline constexpr ImU32 kPromptY = IM_COL32(240, 196, 20, 255);
 inline constexpr ImU32 kPromptNeutral = IM_COL32(190, 190, 184, 255);
 
 // The pictogram inside the dashed yellow ring left of a panel title.
@@ -68,6 +77,11 @@ bool BeginPanel(const char* id, const char* title, PanelIcon icon,
                 ImGuiWindowFlags flags = 0, std::span<const Prompt> prompts = {},
                 float title_size = kTitleSize);
 int EndPanel();
+
+// Height a fixed-size panel's content must leave free at the bottom of
+// GetContentRegionAvail() for the body padding and footer bar, so a child that
+// fills the panel ends where the body does.
+float PanelBottomReserve();
 
 // The lighter mixed-case line the retail menus put under a title.
 void PanelSubtitle(const char* text);

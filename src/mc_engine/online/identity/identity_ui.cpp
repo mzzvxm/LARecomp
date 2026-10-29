@@ -37,6 +37,7 @@
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "identity_client.h"
 #include "identity_store.h"
+#include "mc_engine/ui/mcla_imgui_theme.h"
 
 namespace larecomp {
 
@@ -124,10 +125,11 @@ std::string PickBackupFile(const std::string& start) {
 #endif
 }
 
-const ImVec4 kGood(0.45f, 0.85f, 0.45f, 1.0f);
-const ImVec4 kWarn(1.0f, 0.75f, 0.3f, 1.0f);
-const ImVec4 kBad(1.0f, 0.4f, 0.4f, 1.0f);
-const ImVec4 kDim(0.65f, 0.65f, 0.65f, 1.0f);
+// The MCLA palette (mc_engine/ui/mcla_imgui_theme.h) under this file's names.
+constexpr ImVec4 kGood = mcla::ui::kColorGood;
+constexpr ImVec4 kWarn = mcla::ui::kColorWarn;
+constexpr ImVec4 kBad = mcla::ui::kColorBad;
+constexpr ImVec4 kDim = mcla::ui::kColorTextDim;
 
 class IdentityDialog final : public rex::ui::ImGuiDialog {
 public:
@@ -148,18 +150,28 @@ protected:
         if (!g_open.load()) return;
 
         bool b_pressed = false;
-        if (FeedBrowserGamepad(io, &b_pressed)) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+        const bool pad = FeedBrowserGamepad(io, &b_pressed);
+        if (pad) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard;
 
-        const ImVec2 size(std::min(io.DisplaySize.x - 40.0f, 720.0f), std::min(io.DisplaySize.y - 40.0f, 600.0f));
+        const ImVec2 size(std::min(io.DisplaySize.x - 40.0f, 760.0f), std::min(io.DisplaySize.y - 40.0f, 600.0f));
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing,
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
-        ImGui::SetNextWindowBgAlpha(0.96f);
-        bool keep_open = true;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
-        if (ImGui::Begin("Online Identity###larecomp_identity", &keep_open,
-                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 360.0f), io.DisplaySize);
+        const mcla::ui::Prompt prompts[] = {{"CLOSE", pad ? "B" : "ESC", mcla::ui::kPromptBack}};
+        // Dense screen: rows a step smaller, like the retail mission lists.
+        ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
+        const bool panel = mcla::ui::BeginPanel("###larecomp_identity", "ONLINE IDENTITY", mcla::ui::PanelIcon::kInfo,
+                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                                                    ImGuiWindowFlags_NoScrollWithMouse,
+                                                prompts);
+        // The sections scroll inside the body; the footer bar stays put. EndChild
+        // pairs with every BeginChild, whatever it returns.
+        const bool body = panel && ImGui::BeginChild("##identity_body",
+                                                     ImVec2(0.0f, ImGui::GetContentRegionAvail().y -
+                                                                      mcla::ui::PanelBottomReserve()));
+        if (body) {
             if (first_frame_) {
                 ImGui::SetWindowFocus();
                 first_frame_ = false;
@@ -184,11 +196,12 @@ protected:
             ImGui::Separator();
             DrawBackup();
         }
-        ImGui::End();
-        ImGui::PopStyleVar();
+        if (panel) ImGui::EndChild();
+        const bool close_clicked = mcla::ui::EndPanel() == 0;
+        ImGui::PopFont();
 
         const bool typing = ImGui::GetIO().WantTextInput;
-        if (!keep_open || ((b_pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) && !typing)) Close_();
+        if (close_clicked || ((b_pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) && !typing)) Close_();
     }
 
 private:
@@ -275,10 +288,12 @@ private:
 
     void DrawCode() {
         ImGui::TextColored(kWarn, "Your recovery code");
+        // Large enough to copy out by hand. PushFont with a size, since
+        // SetWindowFontScale is ImGui's legacy scaling.
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
-        ImGui::SetWindowFontScale(1.6f);
+        ImGui::PushFont(nullptr, mcla::ui::kBodySize * 1.4f);
         ImGui::TextUnformatted(code_.c_str());
-        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
         ImGui::PopStyleColor();
         ImGui::TextWrapped(
             "Write it down somewhere safe (paper, a password manager). It is the only way to get this "
@@ -325,7 +340,7 @@ private:
             if (ImGui::Button("Restart now")) browser::RestartGame();
             return;
         }
-        ImGui::SetNextItemWidth(260.0f);
+        ImGui::SetNextItemWidth(FieldWidth("new gamertag (up to 15)"));
         ImGui::InputTextWithHint("##newnick", "new gamertag (up to 15)", newnick_, sizeof(newnick_));
         ImGui::SameLine();
         if (ImGui::Button("Change gamertag")) ApplyNewNick();
@@ -379,13 +394,18 @@ private:
 
     void DrawRecover() {
         ImGui::Text("Recover this nick with its code");
-        ImGui::SetNextItemWidth(260.0f);
+        ImGui::SetNextItemWidth(FieldWidth("XXXXX-XXXXX-XXXXX-XXXXX"));
         ImGui::InputTextWithHint("##code", "XXXXX-XXXXX-XXXXX-XXXXX", recover_, sizeof(recover_));
         ImGui::SameLine();
         if (ImGui::Button("Recover") && recover_[0]) {
             id::RequestRecover(recover_);
             std::memset(recover_, 0, sizeof(recover_));
         }
+    }
+
+    // A text field as wide as what it is meant to hold, in the current font.
+    static float FieldWidth(const char* sample) {
+        return ImGui::CalcTextSize(sample).x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
     }
 
     void DrawBackup() {
@@ -481,6 +501,8 @@ private:
         std::memset(pw2_, 0, sizeof(pw2_));
         auto& io = GetIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
+        // As the mod browser does: no pad left claimed once the window is gone.
+        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
     }
 
     id::Status status_;

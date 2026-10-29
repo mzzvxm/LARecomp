@@ -173,6 +173,29 @@ void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
   colors[ImGuiCol_PlotHistogram]         = kColorCyan;
   colors[ImGuiCol_PlotHistogramHovered]  = kColorYellow;
 
+  // The retail selected tab: a lit teal rule over a dark tab, no blue.
+  colors[ImGuiCol_TabSelectedOverline]        = kColorCyan;
+  colors[ImGuiCol_TabDimmedSelectedOverline]  = ImVec4(0.20f, 0.84f, 0.84f, 0.40f);
+
+  // Tables: the list grooves, no zebra striping.
+  colors[ImGuiCol_TableHeaderBg]         = ImVec4(0.10f, 0.10f, 0.10f, 0.90f);
+  colors[ImGuiCol_TableBorderStrong]     = ImVec4(1.00f, 1.00f, 1.00f, 0.16f);
+  colors[ImGuiCol_TableBorderLight]      = ImVec4(1.00f, 1.00f, 1.00f, 0.08f);
+  colors[ImGuiCol_TableRowBg]            = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+  colors[ImGuiCol_TableRowBgAlt]         = ImVec4(1.00f, 1.00f, 1.00f, 0.025f);
+
+  colors[ImGuiCol_InputTextCursor]       = kColorCyanGlow;
+  colors[ImGuiCol_TextLink]              = kColorCyan;
+  colors[ImGuiCol_TreeLines]             = ImVec4(1.00f, 1.00f, 1.00f, 0.14f);
+  colors[ImGuiCol_DragDropTarget]        = kColorYellow;
+  colors[ImGuiCol_DragDropTargetBg]      = ImVec4(0.95f, 0.89f, 0.02f, 0.10f);
+  colors[ImGuiCol_UnsavedMarker]         = kColorYellow;
+
+  // Pad/keyboard navigation: the cursor ring is the selection teal.
+  colors[ImGuiCol_NavCursor]             = kColorCyanGlow;
+  colors[ImGuiCol_NavWindowingHighlight] = ImVec4(0.95f, 0.95f, 0.92f, 0.70f);
+  colors[ImGuiCol_NavWindowingDimBg]     = ImVec4(0.01f, 0.01f, 0.01f, 0.40f);
+
   colors[ImGuiCol_TextSelectedBg]        = ImVec4(0.20f, 0.84f, 0.84f, 0.35f);
   colors[ImGuiCol_ModalWindowDimBg]      = ImVec4(0.01f, 0.01f, 0.01f, 0.60f);
 
@@ -203,9 +226,13 @@ void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
 
     ui_style->debug.muted_text               = ImVec4(0.91f, 0.91f, 0.88f, 0.40f);
 
+    // Cyan is the selection color in the retail menus, so live settings read
+    // as plain text; yellow flags the ones that wait for a restart.
     ui_style->settings.warning               = kColorYellow;
-    ui_style->settings.lifecycle_live        = kColorCyan;
+    ui_style->settings.lifecycle_live        = kColorTextWhite;
     ui_style->settings.lifecycle_restart     = kColorYellow;
+    ui_style->settings.lifecycle_init_only   = ImVec4(0.80f, 0.36f, 0.32f, 1.00f);
+    ui_style->settings.lifecycle_unknown     = kColorTextWhite;
   }
 }
 
@@ -314,7 +341,11 @@ void DrawPrompt(ImDrawList* draw, ImVec2 pos, const Prompt& p, bool hovered) {
   const ImU32 fill = (p.key_color & ~IM_COL32_A_MASK) |
                      (static_cast<ImU32>(255 * ImGui::GetStyle().Alpha) << IM_COL32_A_SHIFT);
   draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), fill, h * 0.5f);
-  const ImU32 key_text = p.key_color == kPromptNeutral ? Col(16, 16, 16, 255) : Col(250, 250, 250, 255);
+  // Dark lettering on the light badges (neutral, yellow), white on the rest.
+  const int luma = (299 * static_cast<int>((p.key_color >> IM_COL32_R_SHIFT) & 0xFF) +
+                    587 * static_cast<int>((p.key_color >> IM_COL32_G_SHIFT) & 0xFF) +
+                    114 * static_cast<int>((p.key_color >> IM_COL32_B_SHIFT) & 0xFF)) / 1000;
+  const ImU32 key_text = luma > 150 ? Col(16, 16, 16, 255) : Col(250, 250, 250, 255);
   draw->AddText(ImVec2(x + (w - key_size.x) * 0.5f, pos.y), key_text, p.key);
 }
 
@@ -422,6 +453,16 @@ int EndPanel() {
   ImGui::End();
   g_panel = {};
   return clicked;
+}
+
+float PanelBottomReserve() {
+  // The content region ends kBezel + kFooterPad above the window edge. Without
+  // a footer the body needs kInner there; with one, the bar and the bezel gap
+  // above it sit between the body and that edge too (see EndPanel).
+  if (g_panel.prompts.empty()) {
+    return kInner - kFooterPad;
+  }
+  return kInner + kGap + kFooterPad + kSmallSize;
 }
 
 void PanelSubtitle(const char* text) {
