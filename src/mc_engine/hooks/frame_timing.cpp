@@ -54,6 +54,12 @@ REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
     "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(intro_original_speed, true, "MCLA/Patches",
+    "Present the start-up legal screens and logos 30 times a second, as the console does. "
+    "They are drawn by a loop that never runs the engine timer, so fps_limit never reached "
+    "them and they played as fast as the host could present.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(fence_spin_throttle, true, "MCLA/Performance",
     "Yield the host CPU inside the guest's D3D fence poll (sub_82412F98) instead of running "
     "its 32 pipeline-throttle NOPs. Off restores the stock guest spin.")
@@ -120,11 +126,53 @@ bool Patch_FenceSpinThrottle() {
     return true;
 }
 
+// Set by every pass through the engine timer (sub_821BDA90, MCLAFrameDelta),
+// taken by every swap.
+static std::atomic<bool> g_timer_since_swap{false};
+
+// Swaps the engine timer never saw. The legal screens and logos are drawn by a
+// loop of their own (the timer's only callers are sub_822611B0 and
+// sub_822C1FA8, the game loop), paced on the console by the swap interval of
+// two vblanks alone, which the runtime does not honour. Such swaps are held to
+// 30 a second -- from the second one in a row only: uncapped, the update and
+// present threads drift, and about one swap in forty finds no timer pass before
+// it while the next finds two; holding that lone swap would stutter play.
+// Swap thread only.
+static void HoldUntimedSwap() {
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kPeriod = std::chrono::microseconds(1000000 / 30);
+    static Clock::time_point last_swap{};
+    static bool last_untimed = false;
+
+    const bool untimed = !g_timer_since_swap.exchange(false, std::memory_order_relaxed);
+    if (untimed && last_untimed && REXCVAR_GET(intro_original_speed) &&
+        last_swap != Clock::time_point{}) {
+        const Clock::time_point due = last_swap + kPeriod;
+        // Sleep to a millisecond short of it, then yield the rest away: the
+        // sleep alone overshoots by up to a timer tick.
+        if (due - Clock::now() > std::chrono::microseconds(1500)) {
+            std::this_thread::sleep_until(due - std::chrono::milliseconds(1));
+        }
+        while (Clock::now() < due) {
+#if defined(_WIN32)
+            YieldProcessor();
+#else
+            std::this_thread::yield();
+#endif
+        }
+    }
+    last_untimed = untimed;
+    last_swap = Clock::now();
+}
+
 // Swap-interval patch at 0x82419AA0 ("li r11, 2"): the game always requests
 // D3D interval TWO (30 FPS); replacing with 1 requests 60 Hz. Note the current
 // RexGlue command processor ignores the guest swap interval (host vblank is a
 // fixed 60 Hz timer), so this is kept only for correctness of the swap packet.
+// It runs once per swap (sub_824199B0), which makes it where the swaps the
+// engine timer never saw are paced.
 bool Patch_60FPS_Byte(PPCRegister& r11) {
+    HoldUntimedSwap();
     if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
@@ -263,6 +311,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
     EnforceFrameLimit();
+    g_timer_since_swap.store(true, std::memory_order_relaxed);  // see HoldUntimedSwap
     UpdateCityLODMemory();
     RecordFrameTime();
     TickGuestProfiler();
