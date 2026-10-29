@@ -230,6 +230,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/mcla_gamepad.cpp
     src/mc_engine/ui/mcla_settings.cpp
     src/mc_engine/ui/mcla_achievements.cpp
+    src/mc_engine/ui/mcla_kerning.cpp
 )
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

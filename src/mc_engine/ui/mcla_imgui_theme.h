@@ -4,6 +4,7 @@
 #include <rex/ui/style.h>
 
 #include <span>
+#include <vector>
 
 namespace mcla::ui {
 
@@ -26,6 +27,17 @@ struct MclaFonts {
 
 inline constexpr char kBannerWord[] = "LARecomp";
 inline constexpr char kBannerCredit[] = "By mzzvxm & BadassBaboon";
+
+// Kerned text (mcla_kerning.cpp). ImGui lays text out by advance widths alone,
+// but the Midnight Club faces carry real kerning (A-R opens, B-y and m-m close
+// up a lot), which is what makes the banner read like the artwork. A font
+// gets kerning once its TTF bytes are registered; any other lays out as ImGui
+// would. Single-byte (ASCII) text only.
+void RegisterKerning(const ImFont* font, std::vector<unsigned char> ttf);
+// Each character's x origin at `px`, and the total advance in `width`.
+std::vector<float> KernedOrigins(ImFont* font, float px, const char* text, float* width);
+void DrawKerned(ImDrawList* draw, ImFont* font, float px, ImVec2 pos, const char* text,
+                ImU32 (*color)(size_t index));
 
 inline constexpr float kBodySize = 18.0f;
 inline constexpr float kSmallSize = 15.0f;

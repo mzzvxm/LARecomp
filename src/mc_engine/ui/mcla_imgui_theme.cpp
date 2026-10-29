@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <vector>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
@@ -32,6 +35,21 @@ static ImFont* LoadFace(ImFontAtlas* atlas, const fs::path& dir, const char* fil
   mem_cfg.FontDataOwnedByAtlas = false;
   return atlas->AddFontFromMemoryTTF(const_cast<unsigned char*>(data), static_cast<int>(size),
                                      px, &mem_cfg);
+}
+
+// The bytes LoadFace would load: the loose file when there is one, else the
+// embedded copy.
+static std::vector<unsigned char> FaceBytes(const fs::path& dir, const char* file,
+                                            const unsigned char* data, size_t size) {
+  const fs::path path = dir / file;
+  std::error_code ec;
+  if (fs::exists(path, ec)) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)),
+                                     std::istreambuf_iterator<char>());
+    if (!bytes.empty()) return bytes;
+  }
+  return std::vector<unsigned char>(data, data + size);
 }
 
 void LoadMclaFonts(ImFontAtlas* atlas) {
@@ -80,17 +98,28 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
     credit.AddText(kBannerCredit);
     credit.BuildRanges(&credit_ranges);
   }
+  // Rasterized a little above the size they are drawn at on common screens,
+  // so they are scaled down (sharp) rather than up. The bytes are kept: the
+  // banner also reads the faces' kerning from them (RegisterKerning).
+  static std::vector<unsigned char> word_ttf =
+      FaceBytes(dir, "Midnight Club Font Alt.ttf", fonts::kFontMidnightClubAlt,
+                fonts::kFontMidnightClubAltSize);
+  static std::vector<unsigned char> credit_ttf =
+      FaceBytes(dir, "MC Los Angeles Font.ttf", fonts::kFontLosAngelesScript,
+                fonts::kFontLosAngelesScriptSize);
   ImFontConfig banner_cfg = font_cfg;
+  banner_cfg.FontDataOwnedByAtlas = false;
   banner_cfg.OversampleH = 1;
   banner_cfg.OversampleV = 1;
   banner_cfg.GlyphRanges = word_ranges.Data;
-  g_fonts.banner = LoadFace(atlas, dir, "Midnight Club Font Alt.ttf", fonts::kFontMidnightClubAlt,
-                            fonts::kFontMidnightClubAltSize, 128.0f, banner_cfg);
+  g_fonts.banner = atlas->AddFontFromMemoryTTF(word_ttf.data(), static_cast<int>(word_ttf.size()),
+                                               160.0f, &banner_cfg);
   banner_cfg.OversampleH = 2;
   banner_cfg.GlyphRanges = credit_ranges.Data;
-  g_fonts.banner_credit = LoadFace(atlas, dir, "MC Los Angeles Font.ttf",
-                                   fonts::kFontLosAngelesScript, fonts::kFontLosAngelesScriptSize,
-                                   32.0f, banner_cfg);
+  g_fonts.banner_credit = atlas->AddFontFromMemoryTTF(
+      credit_ttf.data(), static_cast<int>(credit_ttf.size()), 40.0f, &banner_cfg);
+  RegisterKerning(g_fonts.banner, word_ttf);
+  RegisterKerning(g_fonts.banner_credit, credit_ttf);
 
   if (g_fonts.body) {
     ImGui::GetIO().FontDefault = g_fonts.body;

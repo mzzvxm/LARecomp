@@ -8,6 +8,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <span>
 #include <optional>
@@ -380,65 +381,87 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     return can_play_ && (accept || submitted || enter || pad_accept);
   }
 
-  // The LARecomp banner above the panel: "LA" in the logo red and "Recomp"
-  // in the menu white, set in Font Alt, with the credit line under it in the
-  // Los Angeles face. The credit is sized to run from under the R to under the
-  // m, and sits with its baseline on the bottom of the p's descender. Every
-  // measure comes from the faces themselves, so a replacement font keeps the
-  // fit. As wide as the panel, or smaller when the screen is short.
+  // The LARecomp banner above the panel, as in the artwork: "LA" in the logo
+  // red and "Recomp" in the menu white, set in Font Alt with the face's own
+  // kerning (which opens the gap between A and R), and the credit under it
+  // in the Los Angeles face, kerned too. The credit starts under the foot of
+  // the R and ends short of the p's descender by the same gap that separates
+  // A from R; its descenders bottom out with the p's. Every measure comes
+  // from the faces, so replacement fonts keep the fit. As wide as the panel,
+  // or smaller when the screen is short.
   void DrawBanner() {
     const mcla::ui::MclaFonts& fonts = mcla::ui::GetFonts();
     ImFont* logo = fonts.banner ? fonts.banner : fonts.title;
     ImFont* script = fonts.banner_credit ? fonts.banner_credit : fonts.script;
     if (!logo || !script || panel_size_.x <= 0.0f) return;
-    const char* kWord = mcla::ui::kBannerWord;
-    const char* kCredit = mcla::ui::kBannerCredit;
+    const char* word = mcla::ui::kBannerWord;      // "LARecomp"
+    const char* credit = mcla::ui::kBannerCredit;  // "By mzzvxm & BadassBaboon"
+    const size_t word_len = std::strlen(word);
+    const size_t credit_len = std::strlen(credit);
     constexpr float kRef = 100.0f;  // laid out at this size, then scaled
     constexpr float kGap = 14.0f;   // between the banner and the panel
     constexpr float kTop = 16.0f;   // kept free above the banner
 
-    auto width = [](ImFont* font, float px, const char* text) {
-      return font->CalcTextSizeA(px, FLT_MAX, 0.0f, text).x;
-    };
-    // Glyph corners and ascent at a drawn size. The fixed atlas holds each
-    // face at one size only and GetFontBaked hands back that one, so its
-    // numbers are in the loaded size's pixels and are scaled to the drawn one.
-    auto glyph_y = [](ImFont* font, float px, ImWchar c, bool bottom) {
+    // Glyph ink box edges at a drawn size. The fixed atlas holds each face at
+    // one size and GetFontBaked hands back that one, so its numbers are in
+    // the loaded size's pixels and are scaled to the drawn one.
+    auto ink = [](ImFont* font, float px, char c, int edge) {
       ImFontBaked* baked = font->GetFontBaked(px);
-      const ImFontGlyph* glyph = baked->FindGlyph(c);
-      return (bottom ? glyph->Y1 : glyph->Y0) * px / baked->Size;
+      const ImFontGlyph* g = baked->FindGlyph(static_cast<unsigned char>(c));
+      const float v[] = {g->X0, g->X1, g->Y0, g->Y1};
+      return v[edge] * px / baked->Size;
     };
-    auto ascent = [](ImFont* font, float px) {
-      ImFontBaked* baked = font->GetFontBaked(px);
-      return baked->Ascent * px / baked->Size;
-    };
-    // Credit size for a given logo size: as wide as "Recom" there.
-    auto credit_px = [&](float px) {
-      return width(logo, px, "Recom") * kRef / width(script, kRef, kCredit);
-    };
-    // Where the credit's line starts below the logo's (its baseline on the
-    // p's descender), and where the banner ends (the credit's descender).
-    auto credit_top = [&](float px) {
-      return glyph_y(logo, px, 'p', true) - ascent(script, credit_px(px));
-    };
-    auto bottom = [&](float px) {
-      return credit_top(px) + glyph_y(script, credit_px(px), 'y', true);
-    };
-    auto cap_top = [&](float px) { return glyph_y(logo, px, 'L', false); };
+    enum { kLeft, kRight, kTopEdge, kBottom };
 
-    const float fit_width = panel_size_.x * 0.97f * kRef / width(logo, kRef, kWord);
-    const float fit_height = (panel_pos_.y - kGap - kTop) * kRef / (bottom(kRef) - cap_top(kRef));
+    // The word at a size, relative to its origin: where the R's foot is, the
+    // gap A-R, where the p's descender starts, and the ink box.
+    struct Word {
+      std::vector<float> at;
+      float r_left, gap, p_left, left, right, top, bottom;
+    };
+    auto lay_word = [&](float px) {
+      Word w;
+      w.at = mcla::ui::KernedOrigins(logo, px, word, nullptr);
+      w.r_left = w.at[2] + ink(logo, px, word[2], kLeft);
+      w.gap = w.r_left - (w.at[1] + ink(logo, px, word[1], kRight));
+      w.p_left = w.at[word_len - 1] + ink(logo, px, word[word_len - 1], kLeft);
+      w.left = w.at[0] + ink(logo, px, word[0], kLeft);
+      w.right = w.at[word_len - 1] + ink(logo, px, word[word_len - 1], kRight);
+      w.top = ink(logo, px, word[0], kTopEdge);
+      w.bottom = ink(logo, px, word[word_len - 1], kBottom);
+      return w;
+    };
+    // The credit's ink width per pixel of size (it scales linearly).
+    auto credit_ink = [&](float px) {
+      const std::vector<float> at = mcla::ui::KernedOrigins(script, px, credit, nullptr);
+      return at[credit_len - 1] + ink(script, px, credit[credit_len - 1], kRight) -
+             ink(script, px, credit[0], kLeft);
+    };
+
+    // Fit: the word's ink as wide as the panel, or as tall as the room above.
+    const Word ref = lay_word(kRef);
+    const float fit_width = panel_size_.x * 0.97f * kRef / (ref.right - ref.left);
+    const float fit_height = (panel_pos_.y - kGap - kTop) * kRef / (ref.bottom - ref.top);
     const float px = std::min(fit_width, fit_height);
     if (px < 12.0f) return;
 
-    const float x = panel_pos_.x + (panel_size_.x - width(logo, px, kWord)) * 0.5f;
-    const float y = panel_pos_.y - kGap - bottom(px);
-    const float r_x = x + width(logo, px, "LA");
+    const Word w = lay_word(px);
+    // The gap is measured between the slanted glyphs' ink boxes, which is
+    // about twice what shows at the baseline, where the artwork's gaps match.
+    const float credit_px = (w.p_left - w.gap * 0.5f - w.r_left) * kRef / credit_ink(kRef);
+    const float x = panel_pos_.x + (panel_size_.x - (w.right - w.left)) * 0.5f - w.left;
+    const float y = panel_pos_.y - kGap - w.bottom;
+    // The credit's descender ('y') bottoms out where the p's does.
+    const float credit_bottom = ink(script, credit_px, 'y', kBottom);
+    const ImVec2 credit_pos(x + w.r_left - ink(script, credit_px, credit[0], kLeft),
+                            y + w.bottom - credit_bottom);
+
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
-    const ImU32 white = IM_COL32(0xE8, 0xE8, 0xE0, 0xFF);
-    draw->AddText(logo, px, ImVec2(x, y), IM_COL32(0xEC, 0x04, 0x0B, 0xFF), "LA");
-    draw->AddText(logo, px, ImVec2(r_x, y), white, "Recomp");
-    draw->AddText(script, credit_px(px), ImVec2(r_x, y + credit_top(px)), white, kCredit);
+    mcla::ui::DrawKerned(draw, logo, px, ImVec2(x, y), word, [](size_t i) -> ImU32 {
+      return i < 2 ? IM_COL32(0xEC, 0x04, 0x0B, 0xFF) : IM_COL32(0xE8, 0xE8, 0xE0, 0xFF);
+    });
+    mcla::ui::DrawKerned(draw, script, credit_px, credit_pos, credit,
+                         [](size_t) -> ImU32 { return IM_COL32(0xE8, 0xE8, 0xE0, 0xFF); });
   }
 
   // The release, flush with the bottom-right corner whatever its length.
