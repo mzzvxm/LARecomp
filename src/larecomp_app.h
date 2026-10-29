@@ -42,6 +42,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/debug_overlay.h"
+#include "mc_engine/ui/controller_toast.h"
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/ui/achievements.h"
 #include <rex/ui/keybinds.h>
@@ -341,6 +342,10 @@ class LarecompApp : public rex::ReXApp {
     }
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
+
+    // LARecomp draws its own MCLA controller toast (mc_engine/ui); the SDK's
+    // would stack a second, unstyled card next to it.
+    SetFlag("controller_toast_enable", "false");
   }
 
   // Detached mode's hook: with no graphics system, ReXApp asks the app for the
@@ -436,6 +441,7 @@ class LarecompApp : public rex::ReXApp {
                                            &achievements());
             }
           });
+      mcla::ui::StartControllerToasts(imgui_drawer());
     }
 
 #if defined(LARECOMP_HAS_GPU)
