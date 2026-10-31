@@ -1349,6 +1349,8 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
+    // Live: the game's rumble stops reaching the controller, and one that runs stops.
+    Bool("PM_RxVibration",   "controller_vibration",     "VIBRATION: "),
 };
 
 // Everything that trades image quality for framerate, in one place.

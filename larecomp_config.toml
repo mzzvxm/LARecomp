@@ -27002,6 +27002,15 @@ name = "Hook_ControlLabel"
 registers = ["r3", "r4", "r5"]
 jump_address_on_true = 0x82679BD4
 
+# Controller vibration (hooks/vibration.cpp). sub_8275CB88 is where the game sets a pad's rumble
+# (called from the per-pad update when it changed); this is its `bl XamInputSetState`, the only
+# call of it. r3 = the user, r5 = the two 16-bit motor speeds on the stack (left first, big-endian).
+# With controller_vibration off the hook zeroes the speeds, so the drivers get a stop.
+[[midasm_hook]]
+address = 0x8275CC34
+name = "Hook_VibrationSet"
+registers = ["r3", "r5"]
+
 
 # Server browser (src/mc_engine/online/server_browser).
 # System Link search answer about to be kept (r27 = 1); r1+0x58 = sender vip.
