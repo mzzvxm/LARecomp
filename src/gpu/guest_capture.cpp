@@ -18,6 +18,7 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#include "cycles.h"
 #include "draw_decode.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -121,8 +122,6 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
   return false;
 }
 
-using Clock = std::chrono::steady_clock;
-
 constexpr uint32_t kMaxEventDepth = 4;
 // Every offset the capture reads from a device lies below this.
 constexpr uint32_t kDeviceReadEnd = guest::kEventWindowEnd;
@@ -133,7 +132,7 @@ struct EventSnapshot {
   uint32_t flags = 0;  // EventFlags found before the call
   uint32_t stack[2] = {};
   uint32_t nested_at_begin = 0;
-  uint64_t before_ns = 0;
+  uint64_t before_cycles = 0;
   EventState state;
 };
 
@@ -160,8 +159,13 @@ inline uint64_t DeviceU64(const uint8_t* base, uint32_t device, uint32_t offset)
   return uint64_t(DeviceU32(base, device, offset)) << 32 | DeviceU32(base, device, offset + 4);
 }
 
-uint64_t ElapsedNs(Clock::time_point since) {
-  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - since).count());
+// TSC cycles since `since` (a cycles::Now). The capture times itself twice per
+// draw; steady_clock reads QueryPerformanceCounter, about 20 ns a call, the TSC a
+// few. The frame's total is turned into time by the code that reads it
+// (cycles::ToNs), as the render thread's own per-draw timers are.
+uint64_t ElapsedCycles(uint64_t since) {
+  const uint64_t now = cycles::Now();
+  return now > since ? now - since : 0;
 }
 
 // The deltas of one bank: blocks whose bytes differ from the shadow, among the
@@ -579,7 +583,7 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   if (!token.active || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(base, device, /*terminated=*/false);
@@ -603,7 +607,7 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
       ++frame_.draws;
     }
   }
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t* base,
@@ -612,7 +616,7 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   if (!token.active || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active) {
     // A second Begin before End on the same device is a guest bug; on another
@@ -633,7 +637,7 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
     REXLOG_ERROR("[gpu] capture: inline draw of {} vertices x {} bytes exceeds the stream's "
                  "record limit; not captured",
                  count, stride);
-    frame_.capture_ns += ElapsedNs(t0);
+    frame_.capture_cycles += ElapsedCycles(t0);
     return;
   }
   DrawCapture c;
@@ -650,19 +654,19 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   pending_.active = true;
   pending_.device = device;
   pending_.buffer = buffer;
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterEndVertices(const uint8_t* base, uint32_t device) {
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(base, device, /*terminated=*/true);
   }
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
 }
 
 void GuestCapture::FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated) {
@@ -712,7 +716,7 @@ GuestCallToken GuestCapture::BeforeEvent(const uint8_t* base, uint32_t device, G
     }
     return token;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   if (!t_snapshots) {
     t_snapshots = std::make_unique<std::array<EventSnapshot, kMaxEventDepth>>();
   }
@@ -753,7 +757,7 @@ GuestCallToken GuestCapture::BeforeEvent(const uint8_t* base, uint32_t device, G
     s.nested_at_begin = t_nested_resolves;
     ++t_end_tiling_depth;
   }
-  s.before_ns = ElapsedNs(t0);
+  s.before_cycles = ElapsedCycles(t0);
   ++t_depth;
   token.snapshot = t_depth;
   token.active = true;
@@ -797,7 +801,7 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
   if (!s || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(base, device, /*terminated=*/false);
@@ -825,7 +829,7 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ClearRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base, uint32_t device,
@@ -842,7 +846,7 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(base, device, /*terminated=*/false);
@@ -890,7 +894,7 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ResolveRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 void GuestCapture::NoteResolveDestination(const uint8_t* header) {
@@ -922,7 +926,7 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
   if (!s || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(base, device, /*terminated=*/false);
@@ -953,7 +957,7 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(TilingBeginRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* base,
@@ -971,7 +975,7 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(base, device, /*terminated=*/false);
@@ -1011,7 +1015,7 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(TilingEndRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,7 +1028,7 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
   }
   uint64_t sequence = 0;
   {
-    const auto t0 = Clock::now();
+    const uint64_t t0 = cycles::Now();
     std::lock_guard lock(mutex_);
     if (pending_.active && pending_.device == device) {
       FlushPendingInline(base, device, /*terminated=*/false);
@@ -1050,7 +1054,7 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
         r->flags |= kPresentGammaRampUnreadable;
       }
       CountRecord(sizeof(PresentRecord));
-      frame_.capture_ns += ElapsedNs(t0);
+      frame_.capture_cycles += ElapsedCycles(t0);
       r->stats = frame_;
       sequence = writer.Commit(Publication::kWaited);
     }
@@ -1070,7 +1074,7 @@ void GuestCapture::Fence(uint32_t device, uint32_t value) {
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   // Not a draw-state event: a pending inline draw stays open. A fence kicked
   // between BeginVertices and EndVertices was inserted before that draw's
@@ -1085,7 +1089,7 @@ void GuestCapture::Fence(uint32_t device, uint32_t value) {
   r->value = value;
   CountRecord(sizeof(FenceRecord));
   ++frame_.fences;
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kNow);
 }
 
@@ -1169,7 +1173,7 @@ void GuestCapture::Composite(uint32_t bucket) {
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   std::lock_guard lock(mutex_);
   // Not a draw-state event, like a fence: a pending inline draw stays open (none
   // is, at the end of the post object's draw).
@@ -1181,7 +1185,7 @@ void GuestCapture::Composite(uint32_t bucket) {
   auto* r = new (payload) CompositeRecord();
   r->bucket = bucket;
   CountRecord(sizeof(CompositeRecord));
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kBatched);
 }
 

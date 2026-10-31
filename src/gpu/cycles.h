@@ -9,7 +9,8 @@
 // cycles/steady-clock rate measured over the last statistics window
 // (Measure, called by the Scene at each window's end and once at start).
 //
-// Threading: render thread only.
+// Threading: Now() reads the TSC and may be called from any thread (the guest
+// capture times itself with it); Measure, NsPerCycle and ToNs: render thread only.
 // ===========================================================================
 
 #include <cstdint>
