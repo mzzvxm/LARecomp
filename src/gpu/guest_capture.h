@@ -202,6 +202,9 @@ class GuestCapture {
                  uint8_t* payload);
   void FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated);
   bool CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes);
+  // IsGuestRangeReadable with a memory of the pages found readable earlier in
+  // the same GatherDraw. Under mutex_.
+  bool Readable(uint32_t address, uint64_t size);
   void CountRecord(uint32_t payload_bytes);
   // Adds the guest ranges of a resolve's destination (its texture header) to
   // resolve_destinations_. Under mutex_.
@@ -216,6 +219,17 @@ class GuestCapture {
   std::unordered_map<uint64_t, IdentityEntry> identities_;
   std::vector<uint8_t> scratch_;  // normalization buffer
   PendingInline pending_;
+  // Runs of 4 KiB guest pages [first, last] that Readable found readable during
+  // the current GatherDraw; off (and not consulted) outside it.
+  struct VerifiedPages {
+    static constexpr uint32_t kRuns = 8;
+    uint32_t first[kRuns] = {};
+    uint32_t last[kRuns] = {};
+    uint32_t count = 0;
+    uint32_t next = 0;
+    bool active = false;
+  };
+  VerifiedPages verified_;
   GuestFrameStats frame_;
   bool reported_device_count_ = false;
   // Physical [start, end) of every resolve destination recorded so far (base

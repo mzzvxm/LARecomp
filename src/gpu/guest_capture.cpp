@@ -222,11 +222,43 @@ GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
 // ---------------------------------------------------------------------------
 
 bool GuestCapture::CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes) {
-  if (address < 0x1000u || bytes == 0 || !nfx::IsGuestRangeReadable(address, bytes)) {
+  if (address < 0x1000u || bytes == 0 || !Readable(address, bytes)) {
     ++frame_.unreadable;
     return false;
   }
   std::memcpy(out, GuestBytes(base, address), bytes);
+  return true;
+}
+
+// IsGuestRangeReadable, except that inside one GatherDraw a range lying on pages
+// that an earlier check of that call found readable is not asked again. Each
+// check takes the heap's lock and walks its page table; a draw makes about ten,
+// mostly on the same few pages (a shader object and its sub-object, a
+// declaration and its elements). The record of what was found lives only
+// until GatherDraw returns, a few microseconds, so a change of the guest's
+// protections between draws is always seen by the next draw's first check.
+// A run is kept as 4 KiB pages: no heap has a smaller page (they are 4 KiB,
+// 64 KiB or 16 MiB) and a protection is per heap page, so a page that lies
+// inside a checked range is as readable as the range.
+bool GuestCapture::Readable(uint32_t address, uint64_t size) {
+  if (!verified_.active || address < 0x1000u || size == 0 ||
+      uint64_t(address) + size > 0x100000000ull) {
+    return nfx::IsGuestRangeReadable(address, size);
+  }
+  const uint32_t first = address >> 12;
+  const uint32_t last = uint32_t((uint64_t(address) + size - 1) >> 12);
+  for (uint32_t i = 0; i < verified_.count; ++i) {
+    if (verified_.first[i] <= first && last <= verified_.last[i]) {
+      return true;
+    }
+  }
+  if (!nfx::IsGuestRangeReadable(address, size)) {
+    return false;
+  }
+  const uint32_t slot = verified_.next++ % VerifiedPages::kRuns;
+  verified_.first[slot] = first;
+  verified_.last[slot] = last;
+  verified_.count = std::min(verified_.count + 1, VerifiedPages::kRuns);
   return true;
 }
 
@@ -265,7 +297,7 @@ GuestCapture::ShaderRead GuestCapture::ReadPixelShader(const uint8_t* base, uint
   r.address = LoadBe32(fields) + LoadBe32(object + guest::kPsUcodeBase);
   r.size = LoadBe32(fields + 4);
   r.readable = r.size != 0 && r.size <= nfx::kMaxUcodeBytes && r.address >= 0x1000u &&
-               nfx::IsGuestRangeReadable(r.address, r.size);
+               Readable(r.address, r.size);
   if (!r.readable) {
     ++frame_.unreadable;
   }
@@ -312,7 +344,7 @@ GuestCapture::ShaderRead GuestCapture::ReadVertexShader(const uint8_t* base, uin
   r.address = LoadBe32(fields) + LoadBe32(object + guest::kVsUcodeBase);
   r.size = LoadBe32(fields + 4);
   r.readable = r.size != 0 && r.size <= nfx::kMaxUcodeBytes && r.address >= 0x1000u &&
-               nfx::IsGuestRangeReadable(r.address, r.size);
+               Readable(r.address, r.size);
   if (!r.readable) {
     ++frame_.unreadable;
   }
@@ -393,6 +425,14 @@ GuestCallToken GuestCapture::BeforeDraw(const uint8_t* base, uint32_t device) {
 
 void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                               DrawCapture& c) {
+  // Readable() remembers the pages it found readable until this call returns.
+  verified_.count = 0;
+  verified_.next = 0;
+  verified_.active = true;
+  struct Deactivate {
+    VerifiedPages& pages;
+    ~Deactivate() { pages.active = false; }
+  } deactivate{verified_};
   const uint32_t ps_object = DeviceU32(base, device, guest::kDevPixelShader);
   if (ps_object == 0) {
     c.flags |= kDrawNoPixelShader;
@@ -427,8 +467,8 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
       if (count > guest::kMaxDeclElements) {
         c.flags |= kDrawDeclTooLong;
       } else if (count != 0 &&
-                 !nfx::IsGuestRangeReadable(c.decl_object + nfx::kDeclOffsetElements,
-                                            count * guest::kDeclElementBytes)) {
+                 !Readable(c.decl_object + nfx::kDeclOffsetElements,
+                           count * guest::kDeclElementBytes)) {
         c.flags |= kDrawDeclUnreadable;
         ++frame_.unreadable;
       } else {
