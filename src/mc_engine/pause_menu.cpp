@@ -1336,16 +1336,15 @@ const ItemDef kVideoItems[] = {
 #else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
+    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
+    Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
 };
 
 const ItemDef kRecompItems[] = {
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
-    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
-    Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
-    Bool("PM_RxDof",         "disable_dof",              "DEPTH OF FIELD: ", true),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
 };
@@ -1372,6 +1371,7 @@ const ItemDef kPerfItems[] = {
     Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (ON RELOAD)"),
     Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
     Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
+    Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
     Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
     // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so
     // the next fence poll already sees a change made here. Worth a row rather
@@ -1585,7 +1585,6 @@ const ItemDef kGfxHubItems[] = {
 #endif
 };
 const ItemDef kGameHubItems[] = {
-    Submenu("PM_RxSubRecomp", "RECOMP SETTINGS", "RxRecompMenu"),
     Submenu("PM_RxSubCam",    "CAMERA",          "RxCamMenu"),
     Submenu("PM_RxSubTod",    "TIME OF DAY",     "RxTodMenu"),
     Submenu("PM_RxSubCarbon", "CARBON FIBER",    "RxCarbonMenu"),
@@ -1693,11 +1692,15 @@ const ItemDef& MenuItemAt(const MenuDef& md, int i) {
 }
 
 const MenuDef kMenus[] = {
-    // Hubs: the buttons of the SETTINGS tab.
+    // The buttons of the SETTINGS tab: the recomp's own fixes first, then the
+    // hubs.
+    {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
+     "RxRecompMenu",
+     kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
     {"PM_RxTabGfx", "GRAPHICS", "Display, renderer and performance.",
      "RxGfxMenu",
      kGfxHubItems, int(sizeof(kGfxHubItems) / sizeof(kGfxHubItems[0]))},
-    {"PM_RxTabGame", "GAMEPLAY", "Recomp fixes, camera, time and cars.",
+    {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
      "RxGameMenu",
      kGameHubItems, int(sizeof(kGameHubItems) / sizeof(kGameHubItems[0]))},
     {"PM_RxTabIface", "INTERFACE", "Menu colors and language.",
@@ -1707,12 +1710,9 @@ const MenuDef kMenus[] = {
      "RxExtrasMenu",
      kExtrasHubItems, int(sizeof(kExtrasHubItems) / sizeof(kExtrasHubItems[0]))},
     // Reached through a hub.
-    {"PM_RxTabVideo", "DISPLAY", "Window, resolution and vsync.",
+    {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0]))},
-    {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
-     "RxRecompMenu",
-     kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
