@@ -56,6 +56,10 @@ void TickMapMouse();
 // the map" -- by the time that is true it is already too late.
 bool MapMouseWantsPointer();
 
+// True while the map has the OS pointer hidden (the mouse is driving it and
+// map_mouse_hide_cursor is on). cursor_hide.cpp leaves the pointer alone then.
+bool MapMouseHidesCursor();
+
 // sub_8262A688 @0x8262A6AC -- the full map's input tick, entered with r31 = the
 // map screen, f1 still holding the frame delta and the frame already set up.
 // Runs before the game reads the pad, so a stick that is inside its deadzone

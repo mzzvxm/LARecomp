@@ -73,6 +73,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/string_dumper.cpp
     src/mc_engine/menu_camera.cpp
     src/mc_engine/map_mouse.cpp
+    src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
