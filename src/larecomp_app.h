@@ -46,6 +46,8 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/ui/achievements.h"
 #include <rex/ui/keybinds.h>
+#include <rex/system.h>
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -538,9 +540,88 @@ class LarecompApp : public rex::ReXApp {
     return true;
   }
 
+  // Whether a file can be created in `dir` (made if missing). Windows'
+  // Controlled Folder Access lets unknown programs read
+  // Documents but not write there; only a real write shows it.
+  static bool CanWriteTo(const std::filesystem::path& dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (!std::filesystem::is_directory(dir, ec)) return false;
+    const std::filesystem::path probe = dir / ".larecomp_write_test";
+    {
+      std::ofstream f(probe, std::ios::binary | std::ios::trunc);
+      if (!f || !(f << 'x') || !f.flush()) return false;
+    }
+    std::filesystem::remove(probe, ec);
+    return true;
+  }
+
+  // %LOCALAPPDATA%\larecomp: where the identity key already lives, and a place
+  // that protection leaves writable. Empty off Windows or without the variable.
+  static std::filesystem::path LocalUserFolder() {
+#if defined(_WIN32)
+    if (const wchar_t* local = _wgetenv(L"LOCALAPPDATA"); local && *local) {
+      return std::filesystem::path(local) / L"larecomp";
+    }
+#endif
+    return {};
+  }
+
+  // The default user folder (Documents\larecomp) when the player did not name
+  // one. If it cannot be written -- Controlled Folder Access blocks it, and the
+  // SDK's shader storage then throws while creating cache\ and the game closes
+  // -- the saves, cache and the rest move to %LOCALAPPDATA%\larecomp, existing
+  // saves copied over. A marker keeps them there afterwards, so lifting the
+  // block later does not split the saves between the two folders.
+  void ChooseWritableUserFolder(rex::PathConfig& paths) {
+    if (!rex::cvar::GetFlagByName("user_data_root").empty()) return;  // the player's choice
+    const std::filesystem::path fallback = LocalUserFolder();
+    if (fallback.empty()) return;
+    const std::filesystem::path marker = fallback / ".moved_from_documents";
+    std::error_code ec;
+    const bool moved_before = std::filesystem::exists(marker, ec);
+    if (!moved_before && CanWriteTo(paths.user_data_root)) return;
+    if (!CanWriteTo(fallback)) {
+      path_notes_.push_back("cannot write to '" + paths.user_data_root.string() + "' nor to '" +
+                            fallback.string() + "'; saves and the shader cache will fail");
+      return;
+    }
+    const std::filesystem::path documents = paths.user_data_root;
+    const bool cache_followed = paths.cache_root == documents / "cache";
+    paths.user_data_root = fallback;
+    if (cache_followed) paths.cache_root = fallback / "cache";
+    if (moved_before) {
+      path_notes_.push_back("user data in '" + fallback.string() + "' (moved there from '" +
+                            documents.string() + "' on an earlier run)");
+      return;
+    }
+    // First time: bring what is already there (reading Documents is allowed),
+    // without the cache, which is rebuilt.
+    size_t copied = 0;
+    if (std::filesystem::is_directory(documents, ec)) {
+      for (const auto& entry : std::filesystem::directory_iterator(documents, ec)) {
+        if (entry.path().filename() == "cache") continue;
+        std::filesystem::copy(entry.path(), fallback / entry.path().filename(),
+                              std::filesystem::copy_options::recursive |
+                                  std::filesystem::copy_options::skip_existing,
+                              ec);
+        if (!ec) ++copied;
+      }
+    }
+    { std::ofstream(marker) << documents.string() << '\n'; }
+    path_notes_.push_back("'" + documents.string() + "' cannot be written; user data moved to '" +
+                          fallback.string() + "', " + std::to_string(copied) + " item(s) copied");
+    rex::ShowSimpleMessageBox(
+        rex::SimpleMessageBoxType::Warning,
+        fmt::format("LARecomp cannot save to\n{}\n\nYour saves are kept in\n{}\ninstead, and the "
+                    "ones already there were copied over. Nothing else to do.",
+                    documents.string(), fallback.string()));
+  }
+
   void OnConfigurePaths(rex::PathConfig& paths) override {
     // The MCLA settings panel saves here, as the SDK's overlay does.
     settings_config_path_ = paths.config_path;
+    ChooseWritableUserFolder(paths);
     const auto root = ExeDir();
 
     // A bare default.xex is not enough to call a directory the game root: the
