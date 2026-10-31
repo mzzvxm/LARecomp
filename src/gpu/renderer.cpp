@@ -24,7 +24,7 @@
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
-    mcla_gpu, false, "MCLA/GPU",
+    mcla_gpu, true, "MCLA/GPU",
     "Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs "
     "mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so "
     "neither the SDK presenter nor the legacy runtime can run beside it. Since milestone M4.6 it "

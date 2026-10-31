@@ -24,7 +24,7 @@
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 
 REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_nocp, false, "MCLA/NativeGfx",
+    mcla_native_gfx_nocp, true, "MCLA/NativeGfx",
     "Run with NO emulated GPU in the process. Leaves gpu_plugin empty, so ReXApp never calls "
     "LoadGpuPlugin and rexgpu-xenos is never loaded: no command processor, no PM4 parser, no "
     "register file, no EDRAM render-target cache, no shader translator. The app then supplies "
