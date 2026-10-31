@@ -24,6 +24,8 @@
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
 
+REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
+
 REXCVAR_DEFINE_BOOL(skip_intro, false, "MCLA/Patches", "Skip the intro videos to prevent graphical issues.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -86,13 +88,16 @@ REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
     "(PHOTOALBUMMOVIE, POPUPMOVIE, PAUSEMOVIE, GARAGEMOVIE, NAVSYSMOVIE, ...), '*' "
     "for every movie, empty for none. The HUD is two movies, HUDMAPMOVIE and "
     "HUDGAUGE (needles, song ticker, race countdown); it is left out by default: "
-    "stepping 30 times a second it would visibly lag a 60 FPS world. Only movies "
-    "the game steps one frame per update are paced.")
+    "stepping 30 times a second it would visibly lag a 60 FPS world, unless the "
+    "frames between the steps are drawn (ui_interpolate, which paces every movie "
+    "and ignores this list). Only movies the game steps one frame per update are "
+    "paced.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(ui_countdown_fix, true, "MCLA/UI",
     "Keep the race countdown (3, 2, 1, GO) in time when the HUD's gauge movie steps "
-    "less often than the game updates (HUDGAUGE or '*' in ui_movie_pacing). The "
+    "less often than the game updates (HUDGAUGE or '*' in ui_movie_pacing, or "
+    "ui_interpolate on). The "
     "movie's script adds the last update's time to the "
     "countdown's clock on every step, so with 30 steps a second at 120 FPS the "
     "countdown ran at a quarter of its speed and a race began on the 2 or the 3. "
@@ -551,7 +556,8 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
         }
     }
     const std::string_view name = screen ? std::string_view(screen->name) : std::string_view("HUDGAUGE");
-    bool paced = g_paced_all;
+    // Smooth UI steps every movie at 30 a second and draws the frames in between.
+    bool paced = g_paced_all || REXCVAR_GET(ui_interpolate);
     for (size_t i = 0; !paced && i < g_paced_names.size(); ++i) paced = g_paced_names[i] == name;
     if (!paced) return nullptr;
 
@@ -590,7 +596,12 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
 // schedule starts again from it. Not the HUD, and not a screen that took an extra step
 // less than 100 ms ago (with ui_input_repeat_30hz off a held direction repeats every 6
 // updates, 50 ms at 120 FPS).
-bool StepDue(Movie& m, int64_t now) {
+//
+// step_ns is when the step belongs on its schedule, which is what the interpolation
+// times the glide from (ui_smooth.cpp): the due time when the movie is on schedule,
+// else now.
+bool StepDue(Movie& m, int64_t now, int64_t& step_ns) {
+    step_ns = now;
     bool by_input = false;
     if (!m.hud) {
         const uint32_t seq = g_ui_input_seq.load(std::memory_order_acquire);
@@ -609,6 +620,7 @@ bool StepDue(Movie& m, int64_t now) {
         return true;
     }
     const bool behind = !m.next_due_ns || now > m.next_due_ns + kStepPeriodNs;
+    step_ns = behind ? now : m.next_due_ns;
     m.next_due_ns = behind ? now + kStepPeriodNs : m.next_due_ns + kStepPeriodNs;
     return true;
 }
@@ -705,11 +717,15 @@ extern "C" REX_FUNC(rex_sub_82720898) {
         std::lock_guard<std::mutex> lock(g_pacing_mutex);
         if (Movie* m = MovieFor(base, entry)) {
             const int64_t now = SteadyNowNs();
+            int64_t step_ns = now;
+            UiSmoothTouch(m->context, now);
             if (PhotoCaptureInProgress(base) || PhotoCityReturning()) {
                 m->next_due_ns = 0;  // back on the 30 Hz schedule from the next update
                 ++m->advanced;
-            } else if (StepDue(*m, now)) {
+                UiSmoothNoteStep(m->context, step_ns, kStepPeriodNs);
+            } else if (StepDue(*m, now, step_ns)) {
                 ++m->advanced;
+                UiSmoothNoteStep(m->context, step_ns, kStepPeriodNs);
             } else {
                 ++m->held;
                 held = m->context;
