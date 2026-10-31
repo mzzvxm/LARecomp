@@ -53,14 +53,21 @@ bool Device::Open(const Options& options) {
     return false;
   }
 
-  device_ = interface_->createDevice(options.preferred_adapter);
+  // The user's adapter always wins; without one, the backend may name its own choice
+  // (backend::DefaultAdapterName), and an empty name leaves it to Plume.
+  const std::string adapter = options.preferred_adapter.empty() ? backend::DefaultAdapterName()
+                                                                 : options.preferred_adapter;
+  device_ = interface_->createDevice(adapter);
   if (!device_) {
     REXLOG_ERROR("[gpu] Plume could not create a {} device{}", BackendName(),
-                 options.preferred_adapter.empty()
-                     ? std::string()
-                     : " on adapter '" + options.preferred_adapter + "'");
+                 adapter.empty() ? std::string() : " on adapter '" + adapter + "'");
     interface_.reset();
     return false;
+  }
+  if (!adapter.empty() && device_->getDescription().name != adapter) {
+    // Plume lets a later adapter with more dedicated video memory replace the named one.
+    REXLOG_WARN("[gpu] adapter '{}' was asked for but the device is on '{}'", adapter,
+                device_->getDescription().name);
   }
   backend_info_ = backend::DescribeDevice(device_.get());
   debug_layer_ = debug_layer;

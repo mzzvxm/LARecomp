@@ -55,7 +55,9 @@ REXCVAR_DEFINE_BOOL(
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
-                      "Adapter name to create the device on. Empty lets Plume pick.")
+                      "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
+                      "graphics setting for this app names, else the high-performance GPU; on "
+                      "Vulkan Plume picks.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(

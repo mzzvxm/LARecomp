@@ -133,4 +133,9 @@ int64_t DeviceRemovedReason(plume::RenderDevice*) {
   return 0;
 }
 
+// Plume's Vulkan rule stands; the D3D12 choice is made from DXGI's adapters.
+std::string DefaultAdapterName() {
+  return {};
+}
+
 }  // namespace mcla::gpu::backend::vulkan

@@ -164,6 +164,16 @@ bool TimestampsSupported(plume::RenderDevice* device);
 // "D3D12 12_2" / "Vulkan 1.3.290": the version a driver bug report needs.
 std::string DescribeDevice(plume::RenderDevice* device);
 
+// The adapter to ask Plume for when the user named none (mcla_gpu_adapter empty). D3D12: the
+// one Windows' graphics setting for this exe names (Settings > System > Display > Graphics:
+// power saving or high performance), else the first of Windows' high-performance order; software
+// and remote adapters and adapters without Direct3D 12 at feature level 11_0 are skipped, and the
+// choice is logged with its reason. Plume alone takes the adapter with the most dedicated video
+// memory, so an integrated GPU can win and Windows' setting is ignored. Empty means no opinion
+// and Plume picks as before: Vulkan, no IDXGIFactory6, no adapter found, or two adapters with
+// the first one's name (Plume matches by name and cannot tell them apart).
+std::string DefaultAdapterName();
+
 // The adapter's local video memory in use and the OS budget for it. Both 0 when
 // the backend cannot report them.
 struct VideoMemory {

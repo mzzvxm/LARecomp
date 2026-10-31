@@ -8,7 +8,13 @@
 
 #include "backend_impl.h"
 
+#include <algorithm>
 #include <format>
+#include <string>
+#include <vector>
+
+#include <dxgi1_6.h>
+#include <wrl/client.h>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -273,6 +279,78 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device) {
   }
   const HRESULT reason = dev->d3d->GetDeviceRemovedReason();
   return FAILED(reason) ? static_cast<int64_t>(static_cast<uint32_t>(reason)) : 0;
+}
+
+namespace {
+
+// The entry of Windows' graphics settings for this exe: the value named by the exe's full path in
+// HKCU, Software, Microsoft, DirectX, UserGpuPreferences, with data like "GpuPreference=2;".
+// 0 = let Windows decide, 1 = power saving, 2 = high performance, -1 = no entry.
+int WindowsGpuPreference() {
+  wchar_t exe[MAX_PATH];
+  const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) {
+    return -1;
+  }
+  wchar_t data[128];
+  DWORD size = sizeof(data);
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", exe,
+                   RRF_RT_REG_SZ, nullptr, data, &size) != ERROR_SUCCESS) {
+    return -1;
+  }
+  constexpr wchar_t kItem[] = L"GpuPreference=";
+  const wchar_t* item = wcsstr(data, kItem);
+  const wchar_t digit = item ? item[std::size(kItem) - 1] : L'\0';
+  return digit >= L'0' && digit <= L'2' ? digit - L'0' : -1;
+}
+
+}  // namespace
+
+std::string DefaultAdapterName() {
+  Microsoft::WRL::ComPtr<IDXGIFactory1> factory1;
+  Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory1))) || FAILED(factory1.As(&factory))) {
+    REXLOG_INFO("[gpu] D3D12 adapter: no IDXGIFactory6 (Windows before 10 1803); Plume picks the "
+                "adapter with the most video memory");
+    return {};
+  }
+  const int preference = WindowsGpuPreference();
+  const DXGI_GPU_PREFERENCE order = preference == 1 ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
+                                                    : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+  // Windows' order, without the adapters Plume skips too (software, remote, no D3D12 at 11_0).
+  std::vector<std::string> names;
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+  for (UINT i = 0; SUCCEEDED(factory->EnumAdapterByGpuPreference(i, order, IID_PPV_ARGS(&adapter)));
+       ++i, adapter.Reset()) {
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(adapter->GetDesc1(&desc)) ||
+        (desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE | DXGI_ADAPTER_FLAG_REMOTE)) ||
+        FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
+                                 nullptr))) {
+      continue;
+    }
+    char name[512];  // the same UTF-8 name Plume compares with
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name),
+                                          nullptr, nullptr);
+    names.emplace_back(name, bytes > 0 ? bytes - 1 : 0);
+  }
+  if (names.empty()) {
+    REXLOG_INFO("[gpu] D3D12 adapter: none listed by IDXGIFactory6; Plume picks");
+    return {};
+  }
+  if (std::count(names.begin(), names.end(), names.front()) > 1) {
+    REXLOG_INFO("[gpu] D3D12 adapter: '{}' comes first but {} adapters have that name, which "
+                "Plume cannot tell apart; Plume picks", names.front(),
+                std::count(names.begin(), names.end(), names.front()));
+    return {};
+  }
+  const char* why = preference == 1   ? "Windows' graphics setting for this app: power saving"
+                    : preference == 2 ? "Windows' graphics setting for this app: high performance"
+                    : preference == 0 ? "Windows' graphics setting for this app: let Windows "
+                                        "decide; the high-performance GPU"
+                                      : "no graphics setting for this app; the high-performance GPU";
+  REXLOG_INFO("[gpu] D3D12 adapter '{}': {} (mcla_gpu_adapter empty)", names.front(), why);
+  return names.front();
 }
 
 }  // namespace mcla::gpu::backend::d3d12
