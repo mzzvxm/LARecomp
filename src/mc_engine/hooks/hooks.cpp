@@ -12,6 +12,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "discord_rpc/discord_rpc.h"
+#include "../adaptive_triggers.h"
 #include "../camera_look.h"
 #include "../cutscene_gallery.h"
 #include "../hud_units.h"
@@ -159,6 +160,7 @@ void Patch_DeltaTimePre() {
     TickCutsceneGallery();      // cutscene replay: close the menu, start the script
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
     TickMapWarp();              // warp console command / F9: a mod's warp point <-> back
+    larecomp::triggers::Tick(); // DualSense triggers: spring and brake while a car is driven
     larecomp::browser::TickServerBrowserJoin();  // server browser: drive the picked join
     TickModGlows();             // guest scratch for the mods' light glows
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit

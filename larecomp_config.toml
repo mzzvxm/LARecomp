@@ -25295,6 +25295,13 @@ name = "Hook_WheelHudGear"
 registers = ["r4", "r5"]
 after_instruction = false
 
+# DualSense adaptive triggers (mc_engine/adaptive_triggers.cpp). Start of the block of the HUD update
+# (sub_822112A8) that writes the speedometer, the tachometer and the gear display. The HUD updates
+# once a frame while a car is driven, so a recent call means "driving".
+[[midasm_hook]]
+address = 0x822117C0
+name = "Hook_TriggersHud"
+
 # Online Tournament: short-circuit the mcOnlineTournament state machine
 # (sub_82740958) at entry. r3 = the state object. The real read hits a dead
 # Rockstar LSP socket (confirmed: state 8 status=2 -> state 11 "server not

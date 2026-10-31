@@ -1347,6 +1347,8 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
+    // Live. A DualSense only: a spring on R2 and a brake on L2 while a car is driven.
+    Bool("PM_RxTriggers",    "adaptive_triggers",        "DUALSENSE TRIGGERS: "),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
 };

@@ -41,6 +41,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "bootprogress/larecomp_boot_progress.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
+#include "mc_engine/adaptive_triggers.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/debug_overlay.h"
 #include "mc_engine/ui/controller_toast.h"
@@ -504,6 +505,7 @@ class LarecompApp : public rex::ReXApp {
   // swap chain back before the process dies.
   bool OnWindowCloseRequested() override {
     MclaWaitForSaves();
+    larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
@@ -514,6 +516,7 @@ class LarecompApp : public rex::ReXApp {
     // Closing the window while the boot content build runs: let it finish
     // writing the mod archive before the process goes, as it always did.
     larecomp::WaitForBootBuild();
+    larecomp::triggers::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
