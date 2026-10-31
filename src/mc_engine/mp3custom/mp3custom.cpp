@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mp3custom.h"
+#include "mc_engine/modloader/modloader.h"
 #include "mc_engine/music/custom_music.h"
 #include "mp3_player.h"
 
@@ -471,9 +472,9 @@ void CollectNativeTitles() {
 #if defined(_WIN32)
     wchar_t exe[MAX_PATH]{};
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
-    models = std::filesystem::path(exe).parent_path() / L"models";
+    models = mc::modloader::ModRootDir(std::filesystem::path(exe).parent_path());
 #else
-    models = std::filesystem::current_path(ec) / "models";
+    models = mc::modloader::ModRootDir(std::filesystem::current_path(ec));
 #endif
     if (!std::filesystem::is_directory(models, ec)) return;
 

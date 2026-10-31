@@ -1,13 +1,15 @@
 // Drop-in model replacement, modloader style.
 //
-//   <exe>/models/<any mod name>/<asset name>.obj
-//   e.g. models/sonic/drv_mp_01_set.obj
+//   <exe>/modloader/<any mod name>/<asset name>.obj
+//   e.g. modloader/sonic/drv_mp_01_set.obj
+//
+// (mods/ and models/ work as well; see ModRootDir.)
 //
 // Wheels go in a "rims" folder inside the mod, since a wheel and a character are
 // different assets under different archive paths:
 //
-//   <exe>/models/<any mod name>/rims/<wheel name>.glb
-//   e.g. models/vw/rims/whl_am_volk_te37.glb
+//   <exe>/modloader/<any mod name>/rims/<wheel name>.glb
+//   e.g. modloader/vw/rims/whl_am_volk_te37.glb
 //
 // In either folder a mesh named "all" stands in for every asset of that kind.
 //
@@ -21,10 +23,33 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
+#include <string_view>
+#include <system_error>
 
 namespace mc::modloader {
 
-// Scans models/, builds xarchive_mods.rpf and prepares the archive list the
+// The mod folder beside the executable. Three names are accepted, the first
+// one present wins: modloader/, mods/, models/. With none of them present it
+// is modloader/, which is what anything creating the folder makes.
+inline std::filesystem::path ModRootDir(const std::filesystem::path& exe_dir) {
+    std::error_code ec;
+    for (const char* name : {"modloader", "mods", "models"}) {
+        std::filesystem::path dir = exe_dir / name;
+        if (std::filesystem::is_directory(dir, ec)) return dir;
+    }
+    return exe_dir / "modloader";
+}
+
+// Folders in the mod folder that are not mods: the texture dumps
+// (textures_dump/), loose replacements (textures_replace/), music and caches
+// (any name starting with '.').
+inline bool IsReservedModFolder(std::string_view name) {
+    return name.empty() || name.front() == '.' || name == "textures_dump" ||
+           name == "textures_replace" || name == "music";
+}
+
+// Scans the mod folder, builds xarchive_mods.rpf and prepares the archive list the
 // engine will mount. Call once at startup, before guest code runs.
 void Init();
 

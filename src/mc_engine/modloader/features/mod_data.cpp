@@ -1,5 +1,7 @@
 #include "mod_data.h"
 
+#include "mc_engine/modloader/modloader.h"
+
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -13,9 +15,10 @@ std::filesystem::path ModelsDir() {
     std::error_code ec;
 #if defined(_WIN32)
     wchar_t exe[MAX_PATH]{};
-    if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) return std::filesystem::path(exe).parent_path() / L"models";
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH))
+        return mc::modloader::ModRootDir(std::filesystem::path(exe).parent_path());
 #endif
-    return std::filesystem::current_path(ec) / "models";
+    return mc::modloader::ModRootDir(std::filesystem::current_path(ec));
 }
 
 }  // namespace
@@ -27,7 +30,8 @@ std::vector<ModDataFile> FindModDataFiles(const char* name) {
     if (!std::filesystem::is_directory(models, ec)) return out;
     std::vector<std::filesystem::path> mods;
     for (const auto& entry : std::filesystem::directory_iterator(models, ec)) {
-        if (entry.is_directory(ec) && entry.path().filename().string().rfind('.', 0) != 0)
+        if (entry.is_directory(ec) &&
+            !mc::modloader::IsReservedModFolder(entry.path().filename().string()))
             mods.push_back(entry.path());
     }
     std::sort(mods.begin(), mods.end());

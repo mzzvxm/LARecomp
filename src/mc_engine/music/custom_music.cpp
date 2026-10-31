@@ -10,6 +10,7 @@
 
 #include "../../larecomp_log.h"
 #include "mc_engine/boot_progress.h"
+#include "mc_engine/modloader/modloader.h"
 #include "mc_engine/modloader/rpf3.h"
 #include "mc_engine/music/audio_dat.h"
 #include "mc_engine/music/wave_bank.h"
@@ -540,7 +541,7 @@ void WriteManifestTemplate(const fs::path& folder) {
 #
 # HOUSEKEEPING
 #
-# Built banks are cached in models/.custommusic and only rebuilt when a source
+# Built banks are cached in modloader/.custommusic and only rebuilt when a source
 # file changes, so a normal start costs nothing. Delete that folder to force a
 # full rebuild. Nothing here ever modifies the game's own files.
 )";
@@ -793,7 +794,7 @@ std::vector<GeneratedFile> Build(const fs::path& exe_dir, const fs::path& game_r
     }
     uint32_t needed_header = kStockHeaderSize;
 
-    const fs::path cache_dir = exe_dir / "models" / kCacheFolder;
+    const fs::path cache_dir = mc::modloader::ModRootDir(exe_dir) / kCacheFolder;
     const fs::path banks_dir = cache_dir / "files" / "audio" / "x360" / "sfx" / "music";
     const fs::path config_dir = cache_dir / "files" / "audio" / "x360" / "config";
     std::error_code ec;

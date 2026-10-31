@@ -44,7 +44,8 @@
 #include "mc_engine/music/custom_music.h"
 
 REXCVAR_DEFINE_BOOL(model_mods, true, "MCLA/Mods",
-    "Load model replacements from <exe>/models/<mod>/<asset>.obj. Each .obj is "
+    "Load model replacements from <exe>/modloader/<mod>/<asset>.obj (or mods/, "
+    "models/). Each .obj is "
     "baked into a native drawable and packed into xarchive_mods.rpf, which is "
     "appended to the archive list -- the engine's own last-mounted-wins rule "
     "makes it override per file. Game archives are never modified.")
@@ -568,7 +569,7 @@ REXCVAR_DEFINE_INT32(model_mods_grow_probe, 0, "MCLA/Mods",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(model_mods_diag, false, "MCLA/Mods",
-    "Write a `models/.diag` folder beside the mods: one .txt per rebuilt asset "
+    "Write a `.diag` folder beside the mods: one .txt per rebuilt asset "
     "holding the template's submesh table, both rigs with the joint-to-bone "
     "mapping, and how the mesh was dealt across the submeshes -- plus the mesh "
     "itself as .obj before and after the retarget. A character that comes out "
@@ -980,9 +981,8 @@ void ScanMods(const std::filesystem::path& models_dir, std::vector<ModEntry>& ch
     for (const auto& mod_dir : std::filesystem::directory_iterator(models_dir, ec)) {
         if (ec) break;
         if (!mod_dir.is_directory()) continue;
-        if (mod_dir.path().filename().string().rfind('.', 0) == 0) continue;  // .cache etc
-
         const std::string mod_name = mod_dir.path().filename().string();
+        if (IsReservedModFolder(mod_name)) continue;  // dumps, .cache etc
         ScanFolder(mod_dir.path(), mod_name, characters);
 
         // Its own error_code: a mod without a rims folder is the normal case,
@@ -4836,10 +4836,18 @@ void Init() {
     const bool enable_models = REXCVAR_GET(model_mods);
 
     const std::filesystem::path exe_dir = ExeDir();
-    const std::filesystem::path models_dir = exe_dir / "models";
+    const std::filesystem::path models_dir = ModRootDir(exe_dir);
 
     std::error_code ec;
     const bool have_models = std::filesystem::is_directory(models_dir, ec);
+    // Only one of the three names is read; a mod left in another one would
+    // otherwise just stop loading.
+    for (const char* other : {"modloader", "mods", "models"}) {
+        const std::filesystem::path dir = exe_dir / other;
+        if (dir != models_dir && std::filesystem::is_directory(dir, ec))
+            LARECOMP_APP_WARN("[mods] {}/ is ignored: mods are read from {}/ only; move its "
+                              "folders there", other, models_dir.filename().string());
+    }
 
     auto* runtime = rex::Runtime::instance();
     if (!runtime) {

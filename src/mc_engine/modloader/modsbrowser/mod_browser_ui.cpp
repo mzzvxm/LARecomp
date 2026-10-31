@@ -36,6 +36,7 @@
 #include "larecomp_log.h"
 #include "../../online/server_browser/browser_client.h"
 #include "mod_download.h"
+#include "mc_engine/modloader/modloader.h"
 #include "mc_engine/ui/imgui_theme.h"
 
 namespace fs = std::filesystem;
@@ -62,7 +63,7 @@ constexpr ImVec4 kBlue = mcla::ui::kColorCyanGlow;
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
-fs::path ModelsDir() { return rex::filesystem::GetExecutableFolder() / "models"; }
+fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder()); }
 
 std::string Utf8(const fs::path& p) {
     const auto u = p.u8string();
@@ -97,8 +98,8 @@ std::vector<LocalMod> ScanLocal() {
             m.name = folder.substr(std::strlen(kOldPrefix));
             m.backup = true;
             m.enabled = false;
-        } else if (folder[0] == '.') {
-            continue;  // .cache, a download in progress, ...
+        } else if (mc::modloader::IsReservedModFolder(folder)) {
+            continue;  // .cache, a download in progress, the texture dumps, ...
         } else {
             m.name = folder;
         }
@@ -480,10 +481,11 @@ private:
 
     void DrawInstalled() {
         if (scanning_local_ && local_.empty()) {
-            ImGui::TextDisabled("Reading models/...");
+            ImGui::TextDisabled("Reading %s/...", Utf8(ModelsDir().filename()).c_str());
             return;
         }
-        if (local_.empty()) ImGui::TextDisabled("No mods in models/.");
+        if (local_.empty())
+            ImGui::TextDisabled("No mods in %s/.", Utf8(ModelsDir().filename()).c_str());
         if (BeginCards("##local")) {
             SetupCards();
             for (const auto& m : local_) {
@@ -603,7 +605,8 @@ private:
         const fs::path to = ModelsDir() / FromUtf8(m.enabled ? std::string(kDisabledPrefix) + m.name : m.name);
         std::error_code ec;
         if (fs::exists(to, ec)) {
-            message_ = "Cannot: models/" + Utf8(to.filename()) + " already exists.";
+            message_ = "Cannot: " + Utf8(ModelsDir().filename()) + "/" + Utf8(to.filename()) +
+                       " already exists.";
             return;
         }
         fs::rename(from, to, ec);
