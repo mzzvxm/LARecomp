@@ -47,6 +47,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/timing_log.cpp
     src/mc_engine/hooks/graphics.cpp
     src/mc_engine/hooks/dev_options.cpp
+    src/mc_engine/hooks/display_gamma.cpp
     src/mc_engine/hooks/camera.cpp
     src/mc_engine/hooks/vehicle.cpp
     src/mc_engine/hooks/rubberband.cpp

@@ -1309,6 +1309,8 @@ constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
 constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
 constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"};
 constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
+constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
+constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
@@ -1344,6 +1346,9 @@ const ItemDef kVideoItems[] = {
 
 const ItemDef kRecompItems[] = {
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
+    // Live: the game's gamma ramp is set again at the next frame (hooks/display_gamma.cpp).
+    Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
+         kDisplayGammaVals, kDisplayGammaNames, 2),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),

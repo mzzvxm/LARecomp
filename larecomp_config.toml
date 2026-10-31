@@ -24947,6 +24947,16 @@ jump_address_on_true = 0x822C2F7C
 address = 0x821315E4
 name = "MCLA_SkipIntroRenderPassMask"
 registers = ["r4"]
+
+# Display gamma (hooks/display_gamma.cpp). sub_82426B68 builds the table that the device's gamma
+# ramp is converted through; 0x82426B98 follows its `bl VdGetCurrentDisplayGamma`, which wrote the
+# display type at r1+84 (1 sRGB, 2 TV). With display_gamma = pc the hook writes 1 where the call
+# wrote 2.
+[[midasm_hook]]
+address = 0x82426B98
+name = "Hook_DisplayGammaType"
+registers = ["r1"]
+
 # BadassBaboon's Recomp Adjustments: Core 60 FPS Engine Timing Pipeline
 # 0x821BDAB0: subf r8,r10,r11 in sub_821BDA90 (elapsed frame ticks clamp & limiter)
 [[midasm_hook]]
