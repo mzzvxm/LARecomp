@@ -9,6 +9,7 @@
 #include "online/server_browser/browser_ui.h"
 #include "ui_forms.h"
 #include "ui_palette.h"
+#include "save_protect.h"
 #include "online/system_link.h"
 
 #include <atomic>
@@ -34,6 +35,7 @@
 #include <rex/runtime.h>
 #include <rex/ppc/function.h>
 #include <rex/system/function_dispatcher.h>
+#include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
 #if defined(LARECOMP_HAS_GPU)
@@ -2015,9 +2017,16 @@ void ApplyItem(const ItemDef& it, int dir) {
             // Same as leaving a menu: settings that moved are written first.
             if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
             auto* runtime = rex::Runtime::instance();
-            auto* app_context = runtime ? runtime->app_context() : nullptr;
-            if (app_context) {
+            rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
+            if (window) {
                 MC_INFO("[pause-menu] quit requested from the QUIT menu");
+                window->app_context().CallInUIThread([window] {
+                    MclaWaitForSaves();
+                    window->RequestClose();
+                });
+            } else if (auto* app_context = runtime ? runtime->app_context() : nullptr) {
+                MC_INFO("[pause-menu] quit requested, closing via deferred quit");
+                MclaWaitForSaves();
                 app_context->RequestDeferredQuit();
             } else {
                 MC_WARN("[pause-menu] quit requested, but app context is unavailable");

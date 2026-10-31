@@ -32,6 +32,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/online/server_browser/browser_ui.h"
 #include "mc_engine/map_mouse.h"
+#include "mc_engine/save_protect.h"
 #include "mc_engine/audio_output.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -502,6 +503,7 @@ class LarecompApp : public rex::ReXApp {
   // the Plume renderer stops its render thread, drains the GPU and gives the
   // swap chain back before the process dies.
   bool OnWindowCloseRequested() override {
+    MclaWaitForSaves();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
