@@ -108,6 +108,16 @@ REXCVAR_DEFINE_BOOL(ui_input_repeat_30hz, true, "MCLA/UI",
     "second. On, the count advances once every 1/30 s.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(ui_advance_on_input, true, "MCLA/UI",
+    "Menus answer a key press on the update it arrives in. A menu movie paced to 30 "
+    "steps a second (ui_movie_pacing) would otherwise show the highlight moving up "
+    "to 33 ms after the press, 17 ms on average. On, a menu key event (a press, or a "
+    "repeat of a held direction) makes each menu, pop-up and map screen take one "
+    "extra step in the update it comes in, and its 30 Hz schedule starts again from "
+    "it, so the animations keep close to the console's speed. The HUD is not "
+    "stepped for it.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 bool SkipIntro() {
     return REXCVAR_GET(skip_intro);
 }
@@ -416,6 +426,18 @@ constexpr uint32_t kMovieContext = 56;
 constexpr uint32_t kMovieEnabled = 68;
 constexpr int64_t kStepPeriodNs  = 1'000'000'000 / 30;
 
+// The last menu key event (a press, or a repeat of a held direction) that the UI input
+// object delivered: a counter and the time. Written by rex_sub_82223CD8 and read by the
+// movie step, one after the other in the same update of the same thread (mcUIManager::
+// Update runs the input object before it steps the movies).
+std::atomic<uint32_t> g_ui_input_seq{0};
+std::atomic<int64_t> g_ui_input_ns{0};
+// A key event older than this when a movie comes to look at it belongs to an update long
+// gone (the movie was not stepped meanwhile): not answered.
+constexpr int64_t kInputWindowNs = 100'000'000;
+// Least time between two extra steps of one screen, whatever the key events do.
+constexpr int64_t kInputGapNs = 100'000'000;
+
 int64_t SteadyNowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -471,6 +493,8 @@ struct Movie {
     std::string name;
     bool hud = false;
     int64_t next_due_ns = 0;
+    int64_t input_ns = 0;     // the last extra step because of a key event
+    uint32_t input_seq = 0;   // the last key event this movie has looked at
     uint32_t advanced = 0;
     uint32_t held = 0;
 };
@@ -543,6 +567,7 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
         g_movies.emplace_back();
         m = &g_movies.back();
         m->entry = entry;
+        m->input_seq = g_ui_input_seq.load(std::memory_order_acquire);
     }
     if (m->name != name) m->name.assign(name);
     m->hud = !screen || name == "HUDMAPMOVIE";
@@ -559,8 +584,30 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
 // early at 60 FPS is not pushed a whole one late. A movie that fell more than a period
 // behind (disabled, a stall, below 30 FPS) restarts its schedule instead of catching up --
 // the console never stepped a movie twice in one update.
+//
+// ui_advance_on_input: a menu key event delivered in this update (noted by
+// rex_sub_82223CD8 below) makes a screen that is not due take one extra step now, and its
+// schedule starts again from it. Not the HUD, and not a screen that took an extra step
+// less than 100 ms ago (with ui_input_repeat_30hz off a held direction repeats every 6
+// updates, 50 ms at 120 FPS).
 bool StepDue(Movie& m, int64_t now) {
-    if (m.next_due_ns && now + kStepPeriodNs / 4 < m.next_due_ns) return false;
+    bool by_input = false;
+    if (!m.hud) {
+        const uint32_t seq = g_ui_input_seq.load(std::memory_order_acquire);
+        if (seq != m.input_seq) {
+            m.input_seq = seq;
+            by_input = REXCVAR_GET(ui_advance_on_input) &&
+                       now - g_ui_input_ns.load(std::memory_order_relaxed) <= kInputWindowNs &&
+                       now - m.input_ns >= kInputGapNs;
+        }
+    }
+    const bool not_due = m.next_due_ns && now + kStepPeriodNs / 4 < m.next_due_ns;
+    if (not_due && !by_input) return false;
+    if (not_due) {
+        m.next_due_ns = now + kStepPeriodNs;
+        m.input_ns = now;
+        return true;
+    }
     const bool behind = !m.next_due_ns || now > m.next_due_ns + kStepPeriodNs;
     m.next_due_ns = behind ? now + kStepPeriodNs : m.next_due_ns + kStepPeriodNs;
     return true;
@@ -711,10 +758,15 @@ extern "C" REX_FUNC(rex_sub_825EDC08) {
 // So a held button's count advances once per 1/30 s: on an update where its
 // tick is not due, one is taken off before the game adds one. Presses,
 // releases and the events themselves still run every update.
+//
+// The same loop is where a key event is known: a button first seen down (a press) or
+// a held one whose count reaches its target (a repeat). The update that delivers it
+// steps the menus' movies right after, so ui_advance_on_input notes it for them.
 REX_EXTERN(__imp__rex_sub_82223CD8);  // FlashNavigator::fnInputHandler update
 
 namespace {
 constexpr uint32_t kUiButtons        = 24;
+constexpr uint32_t kUiRepeatTarget   = 0x8286E480;  // u8[24]
 constexpr uint32_t kUiRepeatCount    = 0x8286E49C;  // u8[24]
 constexpr uint32_t kUiButtonState    = 0x8286E4B8;  // 12 bytes per button
 constexpr int64_t kUiRepeatPeriodNs  = 1'000'000'000 / 30;
@@ -723,7 +775,8 @@ constexpr int64_t kUiRepeatSlackNs   = 2'000'000;
 }  // namespace
 
 extern "C" REX_FUNC(rex_sub_82223CD8) {
-    if (!REXCVAR_GET(ui_input_repeat_30hz)) {
+    const bool pace = REXCVAR_GET(ui_input_repeat_30hz);
+    if (!pace && !REXCVAR_GET(ui_advance_on_input)) {
         __imp__rex_sub_82223CD8(ctx, base);
         return;
     }
@@ -732,8 +785,10 @@ extern "C" REX_FUNC(rex_sub_82223CD8) {
     static int64_t next_tick[kUiButtons] = {};
     const int64_t now = SteadyNowNs();
     uint8_t* const count = base + kUiRepeatCount;
+    const uint8_t* const target = base + kUiRepeatTarget;
     uint8_t before[kUiButtons] = {};
     uint32_t held_back = 0;
+    bool key_event = false;  // a press, or a repeat the game sends in this update
 
     for (uint32_t i = 0; i < kUiButtons; ++i) {
         const uint8_t* state = base + kUiButtonState + 12 * i;
@@ -742,14 +797,19 @@ extern "C" REX_FUNC(rex_sub_82223CD8) {
         if (!down) continue;
         if (!was_down) {
             next_tick[i] = now + kUiRepeatPeriodNs;  // the press: first tick 1/30 s away
+            key_event = true;
             continue;
         }
-        if (now + kUiRepeatSlackNs >= next_tick[i]) {
+        if (!pace || now + kUiRepeatSlackNs >= next_tick[i]) {
             // Due: the game's own ++count stands. A button that fell more than two
             // periods behind restarts its schedule instead of catching up.
-            next_tick[i] = now - next_tick[i] > 2 * kUiRepeatPeriodNs
-                               ? now + kUiRepeatPeriodNs
-                               : next_tick[i] + kUiRepeatPeriodNs;
+            if (pace) {
+                next_tick[i] = now - next_tick[i] > 2 * kUiRepeatPeriodNs
+                                   ? now + kUiRepeatPeriodNs
+                                   : next_tick[i] + kUiRepeatPeriodNs;
+            }
+            // It is a repeat when the count reaches the threshold.
+            key_event |= static_cast<uint8_t>(count[i] + 1) == target[i];
             continue;
         }
         before[i] = count[i];
@@ -764,6 +824,12 @@ extern "C" REX_FUNC(rex_sub_82223CD8) {
     for (uint32_t i = 0; held_back && i < kUiButtons; ++i) {
         if ((held_back >> i & 1) && count[i] == static_cast<uint8_t>(before[i] - 1))
             count[i] = before[i];
+    }
+
+    // The menus' movies are stepped later in this same update: tell them (ui_advance_on_input).
+    if (key_event) {
+        g_ui_input_ns.store(now, std::memory_order_relaxed);
+        g_ui_input_seq.fetch_add(1, std::memory_order_release);
     }
 }
 #else // REXGLUE_HAS_XEO3_TARGET
