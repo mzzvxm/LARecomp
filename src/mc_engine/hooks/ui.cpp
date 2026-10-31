@@ -8,6 +8,7 @@
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -83,8 +84,19 @@ REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
     "which on the 360 was 30 times a second; above 30 FPS those movies play faster "
     "-- the photo album twice as fast at 60. Comma-separated movie names "
     "(PHOTOALBUMMOVIE, POPUPMOVIE, PAUSEMOVIE, GARAGEMOVIE, NAVSYSMOVIE, ...), '*' "
-    "for every movie, empty for none. The HUD is left out on purpose: stepping 30 "
-    "times a second it would visibly lag a 60 FPS world.")
+    "for every movie, empty for none. The HUD is two movies, HUDMAPMOVIE and "
+    "HUDGAUGE (needles, song ticker, race countdown); it is left out by default: "
+    "stepping 30 times a second it would visibly lag a 60 FPS world. Only movies "
+    "the game steps one frame per update are paced.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(ui_countdown_fix, true, "MCLA/UI",
+    "Keep the race countdown (3, 2, 1, GO) in time when the HUD's gauge movie steps "
+    "less often than the game updates (HUDGAUGE or '*' in ui_movie_pacing). The "
+    "movie's script adds the last update's time to the "
+    "countdown's clock on every step, so with 30 steps a second at 120 FPS the "
+    "countdown ran at a quarter of its speed and a race began on the 2 or the 3. "
+    "On, the clock is given the time of all the updates since the movie's last step.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(ui_input_repeat_30hz, true, "MCLA/UI",
@@ -377,9 +389,23 @@ bool OpenRexGraphicsFromGameOptions_826686D4(PPCRegister& r3) {
 // toward its target x, the overwrite highlight pulses with sin(f / 10) -- so
 // the gallery is where it shows.
 //
-// A movie named in ui_movie_pacing steps once per 1/30 s of real time: the
-// per-update step of a movie that is not due holds back its advance, and the
-// rest of that update (3D targets, commit) still runs.
+// A paced movie steps once per 1/30 s of real time: the per-update step of a
+// movie that is not due holds back its advance, and the rest of that update
+// (3D targets, commit) still runs. Which movies: the ones named in
+// ui_movie_pacing, or all of them with '*'.
+//
+// Two callers step movies, both with the one-frame flag in r5 (byte_827DC1FC):
+//   sub_821FC588, mcUIManager::Update, every movie of its map (r6 = 1);
+//   sub_8223D648, the HUD manager's update, the HUD gauge movie (r6 = 0), which
+//   the HUD code creates itself, so the UI manager's map does not name it.
+// A movie the map does not name is therefore the gauge movie, called HUDGAUGE
+// here (the song ticker under the speedometer, the needles, the race countdown's
+// ring). HUDMAPMOVIE, the other half of the HUD, is in the map.
+// Only movies stepped one frame per update are paced; a movie the game steps by
+// elapsed time keeps its own pace and would lose the time of a held update.
+// Nothing is paced before the game loop has run (g_frame_heartbeat): the
+// start-up logos are drawn by a loop of their own and are held to 30 a second
+// at the swap (HoldUntimedSwap in frame_timing.cpp).
 REX_EXTERN(__imp__rex_sub_82720898);  // movie per-update step
 REX_EXTERN(__imp__rex_sub_825EDC08);  // swf advance
 
@@ -388,6 +414,7 @@ constexpr uint32_t kUiManagerPtr = 0x8286D804;
 constexpr uint32_t kMgrMovieMap  = 60;
 constexpr uint32_t kMovieContext = 56;
 constexpr uint32_t kMovieEnabled = 68;
+constexpr int64_t kStepPeriodNs  = 1'000'000'000 / 30;
 
 int64_t SteadyNowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -413,42 +440,49 @@ std::string GuestString(const uint8_t* base, uint32_t ea, size_t max = 48) {
     return std::string(s, n);
 }
 
-std::string Hex(uint32_t v) {
-    char buf[12];
-    std::snprintf(buf, sizeof(buf), "%08X", v);
-    return buf;
-}
+// A movie of the UI manager's map: its entry (what sub_82720898 gets) and the
+// name it is filed under (sub_821F9FB8 looks one up by it).
+struct Screen {
+    uint32_t entry;
+    std::string name;
+};
 
-// The movie entry registered under `name`, 0 when there is none (sub_821F9FB8).
-uint32_t FindMovie(const uint8_t* base, std::string_view name) {
+void ReadScreens(const uint8_t* base, std::vector<Screen>& out) {
+    out.clear();
     const uint32_t mgr = R32(base, kUiManagerPtr);
-    if (!mgr) return 0;
+    if (!mgr) return;
     const uint32_t buckets = R32(base, mgr + kMgrMovieMap);
     const uint16_t count = R16(base, mgr + kMgrMovieMap + 4);
     for (uint32_t i = 0; buckets && i < count; ++i) {
         for (uint32_t node = R32(base, buckets + 4 * i), guard = 0; node && guard < 256;
              node = R32(base, node + 12), ++guard) {
             if (!R16(base, node + 4)) continue;
-            if (GuestString(base, R32(base, node), 64) != name) continue;
             const uint32_t holder = R32(base, node + 8);
-            return holder ? R32(base, holder) : 0;
+            const uint32_t entry = holder ? R32(base, holder) : 0;
+            if (entry) out.push_back(Screen{entry, GuestString(base, R32(base, node), 64)});
         }
     }
-    return 0;
 }
 
-struct PacedMovie {
+// A movie that is paced.
+struct Movie {
     uint32_t entry = 0;
+    uint32_t context = 0;  // its swf context (what the advance gets), +56
     std::string name;
+    bool hud = false;
     int64_t next_due_ns = 0;
     uint32_t advanced = 0;
     uint32_t held = 0;
 };
 
 std::mutex g_pacing_mutex;
-std::vector<PacedMovie> g_paced;
+std::vector<Movie> g_movies;
+std::vector<Screen> g_screens;  // the manager's map, read once per game frame
+std::vector<std::string> g_paced_names;
+bool g_paced_all = false;
 std::string g_paced_list;
-uint64_t g_paced_resolved_frame = ~0ull;
+bool g_paced_list_read = false;
+uint64_t g_resolved_frame = ~0ull;
 int64_t g_pacing_report_ns = 0;
 
 // The context whose advance the movie update on this thread is holding back.
@@ -456,15 +490,17 @@ thread_local uint32_t t_held_context = 0;
 
 // Re-reads the cvar and the movie map once per game frame: movies load and unload
 // with the screens that own them.
-void ResolvePacedMovies(const uint8_t* base) {
+void ResolveFrame(const uint8_t* base) {
     const uint64_t frame = g_frame_heartbeat.load(std::memory_order_relaxed);
-    if (frame == g_paced_resolved_frame) return;
-    g_paced_resolved_frame = frame;
+    if (frame == g_resolved_frame) return;
+    g_resolved_frame = frame;
 
     const std::string list = REXCVAR_GET(ui_movie_pacing);
-    if (list != g_paced_list) {
+    if (!g_paced_list_read || list != g_paced_list) {
+        g_paced_list_read = true;
         g_paced_list = list;
-        g_paced.clear();
+        g_paced_names.clear();
+        g_paced_all = false;
         size_t pos = 0;
         while (pos <= list.size()) {
             size_t end = list.find(',', pos);
@@ -472,46 +508,94 @@ void ResolvePacedMovies(const uint8_t* base) {
             std::string name = list.substr(pos, end - pos);
             while (!name.empty() && name.front() == ' ') name.erase(name.begin());
             while (!name.empty() && name.back() == ' ') name.pop_back();
-            if (!name.empty() && name != "*") g_paced.push_back(PacedMovie{0, name});
+            if (name == "*") g_paced_all = true;
+            else if (!name.empty()) g_paced_names.push_back(name);
             pos = end + 1;
         }
     }
-    if (list == "*") return;  // every movie gets an entry on first sight instead
-    for (PacedMovie& m : g_paced) {
-        const uint32_t entry = FindMovie(base, m.name);
-        if (entry != m.entry) {
-            m.entry = entry;
-            m.next_due_ns = 0;
+    ReadScreens(base, g_screens);
+}
+
+// The pacing state of a movie, or nullptr when the game steps it as it always did.
+Movie* MovieFor(const uint8_t* base, uint32_t entry) {
+    ResolveFrame(base);
+    const Screen* screen = nullptr;
+    for (const Screen& s : g_screens) {
+        if (s.entry == entry) {
+            screen = &s;
+            break;
         }
     }
+    const std::string_view name = screen ? std::string_view(screen->name) : std::string_view("HUDGAUGE");
+    bool paced = g_paced_all;
+    for (size_t i = 0; !paced && i < g_paced_names.size(); ++i) paced = g_paced_names[i] == name;
+    if (!paced) return nullptr;
+
+    Movie* m = nullptr;
+    for (Movie& c : g_movies) {
+        if (c.entry == entry) {
+            m = &c;
+            break;
+        }
+    }
+    if (!m) {
+        if (g_movies.size() >= 64) g_movies.clear();
+        g_movies.emplace_back();
+        m = &g_movies.back();
+        m->entry = entry;
+    }
+    if (m->name != name) m->name.assign(name);
+    m->hud = !screen || name == "HUDMAPMOVIE";
+    const uint32_t context = R32(base, entry + kMovieContext);
+    if (context != m->context) {
+        m->context = context;
+        m->next_due_ns = 0;
+    }
+    return m;
 }
 
-PacedMovie* PacingFor(const uint8_t* base, uint32_t entry) {
-    ResolvePacedMovies(base);
-    for (PacedMovie& m : g_paced)
-        if (m.entry == entry) return &m;
-    if (g_paced_list == "*" && entry) {
-        if (g_paced.size() > 64) g_paced.clear();
-        g_paced.push_back(PacedMovie{entry, Hex(entry)});
-        return &g_paced.back();
-    }
-    return nullptr;
-}
-
-// One movie frame per 1/30 s of real time. The 2 ms slack takes the frame that lands
-// a hair early at 60 FPS instead of pushing it a whole render frame late; a movie that
-// fell more than two periods behind (disabled, or a stall) restarts its schedule
-// instead of catching up -- the console never advanced a movie twice in one update.
-bool AdvanceDue(PacedMovie& m, int64_t now) {
-    constexpr int64_t kPeriodNs = 1'000'000'000 / 30;
-    constexpr int64_t kSlackNs = 2'000'000;
-    if (m.next_due_ns == 0 || now - m.next_due_ns > 2 * kPeriodNs) {
-        m.next_due_ns = now + kPeriodNs;
-        return true;
-    }
-    if (now + kSlackNs < m.next_due_ns) return false;
-    m.next_due_ns += kPeriodNs;
+// One movie frame per 1/30 s of real time. A movie due within a quarter of a period is
+// stepped early, so at 30 FPS every update still steps once and a frame that lands a hair
+// early at 60 FPS is not pushed a whole one late. A movie that fell more than a period
+// behind (disabled, a stall, below 30 FPS) restarts its schedule instead of catching up --
+// the console never stepped a movie twice in one update.
+bool StepDue(Movie& m, int64_t now) {
+    if (m.next_due_ns && now + kStepPeriodNs / 4 < m.next_due_ns) return false;
+    const bool behind = !m.next_due_ns || now > m.next_due_ns + kStepPeriodNs;
+    m.next_due_ns = behind ? now + kStepPeriodNs : m.next_due_ns + kStepPeriodNs;
     return true;
+}
+
+// The race countdown (3, 2, 1, GO) is timed by the gauge movie's own script. The HUD
+// update (sub_82212298) sets the movie's ActionScript variable `countdownUpdate` to
+// the update's elapsed time on every update, and the script adds it to the countdown's
+// clock on every STEP. On the console both ran 30 times a second, so a step added 1/30 s.
+// A movie that steps less often than the game updates sees only the last update's time and
+// the countdown runs slow (a race starts on the "2" at 120 FPS). Hook_UiCountdownDt gives
+// the variable the time since the movie's last step instead.
+struct HudClock {
+    uint32_t context = 0;  // the gauge movie's swf context, from the hook
+    double total = 0.0;     // what the game wrote, in seconds, since the movie appeared
+    double consumed = 0.0;  // the part of it a step of the movie has taken
+    uint32_t since_step = 0;  // writes since a step of this movie was last seen
+};
+std::mutex g_hud_mutex;
+HudClock g_hud;
+std::atomic<uint32_t> g_hud_context{0};  // g_hud.context, readable without the lock
+// With no step seen for this many writes (a HUD that is hidden) the game's value is left
+// alone rather than feeding a clock nobody reads.
+constexpr uint32_t kHudLiveWrites = 100;
+// What one feed may hold at most: an engine frame's worth (the 125 ms clamp of
+// MCLAFrameDelta), so a movie that was not stepped for a while does not get minutes at once.
+constexpr double kHudMaxFeedSeconds = 0.125;
+
+// The movie with this context is about to step: it takes the time it was given.
+void HudClockStep(uint32_t context) {
+    if (context != g_hud_context.load(std::memory_order_relaxed)) return;
+    std::lock_guard<std::mutex> lock(g_hud_mutex);
+    if (context != g_hud.context) return;
+    g_hud.since_step = 0;
+    g_hud.consumed = g_hud.total;
 }
 
 // Every 10 s, into photo_ui_trace's log while the album scene is up.
@@ -520,7 +604,7 @@ void ReportPacing(const uint8_t* base, int64_t now) {
     if (now - g_pacing_report_ns < kReportNs) return;
     g_pacing_report_ns = now;
     const bool trace = PhotoUiTracing(base);
-    for (PacedMovie& m : g_paced) {
+    for (Movie& m : g_movies) {
         if (trace && (m.advanced || m.held))
             MC_INFO("[photo-ui] pacing {}: {} frame(s) advanced, {} update(s) held in the last 10 s",
                     m.name, m.advanced, m.held);
@@ -529,6 +613,30 @@ void ReportPacing(const uint8_t* base, int64_t now) {
     }
 }
 }  // namespace
+
+// Mid-asm hook at 0x822124DC in sub_82212298 (the HUD's update), right after
+// `fmr f1,f31` and before `bl sub_825EE188` sets the ActionScript variable
+// `countdownUpdate` from f1. r3 is the gauge movie's swf context and f1 this update's
+// elapsed time. Gives the variable the time since the movie's last step: at least this
+// update's, at most one engine frame's worth. A movie stepped on every update is given
+// what it was given before, its own update's time.
+void Hook_UiCountdownDt(PPCRegister& r3, PPCRegister& f1) {
+    const double dt = f1.f64;
+    if (!(dt >= 0.0 && dt < 1.0)) return;  // not a time: leave it to the game
+    std::lock_guard<std::mutex> lock(g_hud_mutex);
+    if (g_hud.context != r3.u32) {
+        g_hud.context = r3.u32;
+        g_hud_context.store(r3.u32, std::memory_order_relaxed);
+        g_hud.total = g_hud.consumed = 0.0;
+        g_hud.since_step = 0;
+    }
+    g_hud.total += dt;
+    ++g_hud.since_step;
+    if (!REXCVAR_GET(ui_countdown_fix) || g_hud.since_step > kHudLiveWrites) return;
+    const double fed =
+        std::max(dt, std::min(g_hud.total - g_hud.consumed, std::max(dt, kHudMaxFeedSeconds)));
+    f1.f64 = static_cast<double>(static_cast<float>(fed));
+}
 
 // Movie per-update step. A paced movie that is not due holds back its advance this
 // update; the rest of the update (3D targets, commit) still runs.
@@ -543,19 +651,21 @@ void ReportPacing(const uint8_t* base, int64_t now) {
 // wait for the next 30 Hz period while the city overwrites the photo's memory.
 extern "C" REX_FUNC(rex_sub_82720898) {
     const uint32_t entry = ctx.r3.u32;
+    const bool one_frame = (ctx.r5.u32 & 0xFF) != 0;
     uint32_t held = 0;
-    if (entry && base[entry + kMovieEnabled]) {
+    if (entry && one_frame && base[entry + kMovieEnabled] &&
+        g_frame_heartbeat.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lock(g_pacing_mutex);
-        if (PacedMovie* m = PacingFor(base, entry)) {
+        if (Movie* m = MovieFor(base, entry)) {
             const int64_t now = SteadyNowNs();
             if (PhotoCaptureInProgress(base) || PhotoCityReturning()) {
                 m->next_due_ns = 0;  // back on the 30 Hz schedule from the next update
                 ++m->advanced;
-            } else if (AdvanceDue(*m, now)) {
+            } else if (StepDue(*m, now)) {
                 ++m->advanced;
             } else {
                 ++m->held;
-                held = R32(base, entry + kMovieContext);
+                held = m->context;
             }
             ReportPacing(base, now);
         }
@@ -570,6 +680,7 @@ extern "C" REX_FUNC(rex_sub_82720898) {
 // path (sub_82720288's double step on a movie's first frames, ...) runs untouched.
 extern "C" REX_FUNC(rex_sub_825EDC08) {
     if (t_held_context && ctx.r3.u32 == t_held_context) return;
+    HudClockStep(ctx.r3.u32);  // whichever path made the step
     __imp__rex_sub_825EDC08(ctx, base);
 }
 

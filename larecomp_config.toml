@@ -25672,6 +25672,17 @@ address = 0x825EE980
 name = "Hook_SwfContextEnter"
 registers = ["r3"]
 
+# Race countdown clock (hooks/ui.cpp, ui_countdown_fix). 0x822124DC is
+# `addi r4,r8,-9924` in sub_82212298 (the HUD's update), right after `fmr f1,f31`.
+# r3 is the HUD gauge movie's swf context and f1 the value the next call
+# (sub_825EE188) gives its ActionScript variable `countdownUpdate`: this update's
+# elapsed time. The movie adds it to the race countdown's clock on every step, so
+# a movie that steps less often than the game updates needs the time in between.
+[[midasm_hook]]
+address = 0x822124DC
+name = "Hook_UiCountdownDt"
+registers = ["r3", "f1"]
+
 # Options > Controller key dispatch (sub_8264D0D8, r3 = screen, r4 = key).
 # Hook_ListViewPopulate appends a "PLAYSTATION BUTTONS" row to that screen's
 # own list, reusing one of the eleven checkbox rows its ctor (sub_8264DF48)
