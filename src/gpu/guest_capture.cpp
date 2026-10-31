@@ -8,6 +8,7 @@
 #include "guest_capture.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <new>
 
@@ -170,6 +171,23 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
                    bool verify, std::array<uint8_t, guest::kConstantBlocksPerBank>& out,
                    uint32_t& count, uint32_t& masked, uint32_t& unmasked) {
   count = 0;
+  if (shadow_valid && !verify) {
+    // Only a block the mask names can be sent, so visit those alone, lowest
+    // block first (bit 63 is block 0) as the full walk below does, instead of
+    // testing all 64 bits of both banks at every draw.
+    static_assert(guest::kConstantBlocksPerBank == 64, "one mask bit per block");
+    for (uint64_t bits = dirty; bits != 0;) {
+      const uint32_t i = uint32_t(std::countl_zero(bits));
+      bits &= ~(uint64_t(1) << (63 - i));
+      const uint32_t at = i * guest::kConstantBlockBytes;
+      if (std::memcmp(bank + at, shadow + at, guest::kConstantBlockBytes) == 0) {
+        continue;
+      }
+      out[count++] = uint8_t(i);
+      ++masked;
+    }
+    return;
+  }
   for (uint32_t i = 0; i < guest::kConstantBlocksPerBank; ++i) {
     const bool named = ((dirty >> (63 - i)) & 1u) != 0;
     if (shadow_valid && !named && !verify) {
