@@ -36,9 +36,10 @@
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_texture_dump, false, "MCLA/GPU",
-    "Write every texture the NATIVE renderer uploads to <texture_folder>/dump/<dictionary>/"
+    "Write every texture the NATIVE renderer uploads to <mods>/textures_dump/<dictionary>/"
     "<name>__<hash>.dds, once per texture per session (F2 does it for one frame). Texture mods "
-    "replace a texture by the hash at the end of the file name, from models/<Mod>/textures/.")
+    "replace a texture by the hash at the end of the file name, from "
+    "<mods>/<Mod>/textures_replace/; <mods> is modloader/, mods/ or models/.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

@@ -12,9 +12,14 @@
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
+#include "mc_engine/modloader/modloader.h"
+
 namespace mcla::gpu {
 
 namespace {
+
+// The replacements' folder, in the mod folder itself and in each mod.
+constexpr const char* kReplaceFolder = "textures_replace";
 
 constexpr uint32_t kDdsMagic = 0x20534444u;  // "DDS "
 constexpr uint32_t kDdsdMipMapCount = 0x00020000u;
@@ -107,23 +112,32 @@ bool TextureMods::HashFromFileName(const std::string& stem, uint64_t* hash) {
 
 void TextureMods::Initialize() {
   files_.clear();
-  const std::filesystem::path models = rex::filesystem::GetExecutableFolder() / "models";
+  const std::filesystem::path mod_root =
+      mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder());
   std::error_code ec;
-  if (!std::filesystem::is_directory(models, ec)) {
-    REXLOG_INFO("[gpu] texture mods: no {} folder; no replacements", models.string());
+  if (!std::filesystem::is_directory(mod_root, ec)) {
+    REXLOG_INFO("[gpu] texture mods: no {} folder; no replacements", mod_root.string());
     return;
   }
+  // The loose folder first, so it wins over every mod; then the mods in name
+  // order.
+  std::vector<std::filesystem::path> folders;
+  if (std::filesystem::is_directory(mod_root / kReplaceFolder, ec)) {
+    folders.push_back(mod_root / kReplaceFolder);
+  }
   std::vector<std::filesystem::path> mods;
-  for (const auto& entry : std::filesystem::directory_iterator(models, ec)) {
-    if (entry.is_directory(ec) && std::filesystem::is_directory(entry.path() / "textures", ec)) {
-      mods.push_back(entry.path());
+  for (const auto& entry : std::filesystem::directory_iterator(mod_root, ec)) {
+    if (entry.is_directory(ec) &&
+        !mc::modloader::IsReservedModFolder(entry.path().filename().string()) &&
+        std::filesystem::is_directory(entry.path() / kReplaceFolder, ec)) {
+      mods.push_back(entry.path() / kReplaceFolder);
     }
   }
   std::sort(mods.begin(), mods.end());
+  folders.insert(folders.end(), mods.begin(), mods.end());
   size_t ignored = 0, shadowed = 0;
-  for (const std::filesystem::path& mod : mods) {
+  for (const std::filesystem::path& root : folders) {
     size_t added = 0;
-    const std::filesystem::path root = mod / "textures";
     for (auto it = std::filesystem::recursive_directory_iterator(root, ec);
          !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
       if (!it->is_regular_file(ec)) {
@@ -145,19 +159,18 @@ void TextureMods::Initialize() {
       const auto [found, inserted] = files_.emplace(hash, it->path());
       if (!inserted) {
         ++shadowed;
-        REXLOG_WARN("[gpu] texture mods: {:016x} in {} is also in {}, which wins (mod folders in "
-                    "name order)",
+        REXLOG_WARN("[gpu] texture mods: {:016x} in {} is also in {}, which wins (the loose "
+                    "folder, then mod folders in name order)",
                     hash, it->path().string(), found->second.string());
         continue;
       }
       ++added;
     }
-    REXLOG_INFO("[gpu] texture mods: {} replacement(s) from {}", added,
-                mod.filename().string());
+    REXLOG_INFO("[gpu] texture mods: {} replacement(s) from {}", added, root.string());
   }
-  REXLOG_INFO("[gpu] texture mods: {} replacement(s) from {} mod(s) ({} names without a hash, {} "
-              "shadowed)",
-              files_.size(), mods.size(), ignored, shadowed);
+  REXLOG_INFO("[gpu] texture mods: {} replacement(s) from {} folder(s) ({} names without a hash, "
+              "{} shadowed)",
+              files_.size(), folders.size(), ignored, shadowed);
 }
 
 const std::filesystem::path* TextureMods::Find(uint64_t hash) const {

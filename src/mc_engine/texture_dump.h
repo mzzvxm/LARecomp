@@ -18,8 +18,8 @@ inline uint64_t HashGuestTexture(const uint8_t* data, size_t size) {
   return XXH3_64bits(data, size);
 }
 
-// Where dumps go: the SDK's texture_folder cvar when it exists (so the game and
-// the SDK write to the same tree), otherwise larecomp_texture_folder.
+// Where dumps go: <mod folder>/textures_dump/ (mc::modloader::ModRootDir), or
+// larecomp_texture_folder when it names another folder.
 std::filesystem::path TextureDumpDir();
 
 // Writes <dump_dir>/<hash16>_<w>x<h>_<fmt>.dds, untiling and endian-swapping

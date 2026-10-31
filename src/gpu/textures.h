@@ -258,7 +258,7 @@ class TextureCache {
   void BumpProductGeneration(uint32_t page) { ++product_generations_[GenerationBucket(page)]; }
 
   // Texture dumps (texture_mods.h): every texture bound in the next frame is
-  // written to <texture_folder>/dump/<dictionary>/<name>__<hash16>.dds, once
+  // written to <mods>/textures_dump/<dictionary>/<name>__<hash16>.dds, once
   // per hash per session. mcla_gpu_texture_dump does it for every texture
   // uploaded, all the time. Any thread (a key bind).
   void RequestDump() { dump_requested_.store(true, std::memory_order_relaxed); }

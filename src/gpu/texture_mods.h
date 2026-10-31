@@ -2,14 +2,17 @@
 // ===========================================================================
 // MCLA GPU renderer -- texture mods: the replacement files and their pixels
 // ===========================================================================
-// A mod replaces a game texture with a DDS in models/<Mod>/textures/ (any
-// depth below it). The file is found by the content hash of the texture it
-// replaces -- XXH3-64 of the guest bytes of its base level, the SDK's and
+// A mod replaces a game texture with a DDS in <mods>/<Mod>/textures_replace/
+// (any depth below it), <mods> being the mod folder beside the executable
+// (modloader/, mods/ or models/, mc::modloader::ModRootDir). Loose files go in
+// <mods>/textures_replace/ and win over every mod. The file is found by the
+// content hash of the texture it replaces -- XXH3-64 of the guest bytes of its base level, the SDK's and
 // Xenia-path dumps' key, so their files work unchanged -- written as the last
 // 16 hex digits of the file name after "__" ("capo__3f2a91c04d7e55b1.dds"),
 // the whole name ("3f2a91c04d7e55b1.dds", "0x3f2a91c04d7e55b1.dds") or its
 // first 16 ("3f2a91c04d7e55b1_512x512_k_DXT1.dds", the SDK's dumps). Two mods
-// with the same hash: the mod folder first in name order wins, logged.
+// with the same hash: the loose folder, then the mod first in name order,
+// wins, logged.
 //
 // The pixels stay as authored: BC1-BC5 (DXT1/DXT3/DXT5/ATI1/ATI2/BC4U/BC5U
 // FourCC, or DX10 headers) go to the GPU compressed, RGBA8/BGRA8/BGRX8 as
@@ -46,7 +49,8 @@ struct ReplacementImage {
 
 class TextureMods {
  public:
-  // Indexes models/*/textures/ next to the executable.
+  // Indexes the textures_replace/ folders (see above). Called again to pick
+  // up files added or removed while the game runs.
   void Initialize();
   bool empty() const { return files_.empty(); }
   size_t size() const { return files_.size(); }

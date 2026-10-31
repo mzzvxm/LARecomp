@@ -4,8 +4,9 @@
 //
 // Only the dump half is here. Replacement injection stays in the SDK's
 // TextureCache; nothing on the game side drives it. The file naming
-// (dump/<hash16>_<w>x<h>_<fmt>.dds) and the write-once behaviour are kept
-// byte-for-byte because the vinyl extractor keys off them.
+// (<hash16>_<w>x<h>_<fmt>.dds) and the write-once behaviour are kept
+// byte-for-byte because the vinyl extractor keys off them; the folder is
+// TextureDumpDir().
 
 #include "mc_engine/texture_dump.h"
 
@@ -18,14 +19,16 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/graphics/pipeline/texture/conversion.h>
 #include <rex/graphics/pipeline/texture/info.h>
 
 #include "mc_engine/logging.h"
+#include "mc_engine/modloader/modloader.h"
 
-REXCVAR_DEFINE_STRING(larecomp_texture_folder, "textures", "Graphics",
-                      "Folder for dumped and replacement textures; only consulted when "
-                      "the SDK does not register texture_folder itself");
+REXCVAR_DEFINE_STRING(larecomp_texture_folder, "", "Graphics",
+                      "Folder the texture dumps are written to. Empty: textures_dump/ in the "
+                      "mod folder (modloader/, mods/ or models/ beside the executable)");
 
 namespace mcla {
 
@@ -33,17 +36,16 @@ using rex::graphics::FormatInfo;
 using rex::graphics::FormatType;
 namespace texture_conversion = rex::graphics::texture_conversion;
 
-// Resolve the dump folder the same way whichever SDK is underneath: the fork
-// registers texture_folder, the stock one does not, so fall back to our own.
+// "textures" is the value this cvar had by default before the dumps moved
+// into the mod folder; a toml the game rewrote still carries it.
 std::filesystem::path TextureDumpDir() {
-  std::string folder = rex::cvar::GetFlagByName("texture_folder");
-  if (folder.empty()) {
-    folder = rex::cvar::GetFlagByName("larecomp_texture_folder");
+  const std::filesystem::path exe = rex::filesystem::GetExecutableFolder();
+  const std::string folder = rex::cvar::GetFlagByName("larecomp_texture_folder");
+  if (folder.empty() || folder == "textures") {
+    return mc::modloader::ModRootDir(exe) / "textures_dump";
   }
-  if (folder.empty()) {
-    folder = "textures";
-  }
-  return std::filesystem::path(folder) / "dump";
+  const std::filesystem::path path(std::u8string(folder.begin(), folder.end()));
+  return path.is_relative() ? exe / path : path;
 }
 
 namespace {
