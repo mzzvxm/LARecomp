@@ -2067,7 +2067,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // the other route entirely and stops using states as rows: real row objects
 // of the game's own value class, handed to the list through its widget array.
 
-constexpr int kMaxRowsPerMenu = 17;  // DEBUG CAMERA is 6 + 3 (rear view) + 8 (free look)
+constexpr int kMaxRowsPerMenu = 18;  // PERFORMANCE on the Plume renderer
 
 struct NativeRows {
     uint32_t row[kMaxRowsPerMenu] = {};     // guest row objects
