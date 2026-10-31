@@ -1361,7 +1361,16 @@ const ItemDef kRecompItems[] = {
 // PROP DRAW DIST and BREAK FPS FLOOR patch rage::fragTuneStruct in place after
 // the game has parsed $/tune/types/fragments, so they apply live. "Prop" here
 // means a breakable fragment (pole, sign, fence, barrier), not the whole world.
+// Eighteen rows do not fit one pause list (kMaxRowsPerMenu), so PERFORMANCE is a
+// hub over four menus, split by what the rows touch.
 const ItemDef kPerfItems[] = {
+    Submenu("PM_RxSubPerfShad", "SHADOWS",       "RxPerfShadMenu"),
+    Submenu("PM_RxSubPerfRend", "RENDERING",     "RxPerfRendMenu"),
+    Submenu("PM_RxSubPerfWorld", "WORLD DENSITY", "RxPerfWorldMenu"),
+    Submenu("PM_RxSubPerfLod",  "LOD AND FOLIAGE", "RxPerfLodMenu"),
+};
+
+const ItemDef kPerfShadItems[] = {
     Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
     Str ("PM_RxShadowBits",  "perf_shadow_phase_bits",    "SHADOW PHASES: ",
          kShadowBitVals, kShadowBitNames, 4),
@@ -1372,6 +1381,9 @@ const ItemDef kPerfItems[] = {
     // a district change — rather than needing the process restarted.
     Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (ON RELOAD)"),
     Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
+};
+
+const ItemDef kPerfRendItems[] = {
     Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
     Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
     Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
@@ -1387,6 +1399,9 @@ const ItemDef kPerfItems[] = {
     // for real and the poll thread pays microseconds each time, so ON can cost
     // far more than it saves. Leave it ON, turn it OFF if the game stutters.
     Bool("PM_RxFenceSpin",   "fence_spin_throttle",       "FENCE SPIN YIELD: "),
+};
+
+const ItemDef kPerfWorldItems[] = {
     // BadassBaboon's Recomp Adjustments: city ambient density.
     Bool("PM_RxAmbientTune", "enable_ambient_tuning",     "CITY AMBIENT CULLING: "),
     Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
@@ -1401,6 +1416,9 @@ const ItemDef kPerfItems[] = {
     Dbl ("PM_RxBreakFps",    "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
          kBreakFpsVals, int(sizeof(kBreakFpsVals) / sizeof(kBreakFpsVals[0])),
          "%g", "", "STOCK"),
+};
+
+const ItemDef kPerfLodItems[] = {
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
@@ -1718,6 +1736,18 @@ const MenuDef kMenus[] = {
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
+    {"PM_RxTabPerfShad", "SHADOWS", "Shadow passes and their cost.",
+     "RxPerfShadMenu",
+     kPerfShadItems, int(sizeof(kPerfShadItems) / sizeof(kPerfShadItems[0]))},
+    {"PM_RxTabPerfRend", "RENDERING", "Screen effects and frame pacing.",
+     "RxPerfRendMenu",
+     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0]))},
+    {"PM_RxTabPerfWorld", "WORLD DENSITY", "Traffic, pedestrians and props.",
+     "RxPerfWorldMenu",
+     kPerfWorldItems, int(sizeof(kPerfWorldItems) / sizeof(kPerfWorldItems[0]))},
+    {"PM_RxTabPerfLod", "LOD AND FOLIAGE", "Level of detail and foliage shadows.",
+     "RxPerfLodMenu",
+     kPerfLodItems, int(sizeof(kPerfLodItems) / sizeof(kPerfLodItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
     {"PM_RxTabTex", "TEXTURE MODS", "Dump the game's textures, reload mods.",
      "RxTexMenu",
