@@ -202,6 +202,7 @@ class Renderer final : public RenderThread::Executor {
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
   bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
+  bool check_release_ = false;    // mcla_gpu_present_release_check, read at Initialize
 
   // Render thread only.
   // The sequence of the guest's present while it is executed and the guest is still waiting
@@ -213,6 +214,7 @@ class Renderer final : public RenderThread::Executor {
   bool tail_open_ = false;
   std::chrono::steady_clock::time_point tail_start_{};
   uint64_t early_releases_ = 0;
+  uint64_t released_accesses_ = 0;  // check_release_: guest memory accesses after the release
   uint64_t presented_ = 0;
   uint64_t guest_presents_ = 0;
   uint64_t guest_frames_ = 0;  // kPresent records executed, presented or skipped
