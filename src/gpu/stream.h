@@ -36,6 +36,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -43,6 +44,11 @@
 #include "records.h"
 
 namespace mcla::gpu {
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4324)  // padded for the cache-line alignment below, on purpose
+#endif
 
 class CommandStream {
  public:
@@ -118,40 +124,54 @@ class CommandStream {
   // Stores head_ = read_ and wakes a producer waiting for space.
   void ReleaseNow();
 
-  std::unique_ptr<uint8_t[]> buffer_;
+  // The members are grouped by who writes them, each group on its own cache
+  // line. The producer writes its cursors at every record while the consumer
+  // polls published_tail_ in its idle spin and the producer reads head_ at
+  // every record; with all of them on one or two lines each record moved the
+  // line between the two cores.
+  static constexpr size_t kCacheLine = 64;
+
+  // Read only after Initialize.
+  alignas(kCacheLine) std::unique_ptr<uint8_t[]> buffer_;
   uint32_t capacity_ = 0;
 
   // Producer state, guarded by producer_mutex_.
-  std::mutex producer_mutex_;
+  alignas(kCacheLine) std::mutex producer_mutex_;
   uint64_t tail_ = 0;  // next free byte
   uint64_t next_sequence_ = 1;
   uint32_t unpublished_records_ = 0;
   uint64_t unpublished_bytes_ = 0;
+  std::atomic<uint64_t> bytes_written_{0};  // stored under producer_mutex_ only
+  std::atomic<uint64_t> producer_waits_{0};
 
-  std::atomic<uint64_t> published_tail_{0};
-  std::atomic<uint64_t> head_{0};  // consumer: first byte not yet released
+  // Written by the producer once per batch (or rarely), polled by the consumer.
+  alignas(kCacheLine) std::atomic<uint64_t> published_tail_{0};
   std::atomic<bool> stop_{false};
-
   // Sleeping consumer / waiting producer (Dekker with the positions).
-  std::mutex wake_mutex_;
-  std::condition_variable work_cv_;
-  std::condition_variable space_cv_;
   std::atomic<bool> consumer_sleeping_{false};
   std::atomic<bool> producer_waiting_{false};
 
-  // Presents waiting for execution.
-  std::mutex done_mutex_;
-  std::condition_variable done_cv_;
-  std::atomic<uint64_t> executed_sequence_{0};
+  // Written by the consumer every kReleaseBytes, read by the producer.
+  alignas(kCacheLine) std::atomic<uint64_t> head_{0};  // consumer: first byte not yet released
 
   // Consumer-side cursor (render thread only), and where head_ was last
   // stored (Release).
-  uint64_t read_ = 0;
+  alignas(kCacheLine) uint64_t read_ = 0;
   uint64_t released_ = 0;
-
   std::atomic<uint64_t> consumer_wakes_{0};
-  std::atomic<uint64_t> producer_waits_{0};
-  std::atomic<uint64_t> bytes_written_{0};
+  // Presents waiting for execution: stored by the consumer, read by the waiter.
+  std::atomic<uint64_t> executed_sequence_{0};
+
+  // Waiting and waking (cold).
+  alignas(kCacheLine) std::mutex wake_mutex_;
+  std::condition_variable work_cv_;
+  std::condition_variable space_cv_;
+  std::mutex done_mutex_;
+  std::condition_variable done_cv_;
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 }  // namespace mcla::gpu

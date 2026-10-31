@@ -143,7 +143,10 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   s.tail_ = record_at_ + record_size_;
   ++s.unpublished_records_;
   s.unpublished_bytes_ += record_size_;
-  s.bytes_written_.fetch_add(record_size_, std::memory_order_relaxed);
+  // One writer at a time (this writer holds producer_mutex_): a plain load and
+  // store give what the locked add gave, and cost less.
+  s.bytes_written_.store(s.bytes_written_.load(std::memory_order_relaxed) + record_size_,
+                         std::memory_order_relaxed);
   if (publication != Publication::kBatched || s.unpublished_records_ >= kPublishRecords ||
       s.unpublished_bytes_ >= kPublishBytes ||
       s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
