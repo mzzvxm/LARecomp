@@ -29,6 +29,7 @@ set(LARECOMP_SOURCES
     src/crash_handler.cpp
 
     src/mc_engine/threading.cpp
+    src/mc_engine/fma_fast.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
