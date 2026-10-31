@@ -119,6 +119,8 @@ class Renderer final : public RenderThread::Executor {
   void RequestResize() { resize_requested_.store(true, std::memory_order_release); }
   void RequestCapture() { capture_.Request(); }
   void RequestTextureDump() { textures_.RequestDump(); }
+  void RequestTextureDumpAll() { textures_.RequestDumpAll(); }
+  void RequestTextureReload() { textures_.RequestReload(); }
   // Any thread: trace the guest frame after the next present (frame_trace.h).
   void RequestTrace() { trace_.RequestNext(); }
 

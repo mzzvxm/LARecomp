@@ -33,6 +33,7 @@
 //   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
 //                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
+//   RequestTexture*       the pause menu's TEXTURE MODS rows (any thread)
 //   Shutdown              OnWindowCloseRequested and OnShutdown
 // ===========================================================================
 
@@ -163,6 +164,12 @@ void OnGuestSceneComposited(uint32_t bucket);
 // UI thread, on a window pixel-size change. The rebuild happens on the render
 // thread at the next present (an idle one if the guest is not swapping).
 void RequestResize();
+
+// Any thread. Texture mods: every texture the renderer holds to the dump
+// folder (F2 does only the next frame's), and the replacement folders read
+// again (textures.h). Nothing when the Plume renderer is not running.
+void RequestTextureDumpAll();
+void RequestTextureReload();
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
 // stops the render thread (with a deadline), drains the GPU and releases every

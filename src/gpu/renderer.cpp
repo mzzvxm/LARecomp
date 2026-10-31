@@ -1015,6 +1015,18 @@ void RequestResize() {
   }
 }
 
+void RequestTextureDumpAll() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestTextureDumpAll();
+  }
+}
+
+void RequestTextureReload() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestTextureReload();
+  }
+}
+
 void Shutdown() {
   // No new records; a guest thread inside a capture finishes against the
   // stream, which the render thread's Stop releases.

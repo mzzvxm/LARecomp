@@ -317,6 +317,18 @@ void TextureCache::Shutdown() {
 void TextureCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
+  if (reload_requested_.exchange(false, std::memory_order_relaxed)) {
+    ReloadMods();
+  }
+  if (dump_all_requested_.exchange(false, std::memory_order_relaxed)) {
+    const uint64_t before = stats_.dumped;
+    for (const auto& [key, entry] : entries_) {
+      DumpEntry(*entry);
+    }
+    REXLOG_INFO("[gpu] textures: {} of {} held texture(s) dumped to {} (the rest were dumped "
+                "before or have no dumpable format)",
+                stats_.dumped - before, entries_.size(), mcla::TextureDumpDir().string());
+  }
   if (dump_requested_.exchange(false, std::memory_order_relaxed)) {
     // Every texture bound in this frame; the memoized bindings resolve again
     // so each one passes through Bind2D.
@@ -828,7 +840,7 @@ bool TextureCache::SelectReplacement(Entry& e, plume::RenderCommandList* list) {
     }
   }
   if (dumping && e.base_hash) {
-    DumpEntry(e);
+    DumpEntry(e, e.base_hash);
   }
   Replacement* r =
       e.base_hash && !mods_.empty() ? ReplacementFor(e.base_hash, list) : nullptr;
@@ -912,7 +924,39 @@ TextureCache::Replacement* TextureCache::ReplacementFor(uint64_t hash,
   return raw;
 }
 
-void TextureCache::DumpEntry(const Entry& e) {
+void TextureCache::ReloadMods() {
+  mods_.Initialize();
+  // Every replacement goes, refusals too: a refused file may have been fixed.
+  for (auto& [hash, r] : replacements_) {
+    if (r) {
+      r->views.Release(*frames_, *heap_);
+      frames_->Retire(std::move(r->texture));
+    }
+  }
+  replacements_.clear();
+  // An entry is uploaded again when it held a replacement or now has one; the
+  // upload selects it. Entries uploaded while no mod was indexed have no hash
+  // yet: it is taken here, once.
+  size_t again = 0;
+  for (auto& [key, entry] : entries_) {
+    Entry& e = *entry;
+    if (!e.base_hash && !mods_.empty() && e.ranges[0][1]) {
+      if (const uint8_t* src = memory_->Read(e.ranges[0][0], e.ranges[0][1])) {
+        e.base_hash = XXH3_64bits(src, e.ranges[0][1]);
+      }
+    }
+    if (e.replacement || (e.base_hash && mods_.Find(e.base_hash))) {
+      e.replacement = nullptr;
+      e.uploaded_version = 0;
+      ++again;
+    }
+  }
+  ++epoch_;  // no memoized binding may name a released slot
+  REXLOG_INFO("[gpu] texture mods: reloaded, {} file(s), {} texture(s) uploaded again",
+              mods_.size(), again);
+}
+
+void TextureCache::DumpEntry(const Entry& e, uint64_t hash) {
   const TextureKey& key = e.key;
   if (!e.ranges[0][1] || !mcla::IsDumpableTextureFormat(xe::TextureFormat(key.format))) {
     return;
@@ -921,7 +965,11 @@ void TextureCache::DumpEntry(const Entry& e) {
   if (!src) {
     return;
   }
-  const uint64_t hash = e.base_hash ? e.base_hash : XXH3_64bits(src, e.ranges[0][1]);
+  // Not e.base_hash: the bytes may have changed since the last upload, and
+  // the name has to be the hash of what is written.
+  if (!hash) {
+    hash = XXH3_64bits(src, e.ranges[0][1]);
+  }
   if (!dumped_.insert(hash).second) {
     return;
   }

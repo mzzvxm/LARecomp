@@ -36,6 +36,10 @@
 #include <rex/system/function_dispatcher.h>
 #include <rex/ui/windowed_app_context.h>
 
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gpu.h"
+#endif
+
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
     "Show the TestMovie debug button in the pause menu")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -1213,9 +1217,11 @@ using mcla_menu::Color;
 using mcla_menu::Dbl;
 using mcla_menu::ItemDef;
 using mcla_menu::ItemKind;
+using mcla_menu::kActionDumpTextures;
 using mcla_menu::kActionPlayCutscene;
 using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
+using mcla_menu::kActionReloadTextures;
 using mcla_menu::NativeOnly;
 using mcla_menu::Str;
 using mcla_menu::Submenu;
@@ -1574,6 +1580,9 @@ const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubNative", "RENDERER",    "RxNativeMenu"),
     XeniaOnly(Submenu("PM_RxSubFfx", "FIDELITY FX", "RxFfxMenu")),
     Submenu("PM_RxSubPerf",   "PERFORMANCE", "RxPerfMenu"),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Submenu("PM_RxSubTex", "TEXTURE MODS", "RxTexMenu")),
+#endif
 };
 const ItemDef kGameHubItems[] = {
     Submenu("PM_RxSubRecomp", "RECOMP SETTINGS", "RxRecompMenu"),
@@ -1591,6 +1600,14 @@ const ItemDef kExtrasHubItems[] = {
     Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
          " (NEXT HOST)"),
 };
+#if defined(LARECOMP_HAS_GPU)
+// Texture mods on the Plume renderer: the frame's textures to
+// <mods>/textures_dump/, and the textures_replace/ folders read again.
+const ItemDef kTexItems[] = {
+    Action("PM_RxTexDump",   kActionDumpTextures),
+    Action("PM_RxTexReload", kActionReloadTextures),
+};
+#endif
 // NO first: the cursor starts on the first row, so a stray A keeps the game.
 const ItemDef kQuitItems[] = {
     Action("PM_RxQuitNo",  kActionQuitNo),
@@ -1699,6 +1716,11 @@ const MenuDef kMenus[] = {
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
+#if defined(LARECOMP_HAS_GPU)
+    {"PM_RxTabTex", "TEXTURE MODS", "Dump the game's textures, reload mods.",
+     "RxTexMenu",
+     kTexItems, int(sizeof(kTexItems) / sizeof(kTexItems[0]))},
+#endif
     {"PM_RxTabFfx", "FIDELITY FX", "Upscaling and sharpening of the image.",
      "RxFfxMenu",
      kFfxItems, int(sizeof(kFfxItems) / sizeof(kFfxItems[0]))},
@@ -1939,6 +1961,8 @@ std::string ItemRowLabel(const ItemDef& it) {
             return CutsceneReplayBusy() ? "PLAYING..." : "PLAY CUTSCENE";
         case kActionQuitYes: return "YES";
         case kActionQuitNo:  return "NO";
+        case kActionDumpTextures:   return "DUMP SCENE TEXTURES";
+        case kActionReloadTextures: return "RELOAD TEXTURE MODS";
         }
         return "";
     }
@@ -2003,6 +2027,17 @@ void ApplyItem(const ItemDef& it, int dir) {
         case kActionQuitNo:
             // Closes the QUIT form the way B does; the select sound is the A's.
             larecomp::ui::CloseForm(larecomp::ui::TopForm());
+            break;
+        case kActionDumpTextures:
+            // Every texture held, not the next frame's: that one is this menu.
+#if defined(LARECOMP_HAS_GPU)
+            mcla::gpu::RequestTextureDumpAll();
+#endif
+            break;
+        case kActionReloadTextures:
+#if defined(LARECOMP_HAS_GPU)
+            mcla::gpu::RequestTextureReload();
+#endif
             break;
         }
         break;

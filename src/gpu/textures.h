@@ -262,6 +262,15 @@ class TextureCache {
   // per hash per session. mcla_gpu_texture_dump does it for every texture
   // uploaded, all the time. Any thread (a key bind).
   void RequestDump() { dump_requested_.store(true, std::memory_order_relaxed); }
+  // The same for every texture the cache holds now (the pause menu: the frame
+  // under it shows the menu, the world's textures are still held). Any thread.
+  void RequestDumpAll() { dump_all_requested_.store(true, std::memory_order_relaxed); }
+
+  // Texture mods: the textures_replace/ folders are indexed again at the start
+  // of the next frame and every replacement is read again from its file, so
+  // files added, edited or removed while the game runs take effect. Any thread
+  // (the pause menu).
+  void RequestReload() { reload_requested_.store(true, std::memory_order_relaxed); }
 
   // One line of statistics since the last call.
   std::string TakeSummary(uint64_t frames);
@@ -322,8 +331,11 @@ class TextureCache {
   // The replacement for `hash`, loaded and uploaded on first use; null when
   // no mod has one or its file was refused (logged once).
   Replacement* ReplacementFor(uint64_t hash, plume::RenderCommandList* list);
-  // Writes the entry's base level (hash computed) unless done this session.
-  void DumpEntry(const Entry& entry);
+  // RequestReload, at the start of a frame.
+  void ReloadMods();
+  // Writes the entry's base level unless done this session. `hash` is the
+  // base level's content hash taken just now; 0 takes it here.
+  void DumpEntry(const Entry& entry, uint64_t hash = 0);
   void DrainInvalidations();
   void Destroy(Entry& entry, bool for_shutdown);
   void EvictSome();
@@ -359,6 +371,8 @@ class TextureCache {
   std::unordered_map<uint64_t, std::unique_ptr<Replacement>> replacements_;
   std::unordered_set<uint64_t> dumped_;  // hashes written this session
   std::atomic<bool> dump_requested_{false};
+  std::atomic<bool> reload_requested_{false};
+  std::atomic<bool> dump_all_requested_{false};
   uint64_t dump_frame_ = 0;  // the frame a requested dump covers (0: none)
 
   struct Stats {
