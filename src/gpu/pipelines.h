@@ -229,6 +229,7 @@ class Pipelines {
   Stats stats_;
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;
+  bool msaa_line_guard_ = true;  // mcla_gpu_msaa_line_guard
 
   // Persistence: this API's file and the other API's (read too,
   //), the layouts and records they hold plus the session's new

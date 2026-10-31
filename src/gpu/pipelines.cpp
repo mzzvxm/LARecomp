@@ -31,6 +31,17 @@ REXCVAR_DEFINE_BOOL(
     "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_msaa_line_guard, true, "MCLA/GPU",
+    "D3D12 only: before a pipeline that draws lines or wireframe on a multisampled target, bind a "
+    "triangle pipeline with the same sample count. On some AMD Radeon drivers an aliased line "
+    "pipeline leaves the MSAA sample positions at the pixel center for the triangles after it, "
+    "when it is the first pipeline of a command list or follows a pipeline with another sample "
+    "count (a resolve pass): redrawn meshes then fail the depth test at some samples and show "
+    "blocks of the clear color. Costs one extra pipeline per line pipeline and "
+    "one extra state call per bind of it.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace mcla::gpu {
 
 namespace {
@@ -220,6 +231,8 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
   REXLOG_INFO("[gpu] pipelines: depth bias {}", dynamic_depth_bias_
                                                     ? "dynamic (set per draw on the command list)"
                                                     : "static (part of each pipeline)");
+  msaa_line_guard_ = REXCVAR_GET(mcla_gpu_msaa_line_guard);
+  REXLOG_INFO("[gpu] pipelines: MSAA line guard {} (D3D12 only)", msaa_line_guard_ ? "on" : "off");
   persist_ = REXCVAR_GET(mcla_gpu_pipeline_cache);
   if (persist_) {
     // The pack is <executable>/assets/mcla_shaders.*.pack.
@@ -908,6 +921,7 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
   desc.depthClipEnabled = ((key.raster >> 8) & 1u) != 0;
   desc.alphaToCoverageEnabled = false;  // the shader's (contract v6)
   desc.dynamicDepthBiasEnabled = dynamic_depth_bias_;
+  desc.msaaLineGuard = msaa_line_guard_;
   desc.depthBias = key.depth_bias;
   desc.slopeScaledDepthBias = key.slope_scaled_depth_bias;
   return true;
