@@ -1345,6 +1345,7 @@ const ItemDef kVideoItems[] = {
 const ItemDef kRecompItems[] = {
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
+    Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options

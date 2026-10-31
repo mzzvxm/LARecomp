@@ -13,4 +13,7 @@ namespace mcla::ui {
 // outside, so the same cvar registry gets a panel of its own here.
 void ToggleSettings(rex::ui::ImGuiDrawer* drawer, const std::filesystem::path& config_path);
 
+// Whether that panel is open. Safe from any thread.
+bool SettingsOpen();
+
 } // namespace mcla::ui

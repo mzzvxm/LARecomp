@@ -13,6 +13,7 @@
 #include "hooks_internal.h"
 #include "discord_rpc/discord_rpc.h"
 #include "../camera_look.h"
+#include "../cursor_hide.h"
 #include "../cutscene_gallery.h"
 #include "../hud_units.h"
 #include "../map_mouse.h"
@@ -158,6 +159,7 @@ void Patch_DeltaTimePre() {
     TickHudUnits();             // hud_speed_units: mph -> km/h, live
     TickCutsceneGallery();      // cutscene replay: close the menu, start the script
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
+    TickCursorHide();           // mouse pointer: hidden on pad use or after 3 s still, live
     TickMapWarp();              // warp console command / F9: a mod's warp point <-> back
     larecomp::browser::TickServerBrowserJoin();  // server browser: drive the picked join
     TickModGlows();             // guest scratch for the mods' light glows

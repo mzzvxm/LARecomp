@@ -687,6 +687,10 @@ bool MapMouseWantsPointer() {
     return g_map_wants_pointer.load(std::memory_order_relaxed);
 }
 
+bool MapMouseHidesCursor() {
+    return g_cursor_hidden.load(std::memory_order_relaxed);
+}
+
 void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
     const uint32_t screen = r31.u32;
     if (!screen) return;
@@ -882,6 +886,7 @@ bool MCLA_MapCursorSweepNullGuard(PPCRegister& r31, PPCRegister& r30,
 void InitMapMouse() {}
 void TickMapMouse() {}
 bool MapMouseWantsPointer() { return false; }
+bool MapMouseHidesCursor() { return false; }
 void Hook_MapInputTick(PPCRegister&, PPCRegister&) {}
 bool MCLA_MapCursorMagnetGuard() { return false; }
 bool MCLA_MapCursorSweepNullGuard(PPCRegister&, PPCRegister&, PPCRegister&) {

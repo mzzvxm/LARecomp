@@ -1,6 +1,7 @@
 #include "settings.h"
 #include "imgui_theme.h"
 
+#include <atomic>
 #include <rex/cvar.h>
 #include <rex/string.h>
 #include <rex/string/numeric.h>
@@ -550,9 +551,11 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
 };
 
 std::unique_ptr<SettingsDialog> g_settings;
+std::atomic<bool> g_settings_open{false};
 
 void ReleaseSettings() {
   (void)g_settings.release();
+  g_settings_open.store(false, std::memory_order_relaxed);
 }
 
 }  // namespace
@@ -564,6 +567,9 @@ void ToggleSettings(rex::ui::ImGuiDrawer* drawer, const std::filesystem::path& c
   } else {
     g_settings = std::make_unique<SettingsDialog>(drawer, config_path);
   }
+  g_settings_open.store(g_settings != nullptr, std::memory_order_relaxed);
 }
+
+bool SettingsOpen() { return g_settings_open.load(std::memory_order_relaxed); }
 
 } // namespace mcla::ui
