@@ -9,10 +9,13 @@
 #include <format>
 #include <fstream>
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
 #include "mc_engine/modloader/modloader.h"
+
+REXCVAR_DECLARE(bool, texture_mods);
 
 namespace mcla::gpu {
 
@@ -112,6 +115,10 @@ bool TextureMods::HashFromFileName(const std::string& stem, uint64_t* hash) {
 
 void TextureMods::Initialize() {
   files_.clear();
+  if (!REXCVAR_GET(texture_mods)) {
+    REXLOG_INFO("[gpu] texture mods: switched off; no replacements");
+    return;
+  }
   const std::filesystem::path mod_root =
       mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder());
   std::error_code ec;
@@ -127,10 +134,18 @@ void TextureMods::Initialize() {
   }
   std::vector<std::filesystem::path> mods;
   for (const auto& entry : std::filesystem::directory_iterator(mod_root, ec)) {
-    if (entry.is_directory(ec) &&
-        !mc::modloader::IsReservedModFolder(entry.path().filename().string()) &&
-        std::filesystem::is_directory(entry.path() / kReplaceFolder, ec)) {
-      mods.push_back(entry.path() / kReplaceFolder);
+    if (!entry.is_directory(ec) ||
+        mc::modloader::IsReservedModFolder(entry.path().filename().string())) {
+      continue;
+    }
+    // files/textures_replace/ too: mods that keep everything under files/
+    // put them there, and the modloader ships that folder as raw game files,
+    // which does nothing for a texture.
+    for (const std::filesystem::path& folder :
+         {entry.path() / kReplaceFolder, entry.path() / "files" / kReplaceFolder}) {
+      if (std::filesystem::is_directory(folder, ec)) {
+        mods.push_back(folder);
+      }
     }
   }
   std::sort(mods.begin(), mods.end());

@@ -1623,6 +1623,7 @@ const ItemDef kExtrasHubItems[] = {
 // Texture mods on the Plume renderer: the frame's textures to
 // <mods>/textures_dump/, and the textures_replace/ folders read again.
 const ItemDef kTexItems[] = {
+    Bool("PM_RxTexMods",     "texture_mods", "TEXTURE MODS: "),
     Action("PM_RxTexDump",   kActionDumpTextures),
     Action("PM_RxTexReload", kActionReloadTextures),
 };

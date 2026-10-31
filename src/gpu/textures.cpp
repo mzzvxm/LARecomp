@@ -42,6 +42,18 @@ REXCVAR_DEFINE_BOOL(
     "<mods>/<Mod>/textures_replace/; <mods> is modloader/, mods/ or models/.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    texture_mods, true, "MCLA/Textures",
+    "Use the texture mods (<mods>/<Mod>/textures_replace/). False shows the game's own textures; "
+    "changing it re-indexes the mods at the start of the next frame.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    texture_reload, false, "MCLA/Textures",
+    "Set to true to reload the texture mods (<mods>/<Mod>/textures_replace/) at the start of the "
+    "next frame, the same as RELOAD TEXTURE MODS in the pause menu. It clears itself afterwards.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace xe = rex::graphics::xenos;
@@ -317,6 +329,16 @@ void TextureCache::Shutdown() {
 void TextureCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
+  static bool mods_were_on = REXCVAR_GET(texture_mods);
+  if (mods_were_on != REXCVAR_GET(texture_mods)) {
+    mods_were_on = REXCVAR_GET(texture_mods);
+    reload_requested_.store(true, std::memory_order_relaxed);
+  }
+  if (REXCVAR_GET(texture_reload)) {
+    // A trigger, not a setting: put it back so setting it again reloads again.
+    rex::cvar::SetFlagByName("texture_reload", "false");
+    reload_requested_.store(true, std::memory_order_relaxed);
+  }
   if (reload_requested_.exchange(false, std::memory_order_relaxed)) {
     ReloadMods();
   }

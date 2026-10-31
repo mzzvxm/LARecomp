@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- texture mods: the replacement files and their pixels
 // ===========================================================================
 // A mod replaces a game texture with a DDS in <mods>/<Mod>/textures_replace/
-// (any depth below it), <mods> being the mod folder beside the executable
+// or <mods>/<Mod>/files/textures_replace/ (any depth below either), <mods> being the mod folder beside the executable
 // (modloader/, mods/ or models/, mc::modloader::ModRootDir). Loose files go in
 // <mods>/textures_replace/ and win over every mod. The file is found by the
 // content hash of the texture it replaces -- XXH3-64 of the guest bytes of its base level, the SDK's and
