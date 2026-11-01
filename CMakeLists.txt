@@ -57,6 +57,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/readback_window.cpp
     src/mc_engine/hooks/mods.cpp
     src/mc_engine/hooks/discord.cpp
+    src/mc_engine/hooks/audio_mixer.cpp
     src/mc_engine/hooks/diagnostics.cpp
     src/mc_engine/hooks/vibration.cpp
     src/mc_engine/hooks/warper.cpp
@@ -366,6 +367,8 @@ else()
             psapi
             # real-world weather fetch (mc_engine/real_weather.cpp)
             winhttp
+            # audio mixer thread priority (mc_engine/hooks/audio_mixer.cpp): MMCSS
+            avrt
             # custom MP3 radio (mc_engine/mp3custom): Media Foundation decode.
             # XAudio2 itself is loaded by name at runtime, so it needs no lib.
             mfplat
