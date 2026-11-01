@@ -19,6 +19,10 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <emmintrin.h>
+#endif
+
 #include "cycles.h"
 #include "draw_decode.h"
 #include "guest_memory.h"
@@ -194,6 +198,25 @@ uint64_t ElapsedCycles(uint64_t since) {
   return now > since ? now - since : 0;
 }
 
+// memcmp(a, b, kConstantBlockBytes) == 0 without a call into vcruntime140: the
+// compiler does not expand it, and a draw compares a few blocks (0.03 ms a frame in the
+// profile, mostly the call).
+inline bool SameBlock(const uint8_t* a, const uint8_t* b) {
+  static_assert(guest::kConstantBlockBytes == 64, "four 16-byte compares");
+#if defined(_M_X64) || defined(__x86_64__)
+  const auto load = [](const uint8_t* p, int k) {
+    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(p) + k);
+  };
+  const __m128i e0 = _mm_cmpeq_epi8(load(a, 0), load(b, 0));
+  const __m128i e1 = _mm_cmpeq_epi8(load(a, 1), load(b, 1));
+  const __m128i e2 = _mm_cmpeq_epi8(load(a, 2), load(b, 2));
+  const __m128i e3 = _mm_cmpeq_epi8(load(a, 3), load(b, 3));
+  return _mm_movemask_epi8(_mm_and_si128(_mm_and_si128(e0, e1), _mm_and_si128(e2, e3))) == 0xFFFF;
+#else
+  return std::memcmp(a, b, guest::kConstantBlockBytes) == 0;
+#endif
+}
+
 // The deltas of one bank: blocks whose bytes differ from the shadow, among the
 // ones the dirty mask names -- or among all of them when verifying. A block
 // whose bit is set but whose bytes did not change is not sent.
@@ -210,7 +233,7 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
       const uint32_t i = uint32_t(std::countl_zero(bits));
       bits &= ~(uint64_t(1) << (63 - i));
       const uint32_t at = i * guest::kConstantBlockBytes;
-      if (std::memcmp(bank + at, shadow + at, guest::kConstantBlockBytes) == 0) {
+      if (SameBlock(bank + at, shadow + at)) {
         continue;
       }
       out[count++] = uint8_t(i);
@@ -224,7 +247,7 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
       continue;
     }
     const uint32_t at = i * guest::kConstantBlockBytes;
-    if (shadow_valid && std::memcmp(bank + at, shadow + at, guest::kConstantBlockBytes) == 0) {
+    if (shadow_valid && SameBlock(bank + at, shadow + at)) {
       continue;
     }
     out[count++] = uint8_t(i);
@@ -381,13 +404,18 @@ void GuestCapture::NextFramePages() {
 }
 
 GuestCapture::DeviceState& GuestCapture::StateFor(uint32_t device) {
+  if (last_state_ != nullptr && last_state_->device == device) {
+    return *last_state_;
+  }
   for (auto& state : devices_) {
     if (state->device == device) {
+      last_state_ = state.get();
       return *state;
     }
   }
   devices_.push_back(std::make_unique<DeviceState>());
   devices_.back()->device = device;
+  last_state_ = devices_.back().get();
   if (devices_.size() > 1 && !reported_device_count_) {
     // Expected only if the game's command-buffer cache records on its own
     // device; OnGuestFrameEnd keeps that cache off.

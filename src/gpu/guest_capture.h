@@ -228,6 +228,7 @@ class GuestCapture {
 
   // Everything below is guarded by the stream's producer lock (see Threading above).
   std::vector<std::unique_ptr<DeviceState>> devices_;
+  DeviceState* last_state_ = nullptr;  // the one StateFor found last (a draw asks twice)
   std::unordered_map<uint64_t, IdentityEntry> identities_;
   std::vector<uint8_t> scratch_;  // normalization buffer
   PendingInline pending_;

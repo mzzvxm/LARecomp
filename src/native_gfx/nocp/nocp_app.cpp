@@ -109,7 +109,10 @@ std::atomic<uint64_t> g_timed_frames{0};
 
 void NoteHook(const char* name) {
   g_last_hook.store(name, std::memory_order_relaxed);
-  g_hook_calls.fetch_add(1, std::memory_order_relaxed);
+  // A plain increment, not a locked one: this runs at every hooked call, a draw
+  // among them, and the count only says that hooks are being called (the stall
+  // line in guest_gpu.cpp). Two threads at once can lose a count.
+  g_hook_calls.store(g_hook_calls.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 }
 
 const char* LastHookName() {
