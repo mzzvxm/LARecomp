@@ -1373,8 +1373,8 @@ const ItemDef kRecompItems[] = {
 // PROP DRAW DIST and BREAK FPS FLOOR patch rage::fragTuneStruct in place after
 // the game has parsed $/tune/types/fragments, so they apply live. "Prop" here
 // means a breakable fragment (pole, sign, fence, barrier), not the whole world.
-// Eighteen rows do not fit one pause list (kMaxRowsPerMenu), so PERFORMANCE is a
-// hub over four menus, split by what the rows touch.
+// PERFORMANCE is a hub over four menus of its eighteen rows, split by what the
+// rows touch.
 const ItemDef kPerfItems[] = {
     Submenu("PM_RxSubPerfShad", "SHADOWS",       "RxPerfShadMenu"),
     Submenu("PM_RxSubPerfRend", "RENDERING",     "RxPerfRendMenu"),
@@ -2110,7 +2110,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // the other route entirely and stops using states as rows: real row objects
 // of the game's own value class, handed to the list through its widget array.
 
-constexpr int kMaxRowsPerMenu = 18;  // PERFORMANCE on the Plume renderer
+constexpr int kMaxRowsPerMenu = 18;  // BuildNativeRows refuses a longer menu
 
 struct NativeRows {
     uint32_t row[kMaxRowsPerMenu] = {};     // guest row objects
