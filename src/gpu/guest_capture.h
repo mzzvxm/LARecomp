@@ -31,7 +31,9 @@
 // seen there (up to kMaxRawVariants, since the D3D runtime repatches a VS's
 // vfetches per declaration), the normalized bytes, the identity. Raw bytes that
 // match a known variant are a memcmp; new raw bytes are normalized and compared
-// with the normalized copy; only genuinely new microcode is hashed.
+// with the normalized copy; only genuinely new microcode is hashed. A shader
+// object that was resolved once in the guest frame at the same (address, size)
+// is not looked up again that frame (the identity memo, below).
 //
 // Every guest pointer is checked with IsGuestRangeReadable before it is read.
 // What cannot be read becomes a zero field and a flag, never a crash.
@@ -197,7 +199,10 @@ class GuestCapture {
   ShaderRead ReadVertexShader(const uint8_t* base, uint32_t device, uint32_t ps_object,
                               uint32_t* variant);
   ShaderRead ReadPixelShader(const uint8_t* base, uint32_t ps_object);
+  // The shader's identity, from the frame's memo when this object was resolved at
+  // this (address, size) earlier in the guest frame, else ResolveIdentityFull.
   void ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex);
+  void ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex);
   void GatherDraw(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                   DrawCapture& capture);
   // Fills a draw payload of capture's exact layout and updates the shadows.
@@ -256,6 +261,34 @@ class GuestCapture {
   std::atomic<uint64_t> cache_hits_{0};
   std::atomic<uint64_t> cache_heap_asks_{0};
   std::atomic<uint64_t> cache_stale_{0};
+  // The identity memo. A draw resolves two shaders, and the 5,000 to 6,000
+  // resolves of a frame are of a few hundred objects. An entry holds what
+  // ResolveIdentityFull found for one object at one (address, size) and is good
+  // for the guest frame it was stored in (generation = frame_pages_.generation,
+  // counted up at every present). It rests on the shader's microcode not being
+  // replaced by a different one at the same place within a frame: the D3D
+  // runtime's vfetch repatches keep the normalized form, which the identity is of
+  // (the raw-variant list below does the same), and a shader that is freed and
+  // another created at its address and size mid-frame is the one case it would
+  // get wrong, for the rest of that frame. mcla_gpu_shader_memo_check runs the
+  // full lookup at every hit and counts the answers that differ.
+  struct IdentityMemo {
+    uint32_t object = 0;  // 0 = empty
+    uint32_t generation = 0;
+    uint32_t address = 0;
+    uint32_t size = 0;
+    uint64_t identity = 0;
+    bool computed_fetch_index = false;
+    bool kills_pixels = false;
+  };
+  static constexpr uint32_t kMemoSlots = 1024;  // per kind, direct mapped on the object
+  std::array<IdentityMemo, kMemoSlots> vs_memo_{};
+  std::array<IdentityMemo, kMemoSlots> ps_memo_{};
+  const bool memo_check_;  // mcla_gpu_shader_memo_check
+  // Written under the producer lock only (plain load and store); read by Disable.
+  std::atomic<uint64_t> memo_hits_{0};
+  std::atomic<uint64_t> memo_misses_{0};
+  std::atomic<uint64_t> memo_differ_{0};
   GuestFrameStats frame_;
   bool reported_device_count_ = false;
   // Physical [start, end) of every resolve destination recorded so far (base

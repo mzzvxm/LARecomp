@@ -46,6 +46,14 @@ REXCVAR_DEFINE_BOOL(
     "shutdown; it must be 0. For testing; the heap is asked as often as without the cache.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_shader_memo_check, false, "MCLA/GPU",
+    "Also look every shader's identity up in full at each draw whose answer the frame's identity "
+    "memo gives, and count and log (the first 16) the answers that differ. The count is in the "
+    "shader memo line at shutdown; it must be 0. For testing; the lookups cost as much as without "
+    "the memo.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace mcla::gpu {
 
 namespace nfx = mcla::native_gfx;
@@ -235,23 +243,34 @@ GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
       verify_constants_(verify_constants),
       page_cache_(REXCVAR_GET(mcla_gpu_readable_cache)),
       page_cache_check_(REXCVAR_GET(mcla_gpu_readable_cache) &&
-                        REXCVAR_GET(mcla_gpu_readable_cache_check)) {
+                        REXCVAR_GET(mcla_gpu_readable_cache_check)),
+      memo_check_(REXCVAR_GET(mcla_gpu_shader_memo_check)) {
   scratch_.reserve(nfx::kMaxUcodeBytes);
 }
 
 void GuestCapture::Disable() {
-  if (!enabled_.exchange(false, std::memory_order_acq_rel) || !page_cache_) {
+  if (!enabled_.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
-  const uint64_t hits = cache_hits_.load(std::memory_order_relaxed);
-  const uint64_t asks = cache_heap_asks_.load(std::memory_order_relaxed);
-  REXLOG_INFO("[gpu] readable cache: {} of {} guest range checks answered from the frame's "
-              "pages, {} asked the heap{}",
-              hits, hits + asks, asks,
-              page_cache_check_
-                  ? std::format("; {} cached answers differ from the heap (must be 0)",
-                                cache_stale_.load(std::memory_order_relaxed))
-                  : std::string());
+  if (page_cache_) {
+    const uint64_t hits = cache_hits_.load(std::memory_order_relaxed);
+    const uint64_t asks = cache_heap_asks_.load(std::memory_order_relaxed);
+    REXLOG_INFO("[gpu] readable cache: {} of {} guest range checks answered from the frame's "
+                "pages, {} asked the heap{}",
+                hits, hits + asks, asks,
+                page_cache_check_
+                    ? std::format("; {} cached answers differ from the heap (must be 0)",
+                                  cache_stale_.load(std::memory_order_relaxed))
+                    : std::string());
+  }
+  const uint64_t memo_hits = memo_hits_.load(std::memory_order_relaxed);
+  const uint64_t memo_misses = memo_misses_.load(std::memory_order_relaxed);
+  REXLOG_INFO("[gpu] shader memo: {} of {} shader identity lookups answered from the frame's "
+              "memo, {} looked up in full{}",
+              memo_hits, memo_hits + memo_misses, memo_misses,
+              memo_check_ ? std::format("; {} memo answers differ from the full lookup (must be 0)",
+                                        memo_differ_.load(std::memory_order_relaxed))
+                          : std::string());
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +374,8 @@ void GuestCapture::NextFramePages() {
   if (++frame_pages_.generation == 0) {
     // After 4 billion frames: no slot may match a generation that comes round again.
     std::fill(std::begin(frame_pages_.slot), std::end(frame_pages_.slot), uint64_t{0});
+    vs_memo_.fill(IdentityMemo{});
+    ps_memo_.fill(IdentityMemo{});
     frame_pages_.generation = 1;
   }
 }
@@ -449,6 +470,52 @@ GuestCapture::ShaderRead GuestCapture::ReadVertexShader(const uint8_t* base, uin
 }
 
 void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex) {
+  IdentityMemo& memo =
+      (vertex ? vs_memo_ : ps_memo_)[(shader.object * 2654435761u) >> 22];
+  static_assert(kMemoSlots == (1u << 10), "the slot is the top 10 bits of the product");
+  const uint32_t generation = frame_pages_.generation;
+  if (memo.object == shader.object && memo.generation == generation &&
+      memo.address == shader.address && memo.size == shader.size) {
+    memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    if (!memo_check_) {
+      shader.identity = memo.identity;
+      shader.computed_fetch_index = memo.computed_fetch_index;
+      shader.kills_pixels = memo.kills_pixels;
+      return;
+    }
+    // Checking: the full lookup is the answer used; the memo's is compared with it.
+    ResolveIdentityFull(base, shader, vertex);
+    if (shader.identity != memo.identity ||
+        shader.computed_fetch_index != memo.computed_fetch_index ||
+        shader.kills_pixels != memo.kills_pixels) {
+      const uint64_t differ = memo_differ_.load(std::memory_order_relaxed) + 1;
+      memo_differ_.store(differ, std::memory_order_relaxed);
+      if (differ <= 16) {
+        REXLOG_WARN("[gpu] shader memo: {} object 0x{:08X} at 0x{:08X} + {}: memo identity "
+                    "{:016X}, full lookup {:016X} (fetch index {}/{}, kills {}/{})",
+                    vertex ? "vertex" : "pixel", shader.object, shader.address, shader.size,
+                    memo.identity, shader.identity, memo.computed_fetch_index,
+                    shader.computed_fetch_index, memo.kills_pixels, shader.kills_pixels);
+      }
+      // Leave the memo as the full lookup has it.
+      memo.identity = shader.identity;
+      memo.computed_fetch_index = shader.computed_fetch_index;
+      memo.kills_pixels = shader.kills_pixels;
+    }
+    return;
+  }
+  memo_misses_.store(memo_misses_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  ResolveIdentityFull(base, shader, vertex);
+  memo.object = shader.object;
+  memo.generation = generation;
+  memo.address = shader.address;
+  memo.size = shader.size;
+  memo.identity = shader.identity;
+  memo.computed_fetch_index = shader.computed_fetch_index;
+  memo.kills_pixels = shader.kills_pixels;
+}
+
+void GuestCapture::ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex) {
   const uint8_t* ucode = GuestBytes(base, shader.address);
   const uint64_t key = uint64_t(shader.address) << 32 | shader.size;
   auto found = identities_.find(key);
