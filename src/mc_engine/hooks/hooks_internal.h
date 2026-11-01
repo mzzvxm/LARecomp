@@ -81,6 +81,13 @@ bool PhotoCityReturning();
 // photo_ui_trace is on and the photo album scene is up.
 bool PhotoUiTracing(const uint8_t* base);
 
+// ui_smooth.cpp (ui_interpolate): what ui.cpp's movie pacing tells the interpolation.
+// A paced movie came up for a step in this update, stepped or held back.
+void UiSmoothTouch(uint32_t context, int64_t now_ns);
+// The movie is about to take a step; it belongs on its schedule at step_ns and the
+// steps are period_ns apart.
+void UiSmoothNoteStep(uint32_t context, int64_t step_ns, int64_t period_ns);
+
 // vinyl.cpp
 void ApplyVinylLayerCaps();
 void TickVinylReadbackWindow();
@@ -105,6 +112,9 @@ void StartFreezeWatchdog();
 
 // rear_view.cpp
 void TickRearView();
+
+// vibration.cpp
+void TickVibration();
 
 // world_tuning.cpp
 void ApplyAmbientDensityTuning();

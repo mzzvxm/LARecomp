@@ -91,7 +91,7 @@ enum PresentFlags : uint32_t {
 // The guest capture's own measurements for the frame this present ends, so the
 // render thread reports guest and render costs side by side.
 struct GuestFrameStats {
-  uint64_t capture_ns = 0;          // time spent inside the capture functions
+  uint64_t capture_cycles = 0;      // TSC cycles (cycles.h) spent inside the capture functions
   uint64_t bytes = 0;               // stream bytes the frame wrote
   uint32_t draws = 0;
   uint32_t records = 0;
@@ -172,8 +172,12 @@ struct DrawRecord {
   uint64_t bank_check_vs = 0;   // XXH3 of the device's VS bank, raw (kDrawBankCheck)
   uint64_t bank_check_ps = 0;
   uint8_t stream_strides[guest::kStreamCount] = {};
-  uint8_t fetch[guest::kFetchShadowBytes] = {};          // window F, raw
-  uint8_t registers[guest::kRegisterWindowBytes] = {};   // window R, raw
+  // The two windows have no initializer on purpose: the capture copies both whole
+  // into every record it writes (GuestCapture::WriteDraw constructs the record by
+  // default-initialization), and zeroing 1,520 bytes first only to overwrite them
+  // was a memset per draw. Any other code that builds a DrawRecord must set both.
+  uint8_t fetch[guest::kFetchShadowBytes];          // window F, raw
+  uint8_t registers[guest::kRegisterWindowBytes];   // window R, raw
 };
 static_assert(std::is_trivially_copyable_v<DrawRecord>);
 

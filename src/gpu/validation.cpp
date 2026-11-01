@@ -13,6 +13,7 @@
 #include <rex/logging.h>
 
 #include "backend.h"
+#include "cycles.h"
 #include "draw_decode.h"
 #include "guest_device.h"
 #include "native_gfx/guest/guest_resources.h"
@@ -475,7 +476,7 @@ void FrameValidator::OnPresent(const PresentRecord& r) {
   Count(kConstantBlocksMasked, s.constant_blocks_masked);
   Count(kConstantBlocksUnmasked, s.constant_blocks_unmasked);
   ++window_frames_;
-  window_capture_ns_ += s.capture_ns;
+  window_capture_ns_ += uint64_t(cycles::ToNs(s.capture_cycles));
   window_bytes_ += s.bytes;
   if (total_[kPresents] % kReportInterval == 0) {
     Report("periodic");

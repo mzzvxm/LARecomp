@@ -34,6 +34,7 @@ bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
+std::string DefaultAdapterName();
 }  // namespace d3d12
 #endif
 
@@ -62,6 +63,7 @@ bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
+std::string DefaultAdapterName();
 }  // namespace vulkan
 #endif
 

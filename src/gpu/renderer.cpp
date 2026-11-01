@@ -55,7 +55,9 @@ REXCVAR_DEFINE_BOOL(
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
-                      "Adapter name to create the device on. Empty lets Plume pick.")
+                      "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
+                      "graphics setting for this app names, else the high-performance GPU; on "
+                      "Vulkan Plume picks.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -79,6 +81,16 @@ REXCVAR_DEFINE_UINT32(
     "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
     "and continue in a new list (0: one submission per guest frame, the default). For measuring "
     "submission batching.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_present_release, true, "MCLA/GPU",
+    "Release the guest's Swap as soon as the render thread has read the last guest memory a "
+    "present needs (after the scene's end-of-frame work and the front buffer's texture), and "
+    "before it submits the frame and presents. Without it the guest waits for the whole present, "
+    "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
+    "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
+    "so it never runs more than that ahead.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
@@ -179,6 +191,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     validate_ = REXCVAR_GET(mcla_gpu_validate);
     batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
     profile_records_ = REXCVAR_GET(mcla_gpu_scene_profile);
+    release_early_ = REXCVAR_GET(mcla_gpu_present_release);
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -209,10 +222,11 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   initialized_ = true;
   REXLOG_INFO("[gpu] renderer up: {} frames in flight, render thread running (idle tick {} ms), "
-              "validator {}, {}",
+              "validator {}, {}, present release {}",
               kFramesInFlight, kIdlePeriod.count(), validate_ ? "on" : "off",
               batch_draws_ ? "a batch every " + std::to_string(batch_draws_) + " draws"
-                           : std::string("one submission per guest frame"));
+                           : std::string("one submission per guest frame"),
+              release_early_ ? "early" : "after the present");
   return true;
 }
 
@@ -233,6 +247,10 @@ void Renderer::Shutdown() {
     REXLOG_ERROR("[gpu] renderer left alive after {} presents: its render thread is stuck",
                  presented_);
     return;
+  }
+  if (release_early_) {
+    REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early",
+                early_releases_, guest_presents_);
   }
   // The last reports (and the validator's CSVs), now that no record arrives.
   if (validate_) {
@@ -320,7 +338,10 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       scene_.OnPresent();
       census_.OnPresent();
       present_.OnGuestPresent(*reinterpret_cast<const PresentRecord*>(payload));
+      // The guest waits for this record (kRecordSync); ReleaseGuest may let it go sooner.
+      release_sequence_ = (header.flags & kRecordSync) != 0 ? header.sequence : 0;
       ExecutePresent(PresentSource::kGuest);
+      release_sequence_ = 0;
       return;
     case RecordType::kDraw:
       if (validate_) {
@@ -485,6 +506,7 @@ bool Renderer::RebuildSwapChain() {
 }
 
 void Renderer::ExecutePresent(PresentSource source) {
+  tail_open_ = false;
   if (device_.IsLost()) {
     // Nothing recorded will run: drop the guest frame being recorded.
     if (frames_.is_open()) {
@@ -569,6 +591,25 @@ void Renderer::ExecutePresent(PresentSource source) {
   }
   ReportFrameStats();
   overlay_host_->RequestPass();
+  if (tail_open_ && source == PresentSource::kGuest) {
+    tail_short_ = std::chrono::steady_clock::now() - tail_start_ <= kEarlyReleaseMaxTail;
+  }
+  tail_open_ = false;
+}
+
+void Renderer::ReleaseGuest() {
+  // From here the present reads no guest memory: the scene's end-of-frame work, the
+  // front buffer's texture (present_.Prepare) and the gamma table are done; what follows
+  // draws from the GPU's copies, submits and presents.
+  tail_start_ = std::chrono::steady_clock::now();
+  tail_open_ = true;
+  if (release_sequence_ == 0 || !release_early_ || !tail_short_ ||
+      REXCVAR_GET(mcla_gpu_vsync)) {
+    return;
+  }
+  thread_.stream().MarkExecuted(release_sequence_);
+  release_sequence_ = 0;
+  ++early_releases_;
 }
 
 void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
@@ -582,6 +623,7 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
     // An idle present shows the same front buffer again: not a new frame.
     flicker_probe_.Record(list, present_, guest_presents_ + 1);
   }
+  ReleaseGuest();
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::COLOR_WRITE));

@@ -1309,6 +1309,8 @@ constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
 constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
 constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"};
 constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
+constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
+constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
@@ -1340,15 +1342,25 @@ const ItemDef kVideoItems[] = {
 #endif
     Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
+    // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
+    Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
 
 const ItemDef kRecompItems[] = {
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
+    // Live: the game's gamma ramp is set again at the next frame (hooks/display_gamma.cpp).
+    Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
+         kDisplayGammaVals, kDisplayGammaNames, 2),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
+    Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
+    // Live. A DualSense only: a spring on R2 and a brake on L2 while a car is driven.
+    Bool("PM_RxTriggers",    "adaptive_triggers",        "DUALSENSE TRIGGERS: "),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
+    // Live: the game's rumble stops reaching the controller, and one that runs stops.
+    Bool("PM_RxVibration",   "controller_vibration",     "VIBRATION: "),
 };
 
 // Everything that trades image quality for framerate, in one place.
@@ -2098,7 +2110,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // the other route entirely and stops using states as rows: real row objects
 // of the game's own value class, handed to the list through its widget array.
 
-constexpr int kMaxRowsPerMenu = 17;  // DEBUG CAMERA is 6 + 3 (rear view) + 8 (free look)
+constexpr int kMaxRowsPerMenu = 18;  // PERFORMANCE on the Plume renderer
 
 struct NativeRows {
     uint32_t row[kMaxRowsPerMenu] = {};     // guest row objects

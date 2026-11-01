@@ -3030,8 +3030,16 @@ void NoteSwapHook() {
     RenderDocEndCapture(nullptr);
     return;
   }
-  const bool key_request = g_rdc_capture_request.exchange(false, std::memory_order_acq_rel);
-  const bool file_request = std::remove("native_gfx_rdc_trigger") == 0;
+  // The trigger file is looked for once in 60 swaps, as the native path does:
+  // removing it is a filesystem call (an open of a file that is not there) and
+  // at every swap it cost the guest thread about 0.05 ms a frame. A file
+  // dropped by hand is picked up within a second; the key is still seen at the
+  // next swap, and its flag is only exchanged when it is set.
+  static uint32_t trigger_tick = 0;
+  const bool key_request = g_rdc_capture_request.load(std::memory_order_relaxed) &&
+                           g_rdc_capture_request.exchange(false, std::memory_order_acq_rel);
+  const bool file_request =
+      (++trigger_tick % 60u) == 0u && std::remove("native_gfx_rdc_trigger") == 0;
   if ((key_request || file_request) && RenderDocBeginCapture(nullptr)) {
     emu_capturing = true;
   }

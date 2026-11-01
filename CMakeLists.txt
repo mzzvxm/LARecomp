@@ -29,6 +29,7 @@ set(LARECOMP_SOURCES
     src/crash_handler.cpp
 
     src/mc_engine/threading.cpp
+    src/mc_engine/fma_fast.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
@@ -41,25 +42,31 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/hooks.cpp
     src/mc_engine/hooks/ui.cpp
     src/mc_engine/hooks/ui_theme.cpp
+    src/mc_engine/hooks/ui_smooth.cpp
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/frame_timing.cpp
     src/mc_engine/hooks/timing_log.cpp
     src/mc_engine/hooks/graphics.cpp
     src/mc_engine/hooks/dev_options.cpp
+    src/mc_engine/hooks/display_gamma.cpp
     src/mc_engine/hooks/camera.cpp
     src/mc_engine/hooks/vehicle.cpp
     src/mc_engine/hooks/rubberband.cpp
     src/mc_engine/hooks/vinyl.cpp
     src/mc_engine/hooks/vinyl_shapes.cpp
+    src/mc_engine/hooks/pump_wake.cpp
     src/mc_engine/hooks/photo_mode.cpp
     src/mc_engine/hooks/readback_window.cpp
     src/mc_engine/hooks/mods.cpp
     src/mc_engine/hooks/discord.cpp
+    src/mc_engine/hooks/audio_mixer.cpp
     src/mc_engine/hooks/diagnostics.cpp
+    src/mc_engine/hooks/vibration.cpp
     src/mc_engine/hooks/warper.cpp
     src/mc_engine/hooks/photo_album.cpp
     src/mc_engine/hooks/rear_view.cpp
+    src/mc_engine/hooks/script_input.cpp
 
     src/mc_engine/guest_profiler.cpp
     src/mc_engine/carbon_parts.cpp
@@ -73,6 +80,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/string_dumper.cpp
     src/mc_engine/menu_camera.cpp
     src/mc_engine/map_mouse.cpp
+    src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
@@ -81,6 +89,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/squash_stretch.cpp
     src/mc_engine/tire_offset.cpp
     src/mc_engine/hud_units.cpp
+    src/mc_engine/adaptive_triggers.cpp
     src/mc_engine/cutscene_gallery.cpp
     src/mc_engine/texture_dump.cpp
     src/mc_engine/boot_progress.cpp
@@ -361,6 +370,8 @@ else()
             psapi
             # real-world weather fetch (mc_engine/real_weather.cpp)
             winhttp
+            # audio mixer thread priority (mc_engine/hooks/audio_mixer.cpp): MMCSS
+            avrt
             # custom MP3 radio (mc_engine/mp3custom): Media Foundation decode.
             # XAudio2 itself is loaded by name at runtime, so it needs no lib.
             mfplat

@@ -77,6 +77,7 @@
 #include "../gpu/texture_names.h"
 #endif
 #include "../mc_engine/draw_stats.h"
+#include "../mc_engine/hooks/display_gamma.h"
 
 // Defined in native_gfx.cpp at global scope, so the declaration goes here at
 // global scope too. Read directly rather than through Active(), which latches
@@ -838,6 +839,8 @@ extern "C" REX_FUNC(D3DDevice_Swap) {
   mcla::native_gfx::nocp::NoteHook("D3DDevice_Swap");
   mcla::native_gfx::nocp::NoteSwapCall();
   mcla::native_gfx::NoteSwapHook();
+  // display_gamma: a changed option gives the device its ramp again before this Swap reads it.
+  DisplayGammaOnSwap(ctx, base);
   if (mcla::native_gfx::PresentTakeover()) {
     if (mcla::native_gfx::PresentFrame()) {
       ctx.r3.u64 = 0;  // fence value the caller would have received
