@@ -203,6 +203,10 @@ class TextureCache {
     //, 1 for everything made from guest memory. A reader in
     // texel units (the present) multiplies the guest size by it.
     uint32_t scale = 1;
+    // With `from_product`: the product's own scale (`scale` is smaller when
+    // the reader gets a reduced copy) and whether a depth source made it.
+    uint32_t product_scale = 0;
+    bool depth_source = false;
     // The binding recorded a pass of its own (a decode from the resolve
     // memory): the list has no framebuffer and another pipeline state, and the
     // caller binds its own again.

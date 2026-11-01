@@ -318,6 +318,7 @@ class Scene {
     uint64_t fetches = 0;  // fetch constants resolved to samplers
     uint64_t fetch_not_texture = 0;
     uint64_t fetch_memo_hits = 0;
+    uint64_t census_scale_reads = 0;  // mcla_gpu_census_scale: products read across scales
     uint64_t recorded = 0;           // draws recorded into the list
     uint64_t clears = 0;
     uint64_t clears_color = 0;       // colour targets cleared
@@ -440,6 +441,8 @@ class Scene {
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame
+  bool census_scale_ = false;     // mcla_gpu_census_scale, read at start
+  std::unordered_set<uint64_t> census_scale_logged_;  // NoteScaleRead's cases (the first 64)
   uint64_t lap_ = 0;
   std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
   // How often each memo of the last draw answered (M6a.3), for the profile.

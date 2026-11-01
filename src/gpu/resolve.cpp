@@ -59,6 +59,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
+REXCVAR_DECLARE(bool, mcla_gpu_census_scale);  // scene.cpp
 
 namespace mcla::gpu {
 
@@ -231,6 +232,7 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   passes_ = &passes;
   // The resolve memory reports the readers of inherited pages (reach).
   resolve_memory.SetEdram(&edram);
+  census_scale_ = REXCVAR_GET(mcla_gpu_census_scale);
   subscriber_ = memory.Subscribe("resolve products");
   for (uint32_t depth = 0; depth < 2; ++depth) {
     for (uint32_t msaa = 0; msaa < 2; ++msaa) {
@@ -1193,6 +1195,22 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
                                                  src_key.samples));
         break;
       }
+      // mcla_gpu_census_scale (M6e.0): a copy of an image of the screen that
+      // lands away from where it was read. At a fractional scale its host
+      // offset is rounded, so these are the copies a rounding can move.
+      if (census_scale_ && (dx != 0 || dy != 0) && edram_->IsScreenImage(src_size)) {
+        ++stats_.census_moved;
+        const uint64_t id = uint64_t(key.base_page) << 24 ^ uint64_t(level) << 20 ^
+                            uint64_t(uint16_t(dx)) << 4 ^ uint64_t(uint16_t(dy)) << 36 ^
+                            uint64_t(src_key.base_tiles) << 48;
+        if (census_moved_logged_.size() < 64 && census_moved_logged_.insert(id).second) {
+          REXLOG_INFO("[gpu] census scale: resolve of {} (an image of the screen, declared {}x{}) "
+                      "into {} level {} rect ({}, {})-({}, {}) moved by ({}, {}) from its source",
+                      DescribeEdramKey(src_key), (src_size >> 18) + 1,
+                      ((src_size >> 3) & 0x7FFFu) + 1, key.Describe(), level, tx0, ty0, tx1, ty1,
+                      dx, dy);
+        }
+      }
       // The host samples to read: all of them when the copy reads every guest
       // sample; otherwise, for each guest sample, the host sample nearest to
       // where it sits (the same one when the host has the guest's count).
@@ -1580,6 +1598,11 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       stats_.pages_written_back, double(stats_.write_back_ns) / 1e6,
       double(stats_.write_back_max_ns) / 1e6, stats_.write_back_failures, stats_.reduced_made,
       stats_.reduced_created);
+  if (census_scale_) {
+    text += std::format(" | census scale: {} copies of an image of the screen moved from their "
+                        "source",
+                        stats_.census_moved);
+  }
   stats_ = Stats{};
   return text;
 }

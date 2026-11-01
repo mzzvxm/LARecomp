@@ -300,6 +300,10 @@ class ResolveCache {
   bool fill_first_logged_ = false;
   bool fill_no_register_logged_ = false;
   std::unordered_set<uint64_t> fill_offset_logged_;
+  // mcla_gpu_census_scale (M6e.0): copies of an image of the screen moved from
+  // their source, logged once per destination, level and offset (the first 64).
+  bool census_scale_ = false;
+  std::unordered_set<uint64_t> census_moved_logged_;
   // Locked ranges (address << 32 | size), logged once each (the first 32).
   std::unordered_set<uint64_t> locks_logged_;
   std::vector<Product*> lock_hits_;
@@ -338,6 +342,7 @@ class ResolveCache {
     uint64_t deactivated_by_cpu = 0;
     uint64_t partial = 0;             // copies that do not cover their whole level
     uint64_t half_pixel_filled = 0;   // copies of a scaled source with the gap filled (24.43)
+    uint64_t census_moved = 0;        // copies of a screen image moved from their source (M6e.0)
     uint64_t misaligned = 0;          // destination offset not in whole 32x32 tiles
     uint64_t from_registers = 0;      // source surface not bound: taken from the registers
     uint64_t other_pitch = 0;         // source surface made at another pitch/MSAA than the

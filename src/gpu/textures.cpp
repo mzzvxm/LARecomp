@@ -481,6 +481,8 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t r
       Binding binding = bound(slot, false);
       binding.from_product = true;
       binding.scale = reader_scale;
+      binding.product_scale = product->scale;
+      binding.depth_source = product->depth_source;
       binding.list_state_changed = recorded;
       return binding;
     }
@@ -493,6 +495,8 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t r
     Binding binding = bound(slot, false);
     binding.from_product = true;
     binding.scale = product->scale;
+    binding.product_scale = product->scale;
+    binding.depth_source = product->depth_source;
     return binding;
   }
   // Memory a resolve wrote that guest memory does not hold, read with another

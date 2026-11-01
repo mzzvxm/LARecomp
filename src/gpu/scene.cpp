@@ -59,6 +59,12 @@ REXCVAR_DEFINE_BOOL(
     "scale of the draw's targets, as Xenia does -- a host pixel is 1/scale of the guest's. Off: "
     "the guest's factor unchanged (for A/B). Hot reload.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_census_scale, false, "MCLA/GPU",
+    "Diagnostic (M6e.0): logs once per case each resolve product a draw at another resolution "
+    "scale reads (with the fetch's filters) and each copy of an image of the screen that lands "
+    "away from its source. Off: nothing is checked.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
@@ -298,6 +304,38 @@ uint64_t CompositeTarget(const EdramTargets::Target* target) {
                                target->scale);
 }
 
+// mcla_gpu_census_scale (M6e.0): a fetch of a resolve product made at another
+// scale than the draw's, logged once per product, scales and filters (the
+// first 64): how the reads across scales sample.
+void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fetch,
+                   const uint32_t dwords[6], const TextureCache::Binding& bound, uint32_t scale) {
+  xe::xe_gpu_texture_fetch_t f;
+  std::memcpy(&f, dwords, sizeof(f));
+  const auto filter = [](xe::TextureFilter v) {
+    switch (v) {
+      case xe::TextureFilter::kPoint: return "point";
+      case xe::TextureFilter::kLinear: return "linear";
+      case xe::TextureFilter::kBaseMap: return "base map";
+      default: return "from the fetch";
+    }
+  };
+  const uint64_t id = uint64_t(fetch.key.base_page) ^ uint64_t(fetch.key.format) << 32 ^
+                      uint64_t(bound.product_scale & 0xFu) << 38 ^ uint64_t(scale & 0xFu) << 42 ^
+                      uint64_t(uint32_t(f.mag_filter) & 3u) << 46 ^
+                      uint64_t(uint32_t(f.min_filter) & 3u) << 48 ^
+                      uint64_t(uint32_t(f.mip_filter) & 3u) << 50 ^
+                      uint64_t(uint32_t(f.aniso_filter) & 7u) << 52;
+  if (logged.size() < 64 && logged.insert(id).second) {
+    REXLOG_INFO("[gpu] census scale: {} ({}x, {}) read by a draw at {}x {}; mag {}, min {}, mip "
+                "{}, aniso {}",
+                fetch.key.Describe(), bound.product_scale,
+                bound.depth_source ? "a depth source" : "colour", scale,
+                bound.product_scale > scale ? "through a reduced copy" : "directly",
+                filter(f.mag_filter), filter(f.min_filter), filter(f.mip_filter),
+                uint32_t(f.aniso_filter));
+  }
+}
+
 }  // namespace
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
@@ -331,6 +369,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   cycles::Measure();  // the base of the first window's TSC rate
   ab::Initialize();
   profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
+  census_scale_ = REXCVAR_GET(mcla_gpu_census_scale);
   geometry_->SetProfile(profile_);
   draw_census_.Configure();
   target_census_.Configure();
@@ -948,6 +987,10 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, uint32_
       // the cache logs any other dimension once and the null of its dimension
       // is bound.
       const TextureCache::Binding bound = textures_->Bind2D(fetch, scale, list_);
+      if (census_scale_ && bound.from_product && bound.product_scale != scale) {
+        ++window_.census_scale_reads;
+        NoteScaleRead(census_scale_logged_, fetch, dwords, bound, scale);
+      }
       // A texture mod's replacement has its own size and mips: the fetch's
       // range moves by the size ratio and stays inside the replacement's chain.
       uint32_t mip_min = fetch.mip_min;
@@ -1831,6 +1874,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.fetches += from.fetches;
   into.fetch_not_texture += from.fetch_not_texture;
   into.fetch_memo_hits += from.fetch_memo_hits;
+  into.census_scale_reads += from.census_scale_reads;
   into.recorded += from.recorded;
   into.clears += from.clears;
   into.clears_color += from.clears_color;
@@ -1930,6 +1974,11 @@ void Scene::Report(const char* why) {
                               GeometryCache::ResultName(GeometryCache::Result(i)),
                               w.geometry_results[i]);
     }
+  }
+  if (census_scale_) {
+    REXLOG_INFO("[gpu] census scale ({}): {} fetches of a resolve product at another scale than "
+                "the draw's in {} frames",
+                why, w.census_scale_reads, w.frames);
   }
   REXLOG_INFO(
       "[gpu] scene ({}): {} frames | draws {:.1f}/frame: {} prepared, {} recorded, skipped [{}], "
