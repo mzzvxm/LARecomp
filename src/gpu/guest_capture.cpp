@@ -8,6 +8,7 @@
 #include "guest_capture.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <new>
 
@@ -17,6 +18,11 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <emmintrin.h>
+#endif
+
+#include "cycles.h"
 #include "draw_decode.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -25,6 +31,16 @@
 #include "native_gfx/shader_identity.h"
 
 REXCVAR_DECLARE(bool, mcla_gpu_edram_aliasing);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_readable_cache, true, "MCLA/GPU",
+    "Ask the guest heap whether a guest range is readable once a guest frame per 4 KiB page "
+    "instead of once a draw: the capture checks about ten ranges a draw, and each check takes "
+    "the heap's lock (about 0.2 ms a frame at 2,600 draws). The pages found readable are "
+    "forgotten at every present. A page the guest unmaps within the frame and that a later draw "
+    "still points at would be read as before the unmapping (the memory stays mapped, so it "
+    "cannot fault); off asks the heap at every check, as before.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -120,8 +136,6 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
   return false;
 }
 
-using Clock = std::chrono::steady_clock;
-
 constexpr uint32_t kMaxEventDepth = 4;
 // Every offset the capture reads from a device lies below this.
 constexpr uint32_t kDeviceReadEnd = guest::kEventWindowEnd;
@@ -132,7 +146,7 @@ struct EventSnapshot {
   uint32_t flags = 0;  // EventFlags found before the call
   uint32_t stack[2] = {};
   uint32_t nested_at_begin = 0;
-  uint64_t before_ns = 0;
+  uint64_t before_cycles = 0;
   EventState state;
 };
 
@@ -159,8 +173,32 @@ inline uint64_t DeviceU64(const uint8_t* base, uint32_t device, uint32_t offset)
   return uint64_t(DeviceU32(base, device, offset)) << 32 | DeviceU32(base, device, offset + 4);
 }
 
-uint64_t ElapsedNs(Clock::time_point since) {
-  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - since).count());
+// TSC cycles since `since` (a cycles::Now). The capture times itself twice per
+// draw; steady_clock reads QueryPerformanceCounter, about 20 ns a call, the TSC a
+// few. The frame's total is turned into time by the code that reads it
+// (cycles::ToNs), as the render thread's own per-draw timers are.
+uint64_t ElapsedCycles(uint64_t since) {
+  const uint64_t now = cycles::Now();
+  return now > since ? now - since : 0;
+}
+
+// memcmp(a, b, kConstantBlockBytes) == 0 without a call into vcruntime140: the
+// compiler does not expand it, and a draw compares a few blocks (0.03 ms a frame in the
+// profile, mostly the call).
+inline bool SameBlock(const uint8_t* a, const uint8_t* b) {
+  static_assert(guest::kConstantBlockBytes == 64, "four 16-byte compares");
+#if defined(_M_X64) || defined(__x86_64__)
+  const auto load = [](const uint8_t* p, int k) {
+    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(p) + k);
+  };
+  const __m128i e0 = _mm_cmpeq_epi8(load(a, 0), load(b, 0));
+  const __m128i e1 = _mm_cmpeq_epi8(load(a, 1), load(b, 1));
+  const __m128i e2 = _mm_cmpeq_epi8(load(a, 2), load(b, 2));
+  const __m128i e3 = _mm_cmpeq_epi8(load(a, 3), load(b, 3));
+  return _mm_movemask_epi8(_mm_and_si128(_mm_and_si128(e0, e1), _mm_and_si128(e2, e3))) == 0xFFFF;
+#else
+  return std::memcmp(a, b, guest::kConstantBlockBytes) == 0;
+#endif
 }
 
 // The deltas of one bank: blocks whose bytes differ from the shadow, among the
@@ -170,13 +208,30 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
                    bool verify, std::array<uint8_t, guest::kConstantBlocksPerBank>& out,
                    uint32_t& count, uint32_t& masked, uint32_t& unmasked) {
   count = 0;
+  if (shadow_valid && !verify) {
+    // Only a block the mask names can be sent, so visit those alone, lowest
+    // block first (bit 63 is block 0) as the full walk below does, instead of
+    // testing all 64 bits of both banks at every draw.
+    static_assert(guest::kConstantBlocksPerBank == 64, "one mask bit per block");
+    for (uint64_t bits = dirty; bits != 0;) {
+      const uint32_t i = uint32_t(std::countl_zero(bits));
+      bits &= ~(uint64_t(1) << (63 - i));
+      const uint32_t at = i * guest::kConstantBlockBytes;
+      if (SameBlock(bank + at, shadow + at)) {
+        continue;
+      }
+      out[count++] = uint8_t(i);
+      ++masked;
+    }
+    return;
+  }
   for (uint32_t i = 0; i < guest::kConstantBlocksPerBank; ++i) {
     const bool named = ((dirty >> (63 - i)) & 1u) != 0;
     if (shadow_valid && !named && !verify) {
       continue;
     }
     const uint32_t at = i * guest::kConstantBlockBytes;
-    if (shadow_valid && std::memcmp(bank + at, shadow + at, guest::kConstantBlockBytes) == 0) {
+    if (shadow_valid && SameBlock(bank + at, shadow + at)) {
       continue;
     }
     out[count++] = uint8_t(i);
@@ -191,8 +246,28 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
 }  // namespace
 
 GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
-    : stream_(stream), verify_constants_(verify_constants) {
+    : stream_(stream),
+      verify_constants_(verify_constants),
+      page_cache_(REXCVAR_GET(mcla_gpu_readable_cache)) {
   scratch_.reserve(nfx::kMaxUcodeBytes);
+}
+
+void GuestCapture::Disable() {
+  if (!enabled_.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  if (page_cache_) {
+    const uint64_t hits = cache_hits_.load(std::memory_order_relaxed);
+    const uint64_t asks = cache_heap_asks_.load(std::memory_order_relaxed);
+    REXLOG_INFO("[gpu] readable cache: {} of {} guest range checks answered from the frame's "
+                "pages, {} asked the heap",
+                hits, hits + asks, asks);
+  }
+  const uint64_t memo_hits = memo_hits_.load(std::memory_order_relaxed);
+  const uint64_t memo_misses = memo_misses_.load(std::memory_order_relaxed);
+  REXLOG_INFO("[gpu] shader memo: {} of {} shader identity lookups answered from the frame's "
+              "memo, {} looked up in full",
+              memo_hits, memo_hits + memo_misses, memo_misses);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +275,7 @@ GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
 // ---------------------------------------------------------------------------
 
 bool GuestCapture::CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes) {
-  if (address < 0x1000u || bytes == 0 || !nfx::IsGuestRangeReadable(address, bytes)) {
+  if (address < 0x1000u || bytes == 0 || !Readable(address, bytes)) {
     ++frame_.unreadable;
     return false;
   }
@@ -208,14 +283,102 @@ bool GuestCapture::CopyGuest(const uint8_t* base, uint32_t address, void* out, u
   return true;
 }
 
+// IsGuestRangeReadable, except that a range lying on pages that an earlier
+// check found readable is not asked again. Each check takes the heap's lock and
+// walks its page table; a draw makes about ten, mostly on the same few pages (a
+// shader object and its sub-object, a declaration and its elements), and from
+// one draw to the next mostly on the same pages again (the same shaders and
+// declarations).
+// Two memories, both of 4 KiB pages: no heap has a smaller page (they are
+// 4 KiB, 64 KiB or 16 MiB) and a protection is per heap page, so a page that
+// lies inside a checked range is as readable as the range.
+//  - verified_: the runs found during the current GatherDraw. Gone when it
+//    returns, so a change of the guest's protections between draws is seen by
+//    the next draw's first check.
+//  - frame_pages_ (mcla_gpu_readable_cache): the pages found during the guest
+//    frame, forgotten at the present. The heap's answer is the guest's own
+//    protection bits of the page, and the host memory behind a page stays
+//    mapped after the guest releases it (BaseHeap::Decommit and Release leave
+//    the host pages alone), so an answer that is a few draws old can only
+//    differ for a draw that points at memory the guest freed within the frame.
+// Only ranges of up to kMaxPages pages inside one 16 MiB region are kept in
+// frame_pages_. Heaps meet only on 16 MiB boundaries (the last one ends at
+// 0xFFD00000 with nothing behind it, so a page past its end is never found
+// readable), which makes a page-by-page answer the answer for the range
+// (QueryRangeAccess refuses a range that crosses a heap's end).
+bool GuestCapture::Readable(uint32_t address, uint64_t size) {
+  if (address < 0x1000u || size == 0 || uint64_t(address) + size > 0x100000000ull) {
+    return nfx::IsGuestRangeReadable(address, size);
+  }
+  const uint32_t first = address >> 12;
+  const uint32_t last = uint32_t((uint64_t(address) + size - 1) >> 12);
+  if (verified_.active) {
+    for (uint32_t i = 0; i < verified_.count; ++i) {
+      if (verified_.first[i] <= first && last <= verified_.last[i]) {
+        return true;
+      }
+    }
+  }
+  const bool keep = page_cache_ && last - first < FramePages::kMaxPages &&
+                    (first >> 12) == (last >> 12);
+  const uint64_t generation = uint64_t(frame_pages_.generation) << 32;
+  const auto slot_of = [](uint32_t page) { return (page * 2654435761u) >> 21; };
+  static_assert(FramePages::kSlots == (1u << 11), "slot_of keeps the top 11 bits");
+  if (keep) {
+    uint32_t page = first;
+    while (page <= last && frame_pages_.slot[slot_of(page)] == (generation | page)) {
+      ++page;
+    }
+    if (page > last) {
+      cache_hits_.store(cache_hits_.load(std::memory_order_relaxed) + 1,
+                        std::memory_order_relaxed);
+      return true;
+    }
+  }
+  if (page_cache_) {
+    cache_heap_asks_.store(cache_heap_asks_.load(std::memory_order_relaxed) + 1,
+                           std::memory_order_relaxed);
+  }
+  if (!nfx::IsGuestRangeReadable(address, size)) {
+    return false;
+  }
+  if (keep) {
+    for (uint32_t page = first; page <= last; ++page) {
+      frame_pages_.slot[slot_of(page)] = generation | page;
+    }
+  }
+  if (verified_.active) {
+    const uint32_t slot = verified_.next++ % VerifiedPages::kRuns;
+    verified_.first[slot] = first;
+    verified_.last[slot] = last;
+    verified_.count = std::min(verified_.count + 1, VerifiedPages::kRuns);
+  }
+  return true;
+}
+
+void GuestCapture::NextFramePages() {
+  if (++frame_pages_.generation == 0) {
+    // After 4 billion frames: no slot may match a generation that comes round again.
+    std::fill(std::begin(frame_pages_.slot), std::end(frame_pages_.slot), uint64_t{0});
+    vs_memo_.fill(IdentityMemo{});
+    ps_memo_.fill(IdentityMemo{});
+    frame_pages_.generation = 1;
+  }
+}
+
 GuestCapture::DeviceState& GuestCapture::StateFor(uint32_t device) {
+  if (last_state_ != nullptr && last_state_->device == device) {
+    return *last_state_;
+  }
   for (auto& state : devices_) {
     if (state->device == device) {
+      last_state_ = state.get();
       return *state;
     }
   }
   devices_.push_back(std::make_unique<DeviceState>());
   devices_.back()->device = device;
+  last_state_ = devices_.back().get();
   if (devices_.size() > 1 && !reported_device_count_) {
     // Expected only if the game's command-buffer cache records on its own
     // device; OnGuestFrameEnd keeps that cache off.
@@ -243,7 +406,7 @@ GuestCapture::ShaderRead GuestCapture::ReadPixelShader(const uint8_t* base, uint
   r.address = LoadBe32(fields) + LoadBe32(object + guest::kPsUcodeBase);
   r.size = LoadBe32(fields + 4);
   r.readable = r.size != 0 && r.size <= nfx::kMaxUcodeBytes && r.address >= 0x1000u &&
-               nfx::IsGuestRangeReadable(r.address, r.size);
+               Readable(r.address, r.size);
   if (!r.readable) {
     ++frame_.unreadable;
   }
@@ -290,7 +453,7 @@ GuestCapture::ShaderRead GuestCapture::ReadVertexShader(const uint8_t* base, uin
   r.address = LoadBe32(fields) + LoadBe32(object + guest::kVsUcodeBase);
   r.size = LoadBe32(fields + 4);
   r.readable = r.size != 0 && r.size <= nfx::kMaxUcodeBytes && r.address >= 0x1000u &&
-               nfx::IsGuestRangeReadable(r.address, r.size);
+               Readable(r.address, r.size);
   if (!r.readable) {
     ++frame_.unreadable;
   }
@@ -298,6 +461,30 @@ GuestCapture::ShaderRead GuestCapture::ReadVertexShader(const uint8_t* base, uin
 }
 
 void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex) {
+  IdentityMemo& memo =
+      (vertex ? vs_memo_ : ps_memo_)[(shader.object * 2654435761u) >> 22];
+  static_assert(kMemoSlots == (1u << 10), "the slot is the top 10 bits of the product");
+  const uint32_t generation = frame_pages_.generation;
+  if (memo.object == shader.object && memo.generation == generation &&
+      memo.address == shader.address && memo.size == shader.size) {
+    memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    shader.identity = memo.identity;
+    shader.computed_fetch_index = memo.computed_fetch_index;
+    shader.kills_pixels = memo.kills_pixels;
+    return;
+  }
+  memo_misses_.store(memo_misses_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  ResolveIdentityFull(base, shader, vertex);
+  memo.object = shader.object;
+  memo.generation = generation;
+  memo.address = shader.address;
+  memo.size = shader.size;
+  memo.identity = shader.identity;
+  memo.computed_fetch_index = shader.computed_fetch_index;
+  memo.kills_pixels = shader.kills_pixels;
+}
+
+void GuestCapture::ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex) {
   const uint8_t* ucode = GuestBytes(base, shader.address);
   const uint64_t key = uint64_t(shader.address) << 32 | shader.size;
   auto found = identities_.find(key);
@@ -371,6 +558,14 @@ GuestCallToken GuestCapture::BeforeDraw(const uint8_t* base, uint32_t device) {
 
 void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                               DrawCapture& c) {
+  // Readable() remembers the pages it found readable until this call returns.
+  verified_.count = 0;
+  verified_.next = 0;
+  verified_.active = true;
+  struct Deactivate {
+    VerifiedPages& pages;
+    ~Deactivate() { pages.active = false; }
+  } deactivate{verified_};
   const uint32_t ps_object = DeviceU32(base, device, guest::kDevPixelShader);
   if (ps_object == 0) {
     c.flags |= kDrawNoPixelShader;
@@ -405,8 +600,8 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
       if (count > guest::kMaxDeclElements) {
         c.flags |= kDrawDeclTooLong;
       } else if (count != 0 &&
-                 !nfx::IsGuestRangeReadable(c.decl_object + nfx::kDeclOffsetElements,
-                                            count * guest::kDeclElementBytes)) {
+                 !Readable(c.decl_object + nfx::kDeclOffsetElements,
+                           count * guest::kDeclElementBytes)) {
         c.flags |= kDrawDeclUnreadable;
         ++frame_.unreadable;
       } else {
@@ -444,7 +639,9 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
                              uint8_t* payload) {
   const DrawRecordLayout layout =
       ComputeDrawLayout(c.decl_count, c.vs_block_count, c.ps_block_count, c.inline_bytes);
-  auto* r = new (payload) DrawRecord();
+  // Default-initialized: every member but the two windows has an initializer
+  // (zero), and the windows are copied whole below.
+  auto* r = new (payload) DrawRecord;
   r->device = device;
   r->kind = c.kind;
   r->vs_variant = uint8_t(c.vs_variant);
@@ -561,10 +758,10 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   if (!token.active || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
+  const uint64_t t0 = cycles::Now();
+  CommandStream::Writer writer(stream_);  // the producer lock: the capture's one lock
   if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
+    FlushPendingInline(writer, base, /*terminated=*/false);
   }
   DrawCapture c;
   c.kind = kind;
@@ -575,17 +772,14 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   GatherDraw(token, base, device, c);
   const DrawRecordLayout layout =
       ComputeDrawLayout(c.decl_count, c.vs_block_count, c.ps_block_count, 0);
-  {
-    CommandStream::Writer writer(stream_);
-    uint8_t* payload = writer.Begin(RecordType::kDraw, layout.payload_bytes);
-    if (payload) {
-      WriteDraw(base, device, c, payload);
-      writer.Commit(Publication::kBatched);
-      CountRecord(layout.payload_bytes);
-      ++frame_.draws;
-    }
+  uint8_t* payload = writer.Begin(RecordType::kDraw, layout.payload_bytes);
+  if (payload) {
+    WriteDraw(base, device, c, payload);
+    writer.Commit(Publication::kBatched);
+    CountRecord(layout.payload_bytes);
+    ++frame_.draws;
   }
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t* base,
@@ -594,12 +788,12 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   if (!token.active || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
+  const uint64_t t0 = cycles::Now();
+  CommandStream::Writer writer(stream_);  // the lock; no record is begun through it here
   if (pending_.active) {
     // A second Begin before End on the same device is a guest bug; on another
     // device it is a second thread. Either way the first is closed here.
-    FlushPendingInline(base, pending_.device, /*terminated=*/false);
+    FlushPendingInline(writer, base, /*terminated=*/false);
   }
   const uint64_t bytes = uint64_t(count) * stride;
   // The whole record has to fit, and it is checked before anything is gathered:
@@ -615,7 +809,7 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
     REXLOG_ERROR("[gpu] capture: inline draw of {} vertices x {} bytes exceeds the stream's "
                  "record limit; not captured",
                  count, stride);
-    frame_.capture_ns += ElapsedNs(t0);
+    frame_.capture_cycles += ElapsedCycles(t0);
     return;
   }
   DrawCapture c;
@@ -632,23 +826,23 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   pending_.active = true;
   pending_.device = device;
   pending_.buffer = buffer;
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterEndVertices(const uint8_t* base, uint32_t device) {
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
+  const uint64_t t0 = cycles::Now();
+  CommandStream::Writer writer(stream_);
   if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/true);
+    FlushPendingInline(writer, base, /*terminated=*/true);
   }
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
 }
 
-void GuestCapture::FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated) {
-  (void)device;
+void GuestCapture::FlushPendingInline(CommandStream::Writer& writer, const uint8_t* base,
+                                      bool terminated) {
   pending_.active = false;
   auto* r = reinterpret_cast<DrawRecord*>(pending_.payload.data());
   const DrawRecordLayout layout =
@@ -664,7 +858,6 @@ void GuestCapture::FlushPendingInline(const uint8_t* base, uint32_t device, bool
                  r->inline_bytes)) {
     r->flags |= kDrawInlineUnreadable;
   }
-  CommandStream::Writer writer(stream_);
   uint8_t* payload = writer.Begin(RecordType::kDraw, uint32_t(pending_.payload.size()));
   if (payload) {
     std::memcpy(payload, pending_.payload.data(), pending_.payload.size());
@@ -694,7 +887,7 @@ GuestCallToken GuestCapture::BeforeEvent(const uint8_t* base, uint32_t device, G
     }
     return token;
   }
-  const auto t0 = Clock::now();
+  const uint64_t t0 = cycles::Now();
   if (!t_snapshots) {
     t_snapshots = std::make_unique<std::array<EventSnapshot, kMaxEventDepth>>();
   }
@@ -735,7 +928,7 @@ GuestCallToken GuestCapture::BeforeEvent(const uint8_t* base, uint32_t device, G
     s.nested_at_begin = t_nested_resolves;
     ++t_end_tiling_depth;
   }
-  s.before_ns = ElapsedNs(t0);
+  s.before_cycles = ElapsedCycles(t0);
   ++t_depth;
   token.snapshot = t_depth;
   token.active = true;
@@ -779,12 +972,11 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
   if (!s || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
+  const uint64_t t0 = cycles::Now();
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kClear, sizeof(ClearRecord));
   if (payload) {
     auto* r = new (payload) ClearRecord();
@@ -807,7 +999,7 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ClearRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base, uint32_t device,
@@ -824,12 +1016,11 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
+  const uint64_t t0 = cycles::Now();
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kResolve, sizeof(ResolveRecord));
   if (payload) {
     auto* r = new (payload) ResolveRecord();
@@ -872,7 +1063,7 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ResolveRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 void GuestCapture::NoteResolveDestination(const uint8_t* header) {
@@ -904,12 +1095,11 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
   if (!s || !enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
+  const uint64_t t0 = cycles::Now();
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kTilingBegin, sizeof(TilingBeginRecord));
   if (payload) {
     auto* r = new (payload) TilingBeginRecord();
@@ -935,7 +1125,7 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(TilingBeginRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* base,
@@ -953,12 +1143,11 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
+  const uint64_t t0 = cycles::Now();
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kTilingEnd, sizeof(TilingEndRecord));
   if (payload) {
     auto* r = new (payload) TilingEndRecord();
@@ -993,7 +1182,7 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(TilingEndRecord));
   }
-  frame_.capture_ns += s->before_ns + ElapsedNs(t0);
+  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,12 +1195,11 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
   }
   uint64_t sequence = 0;
   {
-    const auto t0 = Clock::now();
-    std::lock_guard lock(mutex_);
-    if (pending_.active && pending_.device == device) {
-      FlushPendingInline(base, device, /*terminated=*/false);
-    }
+    const uint64_t t0 = cycles::Now();
     CommandStream::Writer writer(stream_);
+    if (pending_.active && pending_.device == device) {
+      FlushPendingInline(writer, base, /*terminated=*/false);
+    }
     uint8_t* payload = writer.Begin(RecordType::kPresent, sizeof(PresentRecord));
     if (payload) {
       auto* r = new (payload) PresentRecord();
@@ -1032,11 +1220,12 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
         r->flags |= kPresentGammaRampUnreadable;
       }
       CountRecord(sizeof(PresentRecord));
-      frame_.capture_ns += ElapsedNs(t0);
+      frame_.capture_cycles += ElapsedCycles(t0);
       r->stats = frame_;
       sequence = writer.Commit(Publication::kWaited);
     }
     frame_ = GuestFrameStats{};
+    NextFramePages();
     for (auto& state : devices_) {
       state->check_next = true;
     }
@@ -1052,8 +1241,7 @@ void GuestCapture::Fence(uint32_t device, uint32_t value) {
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
+  const uint64_t t0 = cycles::Now();
   // Not a draw-state event: a pending inline draw stays open. A fence kicked
   // between BeginVertices and EndVertices was inserted before that draw's
   // packet, so it does not cover the draw and goes ahead of its record.
@@ -1067,7 +1255,7 @@ void GuestCapture::Fence(uint32_t device, uint32_t value) {
   r->value = value;
   CountRecord(sizeof(FenceRecord));
   ++frame_.fences;
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kNow);
 }
 
@@ -1075,7 +1263,6 @@ bool GuestCapture::FenceCatchUp(const uint8_t* base, uint32_t device) {
   if (!enabled() || device == 0) {
     return false;
   }
-  std::lock_guard lock(mutex_);
   // Read with the producer lock held: a record whose writer finished before
   // the increment this read sees is ahead of the catch-up in the stream.
   CommandStream::Writer writer(stream_);
@@ -1112,7 +1299,7 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
   const uint64_t end = uint64_t(start) + size;
   uint64_t sequence = 0;
   {
-    std::lock_guard lock(mutex_);
+    CommandStream::Writer writer(stream_);
     bool destination = false;
     for (const auto& [s, e] : resolve_destinations_) {
       if (s < end && start < e) {
@@ -1124,7 +1311,6 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
       return false;
     }
     // Not a draw-state event, like a fence: a pending inline draw stays open.
-    CommandStream::Writer writer(stream_);
     uint8_t* payload = writer.Begin(RecordType::kLock, sizeof(LockRecord));
     if (!payload) {
       return false;
@@ -1151,8 +1337,7 @@ void GuestCapture::Composite(uint32_t bucket) {
   if (!enabled()) {
     return;
   }
-  const auto t0 = Clock::now();
-  std::lock_guard lock(mutex_);
+  const uint64_t t0 = cycles::Now();
   // Not a draw-state event, like a fence: a pending inline draw stays open (none
   // is, at the end of the post object's draw).
   CommandStream::Writer writer(stream_);
@@ -1163,7 +1348,7 @@ void GuestCapture::Composite(uint32_t bucket) {
   auto* r = new (payload) CompositeRecord();
   r->bucket = bucket;
   CountRecord(sizeof(CompositeRecord));
-  frame_.capture_ns += ElapsedNs(t0);
+  frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kBatched);
 }
 

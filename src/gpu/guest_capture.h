@@ -31,15 +31,20 @@
 // seen there (up to kMaxRawVariants, since the D3D runtime repatches a VS's
 // vfetches per declaration), the normalized bytes, the identity. Raw bytes that
 // match a known variant are a memcmp; new raw bytes are normalized and compared
-// with the normalized copy; only genuinely new microcode is hashed.
+// with the normalized copy; only genuinely new microcode is hashed. A shader
+// object that was resolved once in the guest frame at the same (address, size)
+// is not looked up again that frame (the identity memo, below).
 //
 // Every guest pointer is checked with IsGuestRangeReadable before it is read.
 // What cannot be read becomes a zero field and a flag, never a crash.
 //
-// Threading: any guest thread. One mutex serializes the capture state and the
-// writes into the stream; the pre-state of clear/resolve/tiling events lives
-// on the calling thread (the original runs between Before and After, and an
-// EndTiling nests its resolves).
+// Threading: any guest thread. One lock serializes the capture state and the
+// writes into the stream: the stream's producer lock, which every entry point
+// takes by constructing a CommandStream::Writer first (a draw used to take a
+// mutex of its own and then the stream's, two lock pairs a draw); the
+// pre-state of clear/resolve/tiling events lives on the calling thread (the
+// original runs between Before and After, and an EndTiling nests its
+// resolves).
 // ===========================================================================
 
 #include <array>
@@ -71,7 +76,7 @@ class GuestCapture {
 
   // After this every entry point is a no-op; a thread already inside finishes
   // its record or fails it on the stopped stream.
-  void Disable() { enabled_.store(false, std::memory_order_release); }
+  void Disable();
   bool enabled() const { return enabled_.load(std::memory_order_acquire); }
 
   GuestCallToken BeforeDraw(const uint8_t* base, uint32_t device);
@@ -194,28 +199,92 @@ class GuestCapture {
   ShaderRead ReadVertexShader(const uint8_t* base, uint32_t device, uint32_t ps_object,
                               uint32_t* variant);
   ShaderRead ReadPixelShader(const uint8_t* base, uint32_t ps_object);
+  // The shader's identity, from the frame's memo when this object was resolved at
+  // this (address, size) earlier in the guest frame, else ResolveIdentityFull.
   void ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex);
+  void ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex);
   void GatherDraw(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                   DrawCapture& capture);
   // Fills a draw payload of capture's exact layout and updates the shadows.
   void WriteDraw(const uint8_t* base, uint32_t device, const DrawCapture& capture,
                  uint8_t* payload);
-  void FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated);
+  // Under the producer lock `writer` holds (it writes the record through it).
+  void FlushPendingInline(CommandStream::Writer& writer, const uint8_t* base, bool terminated);
   bool CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes);
+  // IsGuestRangeReadable with two memories of the pages found readable: the
+  // runs of the current GatherDraw (verified_) and the pages of the current
+  // guest frame (frame_pages_, mcla_gpu_readable_cache). Under the producer lock.
+  bool Readable(uint32_t address, uint64_t size);
+  // Forgets the pages of the frame that ended (a present). Under the producer lock.
+  void NextFramePages();
   void CountRecord(uint32_t payload_bytes);
   // Adds the guest ranges of a resolve's destination (its texture header) to
-  // resolve_destinations_. Under mutex_.
+  // resolve_destinations_. Under the producer lock.
   void NoteResolveDestination(const uint8_t* header);
 
   CommandStream& stream_;
   const bool verify_constants_;
   std::atomic<bool> enabled_{true};
 
-  std::mutex mutex_;
+  // Everything below is guarded by the stream's producer lock (see Threading above).
   std::vector<std::unique_ptr<DeviceState>> devices_;
+  DeviceState* last_state_ = nullptr;  // the one StateFor found last (a draw asks twice)
   std::unordered_map<uint64_t, IdentityEntry> identities_;
   std::vector<uint8_t> scratch_;  // normalization buffer
   PendingInline pending_;
+  // Runs of 4 KiB guest pages [first, last] that Readable found readable during
+  // the current GatherDraw; off (and not consulted) outside it.
+  struct VerifiedPages {
+    static constexpr uint32_t kRuns = 8;
+    uint32_t first[kRuns] = {};
+    uint32_t last[kRuns] = {};
+    uint32_t count = 0;
+    uint32_t next = 0;
+    bool active = false;
+  };
+  VerifiedPages verified_;
+  // 4 KiB guest pages found readable earlier in the same guest frame, so the
+  // heap (its lock and page walk) is asked about a page once a frame instead of
+  // once a draw. Direct mapped; a slot holds (generation << 32) | page number
+  // and means "readable" only while its generation is the current one, so a
+  // present forgets all of them by counting up. Only ranges of kMaxPages pages
+  // inside one 16 MiB region are kept (a heap never starts inside one).
+  struct FramePages {
+    static constexpr uint32_t kSlots = 2048;
+    static constexpr uint32_t kMaxPages = 16;
+    uint64_t slot[kSlots] = {};
+    uint32_t generation = 1;
+  };
+  FramePages frame_pages_;
+  const bool page_cache_;  // mcla_gpu_readable_cache, read at construction
+  // Written under the producer lock only (plain load and store); read by Disable.
+  std::atomic<uint64_t> cache_hits_{0};
+  std::atomic<uint64_t> cache_heap_asks_{0};
+  // The identity memo. A draw resolves two shaders, and the 5,000 to 6,000
+  // resolves of a frame are of a few hundred objects. An entry holds what
+  // ResolveIdentityFull found for one object at one (address, size) and is good
+  // for the guest frame it was stored in (generation = frame_pages_.generation,
+  // counted up at every present). It rests on the shader's microcode not being
+  // replaced by a different one at the same place within a frame: the D3D
+  // runtime's vfetch repatches keep the normalized form, which the identity is of
+  // (the raw-variant list below does the same), and a shader that is freed and
+  // another created at its address and size mid-frame is the one case it would
+  // get wrong, for the rest of that frame.
+  struct IdentityMemo {
+    uint32_t object = 0;  // 0 = empty
+    uint32_t generation = 0;
+    uint32_t address = 0;
+    uint32_t size = 0;
+    uint64_t identity = 0;
+    bool computed_fetch_index = false;
+    bool kills_pixels = false;
+  };
+  static constexpr uint32_t kMemoSlots = 1024;  // per kind, direct mapped on the object
+  std::array<IdentityMemo, kMemoSlots> vs_memo_{};
+  std::array<IdentityMemo, kMemoSlots> ps_memo_{};
+  // Written under the producer lock only (plain load and store); read by Disable.
+  std::atomic<uint64_t> memo_hits_{0};
+  std::atomic<uint64_t> memo_misses_{0};
   GuestFrameStats frame_;
   bool reported_device_count_ = false;
   // Physical [start, end) of every resolve destination recorded so far (base

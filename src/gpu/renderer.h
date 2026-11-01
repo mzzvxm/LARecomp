@@ -96,6 +96,8 @@ class Renderer final : public RenderThread::Executor {
   // A guest that swapped this recently drives presentation by itself.
   static constexpr std::chrono::milliseconds kGuestActiveWindow{100};
   static constexpr std::chrono::milliseconds kStopDeadline{2000};
+  // The longest a guest present may take after ReleaseGuest for the next one to release early.
+  static constexpr std::chrono::microseconds kEarlyReleaseMaxTail{1000};
 
   Renderer() : validator_(shaders_), scene_(shaders_), census_(guest_memory_) {}
   const Device& device() const { return device_; }
@@ -159,6 +161,9 @@ class Renderer final : public RenderThread::Executor {
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
+  // In the present pass, once the last guest memory it reads has been read: lets the
+  // guest go on while this thread submits and presents (mcla_gpu_present_release).
+  void ReleaseGuest();
 
   GuestMemory guest_memory_;  // attaches on first use; detached after the render thread stops
   Device device_;
@@ -196,8 +201,18 @@ class Renderer final : public RenderThread::Executor {
   bool validate_ = false;       // mcla_gpu_validate, read at Initialize
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
+  bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
 
   // Render thread only.
+  // The sequence of the guest's present while it is executed and the guest is still waiting
+  // for it; 0 once released, and for an idle present.
+  uint64_t release_sequence_ = 0;
+  // The previous guest present's work after the release point took no longer than
+  // kEarlyReleaseMaxTail (so the guest runs ahead of this thread by that much at most).
+  bool tail_short_ = false;
+  bool tail_open_ = false;
+  std::chrono::steady_clock::time_point tail_start_{};
+  uint64_t early_releases_ = 0;
   uint64_t presented_ = 0;
   uint64_t guest_presents_ = 0;
   uint64_t guest_frames_ = 0;  // kPresent records executed, presented or skipped

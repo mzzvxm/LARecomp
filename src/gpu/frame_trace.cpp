@@ -14,6 +14,7 @@
 #include <rex/logging.h>
 
 #include "backend.h"
+#include "cycles.h"
 #include "draw_decode.h"
 
 REXCVAR_DEFINE_UINT64(mcla_gpu_trace_frame, 0, "MCLA/GPU",
@@ -319,7 +320,7 @@ void FrameTrace::WritePresent(const RecordHeader& header, const PresentRecord& r
   Printf("PR seq=%" PRIu64 " dev=%08x front=%08x flags=%x draws=%u records=%u bytes=%" PRIu64
          " capture_ns=%" PRIu64 "\n",
          header.sequence, r.device, r.front_buffer, r.flags, r.stats.draws, r.stats.records,
-         r.stats.bytes, r.stats.capture_ns);
+         r.stats.bytes, uint64_t(cycles::ToNs(r.stats.capture_cycles)));
   WriteHex("front", r.front_buffer_header, sizeof(r.front_buffer_header));
 }
 
