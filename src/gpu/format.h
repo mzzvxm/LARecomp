@@ -22,7 +22,7 @@
 // uses: k_1_5_5_5 is B5G5R5A1 with red and blue swapped at load,
 // k_16_16_16_16_EXPAND is float16, depth formats are one float channel.
 //
-// Threading: pure functions.
+// Threading: pure functions, but for the one flag SetDepth24Unsupported sets at device open.
 // ===========================================================================
 
 #include <cstdint>
@@ -48,6 +48,15 @@ Mapping VertexFormat(uint32_t packed_decltype);
 // unpack (k_2_10_10_10 as one R32_UINT): with one of these on NORMAL/TANGENT/
 // BINORMAL the VS needs spec constant R11G11B10_NORMAL.
 bool IsPackedNormalDeclType(uint32_t packed_decltype);
+
+// The host has no D24_UNORM_S8_UINT depth target (AMD's Vulkan drivers have no 24-bit
+// depth at all). Set once while the device opens, before any target or pipeline is made;
+// DepthTargetFormat then gives kD24S8 the D32_FLOAT_S8_UINT that kD24FS8 already has.
+void SetDepth24Unsupported(bool unsupported);
+bool Depth24Unsupported();
+// The format a depth format read from a stored pipeline key is made with on this device
+// (the other API's cache file holds D24 keys).
+plume::RenderFormat HostDepthFormat(plume::RenderFormat format);
 
 // xenos::ColorRenderTargetFormat (RB_COLOR_INFO bits 16..19).
 Mapping ColorTargetFormat(uint32_t color_format);

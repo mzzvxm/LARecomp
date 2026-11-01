@@ -2,6 +2,8 @@
 
 #include "device.h"
 
+#include "format.h"
+
 #include <rex/logging.h>
 
 namespace mcla::gpu {
@@ -114,6 +116,18 @@ bool Device::Open(const Options& options) {
       vram.budget ? std::to_string(vram.budget >> 20) + " MiB" : std::string("not reported"),
       caps.descriptorIndexing, caps.bufferDeviceAddress, caps.presentWait, caps.gpuUploadHeap,
       caps.uma);
+
+  // A kD24S8 surface (the shadow atlas) is a D24_UNORM_S8_UINT target on the host. AMD's
+  // Vulkan driver lists no 24-bit depth format, yet creates the image when asked; nothing
+  // drawn into it can be read back, so the sun's shadow lookup finds nothing and every
+  // pixel is in shadow. Plume reports from the format's features whether the device has
+  // it (the creation call is no test); where it does not, kD24S8 is kept as
+  // D32_FLOAT_S8_UINT, which the spec requires of any device that lacks D24. D3D12 always
+  // reports it.
+  format::SetDepth24Unsupported(!caps.depth24Stencil8);
+  REXLOG_INFO("[gpu] depth: D24_UNORM_S8_UINT targets {}",
+              caps.depth24Stencil8 ? "are used"
+                                   : "are not listed: kD24S8 surfaces use D32_FLOAT_S8_UINT");
   return true;
 }
 

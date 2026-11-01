@@ -226,6 +226,9 @@ class Pipelines {
   ShaderStore* shaders_ = nullptr;
   std::unordered_map<PipelineKey, std::unique_ptr<plume::RenderPipeline>, PipelineKeyHash>
       pipelines_;
+  // Where kD24S8 is kept as D32 float (format::Depth24Unsupported): the shift that turns
+  // the guest's constant offset in 2^-24 steps into the float buffer's steps; 0 otherwise.
+  uint32_t depth24_bias_shift_ = 0;
   Stats stats_;
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;

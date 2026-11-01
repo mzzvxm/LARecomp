@@ -2,6 +2,8 @@
 
 #include "format.h"
 
+#include <atomic>
+
 namespace mcla::gpu::format {
 
 using plume::RenderFormat;
@@ -15,7 +17,23 @@ constexpr Mapping Missing(const char* name) {
   return Mapping{RenderFormat::UNKNOWN, Status::kMissingInPlume, name};
 }
 
+std::atomic<bool> g_depth24_unsupported{false};
+
 }  // namespace
+
+void SetDepth24Unsupported(bool unsupported) {
+  g_depth24_unsupported.store(unsupported, std::memory_order_relaxed);
+}
+
+bool Depth24Unsupported() {
+  return g_depth24_unsupported.load(std::memory_order_relaxed);
+}
+
+RenderFormat HostDepthFormat(RenderFormat format) {
+  return format == RenderFormat::D24_UNORM_S8_UINT && Depth24Unsupported()
+             ? RenderFormat::D32_FLOAT_S8_UINT
+             : format;
+}
 
 const char* StatusName(Status status) {
   switch (status) {
@@ -99,7 +117,7 @@ Mapping ColorTargetFormat(uint32_t color_format) {
 
 Mapping DepthTargetFormat(uint32_t depth_format) {
   switch (depth_format) {
-    case 0: return Ok(RenderFormat::D24_UNORM_S8_UINT, "kD24S8");
+    case 0: return Ok(HostDepthFormat(RenderFormat::D24_UNORM_S8_UINT), "kD24S8");
     // No 24-bit float depth on the host; D32 float keeps the range with stencil.
     case 1: return Ok(RenderFormat::D32_FLOAT_S8_UINT, "kD24FS8");
     default: return Mapping{};

@@ -21,6 +21,7 @@
 #include "backend.h"
 #include "constants.h"
 #include "device.h"
+#include "format.h"
 #include "layout.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -217,6 +218,11 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
   layout_ = &layout;
   shaders_ = &shaders;
   dynamic_depth_bias_ = device.capabilities().dynamicDepthBias;
+  // Where kD24S8 is kept as D32 float: the guest's constant depth offset counts 2^-24 steps,
+  // and a float depth buffer counts steps of 2^(e-23) for depth near 2^e. The shadow atlas
+  // holds depth of about 1e-4 to 4e-4 (e is -14 to -12), which asks for 2^11 to 2^13.
+  constexpr uint32_t kDepth24BiasShift = 12;
+  depth24_bias_shift_ = format::Depth24Unsupported() ? kDepth24BiasShift : 0u;
   REXLOG_INFO("[gpu] pipelines: depth bias {}", dynamic_depth_bias_
                                                     ? "dynamic (set per draw on the command list)"
                                                     : "static (part of each pipeline)");
@@ -593,6 +599,9 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
       r.key.depth_bias = 0;
       r.key.slope_scaled_depth_bias = 0.0f;
     }
+    // A depth format this device has no target for (the other API's file holds D24).
+    r.key.depth_format =
+        uint32_t(format::HostDepthFormat(plume::RenderFormat(r.key.depth_format)));
     if (recorded_.insert(r.key).second) {
       records_.push_back(r);
       ++added;
@@ -840,6 +849,10 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   }
   if (poly_scale != 0.0f || poly_offset != 0.0f) {
     bias.constant = IntegerPolygonOffset(state.depth_format, poly_offset);
+    if (depth24_bias_shift_ != 0 && state.depth_format == xe::DepthRenderTargetFormat::kD24S8) {
+      bias.constant = int32_t(std::clamp<int64_t>(
+          int64_t(bias.constant) * (int64_t(1) << depth24_bias_shift_), INT32_MIN, INT32_MAX));
+    }
     bias.slope = poly_scale * xe::kPolygonOffsetScaleSubpixelUnit;
     if (!dynamic_depth_bias_) {
       key.depth_bias = bias.constant;
