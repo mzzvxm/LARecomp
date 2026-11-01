@@ -106,6 +106,9 @@ void StartFreezeWatchdog();
 // rear_view.cpp
 void TickRearView();
 
+// vibration.cpp
+void TickVibration();
+
 // world_tuning.cpp
 void ApplyAmbientDensityTuning();
 void ApplyFragTuneOverrides();
