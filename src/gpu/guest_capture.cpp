@@ -603,7 +603,9 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
                              uint8_t* payload) {
   const DrawRecordLayout layout =
       ComputeDrawLayout(c.decl_count, c.vs_block_count, c.ps_block_count, c.inline_bytes);
-  auto* r = new (payload) DrawRecord();
+  // Default-initialized: every member but the two windows has an initializer
+  // (zero), and the windows are copied whole below.
+  auto* r = new (payload) DrawRecord;
   r->device = device;
   r->kind = c.kind;
   r->vs_variant = uint8_t(c.vs_variant);
