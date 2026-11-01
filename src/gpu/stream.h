@@ -7,11 +7,13 @@
 // M1/M2's fixed-slot ring, which cannot carry thousands of draws a frame of
 // variable size.
 //
-// Producer: any guest thread, serialized by the producer mutex for the whole
-// write (Writer holds it from Begin to Commit), so a record is written in place
-// in the ring with no copy. A record that would cross the end of the buffer is
-// preceded by a kPad record and starts again at offset 0. The producer blocks
-// only when the ring is full.
+// Producer: any guest thread, serialized by the producer lock for the whole
+// write (Writer holds it from its construction to its destruction), so a record
+// is written in place in the ring with no copy. A record that would cross the
+// end of the buffer is preceded by a kPad record and starts again at offset 0.
+// The producer blocks only when the ring is full. GuestCapture builds its
+// Writer first in every entry point and relies on the lock for its own state
+// too, so a draw takes one lock, not two.
 //
 // Publication is batched (reeot render_thread.cpp publishes every 8 commands
 // or at once while its consumer sleeps): the tail the consumer sees moves every
@@ -72,12 +74,40 @@ class CommandStream {
   // big would starve every other record anyway).
   uint32_t max_payload() const { return capacity_ / 4 - sizeof(RecordHeader); }
 
-  // One record being written. Holds the producer mutex until Commit or
-  // destruction (destruction without Commit abandons the space: nothing is
-  // published, the next record reuses it).
+  // The producers' lock. One thread (the guest's render thread) takes it for
+  // about a microsecond at every draw and the others rarely, so it is a test and
+  // set lock: taking it is one locked exchange and releasing it a plain store
+  // (a std::mutex release is a second locked instruction, which also waits for
+  // the stores of the record just written to reach the cache). A thread that
+  // finds it taken spins on plain loads, then gives its core away, then sleeps
+  // a millisecond at a time: the holder can be blocked in WaitForSpace for as
+  // long as the render thread is behind.
+  class ProducerLock {
+   public:
+    void lock() {
+      if (!held_.exchange(true, std::memory_order_acquire)) {
+        return;
+      }
+      LockSlow();
+    }
+    bool try_lock() {
+      return !held_.load(std::memory_order_relaxed) &&
+             !held_.exchange(true, std::memory_order_acquire);
+    }
+    void unlock() { held_.store(false, std::memory_order_release); }
+
+   private:
+    void LockSlow();
+    std::atomic<bool> held_{false};
+  };
+
+  // One record being written. Holds the producer lock from its construction to
+  // its destruction, with or without a record begun, and can write several
+  // records one after the other (Begin again after Commit). Destruction without
+  // Commit abandons the space: nothing is published, the next record reuses it.
   class Writer {
    public:
-    explicit Writer(CommandStream& stream) : stream_(stream), lock_(stream.producer_mutex_) {}
+    explicit Writer(CommandStream& stream) : stream_(stream), lock_(stream.producer_lock_) {}
     ~Writer() = default;
     Writer(const Writer&) = delete;
     Writer& operator=(const Writer&) = delete;
@@ -91,7 +121,7 @@ class CommandStream {
 
    private:
     CommandStream& stream_;
-    std::unique_lock<std::mutex> lock_;
+    std::unique_lock<ProducerLock> lock_;
     uint64_t record_at_ = 0;  // ring position of the header
     uint32_t record_size_ = 0;
     RecordType type_ = RecordType::kPad;
@@ -119,7 +149,7 @@ class CommandStream {
 
  private:
   uint8_t* At(uint64_t position) const { return buffer_.get() + (position % capacity_); }
-  bool WaitForSpace(std::unique_lock<std::mutex>& producer_lock, uint64_t end);
+  bool WaitForSpace(std::unique_lock<ProducerLock>& producer_lock, uint64_t end);
   void Publish(uint64_t tail);
   // Stores head_ = read_ and wakes a producer waiting for space.
   void ReleaseNow();
@@ -135,13 +165,13 @@ class CommandStream {
   alignas(kCacheLine) std::unique_ptr<uint8_t[]> buffer_;
   uint32_t capacity_ = 0;
 
-  // Producer state, guarded by producer_mutex_.
-  alignas(kCacheLine) std::mutex producer_mutex_;
+  // Producer state, guarded by producer_lock_.
+  alignas(kCacheLine) ProducerLock producer_lock_;
   uint64_t tail_ = 0;  // next free byte
   uint64_t next_sequence_ = 1;
   uint32_t unpublished_records_ = 0;
   uint64_t unpublished_bytes_ = 0;
-  std::atomic<uint64_t> bytes_written_{0};  // stored under producer_mutex_ only
+  std::atomic<uint64_t> bytes_written_{0};  // stored under producer_lock_ only
   std::atomic<uint64_t> producer_waits_{0};
 
   // Written by the producer once per batch (or rarely), polled by the consumer.

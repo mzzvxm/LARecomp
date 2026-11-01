@@ -33,6 +33,26 @@ inline void CpuRelax() {
 
 }  // namespace
 
+void CommandStream::ProducerLock::LockSlow() {
+  for (uint32_t round = 0;; ++round) {
+    for (uint32_t i = 0; i < 64; ++i) {
+      if (!held_.load(std::memory_order_relaxed) &&
+          !held_.exchange(true, std::memory_order_acquire)) {
+        return;
+      }
+      CpuRelax();
+    }
+    if (round < 16) {
+      continue;  // about 1,000 pauses, tens of microseconds
+    }
+    if (round < 48) {
+      std::this_thread::yield();
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+}
+
 const char* RecordTypeName(RecordType type) {
   switch (type) {
     case RecordType::kPad: return "pad";
@@ -143,7 +163,7 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   s.tail_ = record_at_ + record_size_;
   ++s.unpublished_records_;
   s.unpublished_bytes_ += record_size_;
-  // One writer at a time (this writer holds producer_mutex_): a plain load and
+  // One writer at a time (this writer holds producer_lock_): a plain load and
   // store give what the locked add gave, and cost less.
   s.bytes_written_.store(s.bytes_written_.load(std::memory_order_relaxed) + record_size_,
                          std::memory_order_relaxed);
@@ -155,7 +175,7 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   return sequence;
 }
 
-bool CommandStream::WaitForSpace(std::unique_lock<std::mutex>& producer_lock, uint64_t end) {
+bool CommandStream::WaitForSpace(std::unique_lock<ProducerLock>& producer_lock, uint64_t end) {
   (void)producer_lock;  // held by the caller for the whole wait: producers are serialized
   if (end - head_.load(std::memory_order_acquire) <= capacity_) {
     return !stopped();
