@@ -27068,3 +27068,27 @@ registers = ["r11"]
 address = 0x8228A0F0
 name = "Hook_NetBigSessionDefault"
 registers = ["r11"]
+
+# The frame-pacing thread woken when the main thread waits for it (hooks/pump_wake.cpp).
+# 0x82148AB0: `li r3,0` ahead of the Sleep(0) in sub_82148A10, the main thread's wait for a free
+# slot of the draw command ring (r31 = the context).
+[[midasm_hook]]
+address = 0x82148AB0
+name = "Hook_PumpWakeRingWait"
+registers = ["r31"]
+
+# 0x821449C8: `lwz r3,84(r1)` in sub_82144888, the loop of the thread that frees the ring's
+# slots; r3 is the milliseconds of the Sleep that ends each round. True skips that Sleep (the
+# `bl` at 0x821449CC) and goes on at the `addi r1,r1,160` after it.
+[[midasm_hook]]
+address = 0x821449C8
+name = "Hook_PumpWake"
+after_instruction = true
+registers = ["r3"]
+jump_address_on_true = 0x821449D0
+
+# 0x823EC978: `bl KeSetEvent` in sub_823EC8C8, with which the audio mixer thread reports a
+# frame done (the watchdog of the above).
+[[midasm_hook]]
+address = 0x823EC978
+name = "Hook_PumpWakeMixerDone"
