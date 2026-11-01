@@ -256,12 +256,10 @@ class GuestCapture {
     uint32_t generation = 1;
   };
   FramePages frame_pages_;
-  const bool page_cache_;        // mcla_gpu_readable_cache, read at construction
-  const bool page_cache_check_;  // mcla_gpu_readable_cache_check
+  const bool page_cache_;  // mcla_gpu_readable_cache, read at construction
   // Written under the producer lock only (plain load and store); read by Disable.
   std::atomic<uint64_t> cache_hits_{0};
   std::atomic<uint64_t> cache_heap_asks_{0};
-  std::atomic<uint64_t> cache_stale_{0};
   // The identity memo. A draw resolves two shaders, and the 5,000 to 6,000
   // resolves of a frame are of a few hundred objects. An entry holds what
   // ResolveIdentityFull found for one object at one (address, size) and is good
@@ -271,8 +269,7 @@ class GuestCapture {
   // runtime's vfetch repatches keep the normalized form, which the identity is of
   // (the raw-variant list below does the same), and a shader that is freed and
   // another created at its address and size mid-frame is the one case it would
-  // get wrong, for the rest of that frame. mcla_gpu_shader_memo_check runs the
-  // full lookup at every hit and counts the answers that differ.
+  // get wrong, for the rest of that frame.
   struct IdentityMemo {
     uint32_t object = 0;  // 0 = empty
     uint32_t generation = 0;
@@ -285,11 +282,9 @@ class GuestCapture {
   static constexpr uint32_t kMemoSlots = 1024;  // per kind, direct mapped on the object
   std::array<IdentityMemo, kMemoSlots> vs_memo_{};
   std::array<IdentityMemo, kMemoSlots> ps_memo_{};
-  const bool memo_check_;  // mcla_gpu_shader_memo_check
   // Written under the producer lock only (plain load and store); read by Disable.
   std::atomic<uint64_t> memo_hits_{0};
   std::atomic<uint64_t> memo_misses_{0};
-  std::atomic<uint64_t> memo_differ_{0};
   GuestFrameStats frame_;
   bool reported_device_count_ = false;
   // Physical [start, end) of every resolve destination recorded so far (base

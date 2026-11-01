@@ -13,32 +13,6 @@ namespace mcla::gpu {
 
 namespace nfx = mcla::native_gfx;
 
-namespace {
-
-thread_local bool t_released = false;
-std::atomic<uint64_t> g_released_accesses{0};
-std::atomic<uint64_t> g_released_reported{0};
-
-// The check costs one thread-local load on the hot path; this runs only inside the window.
-void NoteReleasedAccess(const char* what, uint32_t physical, uint32_t length, const void* caller) {
-  g_released_accesses.fetch_add(1, std::memory_order_relaxed);
-  if (g_released_reported.fetch_add(1, std::memory_order_relaxed) < 16) {
-    REXLOG_ERROR("[gpu] present release check: {} of {:#010x} + {} bytes after the guest was "
-                 "released (caller {})",
-                 what, physical, length, caller);
-  }
-}
-
-}  // namespace
-
-void GuestMemory::MarkReleased(bool released) {
-  t_released = released;
-}
-
-uint64_t GuestMemory::TakeReleasedAccesses() {
-  return g_released_accesses.exchange(0, std::memory_order_relaxed);
-}
-
 GuestMemory::~GuestMemory() {
   Shutdown();
 }
@@ -88,9 +62,6 @@ GuestMemory::Subscriber GuestMemory::Subscribe(const char* name) {
 }
 
 const uint8_t* GuestMemory::Read(uint32_t physical, uint32_t length) const {
-  if (t_released) [[unlikely]] {
-    NoteReleasedAccess("read", physical, length, __builtin_return_address(0));
-  }
   if (length == 0 || !nfx::IsPhysicalRangeReadable(physical, length)) {
     return nullptr;
   }
@@ -98,9 +69,6 @@ const uint8_t* GuestMemory::Read(uint32_t physical, uint32_t length) const {
 }
 
 uint8_t* GuestMemory::WritablePhysical(uint32_t physical, uint32_t length) const {
-  if (t_released) [[unlikely]] {
-    NoteReleasedAccess("write", physical, length, __builtin_return_address(0));
-  }
   if (length == 0 || !nfx::IsPhysicalRangeReadable(physical, length)) {
     return nullptr;
   }

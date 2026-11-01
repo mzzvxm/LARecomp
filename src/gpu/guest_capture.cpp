@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
-#include <format>
 #include <new>
 
 #include <rex/cvar.h>
@@ -41,21 +40,6 @@ REXCVAR_DEFINE_BOOL(
     "forgotten at every present. A page the guest unmaps within the frame and that a later draw "
     "still points at would be read as before the unmapping (the memory stays mapped, so it "
     "cannot fault); off asks the heap at every check, as before.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_readable_cache_check, false, "MCLA/GPU",
-    "With mcla_gpu_readable_cache: also ask the heap at every check the cache answers, and "
-    "count and log (the first 16) the answers that differ. The count is in the line at "
-    "shutdown; it must be 0. For testing; the heap is asked as often as without the cache.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_shader_memo_check, false, "MCLA/GPU",
-    "Also look every shader's identity up in full at each draw whose answer the frame's identity "
-    "memo gives, and count and log (the first 16) the answers that differ. The count is in the "
-    "shader memo line at shutdown; it must be 0. For testing; the lookups cost as much as without "
-    "the memo.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
@@ -264,10 +248,7 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
 GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
     : stream_(stream),
       verify_constants_(verify_constants),
-      page_cache_(REXCVAR_GET(mcla_gpu_readable_cache)),
-      page_cache_check_(REXCVAR_GET(mcla_gpu_readable_cache) &&
-                        REXCVAR_GET(mcla_gpu_readable_cache_check)),
-      memo_check_(REXCVAR_GET(mcla_gpu_shader_memo_check)) {
+      page_cache_(REXCVAR_GET(mcla_gpu_readable_cache)) {
   scratch_.reserve(nfx::kMaxUcodeBytes);
 }
 
@@ -279,21 +260,14 @@ void GuestCapture::Disable() {
     const uint64_t hits = cache_hits_.load(std::memory_order_relaxed);
     const uint64_t asks = cache_heap_asks_.load(std::memory_order_relaxed);
     REXLOG_INFO("[gpu] readable cache: {} of {} guest range checks answered from the frame's "
-                "pages, {} asked the heap{}",
-                hits, hits + asks, asks,
-                page_cache_check_
-                    ? std::format("; {} cached answers differ from the heap (must be 0)",
-                                  cache_stale_.load(std::memory_order_relaxed))
-                    : std::string());
+                "pages, {} asked the heap",
+                hits, hits + asks, asks);
   }
   const uint64_t memo_hits = memo_hits_.load(std::memory_order_relaxed);
   const uint64_t memo_misses = memo_misses_.load(std::memory_order_relaxed);
   REXLOG_INFO("[gpu] shader memo: {} of {} shader identity lookups answered from the frame's "
-              "memo, {} looked up in full{}",
-              memo_hits, memo_hits + memo_misses, memo_misses,
-              memo_check_ ? std::format("; {} memo answers differ from the full lookup (must be 0)",
-                                        memo_differ_.load(std::memory_order_relaxed))
-                          : std::string());
+              "memo, {} looked up in full",
+              memo_hits, memo_hits + memo_misses, memo_misses);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,8 +301,6 @@ bool GuestCapture::CopyGuest(const uint8_t* base, uint32_t address, void* out, u
 //    mapped after the guest releases it (BaseHeap::Decommit and Release leave
 //    the host pages alone), so an answer that is a few draws old can only
 //    differ for a draw that points at memory the guest freed within the frame.
-//    mcla_gpu_readable_cache_check asks the heap again at every hit and counts
-//    the differences.
 // Only ranges of up to kMaxPages pages inside one 16 MiB region are kept in
 // frame_pages_. Heaps meet only on 16 MiB boundaries (the last one ends at
 // 0xFFD00000 with nothing behind it, so a page past its end is never found
@@ -360,15 +332,6 @@ bool GuestCapture::Readable(uint32_t address, uint64_t size) {
     if (page > last) {
       cache_hits_.store(cache_hits_.load(std::memory_order_relaxed) + 1,
                         std::memory_order_relaxed);
-      if (page_cache_check_ && !nfx::IsGuestRangeReadable(address, size)) {
-        const uint64_t stale = cache_stale_.load(std::memory_order_relaxed) + 1;
-        cache_stale_.store(stale, std::memory_order_relaxed);
-        if (stale <= 16) {
-          REXLOG_WARN("[gpu] readable cache: 0x{:08X} + {} was found readable earlier in the "
-                      "frame and the heap now says it is not",
-                      address, size);
-        }
-      }
       return true;
     }
   }
@@ -505,31 +468,9 @@ void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool
   if (memo.object == shader.object && memo.generation == generation &&
       memo.address == shader.address && memo.size == shader.size) {
     memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-    if (!memo_check_) {
-      shader.identity = memo.identity;
-      shader.computed_fetch_index = memo.computed_fetch_index;
-      shader.kills_pixels = memo.kills_pixels;
-      return;
-    }
-    // Checking: the full lookup is the answer used; the memo's is compared with it.
-    ResolveIdentityFull(base, shader, vertex);
-    if (shader.identity != memo.identity ||
-        shader.computed_fetch_index != memo.computed_fetch_index ||
-        shader.kills_pixels != memo.kills_pixels) {
-      const uint64_t differ = memo_differ_.load(std::memory_order_relaxed) + 1;
-      memo_differ_.store(differ, std::memory_order_relaxed);
-      if (differ <= 16) {
-        REXLOG_WARN("[gpu] shader memo: {} object 0x{:08X} at 0x{:08X} + {}: memo identity "
-                    "{:016X}, full lookup {:016X} (fetch index {}/{}, kills {}/{})",
-                    vertex ? "vertex" : "pixel", shader.object, shader.address, shader.size,
-                    memo.identity, shader.identity, memo.computed_fetch_index,
-                    shader.computed_fetch_index, memo.kills_pixels, shader.kills_pixels);
-      }
-      // Leave the memo as the full lookup has it.
-      memo.identity = shader.identity;
-      memo.computed_fetch_index = shader.computed_fetch_index;
-      memo.kills_pixels = shader.kills_pixels;
-    }
+    shader.identity = memo.identity;
+    shader.computed_fetch_index = memo.computed_fetch_index;
+    shader.kills_pixels = memo.kills_pixels;
     return;
   }
   memo_misses_.store(memo_misses_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);

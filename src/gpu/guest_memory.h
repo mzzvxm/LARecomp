@@ -115,15 +115,6 @@ class GuestMemory {
   // Since the previous call.
   Stats TakeStats();
 
-  // Check for the early release of the guest at a present (renderer.cpp,
-  // mcla_gpu_present_release_check). Render thread: between MarkReleased(true) and
-  // MarkReleased(false) the guest runs again, so the render thread must not read
-  // or write guest memory; Read and WritablePhysical count (and log, the first few) each
-  // call made in that window. Other threads are not affected.
-  static void MarkReleased(bool released);
-  // Calls counted since the previous call.
-  static uint64_t TakeReleasedAccesses();
-
  private:
   bool Attach();
   static std::pair<uint32_t, uint32_t> OnInvalidate(void* context, uint32_t start,
