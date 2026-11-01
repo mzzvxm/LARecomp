@@ -1340,6 +1340,8 @@ const ItemDef kVideoItems[] = {
 #endif
     Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
+    // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
+    Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
 
 const ItemDef kRecompItems[] = {

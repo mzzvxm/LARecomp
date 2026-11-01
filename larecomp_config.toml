@@ -25679,6 +25679,73 @@ address = 0x825EE980
 name = "Hook_SwfContextEnter"
 registers = ["r3"]
 
+# Race countdown clock (hooks/ui.cpp, ui_countdown_fix). 0x822124DC is
+# `addi r4,r8,-9924` in sub_82212298 (the HUD's update), right after `fmr f1,f31`.
+# r3 is the HUD gauge movie's swf context and f1 the value the next call
+# (sub_825EE188) gives its ActionScript variable `countdownUpdate`: this update's
+# elapsed time. The movie adds it to the race countdown's clock on every step, so
+# a movie that steps less often than the game updates needs the time in between.
+[[midasm_hook]]
+address = 0x822124DC
+name = "Hook_UiCountdownDt"
+registers = ["r3", "f1"]
+
+# Smooth UI (hooks/ui_smooth.cpp, ui_interpolate). sub_825FB348 is the swf player's
+# draw walk over the display tree (r3 = the node, r4 = the parent's state block, whose
+# world matrix is at +24 and world colour transform at +56). It computes the node's
+# world matrix (0x825FB38C-0x825FB454) and then its world colour transform
+# (`bl sub_825F8B20` at 0x825FB480) from the node's local ones, then draws the node or
+# walks its children. 0x825FB484 is `lhz r9,170(r30)`, right after both are computed:
+# r30 = the node, r31 = the parent's state block. The hook redoes the node's world
+# values from local values blended between the last two steps.
+[[midasm_hook]]
+address = 0x825FB484
+name = "Hook_UiSmoothDraw"
+registers = ["r30", "r31"]
+
+# Smooth UI for the pause menu's 3D (hooks/ui_smooth.cpp, ui_interpolate_camera). The
+# camera and the 3D panels come from numbers the menu's script sets in 30 Hz steps and
+# the game reads again in every update and drawn frame; the hooks blend the reads.
+# sub_82722440 reads an array of three numbers from a script object (r30 = the object,
+# r31 = where the numbers go; the property's name is the pointer saved at 96(r1));
+# sub_827222F0 reads one number the same way (name saved at 80(r1)). Both hooks sit on
+# `li r3,1`, the success path, after the numbers are stored.
+[[midasm_hook]]
+address = 0x82722524
+name = "Hook_UiSceneVec"
+registers = ["r1", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x82722374
+name = "Hook_UiSceneFloat"
+registers = ["r1", "r30", "r31"]
+
+# sub_82724CF0 draws a movie's 3D scene (r3 = its swf context): the entry, and `b 0x823d9230`
+# at its end, which every way out passes. Only reads inside them are the panels'.
+[[midasm_hook]]
+address = 0x82724CF0
+name = "Hook_UiSceneEnter"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x82724E64
+name = "Hook_UiSceneLeave"
+
+# sub_827238B0 is the advance of the UI movies' swf context (vtable 0x820CACB8, slot +4):
+# the movie's step, then `player0_cam_ctrl` (the blend between the game's view and the
+# menu's) and, when it is not 0, the camera (sub_82723570). 0x827238F8 is `lfs f0,80(r1)`,
+# f0 = that blend (r31 = the context); the hook, placed after the instruction, can replace
+# it. 0x82723934 is `ld r31,-16(r1)`, where the function's every way out passes.
+[[midasm_hook]]
+address = 0x827238F8
+name = "Hook_UiCamCtrl"
+after_instruction = true
+registers = ["r31", "f0"]
+
+[[midasm_hook]]
+address = 0x82723934
+name = "Hook_UiCamDone"
+
 # Options > Controller key dispatch (sub_8264D0D8, r3 = screen, r4 = key).
 # Hook_ListViewPopulate appends a "PLAYSTATION BUTTONS" row to that screen's
 # own list, reusing one of the eleven checkbox rows its ctor (sub_8264DF48)
