@@ -1311,6 +1311,7 @@ constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"}
 constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
+constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
@@ -1361,6 +1362,11 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
     // Live: the game's rumble stops reaching the controller, and one that runs stops.
     Bool("PM_RxVibration",   "controller_vibration",     "VIBRATION: "),
+    // Live: for a stick that rests off centre (hooks/stick_deadzone.cpp).
+    Dbl ("PM_RxDeadzoneL",   "left_stick_deadzone",      "LEFT STICK DEAD ZONE: ",
+         kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
+    Dbl ("PM_RxDeadzoneR",   "right_stick_deadzone",     "RIGHT STICK DEAD ZONE: ",
+         kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
 };
 
 // Everything that trades image quality for framerate, in one place.

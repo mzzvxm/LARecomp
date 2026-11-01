@@ -113,6 +113,9 @@ void StartFreezeWatchdog();
 // rear_view.cpp
 void TickRearView();
 
+// stick_deadzone.cpp: state = the guest's X_INPUT_STATE, just read from the SDK.
+void ApplyStickDeadzones(uint8_t* base, uint32_t state);
+
 // vibration.cpp
 void TickVibration();
 

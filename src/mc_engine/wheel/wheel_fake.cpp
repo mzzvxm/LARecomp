@@ -61,6 +61,7 @@
 #include <windows.h>
 #endif
 
+#include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
 #include "wheel_input.h"
@@ -276,8 +277,12 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t state = ctx.r4.u32;
     __imp__rex_sub_8275CB78(ctx, base);
     const FakeMode mode = CurrentMode();
-    if (!IsWheelUser(user) || state == 0) return;
-    if (mode == FakeMode::kOff && !larecomp::wheel::WheelPresent()) return;
+    if (!IsWheelUser(user) || state == 0 ||
+        (mode == FakeMode::kOff && !larecomp::wheel::WheelPresent())) {
+        // A pad, not a wheel: the player's stick dead zones (a wheel owns these axes).
+        if (state != 0 && ctx.r3.u32 == 0) ApplyStickDeadzones(base, state);
+        return;
+    }
 
     if (ctx.r3.u32 != 0) {
         // Nothing connected underneath: still a wheel, at rest.

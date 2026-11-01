@@ -63,6 +63,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/audio_mixer.cpp
     src/mc_engine/hooks/diagnostics.cpp
     src/mc_engine/hooks/vibration.cpp
+    src/mc_engine/hooks/stick_deadzone.cpp
     src/mc_engine/hooks/warper.cpp
     src/mc_engine/hooks/photo_album.cpp
     src/mc_engine/hooks/rear_view.cpp
