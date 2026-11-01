@@ -721,9 +721,9 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
+  CommandStream::Writer writer(stream_);  // the producer lock: the capture's one lock
   if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
+    FlushPendingInline(writer, base, /*terminated=*/false);
   }
   DrawCapture c;
   c.kind = kind;
@@ -734,15 +734,12 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   GatherDraw(token, base, device, c);
   const DrawRecordLayout layout =
       ComputeDrawLayout(c.decl_count, c.vs_block_count, c.ps_block_count, 0);
-  {
-    CommandStream::Writer writer(stream_);
-    uint8_t* payload = writer.Begin(RecordType::kDraw, layout.payload_bytes);
-    if (payload) {
-      WriteDraw(base, device, c, payload);
-      writer.Commit(Publication::kBatched);
-      CountRecord(layout.payload_bytes);
-      ++frame_.draws;
-    }
+  uint8_t* payload = writer.Begin(RecordType::kDraw, layout.payload_bytes);
+  if (payload) {
+    WriteDraw(base, device, c, payload);
+    writer.Commit(Publication::kBatched);
+    CountRecord(layout.payload_bytes);
+    ++frame_.draws;
   }
   frame_.capture_cycles += ElapsedCycles(t0);
 }
@@ -754,11 +751,11 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
+  CommandStream::Writer writer(stream_);  // the lock; no record is begun through it here
   if (pending_.active) {
     // A second Begin before End on the same device is a guest bug; on another
     // device it is a second thread. Either way the first is closed here.
-    FlushPendingInline(base, pending_.device, /*terminated=*/false);
+    FlushPendingInline(writer, base, /*terminated=*/false);
   }
   const uint64_t bytes = uint64_t(count) * stride;
   // The whole record has to fit, and it is checked before anything is gathered:
@@ -799,15 +796,15 @@ void GuestCapture::AfterEndVertices(const uint8_t* base, uint32_t device) {
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
+  CommandStream::Writer writer(stream_);
   if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/true);
+    FlushPendingInline(writer, base, /*terminated=*/true);
   }
   frame_.capture_cycles += ElapsedCycles(t0);
 }
 
-void GuestCapture::FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated) {
-  (void)device;
+void GuestCapture::FlushPendingInline(CommandStream::Writer& writer, const uint8_t* base,
+                                      bool terminated) {
   pending_.active = false;
   auto* r = reinterpret_cast<DrawRecord*>(pending_.payload.data());
   const DrawRecordLayout layout =
@@ -823,7 +820,6 @@ void GuestCapture::FlushPendingInline(const uint8_t* base, uint32_t device, bool
                  r->inline_bytes)) {
     r->flags |= kDrawInlineUnreadable;
   }
-  CommandStream::Writer writer(stream_);
   uint8_t* payload = writer.Begin(RecordType::kDraw, uint32_t(pending_.payload.size()));
   if (payload) {
     std::memcpy(payload, pending_.payload.data(), pending_.payload.size());
@@ -939,11 +935,10 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kClear, sizeof(ClearRecord));
   if (payload) {
     auto* r = new (payload) ClearRecord();
@@ -984,11 +979,10 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kResolve, sizeof(ResolveRecord));
   if (payload) {
     auto* r = new (payload) ResolveRecord();
@@ -1064,11 +1058,10 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kTilingBegin, sizeof(TilingBeginRecord));
   if (payload) {
     auto* r = new (payload) TilingBeginRecord();
@@ -1113,11 +1106,10 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
-  if (pending_.active && pending_.device == device) {
-    FlushPendingInline(base, device, /*terminated=*/false);
-  }
   CommandStream::Writer writer(stream_);
+  if (pending_.active && pending_.device == device) {
+    FlushPendingInline(writer, base, /*terminated=*/false);
+  }
   uint8_t* payload = writer.Begin(RecordType::kTilingEnd, sizeof(TilingEndRecord));
   if (payload) {
     auto* r = new (payload) TilingEndRecord();
@@ -1166,11 +1158,10 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
   uint64_t sequence = 0;
   {
     const uint64_t t0 = cycles::Now();
-    std::lock_guard lock(mutex_);
-    if (pending_.active && pending_.device == device) {
-      FlushPendingInline(base, device, /*terminated=*/false);
-    }
     CommandStream::Writer writer(stream_);
+    if (pending_.active && pending_.device == device) {
+      FlushPendingInline(writer, base, /*terminated=*/false);
+    }
     uint8_t* payload = writer.Begin(RecordType::kPresent, sizeof(PresentRecord));
     if (payload) {
       auto* r = new (payload) PresentRecord();
@@ -1213,7 +1204,6 @@ void GuestCapture::Fence(uint32_t device, uint32_t value) {
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
   // Not a draw-state event: a pending inline draw stays open. A fence kicked
   // between BeginVertices and EndVertices was inserted before that draw's
   // packet, so it does not cover the draw and goes ahead of its record.
@@ -1235,7 +1225,6 @@ bool GuestCapture::FenceCatchUp(const uint8_t* base, uint32_t device) {
   if (!enabled() || device == 0) {
     return false;
   }
-  std::lock_guard lock(mutex_);
   // Read with the producer lock held: a record whose writer finished before
   // the increment this read sees is ahead of the catch-up in the stream.
   CommandStream::Writer writer(stream_);
@@ -1272,7 +1261,7 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
   const uint64_t end = uint64_t(start) + size;
   uint64_t sequence = 0;
   {
-    std::lock_guard lock(mutex_);
+    CommandStream::Writer writer(stream_);
     bool destination = false;
     for (const auto& [s, e] : resolve_destinations_) {
       if (s < end && start < e) {
@@ -1284,7 +1273,6 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
       return false;
     }
     // Not a draw-state event, like a fence: a pending inline draw stays open.
-    CommandStream::Writer writer(stream_);
     uint8_t* payload = writer.Begin(RecordType::kLock, sizeof(LockRecord));
     if (!payload) {
       return false;
@@ -1312,7 +1300,6 @@ void GuestCapture::Composite(uint32_t bucket) {
     return;
   }
   const uint64_t t0 = cycles::Now();
-  std::lock_guard lock(mutex_);
   // Not a draw-state event, like a fence: a pending inline draw stays open (none
   // is, at the end of the post object's draw).
   CommandStream::Writer writer(stream_);

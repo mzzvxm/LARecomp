@@ -36,10 +36,13 @@
 // Every guest pointer is checked with IsGuestRangeReadable before it is read.
 // What cannot be read becomes a zero field and a flag, never a crash.
 //
-// Threading: any guest thread. One mutex serializes the capture state and the
-// writes into the stream; the pre-state of clear/resolve/tiling events lives
-// on the calling thread (the original runs between Before and After, and an
-// EndTiling nests its resolves).
+// Threading: any guest thread. One lock serializes the capture state and the
+// writes into the stream: the stream's producer lock, which every entry point
+// takes by constructing a CommandStream::Writer first (a draw used to take a
+// mutex of its own and then the stream's, two lock pairs a draw); the
+// pre-state of clear/resolve/tiling events lives on the calling thread (the
+// original runs between Before and After, and an EndTiling nests its
+// resolves).
 // ===========================================================================
 
 #include <array>
@@ -200,24 +203,25 @@ class GuestCapture {
   // Fills a draw payload of capture's exact layout and updates the shadows.
   void WriteDraw(const uint8_t* base, uint32_t device, const DrawCapture& capture,
                  uint8_t* payload);
-  void FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated);
+  // Under the producer lock `writer` holds (it writes the record through it).
+  void FlushPendingInline(CommandStream::Writer& writer, const uint8_t* base, bool terminated);
   bool CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes);
   // IsGuestRangeReadable with two memories of the pages found readable: the
   // runs of the current GatherDraw (verified_) and the pages of the current
-  // guest frame (frame_pages_, mcla_gpu_readable_cache). Under mutex_.
+  // guest frame (frame_pages_, mcla_gpu_readable_cache). Under the producer lock.
   bool Readable(uint32_t address, uint64_t size);
-  // Forgets the pages of the frame that ended (a present). Under mutex_.
+  // Forgets the pages of the frame that ended (a present). Under the producer lock.
   void NextFramePages();
   void CountRecord(uint32_t payload_bytes);
   // Adds the guest ranges of a resolve's destination (its texture header) to
-  // resolve_destinations_. Under mutex_.
+  // resolve_destinations_. Under the producer lock.
   void NoteResolveDestination(const uint8_t* header);
 
   CommandStream& stream_;
   const bool verify_constants_;
   std::atomic<bool> enabled_{true};
 
-  std::mutex mutex_;
+  // Everything below is guarded by the stream's producer lock (see Threading above).
   std::vector<std::unique_ptr<DeviceState>> devices_;
   std::unordered_map<uint64_t, IdentityEntry> identities_;
   std::vector<uint8_t> scratch_;  // normalization buffer
@@ -248,7 +252,7 @@ class GuestCapture {
   FramePages frame_pages_;
   const bool page_cache_;        // mcla_gpu_readable_cache, read at construction
   const bool page_cache_check_;  // mcla_gpu_readable_cache_check
-  // Written under mutex_ only (plain load and store); read by Disable.
+  // Written under the producer lock only (plain load and store); read by Disable.
   std::atomic<uint64_t> cache_hits_{0};
   std::atomic<uint64_t> cache_heap_asks_{0};
   std::atomic<uint64_t> cache_stale_{0};
