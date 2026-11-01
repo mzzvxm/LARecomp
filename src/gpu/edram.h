@@ -236,7 +236,8 @@ class EdramTargets {
   // height, read on first use). A target's scale is fixed when it is made: a
   // use whose surface classifies otherwise is counted and reported once per
   // identity (NoteDeclaredScale).
-  static constexpr uint32_t kMaxResolutionScale = 3;
+  static constexpr double kMinResolutionScale = 0.5;
+  static constexpr double kMaxResolutionScale = 3.0;
   static constexpr uint32_t kMaxScreenShift = 3;
   Scale resolution_scale() const { return resolution_scale_; }
   // The scale a target bound through a surface declared with `size_bits`

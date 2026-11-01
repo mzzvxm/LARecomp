@@ -850,7 +850,8 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
     *why = std::format("{} levels read at {}x of a {}x product", levels, scale, product.scale);
     return kInvalidBindlessSlot;
   }
-  if (scale.none() || product.scale.n % scale.n != 0) {
+  if (scale.none() || (product.scale < scale && !product.depth_source)) {
+    // Colour is enlarged by the reader's own filter (TextureCache::Bind2D).
     *why = std::format("a {}x product read at {}x", product.scale, scale);
     return kInvalidBindlessSlot;
   }
@@ -872,11 +873,12 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
     if (!reduced->image.texture) {
       ++stats_.reduced_created;
       // The census of the reads across scales: each product and scale once.
-      REXLOG_INFO("[gpu] resolve: {} ({}x) is read by a draw at {}x: through a copy reduced by "
-                  "{} ({})",
-                  product.key.Describe(), product.scale, scale, product.scale.n / scale.n,
-                  product.depth_source ? "the centre of each block, a depth source"
-                                       : "the mean of each block");
+      REXLOG_INFO("[gpu] resolve: {} ({}x) is read by a draw at {}x: through a copy {} to it "
+                  "({}x{}, {})",
+                  product.key.Describe(), product.scale, scale,
+                  product.scale > scale ? "reduced" : "enlarged", width, height,
+                  product.depth_source ? "the texel at each block's centre, a depth source"
+                                       : "the mean of each block by area");
     }
     if (!passes_->EnsureImage(reduced->image, width, height, product.format,
                               "resolve product reduced")) {
@@ -896,11 +898,13 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
       pass_timing_->Mark(list, std::format("resolve product reduced {}x -> {}x {}x{}", product.scale,
                                            scale, product.key.width, product.key.height));
     }
+    // hlsl/reduce_ps.hlsl ReducePush.
     struct ReducePush {
       uint32_t source;
-      uint32_t ratio;
+      uint32_t num;
+      uint32_t den;
       uint32_t centre;
-    } push{source, product.scale.n / scale.n, product.depth_source ? 1u : 0u};
+    } push{source, product.scale.n, scale.n, product.depth_source ? 1u : 0u};
     passes_->DrawInto(list, reduced->image, pipeline, &push, sizeof(push));
     reduced->made_from = product.writes;
     *recorded = true;
@@ -1445,6 +1449,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         memory_copy.offset_x = -dx;
         memory_copy.offset_y = -dy;
         memory_copy.samples = push.samples;
+        memory_copy.fill = push.fill;
       } else {
         memory_copy.product_slot =
             p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),

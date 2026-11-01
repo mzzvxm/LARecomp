@@ -51,12 +51,13 @@ REXCVAR_DEFINE_UINT32(
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_resolution_scale, 1, "MCLA/GPU",
-    "Internal resolution scale (M6b): every render target that is an image of the screen "
-    "(the scene, the UI, the post-processing sized from the screen) is this many times the "
-    "guest's in each direction (1, 2 or 3; 2 = 2560x1440, 3 = 3840x2160 from 720p). The guest "
-    "keeps seeing its own sizes.")
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_resolution_scale, 1.0, "MCLA/GPU",
+    "Internal resolution scale: every render target that is an image of the screen (the scene, "
+    "the UI, the post-processing sized from the screen) is this many times the guest's in each "
+    "direction, from 0.5 to 3 in steps of 0.05 (0.75 = 960x540, 1.5 = 1920x1080, 2 = 2560x1440, "
+    "3 = 3840x2160 from 720p; other values go to the nearest step). The guest keeps seeing its "
+    "own sizes.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_msaa, "2", "MCLA/GPU",
@@ -235,18 +236,25 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
-  // The internal resolution scale, chosen at start.
-  uint32_t whole = REXCVAR_GET(mcla_gpu_resolution_scale);
-  if (whole < 1 || whole > kMaxResolutionScale) {
-    REXLOG_ERROR("[gpu] edram: mcla_gpu_resolution_scale = {} is not 1 to {}; the targets keep "
+  // The internal resolution scale, chosen at start, on the grid of Scale.
+  const double wanted = REXCVAR_GET(mcla_gpu_resolution_scale);
+  if (!(wanted >= kMinResolutionScale && wanted <= kMaxResolutionScale)) {
+    REXLOG_ERROR("[gpu] edram: mcla_gpu_resolution_scale = {} is not {} to {}; the targets keep "
                  "the guest's size",
-                 whole, kMaxResolutionScale);
-    whole = 1;
+                 wanted, kMinResolutionScale, kMaxResolutionScale);
+    resolution_scale_ = Scale{};
+  } else {
+    resolution_scale_ = Scale{uint32_t(std::lround(wanted * Scale::kDenominator))};
+    if (std::abs(resolution_scale_.value() - wanted) > 1e-6) {
+      REXLOG_INFO("[gpu] edram: mcla_gpu_resolution_scale = {} goes to {}, the nearest step of "
+                  "1/{}",
+                  wanted, resolution_scale_, Scale::kDenominator);
+    }
   }
-  resolution_scale_ = Scale::Whole(whole);
   if (!resolution_scale_.unit()) {
-    REXLOG_INFO("[gpu] edram: the images of the screen at {}x the guest's size",
-                resolution_scale_);
+    REXLOG_INFO("[gpu] edram: the images of the screen at {}x the guest's size ({}x{} from "
+                "1280x720)",
+                resolution_scale_, resolution_scale_.Edge(1280), resolution_scale_.Edge(720));
   }
   // The host MSAA level, chosen at start, within what the device can do for
   // every format an image of the screen is stored as.

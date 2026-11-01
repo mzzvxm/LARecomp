@@ -111,11 +111,12 @@ class ResolveCache {
     // 8x8 cells an inherited resolve wrote and no clean one wrote since --
     // texels that are, on the console, another EDRAM identity's bytes.
     std::vector<Coverage> inherited;
-    // Copies for readers at a smaller resolution scale (ReducedSlot): level 0
+    // Copies for readers at another resolution scale (ReducedSlot): level 0
     // at `scale` host texels per guest texel, each texel the mean of the
-    // product's block over it -- or, for a product a depth source made, the
-    // block's centre texel (a mean of depths is no depth) -- remade after each
-    // resolve into the product.
+    // product's block over it, by area -- or, for a product a depth source
+    // made, the texel at the block's centre (a mean of depths is no depth),
+    // which also enlarges a depth product below 1x for a larger reader --
+    // remade after each resolve into the product.
     struct Reduced {
       Scale scale = Scale::None();
       HostImage image;
@@ -160,11 +161,13 @@ class ResolveCache {
   Product* Find(const TextureKey& key, uint32_t image_base_page);
   // The key without its mip fields (base, size, format, layout).
   static TextureKey ImageKey(const TextureKey& key);
-  // The bindless slot of `product` seen at `scale` (below its own) with
-  // `host_swizzle`: its reduced copy, made -- or made again after a resolve
-  // into the product -- into `list` (outside any render pass; *recorded tells
-  // that the list's framebuffer and pipeline state were changed). Only level 0
-  // is reduced: a fetch of more levels gets kInvalidBindlessSlot and *why.
+  // The bindless slot of `product` seen at `scale` with `host_swizzle`: its
+  // copy at that scale -- reduced from a larger product, or enlarged by the
+  // nearest texel from a smaller depth-source one -- made, or made again after
+  // a resolve into the product, into `list` (outside any render pass;
+  // *recorded tells that the list's framebuffer and pipeline state were
+  // changed). Only level 0 is copied: a fetch of more levels gets
+  // kInvalidBindlessSlot and *why.
   uint32_t ReducedSlot(Product& product, Scale scale, uint32_t levels, uint16_t host_swizzle,
                        plume::RenderCommandList* list, bool* recorded, std::string* why);
   // An active product whose guest range shares a byte with [start, start +

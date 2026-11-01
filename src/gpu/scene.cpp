@@ -330,7 +330,9 @@ void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fet
                 "{}, aniso {}",
                 fetch.key.Describe(), bound.product_scale,
                 bound.depth_source ? "a depth source" : "colour", scale,
-                bound.product_scale > scale ? "through a reduced copy" : "directly",
+                bound.scale == bound.product_scale ? "directly"
+                : bound.product_scale > scale      ? "through a reduced copy"
+                                                   : "through an enlarged copy",
                 filter(f.mag_filter), filter(f.min_filter), filter(f.mip_filter),
                 uint32_t(f.aniso_filter));
   }
@@ -987,7 +989,8 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
       // the cache logs any other dimension once and the null of its dimension
       // is bound.
       const TextureCache::Binding bound = textures_->Bind2D(fetch, scale, list_);
-      if (census_scale_ && bound.from_product && bound.product_scale != scale) {
+      if (census_scale_ && bound.from_product && !bound.product_scale.none() &&
+          bound.product_scale != scale) {
         ++window_.census_scale_reads;
         NoteScaleRead(census_scale_logged_, fetch, dwords, bound, scale);
       }

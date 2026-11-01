@@ -466,10 +466,19 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
       watch::Log(std::format("  bind {}: product {} at {}x, read at {}x", key.Describe(),
                              product->key.Describe(), product->scale, reader_scale));
     }
-    if (!reader_scale.none() && product->scale > reader_scale) {
-      // A reader at a smaller scale samples the product at its own density:
-      // through a copy reduced to it (the guest's texels at 1x), never a
-      // sparse pick of the larger image.
+    // A reader at another scale than the product's:
+    // - a product made above 1x (an image of the screen) read by a draw at a
+    //   smaller scale is sampled at the reader's density, through a copy
+    //   reduced to it, never a sparse pick of the larger image;
+    // - a product a depth source made below 1x read by a draw at a larger
+    //   scale goes through a copy enlarged by the nearest texel: the game's
+    //   linear fetch of the smaller image would blend neighbouring depths;
+    // - anything else is read as it is: a product at the guest's size already
+    //   has the console's density, and colour is enlarged by the game's filter.
+    const bool reduce = product->scale > reader_scale && product->scale > Scale{};
+    const bool enlarge =
+        product->scale < reader_scale && product->scale < Scale{} && product->depth_source;
+    if (!reader_scale.none() && (reduce || enlarge)) {
       bool recorded = false;
       std::string why;
       const uint32_t slot = resolve_->ReducedSlot(*product, reader_scale, key.levels(),

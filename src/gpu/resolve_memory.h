@@ -145,6 +145,9 @@ class ResolveMemory {
     // (colour: the guest texel is the mean of its block) or the EDRAM
     // target's (depth: the sample at the block's centre).
     Scale resolution_scale;
+    // Depth: the host columns and rows at the target's origin the half pixel
+    // left uncovered (the resolve's ResolvePush::fill), read from the next.
+    uint32_t fill = 0;
   };
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not
@@ -313,7 +316,7 @@ class ResolveMemory {
     uint32_t groups_x = 0;
     uint32_t groups_y = 0;
     uint64_t frame = 0;  // frame_ when it was made
-    std::array<uint32_t, 16> push{};
+    std::array<uint32_t, 17> push{};
   };
   std::vector<Pending> pending_;
   // mcla_gpu_resolve_memory_encode_delay, read at each BeginFrame.

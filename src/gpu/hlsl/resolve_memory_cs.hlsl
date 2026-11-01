@@ -38,7 +38,8 @@ struct EncodePush {
   uint rect0;     // the rectangle in level texels: x0 bits 0-15, y0 bits 16-31
   uint rect1;     //                                 x1, y1 (exclusive)
   int group_x0;   // level x of the first dword group of the dispatch (storage-aligned)
-  uint resolution_scale;  // host texels per guest texel of the source read
+  uint resolution_scale;  // host texels per guest texel of the source read, in 20ths (Scale::n)
+  uint fill;      // depth: host pixels of the target's half-pixel gap, read from the next one
 };
 
 #ifdef __spirv__
@@ -74,22 +75,50 @@ uint2 TexelBits(int2 texel) {
   // Every depth destination (k_24_8, k_24_8_FLOAT, k_8_8_8_8, k_32_FLOAT) gets
   // the raw dword.
   uint stencil;
-  // The EDRAM sample at the centre of the guest pixel's s x s block (a mean
-  // of depths is no depth).
-  const int s = int(g_push.resolution_scale);
-  const int2 source = (texel + int2(g_push.offset_x, g_push.offset_y)) * s + (s >> 1);
+  // The EDRAM sample at the centre of the guest pixel's block (a mean of
+  // depths is no depth): floor((t + 0.5) * s), in integers. Between 1x and 2x
+  // the first centre lands in the half-pixel gap, read from the next pixel as
+  // resolve_ps.hlsl does.
+  const uint2 t = uint2(texel + int2(g_push.offset_x, g_push.offset_y));
+  const int2 source = max(int2((t * 2u + 1u) * g_push.resolution_scale / 40u),
+                          int2(int(g_push.fill), int(g_push.fill)));
   const uint d24 = ResolveDepth24(source, stencil);
   return uint2((d24 << 8u) | stencil, 0u);
 #else
-  // The guest texel: the mean of its s x s block of the product (s = 1 reads the one texel).
-  const int s = int(g_push.resolution_scale);
+  // The guest texel: the mean of its block of the product -- s x s texels at
+  // a whole scale (s = 1 reads the one texel), by area otherwise, each texel
+  // weighted by how much of it the block covers.
+  const uint n = g_push.resolution_scale;
+  const int level = int(g_push.level);
   float4 v = 0.0f;
-  for (int by = 0; by < s; ++by) {
-    for (int bx = 0; bx < s; ++bx) {
-      v += g_textures[g_push.source].Load(int3(texel * s + int2(bx, by), int(g_push.level)));
+  if (n % 20u == 0u) {
+    const int s = int(n / 20u);
+    for (int by = 0; by < s; ++by) {
+      for (int bx = 0; bx < s; ++bx) {
+        v += g_textures[g_push.source].Load(int3(texel * s + int2(bx, by), level));
+      }
     }
+    v /= float(s * s);
+  } else {
+    // The last block may reach past the product by the rounding of its size:
+    // the edge texel stands in for what lies beyond it.
+    uint width, height, levels;
+    g_textures[g_push.source].GetDimensions(uint(level), width, height, levels);
+    const int2 last = int2(width, height) - 1;
+    const float s = float(n) / 20.0f;
+    const float2 b0 = float2(texel) * s;
+    const float2 b1 = b0 + s;
+    const int2 t0 = int2(floor(b0));
+    const int2 t1 = int2(ceil(b1));
+    for (int y = t0.y; y < t1.y; ++y) {
+      const float wy = min(float(y + 1), b1.y) - max(float(y), b0.y);
+      for (int x = t0.x; x < t1.x; ++x) {
+        const float wx = min(float(x + 1), b1.x) - max(float(x), b0.x);
+        v += g_textures[g_push.source].Load(int3(min(int2(x, y), last), level)) * (wx * wy);
+      }
+    }
+    v /= s * s;
   }
-  v /= float(s * s);
   switch (g_push.mode & 0xFFu) {
     case kModeUnorm8888: {
       const uint4 q = QuantizeUNorm(v, float4(255.0f, 255.0f, 255.0f, 255.0f));

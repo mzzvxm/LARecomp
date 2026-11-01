@@ -61,9 +61,10 @@ struct EncodePush {
   uint32_t rect0;
   uint32_t rect1;
   int32_t group_x0;
-  uint32_t resolution_scale;  //
+  uint32_t resolution_scale;  // Scale::n
+  uint32_t fill;
 };
-static_assert(sizeof(EncodePush) == 64);
+static_assert(sizeof(EncodePush) == 68);
 
 // hlsl/resolve_memory_ps.hlsl DecodePush.
 struct DecodePush {
@@ -828,8 +829,8 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     push.source = copy.product_slot;
   }
   push.level = copy.level;
-  // The shader reads whole blocks: a whole scale.
-  push.resolution_scale = copy.resolution_scale.n / Scale::kDenominator;
+  push.resolution_scale = copy.resolution_scale.n;
+  push.fill = copy.fill;
   push.address = storage.address;
   push.pitch = pitch;
   push.layout = LayoutBits(source, bpb_log2);
