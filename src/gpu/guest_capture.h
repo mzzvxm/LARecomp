@@ -71,7 +71,7 @@ class GuestCapture {
 
   // After this every entry point is a no-op; a thread already inside finishes
   // its record or fails it on the stopped stream.
-  void Disable() { enabled_.store(false, std::memory_order_release); }
+  void Disable();
   bool enabled() const { return enabled_.load(std::memory_order_acquire); }
 
   GuestCallToken BeforeDraw(const uint8_t* base, uint32_t device);
@@ -202,9 +202,12 @@ class GuestCapture {
                  uint8_t* payload);
   void FlushPendingInline(const uint8_t* base, uint32_t device, bool terminated);
   bool CopyGuest(const uint8_t* base, uint32_t address, void* out, uint32_t bytes);
-  // IsGuestRangeReadable with a memory of the pages found readable earlier in
-  // the same GatherDraw. Under mutex_.
+  // IsGuestRangeReadable with two memories of the pages found readable: the
+  // runs of the current GatherDraw (verified_) and the pages of the current
+  // guest frame (frame_pages_, mcla_gpu_readable_cache). Under mutex_.
   bool Readable(uint32_t address, uint64_t size);
+  // Forgets the pages of the frame that ended (a present). Under mutex_.
+  void NextFramePages();
   void CountRecord(uint32_t payload_bytes);
   // Adds the guest ranges of a resolve's destination (its texture header) to
   // resolve_destinations_. Under mutex_.
@@ -230,6 +233,25 @@ class GuestCapture {
     bool active = false;
   };
   VerifiedPages verified_;
+  // 4 KiB guest pages found readable earlier in the same guest frame, so the
+  // heap (its lock and page walk) is asked about a page once a frame instead of
+  // once a draw. Direct mapped; a slot holds (generation << 32) | page number
+  // and means "readable" only while its generation is the current one, so a
+  // present forgets all of them by counting up. Only ranges of kMaxPages pages
+  // inside one 16 MiB region are kept (a heap never starts inside one).
+  struct FramePages {
+    static constexpr uint32_t kSlots = 2048;
+    static constexpr uint32_t kMaxPages = 16;
+    uint64_t slot[kSlots] = {};
+    uint32_t generation = 1;
+  };
+  FramePages frame_pages_;
+  const bool page_cache_;        // mcla_gpu_readable_cache, read at construction
+  const bool page_cache_check_;  // mcla_gpu_readable_cache_check
+  // Written under mutex_ only (plain load and store); read by Disable.
+  std::atomic<uint64_t> cache_hits_{0};
+  std::atomic<uint64_t> cache_heap_asks_{0};
+  std::atomic<uint64_t> cache_stale_{0};
   GuestFrameStats frame_;
   bool reported_device_count_ = false;
   // Physical [start, end) of every resolve destination recorded so far (base

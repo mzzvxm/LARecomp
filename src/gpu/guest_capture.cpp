@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <format>
 #include <new>
 
 #include <rex/cvar.h>
@@ -27,6 +28,23 @@
 #include "native_gfx/shader_identity.h"
 
 REXCVAR_DECLARE(bool, mcla_gpu_edram_aliasing);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_readable_cache, true, "MCLA/GPU",
+    "Ask the guest heap whether a guest range is readable once a guest frame per 4 KiB page "
+    "instead of once a draw: the capture checks about ten ranges a draw, and each check takes "
+    "the heap's lock (about 0.2 ms a frame at 2,600 draws). The pages found readable are "
+    "forgotten at every present. A page the guest unmaps within the frame and that a later draw "
+    "still points at would be read as before the unmapping (the memory stays mapped, so it "
+    "cannot fault); off asks the heap at every check, as before.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_readable_cache_check, false, "MCLA/GPU",
+    "With mcla_gpu_readable_cache: also ask the heap at every check the cache answers, and "
+    "count and log (the first 16) the answers that differ. The count is in the line at "
+    "shutdown; it must be 0. For testing; the heap is asked as often as without the cache.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -213,8 +231,27 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
 }  // namespace
 
 GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
-    : stream_(stream), verify_constants_(verify_constants) {
+    : stream_(stream),
+      verify_constants_(verify_constants),
+      page_cache_(REXCVAR_GET(mcla_gpu_readable_cache)),
+      page_cache_check_(REXCVAR_GET(mcla_gpu_readable_cache) &&
+                        REXCVAR_GET(mcla_gpu_readable_cache_check)) {
   scratch_.reserve(nfx::kMaxUcodeBytes);
+}
+
+void GuestCapture::Disable() {
+  if (!enabled_.exchange(false, std::memory_order_acq_rel) || !page_cache_) {
+    return;
+  }
+  const uint64_t hits = cache_hits_.load(std::memory_order_relaxed);
+  const uint64_t asks = cache_heap_asks_.load(std::memory_order_relaxed);
+  REXLOG_INFO("[gpu] readable cache: {} of {} guest range checks answered from the frame's "
+              "pages, {} asked the heap{}",
+              hits, hits + asks, asks,
+              page_cache_check_
+                  ? std::format("; {} cached answers differ from the heap (must be 0)",
+                                cache_stale_.load(std::memory_order_relaxed))
+                  : std::string());
 }
 
 // ---------------------------------------------------------------------------
@@ -230,36 +267,96 @@ bool GuestCapture::CopyGuest(const uint8_t* base, uint32_t address, void* out, u
   return true;
 }
 
-// IsGuestRangeReadable, except that inside one GatherDraw a range lying on pages
-// that an earlier check of that call found readable is not asked again. Each
-// check takes the heap's lock and walks its page table; a draw makes about ten,
-// mostly on the same few pages (a shader object and its sub-object, a
-// declaration and its elements). The record of what was found lives only
-// until GatherDraw returns, a few microseconds, so a change of the guest's
-// protections between draws is always seen by the next draw's first check.
-// A run is kept as 4 KiB pages: no heap has a smaller page (they are 4 KiB,
-// 64 KiB or 16 MiB) and a protection is per heap page, so a page that lies
-// inside a checked range is as readable as the range.
+// IsGuestRangeReadable, except that a range lying on pages that an earlier
+// check found readable is not asked again. Each check takes the heap's lock and
+// walks its page table; a draw makes about ten, mostly on the same few pages (a
+// shader object and its sub-object, a declaration and its elements), and from
+// one draw to the next mostly on the same pages again (the same shaders and
+// declarations).
+// Two memories, both of 4 KiB pages: no heap has a smaller page (they are
+// 4 KiB, 64 KiB or 16 MiB) and a protection is per heap page, so a page that
+// lies inside a checked range is as readable as the range.
+//  - verified_: the runs found during the current GatherDraw. Gone when it
+//    returns, so a change of the guest's protections between draws is seen by
+//    the next draw's first check.
+//  - frame_pages_ (mcla_gpu_readable_cache): the pages found during the guest
+//    frame, forgotten at the present. The heap's answer is the guest's own
+//    protection bits of the page, and the host memory behind a page stays
+//    mapped after the guest releases it (BaseHeap::Decommit and Release leave
+//    the host pages alone), so an answer that is a few draws old can only
+//    differ for a draw that points at memory the guest freed within the frame.
+//    mcla_gpu_readable_cache_check asks the heap again at every hit and counts
+//    the differences.
+// Only ranges of up to kMaxPages pages inside one 16 MiB region are kept in
+// frame_pages_. Heaps meet only on 16 MiB boundaries (the last one ends at
+// 0xFFD00000 with nothing behind it, so a page past its end is never found
+// readable), which makes a page-by-page answer the answer for the range
+// (QueryRangeAccess refuses a range that crosses a heap's end).
 bool GuestCapture::Readable(uint32_t address, uint64_t size) {
-  if (!verified_.active || address < 0x1000u || size == 0 ||
-      uint64_t(address) + size > 0x100000000ull) {
+  if (address < 0x1000u || size == 0 || uint64_t(address) + size > 0x100000000ull) {
     return nfx::IsGuestRangeReadable(address, size);
   }
   const uint32_t first = address >> 12;
   const uint32_t last = uint32_t((uint64_t(address) + size - 1) >> 12);
-  for (uint32_t i = 0; i < verified_.count; ++i) {
-    if (verified_.first[i] <= first && last <= verified_.last[i]) {
+  if (verified_.active) {
+    for (uint32_t i = 0; i < verified_.count; ++i) {
+      if (verified_.first[i] <= first && last <= verified_.last[i]) {
+        return true;
+      }
+    }
+  }
+  const bool keep = page_cache_ && last - first < FramePages::kMaxPages &&
+                    (first >> 12) == (last >> 12);
+  const uint64_t generation = uint64_t(frame_pages_.generation) << 32;
+  const auto slot_of = [](uint32_t page) { return (page * 2654435761u) >> 21; };
+  static_assert(FramePages::kSlots == (1u << 11), "slot_of keeps the top 11 bits");
+  if (keep) {
+    uint32_t page = first;
+    while (page <= last && frame_pages_.slot[slot_of(page)] == (generation | page)) {
+      ++page;
+    }
+    if (page > last) {
+      cache_hits_.store(cache_hits_.load(std::memory_order_relaxed) + 1,
+                        std::memory_order_relaxed);
+      if (page_cache_check_ && !nfx::IsGuestRangeReadable(address, size)) {
+        const uint64_t stale = cache_stale_.load(std::memory_order_relaxed) + 1;
+        cache_stale_.store(stale, std::memory_order_relaxed);
+        if (stale <= 16) {
+          REXLOG_WARN("[gpu] readable cache: 0x{:08X} + {} was found readable earlier in the "
+                      "frame and the heap now says it is not",
+                      address, size);
+        }
+      }
       return true;
     }
+  }
+  if (page_cache_) {
+    cache_heap_asks_.store(cache_heap_asks_.load(std::memory_order_relaxed) + 1,
+                           std::memory_order_relaxed);
   }
   if (!nfx::IsGuestRangeReadable(address, size)) {
     return false;
   }
-  const uint32_t slot = verified_.next++ % VerifiedPages::kRuns;
-  verified_.first[slot] = first;
-  verified_.last[slot] = last;
-  verified_.count = std::min(verified_.count + 1, VerifiedPages::kRuns);
+  if (keep) {
+    for (uint32_t page = first; page <= last; ++page) {
+      frame_pages_.slot[slot_of(page)] = generation | page;
+    }
+  }
+  if (verified_.active) {
+    const uint32_t slot = verified_.next++ % VerifiedPages::kRuns;
+    verified_.first[slot] = first;
+    verified_.last[slot] = last;
+    verified_.count = std::min(verified_.count + 1, VerifiedPages::kRuns);
+  }
   return true;
+}
+
+void GuestCapture::NextFramePages() {
+  if (++frame_pages_.generation == 0) {
+    // After 4 billion frames: no slot may match a generation that comes round again.
+    std::fill(std::begin(frame_pages_.slot), std::end(frame_pages_.slot), uint64_t{0});
+    frame_pages_.generation = 1;
+  }
 }
 
 GuestCapture::DeviceState& GuestCapture::StateFor(uint32_t device) {
@@ -1099,6 +1196,7 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
       sequence = writer.Commit(Publication::kWaited);
     }
     frame_ = GuestFrameStats{};
+    NextFramePages();
     for (auto& state : devices_) {
       state->check_next = true;
     }
