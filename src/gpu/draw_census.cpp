@@ -161,7 +161,8 @@ std::string CompositeCensus::Describe(uint64_t packed) {
   key.depth = uint8_t((packed >> 32) & 1u);
   key.format = uint8_t((packed >> 33) & 0xFFu);
   key.samples = uint8_t((packed >> 41) & 0xFFu);
-  return std::format("{} at {}x", DescribeEdramKey(key), uint32_t((packed >> 49) & 0xFFu));
+  return std::format("{} at {}x", DescribeEdramKey(key),
+                     Scale{uint32_t((packed >> 49) & 0xFFu)});
 }
 
 void CompositeCensus::OnPresent() {

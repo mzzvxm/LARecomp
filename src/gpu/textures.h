@@ -70,6 +70,7 @@
 #include "format.h"
 #include "guest_memory.h"
 #include "region_index.h"
+#include "scale.h"
 #include "texture_decode.h"
 #include "texture_mods.h"
 
@@ -202,10 +203,10 @@ class TextureCache {
     // Host texels per guest texel of what is bound: a resolve product's scale
     //, 1 for everything made from guest memory. A reader in
     // texel units (the present) multiplies the guest size by it.
-    uint32_t scale = 1;
+    Scale scale;
     // With `from_product`: the product's own scale (`scale` is smaller when
     // the reader gets a reduced copy) and whether a depth source made it.
-    uint32_t product_scale = 0;
+    Scale product_scale = Scale::None();
     bool depth_source = false;
     // The binding recorded a pass of its own (a decode from the resolve
     // memory): the list has no framebuffer and another pipeline state, and the
@@ -237,9 +238,9 @@ class TextureCache {
   // reason logged once per key). `reader_scale`: the resolution scale of the
   // reading draw's targets -- a resolve product made at a larger one is read
   // through its copy reduced to the reader's density (ResolveCache::
-  // ReducedSlot), as the console reads it; 0 binds the product as it is (the
-  // present, which samples it by its own size).
-  Binding Bind2D(const TextureFetch& fetch, uint32_t reader_scale,
+  // ReducedSlot), as the console reads it; Scale::None() binds the product as
+  // it is (the present, which samples it by its own size).
+  Binding Bind2D(const TextureFetch& fetch, Scale reader_scale,
                  plume::RenderCommandList* list);
 
   // Takes the write notifications of textures and resolve products.

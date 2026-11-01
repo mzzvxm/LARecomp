@@ -658,7 +658,7 @@ plume::RenderFramebuffer* ResolveCache::LevelFramebuffer(Product& p, uint32_t le
 }
 
 ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::RenderFormat format,
-                                              uint32_t scale, plume::RenderCommandList* list,
+                                              Scale scale, plume::RenderCommandList* list,
                                               std::string* why) {
   auto it = products_.find(key);
   Product* p = it != products_.end() ? it->second.get() : nullptr;
@@ -690,13 +690,13 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     product->format = format;
     product->scale = scale;
     plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-        key.width * scale, key.height * scale, key.levels(), format,
+        scale.Edge(key.width), scale.Edge(key.height), key.levels(), format,
         plume::RenderTextureFlag::RENDER_TARGET);
     const std::string name = std::format("resolve product {}", key.Describe());
     product->texture = device_->CreateTexture(desc, name.c_str());
     if (!product->texture) {
       *why = std::format("{} {}x{} with {} levels", format::PlumeFormatName(format),
-                         key.width * scale, key.height * scale, key.levels());
+                         scale.Edge(key.width), scale.Edge(key.height), key.levels());
       return nullptr;
     }
     product->level_views.resize(key.levels());
@@ -837,7 +837,7 @@ void ResolveCache::ReleaseReduced(Product& product) {
   product.reduced.clear();
 }
 
-uint32_t ResolveCache::ReducedSlot(Product& product, uint32_t scale, uint32_t levels,
+uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t levels,
                                    uint16_t host_swizzle, plume::RenderCommandList* list,
                                    bool* recorded, std::string* why) {
   *recorded = false;
@@ -850,7 +850,7 @@ uint32_t ResolveCache::ReducedSlot(Product& product, uint32_t scale, uint32_t le
     *why = std::format("{} levels read at {}x of a {}x product", levels, scale, product.scale);
     return kInvalidBindlessSlot;
   }
-  if (scale == 0 || product.scale % scale != 0) {
+  if (scale.none() || product.scale.n % scale.n != 0) {
     *why = std::format("a {}x product read at {}x", product.scale, scale);
     return kInvalidBindlessSlot;
   }
@@ -867,14 +867,14 @@ uint32_t ResolveCache::ReducedSlot(Product& product, uint32_t scale, uint32_t le
     reduced->scale = scale;
   }
   if (!reduced->image.texture || reduced->made_from != product.writes) {
-    const uint32_t width = uint32_t(product.key.width) * scale;
-    const uint32_t height = uint32_t(product.key.height) * scale;
+    const uint32_t width = scale.Edge(product.key.width);
+    const uint32_t height = scale.Edge(product.key.height);
     if (!reduced->image.texture) {
       ++stats_.reduced_created;
       // The census of the reads across scales: each product and scale once.
       REXLOG_INFO("[gpu] resolve: {} ({}x) is read by a draw at {}x: through a copy reduced by "
                   "{} ({})",
-                  product.key.Describe(), product.scale, scale, product.scale / scale,
+                  product.key.Describe(), product.scale, scale, product.scale.n / scale.n,
                   product.depth_source ? "the centre of each block, a depth source"
                                        : "the mean of each block");
     }
@@ -900,7 +900,7 @@ uint32_t ResolveCache::ReducedSlot(Product& product, uint32_t scale, uint32_t le
       uint32_t source;
       uint32_t ratio;
       uint32_t centre;
-    } push{source, product.scale / scale, product.depth_source ? 1u : 0u};
+    } push{source, product.scale.n / scale.n, product.depth_source ? 1u : 0u};
     passes_->DrawInto(list, reduced->image, pipeline, &push, sizeof(push));
     reduced->made_from = product.writes;
     *recorded = true;
@@ -1262,7 +1262,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       std::string why;
       // The product at the source target's scale: the copy is
       // then 1:1 in host pixels.
-      const uint32_t resolution_scale = src->scale;
+      const Scale resolution_scale = src->scale;
       if (watch::Active() && watch::TouchesKey(key)) {
         watch::Log(std::format(
             "resolve into {} level {} rect ({}, {})-({}, {}) from {} {}@{} pitch {} {}x at {}x{}",
@@ -1305,8 +1305,8 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
                                              key.width, key.height));
       }
       list->setFramebuffer(framebuffer);
-      const plume::RenderViewport viewport(0.0f, 0.0f, float(level_width * resolution_scale),
-                                           float(level_height * resolution_scale));
+      const plume::RenderViewport viewport(0.0f, 0.0f, float(resolution_scale.Edge(level_width)),
+                                           float(resolution_scale.Edge(level_height)));
       list->setViewports(&viewport, 1);
       const plume::RenderRect scissor =
           EdramTargets::ScaledRect(plume::RenderRect(tx0, ty0, tx1, ty1), resolution_scale);
@@ -1316,22 +1316,26 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       Push push{};
       push.source = sample_slot;
       push.stencil = depth_source ? stencil_slot : sample_slot;
-      push.offset_x = -dx * int32_t(resolution_scale);
-      push.offset_y = -dy * int32_t(resolution_scale);
+      // Source pixel = destination pixel + offset, from where each origin
+      // lands on the host (-d * s at a whole scale).
+      push.offset_x = int32_t(resolution_scale.Edge(uint32_t(tx0 - dx))) -
+                      int32_t(resolution_scale.Edge(uint32_t(tx0)));
+      push.offset_y = int32_t(resolution_scale.Edge(uint32_t(ty0 - dy))) -
+                      int32_t(resolution_scale.Edge(uint32_t(ty0)));
       push.samples = count;
       for (uint32_t i = 0; i < count; ++i) {
         push.samples |= host_samples[i] << (8 + 3 * i);
       }
       // The half-pixel gap at a scale. With the D3D pixel centre
       // the viewport adds half a guest pixel, s/2 host pixels: a full-screen
-      // quad leaves the first s>>1 host columns and rows of a scaled target
-      // uncovered, holding whatever was there. As Xenia
+      // quad leaves the first host columns and rows of a scaled target
+      // uncovered (Scale::HalfPixelGap), holding whatever was there. As Xenia
       // (resolve_resolution_scale_fill_half_pixel_offset, PA_SU_VTX_CNTL at the
       // resolve), the copy reads them from the first column/row surely covered;
       // here by the target's origin, not the copy's: the surface is drawn whole
       // at once and a tile's rectangle starts inside covered pixels.
       push.fill = 0;
-      if (resolution_scale > 1 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel) &&
+      if (resolution_scale.HalfPixelGap() != 0 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel) &&
           REXCVAR_GET(mcla_gpu_work_17oct)) {
         bool present = false;
         xreg::PA_SU_VTX_CNTL vtx;
@@ -1343,7 +1347,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
                          "gap of scaled targets is not filled");
           }
         } else if (vtx.pix_center == xe::PixelCenter::kD3DZero) {
-          push.fill = resolution_scale >> 1;
+          push.fill = resolution_scale.HalfPixelGap();
           ++stats_.half_pixel_filled;
         }
         if (!fill_first_logged_ && present) {

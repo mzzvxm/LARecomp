@@ -29,6 +29,7 @@
 #include <plume_render_interface_types.h>
 
 #include "draw_state.h"
+#include "scale.h"
 
 namespace mcla::gpu {
 
@@ -43,17 +44,19 @@ inline constexpr uint32_t kMaxViewportExtent = 8192;
 
 // `pixel_shader_writes_depth`: the depth range is then the full 0..1, the
 // guest having no viewport Z clamp. `resolution_scale`: host pixels per guest
-// pixel of the target -- the viewport is found in guest pixels
-// and only its integer offset and extent are scaled, as Xenia's
-// GetHostViewportInfo does; NDC stays in guest units.
+// pixel of the target -- the viewport is found in guest pixels, as Xenia's
+// GetHostViewportInfo does, and its integer edges go to the host by
+// Scale::Edge; the NDC transform is taken against that host rectangle
+// measured in guest pixels, so a guest position x lands on x * s exactly
+// (at a whole scale the rectangle is the guest's, and so is every number).
 ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_depth,
-                             uint32_t resolution_scale);
+                             Scale resolution_scale);
 
 // D3D's effective window scissor (draw_state.h), clamped to the surface pitch
 // and to [0, height), as Xenia's draw_util::GetScissor does for the pitch.
 // `target_height` in guest pixels; the rect returned is in host pixels
-// (`resolution_scale` per guest pixel).
+// (its edges by Scale::Edge).
 plume::RenderRect ComputeScissor(const XenosState& state, uint32_t target_height,
-                                 uint32_t resolution_scale);
+                                 Scale resolution_scale);
 
 }  // namespace mcla::gpu

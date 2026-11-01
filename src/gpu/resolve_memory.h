@@ -144,7 +144,7 @@ class ResolveMemory {
     // Host texels per guest texel of what the encode reads: the product's
     // (colour: the guest texel is the mean of its block) or the EDRAM
     // target's (depth: the sample at the block's centre).
-    uint32_t resolution_scale = 1;
+    Scale resolution_scale;
   };
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not

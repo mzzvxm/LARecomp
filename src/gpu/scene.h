@@ -152,7 +152,7 @@ class Scene {
     UploadSpan vs_constants;
     UploadSpan ps_constants;
     UploadSpan shared_constants;
-    uint32_t scale = 1;  // the resolution scale its targets are (or are made) at
+    Scale scale;  // the resolution scale its targets are (or are made) at
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -161,7 +161,7 @@ class Scene {
                bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
   // `scale`: the draw's targets' resolution scale; a resolve product made at a
   // larger one is read through its reduced copy (TextureCache::Bind2D).
-  void FillTextureTables(const DrawView& view, uint32_t fetch_mask, uint32_t scale,
+  void FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale scale,
                          SharedConstants& sc);
   // Records a prepared draw. kCount when recorded; kTarget/kFramebuffer when
   // not; *no_effect for an empty scissor.
@@ -272,7 +272,7 @@ class Scene {
     bool is_texture = false;
     uint32_t page = 0;        // physical page whose product generation it saw
     uint32_t generation = 0;
-    uint32_t scale = 0;     // the reading draw's targets' scale (a product may bind reduced)
+    Scale scale = Scale::None();  // the reading draw's targets' scale (a product may bind reduced)
     uint64_t used = 0;      // replacement: the least recently used way goes
   };
   // 4-way set associative: ~2000 distinct fetch constants a frame thrash a
@@ -399,11 +399,11 @@ class Scene {
     uint64_t draw_scale_serial = 0;
     uint32_t draw_scale_colors = 0;
     uint32_t draw_scale_depth_format = 0;
-    uint32_t draw_scale = 1;
+    Scale draw_scale;
     uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
     bool constants_valid = false;
     bool ps_writes_depth = false;
-    uint32_t scale = 1;  // the targets' resolution scale the viewport was made for (24.45)
+    Scale scale;  // the targets' resolution scale the viewport was made for (24.45)
     uint32_t samples = 1;  // and their host samples, for g_AlphaToMask
     ViewportInfo viewport;
     SharedConstants shared;  // before the texture tables

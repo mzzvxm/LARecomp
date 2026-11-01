@@ -82,8 +82,8 @@ class ResolveCache {
     TextureKey key;
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
     // Host texels per guest texel, each way: the scale of the
-    // EDRAM targets its resolves read. The texture is key.width * scale wide.
-    uint32_t scale = 1;
+    // EDRAM targets its resolves read. The texture is scale.Edge(key.width) wide.
+    Scale scale;
     std::unique_ptr<plume::RenderTexture> texture;
     TextureViews views;  // sampling views, per host swizzle
     // Render target views and framebuffers, per level.
@@ -117,7 +117,7 @@ class ResolveCache {
     // block's centre texel (a mean of depths is no depth) -- remade after each
     // resolve into the product.
     struct Reduced {
-      uint32_t scale = 0;
+      Scale scale = Scale::None();
       HostImage image;
       TextureViews views;   // sampling views, per host swizzle
       uint64_t made_from = 0;  // the product's `writes` it was made from
@@ -165,7 +165,7 @@ class ResolveCache {
   // into the product -- into `list` (outside any render pass; *recorded tells
   // that the list's framebuffer and pipeline state were changed). Only level 0
   // is reduced: a fetch of more levels gets kInvalidBindlessSlot and *why.
-  uint32_t ReducedSlot(Product& product, uint32_t scale, uint32_t levels, uint16_t host_swizzle,
+  uint32_t ReducedSlot(Product& product, Scale scale, uint32_t levels, uint16_t host_swizzle,
                        plume::RenderCommandList* list, bool* recorded, std::string* why);
   // An active product whose guest range shares a byte with [start, start +
   // length), or null (the reinterpretation report).
@@ -236,7 +236,7 @@ class ResolveCache {
 
   // `scale`: the source target's; a product made at another
   // scale is made again.
-  Product* Activate(const TextureKey& key, plume::RenderFormat format, uint32_t scale,
+  Product* Activate(const TextureKey& key, plume::RenderFormat format, Scale scale,
                     plume::RenderCommandList* list, std::string* why);
   plume::RenderFramebuffer* LevelFramebuffer(Product& product, uint32_t level);
   plume::RenderPipeline* Pipeline(bool depth, bool msaa, plume::RenderFormat format);

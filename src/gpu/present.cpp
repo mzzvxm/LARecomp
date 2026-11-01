@@ -264,15 +264,15 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
                  fetch.signs[0], fetch.signs[1], fetch.signs[2], fetch.signs[3]);
   }
   textures_->Sync();
-  const TextureCache::Binding bound = textures_->Bind2D(fetch, 0, list);
+  const TextureCache::Binding bound = textures_->Bind2D(fetch, Scale::None(), list);
   if (!bound.from_product) {
     ++stats_.from_memory;
   }
   source_slot_ = bound.slot & ~kTextureGammaBit;
   // The pass reads texels: a resolve product made at the internal resolution
   // scale holds the guest's size times it.
-  source_width_ = fetch.key.width * bound.scale;
-  source_height_ = fetch.key.height * bound.scale;
+  source_width_ = bound.scale.Edge(fetch.key.width);
+  source_height_ = bound.scale.Edge(fetch.key.height);
   source_ready_ = true;
   fit_ = FitOf(source_width_, source_height_, width, height);
   if (REXCVAR_GET(mcla_gpu_fsr)) {

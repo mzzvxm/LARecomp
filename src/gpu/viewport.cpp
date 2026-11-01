@@ -25,11 +25,12 @@ float Saturate(float value) { return Clamp(value, 0.0f, 1.0f); }
 }  // namespace
 
 ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_depth,
-                             uint32_t resolution_scale) {
+                             Scale resolution_scale) {
   ViewportInfo out;
-  // The largest extent in guest pixels: the host's, over the scale (a guest
-  // pixel is always a whole s x s block).
-  const uint32_t max_unscaled = kMaxViewportExtent / resolution_scale;
+  const Scale s = resolution_scale;
+  // The largest extent in guest pixels: the host's, over the scale.
+  const uint32_t max_unscaled =
+      uint32_t(uint64_t(kMaxViewportExtent) * Scale::kDenominator / s.n);
 
   const float scale_xy[2] = {state.vte.vport_x_scale_ena ? state.viewport[0] : 1.0f,
                              state.vte.vport_y_scale_ena ? state.viewport[2] : 1.0f};
@@ -56,8 +57,9 @@ ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_d
   if (state.clip.clip_disable) {
     for (uint32_t i = 0; i < 2; ++i) {
       xy_offset[i] = 0;
-      xy_extent[i] = max_unscaled * resolution_scale;
-      const float extent = float(max_unscaled);
+      xy_extent[i] = s.Edge(max_unscaled);
+      // The host extent in guest pixels (max_unscaled at a whole scale).
+      const float extent = float(xy_extent[i]) / s.value();
       const float pixels_to_ndc = 2.0f / extent;
       out.ndc_scale[i] = scale_xy[i] * pixels_to_ndc;
       out.ndc_offset[i] = (offset_base_xy[i] - extent * 0.5f + offset_add_xy[i]) * pixels_to_ndc;
@@ -74,14 +76,17 @@ ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_d
       const float axis_max = float(max_unscaled);
       const uint32_t axis_0 = uint32_t(Clamp(offset_axis - scale_axis_abs, 0.0f, axis_max));
       const uint32_t axis_1 = uint32_t(Clamp(offset_axis + scale_axis_abs, 0.0f, axis_max));
-      const uint32_t axis_extent = axis_1 - axis_0;
-      xy_offset[i] = axis_0 * resolution_scale;
-      xy_extent[i] = axis_extent * resolution_scale;
-      if (axis_extent) {
-        const float extent_rounded = float(axis_extent);
+      const uint32_t host_0 = s.Edge(axis_0);
+      xy_offset[i] = host_0;
+      xy_extent[i] = s.Edge(axis_1) - host_0;
+      if (xy_extent[i]) {
+        // The host rectangle in guest pixels: [axis_0, axis_1) itself at a
+        // whole scale, the rounded edges otherwise.
+        const float origin = float(host_0) / s.value();
+        const float extent_rounded = float(xy_extent[i]) / s.value();
         out.ndc_scale[i] = scale_axis * 2.0f / extent_rounded;
         out.ndc_offset[i] =
-            (offset_axis - (float(axis_0) + extent_rounded * 0.5f)) * 2.0f / extent_rounded;
+            (offset_axis - (origin + extent_rounded * 0.5f)) * 2.0f / extent_rounded;
       } else {
         out.ndc_scale[i] = 1.0f;
         out.ndc_offset[i] = 0.0f;
@@ -131,7 +136,7 @@ ViewportInfo ComputeViewport(const XenosState& state, bool pixel_shader_writes_d
 }
 
 plume::RenderRect ComputeScissor(const XenosState& state, uint32_t target_height,
-                                 uint32_t resolution_scale) {
+                                 Scale resolution_scale) {
   xreg::PA_SC_WINDOW_SCISSOR_TL tl;
   tl.value = state.scissor_tl;
   xreg::PA_SC_WINDOW_SCISSOR_BR br;
@@ -149,8 +154,9 @@ plume::RenderRect ComputeScissor(const XenosState& state, uint32_t target_height
   tl_y = std::max(tl_y, 0);
   br_x = std::max(br_x, tl_x);
   br_y = std::max(br_y, tl_y);
-  const int32_t s = int32_t(resolution_scale);
-  return plume::RenderRect(tl_x * s, tl_y * s, br_x * s, br_y * s);
+  const Scale s = resolution_scale;
+  return plume::RenderRect(int32_t(s.Edge(uint32_t(tl_x))), int32_t(s.Edge(uint32_t(tl_y))),
+                           int32_t(s.Edge(uint32_t(br_x))), int32_t(s.Edge(uint32_t(br_y))));
 }
 
 }  // namespace mcla::gpu

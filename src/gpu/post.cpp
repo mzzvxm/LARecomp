@@ -193,8 +193,8 @@ bool PostAa::Apply(plume::RenderCommandList* list, uint32_t slot, Mode mode,
     }
     return false;
   }
-  const uint32_t w = std::min(width, target.width) * target.scale;
-  const uint32_t h = std::min(height, target.height) * target.scale;
+  const uint32_t w = target.scale.Edge(std::min(width, target.width));
+  const uint32_t h = target.scale.Edge(std::min(height, target.height));
   uint32_t sample_slot = kInvalidBindlessSlot;
   uint32_t stencil_slot = kInvalidBindlessSlot;
   if (!edram_->SampleSlots(target, &sample_slot, &stencil_slot) ||

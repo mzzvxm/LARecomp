@@ -149,11 +149,11 @@ bool EdramTargets::IsScreenImage(uint32_t size_bits) {
   return false;
 }
 
-uint32_t EdramTargets::ScaleForDeclared(uint32_t size_bits) {
-  if (resolution_scale_ == 1) {
-    return 1;
+Scale EdramTargets::ScaleForDeclared(uint32_t size_bits) {
+  if (resolution_scale_.unit()) {
+    return Scale{};
   }
-  return IsScreenImage(size_bits) ? resolution_scale_ : 1;
+  return IsScreenImage(size_bits) ? resolution_scale_ : Scale{};
 }
 
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
@@ -164,7 +164,7 @@ uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
 }
 
 void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
-  const uint32_t scale = ScaleForDeclared(size_bits);
+  const Scale scale = ScaleForDeclared(size_bits);
   if (scale == target.scale) {
     target.declared_size_bits = size_bits;
     return;
@@ -236,14 +236,15 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   frames_ = &frames;
   heap_ = &heap;
   // The internal resolution scale, chosen at start.
-  resolution_scale_ = REXCVAR_GET(mcla_gpu_resolution_scale);
-  if (resolution_scale_ < 1 || resolution_scale_ > kMaxResolutionScale) {
+  uint32_t whole = REXCVAR_GET(mcla_gpu_resolution_scale);
+  if (whole < 1 || whole > kMaxResolutionScale) {
     REXLOG_ERROR("[gpu] edram: mcla_gpu_resolution_scale = {} is not 1 to {}; the targets keep "
                  "the guest's size",
-                 resolution_scale_, kMaxResolutionScale);
-    resolution_scale_ = 1;
+                 whole, kMaxResolutionScale);
+    whole = 1;
   }
-  if (resolution_scale_ > 1) {
+  resolution_scale_ = Scale::Whole(whole);
+  if (!resolution_scale_.unit()) {
     REXLOG_INFO("[gpu] edram: the images of the screen at {}x the guest's size",
                 resolution_scale_);
   }
@@ -490,9 +491,9 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   if (m.status != format::Status::kOk) {
     return false;
   }
-  // The host texture: the guest's size times the target's scale.
+  // The host texture: the guest's size at the target's scale.
   plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-      k.pitch * target.scale, height * target.scale, 1, m.format,
+      target.scale.Edge(k.pitch), target.scale.Edge(height), 1, m.format,
       k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
   desc.multisampling.sampleCount = plume::RenderSampleCounts(target.host_samples);
   const std::string name =
@@ -534,7 +535,7 @@ void EdramTargets::Clear(Target& target, plume::RenderCommandList* list) {
   ++stats_.cleared;
 }
 
-EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, uint32_t scale,
+EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Scale scale,
                                         uint32_t size_bits, plume::RenderCommandList* list,
                                         bool* framebuffer_unset) {
   if (key.pitch == 0 || key.pitch > kMaxExtent) {
@@ -549,7 +550,9 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, ui
     }
     auto target = std::make_unique<Target>();
     target->key = key;
-    target->scale = std::clamp<uint32_t>(scale, 1, resolution_scale_);
+    // An image of the screen at the internal scale; anything else at the
+    // guest's size.
+    target->scale = scale == resolution_scale_ ? scale : Scale{};
     target->host_samples = HostSamplesFor(key, size_bits);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
@@ -560,7 +563,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, ui
       return nullptr;
     }
     ++stats_.created;
-    if (target->scale > 1) {
+    if (!target->scale.unit()) {
       ++stats_.made_scaled;
     } else {
       ++stats_.made_unscaled;
@@ -571,11 +574,11 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, ui
                   "first use {} rows)",
                   DescribeEdramKey(key), target->host_samples, height);
     }
-    if (resolution_scale_ > 1) {
+    if (!resolution_scale_.unit()) {
       // The census of the rule: what each identity became, once.
       REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
                   DescribeEdramKey(key), target->scale,
-                  target->scale > 1 ? "an image of the screen" : "the guest's size",
+                  !target->scale.unit() ? "an image of the screen" : "the guest's size",
                   size_bits ? (size_bits >> 18) + 1 : 0u,
                   size_bits ? ((size_bits >> 3) & 0x7FFFu) + 1 : 0u, height);
     }
@@ -1284,8 +1287,8 @@ void EdramTargets::RetireFramebuffersOf(const Target* target) {
 std::string EdramTargets::TakeSummary() {
   uint64_t bytes = 0;
   for (const auto& [key, target] : targets_) {
-    bytes += uint64_t(target->width) * target->height * BytesPerPixel(target->format) *
-             target->host_samples * target->scale * target->scale;
+    bytes += uint64_t(target->scale.Edge(target->width)) * target->scale.Edge(target->height) *
+             BytesPerPixel(target->format) * target->host_samples;
   }
   std::string text = std::format(
       "edram: {} targets ({:.1f} MiB), {} framebuffers | created {}, grown {} ({:.1f} MiB "
@@ -1293,10 +1296,10 @@ std::string EdramTargets::TakeSummary() {
       targets_.size(), double(bytes) / 1048576.0, framebuffers_.size(), stats_.created,
       stats_.grown, double(stats_.grown_bytes) / 1048576.0, stats_.cleared,
       stats_.framebuffers_created, stats_.barriers);
-  if (resolution_scale_ > 1) {
+  if (!resolution_scale_.unit()) {
     size_t scaled = 0;
     for (const auto& [key, target] : targets_) {
-      scaled += target->scale > 1;
+      scaled += !target->scale.unit();
     }
     text += std::format(" | scale {}x: {} of {} targets images of the screen (made now {} scaled, {} "
                         "at the guest's size), {} classifications without a declared size, {} uses "

@@ -97,7 +97,8 @@ class CompositeCensus {
   static constexpr size_t kListed = 8;
   static constexpr uint64_t kNoTarget = ~0ull;
 
-  // `key` with `scale` in one word; Describe turns it back into a label.
+  // `key` with `scale` (Scale::n, twentieths) in one word; Describe turns it
+  // back into a label.
   static uint64_t Pack(uint32_t base_tiles, uint32_t pitch, uint32_t depth, uint32_t format,
                        uint32_t samples, uint32_t scale) {
     return uint64_t(base_tiles & 0xFFFFu) | uint64_t(pitch & 0xFFFFu) << 16 |

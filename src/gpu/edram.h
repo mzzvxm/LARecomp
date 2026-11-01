@@ -73,6 +73,8 @@
 
 #include <plume_render_interface.h>
 
+#include "scale.h"
+
 namespace mcla::gpu {
 
 class BindlessHeap;
@@ -155,9 +157,9 @@ class EdramTargets {
     EdramKey key;
     std::unique_ptr<plume::RenderTexture> texture;
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
-    uint32_t width = 0;   // guest pixels (the host texture is width * scale)
+    uint32_t width = 0;   // guest pixels (the host texture is scale.Edge(width))
     uint32_t height = 0;  // guest pixels
-    uint32_t scale = 1;   // host pixels per guest pixel, each way
+    Scale scale;          // host pixels per guest pixel, each way
     // Samples of the host texture: the guest's (key.samples), or the host's
     // MSAA level on an image of the screen the guest multisamples (M6d.2,
     // HostSamplesFor). Fixed when it is made, like the scale.
@@ -236,12 +238,12 @@ class EdramTargets {
   // identity (NoteDeclaredScale).
   static constexpr uint32_t kMaxResolutionScale = 3;
   static constexpr uint32_t kMaxScreenShift = 3;
-  uint32_t resolution_scale() const { return resolution_scale_; }
+  Scale resolution_scale() const { return resolution_scale_; }
   // The scale a target bound through a surface declared with `size_bits`
   // (D3DSurface+0x24: width - 1 in bits 31..18, height - 1 in bits 17..3)
   // gets; 0 = unknown (no surface, or its header unreadable), which is the
   // guest's size, counted.
-  uint32_t ScaleForDeclared(uint32_t size_bits);
+  Scale ScaleForDeclared(uint32_t size_bits);
   // Whether a surface declared with `size_bits` holds an image of the screen
   // (the screen >> k, k up to kMaxScreenShift), whatever the scale; false
   // when unknown.
@@ -261,7 +263,7 @@ class EdramTargets {
   }
   // The scale of `key`'s target: its own when it exists, otherwise the one
   // ScaleForDeclared gives `size_bits`.
-  uint32_t ScaleOf(const EdramKey& key, uint32_t size_bits) {
+  Scale ScaleOf(const EdramKey& key, uint32_t size_bits) {
     const auto it = targets_.find(key);
     return it != targets_.end() ? it->second->scale : ScaleForDeclared(size_bits);
   }
@@ -273,10 +275,15 @@ class EdramTargets {
       CheckDeclaredScale(target, size_bits);
     }
   }
-  // A rectangle in guest pixels, in a target's host pixels.
-  static plume::RenderRect ScaledRect(const plume::RenderRect& guest, uint32_t scale) {
-    const int32_t s = int32_t(scale);
-    return plume::RenderRect(guest.left * s, guest.top * s, guest.right * s, guest.bottom * s);
+  // A rectangle in guest pixels, in a target's host pixels: every edge by
+  // Scale::Edge, so rectangles that share an edge share it on the host.
+  static int32_t ScaledEdge(int32_t guest, Scale scale) {
+    return guest >= 0 ? int32_t(scale.Edge(uint32_t(guest)))
+                      : -int32_t(scale.Edge(uint32_t(-int64_t(guest))));
+  }
+  static plume::RenderRect ScaledRect(const plume::RenderRect& guest, Scale scale) {
+    return plume::RenderRect(ScaledEdge(guest.left, scale), ScaledEdge(guest.top, scale),
+                             ScaledEdge(guest.right, scale), ScaledEdge(guest.bottom, scale));
   }
   bool coverage_queries() const { return coverage_; }
 
@@ -288,7 +295,7 @@ class EdramTargets {
   // Null when the host cannot make it (logged once per identity).
   // `size_bits`: the declared size the use's scale came from (0: none), for
   // the report of what each identity became.
-  Target* Get(const EdramKey& key, uint32_t height, uint32_t scale, uint32_t size_bits,
+  Target* Get(const EdramKey& key, uint32_t height, Scale scale, uint32_t size_bits,
               plume::RenderCommandList* list, bool* framebuffer_unset);
 
   // The target of `key` if it exists (nothing is created).
@@ -557,7 +564,7 @@ class EdramTargets {
   // Coverage checks: per frame slot, an occlusion query pool and what each
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
-  uint32_t resolution_scale_ = 1;
+  Scale resolution_scale_;
   uint32_t msaa_level_ = 2;
   // The game's screen (ScreenSize), 0 until read.
   uint32_t screen_width_ = 0;

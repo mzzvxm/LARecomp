@@ -828,7 +828,8 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     push.source = copy.product_slot;
   }
   push.level = copy.level;
-  push.resolution_scale = copy.resolution_scale;
+  // The shader reads whole blocks: a whole scale.
+  push.resolution_scale = copy.resolution_scale.n / Scale::kDenominator;
   push.address = storage.address;
   push.pitch = pitch;
   push.layout = LayoutBits(source, bpb_log2);

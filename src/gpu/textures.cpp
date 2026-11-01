@@ -411,7 +411,7 @@ TextureCache::Binding TextureCache::Fail(const TextureKey& key, const char* what
   return Binding{kNullTexture2DSlot, true};
 }
 
-TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t reader_scale,
+TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale reader_scale,
                                            plume::RenderCommandList* list) {
   ++stats_.lookups;
   const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
@@ -466,7 +466,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, uint32_t r
       watch::Log(std::format("  bind {}: product {} at {}x, read at {}x", key.Describe(),
                              product->key.Describe(), product->scale, reader_scale));
     }
-    if (reader_scale != 0 && product->scale > reader_scale) {
+    if (!reader_scale.none() && product->scale > reader_scale) {
       // A reader at a smaller scale samples the product at its own density:
       // through a copy reduced to it (the guest's texels at 1x), never a
       // sparse pick of the larger image.

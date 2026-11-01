@@ -255,8 +255,8 @@ const char* ConversionName(uint32_t conversion) {
 // ScaleOf); Scene::Record makes the targets at it and checks that every other
 // target agrees. `*host_samples`: that identity's samples on the host
 // (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take.
-uint32_t DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                   uint32_t size_bits, uint32_t* host_samples) {
+Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
+                uint32_t size_bits, uint32_t* host_samples) {
   EdramKey first;
   first.pitch = uint16_t(s.surface_pitch);
   first.samples = uint8_t(MsaaSampleCount(s.msaa));
@@ -270,7 +270,7 @@ uint32_t DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& 
     first.format = uint8_t(s.depth_format);
   } else {
     *host_samples = first.samples;
-    return 1;
+    return Scale{};
   }
   *host_samples = edram.HostSamplesOf(first, size_bits);
   return edram.ScaleOf(first, size_bits);
@@ -301,14 +301,14 @@ uint64_t CompositeTarget(const EdramTargets::Target* target) {
   }
   const EdramKey& k = target->key;
   return CompositeCensus::Pack(k.base_tiles, k.pitch, k.depth, k.format, k.samples,
-                               target->scale);
+                               target->scale.n);
 }
 
 // mcla_gpu_census_scale (M6e.0): a fetch of a resolve product made at another
 // scale than the draw's, logged once per product, scales and filters (the
 // first 64): how the reads across scales sample.
 void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fetch,
-                   const uint32_t dwords[6], const TextureCache::Binding& bound, uint32_t scale) {
+                   const uint32_t dwords[6], const TextureCache::Binding& bound, Scale scale) {
   xe::xe_gpu_texture_fetch_t f;
   std::memcpy(&f, dwords, sizeof(f));
   const auto filter = [](xe::TextureFilter v) {
@@ -320,11 +320,11 @@ void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fet
     }
   };
   const uint64_t id = uint64_t(fetch.key.base_page) ^ uint64_t(fetch.key.format) << 32 ^
-                      uint64_t(bound.product_scale & 0xFu) << 38 ^ uint64_t(scale & 0xFu) << 42 ^
-                      uint64_t(uint32_t(f.mag_filter) & 3u) << 46 ^
-                      uint64_t(uint32_t(f.min_filter) & 3u) << 48 ^
-                      uint64_t(uint32_t(f.mip_filter) & 3u) << 50 ^
-                      uint64_t(uint32_t(f.aniso_filter) & 7u) << 52;
+                      uint64_t(bound.product_scale.n & 0x7Fu) << 38 ^ uint64_t(scale.n & 0x7Fu) << 45 ^
+                      uint64_t(uint32_t(f.mag_filter) & 3u) << 52 ^
+                      uint64_t(uint32_t(f.min_filter) & 3u) << 54 ^
+                      uint64_t(uint32_t(f.mip_filter) & 3u) << 56 ^
+                      uint64_t(uint32_t(f.aniso_filter) & 7u) << 58;
   if (logged.size() < 64 && logged.insert(id).second) {
     REXLOG_INFO("[gpu] census scale: {} ({}x, {}) read by a draw at {}x {}; mag {}, min {}, mip "
                 "{}, aniso {}",
@@ -794,7 +794,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // bias in its host pixels (M6b.3c): a host pixel is 1/scale of the guest's,
   // so is the depth slope across it -- Xenia multiplies the slope factor by
   // the scale. The constant part is in depth units and stays.
-  uint32_t scale;
+  Scale scale;
   uint32_t host_samples;
   if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
       memo.draw_scale_colors == d.key.color_count &&
@@ -813,8 +813,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   d.scale = scale;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
-  if (scale != 1 && d.bias.slope != 0.0f && scale_depth_bias_) {
-    d.bias.slope *= float(scale);
+  if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
+    d.bias.slope *= scale.value();
     if (!pipelines_->dynamic_depth_bias()) {
       d.key.slope_scaled_depth_bias = d.bias.slope;
     }
@@ -852,8 +852,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     shared = base_shared_;
     issues = FillSharedConstants(s, d.viewport, host_samples, shared);
     // The pixel position a pixel shader receives, in guest pixels (v7).
-    shared.inv_resolution_scale[0] = 1.0f / float(scale);
-    shared.inv_resolution_scale[1] = 1.0f / float(scale);
+    shared.inv_resolution_scale[0] = 1.0f / scale.value();
+    shared.inv_resolution_scale[1] = 1.0f / scale.value();
     memo.constants_valid = true;
     memo.ps_writes_depth = ps_writes_depth;
     memo.scale = scale;
@@ -917,7 +917,7 @@ void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
   }
 }
 
-void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, uint32_t scale,
+void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale scale,
                               SharedConstants& sc) {
   // Write notifications first: a memoized binding must not outlive a write.
   textures_->Sync();
@@ -1345,8 +1345,8 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   if (first_target) {
     edram_->NoteDeclaredScale(*first_target, r.target_size_bits);
   }
-  const uint32_t target_scale =
-      d.key.color_count ? colors[0]->scale : (depth ? depth->scale : 1u);
+  const Scale target_scale =
+      d.key.color_count ? colors[0]->scale : (depth ? depth->scale : Scale{});
   bool scales_agree = !depth || depth->scale == target_scale;
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
     scales_agree &= colors[i]->scale == target_scale;
@@ -1356,7 +1356,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     *detail = std::format("targets of different resolution scales (pitch {}): {} at {}x, {} at {}x",
                           pitch, DescribeEdramKey(first->key), first->scale,
                           depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
-                          depth ? depth->scale : 0u);
+                          depth ? depth->scale : Scale::None());
     return Skip::kTarget;
   }
   // And one sample count on the host, the one the pipeline was made for: a
@@ -1674,7 +1674,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     first_key.depth = 1;
     first_key.format = uint8_t(first_info.depth_format);
   }
-  const uint32_t clear_scale = edram_->ScaleOf(first_key, declared_size);
+  const Scale clear_scale = edram_->ScaleOf(first_key, declared_size);
   // Growth copies sit outside a render pass.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
