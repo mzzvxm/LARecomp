@@ -36,6 +36,7 @@
 //
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
@@ -47,6 +48,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -56,12 +58,24 @@
 
 #include "logging.h"
 #include "map_warp.h"
+#include "profile/larecomp_profile_store.h"
 #include "modloader/features/mod_data.h"
 
 REXCVAR_DEFINE_STRING(warp_spot, "", "MCLA/World",
     "Where F9 drops the car: \"x y z heading\" (heading in degrees, 0 = facing +Z). "
     "Empty = the first point a mod names in models/<mod>/warps.txt. The car is "
     "dropped onto whatever collision is below the point.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(start_garage_last, "hollywood", "MCLA/World",
+    "The garage nearest the car the last time it was driven (hollywood, beaches or sc); "
+    "start_garage = last starts the session there. The game keeps it up to date.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(start_garage, "hollywood", "MCLA/World",
+    "Which district garage the car starts the session at: hollywood (what the game "
+    "always does), beaches, sc, or last (the garage nearest the car when the game was "
+    "closed). The car is moved there once, when it first appears at Hollywood's door.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
@@ -472,6 +486,116 @@ void ConsoleWarp(std::string_view args) {
     File({Kind::kNamed, {}, std::string(args)});
 }
 
+
+// The three district garages. x/y/z is the door, as the pause menu's "go to
+// garage" measures it (sub_826AB070); the car starts at spawn_*, a little way out
+// with the heading it leaves the garage with, since on the door itself the
+// garage's trigger takes the car straight back in.
+struct Garage {
+    const char* name;
+    float x, y, z;
+    float spawn_x, spawn_y, spawn_z;
+    float heading_deg;
+};
+constexpr Garage kGarages[] = {
+    {"hollywood", 819.69f, 17.73f, -804.77f, 819.6f, 17.5f, -808.4f, -28.0f},
+    {"beaches", -3049.5f, -25.0f, 160.0f, -3049.5f, -25.0f, 160.0f, 90.0f},
+    {"sc", -53.6f, -19.6f, 1331.6f, -58.3f, -19.8f, 1308.6f, -134.0f},
+};
+// The game puts the car at Hollywood's door whatever the save says; further than
+// this from it, the car did not just spawn there and is left alone.
+constexpr float kSpawnRadius = 80.0f;
+constexpr int kStartSettleFrames = 60;
+constexpr int kStartGiveUpFrames = 1800;
+constexpr int kLastCheckFrames = 120;
+
+bool g_start_done = false;
+int g_start_frames = 0;
+int g_last_frames = 0;
+int g_last_index = -1;
+
+float GarageDist(const Garage& g, float x, float z) {
+    return std::sqrt((x - g.x) * (x - g.x) + (z - g.z) * (z - g.z));
+}
+
+int NearestGarage(float x, float z) {
+    int best = 0;
+    for (int i = 1; i < 3; ++i)
+        if (GarageDist(kGarages[i], x, z) < GarageDist(kGarages[best], x, z)) best = i;
+    return best;
+}
+
+int GarageByName(const std::string& name) {
+    for (int i = 0; i < 3; ++i)
+        if (name == kGarages[i].name) return i;
+    return -1;
+}
+
+int ReadLastGarage() { return GarageByName(REXCVAR_GET(start_garage_last)); }
+
+// The live cvar and its one line of larecomp.toml, the way the server browser
+// keeps its settings: the SDK only rewrites the whole file when a menu is left.
+void WriteLastGarage(int index) {
+    const std::string name = kGarages[index].name;
+    rex::cvar::SetFlagByName("start_garage_last", name);
+    const std::filesystem::path toml = rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+    if (!larecomp::profiles::EditConfig(
+            toml, {{"start_garage_last", larecomp::profiles::QuoteTomlString(name)}}))
+        MC_WARN("[garage] could not write start_garage_last to larecomp.toml");
+}
+
+// Once per session, the first time the car shows up at Hollywood's door.
+void TickStartGarage() {
+    if (GameIsPaused()) return;
+    const uint32_t racer = PlayerRacer();
+    float cur[16];
+    if (!racer || !CarMatrix(racer, cur)) return;
+
+    if (!g_start_done) {
+        ++g_start_frames;
+        if (g_start_frames < kStartSettleFrames) return;
+        const std::string want = REXCVAR_GET(start_garage);
+        int target = want == "last" ? ReadLastGarage() : GarageByName(want);
+        if (target < 0) target = 0;
+        const bool at_door = GarageDist(kGarages[0], cur[12], cur[14]) < kSpawnRadius;
+        if (target == 0 || !at_door) {
+            g_start_done = true;
+            return;
+        }
+        const Garage& g = kGarages[target];
+        if (!CityCovers(g.spawn_x, g.spawn_z)) {
+            if (g_start_frames > kStartGiveUpFrames) {
+                MC_WARN("[garage] no city sector covers the {} garage -- staying at Hollywood", g.name);
+                g_start_done = true;
+            }
+            return;
+        }
+        float m[16];
+        SpotMatrix(HeadingSpot(g.spawn_x, g.spawn_y, g.spawn_z, g.heading_deg), m);
+        float ground = 0.0f;
+        if (!ProbeGround(m[12], m[13] + float(kProbeUp), m[14], float(kProbeUp + kProbeDown), &ground))
+            MC_WARN("[garage] no collision under the {} garage door -- the car will fall", g.name);
+        if (!Teleport(racer, m, true)) return;
+        float now[16];
+        CarMatrix(racer, now);
+        MC_INFO("[garage] start at the {} garage (start_garage = {}): {:.1f} {:.1f} {:.1f}, landed {:.1f} {:.1f} {:.1f}",
+                g.name, want, m[12], m[13], m[14], now[12], now[13], now[14]);
+        g_start_done = true;
+        g_watch_frames = 0;
+        g_watch_y = now[13];
+        return;
+    }
+
+    // Remember the garage the car is nearest to, for start_garage = last.
+    if (++g_last_frames < kLastCheckFrames) return;
+    g_last_frames = 0;
+    const int near_garage = NearestGarage(cur[12], cur[14]);
+    if (near_garage != g_last_index) {
+        g_last_index = near_garage;
+        WriteLastGarage(near_garage);
+    }
+}
+
 }  // namespace
 
 REXCVAR_DEFINE_COMMAND_ARGS(warp, ConsoleWarp, "MCLA/World",
@@ -482,6 +606,7 @@ REXCVAR_DEFINE_COMMAND_ARGS(warp, ConsoleWarp, "MCLA/World",
 void TickMapWarp() {
     RegisterBindOnce();
     WatchAfterWarp();
+    TickStartGarage();
     Request r;
     {
         std::lock_guard lock(g_mu);
