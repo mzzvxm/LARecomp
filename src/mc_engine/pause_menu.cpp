@@ -1335,6 +1335,8 @@ constexpr const char* kWeatherNames[] = {"GAME", "REAL (LIVE)", "NICE", "CLOUDY"
 // Every row the game ships stays inside A-Z, 0-9, space, '+', '.', parens.
 constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
 constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
+constexpr const char* kStartGarageVals[]  = {"hollywood", "beaches", "sc", "last"};
+constexpr const char* kStartGarageNames[] = {"HOLLYWOOD", "BEACHES", "SOUTH CENTRAL", "LAST USED"};
 constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"};
 constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
@@ -1755,6 +1757,8 @@ const ItemDef kExtrasHubItems[] = {
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
     Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
          " (NEXT HOST)"),
+    Str ("PM_RxStartGarage", "start_garage", "START GARAGE: ",
+         kStartGarageVals, kStartGarageNames, 4, " (RESTART)"),
 };
 #if defined(LARECOMP_HAS_GPU)
 // Texture mods on the Plume renderer: the frame's textures to
