@@ -307,10 +307,12 @@ class Scene {
     uint64_t clip_disabled_draws = 0;
     // Alpha to mask (RB_COLORCONTROL) on a draw that writes colour: in all, on
     // single-sampled targets (a dithered per-pixel threshold), with RT0's
-    // exponent bias (the shader tests the alpha before it, as the hardware).
+    // exponent bias (the shader tests the alpha before it, as the hardware),
+    // and given other offsets than the game's (mcla_gpu_a2c_dither_all).
     uint64_t alpha_to_mask_draws = 0;
     uint64_t alpha_to_mask_1x = 0;
     uint64_t alpha_to_mask_biased = 0;
+    uint64_t alpha_to_mask_replaced = 0;
     uint64_t depth_bias_draws = 0;
     uint64_t constant_uploads = 0;  // VS/PS banks
     uint64_t shared_uploads = 0;
@@ -463,6 +465,9 @@ class Scene {
   std::array<uint32_t, size_t(Skip::kCount)> skip_logged_{};
   uint32_t constants_issues_reported_ = 0;
   uint32_t mismatches_logged_ = 0;
+  // The game's alpha-to-mask offsets already reported as replaced, one bit
+  // per value.
+  std::array<uint64_t, 4> alpha_to_mask_replaced_logged_{};
 };
 
 }  // namespace mcla::gpu

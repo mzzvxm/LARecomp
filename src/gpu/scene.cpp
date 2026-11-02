@@ -897,6 +897,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     ++window_.alpha_to_mask_draws;
     if (d.key.sample_count == 1) ++window_.alpha_to_mask_1x;
     if (s.color[0].exp_bias != 0) ++window_.alpha_to_mask_biased;
+    if (AlphaToMaskOffsetsReplaced(s)) {
+      ++window_.alpha_to_mask_replaced;
+      const uint32_t offsets = s.color_control.value >> 24;
+      uint64_t& logged = alpha_to_mask_replaced_logged_[offsets >> 6];
+      if (!(logged & (uint64_t(1) << (offsets & 63)))) {
+        logged |= uint64_t(1) << (offsets & 63);
+        REXLOG_INFO("[gpu] alpha to mask: the game's offsets {:#04x} ({}, {}, {}, {}) take the "
+                    "dithered 3, 1, 0, 2 (mcla_gpu_a2c_dither_all)",
+                    offsets, offsets & 3, (offsets >> 2) & 3, (offsets >> 4) & 3, offsets >> 6);
+      }
+    }
   }
   return Skip::kCount;
 }
@@ -1870,6 +1881,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.alpha_to_mask_draws += from.alpha_to_mask_draws;
   into.alpha_to_mask_1x += from.alpha_to_mask_1x;
   into.alpha_to_mask_biased += from.alpha_to_mask_biased;
+  into.alpha_to_mask_replaced += from.alpha_to_mask_replaced;
   into.depth_bias_draws += from.depth_bias_draws;
   into.constant_uploads += from.constant_uploads;
   into.shared_uploads += from.shared_uploads;
@@ -1988,7 +2000,8 @@ void Scene::Report(const char* why) {
       "geometry [{}], no effect {} (no target {}, culled {}, no primitive {}, empty scissor {}) | "
       "clears {} ({} colour, {} depth, {} empty, {} failed, {} of a surface made at another "
       "pitch) | conversions [{}] | alpha "
-      "coverage variant {} (alpha test {}, alpha to mask {}: 1x {}, biased {}), clip disabled "
+      "coverage variant {} (alpha test {}, alpha to mask {}: 1x {}, biased {}, offsets replaced "
+      "{}), clip disabled "
       "{}, depth bias {} | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
       "ms; precache {} taken, {} waited {:.1f} ms, {} made here, {} shared) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
@@ -2001,7 +2014,8 @@ void Scene::Report(const char* why) {
       w.no_effect[1], w.no_effect[2], w.no_effect[3], w.clears, w.clears_color, w.clears_depth,
       w.clears_empty, w.clears_failed, w.clears_other_pitch,
       conversions.empty() ? "none" : conversions, w.alpha_coverage_draws, w.alpha_test_draws,
-      w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased, w.clip_disabled_draws,
+      w.alpha_to_mask_draws, w.alpha_to_mask_1x, w.alpha_to_mask_biased,
+      w.alpha_to_mask_replaced, w.clip_disabled_draws,
       w.depth_bias_draws,
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
       double(ps.create_ns) / 1e6, ps.precache_taken, ps.precache_waits,

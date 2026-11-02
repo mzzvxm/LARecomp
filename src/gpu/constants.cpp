@@ -17,12 +17,41 @@
 #include <emmintrin.h>
 #endif
 
+#include <rex/cvar.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
+
+// One alpha-to-mask pattern for every draw. MCLA draws its alpha-tested
+// surfaces twice over the same depth: the depth pre-pass (the ShadowBlend
+// shaders, whose colour becomes the shadow collector) with the solid offsets
+// 2, 2, 2, 2, then, after a colour clear, the colour pass under GREATER_EQUAL
+// with the dithered 3, 1, 0, 2. In two pixels of each quad the dithered
+// threshold is above the solid one (by 1/(2N) and 1/(4N) at N samples), so a
+// sample whose alpha lies between them keeps the pre-pass's depth -- what is
+// behind it fails the depth test -- and gets no colour: it keeps the clear,
+// 2.38 in the HDR target, a white dot. That is what the hardware rule the
+// shaders follow gives (Xenia's; Xenia shows the same dots): half a pixel at
+// the console's 2x, the whole pixel at 1x (mcla_gpu_msaa off); dots on fences
+// and foliage, a checkerboard on LOD cross-fades. Every draw on the dithered
+// pattern -- the one the game gives its colour passes, the same materials
+// included -- makes a surface's depth and colour cover the same samples at any
+// sample count.
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_a2c_dither_all, true, "MCLA/GPU",
+    "Alpha to coverage: every draw takes the dithered offsets (3, 1, 0, 2) the game gives its "
+    "colour passes, so a depth pre-pass the game draws with the solid ones (2, 2, 2, 2) covers "
+    "the samples its colour pass covers. Off: each draw keeps the game's offsets, as the "
+    "console and Xenia -- samples the pre-pass gave depth and the colour pass dropped keep the "
+    "clear (white dots on fences and foliage, a white checkerboard on LOD cross-fades; with "
+    "MSAA off, whole pixels). Hot reload.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
 namespace {
+
+// RB_COLORCONTROL alpha_to_mask_offset0..3 of MCLA's colour passes: 3, 1, 0, 2.
+constexpr uint32_t kAlphaToMaskDithered = 0x87;
 
 // Premult modes of shader_common.h (blendPremultRgb / blendPremultAlpha).
 enum PremultMode : uint32_t {
@@ -202,6 +231,11 @@ AlphaTest ComputeAlphaTest(const XenosState& state) {
   return test;
 }
 
+bool AlphaToMaskOffsetsReplaced(const XenosState& state) {
+  return state.color_control.alpha_to_mask_enable && REXCVAR_GET(mcla_gpu_a2c_dither_all) &&
+         (state.color_control.value >> 24) != kAlphaToMaskDithered;
+}
+
 uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples) {
   if (!state.color_control.alpha_to_mask_enable) {
     return 0;
@@ -214,7 +248,10 @@ uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples) {
   } else if (host_samples >= 2) {
     samples_log2 = 1;
   }
-  return (state.color_control.value >> 24) | 0x100u | (samples_log2 << 9);
+  const uint32_t offsets = REXCVAR_GET(mcla_gpu_a2c_dither_all)
+                               ? kAlphaToMaskDithered
+                               : state.color_control.value >> 24;
+  return offsets | 0x100u | (samples_log2 << 9);
 }
 
 uint32_t FillSharedConstants(const XenosState& state, const ViewportInfo& viewport,

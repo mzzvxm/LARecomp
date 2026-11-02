@@ -120,12 +120,18 @@ struct AlphaTest {
 AlphaTest ComputeAlphaTest(const XenosState& state);
 
 // g_AlphaToMask (contract v5 and v6; the generated computeAlphaToMask, Xenia's
-// rule): bits 0-7 RB_COLORCONTROL's alpha_to_mask_offset0..3,
+// rule): bits 0-7 the dither offsets of the four pixels of a quad --
+// RB_COLORCONTROL's alpha_to_mask_offset0..3, or with mcla_gpu_a2c_dither_all
+// the dithered 3, 1, 0, 2 of the game's colour passes for every draw --
 // bit 8 enabled, bits 9-10 the sample count log2 -- of the host target,
 // `host_samples` (M6d.2: a guest 2x target with 4 host samples takes the 4x
 // pattern; 8, contract v8, the generated 8-sample branch). 0 = off (every sample covered). Read by the ALPHA_TEST variant
 // only.
 uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples);
+
+// Whether AlphaToMaskParameters gives this draw other offsets than the game's
+// (mcla_gpu_a2c_dither_all on, alpha to mask on, the game's not dithered).
+bool AlphaToMaskOffsetsReplaced(const XenosState& state);
 
 // What FillSharedConstants could not express; the caller reports each kind.
 enum SharedConstantsIssue : uint32_t {
