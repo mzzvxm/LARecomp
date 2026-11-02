@@ -13,6 +13,7 @@
 // here too.
 
 #include <cstdint>
+#include <string>
 
 namespace mcla_menu {
 
@@ -27,6 +28,24 @@ enum ActionId {
 // Which renderer a row belongs to. The renderer is a restart-only choice, so
 // the pause menu only lists the rows of the one this launch is running.
 enum RendererMask : uint8_t { kRendXenia = 1, kRendNative = 2, kRendAny = 3 };
+
+// What a row shows and allows when that depends on other settings. Computed
+// each time the row is drawn; every member is optional.
+struct RowDynamics {
+    // kDblCycle: the label of a value. Two values with the same label are the
+    // same entry, and the cvar's own value gets an entry of its own, in order,
+    // when it labels as none of `dvals` (a value set in larecomp.toml): the row
+    // never shows a value it is not on, and stepping off that entry drops it.
+    std::string (*value_label)(double value) = nullptr;
+    // kStrCycle: the label of value i, instead of `slabels`.
+    std::string (*str_label)(int i) = nullptr;
+    // False greys the row out: the game's own disabled row -- the label drawn
+    // grey and no value (the pause movie draws none for it), and left/right
+    // and A do nothing. Null: always enabled.
+    bool (*enabled)() = nullptr;
+    // The label's suffix, instead of `suffix`; it can say why the row is grey.
+    const char* (*suffix)() = nullptr;
+};
 
 struct ItemDef {
     const char* key;      // guest state name + string-table key (unique!)
@@ -46,11 +65,17 @@ struct ItemDef {
     const char* zero_label;
     // Renderers this row is shown for. Anything not tagged is shown for all.
     uint8_t renderers = kRendAny;
+    // Labels, suffix and enabled state that follow other settings. Null: the
+    // row is what the fields above say.
+    const RowDynamics* dynamics = nullptr;
 };
 
 // A row of one renderer only, e.g. XeniaOnly(Dbl(...)).
 constexpr ItemDef XeniaOnly(ItemDef it)  { it.renderers = kRendXenia;  return it; }
 constexpr ItemDef NativeOnly(ItemDef it) { it.renderers = kRendNative; return it; }
+// A row whose labels or state follow other settings, e.g.
+// WithDynamics(Dbl(...), &kSomeDynamics).
+constexpr ItemDef WithDynamics(ItemDef it, const RowDynamics* d) { it.dynamics = d; return it; }
 
 constexpr ItemDef Bool(const char* key, const char* cvar, const char* prefix,
                        bool inverted = false, const char* suffix = "") {

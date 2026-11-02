@@ -12,6 +12,7 @@
 #include "save_protect.h"
 #include "online/system_link.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -138,6 +139,16 @@ constexpr uint32_t kRowProperty1    = 216;  // -1 = leave property1 unwritten
 // flag. Both are set by the ctor from its arguments.)
 constexpr uint32_t kRowObjectSize   = 240;
 constexpr uint32_t kRowSelect       = 208;  // current value index
+// Every row's "enabled" byte, u8, 1 = enabled: the base constructor
+// (sub_82633D40) and 0x8208E83C's (sub_826349F0) store 1 there; vfunc72 of all
+// four row vtables reads it (0x82633D30, lbz r3,0xB8(r3)) and vfunc76 writes
+// it. A value row with 0 renders greyed (sub_82631A20 writes the Flash type
+// as (cntlzw(vfunc72) >> 4) & 2: 0 enabled, 2 disabled) and its left/right
+// handler (sub_826316E0) returns 0 without moving the select; the list's A
+// ('7', sub_826334D0) also asks vfunc72 before it acts. Cursor moves do not
+// skip such a row. The pause movie draws a type 2 row as its label in grey
+// and no value at all (the render still writes the values).
+constexpr uint32_t kRowValueEnabled = 0xB8;
 
 constexpr uint32_t kListRows        = 176;  // row pointer array
 constexpr uint32_t kListCountCap    = 180;  // count:u16 then capacity:u16
@@ -620,8 +631,10 @@ const char* const kDeferredCvars[] = {
     // The SDK's API switch, read at startup by the emulated GPU's plugin and by
     // the Plume renderer alike.
     "graphics_backend",
-    // The Plume renderer sizes its targets once, when the EDRAM is created.
+    // The Plume renderer sizes its targets once, when the EDRAM is created;
+    // an FSR1 preset picks that size too.
     "mcla_gpu_resolution_scale",
+    "mcla_gpu_fsr_preset",
 };
 
 std::mutex g_deferred_mutex;
@@ -1225,8 +1238,10 @@ using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
 using mcla_menu::kActionReloadTextures;
 using mcla_menu::NativeOnly;
+using mcla_menu::RowDynamics;
 using mcla_menu::Str;
 using mcla_menu::Submenu;
+using mcla_menu::WithDynamics;
 using mcla_menu::XeniaOnly;
 
 // ── Value tables ───────────────────────────────────────────────────────
@@ -1234,7 +1249,20 @@ using mcla_menu::XeniaOnly;
 constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
 constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
-constexpr double kGpuResScaleVals[] = {1.0, 2.0, 3.0};
+#if defined(LARECOMP_HAS_GPU)
+// RENDER RES (mcla_gpu_resolution_scale): 0 is the screen's scale -- the one
+// that renders at the size of the window's 16:9 area, measured at start --
+// and the rest go in steps of 0.5. larecomp.toml takes any step of 0.05.
+constexpr double kRenderResVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0};
+// FSR1's quality presets (mcla_gpu_fsr_preset), in the order of
+// mcla::gpu::FsrPreset. With FSR1 on, a preset picks the render scale from the
+// window; CUSTOM leaves it to RENDER RES.
+constexpr const char* kFsrPresetVals[]  = {"custom", "ultra_quality", "quality",
+                                           "balanced", "performance", "ultra_performance"};
+constexpr const char* kFsrPresetNames[] = {"CUSTOM", "ULTRA QUALITY", "QUALITY",
+                                           "BALANCED", "PERFORMANCE", "ULTRA PERF"};
+constexpr int kNumFsrPresets = int(sizeof(kFsrPresetVals) / sizeof(kFsrPresetVals[0]));
+#endif
 constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
 constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
@@ -1313,6 +1341,82 @@ constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
+#if defined(LARECOMP_HAS_GPU)
+// ── RENDER RES and FSR1 ────────────────────────────────────────────────
+//
+// What these rows show is what the next start does: they ask the renderer
+// what it would choose (gpu.h PreviewRenderScale) from the held settings and
+// the window as it is now.
+
+bool FsrOn() { return CvarGetBool("mcla_gpu_fsr"); }
+
+// The preset held for the next start.
+mcla::gpu::FsrPreset FsrPresetChosen() {
+    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
+    mcla::gpu::ParseFsrPreset(CvarGet("mcla_gpu_fsr_preset"), &preset);
+    return preset;
+}
+
+// FSR1 on with a preset: the preset picks the render scale, not RENDER RES.
+bool FsrPresetDecides() {
+    return FsrOn() && FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom;
+}
+
+unsigned RenderHeight(mcla::gpu::Scale scale) {
+    return unsigned(scale.Edge(mcla::gpu::kAssumedScreenHeight));
+}
+
+// "1.5X (1080P)": the scale with one decimal on the steps of 0.1 and two on
+// the twentieths between them (1.35X), and the height it renders at.
+std::string RenderScaleText(mcla::gpu::Scale scale) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), scale.n % 2 == 0 ? "%.1fX (%uP)" : "%.2fX (%uP)",
+                  double(scale.n) / mcla::gpu::Scale::kDenominator, RenderHeight(scale));
+    return buf;
+}
+
+std::string RenderResValueLabel(double value) {
+    const mcla::gpu::RenderScaleChoice c =
+        mcla::gpu::PreviewRenderScale(value, false, mcla::gpu::FsrPreset::kCustom);
+    if (c.source == mcla::gpu::RenderScaleChoice::Source::kScreen)
+        return "SCREEN (" + std::to_string(RenderHeight(c.scale)) + "P)";
+    return RenderScaleText(c.scale);
+}
+
+bool RenderResEnabled() { return !FsrPresetDecides(); }
+
+// Grey, the row shows no value: the suffix says what decides instead. The
+// resolution the preset gives is on the preset's own row.
+const char* RenderResSuffix() {
+    return FsrPresetDecides() ? " (SET BY FSR1)" : " (RESTART)";
+}
+
+// With a preset chosen, FSR1 on or off also moves the render scale, which
+// waits for the next start (the filter itself changes at once).
+const char* FsrToggleSuffix() {
+    return FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom ? " (RESTART)" : "";
+}
+
+// "QUALITY (720P)": the preset and the height it renders at in this window.
+std::string FsrPresetLabel(int i) {
+    if (i < 0 || i >= kNumFsrPresets) return "";
+    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
+    mcla::gpu::ParseFsrPreset(kFsrPresetVals[i], &preset);
+    if (preset == mcla::gpu::FsrPreset::kCustom) return kFsrPresetNames[i];
+    const mcla::gpu::RenderScaleChoice c = mcla::gpu::PreviewRenderScale(1.0, true, preset);
+    return std::string(kFsrPresetNames[i]) + " (" + std::to_string(RenderHeight(c.scale)) + "P)";
+}
+
+constexpr RowDynamics kRenderResDynamics = {
+    .value_label = RenderResValueLabel,
+    .enabled = RenderResEnabled,
+    .suffix = RenderResSuffix,
+};
+constexpr RowDynamics kFsrToggleDynamics = {.suffix = FsrToggleSuffix};
+constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
+constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
+#endif
+
 // ── Menu contents ──────────────────────────────────────────────────────
 
 // Rows tagged XeniaOnly / NativeOnly are listed only when that renderer is the
@@ -1329,8 +1433,12 @@ const ItemDef kVideoItems[] = {
     XeniaOnly(Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ",
                   kResScaleVals, 4, "%gX", " (RESTART)")),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale", "RES SCALE: ",
-                   kGpuResScaleVals, 3, "%gX", " (RESTART)")),
+    // The render scale, 0.5X to 3.0X or the screen's, each with the height it
+    // renders at; grey while an FSR1 preset picks it. FSR1 opens below it.
+    NativeOnly(WithDynamics(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale",
+                                "RENDER RES: ", kRenderResVals, 7, "%g", " (RESTART)"),
+                            &kRenderResDynamics)),
+    NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
 #endif
 #if defined(LARECOMP_HAS_GPU)
     XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
@@ -1486,11 +1594,22 @@ const ItemDef kNativeItems[] = {
                     kNativeAaVals, kNativeAaNames, 3)),
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
-    NativeOnly(Bool("PM_RxGpuFsr",      "mcla_gpu_fsr",          "NATIVE FSR1: ")),
-    NativeOnly(Dbl ("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "NATIVE FSR SHARP REDUCE: ",
-                    kFsrSharpVals, 5, "%g")),
 #endif
 };
+
+#if defined(LARECOMP_HAS_GPU)
+// DISPLAY > FSR1: the renderer's FSR1 on the present, its quality preset and
+// RCAS. The preset and the sharpness are grey while FSR1 is off.
+const ItemDef kGpuFsrItems[] = {
+    WithDynamics(Bool("PM_RxGpuFsr", "mcla_gpu_fsr", "FSR1: "), &kFsrToggleDynamics),
+    WithDynamics(Str("PM_RxGpuFsrPreset", "mcla_gpu_fsr_preset", "QUALITY: ",
+                     kFsrPresetVals, kFsrPresetNames, kNumFsrPresets, " (RESTART)"),
+                 &kFsrPresetDynamics),
+    WithDynamics(Dbl("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "SHARP REDUCE: ",
+                     kFsrSharpVals, 5, "%g"),
+                 &kFsrSharpDynamics),
+};
+#endif
 
 // Where the rear view mirror sits (rearview_position, rear_view.cpp).
 constexpr const char* kRearViewPosVals[]  = {"stock", "left_top", "middle_top",
@@ -1778,6 +1897,11 @@ const MenuDef kMenus[] = {
     {"PM_RxTabNative", "RENDERER", "Renderer and graphics API.",
      "RxNativeMenu",
      kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
+#if defined(LARECOMP_HAS_GPU)
+    {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
+     "RxGpuFsrMenu",
+     kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
+#endif
     {"PM_RxTabCam", "CAMERA", "Chase camera, free camera and rear view.",
      "RxCamMenu",
      kCamHubItems, int(sizeof(kCamHubItems) / sizeof(kCamHubItems[0]))},
@@ -1915,12 +2039,36 @@ bool ItemIsLabelOnly(const ItemDef& it) {
            it.kind == ItemKind::kSubmenu;
 }
 
+// RowDynamics::enabled; a row without one is always enabled.
+bool ItemEnabled(const ItemDef& it) {
+    return !it.dynamics || !it.dynamics->enabled || it.dynamics->enabled();
+}
+
+// A kDblCycle row whose values are labeled by RowDynamics::value_label.
+bool ItemLabelsValues(const ItemDef& it) {
+    return it.kind == ItemKind::kDblCycle && it.dynamics && it.dynamics->value_label;
+}
+
+// The values a kDblCycle row steps through: its table, and for a row that
+// labels its values, also the cvar's own value, in order, when it labels as
+// none of them (RowDynamics::value_label).
+std::vector<double> DblValues(const ItemDef& it) {
+    std::vector<double> values(it.dvals, it.dvals + it.nvals);
+    if (!ItemLabelsValues(it)) return values;
+    const double current = CvarGetDouble(it.cvar);
+    const std::string label = it.dynamics->value_label(current);
+    for (const double v : values)
+        if (it.dynamics->value_label(v) == label) return values;
+    values.insert(std::upper_bound(values.begin(), values.end(), current), current);
+    return values;
+}
+
 int ItemValueCount(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
+    case ItemKind::kDblCycle:  return ItemLabelsValues(it) ? int(DblValues(it).size()) : it.nvals;
     case ItemKind::kStrCycle:
-    case ItemKind::kDblCycle:
     case ItemKind::kColor:     return it.nvals;
     case ItemKind::kAction:
     case ItemKind::kSubmenu:   return 0;
@@ -1932,8 +2080,15 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
     switch (it.kind) {
     case ItemKind::kBool:      return i ? "ON" : "OFF";
     case ItemKind::kCarbonBit: return i ? "CARBON" : "PAINT";
-    case ItemKind::kStrCycle:  return it.slabels[i];
+    case ItemKind::kStrCycle:
+        if (it.dynamics && it.dynamics->str_label) return it.dynamics->str_label(i);
+        return it.slabels[i];
     case ItemKind::kDblCycle: {
+        if (ItemLabelsValues(it)) {
+            const std::vector<double> values = DblValues(it);
+            return (i >= 0 && i < int(values.size())) ? it.dynamics->value_label(values[i])
+                                                      : std::string();
+        }
         if (it.zero_label && it.dvals[i] == 0.0) return it.zero_label;
         char buf[48];
         std::snprintf(buf, sizeof(buf), it.dfmt, it.dvals[i]);
@@ -1959,8 +2114,16 @@ int ItemValueIndex(const ItemDef& it) {
     case ItemKind::kStrCycle:
     case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
-    case ItemKind::kDblCycle:
-        return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
+    case ItemKind::kDblCycle: {
+        if (!ItemLabelsValues(it))
+            return FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
+        // The entry that labels as the cvar's value; DblValues lists one.
+        const std::vector<double> values = DblValues(it);
+        const std::string label = it.dynamics->value_label(CvarGetDouble(it.cvar));
+        for (int i = 0; i < int(values.size()); ++i)
+            if (it.dynamics->value_label(values[i]) == label) return i;
+        return 0;
+    }
     case ItemKind::kAction:
     case ItemKind::kSubmenu:   break;
     }
@@ -1985,7 +2148,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kDblCycle:
-        CvarSetDouble(it.cvar, it.dvals[i]);
+        CvarSetDouble(it.cvar, ItemLabelsValues(it) ? DblValues(it)[size_t(i)] : it.dvals[i]);
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kCarbonBit:
@@ -2024,6 +2187,7 @@ std::string ItemRowLabel(const ItemDef& it) {
 
     if (it.kind == ItemKind::kCarbonBit && !CarbonHaveCar())
         return label + " (NO CAR)";
+    if (it.dynamics && it.dynamics->suffix) return label + it.dynamics->suffix();
     return label + it.suffix;
 }
 
@@ -2043,6 +2207,13 @@ void ApplyItem(const ItemDef& it, int dir) {
         break;
     }
     case ItemKind::kDblCycle: {
+        if (ItemLabelsValues(it)) {
+            const std::vector<double> values = DblValues(it);
+            const int n = int(values.size());
+            CvarSetDouble(it.cvar, values[size_t((ItemValueIndex(it) + dir + n) % n)]);
+            g_settings_saved.store(false, std::memory_order_relaxed);
+            break;
+        }
         int i = FindClosestIndex(CvarGetDouble(it.cvar), it.dvals, it.nvals);
         CvarSetDouble(it.cvar, it.dvals[(i + dir + it.nvals) % it.nvals]);
         g_settings_saved.store(false, std::memory_order_relaxed);
@@ -2125,6 +2296,8 @@ struct NativeRows {
     std::string last_label[kMaxRowsPerMenu];
     int count = 0;
 };
+// A disabled row whose select moved anyway was reported (PollNativeRows; once).
+bool g_disabled_step_reported = false;
 NativeRows g_rows[kNumMenus];
 
 // The value list a row steps through: {vtable, char** keys, count, stride}.
@@ -2193,6 +2366,16 @@ void CentreRowWindow(NativeRows& nr, int i, const ItemDef& it, int idx) {
     WriteGuestBE32(nr.row[i] + kRowSelect, 1);
 }
 
+// The row's enabled state (RowDynamics::enabled) into the guest object: the
+// byte the game's own rows read (kRowValueEnabled), and for a checkbox also
+// the word its render reads (kRowEnabled). Label-only rows have none.
+void ApplyRowEnabled(NativeRows& nr, int i, const ItemDef& it) {
+    if (!nr.row[i] || ItemIsLabelOnly(it)) return;
+    const bool enabled = ItemEnabled(it);
+    WriteGuestU8(nr.row[i] + kRowValueEnabled, enabled ? 1 : 0);
+    if (ItemIsToggle(it)) WriteGuestBE32(nr.row[i] + kRowEnabled, enabled ? 1 : 0);
+}
+
 bool BuildNativeRows(int m) {
     NativeRows& nr = g_rows[m];
     if (nr.count > 0) return true;
@@ -2243,6 +2426,7 @@ bool BuildNativeRows(int m) {
         nr.last_label[i] = label;
         if (!ItemIsLabelOnly(it) && !ItemIsToggle(it))
             CentreRowWindow(nr, i, it, ItemValueIndex(it));
+        ApplyRowEnabled(nr, i, it);
     }
 
     nr.count = MenuItemCount(md);
@@ -2278,6 +2462,7 @@ void SyncNativeRowsFromCvars(int m) {
     for (int i = 0; i < nr.count && i < MenuItemCount(md); ++i) {
         const ItemDef& it = MenuItemAt(md, i);
         RelabelRow(nr, i, it);
+        ApplyRowEnabled(nr, i, it);
 
         if (ItemIsLabelOnly(it)) continue;
 
@@ -2298,8 +2483,10 @@ void SyncNativeRowsFromCvars(int m) {
 void PollNativeRows(int m) {
     NativeRows& nr = g_rows[m];
     const MenuDef& md = kMenus[m];
+    const int count = std::min(nr.count, MenuItemCount(md));
 
-    for (int i = 0; i < nr.count && i < MenuItemCount(md); ++i) {
+    // 1. The steps the player just took, written through to the cvars.
+    for (int i = 0; i < count; ++i) {
         const ItemDef& it = MenuItemAt(md, i);
 
         // An action row's label tracks whether the scene is playing, carbon
@@ -2327,10 +2514,24 @@ void PollNativeRows(int m) {
         // else is a step the player just took, and which way.
         const int slot = int(ReadGuestBE32(nr.row[i] + kRowSelect));
         if (slot != 1) {
+            if (!ItemEnabled(it)) {
+                // The game's row refuses a step while disabled (sub_826316E0);
+                // one that moved anyway is put back, not written through.
+                if (!g_disabled_step_reported) {
+                    g_disabled_step_reported = true;
+                    MC_WARN("[pause-menu] '{}' is disabled but its select moved to {}; put "
+                            "back (reported once)",
+                            nr.last_label[i], slot);
+                }
+                CentreRowWindow(nr, i, it, nr.last_index[i]);
+                continue;
+            }
             const int dir = slot < 1 ? -1 : +1;
             const int idx = ((nr.last_index[i] + dir) % n + n) % n;
             ItemSetValueIndex(it, idx);
-            CentreRowWindow(nr, i, it, idx);
+            // A row that lists the cvar's own value drops that entry once the
+            // value leaves it, so where it now is is read again.
+            CentreRowWindow(nr, i, it, ItemLabelsValues(it) ? ItemValueIndex(it) : idx);
             continue;
         }
 
@@ -2343,6 +2544,19 @@ void PollNativeRows(int m) {
             if (real != nr.last_index[i])
                 CentreRowWindow(nr, i, it, real);
         }
+    }
+
+    // 2. What follows from the cvars as they now are, for the rows that
+    //    depend on other settings: a step above, or one in another menu, can
+    //    grey a row out, change its suffix or what it shows. After all the
+    //    steps, so a row above the one that moved is not a render behind.
+    for (int i = 0; i < count; ++i) {
+        const ItemDef& it = MenuItemAt(md, i);
+        if (!it.dynamics) continue;
+        RelabelRow(nr, i, it);
+        ApplyRowEnabled(nr, i, it);
+        if (!ItemIsLabelOnly(it) && !ItemIsToggle(it))
+            CentreRowWindow(nr, i, it, ItemValueIndex(it));
     }
 }
 
@@ -2474,6 +2688,9 @@ bool MenuFormAccept(uint32_t form, int row) {
     const int m = MenuOfForm(form);
     if (m < 0 || row < 0 || row >= MenuItemCount(kMenus[m])) return false;
     const ItemDef& it = MenuItemAt(kMenus[m], row);
+    // A greyed-out row takes no A, and no select sound, as the game's own
+    // list does (sub_826334D0 asks the row's vfunc72 first).
+    if (!ItemEnabled(it)) return false;
 
     if (it.kind == ItemKind::kSubmenu) {
         const int child = MenuByKey(it.cvar);
@@ -2937,11 +3154,12 @@ bool Hook_ListViewPopulate(PPCRegister& r3) {
                     continue;
                 }
                 MC_INFO("[pm-row] {} '{}' obj=0x{:08X} values={} idx={} '{}' "
-                        "slot={}",
+                        "slot={} enabled={}",
                         i, nr.last_label[i], nr.row[i], n, idx,
                         (idx >= 0 && idx < n) ? ItemValueLabel(it, idx)
                                               : std::string(),
-                        int(ReadGuestBE32(nr.row[i] + kRowSelect)));
+                        int(ReadGuestBE32(nr.row[i] + kRowSelect)),
+                        ReadGuestU8(nr.row[i] + kRowValueEnabled));
             }
         }
     }
