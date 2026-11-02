@@ -80,6 +80,7 @@ namespace mcla::gpu {
 class BindlessHeap;
 class Device;
 class FrameRing;
+struct RenderScaleChoice;
 
 struct EdramKey {
   uint16_t base_tiles = 0;
@@ -211,7 +212,9 @@ class EdramTargets {
   EdramTargets(const EdramTargets&) = delete;
   EdramTargets& operator=(const EdramTargets&) = delete;
 
-  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap);
+  // `scale`: the internal resolution scale chosen at start (render_scale.h).
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
+                  const RenderScaleChoice& scale);
   // The GPU must be idle and the FrameRing drained.
   void Shutdown();
 
@@ -223,8 +226,8 @@ class EdramTargets {
   // (mcla_gpu_coverage_queries, on a device that counts samples exactly).
   // Callers do no ownership work at all while aliasing() is false.
   bool aliasing() const { return aliasing_; }
-  // The internal resolution scale (mcla_gpu_resolution_scale) and the rule a
-  // target gets it by. A target is an image of the screen when the surface
+  // The internal resolution scale (chosen at start, render_scale.h) and the
+  // rule a target gets it by. A target is an image of the screen when the surface
   // that binds it in a use -- RT0, or the depth surface when there is no RT0:
   // the one whose header gives RB_SURFACE_INFO its pitch -- was declared by
   // the game with the screen's size divided by 2^k, k from 0 to
@@ -236,8 +239,6 @@ class EdramTargets {
   // height, read on first use). A target's scale is fixed when it is made: a
   // use whose surface classifies otherwise is counted and reported once per
   // identity (NoteDeclaredScale).
-  static constexpr double kMinResolutionScale = 0.5;
-  static constexpr double kMaxResolutionScale = 3.0;
   static constexpr uint32_t kMaxScreenShift = 3;
   Scale resolution_scale() const { return resolution_scale_; }
   // The scale a target bound through a surface declared with `size_bits`
@@ -566,6 +567,9 @@ class EdramTargets {
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
   Scale resolution_scale_;
+  // The scale was measured from the window against kAssumedScreenWidth/Height
+  // (the screen's, or an FSR1 preset): ScreenSize checks that assumption.
+  bool scale_from_window_ = false;
   uint32_t msaa_level_ = 2;
   // The game's screen (ScreenSize), 0 until read.
   uint32_t screen_width_ = 0;

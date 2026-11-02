@@ -34,11 +34,14 @@
 //                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
 //   RequestTexture*       the pause menu's TEXTURE MODS rows (any thread)
+//   PreviewRenderScale    the pause menu's RENDER RES and FSR1 rows (any thread)
 //   Shutdown              OnWindowCloseRequested and OnShutdown
 // ===========================================================================
 
 #include <cstdint>
 #include <memory>
+
+#include "render_scale.h"
 
 namespace rex::ui {
 class ImGuiDrawer;
@@ -170,6 +173,12 @@ void RequestResize();
 // again (textures.h). Nothing when the Plume renderer is not running.
 void RequestTextureDumpAll();
 void RequestTextureReload();
+
+// Any thread: the internal resolution scale a start would choose from these
+// settings (render_scale.h) for the window as it is now -- the swap chain's
+// last size; before the renderer is up, a window measured as the game's
+// screen. The pause menu labels its RENDER RES and FSR1 rows with it.
+RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset);
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
 // stops the render thread (with a deadline), drains the GPU and releases every

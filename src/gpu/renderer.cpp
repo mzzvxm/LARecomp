@@ -12,6 +12,7 @@
 #include <rex/runtime.h>
 #include <rex/system.h>
 #include <rex/ui/keybinds.h>
+#include <rex/ui/window.h>
 
 #include "gpu.h"
 #include "guest_capture.h"
@@ -116,6 +117,13 @@ std::atomic<uint64_t> g_fence_wait_ns{0};
 // OnGuestLock); taken by the stats line.
 std::atomic<uint64_t> g_guest_locks{0};
 std::atomic<uint64_t> g_guest_locks_on_destinations{0};
+// The swap chain's size (width << 32 | height), set at Initialize and after
+// each rebuild, for gpu.h PreviewRenderScale; 0 before.
+std::atomic<uint64_t> g_window_size{0};
+
+void PublishWindowSize(uint32_t width, uint32_t height) {
+  g_window_size.store(uint64_t(width) << 32 | height, std::memory_order_relaxed);
+}
 
 }  // namespace
 
@@ -154,10 +162,29 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     samplers_.Initialize(device_, heap_);
     pipelines_.Initialize(device_, guest_layout_, shaders_);
     ok = upload_.Initialize(device_) &&
-         geometry_.Initialize(device_, frames_, upload_, guest_memory_);
+         geometry_.Initialize(device_, frames_, upload_, guest_memory_) &&
+         // Before the EDRAM: the window's size can pick the render scale.
+         swap_chain_.Initialize(device_, render_window, options.swap_chain);
   }
   if (ok) {
-    edram_.Initialize(device_, frames_, heap_);
+    // The window's size: the swap chain's; a window with no area yet has none,
+    // then what the window reports; with neither it measures as the game's
+    // screen (1x).
+    uint32_t width = swap_chain_.width();
+    uint32_t height = swap_chain_.height();
+    if (width == 0 || height == 0) {
+      width = window->GetActualPhysicalWidth();
+      height = window->GetActualPhysicalHeight();
+      if (width == 0 || height == 0) {
+        REXLOG_WARN("[gpu] the window has no size yet: a render scale taken from it measures it "
+                    "as the game's {}x{}",
+                    kAssumedScreenWidth, kAssumedScreenHeight);
+      }
+    }
+    render_scale_ = ChooseStartRenderScale(width, height);
+    render_scale_noted_ = render_scale_.scale;
+    PublishWindowSize(width, height);
+    edram_.Initialize(device_, frames_, heap_, render_scale_);
     // mcla_gpu_edram_capture: the detector asks for a RenderDoc capture.
     edram_.SetCaptureRequest([this] { capture_.Request(); });
     // mcla_gpu_watch_base: the diagnostic watch, and its capture.
@@ -176,7 +203,6 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_, pass_timing_, post_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
-         swap_chain_.Initialize(device_, render_window, options.swap_chain) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format()) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
@@ -201,13 +227,13 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     flicker_probe_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
-    swap_chain_.Shutdown();
     post_.Shutdown();
     textures_.Shutdown();
     resolve_.Shutdown();
     resolve_memory_.Shutdown();
     passes_.Shutdown();
     edram_.Shutdown();
+    swap_chain_.Shutdown();
     geometry_.Shutdown();
     upload_.Shutdown();
     pipelines_.Shutdown();
@@ -282,13 +308,13 @@ void Renderer::Shutdown() {
   flicker_probe_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
-  swap_chain_.Shutdown();
   post_.Shutdown();
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
   passes_.Shutdown();
   edram_.Shutdown();
+  swap_chain_.Shutdown();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
@@ -502,7 +528,14 @@ bool Renderer::RebuildSwapChain() {
   // The back buffers are about to be released (and on D3D12 Release()d by
   // Plume's resize): nothing in flight may still write them.
   frames_.WaitIdle();
-  return swap_chain_.Rebuild();
+  if (!swap_chain_.Rebuild()) {
+    return false;
+  }
+  // The render scale stays the one the start's size gave.
+  NoteRenderScaleWindow(render_scale_, swap_chain_.width(), swap_chain_.height(),
+                        &render_scale_noted_);
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  return true;
 }
 
 void Renderer::ExecutePresent(PresentSource source) {
@@ -1067,6 +1100,11 @@ void RequestTextureReload() {
   if (Renderer* r = g_active.load(std::memory_order_acquire)) {
     r->RequestTextureReload();
   }
+}
+
+RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
+  const uint64_t size = g_window_size.load(std::memory_order_relaxed);
+  return ChooseRenderScale(asked, fsr, preset, uint32_t(size >> 32), uint32_t(size));
 }
 
 void Shutdown() {

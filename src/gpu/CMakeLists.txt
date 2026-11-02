@@ -38,6 +38,7 @@ add_library(larecomp_gpu OBJECT
     post.cpp
     present.cpp
     region_index.cpp
+    render_scale.cpp
     render_thread.cpp
     renderer.cpp
     resolve.cpp

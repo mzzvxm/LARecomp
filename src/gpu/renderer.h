@@ -66,6 +66,7 @@
 #include "pipelines.h"
 #include "post.h"
 #include "present.h"
+#include "render_scale.h"
 #include "render_thread.h"
 #include "resolve.h"
 #include "resolve_memory.h"
@@ -202,6 +203,11 @@ class Renderer final : public RenderThread::Executor {
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
   bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
+  // The internal resolution scale chosen at Initialize from the swap chain's
+  // size; render thread: the last scale a later window size was reported to
+  // give (NoteRenderScaleWindow).
+  RenderScaleChoice render_scale_;
+  Scale render_scale_noted_;
 
   // Render thread only.
   // The sequence of the guest's present while it is executed and the guest is still waiting
