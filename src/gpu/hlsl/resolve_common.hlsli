@@ -68,23 +68,50 @@ uint ResolveDepth24(int2 source, out uint stencil) {
                                                   : uint(round(saturate(depth) * 16777215.0f));
 }
 #else
+// Selected sample `i` at `source`, in the EDRAM's PWL for a _GAMMA target
+// (the host keeps those linear).
+float4 ResolveSample(int2 source, uint i) {
+#if RESOLVE_MSAA
+  float4 c = g_textures_ms[g_push.source].Load(source, HostSample(i));
+#else
+  float4 c = g_textures[g_push.source].Load(int3(source, 0));
+#endif
+  if ((g_push.mode & kFlagGammaSource) != 0u) {
+    c.rgb = XeLinearToPWLGamma3(c.rgb);
+  }
+  return c;
+}
+
 // The colour the resolve writes at `source`, before the destination format
-// quantizes it: the selected samples summed (in the EDRAM's PWL for a _GAMMA
-// target, which the host keeps linear), scaled, red and blue swapped when asked.
+// quantizes it: the selected samples summed, scaled, red and blue swapped when
+// asked. The usual counts (1, 2, 4; the same for every pixel of a resolve) load
+// all their samples before the first add, so the loads overlap instead of each
+// waiting for the one before, as in a rolled loop: on a small GPU the resolves
+// are latency-bound. The adds keep the loop's order from 0, so the sum is the
+// same bits as the loop's.
 float4 ResolveColor(int2 source) {
   const uint count = g_push.samples & 15u;
   float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
-  [loop] for (uint i = 0u; i < count; ++i) {
-#if RESOLVE_MSAA
-    float4 c = g_textures_ms[g_push.source].Load(source, HostSample(i));
-#else
-    float4 c = g_textures[g_push.source].Load(int3(source, 0));
-#endif
-    if ((g_push.mode & kFlagGammaSource) != 0u) {
-      // The host keeps _GAMMA targets linear; the EDRAM holds the PWL value.
-      c.rgb = XeLinearToPWLGamma3(c.rgb);
+  [branch] if (count == 4u) {
+    const float4 c0 = ResolveSample(source, 0u);
+    const float4 c1 = ResolveSample(source, 1u);
+    const float4 c2 = ResolveSample(source, 2u);
+    const float4 c3 = ResolveSample(source, 3u);
+    sum += c0;
+    sum += c1;
+    sum += c2;
+    sum += c3;
+  } else if (count == 2u) {
+    const float4 c0 = ResolveSample(source, 0u);
+    const float4 c1 = ResolveSample(source, 1u);
+    sum += c0;
+    sum += c1;
+  } else if (count == 1u) {
+    sum += ResolveSample(source, 0u);
+  } else {
+    [loop] for (uint i = 0u; i < count; ++i) {
+      sum += ResolveSample(source, i);
     }
-    sum += c;
   }
   float4 c = sum * g_push.scale;
   if ((g_push.mode & kFlagSwapRedBlue) != 0u) {
