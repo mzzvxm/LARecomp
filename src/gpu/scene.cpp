@@ -98,12 +98,34 @@ const char* SkipName(uint32_t skip) {
       "EDRAM mode",
       "colour target gap",
       "pipeline not created",
+      "pipeline pending (being made in the background)",
       "constant upload failed",
       "geometry",
       "EDRAM target not made",
       "framebuffer not made",
   };
   return skip < std::size(kNames) ? kNames[skip] : "?";
+}
+
+// The EDRAM identities a draw names (the same in Record and in the skip rule).
+EdramKey ColorEdramKey(const XenosState& s, uint32_t i) {
+  EdramKey key;
+  key.base_tiles = uint16_t(s.color[i].base_tiles);
+  key.pitch = uint16_t(s.surface_pitch);
+  key.depth = 0;
+  key.format = uint8_t(FoldColorFormat(uint32_t(s.color[i].format)));
+  key.samples = uint8_t(MsaaSampleCount(s.msaa));
+  return key;
+}
+
+EdramKey DepthEdramKey(const XenosState& s) {
+  EdramKey key;
+  key.base_tiles = uint16_t(s.depth_base_tiles);
+  key.pitch = uint16_t(s.surface_pitch);
+  key.depth = 1;
+  key.format = uint8_t(s.depth_format);
+  key.samples = uint8_t(MsaaSampleCount(s.msaa));
+  return key;
 }
 
 const char* DrawKindName(DrawKind kind) {
@@ -828,10 +850,19 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     ++memo_hits_[size_t(Memo::kPipeline)];
     d.pipeline = pipeline_memo_;
   } else {
-    d.pipeline = pipelines_->Get(d.key, inputs);
+    // A miss may leave the draw out while a builder thread makes the pipeline.
+    const SkipAsk ask{this, &d};
+    const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
+    bool pending = false;
+    d.pipeline = pipelines_->Get(d.key, inputs, &deferral, &pending);
     if (d.pipeline) {
       pipeline_memo_key_ = d.key;
       pipeline_memo_ = d.pipeline;
+    } else if (pending) {
+      // Not memoized: the next draw with the key asks again, and takes the
+      // pipeline once it is ready.
+      NoteTargetsDrawn(d);
+      return Skip::kPipelinePending;
     }
   }
   if (!d.pipeline) {
@@ -910,6 +941,48 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     }
   }
   return Skip::kCount;
+}
+
+bool Scene::MaySkipForPipeline(const void* context) {
+  const SkipAsk& ask = *static_cast<const SkipAsk*>(context);
+  const Scene& scene = *ask.scene;
+  const PreparedDraw& d = *ask.draw;
+  const XenosState& s = d.state;
+  // Multisampled targets only. A target is known by its EDRAM identity (base,
+  // pitch, format, samples), and a one-off render to texture (a car's paint and
+  // vinyls, made once and kept) could share that identity with a pass drawn
+  // every frame; those are single-sampled, while the passes whose misses this
+  // is for (the scene, 2x; the sun's shadow map, 4x; the reflections, 4x) are
+  // not. A skipped draw into a target that is not redrawn would stay wrong.
+  if (MsaaSampleCount(s.msaa) < 2) {
+    return false;
+  }
+  bool any = false;
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    if (!scene.edram_->DrawnEveryFrame(ColorEdramKey(s, i), scene.frame_serial_,
+                                       kPipelineSkipFrames)) {
+      return false;
+    }
+    any = true;
+  }
+  if (d.key.depth_format != 0) {
+    if (!scene.edram_->DrawnEveryFrame(DepthEdramKey(s), scene.frame_serial_,
+                                       kPipelineSkipFrames)) {
+      return false;
+    }
+    any = true;
+  }
+  return any;
+}
+
+void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
+  const XenosState& s = d.state;
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    edram_->NoteDrawn(ColorEdramKey(s, i), frame_serial_);
+  }
+  if (d.key.depth_format != 0) {
+    edram_->NoteDrawn(DepthEdramKey(s), frame_serial_);
+  }
 }
 
 void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
@@ -1243,6 +1316,9 @@ bool Scene::EdramNoteKey::operator==(const EdramNoteKey& o) const {
 void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail) {
   ++window_.skips[size_t(skip)];
   uint32_t& logged = skip_logged_[size_t(skip)];
+  if (skip == Skip::kPipelinePending) {
+    return;  // expected and repaired by the next frame: counted, not logged
+  }
   if (logged < 4) {
     ++logged;
     REXLOG_ERROR("[gpu] scene: draw not drawn -- {}{}{} ({} {}, count {}, VS {:016X}, PS "
@@ -1269,28 +1345,18 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     *no_effect = true;
     return Skip::kCount;
   }
-  const uint32_t samples = MsaaSampleCount(s.msaa);
   EdramTargets::Target* colors[kColorTargetCount] = {};
   EdramTargets::Target* depth = nullptr;
   const uint32_t pitch = s.surface_pitch;
   // The draw's EDRAM identities.
   EdramKey color_keys[kColorTargetCount];
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
-    EdramKey& key = color_keys[i];
-    key.base_tiles = uint16_t(s.color[i].base_tiles);
-    key.pitch = uint16_t(pitch);
-    key.depth = 0;
-    key.format = uint8_t(FoldColorFormat(uint32_t(s.color[i].format)));
-    key.samples = uint8_t(samples);
+    color_keys[i] = ColorEdramKey(s, i);
   }
   const bool has_depth = d.key.depth_format != 0;
   EdramKey depth_key;
   if (has_depth) {
-    depth_key.base_tiles = uint16_t(s.depth_base_tiles);
-    depth_key.pitch = uint16_t(pitch);
-    depth_key.depth = 1;
-    depth_key.format = uint8_t(s.depth_format);
-    depth_key.samples = uint8_t(samples);
+    depth_key = DepthEdramKey(s);
   }
   // The last draw's targets, while nothing they rest on changed (M6a.3).
   const TargetsMemo& memo = targets_memo_;
@@ -1388,6 +1454,13 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                           depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
                           depth ? depth->host_samples : 0u, d.key.sample_count);
     return Skip::kTarget;
+  }
+  // The draw is recorded: its targets were drawn into in this frame.
+  for (uint32_t i = 0; i < d.key.color_count; ++i) {
+    EdramTargets::NoteDrawn(*colors[i], frame_serial_);
+  }
+  if (depth) {
+    EdramTargets::NoteDrawn(*depth, frame_serial_);
   }
   // Layouts (a barrier closes an open render pass on Vulkan; Plume reopens it).
   uint32_t target_height = EdramTargets::kMaxExtent;
@@ -1907,7 +1980,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
 }
 
 void Scene::OnPresent() {
-  pipelines_->Autosave();
+  pipelines_->EndFrame();  // takes the background builds that finished, then autosaves
   const uint64_t now = cycles::Now();
   if (last_present_) {
     present_intervals_.push_back(now - last_present_);
@@ -2005,7 +2078,10 @@ void Scene::Report(const char* why) {
       "{}), clip disabled "
       "{}, depth bias {} | banks {} checks, {} mismatches | "
       "pipelines {} total (+{} created, {} failed, {:.1f} "
-      "ms; precache {} taken, {} waited {:.1f} ms, {} made here, {} shared) | input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
+      "ms; precache {} taken, {} waited {:.1f} ms, {} made here, {} shared; background {} keys "
+      "pending, {} draws skipped, {} taken ({} of keys the list lacked), wait mean {:.1f}, longest "
+      "{} frames; made here {} new, {} after a failure, {} waited for a running build {:.1f} ms) "
+      "| input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
       "tiling {}/{} | prepare "
       "{:.2f} ms/frame | {}",
@@ -2020,7 +2096,11 @@ void Scene::Report(const char* why) {
       w.depth_bias_draws,
       w.bank_checks, w.bank_mismatches, pipelines_->size(), ps.created, ps.failed,
       double(ps.create_ns) / 1e6, ps.precache_taken, ps.precache_waits,
-      double(ps.precache_wait_ns) / 1e6, ps.precache_claimed, ps.shared, input_layouts_.size(), samplers_->size(), w.fetches,
+      double(ps.precache_wait_ns) / 1e6, ps.precache_claimed, ps.shared, ps.pending_keys,
+      ps.pending_draws, ps.pending_taken, ps.background_taken,
+      ps.pending_taken ? double(ps.pending_frames_sum) / double(ps.pending_taken) : 0.0,
+      ps.pending_frames_max, ps.made_here_new, ps.made_here_retry, ps.request_waits,
+      double(ps.request_wait_ns) / 1e6, input_layouts_.size(), samplers_->size(), w.fetches,
       w.fetch_not_texture, double(w.upload_bytes) / frames / 1048576.0, w.constant_uploads,
       w.shared_uploads,
       (w.fetches + w.fetch_not_texture)

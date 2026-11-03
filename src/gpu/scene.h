@@ -30,6 +30,21 @@
 // identity. Draws with no effect (no target written, both faces culled) are
 // counted apart -- they are not failures.
 //
+// One skip is not a failure: a draw whose pipeline a builder thread is still
+// making (pipelines.h) is left out for now -- "pipeline pending", counted
+// apart, not logged, not remembered by the pipeline memo -- when every target
+// it renders into was drawn into in each of the last kPipelineSkipFrames guest
+// frames (MaySkipForPipeline): the frame's draws are made again every frame, so
+// the next frame's draw, with the pipeline by then, puts back what the skipped
+// one left out. A draw into any other target waits for its pipeline instead.
+// What the rule cannot know: whether the picture of a skipped draw lasts
+// beyond its frame -- a resolve the game keeps for later or reads on the CPU
+// (the lock of a resolve destination comes after the draws; nothing at draw
+// time says one is coming) -- and whether the game draws into a target in
+// every frame for the same purpose. It sees only that the target was drawn
+// into in each of the last frames; a target made for one picture (car paint,
+// vinyl) is not.
+//
 // Statistics: a line every kReportInterval guest frames and at shutdown.
 //
 // Threading: render thread only.
@@ -129,6 +144,7 @@ class Scene {
     kEdramMode,
     kColorGap,
     kPipeline,
+    kPipelinePending,  // a builder thread is making it (pipelines.h): the draw waits
     kUpload,
     kGeometry,     // GeometryCache::Result, counted per result
     kTarget,       // an EDRAM target the host could not make
@@ -159,6 +175,21 @@ class Scene {
   // draw that changes nothing.
   Skip Prepare(const DrawView& view, const ConstantBanks::Banks& banks, PreparedDraw& d,
                bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
+  // The frames in a row a target must have been drawn into for a draw into it
+  // to wait for a pipeline (~0.5 s at 60 FPS: past a loading screen, a menu or
+  // a one-shot render to texture).
+  static constexpr uint32_t kPipelineSkipFrames = 30;
+  // What Pipelines::Get asks on a miss (Deferral): may the draw be left out?
+  // Only when every target the draw renders into was drawn into in each of the
+  // last kPipelineSkipFrames frames.
+  struct SkipAsk {
+    const Scene* scene;
+    const PreparedDraw* draw;
+  };
+  static bool MaySkipForPipeline(const void* context);
+  // A draw left out for its pipeline still counts as a draw into its targets,
+  // or a frame that skipped all of a target's draws would end its run.
+  void NoteTargetsDrawn(const PreparedDraw& d);
   // `scale`: the draw's targets' resolution scale; a resolve product made at a
   // larger one is read through its reduced copy (TextureCache::Bind2D).
   void FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale scale,

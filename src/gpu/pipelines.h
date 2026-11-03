@@ -36,8 +36,9 @@
 // a pixel shader compiled without the variant. Both faces culled is not a
 // failure: the draw has no effect (the caller skips it).
 //
-// Pipelines are created synchronously on the render thread on first use and
-// kept for the life of the renderer.
+// Pipelines are kept for the life of the renderer. One nobody made ahead is
+// made on the render thread when the draw that needs it may not be left out,
+// and by a builder thread when it may (background builds, below).
 //
 // Persistence (M5.3; mcla_gpu_pipeline_cache): every pipeline
 // created is recorded -- its key, with the input layout by content (the
@@ -55,9 +56,33 @@
 // Session layouts with other ids and the same content share a persistent key,
 // and so the pipeline: the later keys alias the first one's.
 //
-// Threading: the render thread; the precache workers touch only their own
-// records, the ShaderStore (GetShader locks) and the device; the autosave
-// thread only the bytes it was given and the file.
+// Background builds: a pipeline nobody precached cost 20 to 150 ms on the
+// render thread when a draw first needed it (measured, RTX 5080, cold driver
+// cache), and about 50 such misses were left in a cold 3 minute drive after
+// the starter list. When Get misses it asks the Scene (Deferral) whether the
+// draw may be left out for now: only a draw into targets the game draws into
+// in every frame, so that the next frame's draw puts back what the skipped one
+// left out (scene.h, MaySkipForPipeline). Then the key goes to the builder
+// threads -- the precache workers, who take these before the rest of their
+// list -- and Get returns null with *pending set. The Scene skips the draw,
+// counts it apart from a failure and does not memoize the null. The next Get
+// for the key finds the build still going (pending again) or finished (taken:
+// the render thread moves the pipeline into pipelines_, as it does for a
+// precached one). A key that has a precache record is moved to the front of
+// the workers' queue instead of being made here. A draw that may not be
+// skipped keeps the old way: a build under way is waited for, never made
+// twice; one no worker has begun is made here, and the worker drops it. A
+// build that fails in the background is reported once and stays null, like one
+// that failed here. A finished build nobody asks for again is taken at the end
+// of the frame (EndFrame), so it is recorded and persists like any other.
+//
+// Threading: the render thread; the builder threads (the precache workers)
+// touch only the entries and requests they were handed, the ShaderStore
+// (GetShader locks) and the device; the autosave thread only the bytes it was
+// given and the file. The render thread owns requests_ and the `asked` fields
+// of the entries; a request goes to the workers through urgent_ (work_mutex_)
+// and comes back through its state and pipeline under precache_mutex_. A hit
+// in pipelines_ takes no lock.
 // ===========================================================================
 
 #include <atomic>
@@ -138,6 +163,14 @@ enum class KeyResult : uint8_t {
   kColorGap,       // colour targets with a gap below a bound one (reported)
 };
 
+// What Get asks when a pipeline is not there yet: may the draw be left out
+// until a builder thread has made it? A plain function and a context, so that
+// a lookup that hits has nothing to prepare for it.
+struct Deferral {
+  bool (*may_skip)(const void* context) = nullptr;
+  const void* context = nullptr;
+};
+
 class Pipelines {
  public:
   Pipelines() = default;
@@ -162,9 +195,18 @@ class Pipelines {
   // True when every pipeline takes its depth bias from the command list.
   bool dynamic_depth_bias() const { return dynamic_depth_bias_; }
 
-  // The pipeline for `key`, created on first use. Null when creation failed
-  // (logged once per key).
-  plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs);
+  // The pipeline for `key`: made on first use, or taken from a thread that made
+  // it. Null when creation failed (logged once per key) or, with *pending set,
+  // when a builder thread is making it and `deferral` said the draw may be left
+  // out: the caller skips the draw, does not remember the null, and asks again
+  // for the next draw with the key. Without `deferral` and `pending` the call
+  // never returns pending.
+  plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs,
+                             const Deferral* deferral = nullptr, bool* pending = nullptr);
+
+  // Once a frame (a guest present), on the render thread: counts the frame,
+  // takes the background builds that finished, and Autosave.
+  void EndFrame();
 
   // Once a frame, on the render thread: writes the records to the file when
   // there are new ones and the last write was a while ago. The file is written
@@ -180,6 +222,20 @@ class Pipelines {
     uint64_t precache_wait_ns = 0;
     uint64_t precache_claimed = 0;  // in the file, no worker at it yet: made here
     uint64_t shared = 0;            // keys whose persistent key another key's pipeline serves
+    // Background builds. A key is pending from the first draw skipped for it
+    // (a key of the precache list that no worker had finished counts too) to the
+    // take; the wait is counted in frames (EndFrame).
+    uint64_t pending_keys = 0;        // handed to the builders, or moved up their queue
+    uint64_t pending_draws = 0;       // lookups answered "pending": the draw was skipped
+    uint64_t pending_taken = 0;       // pending keys taken ready
+    uint64_t pending_frames_sum = 0;  // frames from the first skip to the take, summed
+    uint64_t pending_frames_max = 0;  // ... and the longest
+    uint64_t background_taken = 0;    // of the taken, made for a key no record named
+    // What stayed on the render thread, and why.
+    uint64_t request_waits = 0;       // waited for a background build of a key no record named
+    uint64_t request_wait_ns = 0;
+    uint64_t made_here_new = 0;       // made here: nobody had begun it, no waiting
+    uint64_t made_here_retry = 0;     // made here again after a background build failed
   };
   Stats TakeStats();
   size_t size() const { return pipelines_.size(); }
@@ -208,6 +264,8 @@ class Pipelines {
   // The stored layout of a session layout (made on first use).
   uint32_t StoreLayout(const InputLayout& layout);
   void RecordPipeline(const PipelineKey& key, const InputLayout& layout);
+  // The same for a layout already stored (RecordPipeline's second half).
+  void RecordStored(const PipelineKey& key, uint32_t stored);
   void LoadRecords();
   // Reads one cache file and adds the records it holds that are not known
   // yet; a file with any fault adds nothing. `zero_bias` zeroes the static
@@ -228,12 +286,28 @@ class Pipelines {
                  ShaderStore::ShaderResult* ps_result);
   // The persistent key of a session key with the layout `stored`.
   PipelineKey PersistentKey(const PipelineKey& key, uint32_t stored) const;
+  // Counts a pipeline that could not be made and reports it (the first few).
+  void LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
+                  ShaderStore::ShaderResult ps_result);
   void StartPrecache();
   void StopPrecache();
   void PrecacheWorker();
-  // A ready precached pipeline for `key` (moved into pipelines_), or null:
-  // none, being claimed now for the render thread to make, or failed.
-  plume::RenderPipeline* TakePrecached(const PipelineKey& key, const PipelineInputs& inputs);
+
+  // How a lookup that gave no pipeline ended: nothing is known of the key
+  // (kNone); a build is under way and the draw may wait (kPending); the caller
+  // makes it now, already counted (kMakeHere); a precached entry failed in
+  // the background (kFailed: made again, and reported, on the caller's path); a
+  // request failed in the background and was reported (kReported).
+  enum class Take : uint8_t { kNone, kPending, kMakeHere, kFailed, kReported };
+  struct Miss {
+    const Deferral* deferral = nullptr;  // null: the draw may not be skipped
+    Take take = Take::kNone;
+  };
+  // A ready precached pipeline for `key` (moved into pipelines_), or null: none,
+  // being made while the draw may wait, being claimed now for the render thread
+  // to make, or failed (`miss.take` says which).
+  plume::RenderPipeline* TakePrecached(const PipelineKey& key, Miss& miss,
+                                       const PipelineInputs& inputs);
 
   Device* device_ = nullptr;
   const GuestLayout* layout_ = nullptr;
@@ -280,6 +354,10 @@ class Pipelines {
     std::atomic<uint8_t> state{kQueued};
     PipelineKey taken_as;             // the session key it went to (claimed or taken)
     bool taken = false;
+    // Render thread only: a draw that may be skipped asked for it, in this frame
+    // (EndFrame's count); the worker is told to make it first.
+    bool asked = false;
+    uint64_t asked_frame = 0;
   };
   std::vector<std::unique_ptr<Precached>> precached_;
   // Session keys served by another key's pipeline (same persistent key).
@@ -290,10 +368,58 @@ class Pipelines {
   std::atomic<bool> stop_precache_{false};
   std::atomic<uint32_t> precache_ready_{0};
   std::atomic<uint32_t> precache_failed_{0};
-  std::atomic<uint32_t> workers_running_{0};
+  std::atomic<uint32_t> precache_finished_{0};  // entries built by a worker or claimed here
   std::chrono::steady_clock::time_point precache_start_;
   std::mutex precache_mutex_;
   std::condition_variable precache_done_;
+
+  // Background builds for keys no record names. A request holds what the
+  // worker reads -- the shaders (the pack's, which live as long as the store),
+  // and the layout through stored_layouts_ -- and its state moves like an
+  // entry's (queued -> building -> ready or failed, under precache_mutex_;
+  // claimed: the render thread made it). The map and the requests' lifetime are
+  // the render thread's; a request still queued when taken is kept alive by the
+  // queue until a worker finds it claimed.
+  struct Request {
+    PipelineKey key;                        // the session key
+    const ShaderStore::Entry* vs = nullptr;
+    const ShaderStore::Entry* ps = nullptr;  // null: depth only
+    const StoredLayout* layout = nullptr;    // owned by stored_layouts_
+    uint32_t stored = 0;                     // its index there
+    uint64_t asked_frame = 0;
+    std::atomic<uint8_t> state{kQueued};
+    std::unique_ptr<plume::RenderPipeline> pipeline;
+    ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
+    ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
+  };
+  // Work a worker takes before the rest of the precache list: a request, or
+  // an entry of the list a draw is waiting for.
+  struct Urgent {
+    Precached* precached = nullptr;
+    std::shared_ptr<Request> request;
+  };
+  std::unordered_map<PipelineKey, std::shared_ptr<Request>, PipelineKeyHash> requests_;
+  std::deque<Urgent> urgent_;  // work_mutex_
+  std::mutex work_mutex_;
+  std::condition_variable work_cv_;
+  uint64_t frame_ = 0;  // EndFrame's count, for the waits
+
+  void PushUrgent(Urgent urgent);
+  // Hands `key` to the builders. False when it cannot be built in the
+  // background (no shaders, a layout that cannot be stored, no workers).
+  bool StartRequest(const PipelineKey& key, const PipelineInputs& inputs);
+  // The background build of `key`, if one was asked for: taken when ready,
+  // waited for when the draw may not be skipped (made here when no worker had
+  // begun it), pending when it may.
+  plume::RenderPipeline* TakeRequested(const PipelineKey& key, Miss& miss);
+  // A finished request into pipelines_ (null for a failure, reported) and the
+  // records.
+  plume::RenderPipeline* AdoptRequest(const PipelineKey& key, Request& request);
+  void TakeFinishedRequests();
+  void NotePendingTaken(uint64_t asked_frame);
+  void NotePrecacheEntryDone();
+  void BuildPrecached(Precached& entry);
+  void BuildRequest(Request& request);
 };
 
 }  // namespace mcla::gpu
