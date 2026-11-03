@@ -378,6 +378,18 @@ void Pipelines::RecordStored(const PipelineKey& key, uint32_t index) {
 // precache (M5.3b)
 // ---------------------------------------------------------------------------
 
+// The logical processors this process may run on: its affinity mask where
+// there is one (a game limited to some cores has only those), else the system's.
+uint32_t Pipelines::UsableProcessors() {
+#if defined(_WIN32)
+  DWORD_PTR process = 0, system = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process) {
+    return uint32_t(__builtin_popcountll(process));
+  }
+#endif
+  return std::max(1u, std::thread::hardware_concurrency());
+}
+
 void Pipelines::StartPrecache() {
   precached_.reserve(records_.size());
   for (const Record& r : records_) {
@@ -391,8 +403,7 @@ void Pipelines::StartPrecache() {
   // a pipeline made here is one the render thread does not stop for later.
   // The workers run with an empty list too, and stay when it is done: they
   // make the pipelines the render thread hands them (background builds).
-  const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
-  const uint32_t count = std::clamp(hardware / 2, 1u, 6u);
+  const uint32_t count = std::clamp(UsableProcessors() / 2, 1u, 6u);
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
   next_precache_ = 0;

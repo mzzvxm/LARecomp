@@ -267,6 +267,7 @@ class Pipelines {
   // The same for a layout already stored (RecordPipeline's second half).
   void RecordStored(const PipelineKey& key, uint32_t stored);
   void LoadRecords();
+  static uint32_t UsableProcessors();
   // Reads one cache file and adds the records it holds that are not known
   // yet; a file with any fault adds nothing. `zero_bias` zeroes the static
   // depth bias of its keys (another API's file read by one with a dynamic
