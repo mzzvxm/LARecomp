@@ -171,6 +171,10 @@ class EdramTargets {
     uint32_t generation = 0;  // bumped when the texture is replaced
     plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
     uint64_t last_frame = 0;
+    // The frames the identity was drawn into (NoteDrawn, the Scene's frame
+    // serial): the last one, and how many consecutive frames end in it.
+    uint64_t drawn_frame = 0;
+    uint32_t drawn_run = 0;
     // Shader views (SampleSlots), valid for texture generation `views_generation`.
     std::unique_ptr<plume::RenderTextureView> sample_view;
     std::unique_ptr<plume::RenderTextureView> stencil_view;
@@ -304,6 +308,31 @@ class EdramTargets {
   const Target* Find(const EdramKey& key) const {
     const auto it = targets_.find(key);
     return it == targets_.end() ? nullptr : it->second.get();
+  }
+
+  // A draw into `target` in frame `frame` (the Scene's serial, counted up once
+  // per frame): the run of consecutive frames it was drawn into grows by one
+  // for the first draw of a frame, and starts again after a frame without any.
+  static void NoteDrawn(Target& target, uint64_t frame) {
+    if (target.drawn_frame == frame) {
+      return;
+    }
+    target.drawn_run = target.drawn_frame + 1 == frame ? target.drawn_run + 1 : 1;
+    target.drawn_frame = frame;
+  }
+  // The same for the identity `key`, when its target exists.
+  void NoteDrawn(const EdramKey& key, uint64_t frame) {
+    const auto it = targets_.find(key);
+    if (it != targets_.end()) {
+      NoteDrawn(*it->second, frame);
+    }
+  }
+  // Whether the target of `key` exists and was drawn into in each of the last
+  // `frames` frames before `frame`, or up to it (this frame's first draw may
+  // be the one asking).
+  bool DrawnEveryFrame(const EdramKey& key, uint64_t frame, uint32_t frames) const {
+    const Target* target = Find(key);
+    return target && target->drawn_run >= frames && target->drawn_frame + 1 >= frame;
   }
 
   // Records a barrier moving `target` to `layout` when it is elsewhere.

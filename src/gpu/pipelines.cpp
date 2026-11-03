@@ -213,6 +213,11 @@ plume::RenderBlendDesc UnpackBlend(uint32_t v) {
   return b;
 }
 
+// Whether the draw that missed may be left out for now (Pipelines::Get).
+bool MaySkip(const Deferral* deferral) {
+  return deferral && deferral->may_skip && deferral->may_skip(deferral->context);
+}
+
 }  // namespace
 
 size_t PipelineKeyHash::operator()(const PipelineKey& k) const {
@@ -251,8 +256,10 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
     other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
     starter_path_ = shaders.path().parent_path() / "mcla_pipelines.bin";
     LoadRecords();
-    StartPrecache();
   }
+  // The workers run without a cache file too: they make what the render
+  // thread hands them (background builds).
+  StartPrecache();
 }
 
 void Pipelines::Shutdown() {
@@ -270,6 +277,7 @@ void Pipelines::Shutdown() {
   names_.clear();
   loaded_records_ = 0;
   own_file_records_ = 0;
+  frame_ = 0;
   persist_ = false;
   device_ = nullptr;
   layout_ = nullptr;
@@ -353,7 +361,10 @@ PipelineKey Pipelines::PersistentKey(const PipelineKey& key, uint32_t stored) co
 }
 
 void Pipelines::RecordPipeline(const PipelineKey& key, const InputLayout& layout) {
-  const uint32_t index = StoreLayout(layout);
+  RecordStored(key, StoreLayout(layout));
+}
+
+void Pipelines::RecordStored(const PipelineKey& key, uint32_t index) {
   if (index == kNoLayout) {
     return;
   }
@@ -368,9 +379,6 @@ void Pipelines::RecordPipeline(const PipelineKey& key, const InputLayout& layout
 // ---------------------------------------------------------------------------
 
 void Pipelines::StartPrecache() {
-  if (records_.empty()) {
-    return;
-  }
   precached_.reserve(records_.size());
   for (const Record& r : records_) {
     auto p = std::make_unique<Precached>();
@@ -381,27 +389,44 @@ void Pipelines::StartPrecache() {
   }
   // Half the processors, below normal priority: the guest boots meanwhile, and
   // a pipeline made here is one the render thread does not stop for later.
+  // The workers run with an empty list too, and stay when it is done: they
+  // make the pipelines the render thread hands them (background builds).
   const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
   const uint32_t count = std::clamp(hardware / 2, 1u, 6u);
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
   next_precache_ = 0;
-  workers_running_ = count;
+  precache_ready_ = 0;
+  precache_failed_ = 0;
+  precache_finished_ = 0;
   for (uint32_t i = 0; i < count; ++i) {
     workers_.emplace_back([this] { PrecacheWorker(); });
   }
-  REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads",
-              precached_.size(), count);
+  if (precached_.empty()) {
+    REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
+  } else {
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads",
+                precached_.size(), count);
+  }
 }
 
 void Pipelines::StopPrecache() {
-  stop_precache_ = true;
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    stop_precache_ = true;
+  }
+  work_cv_.notify_all();
   for (std::thread& worker : workers_) {
     if (worker.joinable()) {
       worker.join();
     }
   }
   workers_.clear();
+  // The workers are gone: a request that finished is taken (and recorded, so
+  // the next session has it); one still queued is dropped.
+  TakeFinishedRequests();
+  requests_.clear();
+  urgent_.clear();
   precached_by_key_.clear();
   precached_.clear();  // the GPU is idle: unclaimed pipelines die here
   aliases_.clear();
@@ -411,35 +436,89 @@ void Pipelines::PrecacheWorker() {
 #if defined(_WIN32)
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
-  while (!stop_precache_.load(std::memory_order_relaxed)) {
-    const size_t i = next_precache_.fetch_add(1);
-    if (i >= precached_.size()) {
-      break;
-    }
-    Precached& p = *precached_[i];
-    uint8_t expected = kQueued;
-    if (!p.state.compare_exchange_strong(expected, kBuilding)) {
-      continue;  // the render thread claimed it
-    }
-    plume::RenderGraphicsPipelineDesc desc;
-    ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
-    ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
-    std::unique_ptr<plume::RenderPipeline> pipeline;
-    if (BuildDesc(p.key, shaders_->Find(p.key.vs), p.key.ps ? shaders_->Find(p.key.ps) : nullptr,
-                  *p.layout, desc, &vs_result, &ps_result)) {
-      pipeline = device_->CreateGraphicsPipeline(desc, "precached guest pipeline");
-    }
-    const bool made = pipeline != nullptr;
+  for (;;) {
+    // What the render thread handed over comes first, then the next entry of
+    // the list; with neither the worker sleeps.
+    Urgent urgent;
     {
-      // The render thread may take it the moment the state says so.
-      std::lock_guard<std::mutex> lock(precache_mutex_);
-      p.pipeline = std::move(pipeline);
-      p.state = made ? kReady : kFailed;
+      std::unique_lock<std::mutex> lock(work_mutex_);
+      work_cv_.wait(lock, [this] {
+        return stop_precache_.load() || !urgent_.empty() ||
+               next_precache_.load() < precached_.size();
+      });
+      if (stop_precache_.load()) {
+        return;
+      }
+      if (!urgent_.empty()) {
+        urgent = std::move(urgent_.front());
+        urgent_.pop_front();
+      }
     }
-    ++(made ? precache_ready_ : precache_failed_);
-    precache_done_.notify_all();
+    if (urgent.request) {
+      BuildRequest(*urgent.request);
+    } else if (urgent.precached) {
+      BuildPrecached(*urgent.precached);
+    } else {
+      const size_t i = next_precache_.fetch_add(1);
+      if (i < precached_.size()) {
+        BuildPrecached(*precached_[i]);
+      }
+    }
   }
-  if (--workers_running_ == 0 && !stop_precache_) {
+}
+
+void Pipelines::BuildPrecached(Precached& p) {
+  uint8_t expected = kQueued;
+  if (!p.state.compare_exchange_strong(expected, kBuilding)) {
+    return;  // the render thread claimed it, or another worker has it
+  }
+  plume::RenderGraphicsPipelineDesc desc;
+  ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
+  ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
+  std::unique_ptr<plume::RenderPipeline> pipeline;
+  if (BuildDesc(p.key, shaders_->Find(p.key.vs), p.key.ps ? shaders_->Find(p.key.ps) : nullptr,
+                *p.layout, desc, &vs_result, &ps_result)) {
+    pipeline = device_->CreateGraphicsPipeline(desc, "precached guest pipeline");
+  }
+  const bool made = pipeline != nullptr;
+  {
+    // The render thread may take it the moment the state says so.
+    std::lock_guard<std::mutex> lock(precache_mutex_);
+    p.pipeline = std::move(pipeline);
+    p.state = made ? kReady : kFailed;
+  }
+  ++(made ? precache_ready_ : precache_failed_);
+  precache_done_.notify_all();
+  NotePrecacheEntryDone();
+}
+
+void Pipelines::BuildRequest(Request& r) {
+  uint8_t expected = kQueued;
+  if (!r.state.compare_exchange_strong(expected, kBuilding)) {
+    return;  // the render thread made it itself
+  }
+  plume::RenderGraphicsPipelineDesc desc;
+  ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
+  ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
+  std::unique_ptr<plume::RenderPipeline> pipeline;
+  if (BuildDesc(r.key, r.vs, r.ps, *r.layout, desc, &vs_result, &ps_result)) {
+    pipeline = device_->CreateGraphicsPipeline(desc, "background guest pipeline");
+  }
+  const bool made = pipeline != nullptr;
+  {
+    std::lock_guard<std::mutex> lock(precache_mutex_);
+    r.pipeline = std::move(pipeline);
+    r.vs_result = vs_result;
+    r.ps_result = ps_result;
+    r.state = made ? kReady : kFailed;
+  }
+  precache_done_.notify_all();
+}
+
+void Pipelines::NotePrecacheEntryDone() {
+  // Each entry leaves the queue once: a worker builds it, or the render thread
+  // claims it. The last one to leave says so.
+  if (precache_finished_.fetch_add(1) + 1 == precached_.size() && !stop_precache_.load()) {
     REXLOG_INFO("[gpu] pipelines: precache done in {:.1f} ms: {} ready, {} failed",
                 double(std::chrono::duration_cast<std::chrono::microseconds>(
                            std::chrono::steady_clock::now() - precache_start_)
@@ -449,7 +528,15 @@ void Pipelines::PrecacheWorker() {
   }
 }
 
-plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key,
+void Pipelines::PushUrgent(Urgent urgent) {
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    urgent_.push_back(std::move(urgent));
+  }
+  work_cv_.notify_one();
+}
+
+plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& miss,
                                                 const PipelineInputs& inputs) {
   if (precached_by_key_.empty() || !inputs.input_layout) {
     return nullptr;
@@ -468,14 +555,35 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key,
     // pipeline is this one's too.
     const auto first = pipelines_.find(p.taken_as);
     if (first == pipelines_.end() || !first->second) {
+      miss.take = Take::kFailed;
       return nullptr;
     }
     aliases_.emplace(key, first->second.get());
     ++stats_.shared;
     return first->second.get();
   }
-  uint8_t state = kQueued;
+  uint8_t state = p.state.load();
+  if ((state == kQueued || state == kBuilding) && MaySkip(miss.deferral)) {
+    // The draw may wait for it: a worker makes it, and this one before the
+    // rest of the list.
+    if (!p.asked) {
+      p.asked = true;
+      p.asked_frame = frame_;
+      ++stats_.pending_keys;
+      if (state == kQueued) {
+        Urgent urgent;
+        urgent.precached = &p;
+        PushUrgent(std::move(urgent));
+      }
+    }
+    ++stats_.pending_draws;
+    miss.take = Take::kPending;
+    return nullptr;
+  }
+  state = kQueued;
   if (p.state.compare_exchange_strong(state, kClaimed)) {
+    miss.take = Take::kMakeHere;
+    NotePrecacheEntryDone();
     ++stats_.precache_claimed;  // no worker at it yet: the caller makes it now
     p.taken = true;
     p.taken_as = key;
@@ -492,15 +600,137 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key,
   }
   std::lock_guard<std::mutex> lock(precache_mutex_);
   if (p.state.load() != kReady) {
+    miss.take = Take::kFailed;
     return nullptr;  // failed: made (and reported) on the caller's path
   }
   p.state = kClaimed;
   p.taken = true;
   p.taken_as = key;
+  if (p.asked) {
+    NotePendingTaken(p.asked_frame);
+  }
   plume::RenderPipeline* raw = p.pipeline.get();
   pipelines_.emplace(key, std::move(p.pipeline));
   ++stats_.precache_taken;
   return raw;
+}
+
+bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& inputs) {
+  if (workers_.empty() || stop_precache_.load() || !inputs.vs || !inputs.input_layout ||
+      (key.ps != 0 && !inputs.ps)) {
+    return false;
+  }
+  // The worker reads the layout and the shaders, so it gets the stored copy
+  // (the session's layout may change under it) and the pack's entries.
+  const uint32_t stored = StoreLayout(*inputs.input_layout);
+  if (stored == kNoLayout) {
+    return false;
+  }
+  auto request = std::make_shared<Request>();
+  request->key = key;
+  request->vs = inputs.vs;
+  request->ps = key.ps != 0 ? inputs.ps : nullptr;
+  request->layout = stored_layouts_[stored].get();
+  request->stored = stored;
+  request->asked_frame = frame_;
+  requests_.emplace(key, request);
+  Urgent urgent;
+  urgent.request = std::move(request);
+  PushUrgent(std::move(urgent));
+  ++stats_.pending_keys;
+  ++stats_.pending_draws;
+  return true;
+}
+
+plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& miss) {
+  const auto found = requests_.find(key);
+  if (found == requests_.end()) {
+    return nullptr;
+  }
+  Request& r = *found->second;
+  uint8_t state = r.state.load();
+  if (state == kQueued || state == kBuilding) {
+    if (MaySkip(miss.deferral)) {
+      ++stats_.pending_draws;
+      miss.take = Take::kPending;
+      return nullptr;
+    }
+    state = kQueued;
+    if (r.state.compare_exchange_strong(state, kClaimed)) {
+      // No worker at it yet: made here now, and the worker that finds it in
+      // the queue finds it claimed.
+      ++stats_.made_here_new;
+      requests_.erase(found);
+      miss.take = Take::kMakeHere;
+      return nullptr;
+    }
+    if (state == kBuilding) {
+      const auto t0 = std::chrono::steady_clock::now();
+      std::unique_lock<std::mutex> lock(precache_mutex_);
+      precache_done_.wait(lock, [&] { return r.state.load() != kBuilding; });
+      ++stats_.request_waits;
+      stats_.request_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             std::chrono::steady_clock::now() - t0)
+                                             .count());
+    }
+  }
+  plume::RenderPipeline* raw = AdoptRequest(key, r);
+  requests_.erase(found);
+  if (!raw) {
+    miss.take = Take::kReported;
+  }
+  return raw;
+}
+
+plume::RenderPipeline* Pipelines::AdoptRequest(const PipelineKey& key, Request& r) {
+  std::unique_ptr<plume::RenderPipeline> pipeline;
+  ShaderStore::ShaderResult vs_result;
+  ShaderStore::ShaderResult ps_result;
+  {
+    std::lock_guard<std::mutex> lock(precache_mutex_);
+    pipeline = std::move(r.pipeline);
+    vs_result = r.vs_result;
+    ps_result = r.ps_result;
+  }
+  if (pipeline) {
+    ++stats_.background_taken;
+    NotePendingTaken(r.asked_frame);
+    if (persist_) {
+      RecordStored(key, r.stored);
+    }
+  } else {
+    LogFailure(key, vs_result, ps_result);
+  }
+  plume::RenderPipeline* raw = pipeline.get();
+  pipelines_.emplace(key, std::move(pipeline));
+  return raw;
+}
+
+void Pipelines::TakeFinishedRequests() {
+  for (auto it = requests_.begin(); it != requests_.end();) {
+    const uint8_t state = it->second->state.load();
+    if (state == kReady || state == kFailed) {
+      AdoptRequest(it->first, *it->second);
+      it = requests_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void Pipelines::NotePendingTaken(uint64_t asked_frame) {
+  const uint64_t frames = frame_ - asked_frame;
+  ++stats_.pending_taken;
+  stats_.pending_frames_sum += frames;
+  stats_.pending_frames_max = std::max(stats_.pending_frames_max, frames);
+}
+
+void Pipelines::EndFrame() {
+  ++frame_;
+  if (!requests_.empty()) {
+    TakeFinishedRequests();
+  }
+  Autosave();
 }
 
 void Pipelines::LoadRecords() {
@@ -987,7 +1217,25 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
   return true;
 }
 
-plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInputs& inputs) {
+void Pipelines::LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
+                           ShaderStore::ShaderResult ps_result) {
+  ++stats_.failed;
+  if (stats_.failed <= 16) {
+    REXLOG_ERROR("[gpu] pipeline for vs {:016X}/{} ps {:016X}/{} not created (vs shader {}, ps "
+                 "shader {}, {} colour targets, depth format {})",
+                 key.vs, key.vs_variant, key.ps, key.ps_variant,
+                 ShaderStore::ResultName(vs_result), ShaderStore::ResultName(ps_result),
+                 key.color_count, key.depth_format);
+  }
+}
+
+plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInputs& inputs,
+                                      const Deferral* deferral, bool* pending) {
+  if (pending) {
+    *pending = false;
+  } else {
+    deferral = nullptr;  // nowhere to say "pending": the draw may not wait
+  }
   const auto it = pipelines_.find(key);
   if (it != pipelines_.end()) {
     return it->second.get();
@@ -995,8 +1243,38 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   if (const auto alias = aliases_.find(key); alias != aliases_.end()) {
     return alias->second;
   }
-  if (plume::RenderPipeline* precached = TakePrecached(key, inputs)) {
-    return precached;
+  Miss miss;
+  miss.deferral = deferral;
+  // A background build asked for earlier, then the precache list's entry.
+  if (!requests_.empty()) {
+    if (plume::RenderPipeline* requested = TakeRequested(key, miss)) {
+      return requested;
+    }
+  }
+  if (miss.take == Take::kNone) {
+    if (plume::RenderPipeline* precached = TakePrecached(key, miss, inputs)) {
+      return precached;
+    }
+  }
+  switch (miss.take) {
+    case Take::kPending:
+      *pending = true;
+      return nullptr;
+    case Take::kReported:
+      return nullptr;
+    case Take::kNone:
+      // Nobody has it: a worker makes it when the draw may wait for it.
+      if (MaySkip(deferral) && StartRequest(key, inputs)) {
+        *pending = true;
+        return nullptr;
+      }
+      ++stats_.made_here_new;
+      break;
+    case Take::kFailed:
+      ++stats_.made_here_retry;
+      break;
+    case Take::kMakeHere:
+      break;
   }
   const auto t0 = std::chrono::steady_clock::now();
   ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
@@ -1019,14 +1297,7 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
       RecordPipeline(key, *inputs.input_layout);
     }
   } else {
-    ++stats_.failed;
-    if (stats_.failed <= 16) {
-      REXLOG_ERROR("[gpu] pipeline for vs {:016X}/{} ps {:016X}/{} not created (vs shader {}, ps "
-                   "shader {}, {} colour targets, depth format {})",
-                   key.vs, key.vs_variant, key.ps, key.ps_variant,
-                   ShaderStore::ResultName(vs_result), ShaderStore::ResultName(ps_result),
-                   key.color_count, key.depth_format);
-    }
+    LogFailure(key, vs_result, ps_result);
   }
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));
