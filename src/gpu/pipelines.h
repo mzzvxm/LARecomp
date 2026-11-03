@@ -41,9 +41,11 @@
 //
 // Persistence (M5.3; mcla_gpu_pipeline_cache): every pipeline
 // created is recorded -- its key, with the input layout by content (the
-// session's InputLayout::id means nothing to the next one) -- and on Shutdown
-// the records go to cache/mcla_gpu_pipelines_<backend>.bin beside the
-// executable, the earlier ones first, read back at the next Initialize.
+// session's InputLayout::id means nothing to the next one) -- and the records
+// go to cache/mcla_gpu_pipelines_<backend>.bin beside the executable, the
+// earlier ones first, read back at the next Initialize. They are written on
+// Shutdown and during play (Autosave), so a crash or a killed process keeps
+// what the session had seen by then.
 // Precache (M5.3b): workers make the records' pipelines ahead of use, in the
 // file's order; Get takes one that is ready, waits for one being made, and
 // makes one no worker has taken yet itself (the workers then skip it). A
@@ -52,7 +54,8 @@
 // and so the pipeline: the later keys alias the first one's.
 //
 // Threading: the render thread; the precache workers touch only their own
-// records, the ShaderStore (GetShader locks) and the device.
+// records, the ShaderStore (GetShader locks) and the device; the autosave
+// thread only the bytes it was given and the file.
 // ===========================================================================
 
 #include <atomic>
@@ -161,6 +164,11 @@ class Pipelines {
   // (logged once per key).
   plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs);
 
+  // Once a frame, on the render thread: writes the records to the file when
+  // there are new ones and the last write was a while ago. The file is written
+  // on another thread.
+  void Autosave();
+
   struct Stats {
     uint64_t created = 0;      // on the render thread, at draw time
     uint64_t failed = 0;
@@ -204,7 +212,11 @@ class Pipelines {
   // depth bias of its keys (another API's file read by one with a dynamic
   // bias). Returns the records added.
   size_t LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias);
+  // The file's bytes for the records as they are now. Empty: nothing to write.
+  std::vector<uint8_t> SerializeRecords() const;
+  void WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records, size_t layouts) const;
   void SaveRecords();
+  void JoinAutosave();
 
   // The description of `key`'s pipeline with the given shaders and layout;
   // false (the results say why) when a shader cannot be had.
@@ -248,6 +260,10 @@ class Pipelines {
   std::unordered_set<PipelineKey, PipelineKeyHash> recorded_;
   size_t loaded_records_ = 0;
   size_t own_file_records_ = 0;
+  size_t saved_records_ = 0;  // what the file holds, or what the running autosave will leave in it
+  std::chrono::steady_clock::time_point last_save_;
+  std::thread autosave_thread_;
+  std::atomic<bool> autosave_running_{false};
   static constexpr uint32_t kNoLayout = 0xFFFFFFFFu;  // a layout that cannot be persisted
 
   // Precache: one entry per loaded record, its state moved by

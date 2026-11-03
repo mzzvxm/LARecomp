@@ -246,6 +246,7 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
 
 void Pipelines::Shutdown() {
   StopPrecache();
+  JoinAutosave();
   if (persist_ && shaders_) {
     SaveRecords();
   }
@@ -495,8 +496,10 @@ void Pipelines::LoadRecords() {
   // part of the key: an API with a dynamic bias zeroes it.
   const Backend other = ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan : Backend::kD3D12;
   own_file_records_ = LoadFile(cache_path_, ActiveBackend(), false);
+  saved_records_ = own_file_records_;
   LoadFile(other_cache_path_, other, dynamic_depth_bias_);
   loaded_records_ = records_.size();
+  last_save_ = std::chrono::steady_clock::now();
 }
 
 size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias) {
@@ -614,10 +617,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   return added;
 }
 
-void Pipelines::SaveRecords() {
-  if (records_.size() == own_file_records_) {
-    return;  // nothing beyond what this API's file already holds
-  }
+std::vector<uint8_t> Pipelines::SerializeRecords() const {
   CacheHeader header;
   std::memcpy(header.magic, kCacheMagic, sizeof(kCacheMagic));
   header.version = kCacheVersion;
@@ -638,13 +638,18 @@ void Pipelines::SaveRecords() {
     out.insert(out.end(), key, key + sizeof(r.key));
     Put32(out, r.layout);
   }
+  return out;
+}
+
+void Pipelines::WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records,
+                               size_t layouts) const {
   std::error_code ec;
   std::filesystem::create_directories(cache_path_.parent_path(), ec);
   std::filesystem::path temp = cache_path_;
   temp += ".tmp";
   {
     std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-    file.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+    file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
     if (!file) {
       REXLOG_ERROR("[gpu] pipelines: the cache {} could not be written",
                    temp.string());
@@ -659,8 +664,45 @@ void Pipelines::SaveRecords() {
   }
   REXLOG_INFO("[gpu] pipelines: {} records ({} new this session, {} from the other API's file) "
               "and {} layouts written to {}",
-              records_.size(), records_.size() - loaded_records_,
-              loaded_records_ - own_file_records_, stored_layouts_.size(), cache_path_.string());
+              records, records - loaded_records_, loaded_records_ - own_file_records_, layouts,
+              cache_path_.string());
+}
+
+void Pipelines::SaveRecords() {
+  // Written even when an autosave holds everything already: one that failed
+  // would otherwise lose the session's records.
+  if (records_.size() == own_file_records_) {
+    return;  // nothing beyond what this API's file already holds
+  }
+  WriteCacheFile(SerializeRecords(), records_.size(), stored_layouts_.size());
+}
+
+void Pipelines::JoinAutosave() {
+  if (autosave_thread_.joinable()) {
+    autosave_thread_.join();
+  }
+}
+
+void Pipelines::Autosave() {
+  if (!persist_ || records_.size() == saved_records_ ||
+      autosave_running_.load(std::memory_order_acquire)) {
+    return;
+  }
+  constexpr auto kInterval = std::chrono::seconds(30);
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_save_ < kInterval) {
+    return;
+  }
+  last_save_ = now;
+  saved_records_ = records_.size();
+  JoinAutosave();  // finished: only the handle is left
+  autosave_running_.store(true, std::memory_order_release);
+  autosave_thread_ = std::thread(
+      [this, bytes = SerializeRecords(), records = records_.size(),
+       layouts = stored_layouts_.size()] {
+        WriteCacheFile(bytes, records, layouts);
+        autosave_running_.store(false, std::memory_order_release);
+      });
 }
 
 void Pipelines::Report(uint32_t kind, const char* what) {
