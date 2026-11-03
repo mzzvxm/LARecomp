@@ -216,6 +216,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
+    markers_.Initialize(device_);
     capture_.Initialize();
     census_.SetEnabled(REXCVAR_GET(mcla_gpu_memory_census));
     validate_ = REXCVAR_GET(mcla_gpu_validate);
@@ -298,6 +299,7 @@ void Renderer::Shutdown() {
   if (frames_.is_open()) {
     scene_.EndFrame(nullptr);
     frames_.Abandon();
+    markers_.Drop();
   }
   // 2. Drain. Every retirement is released here, release actions included,
   //    while all the components they name are still alive. Skipped by
@@ -386,7 +388,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       if (validate_) {
         validator_.OnClear(record);
       }
-      scene_.OnClear(record, OpenFrameList());
+      plume::RenderCommandList* list = OpenFrameList();
+      PerfScope label(markers_, list, "Clear", PerfMarkers::kEvent);
+      scene_.OnClear(record, list);
       return;
     }
     case RecordType::kResolve: {
@@ -394,7 +398,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       if (validate_) {
         validator_.OnResolve(record);
       }
-      scene_.OnResolve(record, OpenFrameList());
+      plume::RenderCommandList* list = OpenFrameList();
+      PerfScope label(markers_, list, "Resolve", PerfMarkers::kEvent);
+      scene_.OnResolve(record, list);
       return;
     }
     case RecordType::kTilingBegin: {
@@ -422,18 +428,29 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       const auto& lock = *reinterpret_cast<const LockRecord*>(payload);
       resolve_.OnLock(lock, [this, &lock] {
         if (frames_.is_open()) {
+          markers_.Push(frames_.list(), "LockWriteBack", PerfMarkers::kEvent);
           scene_.BeforeFlush(frames_.list());
           // The encodes still waiting write bytes the write-back copies.
           resolve_memory_.FlushForLock(frames_.list(), lock.address, lock.size);
           pass_timing_.Mark(frames_.list(), "lock write-back");
-          scene_.OnListChanged(frames_.FlushBatch());
+          markers_.Pop(frames_.list(), PerfMarkers::kEvent);
+          // The labels open here (Frame, Scene) stay open across the flush and end in the
+          // frame's next list, on the same queue: the frame keeps one Frame.
+          plume::RenderCommandList* next = frames_.FlushBatch();
+          if (!next) {
+            markers_.Drop();
+          }
+          scene_.OnListChanged(next);
         }
       });
       return;
     }
-    case RecordType::kComposite:
-      scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), OpenFrameList());
+    case RecordType::kComposite: {
+      plume::RenderCommandList* list = OpenFrameList();
+      PerfScope label(markers_, list, "Composite", PerfMarkers::kEvent);
+      scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), list);
       return;
+    }
     case RecordType::kPad:
     case RecordType::kCount:
       break;
@@ -474,6 +491,9 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   pass_timing_.BeginFrame(list, slot);
   heap_.RecordPendingBarriers(list);
   scene_.BeginFrame(list, slot);
+  markers_.BeginFrame();
+  markers_.Push(list, "Frame", PerfMarkers::kFrame);
+  markers_.Push(list, "Scene", PerfMarkers::kPhase);
   return list;
 }
 
@@ -482,7 +502,11 @@ void Renderer::MaybeFlushBatch() {
     return;
   }
   scene_.BeforeFlush(frames_.list());
-  scene_.OnListChanged(frames_.FlushBatch());
+  plume::RenderCommandList* next = frames_.FlushBatch();
+  if (!next) {
+    markers_.Drop();
+  }
+  scene_.OnListChanged(next);
 }
 
 void Renderer::SubmitFrameWithoutPresent() {
@@ -491,7 +515,10 @@ void Renderer::SubmitFrameWithoutPresent() {
   }
   plume::RenderCommandList* list = frames_.list();
   const uint32_t slot = frames_.slot();
+  markers_.Pop(list, PerfMarkers::kPhase);  // Scene
+  markers_.Push(list, "EndOfFrame", PerfMarkers::kPhase);
   scene_.EndFrame(list);
+  markers_.PopAll(list);
   timing_.CompleteFrame(list, slot);
   pass_timing_.CompleteFrame(list, slot);
   if (frames_.Submit(nullptr, 0, nullptr, 0)) {
@@ -549,6 +576,7 @@ void Renderer::ExecutePresent(PresentSource source) {
     if (frames_.is_open()) {
       scene_.EndFrame(nullptr);
       frames_.Abandon();
+      markers_.Drop();
     }
     return;
   }
@@ -593,7 +621,10 @@ void Renderer::ExecutePresent(PresentSource source) {
   const uint32_t slot = frames_.slot();
   // Outside any render pass: the scene's last work (geometry promotions), then
   // the overlay's texture uploads.
+  markers_.Pop(list, PerfMarkers::kPhase);  // Scene
+  markers_.Push(list, "EndOfFrame", PerfMarkers::kPhase);
   scene_.EndFrame(list);
+  markers_.Pop(list, PerfMarkers::kPhase);
   overlay_.Prepare(list, slot);
   RecordPresentPass(list, slot, image, source);
 
@@ -655,6 +686,7 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   // it comes from memory), the gamma table and FSR1's passes
   // before the back buffer's.
   pass_timing_.Mark(list, "present");
+  markers_.Push(list, "Present", PerfMarkers::kPhase);
   present_.Prepare(list, slot, swap_chain_.width(), swap_chain_.height());
   if (source == PresentSource::kGuest) {
     // An idle present shows the same front buffer again: not a new frame.
@@ -668,13 +700,17 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   // Black around the letterboxed front buffer.
   list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
   present_.Draw(list, swap_chain_.width(), swap_chain_.height());
+  markers_.Pop(list, PerfMarkers::kPhase);  // Present
   timing_.Mark(list, slot, GpuTiming::kOverlayBegin);
   pass_timing_.Mark(list, "overlay");
+  markers_.Push(list, "Overlay", PerfMarkers::kPhase);
   overlay_draws_ += overlay_.Draw(list, slot, swap_chain_.width(), swap_chain_.height());
+  markers_.Pop(list, PerfMarkers::kPhase);
   timing_.Mark(list, slot, GpuTiming::kOverlayEnd);
   list->setFramebuffer(nullptr);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
+  markers_.PopAll(list);  // Frame
   timing_.Mark(list, slot, GpuTiming::kFrameEnd);
   pass_timing_.CompleteFrame(list, slot);
 }

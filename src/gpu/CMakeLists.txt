@@ -35,6 +35,7 @@ add_library(larecomp_gpu OBJECT
     native_window.cpp
     overlay.cpp
     pass_timing.cpp
+    perf_markers.cpp
     pipelines.cpp
     post.cpp
     present.cpp

@@ -63,6 +63,7 @@
 #include "memory_census.h"
 #include "overlay.h"
 #include "pass_timing.h"
+#include "perf_markers.h"
 #include "pipelines.h"
 #include "post.h"
 #include "present.h"
@@ -192,6 +193,7 @@ class Renderer final : public RenderThread::Executor {
   OverlayRenderer overlay_;
   GpuTiming timing_;
   PassTiming pass_timing_;  // per-pass GPU time, mcla_gpu_pass_timing
+  PerfMarkers markers_;     // profiler labels, mcla_gpu_perf_markers
   FrameCapture capture_;
   RenderThread thread_;
 
