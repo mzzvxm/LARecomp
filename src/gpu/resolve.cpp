@@ -1543,6 +1543,16 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         memory_copy.offset_y = -dy;
         memory_copy.samples = push.samples;
         memory_copy.fill = push.fill;
+        // A depth resolve into k_8_8_8_8: its RGBA8 product holds the dword's bytes
+        // exactly, so the encode can read the product and wait like a colour one
+        // (resolve_memory_cs.hlsl). Only at a whole scale, where the product texel at
+        // a guest texel's centre is the pixel its EDRAM sample was copied to.
+        if (mode == kModeDepthRaw8888 && resolution_scale.whole()) {
+          memory_copy.product_slot =
+              p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
+                            format::kHostSwizzleRGBA, "resolve product view");
+          memory_copy.from_product = memory_copy.product_slot != kInvalidBindlessSlot;
+        }
       } else {
         memory_copy.product_slot =
             p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
@@ -1551,7 +1561,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       if (!depth_source && memory_copy.product_slot == kInvalidBindlessSlot) {
         Fail(Failure::kProduct, std::format("{}: no view for the resolve memory", key.Describe()));
       } else {
-        if (depth_source && pass_timing_->enabled()) {
+        if (depth_source && !memory_copy.from_product && pass_timing_->enabled()) {
           pass_timing_->Mark(list, "resolve memory encode (depth)");
         }
         resolve_memory_->Encode(list, memory_copy);

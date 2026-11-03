@@ -34,7 +34,10 @@
 // rectangle as bytes in the destination's layout and endian -- colour from
 // the product the conversion pass wrote, depth from the EDRAM target (stencil
 // included). Depth is encoded right after its resolve: the EDRAM target
-// changes with the next draw. Colour waits in a batch (each dispatch after its
+// changes with the next draw. The one exception is a depth resolve into
+// k_8_8_8_8 (Copy::from_product): its RGBA8 product holds the dword's four
+// bytes exactly, so it is encoded from the product like a colour copy.
+// Colour waits in a batch (each dispatch after its
 // conversion pass was a GPU bubble: 1.1 ms/frame for 56 resolves):
 // the product keeps its texels until a resolve writes it again, so the batch
 // is recorded at the end of the frame, or earlier when something must see the
@@ -152,6 +155,13 @@ class ResolveMemory {
     // Depth: the host columns and rows at the target's origin the half pixel
     // left uncovered (the resolve's ResolvePush::fill), read from the next.
     uint32_t fill = 0;
+    // A depth copy whose product holds the dword's bytes exactly (a resolve
+    // into k_8_8_8_8, kModeDepthRaw8888, at a whole scale): `product_slot` is
+    // set as for colour, the encode reads the product instead of the EDRAM
+    // planes, and so it waits in the batch and is dropped when a later resolve
+    // writes the rectangle again, as a colour copy does. The depth fields stay
+    // filled: the test aid's reference encodes from the planes at once.
+    bool from_product = false;
   };
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not
@@ -314,7 +324,7 @@ class ResolveMemory {
   VertexChunk* VertexChunkFor(uint64_t bytes);
   void EvictSome();
   void Fail(const char* what, const std::string& detail);
-  // A colour encode waiting in the batch.
+  // A colour encode (or a depth one that reads its product) waiting in the batch.
   struct Pending {
     TextureKey key;
     uint32_t level = 0;
@@ -324,6 +334,7 @@ class ResolveMemory {
     uint32_t groups_x = 0;
     uint32_t groups_y = 0;
     uint64_t frame = 0;  // frame_ when it was made
+    bool from_product = false;  // a depth copy that reads its product (Copy::from_product)
     std::array<uint32_t, 17> push{};
   };
   std::vector<Pending> pending_;
@@ -447,6 +458,8 @@ class ResolveMemory {
   struct Stats {
     uint64_t encodes = 0;
     uint64_t encodes_dropped = 0;  // replaced by a later resolve of the same rectangle
+    uint64_t depth_product_encodes = 0;  // depth copies encoded from their product
+    uint64_t depth_product_dropped = 0;  // ... of which replaced before running
     uint64_t flushes = 0;          // batches recorded
     uint64_t waves = 0;            // barriers inside batches (overlapping pages)
     uint64_t encoded_bytes = 0;
