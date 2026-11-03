@@ -31,7 +31,8 @@
 
 REXCVAR_DEFINE_UINT32(
     mcla_gpu_resolve_memory_encode_delay, 2, "MCLA/GPU",
-    "Frames a colour resolve's encode into the resolve memory may wait. 0: every "
+    "Frames a colour resolve's encode into the resolve memory (and that of a depth resolve into "
+    "k_8_8_8_8) may wait. 0: every "
     "encode of a frame is recorded at its end. N: recorded once a reader or writer "
     "of its pages needs it, or after N frames; a resolve that rewrites the same rectangle "
     "replaces it before it runs, so most are never recorded (75% on a drive). 2 by default: on a "
@@ -811,7 +812,10 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
       pages_.push_back(page);
     }
   }
-  if (copy.depth) {
+  // A depth copy reads the EDRAM planes now, unless its product holds the same
+  // bytes (from_product): then it joins the batch like a colour copy.
+  const bool from_edram = copy.depth && !copy.from_product;
+  if (from_edram) {
     // Recorded now, after every colour encode waiting: their pages may overlap.
     const PageSpan span{low_page, high_page};
     FlushFor(list, FlushReason::kDepthEncode, &span, 1);
@@ -849,7 +853,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
 
   EncodePush push{};
   push.mode = copy.mode;
-  if (copy.depth) {
+  if (from_edram) {
     push.source = copy.source_slot;
     push.stencil = copy.stencil_slot;
     push.offset_x = copy.offset_x;
@@ -875,7 +879,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
       (uint32_t(copy.x1 - push.group_x0) + uint32_t(group) - 1) / uint32_t(group);
   const uint32_t dispatch_x = (groups_x + 7) / 8;
   const uint32_t dispatch_y = (uint32_t(copy.y1 - copy.y0) + 7) / 8;
-  if (copy.depth) {
+  if (from_edram) {
     PoolBarrier(list, PoolAccess::kComputeWrite);
     list->setComputePipelineLayout(encode_layout_.get());
     for (uint32_t set = 0; set < 4; ++set) {
@@ -900,6 +904,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
     p.groups_x = dispatch_x;
     p.groups_y = dispatch_y;
     p.frame = frame_;
+    p.from_product = copy.from_product;
     static_assert(sizeof(p.push) == sizeof(push));
     std::memcpy(p.push.data(), &push, sizeof(push));
     pending_.push_back(p);
@@ -939,6 +944,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
   ArmPages(pages_);
   TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)), false);
   ++stats_.encodes;
+  stats_.depth_product_encodes += copy.from_product;
   stats_.encoded_bytes += (uint64_t(copy.x1 - copy.x0) * uint64_t(copy.y1 - copy.y0)) << bpb_log2;
   return true;
 }
@@ -968,6 +974,7 @@ void ResolveMemory::BeforeResolve(plume::RenderCommandList* list, const TextureK
       if (x0 <= p.x0 && y0 <= p.y0 && x1 >= p.x1 && y1 >= p.y1) {
         // Every byte it would write, the new resolve writes again, later.
         ++stats_.encodes_dropped;
+        stats_.depth_product_dropped += p.from_product;
         continue;
       }
       overlap = true;
@@ -1885,6 +1892,11 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
   if (delay_ > 0 || stats_.waiting_max > 0) {
     text += std::format(" | encode delay {}: {:.1f} waiting after each frame (max {})", delay_,
                         double(stats_.waiting_sum) / f, stats_.waiting_max);
+  }
+  if (stats_.depth_product_encodes) {
+    text += std::format(
+        " | depth copies encoded from their product {:.1f}/frame, {:.1f} replaced before running",
+        double(stats_.depth_product_encodes) / f, double(stats_.depth_product_dropped) / f);
   }
   if (reach_) {
     text += std::format(" | reach: {} pages marked by inherited resolves", stats_.inherited_marked);
