@@ -53,7 +53,11 @@
 // console's resolve-to-vertex-buffer -- swapped by the stream's plan into a
 // device buffer of the frame, which the draw binds.
 //
-// Threading: render thread only, after Initialize.
+// The decode's pipelines (one per destination format) are made ahead of the
+// first decode, on the host builder thread (host_precache.h).
+//
+// Threading: render thread only, after Initialize; MakeDecodePipeline also runs
+// on the host builder thread and reads only the shader and layout Initialize made.
 // ===========================================================================
 
 #include <array>
@@ -288,7 +292,11 @@ class ResolveMemory {
   // CPU wrote the range (Sync), reported when it lands on a texture decoded in
   // the last frames.
   void TouchDecoded(uint32_t start, uint32_t length, bool cpu);
+  // The decode pass's pipeline for a destination format: the first use takes
+  // it from the host precache (host_precache.h) or makes it. Null on failure.
   plume::RenderPipeline* DecodePipeline(plume::RenderFormat format);
+  // The creation itself (also called on the host builder thread).
+  std::unique_ptr<plume::RenderPipeline> MakeDecodePipeline(plume::RenderFormat format);
   void DestroyDecoded(Decoded& decoded, bool for_shutdown);
   // The vertex copies' destination: per frame slot, device
   // buffers (VERTEX | UNORDERED_ACCESS) used from the start each time the

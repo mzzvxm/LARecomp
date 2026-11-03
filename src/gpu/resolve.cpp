@@ -211,6 +211,63 @@ void UpdateInheritedCells(ResolveCache::Product::Coverage& c, uint32_t level_wid
   }
 }
 
+// The copy pass's variants listed for the host builder (ListPrecache), likeliest
+// first. A variant is (depth or colour source, a source with more than one
+// sample, destination format); the destination formats are the host formats
+// of the conversions Execute has (its `mode` switch): colour into R8G8B8A8
+// (k_8_8_8_8), R16G16B16A16_FLOAT (k_16_16_16_16_EXPAND / _FLOAT), R32_FLOAT
+// (k_32_FLOAT), R32G32_FLOAT (k_32_32_FLOAT, the rain's particle state), R8_UNORM
+// (k_8) and B5G5R5A1_UNORM (k_1_5_5_5); depth into R32_FLOAT (k_24_8,
+// k_24_8_FLOAT, k_32_FLOAT) and R8G8B8A8 (raw k_8_8_8_8). B5G5R5A1 is the
+// one its owner keeps (host_precache.h): an optional render target format, and
+// no pass-timing label in the logs of the measured drives is a resolve into
+// it. The first six are the labels those logs show (MCLA, 1280x720 products);
+// the rest are the same conversions at the other sample count and the
+// formats of the rarer targets.
+struct ResolveVariant {
+  bool depth;
+  bool msaa;
+  plume::RenderFormat format;
+};
+constexpr plume::RenderFormat kRgba8 = plume::RenderFormat::R8G8B8A8_UNORM;
+constexpr plume::RenderFormat kRgba16F = plume::RenderFormat::R16G16B16A16_FLOAT;
+constexpr plume::RenderFormat kR32F = plume::RenderFormat::R32_FLOAT;
+constexpr plume::RenderFormat kRg32F = plume::RenderFormat::R32G32_FLOAT;
+constexpr plume::RenderFormat kR8 = plume::RenderFormat::R8_UNORM;
+constexpr ResolveVariant kListedResolves[] = {
+    {false, true, kRgba8},
+    {true, true, kR32F},
+    {false, true, kRgba16F},
+    {false, false, kRgba8},
+    {false, false, kRgba16F},
+    {true, true, kRgba8},
+    {false, false, kR32F},
+    {false, true, kR32F},
+    {true, false, kR32F},
+    {true, false, kRgba8},
+    {false, false, kRg32F},
+    {false, true, kRg32F},
+    {false, false, kR8},
+    {false, true, kR8},
+};
+// The reduction's destination formats listed when the render scale is not 1x
+// (ResolveCache::ListPrecache): the formats of the three common products.
+constexpr plume::RenderFormat kListedReduces[] = {kRgba8, kRgba16F, kR32F};
+
+// The key of a copy pipeline in ResolveCache::pipelines_.
+constexpr uint32_t PipelineKeyOf(bool depth, bool msaa, plume::RenderFormat format) {
+  return (uint32_t(depth) << 9) | (uint32_t(msaa) << 8) | uint32_t(format);
+}
+
+// Their names: the debug name, and the entry's in the host precache's log.
+std::string ResolvePipelineName(bool depth, bool msaa, plume::RenderFormat format) {
+  return std::format("resolve {}{} -> {}", depth ? "depth" : "colour", msaa ? " msaa" : "",
+                     format::PlumeFormatName(format));
+}
+std::string ReducePipelineName(plume::RenderFormat format) {
+  return std::format("resolve product reduced -> {}", format::PlumeFormatName(format));
+}
+
 }  // namespace
 
 ResolveCache::~ResolveCache() {
@@ -248,10 +305,35 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   if (!reduce_shader_) {
     return false;
   }
+  ListPrecache();
   return true;
 }
 
+void ResolveCache::ListPrecache() {
+  HostPrecache& precache = passes_->precache();
+  for (const ResolveVariant& v : kListedResolves) {
+    const uint64_t key =
+        HostPrecache::Key(HostPrecache::kResolve, PipelineKeyOf(v.depth, v.msaa, v.format));
+    precache.Add(key, ResolvePipelineName(v.depth, v.msaa, v.format),
+                 [this, v] { return MakePipeline(v.depth, v.msaa, v.format); });
+  }
+  // The reduction runs only for a reader at another scale than its product:
+  // with every target at 1x there is none (0 through a reduced copy in the
+  // measured drives).
+  if (!edram_->resolution_scale().unit()) {
+    for (plume::RenderFormat format : kListedReduces) {
+      precache.Add(HostPrecache::Key(HostPrecache::kResolveReduce, uint32_t(format)),
+                   ReducePipelineName(format),
+                   [this, format] { return MakeReducePipeline(format); });
+    }
+  }
+}
+
 void ResolveCache::Shutdown() {
+  // The host builder's functions name this cache's shaders: stop it first.
+  if (passes_) {
+    passes_->precache().Stop();
+  }
   // The GPU is idle and the heap goes next: nothing is handed back to it.
   for (auto& [key, product] : products_) {
     product->views.Drop();
@@ -798,18 +880,24 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
 }
 
 plume::RenderPipeline* ResolveCache::Pipeline(bool depth, bool msaa, plume::RenderFormat format) {
-  const uint32_t key = (uint32_t(depth) << 9) | (uint32_t(msaa) << 8) | uint32_t(format);
+  const uint32_t key = PipelineKeyOf(depth, msaa, format);
   auto it = pipelines_.find(key);
   if (it != pipelines_.end()) {
     return it->second.get();
   }
-  const std::string name = std::format("resolve {}{} -> {}", depth ? "depth" : "colour",
-                                       msaa ? " msaa" : "", format::PlumeFormatName(format));
-  std::unique_ptr<plume::RenderPipeline> pipeline =
-      passes_->CreatePipeline(*shaders_[depth][msaa], format, name.c_str());
+  // Made ahead when listed; a variant nobody listed is made here.
+  std::unique_ptr<plume::RenderPipeline> pipeline = passes_->precache().Acquire(
+      HostPrecache::Key(HostPrecache::kResolve, key), ResolvePipelineName(depth, msaa, format),
+      [&] { return MakePipeline(depth, msaa, format); });
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));
   return raw;
+}
+
+std::unique_ptr<plume::RenderPipeline> ResolveCache::MakePipeline(bool depth, bool msaa,
+                                                                  plume::RenderFormat format) {
+  const std::string name = ResolvePipelineName(depth, msaa, format);
+  return passes_->CreatePipeline(*shaders_[depth][msaa], format, name.c_str());
 }
 
 plume::RenderPipeline* ResolveCache::ReducePipeline(plume::RenderFormat format) {
@@ -818,15 +906,20 @@ plume::RenderPipeline* ResolveCache::ReducePipeline(plume::RenderFormat format) 
   if (it != reduce_pipelines_.end()) {
     return it->second.get();
   }
-  const std::string name =
-      std::format("resolve product reduced -> {}", format::PlumeFormatName(format));
-  std::unique_ptr<plume::RenderPipeline> pipeline =
-      passes_->CreatePipeline(*reduce_shader_, format, name.c_str());
+  std::unique_ptr<plume::RenderPipeline> pipeline = passes_->precache().Acquire(
+      HostPrecache::Key(HostPrecache::kResolveReduce, key), ReducePipelineName(format),
+      [&] { return MakeReducePipeline(format); });
   plume::RenderPipeline* raw = pipeline.get();
   if (raw) {
     reduce_pipelines_.emplace(key, std::move(pipeline));
   }
   return raw;
+}
+
+std::unique_ptr<plume::RenderPipeline> ResolveCache::MakeReducePipeline(
+    plume::RenderFormat format) {
+  const std::string name = ReducePipelineName(format);
+  return passes_->CreatePipeline(*reduce_shader_, format, name.c_str());
 }
 
 void ResolveCache::ReleaseReduced(Product& product) {

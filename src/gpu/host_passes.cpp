@@ -42,6 +42,8 @@ bool HostPasses::Initialize(Device& device, FrameRing& frames, BindlessHeap& hea
 }
 
 void HostPasses::Shutdown() {
+  // The builder uses the layout and the vertex shader below.
+  precache_.Stop();
   vertex_shader_.reset();
   layout_.reset();
   device_ = nullptr;

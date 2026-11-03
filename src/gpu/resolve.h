@@ -44,7 +44,12 @@
 // conversions above, a destination offset that is not a whole number of 32x32
 // tiles (the console's addressing would scatter it; copied as a plain offset).
 //
-// Threading: render thread only, after Initialize.
+// The copy pass's pipelines (one per source kind and destination format) are
+// made ahead of the first resolve, on the host builder thread (host_precache.h).
+//
+// Threading: render thread only, after Initialize; MakePipeline and
+// MakeReducePipeline also run on the host builder thread and read only the
+// shaders and the HostPasses that Initialize made.
 // ===========================================================================
 
 #include <array>
@@ -242,7 +247,16 @@ class ResolveCache {
   Product* Activate(const TextureKey& key, plume::RenderFormat format, Scale scale,
                     plume::RenderCommandList* list, std::string* why);
   plume::RenderFramebuffer* LevelFramebuffer(Product& product, uint32_t level);
+  // The copy pass's pipeline for a source and a destination format: the first
+  // use takes it from the host precache (host_precache.h), where Initialize
+  // listed the variants a session uses, or makes it. Null when it failed.
   plume::RenderPipeline* Pipeline(bool depth, bool msaa, plume::RenderFormat format);
+  // The creation itself (also called on the host builder thread).
+  std::unique_ptr<plume::RenderPipeline> MakePipeline(bool depth, bool msaa,
+                                                      plume::RenderFormat format);
+  std::unique_ptr<plume::RenderPipeline> MakeReducePipeline(plume::RenderFormat format);
+  // Lists the pipelines above that a session makes (Initialize).
+  void ListPrecache();
   void TransitionProduct(plume::RenderCommandList* list, Product& product,
                          plume::RenderTextureLayout layout);
   void Fail(Failure failure, const std::string& detail);

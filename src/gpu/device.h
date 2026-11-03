@@ -17,9 +17,14 @@
 //
 // Threading: Initialize/Shutdown on the thread that owns the renderer's
 // lifecycle; queue() submission only from the render thread. Create* is called
-// from the render thread today. reblue and reeot also create pipelines from
-// precache worker threads; whether every Plume create path is safe for that is
-// to be checked per backend when the precache workers land, not assumed here.
+// from the render thread and the lifecycle thread. CreateGraphicsPipeline is
+// also called from the guest pipelines' precache workers (pipelines.h) and the
+// host builder thread (host_precache.h). For that call, in the pinned Plume:
+// the D3D12 graphics pipeline's constructor takes no lock and keeps no shared
+// state (ID3D12Device::CreateGraphicsPipelineState is free-threaded), and the
+// Vulkan one keeps its scratch vectors thread_local and passes no pipeline
+// cache to vkCreateGraphicsPipelines. The other Create* are not checked for a
+// second thread: do not call them from one.
 // ===========================================================================
 
 #include <atomic>

@@ -15,14 +15,22 @@
 // passes Load texels and leave it unused; hlsl/host_pass_samplers.hlsli) and
 // the push range at (b0, space4).
 //
+// The pipelines the passes' owners can name at start are made ahead of their
+// first use, off the render thread (host_precache.h); precache() is where they
+// are listed and asked for.
+//
 // Threading: Initialize/Shutdown on the lifecycle thread; the rest on the
-// render thread.
+// render thread. CreatePipeline and CreateShader read only what Initialize
+// made and call the Device's validated creation, so the host builder thread
+// (host_precache.h) calls them too.
 // ===========================================================================
 
 #include <cstdint>
 #include <memory>
 
 #include <plume_render_interface.h>
+
+#include "host_precache.h"
 
 namespace mcla::gpu {
 
@@ -53,8 +61,15 @@ class HostPasses {
   HostPasses& operator=(const HostPasses&) = delete;
 
   bool Initialize(Device& device, FrameRing& frames, BindlessHeap& heap);
-  // No pipeline made by CreatePipeline may still exist.
+  // No pipeline made by CreatePipeline may still exist (the host builder
+  // thread is stopped first, and the pipelines it made that nobody took die).
   void Shutdown();
+
+  // The pipelines of the passes' owners made ahead of first use. Each owner
+  // lists its own after its shaders exist (Initialize), the Renderer starts
+  // the builder when all have, and each owner stops it first in its Shutdown:
+  // the functions it was given name that owner's shaders.
+  HostPrecache& precache() { return precache_; }
 
   // A pipeline drawing the full-screen triangle with `pixel_shader` into one
   // single-sampled target of `format`, written whole, no blending, no depth.
@@ -105,6 +120,7 @@ class HostPasses {
   BindlessHeap* heap_ = nullptr;
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> vertex_shader_;
+  HostPrecache precache_;
 };
 
 }  // namespace mcla::gpu

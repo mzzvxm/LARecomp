@@ -197,6 +197,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                              pass_timing_, resolve_memory_);
   }
   if (ok) {
+    // The resolve conversions and the decode listed the pipelines a session
+    // uses (host_precache.h): one builder thread makes them while the rest of
+    // the renderer starts and the guest boots.
+    passes_.precache().Start();
     geometry_.SetResolveMemory(&resolve_memory_);  //
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_,
                          resolve_memory_);

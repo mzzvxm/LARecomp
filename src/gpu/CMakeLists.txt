@@ -26,6 +26,7 @@ add_library(larecomp_gpu OBJECT
     frame.cpp
     geometry.cpp
     host_passes.cpp
+    host_precache.cpp
     guest_capture.cpp
     guest_memory.cpp
     input_layout.cpp
