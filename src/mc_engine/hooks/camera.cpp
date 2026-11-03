@@ -329,6 +329,12 @@ static bool EngineAlreadyHalvedCameraFactor(const uint8_t* base) {
     return fps_i < 60;
 }
 
+// The console curve in continuous time: the per-frame fraction k30 of the 30 FPS
+// console, for a frame of dt seconds. Exactly k30 at dt = 1/30 and scale = 1.
+static double FilterAtFrameTime(double k30, double dt, double scale) {
+    return 1.0 - std::pow(1.0 - k30, dt * 30.0 * scale);
+}
+
 static void ApplyCameraSmoothing(PPCRegister& reg) {
     if (!REXCVAR_GET(smooth_chase_cam)) return;
 
@@ -341,7 +347,7 @@ static void ApplyCameraSmoothing(PPCRegister& reg) {
 
     const double k30 = EngineAlreadyHalvedCameraFactor(base) ? raw_k : 0.5 * raw_k;
     const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
-    reg.f64 = 1.0 - std::pow(1.0 - k30, static_cast<double>(dt) * 30.0 * scale);
+    reg.f64 = FilterAtFrameTime(k30, dt, scale);
 }
 
 void MCLACameraPosSmoothing(PPCRegister& f13) {
@@ -350,6 +356,48 @@ void MCLACameraPosSmoothing(PPCRegister& f13) {
 
 void MCLACameraLookAtSmoothing(PPCRegister& f0) {
     ApplyCameraSmoothing(f0);
+}
+
+// The boom's own two filters, in sub_8231D3A8 (camBoomCS's frame build, called
+// by sub_82320298 after the Velocity/Accel factors above are used). Each frame
+// it moves the up vector (cs+272) by OrientationFilter (tune+216) and the
+// heading (cs+384) by DirectionFilter (tune+220) of the way to their targets: a
+// fixed fraction per frame, so the camera got stiffer with the frame rate and
+// swayed with the frame time. Unlike Velocity/Accel the game never halves them
+// below 60 FPS: on the console they ran at k per frame at 30 FPS, so that is
+// the curve used here, the same one as the two factors above.
+//
+//   8231D814  lfs   f13, 216(r10)  ; OrientationFilter
+//   8231D81C  lfs   f9,  220(r10)  ; DirectionFilter
+//   8231D820  fsubs f8, f10, f13   ; <-- hook; f8 = 1 - k, then f5 = f8 * snap + k
+//   8231D824  fsubs f7, f10, f9
+//
+// The function takes a snap argument (0 in a normal update, up to 1.0 to put the
+// states on their targets). Replacing k before the game blends it with the snap
+// keeps a cut a cut: k stays below 1, so f5 = (1 - k) * 1 + k is still 1.
+// OrientationFactor at tune+212 is a static blend between world up and the
+// car's up, not a filter, and is left alone.
+//
+// f1 is the dt sub_8271F020 handed back at the top of the function (the unscaled
+// clock delta when cs+184 is set, else the scaled one), the same dt the function
+// ramps cs+400 by. Nothing writes f1 before the hook.
+static void ScaleBoomFilter(PPCRegister& reg, double dt, double scale) {
+    const double k = reg.f64;
+    if (k <= 0.0 || k >= 1.0) return;
+    // Rounded like the lfs the game did, so the blend below behaves as it does
+    // for any tune value.
+    reg.f64 = static_cast<float>(FilterAtFrameTime(k, dt, scale));
+}
+
+void MCLACameraBoomFilters(PPCRegister& f13, PPCRegister& f9, PPCRegister& f1) {
+    if (!REXCVAR_GET(smooth_chase_cam)) return;
+
+    const double dt = f1.f64;
+    if (!(dt > 0.0)) return;
+
+    const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
+    ScaleBoomFilter(f13, dt, scale);
+    ScaleBoomFilter(f9, dt, scale);
 }
 
 // BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling
@@ -499,6 +547,7 @@ void Patch_DebugCam(PPCRegister& r3) {}
 void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {}
 void MCLACameraPosSmoothing(PPCRegister& f13) {}
 void MCLACameraLookAtSmoothing(PPCRegister& f0) {}
+void MCLACameraBoomFilters(PPCRegister& f13, PPCRegister& f9, PPCRegister& f1) {}
 void MCLACameraShakeFilter(PPCRegister& f31, PPCRegister& f30, PPCRegister& f29, PPCRegister& f0, PPCRegister& r1) {}
 void MCLACameraTransitionSmoothing(PPCRegister& r27, PPCRegister& r26, PPCRegister& r4, PPCRegister& r1) {}
 void MCLACameraTransitionComplete(PPCRegister& r3) {}

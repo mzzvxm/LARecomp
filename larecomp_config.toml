@@ -26164,6 +26164,17 @@ name = "MCLACameraLookAtSmoothing"
 address = 0x823204F4
 registers = ["f0"]
 
+# 0x8231D820: fsubs f8, f10, f13 in sub_8231D3A8, the frame build camBoomCS::Update
+# (sub_82320298) calls once per update. f13 is the OrientationFilter tune factor
+# (tune+216, the up vector), f9 the DirectionFilter (tune+220, the heading); both
+# were just loaded and are about to be blended with the snap argument. f1 is the
+# camera's dt (the call to sub_8271F020 at the top of the function; nothing
+# writes f1 before this point). Same console curve as the two hooks above.
+[[midasm_hook]]
+name = "MCLACameraBoomFilters"
+address = 0x8231D820
+registers = ["f13", "f9", "f1"]
+
 # BadassBaboon's Recomp Adjustments: Continuous camera shake amplitude scaling
 # 0x82315188: lfs f29, 0x200+var_190(r1) in sub_82315000 (after rotational angles loaded).
 # Scales discrete PRNG shake amplitude to eliminate violent vibrating during drifts, burnouts, and crashes.
