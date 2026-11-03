@@ -24,6 +24,16 @@
 #include "format.h"
 #include "layout.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_pipeline_cache, true, "MCLA/GPU",
     "Keep the pipelines the game asked for across sessions ("
@@ -239,6 +249,7 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
     std::transform(other.begin(), other.end(), other.begin(),
                    [](unsigned char ch) { return char(std::tolower(ch)); });
     other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
+    starter_path_ = shaders.path().parent_path() / "mcla_pipelines.bin";
     LoadRecords();
     StartPrecache();
   }
@@ -246,6 +257,7 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
 
 void Pipelines::Shutdown() {
   StopPrecache();
+  JoinAutosave();
   if (persist_ && shaders_) {
     SaveRecords();
   }
@@ -367,9 +379,10 @@ void Pipelines::StartPrecache() {
     precached_by_key_.emplace(r.key, p.get());
     precached_.push_back(std::move(p));
   }
-  // A few threads beside the game's own: the guest boots meanwhile.
+  // Half the processors, below normal priority: the guest boots meanwhile, and
+  // a pipeline made here is one the render thread does not stop for later.
   const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
-  const uint32_t count = std::clamp(hardware / 4, 1u, 3u);
+  const uint32_t count = std::clamp(hardware / 2, 1u, 6u);
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
   next_precache_ = 0;
@@ -395,6 +408,9 @@ void Pipelines::StopPrecache() {
 }
 
 void Pipelines::PrecacheWorker() {
+#if defined(_WIN32)
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
   while (!stop_precache_.load(std::memory_order_relaxed)) {
     const size_t i = next_precache_.fetch_add(1);
     if (i >= precached_.size()) {
@@ -495,8 +511,14 @@ void Pipelines::LoadRecords() {
   // part of the key: an API with a dynamic bias zeroes it.
   const Backend other = ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan : Backend::kD3D12;
   own_file_records_ = LoadFile(cache_path_, ActiveBackend(), false);
+  saved_records_ = own_file_records_;
   LoadFile(other_cache_path_, other, dynamic_depth_bias_);
+  // Then the starter list that ships beside the pack (tools/pipelines): what
+  // play usually needs, so a first start makes it here rather than at draw time.
+  // It is a D3D12 list whose keys keep their static depth bias.
+  LoadFile(starter_path_, Backend::kD3D12, dynamic_depth_bias_);
   loaded_records_ = records_.size();
+  last_save_ = std::chrono::steady_clock::now();
 }
 
 size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias) {
@@ -614,10 +636,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   return added;
 }
 
-void Pipelines::SaveRecords() {
-  if (records_.size() == own_file_records_) {
-    return;  // nothing beyond what this API's file already holds
-  }
+std::vector<uint8_t> Pipelines::SerializeRecords() const {
   CacheHeader header;
   std::memcpy(header.magic, kCacheMagic, sizeof(kCacheMagic));
   header.version = kCacheVersion;
@@ -638,13 +657,18 @@ void Pipelines::SaveRecords() {
     out.insert(out.end(), key, key + sizeof(r.key));
     Put32(out, r.layout);
   }
+  return out;
+}
+
+void Pipelines::WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records,
+                               size_t layouts) const {
   std::error_code ec;
   std::filesystem::create_directories(cache_path_.parent_path(), ec);
   std::filesystem::path temp = cache_path_;
   temp += ".tmp";
   {
     std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-    file.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+    file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
     if (!file) {
       REXLOG_ERROR("[gpu] pipelines: the cache {} could not be written",
                    temp.string());
@@ -659,8 +683,45 @@ void Pipelines::SaveRecords() {
   }
   REXLOG_INFO("[gpu] pipelines: {} records ({} new this session, {} from the other API's file) "
               "and {} layouts written to {}",
-              records_.size(), records_.size() - loaded_records_,
-              loaded_records_ - own_file_records_, stored_layouts_.size(), cache_path_.string());
+              records, records - loaded_records_, loaded_records_ - own_file_records_, layouts,
+              cache_path_.string());
+}
+
+void Pipelines::SaveRecords() {
+  // Written even when an autosave holds everything already: one that failed
+  // would otherwise lose the session's records.
+  if (records_.size() == own_file_records_) {
+    return;  // nothing beyond what this API's file already holds
+  }
+  WriteCacheFile(SerializeRecords(), records_.size(), stored_layouts_.size());
+}
+
+void Pipelines::JoinAutosave() {
+  if (autosave_thread_.joinable()) {
+    autosave_thread_.join();
+  }
+}
+
+void Pipelines::Autosave() {
+  if (!persist_ || records_.size() == saved_records_ ||
+      autosave_running_.load(std::memory_order_acquire)) {
+    return;
+  }
+  constexpr auto kInterval = std::chrono::seconds(30);
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_save_ < kInterval) {
+    return;
+  }
+  last_save_ = now;
+  saved_records_ = records_.size();
+  JoinAutosave();  // finished: only the handle is left
+  autosave_running_.store(true, std::memory_order_release);
+  autosave_thread_ = std::thread(
+      [this, bytes = SerializeRecords(), records = records_.size(),
+       layouts = stored_layouts_.size()] {
+        WriteCacheFile(bytes, records, layouts);
+        autosave_running_.store(false, std::memory_order_release);
+      });
 }
 
 void Pipelines::Report(uint32_t kind, const char* what) {

@@ -1907,6 +1907,7 @@ void Scene::Add(Stats& into, const Stats& from) const {
 }
 
 void Scene::OnPresent() {
+  pipelines_->Autosave();
   const uint64_t now = cycles::Now();
   if (last_present_) {
     present_intervals_.push_back(now - last_present_);
