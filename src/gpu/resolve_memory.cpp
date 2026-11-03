@@ -155,6 +155,25 @@ bool DecodeOf(const TextureKey& key, uint32_t* kind, plume::RenderFormat* format
   return false;
 }
 
+// The destination formats DecodeOf can give, listed for the host builder
+// (Initialize), likeliest first: the first two are the decodes the measured
+// drives log (k_8_8_8_8; k_24_8 read as R32_FLOAT); the others are float16
+// colour, the rain's particle state and k_8. B5G5R5A1
+// (k_1_5_5_5) is the one the decode keeps for itself (host_precache.h): an
+// optional render target format, and no log of the measured drives has a
+// decode into it.
+constexpr plume::RenderFormat kListedDecodes[] = {
+    plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R32_FLOAT,
+    plume::RenderFormat::R16G16B16A16_FLOAT, plume::RenderFormat::R32G32_FLOAT,
+    plume::RenderFormat::R8_UNORM,
+};
+
+// The decode pipeline's name: the debug name, and the entry's in the host
+// precache's log.
+std::string DecodePipelineName(plume::RenderFormat format) {
+  return std::format("resolve memory decode -> {}", format::PlumeFormatName(format));
+}
+
 // The push layout word of a level: bits 0-1 bpb_log2, bit 2 tiled, bits 3-4 endian.
 uint32_t LayoutBits(const texture_decode::Source& source, uint32_t bpb_log2) {
   return bpb_log2 | (source.tiled ? 4u : 0u) | ((source.endian & 3u) << 3);
@@ -276,6 +295,11 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   if (!decode_shader_) {
     return false;
   }
+  for (const plume::RenderFormat format : kListedDecodes) {
+    passes.precache().Add(HostPrecache::Key(HostPrecache::kResolveDecode, uint32_t(format)),
+                          DecodePipelineName(format),
+                          [this, format] { return MakeDecodePipeline(format); });
+  }
   const HostShaderBlob vertex = ResolveMemoryVertexShader();
   vertex_shader_ = device.CreateShader(vertex.data, vertex.size, "main", vertex.name);
   if (!vertex_shader_) {
@@ -306,6 +330,11 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
 }
 
 void ResolveMemory::Shutdown() {
+  // The host builder's functions name this decode's shader and layout: stop it
+  // first (the resolve cache has, when it ran).
+  if (passes_) {
+    passes_->precache().Stop();
+  }
   // The GPU is idle and the heap goes next: nothing is handed back to it.
   for (auto& [key, d] : decoded_) {
     d->views.Drop();
@@ -1285,13 +1314,19 @@ plume::RenderPipeline* ResolveMemory::DecodePipeline(plume::RenderFormat format)
   if (it != decode_pipelines_.end()) {
     return it->second.get();
   }
-  const std::string name =
-      std::format("resolve memory decode -> {}", format::PlumeFormatName(format));
-  std::unique_ptr<plume::RenderPipeline> pipeline =
-      passes_->CreatePipeline(*decode_layout_, *decode_shader_, format, name.c_str());
+  // Made ahead when listed; a format nobody listed is made here.
+  std::unique_ptr<plume::RenderPipeline> pipeline = passes_->precache().Acquire(
+      HostPrecache::Key(HostPrecache::kResolveDecode, id), DecodePipelineName(format),
+      [&] { return MakeDecodePipeline(format); });
   plume::RenderPipeline* raw = pipeline.get();
   decode_pipelines_.emplace(id, std::move(pipeline));
   return raw;
+}
+
+std::unique_ptr<plume::RenderPipeline> ResolveMemory::MakeDecodePipeline(
+    plume::RenderFormat format) {
+  const std::string name = DecodePipelineName(format);
+  return passes_->CreatePipeline(*decode_layout_, *decode_shader_, format, name.c_str());
 }
 
 ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t host_swizzle,
