@@ -78,6 +78,7 @@ class HostPrecache {
     kResolve = 1,        // ResolveCache::Pipeline: depth << 9 | msaa << 8 | format
     kResolveReduce = 2,  // ResolveCache::ReducePipeline: format
     kResolveDecode = 3,  // ResolveMemory::DecodePipeline: format
+    kResolveFused = 4,   // ResolveMemory::FusedPipeline: msaa << 8 | format
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;

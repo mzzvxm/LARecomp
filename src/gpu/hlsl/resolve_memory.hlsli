@@ -10,6 +10,8 @@
 //
 // The including shader declares the pool, g_memory, as a ByteAddressBuffer or
 // RWByteAddressBuffer, and the table, g_memory_table, as a ByteAddressBuffer.
+// A shader that writes the pool defines RESOLVE_MEMORY_WRITE first, for
+// StoreDword (resolve_memory_cs.hlsl; resolve_ps.hlsl with RESOLVE_FUSED).
 
 #ifndef MCLA_GPU_RESOLVE_MEMORY_HLSLI
 #define MCLA_GPU_RESOLVE_MEMORY_HLSLI
@@ -82,5 +84,16 @@ uint ResolveMemoryLoad(uint address) {
   const uint offset = ResolveMemoryOffset(address & ~3u);
   return offset == kResolveMemoryNoChunk ? 0u : g_memory.Load(offset);
 }
+
+#ifdef RESOLVE_MEMORY_WRITE
+// Guest physical dword `address` (4-aligned) := `value` as the destination's
+// endian lays it out; nothing when its chunk has no place.
+void StoreDword(uint address, uint value, uint endian) {
+  const uint offset = ResolveMemoryOffset(address);
+  if (offset != kResolveMemoryNoChunk) {
+    g_memory.Store(offset, XeEndianSwap32(value, endian));
+  }
+}
+#endif
 
 #endif  // MCLA_GPU_RESOLVE_MEMORY_HLSLI

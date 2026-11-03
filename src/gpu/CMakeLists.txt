@@ -180,6 +180,12 @@ larecomp_gpu_host_shader(resolve_depth_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=0)
 larecomp_gpu_host_shader(resolve_depth_ms_ps ps_6_0 SOURCE resolve_ps
                          DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1)
+# A depth resolve at a whole resolution scale that also writes the resolve
+# memory's dwords (resolve_memory.h FusedWrite).
+larecomp_gpu_host_shader(resolve_depth_fused_ps ps_6_0 SOURCE resolve_ps
+                         DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=0 RESOLVE_FUSED=1)
+larecomp_gpu_host_shader(resolve_depth_ms_fused_ps ps_6_0 SOURCE resolve_ps
+                         DEFINES RESOLVE_DEPTH=1 RESOLVE_MSAA=1 RESOLVE_FUSED=1)
 larecomp_gpu_host_shader(present_ps ps_6_0)
 larecomp_gpu_host_shader(reduce_ps ps_6_0)
 # M6c.1: FSR1 on the present -- EASU passes, RCAS, and the
