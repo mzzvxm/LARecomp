@@ -24,6 +24,16 @@
 #include "format.h"
 #include "layout.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_pipeline_cache, true, "MCLA/GPU",
     "Keep the pipelines the game asked for across sessions ("
@@ -239,6 +249,7 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
     std::transform(other.begin(), other.end(), other.begin(),
                    [](unsigned char ch) { return char(std::tolower(ch)); });
     other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
+    starter_path_ = shaders.path().parent_path() / "mcla_pipelines.bin";
     LoadRecords();
     StartPrecache();
   }
@@ -368,9 +379,10 @@ void Pipelines::StartPrecache() {
     precached_by_key_.emplace(r.key, p.get());
     precached_.push_back(std::move(p));
   }
-  // A few threads beside the game's own: the guest boots meanwhile.
+  // Half the processors, below normal priority: the guest boots meanwhile, and
+  // a pipeline made here is one the render thread does not stop for later.
   const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
-  const uint32_t count = std::clamp(hardware / 4, 1u, 3u);
+  const uint32_t count = std::clamp(hardware / 2, 1u, 6u);
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
   next_precache_ = 0;
@@ -396,6 +408,9 @@ void Pipelines::StopPrecache() {
 }
 
 void Pipelines::PrecacheWorker() {
+#if defined(_WIN32)
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
   while (!stop_precache_.load(std::memory_order_relaxed)) {
     const size_t i = next_precache_.fetch_add(1);
     if (i >= precached_.size()) {
@@ -498,6 +513,10 @@ void Pipelines::LoadRecords() {
   own_file_records_ = LoadFile(cache_path_, ActiveBackend(), false);
   saved_records_ = own_file_records_;
   LoadFile(other_cache_path_, other, dynamic_depth_bias_);
+  // Then the starter list that ships beside the pack (tools/pipelines): what
+  // play usually needs, so a first start makes it here rather than at draw time.
+  // It is a D3D12 list whose keys keep their static depth bias.
+  LoadFile(starter_path_, Backend::kD3D12, dynamic_depth_bias_);
   loaded_records_ = records_.size();
   last_save_ = std::chrono::steady_clock::now();
 }

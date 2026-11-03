@@ -435,6 +435,16 @@ else()
             COMMENT "Copying gamecontrollerdb.txt next to larecomp.exe")
     endif()
 
+    # The starter pipeline list, beside the shader pack (src/gpu/pipelines.h).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin")
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin"
+                    "$<TARGET_FILE_DIR:larecomp>/assets/mcla_pipelines.bin"
+            COMMENT "Copying the starter pipeline list next to the shader pack")
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
         add_custom_command(TARGET larecomp POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory

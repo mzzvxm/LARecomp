@@ -45,7 +45,9 @@
 // go to cache/mcla_gpu_pipelines_<backend>.bin beside the executable, the
 // earlier ones first, read back at the next Initialize. They are written on
 // Shutdown and during play (Autosave), so a crash or a killed process keeps
-// what the session had seen by then.
+// what the session had seen by then. A starter list ships beside the pack
+// (assets/mcla_pipelines.bin, built with tools/pipelines/pipeline_list.py) and
+// is read after them, so a first start precaches what play usually needs.
 // Precache (M5.3b): workers make the records' pipelines ahead of use, in the
 // file's order; Get takes one that is ready, waits for one being made, and
 // makes one no worker has taken yet itself (the workers then skip it). A
@@ -252,6 +254,7 @@ class Pipelines {
   bool persist_ = false;
   std::filesystem::path cache_path_;
   std::filesystem::path other_cache_path_;
+  std::filesystem::path starter_path_;  // assets/mcla_pipelines.bin
   std::deque<std::string> names_;
   std::vector<std::unique_ptr<StoredLayout>> stored_layouts_;
   std::unordered_map<uint64_t, uint32_t> stored_layout_index_;  // hash -> stored_layouts_
