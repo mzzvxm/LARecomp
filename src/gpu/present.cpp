@@ -299,9 +299,14 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
 void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   // At 1:1 every back buffer pixel reads one texel (present_ps): nothing to
   // gain. Scaled, each reads four, and each of those three table entries:
-  // 16 fetches a pixel against 4 for the table pass and 4 for the stretch.
+  // 16 fetches a pixel against 4 for the table pass and 4 (of 32-bit float
+  // texels) for the stretch. The table pass costs about as much as that
+  // saves until the letterbox has some 3 times the source's pixels (an
+  // integrated Radeon, 1280x720 source: 1920x1080 draw 1.09 ms against 0.39 +
+  // 0.75; 2880x1620 2.32 against 0.55 + 1.37), so smaller stretches keep
+  // the single pass.
   if (!ramped_pipeline_ || fit_.w == 0 || fit_.h == 0 ||
-      (fit_.w == source_width_ && fit_.h == source_height_)) {
+      uint64_t(fit_.w) * fit_.h < 3ull * source_width_ * source_height_) {
     return;
   }
   if (!passes_->EnsureImage(ramped_, source_width_, source_height_, kRampedFormat,
