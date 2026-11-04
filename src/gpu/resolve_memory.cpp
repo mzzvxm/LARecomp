@@ -395,6 +395,10 @@ void ResolveMemory::Shutdown() {
   chosen_.clear();
   choose_spans_.clear();
   last_batch_.clear();
+  ahead_.clear();
+  ahead_spans_.clear();
+  lock_spans_.clear();
+  ahead_pages_.clear();
   readback_buffer_.reset();
   readback_bytes_ = 0;
   readback_fence_.reset();
@@ -490,6 +494,7 @@ void ResolveMemory::BeginFrame(uint32_t slot) {
   }
   if (frame_ % 60 == 0) {
     EvictSome();
+    ForgetAhead();
   }
 }
 
@@ -1163,9 +1168,13 @@ void ResolveMemory::FlushForLock(plume::RenderCommandList* list, uint32_t addres
     Flush(list, FlushReason::kLock);
     return;
   }
-  const PageSpan span{address >> kPageShift,
-                      uint32_t((uint64_t(address) + size - 1) >> kPageShift)};
-  FlushFor(list, FlushReason::kLock, &span, 1);
+  // The locked pages, and the pages WriteBack reads ahead of their own lock in the
+  // same copy: the encodes over them are recorded before it.
+  lock_spans_.clear();
+  lock_spans_.push_back(PageSpan{address >> kPageShift,
+                                 uint32_t((uint64_t(address) + size - 1) >> kPageShift)});
+  lock_spans_.insert(lock_spans_.end(), ahead_spans_.begin(), ahead_spans_.end());
+  FlushFor(list, FlushReason::kLock, lock_spans_.data(), lock_spans_.size());
 }
 
 void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, size_t needed,
@@ -1799,8 +1808,106 @@ bool ResolveMemory::EnsureReadback(uint64_t bytes) {
   return true;
 }
 
+int64_t ResolveMemory::TakeAhead() {
+  if (ahead_.empty()) {
+    return 0;
+  }
+  int64_t taken = 0;
+  size_t kept = 0;
+  for (size_t i = 0; i < pages_.size(); ++i) {
+    const uint32_t page = pages_[i];
+    const auto it = ahead_.find(page);
+    if (it == ahead_.end()) {
+      pages_[kept++] = page;
+      continue;
+    }
+    if (it->second.sequence != page_sequence_[page]) {
+      // Written since: what the pool holds now is not what was read.
+      ahead_.erase(it);
+      pages_[kept++] = page;
+      continue;
+    }
+    // The physical view, as below: the watch does not see this write.
+    uint8_t* out = memory_->WritablePhysical(page << kPageShift, kPageBytes);
+    if (!out) {
+      Fail("a locked page that cannot be written", std::format("{:#010x}", page << kPageShift));
+      ahead_.erase(it);
+      continue;
+    }
+    std::memcpy(out, it->second.bytes.data(), kPageBytes);
+    page_flags_[page] &= uint8_t(~kNewer);
+    ahead_.erase(it);
+    ++taken;
+  }
+  pages_.resize(kept);
+  stats_.lock_pages_ahead_used += uint64_t(taken);
+  return taken;
+}
+
+void ResolveMemory::AddAhead(const std::vector<AddressRange>* ranges) {
+  ahead_spans_.clear();
+  if (!ranges || ranges->empty()) {
+    return;
+  }
+  // pages_ holds the locked pages so far, in ascending order.
+  const size_t locked = pages_.size();
+  ForgetAhead();
+  ahead_pages_.clear();
+  for (const AddressRange& range : *ranges) {
+    if (range.size == 0) {
+      continue;
+    }
+    const uint32_t first = range.address >> kPageShift;
+    if (first >= kPageCount) {
+      continue;
+    }
+    const uint32_t last = std::min(
+        uint32_t((uint64_t(range.address) + range.size - 1) >> kPageShift), kPageCount - 1);
+    for (uint32_t page = first; page <= last; ++page) {
+      // Only pages a lock will have to write back: bytes guest memory lacks, held whole.
+      if ((page_flags_[page] & (kNewer | kValid)) != (kNewer | kValid)) {
+        continue;
+      }
+      const auto it = ahead_.find(page);
+      if (it != ahead_.end() && it->second.sequence == page_sequence_[page]) {
+        continue;
+      }
+      ahead_pages_.push_back(page);
+    }
+  }
+  std::sort(ahead_pages_.begin(), ahead_pages_.end());
+  ahead_pages_.erase(std::unique(ahead_pages_.begin(), ahead_pages_.end()), ahead_pages_.end());
+  const size_t room = kMaxAheadPages > ahead_.size() ? kMaxAheadPages - ahead_.size() : 0;
+  for (const uint32_t page : ahead_pages_) {
+    if (pages_.size() - locked >= room) {
+      break;
+    }
+    if (std::binary_search(pages_.begin(), pages_.begin() + locked, page)) {
+      continue;
+    }
+    pages_.push_back(page);
+    if (!ahead_spans_.empty() && ahead_spans_.back().last + 1 == page) {
+      ahead_spans_.back().last = page;
+    } else {
+      ahead_spans_.push_back(PageSpan{page, page});
+    }
+  }
+}
+
+void ResolveMemory::ForgetAhead() {
+  for (auto it = ahead_.begin(); it != ahead_.end();) {
+    if (it->second.sequence != page_sequence_[it->first] ||
+        frame_ - it->second.frame > kAheadFrames) {
+      it = ahead_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
-                                 const std::function<void()>& submit_recorded) {
+                                 const std::function<void()>& submit_recorded,
+                                 const std::vector<AddressRange>* read_ahead) {
   Sync();
   if (size == 0) {
     return 0;
@@ -1841,7 +1948,40 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   if (device_->IsLost()) {
     return -1;
   }
+  // Pages an earlier lock read ahead need no GPU. When they are all of this lock,
+  // nothing is sent to the queue and nothing waited for.
+  const int64_t taken = TakeAhead();
+  if (pages_.empty()) {
+    ++stats_.lock_write_backs;
+    stats_.locks_without_wait += taken > 0;
+    stats_.lock_pages += uint64_t(taken);
+    return taken;
+  }
+  // The copy this lock waits for anyway also takes the pages of the other levels of
+  // its texture (the locks that follow).
+  const size_t locked = pages_.size();
+  AddAhead(read_ahead);
   submit_recorded();
+  ahead_spans_.clear();
+  if (pages_.size() > locked && !pending_.empty()) {
+    // An encode over a page read ahead that is still waiting (the frame had no list to
+    // record it in) has not written the page's bytes yet: they are not kept.
+    size_t kept = locked;
+    for (size_t i = locked; i < pages_.size(); ++i) {
+      const uint32_t page = pages_[i];
+      bool under = false;
+      for (const Pending& p : pending_) {
+        if (page >= p.first_page && page <= p.last_page) {
+          under = true;
+          break;
+        }
+      }
+      if (!under) {
+        pages_[kept++] = page;
+      }
+    }
+    pages_.resize(kept);
+  }
   if (!EnsureReadback(uint64_t(pages_.size()) * kPageBytes)) {
     return -1;
   }
@@ -1890,6 +2030,16 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   int64_t written = 0;
   for (size_t i = 0; i < pages_.size(); ++i) {
     const uint32_t page = pages_[i];
+    if (i >= locked) {
+      // Read ahead: kept in host memory until the lock of the page; guest memory and the
+      // page's flags stay as they are.
+      AheadPage& kept = ahead_[page];
+      kept.sequence = page_sequence_[page];
+      kept.frame = frame_;
+      std::memcpy(kept.bytes.data(), mapped + i * kPageBytes, kPageBytes);
+      ++stats_.lock_pages_ahead;
+      continue;
+    }
     // The physical view: the watch does not see this write, and guest memory
     // now holds what the pool holds.
     uint8_t* out = memory_->WritablePhysical(page << kPageShift, kPageBytes);
@@ -1903,8 +2053,8 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   }
   readback_buffer_->unmap();
   ++stats_.lock_write_backs;
-  stats_.lock_pages += uint64_t(written);
-  return written;
+  stats_.lock_pages += uint64_t(written + taken);
+  return written + taken;
 }
 
 // ---------------------------------------------------------------------------
@@ -2047,6 +2197,11 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
       stats_.decoded_levels, stats_.bind_unsupported, stats_.bind_failures, decoded_.size(),
       stats_.evicted, stats_.cpu_writes, stats_.cpu_writes_newer, stats_.lock_write_backs,
       stats_.lock_pages, stats_.lock_pages_unknown);
+  if (stats_.lock_pages_ahead || stats_.lock_pages_ahead_used) {
+    text += std::format(
+        " | locks read ahead: {} pages kept, {} taken by their lock, {} locks without a wait",
+        stats_.lock_pages_ahead, stats_.lock_pages_ahead_used, stats_.locks_without_wait);
+  }
   if (stats_.vertex_copies) {
     text += std::format(" | vertex streams built from it {:.1f}/frame ({:.2f} MiB/frame), {} failed",
                         double(stats_.vertex_copies) / f,

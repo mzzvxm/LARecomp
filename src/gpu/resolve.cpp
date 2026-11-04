@@ -290,6 +290,43 @@ bool DepthSampleWritten(Scale scale, int32_t x0, int32_t x1, int32_t offset, uin
          pixel(x1 - 1) < int64_t(scale.Edge(uint32_t(x1)));
 }
 
+// The storage of every level of the texture a lock belongs to (its resource's own fetch
+// constant), when the locked range is one of them; empty otherwise. The guest locks the levels
+// one by one and each lock waits for the GPU: the first one reads the pages of the others in its
+// own copy (ResolveMemory::WriteBack).
+void LockReadAheadRanges(const GuestMemory& memory, const LockRecord& record,
+                         std::vector<ResolveMemory::AddressRange>* ranges) {
+  ranges->clear();
+  const uint8_t* header =
+      memory.Read(GuestMemory::ToPhysical(record.resource) + guest::kTextureFetchOffset, 24);
+  if (!header) {
+    return;
+  }
+  uint32_t d[6];
+  for (uint32_t i = 0; i < 6; ++i) {
+    d[i] = LoadBe32(header + 4 * i);
+  }
+  const TextureFetch fetch = ReadTextureFetch(d);
+  if (!fetch.is_texture) {
+    return;
+  }
+  const uint64_t lock_end = uint64_t(record.address) + record.size;
+  bool locked_level = false;
+  for (uint32_t level = 0; level < fetch.key.levels(); ++level) {
+    TextureLevelStorage stored;
+    if (!GetTextureLevelStorage(fetch.key, level, &stored) || stored.extent == 0 ||
+        stored.extent > UINT32_MAX) {
+      continue;
+    }
+    ranges->push_back({stored.address, uint32_t(stored.extent)});
+    const uint64_t level_end = uint64_t(stored.address) + stored.extent;
+    locked_level = locked_level || (stored.address < lock_end && record.address < level_end);
+  }
+  if (!locked_level) {
+    ranges->clear();
+  }
+}
+
 }  // namespace
 
 ResolveCache::~ResolveCache() {
@@ -622,7 +659,10 @@ void ResolveCache::OnLock(const LockRecord& record,
   // the resolve memory when its product is gone, and a product reactivated
   // over another's bytes owes guest memory only what the resolves wrote.
   const auto t0 = Clock::now();
-  const int64_t pages = resolve_memory_->WriteBack(record.address, record.size, submit_recorded);
+  std::vector<ResolveMemory::AddressRange> read_ahead;
+  LockReadAheadRanges(*memory_, record, &read_ahead);
+  const int64_t pages =
+      resolve_memory_->WriteBack(record.address, record.size, submit_recorded, &read_ahead);
   const uint64_t ns = uint64_t(
       std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
   const uint64_t id = uint64_t(record.address) << 32 | record.size;
