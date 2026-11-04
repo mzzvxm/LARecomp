@@ -4,6 +4,7 @@
 // per-slot linear upload memory reset when the slot's fence is waited. The
 // chunk list, the oversized path and the idle pruning are this renderer's.
 
+#include <atomic>
 #include "upload.h"
 
 #include <format>
@@ -76,7 +77,11 @@ bool UploadRing::CreateChunk(uint32_t slot, uint64_t size, Chunk& out) {
   const plume::RenderRange no_read(0, 0);
   out.cpu = static_cast<uint8_t*>(out.buffer->map(0, &no_read));
   if (!out.cpu) {
-    REXLOG_ERROR("[gpu] could not map upload chunk '{}' ({} bytes)", name, size);
+    // Can repeat every frame while the cause lasts: the first 8 are logged.
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+      REXLOG_ERROR("[gpu] could not map upload chunk '{}' ({} bytes)", name, size);
+    }
     out.buffer.reset();
     return false;
   }
@@ -102,7 +107,11 @@ UploadSpan UploadRing::Allocate(uint32_t slot, uint64_t size, uint64_t alignment
     return {};
   }
   if (size == 0 || !IsPowerOfTwo(alignment) || alignment > kChunkSize) {
-    REXLOG_ERROR("[gpu] upload ring: invalid request of {} bytes aligned to {}", size, alignment);
+    // Can repeat every frame while the cause lasts: the first 8 are logged.
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+      REXLOG_ERROR("[gpu] upload ring: invalid request of {} bytes aligned to {}", size, alignment);
+    }
     return {};
   }
   Slot& s = slots_[slot];

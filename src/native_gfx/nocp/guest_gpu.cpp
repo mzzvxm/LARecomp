@@ -303,7 +303,15 @@ void DispatchVblank(uint32_t device_va) {
   if (!thread) {
     return;
   }
-  thread->SetActiveCpu(kInterruptCpu);
+  // Pinned once, and again only if something moved it: SetActiveCpu on every
+  // vblank (up to 1000 a second with vsync off) set the same processor each
+  // time, and on a PC with fewer than 6 logical processors the SDK logs "Too
+  // few processor cores" on every call, flushing the log file with it.
+  thread_local bool pinned = false;
+  if (!pinned || thread->active_cpu() != kInterruptCpu) {
+    thread->SetActiveCpu(kInterruptCpu);
+    pinned = true;
+  }
   uint64_t args[] = {uint64_t(kInterruptSourceVblank), uint64_t(device_va)};
   dispatcher->ExecuteInterrupt(thread->thread_state(),
                                /*address=*/0x82411478u, args, 2);
