@@ -2,6 +2,7 @@
 #include "pause_menu.h"
 #include "carbon_parts.h"
 #include "camera_look.h"
+#include "config_save.h"
 #include "cutscene_gallery.h"
 #include "menu_items.h"
 #include "logging.h"
@@ -657,58 +658,20 @@ void SetDeferred(const char* name, const char* value) {
     g_deferred.emplace_back(name, value);
 }
 
-// A held value as a TOML value: quoted for a string cvar, as SaveConfig writes
-// it (the SDK's SerializeToTOML); bare for the rest. A bare word such as
-// `graphics_backend = vulkan` is not TOML, and the whole file would fail to
-// load on the next launch.
-std::string TomlValue(const std::string& key, const std::string& value) {
-    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(key);
-    if (!info || info->type != rex::cvar::FlagType::String) return value;
-    std::string quoted = "\"";
-    for (const char c : value) {
-        if (c == '"' || c == '\\') quoted += '\\';
-        quoted += c;
-    }
-    return quoted + "\"";
-}
-
-// SaveConfig has just written the live values; replace the deferred keys'
-// lines with the held ones (appending any the file does not have). The toml
-// is flat, one `key = value` per line.
+// The held values on their own: only these lines of the toml change, the live
+// cvars are not written (a settings save, SaveSettingsNow, does both).
 void WriteDeferredCvars(const std::filesystem::path& path) {
-    std::vector<std::pair<std::string, std::string>> pending;
+    larecomp::HeldCvars pending;
     {
         std::lock_guard<std::mutex> lock(g_deferred_mutex);
         pending = g_deferred;
     }
     if (pending.empty()) return;
-
-    std::vector<std::string> lines;
-    {
-        std::ifstream in(path, std::ios::binary);
-        std::string line;
-        while (std::getline(in, line)) lines.push_back(line);
-    }
-    for (const auto& [key, held] : pending) {
-        const std::string value = TomlValue(key, held);
-        bool found = false;
-        for (auto& l : lines) {
-            const size_t p = l.find_first_not_of(" \t");
-            if (p == std::string::npos || l.compare(p, key.size(), key) != 0) continue;
-            // The key must be followed by '=', so mcla_native_gfx does not
-            // match mcla_native_gfx_msaa.
-            const size_t q = l.find_first_not_of(" \t", p + key.size());
-            if (q == std::string::npos || l[q] != '=') continue;
-            const bool cr = !l.empty() && l.back() == '\r';
-            l = key + " = " + value + (cr ? "\r" : "");
-            found = true;
-        }
-        if (!found) lines.push_back(key + " = " + value);
-    }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    for (const auto& l : lines) out << l << '\n';
-    MC_INFO("[pause-menu] {} restart-only setting(s) written to {}; they apply on the next launch",
-            pending.size(), path.string());
+    if (larecomp::SaveHeldCvarsToConfig(path, pending))
+        MC_INFO("[pause-menu] {} restart-only setting(s) written to {}; they apply on the next launch",
+                pending.size(), path.string());
+    else
+        MC_ERROR("[pause-menu] could not write the restart-only settings to {}", path.string());
 }
 
 // The key of a flat `key = value` line, or empty for anything else.
@@ -720,51 +683,6 @@ std::string TomlLineKey(const std::string& line) {
     const size_t q = line.find_first_not_of(" \t", e);
     if (e == p || q == std::string::npos || line[q] != '=') return {};
     return line.substr(p, e - p);
-}
-
-// Lines of the toml whose key no cvar of this process answers to. The config
-// loader parks those as deferred (rex cvar.cpp, ApplyTomlTable) and SaveConfig
-// serializes the registry, so a save drops them. In the Plume and legacy modes
-// the emulated GPU's plugin is never loaded and its cvars (vsync,
-// anisotropic_override, texture_cache_memory_limit_*,
-// gpu_allow_invalid_fetch_constants) are exactly that: a settings save there
-// erased them, and the Xenia mode came back without them.
-std::vector<std::pair<std::string, std::string>> UnregisteredConfigLines(
-    const std::filesystem::path& path) {
-    std::vector<std::pair<std::string, std::string>> kept;
-    std::ifstream in(path, std::ios::binary);
-    std::string line;
-    while (std::getline(in, line)) {
-        std::string key = TomlLineKey(line);
-        if (!key.empty() && !rex::cvar::GetFlagInfo(key)) kept.emplace_back(std::move(key), line);
-    }
-    return kept;
-}
-
-// Puts back the lines UnregisteredConfigLines kept that the save left out.
-void KeepUnregisteredConfigLines(const std::filesystem::path& path,
-                                 const std::vector<std::pair<std::string, std::string>>& kept) {
-    if (kept.empty()) return;
-    std::vector<std::string> lines;
-    {
-        std::ifstream in(path, std::ios::binary);
-        std::string line;
-        while (std::getline(in, line)) lines.push_back(line);
-    }
-    uint32_t restored = 0;
-    for (const auto& [key, original] : kept) {
-        bool present = false;
-        for (const auto& l : lines) present |= TomlLineKey(l) == key;
-        if (!present) {
-            lines.push_back(original);
-            ++restored;
-        }
-    }
-    if (!restored) return;
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    for (const auto& l : lines) out << l << '\n';
-    MC_INFO("[pause-menu] {} setting(s) of code not loaded in this mode kept in {}", restored,
-            path.string());
 }
 
 // RENDERER picks one of three renderers, and which one runs is four
@@ -918,8 +836,11 @@ std::string TomlLineValue(const std::filesystem::path& path, const std::string& 
     while (std::getline(in, line)) {
         if (TomlLineKey(line) != key) continue;
         const size_t b = line.find_first_not_of(" \t", line.find('=') + 1);
-        const size_t e = line.find_last_not_of(" \t\r");
-        return (b == std::string::npos || e < b) ? std::string() : line.substr(b, e - b + 1);
+        if (b == std::string::npos) return {};
+        // A comment after a bare value (a save keeps the player's) is not part of it.
+        const size_t e = line[b] == '"' ? line.find_last_not_of(" \t\r") + 1
+                                        : std::min(line.find_first_of(" \t#\r", b), line.size());
+        return e <= b ? std::string() : line.substr(b, e - b);
     }
     return {};
 }
@@ -983,11 +904,18 @@ void KeepOnlineChoiceInConfig() {
 // The same write as leaving a settings submenu (Hook_RexGlueCancel).
 void SaveSettingsNow() {
     const auto path = ConfigPath();
-    const auto unregistered = UnregisteredConfigLines(path);
-    rex::cvar::SaveConfig(path);
-    WriteDeferredCvars(path);
-    KeepUnregisteredConfigLines(path, unregistered);
-    MC_INFO("[pause-menu] settings saved to {}", path.string());
+    larecomp::HeldCvars held;
+    {
+        std::lock_guard<std::mutex> lock(g_deferred_mutex);
+        held = g_deferred;
+    }
+    // What changed in this session and the held restart-only choices, merged
+    // into the file: its other lines, including those of cvars this mode never
+    // registers (the emulated GPU's, in the Plume mode), stay as they are.
+    if (larecomp::SaveCvarsToConfig(path, held))
+        MC_INFO("[pause-menu] settings saved to {}", path.string());
+    else
+        MC_ERROR("[pause-menu] could not save the settings to {}", path.string());
 }
 
 // ── SYSTEM LINK > ONLINE ─────────────────────────────────────────────────
@@ -2741,7 +2669,7 @@ bool MenuFormCancel(uint32_t form) {
 // Every cvar here already applies the instant it changes - the row only
 // ever controlled whether larecomp.toml was rewritten, which is not a
 // distinction worth a menu entry. Writing on each change was the other
-// option and is worse: SaveConfig rewrites the whole file, and scrubbing a
+// option and is worse: a save rewrites the whole file, and scrubbing a
 // value moves it several times a second, so it would put a full file write
 // in the middle of gameplay. Saving once per menu left, and only when
 // something actually moved, costs one write and no menu row.

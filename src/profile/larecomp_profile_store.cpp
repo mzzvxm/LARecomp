@@ -6,8 +6,19 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <system_error>
 #include <utility>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace larecomp::profiles {
 
@@ -65,24 +76,135 @@ bool ScanSaves(const fs::path& dir, Profile& profile) {
   return found;
 }
 
-// The key of a flat `key = value` line, or empty for anything else.
-std::string LineKey(std::string_view line) {
-  if (line.starts_with("\xEF\xBB\xBF")) {
-    line.remove_prefix(3);
+constexpr std::string_view kBom = "\xEF\xBB\xBF";
+
+// One line of the file and the line break that ended it ("" on the last line).
+struct Line {
+  std::string_view text;
+  std::string_view end;
+};
+
+std::vector<Line> SplitLines(std::string_view text) {
+  std::vector<Line> lines;
+  size_t pos = 0;
+  while (pos < text.size()) {
+    const size_t nl = text.find('\n', pos);
+    if (nl == std::string_view::npos) {
+      lines.push_back({text.substr(pos), {}});
+      break;
+    }
+    const size_t cr = (nl > pos && text[nl - 1] == '\r') ? 1 : 0;
+    lines.push_back({text.substr(pos, nl - cr - pos), text.substr(nl - cr, cr + 1)});
+    pos = nl + 1;
+  }
+  return lines;
+}
+
+bool IsBlank(std::string_view line) {
+  return line.find_first_not_of(" \t") == std::string_view::npos;
+}
+
+// A [table] or [[array of tables]] header.
+bool IsTableLine(std::string_view line) {
+  if (line.starts_with(kBom)) {
+    line.remove_prefix(kBom.size());
   }
   const size_t p = line.find_first_not_of(" \t");
+  return p != std::string_view::npos && line[p] == '[';
+}
+
+// A `key = value` line: the key (a quoted one without its quotes) and where the
+// value starts in the line. The key is empty for anything else.
+struct KeyLine {
+  std::string key;
+  size_t value = 0;
+};
+
+KeyLine ParseKeyLine(std::string_view line) {
+  const size_t bom = line.starts_with(kBom) ? kBom.size() : 0;
+  const size_t p = line.find_first_not_of(" \t", bom);
   if (p == std::string_view::npos || line[p] == '#' || line[p] == '[') {
     return {};
   }
+  std::string key;
   size_t e = p;
-  while (e < line.size() && line[e] != '=' && line[e] != ' ' && line[e] != '\t') {
-    ++e;
+  if (line[p] == '"' || line[p] == '\'') {
+    const size_t close = line.find(line[p], p + 1);
+    if (close == std::string_view::npos) {
+      return {};
+    }
+    key = std::string(line.substr(p + 1, close - p - 1));
+    e = close + 1;
+  } else {
+    while (e < line.size() && line[e] != '=' && line[e] != ' ' && line[e] != '\t') {
+      ++e;
+    }
+    key = std::string(line.substr(p, e - p));
   }
   const size_t q = line.find_first_not_of(" \t", e);
-  if (e == p || q == std::string_view::npos || line[q] != '=') {
+  if (key.empty() || q == std::string_view::npos || line[q] != '=') {
     return {};
   }
-  return std::string(line.substr(p, e - p));
+  return {std::move(key), std::min(line.find_first_not_of(" \t", q + 1), line.size())};
+}
+
+// Where the single-line value that starts at `pos` ends: after its closing
+// quote for a string, else at the first space or '#'.
+size_t ValueEnd(std::string_view line, size_t pos) {
+  if (pos >= line.size()) {
+    return line.size();
+  }
+  const char c = line[pos];
+  size_t i = pos;
+  if (c == '"' || c == '\'') {
+    for (++i; i < line.size() && line[i] != c; i += (c == '"' && line[i] == '\\') ? 2 : 1) {
+    }
+    return std::min(i + 1, line.size());
+  }
+  while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '#') {
+    ++i;
+  }
+  return i;
+}
+
+// How many lines the statement on lines[i] takes: one, unless its value is a
+// multi-line string (""" or ''') that does not close on that line. The lines of
+// such a string are never taken for keys.
+size_t StatementLines(const std::vector<Line>& lines, size_t i, size_t value) {
+  const std::string_view first = lines[i].text;
+  const std::string_view open = first.substr(std::min(value, first.size()), 3);
+  if (open != "\"\"\"" && open != "'''") {
+    return 1;
+  }
+  if (first.find(open, value + 3) != std::string_view::npos) {
+    return 1;
+  }
+  for (size_t j = i + 1; j < lines.size(); ++j) {
+    if (lines[j].text.find(open) != std::string_view::npos) {
+      return j - i + 1;
+    }
+  }
+  return lines.size() - i;
+}
+
+// Moves `from` over `to` in one step.
+bool MoveOver(const fs::path& from, const fs::path& to) {
+#if defined(_WIN32)
+  // The data must be on the disk before the name moves, or a power cut could
+  // leave the new name on an empty file.
+  HANDLE handle = CreateFileW(from.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle != INVALID_HANDLE_VALUE) {
+    FlushFileBuffers(handle);
+    CloseHandle(handle);
+  }
+  return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) !=
+         0;
+#else
+  std::error_code ec;
+  fs::rename(from, to, ec);
+  return !ec;
+#endif
 }
 
 bool ReadWholeFile(const fs::path& path, std::string& out) {
@@ -240,65 +362,103 @@ std::string QuoteTomlString(std::string_view value) {
 }
 
 bool EditConfig(const fs::path& config, const std::vector<ConfigEdit>& edits) {
+  // The settings panel and the pause menu save from different threads; both
+  // read the file, change it and write it back, and share one temporary name.
+  static std::mutex edit_mutex;
+  std::lock_guard<std::mutex> lock(edit_mutex);
+
   std::string text;
   const bool existed = ReadWholeFile(config, text);
+  std::error_code ec;
+  if (!existed && fs::exists(config, ec)) {
+    return false;  // there, but it cannot be read: do not replace what we have not seen
+  }
   // Keep the file's own line ending; a new file gets the one the SDK writes on Windows.
   const std::string eol = (!existed || text.find("\r\n") != std::string::npos) ? "\r\n" : "\n";
 
+  const std::vector<Line> lines = SplitLines(text);
   std::vector<bool> applied(edits.size(), false);
   std::string out;
-  size_t pos = 0;
-  while (pos < text.size()) {
-    const size_t nl = text.find('\n', pos);
-    const bool has_end = nl != std::string::npos;
-    std::string_view line(text.data() + pos, (has_end ? nl : text.size()) - pos);
-    std::string_view end = has_end ? std::string_view("\n") : std::string_view();
-    if (has_end && line.ends_with('\r')) {
-      line.remove_suffix(1);
-      end = "\r\n";
+  // Cvars are top-level keys. Past the first [table] nothing is read or added,
+  // and a new key goes in right after the last line above that table.
+  bool in_table = false;
+  size_t top_end = 0;
+  size_t insert_at = std::string::npos;
+  for (size_t i = 0; i < lines.size();) {
+    if (!in_table && IsTableLine(lines[i].text)) {
+      in_table = true;
+      insert_at = top_end;
     }
-    pos = has_end ? nl + 1 : text.size();
-
-    const std::string key = LineKey(line);
+    KeyLine parsed;
+    if (!in_table) {
+      parsed = ParseKeyLine(lines[i].text);
+    }
     size_t hit = edits.size();
-    if (!key.empty()) {
-      for (size_t i = 0; i < edits.size(); ++i) {
-        if (edits[i].key == key) {
-          hit = i;
-          break;
-        }
+    for (size_t k = 0; k < edits.size() && !parsed.key.empty(); ++k) {
+      if (edits[k].key == parsed.key) {
+        hit = k;
+        break;
       }
     }
+    const size_t count = parsed.key.empty() ? 1 : StatementLines(lines, i, parsed.value);
     if (hit == edits.size()) {
-      out.append(line).append(end);  // not ours: byte for byte
+      for (size_t j = i; j < i + count; ++j) {  // not ours: byte for byte
+        out.append(lines[j].text).append(lines[j].end);
+        if (!in_table && !IsBlank(lines[j].text)) {
+          top_end = out.size();
+        }
+      }
+      i += count;
       continue;
     }
-    if (applied[hit]) {
-      continue;  // a second line for a key already handled: TOML forbids the duplicate
+    if (!applied[hit]) {
+      applied[hit] = true;
+      if (edits[hit].value) {
+        const std::string_view first = lines[i].text;
+        // What follows the old value stays when it is a comment.
+        std::string_view comment;
+        if (count == 1) {
+          const size_t end = ValueEnd(first, parsed.value);
+          const size_t c = first.find_first_not_of(" \t", end);
+          if (c != std::string_view::npos && first[c] == '#') {
+            comment = first.substr(end);
+          }
+        }
+        // The key part is kept as the player typed it (spacing, quotes, BOM).
+        out.append(first.substr(0, parsed.value))
+            .append(*edits[hit].value)
+            .append(comment)
+            .append(lines[i + count - 1].end);
+        top_end = out.size();
+      }
     }
-    applied[hit] = true;
-    if (edits[hit].value) {
-      out.append(key).append(" = ").append(*edits[hit].value).append(end);
+    // else: a second line for a key already handled; TOML forbids the duplicate.
+    i += count;
+  }
+  std::string added;
+  for (size_t i = 0; i < edits.size(); ++i) {
+    if (!applied[i] && edits[i].value && !edits[i].update_only) {
+      added.append(edits[i].key).append(" = ").append(*edits[i].value).append(eol);
     }
   }
-  for (size_t i = 0; i < edits.size(); ++i) {
-    if (applied[i] || !edits[i].value) {
-      continue;
+  if (!added.empty()) {
+    if (insert_at != std::string::npos) {
+      out.insert(insert_at, added);
+    } else {
+      if (out.empty() && !existed) {
+        out.append("# Auto-generated cvar configuration").append(eol);
+      }
+      if (!out.empty() && out.back() != '\n') {
+        out.append(eol);
+      }
+      out.append(added);
     }
-    if (out.empty() && !existed) {
-      out.append("# Auto-generated cvar configuration").append(eol);
-    }
-    if (!out.empty() && out.back() != '\n') {
-      out.append(eol);
-    }
-    out.append(edits[i].key).append(" = ").append(*edits[i].value).append(eol);
   }
 
   if (out == text) {
     return true;  // nothing to change; a missing file stays missing
   }
 
-  std::error_code ec;
   if (!config.parent_path().empty()) {
     fs::create_directories(config.parent_path(), ec);
   }
@@ -317,8 +477,7 @@ bool EditConfig(const fs::path& config, const std::vector<ConfigEdit>& edits) {
       return false;
     }
   }
-  fs::rename(temp, config, ec);
-  if (!ec) {
+  if (MoveOver(temp, config)) {
     return true;
   }
   // Something holds the config open (an editor without share-delete): write through it instead.
