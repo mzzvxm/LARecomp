@@ -27,6 +27,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
+#include "mc_engine/config_save.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
@@ -121,9 +122,15 @@ class LarecompApp : public rex::ReXApp {
     return log;
   }
 
+  // Every value set here is LARecomp's own default, not a choice of the player's:
+  // the config save leaves it out while it stays what it is now (see
+  // NoteStartupCvar), so a later version, or another PC, can still change it.
   static void SetFlag(const char* name, const char* value) {
     const bool ok = rex::cvar::SetFlagByName(name, value);
     FlagLog().push_back(std::string(ok ? "  ok   " : "  FAIL ") + name + " = " + value);
+    if (ok) {
+      larecomp::NoteStartupCvar(name);
+    }
   }
 
 
