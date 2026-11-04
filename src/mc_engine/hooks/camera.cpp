@@ -381,12 +381,17 @@ void MCLACameraLookAtSmoothing(PPCRegister& f0) {
 // f1 is the dt sub_8271F020 handed back at the top of the function (the unscaled
 // clock delta when cs+184 is set, else the scaled one), the same dt the function
 // ramps cs+400 by. Nothing writes f1 before the hook.
-static void ScaleBoomFilter(PPCRegister& reg, double dt, double scale) {
+//
+// chase_cam_smoothing_factor is not applied here: it has always scaled the
+// position and look-at smoothing above, and players set it for those. Scaling
+// these two by it as well made a factor of 0.2 turn the up vector and the
+// heading 5 times slower than the console. They follow the console's curve.
+static void ScaleBoomFilter(PPCRegister& reg, double dt) {
     const double k = reg.f64;
     if (k <= 0.0 || k >= 1.0) return;
     // Rounded like the lfs the game did, so the blend below behaves as it does
     // for any tune value.
-    reg.f64 = static_cast<float>(FilterAtFrameTime(k, dt, scale));
+    reg.f64 = static_cast<float>(FilterAtFrameTime(k, dt, 1.0));
 }
 
 void MCLACameraBoomFilters(PPCRegister& f13, PPCRegister& f9, PPCRegister& f1) {
@@ -395,9 +400,8 @@ void MCLACameraBoomFilters(PPCRegister& f13, PPCRegister& f9, PPCRegister& f1) {
     const double dt = f1.f64;
     if (!(dt > 0.0)) return;
 
-    const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
-    ScaleBoomFilter(f13, dt, scale);
-    ScaleBoomFilter(f9, dt, scale);
+    ScaleBoomFilter(f13, dt);
+    ScaleBoomFilter(f9, dt);
 }
 
 // BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling
