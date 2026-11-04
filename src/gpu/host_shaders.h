@@ -29,6 +29,8 @@
 #include "reduce_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
 #include "resolve_color_ps.hlsl.dxil.h"
+#include "resolve_depth_fused_ps.hlsl.dxil.h"
+#include "resolve_depth_ms_fused_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
 #include "resolve_depth_ps.hlsl.dxil.h"
 #include "resolve_memory_color_cs.hlsl.dxil.h"
@@ -53,6 +55,8 @@
 #include "reduce_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
 #include "resolve_color_ps.hlsl.spirv.h"
+#include "resolve_depth_fused_ps.hlsl.spirv.h"
+#include "resolve_depth_ms_fused_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
 #include "resolve_depth_ps.hlsl.spirv.h"
 #include "resolve_memory_color_cs.hlsl.spirv.h"
@@ -150,6 +154,13 @@ inline HostShaderBlob ResolvePixelShader(bool depth, bool msaa) {
   }
   return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_color_ms_ps)
               : MCLA_GPU_HOST_SHADER_BLOB(resolve_color_ps);
+}
+
+// The depth conversion that also writes the resolve memory's dwords of the same
+// resolve (resolve_ps.hlsl RESOLVE_FUSED), by multisampled source or not.
+inline HostShaderBlob ResolveFusedPixelShader(bool msaa) {
+  return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_ms_fused_ps)
+              : MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_fused_ps);
 }
 
 // A resolve's bytes into the resolve memory (resolve_memory_cs.hlsl): colour

@@ -1392,24 +1392,6 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
             stencil_slot, static_cast<const void*>(p), static_cast<const void*>(p->texture.get()),
             prior_texture, prior_height, prior_generation, src->generation != prior_generation);
       }
-      edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
-      TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
-      if (pass_timing_->enabled()) {
-        const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
-                                        : format::ColorTargetFormat(src_format).guest_name;
-        const char* to = format::TextureHost(key.format).guest_name;
-        pass_timing_->Mark(list, std::format("resolve {} {}x -> {} {}x{}", from, samples, to,
-                                             key.width, key.height));
-      }
-      list->setFramebuffer(framebuffer);
-      const plume::RenderViewport viewport(0.0f, 0.0f, float(resolution_scale.Edge(level_width)),
-                                           float(resolution_scale.Edge(level_height)));
-      list->setViewports(&viewport, 1);
-      const plume::RenderRect scissor =
-          EdramTargets::ScaledRect(plume::RenderRect(tx0, ty0, tx1, ty1), resolution_scale);
-      list->setScissors(&scissor, 1);
-      passes_->Bind(list);
-      list->setPipeline(pipeline);
       Push push{};
       push.source = sample_slot;
       push.stencil = depth_source ? stencil_slot : sample_slot;
@@ -1484,7 +1466,94 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       }
       push.scale = scale / float(count);
       push.mode = full_mode;
-      list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+      // The same bytes into the resolve memory: colour from the product just written,
+      // depth from the EDRAM target (with stencil). Built before the pass: a depth copy at a
+      // whole scale is written by the pass itself.
+      ResolveMemory::Copy memory_copy;
+      memory_copy.key = &key;
+      memory_copy.level = level;
+      memory_copy.x0 = tx0;
+      memory_copy.y0 = ty0;
+      memory_copy.x1 = tx1;
+      memory_copy.y1 = ty1;
+      memory_copy.mode = full_mode;
+      memory_copy.resolution_scale = resolution_scale;
+      if (depth_source) {
+        memory_copy.depth = true;
+        memory_copy.msaa = samples > 1;
+        memory_copy.source_slot = sample_slot;
+        memory_copy.stencil_slot = stencil_slot;
+        memory_copy.offset_x = -dx;
+        memory_copy.offset_y = -dy;
+        memory_copy.samples = push.samples;
+        memory_copy.fill = push.fill;
+        // A depth resolve into k_8_8_8_8: its RGBA8 product holds the dword's bytes
+        // exactly, so the encode can read the product and wait like a colour one
+        // (resolve_memory_cs.hlsl). Only at a whole scale, where the product texel at
+        // a guest texel's centre is the pixel its EDRAM sample was copied to.
+        if (mode == kModeDepthRaw8888 && resolution_scale.whole()) {
+          memory_copy.product_slot =
+              p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
+                            format::kHostSwizzleRGBA, "resolve product view");
+          memory_copy.from_product = memory_copy.product_slot != kInvalidBindlessSlot;
+        }
+      } else {
+        memory_copy.product_slot =
+            p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
+                          format::kHostSwizzleRGBA, "resolve product view");
+      }
+      // The EDRAM planes are read by the pass, and by the encode's dispatch if there is one.
+      edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
+      // A depth copy that keeps its stencil byte (not the raw k_8_8_8_8 one, which waits for
+      // its product) at a whole scale: this pass also stores the resolve memory's dwords, from
+      // the invocation at each guest texel's centre, the very depth and stencil the encode
+      // would load (resolve_ps.hlsl RESOLVE_FUSED). The encode does everything else now, before
+      // the pass: the waiting encodes over its pages, the uploads, the barrier, the page
+      // bookkeeping. Other scales, and a pipeline that could not be made: the dispatch after
+      // the pass, as before.
+      plume::RenderPipeline* fused_pipeline = nullptr;
+      if (memory_copy.depth && !memory_copy.from_product && resolution_scale.whole() &&
+          resolution_scale.n >= Scale::kDenominator) {
+        fused_pipeline = resolve_memory_->FusedPipeline(samples > 1, host.format);
+      }
+      struct FusedPush {
+        Push resolve;
+        ResolveMemory::FusedWrite write;
+      } fused_push{};
+      static_assert(sizeof(FusedPush) == ResolveMemory::kFusedPushBytes);
+      bool encoded = false;  // the resolve memory has had the copy (fused: the pass writes it)
+      bool in_pass = false;
+      if (fused_pipeline) {
+        memory_copy.fuse = true;
+        encoded = true;
+        resolve_memory_->Encode(list, memory_copy, &fused_push.write);
+        in_pass = fused_push.write.whole != 0;
+      }
+      TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
+      if (pass_timing_->enabled()) {
+        const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
+                                        : format::ColorTargetFormat(src_format).guest_name;
+        const char* to = format::TextureHost(key.format).guest_name;
+        pass_timing_->Mark(list, std::format("resolve {} {}x -> {} {}x{}", from, samples, to,
+                                             key.width, key.height));
+      }
+      list->setFramebuffer(framebuffer);
+      const plume::RenderViewport viewport(0.0f, 0.0f, float(resolution_scale.Edge(level_width)),
+                                           float(resolution_scale.Edge(level_height)));
+      list->setViewports(&viewport, 1);
+      const plume::RenderRect scissor =
+          EdramTargets::ScaledRect(plume::RenderRect(tx0, ty0, tx1, ty1), resolution_scale);
+      list->setScissors(&scissor, 1);
+      if (in_pass) {
+        resolve_memory_->BindFused(list);
+        list->setPipeline(fused_pipeline);
+        fused_push.resolve = push;
+        list->setGraphicsPushConstants(0, &fused_push, 0, sizeof(fused_push));
+      } else {
+        passes_->Bind(list);
+        list->setPipeline(pipeline);
+        list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+      }
       list->drawInstanced(3, 1, 0, 0);
       list->setFramebuffer(nullptr);
       TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
@@ -1523,44 +1592,9 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         UpdateInheritedCells(p->inherited[level], level_width, level_height, tx0, ty0, tx1, ty1,
                              false);
       }
-      // The same bytes into the resolve memory: colour from the
-      // product just written, depth from the EDRAM target (with stencil).
-      ResolveMemory::Copy memory_copy;
-      memory_copy.key = &key;
-      memory_copy.level = level;
-      memory_copy.x0 = tx0;
-      memory_copy.y0 = ty0;
-      memory_copy.x1 = tx1;
-      memory_copy.y1 = ty1;
-      memory_copy.mode = full_mode;
-      memory_copy.resolution_scale = resolution_scale;
-      if (depth_source) {
-        memory_copy.depth = true;
-        memory_copy.msaa = samples > 1;
-        memory_copy.source_slot = sample_slot;
-        memory_copy.stencil_slot = stencil_slot;
-        memory_copy.offset_x = -dx;
-        memory_copy.offset_y = -dy;
-        memory_copy.samples = push.samples;
-        memory_copy.fill = push.fill;
-        // A depth resolve into k_8_8_8_8: its RGBA8 product holds the dword's bytes
-        // exactly, so the encode can read the product and wait like a colour one
-        // (resolve_memory_cs.hlsl). Only at a whole scale, where the product texel at
-        // a guest texel's centre is the pixel its EDRAM sample was copied to.
-        if (mode == kModeDepthRaw8888 && resolution_scale.whole()) {
-          memory_copy.product_slot =
-              p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
-                            format::kHostSwizzleRGBA, "resolve product view");
-          memory_copy.from_product = memory_copy.product_slot != kInvalidBindlessSlot;
-        }
-      } else {
-        memory_copy.product_slot =
-            p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
-                          format::kHostSwizzleRGBA, "resolve product view");
-      }
       if (!depth_source && memory_copy.product_slot == kInvalidBindlessSlot) {
         Fail(Failure::kProduct, std::format("{}: no view for the resolve memory", key.Describe()));
-      } else {
+      } else if (!encoded) {
         if (depth_source && !memory_copy.from_product && pass_timing_->enabled()) {
           pass_timing_->Mark(list, "resolve memory encode (depth)");
         }

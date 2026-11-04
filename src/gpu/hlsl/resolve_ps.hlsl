@@ -9,9 +9,26 @@
 //
 // Variants (compile-time): RESOLVE_DEPTH (a depth/stencil source) and
 // RESOLVE_MSAA (a multisampled source).
+//
+// RESOLVE_FUSED (a depth source at a whole resolution scale s, resolve_memory.h
+// FusedWrite): the pass also writes the resolve memory's dwords of the same
+// resolve, the bytes resolve_memory_cs.hlsl would write from the EDRAM planes.
+// The encode reads, for the guest texel (tx, ty), the EDRAM sample
+// floor((t + 1/2) s) in each axis (t = the texel + the resolve's offset, in
+// guest texels), that is t s + s/2. This pass copies the sample at
+// (product pixel + offset) into the product pixel, with the offset a whole
+// number of guest texels, -dx s: so the invocation at the product pixel
+// (tx s + s/2, ty s + s/2) of the texel's block loaded exactly the sample the
+// encode reads. That invocation, and only that one, writes the dword it has just
+// built, to the address the encode
+// would use (resolve_memory.hlsli, shared). s = 1: every pixel.
 
 #include "host_pass_common.hlsli"
 #include "xenos_formats.hlsli"
+
+#ifndef RESOLVE_FUSED
+#define RESOLVE_FUSED 0
+#endif
 
 struct ResolvePush {
   uint source;   // bindless slot: the colour or depth plane view
@@ -22,15 +39,38 @@ struct ResolvePush {
   float scale;   // 2^exp_bias (x32 for the 16-bit EDRAM formats) / count
   uint mode;
   uint fill;     // host pixels of a scaled source's half-pixel gap (0: none)
+#if RESOLVE_FUSED
+  // The resolve memory's write (resolve_memory_cs.hlsl EncodePush, same meaning).
+  uint address;  // the destination level's storage origin (physical)
+  uint pitch;    // tiled: row pitch in blocks; linear: in bytes
+  uint layout;   // bits 0-1 bpb_log2, bit 2 tiled, bits 3-4 endian
+  uint tail;     // the level's place in a packed tail: x bits 0-15, y bits 16-31
+  uint rect0;    // the rectangle in level texels: x0 bits 0-15, y0 bits 16-31
+  uint rect1;    //                                 x1, y1 (exclusive)
+  uint whole;    // host pixels per guest texel (the whole resolution scale s)
+#endif
 };
 
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<ResolvePush> g_push;
+#elif RESOLVE_FUSED
+ConstantBuffer<ResolvePush> g_push : register(b0, space5);
 #else
 ConstantBuffer<ResolvePush> g_push : register(b0, space4);
 #endif
 
 #include "resolve_common.hlsli"
+
+#if RESOLVE_FUSED
+#if !RESOLVE_DEPTH
+#error RESOLVE_FUSED is for a depth source
+#endif
+RWByteAddressBuffer g_memory : register(u0, space4);
+ByteAddressBuffer g_memory_table : register(t1, space4);
+
+#define RESOLVE_MEMORY_WRITE
+#include "resolve_memory.hlsli"
+#endif
 
 float4 main(float4 position : SV_Position) : SV_Target {
   // The first `fill` columns and rows of a scaled source no full-screen draw
@@ -44,6 +84,25 @@ float4 main(float4 position : SV_Position) : SV_Target {
   uint stencil;
   const uint d24 = ResolveDepth24(source, stencil);
   const uint dword = (d24 << 8u) | stencil;
+#if RESOLVE_FUSED
+  {
+    const uint s = g_push.whole;
+    const uint2 pixel = uint2(position.xy);
+    uint2 texel = pixel;
+    bool centre = true;
+    [branch] if (s != 1u) {
+      texel = pixel / s;
+      centre = all((pixel - texel * s) == uint2(s >> 1u, s >> 1u));
+    }
+    const int2 r0 = int2(int(g_push.rect0 & 0xFFFFu), int(g_push.rect0 >> 16u));
+    const int2 r1 = int2(int(g_push.rect1 & 0xFFFFu), int(g_push.rect1 >> 16u));
+    if (centre && all(int2(texel) >= r0) && all(int2(texel) < r1)) {
+      const GuestLevel l =
+          MakeGuestLevel(g_push.address, g_push.pitch, g_push.layout, g_push.tail);
+      StoreDword(GuestBlockAddress(l, int2(texel)), dword, l.endian);
+    }
+  }
+#endif
   if (mode == kModeDepthFloat) {
     const float value = (g_push.mode & kFlagDestFloat24) != 0u ? XeFloat20e4To32(d24)
                                                                  : XeUNorm24To32(d24);

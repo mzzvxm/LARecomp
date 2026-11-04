@@ -37,6 +37,11 @@
 // changes with the next draw. The one exception is a depth resolve into
 // k_8_8_8_8 (Copy::from_product): its RGBA8 product holds the dword's four
 // bytes exactly, so it is encoded from the product like a colour copy.
+// The other depth copies, at a whole resolution scale, are written by the
+// resolve's own pixel shader (Copy::fuse, hlsl/resolve_ps.hlsl RESOLVE_FUSED):
+// the invocation at the centre of each guest texel's block has loaded the very
+// depth and stencil the encode would load, and stores the dword. That drops the
+// second read of the multisampled planes and the switch to compute and back.
 // Colour waits in a batch (each dispatch after its
 // conversion pass was a GPU bubble: 1.1 ms/frame for 56 resolves):
 // the product keeps its texels until a resolve writes it again, so the batch
@@ -162,11 +167,41 @@ class ResolveMemory {
     // writes the rectangle again, as a colour copy does. The depth fields stay
     // filled: the test aid's reference encodes from the planes at once.
     bool from_product = false;
+    // A depth copy that reads the EDRAM planes (not from_product) at a whole
+    // resolution scale, whose dwords the resolve's own pixel shader writes
+    // (FusedWrite) instead of a dispatch after it. The caller has made the
+    // fused pipeline and calls Encode BEFORE the resolve's pass.
+    bool fuse = false;
   };
+  // The constants of the fused pixel shader that follow the resolve's own
+  // (resolve.h Push, kResolvePushBytes): resolve_ps.hlsl ResolvePush with
+  // RESOLVE_FUSED, EncodePush's fields of the same names.
+  struct FusedWrite {
+    uint32_t address = 0;  // the destination level's storage origin (physical)
+    uint32_t pitch = 0;
+    uint32_t layout = 0;
+    uint32_t tail = 0;
+    uint32_t rect0 = 0;
+    uint32_t rect1 = 0;
+    uint32_t whole = 0;  // host pixels per guest texel; 0: nothing to write
+  };
+  static constexpr uint32_t kResolvePushBytes = 32;
+  static constexpr uint32_t kFusedPushBytes = kResolvePushBytes + 7 * sizeof(uint32_t);
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not
   // (logged, counted): the pages it would have written stay as they were.
-  bool Encode(plume::RenderCommandList* list, const Copy& copy);
+  // With copy.fuse (`fused` given) it records no dispatch: it does the rest --
+  // the waiting encodes over the pages, the uploads, the pool barrier for the
+  // pass's stores, the page bookkeeping -- and fills *fused for the pass that
+  // follows; *fused stays empty (whole 0) when there is nothing to write.
+  bool Encode(plume::RenderCommandList* list, const Copy& copy, FusedWrite* fused = nullptr);
+  // The fused variant of the depth conversion into `format` (a pipeline whose
+  // layout is BindFused's), made ahead when listed. Null when it could not be
+  // made: the caller encodes the copy the other way.
+  plume::RenderPipeline* FusedPipeline(bool msaa, plume::RenderFormat format);
+  // Binds the fused pass's layout, the four texture sets and the pool (the
+  // pass writes it). After Encode of the copy, before the pass's draw.
+  void BindFused(plume::RenderCommandList* list);
   // Before a resolve writes `level` of the product of `key` over [x0, x1) x
   // [y0, y1): waiting encodes of that level that the rectangle covers are
   // dropped (the new one writes their bytes again); one it overlaps otherwise
@@ -262,6 +297,7 @@ class ResolveMemory {
     kComputeWrite,
     kComputeRead,  // the vertex copy reads it
     kGraphicsRead,
+    kGraphicsWrite,  // a fused depth resolve's pixel shader stores into it
   };
   // A texture decoded from the resolve memory.
   struct Decoded {
@@ -407,6 +443,14 @@ class ResolveMemory {
   // Encode pipelines: [0] colour, [1] depth, [2] multisampled depth.
   std::unique_ptr<plume::RenderShader> encode_shaders_[3];
   std::unique_ptr<plume::RenderPipeline> encode_pipelines_[3];
+  // The fused depth resolve (resolve_ps.hlsl RESOLVE_FUSED): the texture sets
+  // (spaces 0-3), the encode's set (space 4), the push range (b0, space 5); a
+  // pixel shader by multisampled source, a pipeline by (msaa, format).
+  std::unique_ptr<plume::RenderPipelineLayout> fused_layout_;
+  std::unique_ptr<plume::RenderShader> fused_shaders_[2];
+  std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> fused_pipelines_;
+  // The creation itself (also called on the host builder thread).
+  std::unique_ptr<plume::RenderPipeline> MakeFusedPipeline(bool msaa, plume::RenderFormat format);
   std::unique_ptr<plume::RenderShader> decode_shader_;
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> decode_pipelines_;
   // The vertex copy: the decode's set (pool and table, space 0), the
@@ -460,6 +504,7 @@ class ResolveMemory {
     uint64_t encodes_dropped = 0;  // replaced by a later resolve of the same rectangle
     uint64_t depth_product_encodes = 0;  // depth copies encoded from their product
     uint64_t depth_product_dropped = 0;  // ... of which replaced before running
+    uint64_t fused_encodes = 0;          // depth copies written by the resolve's own pixel shader
     uint64_t flushes = 0;          // batches recorded
     uint64_t waves = 0;            // barriers inside batches (overlapping pages)
     uint64_t encoded_bytes = 0;

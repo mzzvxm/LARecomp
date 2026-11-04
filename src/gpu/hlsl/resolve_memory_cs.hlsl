@@ -14,7 +14,10 @@
 // exactly what the destination's fetch reads (the float16 rounding included).
 // Depth comes from the EDRAM target, as resolve_ps.hlsl reads it: the raw
 // depth24 << 8 | stencil the console writes, which an R32F product cannot
-// keep. The exception is a depth resolve into k_8_8_8_8 (kModeDepthRaw8888):
+// keep. (At a whole resolution scale resolve_ps.hlsl writes these dwords itself,
+// RESOLVE_FUSED, from the invocation that already loaded the depth and the stencil;
+// this variant stays for the other scales and as the check's reference,
+// mcla_gpu_resolve_memory_check.) The exception is a depth resolve into k_8_8_8_8 (kModeDepthRaw8888):
 // its product is RGBA8 and holds the four bytes of that dword exactly, so the
 // colour variant reads them from the product (the texel at the guest texel's
 // centre, not a mean) and the copy can wait in the batch like a colour one.
@@ -56,14 +59,8 @@ ConstantBuffer<EncodePush> g_push : register(b0, space5);
 RWByteAddressBuffer g_memory : register(u0, space4);
 ByteAddressBuffer g_memory_table : register(t1, space4);
 
+#define RESOLVE_MEMORY_WRITE
 #include "resolve_memory.hlsli"
-
-void StoreDword(uint address, uint value, uint endian) {
-  const uint offset = ResolveMemoryOffset(address);
-  if (offset != kResolveMemoryNoChunk) {
-    g_memory.Store(offset, XeEndianSwap32(value, endian));
-  }
-}
 
 #if !RESOLVE_DEPTH
 uint4 QuantizeUNorm(float4 value, float4 max_value) {

@@ -175,6 +175,16 @@ std::string DecodePipelineName(plume::RenderFormat format) {
   return std::format("resolve memory decode -> {}", format::PlumeFormatName(format));
 }
 
+// The fused depth resolve pipeline's key (ResolveMemory::fused_pipelines_, and the host
+// precache's variant) and name.
+constexpr uint32_t FusedKeyOf(bool msaa, plume::RenderFormat format) {
+  return (uint32_t(msaa) << 8) | uint32_t(format);
+}
+std::string FusedPipelineName(bool msaa, plume::RenderFormat format) {
+  return std::format("resolve depth{} fused -> {}", msaa ? " msaa" : "",
+                     format::PlumeFormatName(format));
+}
+
 // The push layout word of a level: bits 0-1 bpb_log2, bit 2 tiled, bits 3-4 endian.
 uint32_t LayoutBits(const texture_decode::Source& source, uint32_t bpb_log2) {
   return bpb_log2 | (source.tiled ? 4u : 0u) | ((source.endian & 3u) << 3);
@@ -259,6 +269,18 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   encode_builder.addPushConstant(0, 5, sizeof(EncodePush), plume::RenderShaderStageFlag::COMPUTE);
   encode_builder.end();
   encode_layout_ = device.CreatePipelineLayout(encode_builder, "resolve memory encode layout");
+  // The fused depth resolve (resolve_ps.hlsl RESOLVE_FUSED), a graphics pass over the
+  // encode's resources: the same sets, the push range (b0, space 5) for the pixel shader.
+  // Optional: without it every depth copy is encoded by the dispatch.
+  plume::RenderPipelineLayoutBuilder fused_builder;
+  fused_builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  for (uint32_t set = 0; set < 4; ++set) {
+    fused_builder.addDescriptorSet(heap.texture_set_builder());
+  }
+  fused_builder.addDescriptorSet(encode_set_builder_);
+  fused_builder.addPushConstant(0, 5, kFusedPushBytes, plume::RenderShaderStageFlag::PIXEL);
+  fused_builder.end();
+  fused_layout_ = device.CreatePipelineLayout(fused_builder, "resolve memory fused layout");
   // The decode: the memory (space 0), the push range (b0, space 1).
   plume::RenderPipelineLayoutBuilder decode_builder;
   decode_builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
@@ -300,6 +322,27 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
     passes.precache().Add(HostPrecache::Key(HostPrecache::kResolveDecode, uint32_t(format)),
                           DecodePipelineName(format),
                           [this, format] { return MakeDecodePipeline(format); });
+  }
+  // The fused depth resolve's pixel shaders and pipelines (into R32_FLOAT: k_24_8,
+  // k_24_8_FLOAT and k_32_FLOAT, the depth copies that keep a stencil byte), listed for
+  // the host builder, the multisampled source first.
+  if (fused_layout_) {
+    for (uint32_t msaa = 0; msaa < 2; ++msaa) {
+      const HostShaderBlob blob = ResolveFusedPixelShader(msaa != 0);
+      fused_shaders_[msaa] = passes.CreateShader(blob.data, blob.size, blob.name);
+    }
+    if (fused_shaders_[0] && fused_shaders_[1]) {
+      for (const bool msaa : {true, false}) {
+        passes.precache().Add(
+            HostPrecache::Key(HostPrecache::kResolveFused,
+                              FusedKeyOf(msaa, plume::RenderFormat::R32_FLOAT)),
+            FusedPipelineName(msaa, plume::RenderFormat::R32_FLOAT),
+            [this, msaa] { return MakeFusedPipeline(msaa, plume::RenderFormat::R32_FLOAT); });
+      }
+    } else {
+      fused_shaders_[0].reset();
+      fused_shaders_[1].reset();
+    }
   }
   const HostShaderBlob vertex = ResolveMemoryVertexShader();
   vertex_shader_ = device.CreateShader(vertex.data, vertex.size, "main", vertex.name);
@@ -353,6 +396,9 @@ void ResolveMemory::Shutdown() {
   decoded_owners_.clear();
   decode_pipelines_.clear();
   decode_shader_.reset();
+  fused_pipelines_.clear();
+  fused_shaders_[0].reset();
+  fused_shaders_[1].reset();
   vertex_chunks_.clear();
   vertex_pipeline_.reset();
   vertex_shader_.reset();
@@ -367,6 +413,7 @@ void ResolveMemory::Shutdown() {
   decode_set_.reset();
   encode_layout_.reset();
   decode_layout_.reset();
+  fused_layout_.reset();
   pool_.reset();
   table_.reset();
   chunk_slot_.clear();
@@ -576,6 +623,15 @@ void ResolveMemory::PoolBarrier(plume::RenderCommandList* list, PoolAccess acces
                        plume::RenderBufferBarrier(pool_.get(), plume::RenderBufferAccess::READ));
       }
       break;
+    case PoolAccess::kGraphicsWrite:
+      // Before the pass whose pixel shader stores (a fused depth resolve), every time as for
+      // the compute write: it follows every earlier write to the same pages (a UAV barrier
+      // once the pool is in the UAV state on D3D12), and the next reader's barrier waits for
+      // it. Outside a render pass: the pass has not begun.
+      list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                     plume::RenderBufferBarrier(pool_.get(), plume::RenderBufferAccess::READ |
+                                                                 plume::RenderBufferAccess::WRITE));
+      break;
     case PoolAccess::kCopyRead:
       if (pool_access_ != PoolAccess::kCopyRead) {
         list->barriers(plume::RenderBarrierStage::COPY,
@@ -762,13 +818,16 @@ bool ResolveMemory::TouchPages(const TextureLevelStorage& storage, uint32_t bpb_
   return inside;
 }
 
-bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
+bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, FusedWrite* fused) {
   const TextureKey& key = *copy.key;
   const auto fail = [&](const char* what) {
     ++stats_.encode_failures;
     Fail(what, std::format("{} level {}", key.Describe(), copy.level));
     return false;
   };
+  if (fused) {
+    *fused = FusedWrite{};
+  }
   if (!list) {
     return fail("no command list");
   }
@@ -815,6 +874,9 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
   // A depth copy reads the EDRAM planes now, unless its product holds the same
   // bytes (from_product): then it joins the batch like a colour copy.
   const bool from_edram = copy.depth && !copy.from_product;
+  // A fused copy (copy.fuse) is written by the resolve's pixel shader, in the pass that
+  // follows this call; everything else is as for any copy that reads the EDRAM planes now.
+  const bool in_pass = from_edram && copy.fuse && fused != nullptr;
   if (from_edram) {
     // Recorded now, after every colour encode waiting: their pages may overlap.
     const PageSpan span{low_page, high_page};
@@ -880,15 +942,28 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
   const uint32_t dispatch_x = (groups_x + 7) / 8;
   const uint32_t dispatch_y = (uint32_t(copy.y1 - copy.y0) + 7) / 8;
   if (from_edram) {
-    PoolBarrier(list, PoolAccess::kComputeWrite);
-    list->setComputePipelineLayout(encode_layout_.get());
-    for (uint32_t set = 0; set < 4; ++set) {
-      list->setComputeDescriptorSet(heap_->texture_set(), set);
+    if (in_pass) {
+      // The dwords are stored by the pixel shader of the pass that follows, from the
+      // invocation at each guest texel's centre: the same address, endian and rectangle.
+      PoolBarrier(list, PoolAccess::kGraphicsWrite);
+      fused->address = push.address;
+      fused->pitch = push.pitch;
+      fused->layout = push.layout;
+      fused->tail = push.tail;
+      fused->rect0 = push.rect0;
+      fused->rect1 = push.rect1;
+      fused->whole = copy.resolution_scale.n / Scale::kDenominator;
+    } else {
+      PoolBarrier(list, PoolAccess::kComputeWrite);
+      list->setComputePipelineLayout(encode_layout_.get());
+      for (uint32_t set = 0; set < 4; ++set) {
+        list->setComputeDescriptorSet(heap_->texture_set(), set);
+      }
+      list->setComputeDescriptorSet(encode_set_.get(), 4);
+      list->setPipeline(encode_pipelines_[copy.msaa ? 2 : 1].get());
+      list->setComputePushConstants(0, &push, 0, sizeof(push));
+      list->dispatch(dispatch_x, dispatch_y, 1);
     }
-    list->setComputeDescriptorSet(encode_set_.get(), 4);
-    list->setPipeline(encode_pipelines_[copy.msaa ? 2 : 1].get());
-    list->setComputePushConstants(0, &push, 0, sizeof(push));
-    list->dispatch(dispatch_x, dispatch_y, 1);
   } else {
     // The product keeps these texels until a resolve writes the level again
     // (BeforeResolve): the dispatch joins the batch.
@@ -945,6 +1020,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy) {
   TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)), false);
   ++stats_.encodes;
   stats_.depth_product_encodes += copy.from_product;
+  stats_.fused_encodes += in_pass;
   stats_.encoded_bytes += (uint64_t(copy.x1 - copy.x0) * uint64_t(copy.y1 - copy.y0)) << bpb_log2;
   return true;
 }
@@ -1334,6 +1410,38 @@ std::unique_ptr<plume::RenderPipeline> ResolveMemory::MakeDecodePipeline(
     plume::RenderFormat format) {
   const std::string name = DecodePipelineName(format);
   return passes_->CreatePipeline(*decode_layout_, *decode_shader_, format, name.c_str());
+}
+
+plume::RenderPipeline* ResolveMemory::FusedPipeline(bool msaa, plume::RenderFormat format) {
+  if (!fused_layout_ || !fused_shaders_[msaa]) {
+    return nullptr;
+  }
+  const uint32_t id = FusedKeyOf(msaa, format);
+  auto it = fused_pipelines_.find(id);
+  if (it != fused_pipelines_.end()) {
+    return it->second.get();
+  }
+  // Made ahead when listed; a format nobody listed is made here.
+  std::unique_ptr<plume::RenderPipeline> pipeline = passes_->precache().Acquire(
+      HostPrecache::Key(HostPrecache::kResolveFused, id), FusedPipelineName(msaa, format),
+      [&] { return MakeFusedPipeline(msaa, format); });
+  plume::RenderPipeline* raw = pipeline.get();
+  fused_pipelines_.emplace(id, std::move(pipeline));
+  return raw;
+}
+
+std::unique_ptr<plume::RenderPipeline> ResolveMemory::MakeFusedPipeline(
+    bool msaa, plume::RenderFormat format) {
+  const std::string name = FusedPipelineName(msaa, format);
+  return passes_->CreatePipeline(*fused_layout_, *fused_shaders_[msaa], format, name.c_str());
+}
+
+void ResolveMemory::BindFused(plume::RenderCommandList* list) {
+  list->setGraphicsPipelineLayout(fused_layout_.get());
+  for (uint32_t set = 0; set < 4; ++set) {
+    list->setGraphicsDescriptorSet(heap_->texture_set(), set);
+  }
+  list->setGraphicsDescriptorSet(encode_set_.get(), 4);
 }
 
 ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t host_swizzle,
@@ -1897,6 +2005,10 @@ std::string ResolveMemory::TakeSummary(uint64_t frames) {
     text += std::format(
         " | depth copies encoded from their product {:.1f}/frame, {:.1f} replaced before running",
         double(stats_.depth_product_encodes) / f, double(stats_.depth_product_dropped) / f);
+  }
+  if (stats_.fused_encodes) {
+    text += std::format(" | depth copies written by their resolve pass {:.1f}/frame",
+                        double(stats_.fused_encodes) / f);
   }
   if (reach_) {
     text += std::format(" | reach: {} pages marked by inherited resolves", stats_.inherited_marked);
