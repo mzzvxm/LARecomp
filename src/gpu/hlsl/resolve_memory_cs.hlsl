@@ -14,13 +14,14 @@
 // exactly what the destination's fetch reads (the float16 rounding included).
 // Depth comes from the EDRAM target, as resolve_ps.hlsl reads it: the raw
 // depth24 << 8 | stencil the console writes, which an R32F product cannot
-// keep. (At a whole resolution scale resolve_ps.hlsl writes these dwords itself,
-// RESOLVE_FUSED, from the invocation that already loaded the depth and the stencil;
-// this variant stays for the other scales and as the check's reference,
+// keep. (At a whole resolution scale, and at a fractional one where the pass wrote the
+// pixels this reads (resolve.cpp DepthSampleWritten), resolve_ps.hlsl writes these dwords
+// itself, RESOLVE_FUSED, from the invocation that already loaded the depth and the stencil;
+// this variant stays for the other cases and as the check's reference,
 // mcla_gpu_resolve_memory_check.) The exception is a depth resolve into k_8_8_8_8 (kModeDepthRaw8888):
 // its product is RGBA8 and holds the four bytes of that dword exactly, so the
-// colour variant reads them from the product (the texel at the guest texel's
-// centre, not a mean) and the copy can wait in the batch like a colour one.
+// colour variant reads them from the product (the texel that holds the sample the
+// depth variant would load, not a mean) and the copy can wait in the batch like a colour one.
 //
 // Variants (compile-time): RESOLVE_DEPTH (an EDRAM depth/stencil source),
 // RESOLVE_MSAA (that source multisampled).
@@ -88,7 +89,7 @@ uint2 TexelBits(int2 texel) {
   const uint n = g_push.resolution_scale;
   const int level = int(g_push.level);
   if ((g_push.mode & 0xFFu) == kModeDepthRaw8888) {
-    // A depth resolve into k_8_8_8_8 at a whole scale (resolve.cpp): the
+    // A depth resolve into k_8_8_8_8 (resolve.cpp): the
     // product holds the dword's bytes, R the stencil and G, B, A the depth24
     // from its low byte up (resolve_ps.hlsl), one texel per host pixel. The
     // depth encode reads the EDRAM sample at the guest texel's centre,
@@ -96,7 +97,24 @@ uint2 TexelBits(int2 texel) {
     // that sample was copied to (the resolve's offset is a whole number of
     // guest pixels, so a whole scale keeps the same sample). A mean of the
     // block would average depths.
-    const int2 centre = int2((uint2(texel) * 2u + 1u) * n / 40u);
+    int2 centre;
+    if (n % 20u == 0u) {
+      centre = int2((uint2(texel) * 2u + 1u) * n / 40u);
+    } else {
+      // A fractional scale. The pass copied the EDRAM pixel max(p + shift, fill) into the
+      // product pixel p, with shift = Edge(x0 + offset) - Edge(x0) (the pass's offset in host
+      // pixels; Edge(x) = floor(x s + 1/2)). The depth variant's sample is
+      // max(floor((2 u + 1) n / 40), fill) with u = texel + offset, so the product pixel that
+      // holds it is that sample - shift. resolve.cpp has checked that the pass wrote it.
+      const int2 offset = int2(g_push.offset_x, g_push.offset_y);
+      const int2 rect0 = int2(int(g_push.rect0 & 0xFFFFu), int(g_push.rect0 >> 16u));
+      const uint2 u = uint2(texel + offset);
+      const int2 sample_pixel = max(int2((u * 2u + 1u) * n / 40u),
+                                    int2(int(g_push.fill), int(g_push.fill)));
+      const int2 shift = int2((uint2(rect0 + offset) * n + 10u) / 20u) -
+                         int2((uint2(rect0) * n + 10u) / 20u);
+      centre = sample_pixel - shift;
+    }
     const uint4 q = QuantizeUNorm(g_textures[g_push.source].Load(int3(centre, level)),
                                   float4(255.0f, 255.0f, 255.0f, 255.0f));
     return uint2(q.r | (q.g << 8u) | (q.b << 16u) | (q.a << 24u), 0u);

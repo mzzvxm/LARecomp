@@ -42,6 +42,11 @@
 // the invocation at the centre of each guest texel's block has loaded the very
 // depth and stencil the encode would load, and stores the dword. That drops the
 // second read of the multisampled planes and the switch to compute and back.
+// At a fractional scale both hold too, when the pass wrote the pixels the
+// encode reads (resolve.cpp DepthSampleWritten): the invocation that loaded a
+// texel's sample stores for it (RESOLVE_FUSED=2), and the raw k_8_8_8_8 encode
+// reads the product pixel that holds the sample. Otherwise the dispatch from
+// the EDRAM planes, as before.
 // Colour waits in a batch (each dispatch after its
 // conversion pass was a GPU bubble: 1.1 ms/frame for 56 resolves):
 // the product keeps its texels until a resolve writes it again, so the batch
@@ -161,21 +166,24 @@ class ResolveMemory {
     // left uncovered (the resolve's ResolvePush::fill), read from the next.
     uint32_t fill = 0;
     // A depth copy whose product holds the dword's bytes exactly (a resolve
-    // into k_8_8_8_8, kModeDepthRaw8888, at a whole scale): `product_slot` is
+    // into k_8_8_8_8, kModeDepthRaw8888, at a whole scale or at a fractional
+    // one whose pixels the pass wrote): `product_slot` is
     // set as for colour, the encode reads the product instead of the EDRAM
     // planes, and so it waits in the batch and is dropped when a later resolve
     // writes the rectangle again, as a colour copy does. The depth fields stay
     // filled: the test aid's reference encodes from the planes at once.
     bool from_product = false;
     // A depth copy that reads the EDRAM planes (not from_product) at a whole
-    // resolution scale, whose dwords the resolve's own pixel shader writes
+    // resolution scale, or at a fractional one whose pixels the pass wrote,
+    // whose dwords the resolve's own pixel shader writes
     // (FusedWrite) instead of a dispatch after it. The caller has made the
     // fused pipeline and calls Encode BEFORE the resolve's pass.
     bool fuse = false;
   };
   // The constants of the fused pixel shader that follow the resolve's own
   // (resolve.h Push, kResolvePushBytes): resolve_ps.hlsl ResolvePush with
-  // RESOLVE_FUSED, EncodePush's fields of the same names.
+  // RESOLVE_FUSED, EncodePush's fields of the same names. The variant for a
+  // whole scale reads the first seven dwords, the one for a fractional scale all ten.
   struct FusedWrite {
     uint32_t address = 0;  // the destination level's storage origin (physical)
     uint32_t pitch = 0;
@@ -183,22 +191,29 @@ class ResolveMemory {
     uint32_t tail = 0;
     uint32_t rect0 = 0;
     uint32_t rect1 = 0;
-    uint32_t whole = 0;  // host pixels per guest texel; 0: nothing to write
+    uint32_t whole = 0;  // whole scale: host pixels per guest texel
+    int32_t offset_x = 0;  // fractional scale: EDRAM texel = destination texel + offset
+    int32_t offset_y = 0;
+    uint32_t scale_n = 0;  // Scale::n; 0: nothing to write
   };
   static constexpr uint32_t kResolvePushBytes = 32;
-  static constexpr uint32_t kFusedPushBytes = kResolvePushBytes + 7 * sizeof(uint32_t);
+  static constexpr uint32_t kFusedPushBytes = kResolvePushBytes + 10 * sizeof(uint32_t);
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not
   // (logged, counted): the pages it would have written stay as they were.
   // With copy.fuse (`fused` given) it records no dispatch: it does the rest --
   // the waiting encodes over the pages, the uploads, the pool barrier for the
   // pass's stores, the page bookkeeping -- and fills *fused for the pass that
-  // follows; *fused stays empty (whole 0) when there is nothing to write.
+  // follows; *fused stays empty (scale_n 0) when there is nothing to write.
   bool Encode(plume::RenderCommandList* list, const Copy& copy, FusedWrite* fused = nullptr);
   // The fused variant of the depth conversion into `format` (a pipeline whose
   // layout is BindFused's), made ahead when listed. Null when it could not be
-  // made: the caller encodes the copy the other way.
-  plume::RenderPipeline* FusedPipeline(bool msaa, plume::RenderFormat format);
+  // made: the caller encodes the copy the other way. `fractional`: the variant
+  // for a fractional resolution scale.
+  plume::RenderPipeline* FusedPipeline(bool msaa, plume::RenderFormat format, bool fractional);
+  // Lists the fractional variants for the host builder. Only at a fractional
+  // render scale (ResolveCache::ListPrecache): at a whole one they are never used.
+  void ListFractionalPrecache();
   // Binds the fused pass's layout, the four texture sets and the pool (the
   // pass writes it). After Encode of the copy, before the pass's draw.
   void BindFused(plume::RenderCommandList* list);
@@ -445,12 +460,14 @@ class ResolveMemory {
   std::unique_ptr<plume::RenderPipeline> encode_pipelines_[3];
   // The fused depth resolve (resolve_ps.hlsl RESOLVE_FUSED): the texture sets
   // (spaces 0-3), the encode's set (space 4), the push range (b0, space 5); a
-  // pixel shader by multisampled source, a pipeline by (msaa, format).
+  // pixel shader by [fractional scale][multisampled source], a pipeline by (fractional, msaa,
+  // format).
   std::unique_ptr<plume::RenderPipelineLayout> fused_layout_;
-  std::unique_ptr<plume::RenderShader> fused_shaders_[2];
+  std::unique_ptr<plume::RenderShader> fused_shaders_[2][2];
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> fused_pipelines_;
   // The creation itself (also called on the host builder thread).
-  std::unique_ptr<plume::RenderPipeline> MakeFusedPipeline(bool msaa, plume::RenderFormat format);
+  std::unique_ptr<plume::RenderPipeline> MakeFusedPipeline(bool msaa, plume::RenderFormat format,
+                                                           bool fractional);
   std::unique_ptr<plume::RenderShader> decode_shader_;
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> decode_pipelines_;
   // The vertex copy: the decode's set (pool and table, space 0), the

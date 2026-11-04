@@ -360,6 +360,8 @@ class ResolveCache {
     uint64_t partial = 0;             // copies that do not cover their whole level
     uint64_t half_pixel_filled = 0;   // copies of a scaled source with the gap filled (24.43)
     uint64_t census_moved = 0;        // copies of a screen image moved from their source (M6e.0)
+    uint64_t depth_fractional_kept = 0;  // depth copies at a fractional scale whose encode would
+                                         // read a pixel the pass did not write: encoded at once
     uint64_t misaligned = 0;          // destination offset not in whole 32x32 tiles
     uint64_t from_registers = 0;      // source surface not bound: taken from the registers
     uint64_t other_pitch = 0;         // source surface made at another pitch/MSAA than the
