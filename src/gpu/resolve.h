@@ -214,6 +214,12 @@ class ResolveCache {
     kFlagGammaSource = 1u << 9,
     kFlagSourceFloat24 = 1u << 10,
     kFlagDestFloat24 = 1u << 11,
+    // The source is a colour target whose clamp floor is 0 and that the host keeps as float16
+    // (k_2_10_10_10_FLOAT, k_8_8_8_8_GAMMA): the guest's render target never holds a NaN -- what
+    // is written to it is clamped, and max(NaN, 0) is 0 -- so each sample is read as 0 where the
+    // host kept a NaN. Xenia's host-render-target path does the same where it packs the target
+    // into the EDRAM (UnclampedFloat32To7e3), per sample, before the resolve averages them.
+    kFlagSourceNanToZero = 1u << 12,
   };
   struct Push {
     uint32_t source;

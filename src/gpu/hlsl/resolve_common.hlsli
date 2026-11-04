@@ -45,6 +45,7 @@
 #define kFlagGammaSource (1u << 9)
 #define kFlagSourceFloat24 (1u << 10)
 #define kFlagDestFloat24 (1u << 11)
+#define kFlagSourceNanToZero (1u << 12)
 
 uint HostSample(uint i) {
   return (g_push.samples >> (8u + 3u * i)) & 7u;
@@ -76,6 +77,14 @@ float4 ResolveSample(int2 source, uint i) {
 #else
   float4 c = g_textures[g_push.source].Load(int3(source, 0));
 #endif
+  if ((g_push.mode & kFlagSourceNanToZero) != 0u) {
+    // Per sample, before the samples are summed: one NaN sample would otherwise make the whole
+    // pixel NaN and cost an edge its antialiasing. Tested on the bits so no optimizer assuming
+    // finite maths can fold it away.
+    const uint4 bits = asuint(c);
+    const bool4 nan = (bits & 0x7FFFFFFFu) > 0x7F800000u;
+    c = float4(nan.x ? 0.0f : c.x, nan.y ? 0.0f : c.y, nan.z ? 0.0f : c.z, nan.w ? 0.0f : c.w);
+  }
   if ((g_push.mode & kFlagGammaSource) != 0u) {
     c.rgb = XeLinearToPWLGamma3(c.rgb);
   }

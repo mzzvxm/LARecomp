@@ -1198,6 +1198,14 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         if (src_format == 1) {
           full_mode |= kFlagGammaSource;  // k_8_8_8_8_GAMMA, kept linear on the host
         }
+        // The colour formats whose clamp floor is 0 (max(NaN, 0) = 0) and whose host target is
+        // float, so the ones that can hold a NaN the guest's render target would have stored as
+        // 0: k_8_8_8_8_GAMMA, and k_2_10_10_10_FLOAT with its _AS_16_16_16_16 variant folded
+        // into it. (k_16_16_16_16_FLOAT floors at -65504 and k_32_FLOAT is not clamped: left as
+        // they were.)
+        if (src_format == 1 || src_format == 3) {
+          full_mode |= kFlagSourceNanToZero;
+        }
       } else if (src_format == uint32_t(xe::DepthRenderTargetFormat::kD24FS8)) {
         full_mode |= kFlagSourceFloat24;
       }
