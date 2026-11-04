@@ -60,6 +60,7 @@ add_library(larecomp_gpu OBJECT
     upload.cpp
     validation.cpp
     viewport.cpp
+    vram_budget.cpp
     watch.cpp
 )
 # The only translation units that see a backend's own objects (backend.h).

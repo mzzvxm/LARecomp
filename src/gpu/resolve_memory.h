@@ -298,6 +298,15 @@ class ResolveMemory {
 
   std::string TakeSummary(uint64_t frames);
 
+  // The video memory budget's calls (vram_budget.h); render thread, at the
+  // start of a frame. Trim releases the textures decoded from the pool that
+  // nothing bound for `idle_frames` frames, the longest idle first, until about
+  // `bytes` are released or `max_items` textures are; each is decoded again
+  // when it is bound. The pool itself stays.
+  TrimResult Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items);
+  // Host bytes of the decoded textures and of the pool.
+  uint64_t HeldBytes() const;
+
  private:
   enum PageFlag : uint8_t {
     kValid = 1u << 0,

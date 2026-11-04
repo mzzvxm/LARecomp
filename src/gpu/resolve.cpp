@@ -793,13 +793,21 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     ++stats_.remade_for_scale;
   }
   if (!p) {
+    plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
+        scale.Edge(key.width), scale.Edge(key.height), key.levels(), format,
+        plume::RenderTextureFlag::RENDER_TARGET);
+    if (device_->TextureBlocked(desc)) {
+      // Not made lately for want of room, and nothing was freed since: the
+      // device does not ask the driver again (Device::kBackoffFrames), nor does this.
+      *why = std::format("{} {}x{} with {} levels, not tried again yet",
+                         format::PlumeFormatName(format), scale.Edge(key.width),
+                         scale.Edge(key.height), key.levels());
+      return nullptr;
+    }
     auto product = std::make_unique<Product>();
     product->key = key;
     product->format = format;
     product->scale = scale;
-    plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-        scale.Edge(key.width), scale.Edge(key.height), key.levels(), format,
-        plume::RenderTextureFlag::RENDER_TARGET);
     const std::string name = std::format("resolve product {}", key.Describe());
     product->texture = device_->CreateTexture(desc, name.c_str());
     if (!product->texture) {
@@ -1709,6 +1717,15 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
 // housekeeping
 // ---------------------------------------------------------------------------
 
+uint64_t ResolveCache::ProductBytes(const Product& p) {
+  uint64_t bytes = TextureBytes(p.scale.Edge(p.key.width), p.scale.Edge(p.key.height),
+                                p.key.levels(), p.format);
+  for (const auto& reduced : p.reduced) {
+    bytes += TextureBytes(reduced->image.width, reduced->image.height, 1, reduced->image.format);
+  }
+  return bytes;
+}
+
 void ResolveCache::EvictSome() {
   for (auto it = products_.begin(); it != products_.end();) {
     Product& p = *it->second;
@@ -1720,21 +1737,71 @@ void ResolveCache::EvictSome() {
         ++it;
         continue;
       }
-      ReleaseReduced(p);
-      p.views.Release(*frames_, *heap_);
-      for (auto& framebuffer : p.level_framebuffers) {
-        frames_->Retire(std::move(framebuffer));
-      }
-      for (auto& view : p.level_views) {
-        frames_->Retire(std::move(view));
-      }
-      frames_->Retire(std::move(p.texture));
+      device_->NoteReleased(ProductBytes(p));
+      RetireProduct(p);
       ++stats_.evicted;
       it = products_.erase(it);
     } else {
       ++it;
     }
   }
+}
+
+void ResolveCache::RetireProduct(Product& p) {
+  ReleaseReduced(p);
+  p.views.Release(*frames_, *heap_);
+  for (auto& framebuffer : p.level_framebuffers) {
+    frames_->Retire(std::move(framebuffer));
+  }
+  for (auto& view : p.level_views) {
+    frames_->Retire(std::move(view));
+  }
+  frames_->Retire(std::move(p.texture));
+}
+
+TrimResult ResolveCache::Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items) {
+  TrimResult result;
+  std::vector<Product*> idle;
+  for (const auto& [key, product] : products_) {
+    // An active product is what the guest last rendered into that memory, and
+    // what its fetches read: it stays. The others wait in the reservoir for
+    // their key to be resolved again, and are made empty then.
+    if (!product->active && product->last_frame + idle_frames < frame_) {
+      idle.push_back(product.get());
+    }
+  }
+  std::sort(idle.begin(), idle.end(),
+            [](const Product* a, const Product* b) { return a->last_frame < b->last_frame; });
+  for (Product* p : idle) {
+    if (result.bytes >= bytes || result.items >= max_items) {
+      break;
+    }
+    if (resolve_memory_->Waiting(p->key)) {
+      // An encode still waiting reads it through its slot: it lives until that
+      // encode is recorded.
+      ++stats_.evictions_put_off;
+      continue;
+    }
+    result.bytes += ProductBytes(*p);
+    ++result.items;
+    const TextureKey key = p->key;
+    RetireProduct(*p);
+    ++stats_.evicted;
+    products_.erase(key);
+  }
+  if (result.items) {
+    device_->NoteReleased(result.bytes);
+    textures_->BumpEpoch();  // no memoized binding may name a released slot
+  }
+  return result;
+}
+
+uint64_t ResolveCache::HeldBytes() const {
+  uint64_t bytes = 0;
+  for (const auto& [key, product] : products_) {
+    bytes += ProductBytes(*product);
+  }
+  return bytes;
 }
 
 std::string ResolveCache::TakeSummary(uint64_t frames) {

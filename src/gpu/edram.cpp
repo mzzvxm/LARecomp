@@ -590,6 +590,23 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
   }
   Target& t = *it->second;
   t.last_frame = frame_;
+  if (!t.texture) {
+    // Released for want of video memory (Trim): made again at the size it had
+    // when the identity was made, cleared as a new target's texture is.
+    if (!Create(t, wanted)) {
+      if (remake_failures_logged_ < 8) {
+        ++remake_failures_logged_;
+        REXLOG_ERROR("[gpu] edram: could not make the texture of {} again after it was released "
+                     "for want of video memory",
+                     DescribeEdramKey(key));
+      }
+      return nullptr;
+    }
+    ++stats_.remade;
+    Clear(t, list);
+    *framebuffer_unset = true;
+    return &t;
+  }
   if (t.height >= wanted) {
     return &t;
   }
@@ -601,8 +618,13 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     t.texture = std::move(old);
     t.height = old_height;
     t.layout = old_layout;
-    REXLOG_ERROR("[gpu] edram: could not grow target at tile {} pitch {} to {} rows",
-                 key.base_tiles, key.pitch, wanted);
+    // Asked again by every draw that needs the rows; the device does not ask the driver again
+    // for a while (Device::kBackoffFrames), and the first 8 are logged.
+    if (grow_failures_logged_ < 8) {
+      ++grow_failures_logged_;
+      REXLOG_ERROR("[gpu] edram: could not grow target at tile {} pitch {} to {} rows",
+                   key.base_tiles, key.pitch, wanted);
+    }
     return &t;  // the old size still draws everything but the new rows
   }
   // The whole new texture is initialized, then the old rows copied over it.
@@ -1279,9 +1301,59 @@ void EdramTargets::RetireFramebuffersOf(const Target* target) {
   }
 }
 
+TrimResult EdramTargets::Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items) {
+  TrimResult result;
+  if (aliasing_ || tiling_) {
+    return result;
+  }
+  std::vector<Target*> idle;
+  for (const auto& [key, target] : targets_) {
+    if (target->texture && target->last_frame + idle_frames < frame_) {
+      idle.push_back(target.get());
+    }
+  }
+  std::sort(idle.begin(), idle.end(),
+            [](const Target* a, const Target* b) { return a->last_frame < b->last_frame; });
+  for (Target* t : idle) {
+    if (result.bytes >= bytes || result.items >= max_items) {
+      break;
+    }
+    result.bytes += TextureBytes(t->scale.Edge(t->width), t->scale.Edge(t->height), 1, t->format,
+                                 t->host_samples);
+    ++result.items;
+    // The framebuffers that name it, the shader views and their slots, then the
+    // texture, each after the lists that still use them (FrameRing serials).
+    RetireFramebuffersOf(t);
+    ReleaseViews(*t);
+    frames_->Retire(std::move(t->texture));
+    t->height = 0;
+    t->layout = plume::RenderTextureLayout::UNKNOWN;
+    ++t->generation;
+    ++stats_.trimmed;
+  }
+  if (result.items) {
+    device_->NoteReleased(result.bytes);
+  }
+  return result;
+}
+
+uint64_t EdramTargets::HeldBytes() const {
+  uint64_t bytes = 0;
+  for (const auto& [key, target] : targets_) {
+    if (target->texture) {
+      bytes += TextureBytes(target->scale.Edge(target->width), target->scale.Edge(target->height),
+                            1, target->format, target->host_samples);
+    }
+  }
+  return bytes;
+}
+
 std::string EdramTargets::TakeSummary() {
   uint64_t bytes = 0;
   for (const auto& [key, target] : targets_) {
+    if (!target->texture) {
+      continue;  // released for want of video memory (Trim)
+    }
     bytes += uint64_t(target->scale.Edge(target->width)) * target->scale.Edge(target->height) *
              BytesPerPixel(target->format) * target->host_samples;
   }
@@ -1291,6 +1363,10 @@ std::string EdramTargets::TakeSummary() {
       targets_.size(), double(bytes) / 1048576.0, framebuffers_.size(), stats_.created,
       stats_.grown, double(stats_.grown_bytes) / 1048576.0, stats_.cleared,
       stats_.framebuffers_created, stats_.barriers);
+  if (stats_.trimmed || stats_.remade) {
+    text += std::format(" | released for want of video memory {}, made again {}", stats_.trimmed,
+                        stats_.remade);
+  }
   if (!resolution_scale_.unit()) {
     size_t scaled = 0;
     for (const auto& [key, target] : targets_) {

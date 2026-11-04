@@ -1064,6 +1064,7 @@ void TextureCache::Destroy(Entry& e, bool for_shutdown) {
   }
   e.views.Release(*frames_, *heap_);
   frames_->Retire(std::move(e.texture));
+  device_->NoteReleased(e.bytes);
 }
 
 void TextureCache::EvictSome() {
@@ -1091,6 +1092,7 @@ void TextureCache::EvictSome() {
       if (!held) {
         r->views.Release(*frames_, *heap_);
         frames_->Retire(std::move(r->texture));
+        device_->NoteReleased(r->bytes);
         any = true;
         it = replacements_.erase(it);
         continue;
@@ -1101,6 +1103,69 @@ void TextureCache::EvictSome() {
   if (any) {
     ++epoch_;  // no memoized binding may name a released slot
   }
+}
+
+TrimResult TextureCache::Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items) {
+  TrimResult result;
+  std::vector<Entry*> idle;
+  for (const auto& [key, entry] : entries_) {
+    // last_frame is current to within kRefreshFrames: the memoized bindings are
+    // resolved again that often (BeginFrame), and each updates it.
+    if (entry->last_frame + idle_frames < frame_) {
+      idle.push_back(entry.get());
+    }
+  }
+  std::sort(idle.begin(), idle.end(),
+            [](const Entry* a, const Entry* b) { return a->last_frame < b->last_frame; });
+  for (Entry* e : idle) {
+    if (result.bytes >= bytes || result.items >= max_items) {
+      break;
+    }
+    result.bytes += e->bytes;
+    ++result.items;
+    const TextureKey key = e->key;
+    Destroy(*e, false);
+    ++stats_.evicted;
+    entries_.erase(key);
+  }
+  // Replacements no remaining entry holds and nothing bound for as long.
+  for (auto it = replacements_.begin();
+       it != replacements_.end() && result.bytes < bytes && result.items < max_items;) {
+    Replacement* r = it->second.get();
+    if (r && r->last_frame + idle_frames < frame_) {
+      bool held = false;
+      for (const auto& [key, entry] : entries_) {
+        held |= entry->replacement == r;
+      }
+      if (!held) {
+        result.bytes += r->bytes;
+        ++result.items;
+        r->views.Release(*frames_, *heap_);
+        frames_->Retire(std::move(r->texture));
+        device_->NoteReleased(r->bytes);
+        it = replacements_.erase(it);
+        continue;
+      }
+    }
+    ++it;
+  }
+  if (result.items) {
+    ++epoch_;  // no memoized binding may name a released slot
+  }
+  return result;
+}
+
+uint64_t TextureCache::HeldBytes() const {
+  uint64_t bytes = 0;
+  for (const auto& [key, entry] : entries_) {
+    bytes += entry->bytes;
+  }
+  for (const auto& [hash, replacement] : replacements_) {
+    if (replacement) {
+      bytes += replacement->bytes;
+    }
+  }
+  return bytes;
 }
 
 std::string TextureCache::TakeSummary(uint64_t frames) {

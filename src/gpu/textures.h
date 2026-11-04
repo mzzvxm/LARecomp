@@ -71,6 +71,7 @@
 #include "guest_memory.h"
 #include "region_index.h"
 #include "scale.h"
+#include "texture_bytes.h"
 #include "texture_decode.h"
 #include "texture_mods.h"
 
@@ -279,6 +280,16 @@ class TextureCache {
 
   // One line of statistics since the last call.
   std::string TakeSummary(uint64_t frames);
+
+  // The video memory budget's calls (vram_budget.h); render thread, at the
+  // start of a frame. Trim releases the textures nothing bound for
+  // `idle_frames` frames (so never one bound in this frame), the longest idle
+  // first, until about `bytes` are released or `max_items` textures are; each
+  // is decoded from guest memory again when it is bound. The mod replacements
+  // nothing holds and nothing bound as long go with them.
+  TrimResult Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items);
+  // Host bytes of the textures and replacements held.
+  uint64_t HeldBytes() const;
 
  private:
   enum class Mode : uint8_t { kWatched, kHashed };

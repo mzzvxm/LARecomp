@@ -1972,6 +1972,7 @@ void ResolveMemory::DestroyDecoded(Decoded& d, bool for_shutdown) {
     frames_->Retire(std::move(view));
   }
   frames_->Retire(std::move(d.texture));
+  device_->NoteReleased(TextureBytes(d.key.width, d.key.height, d.key.levels(), d.format));
 }
 
 void ResolveMemory::EvictSome() {
@@ -1990,6 +1991,42 @@ void ResolveMemory::EvictSome() {
   if (any) {
     textures_->BumpEpoch();  // no memoized binding may name a released slot
   }
+}
+
+TrimResult ResolveMemory::Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items) {
+  TrimResult result;
+  std::vector<Decoded*> idle;
+  for (const auto& [key, decoded] : decoded_) {
+    if (decoded->last_frame + idle_frames < frame_) {
+      idle.push_back(decoded.get());
+    }
+  }
+  std::sort(idle.begin(), idle.end(),
+            [](const Decoded* a, const Decoded* b) { return a->last_frame < b->last_frame; });
+  for (Decoded* d : idle) {
+    if (result.bytes >= bytes || result.items >= max_items) {
+      break;
+    }
+    result.bytes += TextureBytes(d->key.width, d->key.height, d->key.levels(), d->format);
+    ++result.items;
+    const TextureKey key = d->key;
+    DestroyDecoded(*d, false);
+    ++stats_.evicted;
+    decoded_.erase(key);
+  }
+  if (result.items) {
+    textures_->BumpEpoch();  // no memoized binding may name a released slot
+  }
+  return result;
+}
+
+uint64_t ResolveMemory::HeldBytes() const {
+  uint64_t bytes = uint64_t(pool_chunks_) * kChunkBytes;
+  for (const auto& [key, decoded] : decoded_) {
+    bytes += TextureBytes(decoded->key.width, decoded->key.height, decoded->key.levels(),
+                          decoded->format);
+  }
+  return bytes;
 }
 
 std::string ResolveMemory::TakeSummary(uint64_t frames) {
