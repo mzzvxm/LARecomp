@@ -2,6 +2,8 @@
 
 Put MP3 files in a folder and they appear on the in-game radio. Each file is turned into a real game song: a game object, a cue and a streaming wave bank, built the way the shipped songs are. Source: `src/mc_engine/music/` (native route) and `src/mc_engine/mp3custom/` (older host player).
 
+No cvar is needed for this. The native route described here is always active: it runs at startup whenever it finds `.mp3` files in the folders below. Do not set `custom_music = true`; that switches on the older host player (see Options), which plays over the game instead of through the radio and is off by default.
+
 ## Quick start
 
 1. Create a `music/` folder beside the executable and drop `.mp3` files in it.
@@ -70,7 +72,7 @@ Built banks live in `<mod folder>/.custommusic/`, keyed by each source file's pa
 
 | Option | Default | Notes |
 |---|---|---|
-| `custom_music` | `false` | Older host player: decodes `music/*.mp3` outside the game and plays over it. Off by default. It only sees files the native route could not take. Restart. |
+| `custom_music` | `false` | Not needed for custom music. Older, second-class host player: decodes `music/*.mp3` outside the game and plays over it. Off by default. It only sees files the native route could not take. Restart. |
 | `custom_music_volume` | `0.5` | Trim for the host player on top of the in-game music slider. |
 | `custom_music_announce` | `true` | See above. |
 | `custom_music_announce_seconds` | `15.0` | See above. |
