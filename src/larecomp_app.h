@@ -415,6 +415,24 @@ class LarecompApp : public rex::ReXApp {
       return false;
     }
 
+    // The SDK's callback for `fullscreen` calls Window::SetFullscreen on the
+    // thread that set the cvar, with the cvar registry locked. The pause menu
+    // sets it on the game thread; SetFullscreen then waits for the UI thread,
+    // and with the settings panel or the console open the UI thread is waiting
+    // for that lock when it reads a cvar, so the game hung for good. The window
+    // change is queued for the UI thread instead and runs after the lock is
+    // released. The SDK registers no other callback for this name.
+    rex::cvar::UnregisterChangeCallbacks("fullscreen");
+    rex::cvar::RegisterChangeCallback(
+        "fullscreen", [this](std::string_view, std::string_view value) {
+          const bool fullscreen = rex::string::from_string<bool>(value, false);
+          app_context().CallInUIThreadDeferred([this, fullscreen] {
+            if (auto* w = window()) {
+              w->SetFullscreen(fullscreen);
+            }
+          });
+        });
+
     if (imgui_drawer()) {
       mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
       // The SDK registered bind_debug_overlay first, and the first bind that
