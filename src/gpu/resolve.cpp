@@ -793,13 +793,21 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     ++stats_.remade_for_scale;
   }
   if (!p) {
+    plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
+        scale.Edge(key.width), scale.Edge(key.height), key.levels(), format,
+        plume::RenderTextureFlag::RENDER_TARGET);
+    if (device_->TextureBlocked(desc)) {
+      // Not made lately for want of room, and nothing was freed since: the
+      // device does not ask the driver again (Device::kBackoffFrames), nor does this.
+      *why = std::format("{} {}x{} with {} levels, not tried again yet",
+                         format::PlumeFormatName(format), scale.Edge(key.width),
+                         scale.Edge(key.height), key.levels());
+      return nullptr;
+    }
     auto product = std::make_unique<Product>();
     product->key = key;
     product->format = format;
     product->scale = scale;
-    plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-        scale.Edge(key.width), scale.Edge(key.height), key.levels(), format,
-        plume::RenderTextureFlag::RENDER_TARGET);
     const std::string name = std::format("resolve product {}", key.Describe());
     product->texture = device_->CreateTexture(desc, name.c_str());
     if (!product->texture) {
@@ -1709,6 +1717,15 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
 // housekeeping
 // ---------------------------------------------------------------------------
 
+uint64_t ResolveCache::ProductBytes(const Product& p) {
+  uint64_t bytes = TextureBytes(p.scale.Edge(p.key.width), p.scale.Edge(p.key.height),
+                                p.key.levels(), p.format);
+  for (const auto& reduced : p.reduced) {
+    bytes += TextureBytes(reduced->image.width, reduced->image.height, 1, reduced->image.format);
+  }
+  return bytes;
+}
+
 void ResolveCache::EvictSome() {
   for (auto it = products_.begin(); it != products_.end();) {
     Product& p = *it->second;
@@ -1720,6 +1737,7 @@ void ResolveCache::EvictSome() {
         ++it;
         continue;
       }
+      device_->NoteReleased(ProductBytes(p));
       ReleaseReduced(p);
       p.views.Release(*frames_, *heap_);
       for (auto& framebuffer : p.level_framebuffers) {

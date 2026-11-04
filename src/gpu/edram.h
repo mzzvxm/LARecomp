@@ -567,6 +567,7 @@ class EdramTargets {
                      FramebufferKeyHash>
       framebuffers_;
   std::vector<EdramKey> failed_;  // identities reported as impossible
+  uint32_t grow_failures_logged_ = 0;
   uint64_t frame_ = 0;
   uint64_t change_serial_ = 1;
 

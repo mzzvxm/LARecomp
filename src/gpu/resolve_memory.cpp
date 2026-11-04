@@ -1972,6 +1972,7 @@ void ResolveMemory::DestroyDecoded(Decoded& d, bool for_shutdown) {
     frames_->Retire(std::move(view));
   }
   frames_->Retire(std::move(d.texture));
+  device_->NoteReleased(TextureBytes(d.key.width, d.key.height, d.key.levels(), d.format));
 }
 
 void ResolveMemory::EvictSome() {

@@ -121,6 +121,7 @@ class HostPasses {
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> vertex_shader_;
   HostPrecache precache_;
+  uint32_t image_failures_logged_ = 0;
 };
 
 }  // namespace mcla::gpu

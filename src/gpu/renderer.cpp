@@ -486,6 +486,7 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
     return nullptr;
   }
   const uint32_t slot = frames_.slot();
+  device_.BeginFrame();
   // Outside any render pass: timestamp pool reset, one-time heap transitions.
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);

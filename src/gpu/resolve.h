@@ -272,6 +272,8 @@ class ResolveCache {
   void ReleaseReduced(Product& product);
   void IndexRanges(Product& product);
   void UnindexRanges(Product& product);
+  // Host bytes of the product's texture and of its reduced copies.
+  static uint64_t ProductBytes(const Product& product);
   void EvictSome();
 
   Device* device_ = nullptr;

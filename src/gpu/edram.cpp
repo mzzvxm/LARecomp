@@ -601,8 +601,13 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     t.texture = std::move(old);
     t.height = old_height;
     t.layout = old_layout;
-    REXLOG_ERROR("[gpu] edram: could not grow target at tile {} pitch {} to {} rows",
-                 key.base_tiles, key.pitch, wanted);
+    // Asked again by every draw that needs the rows; the device does not ask the driver again
+    // for a while (Device::kBackoffFrames), and the first 8 are logged.
+    if (grow_failures_logged_ < 8) {
+      ++grow_failures_logged_;
+      REXLOG_ERROR("[gpu] edram: could not grow target at tile {} pitch {} to {} rows",
+                   key.base_tiles, key.pitch, wanted);
+    }
     return &t;  // the old size still draws everything but the new rows
   }
   // The whole new texture is initialized, then the old rows copied over it.

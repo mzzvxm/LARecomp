@@ -134,7 +134,11 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
     image.slot = heap_->AllocateTexture(*image.texture, *image.view);
   }
   if (!image.texture || !image.view || !image.framebuffer || image.slot == kInvalidBindlessSlot) {
-    REXLOG_ERROR("[gpu] {}: the {}x{} image could not be made", name, width, height);
+    // Asked again by the next frame while the cause lasts: the first 8 are logged.
+    if (image_failures_logged_ < 8) {
+      ++image_failures_logged_;
+      REXLOG_ERROR("[gpu] {}: the {}x{} image could not be made", name, width, height);
+    }
     ReleaseImage(image);
     return false;
   }
@@ -158,6 +162,7 @@ void HostPasses::ReleaseImage(HostImage& image) {
     frames_->Retire(std::move(image.view));
   }
   if (image.texture) {
+    device_->NoteReleased(TextureBytes(image.width, image.height, 1, image.format));
     frames_->Retire(std::move(image.texture));
   }
   image = HostImage{};

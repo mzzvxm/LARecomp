@@ -1064,6 +1064,7 @@ void TextureCache::Destroy(Entry& e, bool for_shutdown) {
   }
   e.views.Release(*frames_, *heap_);
   frames_->Retire(std::move(e.texture));
+  device_->NoteReleased(e.bytes);
 }
 
 void TextureCache::EvictSome() {
@@ -1091,6 +1092,7 @@ void TextureCache::EvictSome() {
       if (!held) {
         r->views.Release(*frames_, *heap_);
         frames_->Retire(std::move(r->texture));
+        device_->NoteReleased(r->bytes);
         any = true;
         it = replacements_.erase(it);
         continue;
