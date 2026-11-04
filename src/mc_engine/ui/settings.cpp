@@ -1,5 +1,6 @@
 #include "settings.h"
 #include "imgui_theme.h"
+#include "mc_engine/config_save.h"
 
 #include <atomic>
 #include <rex/cvar.h>
@@ -193,8 +194,8 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     const bool capturing = !capturing_bind_name_.empty();
     if (clicked == 0 ||
         (!capturing && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))) {
-      rex::cvar::SaveConfig(config_path_);
-      saved_flash_ = 2.0f;
+      // Merged into the file, not rewritten from the registry: see config_save.h.
+      if (larecomp::SaveCvarsToConfig(config_path_)) saved_flash_ = 2.0f;
     }
     saved_flash_ = std::max(0.0f, saved_flash_ - io.DeltaTime);
     if (clicked == 1 ||

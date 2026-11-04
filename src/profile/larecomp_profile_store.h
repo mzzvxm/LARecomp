@@ -61,12 +61,22 @@ std::string QuoteTomlString(std::string_view value);
 struct ConfigEdit {
   std::string key;
   std::optional<std::string> value;
+  // Only rewrite the line when the file already has one; never add it. For a
+  // value that is back at its default: no line is needed, but a stale one must
+  // not keep the old value.
+  bool update_only = false;
 };
 
 // Rewrites just these keys in place and leaves every other byte of the file
-// alone, creating the file when it is missing. The SDK's SaveConfig is no
-// substitute: it serializes every cvar that differs from its default, whatever
-// set it, and drops the lines of cvars this process never registered.
+// alone, creating the file when it is missing. A key is only looked for above
+// the first [table] (that is where the cvars live); a new key is added there
+// too, so it never ends up inside a table. A comment after a rewritten value
+// stays. The file is written to a temporary one and moved over it, so a crash
+// mid-write cannot leave half a config, and writers in this process take turns.
+// The SDK's SaveConfig is no substitute: it serializes every cvar that differs
+// from its default, whatever set it, and drops the lines of cvars this process
+// never registered. SaveCvarsToConfig (mc_engine/config_save.h) builds the edits
+// for a whole save from the cvar registry.
 bool EditConfig(const fs::path& config, const std::vector<ConfigEdit>& edits);
 
 // UTF-8 <-> path, independent of the ANSI code page.
