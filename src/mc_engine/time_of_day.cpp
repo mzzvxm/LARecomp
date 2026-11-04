@@ -46,6 +46,7 @@
 #include <string>
 
 #include "larecomp_log.h"
+#include "mc_engine/config_save.h"
 #include "real_weather.h"
 #include "time_of_day.h"
 
@@ -334,6 +335,10 @@ void Hook_TimeOfDay(PPCRegister& r3) {
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%.4f", current);
             rex::cvar::SetFlagByName("time_of_day", buf);
+            // The mirror is the world's hour, not the player's choice: a settings
+            // save leaves it out (it only matters while the hold is on, and then
+            // this does not run).
+            larecomp::NoteStartupCvar("time_of_day");
         }
     }
 
