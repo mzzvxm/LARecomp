@@ -523,6 +523,7 @@ class LarecompApp : public rex::ReXApp {
   // swap chain back before the process dies.
   bool OnWindowCloseRequested() override {
     MclaWaitForSaves();
+    LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
@@ -534,6 +535,7 @@ class LarecompApp : public rex::ReXApp {
     // Closing the window while the boot content build runs: let it finish
     // writing the mod archive before the process goes, as it always did.
     larecomp::WaitForBootBuild();
+    LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();

@@ -154,5 +154,9 @@ void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31);
 bool MCLAUseRealDelta();
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11);
 
+// Logs the audio dropout counter's closing line, once (hooks/audio_mixer.cpp). Safe from any
+// thread; logs nothing if the game closed before the counter started.
+void LogAudioDropoutSummary();
+
 inline double fpsCount;
 inline bool showfps;
