@@ -268,6 +268,28 @@ std::string ReducePipelineName(plume::RenderFormat format) {
   return std::format("resolve product reduced -> {}", format::PlumeFormatName(format));
 }
 
+// One axis of a depth copy at a fractional scale. The depth encode reads, for the guest texel g of
+// [x0, x1), the EDRAM sample max(floor((2 (g + offset) + 1) n / 40), fill) (resolve_memory_cs.hlsl;
+// offset = the resolve's -dx). The resolve pass copied that sample to the product pixel
+// sample - (Edge(x0 + offset) - Edge(x0)), but wrote only the pixels [Edge(x0), Edge(x1)). At a
+// whole scale the pixel is always inside; at a fractional one the rounding of Edge can put the
+// first or the last texel's pixel outside it (a copy that does not start at the target's
+// origin, a scale below 1). The sample grows with g, so the two ends decide for the rectangle.
+bool DepthSampleWritten(Scale scale, int32_t x0, int32_t x1, int32_t offset, uint32_t fill) {
+  if (x1 <= x0 || x0 + offset < 0) {
+    return false;
+  }
+  const int64_t shift =
+      int64_t(scale.Edge(uint32_t(x0 + offset))) - int64_t(scale.Edge(uint32_t(x0)));
+  const auto pixel = [&](int32_t g) {
+    const int64_t sample =
+        (2 * (int64_t(g) + offset) + 1) * int64_t(scale.n) / (2 * int64_t(Scale::kDenominator));
+    return std::max<int64_t>(sample, int64_t(fill)) - shift;
+  };
+  return pixel(x0) >= int64_t(scale.Edge(uint32_t(x0))) &&
+         pixel(x1 - 1) < int64_t(scale.Edge(uint32_t(x1)));
+}
+
 }  // namespace
 
 ResolveCache::~ResolveCache() {
@@ -326,6 +348,10 @@ void ResolveCache::ListPrecache() {
                    ReducePipelineName(format),
                    [this, format] { return MakeReducePipeline(format); });
     }
+  }
+  // The fused depth resolve of a fractional scale runs only at one.
+  if (!edram_->resolution_scale().whole()) {
+    resolve_memory_->ListFractionalPrecache();
   }
 }
 
@@ -1466,9 +1492,18 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       }
       push.scale = scale / float(count);
       push.mode = full_mode;
+      // A depth copy at a fractional scale takes the fast paths (waiting for its product, or
+      // stored by the pass) only if the pass wrote the pixels its encode reads, on both axes.
+      // Otherwise the encode reads the EDRAM planes at once, as before.
+      bool depth_fractional_ok = false;
+      if (depth_source && !resolution_scale.whole()) {
+        depth_fractional_ok = DepthSampleWritten(resolution_scale, tx0, tx1, -dx, push.fill) &&
+                              DepthSampleWritten(resolution_scale, ty0, ty1, -dy, push.fill);
+        stats_.depth_fractional_kept += !depth_fractional_ok;
+      }
       // The same bytes into the resolve memory: colour from the product just written,
-      // depth from the EDRAM target (with stencil). Built before the pass: a depth copy at a
-      // whole scale is written by the pass itself.
+      // depth from the EDRAM target (with stencil). Built before the pass: a fused depth copy
+      // is written by the pass itself.
       ResolveMemory::Copy memory_copy;
       memory_copy.key = &key;
       memory_copy.level = level;
@@ -1489,9 +1524,10 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         memory_copy.fill = push.fill;
         // A depth resolve into k_8_8_8_8: its RGBA8 product holds the dword's bytes
         // exactly, so the encode can read the product and wait like a colour one
-        // (resolve_memory_cs.hlsl). Only at a whole scale, where the product texel at
-        // a guest texel's centre is the pixel its EDRAM sample was copied to.
-        if (mode == kModeDepthRaw8888 && resolution_scale.whole()) {
+        // (resolve_memory_cs.hlsl). At a whole scale the product texel at a guest texel's
+        // centre is the pixel its EDRAM sample was copied to; at a fractional one the encode
+        // finds that pixel, if the pass wrote it (depth_fractional_ok).
+        if (mode == kModeDepthRaw8888 && (resolution_scale.whole() || depth_fractional_ok)) {
           memory_copy.product_slot =
               p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
                             format::kHostSwizzleRGBA, "resolve product view");
@@ -1505,16 +1541,18 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       // The EDRAM planes are read by the pass, and by the encode's dispatch if there is one.
       edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
       // A depth copy that keeps its stencil byte (not the raw k_8_8_8_8 one, which waits for
-      // its product) at a whole scale: this pass also stores the resolve memory's dwords, from
-      // the invocation at each guest texel's centre, the very depth and stencil the encode
-      // would load (resolve_ps.hlsl RESOLVE_FUSED). The encode does everything else now, before
-      // the pass: the waiting encodes over its pages, the uploads, the barrier, the page
-      // bookkeeping. Other scales, and a pipeline that could not be made: the dispatch after
-      // the pass, as before.
+      // its product) at a whole scale, or at a fractional one whose pixels the pass wrote: this
+      // pass also stores the resolve memory's dwords, from the invocation that loaded each guest
+      // texel's sample, the very depth and stencil the encode would load (resolve_ps.hlsl
+      // RESOLVE_FUSED). The encode does everything else now, before the pass: the waiting
+      // encodes over its pages, the uploads, the barrier, the page bookkeeping. Other cases,
+      // and a pipeline that could not be made: the dispatch after the pass, as before.
       plume::RenderPipeline* fused_pipeline = nullptr;
       if (memory_copy.depth && !memory_copy.from_product && resolution_scale.whole() &&
           resolution_scale.n >= Scale::kDenominator) {
-        fused_pipeline = resolve_memory_->FusedPipeline(samples > 1, host.format);
+        fused_pipeline = resolve_memory_->FusedPipeline(samples > 1, host.format, false);
+      } else if (memory_copy.depth && !memory_copy.from_product && depth_fractional_ok) {
+        fused_pipeline = resolve_memory_->FusedPipeline(samples > 1, host.format, true);
       }
       struct FusedPush {
         Push resolve;
@@ -1527,7 +1565,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
         memory_copy.fuse = true;
         encoded = true;
         resolve_memory_->Encode(list, memory_copy, &fused_push.write);
-        in_pass = fused_push.write.whole != 0;
+        in_pass = fused_push.write.scale_n != 0;
       }
       TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
       if (pass_timing_->enabled()) {
@@ -1748,6 +1786,11 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
     text += std::format(" | census scale: {} copies of an image of the screen moved from their "
                         "source",
                         stats_.census_moved);
+  }
+  if (stats_.depth_fractional_kept) {
+    text += std::format(" | depth copies at a fractional scale encoded at once, the pass did not "
+                        "write the pixels they read: {:.1f}/frame",
+                        double(stats_.depth_fractional_kept) / f);
   }
   stats_ = Stats{};
   return text;

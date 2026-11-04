@@ -22,6 +22,17 @@
 // encode reads. That invocation, and only that one, writes the dword it has just
 // built, to the address the encode
 // would use (resolve_memory.hlsli, shared). s = 1: every pixel.
+//
+// RESOLVE_FUSED=2 is the same at a fractional scale (n/20 host pixels per guest texel, n not a
+// multiple of 20; resolve.cpp DepthSampleWritten checks that the pass wrote every pixel the
+// encode would read). There the encode reads, for the guest texel g, the EDRAM sample
+// max(floor((2 u + 1) n / 40), fill), u = g + the resolve's offset in guest texels, and the pass
+// copied the sample max(pixel + offset, fill) into each product pixel. So the invocation that
+// loaded a texel's sample is the one that holds its depth and stencil, wherever in the texel's
+// block it sits. It stores for every texel of the rectangle whose sample it loaded: none, one,
+// or two per axis (at a scale below 1, or just above it where `fill` shares a sample).
+// Samples below `fill` are nobody's; `fill` itself is the sample of every texel whose own is at
+// or below it.
 
 #include "host_pass_common.hlsli"
 #include "xenos_formats.hlsli"
@@ -48,6 +59,11 @@ struct ResolvePush {
   uint rect0;    // the rectangle in level texels: x0 bits 0-15, y0 bits 16-31
   uint rect1;    //                                 x1, y1 (exclusive)
   uint whole;    // host pixels per guest texel (the whole resolution scale s)
+#if RESOLVE_FUSED == 2
+  int guest_x;   // the resolve's offset in guest texels: source texel = texel + offset
+  int guest_y;
+  uint scale_n;  // the resolution scale in twentieths (Scale::n)
+#endif
 #endif
 };
 
@@ -72,6 +88,23 @@ ByteAddressBuffer g_memory_table : register(t1, space4);
 #include "resolve_memory.hlsli"
 #endif
 
+#if RESOLVE_FUSED == 2
+// The guest texels of one axis, the range [x, y] (empty when x > y), whose encode sample is
+// `raw` (the pixel plus the pass's offset): those with u = g + offset and
+// max(floor((2 u + 1) n / 40), fill) = max(raw, fill), inside the rectangle [rect0, rect1).
+int2 OwnedTexels(int raw, int fill, int n, int offset, int rect0, int rect1) {
+  if (raw < fill) {
+    return int2(1, 0);
+  }
+  // The smallest u with (2 u + 1) n >= 40 raw, and the largest with (2 u + 1) n <= 40 raw + 39.
+  // The sample `fill` is also that of every texel below it, so it starts at the first texel.
+  const int first = raw == fill ? 0 : (40 * raw + n - 1) / (2 * n);
+  const int last_numerator = 40 * raw + 39 - n;
+  const int last = last_numerator < 0 ? -1 : last_numerator / (2 * n);
+  return int2(max(first - offset, rect0), min(last - offset, rect1 - 1));
+}
+#endif
+
 float4 main(float4 position : SV_Position) : SV_Target {
   // The first `fill` columns and rows of a scaled source no full-screen draw
   // covers (the half pixel at a scale) are read from the first
@@ -84,7 +117,26 @@ float4 main(float4 position : SV_Position) : SV_Target {
   uint stencil;
   const uint d24 = ResolveDepth24(source, stencil);
   const uint dword = (d24 << 8u) | stencil;
-#if RESOLVE_FUSED
+#if RESOLVE_FUSED == 2
+  {
+    const int2 raw = int2(position.xy) + int2(g_push.offset_x, g_push.offset_y);
+    const int fill = int(g_push.fill);
+    const int n = int(g_push.scale_n);
+    const int2 r0 = int2(int(g_push.rect0 & 0xFFFFu), int(g_push.rect0 >> 16u));
+    const int2 r1 = int2(int(g_push.rect1 & 0xFFFFu), int(g_push.rect1 >> 16u));
+    const int2 xs = OwnedTexels(raw.x, fill, n, g_push.guest_x, r0.x, r1.x);
+    const int2 ys = OwnedTexels(raw.y, fill, n, g_push.guest_y, r0.y, r1.y);
+    if (xs.x <= xs.y && ys.x <= ys.y) {
+      const GuestLevel l =
+          MakeGuestLevel(g_push.address, g_push.pitch, g_push.layout, g_push.tail);
+      [loop] for (int y = ys.x; y <= ys.y; ++y) {
+        [loop] for (int x = xs.x; x <= xs.y; ++x) {
+          StoreDword(GuestBlockAddress(l, int2(x, y)), dword, l.endian);
+        }
+      }
+    }
+  }
+#elif RESOLVE_FUSED
   {
     const uint s = g_push.whole;
     const uint2 pixel = uint2(position.xy);

@@ -176,13 +176,13 @@ std::string DecodePipelineName(plume::RenderFormat format) {
 }
 
 // The fused depth resolve pipeline's key (ResolveMemory::fused_pipelines_, and the host
-// precache's variant) and name.
-constexpr uint32_t FusedKeyOf(bool msaa, plume::RenderFormat format) {
-  return (uint32_t(msaa) << 8) | uint32_t(format);
+// precache's variant) and name; `fractional` is the variant for a fractional scale.
+constexpr uint32_t FusedKeyOf(bool msaa, plume::RenderFormat format, bool fractional) {
+  return (uint32_t(fractional) << 9) | (uint32_t(msaa) << 8) | uint32_t(format);
 }
-std::string FusedPipelineName(bool msaa, plume::RenderFormat format) {
-  return std::format("resolve depth{} fused -> {}", msaa ? " msaa" : "",
-                     format::PlumeFormatName(format));
+std::string FusedPipelineName(bool msaa, plume::RenderFormat format, bool fractional) {
+  return std::format("resolve depth{} fused{} -> {}", msaa ? " msaa" : "",
+                     fractional ? " fractional" : "", format::PlumeFormatName(format));
 }
 
 // The push layout word of a level: bits 0-1 bpb_log2, bit 2 tiled, bits 3-4 endian.
@@ -328,20 +328,28 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
   // the host builder, the multisampled source first.
   if (fused_layout_) {
     for (uint32_t msaa = 0; msaa < 2; ++msaa) {
-      const HostShaderBlob blob = ResolveFusedPixelShader(msaa != 0);
-      fused_shaders_[msaa] = passes.CreateShader(blob.data, blob.size, blob.name);
+      const HostShaderBlob blob = ResolveFusedPixelShader(msaa != 0, false);
+      fused_shaders_[0][msaa] = passes.CreateShader(blob.data, blob.size, blob.name);
     }
-    if (fused_shaders_[0] && fused_shaders_[1]) {
+    if (fused_shaders_[0][0] && fused_shaders_[0][1]) {
       for (const bool msaa : {true, false}) {
         passes.precache().Add(
             HostPrecache::Key(HostPrecache::kResolveFused,
-                              FusedKeyOf(msaa, plume::RenderFormat::R32_FLOAT)),
-            FusedPipelineName(msaa, plume::RenderFormat::R32_FLOAT),
-            [this, msaa] { return MakeFusedPipeline(msaa, plume::RenderFormat::R32_FLOAT); });
+                              FusedKeyOf(msaa, plume::RenderFormat::R32_FLOAT, false)),
+            FusedPipelineName(msaa, plume::RenderFormat::R32_FLOAT, false), [this, msaa] {
+              return MakeFusedPipeline(msaa, plume::RenderFormat::R32_FLOAT, false);
+            });
+      }
+      // The variants for a fractional scale: the shaders are made here (cheap), their
+      // pipelines listed only at such a scale (ListFractionalPrecache). Optional: without
+      // them those copies are encoded by the dispatch.
+      for (uint32_t msaa = 0; msaa < 2; ++msaa) {
+        const HostShaderBlob blob = ResolveFusedPixelShader(msaa != 0, true);
+        fused_shaders_[1][msaa] = passes.CreateShader(blob.data, blob.size, blob.name);
       }
     } else {
-      fused_shaders_[0].reset();
-      fused_shaders_[1].reset();
+      fused_shaders_[0][0].reset();
+      fused_shaders_[0][1].reset();
     }
   }
   const HostShaderBlob vertex = ResolveMemoryVertexShader();
@@ -397,8 +405,11 @@ void ResolveMemory::Shutdown() {
   decode_pipelines_.clear();
   decode_shader_.reset();
   fused_pipelines_.clear();
-  fused_shaders_[0].reset();
-  fused_shaders_[1].reset();
+  for (auto& row : fused_shaders_) {
+    for (auto& shader : row) {
+      shader.reset();
+    }
+  }
   vertex_chunks_.clear();
   vertex_pipeline_.reset();
   vertex_shader_.reset();
@@ -924,6 +935,13 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
   } else {
     push.source = copy.product_slot;
   }
+  if (copy.from_product) {
+    // At a fractional scale the product pixel that holds a texel's depth sample depends on
+    // the resolve's offset and the half-pixel fill (resolve_memory_cs.hlsl, kModeDepthRaw8888);
+    // a whole scale does not read them.
+    push.offset_x = copy.offset_x;
+    push.offset_y = copy.offset_y;
+  }
   push.level = copy.level;
   push.resolution_scale = copy.resolution_scale.n;
   push.fill = copy.fill;
@@ -944,7 +962,8 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
   if (from_edram) {
     if (in_pass) {
       // The dwords are stored by the pixel shader of the pass that follows, from the
-      // invocation at each guest texel's centre: the same address, endian and rectangle.
+      // invocation that loaded each guest texel's sample: the same address, endian and
+      // rectangle.
       PoolBarrier(list, PoolAccess::kGraphicsWrite);
       fused->address = push.address;
       fused->pitch = push.pitch;
@@ -953,6 +972,9 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
       fused->rect0 = push.rect0;
       fused->rect1 = push.rect1;
       fused->whole = copy.resolution_scale.n / Scale::kDenominator;
+      fused->offset_x = copy.offset_x;
+      fused->offset_y = copy.offset_y;
+      fused->scale_n = copy.resolution_scale.n;
     } else {
       PoolBarrier(list, PoolAccess::kComputeWrite);
       list->setComputePipelineLayout(encode_layout_.get());
@@ -1412,28 +1434,48 @@ std::unique_ptr<plume::RenderPipeline> ResolveMemory::MakeDecodePipeline(
   return passes_->CreatePipeline(*decode_layout_, *decode_shader_, format, name.c_str());
 }
 
-plume::RenderPipeline* ResolveMemory::FusedPipeline(bool msaa, plume::RenderFormat format) {
-  if (!fused_layout_ || !fused_shaders_[msaa]) {
+plume::RenderPipeline* ResolveMemory::FusedPipeline(bool msaa, plume::RenderFormat format,
+                                                    bool fractional) {
+  if (!fused_layout_ || !fused_shaders_[fractional][msaa]) {
     return nullptr;
   }
-  const uint32_t id = FusedKeyOf(msaa, format);
+  const uint32_t id = FusedKeyOf(msaa, format, fractional);
   auto it = fused_pipelines_.find(id);
   if (it != fused_pipelines_.end()) {
     return it->second.get();
   }
   // Made ahead when listed; a format nobody listed is made here.
   std::unique_ptr<plume::RenderPipeline> pipeline = passes_->precache().Acquire(
-      HostPrecache::Key(HostPrecache::kResolveFused, id), FusedPipelineName(msaa, format),
-      [&] { return MakeFusedPipeline(msaa, format); });
+      HostPrecache::Key(HostPrecache::kResolveFused, id),
+      FusedPipelineName(msaa, format, fractional),
+      [&] { return MakeFusedPipeline(msaa, format, fractional); });
   plume::RenderPipeline* raw = pipeline.get();
   fused_pipelines_.emplace(id, std::move(pipeline));
   return raw;
 }
 
 std::unique_ptr<plume::RenderPipeline> ResolveMemory::MakeFusedPipeline(
-    bool msaa, plume::RenderFormat format) {
-  const std::string name = FusedPipelineName(msaa, format);
-  return passes_->CreatePipeline(*fused_layout_, *fused_shaders_[msaa], format, name.c_str());
+    bool msaa, plume::RenderFormat format, bool fractional) {
+  const std::string name = FusedPipelineName(msaa, format, fractional);
+  return passes_->CreatePipeline(*fused_layout_, *fused_shaders_[fractional][msaa], format,
+                                 name.c_str());
+}
+
+void ResolveMemory::ListFractionalPrecache() {
+  if (!fused_layout_) {
+    return;
+  }
+  for (const bool msaa : {true, false}) {
+    if (!fused_shaders_[1][msaa]) {
+      continue;
+    }
+    passes_->precache().Add(
+        HostPrecache::Key(HostPrecache::kResolveFused,
+                          FusedKeyOf(msaa, plume::RenderFormat::R32_FLOAT, true)),
+        FusedPipelineName(msaa, plume::RenderFormat::R32_FLOAT, true), [this, msaa] {
+          return MakeFusedPipeline(msaa, plume::RenderFormat::R32_FLOAT, true);
+        });
+  }
 }
 
 void ResolveMemory::BindFused(plume::RenderCommandList* list) {
