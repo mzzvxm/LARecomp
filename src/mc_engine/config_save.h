@@ -30,13 +30,23 @@ using HeldCvars = std::vector<std::pair<std::string, std::string>>;
 // that is not one): saving it would make the whole file unreadable.
 std::optional<std::string> CvarTomlValue(std::string_view name, std::string_view value);
 
+// LARecomp's own startup code sets cvars through SetFlagByName too (the texture
+// cache sizes and the other GPU defaults it works out for this PC), so a save
+// would take them for the player's choices and freeze them in the file: a later
+// version with better defaults, or another graphics card, would no longer change
+// them. Call this right after such a set. The cvar's value at that moment is
+// remembered as its startup value, and a save does not write the cvar while it
+// still has that value. Not for what the player picked (the save picker's
+// user_name): that stays a change.
+void NoteStartupCvar(std::string_view name);
+
 // Merges into the file what the player changed while the game ran (cvars whose
 // last writer was SetFlagByName), plus `held`. Everything else in the file stays
 // as it is: other lines, comments, keys of cvars this build does not have. Values
 // from the command line or the environment are not written. A changed value that
-// is back at its default only rewrites a line the file already has. The file is
-// replaced in one step (see profiles::EditConfig). False, with the file as it
-// was, when it cannot be written.
+// is back at its default, or at its startup value (NoteStartupCvar), only rewrites
+// a line the file already has. The file is replaced in one step (see
+// profiles::EditConfig). False, with the file as it was, when it cannot be written.
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held = {});
 
 // Only `held`, none of the live cvars.
