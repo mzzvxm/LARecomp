@@ -80,9 +80,9 @@ class PresentPass {
   // on and an upscale to a letterbox in `width` x `height`, records the passes
   // before the back buffer's (the table, EASU, and RCAS when a stretch follows).
   void Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_t width, uint32_t height);
-  // Inside the back buffer's render pass, cleared by the caller: draws the
-  // front buffer fitted into `width` x `height` -- the size Prepare had. Nothing
-  // before the first guest present.
+  // Inside the back buffer's render pass, cleared by the caller unless
+  // CoversTarget: draws the front buffer fitted into `width` x `height` -- the
+  // size Prepare had. Nothing before the first guest present.
   void Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // The same pass 1:1 into a target of source_width() x source_height()
   // (the flicker probe); not counted in the summary.
@@ -92,6 +92,10 @@ class PresentPass {
   bool source_ready() const { return source_ready_; }
   uint32_t source_width() const { return source_width_; }
   uint32_t source_height() const { return source_height_; }
+  // After Prepare: Draw writes every pixel of a `width` x `height` target (a
+  // front buffer is bound and its letterbox is the whole target), so a clear
+  // before it has nothing left to do.
+  bool CoversTarget(uint32_t width, uint32_t height) const;
 
   std::string TakeSummary();
 
