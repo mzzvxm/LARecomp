@@ -8,6 +8,15 @@
 
 namespace mcla::gpu::backend {
 
+// The GPU the renderer will run on, as DXGI lists it (d3d12::DescribeRenderingAdapter). Asked
+// before any backend exists, to decide graphics_backend = "auto" (ChooseAutoBackend, backend.h).
+struct RenderingAdapter {
+  bool found = false;       // DXGI lists an adapter the renderer can use
+  std::string name;         // DXGI's description: the name Plume and mcla_gpu_adapter match on
+  uint32_t vendor_id = 0;   // PCI vendor id: 0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel
+  bool has_outputs = true;  // a display is connected to it; true when DXGI could not say
+};
+
 #if defined(LARECOMP_GPU_HAS_D3D12)
 namespace d3d12 {
 bool EnableDebugLayer();
@@ -35,6 +44,7 @@ std::string DescribeDevice(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 std::string DefaultAdapterName();
+RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
 }  // namespace d3d12
 #endif
 

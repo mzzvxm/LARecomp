@@ -304,14 +304,15 @@ int WindowsGpuPreference() {
   return digit >= L'0' && digit <= L'2' ? digit - L'0' : -1;
 }
 
-}  // namespace
-
-std::string DefaultAdapterName() {
+// DefaultAdapterName's choice. `log` is off for a caller that only needs the name.
+std::string PickDefaultAdapter(bool log) {
   Microsoft::WRL::ComPtr<IDXGIFactory1> factory1;
   Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
   if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory1))) || FAILED(factory1.As(&factory))) {
-    REXLOG_INFO("[gpu] D3D12 adapter: no IDXGIFactory6 (Windows before 10 1803); Plume picks the "
-                "adapter with the most video memory");
+    if (log) {
+      REXLOG_INFO("[gpu] D3D12 adapter: no IDXGIFactory6 (Windows before 10 1803); Plume picks "
+                  "the adapter with the most video memory");
+    }
     return {};
   }
   const int preference = WindowsGpuPreference();
@@ -335,13 +336,17 @@ std::string DefaultAdapterName() {
     names.emplace_back(name, bytes > 0 ? bytes - 1 : 0);
   }
   if (names.empty()) {
-    REXLOG_INFO("[gpu] D3D12 adapter: none listed by IDXGIFactory6; Plume picks");
+    if (log) {
+      REXLOG_INFO("[gpu] D3D12 adapter: none listed by IDXGIFactory6; Plume picks");
+    }
     return {};
   }
   if (std::count(names.begin(), names.end(), names.front()) > 1) {
-    REXLOG_INFO("[gpu] D3D12 adapter: '{}' comes first but {} adapters have that name, which "
-                "Plume cannot tell apart; Plume picks", names.front(),
-                std::count(names.begin(), names.end(), names.front()));
+    if (log) {
+      REXLOG_INFO("[gpu] D3D12 adapter: '{}' comes first but {} adapters have that name, which "
+                  "Plume cannot tell apart; Plume picks", names.front(),
+                  std::count(names.begin(), names.end(), names.front()));
+    }
     return {};
   }
   const char* why = preference == 1   ? "Windows' graphics setting for this app: power saving"
@@ -349,8 +354,65 @@ std::string DefaultAdapterName() {
                     : preference == 0 ? "Windows' graphics setting for this app: let Windows "
                                         "decide; the high-performance GPU"
                                       : "no graphics setting for this app; the high-performance GPU";
-  REXLOG_INFO("[gpu] D3D12 adapter '{}': {} (mcla_gpu_adapter empty)", names.front(), why);
+  if (log) {
+    REXLOG_INFO("[gpu] D3D12 adapter '{}': {} (mcla_gpu_adapter empty)", names.front(), why);
+  }
   return names.front();
+}
+
+}  // namespace
+
+std::string DefaultAdapterName() {
+  return PickDefaultAdapter(true);
+}
+
+RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter) {
+  RenderingAdapter out;
+  Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    return out;
+  }
+  // The name Device::Open will ask Plume for. Empty is fine: Plume then picks by video memory.
+  const std::string wanted = preferred_adapter.empty() ? PickDefaultAdapter(false)
+                                                       : preferred_adapter;
+  // What Plume's D3D12Device does with that name (plume_d3d12.cpp, Plume pin 251248e): the first
+  // adapter of that name wins at once; without one, the adapter with the most dedicated video
+  // memory (the first of equals). Software, remote and no-D3D12 adapters are skipped there too.
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> chosen;
+  uint64_t chosen_memory = 0;
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+  for (UINT i = 0; SUCCEEDED(factory->EnumAdapters1(i, adapter.ReleaseAndGetAddressOf()));
+       ++i, adapter.Reset()) {
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(adapter->GetDesc1(&desc)) ||
+        (desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE | DXGI_ADAPTER_FLAG_REMOTE)) ||
+        FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
+                                 nullptr))) {
+      continue;
+    }
+    char name[512];  // the same UTF-8 name Plume compares with
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name),
+                                          nullptr, nullptr);
+    const std::string utf8(name, bytes > 0 ? bytes - 1 : 0);
+    const bool named = !wanted.empty() && utf8 == wanted;
+    if (named || !chosen || desc.DedicatedVideoMemory > chosen_memory) {
+      chosen = adapter;
+      chosen_memory = desc.DedicatedVideoMemory;
+      out.found = true;
+      out.name = utf8;
+      out.vendor_id = desc.VendorId;
+      if (named) {
+        break;
+      }
+    }
+  }
+  if (!out.found) {
+    return out;
+  }
+  // Only DXGI saying there is no output 0 counts as "none"; any other answer keeps D3D12.
+  Microsoft::WRL::ComPtr<IDXGIOutput> output;
+  out.has_outputs = chosen->EnumOutputs(0, output.GetAddressOf()) != DXGI_ERROR_NOT_FOUND;
+  return out;
 }
 
 }  // namespace mcla::gpu::backend::d3d12

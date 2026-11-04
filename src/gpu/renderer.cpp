@@ -58,7 +58,7 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
                       "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
                       "graphics setting for this app names, else the high-performance GPU; on "
-                      "Vulkan Plume picks.")
+                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -798,6 +798,9 @@ std::shared_ptr<OverlayHost> g_overlay_host;
 // What graphics_backend asks this renderer for (RequestedBackend), decided with
 // Enabled().
 Backend g_requested_backend = kDefaultBackend;
+// Set only when "auto" chose Vulkan: the GPU that choice was made on, which the Vulkan device is
+// created on. Empty otherwise.
+std::string g_auto_adapter;
 
 // The SDK's graphics_backend -- the cvar that also picks the
 // emulated GPU's backend -- as a backend this build has.
@@ -816,6 +819,8 @@ Backend RequestedBackend() {
     REXLOG_ERROR("[gpu] graphics_backend = \"{}\", but this build has no {}; {} runs", text,
                  BackendName(backend), BackendName(kDefaultBackend));
     backend = kDefaultBackend;
+  } else if (text == "auto") {
+    backend = ChooseAutoBackend(REXCVAR_GET(mcla_gpu_adapter), g_auto_adapter);
   }
   return backend;
 }
@@ -882,6 +887,10 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
 
   Renderer::Options options;
   options.device.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
+  if (options.device.preferred_adapter.empty()) {
+    // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
+    options.device.preferred_adapter = g_auto_adapter;
+  }
   options.device.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
   options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
   options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
@@ -892,7 +901,12 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
     g_overlay_host->Disconnect();
     return false;
   }
-  if (g_renderer->device().fell_back()) {
+  if (g_renderer->device().fell_back() && !g_auto_adapter.empty()) {
+    // "auto" picked Vulkan, not the player, and D3D12 is what "auto" ran before: no box.
+    REXLOG_WARN("[gpu] Vulkan, which graphics_backend auto picked for '{}', could not be started "
+                "(the reason is above); D3D12 runs",
+                g_auto_adapter);
+  } else if (g_renderer->device().fell_back()) {
     // The log has the reason; the player chose the API in the menu and would
     // otherwise never learn that another one runs.
     rex::ShowSimpleMessageBox(
