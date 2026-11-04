@@ -55,6 +55,8 @@
 // pipeline is taken only for a layout equal to its record's, byte for byte.
 // Session layouts with other ids and the same content share a persistent key,
 // and so the pipeline: the later keys alias the first one's.
+// With fewer than 8 usable processors the workers start in boot mode (boot_mode_):
+// more of them, at normal priority, following the render thread through the list.
 //
 // Background builds: a pipeline nobody precached cost 20 to 150 ms on the
 // render thread when a draw first needed it (measured, RTX 5080, cold driver
@@ -292,7 +294,7 @@ class Pipelines {
                   ShaderStore::ShaderResult ps_result);
   void StartPrecache();
   void StopPrecache();
-  void PrecacheWorker();
+  void PrecacheWorker(uint32_t index);
 
   // How a lookup that gave no pipeline ended: nothing is known of the key
   // (kNone); a build is under way and the draw may wait (kPending); the caller
@@ -353,6 +355,7 @@ class Pipelines {
     const StoredLayout* layout = nullptr;
     std::unique_ptr<plume::RenderPipeline> pipeline;
     std::atomic<uint8_t> state{kQueued};
+    uint32_t index = 0;               // its place in precached_ (and in records_)
     PipelineKey taken_as;             // the session key it went to (claimed or taken)
     bool taken = false;
     // Render thread only: a draw that may be skipped asked for it, in this frame
@@ -365,7 +368,16 @@ class Pipelines {
   std::unordered_map<PipelineKey, plume::RenderPipeline*, PipelineKeyHash> aliases_;
   std::unordered_map<PipelineKey, Precached*, PipelineKeyHash> precached_by_key_;
   std::vector<std::thread> workers_;
-  std::atomic<size_t> next_precache_{0};
+  // Where the workers are in the list (work_mutex_): the next entry and the end of the run they
+  // are in. The entries a jump of the cursor passed over (FollowRenderThread) wait in
+  // list_skipped_ and are made after the run.
+  struct ListRange {
+    size_t begin = 0;
+    size_t end = 0;
+  };
+  size_t list_cursor_ = 0;
+  size_t list_end_ = 0;
+  std::deque<ListRange> list_skipped_;
   std::atomic<bool> stop_precache_{false};
   std::atomic<uint32_t> precache_ready_{0};
   std::atomic<uint32_t> precache_failed_{0};
@@ -373,6 +385,26 @@ class Pipelines {
   std::chrono::steady_clock::time_point precache_start_;
   std::mutex precache_mutex_;
   std::condition_variable precache_done_;
+
+  // Boot mode (fewer than kBootBoostBelow usable processors, a list to make): on a first start
+  // the title's first frame asks for hundreds of the list's pipelines at once, and two workers
+  // at below normal priority, sharing four processors with the guest's own threads, made them
+  // slower than the guest asked. Until the list is done or kBootSeconds have passed, up to all
+  // the processors but one make pipelines at normal priority, and a claim by the render thread
+  // moves the workers on to the entries after it (FollowRenderThread). Then the extra workers
+  // leave and the others drop to below normal, as with more processors, which never have it.
+  std::atomic<bool> boot_mode_{false};
+  uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
+  std::chrono::steady_clock::time_point boot_deadline_;
+  std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
+  std::atomic<uint32_t> boot_waits_{0};   // ... and builds under way it waited for
+  void EndBootMode(const char* why);
+  // The render thread made entry `index` itself in boot mode: the workers go on after it, and the
+  // entries between their place and it are made once the run is over.
+  void FollowRenderThread(size_t index);
+  void NoteClaim(size_t index);
+  bool HasListWork() const;                // work_mutex_ held
+  bool NextListEntry(size_t& index);       // work_mutex_ held
 
   // Background builds for keys no record names. A request holds what the
   // worker reads -- the shaders (the pack's, which live as long as the store),
