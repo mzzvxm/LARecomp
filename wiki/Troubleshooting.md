@@ -89,6 +89,10 @@ See the full table in [Mod Loader](Mod-Loader#common-failures). Quick checks:
 
 See the troubleshooting table in [Custom Music](Custom-Music#troubleshooting). Common causes: not MPEG-1 at 32, 44.1 or 48 kHz, track too long for the header budget, two files with the same bank name, more than 1785 songs.
 
+## Online
+
+See the troubleshooting table in [Online Play](Online-Play#troubleshooting) and the log reference in [Relay Server](Relay-Server#reading-the-log).
+
 ## Vinyls and photo mode
 
 - Vinyl decals missing outside the editor: leave `vinyl_auto_readback` on.

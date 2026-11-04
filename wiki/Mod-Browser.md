@@ -43,4 +43,4 @@ image = "preview.png"
 ## Related
 
 - [Mod Loader](Mod-Loader) for what `.`-prefixed folders mean.
-- Server and relay features are outside this wiki; their cvars are listed under Online in [Settings Reference](Settings-Reference#online).
+- [Online Play](Online-Play) for the server browser, and [Relay Server](Relay-Server#hosting-mods) for how a server offers mods.

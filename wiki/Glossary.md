@@ -59,4 +59,10 @@ Terms as this project uses them. Each entry names where the meaning is stated.
 | Radio manager | `MUSIC_0_MANAGER`, the game object listing radio songs in seven genre groups. | `src/mc_engine/music/custom_music.cpp` |
 | Debug option | One of the game's developer command-line options, reactivated through `debug_options.txt`. | [Debug Options](Debug-Options) |
 | Effective config | `logs/effective_config.txt`, the cvar values that took effect at launch. | README |
-| Relay, server browser | Online features: a relay server hosts sessions; the browser (F6) lists servers. | `src/mc_engine/online/` |
+| Relay | Server that forwards System Link packets between players over UDP and assigns each a virtual IP. See [Relay Server](Relay-Server). | `src/mc_engine/online/relay_server/relay_server.cpp` |
+| Master server | Server that lists relays for the browser and keeps the nick registry. See [Master Server](Master-Server). | `src/mc_engine/online/master_server/` |
+| Server browser | In-game window (F6) listing relays and their rooms. See [Online Play](Online-Play). | `src/mc_engine/online/server_browser/` |
+| vip | Virtual IP a relay assigns to a peer as its identity. | `src/mc_engine/online/relay_server/relay_server.cpp` |
+| Room | The peers of one relay that exchanged game data in the last 20 seconds. | `src/mc_engine/online/relay_server/relay_server.cpp` |
+| Nick, nick check | A gamertag, and the relay option that admits it only from a PC that proved ownership on the master. | [Online Play](Online-Play) |
+| Recovery code | Code shown once that moves a nick to another PC after a hold the owner can cancel. | [Online Play](Online-Play) |

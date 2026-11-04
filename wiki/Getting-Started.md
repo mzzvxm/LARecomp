@@ -88,8 +88,8 @@ Non-Release builds log at `trace` by default, which the README describes as enou
 | F4 (`bind_mcla_settings`) | Toggle the settings panel. The key is taken from the SDK's `bind_settings` when that is set, otherwise F4. | `src/larecomp_app.h`, `src/mc_engine/ui/settings.cpp` |
 | F3 (`bind_mcla_telemetry`) | Toggle the telemetry overlay. The key is taken from the SDK's `bind_debug_overlay` when that is set, otherwise F3. | `src/larecomp_app.h`, `src/mc_engine/ui/debug_overlay.cpp` |
 | F5 (`bind_mod_browser`) | Mod browser. See [Mod Browser](Mod-Browser). | `src/mc_engine/modloader/modsbrowser/mod_browser_ui.cpp` |
-| F6 (`bind_server_browser`) | Server browser. | `src/mc_engine/online/server_browser/browser_ui.cpp` |
-| F8 (`bind_identity`) | Online identity window. | `src/mc_engine/online/identity/identity_ui.cpp` |
+| F6 (`bind_server_browser`) | Server browser. See [Online Play](Online-Play). | `src/mc_engine/online/server_browser/browser_ui.cpp` |
+| F8 (`bind_identity`) | Online identity window. See [Online Play](Online-Play). | `src/mc_engine/online/identity/identity_ui.cpp` |
 | F9 (`bind_map_warp`) | Warp to a mod's warp point and back. See [Map Mods](Map-Mods). | `src/mc_engine/map_warp.cpp` |
 | F2 (`bind_gpu_texture_dump`) | Dump the textures of the next frame (Plume renderer). See [Texture Modding](Texture-Modding). | `src/gpu/renderer.cpp` |
 | F10 (`bind_gpu_trace_next`) | Write a raw trace of the next guest frame (Plume renderer). | `src/gpu/renderer.cpp` |

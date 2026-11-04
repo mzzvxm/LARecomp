@@ -9,6 +9,7 @@ LARecomp is a static recompilation of Midnight Club: Los Angeles (Complete Editi
 | [Getting Started](Getting-Started) | Requirements, game data folder, first launch dialogs, where settings and logs live, when `larecomp.toml` is rewritten, hotkeys. |
 | [Settings Reference](Settings-Reference) | Every cvar with type, default, range, menu location and source file; the pause menu layout; environment variables. |
 | [Settings Renderer Advanced](Settings-Renderer-Advanced) | Diagnostic and tuning cvars of the two renderers. |
+| [Online Play](Online-Play) | Relays, server browser, nick check, Rate My Ride, leaderboards, online cvars. |
 | [Custom Music](Custom-Music) | Put MP3 files on the radio. |
 | [Mod Browser](Mod-Browser) | Install, update and switch mods on or off from inside the game. |
 | [Photo Mode](Photo-Mode) | Photo mode and album fixes and options. |
@@ -30,6 +31,9 @@ LARecomp is a static recompilation of Midnight Club: Los Angeles (Complete Editi
 | [String Replacement](String-Replacement) | Dump and replace game text. |
 | [Debug Options](Debug-Options) | `debug_options.txt` and the table of developer options. |
 | [Mod Browser](Mod-Browser) | `mod.toml` fields. |
+| [Relay Server](Relay-Server) | Host an online relay: build, run, `server.toml`, mods hosting, nick check, dashboard. Server operators. |
+| [Master Server](Master-Server) | Host the server list and nick registry. Server operators. |
+| [Rate My Ride Server](Rate-My-Ride-Server) | Host the shared Rate My Ride and leaderboards server. Server operators. |
 
 ## Conventions
 
