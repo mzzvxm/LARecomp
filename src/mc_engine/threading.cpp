@@ -71,6 +71,18 @@ bool FewLogicalProcessors() {
     return few;
 }
 
+bool FourOrFewerLogicalProcessors() {
+    static const bool few = [] {
+#if defined(_WIN32)
+        const unsigned logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+#else
+        const unsigned logical = 0;  // not counted: nothing is lowered
+#endif
+        return logical != 0 && logical <= 4;
+    }();
+    return few;
+}
+
 } // namespace mc
 
 // ---------------------------------------------------------------------------

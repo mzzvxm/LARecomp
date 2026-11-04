@@ -11,4 +11,8 @@ void DisableHighResTimer();
 // this is true (hooks/pump_wake.cpp, gpu/stream.cpp).
 bool FewLogicalProcessors();
 
+// True on a PC with 4 or fewer logical processors, counted the same way. Decided once. The
+// physics job threads run at a lower priority where this is true (hooks/job_workers.cpp).
+bool FourOrFewerLogicalProcessors();
+
 } // namespace mc
