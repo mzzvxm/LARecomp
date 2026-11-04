@@ -20,7 +20,7 @@
 // many kernel objects the game made before it).
 //   0 normal (the game's own behaviour), 1 above normal, 2 highest,
 //   3 highest and registered with the Windows multimedia scheduler ("Pro Audio"),
-//  -1 automatic: 3 on a PC with 5 or fewer logical processors, else 0.
+//  -1 automatic: 3 on a PC with 6 or fewer logical processors, else 0.
 // Takes effect at the next start. Whatever the setting, one line in larecomp.log per thread
 // says that it started and what was done to it. Windows only: elsewhere the threads are left
 // as they are.
@@ -60,7 +60,7 @@ REXCVAR_DEFINE_INT32(audio_mixer_priority, -1, "MCLA/Audio",
     "frame (the game's request for a higher priority is ignored) and the SDK's audio worker "
     "that calls the game for each frame: 0 = normal, 1 = above normal, 2 = highest, 3 = highest "
     "and registered with the Windows multimedia scheduler (\"Pro Audio\"), -1 = automatic: 3 on "
-    "a PC with 5 or fewer logical processors, 0 otherwise. Takes effect at the next start.")
+    "a PC with 6 or fewer logical processors, 0 otherwise. Takes effect at the next start.")
     .range(-1, 3)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -69,7 +69,7 @@ REX_EXTERN(__imp__sub_823F56D0);      // the game's audio callback, run by the S
 
 namespace {
 
-constexpr DWORD kSmallPcLogicalProcessors = 5;
+constexpr DWORD kSmallPcLogicalProcessors = 6;
 
 // The level to apply, from the setting and the PC.
 int AudioLevel(DWORD logical) {
