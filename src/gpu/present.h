@@ -146,12 +146,18 @@ class PresentPass {
   static_assert(sizeof(EasuPush) <= 32 && sizeof(RcasPush) <= 32);
   // chain_[0] the table's output at the source size, [1..n] the EASU passes',
   // [n + 1] RCAS's when the stretch follows.
-  enum class Route : uint8_t { kBilinear, kFsr, kFsrStretch };
+  // kRamped: the table applied 1:1 into ramped_ first, then the bilinear
+  // stretch without the table (PrepareRamped).
+  enum class Route : uint8_t { kBilinear, kFsr, kFsrStretch, kRamped };
   // `index` at `width` x `height` (HostPasses::EnsureImage); counted when it
   // cannot be made.
   bool EnsureIntermediate(uint32_t index, uint32_t width, uint32_t height);
   // Prepare's FSR1 half: the passes before the back buffer's, and route_.
   void PrepareFsr(plume::RenderCommandList* list, const Fit& fit);
+  // Prepare's bilinear half when the present scales: the table once per
+  // source texel into ramped_ (kRamped), instead of once per texel each
+  // back buffer pixel reads (four).
+  void PrepareRamped(plume::RenderCommandList* list);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
@@ -172,6 +178,10 @@ class PresentPass {
   std::unique_ptr<plume::RenderPipeline> rcas_offscreen_pipeline_;  // into an intermediate
   std::unique_ptr<plume::RenderPipeline> stretch_pipeline_;       // into the back buffer
   std::array<HostImage, kMaxFsrPasses + 2> chain_;
+  // kRamped: present_ps 1:1 into ramped_ (R32G32B32A32_FLOAT, which holds the
+  // table's values exactly, so the stretch mixes the same numbers as before).
+  std::unique_ptr<plume::RenderPipeline> ramped_pipeline_;
+  HostImage ramped_;
   Route route_ = Route::kBilinear;
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;
@@ -207,6 +217,8 @@ class PresentPass {
     uint64_t fsr = 0;          // presents through FSR1 (stretched ones among them)
     uint64_t fsr_stretched = 0;
     uint64_t fsr_failed = 0;   // FSR1 asked, an intermediate could not be made
+    uint64_t ramped = 0;       // scaled presents with the table applied first (kRamped)
+    uint64_t ramped_failed = 0;  // ramped_ could not be made: the table per texel read
   };
   Stats stats_;
 };

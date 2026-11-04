@@ -55,6 +55,11 @@ namespace {
 // The FSR1 intermediates: float16 keeps the table's 10 bits (Plume has no
 // 10:10:10:2) and is a colour target every Vulkan device must support.
 constexpr plume::RenderFormat kIntermediateFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
+// The scaled bilinear present's table pass writes the table's own values
+// (10-bit numbers / 1023 as 32-bit floats): only a 32-bit float target keeps
+// them exactly, so the stretch after it gives the same pixels as the table
+// applied per texel read.
+constexpr plume::RenderFormat kRampedFormat = plume::RenderFormat::R32G32B32A32_FLOAT;
 
 }  // namespace
 
@@ -116,6 +121,9 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
       !stretch_pipeline_) {
     return false;
   }
+  // The scaled bilinear present's table pass (kRamped). Without it the
+  // present applies the table per texel read, as before.
+  ramped_pipeline_ = passes.CreatePipeline(*shader_, kRampedFormat, "present gamma table");
   // The SDK presenter's output effects belong to that presenter, which this
   // mode replaces; the renderer has its own FSR1 (mcla_gpu_fsr).
   const std::string effect = rex::cvar::GetFlagByName("present_effect");
@@ -133,6 +141,8 @@ void PresentPass::Shutdown() {
   for (HostImage& image : chain_) {
     image = HostImage{};
   }
+  ramped_ = HostImage{};
+  ramped_pipeline_.reset();
   stretch_pipeline_.reset();
   rcas_offscreen_pipeline_.reset();
   rcas_pipeline_.reset();
@@ -281,6 +291,40 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
     reported_route_.clear();
     REXLOG_INFO("[gpu] present: FSR1 off (mcla_gpu_fsr); bilinear present");
   }
+  if (route_ == Route::kBilinear) {
+    PrepareRamped(list);
+  }
+}
+
+void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
+  // At 1:1 every back buffer pixel reads one texel (present_ps): nothing to
+  // gain. Scaled, each reads four, and each of those three table entries:
+  // 16 fetches a pixel against 4 for the table pass and 4 (of 32-bit float
+  // texels) for the stretch. The table pass costs about as much as that
+  // saves until the letterbox has some 3 times the source's pixels (an
+  // integrated Radeon, 1280x720 source: 1920x1080 draw 1.09 ms against 0.39 +
+  // 0.75; 2880x1620 2.32 against 0.55 + 1.37), so smaller stretches keep
+  // the single pass.
+  if (!ramped_pipeline_ || fit_.w == 0 || fit_.h == 0 ||
+      uint64_t(fit_.w) * fit_.h < 3ull * source_width_ * source_height_) {
+    return;
+  }
+  if (!passes_->EnsureImage(ramped_, source_width_, source_height_, kRampedFormat,
+                            "present gamma table")) {
+    ++stats_.ramped_failed;
+    return;
+  }
+  pass_timing_->Mark(list, "present gamma table");
+  Push push{};
+  push.source = source_slot_;
+  push.ramp = ramp_slot_;
+  push.source_width = source_width_;
+  push.source_height = source_height_;
+  push.scale_x = 1.0f;
+  push.scale_y = 1.0f;
+  passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
+  route_ = Route::kRamped;
+  ++stats_.ramped;
 }
 
 void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
@@ -288,6 +332,12 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
     if (RecordDraw(list, width, height)) {
       ++stats_.drawn;
     }
+    return;
+  }
+  if (route_ == Route::kRamped) {
+    // The same bilinear stretch, of texels the table was already applied to.
+    RecordFitted(list, stretch_pipeline_.get(), ramped_.slot, ramped_.width, ramped_.height, fit_);
+    ++stats_.drawn;
     return;
   }
   const HostImage& image = chain_[final_];
@@ -473,9 +523,10 @@ bool PresentPass::EnsureIntermediate(uint32_t index, uint32_t width, uint32_t he
 std::string PresentPass::TakeSummary() {
   std::string text = std::format(
       "present: {} guest presents, {} drawn, front buffer from memory {} (not a resolve "
-      "product), gamma table written {}, FSR1 {} ({} stretched, {} failed)",
+      "product), gamma table written {}, FSR1 {} ({} stretched, {} failed), scaled with the "
+      "table first {} ({} failed)",
       stats_.guest_presents, stats_.drawn, stats_.from_memory, stats_.ramp_writes, stats_.fsr,
-      stats_.fsr_stretched, stats_.fsr_failed);
+      stats_.fsr_stretched, stats_.fsr_failed, stats_.ramped, stats_.ramped_failed);
   stats_ = Stats{};
   return text;
 }
