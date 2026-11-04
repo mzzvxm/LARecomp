@@ -738,9 +738,11 @@ void Pipelines::LoadRecords() {
   // state, shaders of the pack, Plume formats and a layout by its content's
   // hash -- nothing of the API -- so what one API saw precaches the other.
   // The one exception is a static depth bias (D3D12 without dynamic bias),
-  // part of the key: an API with a dynamic bias zeroes it.
+  // part of the key: a device with a dynamic bias zeroes it in every file,
+  // its own too -- a D3D12 file from a build with the static bias holds keys
+  // no draw asks for once the bias is dynamic.
   const Backend other = ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan : Backend::kD3D12;
-  own_file_records_ = LoadFile(cache_path_, ActiveBackend(), false);
+  own_file_records_ = LoadFile(cache_path_, ActiveBackend(), dynamic_depth_bias_);
   saved_records_ = own_file_records_;
   LoadFile(other_cache_path_, other, dynamic_depth_bias_);
   // Then the starter list that ships beside the pack (tools/pipelines): what
@@ -840,6 +842,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   }
   size_t added = 0;
   uint32_t dropped = 0;
+  uint32_t zeroed = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
     // A shader the pack no longer has: the pipeline cannot be made.
@@ -848,6 +851,9 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
       continue;
     }
     if (zero_bias) {
+      if (r.key.depth_bias != 0 || r.key.slope_scaled_depth_bias != 0.0f) {
+        ++zeroed;
+      }
       r.key.depth_bias = 0;
       r.key.slope_scaled_depth_bias = 0.0f;
     }
@@ -862,7 +868,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   REXLOG_INFO("[gpu] pipelines: {} records and {} layouts in {}: {} new here ({} dropped: a "
               "shader the pack does not have{})",
               header.record_count, header.layout_count, path.string(), added, dropped,
-              zero_bias ? "; static depth bias zeroed" : "");
+              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string());
   return added;
 }
 
