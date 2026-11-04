@@ -704,13 +704,8 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::COLOR_WRITE));
   list->setFramebuffer(swap_chain_.framebuffer(image));
-  // Black around the letterboxed front buffer. When the front buffer covers the
-  // whole back buffer (no letterbox) the draw writes every pixel without blending,
-  // and the clear (0.25 ms at 720p, 0.6 ms at 1080p on an integrated Radeon) is
-  // left out.
-  if (!present_.CoversTarget(swap_chain_.width(), swap_chain_.height())) {
-    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
-  }
+  // Black around the letterboxed front buffer.
+  list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
   present_.Draw(list, swap_chain_.width(), swap_chain_.height());
   markers_.Pop(list, PerfMarkers::kPhase);  // Present
   timing_.Mark(list, slot, GpuTiming::kOverlayBegin);

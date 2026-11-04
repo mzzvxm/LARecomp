@@ -388,14 +388,6 @@ PresentPass::Fit PresentPass::FitOf(uint32_t source_width, uint32_t source_heigh
   return fit;
 }
 
-bool PresentPass::CoversTarget(uint32_t width, uint32_t height) const {
-  if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
-    return false;
-  }
-  const Fit fit = FitOf(source_width_, source_height_, width, height);
-  return fit.x == 0 && fit.y == 0 && fit.w == width && fit.h == height;
-}
-
 bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
     return false;
