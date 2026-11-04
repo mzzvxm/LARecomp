@@ -14,6 +14,8 @@
 
 #include <rex/logging.h>
 
+#include "mc_engine/threading.h"
+
 namespace mcla::gpu {
 
 namespace {
@@ -22,6 +24,18 @@ namespace {
 // the guest publishes a batch every few tens of microseconds; sleeping between
 // two batches would make every batch a syscall on the guest thread.
 constexpr std::chrono::microseconds kSpinBeforeSleep{200};
+
+// The same on a PC with 5 or fewer logical processors, where the spinning render thread holds a
+// core that the guest's main thread, the audio threads and the workers need. A gap longer than
+// this costs one wake-up: a notify on the guest thread that publishes next, and the scheduling
+// delay of the render thread.
+constexpr std::chrono::microseconds kSpinBeforeSleepFewCores{50};
+
+std::chrono::microseconds SpinBeforeSleep() {
+  static const std::chrono::microseconds spin =
+      ::mc::FewLogicalProcessors() ? kSpinBeforeSleepFewCores : kSpinBeforeSleep;
+  return spin;
+}
 
 inline void CpuRelax() {
 #if defined(_M_X64) || defined(__x86_64__)
@@ -275,7 +289,7 @@ bool CommandStream::WaitForWork(std::chrono::milliseconds timeout) {
   if (released_ != read_) {
     ReleaseNow();
   }
-  const auto spin_until = std::chrono::steady_clock::now() + kSpinBeforeSleep;
+  const auto spin_until = std::chrono::steady_clock::now() + SpinBeforeSleep();
   for (;;) {
     for (int i = 0; i < 64; ++i) {
       if (stopped() || published_tail_.load(std::memory_order_acquire) != read_) {

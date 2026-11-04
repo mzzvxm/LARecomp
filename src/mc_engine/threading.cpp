@@ -56,6 +56,21 @@ void DisableHighResTimer() {
 #endif
 }
 
+bool FewLogicalProcessors() {
+    static const bool few = [] {
+#if defined(_WIN32)
+        const unsigned logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+#else
+        const unsigned logical = 0;  // not counted: the waits stay as they are
+#endif
+        const bool small = logical != 0 && logical <= 5;
+        MC_INFO("[threading] {} logical processors: {}", logical,
+                small ? "the spin waits sleep instead" : "the spin waits are unchanged");
+        return small;
+    }();
+    return few;
+}
+
 } // namespace mc
 
 // ---------------------------------------------------------------------------
