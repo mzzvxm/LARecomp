@@ -3204,6 +3204,9 @@ bool Hook_ControllerMenuKey(PPCRegister& r3, PPCRegister& r4) {
 }
 
 bool Hook_FlashCommandLog(PPCRegister& r5) {
+    // Runs for every Flash UI command: build the line only when it is logged.
+    auto* logger = ::rex::GetLoggerRaw(::mc::log::mc);
+    if (!logger || !logger->should_log(spdlog::level::info)) return false;
     uint32_t cmd = static_cast<uint32_t>(r5.u64);
     if (!cmd || !GetMembase()) return false;
 

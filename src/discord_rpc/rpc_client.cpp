@@ -86,7 +86,12 @@ bool ConnectToDiscord() {
       return true;
     }
   }
-  REXLOG_WARN("DiscordRPC: no Discord IPC pipe found (is Discord running?)");
+  // Retried every 15 s while Discord is not running: said once.
+  static bool said = false;
+  if (!said) {
+    said = true;
+    REXLOG_WARN("DiscordRPC: no Discord IPC pipe found (is Discord running?)");
+  }
   return false;
 }
 
@@ -129,7 +134,12 @@ bool ConnectToDiscord() {
       ::close(fd);
     }
   }
-  REXLOG_WARN("DiscordRPC: no Discord IPC socket found (is Discord running?)");
+  // Retried every 15 s while Discord is not running: said once.
+  static bool said = false;
+  if (!said) {
+    said = true;
+    REXLOG_WARN("DiscordRPC: no Discord IPC socket found (is Discord running?)");
+  }
   return false;
 }
 

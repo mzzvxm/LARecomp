@@ -9,6 +9,7 @@
 // imgui_overlay_drawer.cpp and reeot imgui_overlay.cpp (BSD-3-Clause) record
 // on the UI thread instead.
 
+#include <atomic>
 #include "overlay.h"
 
 #include <cstddef>
@@ -534,7 +535,11 @@ void OverlayRenderer::CreateTexture(plume::RenderCommandList* list, uint32_t slo
   const uint64_t pitch = AlignUp(row_bytes, kTextureCopyPitchAlignment);
   const UploadSpan staging = upload_->Allocate(slot, pitch * height, kTextureCopyOffsetAlignment);
   if (!staging) {
-    REXLOG_ERROR("[gpu] {}: no upload memory for {} bytes", name, pitch * height);
+    // Can repeat every frame while the cause lasts: the first 8 are logged.
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+      REXLOG_ERROR("[gpu] {}: no upload memory for {} bytes", name, pitch * height);
+    }
     failed_textures_.insert(upload.id);
     return;
   }
@@ -618,8 +623,12 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
     indices = upload_->Allocate(slot, index_bytes, 16);
   }
   if ((vertex_bytes && !vertices) || (index_bytes && !indices)) {
-    REXLOG_ERROR("[gpu] overlay frame dropped: no upload memory for {} + {} bytes", vertex_bytes,
-                 index_bytes);
+    // Can repeat every frame while the cause lasts: the first 8 are logged.
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+      REXLOG_ERROR("[gpu] overlay frame dropped: no upload memory for {} + {} bytes", vertex_bytes,
+                   index_bytes);
+    }
     return 0;
   }
   if (vertices) {

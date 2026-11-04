@@ -152,10 +152,12 @@ std::unique_ptr<plume::RenderTexture> Device::CreateTexture(const plume::RenderT
   }
   auto texture = device_->createTexture(desc);
   if (backend::IsNullBacked(texture.get())) {
-    REXLOG_ERROR("[gpu] texture '{}' failed: {}x{}x{} mips={} fmt={} flags={:#x} samples={}",
-                 name ? name : "?", desc.width, desc.height, desc.depth, desc.mipLevels,
-                 static_cast<uint32_t>(desc.format), static_cast<uint32_t>(desc.flags),
-                 static_cast<uint32_t>(desc.multisampling.sampleCount));
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] texture '{}' failed: {}x{}x{} mips={} fmt={} flags={:#x} samples={}",
+                   name ? name : "?", desc.width, desc.height, desc.depth, desc.mipLevels,
+                   static_cast<uint32_t>(desc.format), static_cast<uint32_t>(desc.flags),
+                   static_cast<uint32_t>(desc.multisampling.sampleCount));
+    }
     ReportCreationFailure("texture", name);
     return nullptr;
   }
@@ -173,9 +175,11 @@ std::unique_ptr<plume::RenderTextureView> Device::CreateTextureView(
   }
   auto view = texture.createTextureView(desc);
   if (backend::IsNullBacked(view.get())) {
-    REXLOG_ERROR("[gpu] texture view of '{}' failed: fmt={} dim={} mips={}", name ? name : "?",
-                 static_cast<uint32_t>(desc.format), static_cast<uint32_t>(desc.dimension),
-                 desc.mipLevels);
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] texture view of '{}' failed: fmt={} dim={} mips={}", name ? name : "?",
+                   static_cast<uint32_t>(desc.format), static_cast<uint32_t>(desc.dimension),
+                   desc.mipLevels);
+    }
     ReportCreationFailure("texture view", name);
     return nullptr;
   }
@@ -189,7 +193,9 @@ std::unique_ptr<plume::RenderSampler> Device::CreateSampler(const plume::RenderS
   }
   auto sampler = device_->createSampler(desc);
   if (backend::IsNullBacked(sampler.get())) {
-    REXLOG_ERROR("[gpu] sampler '{}' failed", name ? name : "?");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] sampler '{}' failed", name ? name : "?");
+    }
     ReportCreationFailure("sampler", name);
     return nullptr;
   }
@@ -204,10 +210,12 @@ std::unique_ptr<plume::RenderDescriptorSet> Device::CreateDescriptorSet(
   }
   auto set = builder.create(device_.get());
   if (!backend::DescriptorSetAllocated(set.get(), view_count, sampler_count)) {
-    REXLOG_ERROR(
-        "[gpu] descriptor set '{}' failed: {} views + {} samplers (the shader-visible heaps are "
-        "shared by every set; a full heap is the usual cause)",
-        name ? name : "?", view_count, sampler_count);
+    if (LogThisFailure()) {
+      REXLOG_ERROR(
+          "[gpu] descriptor set '{}' failed: {} views + {} samplers (the shader-visible heaps are "
+          "shared by every set; a full heap is the usual cause)",
+          name ? name : "?", view_count, sampler_count);
+    }
     ReportCreationFailure("descriptor set", name);
     return nullptr;
   }
@@ -221,7 +229,9 @@ std::unique_ptr<plume::RenderPipelineLayout> Device::CreatePipelineLayout(
   }
   auto layout = builder.create(device_.get());
   if (backend::IsNullBacked(layout.get())) {
-    REXLOG_ERROR("[gpu] pipeline layout '{}' failed", name ? name : "?");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] pipeline layout '{}' failed", name ? name : "?");
+    }
     ReportCreationFailure("pipeline layout", name);
     return nullptr;
   }
@@ -235,14 +245,18 @@ std::unique_ptr<plume::RenderShader> Device::CreateShader(const void* data, uint
     return nullptr;
   }
   if (!data || size == 0) {
-    REXLOG_ERROR("[gpu] shader '{}' has no bytecode", name ? name : "?");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] shader '{}' has no bytecode", name ? name : "?");
+    }
     return nullptr;
   }
   const plume::RenderShaderFormat format = HostShaderFormat();
   auto shader = device_->createShader(data, size, entry_point, format);
   if (backend::IsNullBacked(shader.get())) {
-    REXLOG_ERROR("[gpu] shader '{}' failed: {} bytes of {}", name ? name : "?", size,
-                 format == plume::RenderShaderFormat::DXIL ? "DXIL" : "SPIR-V");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] shader '{}' failed: {} bytes of {}", name ? name : "?", size,
+                   format == plume::RenderShaderFormat::DXIL ? "DXIL" : "SPIR-V");
+    }
     ReportCreationFailure("shader", name);
     return nullptr;
   }
@@ -260,8 +274,10 @@ std::unique_ptr<plume::RenderQueryPool> Device::CreateQueryPool(uint32_t query_c
   }
   auto pool = device_->createQueryPool(query_count, type);
   if (!pool || backend::IsNullBacked(pool.get())) {
-    REXLOG_ERROR("[gpu] query pool '{}' of {} {} queries failed", name ? name : "?", query_count,
-                 type == plume::RenderQueryType::OCCLUSION ? "occlusion" : "timestamp");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] query pool '{}' of {} {} queries failed", name ? name : "?", query_count,
+                   type == plume::RenderQueryType::OCCLUSION ? "occlusion" : "timestamp");
+    }
     ReportCreationFailure("query pool", name);
     return nullptr;
   }
@@ -275,8 +291,10 @@ std::unique_ptr<plume::RenderFramebuffer> Device::CreateFramebuffer(
   }
   auto framebuffer = device_->createFramebuffer(desc);
   if (backend::IsNullBacked(framebuffer.get())) {
-    REXLOG_ERROR("[gpu] framebuffer '{}' of {} colour targets{} failed", name ? name : "?",
-                 desc.colorAttachmentsCount, desc.depthAttachment ? " and depth" : "");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] framebuffer '{}' of {} colour targets{} failed", name ? name : "?",
+                   desc.colorAttachmentsCount, desc.depthAttachment ? " and depth" : "");
+    }
     ReportCreationFailure("framebuffer", name);
     return nullptr;
   }
@@ -290,9 +308,11 @@ std::unique_ptr<plume::RenderBuffer> Device::CreateBuffer(const plume::RenderBuf
   }
   auto buffer = device_->createBuffer(desc);
   if (backend::IsNullBacked(buffer.get())) {
-    REXLOG_ERROR("[gpu] buffer '{}' failed: {} bytes heap={} flags={:#x}", name ? name : "?",
-                 desc.size, static_cast<uint32_t>(desc.heapType),
-                 static_cast<uint32_t>(desc.flags));
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] buffer '{}' failed: {} bytes heap={} flags={:#x}", name ? name : "?",
+                   desc.size, static_cast<uint32_t>(desc.heapType),
+                   static_cast<uint32_t>(desc.flags));
+    }
     ReportCreationFailure("buffer", name);
     return nullptr;
   }
@@ -309,7 +329,9 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateGraphicsPipeline(
   }
   auto pipeline = device_->createGraphicsPipeline(desc);
   if (backend::IsNullBacked(pipeline.get())) {
-    REXLOG_ERROR("[gpu] graphics pipeline '{}' failed", name ? name : "?");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] graphics pipeline '{}' failed", name ? name : "?");
+    }
     ReportCreationFailure("graphics pipeline", name);
     return nullptr;
   }
@@ -326,7 +348,9 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateComputePipeline(
   }
   auto pipeline = device_->createComputePipeline(desc);
   if (backend::IsNullBackedCompute(pipeline.get())) {
-    REXLOG_ERROR("[gpu] compute pipeline '{}' failed", name ? name : "?");
+    if (LogThisFailure()) {
+      REXLOG_ERROR("[gpu] compute pipeline '{}' failed", name ? name : "?");
+    }
     ReportCreationFailure("compute pipeline", name);
     return nullptr;
   }
@@ -356,8 +380,31 @@ bool Device::CheckLost(const char* context) {
   return true;
 }
 
+namespace {
+// The failure the calling thread is reporting: logged, or only counted.
+thread_local bool t_log_failure = true;
+}  // namespace
+
+bool Device::LogThisFailure() {
+  // A creation that fails keeps failing while its cause lasts (a full VRAM
+  // budget asks for the same texture every frame): the first 16 are logged in
+  // full, then one in 256 with the count, instead of two lines and a budget
+  // query per failure.
+  const uint64_t n = ++creation_failures_;
+  t_log_failure = n <= 16 || n % 256 == 0;
+  if (n == 16) {
+    REXLOG_ERROR("[gpu] 16 creations have failed: from now on one in 256 is logged");
+  } else if (n > 16 && t_log_failure) {
+    REXLOG_ERROR("[gpu] {} creations have failed so far", n);
+  }
+  return t_log_failure;
+}
+
 void Device::ReportCreationFailure(const char* what, const char* name) {
   if (CheckLost(what)) {
+    return;
+  }
+  if (!t_log_failure) {
     return;
   }
   // Device alive and the allocation still failed: memory, or an invalid

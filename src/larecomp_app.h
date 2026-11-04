@@ -527,6 +527,7 @@ class LarecompApp : public rex::ReXApp {
     LARECOMP_Discord_Shutdown();
     mc::profiler::Shutdown();
     mc::DisableHighResTimer();
+    rex::FlushLogging();  // spdlog::shutdown() does not flush the SDK's loggers
     ShutdownLarecompLogging();
     std::_Exit(0);
   }
@@ -708,6 +709,14 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPostInitLogging() override {
+    // A warning flushed the log file to disk at once, so a warning that
+    // repeats cost a disk write each time. Errors still flush at once, and
+    // log_flush_interval flushes the rest every second: a crash loses at most
+    // the last second of warnings. (The categories registered later keep the
+    // SDK's own setting.)
+    for (const auto& entry : rex::GetAllCategories()) {
+      if (entry.logger) entry.logger->flush_on(spdlog::level::err);
+    }
     for (const auto& note : path_notes_) {
       LARECOMP_APP_WARN("Game data: {}", note);
     }

@@ -117,6 +117,9 @@ class Device {
   // One attempt on the active backend; leaves nothing behind on failure.
   bool Open(const Options& options);
   void ReportCreationFailure(const char* what, const char* name);
+  // Whether this creation failure is logged in full (counts every failure).
+  bool LogThisFailure();
+  std::atomic<uint64_t> creation_failures_{0};
 
   // Declaration order is destruction order in reverse: queue, device, interface.
   std::unique_ptr<plume::RenderInterface> interface_;
