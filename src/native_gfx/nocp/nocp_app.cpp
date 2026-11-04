@@ -78,8 +78,11 @@ std::unique_ptr<rex::ui::d3d12::D3D12Provider> g_provider;
 std::unique_ptr<rex::ui::Presenter> g_presenter;
 
 // OnClosing is too late: the app listener can already have called _Exit.
-// Close requests reach every listener before that path. Registration happens
-// on the UI thread in AttachPresentation; this object outlives the window.
+// Close requests reach every listener before that path -- unless the app
+// listener, which is first, vetoes the request. LarecompApp does (it closes
+// the window itself, from the main loop: FinishWindowClose), and calls
+// NotifyWindowCloseRequested there. Registration happens on the UI thread in
+// AttachPresentation; this object outlives the window.
 class PipelineCacheCloseListener final : public rex::ui::WindowListener {
  public:
   bool OnCloseRequested(rex::ui::UIEvent&) override {
