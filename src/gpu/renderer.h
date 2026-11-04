@@ -9,14 +9,15 @@
 //                ShaderStore -> Samplers -> Pipelines -> UploadRing ->
 //                GeometryCache -> EdramTargets -> HostPasses -> ResolveMemory ->
 //                ResolveCache ->
-//                TextureCache -> Scene -> SwapChain -> PresentPass ->
+//                TextureCache -> VideoMemoryBudget -> Scene -> SwapChain -> PresentPass ->
 //                OverlayRenderer -> GpuTiming -> FrameCapture -> RenderThread
 //   Shutdown:    RenderThread stopped (deadline) -> FrameValidator::Finish ->
 //                Scene::Finish -> MemoryCensus::Finish -> GuestMemory
 //                (callback unregistered) -> FrameRing::WaitIdle (drains every
 //                retirement, running release actions while everything they
 //                name is alive) -> FrameCapture -> GpuTiming -> OverlayRenderer
-//                -> PresentPass -> SwapChain -> TextureCache -> ResolveCache ->
+//                -> PresentPass -> SwapChain -> VideoMemoryBudget -> TextureCache ->
+//                ResolveCache ->
 //                ResolveMemory -> HostPasses ->
 //                EdramTargets -> GeometryCache -> UploadRing ->
 //                Pipelines -> Samplers -> ShaderStore -> GuestLayout ->
@@ -79,6 +80,7 @@
 #include "timing.h"
 #include "upload.h"
 #include "validation.h"
+#include "vram_budget.h"
 
 namespace rex::ui {
 class Window;
@@ -186,6 +188,7 @@ class Renderer final : public RenderThread::Executor {
   ResolveMemory resolve_memory_;  // what resolves write, as guest bytes
   ResolveCache resolve_;    // resolve products (owns their textures and views)
   TextureCache textures_;   // textures decoded from guest memory
+  VideoMemoryBudget vram_;  // releases what is unused when video memory runs short
   SwapChain swap_chain_;
   PresentPass present_;     // the guest's front buffer on the window
   PostAa post_;             // the scene's anti-aliasing before the UI

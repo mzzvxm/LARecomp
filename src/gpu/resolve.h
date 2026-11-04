@@ -195,6 +195,15 @@ class ResolveCache {
 
   std::string TakeSummary(uint64_t frames);
 
+  // The video memory budget's calls (vram_budget.h); render thread, at the
+  // start of a frame. Trim releases the inactive products nothing resolved into
+  // or fetched for `idle_frames` frames, the longest idle first, until about
+  // `bytes` are released or `max_items` products are; a product is made again,
+  // empty, when its key is resolved again. The active ones stay.
+  TrimResult Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items);
+  // Host bytes of the products and their reduced copies.
+  uint64_t HeldBytes() const;
+
  private:
   // Conversions, as resolve_ps.hlsl numbers them.
   enum Mode : uint32_t {
@@ -274,6 +283,9 @@ class ResolveCache {
   void UnindexRanges(Product& product);
   // Host bytes of the product's texture and of its reduced copies.
   static uint64_t ProductBytes(const Product& product);
+  // Hands the product's objects back (slots to the heap, objects to the
+  // FrameRing); the caller erases it.
+  void RetireProduct(Product& product);
   void EvictSome();
 
   Device* device_ = nullptr;

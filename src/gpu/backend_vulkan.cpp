@@ -8,7 +8,9 @@
 
 #include "backend_impl.h"
 
+#include <cstring>
 #include <format>
+#include <vector>
 
 #include <rex/logging.h>
 
@@ -116,17 +118,77 @@ std::string DescribeDevice(plume::RenderDevice* device) {
                      VK_API_VERSION_PATCH(v));
 }
 
-VideoMemory QueryVideoMemory(plume::RenderDevice*) {
-  // Not reported on Vulkan, deliberately:
-  //  - Plume does not enable VK_EXT_memory_budget, so VMA's vmaGetHeapBudgets
-  //    (what reblue calls) would only return its own estimate;
-  //  - this SDK's rexruntime DLL exports its own copy of VMA, and a call to
-  //    vma* from this translation unit binds to that import before
-  //    plume_vulkan.obj (which defines the same names) is loaded, which the
-  //    linker refuses ("vmaGetHeapBudgets was replaced", measured 05/10).
-  // Enabling the extension in Plume and reading it through volk is the fix
-  // when the Vulkan path needs a VRAM report.
-  return {};
+namespace {
+
+// Whether the physical device lists VK_EXT_memory_budget.
+bool ListsMemoryBudget(VkPhysicalDevice physical_device) {
+  uint32_t count = 0;
+  if (vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, nullptr) !=
+          VK_SUCCESS ||
+      count == 0) {
+    return false;
+  }
+  std::vector<VkExtensionProperties> extensions(count);
+  if (vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, extensions.data()) <
+      0) {
+    return false;
+  }
+  for (const VkExtensionProperties& extension : extensions) {
+    if (std::strcmp(extension.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
+  // VK_EXT_memory_budget through vkGetPhysicalDeviceMemoryProperties2, read
+  // through volk (Plume's loader). Not through VMA's vmaGetHeapBudgets: this
+  // SDK's rexruntime DLL exports its own copy of VMA, and a call to vma* from
+  // this translation unit binds to that import before plume_vulkan.obj (which
+  // defines the same names) is loaded, which the linker refuses
+  // ("vmaGetHeapBudgets was replaced", measured 05/10).
+  // Plume does not enable the extension on the device (OptionalDeviceExtensions
+  // in plume_vulkan.cpp), and the specification asks for it to be enabled; the
+  // physical device's answer does not depend on the device that asks on the
+  // drivers this was written against, but where one answers 0 -- or lists no
+  // such extension -- nothing is reported, as before, and the budget response
+  // (vram_budget.h) runs only on a creation that failed.
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceMemoryProperties2) {
+    return {};
+  }
+  static const bool lists_budget = ListsMemoryBudget(dev->physicalDevice);
+  if (!lists_budget) {
+    return {};
+  }
+  VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {};
+  budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+  VkPhysicalDeviceMemoryProperties2 properties = {};
+  properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+  properties.pNext = &budget;
+  vkGetPhysicalDeviceMemoryProperties2(dev->physicalDevice, &properties);
+  // The device-local heap Plume sized dedicatedVideoMemory from: the biggest
+  // (the others are the small host-visible window of a discrete card).
+  const VkPhysicalDeviceMemoryProperties& memory = properties.memoryProperties;
+  uint32_t heap = UINT32_MAX;
+  VkDeviceSize biggest = 0;
+  for (uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+    if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+        memory.memoryHeaps[i].size > biggest) {
+      heap = i;
+      biggest = memory.memoryHeaps[i].size;
+    }
+  }
+  if (heap == UINT32_MAX || budget.heapBudget[heap] == 0) {
+    return {};
+  }
+  VideoMemory out;
+  out.used = budget.heapUsage[heap];
+  out.budget = budget.heapBudget[heap];
+  return out;
 }
 
 int64_t DeviceRemovedReason(plume::RenderDevice*) {

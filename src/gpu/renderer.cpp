@@ -204,6 +204,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     geometry_.SetResolveMemory(&resolve_memory_);  //
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_,
                          resolve_memory_);
+    vram_.Initialize(device_, textures_, resolve_, resolve_memory_, edram_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_, pass_timing_, post_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -233,6 +234,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     overlay_.Shutdown();
     present_.Shutdown();
     post_.Shutdown();
+    vram_.Shutdown();
     textures_.Shutdown();
     resolve_.Shutdown();
     resolve_memory_.Shutdown();
@@ -315,6 +317,7 @@ void Renderer::Shutdown() {
   overlay_.Shutdown();
   present_.Shutdown();
   post_.Shutdown();
+  vram_.Shutdown();
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
@@ -492,6 +495,9 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   pass_timing_.BeginFrame(list, slot);
   heap_.RecordPendingBarriers(list);
   scene_.BeginFrame(list, slot);
+  // After the caches' own frame start, before any record of the frame: what
+  // the budget releases is retired behind this frame's submission.
+  vram_.BeginFrame();
   markers_.BeginFrame();
   markers_.Push(list, "Frame", PerfMarkers::kFrame);
   markers_.Push(list, "Scene", PerfMarkers::kPhase);
