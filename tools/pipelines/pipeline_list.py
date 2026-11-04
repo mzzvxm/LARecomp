@@ -2,6 +2,7 @@
 
   python pipeline_list.py info FILE...
   python pipeline_list.py merge -o assets/mcla_pipelines.bin FILE...
+  python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
 
 A list holds no game data: each record is a pipeline key (the pack's shader hashes, spec variants,
 target formats, blend/depth/stencil/raster state) and the input layout it was made with, by content.
@@ -14,6 +15,13 @@ precache makes them in that order. Prefer D3D12 lists from a device with 24-bit 
 a Vulkan list from a device without it holds D32 keys that a D24 device never asks for.
 Rebuild the starter when the shader pack or PipelineKey changes: a record whose shader is not in the
 pack is dropped at load, and a list of another version is ignored.
+
+reorder keeps the records of --base and moves to the front those that also stand in the FILEs (the
+depth bias is not compared), in the FILEs' order, the rest after them in their old order. Use it
+with the list of a cold run that started with no starter: a list is written in the order the render
+thread first needed each pipeline, so that run's list is the title's pipelines first (the first
+frame of the title asks for about 360 at once), then the first drive's. The precache works through
+the starter in order, and a first start on a weak CPU has to have the title's before the first frame.
 """
 import argparse
 import struct
@@ -90,6 +98,10 @@ def merge(paths, out):
             records.append((key, layout_index[h]))
             added += 1
         print(f"{p}: {len(file_records)} records, {added} new")
+    write_list(out, layouts, records)
+
+
+def write_list(out, layouts, records):
     blob = bytearray(MAGIC + struct.pack("<6I", VERSION, KEY_SIZE, 0, len(layouts), len(records), 0))
     for h, body in layouts:
         blob += struct.pack("<Q", h) + body
@@ -100,6 +112,30 @@ def merge(paths, out):
     print(f"{out}: {len(records)} records, {len(layouts)} layouts, {len(blob)} bytes")
 
 
+def without_bias(key):
+    return key[:DEPTH_BIAS_AT] + key[DEPTH_BIAS_AT + 8:]
+
+
+def reorder(base, firsts, out):
+    _, layouts, records = read_list(base)
+    where = {}
+    for i, (key, _) in enumerate(records):
+        where.setdefault(without_bias(key), []).append(i)
+    front, taken = [], set()
+    for p in firsts:
+        _, _, file_records = read_list(p)
+        found = 0
+        for key, _ in file_records:
+            for i in where.get(without_bias(key), ()):
+                if i not in taken:
+                    taken.add(i)
+                    front.append(i)
+                    found += 1
+        print(f"{p}: {len(file_records)} records, {found} of them in {base}")
+    order = front + [i for i in range(len(records)) if i not in taken]
+    write_list(out, layouts, [records[i] for i in order])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -107,9 +143,18 @@ def main():
     m = sub.add_parser("merge")
     m.add_argument("-o", "--out", required=True)
     m.add_argument("files", nargs="+")
+    r = sub.add_parser("reorder")
+    r.add_argument("-o", "--out", required=True)
+    r.add_argument("--base", required=True)
+    r.add_argument("files", nargs="+")
     a = ap.parse_args()
     try:
-        info(a.files) if a.cmd == "info" else merge(a.files, a.out)
+        if a.cmd == "info":
+            info(a.files)
+        elif a.cmd == "merge":
+            merge(a.files, a.out)
+        else:
+            reorder(a.base, a.files, a.out)
     except (Bad, OSError, struct.error) as e:
         sys.exit(str(e))
 
