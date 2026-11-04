@@ -276,15 +276,28 @@ class ResolveMemory {
   BindResult Bind(const TextureKey& key, uint16_t host_swizzle, plume::RenderCommandList* list,
                   uint32_t* slot, bool* state_changed, std::string* why);
 
+  // A range of guest physical memory.
+  struct AddressRange {
+    uint32_t address = 0;
+    uint32_t size = 0;
+  };
   // A CPU lock of [address, address + size): the
   // pages of the range with bytes guest memory lacks are copied from the pool
   // into guest memory, whole, before the CPU reads them -- the resolves' bytes
   // in their order, whatever product made them. `submit_recorded` sends what
   // the frame recorded so far to the queue; the caller records the encode
-  // batch first (Flush). Waits for the GPU. The pages written, or -1 when the
+  // batch first (FlushForLock). Waits for the GPU. The pages written, or -1 when the
   // copy could not be made (logged).
+  // `read_ahead`: the other ranges the guest will lock next (the other levels of
+  // the locked texture). A lock that has to wait for the GPU reads their pages
+  // that hold bytes guest memory lacks in the same copy and keeps them in host
+  // memory, as the pool held them; the lock of those pages finds them there and
+  // does not wait. Guest memory is written only by the lock that owns the page,
+  // as before, and a page whose sequence changed since (a resolve, an upload, a
+  // CPU write) is read again from the pool.
   int64_t WriteBack(uint32_t address, uint32_t size,
-                    const std::function<void()>& submit_recorded);
+                    const std::function<void()>& submit_recorded,
+                    const std::vector<AddressRange>* read_ahead = nullptr);
 
   // Reach (only with mcla_gpu_edram_aliasing). The ResolveCache
   // hands over the EDRAM map at its Initialize. MarkInherited: the pages an
@@ -423,6 +436,31 @@ class ResolveMemory {
   std::vector<uint8_t> chosen_;         // Choose's marks, by waiting encode
   std::vector<PageSpan> choose_spans_;  // Choose's scratch: the chosen ones' pages
   std::vector<PageSpan> upload_spans_;  // a colour encode's uploaded pages, as runs
+  // Pages a lock that waited for the GPU read back besides its own (WriteBack's
+  // read_ahead), as the pool held them. The entry is good while the page's
+  // sequence is the one it was read at: every write into a page (resolve,
+  // upload, CPU) bumps it, and the pending encodes over the pages were recorded
+  // before the copy (FlushForLock), so the bytes are the ones a read of the pool
+  // would give now. At most kMaxAheadPages (16 MiB); the entries of pages that
+  // were written since, or not locked within kAheadFrames, are dropped.
+  struct AheadPage {
+    uint64_t sequence = 0;
+    uint64_t frame = 0;  // frame_ when it was read
+    std::array<uint8_t, kPageBytes> bytes;
+  };
+  static constexpr size_t kMaxAheadPages = 4096;
+  static constexpr uint64_t kAheadFrames = 3600;
+  std::unordered_map<uint32_t, AheadPage> ahead_;  // by page
+  std::vector<PageSpan> ahead_spans_;  // the pages being read ahead, for FlushForLock
+  std::vector<PageSpan> lock_spans_;   // FlushForLock's scratch
+  std::vector<uint32_t> ahead_pages_;  // WriteBack's scratch
+  // Writes the pages of pages_ that an earlier lock read ahead to guest memory
+  // and takes them out of pages_. Returns how many.
+  int64_t TakeAhead();
+  // Appends to pages_ the pages of `ranges` that hold bytes guest memory lacks and
+  // are not read ahead yet; sets ahead_spans_.
+  void AddAhead(const std::vector<AddressRange>* ranges);
+  void ForgetAhead();
   // The encodes of the last end-of-frame batch, for the count of the ones a
   // resolve of the next frame writes again whole.
   struct Recorded {
@@ -550,6 +588,9 @@ class ResolveMemory {
     uint64_t lock_write_backs = 0;     // locks that copied pages back
     uint64_t lock_pages = 0;           // pages copied back
     uint64_t lock_pages_unknown = 0;   // newer pages the pool does not hold whole (logged)
+    uint64_t lock_pages_ahead = 0;     // pages read back ahead of their lock
+    uint64_t lock_pages_ahead_used = 0;  // ... of which a lock took from there
+    uint64_t locks_without_wait = 0;   // locks whose pages were all read ahead
     uint64_t inherited_marked = 0;     // reach: pages marked by inherited resolves
     uint64_t vertex_copies = 0;        // vertex streams built from the pool
     uint64_t vertex_copy_bytes = 0;
