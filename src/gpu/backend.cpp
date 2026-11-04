@@ -20,6 +20,27 @@
 
 namespace mcla::gpu {
 
+namespace {
+
+#if defined(_WIN32) && defined(LARECOMP_GPU_HAS_D3D12) && defined(LARECOMP_GPU_HAS_VULKAN)
+constexpr uint32_t kVendorNvidia = 0x10DE;
+
+const char* VendorName(uint32_t vendor_id) {
+  switch (vendor_id) {
+    case kVendorNvidia:
+      return "NVIDIA";
+    case 0x1002:
+      return "AMD";
+    case 0x8086:
+      return "Intel";
+    default:
+      return "other";
+  }
+}
+#endif
+
+}  // namespace
+
 void SelectBackend(Backend backend) {
   if (!BackendCompiled(backend)) {
     REXLOG_ERROR("[gpu] {} is not in this build; {} stays selected", BackendName(backend),
@@ -47,6 +68,43 @@ bool ParseBackend(std::string_view text, Backend& out) {
     return true;
   }
   return false;
+}
+
+Backend ChooseAutoBackend(const std::string& preferred_adapter, std::string& adapter) {
+  adapter.clear();
+#if defined(_WIN32) && defined(LARECOMP_GPU_HAS_D3D12) && defined(LARECOMP_GPU_HAS_VULKAN)
+  // Why Vulkan here and D3D12 everywhere else: on a desktop where the GPU that renders is not
+  // the one that drives the display (measured with an NVIDIA GPU rendering and an AMD one
+  // presenting), D3D12 presentation pauses for about 20-25 ms every 5 s whenever frames are fast
+  // (uncapped, or vsync on a fast display); Vulkan does not. Players on hybrid laptops reported a
+  // shaking camera on D3D12 that Vulkan fixed. A GPU with no output is how DXGI shows that it is
+  // not driving the display. Only NVIDIA: on AMD, Vulkan's GPU time was about 20% longer than
+  // D3D12's here, so AMD and Intel keep D3D12.
+  const backend::RenderingAdapter gpu = backend::d3d12::DescribeRenderingAdapter(preferred_adapter);
+  if (!gpu.found) {
+    REXLOG_INFO("[gpu] graphics_backend auto: D3D12 (DXGI lists no adapter to look at)");
+    return Backend::kD3D12;
+  }
+  const bool hybrid_nvidia = gpu.vendor_id == kVendorNvidia && !gpu.has_outputs;
+  const char* why = "";
+  if (hybrid_nvidia) {
+    why = ": it renders for a display driven by another GPU, where D3D12 presents with pauses";
+  } else if (!gpu.has_outputs) {
+    why = ": Vulkan is only chosen for NVIDIA";
+  }
+  REXLOG_INFO("[gpu] graphics_backend auto: {} (GPU '{}', vendor {:#06x} {}, {}{})",
+              hybrid_nvidia ? "Vulkan" : "D3D12", gpu.name, gpu.vendor_id,
+              VendorName(gpu.vendor_id),
+              gpu.has_outputs ? "has a display output" : "no display output", why);
+  if (!hybrid_nvidia) {
+    return Backend::kD3D12;
+  }
+  adapter = gpu.name;
+  return Backend::kVulkan;
+#else
+  (void)preferred_adapter;
+  return kDefaultBackend;
+#endif
 }
 
 namespace backend {

@@ -48,7 +48,8 @@ constexpr bool BackendCompiled(Backend backend) {
   return false;
 }
 
-// What graphics_backend = "auto" runs: D3D12 where the build has it.
+// What graphics_backend = "auto" runs, apart from the one case ChooseAutoBackend (below) moves to
+// Vulkan: D3D12 where the build has it.
 inline constexpr Backend kDefaultBackend =
     BackendCompiled(Backend::kD3D12) ? Backend::kD3D12 : Backend::kVulkan;
 
@@ -74,7 +75,17 @@ inline const char* BackendName() {
 
 // graphics_backend's text as a backend: "auto" is kDefaultBackend, "d3d12" and
 // "vulkan" themselves. False for anything else, with kDefaultBackend in `out`.
+// (Whoever starts the renderer refines "auto" with ChooseAutoBackend.)
 bool ParseBackend(std::string_view text, Backend& out);
+
+// graphics_backend = "auto": kDefaultBackend, except on Windows when the GPU the renderer will
+// use is NVIDIA and has no display output (a hybrid laptop: that GPU renders, the integrated one
+// drives the screen). That case gets Vulkan. `preferred_adapter` is mcla_gpu_adapter; the GPU is
+// that one, else the one Device::Open takes by default (DefaultAdapterName, else Plume's rule).
+// With Vulkan chosen, `adapter` is that GPU's name, for the Vulkan device to be created on
+// (Plume's own Vulkan rule could take another); otherwise it is empty. Logs one line with the
+// choice and why. Before SelectBackend; an explicit "d3d12" or "vulkan" never comes here.
+Backend ChooseAutoBackend(const std::string& preferred_adapter, std::string& adapter);
 
 // The format of the active backend's shader blobs: DXIL on D3D12, SPIR-V on
 // Vulkan.
