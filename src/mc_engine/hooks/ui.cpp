@@ -23,6 +23,7 @@
 #include "../graphics_button.h"
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
+#include "../ui/pad_vendor.h"
 
 REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
 
@@ -46,8 +47,10 @@ REXCVAR_DEFINE_STRING(speed_units, "kmh", "MCLA/HUD",
     .allowed({"game", "kmh", "mph"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
-    "On-screen button glyphs. xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
+REXCVAR_DEFINE_STRING(button_prompts, "auto", "MCLA/UI",
+    "On-screen button glyphs. auto = PlayStation glyphs while a Sony controller is "
+    "attached, Xbox glyphs otherwise (checked every 2 seconds, so plugging one in is "
+    "noticed). xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
     "cross/circle/square/triangle + L1/R1/L2/R2. Both sets already ship inside "
     "the game's own UI movies and texture dictionary, so this only flips the "
     "'platform' flag their ActionScript reads - no asset is swapped or reloaded. "
@@ -56,7 +59,7 @@ REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
     "keyboard = key caps. The movies have no third glyph strip, so this stays on "
     "platform 0 and keyboard_native.cpp paints a key cap over the pixels of the "
     "Xbox A/B/X/Y/LB/RB/LT/RT bitmaps (the key bound to that menu button, kb_ui_*).")
-    .allowed({"xbox", "playstation", "keyboard"})
+    .allowed({"auto", "xbox", "playstation", "keyboard"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
@@ -247,10 +250,24 @@ static std::atomic<uint32_t> g_platform_var_ea{0};
 // Last value written, so the tick only touches guest memory on a real change.
 static std::atomic<int> g_platform_applied{-1};
 
+// button_prompts = auto: 1 while a Sony controller is attached. -1 until the first check, which is
+// made on first use (the UI manager asks before the first frame tick); the tick re-checks every 2 s.
+static std::atomic<int> g_sony_attached{-1};
+
 static int WantedPlatformValue() {
     std::string mode = REXCVAR_GET(button_prompts);
+    if (mode == "auto") {
+        int sony = g_sony_attached.load(std::memory_order_relaxed);
+        if (sony < 0) {
+            sony = mcla::ui::PlayStationControllerPresent() ? 1 : 0;
+            g_sony_attached.store(sony, std::memory_order_relaxed);
+        }
+        return sony;
+    }
     return mode == "playstation" ? 1 : 0;
 }
+
+bool ButtonPromptsArePlayStation() { return WantedPlatformValue() == 1; }
 
 // +88 (0x58) is the int mcVariant::asInt returns for type 3, +92 (0x5C) the
 // plain "%d" char buffer sub_823DC018 formatted into for the string readers.
@@ -272,6 +289,17 @@ static void WritePlatformVar(uint32_t entry, int value) {
 // from the F4 menu. Movies already on screen keep the glyphs they resolved at
 // their own frame 1; anything opened after this picks up the new set.
 void TickButtonPrompts() {
+    // auto: notice a controller plugged in or out (every 2 s: the check walks every HID device).
+    static auto next_check = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_check) {
+        next_check = now + std::chrono::seconds(2);
+        if (REXCVAR_GET(button_prompts) == "auto") {
+            g_sony_attached.store(mcla::ui::PlayStationControllerPresent() ? 1 : 0,
+                                  std::memory_order_relaxed);
+        }
+    }
+
     const uint32_t entry = g_platform_var_ea.load(std::memory_order_relaxed);
     if (!entry) return;
 
@@ -858,6 +886,7 @@ void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {}
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
 bool Patch_SpeedUnits(PPCRegister& r11) { return false; }
 void TickButtonPrompts() {}
+bool ButtonPromptsArePlayStation() { return false; }
 void Hook_PlatformVarInit(PPCRegister& r27) {}
 bool Patch_PlatformPush(PPCRegister& r5) { return false; }
 void Hook_SwfContextEnter(PPCRegister& r3) {}

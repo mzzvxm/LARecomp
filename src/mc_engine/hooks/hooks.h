@@ -55,6 +55,8 @@ bool Patch_SpeedUnits(PPCRegister& r11);
 // it, Patch_PlatformPush feeds the per-movie push in sub_821F8038, and
 // TickButtonPrompts (called from Patch_DeltaTimePre) applies live cvar changes.
 void TickButtonPrompts();
+// The glyph set in use: button_prompts = playstation, or auto with a Sony controller attached.
+bool ButtonPromptsArePlayStation();
 void Hook_PlatformVarInit(PPCRegister& r27);
 bool Patch_PlatformPush(PPCRegister& r5);
 // AVM action-buffer entry (sub_825EE970, r3 = swf context). Pushes
