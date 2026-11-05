@@ -471,6 +471,22 @@ constexpr int64_t kInputWindowNs = 100'000'000;
 // Least time between two extra steps of one screen, whatever the key events do.
 constexpr int64_t kInputGapNs = 100'000'000;
 
+// The minimap expands and collapses (D-pad Up) by a game script, which sets variables of
+// HUDMAPMOVIE, and the game switches the minimap's render target between the 220x220 radar
+// and the 749x430 city map in that same update -- both are resolved to the same memory. Paced
+// to 30 steps a second, the movie could go on drawing the other view's image for up to a step
+// after the switch, from memory that now holds the new one: a frame of scrambled blocks over
+// the map. So when a script sets a variable of HUDMAPMOVIE, the movie takes its step in that
+// update, as on the console, where it stepped on every update. (The same script sets the gauge
+// movie's variables too, in between; that movie draws no render target and keeps its pace.)
+// sub_822095D8 is the script native "set a float variable of a movie by name"; it calls the
+// float setter (sub_825EE188) from 0x8220982C. Written by rex_sub_825EE188 and read by the
+// movie step, on the game's update thread; g_map_movie_context is HUDMAPMOVIE's swf context,
+// from the movie list (MovieFor).
+constexpr uint32_t kScriptSetMovieFloatReturn = 0x82209830;
+std::atomic<uint32_t> g_map_movie_context{0};
+std::atomic<bool> g_map_movie_script_set{false};
+
 int64_t SteadyNowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -610,6 +626,7 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
         m->context = context;
         m->next_due_ns = 0;
     }
+    if (name == "HUDMAPMOVIE") g_map_movie_context.store(context, std::memory_order_relaxed);
     return m;
 }
 
@@ -625,6 +642,11 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
 // less than 100 ms ago (with ui_input_repeat_30hz off a held direction repeats every 6
 // updates, 50 ms at 120 FPS).
 //
+// HUDMAPMOVIE, when a game script has set one of its variables in this update
+// (g_map_movie_script_set), takes one extra step now in the same way, whatever
+// ui_advance_on_input says: it is not about latency but about drawing what the game has
+// already switched to.
+//
 // step_ns is when the step belongs on its schedule, which is what the interpolation
 // times the glide from (ui_smooth.cpp): the due time when the movie is on schedule,
 // else now.
@@ -639,6 +661,9 @@ bool StepDue(Movie& m, int64_t now, int64_t& step_ns) {
                        now - g_ui_input_ns.load(std::memory_order_relaxed) <= kInputWindowNs &&
                        now - m.input_ns >= kInputGapNs;
         }
+    } else if (m.context && m.context == g_map_movie_context.load(std::memory_order_relaxed) &&
+               g_map_movie_script_set.exchange(false, std::memory_order_relaxed)) {
+        by_input = now - m.input_ns >= kInputGapNs;
     }
     const bool not_due = m.next_due_ns && now + kStepPeriodNs / 4 < m.next_due_ns;
     if (not_due && !by_input) return false;
@@ -773,6 +798,17 @@ extern "C" REX_FUNC(rex_sub_825EDC08) {
     if (t_held_context && ctx.r3.u32 == t_held_context) return;
     HudClockStep(ctx.r3.u32);  // whichever path made the step
     __imp__rex_sub_825EDC08(ctx, base);
+}
+
+// The swf float setter (r3 = the movie's context, r4 = the variable's name, f1 = the
+// value). A call from the script native sub_822095D8 on HUDMAPMOVIE marks that movie for a
+// step in this update (StepDue); every call goes on to the game's own setter unchanged.
+REX_EXTERN(__imp__rex_sub_825EE188);
+extern "C" REX_FUNC(rex_sub_825EE188) {
+    if (uint32_t(ctx.lr) == kScriptSetMovieFloatReturn && ctx.r3.u32 != 0 &&
+        ctx.r3.u32 == g_map_movie_context.load(std::memory_order_relaxed))
+        g_map_movie_script_set.store(true, std::memory_order_relaxed);
+    __imp__rex_sub_825EE188(ctx, base);
 }
 
 // ── Menu cursor auto-repeat ──────────────────────────────────────────────
