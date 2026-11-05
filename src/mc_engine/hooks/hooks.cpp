@@ -177,6 +177,7 @@ void Patch_DeltaTimePre() {
     ApplyLoadTimeDevOptions();    // keeps node+4 in sync for the load-time switches
     ApplyRubberBandLevel();       // forced AI difficulty tune index
     ApplyRubberBandScales();      // AI catch-up / hold-back limits
+    ApplyRubberBandLive();        // ...pushed into the AI racers of the race in progress
     LogRenderPhaseMaskOnce();     // a few samples of the real per-frame masks
     g_frame_heartbeat.fetch_add(1, std::memory_order_relaxed);
 }

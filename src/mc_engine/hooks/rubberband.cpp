@@ -5,6 +5,7 @@
 #include <rex/cvar.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,6 +58,16 @@ REXCVAR_DEFINE_INT32(rubberband_level, -1, "MCLA/Difficulty",
     .range(-1, 10)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// The pause menu's AI DIFFICULTY row, in percent like Midnight Club 3's: the 11
+// tune levels spread over 0..100, so each 10% is one level. -1 = the game's own
+// choice. rubberband_level (the raw 0..10 index) wins when it is set.
+REXCVAR_DEFINE_DOUBLE(ai_difficulty, -1.0, "MCLA/Difficulty",
+    "AI difficulty in percent: 0 = easiest, 100 = the game's hardest, each 10% one "
+    "RubberBandTune level. -1 leaves the game's own choice. "
+    "Ignored while rubberband_level is set.")
+    .range(-1.0, 100.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(rubberband_distance_scale, 1.0, "MCLA/Difficulty",
     "Scales the distance bands the rubberband reacts within: MinDist, MaxDist, "
     "BehindMinDist, BehindMaxDist. Larger = the band engages from further away.")
@@ -74,6 +85,17 @@ REXCVAR_DEFINE_DOUBLE(rubberband_distance_scale, 1.0, "MCLA/Difficulty",
 // is a flat 100 at every one of them — the only field in the struct with no
 // difficulty ramp. Scaling a constant tells you nothing about what you asked
 // for, and 100 is short enough that even x8 lands inside the opening straight.
+// Checked in IDA: the AI brain (sub_822BE670) takes a shorter alt path of the
+// checkpoint list when its distance to the player is below -DistBehindBefore-
+// TakingShortcuts (tune +40, racer+452). So the difficulty level DOES reach the
+// checkpoints, through the shortcuts: a larger scale makes the AI wait until it
+// is further behind before cutting, a smaller one makes it cut earlier.
+REXCVAR_DEFINE_DOUBLE(rubberband_shortcut_scale, 1.0, "MCLA/Difficulty",
+    "Scales DistBehindBeforeTakingShortcuts: how far behind you the AI must fall before "
+    "it takes a track's alternate (shortcut) path. 0 = always takes them, above 1 = later.")
+    .range(0.0, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(rubberband_nitro_start_dist, -1.0, "MCLA/Difficulty",
     "UseNitroMinDistFromStart in world units: how far into the race the AI must be "
     "before it may touch nitrous. Stock is 100 at every difficulty level, which is why "
@@ -202,6 +224,7 @@ static constexpr RubberBandScale kRubberBandScales[] = {
     {"rubberband_catchup_scale",      {0, 28, 60, 68}, true,  false},  // *MaxThrottle
     {"rubberband_holdback_scale",     {16, 0, 0, 0},   true,  false},  // MinThrottle
     {"rubberband_distance_scale",     {8, 12, 20, 24}, false, false},  // *Dist bands
+    {"rubberband_shortcut_scale",     {40, 0, 0, 0},   false, false},  // DistBehindBeforeTakingShortcuts
     {"rubberband_nitro_start_dist",   {44, 0, 0, 0},   false, true},   // UseNitroMinDistFromStart
     {"rubberband_nitro_finish_scale", {48, 0, 0, 0},   false, false},  // UseNitroMinDistFromFinish
     {"rubberband_nitro_behind_scale", {52, 56, 0, 0},  false, false},  // *MinDistBehindPlayer
@@ -234,27 +257,13 @@ static constexpr size_t RubberBandFieldTotal() {
 static constexpr uint32_t kRubberBandLevelField = 60u;
 
 void ApplyRubberBandLevel() {
-    static int last_logged = -2;
-    const int want = int(std::strtol(rex::cvar::GetFlagByName("rubberband_level").c_str(),
-                                     nullptr, 10));
+    int want = int(std::strtol(rex::cvar::GetFlagByName("rubberband_level").c_str(),
+                               nullptr, 10));
     if (want < 0) {
-        last_logged = -2;
-        return;
+        const double pct = std::strtod(rex::cvar::GetFlagByName("ai_difficulty").c_str(), nullptr);
+        if (pct >= 0.0) want = int(pct / 10.0 + 0.5);
     }
-
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-    const uint32_t mgr = ReadGuestU32(base, kRubberBandMgrPtr);
-    if (mgr == 0) return;
-
-    const uint32_t clamped = uint32_t(want > 10 ? 10 : want);
-    if (ReadGuestU32(base, mgr + kRubberBandLevelField) != clamped)
-        WriteGuestU32(base, mgr + kRubberBandLevelField, clamped);
-
-    if (last_logged != want) {
-        last_logged = want;
-        LARECOMP_APP_INFO("[RubberBand] forcing tune level {} (mgr+60)", clamped);
-    }
+    SetRubberBandLevelOption(want);
 }
 
 void ApplyRubberBandScales() {
@@ -361,6 +370,72 @@ void ApplyRubberBandScales() {
         LARECOMP_APP_INFO("[RubberBand] {} on {} entries", what, kRubberBandCount);
     }
     was_scaled = true;
+}
+// Live. SetupRace (sub_82743B30 -> sub_82742D28) copies the chosen tune entry,
+// 140 bytes, into every AI racer at racer+412 once per race, and the AI brain
+// (sub_822BE670: racer+452 shortcuts, +468 nitro; the mgr's per-frame pass:
+// +384 offsets) reads that copy every frame. So the table edits above only reach
+// the next race. Doing the same copy every frame makes them reach the race in
+// progress: session = dword_8286EBF8, +8 -> entries at +8 (stride 192), entry+8 =
+// type (2 = AI), entry+12 = racer; count at (session+8)+3080. Same layout
+// sub_82742D28 walks. The level is also written into mgr+60 here (the dev option
+// only feeds the next SetupRace).
+void ApplyRubberBandLive() {
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    const uint32_t mgr = ReadGuestU32(base, kRubberBandMgrPtr);
+    if (mgr == 0) return;
+    // +53 is set at the end of SetupRace, +52 is the system's enable flag.
+    if (base[mgr + 53] == 0 || base[mgr + 52] == 0) return;
+
+    const int forced = int(std::strtol(rex::cvar::GetFlagByName("rubberband_level").c_str(),
+                                       nullptr, 10));
+    const double pct = forced >= 0 ? -1.0
+        : std::strtod(rex::cvar::GetFlagByName("ai_difficulty").c_str(), nullptr);
+    int want = forced;
+    if (want < 0 && pct >= 0.0) want = int(std::fmin(pct, 100.0) / 10.0 + 0.5);
+    if (want > 10) want = 10;
+    if (want >= 0 && ReadGuestU32(base, mgr + kRubberBandLevelField) != uint32_t(want))
+        WriteGuestU32(base, mgr + kRubberBandLevelField, uint32_t(want));
+    const uint32_t level = ReadGuestU32(base, mgr + kRubberBandLevelField);
+    if (level > 10) return;
+    // Levels past the game's last: the per-level ramp of each scalar field,
+    // (level 10 - level 0) / 10, carried on. 150% = 5 levels beyond, 200% = 10.
+    const double beyond = pct > 100.0 ? (pct - 100.0) / 10.0 : 0.0;
+
+    const uint32_t session = ReadGuestU32(base, 0x8286EBF8u);
+    if (session == 0) return;
+    const uint32_t s = session + 8;
+    const int32_t count = int32_t(ReadGuestU32(base, s + 3080));
+    if (count <= 0 || count > 16) return;
+
+    const uint32_t src = mgr + kRubberBandFirst + level * kRubberBandStride;
+    const uint32_t easy = mgr + kRubberBandFirst;
+    const uint32_t hard = mgr + kRubberBandFirst + 10u * kRubberBandStride;
+    for (int i = 0; i < count; ++i) {
+        const uint32_t entry = s + 8 + uint32_t(i) * 192u;
+        if (ReadGuestU32(base, entry + 8) != 2) continue;  // AI only
+        const uint32_t racer = ReadGuestU32(base, entry + 12);
+        if (racer < 0x10000u || racer >= 0xA0000000u) continue;
+        for (uint32_t o = 0; o < kRubberBandStride; o += 4) {
+            if (beyond > 0.0 && o < 76u) {
+                // Scalar floats only; the two 8-float offset arrays stay level 10.
+                const float v10 = ReadGuestF32(base, hard + o);
+                const float v0 = ReadGuestF32(base, easy + o);
+                double v = double(v10) + double(v10 - v0) / 10.0 * beyond;
+                if (v < 0.0) v = 0.0;
+                // Normalised throttles stay inside 0..1.
+                const bool throttle = o == 0 || o == 16 || o == 28 || o == 60 || o == 68;
+                if (throttle && v10 <= 1.0f && v > 1.0) v = 1.0;
+                if (ReadGuestF32(base, racer + 412 + o) != float(v))
+                    WriteGuestF32(base, racer + 412 + o, float(v));
+                continue;
+            }
+            const uint32_t w = ReadGuestU32(base, src + o);
+            if (ReadGuestU32(base, racer + 412 + o) != w)
+                WriteGuestU32(base, racer + 412 + o, w);
+        }
+    }
 }
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.

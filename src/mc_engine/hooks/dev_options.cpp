@@ -290,6 +290,36 @@ void ApplyLoadTimeDevOptions() {
     primed = true;
 }
 
+// The game's own `rubberband` dev option (node+4 @ 0x8290AC14) is read by
+// RubberBandMgr_SetupRace (sub_82743B30) right before it copies the chosen
+// RubberBandTune entry into every AI racer (sub_82742D28). Writing mgr+60 from
+// outside is too late: SetupRace recomputes it, then copies, all in one call.
+// Feeding the option instead makes the game pick the level itself. level < 0
+// clears it. One value string per level, parked once and reused.
+void SetRubberBandLevelOption(int level) {
+    static uint32_t ptr[11] = {};
+    static int last = -2;
+    if (level > 10) level = 10;
+    if (level == last) return;
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    const DebugOption* opt = FindDebugOption("rubberband");
+    if (!opt) return;
+    if (level < 0) {
+        WriteGuestU32(base, opt->value_addr, 0);
+    } else {
+        if (level > 10) level = 10;
+        if (ptr[level] == 0) {
+            if (!SetDebugOptionValue(opt->value_addr, std::to_string(level))) return;
+            ptr[level] = ReadGuestU32(base, opt->value_addr);
+        } else {
+            WriteGuestU32(base, opt->value_addr, ptr[level]);
+        }
+    }
+    last = level;
+    LARECOMP_APP_INFO("[DbgOpt] rubberband level -> {} (applies at the next race setup)", level);
+}
+
 // Reads <exe dir>/debug_options.txt: one `name` or `name=value` per line,
 // '#'/';' comments and blank lines ignored. Bare name means value "1".
 void ApplyDebugOptions() {

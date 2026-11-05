@@ -125,7 +125,9 @@ void ApplyFragTuneOverrides();
 
 // rubberband.cpp
 void ApplyRubberBandLevel();
+void SetRubberBandLevelOption(int level);  // dev_options.cpp
 void ApplyRubberBandScales();
+void ApplyRubberBandLive();   // copies the scaled tune into the AI racers mid-race
 void DumpRubberBandTuning();
 
 // frame_timing.cpp: the spin counters the timing log reports.

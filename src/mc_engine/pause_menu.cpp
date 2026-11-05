@@ -1269,6 +1269,30 @@ constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"}
 constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
+// DIFFICULTY. AI DIFFICULTY is a percent, -1 = the game's own choice (STOCK);
+// the scales are multipliers over the shipped RubberBandTune (1 = as shipped).
+constexpr double kAiDiffVals[]     = {-1.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
+                                      60.0, 70.0, 80.0, 90.0, 100.0};
+constexpr double kRbScaleVals[]    = {0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
+constexpr double kRbDistVals[]     = {0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0};
+constexpr double kRbNitroScaleVals[] = {0.0, 0.5, 1.0, 2.0, 4.0, 8.0};
+constexpr double kRbNitroStartVals[] = {-1.0, 100.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0};
+
+std::string AiDiffLabel(double v) {
+    if (v < 0.0) return "STOCK";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%.0f%%", v);
+    return buf;
+}
+std::string RbNitroStartLabel(double v) {
+    if (v < 0.0) return "STOCK";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%.0fM", v);
+    return buf;
+}
+constexpr RowDynamics kAiDiffDynamics     = {.value_label = AiDiffLabel};
+constexpr RowDynamics kRbNitroStartDynamics = {.value_label = RbNitroStartLabel};
+
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
 #if defined(LARECOMP_HAS_GPU)
@@ -1386,7 +1410,6 @@ const ItemDef kVideoItems[] = {
 };
 
 const ItemDef kRecompItems[] = {
-    Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     // Live: the game's gamma ramp is set again at the next frame (hooks/display_gamma.cpp).
     Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
          kDisplayGammaVals, kDisplayGammaNames, 2),
@@ -1675,6 +1698,33 @@ const ItemDef kGameHubItems[] = {
     Submenu("PM_RxSubCam",    "CAMERA",          "RxCamMenu"),
     Submenu("PM_RxSubTod",    "TIME OF DAY",     "RxTodMenu"),
     Submenu("PM_RxSubCarbon", "CARBON FIBER",    "RxCarbonMenu"),
+    Submenu("PM_RxSubDiff",   "DIFFICULTY",      "RxDiffMenu"),
+};
+// The AI: one percent for the difficulty, then the rubberband taken apart so
+// each half can be moved alone. Every row but the on/off is live. Turning the
+// rubberband OFF removes the leash on a leading AI as well (MinThrottle), so the
+// scales below are the fairer way to soften it.
+const ItemDef kDiffItems[] = {
+    WithDynamics(Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
+                     kAiDiffVals, int(sizeof(kAiDiffVals) / sizeof(kAiDiffVals[0])), "%g"),
+                 &kAiDiffDynamics),
+    Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
+    Dbl ("PM_RxRbCatchup",   "rubberband_catchup_scale", "CATCH-UP (AI BEHIND): ",
+         kRbScaleVals, int(sizeof(kRbScaleVals) / sizeof(kRbScaleVals[0])), "%gX"),
+    Dbl ("PM_RxRbHoldback",  "rubberband_holdback_scale", "HOLD-BACK (AI AHEAD): ",
+         kRbScaleVals, int(sizeof(kRbScaleVals) / sizeof(kRbScaleVals[0])), "%gX"),
+    Dbl ("PM_RxRbDist",      "rubberband_distance_scale", "RUBBERBAND RANGE: ",
+         kRbDistVals, int(sizeof(kRbDistVals) / sizeof(kRbDistVals[0])), "%gX"),
+    Dbl ("PM_RxRbShortcut",  "rubberband_shortcut_scale", "AI SHORTCUTS WHEN BEHIND: ",
+         kRbNitroScaleVals, int(sizeof(kRbNitroScaleVals) / sizeof(kRbNitroScaleVals[0])), "%gX"),
+    WithDynamics(Dbl("PM_RxRbNitroStart", "rubberband_nitro_start_dist", "NITRO FROM START: ",
+                     kRbNitroStartVals,
+                     int(sizeof(kRbNitroStartVals) / sizeof(kRbNitroStartVals[0])), "%g"),
+                 &kRbNitroStartDynamics),
+    Dbl ("PM_RxRbNitroFin",  "rubberband_nitro_finish_scale", "NITRO NEAR FINISH: ",
+         kRbNitroScaleVals, int(sizeof(kRbNitroScaleVals) / sizeof(kRbNitroScaleVals[0])), "%gX"),
+    Dbl ("PM_RxRbNitroBeh",  "rubberband_nitro_behind_scale", "NITRO BEHIND YOU: ",
+         kRbNitroScaleVals, int(sizeof(kRbNitroScaleVals) / sizeof(kRbNitroScaleVals[0])), "%gX"),
 };
 const ItemDef kIfaceHubItems[] = {
     Submenu("PM_RxSubUi",   "UI",        "RxUiMenu"),
@@ -1855,6 +1905,9 @@ const MenuDef kMenus[] = {
      "RxCamLookMenu",
      nullptr, 0,
      CameraLookMenuItems},
+    {"PM_RxTabDiff", "DIFFICULTY", "AI difficulty and rubberband.",
+     "RxDiffMenu",
+     kDiffItems, int(sizeof(kDiffItems) / sizeof(kDiffItems[0]))},
     {"PM_RxTabTod", "TIME OF DAY", "Time of day, clock and weather.",
      "RxTodMenu",
      kTodItems, int(sizeof(kTodItems) / sizeof(kTodItems[0]))},
