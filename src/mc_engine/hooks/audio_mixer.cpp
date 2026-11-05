@@ -51,6 +51,7 @@
 #include <avrt.h>
 
 #include "hooks.h"
+#include "mc_engine/threading.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "mc_engine/adaptive_triggers.h"
@@ -82,7 +83,7 @@ int AudioLevel(DWORD logical) {
 
 // Applies the setting to the calling thread and logs one line about it; `who` starts the line.
 void ApplyToThisThread(const char* who) {
-    const DWORD logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const DWORD logical = mc::UsableLogicalProcessors();
     const int level = AudioLevel(logical);
     HANDLE self = GetCurrentThread();
     // The name the SDK gave the thread, if any: it shows that the right thread was found.

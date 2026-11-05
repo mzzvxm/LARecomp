@@ -56,13 +56,24 @@ void DisableHighResTimer() {
 #endif
 }
 
+unsigned UsableLogicalProcessors() {
+#if defined(_WIN32)
+    const unsigned active = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    DWORD_PTR process = 0, system = 0;
+    if (active <= 64 && GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process) {
+        unsigned allowed = 0;
+        for (DWORD_PTR m = process; m; m &= m - 1) ++allowed;
+        return allowed < active ? allowed : active;
+    }
+    return active;
+#else
+    return 0;
+#endif
+}
+
 bool FewLogicalProcessors() {
     static const bool few = [] {
-#if defined(_WIN32)
-        const unsigned logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
-#else
-        const unsigned logical = 0;  // not counted: the waits stay as they are
-#endif
+        const unsigned logical = UsableLogicalProcessors();  // 0 off Windows: the waits stay as they are
         const bool small = logical != 0 && logical <= 5;
         MC_INFO("[threading] {} logical processors: {}", logical,
                 small ? "the spin waits sleep instead" : "the spin waits are unchanged");
@@ -73,11 +84,7 @@ bool FewLogicalProcessors() {
 
 bool FourOrFewerLogicalProcessors() {
     static const bool few = [] {
-#if defined(_WIN32)
-        const unsigned logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
-#else
-        const unsigned logical = 0;  // not counted: nothing is lowered
-#endif
+        const unsigned logical = UsableLogicalProcessors();  // 0 off Windows: nothing is lowered
         return logical != 0 && logical <= 4;
     }();
     return few;
