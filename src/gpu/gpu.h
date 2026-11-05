@@ -40,6 +40,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "render_scale.h"
 
@@ -185,5 +186,10 @@ RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset);
 // GPU object, device last, then hands the retired fence back to the vblank
 // thread. Safe to call more than once.
 void Shutdown();
+
+// graphics_backend = "auto" as the Plume renderer decides it (ChooseAutoBackend in backend.h):
+// true when that is Vulkan. For the emulated GPU's backend (larecomp_app.h), which follows the same
+// setting; backend.h itself needs Plume's headers, this one doesn't.
+bool AutoBackendIsVulkan(const std::string& preferred_adapter);
 
 }  // namespace mcla::gpu

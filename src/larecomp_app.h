@@ -5,6 +5,7 @@
 #include <rex/system/achievement_manager.h>
 #include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
+#include <rex/system/gpu_plugin.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
@@ -328,6 +329,37 @@ class LarecompApp : public rex::ReXApp {
     SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
   }
 
+  // The SDK loads the GPU plugin with the plugin's own default backend ("any": Direct3D 12 first
+  // where both are built) and has no setting for it, so graphics_backend (GRAPHICS API in the menu,
+  // which the Plume renderer reads too) never reached the emulated GPU: it always ran Direct3D 12.
+  // Loaded here with the backend that setting asks for; "auto" (or unset) makes the same choice as
+  // Plume (ChooseAutoBackend). If that backend can't start, the SDK loads its default as before.
+  void LoadXenosWithChosenBackend(rex::RuntimeConfig& config) {
+    const std::string asked = rex::cvar::GetFlagByName("graphics_backend");
+    std::string backend;
+    if (asked == "d3d12" || asked == "vulkan") {
+      backend = asked;
+#if defined(LARECOMP_HAS_GPU)
+    } else if (asked.empty() || asked == "auto") {
+      backend = mcla::gpu::AutoBackendIsVulkan(rex::cvar::GetFlagByName("mcla_gpu_adapter"))
+                    ? "vulkan"
+                    : "d3d12";
+#endif
+    }
+    if (backend.empty()) {
+      return;
+    }
+    config.graphics = rex::system::LoadGpuPlugin("xenos", backend);
+    if (config.graphics) {
+      LARECOMP_APP_INFO("Xenia GPU: {} (graphics_backend = {})", backend,
+                        asked.empty() ? "unset" : asked);
+    } else {
+      LARECOMP_APP_WARN("Xenia GPU: {} could not be started (graphics_backend = {}); the plugin's "
+                        "default backend is used",
+                        backend, asked.empty() ? "unset" : asked);
+    }
+  }
+
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.audio_factory = &mcla::audio::CreateAudioSystem;
 
@@ -355,6 +387,7 @@ class LarecompApp : public rex::ReXApp {
       // so the game works without anything in larecomp.toml; an explicit cvar
       // still wins because this only fills in the blank.
       config.gpu_plugin = "xenos";
+      LoadXenosWithChosenBackend(config);
     }
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
