@@ -73,10 +73,18 @@ void EnsurePadLayer() {
   std::call_once(once, [] {
     // The wheel code's hints (wheel_input.cpp, WheelThread): this SDL must not
     // open pads through the drivers that would take them from the SDK's SDL.
-    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-    SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
-    SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    //
+    // When the SDK's own driver is SDL (input_backend = "sdl", which is what Linux runs) this is
+    // the SAME SDL: HIDAPI stays on for it, and gamepad events stay on, because the driver is
+    // driven by exactly those events. Switching them off here left a detected pad that never
+    // sent a button.
+    const bool sdk_uses_sdl = rex::cvar::GetFlagByName("input_backend") == "sdl";
+    if (!sdk_uses_sdl) {
+      SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+      SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+      SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
+      SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    }
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     g_layer_up = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!g_layer_up) {
@@ -84,7 +92,9 @@ void EnsurePadLayer() {
       return;
     }
     // Nothing pumps this SDL's event queue; state is read by polling.
-    SDL_SetGamepadEventsEnabled(false);
+    if (!sdk_uses_sdl) {
+      SDL_SetGamepadEventsEnabled(false);
+    }
     // The mappings the SDK's driver loads, so a DirectInput pad maps the same.
     const std::string mappings = rex::cvar::GetFlagByName("hid_mappings_file");
     std::error_code ec;

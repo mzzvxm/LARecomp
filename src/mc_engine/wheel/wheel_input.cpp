@@ -1467,13 +1467,46 @@ void WheelThread() {
     Shared& sh = S();
     // This SDL instance has to stay away from every pad: the SDK's own driver owns those. Only
     // DirectInput devices are enumerated, and the HID drivers that would init a pad are off.
-    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-    SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
-    SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    //
+    // Not when the SDK's own driver is SDL itself (input_backend = "sdl", which is what Linux
+    // runs): it needs HIDAPI for the Xbox One, DualShock and Switch pads, and this process shares
+    // one SDL with it.
+    if (rex::cvar::GetFlagByName("input_backend") != "sdl") {
+        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+        SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
+        SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    }
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
 
+    // SDL3 sends GAMEPAD_ADDED only for pads plugged in after its gamepad layer is up, and the SDK's SDL driver
+    // lists pads only from that event: a pad already connected at launch stays unseen until it is replugged.
+    // Once the driver has had time to start and drain its queue, hand it the event for each pad it has not
+    // opened (SDL_GetGamepadFromID is null until the driver opens it).
+    const bool sdk_on_sdl = rex::cvar::GetFlagByName("input_backend") == "sdl";
+    bool pads_announced = !sdk_on_sdl;
+    Clock::time_point gamepad_seen{};
+
     while (true) {
+        if (!pads_announced && SDL_WasInit(SDL_INIT_GAMEPAD)) {
+            const Clock::time_point t = Clock::now();
+            if (gamepad_seen.time_since_epoch().count() == 0) gamepad_seen = t;
+            if (t - gamepad_seen >= std::chrono::seconds(3)) {
+                pads_announced = true;
+                int n = 0;
+                SDL_JoystickID* ids = SDL_GetGamepads(&n);
+                for (int i = 0; ids && i < n; ++i) {
+                    if (SDL_GetGamepadFromID(ids[i])) continue;
+                    SDL_Event ev{};
+                    ev.type = SDL_EVENT_GAMEPAD_ADDED;
+                    ev.gdevice.which = ids[i];
+                    SDL_PushEvent(&ev);
+                    LARECOMP_APP_INFO("[input] pad '{}' was connected before the SDK driver started: announcing it",
+                                      SDL_GetGamepadNameForID(ids[i]) ? SDL_GetGamepadNameForID(ids[i]) : "?");
+                }
+                SDL_free(ids);
+            }
+        }
         if (!WantSdl()) {
             if (sh.sdl_up) {
                 if (sh.have_dev) CloseDevice(sh);
@@ -1487,6 +1520,14 @@ void WheelThread() {
             continue;
         }
         if (!sh.sdl_up) {
+            // With the SDK's driver on SDL, its gamepad subsystem has to come up BEFORE ours: SDL only
+            // posts GAMEPAD_ADDED for pads already present when the joystick layer was started by someone
+            // else, so initing joystick first leaves the driver blind to every pad (seen on Linux: no
+            // "OnControllerDeviceAdded" in the log, pad works in the pickers but not in the game).
+            if (rex::cvar::GetFlagByName("input_backend") == "sdl" && !SDL_WasInit(SDL_INIT_GAMEPAD)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
             if (!SDL_InitSubSystem(SDL_INIT_JOYSTICK)) {
                 LARECOMP_APP_WARN("[wheel] SDL joystick init failed: {}", SDL_GetError());
                 std::this_thread::sleep_for(std::chrono::seconds(5));
