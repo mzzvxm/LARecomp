@@ -1211,7 +1211,9 @@ constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
 constexpr double kLodValues[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0};
-constexpr double kFpsCapVals[] = {30.0, 60.0, 120.0, 144.0, 0.0};
+// 40, 45 and 50 sit between the console's 30 and 60: steady on hardware that can't hold 60, and
+// even divisors of 120 Hz (40), 90 Hz (45) and 100 Hz (50) displays.
+constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.0};
 
 // Performance. Traffic/ped/parked mirror the ranges the cvars declare; the
 // fragment-tune tables bracket the two values the engine itself uses — 250 is
@@ -1379,7 +1381,7 @@ const ItemDef kVideoItems[] = {
 #else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
-    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
+    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
