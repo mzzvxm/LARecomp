@@ -1,4 +1,5 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
+#include "restart.h"
 #include "pause_menu.h"
 #include "carbon_parts.h"
 #include "camera_look.h"
@@ -1168,6 +1169,7 @@ using mcla_menu::kActionPlayCutscene;
 using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
 using mcla_menu::kActionReloadTextures;
+using mcla_menu::kActionRestart;
 using mcla_menu::NativeOnly;
 using mcla_menu::RowDynamics;
 using mcla_menu::Str;
@@ -1704,6 +1706,7 @@ const ItemDef kTexItems[] = {
 const ItemDef kQuitItems[] = {
     Action("PM_RxQuitNo",  kActionQuitNo),
     Action("PM_RxQuitYes", kActionQuitYes),
+    Action("PM_RxQuitRestart", kActionRestart),
 };
 
 // One RexGlue menu: a native list form (ui_forms.h) of `items` rows. A menu no
@@ -2112,6 +2115,7 @@ std::string ItemRowLabel(const ItemDef& it) {
         case kActionQuitNo:  return "NO";
         case kActionDumpTextures:   return "DUMP SCENE TEXTURES";
         case kActionReloadTextures: return "RELOAD TEXTURE MODS";
+        case kActionRestart:        return "RESTART GAME";
         }
         return "";
     }
@@ -2188,6 +2192,9 @@ void ApplyItem(const ItemDef& it, int dir) {
             }
             break;
         }
+        case kActionRestart:
+            PauseMenuRestartGame();
+            break;
         case kActionQuitNo:
             // Closes the QUIT form the way B does; the select sound is the A's.
             larecomp::ui::CloseForm(larecomp::ui::TopForm());
@@ -2839,6 +2846,27 @@ void EnsureControllerButtonRow(uint32_t list) {
 }  // anonymous namespace
 
 // ── Public API ──────────────────────────────────────────────────────────
+
+// RESTART GAME: as the QUIT form's YES, but the game is started again before this one closes
+// (restart.h); the new one waits for this one to be gone before it reads the settings or the saves.
+// If it can't be started, the game keeps running rather than quit without it.
+void PauseMenuRestartGame() {
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+    auto* runtime = rex::Runtime::instance();
+    rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
+    if (!window) {
+        MC_WARN("[pause-menu] restart requested, but there is no window to close");
+        return;
+    }
+    MC_INFO("[pause-menu] restart requested");
+    window->app_context().CallInUIThread([window] {
+        MclaWaitForSaves();
+        if (!mcla::RelaunchGame()) {
+            return;
+        }
+        window->RequestClose();
+    });
+}
 
 void InitPauseMenuHooks() {
     rex::cvar::RegisterChangeCallback(
@@ -4383,6 +4411,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
     return false;
 }
 void PauseMenuLeaveSubmenu() {}
+void PauseMenuRestartGame() {}
 void PauseMenuFormsTick() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) { return false; }

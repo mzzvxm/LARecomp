@@ -34,6 +34,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/online/server_browser/browser_ui.h"
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/save_protect.h"
+#include "mc_engine/restart.h"
 #include "mc_engine/audio_output.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -95,6 +96,9 @@ class LarecompApp : public rex::ReXApp {
               std::string_view name,
               rex::PPCImageInfo ppc_info)
       : rex::ReXApp(ctx, name, ppc_info) {
+    // Started by RESTART GAME: wait for the old process to be gone before this one opens its log,
+    // reads the settings or touches the saves (restart.h).
+    mcla::WaitForRestartedGame();
     InitLarecompLogging();
     LARECOMP_APP_INFO("LA Recompiled - @by mzzvxm");
     InstallCrashLogger();
