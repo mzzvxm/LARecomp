@@ -34,7 +34,7 @@ REXCVAR_DEFINE_BOOL(rexglue_settings_in_gameoptions, false, "MCLA/Settings",
     "Replace Game Options with ReXGlue Settings overlay (F4)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(speed_units, "kmh", "MCLA/HUD",
+REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
     "Speedometer / distance units. Drives the game's own metric formatter "
     "(sub_8238DDF0): game = console profile default (mph on NTSC), kmh = metric "
     "(km/h, km, m), mph = imperial (mph, miles, ft). Converts both the number and "
