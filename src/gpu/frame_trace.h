@@ -75,6 +75,9 @@ class FrameTrace {
   uint64_t draws_ = 0;
   uint64_t records_ = 0;
   std::atomic<bool> request_next_{false};
+  // The frame ShouldTrace last looked at in full: the rest of its records only check whether a
+  // dump is open or was asked for (a frame has thousands of records).
+  uint64_t checked_frames_ = ~uint64_t(0);
   uint64_t requested_at_ = 0;  // frame count when gpu_trace_next was seen
   bool armed_next_ = false;
   bool have_windows_ = false;
