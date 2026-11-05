@@ -53,6 +53,9 @@ REXCVAR_DEFINE_BOOL(garage_tire_offset, true, "MCLA/Patches",
     "the per-car TireOffset0/1 bytes retail parses but never uses.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// hooks/ui.cpp: the glyph set in use (button_prompts, auto resolved).
+bool ButtonPromptsArePlayStation();
+
 namespace {
 
 std::atomic<uint32_t> g_pausetab_addr{0};
@@ -2756,8 +2759,6 @@ constexpr const char* kCtrlRowLabel  = "PLAYSTATION BUTTONS";
 
 std::atomic<uint32_t> g_ctrl_row{0};        // guest row object, 0 = not installed
 std::atomic<int>      g_ctrl_row_index{-1}; // its index in the list
-
-bool ButtonPromptsArePlayStation();  // hooks/ui.cpp: button_prompts, auto resolved
 
 bool ButtonPromptsArePS() {
     return ButtonPromptsArePlayStation();
