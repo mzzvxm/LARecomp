@@ -53,6 +53,9 @@ REXCVAR_DEFINE_BOOL(garage_tire_offset, true, "MCLA/Patches",
     "the per-car TireOffset0/1 bytes retail parses but never uses.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// hooks/ui.cpp: the glyph set in use (button_prompts, auto resolved).
+bool ButtonPromptsArePlayStation();
+
 namespace {
 
 std::atomic<uint32_t> g_pausetab_addr{0};
@@ -1265,8 +1268,8 @@ constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
 constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
 constexpr const char* kStartGarageVals[]  = {"hollywood", "beaches", "sc", "last"};
 constexpr const char* kStartGarageNames[] = {"HOLLYWOOD", "BEACHES", "SOUTH CENTRAL", "LAST USED"};
-constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"};
-constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
+constexpr const char* kButtonLayoutVals[]  = {"auto", "xbox", "playstation", "keyboard"};
+constexpr const char* kButtonLayoutNames[] = {"AUTO", "XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
@@ -1656,7 +1659,7 @@ const ItemDef kUiItems[] = {
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
     Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
-         kButtonLayoutVals, kButtonLayoutNames, 3),
+         kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
 // The SETTINGS tab holds a handful of hubs, each a list of Submenu rows. Their
@@ -2758,7 +2761,7 @@ std::atomic<uint32_t> g_ctrl_row{0};        // guest row object, 0 = not install
 std::atomic<int>      g_ctrl_row_index{-1}; // its index in the list
 
 bool ButtonPromptsArePS() {
-    return CvarGet("button_prompts") == "playstation";
+    return ButtonPromptsArePlayStation();
 }
 
 // Re-render the list through its own vtable slot 184, the same call the
