@@ -29,7 +29,9 @@
 #include "reduce_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
 #include "resolve_color_ps.hlsl.dxil.h"
+#include "resolve_depth_fused_frac_ps.hlsl.dxil.h"
 #include "resolve_depth_fused_ps.hlsl.dxil.h"
+#include "resolve_depth_ms_fused_frac_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_fused_ps.hlsl.dxil.h"
 #include "resolve_depth_ms_ps.hlsl.dxil.h"
 #include "resolve_depth_ps.hlsl.dxil.h"
@@ -55,7 +57,9 @@
 #include "reduce_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
 #include "resolve_color_ps.hlsl.spirv.h"
+#include "resolve_depth_fused_frac_ps.hlsl.spirv.h"
 #include "resolve_depth_fused_ps.hlsl.spirv.h"
+#include "resolve_depth_ms_fused_frac_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_fused_ps.hlsl.spirv.h"
 #include "resolve_depth_ms_ps.hlsl.spirv.h"
 #include "resolve_depth_ps.hlsl.spirv.h"
@@ -157,8 +161,13 @@ inline HostShaderBlob ResolvePixelShader(bool depth, bool msaa) {
 }
 
 // The depth conversion that also writes the resolve memory's dwords of the same
-// resolve (resolve_ps.hlsl RESOLVE_FUSED), by multisampled source or not.
-inline HostShaderBlob ResolveFusedPixelShader(bool msaa) {
+// resolve (resolve_ps.hlsl RESOLVE_FUSED), by multisampled source or not, and for a
+// whole resolution scale or a fractional one.
+inline HostShaderBlob ResolveFusedPixelShader(bool msaa, bool fractional) {
+  if (fractional) {
+    return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_ms_fused_frac_ps)
+                : MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_fused_frac_ps);
+  }
   return msaa ? MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_ms_fused_ps)
               : MCLA_GPU_HOST_SHADER_BLOB(resolve_depth_fused_ps);
 }

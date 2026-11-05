@@ -74,6 +74,7 @@
 #include <plume_render_interface.h>
 
 #include "scale.h"
+#include "texture_bytes.h"
 
 namespace mcla::gpu {
 
@@ -309,6 +310,18 @@ class EdramTargets {
     const auto it = targets_.find(key);
     return it == targets_.end() ? nullptr : it->second.get();
   }
+
+  // The video memory budget's calls (vram_budget.h); render thread, at the
+  // start of a frame. Trim releases the host textures of the targets that no
+  // draw, clear or resolve has used for `idle_frames` frames (Get is the one
+  // way in for all three), the longest idle first, until about `bytes` are
+  // released or `max_items` targets are. Not while the aliasing detector is on:
+  // it follows what each identity wrote. The target stays as a record with
+  // height 0 and no texture; the next Get makes the texture again, cleared as a
+  // new target's is.
+  TrimResult Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items);
+  // Host bytes of the targets' textures.
+  uint64_t HeldBytes() const;
 
   // A draw into `target` in frame `frame` (the Scene's serial, counted up once
   // per frame): the run of consecutive frames it was drawn into grows by one
@@ -567,6 +580,7 @@ class EdramTargets {
                      FramebufferKeyHash>
       framebuffers_;
   std::vector<EdramKey> failed_;  // identities reported as impossible
+  uint32_t grow_failures_logged_ = 0;
   uint64_t frame_ = 0;
   uint64_t change_serial_ = 1;
 
@@ -654,8 +668,11 @@ class EdramTargets {
     uint64_t declared_unknown = 0;  // classifications with no declared size (guest's size)
     uint64_t scale_conflicts = 0;   // uses whose declared size gives another scale than the target's
     uint64_t made_host_msaa = 0;    // targets made with more samples than the guest's (M6d.2)
+    uint64_t trimmed = 0;           // textures released for want of video memory (Trim)
+    uint64_t remade = 0;            // ... made again by a Get
   };
   Stats stats_;
+  uint32_t remake_failures_logged_ = 0;
 };
 
 }  // namespace mcla::gpu

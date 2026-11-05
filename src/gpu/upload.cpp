@@ -154,6 +154,7 @@ void UploadRing::ResetSlot(uint32_t slot) {
   }
   Slot& s = slots_[slot];
   for (Chunk& c : s.oversized) {
+    device_->NoteReleased(c.size);
     DestroyChunk(c);
   }
   s.oversized.clear();
@@ -163,6 +164,7 @@ void UploadRing::ResetSlot(uint32_t slot) {
   }
   // Only from the back, so the chunks a frame fills first stay put.
   while (s.chunks.size() > 1 && s.chunks.back().idle_resets >= kIdleResetsBeforePrune) {
+    device_->NoteReleased(s.chunks.back().size);
     DestroyChunk(s.chunks.back());
     s.chunks.pop_back();
   }

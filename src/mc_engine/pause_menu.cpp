@@ -1,4 +1,5 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
+#include "restart.h"
 #include "pause_menu.h"
 #include "carbon_parts.h"
 #include "camera_look.h"
@@ -52,6 +53,9 @@ REXCVAR_DEFINE_BOOL(garage_tire_offset, true, "MCLA/Patches",
     "Add a TIRE OFFSET row to the garage wheels > dimensions screen, editing "
     "the per-car TireOffset0/1 bytes retail parses but never uses.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// hooks/ui.cpp: the glyph set in use (button_prompts, auto resolved).
+bool ButtonPromptsArePlayStation();
 
 namespace {
 
@@ -1165,6 +1169,7 @@ using mcla_menu::kActionPlayCutscene;
 using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
 using mcla_menu::kActionReloadTextures;
+using mcla_menu::kActionRestart;
 using mcla_menu::NativeOnly;
 using mcla_menu::RowDynamics;
 using mcla_menu::Str;
@@ -1211,7 +1216,9 @@ constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
 constexpr double kLodValues[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0};
-constexpr double kFpsCapVals[] = {30.0, 60.0, 120.0, 144.0, 0.0};
+// 40, 45 and 50 sit between the console's 30 and 60: steady on hardware that can't hold 60, and
+// even divisors of 120 Hz (40), 90 Hz (45) and 100 Hz (50) displays.
+constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.0};
 
 // Performance. Traffic/ped/parked mirror the ranges the cvars declare; the
 // fragment-tune tables bracket the two values the engine itself uses — 250 is
@@ -1265,8 +1272,8 @@ constexpr const char* kSpeedUnitVals[]  = {"game", "kmh", "mph"};
 constexpr const char* kSpeedUnitNames[] = {"GAME", "KMH", "MPH"};
 constexpr const char* kStartGarageVals[]  = {"hollywood", "beaches", "sc", "last"};
 constexpr const char* kStartGarageNames[] = {"HOLLYWOOD", "BEACHES", "SOUTH CENTRAL", "LAST USED"};
-constexpr const char* kButtonLayoutVals[]  = {"xbox", "playstation", "keyboard"};
-constexpr const char* kButtonLayoutNames[] = {"XBOX", "PLAYSTATION", "KEYBOARD"};
+constexpr const char* kButtonLayoutVals[]  = {"auto", "xbox", "playstation", "keyboard"};
+constexpr const char* kButtonLayoutNames[] = {"AUTO", "XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 // DIFFICULTY. AI DIFFICULTY is a percent, -1 = the game's own choice (STOCK);
@@ -1403,7 +1410,7 @@ const ItemDef kVideoItems[] = {
 #else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
-    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 5, "%.0f", "", "UNCAPPED"),
+    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "", "UNCAPPED"),
     Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
@@ -1679,7 +1686,7 @@ const ItemDef kUiItems[] = {
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
     Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
-         kButtonLayoutVals, kButtonLayoutNames, 3),
+         kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
 // The SETTINGS tab holds a handful of hubs, each a list of Submenu rows. Their
@@ -1751,6 +1758,7 @@ const ItemDef kTexItems[] = {
 const ItemDef kQuitItems[] = {
     Action("PM_RxQuitNo",  kActionQuitNo),
     Action("PM_RxQuitYes", kActionQuitYes),
+    Action("PM_RxQuitRestart", kActionRestart),
 };
 
 // One RexGlue menu: a native list form (ui_forms.h) of `items` rows. A menu no
@@ -2162,6 +2170,7 @@ std::string ItemRowLabel(const ItemDef& it) {
         case kActionQuitNo:  return "NO";
         case kActionDumpTextures:   return "DUMP SCENE TEXTURES";
         case kActionReloadTextures: return "RELOAD TEXTURE MODS";
+        case kActionRestart:        return "RESTART GAME";
         }
         return "";
     }
@@ -2238,6 +2247,9 @@ void ApplyItem(const ItemDef& it, int dir) {
             }
             break;
         }
+        case kActionRestart:
+            PauseMenuRestartGame();
+            break;
         case kActionQuitNo:
             // Closes the QUIT form the way B does; the select sound is the A's.
             larecomp::ui::CloseForm(larecomp::ui::TopForm());
@@ -2811,7 +2823,7 @@ std::atomic<uint32_t> g_ctrl_row{0};        // guest row object, 0 = not install
 std::atomic<int>      g_ctrl_row_index{-1}; // its index in the list
 
 bool ButtonPromptsArePS() {
-    return CvarGet("button_prompts") == "playstation";
+    return ButtonPromptsArePlayStation();
 }
 
 // Re-render the list through its own vtable slot 184, the same call the
@@ -2889,6 +2901,27 @@ void EnsureControllerButtonRow(uint32_t list) {
 }  // anonymous namespace
 
 // ── Public API ──────────────────────────────────────────────────────────
+
+// RESTART GAME: as the QUIT form's YES, but the game is started again before this one closes
+// (restart.h); the new one waits for this one to be gone before it reads the settings or the saves.
+// If it can't be started, the game keeps running rather than quit without it.
+void PauseMenuRestartGame() {
+    if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+    auto* runtime = rex::Runtime::instance();
+    rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
+    if (!window) {
+        MC_WARN("[pause-menu] restart requested, but there is no window to close");
+        return;
+    }
+    MC_INFO("[pause-menu] restart requested");
+    window->app_context().CallInUIThread([window] {
+        MclaWaitForSaves();
+        if (!mcla::RelaunchGame()) {
+            return;
+        }
+        window->RequestClose();
+    });
+}
 
 void InitPauseMenuHooks() {
     rex::cvar::RegisterChangeCallback(
@@ -4433,6 +4466,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
     return false;
 }
 void PauseMenuLeaveSubmenu() {}
+void PauseMenuRestartGame() {}
 void PauseMenuFormsTick() {}
 void Hook_CapturePMContinue(PPCRegister& r3) {}
 bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) { return false; }

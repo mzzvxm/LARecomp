@@ -27166,11 +27166,21 @@ registers = ["r11"]
 
 # The frame-pacing thread woken when the main thread waits for it (hooks/pump_wake.cpp).
 # 0x82148AB0: `li r3,0` ahead of the Sleep(0) in sub_82148A10, the main thread's wait for a free
-# slot of the draw command ring (r31 = the context).
+# slot of the draw command ring (r31 = the context, r30 = the rings at 0x82836814, r29 = the word
+# at +4 as the loop last read it, r26 = the loop's deadline and r3 = its last clock reading, in
+# microseconds). True skips the Sleep(0) and goes on at the `lbz` after it (0x82148AB8).
 [[midasm_hook]]
 address = 0x82148AB0
 name = "Hook_PumpWakeRingWait"
-registers = ["r31"]
+registers = ["r31", "r30", "r29", "r26", "r3"]
+jump_address_on_true = 0x82148AB8
+
+# 0x82160140: `stw r11,4(r6)` in sub_82160088, which frees a slot of the first ring (the only
+# store to the word at +4). Hooked after the store: wakes a main thread asleep in its ring wait.
+[[midasm_hook]]
+address = 0x82160140
+name = "Hook_PumpWakeSlotFreed"
+after_instruction = true
 
 # 0x821449C8: `lwz r3,84(r1)` in sub_82144888, the loop of the thread that frees the ring's
 # slots; r3 is the milliseconds of the Sleep that ends each round. True skips that Sleep (the

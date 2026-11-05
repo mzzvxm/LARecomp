@@ -58,7 +58,7 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
                       "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
                       "graphics setting for this app names, else the high-performance GPU; on "
-                      "Vulkan Plume picks.")
+                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -204,6 +204,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     geometry_.SetResolveMemory(&resolve_memory_);  //
     textures_.Initialize(device_, frames_, heap_, upload_, guest_memory_, resolve_,
                          resolve_memory_);
+    vram_.Initialize(device_, textures_, resolve_, resolve_memory_, edram_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_, pass_timing_, post_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -233,6 +234,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     overlay_.Shutdown();
     present_.Shutdown();
     post_.Shutdown();
+    vram_.Shutdown();
     textures_.Shutdown();
     resolve_.Shutdown();
     resolve_memory_.Shutdown();
@@ -315,6 +317,7 @@ void Renderer::Shutdown() {
   overlay_.Shutdown();
   present_.Shutdown();
   post_.Shutdown();
+  vram_.Shutdown();
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
@@ -486,11 +489,15 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
     return nullptr;
   }
   const uint32_t slot = frames_.slot();
+  device_.BeginFrame();
   // Outside any render pass: timestamp pool reset, one-time heap transitions.
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);
   heap_.RecordPendingBarriers(list);
   scene_.BeginFrame(list, slot);
+  // After the caches' own frame start, before any record of the frame: what
+  // the budget releases is retired behind this frame's submission.
+  vram_.BeginFrame();
   markers_.BeginFrame();
   markers_.Push(list, "Frame", PerfMarkers::kFrame);
   markers_.Push(list, "Scene", PerfMarkers::kPhase);
@@ -722,10 +729,17 @@ void Renderer::ReportFrameStats() {
     return;
   }
   const auto vram = device_.QueryVideoMemory();
+  // What the renderer itself holds, by kind: where the VRAM goes (the budget trim releases these
+  // same four when memory runs short, vram_budget.cpp).
+  const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
+  const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
+                           mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
+                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) + " MiB)";
   const std::string vram_text =
-      vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
-                        " MiB"
-                  : std::string("not reported");
+      (vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
+                         " MiB"
+                   : std::string("not reported")) +
+      held;
   CommandStream& stream = thread_.stream();
   const uint64_t fence_waits = g_fence_waits.exchange(0, std::memory_order_relaxed);
   const uint64_t fence_wait_ns = g_fence_wait_ns.exchange(0, std::memory_order_relaxed);
@@ -791,6 +805,9 @@ std::shared_ptr<OverlayHost> g_overlay_host;
 // What graphics_backend asks this renderer for (RequestedBackend), decided with
 // Enabled().
 Backend g_requested_backend = kDefaultBackend;
+// Set only when "auto" chose Vulkan: the GPU that choice was made on, which the Vulkan device is
+// created on. Empty otherwise.
+std::string g_auto_adapter;
 
 // The SDK's graphics_backend -- the cvar that also picks the
 // emulated GPU's backend -- as a backend this build has.
@@ -809,6 +826,8 @@ Backend RequestedBackend() {
     REXLOG_ERROR("[gpu] graphics_backend = \"{}\", but this build has no {}; {} runs", text,
                  BackendName(backend), BackendName(kDefaultBackend));
     backend = kDefaultBackend;
+  } else if (text == "auto") {
+    backend = ChooseAutoBackend(REXCVAR_GET(mcla_gpu_adapter), g_auto_adapter);
   }
   return backend;
 }
@@ -875,6 +894,10 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
 
   Renderer::Options options;
   options.device.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
+  if (options.device.preferred_adapter.empty()) {
+    // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
+    options.device.preferred_adapter = g_auto_adapter;
+  }
   options.device.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
   options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
   options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
@@ -885,7 +908,12 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
     g_overlay_host->Disconnect();
     return false;
   }
-  if (g_renderer->device().fell_back()) {
+  if (g_renderer->device().fell_back() && !g_auto_adapter.empty()) {
+    // "auto" picked Vulkan, not the player, and D3D12 is what "auto" ran before: no box.
+    REXLOG_WARN("[gpu] Vulkan, which graphics_backend auto picked for '{}', could not be started "
+                "(the reason is above); D3D12 runs",
+                g_auto_adapter);
+  } else if (g_renderer->device().fell_back()) {
     // The log has the reason; the player chose the API in the menu and would
     // otherwise never learn that another one runs.
     rex::ShowSimpleMessageBox(

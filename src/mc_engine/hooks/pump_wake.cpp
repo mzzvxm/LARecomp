@@ -26,6 +26,17 @@
 //    running dry: the thread goes back to the game's own Sleep for 60 s, and a second time
 //    for the rest of the session. The SDK does not count its underruns where this file can
 //    read them, so the mixer's pace stands in for them.
+//
+// The ring wait is itself a poll: for up to 1,000 microseconds the main thread calls Sleep(0)
+// (a SwitchToThread) and reads the clock and the word at +4 again, then gives up. The freeing
+// thread comes round once per rhythm, so a wait often runs its whole length. On a PC with 5 or
+// fewer logical processors that poll holds a core the game's other threads need, with the pump
+// wake off as well as on. There the wait is a short spin on the word, a sleep on a
+// high-resolution timer that the freeing thread ends early (it sets an event right after it
+// stores the word: Hook_PumpWakeSlotFreed), and a spin again for the last 400 microseconds,
+// since the timer wakes late. The loop stays the game's own: it reads the word and the clock
+// after every wait, so its give-up is where it was, and a wake that never comes costs only the
+// sleep's length. Bigger CPUs keep the Sleep(0).
 
 #if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
 #include <rex/cvar.h>
@@ -44,6 +55,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
 
 #include "../threading.h"
 #include "larecomp_log.h"
@@ -100,16 +114,121 @@ bool Allowed(int64_t now) {
            now >= g_paused_until_ns.load(std::memory_order_relaxed);
 }
 
+const uint8_t* GuestBase() {
+    static const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    return base;
+}
+
+// The main thread is in its ring wait: if the freeing thread is inside its own wait, it comes
+// round now.
+void WakePumpIfWaiting(PPCRegister& r31) {
+    if (!g_waiting.load(std::memory_order_acquire)) return;
+    if (((GuestBase()[r31.u32 + 199] >> 2) & 0x38) != 0) return;
+    SetEvent(WakeEvent());
+}
+
+// The ring wait sleeps instead of polling (see the top of the file).
+bool PollWait() {
+    return mc::FewLogicalProcessors();
+}
+
+constexpr int64_t kPollSpinNs = 40'000;       // spin on the word before sleeping
+constexpr int64_t kPollTailNs = 400'000;      // the timer wakes about 0.3 ms late: spin this long before the deadline
+constexpr int64_t kPollMinSleepNs = 200'000;  // a shorter sleep is not worth the two waits
+constexpr DWORD kPollMaxSleepMs = 20;         // the timer fires well before; this only bounds a lost wake
+
+// Set by Hook_PumpWakeSlotFreed once the word at +4 is stored.
+HANDLE SlotFreedEvent() {
+    static HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);  // manual reset
+    return event;
+}
+
+// One high-resolution timer per waiting thread (null before Windows 10 1803: the game's poll stays).
+struct WaitTimer {
+    HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                           TIMER_ALL_ACCESS);
+    ~WaitTimer() {
+        if (handle) CloseHandle(handle);
+    }
+};
+
+// The wait for a free slot, done here. True: the Sleep(0) is skipped and the game's loop reads the
+// word and the clock again. False: no timer, the game polls.
+bool WaitForSlot(PPCRegister& r31, PPCRegister& r30, PPCRegister& r29, PPCRegister& r26,
+                 PPCRegister& r3) {
+    static thread_local WaitTimer timer;
+    if (!timer.handle) return false;
+    const int32_t left_us = static_cast<int32_t>(r26.u32 - r3.u32);
+    if (left_us <= 0) return true;  // the loop's next turn sees its deadline
+    const uint8_t* base = GuestBase();
+    const uint32_t ring = (base[r31.u32 + 199] >> 2) & 0x38;
+    const uint32_t* word = reinterpret_cast<const uint32_t*>(base + r30.u32 + 4 + ring);
+    const uint32_t expected = __builtin_bswap32(r29.u32);  // guest memory is big-endian
+    const auto freed = [&] { return __atomic_load_n(word, __ATOMIC_RELAXED) != expected; };
+
+    const int64_t entered = NowNs();
+    const int64_t deadline = entered + static_cast<int64_t>(left_us) * 1000;
+    HANDLE slot_freed = SlotFreedEvent();
+    ResetEvent(slot_freed);  // before the word is read again: a store after the read sets it
+
+    // 1. A short spin: the word often changes within it when a slot is nearly free.
+    int64_t now = entered;
+    for (;;) {
+        for (int i = 0; i < 16; ++i) {
+            if (freed()) return true;
+            YieldProcessor();
+        }
+        now = NowNs();
+        if (now - entered >= kPollSpinNs || now >= deadline) break;
+    }
+    // 2. Asleep until the tail before the deadline, or until the freeing thread stores the word.
+    const int64_t sleep_ns = deadline - kPollTailNs - now;
+    if (sleep_ns >= kPollMinSleepNs) {
+        LARGE_INTEGER due;
+        due.QuadPart = -(sleep_ns / 100);  // 100 ns units, relative
+        if (SetWaitableTimerEx(timer.handle, &due, 0, nullptr, nullptr, nullptr, 0)) {
+            const HANDLE handles[2] = {slot_freed, timer.handle};
+            const DWORD woke = WaitForMultipleObjects(2, handles, FALSE, kPollMaxSleepMs);
+            if (woke != WAIT_OBJECT_0 + 1) CancelWaitableTimer(timer.handle);
+            if (woke == WAIT_OBJECT_0) return true;  // a slot was freed: the loop reads the word
+        }
+    }
+    // 3. The tail: spin until the word changes or the deadline.
+    for (;;) {
+        for (int i = 0; i < 16; ++i) {
+            if (freed()) return true;
+            YieldProcessor();
+        }
+        if (NowNs() >= deadline) return true;
+    }
+}
+
 }  // namespace
 
 // 0x82148AB0 in sub_82148A10: `li r3,0` ahead of the Sleep(0) in the main thread's wait for a
 // free slot. r31 = the context; its byte at +199 picks the ring (rlwinm r8,r11,30,2,28), and
-// the freeing thread only frees the first.
-void Hook_PumpWakeRingWait(PPCRegister& r31) {
-    if (!g_waiting.load(std::memory_order_acquire)) return;
-    static const uint8_t* base = rex::Runtime::instance()->virtual_membase();
-    if (((base[r31.u32 + 199] >> 2) & 0x38) != 0) return;
-    SetEvent(WakeEvent());
+// the freeing thread only frees the first. r30 = 0x82836814, the rings (8 bytes each; the word
+// at +4 is the one the freeing thread stores), r29 = that word as the loop last read it, r26 =
+// the loop's deadline and r3 = its last clock reading, both in microseconds. It wakes the
+// freeing thread if that waits (pump wake). On a PC with few logical processors it also does
+// the wait, and returns true: the jump skips the Sleep(0) and goes on at the `lbz` that reads
+// the word again.
+bool Hook_PumpWakeRingWait(PPCRegister& r31, PPCRegister& r30, PPCRegister& r29, PPCRegister& r26,
+                           PPCRegister& r3) {
+    WakePumpIfWaiting(r31);
+    if (!PollWait()) return false;
+    static std::once_flag announced;
+    std::call_once(announced, [] {
+        LARECOMP_APP_INFO("[PumpWake] the main thread's ring wait sleeps on a timer instead of polling");
+    });
+    return WaitForSlot(r31, r30, r29, r26, r3);
+}
+
+// 0x82160140 in sub_82160088, after `stw r11,4(r6)` (r6 = 0x82836814): the freeing thread has
+// stored the word at +4 of the first ring, the only store to it. Wakes a main thread asleep in
+// its ring wait.
+void Hook_PumpWakeSlotFreed() {
+    if (PollWait()) SetEvent(SlotFreedEvent());
 }
 
 // 0x821449C8 in sub_82144888, after `lwz r3,84(r1)`: r3 is the milliseconds of the Sleep that

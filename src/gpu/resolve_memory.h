@@ -42,6 +42,11 @@
 // the invocation at the centre of each guest texel's block has loaded the very
 // depth and stencil the encode would load, and stores the dword. That drops the
 // second read of the multisampled planes and the switch to compute and back.
+// At a fractional scale both hold too, when the pass wrote the pixels the
+// encode reads (resolve.cpp DepthSampleWritten): the invocation that loaded a
+// texel's sample stores for it (RESOLVE_FUSED=2), and the raw k_8_8_8_8 encode
+// reads the product pixel that holds the sample. Otherwise the dispatch from
+// the EDRAM planes, as before.
 // Colour waits in a batch (each dispatch after its
 // conversion pass was a GPU bubble: 1.1 ms/frame for 56 resolves):
 // the product keeps its texels until a resolve writes it again, so the batch
@@ -161,21 +166,24 @@ class ResolveMemory {
     // left uncovered (the resolve's ResolvePush::fill), read from the next.
     uint32_t fill = 0;
     // A depth copy whose product holds the dword's bytes exactly (a resolve
-    // into k_8_8_8_8, kModeDepthRaw8888, at a whole scale): `product_slot` is
+    // into k_8_8_8_8, kModeDepthRaw8888, at a whole scale or at a fractional
+    // one whose pixels the pass wrote): `product_slot` is
     // set as for colour, the encode reads the product instead of the EDRAM
     // planes, and so it waits in the batch and is dropped when a later resolve
     // writes the rectangle again, as a colour copy does. The depth fields stay
     // filled: the test aid's reference encodes from the planes at once.
     bool from_product = false;
     // A depth copy that reads the EDRAM planes (not from_product) at a whole
-    // resolution scale, whose dwords the resolve's own pixel shader writes
+    // resolution scale, or at a fractional one whose pixels the pass wrote,
+    // whose dwords the resolve's own pixel shader writes
     // (FusedWrite) instead of a dispatch after it. The caller has made the
     // fused pipeline and calls Encode BEFORE the resolve's pass.
     bool fuse = false;
   };
   // The constants of the fused pixel shader that follow the resolve's own
   // (resolve.h Push, kResolvePushBytes): resolve_ps.hlsl ResolvePush with
-  // RESOLVE_FUSED, EncodePush's fields of the same names.
+  // RESOLVE_FUSED, EncodePush's fields of the same names. The variant for a
+  // whole scale reads the first seven dwords, the one for a fractional scale all ten.
   struct FusedWrite {
     uint32_t address = 0;  // the destination level's storage origin (physical)
     uint32_t pitch = 0;
@@ -183,22 +191,29 @@ class ResolveMemory {
     uint32_t tail = 0;
     uint32_t rect0 = 0;
     uint32_t rect1 = 0;
-    uint32_t whole = 0;  // host pixels per guest texel; 0: nothing to write
+    uint32_t whole = 0;  // whole scale: host pixels per guest texel
+    int32_t offset_x = 0;  // fractional scale: EDRAM texel = destination texel + offset
+    int32_t offset_y = 0;
+    uint32_t scale_n = 0;  // Scale::n; 0: nothing to write
   };
   static constexpr uint32_t kResolvePushBytes = 32;
-  static constexpr uint32_t kFusedPushBytes = kResolvePushBytes + 7 * sizeof(uint32_t);
+  static constexpr uint32_t kFusedPushBytes = kResolvePushBytes + 10 * sizeof(uint32_t);
   // Records the copy's bytes into the resolve memory, outside any render pass,
   // leaving none open; binds its own compute state. False when it could not
   // (logged, counted): the pages it would have written stay as they were.
   // With copy.fuse (`fused` given) it records no dispatch: it does the rest --
   // the waiting encodes over the pages, the uploads, the pool barrier for the
   // pass's stores, the page bookkeeping -- and fills *fused for the pass that
-  // follows; *fused stays empty (whole 0) when there is nothing to write.
+  // follows; *fused stays empty (scale_n 0) when there is nothing to write.
   bool Encode(plume::RenderCommandList* list, const Copy& copy, FusedWrite* fused = nullptr);
   // The fused variant of the depth conversion into `format` (a pipeline whose
   // layout is BindFused's), made ahead when listed. Null when it could not be
-  // made: the caller encodes the copy the other way.
-  plume::RenderPipeline* FusedPipeline(bool msaa, plume::RenderFormat format);
+  // made: the caller encodes the copy the other way. `fractional`: the variant
+  // for a fractional resolution scale.
+  plume::RenderPipeline* FusedPipeline(bool msaa, plume::RenderFormat format, bool fractional);
+  // Lists the fractional variants for the host builder. Only at a fractional
+  // render scale (ResolveCache::ListPrecache): at a whole one they are never used.
+  void ListFractionalPrecache();
   // Binds the fused pass's layout, the four texture sets and the pool (the
   // pass writes it). After Encode of the copy, before the pass's draw.
   void BindFused(plume::RenderCommandList* list);
@@ -261,15 +276,28 @@ class ResolveMemory {
   BindResult Bind(const TextureKey& key, uint16_t host_swizzle, plume::RenderCommandList* list,
                   uint32_t* slot, bool* state_changed, std::string* why);
 
+  // A range of guest physical memory.
+  struct AddressRange {
+    uint32_t address = 0;
+    uint32_t size = 0;
+  };
   // A CPU lock of [address, address + size): the
   // pages of the range with bytes guest memory lacks are copied from the pool
   // into guest memory, whole, before the CPU reads them -- the resolves' bytes
   // in their order, whatever product made them. `submit_recorded` sends what
   // the frame recorded so far to the queue; the caller records the encode
-  // batch first (Flush). Waits for the GPU. The pages written, or -1 when the
+  // batch first (FlushForLock). Waits for the GPU. The pages written, or -1 when the
   // copy could not be made (logged).
+  // `read_ahead`: the other ranges the guest will lock next (the other levels of
+  // the locked texture). A lock that has to wait for the GPU reads their pages
+  // that hold bytes guest memory lacks in the same copy and keeps them in host
+  // memory, as the pool held them; the lock of those pages finds them there and
+  // does not wait. Guest memory is written only by the lock that owns the page,
+  // as before, and a page whose sequence changed since (a resolve, an upload, a
+  // CPU write) is read again from the pool.
   int64_t WriteBack(uint32_t address, uint32_t size,
-                    const std::function<void()>& submit_recorded);
+                    const std::function<void()>& submit_recorded,
+                    const std::vector<AddressRange>* read_ahead = nullptr);
 
   // Reach (only with mcla_gpu_edram_aliasing). The ResolveCache
   // hands over the EDRAM map at its Initialize. MarkInherited: the pages an
@@ -282,6 +310,15 @@ class ResolveMemory {
                      int32_t y1);
 
   std::string TakeSummary(uint64_t frames);
+
+  // The video memory budget's calls (vram_budget.h); render thread, at the
+  // start of a frame. Trim releases the textures decoded from the pool that
+  // nothing bound for `idle_frames` frames, the longest idle first, until about
+  // `bytes` are released or `max_items` textures are; each is decoded again
+  // when it is bound. The pool itself stays.
+  TrimResult Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items);
+  // Host bytes of the decoded textures and of the pool.
+  uint64_t HeldBytes() const;
 
  private:
   enum PageFlag : uint8_t {
@@ -399,6 +436,31 @@ class ResolveMemory {
   std::vector<uint8_t> chosen_;         // Choose's marks, by waiting encode
   std::vector<PageSpan> choose_spans_;  // Choose's scratch: the chosen ones' pages
   std::vector<PageSpan> upload_spans_;  // a colour encode's uploaded pages, as runs
+  // Pages a lock that waited for the GPU read back besides its own (WriteBack's
+  // read_ahead), as the pool held them. The entry is good while the page's
+  // sequence is the one it was read at: every write into a page (resolve,
+  // upload, CPU) bumps it, and the pending encodes over the pages were recorded
+  // before the copy (FlushForLock), so the bytes are the ones a read of the pool
+  // would give now. At most kMaxAheadPages (16 MiB); the entries of pages that
+  // were written since, or not locked within kAheadFrames, are dropped.
+  struct AheadPage {
+    uint64_t sequence = 0;
+    uint64_t frame = 0;  // frame_ when it was read
+    std::array<uint8_t, kPageBytes> bytes;
+  };
+  static constexpr size_t kMaxAheadPages = 4096;
+  static constexpr uint64_t kAheadFrames = 3600;
+  std::unordered_map<uint32_t, AheadPage> ahead_;  // by page
+  std::vector<PageSpan> ahead_spans_;  // the pages being read ahead, for FlushForLock
+  std::vector<PageSpan> lock_spans_;   // FlushForLock's scratch
+  std::vector<uint32_t> ahead_pages_;  // WriteBack's scratch
+  // Writes the pages of pages_ that an earlier lock read ahead to guest memory
+  // and takes them out of pages_. Returns how many.
+  int64_t TakeAhead();
+  // Appends to pages_ the pages of `ranges` that hold bytes guest memory lacks and
+  // are not read ahead yet; sets ahead_spans_.
+  void AddAhead(const std::vector<AddressRange>* ranges);
+  void ForgetAhead();
   // The encodes of the last end-of-frame batch, for the count of the ones a
   // resolve of the next frame writes again whole.
   struct Recorded {
@@ -445,12 +507,14 @@ class ResolveMemory {
   std::unique_ptr<plume::RenderPipeline> encode_pipelines_[3];
   // The fused depth resolve (resolve_ps.hlsl RESOLVE_FUSED): the texture sets
   // (spaces 0-3), the encode's set (space 4), the push range (b0, space 5); a
-  // pixel shader by multisampled source, a pipeline by (msaa, format).
+  // pixel shader by [fractional scale][multisampled source], a pipeline by (fractional, msaa,
+  // format).
   std::unique_ptr<plume::RenderPipelineLayout> fused_layout_;
-  std::unique_ptr<plume::RenderShader> fused_shaders_[2];
+  std::unique_ptr<plume::RenderShader> fused_shaders_[2][2];
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> fused_pipelines_;
   // The creation itself (also called on the host builder thread).
-  std::unique_ptr<plume::RenderPipeline> MakeFusedPipeline(bool msaa, plume::RenderFormat format);
+  std::unique_ptr<plume::RenderPipeline> MakeFusedPipeline(bool msaa, plume::RenderFormat format,
+                                                           bool fractional);
   std::unique_ptr<plume::RenderShader> decode_shader_;
   std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> decode_pipelines_;
   // The vertex copy: the decode's set (pool and table, space 0), the
@@ -524,6 +588,9 @@ class ResolveMemory {
     uint64_t lock_write_backs = 0;     // locks that copied pages back
     uint64_t lock_pages = 0;           // pages copied back
     uint64_t lock_pages_unknown = 0;   // newer pages the pool does not hold whole (logged)
+    uint64_t lock_pages_ahead = 0;     // pages read back ahead of their lock
+    uint64_t lock_pages_ahead_used = 0;  // ... of which a lock took from there
+    uint64_t locks_without_wait = 0;   // locks whose pages were all read ahead
     uint64_t inherited_marked = 0;     // reach: pages marked by inherited resolves
     uint64_t vertex_copies = 0;        // vertex streams built from the pool
     uint64_t vertex_copy_bytes = 0;

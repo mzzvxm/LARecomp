@@ -195,6 +195,15 @@ class ResolveCache {
 
   std::string TakeSummary(uint64_t frames);
 
+  // The video memory budget's calls (vram_budget.h); render thread, at the
+  // start of a frame. Trim releases the inactive products nothing resolved into
+  // or fetched for `idle_frames` frames, the longest idle first, until about
+  // `bytes` are released or `max_items` products are; a product is made again,
+  // empty, when its key is resolved again. The active ones stay.
+  TrimResult Trim(uint64_t idle_frames, uint64_t bytes, uint32_t max_items);
+  // Host bytes of the products and their reduced copies.
+  uint64_t HeldBytes() const;
+
  private:
   // Conversions, as resolve_ps.hlsl numbers them.
   enum Mode : uint32_t {
@@ -278,6 +287,11 @@ class ResolveCache {
   void ReleaseReduced(Product& product);
   void IndexRanges(Product& product);
   void UnindexRanges(Product& product);
+  // Host bytes of the product's texture and of its reduced copies.
+  static uint64_t ProductBytes(const Product& product);
+  // Hands the product's objects back (slots to the heap, objects to the
+  // FrameRing); the caller erases it.
+  void RetireProduct(Product& product);
   void EvictSome();
 
   Device* device_ = nullptr;
@@ -366,6 +380,8 @@ class ResolveCache {
     uint64_t partial = 0;             // copies that do not cover their whole level
     uint64_t half_pixel_filled = 0;   // copies of a scaled source with the gap filled (24.43)
     uint64_t census_moved = 0;        // copies of a screen image moved from their source (M6e.0)
+    uint64_t depth_fractional_kept = 0;  // depth copies at a fractional scale whose encode would
+                                         // read a pixel the pass did not write: encoded at once
     uint64_t misaligned = 0;          // destination offset not in whole 32x32 tiles
     uint64_t from_registers = 0;      // source surface not bound: taken from the registers
     uint64_t other_pitch = 0;         // source surface made at another pitch/MSAA than the

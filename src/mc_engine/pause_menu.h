@@ -31,6 +31,8 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out);
 // cutscene gallery calls this when it unpauses the game to play a scene, so no
 // menu of ours is left on the open-form stack holding the pad.
 void PauseMenuLeaveSubmenu();
+// RESTART GAME (the QUIT form): save, start the game again, close this one.
+void PauseMenuRestartGame();
 
 // Once per UI update (swf_dom.cpp), guest thread: closes our menus if the
 // pause screen they were opened over goes away under them.

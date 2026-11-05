@@ -249,6 +249,12 @@ bool MaySkip(const Deferral* deferral) {
   return deferral && deferral->may_skip && deferral->may_skip(deferral->context);
 }
 
+// Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
+// how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
+constexpr uint32_t kBootBoostBelow = 8;
+constexpr std::chrono::seconds kBootSeconds{40};
+constexpr size_t kFollowMinGap = 8;
+
 }  // namespace
 
 size_t PipelineKeyHash::operator()(const PipelineKey& k) const {
@@ -409,12 +415,25 @@ void Pipelines::RecordStored(const PipelineKey& key, uint32_t index) {
 // precache (M5.3b)
 // ---------------------------------------------------------------------------
 
+// The logical processors this process may run on: its affinity mask where
+// there is one (a game limited to some cores has only those), else the system's.
+uint32_t Pipelines::UsableProcessors() {
+#if defined(_WIN32)
+  DWORD_PTR process = 0, system = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process) {
+    return uint32_t(__builtin_popcountll(process));
+  }
+#endif
+  return std::max(1u, std::thread::hardware_concurrency());
+}
+
 void Pipelines::StartPrecache() {
   precached_.reserve(records_.size());
   for (const Record& r : records_) {
     auto p = std::make_unique<Precached>();
     p->key = r.key;
     p->layout = stored_layouts_[r.layout].get();  // owned by a unique_ptr: stable
+    p->index = uint32_t(precached_.size());
     precached_by_key_.emplace(r.key, p.get());
     precached_.push_back(std::move(p));
   }
@@ -422,19 +441,35 @@ void Pipelines::StartPrecache() {
   // a pipeline made here is one the render thread does not stop for later.
   // The workers run with an empty list too, and stay when it is done: they
   // make the pipelines the render thread hands them (background builds).
-  const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
-  const uint32_t count = std::clamp(hardware / 2, 1u, 6u);
+  // With fewer than kBootBoostBelow processors the first seconds are different
+  // (boot mode, pipelines.h): up to all the processors but one, at normal priority.
+  const uint32_t usable = UsableProcessors();
+  steady_workers_ = std::clamp(usable / 2, 1u, 6u);
+  const bool boot = !precached_.empty() && usable < kBootBoostBelow;
+  const uint32_t count =
+      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, 6u) : steady_workers_;
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
-  next_precache_ = 0;
+  list_cursor_ = 0;
+  list_end_ = precached_.size();
+  list_skipped_.clear();
   precache_ready_ = 0;
   precache_failed_ = 0;
   precache_finished_ = 0;
+  boot_claims_ = 0;
+  boot_waits_ = 0;
+  boot_deadline_ = precache_start_ + kBootSeconds;
+  boot_mode_ = boot;
   for (uint32_t i = 0; i < count; ++i) {
-    workers_.emplace_back([this] { PrecacheWorker(); });
+    workers_.emplace_back([this, i] { PrecacheWorker(i); });
   }
   if (precached_.empty()) {
     REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
+  } else if (boot) {
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads; boot mode on {} usable "
+                "processors: normal priority until the list is done or {} s have passed, then {} "
+                "threads at below normal",
+                precached_.size(), count, usable, kBootSeconds.count(), steady_workers_);
   } else {
     REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads",
                 precached_.size(), count);
@@ -453,49 +488,138 @@ void Pipelines::StopPrecache() {
     }
   }
   workers_.clear();
+  boot_mode_ = false;
   // The workers are gone: a request that finished is taken (and recorded, so
   // the next session has it); one still queued is dropped.
   TakeFinishedRequests();
   requests_.clear();
   urgent_.clear();
+  list_skipped_.clear();
   precached_by_key_.clear();
   precached_.clear();  // the GPU is idle: unclaimed pipelines die here
   aliases_.clear();
 }
 
-void Pipelines::PrecacheWorker() {
+void Pipelines::PrecacheWorker(uint32_t index) {
 #if defined(_WIN32)
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  bool priority_set = false;
+  bool priority_boosted = false;
 #endif
   for (;;) {
     // What the render thread handed over comes first, then the next entry of
-    // the list; with neither the worker sleeps.
+    // the list; with neither the worker sleeps. The workers above
+    // steady_workers_ are the boot mode's: they leave when it is over.
     Urgent urgent;
+    size_t entry = 0;
+    bool from_list = false;
     {
       std::unique_lock<std::mutex> lock(work_mutex_);
-      work_cv_.wait(lock, [this] {
-        return stop_precache_.load() || !urgent_.empty() ||
-               next_precache_.load() < precached_.size();
+      const auto leaves = [&] { return index >= steady_workers_ && !boot_mode_.load(); };
+      work_cv_.wait(lock, [&] {
+        return stop_precache_.load() || leaves() || !urgent_.empty() || HasListWork();
       });
       if (stop_precache_.load()) {
+        return;
+      }
+      if (leaves()) {
+        if (!urgent_.empty() || HasListWork()) {
+          work_cv_.notify_one();  // what woke this one goes to a worker that stays
+        }
         return;
       }
       if (!urgent_.empty()) {
         urgent = std::move(urgent_.front());
         urgent_.pop_front();
+      } else {
+        from_list = NextListEntry(entry);
       }
     }
+#if defined(_WIN32)
+    // Normal priority in boot mode, below normal after: the guest's threads come first once
+    // the render thread no longer waits for the list.
+    const bool boosted = boot_mode_.load();
+    if (!priority_set || boosted != priority_boosted) {
+      SetThreadPriority(GetCurrentThread(),
+                        boosted ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL);
+      priority_set = true;
+      priority_boosted = boosted;
+    }
+#endif
     if (urgent.request) {
       BuildRequest(*urgent.request);
     } else if (urgent.precached) {
       BuildPrecached(*urgent.precached);
-    } else {
-      const size_t i = next_precache_.fetch_add(1);
-      if (i < precached_.size()) {
-        BuildPrecached(*precached_[i]);
-      }
+    } else if (from_list) {
+      BuildPrecached(*precached_[entry]);
     }
   }
+}
+
+bool Pipelines::HasListWork() const {
+  return list_cursor_ < list_end_ || !list_skipped_.empty();
+}
+
+bool Pipelines::NextListEntry(size_t& index) {
+  for (;;) {
+    while (list_cursor_ >= list_end_) {
+      if (list_skipped_.empty()) {
+        return false;
+      }
+      list_cursor_ = list_skipped_.front().begin;
+      list_end_ = list_skipped_.front().end;
+      list_skipped_.pop_front();
+    }
+    const size_t i = list_cursor_++;
+    // One the render thread made or a worker has is left alone.
+    if (precached_[i]->state.load() == kQueued) {
+      index = i;
+      return true;
+    }
+  }
+}
+
+void Pipelines::NoteClaim(size_t index) {
+  if (!boot_mode_.load()) {
+    return;
+  }
+  ++boot_claims_;
+  FollowRenderThread(index);
+}
+
+void Pipelines::FollowRenderThread(size_t index) {
+  // The render thread had to make entry `index` because no worker had reached it. It asks in
+  // about the order the list was recorded in, so the next entries are the ones it will want:
+  // the workers go on after it, and what lies between them and it (not asked for yet) waits
+  // until the run is over. A claim behind the cursor or beyond the run changes nothing.
+  std::lock_guard<std::mutex> lock(work_mutex_);
+  const size_t next = index + 1;
+  if (next <= list_cursor_ || next > list_end_ || next - list_cursor_ < kFollowMinGap) {
+    return;
+  }
+  list_skipped_.push_back(ListRange{list_cursor_, index});
+  list_cursor_ = next;
+}
+
+void Pipelines::EndBootMode(const char* why) {
+  if (!boot_mode_.load()) {
+    return;
+  }
+  {
+    // Under the workers' mutex, or one about to wait would miss the wake-up.
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    if (!boot_mode_.exchange(false)) {
+      return;
+    }
+  }
+  work_cv_.notify_all();
+  REXLOG_INFO("[gpu] pipelines: boot mode over after {:.1f} s ({}): {} of {} entries left the "
+              "queue, {} made by the render thread, {} builds it waited for",
+              double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - precache_start_)
+                         .count()) /
+                  1000.0,
+              why, precache_finished_.load(), precached_.size(), boot_claims_.load(),
+              boot_waits_.load());
 }
 
 void Pipelines::BuildPrecached(Precached& p) {
@@ -560,6 +684,7 @@ void Pipelines::NotePrecacheEntryDone() {
                            .count()) /
                     1000.0,
                 precache_ready_.load(), precache_failed_.load());
+    EndBootMode("the list is done");
   }
 }
 
@@ -618,6 +743,7 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   state = kQueued;
   if (p.state.compare_exchange_strong(state, kClaimed)) {
     miss.take = Take::kMakeHere;
+    NoteClaim(p.index);
     NotePrecacheEntryDone();
     ++stats_.precache_claimed;  // no worker at it yet: the caller makes it now
     p.taken = true;
@@ -628,6 +754,9 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
     const auto t0 = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(precache_mutex_);
     precache_done_.wait(lock, [&] { return p.state.load() != kBuilding; });
+    if (boot_mode_.load()) {
+      ++boot_waits_;
+    }
     ++stats_.precache_waits;
     stats_.precache_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - t0)
@@ -762,6 +891,10 @@ void Pipelines::NotePendingTaken(uint64_t asked_frame) {
 
 void Pipelines::EndFrame() {
   ++frame_;
+  if (boot_mode_.load(std::memory_order_relaxed) &&
+      std::chrono::steady_clock::now() >= boot_deadline_) {
+    EndBootMode("time limit");
+  }
   if (!requests_.empty()) {
     TakeFinishedRequests();
   }

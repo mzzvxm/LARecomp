@@ -362,6 +362,10 @@ void Shutdown() {
     g_pads.clear();
 }
 
+bool IsGamePaused() { return GamePaused(); }
+
+bool IsWindowInFront() { return WindowInFront(); }
+
 }  // namespace larecomp::triggers
 
 // 0x822117C0 in sub_822112A8, the race HUD update: it runs once a frame while a car is driven.

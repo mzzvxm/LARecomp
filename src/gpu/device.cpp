@@ -150,6 +150,10 @@ std::unique_ptr<plume::RenderTexture> Device::CreateTexture(const plume::RenderT
   if (!device_ || IsLost()) {
     return nullptr;
   }
+  const uint64_t backoff_key = BackoffKey(desc);
+  if (Blocked(backoff_key)) {
+    return nullptr;
+  }
   auto texture = device_->createTexture(desc);
   if (backend::IsNullBacked(texture.get())) {
     if (LogThisFailure()) {
@@ -159,6 +163,7 @@ std::unique_ptr<plume::RenderTexture> Device::CreateTexture(const plume::RenderT
                    static_cast<uint32_t>(desc.multisampling.sampleCount));
     }
     ReportCreationFailure("texture", name);
+    NoteFailed(backoff_key, TextureBytes(desc), /*video_memory=*/true);
     return nullptr;
   }
   if (name) {
@@ -306,6 +311,10 @@ std::unique_ptr<plume::RenderBuffer> Device::CreateBuffer(const plume::RenderBuf
   if (!device_ || IsLost()) {
     return nullptr;
   }
+  const uint64_t backoff_key = BackoffKey(desc);
+  if (Blocked(backoff_key)) {
+    return nullptr;
+  }
   auto buffer = device_->createBuffer(desc);
   if (backend::IsNullBacked(buffer.get())) {
     if (LogThisFailure()) {
@@ -314,6 +323,7 @@ std::unique_ptr<plume::RenderBuffer> Device::CreateBuffer(const plume::RenderBuf
                    static_cast<uint32_t>(desc.flags));
     }
     ReportCreationFailure("buffer", name);
+    NoteFailed(backoff_key, desc.size, desc.heapType == plume::RenderHeapType::DEFAULT);
     return nullptr;
   }
   if (name) {
@@ -417,6 +427,90 @@ void Device::ReportCreationFailure(const char* what, const char* name) {
 
 backend::VideoMemory Device::QueryVideoMemory() const {
   return device_ ? backend::QueryVideoMemory(device_.get()) : backend::VideoMemory{};
+}
+
+namespace {
+
+constexpr uint64_t Mix(uint64_t hash, uint64_t value) {
+  return hash ^ (value + 0x9E3779B97F4A7C15ull + (hash << 6) + (hash >> 2));
+}
+
+}  // namespace
+
+uint64_t Device::BackoffKey(const plume::RenderTextureDesc& desc) {
+  uint64_t key = 0x7465787475726500ull;
+  key = Mix(key, uint64_t(desc.dimension));
+  key = Mix(key, uint64_t(desc.width) << 32 | desc.height);
+  key = Mix(key, uint64_t(desc.depth) << 32 | desc.mipLevels);
+  key = Mix(key, uint64_t(desc.arraySize) << 32 | uint64_t(desc.format));
+  key = Mix(key, uint64_t(desc.flags) << 32 | uint64_t(desc.multisampling.sampleCount));
+  key = Mix(key, uint64_t(desc.textureArrangement) << 1 | (desc.committed ? 1u : 0u));
+  return key;
+}
+
+uint64_t Device::BackoffKey(const plume::RenderBufferDesc& desc) {
+  uint64_t key = 0x627566666572ull;
+  key = Mix(key, desc.size);
+  key = Mix(key, uint64_t(desc.heapType) << 32 | uint64_t(desc.flags));
+  key = Mix(key, desc.committed ? 1u : 0u);
+  return key;
+}
+
+bool Device::Blocked(uint64_t key) {
+  if (backoff_count_.load(std::memory_order_relaxed) == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(backoff_mutex_);
+  const auto it = backoff_.find(key);
+  if (it == backoff_.end()) {
+    return false;
+  }
+  const Backoff& entry = it->second;
+  const uint64_t now = frame();
+  // Enough memory was given back, and long enough ago for the GPU to have let go of it.
+  const bool freed =
+      released_bytes() - entry.released_at >= entry.bytes &&
+      now >= release_frame_.load(std::memory_order_relaxed) + kReleaseSettleFrames;
+  if (now < entry.retry_frame && !freed) {
+    skipped_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+  backoff_.erase(it);
+  backoff_count_.store(uint32_t(backoff_.size()), std::memory_order_relaxed);
+  return false;
+}
+
+void Device::NoteFailed(uint64_t key, uint64_t bytes, bool video_memory) {
+  if (IsLost()) {
+    return;
+  }
+  if (video_memory) {
+    uint64_t seen = failed_bytes_.load(std::memory_order_relaxed);
+    while (seen < bytes &&
+           !failed_bytes_.compare_exchange_weak(seen, bytes, std::memory_order_relaxed)) {
+    }
+  }
+  std::lock_guard<std::mutex> lock(backoff_mutex_);
+  if (backoff_.size() >= kBackoffEntries) {
+    backoff_.clear();
+  }
+  Backoff& entry = backoff_[key];
+  entry.retry_frame = frame() + (video_memory ? kBackoffFrames : kUploadBackoffFrames);
+  entry.released_at = released_bytes();
+  entry.bytes = std::max<uint64_t>(bytes, 1);
+  backoff_count_.store(uint32_t(backoff_.size()), std::memory_order_relaxed);
+}
+
+void Device::NoteReleased(uint64_t bytes) {
+  if (bytes == 0) {
+    return;
+  }
+  released_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+  release_frame_.store(frame(), std::memory_order_relaxed);
+}
+
+bool Device::TextureBlocked(const plume::RenderTextureDesc& desc) {
+  return device_ && !IsLost() && Blocked(BackoffKey(desc));
 }
 
 }  // namespace mcla::gpu

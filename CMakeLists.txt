@@ -61,6 +61,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/mods.cpp
     src/mc_engine/hooks/discord.cpp
     src/mc_engine/hooks/audio_mixer.cpp
+    src/mc_engine/hooks/job_workers.cpp
     src/mc_engine/hooks/diagnostics.cpp
     src/mc_engine/hooks/vibration.cpp
     src/mc_engine/hooks/stick_deadzone.cpp
@@ -235,6 +236,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/imgui_theme.cpp
     src/mc_engine/ui/debug_overlay.cpp
     src/mc_engine/ui/controller_toast.cpp
+    src/mc_engine/ui/pad_vendor.cpp
+    src/mc_engine/restart.cpp
     src/mc_engine/ui/gamepad.cpp
     src/mc_engine/ui/settings.cpp
     src/mc_engine/ui/achievements.cpp

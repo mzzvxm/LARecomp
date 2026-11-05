@@ -5,6 +5,7 @@
 #include <rex/system/achievement_manager.h>
 #include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
+#include <rex/system/gpu_plugin.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
@@ -29,12 +30,14 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
+#include "mc_engine/config_save.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/online/server_browser/browser_ui.h"
 #include "mc_engine/map_mouse.h"
 #include "mc_engine/save_protect.h"
+#include "mc_engine/restart.h"
 #include "mc_engine/audio_output.h"
 #include "mc_engine/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
@@ -85,6 +88,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 extern uint8_t* g_guest_mem;
@@ -95,6 +99,9 @@ class LarecompApp : public rex::ReXApp {
               std::string_view name,
               rex::PPCImageInfo ppc_info)
       : rex::ReXApp(ctx, name, ppc_info) {
+    // Started by RESTART GAME: wait for the old process to be gone before this one opens its log,
+    // reads the settings or touches the saves (restart.h).
+    mcla::WaitForRestartedGame();
     InitLarecompLogging();
     LARECOMP_APP_INFO("LA Recompiled - @by mzzvxm");
     InstallCrashLogger();
@@ -123,9 +130,15 @@ class LarecompApp : public rex::ReXApp {
     return log;
   }
 
+  // Every value set here is LARecomp's own default, not a choice of the player's:
+  // the config save leaves it out while it stays what it is now (see
+  // NoteStartupCvar), so a later version, or another PC, can still change it.
   static void SetFlag(const char* name, const char* value) {
     const bool ok = rex::cvar::SetFlagByName(name, value);
     FlagLog().push_back(std::string(ok ? "  ok   " : "  FAIL ") + name + " = " + value);
+    if (ok) {
+      larecomp::NoteStartupCvar(name);
+    }
   }
 
 
@@ -318,6 +331,37 @@ class LarecompApp : public rex::ReXApp {
     SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
   }
 
+  // The SDK loads the GPU plugin with the plugin's own default backend ("any": Direct3D 12 first
+  // where both are built) and has no setting for it, so graphics_backend (GRAPHICS API in the menu,
+  // which the Plume renderer reads too) never reached the emulated GPU: it always ran Direct3D 12.
+  // Loaded here with the backend that setting asks for; "auto" (or unset) makes the same choice as
+  // Plume (ChooseAutoBackend). If that backend can't start, the SDK loads its default as before.
+  void LoadXenosWithChosenBackend(rex::RuntimeConfig& config) {
+    const std::string asked = rex::cvar::GetFlagByName("graphics_backend");
+    std::string backend;
+    if (asked == "d3d12" || asked == "vulkan") {
+      backend = asked;
+#if defined(LARECOMP_HAS_GPU)
+    } else if (asked.empty() || asked == "auto") {
+      backend = mcla::gpu::AutoBackendIsVulkan(rex::cvar::GetFlagByName("mcla_gpu_adapter"))
+                    ? "vulkan"
+                    : "d3d12";
+#endif
+    }
+    if (backend.empty()) {
+      return;
+    }
+    config.graphics = rex::system::LoadGpuPlugin("xenos", backend);
+    if (config.graphics) {
+      LARECOMP_APP_INFO("Xenia GPU: {} (graphics_backend = {})", backend,
+                        asked.empty() ? "unset" : asked);
+    } else {
+      LARECOMP_APP_WARN("Xenia GPU: {} could not be started (graphics_backend = {}); the plugin's "
+                        "default backend is used",
+                        backend, asked.empty() ? "unset" : asked);
+    }
+  }
+
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.audio_factory = &mcla::audio::CreateAudioSystem;
 
@@ -345,6 +389,7 @@ class LarecompApp : public rex::ReXApp {
       // so the game works without anything in larecomp.toml; an explicit cvar
       // still wins because this only fills in the blank.
       config.gpu_plugin = "xenos";
+      LoadXenosWithChosenBackend(config);
     }
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
@@ -527,22 +572,85 @@ class LarecompApp : public rex::ReXApp {
   }
 
   // A normal window close never reaches OnShutdown: ReXApp::OnClosing
-  // terminates the title and _Exit()s. This runs first, on the UI thread, so
-  // the Plume renderer stops its render thread, drains the GPU and gives the
-  // swap chain back before the process dies.
+  // terminates the title and _Exit()s. The work before that (the Plume renderer
+  // stops its render thread, drains the GPU and gives the swap chain back) is
+  // done in FinishWindowClose, not here.
+  //
+  // The close button, Alt+F4 and every other WM_CLOSE reach this callback inside
+  // SDL's event-watcher dispatch: SDL_EVENT_QUIT is handled synchronously by the
+  // SDK's event watch (SDLWindowedAppContext::WatchEvent), and SDL calls watchers
+  // with the watcher list's mutex held, so any other thread's SDL_PushEvent waits
+  // until the watcher returns. The rest of the close (MnkInputDriver::OnLostFocus,
+  // which takes state_mutex_) ran inside it too. With mnk_mode on, a guest thread
+  // polling the input holds that same state_mutex_ while it pushes the "run this on
+  // the UI thread" wake-up event (MnkInputDriver::QueueMouseCaptureUpdate), so the
+  // two wait for each other for good: no "Window closing" line, the guest frozen
+  // after the renderer stopped, the process alive until it is killed (INFERRED from
+  // the SDK and SDL sources and from the logs; not caught in a debugger).
+  //
+  // So this only schedules the close and vetoes it. It runs again for the
+  // CLOSE_REQUESTED event SDL queued, which is why the schedule is latched.
+  // FinishWindowClose then runs from the main loop, outside the watcher, and ends
+  // the window the way the SDK describes for a veto: window()->RequestClose().
   bool OnWindowCloseRequested() override {
+    if (!close_scheduled_.exchange(true, std::memory_order_acq_rel)) {
+      // False only once the main loop has stopped taking work: nothing left to wait for.
+      if (!app_context().CallInUIThreadDeferred([this]() { FinishWindowClose(); })) {
+        FinishWindowClose();
+      }
+    }
+    return false;
+  }
+
+  // UI thread, from the main loop. Does what the close needs before the SDK's
+  // OnClosing ends the process, then asks the window to close. The process ends
+  // inside it (the SDK's OnClosing calls _Exit; if it never gets there, the end
+  // of this function does); it returns only if it already ran.
+  void FinishWindowClose() {
+    if (close_started_.exchange(true, std::memory_order_acq_rel)) {
+      return;
+    }
+    const auto started = std::chrono::steady_clock::now();
     MclaWaitForSaves();
+    LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
-    return rex::ReXApp::OnWindowCloseRequested();
+    // The close listener of the nocp presenter (nocp_app.cpp) runs only for a
+    // close request that is not vetoed; this is that request.
+    if (mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      mcla::native_gfx::NotifyWindowCloseRequested();
+    }
+    LARECOMP_APP_INFO("[quit] LARecomp's shutdown took {} ms; closing the window",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - started)
+                          .count());
+    // A bound for whatever the SDK's close still does (the 200 ms TerminateTitle
+    // and the log flush take well under a second). Armed after the career save
+    // wait and the renderer stop, which have their own limits (10 s and 2 s).
+    std::thread([]() {
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+      LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
+      rex::FlushLogging();
+      std::_Exit(0);
+    }).detach();
+    if (auto* w = window()) {
+      w->RequestClose();  // ReXApp::OnClosing: terminate the title, flush, _Exit(0)
+    }
+    // Only when the window was not open any more, so OnClosing never ran.
+    rex::FlushLogging();
+    std::_Exit(0);
   }
+
+  std::atomic<bool> close_scheduled_{false};
+  std::atomic<bool> close_started_{false};
 
   void OnShutdown() override {
     // Closing the window while the boot content build runs: let it finish
     // writing the mod archive before the process goes, as it always did.
     larecomp::WaitForBootBuild();
+    LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();

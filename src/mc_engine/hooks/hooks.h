@@ -55,6 +55,8 @@ bool Patch_SpeedUnits(PPCRegister& r11);
 // it, Patch_PlatformPush feeds the per-movie push in sub_821F8038, and
 // TickButtonPrompts (called from Patch_DeltaTimePre) applies live cvar changes.
 void TickButtonPrompts();
+// The glyph set in use: button_prompts = playstation, or auto with a Sony controller attached.
+bool ButtonPromptsArePlayStation();
 void Hook_PlatformVarInit(PPCRegister& r27);
 bool Patch_PlatformPush(PPCRegister& r5);
 // AVM action-buffer entry (sub_825EE970, r3 = swf context). Pushes
@@ -155,6 +157,10 @@ void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31);
 // not cover.
 bool MCLAUseRealDelta();
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11);
+
+// Logs the audio dropout counter's closing line, once (hooks/audio_mixer.cpp). Safe from any
+// thread; logs nothing if the game closed before the counter started.
+void LogAudioDropoutSummary();
 
 inline double fpsCount;
 inline bool showfps;

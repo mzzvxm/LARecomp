@@ -23,6 +23,7 @@
 #include "../graphics_button.h"
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
+#include "../ui/pad_vendor.h"
 
 REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
 
@@ -33,7 +34,7 @@ REXCVAR_DEFINE_BOOL(rexglue_settings_in_gameoptions, false, "MCLA/Settings",
     "Replace Game Options with ReXGlue Settings overlay (F4)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(speed_units, "kmh", "MCLA/HUD",
+REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
     "Speedometer / distance units. Drives the game's own metric formatter "
     "(sub_8238DDF0): game = console profile default (mph on NTSC), kmh = metric "
     "(km/h, km, m), mph = imperial (mph, miles, ft). Converts both the number and "
@@ -46,8 +47,10 @@ REXCVAR_DEFINE_STRING(speed_units, "kmh", "MCLA/HUD",
     .allowed({"game", "kmh", "mph"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
-    "On-screen button glyphs. xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
+REXCVAR_DEFINE_STRING(button_prompts, "auto", "MCLA/UI",
+    "On-screen button glyphs. auto = PlayStation glyphs while a Sony controller is "
+    "attached, Xbox glyphs otherwise (checked every 2 seconds, so plugging one in is "
+    "noticed). xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
     "cross/circle/square/triangle + L1/R1/L2/R2. Both sets already ship inside "
     "the game's own UI movies and texture dictionary, so this only flips the "
     "'platform' flag their ActionScript reads - no asset is swapped or reloaded. "
@@ -56,7 +59,7 @@ REXCVAR_DEFINE_STRING(button_prompts, "xbox", "MCLA/UI",
     "keyboard = key caps. The movies have no third glyph strip, so this stays on "
     "platform 0 and keyboard_native.cpp paints a key cap over the pixels of the "
     "Xbox A/B/X/Y/LB/RB/LT/RT bitmaps (the key bound to that menu button, kb_ui_*).")
-    .allowed({"xbox", "playstation", "keyboard"})
+    .allowed({"auto", "xbox", "playstation", "keyboard"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
@@ -247,10 +250,24 @@ static std::atomic<uint32_t> g_platform_var_ea{0};
 // Last value written, so the tick only touches guest memory on a real change.
 static std::atomic<int> g_platform_applied{-1};
 
+// button_prompts = auto: 1 while a Sony controller is attached. -1 until the first check, which is
+// made on first use (the UI manager asks before the first frame tick); the tick re-checks every 2 s.
+static std::atomic<int> g_sony_attached{-1};
+
 static int WantedPlatformValue() {
     std::string mode = REXCVAR_GET(button_prompts);
+    if (mode == "auto") {
+        int sony = g_sony_attached.load(std::memory_order_relaxed);
+        if (sony < 0) {
+            sony = mcla::ui::PlayStationControllerPresent() ? 1 : 0;
+            g_sony_attached.store(sony, std::memory_order_relaxed);
+        }
+        return sony;
+    }
     return mode == "playstation" ? 1 : 0;
 }
+
+bool ButtonPromptsArePlayStation() { return WantedPlatformValue() == 1; }
 
 // +88 (0x58) is the int mcVariant::asInt returns for type 3, +92 (0x5C) the
 // plain "%d" char buffer sub_823DC018 formatted into for the string readers.
@@ -272,6 +289,17 @@ static void WritePlatformVar(uint32_t entry, int value) {
 // from the F4 menu. Movies already on screen keep the glyphs they resolved at
 // their own frame 1; anything opened after this picks up the new set.
 void TickButtonPrompts() {
+    // auto: notice a controller plugged in or out (every 2 s: the check walks every HID device).
+    static auto next_check = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_check) {
+        next_check = now + std::chrono::seconds(2);
+        if (REXCVAR_GET(button_prompts) == "auto") {
+            g_sony_attached.store(mcla::ui::PlayStationControllerPresent() ? 1 : 0,
+                                  std::memory_order_relaxed);
+        }
+    }
+
     const uint32_t entry = g_platform_var_ea.load(std::memory_order_relaxed);
     if (!entry) return;
 
@@ -443,6 +471,22 @@ constexpr int64_t kInputWindowNs = 100'000'000;
 // Least time between two extra steps of one screen, whatever the key events do.
 constexpr int64_t kInputGapNs = 100'000'000;
 
+// The minimap expands and collapses (D-pad Up) by a game script, which sets variables of
+// HUDMAPMOVIE, and the game switches the minimap's render target between the 220x220 radar
+// and the 749x430 city map in that same update -- both are resolved to the same memory. Paced
+// to 30 steps a second, the movie could go on drawing the other view's image for up to a step
+// after the switch, from memory that now holds the new one: a frame of scrambled blocks over
+// the map. So when a script sets a variable of HUDMAPMOVIE, the movie takes its step in that
+// update, as on the console, where it stepped on every update. (The same script sets the gauge
+// movie's variables too, in between; that movie draws no render target and keeps its pace.)
+// sub_822095D8 is the script native "set a float variable of a movie by name"; it calls the
+// float setter (sub_825EE188) from 0x8220982C. Written by rex_sub_825EE188 and read by the
+// movie step, on the game's update thread; g_map_movie_context is HUDMAPMOVIE's swf context,
+// from the movie list (MovieFor).
+constexpr uint32_t kScriptSetMovieFloatReturn = 0x82209830;
+std::atomic<uint32_t> g_map_movie_context{0};
+std::atomic<bool> g_map_movie_script_set{false};
+
 int64_t SteadyNowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -582,6 +626,7 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
         m->context = context;
         m->next_due_ns = 0;
     }
+    if (name == "HUDMAPMOVIE") g_map_movie_context.store(context, std::memory_order_relaxed);
     return m;
 }
 
@@ -597,6 +642,11 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
 // less than 100 ms ago (with ui_input_repeat_30hz off a held direction repeats every 6
 // updates, 50 ms at 120 FPS).
 //
+// HUDMAPMOVIE, when a game script has set one of its variables in this update
+// (g_map_movie_script_set), takes one extra step now in the same way, whatever
+// ui_advance_on_input says: it is not about latency but about drawing what the game has
+// already switched to.
+//
 // step_ns is when the step belongs on its schedule, which is what the interpolation
 // times the glide from (ui_smooth.cpp): the due time when the movie is on schedule,
 // else now.
@@ -611,6 +661,9 @@ bool StepDue(Movie& m, int64_t now, int64_t& step_ns) {
                        now - g_ui_input_ns.load(std::memory_order_relaxed) <= kInputWindowNs &&
                        now - m.input_ns >= kInputGapNs;
         }
+    } else if (m.context && m.context == g_map_movie_context.load(std::memory_order_relaxed) &&
+               g_map_movie_script_set.exchange(false, std::memory_order_relaxed)) {
+        by_input = now - m.input_ns >= kInputGapNs;
     }
     const bool not_due = m.next_due_ns && now + kStepPeriodNs / 4 < m.next_due_ns;
     if (not_due && !by_input) return false;
@@ -747,6 +800,17 @@ extern "C" REX_FUNC(rex_sub_825EDC08) {
     __imp__rex_sub_825EDC08(ctx, base);
 }
 
+// The swf float setter (r3 = the movie's context, r4 = the variable's name, f1 = the
+// value). A call from the script native sub_822095D8 on HUDMAPMOVIE marks that movie for a
+// step in this update (StepDue); every call goes on to the game's own setter unchanged.
+REX_EXTERN(__imp__rex_sub_825EE188);
+extern "C" REX_FUNC(rex_sub_825EE188) {
+    if (uint32_t(ctx.lr) == kScriptSetMovieFloatReturn && ctx.r3.u32 != 0 &&
+        ctx.r3.u32 == g_map_movie_context.load(std::memory_order_relaxed))
+        g_map_movie_script_set.store(true, std::memory_order_relaxed);
+    __imp__rex_sub_825EE188(ctx, base);
+}
+
 // ── Menu cursor auto-repeat ──────────────────────────────────────────────
 //
 // sub_82223CD8 is FlashNavigator::fnInputHandler's update (the handler sits at
@@ -858,6 +922,7 @@ void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {}
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
 bool Patch_SpeedUnits(PPCRegister& r11) { return false; }
 void TickButtonPrompts() {}
+bool ButtonPromptsArePlayStation() { return false; }
 void Hook_PlatformVarInit(PPCRegister& r27) {}
 bool Patch_PlatformPush(PPCRegister& r5) { return false; }
 void Hook_SwfContextEnter(PPCRegister& r3) {}

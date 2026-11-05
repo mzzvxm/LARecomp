@@ -4,7 +4,10 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <mutex>
+#include <string>
 #include <system_error>
+#include <unordered_map>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -154,6 +157,20 @@ namespace {
 
 using Edits = std::vector<pf::ConfigEdit>;
 
+// The value each cvar had right after LARecomp's startup code set it, as the
+// cvar's own getter prints it, so it compares with a later read of the same getter.
+std::mutex g_startup_mutex;
+std::unordered_map<std::string, std::string>& StartupValues() {
+  static std::unordered_map<std::string, std::string> values;
+  return values;
+}
+
+bool AtStartupValue(const std::string& name, const std::string& value) {
+  std::lock_guard<std::mutex> lock(g_startup_mutex);
+  const auto it = StartupValues().find(name);
+  return it != StartupValues().end() && it->second == value;
+}
+
 // Adds the edit for `name`, or replaces the one already there.
 void Put(Edits& edits, const std::string& name, std::optional<std::string> value,
          bool update_only) {
@@ -190,11 +207,21 @@ bool Write(const std::filesystem::path& path, const Edits& edits) {
 
 }  // namespace
 
+void NoteStartupCvar(std::string_view name) {
+  std::string value = rex::cvar::GetFlagByName(name);
+  std::lock_guard<std::mutex> lock(g_startup_mutex);
+  StartupValues()[std::string(name)] = std::move(value);
+}
+
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held) {
   Edits edits;
   // Only cvars whose last writer was SetFlagByName: a menu, the settings panel,
   // the console. A value that came from the command line, the environment or the
   // file itself is not a change, and the file keeps its line for the last one.
+  // The same for a value LARecomp's startup code gave (NoteStartupCvar) and that
+  // nobody has changed since: it is not the player's choice. A line the file has
+  // already still follows the value, so a cvar the player changed, saved and then
+  // put back is not left at the changed value.
   for (const std::string& name : rex::cvar::ListFlags()) {
     const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
     if (!info || info->type == rex::cvar::FlagType::Command ||
@@ -202,7 +229,8 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
       continue;
     }
     const std::string value = info->getter();
-    Put(edits, name, CvarTomlValue(name, value), value == info->default_value);
+    const bool unchanged = value == info->default_value || AtStartupValue(name, value);
+    Put(edits, name, CvarTomlValue(name, value), unchanged);
   }
   for (const auto& [name, value] : held) {
     Put(edits, name, CvarTomlValue(name, value), false);

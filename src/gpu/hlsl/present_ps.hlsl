@@ -57,6 +57,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 cell = floor(p);
   const float2 f = p - cell;
   const int2 at = int2(cell);
+  // At 1:1 (the image at its own size, on whole pixels) both weights are 0 and the other three
+  // texels add nothing (lerp(a, b, 0) is a exactly): one texel and its three table reads instead
+  // of four and twelve, the same result. Every pixel of the draw takes the same branch then.
+  if (all(f == 0.0f)) {
+    return float4(Texel(at), 1.0f);
+  }
   const float3 top = lerp(Texel(at), Texel(at + int2(1, 0)), f.x);
   const float3 bottom = lerp(Texel(at + int2(0, 1)), Texel(at + int2(1, 1)), f.x);
   return float4(lerp(top, bottom, f.y), 1.0f);

@@ -30,11 +30,14 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <plume_render_interface.h>
 
 #include "backend.h"
+#include "texture_bytes.h"
 
 namespace mcla::gpu {
 
@@ -105,6 +108,33 @@ class Device {
   std::unique_ptr<plume::RenderFramebuffer> CreateFramebuffer(
       const plume::RenderFramebufferDesc& desc, const char* name);
 
+  // A texture or buffer whose creation failed with the device alive is not
+  // asked for again -- the same description, from anywhere -- for kBackoffFrames
+  // frames (kUploadBackoffFrames for the upload and readback heaps, whose
+  // draws are dropped meanwhile), nor before about as many bytes as it needed
+  // have been given back (NoteReleased) and the GPU has let go of them. A full
+  // video memory asks for the same resolve product or texture on every use,
+  // every frame, and each ask is a driver call that fails, and may page other
+  // allocations out first. The frame is counted by BeginFrame.
+  static constexpr uint64_t kBackoffFrames = 30;
+  static constexpr uint64_t kUploadBackoffFrames = 10;
+  // Render thread, once per frame (Renderer::OpenFrameList).
+  void BeginFrame() { frame_.fetch_add(1, std::memory_order_relaxed); }
+  uint64_t frame() const { return frame_.load(std::memory_order_relaxed); }
+  // A cache retired `bytes` of texture or buffer memory. The GPU lets go of it
+  // within kFramesInFlight frames.
+  void NoteReleased(uint64_t bytes);
+  uint64_t released_bytes() const { return released_bytes_.load(std::memory_order_relaxed); }
+  // Whether CreateTexture would refuse `desc` now, for a creation that failed
+  // lately (callers that build more than the texture check this first).
+  bool TextureBlocked(const plume::RenderTextureDesc& desc);
+  // The largest video memory request (a texture, or a buffer in the default
+  // heap) that failed since the last call; 0 when none. Taken by the
+  // budget (vram_budget.h), which answers it by releasing what is unused.
+  uint64_t TakeFailedBytes() { return failed_bytes_.exchange(0, std::memory_order_relaxed); }
+  // Creations refused by the back-off since the last call.
+  uint64_t TakeSkipped() { return skipped_.exchange(0, std::memory_order_relaxed); }
+
   // True once device loss has been seen. Latched.
   bool IsLost() const { return lost_.load(std::memory_order_acquire); }
   // Asks the backend whether the device is gone; logs and latches the first
@@ -120,6 +150,31 @@ class Device {
   // Whether this creation failure is logged in full (counts every failure).
   bool LogThisFailure();
   std::atomic<uint64_t> creation_failures_{0};
+
+  // The back-off (above): what was asked for, by description.
+  static uint64_t BackoffKey(const plume::RenderTextureDesc& desc);
+  static uint64_t BackoffKey(const plume::RenderBufferDesc& desc);
+  // True while a creation of `key` failed lately and nothing was freed since.
+  bool Blocked(uint64_t key);
+  // A creation of `bytes` failed with the device alive; `video_memory`: the
+  // request was for video memory (not an upload or readback heap).
+  void NoteFailed(uint64_t key, uint64_t bytes, bool video_memory);
+  static constexpr size_t kBackoffEntries = 256;
+  // Frames after a release before the GPU is taken to be done with what it freed.
+  static constexpr uint64_t kReleaseSettleFrames = 3;
+  struct Backoff {
+    uint64_t retry_frame = 0;   // tried again from this frame at the latest
+    uint64_t released_at = 0;   // released_bytes() when it failed
+    uint64_t bytes = 0;         // what the request needed
+  };
+  std::atomic<uint64_t> frame_{0};
+  std::atomic<uint64_t> released_bytes_{0};
+  std::atomic<uint64_t> release_frame_{0};  // the frame of the last NoteReleased
+  std::atomic<uint64_t> failed_bytes_{0};
+  std::atomic<uint64_t> skipped_{0};
+  std::atomic<uint32_t> backoff_count_{0};  // backoff_.size(), read without the lock
+  std::mutex backoff_mutex_;
+  std::unordered_map<uint64_t, Backoff> backoff_;
 
   // Declaration order is destruction order in reverse: queue, device, interface.
   std::unique_ptr<plume::RenderInterface> interface_;

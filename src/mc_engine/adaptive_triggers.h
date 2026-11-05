@@ -16,4 +16,11 @@ void Tick();
 // call more than once and from any thread.
 void Shutdown();
 
+// The two checks the triggers use, for other code that wants the same answer (the audio gap
+// counter, hooks/audio_mixer.cpp). Safe from any thread.
+// IsGamePaused: the game's own paused flag is set (the pause menu holds the game).
+// IsWindowInFront: the foreground window belongs to this process.
+bool IsGamePaused();
+bool IsWindowInFront();
+
 }  // namespace larecomp::triggers
