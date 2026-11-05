@@ -22,7 +22,7 @@ enum class ItemKind { kBool, kStrCycle, kDblCycle, kCarbonBit, kAction, kColor, 
 // Action ids for ItemKind::kAction, carried in ItemDef::nvals.
 enum ActionId {
     kActionPlayCutscene = 1, kActionQuitYes, kActionQuitNo, kActionDumpTextures,
-    kActionReloadTextures
+    kActionReloadTextures, kActionRestart
 };
 
 // Which renderer a row belongs to. The renderer is a restart-only choice, so

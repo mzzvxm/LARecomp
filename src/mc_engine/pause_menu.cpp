@@ -1,4 +1,5 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
+#include "restart.h"
 #include "pause_menu.h"
 #include "carbon_parts.h"
 #include "camera_look.h"
@@ -1165,6 +1166,7 @@ using mcla_menu::kActionPlayCutscene;
 using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
 using mcla_menu::kActionReloadTextures;
+using mcla_menu::kActionRestart;
 using mcla_menu::NativeOnly;
 using mcla_menu::RowDynamics;
 using mcla_menu::Str;
@@ -1701,6 +1703,7 @@ const ItemDef kTexItems[] = {
 const ItemDef kQuitItems[] = {
     Action("PM_RxQuitNo",  kActionQuitNo),
     Action("PM_RxQuitYes", kActionQuitYes),
+    Action("PM_RxQuitRestart", kActionRestart),
 };
 
 // One RexGlue menu: a native list form (ui_forms.h) of `items` rows. A menu no
@@ -2109,6 +2112,7 @@ std::string ItemRowLabel(const ItemDef& it) {
         case kActionQuitNo:  return "NO";
         case kActionDumpTextures:   return "DUMP SCENE TEXTURES";
         case kActionReloadTextures: return "RELOAD TEXTURE MODS";
+        case kActionRestart:        return "RESTART GAME";
         }
         return "";
     }
@@ -2182,6 +2186,27 @@ void ApplyItem(const ItemDef& it, int dir) {
                 app_context->RequestDeferredQuit();
             } else {
                 MC_WARN("[pause-menu] quit requested, but app context is unavailable");
+            }
+            break;
+        }
+        case kActionRestart: {
+            // As YES, but the game is started again before this one closes (restart.h): the new one
+            // waits for this one to be gone before it reads the settings or the saves. If it can't be
+            // started, the game keeps running rather than quit without it.
+            if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+            auto* runtime = rex::Runtime::instance();
+            rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
+            if (window) {
+                MC_INFO("[pause-menu] restart requested from the QUIT menu");
+                window->app_context().CallInUIThread([window] {
+                    MclaWaitForSaves();
+                    if (!mcla::RelaunchGame()) {
+                        return;
+                    }
+                    window->RequestClose();
+                });
+            } else {
+                MC_WARN("[pause-menu] restart requested, but there is no window to close");
             }
             break;
         }

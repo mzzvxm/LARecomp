@@ -236,6 +236,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/imgui_theme.cpp
     src/mc_engine/ui/debug_overlay.cpp
     src/mc_engine/ui/controller_toast.cpp
+    src/mc_engine/restart.cpp
     src/mc_engine/ui/gamepad.cpp
     src/mc_engine/ui/settings.cpp
     src/mc_engine/ui/achievements.cpp
