@@ -729,10 +729,17 @@ void Renderer::ReportFrameStats() {
     return;
   }
   const auto vram = device_.QueryVideoMemory();
+  // What the renderer itself holds, by kind: where the VRAM goes (the budget trim releases these
+  // same four when memory runs short, vram_budget.cpp).
+  const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
+  const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
+                           mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
+                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) + " MiB)";
   const std::string vram_text =
-      vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
-                        " MiB"
-                  : std::string("not reported");
+      (vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
+                         " MiB"
+                   : std::string("not reported")) +
+      held;
   CommandStream& stream = thread_.stream();
   const uint64_t fence_waits = g_fence_waits.exchange(0, std::memory_order_relaxed);
   const uint64_t fence_wait_ns = g_fence_wait_ns.exchange(0, std::memory_order_relaxed);
