@@ -16,8 +16,10 @@
 #include "mc_engine/hooks/hooks.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/native_gfx.h"
+#if defined(_WIN32)
 #include "native_gfx/d3d12/device_manager.h"
 #include "native_gfx/d3d12/swapchain.h"
+#endif
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
@@ -350,6 +352,13 @@ class LarecompApp : public rex::ReXApp {
     // LARecomp draws its own MCLA controller toast (mc_engine/ui); the SDK's
     // would stack a second, unstyled card next to it.
     SetFlag("controller_toast_enable", "false");
+
+#if !defined(_WIN32)
+    // XInput exists only on Windows. A larecomp.toml carried over from there says
+    // input_backend = "xinput", and the SDK then adds no pad driver at all: the pad is
+    // detected (the wheel layer lists it) but the game never receives its input.
+    SetFlag("input_backend", "sdl");
+#endif
   }
 
   // Detached mode's hook: with no graphics system, ReXApp asks the app for the
@@ -852,6 +861,7 @@ class LarecompApp : public rex::ReXApp {
     mc::EnableHighResTimer();
     ApplyGpuFlags();
     DumpEffectiveConfig();
+    MCLA_StartInputProbe();
 
     // The guest GPU can only be installed here. ReXApp::Run calls
     // SetupPresentation (rex_app.cpp:117) BEFORE ConstructRuntime (:159), and

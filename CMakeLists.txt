@@ -240,6 +240,30 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/achievements.cpp
     src/mc_engine/ui/kerning.cpp
 )
+if(NOT WIN32)
+    # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
+    # drive it) is Windows-only; Linux renders through Plume. The guest-side
+    # files Plume shares (native_gfx/guest, nocp, vertex_declaration, ...) stay,
+    # with their DXGI enums coming from src/compat/linux.
+    set(_larecomp_win_only
+        src/native_gfx/native_gfx.cpp
+        src/native_gfx/geometry.cpp
+        src/native_gfx/telemetry.cpp
+        src/native_gfx/guest/sampler_state.cpp
+        src/mc_engine/adaptive_triggers.cpp)
+    foreach(_f IN LISTS LARECOMP_SOURCES)
+        if(_f MATCHES "^src/native_gfx/d3d12/")
+            list(APPEND _larecomp_win_only "${_f}")
+        endif()
+    endforeach()
+    list(REMOVE_ITEM LARECOMP_SOURCES ${_larecomp_win_only})
+    list(APPEND LARECOMP_SOURCES src/compat/linux/linux_stubs.cpp)
+    # The generated code and the SDK headers read and write guest memory through
+    # typed pointers; clang -O2/-O3 on Linux reorders those accesses (measured: an
+    # .fxc parsed to different bytes than on Windows). Aliasing off keeps them in order.
+    string(APPEND CMAKE_CXX_FLAGS " -fno-strict-aliasing")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/compat/linux)
+endif()
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
     # XEO3 Clang fork (this project's compiler cannot produce the calling
@@ -305,6 +329,13 @@ else()
     # TARGET_RUNTIME_DLLS does not see it.
     rexglue_setup_target(larecomp GPU_PLUGINS xenos)
 
+    if(NOT WIN32 AND NOT APPLE)
+        # The ISO installer and the save importer open GTK file dialogs.
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
+        target_link_libraries(larecomp PRIVATE PkgConfig::GTK3)
+    endif()
+
     # The Plume renderer, src/gpu.
     # Every backend the platform has is built in -- D3D12 and Vulkan on Windows,
     # Vulkan elsewhere -- and the SDK's graphics_backend cvar picks one at
@@ -314,13 +345,8 @@ else()
     # reblue ships (SDL3 Vulkan path, fill mode, R11G11B10/D24S8), plus the
     # teardown leak fixes; the host shaders are compiled by
     # the dxc of the submodule thirdparty/dxc-bin (renderbag, the revision reblue
-    # and reeot use). Off outside Windows until that path has been compiled.
-    if(WIN32)
-        set(_larecomp_gpu_default ON)
-    else()
-        set(_larecomp_gpu_default OFF)
-    endif()
-    option(LARECOMP_GPU "Build the Plume renderer (src/gpu)" ${_larecomp_gpu_default})
+    # and reeot use). On Linux it renders through Vulkan.
+    option(LARECOMP_GPU "Build the Plume renderer (src/gpu)" ON)
     if(LARECOMP_GPU)
         # Metal is not wired.
         if(WIN32)

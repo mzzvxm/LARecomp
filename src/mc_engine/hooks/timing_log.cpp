@@ -203,7 +203,11 @@ void RecordFrameTime() {
         std::filesystem::create_directories("logs", ec);
         std::time_t t = std::time(nullptr);
         std::tm tm{};
+#if defined(_WIN32)
         localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
         char name[160];
         std::snprintf(name, sizeof(name),
                       "logs/timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",

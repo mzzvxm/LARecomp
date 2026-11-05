@@ -10,7 +10,9 @@
 #include <rex/cvar.h>
 #include <rex/perf/counter.h>
 #include <rex/logging.h>
+#if defined(_WIN32)
 #include <rex/ui/d3d12/d3d12_provider.h>
+#endif
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/immediate_drawer.h>
 #include <rex/ui/overlay/debug_overlay.h>
@@ -74,7 +76,9 @@ namespace {
 // window and the overlays hold raw pointers into both for the life of the
 // process, and tearing them down in the right order at exit buys nothing on a
 // path that ends in _Exit.
+#if defined(_WIN32)
 std::unique_ptr<rex::ui::d3d12::D3D12Provider> g_provider;
+#endif
 std::unique_ptr<rex::ui::Presenter> g_presenter;
 
 // OnClosing is too late: the app listener can already have called _Exit.
@@ -122,7 +126,11 @@ const char* LastHookName() {
 
 uint64_t HookCallCount() { return g_hook_calls.load(std::memory_order_relaxed); }
 
+#if defined(_WIN32)
 rex::ui::d3d12::D3D12Provider* Provider() { return g_provider.get(); }
+#else
+rex::ui::d3d12::D3D12Provider* Provider() { return nullptr; }
+#endif
 rex::ui::Presenter* PresenterPtr() { return g_presenter.get(); }
 
 void NoteFrameEnd() { g_frame_ends.fetch_add(1, std::memory_order_relaxed); }
@@ -162,6 +170,18 @@ rex::ui::FrameStats GuestFrameStats() {
 uint64_t FrameEndCount() { return g_frame_ends.load(std::memory_order_relaxed); }
 uint64_t SwapCount() { return g_swaps.load(std::memory_order_relaxed); }
 
+#if !defined(_WIN32)
+// No D3D12 provider here: Plume supplies the overlay drawer and owns the window.
+std::unique_ptr<rex::ui::ImmediateDrawer> CreateImmediateDrawer() { return nullptr; }
+
+bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer*,
+                        rex::ui::ImmediateDrawer*) {
+  if (window) {
+    window->AddListener(&g_pipeline_close_listener);
+  }
+  return true;
+}
+#else
 std::unique_ptr<rex::ui::ImmediateDrawer> CreateImmediateDrawer() {
   if (!g_provider) {
     g_provider = rex::ui::d3d12::D3D12Provider::Create();
@@ -208,6 +228,8 @@ bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer* imgui_dra
   REXLOG_INFO("[nocp] presentation attached with no emulated GPU in the process");
   return true;
 }
+
+#endif  // _WIN32
 
 bool InstallGuestGpu() {
   // Only now, with no graphics system to have claimed it, can the guest's GPU
