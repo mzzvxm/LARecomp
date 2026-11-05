@@ -2,6 +2,7 @@
 // its half (backend_d3d12.cpp, backend_vulkan.cpp). See backend.h.
 
 #include "backend.h"
+#include "gpu.h"
 
 #include <rex/logging.h>
 
@@ -105,6 +106,11 @@ Backend ChooseAutoBackend(const std::string& preferred_adapter, std::string& ada
   (void)preferred_adapter;
   return kDefaultBackend;
 #endif
+}
+
+bool AutoBackendIsVulkan(const std::string& preferred_adapter) {
+  std::string adapter;
+  return ChooseAutoBackend(preferred_adapter, adapter) == Backend::kVulkan;
 }
 
 namespace backend {

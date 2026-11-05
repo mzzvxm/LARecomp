@@ -21,7 +21,6 @@
 #include "native_gfx/d3d12/swapchain.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
-#include "gpu/backend.h"
 #endif
 
 REXCVAR_DECLARE(bool, mcla_native_gfx);
@@ -338,9 +337,7 @@ class LarecompApp : public rex::ReXApp {
       backend = asked;
 #if defined(LARECOMP_HAS_GPU)
     } else if (asked.empty() || asked == "auto") {
-      std::string adapter;
-      backend = mcla::gpu::ChooseAutoBackend(rex::cvar::GetFlagByName("mcla_gpu_adapter"),
-                                             adapter) == mcla::gpu::Backend::kVulkan
+      backend = mcla::gpu::AutoBackendIsVulkan(rex::cvar::GetFlagByName("mcla_gpu_adapter"))
                     ? "vulkan"
                     : "d3d12";
 #endif
