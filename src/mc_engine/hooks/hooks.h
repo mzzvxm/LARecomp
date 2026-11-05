@@ -128,6 +128,8 @@ void MCLA_DriverAnimName(PPCRegister& r1);
 // decoder ate and produced, which is the only evidence a repacked resource that
 // never arrives leaves behind.
 void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4);
+void MCLA_StreamBufferProbe(PPCRegister& r3);
+void MCLA_StartInputProbe();
 
 // datResource's fixup error. r3 is the resource descriptor, r4 the message and
 // r5 the address that fit no segment. Dumps the segment table, which names the

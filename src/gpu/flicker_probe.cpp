@@ -3,6 +3,7 @@
 #include "flicker_probe.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -30,6 +31,13 @@ REXCVAR_DEFINE_UINT32(
     "With mcla_gpu_flicker_probe: how many flicker events also write the frame before, the "
     "first frame of the blip and the frame after as mcla_flicker_<event>_<frame>_<what>.tga "
     "next to the executable (3.7 MB each at 1280x720).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_flicker_probe_shots, "", "MCLA/GPU",
+    "With mcla_gpu_flicker_probe: a comma-separated list of guest frame numbers, each written "
+    "as mcla_flicker_000_<frame>_shot.tga next to the executable whether or not it flickered. "
+    "For comparing what two platforms or builds put in the window at the same frame.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
@@ -211,6 +219,21 @@ void FlickerProbe::Process(uint32_t readback, uint64_t frame, uint64_t generatio
   f.number = frame;
   f.valid = true;
   ++stats_.frames;
+  static const std::vector<uint64_t> shots = [] {
+    std::vector<uint64_t> out;
+    const std::string list = REXCVAR_GET(mcla_gpu_flicker_probe_shots);
+    size_t at = 0;
+    while (at < list.size()) {
+      size_t end = list.find(',', at);
+      if (end == std::string::npos) end = list.size();
+      if (end > at) out.push_back(std::strtoull(list.substr(at, end - at).c_str(), nullptr, 10));
+      at = end + 1;
+    }
+    return out;
+  }();
+  if (std::find(shots.begin(), shots.end(), frame) != shots.end()) {
+    Dump(0, frame, "shot", f);
+  }
   Detect(frame);
 }
 

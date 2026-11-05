@@ -13,6 +13,9 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <set>
+#include <sstream>
+#include <string>
 
 #include <rex/cvar.h>
 #include <rex/hash.h>
@@ -33,6 +36,34 @@
 #endif
 #include <windows.h>
 #endif
+
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_skip_shaders, "", "MCLA/GPU",
+    "Workaround for a driver that dies compiling one particular shader combination: a "
+    "comma-separated list of shader identities (the 16 hex digits of the pack's keys). A "
+    "guest pipeline that uses any of them is not built, and its draws are treated like those "
+    "of a pipeline that failed. Measured on Mesa's dzn (Vulkan over D3D12 in WSL2), which "
+    "overflows its stack in vkCreateGraphicsPipelines for the pair b000e9d48f010bd8 + "
+    "68387d4a0b431769 (each alone is fine).")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+namespace {
+// True when the pipeline uses a shader named by mcla_gpu_skip_shaders.
+bool SkipShaders(uint64_t vs, uint64_t ps) {
+  static const std::set<uint64_t> keys = [] {
+    std::set<uint64_t> out;
+    std::stringstream list(REXCVAR_GET(mcla_gpu_skip_shaders));
+    std::string item;
+    while (std::getline(list, item, ',')) {
+      if (!item.empty()) {
+        out.insert(std::strtoull(item.c_str(), nullptr, 16));
+      }
+    }
+    return out;
+  }();
+  return !keys.empty() && (keys.count(vs) != 0 || (ps != 0 && keys.count(ps) != 0));
+}
+}  // namespace
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_pipeline_cache, true, "MCLA/GPU",
@@ -478,7 +509,9 @@ void Pipelines::BuildPrecached(Precached& p) {
   std::unique_ptr<plume::RenderPipeline> pipeline;
   if (BuildDesc(p.key, shaders_->Find(p.key.vs), p.key.ps ? shaders_->Find(p.key.ps) : nullptr,
                 *p.layout, desc, &vs_result, &ps_result)) {
-    pipeline = device_->CreateGraphicsPipeline(desc, "precached guest pipeline");
+    if (!SkipShaders(p.key.vs, p.key.ps)) {
+      pipeline = device_->CreateGraphicsPipeline(desc, "precached guest pipeline");
+    }
   }
   const bool made = pipeline != nullptr;
   {
@@ -502,7 +535,9 @@ void Pipelines::BuildRequest(Request& r) {
   ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
   std::unique_ptr<plume::RenderPipeline> pipeline;
   if (BuildDesc(r.key, r.vs, r.ps, *r.layout, desc, &vs_result, &ps_result)) {
-    pipeline = device_->CreateGraphicsPipeline(desc, "background guest pipeline");
+    if (!SkipShaders(r.key.vs, r.key.ps)) {
+      pipeline = device_->CreateGraphicsPipeline(desc, "background guest pipeline");
+    }
   }
   const bool made = pipeline != nullptr;
   {
@@ -1292,7 +1327,9 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   std::unique_ptr<plume::RenderPipeline> pipeline;
   if (BuildDesc(key, inputs.vs, key.ps != 0 ? inputs.ps : nullptr, layout, desc, &vs_result,
                 &ps_result)) {
-    pipeline = device_->CreateGraphicsPipeline(desc, "guest pipeline");
+    if (!SkipShaders(key.vs, key.ps)) {
+      pipeline = device_->CreateGraphicsPipeline(desc, "guest pipeline");
+    }
   }
   stats_.create_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                    std::chrono::steady_clock::now() - t0)

@@ -26429,6 +26429,13 @@ name = "MCLA_TuneFieldProbe"
 address = 0x824DF200
 registers = ["r3", "r4", "r5", "r6"]
 
+# sub_821BE250 entry, rage's stream read. Diagnostic, gated on the fxc_probe cvar (off by default):
+# writes the effect loader's stream buffer to disk, to compare it across platforms.
+[[midasm_hook]]
+name = "MCLA_StreamBufferProbe"
+address = 0x821BE250
+registers = ["r3"]
+
 # One instruction after `bl sub_821BCE68` in sub_821E2940 (pgStreamer::Open, the
 # call that turns a resource path into a handle). The resolved path is still the
 # stack buffer at r1+0x60 and r3 is the handle, -1 when the archive did not have

@@ -5,6 +5,8 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
+#include <rex/input/input_system.h>
+#include <thread>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -693,6 +695,101 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {
         if (last != 0) LzxDump(now, last);
     }
 }
+
+REXCVAR_DEFINE_BOOL(fxc_probe, false, "MCLA/Diag",
+    "Write the bytes of the two static rage streams' buffer (the effect loader's, at "
+    "0x82860C18 and 0x82860C40) to fxc_probe_<n>_<stream>_<count>.bin in the working "
+    "directory, once per distinct content, for the first two hundred.\n"
+    "\n"
+    "Compares what the effect (.fxc) parser is handed on two platforms: the same file should "
+    "give the same bytes. Observer only; off by default.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// sub_821BE250 entry (the rage stream's read): r3 is the stream. The buffer is the
+// pointer at +8, +24 is the read position and +28 the number of bytes the last refill put
+// in it, so a non-zero count means the buffer holds a file's bytes.
+void MCLA_StreamBufferProbe(PPCRegister& r3) {
+    if (!REXCVAR_GET(fxc_probe)) return;
+    const uint32_t stream = r3.u32;
+    if (stream != 0x82860C18u && stream != 0x82860C40u) return;
+
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    auto word = [&](uint32_t offset) {
+        const uint8_t* p = base + stream + offset;
+        return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) |
+               uint32_t(p[3]);
+    };
+    const uint32_t buffer = word(8);
+    const uint32_t count = word(28);
+    if (count == 0 || count > 0x10000u || buffer < 0x10000u || buffer >= 0xC0000000u) return;
+
+    uint64_t hash = 1469598103934665603ull;
+    for (uint32_t i = 0; i < count; ++i) hash = (hash ^ base[buffer + i]) * 1099511628211ull;
+    hash ^= uint64_t(stream) << 1;
+
+    static std::mutex mutex;
+    static std::set<uint64_t> seen;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (seen.size() >= 200 || !seen.insert(hash).second) return;
+
+    char name[96];
+    std::snprintf(name, sizeof name, "fxc_probe_%zu_%08X_%u.bin", seen.size(), stream, count);
+    if (FILE* f = std::fopen(name, "wb")) {
+        std::fwrite(base + buffer, 1, count, f);
+        std::fclose(f);
+    }
+    LARECOMP_APP_INFO("[fxc-probe] {} <- stream {:#010x} buffer {:#010x}, {} bytes, hash {:016x}",
+                      name, stream, buffer, count, hash);
+}
+
+REXCVAR_DEFINE_BOOL(input_probe, false, "MCLA/Diag",
+    "Log what the SDK's input system hands the game for users 0 to 3 whenever it changes: "
+    "the status, the packet number, the buttons and the sticks. Off by default. Polling it "
+    "pumps the same input path the game uses, so it can only make a pad look better, never worse; "
+    "if a pad shows nothing here, the game gets nothing either.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// Started once the runtime exists. One thread asks the InputSystem for every user's state twice a second.
+void MCLA_StartInputProbe() {
+    if (!REXCVAR_GET(input_probe)) return;
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    std::thread([] {
+        struct Seen {
+            uint32_t status = 0xFFFFFFFFu;
+            uint32_t packet = 0;
+            uint16_t buttons = 0xFFFFu;
+            bool any = false;
+        } seen[4];
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            auto* rt = rex::Runtime::instance();
+            auto* sys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+            if (!sys) continue;
+            for (uint32_t user = 0; user < 4; ++user) {
+                rex::input::X_INPUT_STATE state{};
+                const uint32_t status = uint32_t(sys->GetState(user, &state));
+                const uint16_t buttons = state.gamepad.buttons;
+                Seen& s = seen[user];
+                if (status != s.status || (status == 0 && (buttons != s.buttons || uint32_t(state.packet_number) != s.packet))) {
+                    if (status == 0 || s.any || user == 0) {
+                        LARECOMP_APP_INFO("[input-probe] user {}: status {:#x} packet {} buttons {:#06x} triggers {}/{} left stick {},{} right stick {},{}",
+                                          user, status, uint32_t(state.packet_number), buttons,
+                                          state.gamepad.left_trigger, state.gamepad.right_trigger,
+                                          int16_t(state.gamepad.thumb_lx), int16_t(state.gamepad.thumb_ly),
+                                          int16_t(state.gamepad.thumb_rx), int16_t(state.gamepad.thumb_ry));
+                    }
+                    s.status = status;
+                    s.buttons = buttons;
+                    s.packet = uint32_t(state.packet_number);
+                    s.any = s.any || status == 0;
+                }
+            }
+        }
+    }).detach();
+}
+
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
@@ -704,6 +801,8 @@ void MCLA_StreamOpenResult(PPCRegister& r1, PPCRegister& r3) {}
 void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
 void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3) {}
 void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4) {}
+void MCLA_StreamBufferProbe(PPCRegister& r3) {}
+void MCLA_StartInputProbe() {}
 void MCLA_ResourceFixupError(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {}
 void MCLA_ResourceSegments(PPCRegister& r31) {}
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
