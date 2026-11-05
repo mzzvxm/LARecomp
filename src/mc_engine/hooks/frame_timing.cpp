@@ -7,6 +7,7 @@
 #include <rex/cvar.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -248,9 +249,35 @@ static void EnforceFrameLimit() {
 
     if (now < next_us) {
         uint64_t remaining = next_us - now;
-        const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 1200 : 1500;
-        if (remaining > slack_us + 500) {
-            std::this_thread::sleep_for(std::chrono::microseconds(remaining - slack_us));
+#if defined(_WIN32)
+        // A high-resolution waitable timer (Windows 10 1803 and later) wakes a fraction of a
+        // millisecond after its time, where sleep_for, on the 1 ms system timer, can be 1.5 ms late.
+        // So it sleeps closer to the deadline and leaves a shorter spin (or yield) to finish on.
+        // How early it wakes adapts to the PC: the slack follows the lateness seen (a slowly
+        // decaying maximum, plus a margin), between 0.25 and 1.2 ms.
+        static thread_local HANDLE hr_timer = CreateWaitableTimerExW(
+            nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        static thread_local double hr_late_us = 500.0;
+        if (hr_timer) {
+            const uint64_t slack_us = std::clamp<uint64_t>(static_cast<uint64_t>(hr_late_us) + 150, 250, 1200);
+            if (remaining > slack_us + 100) {
+                const uint64_t target = next_us - slack_us;
+                LARGE_INTEGER due;
+                due.QuadPart = -static_cast<LONGLONG>((remaining - slack_us) * 10);  // 100 ns units, relative
+                if (SetWaitableTimerEx(hr_timer, &due, 0, nullptr, nullptr, nullptr, 0) &&
+                    WaitForSingleObject(hr_timer, 50) == WAIT_OBJECT_0) {
+                    const uint64_t woke = now_us();
+                    const double late = woke > target ? static_cast<double>(woke - target) : 0.0;
+                    hr_late_us = std::max(late, hr_late_us * 0.98);
+                }
+            }
+        } else
+#endif
+        {
+            const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 1200 : 1500;
+            if (remaining > slack_us + 500) {
+                std::this_thread::sleep_for(std::chrono::microseconds(remaining - slack_us));
+            }
         }
         // Sub-millisecond spin with YieldProcessor() (x86 PAUSE) to hit the exact
         // microsecond deadline. Replacing std::this_thread::yield() eliminates
