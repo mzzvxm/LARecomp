@@ -41,7 +41,7 @@ REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
 // Default to 60 FPS: with vsync=false for low input lag and fast pacing,
 // the precision frame limiter caps to 60 FPS out-of-the-box.
 REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
-    "Frame rate cap (0 = uncapped, 60 = 60 FPS, 120 = 120 FPS, 144 = 144 FPS).")
+    "Frame rate cap in FPS (0 = uncapped). The pause menu offers 30, 40, 45, 50, 60, 120 and 144.")
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
