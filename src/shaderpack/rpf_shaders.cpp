@@ -6,8 +6,8 @@
 #include <system_error>
 #include <utility>
 
-#include "larecomp_log.h"
 #include "mc_engine/modloader/rpf3.h"
+#include "shaderpack/log.h"
 
 namespace larecomp::shaderpack {
 
@@ -191,13 +191,13 @@ RpfShadersResult ReadRpfShadersFromArchive(const Rpf3Reader& archive, RpfShaders
 
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-  LARECOMP_APP_INFO("[shaderpack] Shaders folder of {}: {} files, {} bytes ({} stored, {} inflated), {:.2f} s",
-                    PathUtf8(archive.path()), result.files.size(), result.total_bytes,
-                    result.stored_count, result.deflated_count, seconds);
+  SHADERPACK_LOG_INFO("Shaders folder of {}: {} files, {} bytes ({} stored, {} inflated), {:.2f} s",
+                      PathUtf8(archive.path()), result.files.size(), result.total_bytes,
+                      result.stored_count, result.deflated_count, seconds);
   if (result.files.size() != kExpectedRpfShaderFiles) {
-    LARECOMP_APP_WARN("[shaderpack] the Shaders folder has {} files, the retail game has {}; "
-                      "carrying on, the shader contract does not depend on the count",
-                      result.files.size(), kExpectedRpfShaderFiles);
+    SHADERPACK_LOG_WARN("the Shaders folder has {} files, the retail game has {}; "
+                        "carrying on, the shader contract does not depend on the count",
+                        result.files.size(), kExpectedRpfShaderFiles);
   }
 
   out = std::move(result);
