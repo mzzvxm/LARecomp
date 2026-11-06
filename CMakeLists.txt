@@ -18,6 +18,26 @@ endif()
 
 include(generated/rexglue.cmake)
 
+if(MINGW)
+    # llvm-mingw (Clang with lld, libc++ and mingw-w64 on the UCRT): the build for a PC
+    # without Visual Studio. The SDK has to be built with the same toolchain (libc++ and the
+    # Microsoft STL do not mix). __try/__except (mc_engine/camera_look.cpp) needs
+    # -fms-extensions, and mingw-w64 assumes Windows 7 (_WIN32_WINNT 0x601) where the
+    # Windows SDK assumes the current Windows. Both as the SDK sets them for itself.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fms-extensions>)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+    # No -fasync-exceptions for the generated code: for a MinGW target the Clang driver drops
+    # it ("argument unused", on every file), and passed to the compiler itself it has crashed
+    # Clang in SimplifyCFG. A fault inside a guest __try scope is therefore not caught with
+    # this toolchain; the generated code of this game has no such scope. The sources carry
+    # the list as it was when the file was included, so it is set again.
+    list(REMOVE_ITEM REXGLUE_RECOMP_OPTIONS -fasync-exceptions)
+    if(REXGLUE_ENTRYPOINT_GENERATED_SOURCES)
+        set_source_files_properties(${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "${REXGLUE_RECOMP_OPTIONS}")
+    endif()
+endif()
+
 # Sources
 # Monocypher (nick keys and tickets, thirdparty/monocypher) is C99 that also
 # compiles as C++; the project only enables CXX.
@@ -296,7 +316,10 @@ else()
         # understands them, so prefer it when it sits beside the clang in use.
         # Must be set before enable_language(RC), and it is cached - delete the
         # build directory if switching toolchains.
-        if(NOT CMAKE_RC_COMPILER)
+        # Not with MinGW: there CMake drives windres (llvm-windres in llvm-mingw, which
+        # preprocesses with Clang and calls llvm-rc itself), and llvm-rc alone does not
+        # take windres' command line (-O coff).
+        if(NOT CMAKE_RC_COMPILER AND NOT MINGW)
             get_filename_component(_larecomp_llvm_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
             find_program(LLVM_RC_EXECUTABLE NAMES llvm-rc HINTS "${_larecomp_llvm_bin}")
             if(LLVM_RC_EXECUTABLE)
@@ -452,6 +475,43 @@ else()
             # Rate My Ride client sockets (mc_engine/online/rate_my_ride)
             ws2_32
         )
+        if(MINGW)
+            # What the sources ask for with #pragma comment(lib, ...) (crash_handler.cpp,
+            # guest_profiler.cpp, adaptive_triggers.cpp, identity_store.cpp, identity_ui.cpp),
+            # which Clang for MinGW does not turn into a link request, and what MSVC's
+            # default libraries cover (the ones llvm-mingw's driver does not: winmm for
+            # timeBeginPeriod, dxguid for the DirectInput GUID_* of the wheel code, ntdll).
+            # advapi32, shell32, user32 and kernel32 are the driver's own defaults.
+            target_link_libraries(larecomp
+                PRIVATE
+                dbghelp
+                setupapi
+                hid
+                shlwapi
+                crypt32
+                comdlg32
+                winmm
+                dxguid
+                ntdll
+                uuid
+            )
+            # The line tables of the generated code (-gline-tables-only, from
+            # generated/rexglue.cmake) are 37 MB of the executable: split into
+            # larecomp.exe.debug beside it, as the MCLA fork does for mcla.exe.
+            # Nothing reads them at run time; llvm-symbolizer does, with the exe's address.
+            get_filename_component(_larecomp_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+            find_program(LARECOMP_OBJCOPY NAMES llvm-objcopy objcopy HINTS "${_larecomp_compiler_dir}")
+            if(LARECOMP_OBJCOPY)
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND "${LARECOMP_OBJCOPY}" --only-keep-debug "$<TARGET_FILE:larecomp>" "$<TARGET_FILE:larecomp>.debug"
+                    COMMAND "${LARECOMP_OBJCOPY}" --strip-all "$<TARGET_FILE:larecomp>"
+                    COMMAND "${LARECOMP_OBJCOPY}" "--add-gnu-debuglink=$<TARGET_FILE:larecomp>.debug" "$<TARGET_FILE:larecomp>"
+                    COMMENT "Splitting the debug information off larecomp.exe"
+                    VERBATIM)
+            else()
+                message(WARNING "llvm-objcopy was not found: larecomp.exe keeps its debug information")
+            endif()
+        endif()
     endif()
 
     # The shared Rate My Ride server players reach on TCP 31002. Standalone: the

@@ -37,6 +37,12 @@
 
 #include "larecomp_log.h"
 
+#if defined(__MINGW32__)
+// The C runtime's own flag for its software fma. The Windows SDK's corecrt_math.h declares it;
+// mingw-w64's math.h does not (ucrtbase.dll exports it either way).
+extern "C" int _get_FMA3_enable(void);
+#endif
+
 REXCVAR_DEFINE_BOOL(fma_float_fast, true, "MCLA/Performance",
     "On a CPU without FMA3 (Intel before Haswell, AMD before Piledriver), fused multiply-adds "
     "whose operands are single-precision values are computed with a double multiply and add, "
