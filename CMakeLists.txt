@@ -377,11 +377,16 @@ else()
         endif()
         # AMD's FidelityFX SDK (2.4.0 or later, the folder that holds Kits/): the headers the temporal
         # upscaler's backend (src/gpu/temporal_ffx.h) is compiled with, and the signed DLLs and the
-        # licence copied next to the exe below. Unset (the default), the backend is not compiled and
-        # nothing of it exists. Read-only: nothing from the SDK is built or run here. How the DLLs
-        # ship for real is decided with the maintainer.
+        # licence copied next to the exe below. By default the pinned 2.4.0 files are fetched into the
+        # build folder and checked (cmake/FetchFidelityFX.cmake); LARECOMP_FFX_SDK_DIR names a local
+        # SDK instead, LARECOMP_FFX_FETCH=OFF with it unset builds without FSR. Read-only: nothing
+        # from the SDK is built or run here.
         set(LARECOMP_FFX_SDK_DIR "" CACHE PATH
             "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR")
+        option(LARECOMP_FFX_FETCH "Fetch the pinned FidelityFX SDK 2.4.0 files when LARECOMP_FFX_SDK_DIR is unset" ON)
+        if(NOT LARECOMP_FFX_SDK_DIR AND LARECOMP_FFX_FETCH AND WIN32)
+            include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchFidelityFX.cmake")
+        endif()
         set(LARECOMP_FFX_KIT "")
         if(LARECOMP_FFX_SDK_DIR AND WIN32)
             foreach(_larecomp_ffx_candidate "${LARECOMP_FFX_SDK_DIR}/Kits/FidelityFX"
