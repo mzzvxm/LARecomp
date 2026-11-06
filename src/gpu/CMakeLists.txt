@@ -22,6 +22,7 @@ add_library(larecomp_gpu OBJECT
     edram.cpp
     flicker_probe.cpp
     format.cpp
+    frame_layers.cpp
     frame_trace.cpp
     frame.cpp
     geometry.cpp
@@ -30,6 +31,7 @@ add_library(larecomp_gpu OBJECT
     guest_capture.cpp
     guest_memory.cpp
     hdr.cpp
+    hdr_scene.cpp
     input_layout.cpp
     layout.cpp
     memory_census.cpp
@@ -210,6 +212,10 @@ larecomp_gpu_host_shader(present_stretch_hdr_ps ps_6_0 SOURCE present_ps
 larecomp_gpu_host_shader(fsr_rcas_hdr_ps ps_6_0 SOURCE fsr_rcas_ps HLSL_VERSION 2018
                          DEFINES RCAS_HDR=1)
 larecomp_gpu_host_shader(overlay_hdr_ps ps_6_0 SOURCE overlay_ps DEFINES OVERLAY_HDR=1)
+# The UI layer split (frame_layers.h, hdr_scene.h): the scene put back under the UI in the guest's
+# target, and the HDR present's compose of the two layers.
+larecomp_gpu_host_shader(layers_restore_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=0)
+larecomp_gpu_host_shader(hdr_compose_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=1)
 # M6c.2/M6c.3: the scene's anti-aliasing before the UI -- the copy
 # (luma in alpha), FXAA 3.11, SMAA 1x's three passes.
 larecomp_gpu_host_shader(post_luma_ps ps_6_0)

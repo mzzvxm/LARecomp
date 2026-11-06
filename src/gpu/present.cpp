@@ -24,6 +24,7 @@
 #include "device.h"
 #include "frame.h"
 #include "host_passes.h"
+#include "hdr_scene.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "textures.h"
@@ -311,6 +312,14 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
   source_width_ = bound.scale.Edge(fetch.key.width);
   source_height_ = bound.scale.Edge(fetch.key.height);
   source_ready_ = true;
+  // A frame that kept its UI as a layer (HDR10): the scene and the UI composed in the game's
+  // code values, in float, where the front buffer would be read.
+  extended_ = false;
+  if (hdr_scene_ != nullptr &&
+      hdr_scene_->Compose(list, fetch.key, source_width_, source_height_)) {
+    source_slot_ = hdr_scene_->slot();
+    extended_ = true;
+  }
   fit_ = FitOf(source_width_, source_height_, width, height);
   if (REXCVAR_GET(mcla_gpu_fsr)) {
     PrepareFsr(list, fit_);
@@ -349,6 +358,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   push.source_height = source_height_;
   push.scale_x = 1.0f;
   push.scale_y = 1.0f;
+  push.hdr_flags = extended_ ? kHdrFlagExtendedCodes : 0u;
   passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
   route_ = Route::kRamped;
   ++stats_.ramped;
@@ -455,7 +465,7 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_white = hdr_levels_.white;
   push.hdr_peak = hdr_levels_.peak;
   push.hdr_knee = hdr_levels_.knee;
-  push.hdr_flags = hdr_levels_.flags;
+  push.hdr_flags = hdr_levels_.flags | (extended_ ? kHdrFlagExtendedCodes : 0u);
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
@@ -521,6 +531,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     push.source_height = source_height_;
     push.scale_x = 1.0f;
     push.scale_y = 1.0f;
+    push.hdr_flags = extended_ ? kHdrFlagExtendedCodes : 0u;
     passes_->DrawInto(list, chain_[0], ramp_pipeline_.get(), &push, sizeof(push));
   }
   for (uint32_t i = 1; i <= passes; ++i) {

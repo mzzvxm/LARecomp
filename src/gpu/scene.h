@@ -63,6 +63,7 @@
 #include "constants.h"
 #include "draw_census.h"
 #include "edram.h"
+#include "frame_layers.h"
 #include "geometry.h"
 #include "input_layout.h"
 #include "pipelines.h"
@@ -95,6 +96,8 @@ class Scene {
                   GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                   ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap,
                   PassTiming& pass_timing, PostAa& post);
+  // The UI layer split (frame_layers.h); not owned. Null or inactive: no draw is touched.
+  void SetFrameLayers(FrameLayers* layers) { layers_ = layers; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -169,6 +172,9 @@ class Scene {
     UploadSpan ps_constants;
     UploadSpan shared_constants;
     Scale scale;  // the resolution scale its targets are (or are made) at
+    // The UI layer split: what OnDraw does before recording the draw (the key's alpha blend was
+    // already changed in Prepare when the draw joins the layer).
+    FrameLayers::DrawAction ui_layer = FrameLayers::DrawAction::kNone;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -226,6 +232,9 @@ class Scene {
   EdramNoteKey last_edram_note_;
   // Binds `framebuffer` (closing the open render pass first) unless bound.
   void BindFramebuffer(plume::RenderCommandList* list, plume::RenderFramebuffer* framebuffer);
+  // The UI layer split starts or ends with a draw (FrameLayers::Start/End): copies, clears and
+  // draws into the UI target, outside a render pass; the draw binds everything again after.
+  void UiLayersBeforeDraw(FrameLayers::DrawAction action, plume::RenderCommandList* list);
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
@@ -382,6 +391,7 @@ class Scene {
   uint32_t last_color0_width_ = 0;
   uint32_t last_color0_height_ = 0;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
+  FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
 
   // The last draw's lookups: consecutive draws mostly name
   // the same targets, shaders and pipeline. Each memo holds only while what it

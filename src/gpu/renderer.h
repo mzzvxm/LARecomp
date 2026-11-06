@@ -56,9 +56,11 @@
 #include "edram.h"
 #include "flicker_probe.h"
 #include "frame.h"
+#include "frame_layers.h"
 #include "frame_trace.h"
 #include "geometry.h"
 #include "guest_memory.h"
+#include "hdr_scene.h"
 #include "host_passes.h"
 #include "layout.h"
 #include "memory_census.h"
@@ -195,6 +197,8 @@ class Renderer final : public RenderThread::Executor {
   SwapChain swap_chain_;
   PresentPass present_;     // the guest's front buffer on the window
   PostAa post_;             // the scene's anti-aliasing before the UI
+  FrameLayers layers_;      // the frame's scene and UI as two layers (HDR output, frame generation)
+  HdrScene hdr_scene_;      // HDR10: the two layers composed at the present
   FlickerProbe flicker_probe_;  // diagnostic, mcla_gpu_flicker_probe
   OverlayRenderer overlay_;
   GpuTiming timing_;

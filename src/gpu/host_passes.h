@@ -87,6 +87,12 @@ class HostPasses {
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
                                                         plume::RenderFormat format,
                                                         uint8_t write_mask, const char* name);
+  // The same with the target's blend as given (the UI layer split's put-back draws the scene
+  // under the UI with INV_DEST_ALPHA / ONE, frame_layers.h).
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
+                                                        plume::RenderFormat format,
+                                                        const plume::RenderBlendDesc& blend,
+                                                        const char* name);
   // The same with another pipeline layout, for a pass with resources of its
   // own (resolve_memory.h's decode). The full-screen vertex shader reads none.
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,

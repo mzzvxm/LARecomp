@@ -38,7 +38,10 @@
 // RCAS's last pass -- are the variants whose last step is hlsl/hdr_output.hlsli (the SDR code
 // values decoded, placed at paper white, rolled off, PQ encoded). The table, EASU and the
 // intermediates stay SDR code values, so the picture is mixed and sharpened as it is in SDR and
-// DISPLAY GAMMA means the same.
+// DISPLAY GAMMA means the same. A guest frame that kept its UI as a layer (frame_layers.h) is read
+// from the float image HdrScene composed (hdr_scene.h) instead of the front buffer: its code values
+// may exceed 1, so the table is read as before up to 1 and goes on above 1 by the slope of its last
+// step (kHdrFlagExtendedCodes); FSR1's passes read that image in float16.
 //
 // Threading: render thread only, after Initialize.
 // ===========================================================================
@@ -60,6 +63,7 @@ namespace mcla::gpu {
 class BindlessHeap;
 class Device;
 class FrameRing;
+class HdrScene;
 class PassTiming;
 class TextureCache;
 class UploadRing;
@@ -85,6 +89,10 @@ class PresentPass {
 
   // HDR10 only: the levels Draw puts in its constants, each frame before it.
   void SetHdrLevels(const HdrLevels& levels) { hdr_levels_ = levels; }
+  // HDR10 only: where Prepare takes the frame from when the guest frame kept its UI as a layer
+  // (hdr_scene.h) -- the float image of the scene and the UI composed -- instead of the front
+  // buffer. Not owned; null: the front buffer always.
+  void SetHdrScene(HdrScene* scene) { hdr_scene_ = scene; }
 
   // Outside any render pass: binds the front buffer (its upload, if it comes
   // from memory) and writes the table when it changed, into `list`; with FSR1
@@ -213,6 +221,9 @@ class PresentPass {
   HostImage ramped_;
   bool hdr_ = false;    // the back buffer is HDR10
   HdrLevels hdr_levels_;
+  HdrScene* hdr_scene_ = nullptr;
+  // Prepare bound the HdrScene's image: its codes may exceed 1 (kHdrFlagExtendedCodes).
+  bool extended_ = false;
   Route route_ = Route::kBilinear;
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;
