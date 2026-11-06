@@ -4,6 +4,7 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -125,6 +126,11 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
   g_window_size.store(uint64_t(width) << 32 | height, std::memory_order_relaxed);
 }
 
+// The folder the app wants the shader packs in (gpu.h SetShaderPackFolder); empty: the default.
+std::filesystem::path g_shader_pack_folder;
+// The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
+std::function<bool()> g_shader_pack_gate;
+
 }  // namespace
 
 namespace mcla::gpu {
@@ -159,8 +165,25 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
             heap_.Initialize(device_, frames_) && guest_layout_.Initialize(device_, heap_) &&
             shaders_.Initialize(device_);
   if (ok) {
+    // A pack that is in place is attached now, as before the store could start without one;
+    // with none the store stays pending until AttachShaderPacks (the packs are built from the
+    // player's game files after the renderer, which draws the ISO wizard, is up). Until then a
+    // guest draw is skipped (Scene: kVsNotInPack, counted by the store too).
+    // Scene::CountSkip logs the first four draws skipped for want of a pack as errors, then counts
+    // them; the app attaches the packs before the guest starts, so none are skipped in its flow.
+    // The app may hold the attach back: packs whose stamp is stale are rebuilt first, and a pack
+    // that is mapped here could not be replaced.
+    if (!g_shader_pack_gate || g_shader_pack_gate()) {
+      shaders_.AttachFirst(ShaderStore::SearchFolders(g_shader_pack_folder));
+    } else {
+      REXLOG_INFO("[gpu] shader pack: not attached at startup; the app checks and, where needed, "
+                  "rebuilds it first");
+    }
     samplers_.Initialize(device_, heap_);
     pipelines_.Initialize(device_, guest_layout_, shaders_);
+    if (shaders_.attached()) {
+      OnShaderPackAttached();
+    }
     ok = upload_.Initialize(device_) &&
          geometry_.Initialize(device_, frames_, upload_, guest_memory_) &&
          // Before the EDRAM: the window's size can pick the render scale.
@@ -269,6 +292,31 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
               batch_draws_ ? "a batch every " + std::to_string(batch_draws_) + " draws"
                            : std::string("one submission per guest frame"),
               release_early_ ? "early" : "after the present");
+  return true;
+}
+
+void Renderer::OnShaderPackAttached() {
+  // HOOK(hdr): with feat/hdr-scene merged, the optional HDR variant pack is attached here, when
+  // HDR output is on (hdr::Wanted()): shaders_.LoadHdrVariants(&why) with the folder the main
+  // pack came from (shaders_.folder(), larecomp::shaderpack::kHdrPackFileName), logging "the HDR
+  // variants are not available" as that branch does. It changes entries (hdr_variant) and must
+  // run before StartPersistence: a record that names a variant is dropped while the variants are
+  // not loaded.
+  pipelines_.StartPersistence(shaders_);
+}
+
+bool Renderer::AttachShaderPacks(const std::filesystem::path& folder) {
+  if (shaders_.attached()) {
+    return true;
+  }
+  if (!initialized_) {
+    REXLOG_ERROR("[gpu] shader pack: cannot attach, the renderer is not running");
+    return false;
+  }
+  if (!shaders_.Attach(ShaderStore::BuildFolder(folder))) {
+    return false;
+  }
+  OnShaderPackAttached();
   return true;
 }
 
@@ -1208,6 +1256,32 @@ void RequestTextureReload() {
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
   const uint64_t size = g_window_size.load(std::memory_order_relaxed);
   return ChooseRenderScale(asked, fsr, preset, uint32_t(size >> 32), uint32_t(size));
+}
+
+void SetShaderPackFolder(const std::filesystem::path& folder) {
+  g_shader_pack_folder = folder;
+}
+
+void SetShaderPackGate(std::function<bool()> gate) {
+  g_shader_pack_gate = std::move(gate);
+}
+
+std::filesystem::path ShaderPackFolder() {
+  return ShaderStore::BuildFolder(g_shader_pack_folder);
+}
+
+bool ShaderPacksAttached() {
+  Renderer* r = g_active.load(std::memory_order_acquire);
+  return r && r->shader_packs_attached();
+}
+
+bool AttachShaderPacks(const std::filesystem::path& folder) {
+  Renderer* r = g_active.load(std::memory_order_acquire);
+  if (!r) {
+    REXLOG_ERROR("[gpu] shader pack: cannot attach, the Plume renderer is not running");
+    return false;
+  }
+  return r->AttachShaderPacks(folder.empty() ? g_shader_pack_folder : folder);
 }
 
 void Shutdown() {

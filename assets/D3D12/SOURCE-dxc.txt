@@ -1,0 +1,7 @@
+DirectX Shader Compiler (dxcompiler.dll, dxil.dll) 1.9.2609.5 (release v1.9.2609)
+https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609
+Taken unchanged from dxc_2026_09_29.zip, bin/x64; Authenticode-signed by Microsoft Corporation.
+sha256 dxcompiler.dll 0689E2FEE0A1C9DF8662A59680469F24E2A3AD7CE6BBBCC9284F7A83172BFC59
+sha256 dxil.dll       64BE2368211D257A038A7D4EA6BB3E24C878EB8D588C7B8414FCCF759B69C2AC
+Licences: LICENSE-LLVM.txt and LICENCE-MIT.txt (dxcompiler.dll), LICENSE-MS.txt (dxil.dll).
+LARecomp uses them to build its shader packs from the player's game files on first start.

@@ -6,11 +6,13 @@ obj/
 generated/
 generated_xeo3/
 # tools/ is local scratch work, except the repository backup script,
-# which has to travel with the history it backs up, and the tool that builds
-# the starter pipeline list in assets/.
+# which has to travel with the history it backs up, the tool that builds
+# the starter pipeline list in assets/, and the shader pack builder's command
+# line (it builds from src/shaderpack).
 tools/*
 !tools/backup/
 !tools/pipelines/
+!tools/shaderpack_tool/
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle

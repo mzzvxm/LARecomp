@@ -29,7 +29,10 @@
 //
 // Call order (all on the UI thread except where noted):
 //   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer
+//   SetShaderPackFolder   from LarecompApp::OnConfigurePaths, before Startup (optional)
+//   SetShaderPackGate     from LarecompApp::SetupPresentation, before Startup (optional)
 //   Startup               from LarecompApp::SetupPresentation, after the base
+//   AttachShaderPacks     once the shader packs are built, when ShaderPacksAttached() is false
 //   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
 //                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
@@ -39,6 +42,8 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -68,6 +73,36 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
 // reason is logged and the app should not start.
 bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
              rex::ui::ImGuiDrawer* imgui_drawer);
+
+// --- the shader packs (shaders.h) ---------------------------------------------
+// The renderer starts without the shader packs when there are none yet: on a first run they are
+// built from the player's game files, which exist only after the ISO wizard, and the wizard is
+// drawn by this renderer. A pack that is in place when Startup runs is attached by Startup, as
+// always. Without one the renderer is pending: guest draws find no shaders and are skipped
+// (counted; nothing draws guest content). Once a build finished, AttachShaderPacks makes the
+// renderer usable, before the guest is launched.
+
+// UI thread, before Startup (LarecompApp::OnConfigurePaths): the folder the packs are looked for
+// in first and built into. Not called: <exe>/cache/shaders, else the local application data
+// folder. The cvar shader_pack_dir replaces both and then is the only folder. A pack that an
+// older install left in <exe>/assets is still read when the folder has none.
+void SetShaderPackFolder(const std::filesystem::path& folder);
+// UI thread, before Startup: lets the app decide whether Startup attaches the packs that are in
+// place. Startup asks once, after the device exists; false leaves the renderer pending. The app
+// does that for packs its stamp says are stale: they are rebuilt, and a pack the renderer has
+// mapped could not be replaced. Not set: whatever pack is valid is attached, as before.
+void SetShaderPackGate(std::function<bool()> gate);
+// Where a build of the packs should write: shader_pack_dir, else the folder from
+// SetShaderPackFolder, else the default (made, and tried with a real file). Any thread.
+std::filesystem::path ShaderPackFolder();
+// True once the main pack is attached (at Startup or by AttachShaderPacks); false with no
+// renderer. Any thread. A build is needed when this is false after Startup.
+bool ShaderPacksAttached();
+// UI thread, after Startup and a finished build, before the guest runs: attaches the packs in
+// `folder` (empty: ShaderPackFolder()) and starts the pipeline cache and precache against them.
+// True when attached (also when they were already). False, logged, when the pack is missing or
+// invalid there: the renderer stays pending.
+bool AttachShaderPacks(const std::filesystem::path& folder);
 
 // --- guest capture (hooks.cpp) ------------------------------------------------
 // Each hooked D3D call is bracketed: Before* runs before the original (it reads
