@@ -27,8 +27,9 @@
 // Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
 // the motion vectors from this system's own camera history; the backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
 //
-// Step 2 (temporal_backend.h, temporal_ffx.h) adds the backend: with an upscaler chosen
-// (mcla_gpu_upscaler: FSR 3.1, FSR 4) and able to run, the system is on and the frame goes
+// Step 2 (temporal_backend.h, temporal_ffx.h, temporal_dlss.h) adds the backends: with an upscaler
+// chosen (mcla_gpu_upscaler: FSR 3.1, FSR 4, DLSS) and able to run, the system is on and the frame
+// goes
 //
 //   BeginFrame   the chosen upscaler is asked for a context (render and output size of the last
 //                accepted frame: ratio 1, "Native AA"); the jitter is armed only while the context is
@@ -338,7 +339,15 @@ class TemporalSystem {
   PassTiming* pass_timing_ = nullptr;
   TextureCache* textures_ = nullptr;
   ResolveCache* resolve_ = nullptr;
-  std::unique_ptr<TemporalBackend> backend_;
+  // The upscaler backends (each null in a build without its runtime): FidelityFX for FSR 3.1 and
+  // FSR 4, Streamline for DLSS. Both are probed; the chosen one runs.
+  std::unique_ptr<TemporalBackend> ffx_;
+  std::unique_ptr<TemporalBackend> dlss_;
+  TemporalBackend* BackendFor(Upscaler upscaler) const {
+    return upscaler == Upscaler::kDlss ? dlss_.get()
+           : (upscaler == Upscaler::kFsr31 || upscaler == Upscaler::kFsr4) ? ffx_.get()
+                                                                           : nullptr;
+  }
   UpscalerSettings settings_;
   Upscaler effective_ = Upscaler::kOff;
   uint32_t choice_key_ = 0;

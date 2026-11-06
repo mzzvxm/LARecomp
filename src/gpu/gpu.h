@@ -238,29 +238,40 @@ bool AutoBackendIsVulkan(const std::string& preferred_adapter);
 
 // --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
 // What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
-// mcla_gpu_upscaler is off | fsr31 | fsr4; a choice this PC cannot run is treated as off and the
-// menu does not list it.
-enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4 };
-const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4
+// mcla_gpu_upscaler is off | fsr31 | fsr4 | dlss; a choice this PC cannot run is treated as off and
+// the menu does not list it (DLSS without its files is listed, greyed, as "needs setup").
+enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4, kDlss };  // stored in 2 bits in places
+const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4, DLSS
 
-// The vendors' quality modes: their names and the render size as a share of the output (FSR 3.1
-// and FSR 4; DLSS's table differs a little and arrives with it).
+// The vendors' quality modes: their names and the render size as a share of the output. FSR 3.1
+// and FSR 4 share one table (Native AA 100%, Quality 67%, Balanced 59%, Performance 50%, Ultra
+// Performance 33%); DLSS's differs in the names (DLAA for the first) and in Balanced (58%).
 enum class UpscaleMode : uint8_t { kNativeAa, kQuality, kBalanced, kPerformance, kUltraPerformance,
                                    kCount };
 struct ModeInfo {
-  const char* cvar;   // native_aa, quality, balanced, performance, ultra_performance
-  const char* name;   // NATIVE AA, QUALITY, ...
-  uint32_t percent;   // 100, 67, 59, 50, 33
-  double ratio;       // output size over render size: 1, 1.5, 1.7, 2, 3
+  const char* cvar;   // native_aa (dlaa for DLSS), quality, balanced, performance, ultra_performance
+  const char* name;   // NATIVE AA (DLAA), QUALITY, ...
+  uint32_t percent;   // 100, 67, 59 (DLSS 58), 50, 33
+  double ratio;       // output size over render size: 1, 1.5, 1.7 (DLSS 1.724), 2, 3
 };
-const ModeInfo& ModeInfoOf(UpscaleMode mode);
+// `upscaler` picks the table (FSR's for off, FSR 3.1 and FSR 4).
+const ModeInfo& ModeInfoOf(Upscaler upscaler, UpscaleMode mode);
+inline const ModeInfo& ModeInfoOf(UpscaleMode mode) { return ModeInfoOf(Upscaler::kFsr31, mode); }
 
-// Any thread. Written by the renderer's upscaler backend when its probe ends (and when something
-// fails) and by the temporal system as frames go.
+// Any thread. Written by the renderer's upscaler backends when their probes end (and when
+// something fails) and by the temporal system as frames go.
 struct UpscalerAvailability {
-  bool probed = false;  // the answer below is final
+  bool probed = false;  // the FidelityFX answers (fsr31, fsr4) are final
   bool fsr31 = false;   // can run on this PC: listed under Upscaling
   bool fsr4 = false;    // its provider really loads here
+  // NVIDIA DLSS (through Streamline). Three states of a card that could run it: the files are
+  // there and it can run (dlss); the files are missing or fail their signature check (needs setup:
+  // listed greyed, the game runs); it can run, but only from the next start (Vulkan: the device is
+  // made with Streamline's help, so the choice has to be there when the game starts).
+  bool dlss_probed = false;         // the DLSS answers are final
+  bool dlss = false;                // can run on this PC now: listed under Upscaling
+  bool dlss_needs_setup = false;    // an NVIDIA RTX card, files missing: listed greyed
+  bool dlss_after_restart = false;  // listed; runs from the next start
   Upscaler running = Upscaler::kOff;  // the one doing the work this moment
 };
 UpscalerAvailability GetUpscalerAvailability();
