@@ -123,9 +123,7 @@ class ShaderStore {
     kBadBlob,       // FNV or magic mismatch (logged once)
     kCreateFailed,  // the backend refused it (logged once)
     // No pack is attached yet (the store is pending).
-    // CHECK: FrameValidator::CheckShaderObject (validation.cpp) switches over this enum and has no
-    // case for it (a -Wswitch warning, no harm: its entries come from Find, which is null while
-    // pending, so it never sees this result). Add `case kNoPack: break;` there.
+    // The store is pending: no pack is attached yet, and the draw is skipped.
     kNoPack,
   };
   static const char* ResultName(ShaderResult result);

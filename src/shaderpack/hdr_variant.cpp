@@ -266,9 +266,9 @@ constexpr Target kVertexTargets[] = {
 static_assert(std::size(kVertexTargets) <= kHdrVertexShaders);
 
 // By identity first; when the game is not the retail one, by name, which has to be unique.
-// CHECK: the Python looks the name up among the executable's containers only; this looks in every
-// container read, so a second shader of the same name in the RPF makes the fallback fail where the
-// Python would not (the identity lookup, which decides on the retail game, is not affected).
+// The name fallback looks in every container read (the Python builder looked in the executable's
+// only), so a second shader of the same name in the RPF makes it fail where the Python would not.
+// The identity lookup comes first and is what decides on the retail game.
 const ShaderSource* ResolveTarget(const ContainerSet& set, const Target& target, ShaderStage stage,
                                   std::string* error) {
   if (const ShaderSource* by_key = set.Find(target.key); by_key && by_key->stage == stage) return by_key;

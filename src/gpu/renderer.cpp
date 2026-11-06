@@ -169,8 +169,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // with none the store stays pending until AttachShaderPacks (the packs are built from the
     // player's game files after the renderer, which draws the ISO wizard, is up). Until then a
     // guest draw is skipped (Scene: kVsNotInPack, counted by the store too).
-    // CHECK: Scene::CountSkip logs the first four such skips as errors (then counts them); nothing
-    // draws guest content before the attach in the planned flow, so this was read, not run.
+    // Scene::CountSkip logs the first four draws skipped for want of a pack as errors, then counts
+    // them; the app attaches the packs before the guest starts, so none are skipped in its flow.
     // The app may hold the attach back: packs whose stamp is stale are rebuilt first, and a pack
     // that is mapped here could not be replaced.
     if (!g_shader_pack_gate || g_shader_pack_gate()) {

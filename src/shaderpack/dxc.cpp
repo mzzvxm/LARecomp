@@ -26,10 +26,8 @@
 #ifndef DXC_API_IMPORT
 #define DXC_API_IMPORT
 #endif
-// CHECK: header search path. thirdparty/dxc-bin/inc (dxcapi.h, WinAdapter.h) is
-// expected on the include path of the shaderpack target; the SDK's copy under
-// thirdparty/dxc/include works too if it is the same dxcapi.h generation
-// (IDxcCompiler3, IDxcResult, IDxcVersionInfo3 are needed).
+// dxcapi.h (IDxcCompiler3, IDxcResult, IDxcVersionInfo3) comes from LAR-XenosRecomp's
+// thirdparty/dxc-bin/inc, on the shaderpack target's include path (CMakeLists.txt).
 #include <dxcapi.h>
 
 namespace larecomp::shaderpack {
@@ -234,9 +232,9 @@ void FreeCoString(char* text) {
 #endif
 }
 
-// CHECK: whether the compiler object answers QueryInterface for the three
-// IDxcVersionInfo flavours is from memory of dxcompiler's sources, not seen; every
-// step is optional and the result is only logged.
+// The compiler's version for the log and the stamp, e.g. "1.9 commit-count 5512 01b62ad4
+// [1.9.2609.5]": IDxcVersionInfo, IDxcVersionInfo2 (the commit) and IDxcVersionInfo3 (the
+// release), each optional.
 std::string ReadVersion(IDxcCompiler3* compiler) {
   std::string version;
   ComPtr<IDxcVersionInfo> info;

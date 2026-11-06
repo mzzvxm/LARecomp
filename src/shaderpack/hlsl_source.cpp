@@ -9,12 +9,10 @@
 
 namespace larecomp::shaderpack {
 
-// CHECK: the HLSL is the translator's output with its embedded shader_common.h, which is the bytes of
-// that file in the LAR-XenosRecomp checkout (feat/library-api marks it eol=crlf so a Windows checkout
-// and the devs' tree agree). A checkout with LF endings embeds different bytes: the HLSL differs
-// from the Python chain's tree, and with it every blob (the stamp's shader_common_xxh3 tells them apart).
-// CHECK: LARecomp links its own fmt (the SDK's 12.1.0), the translator was validated against its
-// submodule's 11.0.2; the HLSL has to come out byte for byte the same (compare_packs.py shows it).
+// The HLSL is the translator's output with its embedded shader_common.h: the bytes of that file in
+// the LAR-XenosRecomp checkout, which marks it eol=crlf so every checkout embeds the same text (the
+// stamp's shader_common_xxh3 records it). LARecomp links the SDK's fmt (12.1.0) and the translator's
+// own submodule has 11.0.2: the packs come out byte for byte the same with either.
 bool TranslateContainer(std::span<const uint8_t> container, TranslatedShader* out, std::string* error) {
   *out = TranslatedShader{};
   xenos_recomp::RecompiledShader result;

@@ -177,7 +177,7 @@ bool Stamp::Write(const std::filesystem::path& path, std::string* error) const {
 // Files
 // ---------------------------------------------------------------------------
 
-// CHECK: file_time_type's epoch and tick differ between standard libraries; the value is only ever
+// file_time_type's epoch and tick differ between standard libraries; the value is only ever
 // compared with one this same build wrote, so the stamp is not portable between builds that use
 // another library (the worst case is one rebuild: the game files are compared by content next).
 FileStat StatFile(const std::filesystem::path& path) {
