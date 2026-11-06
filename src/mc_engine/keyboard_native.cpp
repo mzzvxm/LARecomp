@@ -17,6 +17,7 @@
 
 #include <rex/cvar.h>
 #include <rex/ppc.h>
+#include <rex/ppc/function.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/xmemory.h>
@@ -1390,6 +1391,22 @@ void Hook_KeyboardFeed() {
         g_drive_sig_applied = DriveSignature();  // before: the rebuild below refreshes it again
         ReapplyDrive(b);
     }
+}
+
+// sub_822A4B80(controller): "SHIFT_UP and SHIFT_DOWN are both bound", read from the control map
+// of the controller's pad as entries 4 and 5 of {u32 type, u32 key}. The game tests only the TYPE
+// word, because a type of 0 never occurred on a bound action in its own maps; a keyboard (or
+// extra pad button) source is type 0 with the scancode in the key word, so a shift bound to one
+// read as "no shift controls" and the manual shift never fired. An entry counts as bound when
+// either word is set. Maps the game ships have a non-zero type wherever something is bound, so
+// they answer exactly as before.
+extern "C" REX_FUNC(rex_sub_822A4B80) {
+    const uint32_t pad = ReadGuestU32(base, ctx.r3.u32 + 4);
+    const uint32_t map = pad < 4 ? ReadGuestU32(base, 0x8287438C + 4 * pad) : 0;
+    bool both = map >= 0x10000;
+    for (uint32_t entry = 4; both && entry <= 5; ++entry)
+        both = ReadGuestU32(base, map + 8 * entry) != 0 || ReadGuestU32(base, map + 8 * entry + 4) != 0;
+    ctx.r3.u64 = both ? 1 : 0;
 }
 
 #else  // REXGLUE_HAS_XEO3_TARGET
