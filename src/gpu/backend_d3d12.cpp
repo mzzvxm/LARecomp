@@ -8,6 +8,8 @@
 
 #include "backend_impl.h"
 
+#include "temporal_dlss.h"
+
 #include <algorithm>
 #include <cstring>
 #include <format>
@@ -152,8 +154,35 @@ void ReleaseDebugDevice(void* debug_device) {
   static_cast<ID3D12DebugDevice*>(debug_device)->Release();
 }
 
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+namespace {
+
+// NVIDIA Streamline's wrapper of the swap chain (temporal_dlss.h): it can only go in once
+// Streamline has finished starting, seconds after the swap chain was made, so Plume asks before
+// every present. With nothing to do this is one atomic read.
+void UpgradeSwapChainAtPresent(void*, IDXGISwapChain1** swap_chain) {
+  if (!dlss::SwapChainUpgradePending() || !*swap_chain) {
+    return;
+  }
+  IDXGISwapChain1* native = *swap_chain;
+  void* wrapper = native;
+  if (dlss::UpgradeSwapChain(&wrapper)) {
+    *swap_chain = static_cast<IDXGISwapChain1*>(wrapper);
+    native->Release();  // the wrapper holds a reference of its own to it
+  }
+}
+
+}  // namespace
+#endif
+
 std::unique_ptr<plume::RenderInterface> CreateInterface() {
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+  plume::D3D12InterfaceHooks hooks;
+  hooks.upgradeSwapChainAtPresent = &UpgradeSwapChainAtPresent;
+  return plume::CreateD3D12Interface(hooks);
+#else
   return plume::CreateD3D12Interface();
+#endif
 }
 
 bool IsNullBacked(const plume::RenderTexture* texture) {

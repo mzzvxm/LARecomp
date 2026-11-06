@@ -116,6 +116,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_vulkan.h")
     endif()
     unset(_larecomp_plume_vulkan_header)
 endif()
+# Plume's hook that wraps the D3D12 swap chain at a present (upgradeSwapChainAtPresent, Plume's
+# feat/streamline-hooks): Streamline's wrapper can only go in once Streamline has started, long after
+# the swap chain exists. A Plume without it still runs DLSS on D3D12, but Streamline does not see
+# the presents (temporal_dlss.h).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_d3d12.h")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_d3d12.h" _larecomp_plume_d3d12_header)
+    if(_larecomp_plume_d3d12_header MATCHES "upgradeSwapChainAtPresent")
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_PLUME_D3D12_PRESENT_HOOK=1)
+    endif()
+    unset(_larecomp_plume_d3d12_header)
+endif()
 
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 # src/ too: the guest decoders the renderer reuses from the legacy runtime are
