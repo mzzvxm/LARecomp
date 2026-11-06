@@ -6,7 +6,9 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <iterator>
 #include <memory>
@@ -41,6 +43,8 @@ namespace {
 
 constexpr const char* kPrefix = "[gpu] dlss:";
 constexpr uint32_t kVendorNvidia = 0x10DE;
+// Warnings and errors of Streamline that go to the game's log (its information lines only go to its
+// own log file, sl.log).
 constexpr uint32_t kMaxSlLogLines = 200;
 // This project's own id for Streamline and NGX: DLSS needs no NVIDIA application id (the
 // engine is "custom"; NVIDIA RTX SDKs licence, Programming Guide 2.2 and 5.2.1).
@@ -78,6 +82,29 @@ std::wstring ExeDirectory() {
   std::wstring dir(path, length);
   const size_t slash = dir.find_last_of(L"\\/");
   return slash == std::wstring::npos ? std::wstring() : dir.substr(0, slash + 1);
+}
+
+// Where LARecomp keeps its logs: next to the file the logger writes (LARECOMP_LOG_FILE), else
+// ./logs (InitLarecompLogging; the same rule as LogFolder in bootprogress/larecomp_shader_build.cpp).
+// Streamline's full log (sl.log: every line it writes, with NGX's) goes into it, which is what a
+// bug report about DLSS needs. Empty, and no log file, when the folder cannot be had.
+std::wstring StreamlineLogFolder() {
+  std::error_code ec;
+  std::filesystem::path folder;
+  if (const char* file = std::getenv("LARECOMP_LOG_FILE"); file && *file) {
+    const std::filesystem::path parent = std::filesystem::path(file).parent_path();
+    if (!parent.empty()) {
+      folder = std::filesystem::absolute(parent, ec);
+    }
+  }
+  if (folder.empty()) {
+    folder = std::filesystem::absolute("logs", ec);
+  }
+  if (ec || folder.empty()) {
+    return {};
+  }
+  std::filesystem::create_directories(folder, ec);
+  return ec ? std::wstring() : folder.wstring();
 }
 
 bool FileExists(const std::wstring& path) {
@@ -151,20 +178,33 @@ std::string ResultText(sl::Result result) {
   return std::format("{}{}sl::Result {}", name, name[0] ? ", " : "", uint32_t(result));
 }
 
-// Streamline's own log lines, from whatever thread it is on.
+// Streamline's own log lines, from whatever thread it is on. Only its warnings and errors go to the
+// game's log (its information lines, a few hundred at every start, are all in sl.log: InitLocked
+// gives it the logs folder), and no more than kMaxSlLogLines of them, so that a message it repeats
+// cannot flood the log.
 void SlLog(sl::LogType type, const char* message) {
   static std::atomic<uint32_t> lines{0};
-  if (!message || lines.fetch_add(1, std::memory_order_relaxed) >= kMaxSlLogLines) {
+  if (!message || type == sl::LogType::eInfo) {
+    return;
+  }
+  const uint32_t count = lines.fetch_add(1, std::memory_order_relaxed);
+  if (count > kMaxSlLogLines) {
+    return;
+  }
+  if (count == kMaxSlLogLines) {
+    REXLOG_WARN("{} streamline: more than {} warnings and errors: the rest are only in its own log "
+                "(sl.log, in the logs folder)",
+                kPrefix, kMaxSlLogLines);
     return;
   }
   std::string text(message);
   while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
     text.pop_back();
   }
-  switch (type) {
-    case sl::LogType::eError: REXLOG_ERROR("{} streamline: {}", kPrefix, text); break;
-    case sl::LogType::eWarn: REXLOG_WARN("{} streamline: {}", kPrefix, text); break;
-    default: REXLOG_INFO("{} streamline: {}", kPrefix, text); break;
+  if (type == sl::LogType::eError) {
+    REXLOG_ERROR("{} streamline: {}", kPrefix, text);
+  } else {
+    REXLOG_WARN("{} streamline: {}", kPrefix, text);
   }
 }
 
@@ -267,6 +307,9 @@ bool LoadRuntimeLocked(Runtime& rt, std::string* why) {
 // needs none), the game's own device is given later. Not the defaults: no over-the-air plugin
 // updates and no downloaded plugins (the files shipped with the game are the ones that run), the
 // host (Plume's InvalidateAfterExternalWork) restores the command list state.
+//
+// Streamline's log: every line goes to sl.log in the logs folder (what a bug report needs); the
+// callback hands the game's log only the warnings and errors (SlLog).
 bool InitLocked(Runtime& rt, sl::RenderAPI api, std::string* why) {
   if (rt.initialized) {
     return true;
@@ -274,12 +317,13 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, std::string* why) {
   const std::wstring dir = ExeDirectory();
   const wchar_t* plugin_paths[] = {dir.c_str()};
   const sl::Feature features[] = {sl::kFeatureDLSS};
+  const std::wstring logs = StreamlineLogFolder();
   sl::Preferences pref;
   pref.showConsole = false;
   pref.logLevel = sl::LogLevel::eDefault;
   pref.pathsToPlugins = plugin_paths;
   pref.numPathsToPlugins = 1;
-  pref.pathToLogsAndData = nullptr;  // no log files: the lines go to the game's log
+  pref.pathToLogsAndData = logs.empty() ? nullptr : logs.c_str();
   pref.logMessageCallback = &SlLog;
   pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseManualHooking;
   pref.featuresToLoad = features;
@@ -288,6 +332,15 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, std::string* why) {
   pref.engineVersion = kEngineVersion;
   pref.projectId = kProjectId;
   pref.renderAPI = api;
+  if (logs.empty()) {
+    REXLOG_WARN("{} Streamline's own log file cannot be written (the logs folder is not usable): "
+                "only its warnings and errors reach this log",
+                kPrefix);
+  } else {
+    REXLOG_INFO("{} Streamline starts; its full log is {}\\sl.log (only its warnings and errors "
+                "come into this log)",
+                kPrefix, Utf8(logs.c_str()));
+  }
   const sl::Result result = rt.api.init(pref, sl::kSDKVersion);
   if (result != sl::Result::eOk) {
     *why = "slInit failed: " + ResultText(result);
@@ -880,6 +933,7 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   // direction or the scale is the first suspect.
   consts.mvecScale = sl::float2(in.motion_scale[0] / float(in.render_size[0]),
                                 in.motion_scale[1] / float(in.render_size[1]));
+  consts.cameraPinholeOffset = sl::float2(0.0f, 0.0f);  // the camera has none (not left invalid)
   consts.cameraPos = sl::float3(in.camera_position[0], in.camera_position[1], in.camera_position[2]);
   consts.cameraUp = sl::float3(in.camera_up[0], in.camera_up[1], in.camera_up[2]);
   consts.cameraRight = sl::float3(in.camera_right[0], in.camera_right[1], in.camera_right[2]);
