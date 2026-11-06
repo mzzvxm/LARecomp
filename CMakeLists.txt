@@ -73,6 +73,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/display_gamma.cpp
     src/mc_engine/hooks/camera.cpp
     src/mc_engine/hooks/vehicle.cpp
+    src/mc_engine/hooks/vehicle_records.cpp
     src/mc_engine/hooks/rubberband.cpp
     src/mc_engine/hooks/vinyl.cpp
     src/mc_engine/hooks/vinyl_shapes.cpp

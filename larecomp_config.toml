@@ -27282,3 +27282,157 @@ jump_address_on_true = 0x821449D0
 [[midasm_hook]]
 address = 0x823EC978
 name = "Hook_PumpWakeMixerDone"
+
+# The parts-bought table of the player profile (LocalOptions +246640, 77 records of 84 bytes,
+# one per roster vehicle) moved to a block sized to the roster: vehicle_records.cpp. Each hook
+# follows the instruction that forms the table's address - `ori rX,rY,0xC3xx` after `lis rY,3`
+# or `addi rX,rX,-0x3C90` after `addis rX,rP,4` - and moves that register to the new block.
+[[midasm_hook]]
+address = 0x8238ACB8
+name = "VehicleRecords_8238ACB8"
+registers = ["r6"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B40C
+name = "VehicleRecords_8238B40C"
+registers = ["r28"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C2C0
+name = "VehicleRecords_8238C2C0"
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C5D4
+name = "VehicleRecords_8238C5D4"
+registers = ["r21"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C5D8
+name = "VehicleRecords_8238C5D8"
+registers = ["r23"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C5FC
+name = "VehicleRecords_8238C5FC"
+registers = ["r25"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C7B4
+name = "VehicleRecords_8238C7B4"
+registers = ["r24"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269A2FC
+name = "VehicleRecords_8269A2FC"
+registers = ["r23"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269B724
+name = "VehicleRecords_8269B724"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269B810
+name = "VehicleRecords_8269B810"
+registers = ["r26"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269BE7C
+name = "VehicleRecords_8269BE7C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269DC84
+name = "VehicleRecords_8269DC84"
+registers = ["r27"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269E438
+name = "VehicleRecords_8269E438"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A7328
+name = "VehicleRecords_826A7328"
+registers = ["r22"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A96A8
+name = "VehicleRecords_826A96A8"
+registers = ["r27"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9964
+name = "VehicleRecords_826A9964"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9A30
+name = "VehicleRecords_826A9A30"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9B0C
+name = "VehicleRecords_826A9B0C"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9B84
+name = "VehicleRecords_826A9B84"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AA490
+name = "VehicleRecords_826AA490"
+registers = ["r28"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AEE00
+name = "VehicleRecords_826AEE00"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AEF3C
+name = "VehicleRecords_826AEF3C"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AF6F8
+name = "VehicleRecords_826AF6F8"
+registers = ["r5"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826B01B0
+name = "VehicleRecords_826B01B0"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8279ABF0
+name = "VehicleRecords_8279ABF0"
+registers = ["r8"]
+after_instruction = true
