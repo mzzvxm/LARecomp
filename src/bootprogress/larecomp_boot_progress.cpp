@@ -43,6 +43,7 @@ struct OverlayState {
     std::atomic<bool> want_close{false};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool announced = false;  // UI thread only
+    bool centred = false;    // UI thread only: the shader build was shown (see OnDraw)
 };
 
 class BootProgressDialog final : public rex::ui::ImGuiDialog {
@@ -90,10 +91,19 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
         const bool offer_cancel = cancellable && !cancelling;
 
         // Bottom-right, out of the way of anything the game puts on screen and
-        // where a progress toast is expected to be.
-        const float margin = 16.0f;
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, io.DisplaySize.y - margin),
-                                ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        // where a progress toast is expected to be. The shader build is the one
+        // thing the player waits on with nothing else on screen, so the popup is
+        // centred like the app's other dialogs from then on, and stays there for
+        // the mod loading that follows instead of jumping to the corner.
+        if (cancellable) state_->centred = true;
+        if (state_->centred) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        } else {
+            const float margin = 16.0f;
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, io.DisplaySize.y - margin),
+                                    ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        }
         // Wide enough for the 52-character lines below in the small face.
         ImGui::SetNextWindowSize(ImVec2(600.0f, 0.0f), ImGuiCond_Always);
 
