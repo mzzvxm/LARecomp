@@ -30,6 +30,7 @@
 // Call order (all on the UI thread except where noted):
 //   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer
 //   SetShaderPackFolder   from LarecompApp::OnConfigurePaths, before Startup (optional)
+//   SetShaderPackGate     from LarecompApp::SetupPresentation, before Startup (optional)
 //   Startup               from LarecompApp::SetupPresentation, after the base
 //   AttachShaderPacks     once the shader packs are built, when ShaderPacksAttached() is false
 //   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
@@ -42,6 +43,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -85,6 +87,11 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
 // folder. The cvar shader_pack_dir replaces both and then is the only folder. A pack that an
 // older install left in <exe>/assets is still read when the folder has none.
 void SetShaderPackFolder(const std::filesystem::path& folder);
+// UI thread, before Startup: lets the app decide whether Startup attaches the packs that are in
+// place. Startup asks once, after the device exists; false leaves the renderer pending. The app
+// does that for packs its stamp says are stale: they are rebuilt, and a pack the renderer has
+// mapped could not be replaced. Not set: whatever pack is valid is attached, as before.
+void SetShaderPackGate(std::function<bool()> gate);
 // Where a build of the packs should write: shader_pack_dir, else the folder from
 // SetShaderPackFolder, else the default (made, and tried with a real file). Any thread.
 std::filesystem::path ShaderPackFolder();

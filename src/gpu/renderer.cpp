@@ -4,6 +4,7 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -127,6 +128,8 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
 
 // The folder the app wants the shader packs in (gpu.h SetShaderPackFolder); empty: the default.
 std::filesystem::path g_shader_pack_folder;
+// The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
+std::function<bool()> g_shader_pack_gate;
 
 }  // namespace
 
@@ -168,7 +171,14 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // guest draw is skipped (Scene: kVsNotInPack, counted by the store too).
     // CHECK: Scene::CountSkip logs the first four such skips as errors (then counts them); nothing
     // draws guest content before the attach in the planned flow, so this was read, not run.
-    shaders_.AttachFirst(ShaderStore::SearchFolders(g_shader_pack_folder));
+    // The app may hold the attach back: packs whose stamp is stale are rebuilt first, and a pack
+    // that is mapped here could not be replaced.
+    if (!g_shader_pack_gate || g_shader_pack_gate()) {
+      shaders_.AttachFirst(ShaderStore::SearchFolders(g_shader_pack_folder));
+    } else {
+      REXLOG_INFO("[gpu] shader pack: not attached at startup; the app checks and, where needed, "
+                  "rebuilds it first");
+    }
     samplers_.Initialize(device_, heap_);
     pipelines_.Initialize(device_, guest_layout_, shaders_);
     if (shaders_.attached()) {
@@ -1241,6 +1251,10 @@ RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
 
 void SetShaderPackFolder(const std::filesystem::path& folder) {
   g_shader_pack_folder = folder;
+}
+
+void SetShaderPackGate(std::function<bool()> gate) {
+  g_shader_pack_gate = std::move(gate);
 }
 
 std::filesystem::path ShaderPackFolder() {
