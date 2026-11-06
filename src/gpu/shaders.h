@@ -16,12 +16,21 @@
 // shader variant 1, the one whose coverage depends on alpha). The legacy
 // runtime's v2 pack keeps the old contract.
 //
-// The pack is memory-mapped read-only from <exe folder>/assets (the legacy
-// runtime opens v2 relative to the working directory, a known pending issue);
-// only the pages of the blobs actually used are read. The header, every entry
-// and every range are validated at open; a blob's FNV and magic are verified
-// the first time it is used, and a bad blob marks its entry unusable, logged
-// with its key.
+// The pack is memory-mapped read-only from a pack folder (Attach; the folders
+// the renderer looks in are SearchFolders); only the pages of the blobs actually
+// used are read. The header, every entry and every range are validated at
+// open; a blob's FNV and magic are verified the first time it is used, and a
+// bad blob marks its entry unusable, logged with its key.
+//
+// Pending and attached: the store starts without a pack (Initialize), because
+// on a first run the packs are built from the player's game files after the
+// renderer is up -- the renderer draws the ISO wizard before those files exist.
+// While pending, Find and GetShader return null and count the asks
+// (pending_lookups): nothing draws guest content, since a guest draw whose
+// shader is not found is skipped. Attach opens and validates the pack and
+// publishes it; from then on the store behaves as it always did. A pack that is
+// in place at start is attached right in the renderer's Initialize, so nothing
+// changes for it.
 //
 // Shaders: one plume::RenderShader per blob, created on first use on the
 // render thread through Device::CreateShader (which rejects a null-backed
@@ -30,10 +39,15 @@
 // compiled, because the variants differ in their outputs, which a
 // specialization constant cannot change.
 //
-// Threading: after Initialize, GetShader from any thread (the pipeline
-// precache's workers call it); the rest from the render thread.
+// Threading: Find and GetShader from any thread once attached (the pipeline
+// precache's workers call GetShader), and Find is safe before: it checks one
+// atomic flag, set last by Attach (release) and read first by Find (acquire).
+// Attach and Shutdown are called from one thread, with the guest not yet
+// running (Attach) or the render thread stopped (Shutdown); the rest from the
+// render thread.
 // ===========================================================================
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <filesystem>
@@ -108,6 +122,7 @@ class ShaderStore {
     kNoVariant,     // the variant asked for was not compiled for this shader
     kBadBlob,       // FNV or magic mismatch (logged once)
     kCreateFailed,  // the backend refused it (logged once)
+    kNoPack,        // no pack is attached yet (the store is pending)
   };
   static const char* ResultName(ShaderResult result);
 
@@ -123,15 +138,43 @@ class ShaderStore {
   ShaderStore(const ShaderStore&) = delete;
   ShaderStore& operator=(const ShaderStore&) = delete;
 
-  // Opens and validates the pack. False (logged) when it is missing or malformed.
+  // Takes the device. Needs no pack: the store starts pending (see the top of this file) and is
+  // attached by Attach/AttachFirst. Always true.
   bool Initialize(Device& device);
+  // Opens and validates the main pack in `folder` (kPackFileName) and makes the store usable.
+  // False (logged) when it is missing or malformed: the store stays pending and nothing of the
+  // file is kept. A store that is attached already is left as it is (true).
+  bool Attach(const std::filesystem::path& folder);
+  // Attach for the first of `folders` that holds a valid pack; when none does, logs that the
+  // store is pending and which folders were looked in.
+  bool AttachFirst(const std::vector<std::filesystem::path>& folders);
   // The GPU must be idle: shaders are destroyed directly.
   void Shutdown();
 
-  uint32_t entry_count() const { return uint32_t(entries_.size()); }
+  // The folders a pack is looked for in, in order. The cvar shader_pack_dir, when set, is the
+  // only one (a test or a pack kept elsewhere must not be mixed with the others). Otherwise
+  // `configured` (the folder the app named: gpu.h SetShaderPackFolder) or, when that is empty,
+  // the places the packs are built into by default (<exe>/cache/shaders, then
+  // %LOCALAPPDATA%\larecomp\cache\shaders); then <exe>/assets, where the pack lived before it
+  // was built on the player's PC. The first folder with a valid pack wins.
+  static std::vector<std::filesystem::path> SearchFolders(const std::filesystem::path& configured);
+  // Where the packs are built by default: <exe>/cache/shaders when that can be written (tried
+  // with a real file, as Controlled Folder Access allows reads and not writes), else
+  // %LOCALAPPDATA%\larecomp\cache\shaders (~/.cache/larecomp/shaders off Windows). Makes the
+  // folder.
+  static std::filesystem::path DefaultPackFolder();
+
+  // Any thread. False while the store is pending.
+  bool attached() const { return attached_.load(std::memory_order_acquire); }
+  // Find and GetShader calls answered "no pack yet" so far (Attach logs the count and clears it).
+  uint64_t pending_lookups() const { return pending_lookups_.load(std::memory_order_relaxed); }
+  uint32_t entry_count() const { return attached() ? uint32_t(entries_.size()) : 0u; }
   const std::filesystem::path& path() const { return path_; }
+  // The folder the attached pack came from (the HDR variant pack is read from there too).
+  const std::filesystem::path& folder() const { return folder_; }
   const Stats& stats() const { return stats_; }
 
+  // Null for an identity the pack does not have, and while pending (counted, pending_lookups).
   const Entry* Find(uint64_t identity) const;
   // Appends the vertex shader's elements to `out` (cleared first).
   void GetVertexElements(const Entry& entry, std::vector<VertexElement>& out) const;
@@ -151,7 +194,10 @@ class ShaderStore {
 
   Device* device_ = nullptr;
   std::mutex mutex_;  // GetShader's slots and stats
-  std::filesystem::path path_;
+  std::atomic<bool> attached_{false};  // set last by Attach; Find checks it first
+  mutable std::atomic<uint64_t> pending_lookups_{0};
+  std::filesystem::path path_;    // the pack file
+  std::filesystem::path folder_;  // its folder
   std::unique_ptr<rex::memory::MappedMemory> file_;
   std::unordered_map<uint64_t, Entry> entries_;
   std::unordered_map<uint64_t, Slot> slots_[2];  // per variant, by identity

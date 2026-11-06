@@ -2,10 +2,15 @@
 
 #include "shaders.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
+#include <system_error>
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
@@ -16,11 +21,57 @@
 #include "native_gfx/shader_identity.h"
 #include "shaderpack/pack_format.h"
 
+REXCVAR_DEFINE_STRING(
+    shader_pack_dir, "", "MCLA/GPU",
+    "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_hdr.v1.pack) are read from "
+    "and built into. Empty: the cache/shaders folder next to the program or, where that folder "
+    "cannot be written to, larecomp/cache/shaders in the local application data folder; a pack "
+    "left in the program's assets folder by an older install is still used when there is none "
+    "in that folder. When this is set, only this folder is used.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace mcla::gpu {
 
 namespace {
 
 namespace pack = larecomp::shaderpack;
+
+// Whether a file can be created in `dir` (made if missing): Windows' Controlled Folder Access lets
+// unknown programs read a folder but not write to it, and only a real write shows it.
+bool CanWriteTo(const std::filesystem::path& dir) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (!std::filesystem::is_directory(dir, ec)) {
+    return false;
+  }
+  const std::filesystem::path probe = dir / ".larecomp_write_test";
+  {
+    std::ofstream f(probe, std::ios::binary | std::ios::trunc);
+    if (!f || !(f << 'x') || !f.flush()) {
+      return false;
+    }
+  }
+  std::filesystem::remove(probe, ec);
+  return true;
+}
+
+// %LOCALAPPDATA%/larecomp/cache/shaders on Windows; $XDG_CACHE_HOME or ~/.cache, then
+// larecomp/shaders elsewhere. Empty when the environment names no place.
+std::filesystem::path LocalPackFolder() {
+#if defined(_WIN32)
+  if (const wchar_t* local = _wgetenv(L"LOCALAPPDATA"); local && *local) {
+    return std::filesystem::path(local) / L"larecomp" / L"cache" / L"shaders";
+  }
+#else
+  if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+    return std::filesystem::path(xdg) / "larecomp" / "shaders";
+  }
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    return std::filesystem::path(home) / ".cache" / "larecomp" / "shaders";
+  }
+#endif
+  return {};
+}
 
 uint32_t ReadU32(const uint8_t* p) {
   uint32_t v;
@@ -50,6 +101,7 @@ const char* ShaderStore::ResultName(ShaderResult result) {
     case ShaderResult::kNoVariant: return "variant not compiled";
     case ShaderResult::kBadBlob: return "bad blob";
     case ShaderResult::kCreateFailed: return "creation failed";
+    case ShaderResult::kNoPack: return "no shader pack attached";
   }
   return "?";
 }
@@ -62,24 +114,104 @@ ShaderStore::~ShaderStore() {
 
 bool ShaderStore::Initialize(Device& device) {
   device_ = &device;
-  path_ = rex::filesystem::GetExecutableFolder() / "assets" / kPackFileName;
+  return true;  // pending until Attach: no pack is needed to start
+}
+
+std::filesystem::path ShaderStore::DefaultPackFolder() {
+  const std::filesystem::path beside = rex::filesystem::GetExecutableFolder() / "cache" / "shaders";
+  if (CanWriteTo(beside)) {
+    return beside;
+  }
+  const std::filesystem::path local = LocalPackFolder();
+  if (!local.empty() && CanWriteTo(local)) {
+    return local;
+  }
+  return beside;  // neither can be written: the build reports it, with this path
+}
+
+std::vector<std::filesystem::path> ShaderStore::SearchFolders(
+    const std::filesystem::path& configured) {
+  std::vector<std::filesystem::path> folders;
+  const std::string dir = REXCVAR_GET(shader_pack_dir);
+  if (!dir.empty()) {
+    folders.emplace_back(std::u8string(dir.begin(), dir.end()));
+    return folders;
+  }
+  if (!configured.empty()) {
+    folders.push_back(configured);
+  } else {
+    // Where DefaultPackFolder builds them, looked at without writing anything.
+    folders.push_back(rex::filesystem::GetExecutableFolder() / "cache" / "shaders");
+    if (const std::filesystem::path local = LocalPackFolder(); !local.empty()) {
+      folders.push_back(local);
+    }
+  }
+  // Where the pack was before it was built on the player's PC (and where a test setup still
+  // puts it): last, so a pack built for this game wins over a stale copy left here.
+  const std::filesystem::path legacy = rex::filesystem::GetExecutableFolder() / "assets";
+  if (std::find(folders.begin(), folders.end(), legacy) == folders.end()) {
+    folders.push_back(legacy);
+  }
+  return folders;
+}
+
+bool ShaderStore::AttachFirst(const std::vector<std::filesystem::path>& folders) {
+  for (const std::filesystem::path& folder : folders) {
+    if (Attach(folder)) {
+      return true;
+    }
+  }
+  std::string looked;
+  for (const std::filesystem::path& folder : folders) {
+    looked += (looked.empty() ? "" : ", ") + rex::path_to_utf8(folder);
+  }
+  REXLOG_INFO("[gpu] shader pack: none found (looked in {}); pending: draws of guest content are "
+              "skipped until the packs are attached",
+              looked);
+  return false;
+}
+
+bool ShaderStore::Attach(const std::filesystem::path& folder) {
+  if (!device_) {
+    REXLOG_ERROR("[gpu] shader pack: Attach before Initialize");
+    return false;
+  }
+  if (attached()) {
+    REXLOG_WARN("[gpu] shader pack: already attached from {}; {} is not read",
+                rex::path_to_utf8(path_), rex::path_to_utf8(folder));
+    return true;
+  }
+  path_ = folder / kPackFileName;
+  std::error_code ec;
+  if (!std::filesystem::exists(path_, ec)) {
+    REXLOG_INFO("[gpu] shader pack: none at {}", rex::path_to_utf8(path_));
+    path_.clear();
+    return false;
+  }
   file_ = rex::memory::MappedMemory::Open(path_, rex::memory::MappedMemory::Mode::kRead);
   if (!file_ || !file_->data()) {
-    REXLOG_ERROR("[gpu] shader pack: cannot open {} (build it with "
-                 "tools/build_shader_pack_v6.py; the build copies src/assets next to the exe)",
-                 rex::path_to_utf8(path_));
+    REXLOG_ERROR("[gpu] shader pack: cannot open {}", rex::path_to_utf8(path_));
     file_.reset();
+    path_.clear();
     return false;
   }
   if (!Validate()) {
     entries_.clear();
     file_.reset();
+    path_.clear();
     return false;
   }
+  folder_ = folder;
   // The exact size and hash name the build of the pack a log was made with.
   REXLOG_INFO("[gpu] shader pack: {} shaders from {} ({} bytes, xxh3 {:016x}, {})",
               entries_.size(), rex::path_to_utf8(path_), file_->size(),
               XXH3_64bits(file_->data(), file_->size()), Dxil() ? "DXIL" : "SPIR-V");
+  if (const uint64_t pending = pending_lookups_.exchange(0)) {
+    REXLOG_WARN("[gpu] shader pack: {} shader lookups were answered before it was attached "
+                "(each skipped a draw)",
+                pending);
+  }
+  attached_.store(true, std::memory_order_release);
   return true;
 }
 
@@ -157,6 +289,12 @@ bool ShaderStore::Validate() {
 }
 
 void ShaderStore::Shutdown() {
+  attached_.store(false, std::memory_order_release);
+  if (const uint64_t pending = pending_lookups_.exchange(0)) {
+    REXLOG_WARN("[gpu] shader pack: {} shader lookups were answered with no pack attached "
+                "(each skipped a draw)",
+                pending);
+  }
   for (auto& slots : slots_) {
     slots.clear();
   }
@@ -166,6 +304,10 @@ void ShaderStore::Shutdown() {
 }
 
 const ShaderStore::Entry* ShaderStore::Find(uint64_t identity) const {
+  if (!attached_.load(std::memory_order_acquire)) {
+    pending_lookups_.fetch_add(1, std::memory_order_relaxed);
+    return nullptr;
+  }
   const auto it = entries_.find(identity);
   return it == entries_.end() ? nullptr : &it->second;
 }
@@ -205,6 +347,11 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
                                             ShaderResult* result) {
   ShaderResult local;
   ShaderResult& out = result ? *result : local;
+  if (!attached_.load(std::memory_order_acquire)) {
+    pending_lookups_.fetch_add(1, std::memory_order_relaxed);
+    out = ShaderResult::kNoPack;
+    return nullptr;
+  }
   if (variant > 1 || (variant == 1 && entry.spec_mask == 0)) {
     out = ShaderResult::kNoVariant;
     return nullptr;
