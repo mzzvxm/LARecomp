@@ -1,12 +1,14 @@
 #include "rpf3.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <map>
 
 #include "aes256.h"
+#include "texture.h"  // InflateRaw: the raw-deflate decoder that stb_image carries
 
 namespace mc::modloader {
 
@@ -174,7 +176,9 @@ bool Rpf3Reader::ListDirectory(std::string_view path, std::vector<Rpf3Entry>& ou
     return true;
 }
 
-bool Rpf3Reader::ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const {
+bool Rpf3Reader::ReadAt(uint64_t offset, size_t size, std::vector<uint8_t>& out) const {
+    out.clear();
+
     FILE* file = nullptr;
 #if defined(_WIN32)
     if (_wfopen_s(&file, path_.wstring().c_str(), L"rb") != 0) file = nullptr;
@@ -184,19 +188,58 @@ bool Rpf3Reader::ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) con
     if (!file) return false;
 
 #if defined(_WIN32)
-    const int seek_ok = _fseeki64(file, static_cast<int64_t>(entry.data_offset()), SEEK_SET);
+    const int seek_ok = _fseeki64(file, static_cast<int64_t>(offset), SEEK_SET);
 #else
-    const int seek_ok = fseeko(file, static_cast<off_t>(entry.data_offset()), SEEK_SET);
+    const int seek_ok = fseeko(file, static_cast<off_t>(offset), SEEK_SET);
 #endif
     if (seek_ok != 0) {
         std::fclose(file);
         return false;
     }
 
-    out.resize(entry.size);
+    out.resize(size);
     const bool ok = out.empty() || std::fread(out.data(), 1, out.size(), file) == out.size();
     std::fclose(file);
+    if (!ok) out.clear();
     return ok;
+}
+
+bool Rpf3Reader::ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const {
+    return ReadAt(entry.data_offset(), entry.size, out);
+}
+
+bool Rpf3Reader::Root(Rpf3Entry& out) const {
+    if (entries_.empty()) return false;
+    out = entries_[0];
+    return true;
+}
+
+bool Rpf3Reader::Children(const Rpf3Entry& directory, std::vector<Rpf3Entry>& out) const {
+    out.clear();
+    if (!directory.is_directory()) return false;
+
+    const uint64_t first = directory.first_child();
+    const uint64_t count = directory.child_count();
+    if (first + count > entries_.size()) return false;
+    out.assign(entries_.begin() + static_cast<std::ptrdiff_t>(first),
+               entries_.begin() + static_cast<std::ptrdiff_t>(first + count));
+    return true;
+}
+
+bool Rpf3Reader::ReadPlainFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const {
+    out.clear();
+    if (entry.is_directory() || entry.is_resource()) return false;
+
+    if ((entry.flag & 0x40000000u) == 0) return ReadAt(entry.data_offset(), entry.size, out);
+
+    const uint32_t stored = entry.flag & 0x3FFFFFFFu;
+    std::vector<uint8_t> raw;
+    if (stored == 0 || !ReadAt(entry.data_offset(), stored, raw)) return false;
+    if (!InflateRaw(raw.data(), raw.size(), entry.size, out) || out.size() != entry.size) {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 void Rpf3Writer::Add(std::string path, std::vector<uint8_t> data, uint32_t flag,
