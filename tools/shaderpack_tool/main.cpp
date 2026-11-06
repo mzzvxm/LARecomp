@@ -27,6 +27,7 @@
 
 #include "shaderpack/builder.h"
 #include "shaderpack/dxc_selftest.h"
+#include "shaderpack/hash.h"
 #include "shaderpack/image_scan.h"
 #include "shaderpack/input_selftest.h"
 #include "shaderpack/pack_writer.h"

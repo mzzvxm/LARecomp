@@ -87,7 +87,7 @@ class PackFile {
       *error = "the pack's entry table runs past the end of the file";
       return false;
     }
-    std::vector<uint8_t> table(size_t(table_bytes));
+    std::vector<uint8_t> table(static_cast<size_t>(table_bytes));
     file_.read(reinterpret_cast<char*>(table.data()), std::streamsize(table.size()));
     if (!file_) {
       *error = "cannot read the pack's entry table";
