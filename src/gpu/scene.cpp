@@ -33,6 +33,7 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
 #include "watch.h"
@@ -483,6 +484,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
+  if (temporal_) {
+    temporal_->BeginFrame(slot);
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   // Uploads of the previous frame live in another slot's memory.
@@ -912,6 +916,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
   FillTextureTables(view, fetch_mask, scale, shared);
   Lap(Stage::kTextures);
+  if (temporal_ && temporal_->active()) {
+    NoteTemporal(view, banks, d, shared);
+  }
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
   }
@@ -984,6 +991,28 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
   if (d.key.depth_format != 0) {
     edram_->NoteDrawn(DepthEdramKey(s), frame_serial_);
   }
+}
+
+void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
+                         const PreparedDraw& d, SharedConstants& shared) {
+  TemporalSystem::DrawFacts f;
+  f.view = &view;
+  f.state = &d.state;
+  f.banks = &banks;
+  f.ps = d.ps;
+  f.viewport = &d.viewport;
+  f.scale = d.scale;
+  EdramKey color;
+  EdramKey depth;
+  if (d.key.color_count != 0) {
+    color = ColorEdramKey(d.state, 0);
+    f.color0 = &color;
+  }
+  if (d.key.depth_format != 0) {
+    depth = DepthEdramKey(d.state);
+    f.depth = &depth;
+  }
+  temporal_->OnDraw(f, shared);
 }
 
 void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
@@ -1941,6 +1970,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // Where the scene was composed -- the frame's last colour target -- counted
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
+  if (temporal_) {
+    temporal_->OnComposite();
+  }
   const PostAa::Mode mode = post_->FrameMode();
   if (!last_color0_ || !list || mode == PostAa::Mode::kOff) {
     return;
@@ -2017,6 +2049,9 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  if (temporal_) {
+    temporal_->EndFrame();
+  }
   last_color0_ = nullptr;
   last_color0_width_ = 0;
   last_color0_height_ = 0;

@@ -82,6 +82,7 @@ class PassTiming;
 class PostAa;
 class ResolveCache;
 class Samplers;
+class TemporalSystem;
 class TextureCache;
 
 class Scene {
@@ -100,6 +101,9 @@ class Scene {
   // The guest's occlusion queries: while one is open, the draws are counted
   // (occlusion.h). Null: none are.
   void SetOcclusion(GuestOcclusion* occlusion) { occlusion_ = occlusion; }
+  // The temporal groundwork (temporal.h): called at the frame's start, for every prepared draw,
+  // at the composite marker and at the present. Null: none.
+  void SetTemporal(TemporalSystem* temporal) { temporal_ = temporal; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -235,6 +239,9 @@ class Scene {
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
+  // mcla_gpu_temporal: a prepared draw, before its constants are uploaded; may move it.
+  void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
+                    const PreparedDraw& d, SharedConstants& shared);
   void Report(const char* why);
 
   ShaderStore& shaders_;
@@ -251,6 +258,7 @@ class Scene {
   const BindlessHeap* heap_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   GuestOcclusion* occlusion_ = nullptr;
+  TemporalSystem* temporal_ = nullptr;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.

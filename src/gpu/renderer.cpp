@@ -210,6 +210,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // The guest's occlusion queries (the sun's glare): never fails the renderer.
     occlusion_.Initialize(device_);
     scene_.SetOcclusion(&occlusion_);
+    scene_.SetTemporal(&temporal_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format()) &&
@@ -294,6 +295,7 @@ void Renderer::Shutdown() {
     validator_.Finish();
   }
   scene_.Finish();
+  temporal_.Finish();
   census_.Finish();
   trace_.Finish();
   // Nothing reads or watches guest memory any more.
