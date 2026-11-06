@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <string_view>
@@ -33,6 +34,7 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
 #include "watch.h"
@@ -126,6 +128,19 @@ EdramKey DepthEdramKey(const XenosState& s) {
   key.depth = 1;
   key.format = uint8_t(s.depth_format);
   key.samples = uint8_t(MsaaSampleCount(s.msaa));
+  return key;
+}
+
+// The depth identity of a draw that has `color_count` colour targets, with its layer (the scene's
+// or the UI's: EdramTargets::DepthLayer).
+EdramKey DrawDepthKey(EdramTargets& edram, const XenosState& s, uint32_t color_count) {
+  EdramKey key = DepthEdramKey(s);
+  if (color_count != 0) {
+    const EdramKey color0 = ColorEdramKey(s, 0);
+    key.reserved = edram.DepthLayer(key, &color0);
+  } else {
+    key.reserved = edram.DepthLayer(key, nullptr);
+  }
   return key;
 }
 
@@ -277,9 +292,12 @@ const char* ConversionName(uint32_t conversion) {
 // the one the declared size of the surface binding it gives (EdramTargets::
 // ScaleOf); Scene::Record makes the targets at it and checks that every other
 // target agrees. `*host_samples`: that identity's samples on the host
-// (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take.
+// (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take. `*scene`: that
+// identity is the scene's and the scene is drawn at a scale of its own (EdramTargets::SceneApart):
+// its textures are sampled with the scene's mip bias (Scene::SceneBias).
 Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                uint32_t size_bits, uint32_t* host_samples) {
+                uint32_t size_bits, uint32_t* host_samples, bool* scene) {
+  *scene = false;
   EdramKey first;
   first.pitch = uint16_t(s.surface_pitch);
   first.samples = uint8_t(MsaaSampleCount(s.msaa));
@@ -291,11 +309,13 @@ Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key
     first.base_tiles = uint16_t(s.depth_base_tiles);
     first.depth = 1;
     first.format = uint8_t(s.depth_format);
+    first.reserved = edram.DepthLayer(first, nullptr);
   } else {
     *host_samples = first.samples;
     return Scale{};
   }
   *host_samples = edram.HostSamplesOf(first, size_bits);
+  *scene = EdramTargets::IsSceneKey(first) && edram.SceneApart();
   return edram.ScaleOf(first, size_bits);
 }
 
@@ -483,6 +503,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
+  if (temporal_) {
+    temporal_->BeginFrame(slot);
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   // Uploads of the previous frame live in another slot's memory.
@@ -565,6 +588,12 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
                      check.ps_matches ? "" : "PS", r.device);
       }
     }
+  }
+
+  // The scene phase of the frame ends at the game's motion blur draw (the anchor), which comes
+  // after the main view's last draw (EdramTargets::DepthLayer).
+  if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
+    edram_->SetScenePhase(false);
   }
 
   if (!list) {
@@ -821,21 +850,25 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // the scale. The constant part is in depth units and stays.
   Scale scale;
   uint32_t host_samples;
+  bool scene_draw;
   if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
       memo.draw_scale_colors == d.key.color_count &&
       memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
     scale = memo.draw_scale;
     host_samples = memo.draw_samples;
+    scene_draw = memo.draw_scene;
   } else {
-    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples);
+    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw);
     memo.draw_scale_valid = true;
     memo.draw_scale_serial = edram_->change_serial();
     memo.draw_scale_colors = d.key.color_count;
     memo.draw_scale_depth_format = uint32_t(d.key.depth_format);
     memo.draw_scale = scale;
     memo.draw_samples = host_samples;
+    memo.draw_scene = scene_draw;
   }
   d.scale = scale;
+  d.scene = scene_draw;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
   if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
@@ -910,8 +943,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   Lap(Stage::kConstants);
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
-  FillTextureTables(view, fetch_mask, scale, shared);
+  FillTextureTables(view, fetch_mask, scale, shared, d.scene ? SceneBias() : 0);
   Lap(Stage::kTextures);
+  if (temporal_ && temporal_->active()) {
+    NoteTemporal(view, banks, d, shared);
+  }
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
   }
@@ -967,8 +1003,8 @@ bool Scene::MaySkipForPipeline(const void* context) {
     any = true;
   }
   if (d.key.depth_format != 0) {
-    if (!scene.edram_->DrawnEveryFrame(DepthEdramKey(s), scene.frame_serial_,
-                                       kPipelineSkipFrames)) {
+    if (!scene.edram_->DrawnEveryFrame(DrawDepthKey(*scene.edram_, s, d.key.color_count),
+                                       scene.frame_serial_, kPipelineSkipFrames)) {
       return false;
     }
     any = true;
@@ -982,7 +1018,44 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
     edram_->NoteDrawn(ColorEdramKey(s, i), frame_serial_);
   }
   if (d.key.depth_format != 0) {
-    edram_->NoteDrawn(DepthEdramKey(s), frame_serial_);
+    edram_->NoteDrawn(DrawDepthKey(*edram_, s, d.key.color_count), frame_serial_);
+  }
+}
+
+void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
+                         const PreparedDraw& d, SharedConstants& shared) {
+  TemporalSystem::DrawFacts f;
+  f.view = &view;
+  f.state = &d.state;
+  f.banks = &banks;
+  f.ps = d.ps;
+  f.viewport = &d.viewport;
+  f.scale = d.scale;
+  EdramKey color;
+  EdramKey depth;
+  if (d.key.color_count != 0) {
+    color = ColorEdramKey(d.state, 0);
+    f.color0 = &color;
+  }
+  if (d.key.depth_format != 0) {
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+    f.depth = &depth;
+  }
+  if (temporal_->OnDraw(f, shared)) {
+    // The anchor was taken: its passes (the scene's depth kept, the motion vectors) read products
+    // the main view's resolves made, so the open render pass ends first.
+    if (list_ && bound_.framebuffer) {
+      list_->setFramebuffer(nullptr);
+      bound_.framebuffer = nullptr;
+    }
+    if (temporal_->RecordAnchorPasses(list_)) {
+      // They bound their own layout, pipelines and framebuffers (and an upscaler its own heaps and
+      // pipeline state): the draw binds everything again. With an upscaler running, the anchor's own
+      // colour fetch reads its output.
+      ResetListState();
+      marked_framebuffer_ = nullptr;
+      temporal_->PatchAnchor(shared);
+    }
   }
 }
 
@@ -1004,8 +1077,27 @@ void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
   }
 }
 
+int32_t Scene::SceneBias() {
+  if (scene_bias_serial_ != frame_serial_) {
+    scene_bias_serial_ = frame_serial_;
+    scene_bias_ = 0;
+    if (edram_->SceneApart()) {
+      // The scene's textures pick their mip levels from a picture smaller than the output: the
+      // levels the output's size would have picked are log2(render / output) lower. One more
+      // level on top is what AMD's guide recommends for FSR. A fetch constant's own bias is added
+      // to it by the sampler.
+      constexpr double kExtraBias = -1.0;
+      const double render = edram_->SceneScale().value();
+      const double output = edram_->resolution_scale().value();
+      const double bias = std::log2(render / output) + kExtraBias;
+      scene_bias_ = int32_t(std::lround(std::clamp(bias, -3.9, 3.9) * 32.0));
+    }
+  }
+  return scene_bias_;
+}
+
 void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale scale,
-                              SharedConstants& sc) {
+                              SharedConstants& sc, int32_t bias) {
   // Write notifications first: a memoized binding must not outlive a write.
   textures_->Sync();
   for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
@@ -1015,7 +1107,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
     const auto holds = [&](const FetchMemo& m) {
       return m.epoch == textures_->epoch() && (m.frame == 0 || m.frame == frame_serial_) &&
              m.generation == textures_->ProductGeneration(m.page) && m.scale == scale &&
-             std::memcmp(m.dwords, dwords, sizeof(dwords)) == 0;
+             m.bias == bias && std::memcmp(m.dwords, dwords, sizeof(dwords)) == 0;
     };
     // The slot's last entry first (M6a.10), then the set.
     FetchMemo* hit = nullptr;
@@ -1088,7 +1180,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
         mip_min = uint32_t(std::clamp(int32_t(mip_min) + bound.lod_shift, 0, top));
         mip_max = uint32_t(std::clamp(int32_t(mip_max) + bound.lod_shift, 0, top));
       }
-      fresh.sampler = samplers_->Get(dwords, mip_min, mip_max);
+      fresh.sampler = samplers_->Get(dwords, mip_min, mip_max, bias);
       if (watch::Active() && watch::TouchesKey(fetch.key)) {
         watch::Log(std::format("fetch s{} ps {:016x} {} -> texture slot {}{}{}", slot,
                                watch::CurrentPs(), fetch.key.Describe(), bound.slot,
@@ -1120,6 +1212,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
     }
     fresh.epoch = textures_->epoch();
     fresh.scale = scale;
+    fresh.bias = bias;
     fresh.used = ++fetch_memo_clock_;
     m = fresh;
     last_fetch_[slot] = &m;
@@ -1361,7 +1454,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   const bool has_depth = d.key.depth_format != 0;
   EdramKey depth_key;
   if (has_depth) {
-    depth_key = DepthEdramKey(s);
+    depth_key = DrawDepthKey(*edram_, s, d.key.color_count);
   }
   // The last draw's targets, while nothing they rest on changed (M6a.3).
   const TargetsMemo& memo = targets_memo_;
@@ -1787,6 +1880,8 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     first_key.base_tiles = uint16_t(first_info.depth_base | (first_info.depth_base_bit_11 << 11));
     first_key.depth = 1;
     first_key.format = uint8_t(first_info.depth_format);
+    // A clear of the depth alone: the scene's or the UI's (EdramTargets::DepthLayer).
+    first_key.reserved = edram_->DepthLayer(first_key, nullptr);
   }
   const Scale clear_scale = edram_->ScaleOf(first_key, declared_size);
   // Growth copies sit outside a render pass.
@@ -1854,6 +1949,8 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     key.depth = 1;
     key.format = uint8_t(depth_info.depth_format);
     key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+    // With RT0 bound its colour says whose depth this is; without, the frame's phase does.
+    key.reserved = edram_->DepthLayer(key, sized_surface == 0 ? &first_key : nullptr);
     if (bound_.framebuffer) {
       list->setFramebuffer(nullptr);
       bound_.framebuffer = nullptr;
@@ -1941,7 +2038,15 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // Where the scene was composed -- the frame's last colour target -- counted
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
-  const PostAa::Mode mode = post_->FrameMode();
+  edram_->SetScenePhase(false);
+  if (temporal_) {
+    temporal_->OnComposite();
+  }
+  PostAa::Mode mode = post_->FrameMode();
+  // FXAA and SMAA are held off while an upscaler is chosen and can run (MSAA stays the player's).
+  if (temporal_ && temporal_->HoldsAaOff(mode != PostAa::Mode::kOff)) {
+    mode = PostAa::Mode::kOff;
+  }
   if (!last_color0_ || !list || mode == PostAa::Mode::kOff) {
     return;
   }
@@ -2017,6 +2122,10 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  edram_->SetScenePhase(true);  // the next frame's scene
+  if (temporal_) {
+    temporal_->EndFrame();
+  }
   last_color0_ = nullptr;
   last_color0_width_ = 0;
   last_color0_height_ = 0;

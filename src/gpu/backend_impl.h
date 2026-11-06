@@ -45,6 +45,11 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 std::string DefaultAdapterName();
 RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
+NativeDevice NativeDeviceOf(plume::RenderDevice* device);
+void* NativeListHandle(plume::RenderCommandList* list);
+void* NativeTextureHandle(const plume::RenderTexture* texture);
+void InvalidateAfterExternalWork(plume::RenderCommandList* list);
+UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
 }  // namespace d3d12
 #endif
 
@@ -74,6 +79,11 @@ std::string DescribeDevice(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 std::string DefaultAdapterName();
+NativeDevice NativeDeviceOf(plume::RenderDevice* device);
+void* NativeListHandle(plume::RenderCommandList* list);
+void* NativeTextureHandle(const plume::RenderTexture* texture);
+void InvalidateAfterExternalWork(plume::RenderCommandList* list);
+UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
 }  // namespace vulkan
 #endif
 

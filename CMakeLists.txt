@@ -86,6 +86,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
     src/mc_engine/map_warp.cpp
@@ -375,6 +376,35 @@ else()
         if(NOT TARGET Microsoft::DirectXShaderCompiler)
             add_subdirectory(thirdparty/dxc-bin EXCLUDE_FROM_ALL)
         endif()
+        # AMD's FidelityFX SDK (2.4.0 or later, the folder that holds Kits/): the headers the temporal
+        # upscaler's backend (src/gpu/temporal_ffx.h) is compiled with, and the signed DLLs and the
+        # licence copied next to the exe below. By default the pinned 2.4.0 files are fetched into the
+        # build folder and checked (cmake/FetchFidelityFX.cmake); LARECOMP_FFX_SDK_DIR names a local
+        # SDK instead, LARECOMP_FFX_FETCH=OFF with it unset builds without FSR. Read-only: nothing
+        # from the SDK is built or run here.
+        set(LARECOMP_FFX_SDK_DIR "" CACHE PATH
+            "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR")
+        option(LARECOMP_FFX_FETCH "Fetch the pinned FidelityFX SDK 2.4.0 files when LARECOMP_FFX_SDK_DIR is unset" ON)
+        if(NOT LARECOMP_FFX_SDK_DIR AND LARECOMP_FFX_FETCH AND WIN32)
+            include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchFidelityFX.cmake")
+        endif()
+        set(LARECOMP_FFX_KIT "")
+        if(LARECOMP_FFX_SDK_DIR AND WIN32)
+            foreach(_larecomp_ffx_candidate "${LARECOMP_FFX_SDK_DIR}/Kits/FidelityFX"
+                                            "${LARECOMP_FFX_SDK_DIR}")
+                if(EXISTS "${_larecomp_ffx_candidate}/api/include/ffx_api.h" AND
+                   EXISTS "${_larecomp_ffx_candidate}/upscalers/include/ffx_upscale.h")
+                    set(LARECOMP_FFX_KIT "${_larecomp_ffx_candidate}")
+                    break()
+                endif()
+            endforeach()
+            if(NOT LARECOMP_FFX_KIT)
+                message(WARNING "LARECOMP_FFX_SDK_DIR=${LARECOMP_FFX_SDK_DIR} holds no "
+                                "Kits/FidelityFX/api/include/ffx_api.h: building without FSR")
+            else()
+                message(STATUS "larecomp: FidelityFX upscalers from ${LARECOMP_FFX_KIT}")
+            endif()
+        endif()
         add_subdirectory(src/gpu)
         # The renderer's objects, and plume's archive without plume's include
         # directories in larecomp's own translation units (CMP0131 is NEW with
@@ -483,6 +513,38 @@ else()
                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin"
                     "$<TARGET_FILE_DIR:larecomp>/assets/mcla_pipelines.bin"
             COMMENT "Copying the starter pipeline list next to the shader pack")
+    endif()
+
+    # The FidelityFX runtime (when LARECOMP_FFX_SDK_DIR is set): the loader and the upscaler DLL of each
+    # API the build has, AMD-signed and unchanged, and the licence that must travel with them (its
+    # redistribution terms: binary form only, the notice reproduced). The renderer opens them by full
+    # path from this folder and nowhere else.
+    if(LARECOMP_FFX_KIT)
+        set(_larecomp_ffx_dlls "")
+        if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll)
+        endif()
+        if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll)
+        endif()
+        foreach(_larecomp_ffx_dll IN LISTS _larecomp_ffx_dlls)
+            if(NOT EXISTS "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}")
+                message(WARNING "FidelityFX: ${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll} is missing")
+                continue()
+            endif()
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}"
+                        "$<TARGET_FILE_DIR:larecomp>/${_larecomp_ffx_dll}"
+                COMMENT "Copying ${_larecomp_ffx_dll} next to larecomp.exe")
+        endforeach()
+        if(EXISTS "${LARECOMP_FFX_KIT}/docs/license.md")
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_FFX_KIT}/docs/license.md"
+                        "$<TARGET_FILE_DIR:larecomp>/amd_fidelityfx_license.md"
+                COMMENT "Copying the FidelityFX licence next to larecomp.exe")
+        endif()
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")

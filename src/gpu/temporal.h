@@ -1,0 +1,376 @@
+#pragma once
+// ===========================================================================
+// MCLA GPU renderer -- the groundwork of the temporal upscalers (F4 step 1a)
+// ===========================================================================
+// feature-parity/F4-DESIGN.md sections 0, 2, 3 and 6.1, as the census of the real game corrected
+// them (feature-parity/CENSUS-FINDINGS.md section 3). One component, owned by the Renderer and
+// called by the Scene, for the frames that have a 3D scene. At ratio 1 (the scene is drawn at the
+// size it is shown at) it does:
+//
+//   Jitter.   A Halton(2,3) sub-pixel offset is added to SharedConstants::pos_offset, on the copy
+//             of the shared constants a draw is about to upload (the memo keeps the unjittered
+//             block), of the draws that go to the main view: the scene's colour and depth, found by
+//             their exact EDRAM identity at 2x samples, or 1x when the game runs without MSAA
+//             (temporal_identities.h), only before the
+//             anchor and the composite marker, and only world draws (clipping and the viewport
+//             transform on, not a rectangle list, a viewport as wide as the target). Everything
+//             else keeps its position: the shadow maps, the reflections, the post chain, the UI.
+//   Anchor.   The game's motion blur draw, found by its pinned shader pair and checked
+//             structurally (its fetches 0 to 2, its colour target, c62). Its pixel shader constants
+//             give the camera (temporal_camera.h), checked, and the cut state machine: a camera
+//             cut, a change of size, a gap of more than 100 ms, a frame without an anchor before
+//             it, or no usable previous matrix for the world gives `reset`.
+//   State.    Per guest frame: whether the jitter is armed (the anchor was accepted in the frame
+//             before), the jitter and its phase, the sizes, the camera, the anchor's bound
+//             textures, the counts of draws; and the states of the run in the log.
+//
+// Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
+// the motion vectors from this system's own camera history; the backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
+//
+// Step 2 (temporal_backend.h, temporal_ffx.h) adds the backend: with an upscaler chosen
+// (mcla_gpu_upscaler: FSR 3.1, FSR 4) and able to run, the system is on and the frame goes
+//
+//   BeginFrame   the chosen upscaler is asked for a context (render and output size of the last
+//                accepted frame: ratio 1, "Native AA"); the jitter is armed only while the context is
+//                ready, so a frame the upscaler cannot take is plain and never shakes.
+//   anchor       after the depth and the vectors, the colour product the anchor reads, the depth and
+//                the vectors go through the backend into the output image; a stand-in in the texture
+//                cache (textures.h Override) makes every fetch of that product for the rest of the
+//                frame read the output: the anchor's own fetch (patched in its constants here), the
+//                tone map, the glow and the UI draw on it.
+//   failure      a frame that cannot be upscaled is plain (no stand-in); three armed frames in a row
+//                that could not be, or one failed dispatch or context, and the backend is off for the
+//                session (one log line), the jitter stops, FXAA and SMAA come back.
+//   AA           FXAA and SMAA are held off while an upscaler is chosen and can run. MSAA is held off
+//                too, but it is a start-up switch of the game: a game started with the upscaler on
+//                runs without it (gpu.h GuestMsaa, decided when the game makes its renderer; the
+//                player's choice is kept); one that started with MSAA keeps it until the next start.
+//
+// Step 3 (F4-DESIGN.md 4, stage U3) draws the scene smaller than the output: with an upscaler in a
+// mode below 100% at the start (gpu.h GetStartUpscale) the main view's colour and depth are made
+// at a scale of their own (edram.h SceneScale: the images of the screen's over the mode's ratio,
+// render_scale.h ChooseSceneScale), fixed until the next start. The render size is that scale
+// over the guest's size, the output size the anchor's (an image of the screen), the jitter
+// sequence follows the ratio and the scene's textures are sampled sharper (scene.cpp SceneBias).
+//
+// With no upscaler chosen (or one this PC cannot run) no hook of the Scene does anything beyond one
+// branch, no constant changes, no draw is added. With one on, the system jitters, reads the camera
+// and logs: "[gpu] temporal: ..." lines, one for each change of what the frames are (no 3D scene,
+// 3D scene at 4x samples, anchor missing or refused, running) and a summary when the game exits.
+//
+// Threading: render thread only.
+// ===========================================================================
+
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "constants.h"
+#include "draw_decode.h"
+#include "draw_state.h"
+#include "edram.h"
+#include "scale.h"
+#include "shaders.h"
+#include "temporal_backend.h"
+#include "temporal_camera.h"
+#include "temporal_identities.h"
+#include "temporal_mv.h"
+#include "viewport.h"
+
+namespace mcla::gpu {
+
+class ResolveCache;
+class TextureCache;
+
+class TemporalSystem {
+ public:
+  // Phases of the sequence at ratio 1: 8 x ratio^2, rounded up (F4-DESIGN.md 3); at another
+  // ratio the runtime's own count (FFX's query for the sizes) or that formula (JitterPhases).
+  static constexpr uint32_t kPhasesAtRatio1 = 8;
+  static constexpr uint32_t kMaxPhases = 128;
+  // A longer gap between two anchors resets the history; the frame time is clamped to this.
+  static constexpr double kMaxGapMs = 100.0;
+  // Frames that were jittered, saw the main view, and had no accepted anchor, before the jitter is
+  // switched off (until the upscaler is turned off and on): a safety net, the census saw none.
+  static constexpr uint32_t kDisarmAfterMisses = 3;
+  // A new state of the frames is logged once it has lasted this many frames.
+  static constexpr uint32_t kModeDebounce = 5;
+
+  // The kinds of main view draw: colour and depth, colour only (the pass "k_2_10_10_10_FLOAT@1024
+  // pitch 1280 2x | no depth" of the census, under 22 draws a frame), depth only (the occlusion
+  // draws, 256 a frame at dusk and night).
+  enum Kind : uint32_t { kColorDepth, kColorOnly, kDepthOnly, kKinds };
+  // Why a main view draw is not a world draw (a draw may have several).
+  enum GateBit : uint32_t {
+    kGateClipOff = 1u << 0,        // clipping disabled: a screen-space draw
+    kGateNoViewport = 1u << 1,     // the viewport transform is off
+    kGateRectList = 1u << 2,       // a rectangle list (the clears, the fog quad)
+    kGateNarrow = 1u << 3,         // a viewport narrower than the target
+  };
+  // Why the history starts again (a bit each).
+  enum ResetBit : uint32_t {
+    kResetFirst = 1u << 0,       // no accepted anchor in the frame before (first, a menu, a pause)
+    kResetCut = 1u << 1,         // the camera cut rule fired
+    kResetSize = 1u << 2,        // the frame's size or the scene's scale changed
+    kResetTime = 1u << 3,        // more than kMaxGapMs since the previous anchor
+    kResetNoPrevious = 1u << 4,  // the world's previous matrix (c69) is not usable
+  };
+  static constexpr uint32_t kResetReasons = 5;
+  // What the anchor test said of the frame.
+  enum class AnchorStatus : uint8_t {
+    kNotSeen,         // the frame has no anchor draw (or the system did not see it prepared)
+    kAccepted,
+    kNoMainView,      // an anchor draw but no main view draw before it
+    kView4x,          // the main view is at 4x samples: the pause menu, the map
+    kFetches,         // fetches 0 to 2 are not the colour, stencil and depth textures at one size
+    kTarget,          // its colour target is not the half-size float image
+    kFrameSize,       // temporal_camera.h Reject
+    kConstants,
+    kViewProjection,
+    kViewInverse,
+    kLens,
+    kCount,
+  };
+
+  // What the Scene tells of a prepared draw, after its texture tables are filled and before its
+  // constants are uploaded.
+  struct DrawFacts {
+    const DrawView* view = nullptr;
+    const XenosState* state = nullptr;
+    const ConstantBanks::Banks* banks = nullptr;  // the draw's own constants
+    const ShaderStore::Entry* ps = nullptr;       // null: depth only
+    const ViewportInfo* viewport = nullptr;
+    Scale scale;                                  // of the draw's targets
+    const EdramKey* color0 = nullptr;             // null: no colour output
+    const EdramKey* depth = nullptr;              // null: no depth target
+  };
+
+  // The textures the anchor draw binds: what the motion vector pass reads (F4-DESIGN.md 2.3), as
+  // the draw's own fetch constants and the table the shaders index (SharedConstants::texture_2d,
+  // the bindless slot and the gamma bit).
+  struct AnchorTextures {
+    bool bound = false;
+    uint32_t fetch[3][6] = {};  // the six dwords of fetch slots 0 (scene colour), 1 (stencil view
+                                // of the depth, vehicle ID in its stencil byte >> 2), 2 (depth, 1 near)
+    uint32_t table[3] = {};
+  };
+
+  // Everything of the frame being recorded or, between EndFrame and the next BeginFrame, of the
+  // last one.
+  struct FrameState {
+    uint64_t frame = 0;  // guest frames since the switch was turned on
+    uint32_t slot = 0;   // the frame's upload slot
+
+    // Jitter. `jitter` is what this frame's gated draws were moved by, in host pixels of the main
+    // view, +y down (zero when not armed). The projection of the vertex shader epilogue shifts
+    // the image by +x to the right and +y down by that much.
+    bool armed = false;
+    uint32_t jitter_index = 0;  // 0 .. phase_count - 1
+    uint32_t phase_count = kPhasesAtRatio1;
+    float jitter[2] = {};
+    double ratio = 1.0;  // output size over render size, per axis: 1 until the scene is drawn smaller
+
+    // The main view (2x samples, 1x without MSAA, before the anchor).
+    Scale scale = Scale::None();  // of the first main view draw's targets
+    uint32_t samples = 0;         // guest samples of the first one: 2, or 1 without MSAA
+    std::array<uint32_t, kKinds> main_draws{};
+    std::array<uint32_t, kKinds> jittered{};
+    uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
+    bool composite_seen = false;
+
+    // The anchor.
+    uint32_t anchors = 0;         // anchor draws seen (a second one is ignored)
+    bool anchor_seen = false;
+    bool anchor_ok = false;       // accepted: `camera` and the fields below are valid
+    AnchorStatus anchor_status = AnchorStatus::kNotSeen;
+    temporal::Camera camera;
+    uint32_t reset = 0;           // ResetBit: this frame starts the history again
+    temporal::Cut cut;            // the cut test against the frame before (when there was one)
+    float frame_time_ms = 1000.0f / 60.0f;  // between this anchor and the one before, 1 to 100
+    uint32_t guest_size[2] = {};   // c62: the frame in guest pixels
+    uint32_t render_size[2] = {};  // the main view in host pixels (guest size at the scene's scale)
+    // What the upscaler makes (F4-DESIGN.md 4): the anchor draws into an image of the screen, whose
+    // scale is the output's however much smaller the scene was drawn.
+    Scale output_scale = Scale::None();
+    uint32_t output_size[2] = {};  // the guest size at output_scale
+    AnchorTextures anchor_textures;
+
+    // The upscaler (step 2).
+    Upscaler upscaler = Upscaler::kOff;  // the chosen one when this PC can run it, else off
+    bool backend_ready = false;          // its context exists for the sizes of the last frame
+    bool upscaled = false;               // the output is made and the stand-in set for this frame
+    uint32_t anchor_color_slot = 0;      // the bindless slot the anchor's colour fetch reads instead
+  };
+
+  // True while an upscaler was chosen and able to run at the start of the frame being recorded: the
+  // Scene's hooks do nothing otherwise.
+  bool active() const { return enabled_; }
+
+  // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
+  // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
+  // Probes the upscaler backend (a worker thread; nothing on this one).
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
+                  PassTiming& pass_timing, TextureCache& textures, ResolveCache& resolve);
+  // GPU idle, before HostPasses and the BindlessHeap shut down.
+  void Shutdown();
+
+  // The Renderer opened the frame's first list (frame slot `slot`). Reads the upscaler's settings.
+  void BeginFrame(uint32_t slot);
+  // A prepared draw of the frame, after FillTextureTables and before UploadConstants: finds the
+  // main view's draws and moves them (`shared` is the draw's own copy), finds the anchor and reads
+  // the camera. True when this draw is the anchor, it was taken and its passes are due: the Scene
+  // then ends its render pass, calls RecordAnchorPasses and forgets its list state.
+  bool OnDraw(const DrawFacts& facts, SharedConstants& shared);
+  // The anchor's passes (depth, motion vectors, the checks' copies) into `list`, outside any render
+  // pass. False when nothing was recorded.
+  // With an upscaler running it also records the upscale and sets the stand-in for the scene colour.
+  bool RecordAnchorPasses(plume::RenderCommandList* list);
+  // The anchor draw's own constants after RecordAnchorPasses: its colour fetch reads the upscaler's
+  // output when there is one this frame.
+  void PatchAnchor(SharedConstants& shared) const;
+  // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
+  // once per change when `aa_asked` (mcla_gpu_aa is not off).
+  bool HoldsAaOff(bool aa_asked);
+  // The composite marker: the UI starts.
+  void OnComposite();
+  // The guest's present: the frame ends, the state machine moves on, the log.
+  void EndFrame();
+  // The renderer shuts down: the last summary.
+  void Finish();
+
+  // The frame being recorded (valid fields as documented above), or the last one.
+  const FrameState& frame() const { return frame_; }
+  // The camera of the frame before when its anchor was accepted and this frame follows it
+  // directly (null: the history starts again).
+  const temporal::Camera* previous_camera() const { return ran_last_ ? &last_camera_ : nullptr; }
+  // The depth and motion vector images kept for the last frame (temporal_mv.h Kept: sizes, formats).
+  const TemporalMotion& motion() const { return motion_; }
+  // The video memory the temporal path holds now: the upscaler's output image, the depth and the
+  // vectors at the render size, and the runtime's own context as it reports it (about 500 MB at
+  // 4K for FSR). Render thread (the backend's status is read under its lock).
+  uint64_t HeldBytes() const;
+
+ private:
+  using Clock = std::chrono::steady_clock;
+
+  // What the frames are, for the log.
+  enum class Mode : uint8_t { kNoScene, kView4x, kNoAnchor, kRunning, kCount };
+
+  struct Window {
+    uint64_t frames = 0;
+    uint64_t armed = 0;
+    uint64_t modes[size_t(Mode::kCount)] = {};
+    uint64_t anchor_status[size_t(AnchorStatus::kCount)] = {};
+    uint64_t resets = 0;
+    uint64_t reset_reasons[kResetReasons] = {};
+    uint64_t cut_distance = 0;  // camera cuts by clause (a cut may have several)
+    uint64_t cut_turn = 0;
+    uint64_t cut_fov = 0;
+    // The upscaler: frames it ran in, and the frames with an upscaler chosen that it did not run in.
+    uint64_t upscaled = 0;
+    uint64_t upscale_plain_not_ready = 0;  // no context yet (or the sizes changed): plain, no jitter
+    uint64_t upscale_plain_no_vectors = 0;
+    uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
+    uint64_t upscale_resets = 0;           // upscaled frames the history started again in
+    // The last accepted camera, for the line.
+    bool have_camera = false;
+    temporal::Camera camera;
+    uint32_t render_size[2] = {};
+  };
+
+  void SetEnabled(bool enabled);
+  void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
+  bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
+  static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
+                               const ViewportInfo& viewport, Scale scale);
+  // Structure of the anchor: its fetches and its target. Fills `*width`, `*height` (the fetches'
+  // size) and `*why` on a refusal.
+  AnchorStatus CheckAnchor(const DrawFacts& facts, uint32_t* width, uint32_t* height,
+                           std::string* why) const;
+  static Mode ModeOf(const FrameState& frame);
+  void NoteMode(Mode mode, const FrameState& frame);
+  void Report();
+  void ResetRun();
+
+  bool enabled_ = false;
+  bool frame_open_ = false;  // BeginFrame ran and no present has ended the frame yet
+  uint64_t frame_number_ = 0;
+  FrameState frame_;
+
+  // The run: what the frames before this one left.
+  bool ran_last_ = false;    // the previous frame's anchor was accepted
+  temporal::Camera last_camera_;
+  // The camera's last step (position now minus position before), what the cut test predicts the
+  // next one from; unknown at the first step of a run.
+  double last_step_[3] = {};
+  bool last_step_known_ = false;
+  Scale last_scale_ = Scale::None();
+  Clock::time_point last_anchor_time_{};
+  uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
+  uint32_t misses_ = 0;
+  bool disarmed_ = false;
+
+  // Step 1b: the passes and what they keep (temporal_mv.h), and what the anchor told them.
+  TemporalMotion motion_;
+  TemporalMotion::Frame pending_;
+  bool pending_ready_ = false;
+
+  // Step 2: the upscaler. `effective_` is what the settings and this PC's answer make of the
+  // player's choice, read at BeginFrame.
+  void ReadUpscalerChoice();
+  void NoteMsaa();
+  // The jitter sequence's length for `ratio` (output over render): `from_runtime` is what the
+  // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
+  static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
+  void MakeRequest(BackendRequest* request) const;
+  // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
+  // failure turns the upscaler off for the session.
+  bool RecordUpscale(plume::RenderCommandList* list);
+  void FailUpscaler(const std::string& why);
+  void ReleaseUpscaler();
+  void ClearStandIn();
+
+  Device* device_ = nullptr;
+  FrameRing* frames_ = nullptr;
+  HostPasses* passes_ = nullptr;
+  PassTiming* pass_timing_ = nullptr;
+  TextureCache* textures_ = nullptr;
+  ResolveCache* resolve_ = nullptr;
+  std::unique_ptr<TemporalBackend> backend_;
+  UpscalerSettings settings_;
+  Upscaler effective_ = Upscaler::kOff;
+  uint32_t choice_key_ = 0;
+  bool choice_reported_ = false;
+  bool ready_reported_ = false;
+  HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, output size
+  uint32_t last_render_size_[2] = {};  // of the last accepted frame
+  uint32_t last_output_size_[2] = {};  // ... and what the upscaler made of it
+  // The mode the scene was drawn for: the start's (gpu.h GetStartUpscale), whatever the setting says
+  // now. Native AA when no upscaler ran at the start (the scene is at the output's size).
+  UpscaleMode mode_in_use_ = UpscaleMode::kNativeAa;
+  uint32_t mode_note_key_ = ~0u;     // what ReadUpscalerChoice last said of the mode
+  bool request_made_ = false;        // a context was asked for and not released
+  BackendRequest request_;
+  Clock::time_point off_since_{};
+  bool stand_in_set_ = false;
+  uint64_t last_dispatch_frame_ = ~uint64_t(0);
+  uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
+  bool aa_hold_reported_ = false;
+  uint32_t msaa_key_ = ~0u;          // the game's MSAA and the upscaler, as last said (NoteMsaa)
+  std::array<bool, 4> plain_logged_{};
+
+  // The log.
+  Window window_;
+  Clock::time_point window_start_{};
+  Mode shown_mode_ = Mode::kCount;    // kCount: none shown yet
+  Mode pending_mode_ = Mode::kCount;
+  uint32_t pending_frames_ = 0;
+  std::array<bool, size_t(AnchorStatus::kCount)> status_logged_{};
+  uint32_t reset_lines_ = 0;
+  double logged_lens_[3] = {};                 // field of view (rad), near, far of the last line
+  uint32_t lens_lines_ = 0;
+};
+
+}  // namespace mcla::gpu

@@ -200,4 +200,132 @@ std::string DefaultAdapterName() {
   return {};
 }
 
+NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
+  NativeDevice out;
+  const auto* dev = static_cast<const plume::VulkanDevice*>(device);
+  if (dev) {
+    out.device = reinterpret_cast<void*>(dev->vk);
+    out.physical_device = reinterpret_cast<void*>(dev->physicalDevice);
+    out.get_device_proc_addr = reinterpret_cast<void*>(vkGetDeviceProcAddr);
+  }
+  return out;
+}
+
+void* NativeListHandle(plume::RenderCommandList* list) {
+  const auto* l = static_cast<const plume::VulkanCommandList*>(list);
+  return l ? reinterpret_cast<void*>(l->vk) : nullptr;
+}
+
+void* NativeTextureHandle(const plume::RenderTexture* texture) {
+  const auto* t = static_cast<const plume::VulkanTexture*>(texture);
+  return t ? reinterpret_cast<void*>(t->vk) : nullptr;
+}
+
+void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
+  auto* l = static_cast<plume::VulkanCommandList*>(list);
+  if (!l) {
+    return;
+  }
+  // A compute runtime binds its own compute pipeline, layout and descriptor sets; the caller has
+  // ended the render pass and bound no framebuffer. Plume's cached layouts go, so the next
+  // setXxxPipelineLayout / setXxxDescriptorSet names them again (the bind points are separate in
+  // Vulkan, so graphics state itself is untouched).
+  l->activeComputePipelineLayout = nullptr;
+  l->activeGraphicsPipelineLayout = nullptr;
+  l->activeRaytracingPipelineLayout = nullptr;
+}
+
+namespace {
+
+// What Plume's Vulkan device must report for FidelityFX (the P1 list in the report of the change
+// that added this): the compute capabilities of plume_render_interface_types.h, added by Plume's
+// feat/ffx-prereqs. A Plume without them has no such members: a requires-expression inside a
+// template sees that (a discarded branch of an if constexpr in a template is never instantiated).
+// Returns why it cannot run, empty when it can.
+template <typename Caps>
+std::string ComputeCapsProblem(const Caps& caps, bool has_float16, bool has_subgroup_control) {
+  if constexpr (requires {
+                  caps.native16BitShaderOps;
+                  caps.subgroupSizeControl;
+                  caps.typedUnorderedAccessLoad;
+                }) {
+    // The runtime picks its 16-bit shaders and its wave sizes from what the physical device
+    // supports, not from what the device was created with: a feature the device has and Plume did
+    // not enable is a shader that uses it anyway.
+    if (has_float16 && !caps.native16BitShaderOps) {
+      return "Plume's Vulkan device was created without the 16-bit shader features this graphics "
+             "card has (Plume change P1)";
+    }
+    if (has_subgroup_control && !caps.subgroupSizeControl) {
+      return "Plume's Vulkan device was created without the subgroup size control this graphics "
+             "card has (Plume change P1)";
+    }
+    // Typed reads of the four-channel 16-bit unorm storage image FidelityFX's passes declare.
+    if (!caps.typedUnorderedAccessLoad) {
+      return "the Vulkan driver cannot read storage images without a format, which FidelityFX's "
+             "shaders do";
+    }
+    return {};
+  } else {
+    (void)caps;
+    (void)has_float16;
+    (void)has_subgroup_control;
+    return "this build's Plume does not enable the Vulkan device features FidelityFX asks for "
+           "(Plume change P1)";
+  }
+}
+
+}  // namespace
+
+UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
+  UpscalerSupport out;
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceFeatures2) {
+    out.reason = "there is no Vulkan device";
+    return out;
+  }
+  const uint32_t v = dev->physicalDeviceProperties.apiVersion;
+  out.detail = std::format("Vulkan {}.{}.{}", VK_API_VERSION_MAJOR(v), VK_API_VERSION_MINOR(v),
+                           VK_API_VERSION_PATCH(v));
+  // CHECK: FidelityFX's Vulkan upscaler needs Vulkan 1.2 or later (the version Plume asks the
+  // instance for); the runtime's creation is the final word.
+  if (VK_API_VERSION_MAJOR(v) < 1 || (VK_API_VERSION_MAJOR(v) == 1 && VK_API_VERSION_MINOR(v) < 2)) {
+    out.reason = std::format("the Vulkan driver is version {}.{} and FidelityFX needs 1.2",
+                             VK_API_VERSION_MAJOR(v), VK_API_VERSION_MINOR(v));
+    return out;
+  }
+
+  // What the physical device supports. Plume creates the device with every core feature it supports
+  // (pEnabledFeatures = what vkGetPhysicalDeviceFeatures2 returned), so the core ones read here are
+  // the ones enabled; the extension features are enabled only by Plume's P1 and are compared with
+  // what it reports below.
+  VkPhysicalDeviceShaderFloat16Int8Features float16 = {};
+  float16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+  VkPhysicalDevice16BitStorageFeatures storage16 = {};
+  storage16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+  storage16.pNext = &float16;
+  VkPhysicalDeviceSubgroupSizeControlFeatures subgroup = {};
+  subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+  subgroup.pNext = &storage16;
+  VkPhysicalDeviceFeatures2 features = {};
+  features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features.pNext = &subgroup;
+  vkGetPhysicalDeviceFeatures2(dev->physicalDevice, &features);
+  const bool has_float16 = float16.shaderFloat16 && storage16.storageBuffer16BitAccess &&
+                           features.features.shaderInt16;
+  const bool has_subgroup_control = subgroup.subgroupSizeControl;
+  out.detail += std::format(", 16-bit math {}, subgroup size control {}, extended storage formats {}",
+                            has_float16 ? "yes" : "no", has_subgroup_control ? "yes" : "no",
+                            features.features.shaderStorageImageExtendedFormats ? "yes" : "no");
+  if (!features.features.shaderStorageImageExtendedFormats) {
+    out.reason = "the Vulkan driver cannot write the two-channel 16-bit images FidelityFX uses "
+                 "(shaderStorageImageExtendedFormats)";
+    return out;
+  }
+
+  out.reason = ComputeCapsProblem(dev->capabilities, has_float16, has_subgroup_control);
+  out.ok = out.reason.empty();
+  return out;
+}
+
 }  // namespace mcla::gpu::backend::vulkan

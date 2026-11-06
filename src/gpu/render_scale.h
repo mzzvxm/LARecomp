@@ -170,6 +170,42 @@ inline RenderScaleChoice ChooseRenderScale(double asked, bool fsr, FsrPreset pre
   return c;
 }
 
+// The scale the 3D scene itself is drawn at while a temporal upscaler works on it (F4-DESIGN.md 4,
+// stage U3): the output's scale (`output`, the render scale above) divided by the vendor's ratio
+// of output to render, per axis (FSR 3.1 and 4: 1, 1.5, 1.7, 2, 3). The grid is Scale's twentieths,
+// the one every resolve and encode shader works in, so the render size is the nearest step: the
+// main view's 1280x720 comes out at multiples of 64x36 (1728x972 for Quality at 2x, where exactly
+// 1/1.5 would be 1707x960). A ratio of 1 or less leaves it at `output`. Never below
+// kMinSceneScale: nothing below 0.5x has been run through the fractional resolve paths.
+inline constexpr Scale kMinSceneScale = kMinRenderScale;
+
+struct SceneScaleChoice {
+  Scale scale;           // what the main view's colour and depth are made at
+  double ratio = 1.0;    // asked: output over render, per axis
+  double wanted = 1.0;   // output / ratio, before the grid and the limit
+  bool limited = false;  // `wanted` was below kMinSceneScale and was brought up to it
+  // Output over render as the grid made it (1 when the scene is not drawn smaller).
+  double actual_ratio(Scale output) const {
+    return scale.n == 0 ? 1.0 : double(output.n) / double(scale.n);
+  }
+};
+
+inline SceneScaleChoice ChooseSceneScale(Scale output, double ratio) {
+  SceneScaleChoice c;
+  c.scale = output;
+  c.wanted = output.none() ? 1.0 : output.value();
+  if (output.none() || !std::isfinite(ratio) || !(ratio > 1.0)) {
+    return c;
+  }
+  c.ratio = ratio;
+  c.wanted = output.value() / ratio;
+  const double low = double(std::min(kMinSceneScale.n, output.n));
+  const double step = std::round(double(output.n) / ratio);
+  c.limited = step < low;
+  c.scale = Scale{uint32_t(std::clamp(step, low, double(output.n)))};
+  return c;
+}
+
 // render_scale.cpp. The start's choice from mcla_gpu_resolution_scale,
 // mcla_gpu_fsr and mcla_gpu_fsr_preset for a window of that size, logged.
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height);

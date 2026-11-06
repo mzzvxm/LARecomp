@@ -113,27 +113,31 @@ void HostPasses::Bind(plume::RenderCommandList* list) const {
 }
 
 bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
-                             plume::RenderFormat format, const char* name) {
-  if (image.texture && image.width == width && image.height == height && image.format == format) {
+                             plume::RenderFormat format, const char* name,
+                             plume::RenderTextureFlags flags) {
+  if (image.texture && image.width == width && image.height == height && image.format == format &&
+      image.flags == flags) {
     return true;
   }
   ReleaseImage(image);
+  const bool render_target = (flags & plume::RenderTextureFlag::RENDER_TARGET) != 0;
   image.texture = device_->CreateTexture(
-      plume::RenderTextureDesc::Texture2D(width, height, 1, format,
-                                          plume::RenderTextureFlag::RENDER_TARGET),
-      name);
+      plume::RenderTextureDesc::Texture2D(width, height, 1, format, flags), name);
   if (image.texture) {
     plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(format);
     view.mipLevels = 1;
     image.view = device_->CreateTextureView(*image.texture, view, name);
-    const plume::RenderTexture* attachments[1] = {image.texture.get()};
-    image.framebuffer =
-        device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, 1), name);
+    if (render_target) {
+      const plume::RenderTexture* attachments[1] = {image.texture.get()};
+      image.framebuffer =
+          device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, 1), name);
+    }
   }
   if (image.view) {
     image.slot = heap_->AllocateTexture(*image.texture, *image.view);
   }
-  if (!image.texture || !image.view || !image.framebuffer || image.slot == kInvalidBindlessSlot) {
+  if (!image.texture || !image.view || (render_target && !image.framebuffer) ||
+      image.slot == kInvalidBindlessSlot) {
     // Asked again by the next frame while the cause lasts: the first 8 are logged.
     if (image_failures_logged_ < 8) {
       ++image_failures_logged_;
@@ -145,6 +149,7 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
   image.width = width;
   image.height = height;
   image.format = format;
+  image.flags = flags;
   image.layout = plume::RenderTextureLayout::UNKNOWN;
   return true;
 }

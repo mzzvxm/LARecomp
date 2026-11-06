@@ -233,6 +233,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // The guest's occlusion queries (the sun's glare): never fails the renderer.
     occlusion_.Initialize(device_);
     scene_.SetOcclusion(&occlusion_);
+    scene_.SetTemporal(&temporal_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format()) &&
@@ -241,6 +242,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
+    // The temporal groundwork's passes: made on first use, never fail the renderer.
+    // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
+    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_);
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
@@ -257,6 +261,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
+    temporal_.Shutdown();
     flicker_probe_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
@@ -342,6 +347,7 @@ void Renderer::Shutdown() {
     validator_.Finish();
   }
   scene_.Finish();
+  temporal_.Finish();
   census_.Finish();
   trace_.Finish();
   // Nothing reads or watches guest memory any more.
@@ -366,6 +372,7 @@ void Renderer::Shutdown() {
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
+  temporal_.Shutdown();
   flicker_probe_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
@@ -796,7 +803,9 @@ void Renderer::ReportFrameStats() {
   const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
   const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
                            mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
-                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) + " MiB)";
+                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) +
+                           ", upscaler (output, depth, vectors, its own context) " +
+                           mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
       (vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
                          " MiB"
