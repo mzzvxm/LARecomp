@@ -24957,6 +24957,14 @@ address = 0x82426B98
 name = "Hook_DisplayGammaType"
 registers = ["r1"]
 
+# 0x821BDA90: the engine timer's first instruction, before it reads the clock. Where a frame starts
+# for the GPU vendor's latency reducer (NVIDIA Reflex, AMD Anti-Lag 2): its wait comes here, so the
+# time step the timer then measures is the one after the wait (hooks/frame_timing.cpp,
+# MCLAFrameStart; src/gpu/latency.h).
+[[midasm_hook]]
+name = "MCLAFrameStart"
+address = 0x821BDA90
+
 # BadassBaboon's Recomp Adjustments: Core 60 FPS Engine Timing Pipeline
 # 0x821BDAB0: subf r8,r10,r11 in sub_821BDA90 (elapsed frame ticks clamp & limiter)
 [[midasm_hook]]

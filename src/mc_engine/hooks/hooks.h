@@ -150,6 +150,9 @@ bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30);
 bool Patch_DisableImposterShadows(PPCRegister& r11);
 
 // BadassBaboon's Recomp Adjustments: Core 60 FPS clock delta pipeline
+// The same timer's first instruction (0x821BDA90): a frame starts, for the GPU vendor's latency
+// reducer (hooks/frame_timing.cpp, gpu/latency.h).
+void MCLAFrameStart();
 void MCLAFrameDelta(PPCRegister& r8);
 void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31);
 // The two fixed-timestep substitution paths in sub_821BDA90. MCLAUseRealDelta
