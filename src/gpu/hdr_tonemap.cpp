@@ -72,16 +72,21 @@ float LoadBeFloat(const uint8_t* p) {
 // A depth or stencil test that can reject pixels: the second draw has no depth target. A bound depth
 // target the draw does not test (or tests with ALWAYS), writing or not, changes nothing a float
 // image without one would show.
+// Whether a depth or stencil test could leave pixels out. The float scene's draw has no depth/stencil
+// target (VariantKey drops both), so only a test that rejects matters: the game's tone map has stencil
+// on with ALWAYS front and back (it writes a stencil mark with REPLACE), which rejects nothing.
 bool DepthInUse(const PipelineKey& key) {
   if (key.depth_format == 0) {
     return false;
   }
-  if ((key.stencil & 1u) != 0) {
+  constexpr auto kAlways = plume::RenderComparisonFunction::ALWAYS;
+  if ((key.stencil & 1u) != 0 &&
+      (plume::RenderComparisonFunction((key.stencil >> 1) & 0xFu) != kAlways ||
+       plume::RenderComparisonFunction((key.stencil >> 17) & 0xFu) != kAlways)) {
     return true;
   }
   return (key.depth & 1u) != 0 &&
-         plume::RenderComparisonFunction((key.depth >> 2) & 0xFu) !=
-             plume::RenderComparisonFunction::ALWAYS;
+         plume::RenderComparisonFunction((key.depth >> 2) & 0xFu) != kAlways;
 }
 
 }  // namespace
