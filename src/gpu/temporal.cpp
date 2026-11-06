@@ -20,6 +20,7 @@
 #include "pass_timing.h"
 #include "records.h"
 #include "resolve.h"
+#include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
 
@@ -211,6 +212,17 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
   return true;
 }
 
+uint64_t TemporalSystem::HeldBytes() const {
+  uint64_t bytes = motion_.HeldBytes();
+  if (output_.texture) {
+    bytes += TextureBytes(output_.width, output_.height, 1, output_.format);
+  }
+  if (backend_) {
+    bytes += backend_->Status().context_bytes;
+  }
+  return bytes;
+}
+
 void TemporalSystem::PatchAnchor(SharedConstants& shared) const {
   if (frame_.upscaled) {
     // The anchor's own colour fetch (slot 0) was bound before the upscale existed.
@@ -237,6 +249,10 @@ bool TemporalSystem::HoldsAaOff(bool aa_asked) {
 
 void TemporalSystem::ReadUpscalerChoice() {
   settings_ = ReadUpscalerSettings();
+  // The scene was made at the size the start chose (gpu.h GetStartUpscale; it cannot change while
+  // the game runs): the mode in use is the one it was drawn for, whatever the setting says now.
+  const StartUpscale start = PeekStartUpscale();
+  mode_in_use_ = start.decided && start.runs ? start.mode : UpscaleMode::kNativeAa;
   const UpscalerAvailability available = GetUpscalerAvailability();
   Upscaler effective = Upscaler::kOff;
   if (backend_ && ((settings_.upscaler == Upscaler::kFsr31 && available.fsr31) ||
@@ -253,7 +269,7 @@ void TemporalSystem::ReadUpscalerChoice() {
     if (settings_.upscaler != Upscaler::kOff) {
       if (effective != Upscaler::kOff) {
         REXLOG_INFO("{} upscaling: {} ({} {}%), sharpness {:.2f}", kPrefix, UpscalerName(effective),
-                    ModeInfoOf(settings_.mode).name, ModeInfoOf(settings_.mode).percent,
+                    ModeInfoOf(mode_in_use_).name, ModeInfoOf(mode_in_use_).percent,
                     settings_.sharpness);
       } else if (!backend_) {
         REXLOG_INFO("{} {} is chosen but this build has no FidelityFX: treated as off", kPrefix,
@@ -266,6 +282,32 @@ void TemporalSystem::ReadUpscalerChoice() {
     }
   }
   effective_ = effective;
+  // What the mode comes to now against what the scene was drawn for: a line when that changes.
+  // The scene's size is the start's (restart only), so a mode picked since, and an upscaler
+  // that is off or cannot run while the scene is drawn smaller, are said once.
+  const bool smaller = start.decided && start.runs && start.ratio > 1.0;
+  const bool mode_differs =
+      start.decided && effective != Upscaler::kOff && settings_.mode != mode_in_use_;
+  const bool soft = smaller && effective == Upscaler::kOff;
+  const uint32_t note = uint32_t(settings_.mode) | uint32_t(mode_in_use_) << 4 |
+                        uint32_t(mode_differs) << 8 | uint32_t(soft) << 9;
+  if (note != mode_note_key_) {
+    mode_note_key_ = note;
+    if (mode_differs) {
+      REXLOG_INFO("{} {} {} ({}%) is chosen, but this game was started with the 3D scene drawn "
+                  "for {} ({}%): the scene's size is fixed at the start, so the new mode applies "
+                  "at the next start",
+                  kPrefix, UpscalerName(effective), ModeInfoOf(settings_.mode).name,
+                  ModeInfoOf(settings_.mode).percent, ModeInfoOf(mode_in_use_).name,
+                  ModeInfoOf(mode_in_use_).percent);
+    }
+    if (soft) {
+      REXLOG_INFO("{} no upscaler is running, but this game was started with the 3D scene drawn "
+                  "for {} ({}% of the output): the scene is soft until the upscaler is on again "
+                  "(or the game is started again with none)",
+                  kPrefix, ModeInfoOf(mode_in_use_).name, ModeInfoOf(mode_in_use_).percent);
+    }
+  }
   NoteMsaa();
 }
 
@@ -294,10 +336,21 @@ void TemporalSystem::NoteMsaa() {
 
 void TemporalSystem::MakeRequest(BackendRequest* request) const {
   request->upscaler = effective_;
-  request->mode = settings_.mode;
-  // Ratio 1: the scene is drawn at the size it is shown at.
-  request->render_size[0] = request->output_size[0] = last_render_size_[0];
-  request->render_size[1] = request->output_size[1] = last_render_size_[1];
+  request->mode = mode_in_use_;
+  // What the last accepted frame had: the scene at the render size, the output at the size of the
+  // images of the screen (one size at Native AA).
+  request->render_size[0] = last_render_size_[0];
+  request->render_size[1] = last_render_size_[1];
+  request->output_size[0] = last_output_size_[0];
+  request->output_size[1] = last_output_size_[1];
+}
+
+uint32_t TemporalSystem::JitterPhases(double ratio, uint32_t from_runtime) {
+  if (from_runtime != 0) {
+    return std::min(from_runtime, kMaxPhases);
+  }
+  const double wanted = std::ceil(double(kPhasesAtRatio1) * ratio * ratio - 1e-6);
+  return uint32_t(std::clamp(wanted, 1.0, double(kMaxPhases)));
 }
 
 void TemporalSystem::ClearStandIn() {
@@ -353,8 +406,17 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   if (!fr.backend_ready || !backend_->Ready(request_)) {
     return plain(window_.upscale_plain_not_ready, 0, "the upscaler's context is not ready");
   }
+  // The scene at the render size (the vectors, the depth and the colour the anchor reads are made
+  // at it); the output at the output's (F4-DESIGN.md 4).
   const uint32_t width = fr.render_size[0];
   const uint32_t height = fr.render_size[1];
+  const uint32_t out_width = fr.output_size[0];
+  const uint32_t out_height = fr.output_size[1];
+  if (out_width == 0 || out_height == 0 || out_width < width || out_height < height) {
+    return plain(window_.upscale_plain_no_color, 2,
+                 std::format("the output {}x{} is not at least the render size {}x{}", out_width,
+                             out_height, width, height));
+  }
   const TemporalMotion::Kept kept = motion_.kept();
   if (!kept.valid || kept.frame != fr.frame || !kept.depth || !kept.motion ||
       !kept.depth->texture || !kept.motion->texture || kept.depth->width != width ||
@@ -387,25 +449,27 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   constexpr plume::RenderFormat kOutputFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
   constexpr plume::RenderTextureFlags kOutputFlags =
       plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
-  if (output_.texture && (output_.width != width || output_.height != height)) {
+  if (output_.texture && (output_.width != out_width || output_.height != out_height)) {
     textures_->ReleaseOverrideViews();  // before the texture they name goes
   }
-  if (!passes_->EnsureImage(output_, width, height, kOutputFormat, "temporal upscaler output",
-                            kOutputFlags)) {
-    FailUpscaler(std::format("its {}x{} output image could not be made", width, height));
+  if (!passes_->EnsureImage(output_, out_width, out_height, kOutputFormat,
+                            "temporal upscaler output", kOutputFlags)) {
+    FailUpscaler(std::format("its {}x{} output image could not be made", out_width, out_height));
     return false;
   }
 
   TemporalInputs in;
   in.frame = fr.frame;
-  in.render_size[0] = in.output_size[0] = width;
-  in.render_size[1] = in.output_size[1] = height;
+  in.render_size[0] = width;
+  in.render_size[1] = height;
+  in.output_size[0] = out_width;
+  in.output_size[1] = out_height;
   in.color = {product->texture.get(), width, height, kOutputFormat, plume::RenderTextureFlag::NONE};
   in.depth = {kept.depth->texture.get(), kept.depth->width, kept.depth->height, kept.depth->format,
               kept.depth->flags};
   in.motion = {kept.motion->texture.get(), kept.motion->width, kept.motion->height,
                kept.motion->format, kept.motion->flags};
-  in.output = {output_.texture.get(), width, height, kOutputFormat, kOutputFlags};
+  in.output = {output_.texture.get(), out_width, out_height, kOutputFormat, kOutputFlags};
   in.jitter[0] = fr.jitter[0];
   in.jitter[1] = fr.jitter[1];
   // Development: the upscaler is told the jitter flipped (the convention check); the scene was
@@ -463,12 +527,13 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   stand_in.page = fetch.key.base_page ? fetch.key.base_page : fetch.key.mip_page;
   stand_in.texture = output_.texture.get();
   stand_in.format = kOutputFormat;
-  stand_in.scale = fr.scale;
+  stand_in.scale = fr.output_scale;  // the output's size, however small the scene was drawn
   textures_->SetOverride(stand_in);
   stand_in_set_ = true;
   fr.upscaled = true;
-  // The anchor's own colour fetch: the binding the stand-in gives this fetch's swizzle.
-  fr.anchor_color_slot = textures_->Bind2D(fetch, fr.scale, list).slot;
+  // The anchor's own colour fetch: the binding the stand-in gives this fetch's swizzle (the anchor
+  // draws at the output's scale).
+  fr.anchor_color_slot = textures_->Bind2D(fetch, fr.output_scale, list).slot;
   last_dispatch_frame_ = fr.frame;
   ++window_.upscaled;
   window_.upscale_resets += in.reset;
@@ -526,11 +591,13 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
   frame_ = FrameState{};
   frame_.frame = frame_number_;
   frame_.slot = slot;
-  // The upscaler's context, for the size the last accepted frame had (ratio 1): asked for while the
-  // upscaler is chosen and can run; the jitter waits for it, so a frame it cannot take never shakes.
+  // The upscaler's context, for the sizes the last accepted frame had (the scene at the render
+  // size, the output at the images of the screen's): asked for while the upscaler is chosen and can
+  // run; the jitter waits for it, so a frame it cannot take never shakes.
   frame_.upscaler = effective_;
   bool ready = false;
-  if (effective_ != Upscaler::kOff && backend_ && ran_last_ && last_render_size_[0] != 0) {
+  if (effective_ != Upscaler::kOff && backend_ && ran_last_ && last_render_size_[0] != 0 &&
+      last_output_size_[0] != 0) {
     BackendRequest request;
     MakeRequest(&request);
     backend_->Request(request);
@@ -542,11 +609,11 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
   if (ready != ready_reported_) {
     ready_reported_ = ready;
     if (ready) {
-      REXLOG_INFO("{} {} is ready for {}x{} ({} {}%): the jitter starts and the scene colour is "
-                  "replaced by its output",
+      REXLOG_INFO("{} {} is ready for {}x{} to {}x{} ({} {}%): the jitter starts and the scene "
+                  "colour is replaced by its output",
                   kPrefix, UpscalerName(effective_), request_.render_size[0],
-                  request_.render_size[1], ModeInfoOf(request_.mode).name,
-                  ModeInfoOf(request_.mode).percent);
+                  request_.render_size[1], request_.output_size[0], request_.output_size[1],
+                  ModeInfoOf(request_.mode).name, ModeInfoOf(request_.mode).percent);
     } else if (effective_ != Upscaler::kOff) {
       REXLOG_INFO("{} the upscaler's context is not ready: frames are plain until it is", kPrefix);
     }
@@ -555,7 +622,12 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
   // (F4-DESIGN.md 2.5); with an upscaler chosen, only while its context is ready.
   frame_.armed = ran_last_ && !disarmed_ && (effective_ == Upscaler::kOff || ready);
   if (frame_.armed) {
-    frame_.phase_count = kPhasesAtRatio1;  // 8 x ratio^2, ratio 1
+    // The sequence's length follows the ratio of the last accepted frame (8 at 1, 18 at 1.5, 32 at
+    // 2, 72 at 3): the upscaler's own count for its context when it has one.
+    frame_.ratio = (last_render_size_[0] != 0 && last_output_size_[0] != 0)
+                       ? double(last_output_size_[0]) / double(last_render_size_[0])
+                       : 1.0;
+    frame_.phase_count = JitterPhases(frame_.ratio, ready && backend_ ? backend_->JitterPhaseCount() : 0u);
     frame_.jitter_index = jitter_index_ % frame_.phase_count;
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down. (Development,
     // bit 2: the scene is not moved.)
@@ -806,6 +878,12 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   fr.guest_size[1] = camera.height;
   fr.render_size[0] = fr.scale.Edge(camera.width);
   fr.render_size[1] = fr.scale.Edge(camera.height);
+  // The anchor draws into an image of the screen (checked: its viewport is half the frame at its
+  // scale), so its scale is the output's, however much smaller the main view was drawn.
+  fr.output_scale = f.scale;
+  fr.output_size[0] = f.scale.Edge(camera.width);
+  fr.output_size[1] = f.scale.Edge(camera.height);
+  fr.ratio = fr.render_size[0] != 0 ? double(fr.output_size[0]) / double(fr.render_size[0]) : 1.0;
   for (uint32_t i = 0; i < 3; ++i) {
     f.view->FetchGroup(i, fr.anchor_textures.fetch[i]);
     fr.anchor_textures.table[i] = shared.texture_2d[i];
@@ -824,7 +902,8 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
       reset |= kResetTime;
     }
     if (last_camera_.width != camera.width || last_camera_.height != camera.height ||
-        last_scale_ != fr.scale) {
+        last_scale_ != fr.scale || last_output_size_[0] != fr.output_size[0] ||
+        last_output_size_[1] != fr.output_size[1]) {
       reset |= kResetSize;
     }
     cut = temporal::TestCut(camera, last_camera_, last_step_known_ ? last_step_ : nullptr);
@@ -1031,6 +1110,8 @@ void TemporalSystem::EndFrame() {
     last_scale_ = fr.scale;
     last_render_size_[0] = fr.render_size[0];
     last_render_size_[1] = fr.render_size[1];
+    last_output_size_[0] = fr.output_size[0];
+    last_output_size_[1] = fr.output_size[1];
     ++jitter_index_;  // advances in the frames the pass ran in only
   }
 

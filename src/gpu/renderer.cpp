@@ -758,7 +758,9 @@ void Renderer::ReportFrameStats() {
   const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
   const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
                            mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
-                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) + " MiB)";
+                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) +
+                           ", upscaler (output, depth, vectors, its own context) " +
+                           mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
       (vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
                          " MiB"

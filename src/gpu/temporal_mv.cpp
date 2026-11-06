@@ -18,6 +18,7 @@
 #include "format.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
+#include "texture_bytes.h"
 #include "textures.h"
 
 REXCVAR_DEFINE_STRING(
@@ -236,6 +237,25 @@ void TemporalMotion::Release() {
   ids_recorded_ = false;
   color_recorded_[0] = color_recorded_[1] = false;
   // Readbacks still in flight judge a copy of what they need and then free themselves.
+}
+
+uint64_t TemporalMotion::HeldBytes() const {
+  uint64_t bytes = 0;
+  const auto add = [&bytes](const HostImage& image) {
+    if (image.texture) {
+      bytes += TextureBytes(image.width, image.height, 1, image.format);
+    }
+  };
+  for (const HostImage& image : depth_) {
+    add(image);
+  }
+  for (const HostImage& image : color_) {
+    add(image);
+  }
+  add(motion_);
+  add(ids_);
+  add(check_);
+  return bytes;
 }
 
 void TemporalMotion::ReadSettings() {

@@ -130,6 +130,9 @@ class TemporalMotion {
   void Shutdown();
   // The switch went off: the images go (retired behind the frames that name them); the passes stay.
   void Release();
+  // The video memory the images hold now: the depth pair, the vectors, and what the checks and
+  // the debug views made.
+  uint64_t HeldBytes() const;
 
   // False once the passes could not be made (logged): TemporalSystem then records nothing.
   bool available() const { return initialized_ && !failed_; }

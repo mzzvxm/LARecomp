@@ -83,8 +83,10 @@ class TextureCache;
 class TemporalSystem {
  public:
   static constexpr double kReportSeconds = 5.0;
-  // Phases of the sequence at ratio 1: 8 x ratio^2, rounded up (F4-DESIGN.md 3).
+  // Phases of the sequence at ratio 1: 8 x ratio^2, rounded up (F4-DESIGN.md 3); at another
+  // ratio the runtime's own count (FFX's query for the sizes) or that formula (JitterPhases).
   static constexpr uint32_t kPhasesAtRatio1 = 8;
+  static constexpr uint32_t kMaxPhases = 128;
   // A longer gap between two anchors resets the history; the frame time is clamped to this.
   static constexpr double kMaxGapMs = 100.0;
   // Frames that were jittered, saw the main view, and had no accepted anchor, before the jitter is
@@ -166,7 +168,7 @@ class TemporalSystem {
     uint32_t jitter_index = 0;  // 0 .. phase_count - 1
     uint32_t phase_count = kPhasesAtRatio1;
     float jitter[2] = {};
-    double ratio = 1.0;  // output size over render size: 1 until the scene is drawn smaller
+    double ratio = 1.0;  // output size over render size, per axis: 1 until the scene is drawn smaller
 
     // The main view (2x samples, 1x without MSAA, before the anchor).
     Scale scale = Scale::None();  // of the first main view draw's targets
@@ -192,6 +194,10 @@ class TemporalSystem {
     float frame_time_ms = 1000.0f / 60.0f;  // between this anchor and the one before, 1 to 100
     uint32_t guest_size[2] = {};   // c62: the frame in guest pixels
     uint32_t render_size[2] = {};  // the main view in host pixels (guest size at the scene's scale)
+    // What the upscaler makes (F4-DESIGN.md 4): the anchor draws into an image of the screen, whose
+    // scale is the output's however much smaller the scene was drawn.
+    Scale output_scale = Scale::None();
+    uint32_t output_size[2] = {};  // the guest size at output_scale
     AnchorTextures anchor_textures;
 
     // The upscaler (step 2).
@@ -248,6 +254,10 @@ class TemporalSystem {
   const temporal::Camera* previous_camera() const { return ran_last_ ? &last_camera_ : nullptr; }
   // The depth and motion vector images kept for the last frame (temporal_mv.h Kept: sizes, formats).
   const TemporalMotion& motion() const { return motion_; }
+  // The video memory the temporal path holds now: the upscaler's output image, the depth and the
+  // vectors at the render size, and the runtime's own context as it reports it (about 500 MB at
+  // 4K for FSR). Render thread (the backend's status is read under its lock).
+  uint64_t HeldBytes() const;
 
  private:
   using Clock = std::chrono::steady_clock;
@@ -343,6 +353,9 @@ class TemporalSystem {
   // player's choice, read at BeginFrame.
   void ReadUpscalerChoice();
   void NoteMsaa();
+  // The jitter sequence's length for `ratio` (output over render): `from_runtime` is what the
+  // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
+  static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
   void MakeRequest(BackendRequest* request) const;
   // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
   // failure turns the upscaler off for the session.
@@ -365,8 +378,13 @@ class TemporalSystem {
   bool development_ = false;         // mcla_gpu_temporal, read each frame
   bool ready_reported_ = false;
   uint32_t debug_bits_ = 0;          // mcla_gpu_temporal_debug
-  HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, render size
+  HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, output size
   uint32_t last_render_size_[2] = {};  // of the last accepted frame
+  uint32_t last_output_size_[2] = {};  // ... and what the upscaler made of it
+  // The mode the scene was drawn for: the start's (gpu.h GetStartUpscale), whatever the setting says
+  // now. Native AA when no upscaler ran at the start (the scene is at the output's size).
+  UpscaleMode mode_in_use_ = UpscaleMode::kNativeAa;
+  uint32_t mode_note_key_ = ~0u;     // what ReadUpscalerChoice last said of the mode
   bool request_made_ = false;        // a context was asked for and not released
   BackendRequest request_;
   Clock::time_point off_since_{};
