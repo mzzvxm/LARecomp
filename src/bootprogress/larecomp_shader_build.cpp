@@ -192,7 +192,14 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
         reason_(std::move(reason)),
         log_folder_(std::move(log_folder)),
         retry_(std::move(retry)),
-        quit_(std::move(quit)) {}
+        quit_(std::move(quit)) {
+    // The first paragraph is for the player (the panel's large face); the rest is the build's own
+    // message, with paths and the compiler's words, in the small dim text.
+    if (const size_t split = reason_.find("\n\n"); split != std::string::npos) {
+      detail_ = reason_.substr(split + 2);
+      reason_.resize(split);
+    }
+  }
 
  protected:
   void OnDraw(ImGuiIO& io) override {
@@ -224,6 +231,10 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
       mcla::ui::PanelSubtitle(reason_.c_str());
       ImGui::Dummy(ImVec2(0.0f, 4.0f));
       ImGui::PushStyleColor(ImGuiCol_Text, mcla::ui::kColorTextDim);
+      if (!detail_.empty()) {
+        ImGui::TextWrapped("%s", detail_.c_str());
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+      }
       ImGui::TextWrapped("%s",
                          "The game needs these shaders to draw, and builds them from your game "
                          "files. Retry starts the build again from the beginning.");
@@ -257,6 +268,7 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
 
   bool cancelled_;
   std::string reason_;
+  std::string detail_;  // the build's own message, below the player's reason (may be empty)
   std::filesystem::path log_folder_;
   std::function<void()> retry_;
   std::function<void()> quit_;
@@ -269,6 +281,37 @@ std::string ShortReason(const std::string& message) {
   constexpr size_t kMax = 600;
   if (message.size() <= kMax) return message;
   return message.substr(0, kMax - 3) + "...";
+}
+
+// What the player reads first: what went wrong and what to do about it. The build's own message
+// (paths, the compiler's error) follows it, and the whole of it is in logs/shader_build.txt.
+std::string PlayerReason(const sp::BuildResult& result) {
+  const char* lead = nullptr;
+  switch (result.status) {
+    case sp::Status::kMissingDxc:
+    case sp::Status::kDxilNotSigned:
+      lead = "A file LARecomp needs is missing or damaged: the shader compiler in its D3D12 folder "
+             "(dxcompiler.dll and dxil.dll). Reinstall LARecomp, or copy that folder back from "
+             "the download.";
+      break;
+    case sp::Status::kMissingInput:
+      lead = "The game files could not be read. Check that the game folder is complete.";
+      break;
+    case sp::Status::kIoError:
+      lead = "The shaders could not be saved. Check that the disk has space and that the "
+             "folder can be written.";
+      break;
+    case sp::Status::kTranslateFailed:
+    case sp::Status::kCompileFailed:
+    case sp::Status::kContractFailed:
+      lead = "The shaders could not be built from your game files. This is a LARecomp bug: "
+             "please report it with the log file below.";
+      break;
+    default:
+      break;
+  }
+  if (lead == nullptr) return ShortReason(result.message);
+  return std::string(lead) + "\n\n" + ShortReason(result.message);
 }
 
 // Whether the stamp next to the packs vouches for them (and so whether Startup may attach them).
@@ -380,7 +423,7 @@ void Phase::Run() {
     reason_ = "You stopped the shader build.";
   } else {
     kind_ = Kind::kFailed;
-    reason_ = ShortReason(result.message);
+    reason_ = PlayerReason(result);
   }
 }
 
