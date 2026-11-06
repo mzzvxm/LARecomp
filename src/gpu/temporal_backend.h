@@ -65,6 +65,11 @@ bool ModeRuns(Upscaler upscaler, UpscaleMode mode);
 // run only makes that list longer than it had to be.
 bool MayDrawSceneSmaller();
 
+// TEST ONLY (mcla_gpu_upscaler_tonemap, read once at the first call: a start-up switch): whether the
+// upscalers work on the tone mapped scene (temporal_tonemap.h) or, as before it, on the linear one
+// told to be HDR. The temporal system and both backends ask this one function, so they agree.
+bool UpscalerToneMapEnabled();
+
 // What the settings say now (cvars read; a mode that cannot run is Native AA).
 struct UpscalerSettings {
   Upscaler upscaler = Upscaler::kOff;  // as saved, before the PC's availability is applied

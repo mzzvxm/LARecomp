@@ -58,6 +58,14 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_upscaler_tonemap, true, "MCLA/GPU",
+    "TEST ONLY, for measuring, not a setting: the upscalers work on the scene compressed with "
+    "c / (1 + max(r, g, b)), are told their input is not HDR, and their output is expanded again "
+    "(the cure for sub-pixel highlights that blink with the jitter). Off: they get the linear "
+    "scene colour as before, told it is HDR. Takes effect at the next start.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DECLARE(std::string, mcla_gpu_msaa);  // edram.cpp
 
 namespace mcla::gpu {
@@ -172,6 +180,18 @@ UpscalerSettings ReadUpscalerSettings() {
   out.mode = ModeRuns(out.upscaler, parsed) ? parsed : UpscaleMode::kNativeAa;
   out.sharpness = float(std::clamp(REXCVAR_GET(mcla_gpu_upscaler_sharpness), 0.0, 1.0));
   return out;
+}
+
+bool UpscalerToneMapEnabled() {
+  // Read once: the temporal system and both backends must always agree on what the input is.
+  static const bool enabled = [] {
+    const bool on = REXCVAR_GET(mcla_gpu_upscaler_tonemap);
+    REXLOG_INFO("[gpu] temporal: the tone map around the upscalers is {} (mcla_gpu_upscaler_tonemap, "
+                "test only)",
+                on ? "on" : "OFF: the upscalers get the linear scene colour, told it is HDR");
+    return on;
+  }();
+  return enabled;
 }
 
 bool MayDrawSceneSmaller() {

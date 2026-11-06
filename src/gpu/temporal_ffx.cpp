@@ -507,7 +507,10 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
   // CHECK: the picture and the highlight flicker against FFX_UPSCALE_ENABLE_AUTO_EXPOSURE left out
   // (the guide lists the exposure image as optional only with that flag, so an exposure image of 1.0
   // would have to be given: not tried).
-  const uint32_t flags = FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+  // TEST ONLY (mcla_gpu_upscaler_tonemap off): the linear scene colour, HDR as before.
+  const uint32_t hdr =
+      UpscalerToneMapEnabled() ? 0u : uint32_t(FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE);
+  const uint32_t flags = hdr | FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
   context->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
   context->upscale.flags = flags;
   context->upscale.maxRenderSize = {request.render_size[0], request.render_size[1]};
