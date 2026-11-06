@@ -86,6 +86,29 @@ class Rpf3Reader {
     // Raw on-disk bytes of a file entry (still LZX-compressed for resources).
     bool ReadFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const;
 
+    // The root directory, entry 0 of the table. False for an archive that has
+    // not been opened.
+    bool Root(Rpf3Entry& out) const;
+
+    // Every child of `directory`, in table order (ascending hash). `directory`
+    // is an entry that came out of this reader (Root, Children, Find...): the
+    // children are located by the first-child index and count it carries. False
+    // for a file entry or a child range that runs past the table.
+    bool Children(const Rpf3Entry& directory, std::vector<Rpf3Entry>& out) const;
+
+    // A plain file (not a resource) as the engine's own reader hands it out.
+    // One stored compressed has bit 30 of its flag set, the length of the
+    // deflate stream in the low thirty bits and `size` the length once
+    // inflated; the stream is raw deflate, with no zlib header. The inflated
+    // length has to be exactly `size`, otherwise the read fails (a short or
+    // overlong stream means the table or the archive is not what this reader
+    // assumes). A file stored plain is `size` bytes at its offset. False for a
+    // directory or a resource.
+    bool ReadPlainFile(const Rpf3Entry& entry, std::vector<uint8_t>& out) const;
+
+    // Number of entries in the table (the root, directories and files).
+    size_t entry_count() const { return entries_.size(); }
+
     // Every child of one directory, in TOC order. The TOC keeps hashes and not
     // names, so what comes back can be copied but not printed -- which is
     // exactly what cloning a donor car's folder needs: several of its parts are
@@ -95,6 +118,9 @@ class Rpf3Reader {
     const std::filesystem::path& path() const { return path_; }
 
  private:
+    // `size` bytes at byte `offset` of the archive file. Clears `out` on failure.
+    bool ReadAt(uint64_t offset, size_t size, std::vector<uint8_t>& out) const;
+
     std::filesystem::path path_;
     std::vector<Rpf3Entry> entries_;
 };
