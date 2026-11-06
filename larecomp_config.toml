@@ -27436,3 +27436,19 @@ address = 0x8279ABF0
 name = "VehicleRecords_8279ABF0"
 registers = ["r8"]
 after_instruction = true
+
+# The garage's showroom past 70 rows: showroom.cpp. 0x8269381C is where the statechart loader
+# (sub_82692440) goes on after sscanf'ing an <include>'s count into r1+0x54; the hook raises the
+# count of the showroom's template to the roster.
+[[midasm_hook]]
+address = 0x8269381C
+name = "ShowroomRows_8269381C"
+registers = ["r1"]
+
+# `addi r15,r14,0x6C` in mcGarage::ListShowroomVehicles: the pointer into the garage's name pool
+# that the loop walks, moved to a block sized to the roster.
+[[midasm_hook]]
+address = 0x826A9EA8
+name = "ShowroomNames_826A9EA8"
+registers = ["r15"]
+after_instruction = true

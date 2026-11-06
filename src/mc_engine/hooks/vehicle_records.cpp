@@ -32,6 +32,7 @@
 // 77, and the records past that go to mc4_vehicle_records.bin next to the save's
 // content folder - not inside it, since a CREATE_ALWAYS save wipes that folder.
 // Loading copies the 77 back and appends the rest when the file matches the save.
+// The showroom's own limits are in showroom.cpp.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
