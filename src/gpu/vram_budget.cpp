@@ -34,6 +34,10 @@ void VideoMemoryBudget::Initialize(Device& device, TextureCache& textures, Resol
   last_log_ = device.frame();
   short_ = false;
   window_ = Window{};
+  last_check_time_ = std::chrono::steady_clock::now();
+  last_check_frame_ = device.frame();
+  frames_per_second_ = 0.0;
+  lazy_checks_ = 0;
 }
 
 void VideoMemoryBudget::Shutdown() {
@@ -61,6 +65,7 @@ void VideoMemoryBudget::BeginFrame() {
   }
   next_check_ = frame + kCheckFrames;
 
+  NoteFrameRate(frame);
   const backend::VideoMemory memory = Sample();
   const uint64_t failed = device_->TakeFailedBytes();
   window_.skipped += device_->TakeSkipped();
@@ -77,6 +82,7 @@ void VideoMemoryBudget::BeginFrame() {
   }
   if (need == 0) {
     short_ = false;
+    ReleaseIdleTargets();
     if (window_.any() && frame >= last_log_ + kLogFrames) {
       LogReleased(memory);
     }
@@ -105,6 +111,40 @@ void VideoMemoryBudget::BeginFrame() {
   if (window_.any() && frame >= last_log_ + kLogFrames) {
     LogReleased(memory);
   }
+}
+
+void VideoMemoryBudget::NoteFrameRate(uint64_t frame) {
+  const auto now = std::chrono::steady_clock::now();
+  if (last_check_frame_ != 0 && frame > last_check_frame_) {
+    const double seconds = std::chrono::duration<double>(now - last_check_time_).count();
+    if (seconds > 0.0) {
+      const double fps = double(frame - last_check_frame_) / seconds;
+      // A pause (a minimised window, a stall) reads as a very low rate: the
+      // minimum number of frames covers it.
+      frames_per_second_ = frames_per_second_ == 0.0 ? fps : frames_per_second_ * 0.8 + fps * 0.2;
+    }
+  }
+  last_check_time_ = now;
+  last_check_frame_ = frame;
+}
+
+void VideoMemoryBudget::ReleaseIdleTargets() {
+  if (++lazy_checks_ < kLazyEveryChecks) {
+    return;
+  }
+  lazy_checks_ = 0;
+  const uint64_t idle = std::max<uint64_t>(
+      kLazyMinIdleFrames, uint64_t(frames_per_second_ * kLazyIdleSeconds));
+  const TrimResult released = edram_->Trim(idle, UINT64_MAX, kMaxItems);
+  if (released.items == 0) {
+    return;
+  }
+  REXLOG_INFO("[gpu] video memory: released {} EDRAM targets ({:.1f} MiB) that nothing used for "
+              "{} frames (about {:.0f} s), with no shortage; each is made again, cleared, when its "
+              "identity is next used | held now: EDRAM targets {:.0f} MiB",
+              released.items, double(released.bytes) * kMiB, idle,
+              frames_per_second_ > 0.0 ? double(idle) / frames_per_second_ : 0.0,
+              double(edram_->HeldBytes()) * kMiB);
 }
 
 uint64_t VideoMemoryBudget::Trim(uint64_t need) {
