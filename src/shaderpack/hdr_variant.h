@@ -21,12 +21,47 @@
 //                r0.z = HdrToneLd(r1.x, White.x, g_HdrScene);
 //   5. the last assignment:
 //                oC0.xyz = HdrFinish(<the game's encode>.xyz);
+//
+// The result is compiled for spec variant 0 only (the draw that qualifies has no alpha test) with
+// the pack's usual dxc arguments, and written to mcla_shaders_hdr.v1.pack (MSHV v1; the constants
+// are pack_format.h's, the reader is src/gpu/shaders.cpp LoadHdrVariants). One entry: the tone map's
+// identity, the identities of the two post effect vertex shaders it may be drawn with, and its DXIL
+// and SPIR-V blobs (a format the main pack was not built with has a zero blob record).
+//
+// The curve itself is src/gpu/hlsl/hdr_tonemap_shoulder.hlsli of the HDR feature (branch
+// feat/hdr-scene); it is not part of this code. CMake embeds it into the library when the file
+// exists (src/shaderpack/CMakeLists.txt, cache variable LARECOMP_HDR_HLSLI), so the pack always
+// matches the curve of the build that wrote it and the stamp carries its hash. A build without the
+// file has no step: CreateHdrStep() returns null, the builder writes no HDR pack and no hdr_* stamp
+// lines, and the renderer stays at HDR stage 2 (which it allows).
+//
+// A step that fails fails the HDR pack only, never the main build (builder.h).
 // ===========================================================================
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
+#include "shaderpack/builder.h"
+
 namespace larecomp::shaderpack {
+
+// Hand bumped: the edits, the checks or the layout of this step. It is one of the stamp's hdr_*
+// lines, so changing it rebuilds the HDR pack alone.
+inline constexpr uint32_t kHdrStepVersion = 1;
+
+// The step for a build that has the curve embedded; null when it has none (HdrStepUnavailableReason()
+// says why, for a log line).
+std::unique_ptr<HdrStep> CreateHdrStep();
+std::string HdrStepUnavailableReason();  // empty when CreateHdrStep() returns a step
+
+// The step with the curve given as text instead of the embedded one (tests, a tool option).
+std::unique_ptr<HdrStep> CreateHdrStepFromText(std::string_view hlsli_text);
+
+// ---------------------------------------------------------------------------
+// The text transform alone (pure; public for tests)
+// ---------------------------------------------------------------------------
 
 struct HdrTransformResult {
   bool ok = false;

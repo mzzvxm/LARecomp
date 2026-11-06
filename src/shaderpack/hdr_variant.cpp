@@ -5,13 +5,36 @@
 
 #include <array>
 #include <cstddef>
+#include <exception>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
+
+#include "native_gfx/shader_identity.h"
+#include "shaderpack/contract_checks.h"
+#include "shaderpack/hash.h"
+#include "shaderpack/hlsl_source.h"
+#include "shaderpack/log.h"
+#include "shaderpack/pack_format.h"
+#include "shaderpack/pack_writer.h"
+
+#ifdef LARECOMP_HDR_HLSLI_EMBEDDED
+namespace {
+// hdr_tonemap_shoulder.hlsli, turned into bytes by CMake (src/shaderpack/CMakeLists.txt), with a
+// closing 0 that is not part of the file (so that even an empty file makes an array).
+const unsigned char kEmbeddedCurve[] = {
+#include "hdr_hlsli_bytes.inc"
+};
+}  // namespace
+#endif
 
 namespace larecomp::shaderpack {
 
@@ -217,6 +240,311 @@ HdrTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_view 
   result.ok = true;
   result.hlsl = std::move(text);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// The step
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A shader the variant needs, by its identity on the retail game (FNV-1a 64 of the vertex-fetch
+// normalised microcode, the runtime's own) and by its name (the group and entry point of the .updb
+// path inside the container, as the translator names its HLSL files).
+struct Target {
+  std::string_view name;
+  uint64_t key;
+};
+constexpr Target kPixelTarget = {"xrage_postfx__PSToneMap", 0xBC5F0EED0A746DEAull};
+// The vertex shaders the tone map is drawn with: they make its uv and the adapted luminance (the
+// second also the screen position the fog variants use). Which one the game pairs it with is told by
+// the renderer's own check; the runtime requires one of these. The order is the pack's: slot 0, 1.
+constexpr Target kVertexTargets[] = {
+    {"xrage_postfx__VS_ragePassThroughNoXform4TexOnly", 0xF097B3E9236CB05Aull},
+    {"xrage_postfx__VS_ragePassThroughNoXform4TexAndScrPos", 0xF25FA84098BACE43ull},
+};
+static_assert(std::size(kVertexTargets) <= kHdrVertexShaders);
+
+// By identity first; when the game is not the retail one, by name, which has to be unique.
+// CHECK: the Python looks the name up among the executable's containers only; this looks in every
+// container read, so a second shader of the same name in the RPF makes the fallback fail where the
+// Python would not (the identity lookup, which decides on the retail game, is not affected).
+const ShaderSource* ResolveTarget(const ContainerSet& set, const Target& target, ShaderStage stage,
+                                  std::string* error) {
+  if (const ShaderSource* by_key = set.Find(target.key); by_key && by_key->stage == stage) return by_key;
+  const ShaderSource* found = nullptr;
+  size_t count = 0;
+  for (const ShaderSource& shader : set.shaders) {
+    if (shader.name != target.name) continue;
+    ++count;
+    found = &shader;
+  }
+  if (count != 1) {
+    *error = std::format("{}: identity {} is not in the game's shaders and {} shaders have that name (need one)",
+                         target.name, Hex64(target.key), count);
+    return nullptr;
+  }
+  if (found->stage != stage) {
+    *error = std::format("{} is not {} shader", target.name, stage == ShaderStage::kPixel ? "a pixel" : "a vertex");
+    return nullptr;
+  }
+  SHADERPACK_LOG_WARN("HDR variant: {} was found by its name ({}), not by its known identity {}", target.name,
+                      Hex64(found->key), Hex64(target.key));
+  return found;
+}
+
+void Put32(std::vector<uint8_t>& out, uint32_t value) {
+  for (int shift = 0; shift < 32; shift += 8) out.push_back(uint8_t(value >> shift));
+}
+
+void Put64(std::vector<uint8_t>& out, uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) out.push_back(uint8_t(value >> shift));
+}
+
+struct HdrPackEntry {
+  uint64_t ps_key = 0;
+  std::array<uint64_t, kHdrVertexShaders> vs_keys{};  // 0 = none
+  std::vector<uint8_t> dxil;                          // empty: the format was not built
+  std::vector<uint8_t> spirv;
+};
+
+// header | entries | blobs, as build_hdr_variants.py writes it (pack_format.h has the layout).
+// `entries` are in increasing ps key order. False with *error when a size does not fit.
+bool LayOutHdrPack(std::span<const HdrPackEntry> entries, uint32_t formats, std::vector<uint8_t>* out,
+                   std::string* error) {
+  out->clear();
+  out->insert(out->end(), kHdrPackMagic, kHdrPackMagic + 4);
+  Put32(*out, kHdrPackVersion);
+  Put32(*out, uint32_t(entries.size()));
+  Put32(*out, formats);
+  Put32(*out, kHdrContract);
+  Put32(*out, kPackVersion);  // the main pack the variants were built beside
+  Put32(*out, 0);
+  Put32(*out, 0);
+
+  const uint64_t blob_base = uint64_t(kHdrPackHeaderBytes) + uint64_t(entries.size()) * kHdrPackEntryBytes;
+  std::vector<uint8_t> blobs;
+  for (const HdrPackEntry& entry : entries) {
+    const size_t entry_start = out->size();
+    Put64(*out, entry.ps_key);
+    for (const uint64_t vs_key : entry.vs_keys) Put64(*out, vs_key);
+    Put32(*out, 0);  // flags
+    Put32(*out, 0);  // reserved
+    for (const std::vector<uint8_t>* blob : {&entry.dxil, &entry.spirv}) {
+      if (blob->empty()) {
+        Put32(*out, 0);
+        Put32(*out, 0);
+        Put64(*out, 0);
+        continue;
+      }
+      const uint64_t offset = blob_base + blobs.size();
+      if (offset + blob->size() > kMaxPackBytes) {
+        *error = "the HDR pack would pass 4 GiB (blob offsets are 32 bit)";
+        return false;
+      }
+      Put32(*out, uint32_t(offset));
+      Put32(*out, uint32_t(blob->size()));
+      Put64(*out, mcla::native_gfx::Fnv1a64(blob->data(), blob->size()));
+      blobs.insert(blobs.end(), blob->begin(), blob->end());
+    }
+    if (out->size() - entry_start != kHdrPackEntryBytes) {
+      *error = "internal error: an HDR pack entry is not 80 bytes";
+      return false;
+    }
+  }
+  out->insert(out->end(), blobs.begin(), blobs.end());
+  return true;
+}
+
+std::string PathText(const std::filesystem::path& path) {
+  const auto u8 = path.u8string();  // never throws, unlike path::string() on a non-ANSI path
+  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+std::string JoinProblems(const Problems& problems) {
+  std::string text;
+  for (const std::string& problem : problems) {
+    if (!text.empty()) text += '\n';
+    text += problem;
+  }
+  return text;
+}
+
+bool BytesContain(std::span<const uint8_t> bytes, std::string_view needle) {
+  return std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()).find(needle) !=
+         std::string_view::npos;
+}
+
+class HdrStepImpl final : public HdrStep {
+ public:
+  explicit HdrStepImpl(std::string curve) : curve_(std::move(curve)), curve_xxh3_(Xxh3(curve_)) {}
+
+  std::vector<StampLine> ExpectedStampLines() const override {
+    return {
+        {"hdr_step_version", std::to_string(kHdrStepVersion)},
+        {"hdr_pack_version", std::to_string(kHdrPackVersion)},
+        {"hdr_contract", std::to_string(kHdrContract)},
+        {"hdr_hlsli_xxh3", Hex64(curve_xxh3_)},
+    };
+  }
+
+  HdrStepResult Build(const HdrStepInput& input) override {
+    HdrStepResult result;
+    try {
+      BuildChecked(input, &result);
+    } catch (const std::exception& exception) {
+      Fail(&result, std::string("the HDR variant could not be built: ") + exception.what());
+    } catch (...) {
+      Fail(&result, "the HDR variant could not be built: unknown exception");
+    }
+    return result;
+  }
+
+ private:
+  static void Fail(HdrStepResult* result, std::string message) {
+    result->built = false;
+    result->message = std::move(message);
+    result->stamp_lines.clear();
+  }
+
+  void BuildChecked(const HdrStepInput& input, HdrStepResult* result) const {
+    const std::filesystem::path final_path = input.out_dir / kHdrPackFileName;
+    const std::filesystem::path temporary_path = input.out_dir / (std::string(kHdrPackFileName) + ".tmp");
+    {
+      // Whatever HDR pack is there was built beside a main pack that is being replaced (or from an
+      // older transform): it must not be read while this step runs or when it fails.
+      std::error_code ec;
+      std::filesystem::remove(final_path, ec);
+      std::filesystem::remove(temporary_path, ec);
+    }
+    const auto fail = [&](std::string message) {
+      std::error_code ec;
+      std::filesystem::remove(temporary_path, ec);
+      Fail(result, std::move(message));
+    };
+
+    const uint32_t formats = input.formats & (kDxil | kSpirv);
+    if (!input.containers || !input.dxc || !input.sink) return fail("the HDR step was not given its inputs");
+    if (formats == 0) return fail("no shader format was asked for");
+    ProgressSink& sink = *input.sink;
+    sink.BeginPhase("Preparing the HDR scene shader", 1);
+
+    // 1. The shaders: the tone map and the vertex shaders it may be drawn with.
+    std::string error;
+    const ShaderSource* pixel = ResolveTarget(*input.containers, kPixelTarget, ShaderStage::kPixel, &error);
+    if (!pixel) return fail(error);
+    HdrPackEntry entry;
+    entry.ps_key = pixel->key;
+    std::string vertex_keys_text;
+    for (size_t i = 0; i < std::size(kVertexTargets); ++i) {
+      const ShaderSource* vertex = ResolveTarget(*input.containers, kVertexTargets[i], ShaderStage::kVertex, &error);
+      if (!vertex) return fail(error);
+      entry.vs_keys[i] = vertex->key;
+      if (i != 0) vertex_keys_text += ',';
+      vertex_keys_text += Hex64(vertex->key);
+    }
+
+    // 2. The tone map's HLSL (the translator's own text, as the pack's main build compiles it) and the edits.
+    TranslatedShader translated;
+    if (!TranslateContainer(pixel->container, &translated, &error)) return fail(pixel->name + ": " + error);
+    if (translated.stage != ShaderStage::kPixel) return fail(pixel->name + " is not a pixel shader");
+    const HdrTransformResult variant = TransformToneMapHlsl(translated.hlsl, curve_);
+    if (!variant.ok) return fail(pixel->name + ": " + variant.error);
+    if (sink.Cancelled()) return fail("The shader build was cancelled.");
+
+    // 3. The blobs: spec variant 0 (no alpha test), the formats of the main pack, the same dxc
+    // arguments as every other pixel shader of the pack (dxc.h).
+    DxcStatus status;
+    const std::unique_ptr<DxcWorker> worker = input.dxc->CreateWorker(&status);
+    if (!worker) return fail("the shader compiler could not start a worker: " + status.message);
+    const std::string label = std::format("{} [{}] (HDR variant)", pixel->name, Hex64(pixel->key));
+    CompileRequest request;
+    request.hlsl = variant.hlsl;
+    request.stage = ShaderStage::kPixel;
+    request.spec_constants = 0;
+    request.name = label;
+    if ((formats & kDxil) != 0) {
+      status = worker->CompileDxil(request, &entry.dxil);
+      if (!status.ok()) return fail(status.message);
+    }
+    if (sink.Cancelled()) return fail("The shader build was cancelled.");
+    if ((formats & kSpirv) != 0) {
+      status = worker->CompileSpirv(request, &entry.spirv);
+      if (!status.ok()) return fail(status.message);
+    }
+
+    // 4. What the runtime relies on, read back from the blobs: the colour output is there, and no
+    // coverage output, sample mask or specialization constant (this is the draw without alpha to coverage).
+    if (!entry.dxil.empty() && !BytesContain(entry.dxil, "SV_Target")) {
+      return fail(label + ": the DXIL has no SV_Target");
+    }
+    Problems problems;
+    BlobContractInput blob;
+    blob.name = label;
+    blob.stage = ShaderStage::kPixel;
+    blob.variant = 0;
+    blob.writes_oc0 = false;
+    blob.dxil = entry.dxil;
+    blob.spirv = entry.spirv;
+    if (!CheckBlobContract(blob, &problems)) return fail(JoinProblems(problems));
+
+    // 5. The file, under a temporary name and then moved into place.
+    std::vector<uint8_t> bytes;
+    const HdrPackEntry entries[] = {entry};
+    if (!LayOutHdrPack(entries, formats, &bytes, &error)) return fail(error);
+    {
+      std::ofstream file(temporary_path, std::ios::binary | std::ios::trunc);
+      if (file) file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+      if (file) file.flush();
+      if (!file) return fail("the HDR pack could not be written to " + PathText(temporary_path));
+    }
+    if (!CommitFile(temporary_path, final_path, &error)) return fail(error);
+
+    // 6. What it was built from.
+    result->built = true;
+    result->message = std::format("{} (vs {}): DXIL {} bytes, SPIR-V {} bytes, {} bytes in all", label,
+                                  vertex_keys_text, entry.dxil.size(), entry.spirv.size(), bytes.size());
+    result->stamp_lines = ExpectedStampLines();
+    // Informational (CheckStamp compares only the lines above).
+    result->stamp_lines.push_back({"hdr_ps_key", Hex64(entry.ps_key)});
+    result->stamp_lines.push_back({"hdr_vs_keys", vertex_keys_text});
+    result->stamp_lines.push_back({"hdr_pack_xxh3", Hex64(Xxh3(bytes.data(), bytes.size()))});
+    sink.Step(pixel->name);
+    SHADERPACK_LOG_INFO("HDR variant pack: {}", result->message);
+  }
+
+  std::string curve_;
+  uint64_t curve_xxh3_ = 0;
+};
+
+// The embedded curve, or empty text when this build has none.
+std::string EmbeddedCurve() {
+#ifdef LARECOMP_HDR_HLSLI_EMBEDDED
+  return std::string(reinterpret_cast<const char*>(kEmbeddedCurve), sizeof(kEmbeddedCurve) - 1);
+#else
+  return std::string();
+#endif
+}
+
+}  // namespace
+
+std::unique_ptr<HdrStep> CreateHdrStepFromText(std::string_view hlsli_text) {
+  if (hlsli_text.empty()) return nullptr;
+  return std::make_unique<HdrStepImpl>(std::string(hlsli_text));
+}
+
+std::unique_ptr<HdrStep> CreateHdrStep() {
+  return CreateHdrStepFromText(EmbeddedCurve());
+}
+
+std::string HdrStepUnavailableReason() {
+  if (!EmbeddedCurve().empty()) return std::string();
+#ifdef LARECOMP_HDR_HLSLI_EMBEDDED
+  return "the embedded HDR curve file is empty";
+#else
+  return "this build has no HDR curve embedded (src/gpu/hlsl/hdr_tonemap_shoulder.hlsli was not in the "
+         "source tree when CMake configured; LARECOMP_HDR_HLSLI can name another file)";
+#endif
 }
 
 }  // namespace larecomp::shaderpack
