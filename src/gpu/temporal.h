@@ -224,6 +224,13 @@ class TemporalSystem {
     // The post chain before the anchor reads the previous frame's output (StandInForPostChain).
     bool post_checked = false;           // the frame's first main view draw decided
     bool post_on_previous = false;
+
+    // Probe (log only): vertex shader constants of some main view draws, for the camera the anchor
+    // finds later in the frame (temporal_camera.h VsMatrices).
+    static constexpr uint32_t kProbeSamples = 12;
+    static constexpr uint32_t kProbeEvery = 64;  // one coloured main view draw in this many
+    std::array<temporal::VsMatrices, kProbeSamples> probe;
+    uint32_t probe_count = 0;
   };
 
   // True while an upscaler was chosen and able to run at the start of the frame being recorded: the
@@ -298,6 +305,14 @@ class TemporalSystem {
     uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
     uint64_t upscale_resets = 0;           // upscaled frames the history started again in
     uint64_t post_on_previous = 0;         // frames whose post chain read the previous output
+    // The probe: frames with samples, and in how many of them (and of the samples) the main view's
+    // vertex constants held the anchor's view inverse and WorldView * projection = WorldViewProj.
+    uint64_t probe_frames = 0;
+    uint64_t probe_view_inverse_frames = 0;
+    uint64_t probe_projection_frames = 0;
+    uint64_t probe_samples = 0;
+    uint64_t probe_view_inverse_samples = 0;
+    uint64_t probe_projection_samples = 0;
     // The last accepted camera, for the line.
     bool have_camera = false;
     temporal::Camera camera;
@@ -361,6 +376,8 @@ class TemporalSystem {
   // The anchor did not upscale the frame: what the post chain was given goes, the tone map and
   // the rest read this frame's own product.
   void DropPostStandIn();
+  // The probe (log only): what the main view's vertex constants say against the anchor's camera.
+  void RunProbe();
   void FailUpscaler(const std::string& why);
   void ReleaseUpscaler();
   void ClearStandIn();
@@ -405,6 +422,7 @@ class TemporalSystem {
   uint32_t last_stand_in_page_ = 0;
   Scale last_stand_in_scale_ = Scale::None();
   bool post_stand_in_reported_ = false;
+  uint32_t probe_lines_ = 0;
   uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
   bool aa_hold_reported_ = false;
   uint32_t msaa_key_ = ~0u;          // the game's MSAA and the upscaler, as last said (NoteMsaa)

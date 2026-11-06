@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 
 #include "records.h"
 
@@ -61,6 +62,49 @@ Mat4 ClipToPixels(double width, double height) {
   m.m[3][1] = height * 0.5;
   m.m[3][3] = 1.0;
   return m;
+}
+
+void ReadVsMatrices(const uint8_t* vs_bank, VsMatrices* out) {
+  const auto read = [&](uint32_t first, float* dest) {
+    for (uint32_t r = 0; r < 4; ++r) {
+      for (uint32_t c = 0; c < 4; ++c) {
+        dest[r * 4 + c] = Reg(vs_bank, first + r, c);
+      }
+    }
+  };
+  read(0, out->world);
+  read(4, out->world_view);
+  read(8, out->world_view_projection);
+  read(12, out->view_inverse);
+}
+
+VsProbe CompareVsMatrices(const VsMatrices& vs, const Camera& cam) {
+  const auto to_mat = [](const float* f) {
+    Mat4 m;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        m.m[r][c] = double(f[r * 4 + c]);
+      }
+    }
+    return m;
+  };
+  constexpr double kInfinity = std::numeric_limits<double>::infinity();
+  VsProbe probe;
+  const Mat4 view_inverse = to_mat(vs.view_inverse);
+  const Mat4 world_view = to_mat(vs.world_view);
+  const Mat4 wvp = to_mat(vs.world_view_projection);
+  probe.view_inverse = Finite(view_inverse)
+                           ? MaxAbsDiff(view_inverse, cam.view_inverse) /
+                                 std::max(1.0, RowMax(cam.view_inverse, 3))
+                           : kInfinity;
+  probe.projection = Finite(world_view) && Finite(wvp)
+                         ? MaxAbsDiff(Mul(world_view, cam.projection), wvp) /
+                               std::max(1e-30, MaxAbs(wvp))
+                         : kInfinity;
+  if (!(probe.projection == probe.projection)) {
+    probe.projection = kInfinity;  // NaN
+  }
+  return probe;
 }
 
 Mat4 CameraToPreviousPixels(const Camera& now, const Camera& before) {

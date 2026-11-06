@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <string>
 
 #include <rex/cvar.h>
@@ -129,6 +130,7 @@ void TemporalSystem::SetEnabled(bool enabled) {
   last_dispatch_frame_ = ~uint64_t(0);
   last_stand_in_product_ = nullptr;
   post_stand_in_reported_ = false;
+  probe_lines_ = 0;
   plain_logged_.fill(false);
   if (enabled) {
     REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
@@ -416,10 +418,11 @@ void TemporalSystem::StandInForPostChain() {
   // The post chain's first reads of the scene colour come before the anchor, so before this frame's
   // upscale (temporal.h, "The post chain before the anchor"). The upscale needs this frame's camera
   // and the anchor's own fetches, and the camera is known only at the anchor's draw (nothing before
-  // it carries one in a form that has been verified); so those reads are given what the previous
-  // frame's upscale made: the output image still holds it, and the stand-in the anchor sets later
-  // is the same image with this frame's picture in it. Nothing before the anchor writes the image,
-  // so the draws recorded before and after it see the frame before's and this frame's picture each.
+  // it carries one in a form that has been verified: RunProbe asks the main view's vertex
+  // constants); so those reads are given what the previous frame's upscale made: the output image
+  // still holds it, and the stand-in the anchor sets later is the same image with this frame's
+  // picture in it. Nothing before the anchor writes the image, so the draws recorded before and
+  // after it see the frame before's and this frame's picture each.
   // CHECK: that the half-size downsample (sub_8260DA68's first sub_8260D678 call, dofObj+92 into
   // dofObj+12, read in the recompiled guest code, not seen in a draw log) is the only reader of
   // the scene colour product before the anchor; any other one is redirected the same way and
@@ -465,6 +468,43 @@ void TemporalSystem::StandInForPostChain() {
                 "frame late. The scene is drawn at {}x{} for an output of {}x{}",
                 kPrefix, last_render_size_[0], last_render_size_[1], last_output_size_[0],
                 last_output_size_[1]);
+  }
+}
+
+void TemporalSystem::RunProbe() {
+  // Log only. The upscale could run before the post chain if the camera existed there: the
+  // fork's frame capture says the main view's vertex constants hold the view inverse and
+  // World x View x Projection (temporal_camera.h VsMatrices); this says whether LARecomp's draws
+  // do, against the camera the anchor reads in the same frame.
+  FrameState& fr = frame_;
+  if (fr.probe_count == 0) {
+    return;
+  }
+  uint32_t view_inverse = 0;
+  uint32_t projection = 0;
+  double best_view_inverse = std::numeric_limits<double>::infinity();
+  double best_projection = std::numeric_limits<double>::infinity();
+  for (uint32_t i = 0; i < fr.probe_count; ++i) {
+    const temporal::VsProbe p = temporal::CompareVsMatrices(fr.probe[i], fr.camera);
+    view_inverse += p.ViewInverseMatches() ? 1u : 0u;
+    projection += p.ProjectionMatches() ? 1u : 0u;
+    best_view_inverse = std::min(best_view_inverse, p.view_inverse);
+    best_projection = std::min(best_projection, p.projection);
+  }
+  Window& w = window_;
+  ++w.probe_frames;
+  w.probe_samples += fr.probe_count;
+  w.probe_view_inverse_samples += view_inverse;
+  w.probe_projection_samples += projection;
+  w.probe_view_inverse_frames += view_inverse != 0 ? 1u : 0u;
+  w.probe_projection_frames += projection != 0 ? 1u : 0u;
+  if (probe_lines_ < 8 && fr.frame % 600 == 100) {
+    ++probe_lines_;
+    REXLOG_INFO("{} probe, frame {}: of {} main view draws sampled, c12-c15 = the anchor's view "
+                "inverse in {} (best difference {:.3g}), c4-c7 x projection = c8-c11 in {} (best "
+                "difference {:.3g})",
+                kPrefix, fr.frame, fr.probe_count, view_inverse, best_view_inverse, projection,
+                best_projection);
   }
 }
 
@@ -907,6 +947,10 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
       fr.post_checked = true;
       StandInForPostChain();
     }
+    if (fr.probe_count < FrameState::kProbeSamples &&
+        Colored(fr.main_draws) % FrameState::kProbeEvery == 1) {
+      temporal::ReadVsMatrices(f.banks->vs.data(), &fr.probe[fr.probe_count++]);
+    }
   }
 
   if (EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale) != 0) {
@@ -1016,6 +1060,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   // Accepted. What the frame's camera is, and whether its history starts again.
   fr.anchor_ok = true;
   fr.camera = camera;
+  RunProbe();
   fr.guest_size[0] = camera.width;
   fr.guest_size[1] = camera.height;
   fr.render_size[0] = fr.scale.Edge(camera.width);
@@ -1323,6 +1368,14 @@ void TemporalSystem::Report() {
               kPrefix, w.frames, seconds, scene, running, w.modes[size_t(Mode::kView4x)],
               w.modes[size_t(Mode::kNoScene)], w.armed, refused.empty() ? "none" : refused,
               w.resets, resets.empty() ? "none" : resets, camera);
+  if (w.probe_frames != 0) {
+    REXLOG_INFO("{} probe (log only, whether the camera exists before the post chain): in {} frames "
+                "the main view's vertex constants c12-c15 equalled the anchor's view inverse in {} "
+                "frames ({} of {} samples), and c4-c7 x projection equalled c8-c11 in {} frames ({} "
+                "samples)",
+                kPrefix, w.probe_frames, w.probe_view_inverse_frames, w.probe_view_inverse_samples,
+                w.probe_samples, w.probe_projection_frames, w.probe_projection_samples);
+  }
   if (effective_ != Upscaler::kOff || w.upscaled != 0) {
     const TemporalBackend* running_backend = BackendFor(effective_);
     const BackendStatus status = running_backend ? running_backend->Status() : BackendStatus{};
