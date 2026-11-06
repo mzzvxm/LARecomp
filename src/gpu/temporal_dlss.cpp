@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <format>
 #include <iterator>
@@ -34,7 +35,15 @@
 // GetProcAddress, so none of the SL_API declarations or header helpers is ever called.
 #include <sl.h>
 #include <sl_dlss.h>
+#if defined(__MINGW32__)
+// Streamline's sl_security.h counts a file's nested signatures with WINTRUST_SIGNATURE_SETTINGS
+// (Windows 8's wintrust), which mingw-w64's headers do not declare: VerifiedByNvidia below.
+#include <softpub.h>
+#include <wincrypt.h>
+#include <wintrust.h>
+#else
 #include <sl_security.h>
+#endif
 
 #include "backend.h"
 #include "device.h"
@@ -146,12 +155,74 @@ std::string MissingFiles(const std::wstring& dir) {
   return missing;
 }
 
-// sl_security.h loads wintrust.dll and crypt32.dll by name, so no import library is needed; nvngx_dlss.dll,
-// which sl.dlss.dll loads, is checked by Streamline itself.
+// Whether Windows trusts the file's signature and NVIDIA signed it. With the Clang/MSVC build this is
+// Streamline's own check (sl_security.h: the primary signature trusted by Windows, and a nested one made
+// with Streamline's pinned NVIDIA key). mingw-w64's wintrust.h lacks what the nested part needs, so
+// that build checks the primary signature: trusted by Windows (WinVerifyTrust) and its signer's name is
+// NVIDIA Corporation, which is what all four files carry. Both load wintrust.dll and crypt32.dll by
+// name: no import library either way.
+bool VerifiedByNvidia(const std::wstring& path) {
+#if defined(__MINGW32__)
+  HMODULE wintrust = LoadLibraryExW(L"wintrust.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  HMODULE crypt32 = LoadLibraryExW(L"crypt32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!wintrust || !crypt32) {
+    return false;
+  }
+  using VerifyFn = LONG(WINAPI*)(HWND, GUID*, LPVOID);
+  using ProviderFn = CRYPT_PROVIDER_DATA*(WINAPI*)(HANDLE);
+  using SignerFn = CRYPT_PROVIDER_SGNR*(WINAPI*)(CRYPT_PROVIDER_DATA*, DWORD, BOOL, DWORD);
+  using CertFn = CRYPT_PROVIDER_CERT*(WINAPI*)(CRYPT_PROVIDER_SGNR*, DWORD);
+  using NameFn = DWORD(WINAPI*)(PCCERT_CONTEXT, DWORD, DWORD, void*, LPWSTR, DWORD);
+  auto verify = reinterpret_cast<VerifyFn>(reinterpret_cast<void*>(GetProcAddress(wintrust, "WinVerifyTrust")));
+  auto provider_of = reinterpret_cast<ProviderFn>(
+      reinterpret_cast<void*>(GetProcAddress(wintrust, "WTHelperProvDataFromStateData")));
+  auto signer_of = reinterpret_cast<SignerFn>(
+      reinterpret_cast<void*>(GetProcAddress(wintrust, "WTHelperGetProvSignerFromChain")));
+  auto cert_of = reinterpret_cast<CertFn>(
+      reinterpret_cast<void*>(GetProcAddress(wintrust, "WTHelperGetProvCertFromChain")));
+  auto name_of = reinterpret_cast<NameFn>(reinterpret_cast<void*>(GetProcAddress(crypt32, "CertGetNameStringW")));
+  if (!verify || !provider_of || !signer_of || !cert_of || !name_of) {
+    return false;
+  }
+  WINTRUST_FILE_INFO file{};
+  file.cbStruct = sizeof(file);
+  file.pcwszFilePath = path.c_str();
+  WINTRUST_DATA data{};
+  data.cbStruct = sizeof(data);
+  data.dwUIChoice = WTD_UI_NONE;
+  data.fdwRevocationChecks = WTD_REVOKE_NONE;
+  data.dwUnionChoice = WTD_CHOICE_FILE;
+  data.pFile = &file;
+  data.dwStateAction = WTD_STATEACTION_VERIFY;
+  GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+  const HWND no_ui = static_cast<HWND>(INVALID_HANDLE_VALUE);
+  bool ok = verify(no_ui, &action, &data) == ERROR_SUCCESS;
+  if (ok) {
+    ok = false;
+    if (CRYPT_PROVIDER_DATA* provider = provider_of(data.hWVTStateData)) {
+      if (CRYPT_PROVIDER_SGNR* signer = signer_of(provider, 0, FALSE, 0)) {
+        CRYPT_PROVIDER_CERT* leaf = cert_of(signer, 0);
+        if (leaf && leaf->pCert) {
+          wchar_t name[256] = {};
+          name_of(leaf->pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 256);
+          ok = std::wcscmp(name, L"NVIDIA Corporation") == 0;
+        }
+      }
+    }
+  }
+  data.dwStateAction = WTD_STATEACTION_CLOSE;
+  verify(no_ui, &action, &data);
+  return ok;
+#else
+  return sl::security::verifyEmbeddedSignature(path.c_str());
+#endif
+}
+
+// nvngx_dlss.dll, which sl.dlss.dll loads, is checked by Streamline itself.
 bool SignaturesOk(const std::wstring& dir, std::string* why) {
   for (const wchar_t* file : kSignedFiles) {
     const std::wstring path = dir + file;
-    if (!sl::security::verifyEmbeddedSignature(path.c_str())) {
+    if (!VerifiedByNvidia(path)) {
       *why = std::format("{} does not carry NVIDIA's signature, or Windows does not trust it",
                          Utf8(file));
       return false;
