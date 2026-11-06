@@ -362,6 +362,24 @@ class LarecompApp : public rex::ReXApp {
     }
   }
 
+  // The emulated GPU's resolve rules for this game, unless the player set them (an SDK without
+  // the settings ignores the names):
+  // - readback_resolve_rules: the 512x512 8_8_8_8 target the game bakes custom vinyls into, and
+  //   its mip chain, are copied back into guest memory, where the game reads them (without it the
+  //   custom vinyls come out blank or stale);
+  // - resolve_unscaled_copy_rules: above 1x, the rain's four 128x128 32_32_FLOAT simulation
+  //   targets are also written at 1x into guest memory, which the rain's vertex shader reads
+  //   (without it no rain is drawn above 1x). Nothing to copy at 1x.
+  void SetXeniaResolveRules() {
+    if (!FlagWasConfigured("readback_resolve_rules")) {
+      SetFlag("readback_resolve_rules",
+              "len=1048576,pitch=512,height=512,fmt=6;addr=0x051A0000-0x051F7FFF");
+    }
+    if (!FlagWasConfigured("resolve_unscaled_copy_rules")) {
+      SetFlag("resolve_unscaled_copy_rules", "len=131072,pitch=128,height=128,fmt=37");
+    }
+  }
+
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.audio_factory = &mcla::audio::CreateAudioSystem;
 
@@ -390,6 +408,7 @@ class LarecompApp : public rex::ReXApp {
       // still wins because this only fills in the blank.
       config.gpu_plugin = "xenos";
       LoadXenosWithChosenBackend(config);
+      SetXeniaResolveRules();
     }
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
