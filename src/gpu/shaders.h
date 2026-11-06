@@ -30,6 +30,17 @@
 // compiled, because the variants differ in their outputs, which a
 // specialization constant cannot change.
 //
+// HDR scene variants (stage 3 of the HDR output, hdr_tonemap.h): a second, optional file next to
+// the pack, mcla_shaders_hdr.v1.pack, built from the same HLSL tree by
+// tools/build_hdr_variants.py (not part of the repository: it works on the game's translated
+// shaders). It carries, for the pixel shaders the HDR output draws again into a float image (the
+// game's tone map), a third blob per backend -- the shader with its curve and its encode changed
+// for values above white -- keyed by the same identity, together with the identity of the vertex
+// shaders it is drawn with. A pipeline key names it with ps_variant kHdrVariant. The pack is not
+// the main one's contract: the SharedConstants block stays 608 bytes and the variant reads 16
+// bytes after it that only the variant draws upload (constants.h HdrSceneConstants). A missing,
+// malformed or foreign file leaves the HDR output at stage 2 (the scene at paper white).
+//
 // Threading: after Initialize, GetShader from any thread (the pipeline
 // precache's workers call it); the rest from the render thread.
 // ===========================================================================
@@ -38,6 +49,7 @@
 #include <mutex>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -55,6 +67,13 @@ class ShaderStore {
  public:
   static constexpr const char* kPackFileName = "mcla_shaders.v8.pack";
   static constexpr uint32_t kPackVersion = 8;
+  // The HDR scene variants (above): file, format version, and the contract of its constants block
+  // (1: SharedConstants, then float4 {knee, highlights, peak, 0} at byte 608).
+  static constexpr const char* kHdrPackFileName = "mcla_shaders_hdr.v1.pack";
+  static constexpr uint32_t kHdrPackVersion = 1;
+  static constexpr uint32_t kHdrContract = 1;
+  // PipelineKey::ps_variant of a pixel shader's HDR scene variant (0 and 1 are the spec variants).
+  static constexpr uint32_t kHdrVariant = 2;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
@@ -91,6 +110,27 @@ class ShaderStore {
     uint32_t texture_fetch_mask = 0;  // bit i: a texture instruction reads fetch constant i
     Blob dxil[2];   // variant 0 (no spec bit) / variant 1 (spec_mask)
     Blob spirv[2];  // the same variants
+    // A pixel shader that has an HDR scene variant (LoadHdrVariants), else false.
+    bool hdr_variant = false;
+  };
+
+  // What the HDR pack says of one shader.
+  static constexpr uint32_t kHdrVertexShaders = 4;
+  struct HdrVariant {
+    uint64_t ps_key = 0;
+    // The vertex shaders the variant is drawn with (the ones whose outputs it reads: 0 = none).
+    uint64_t vs_keys[kHdrVertexShaders] = {};
+    uint32_t flags = 0;
+    Blob dxil;
+    Blob spirv;
+    bool DrawnWith(uint64_t vs_key) const {
+      for (uint64_t key : vs_keys) {
+        if (key != 0 && key == vs_key) {
+          return true;
+        }
+      }
+      return false;
+    }
   };
 
   struct VertexElement {
@@ -129,10 +169,19 @@ class ShaderStore {
   const Stats& stats() const { return stats_; }
 
   const Entry* Find(uint64_t identity) const;
+  // Opens the optional HDR pack beside the main one. False when there is none or it is not
+  // usable, with the reason in `why` (the caller logs it: absent is normal without HDR). Marks
+  // the entries it has a variant for (Entry::hdr_variant). Once, after Initialize.
+  bool LoadHdrVariants(std::string* why);
+  bool has_hdr_variants() const { return !hdr_variants_.empty(); }
+  const std::filesystem::path& hdr_path() const { return hdr_path_; }
+  // The variant of pixel shader `identity`, null when it has none.
+  const HdrVariant* FindHdrVariant(uint64_t identity) const;
   // Appends the vertex shader's elements to `out` (cleared first).
   void GetVertexElements(const Entry& entry, std::vector<VertexElement>& out) const;
-  // The shader for `entry` with spec `variant` (0, or 1 = spec_mask applied),
-  // created on first use. Null with the reason in `result` otherwise.
+  // The shader for `entry` with spec `variant` (0, or 1 = spec_mask applied, or kHdrVariant for
+  // the HDR scene variant of a pixel shader that has one), created on first use. Null with the
+  // reason in `result` otherwise.
   plume::RenderShader* GetShader(const Entry& entry, uint32_t variant, ShaderResult* result);
 
  private:
@@ -143,14 +192,17 @@ class ShaderStore {
   };
 
   bool Validate();
-  bool VerifyBlob(const Entry& entry, const Blob& blob, bool spirv);
+  bool VerifyBlob(const Entry& entry, const Blob& blob, bool spirv, const uint8_t* base);
 
   Device* device_ = nullptr;
   std::mutex mutex_;  // GetShader's slots and stats
   std::filesystem::path path_;
   std::unique_ptr<rex::memory::MappedMemory> file_;
   std::unordered_map<uint64_t, Entry> entries_;
-  std::unordered_map<uint64_t, Slot> slots_[2];  // per variant, by identity
+  std::unordered_map<uint64_t, Slot> slots_[3];  // per variant (2: HDR scene), by identity
+  std::filesystem::path hdr_path_;
+  std::unique_ptr<rex::memory::MappedMemory> hdr_file_;
+  std::unordered_map<uint64_t, HdrVariant> hdr_variants_;
   Stats stats_;
 };
 

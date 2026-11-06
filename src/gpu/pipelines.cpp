@@ -995,8 +995,11 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   uint32_t zeroed = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
-    // A shader the pack no longer has: the pipeline cannot be made.
-    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !shaders_->Find(r.key.ps))) {
+    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with an HDR scene
+    // variant (stage 3 of the HDR output) while the HDR pack is not loaded or lacks it.
+    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !shaders_->Find(r.key.ps)) ||
+        (r.key.ps_variant == ShaderStore::kHdrVariant &&
+         (r.key.ps == 0 || !shaders_->Find(r.key.ps)->hdr_variant))) {
       ++dropped;
       continue;
     }
