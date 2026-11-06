@@ -39,6 +39,7 @@ add_library(larecomp_gpu OBJECT
     pipelines.cpp
     post.cpp
     present.cpp
+    process_memory.cpp
     region_index.cpp
     render_scale.cpp
     render_thread.cpp
