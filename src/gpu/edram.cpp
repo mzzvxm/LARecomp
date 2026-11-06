@@ -1364,8 +1364,8 @@ std::string EdramTargets::TakeSummary() {
       stats_.grown, double(stats_.grown_bytes) / 1048576.0, stats_.cleared,
       stats_.framebuffers_created, stats_.barriers);
   if (stats_.trimmed || stats_.remade) {
-    text += std::format(" | released for want of video memory {}, made again {}", stats_.trimmed,
-                        stats_.remade);
+    text += std::format(" | released (video memory short, or idle for a minute) {}, made again {}",
+                        stats_.trimmed, stats_.remade);
   }
   if (!resolution_scale_.unit()) {
     size_t scaled = 0;
