@@ -22,6 +22,12 @@
 //            they move. After a history restart the image is zero.
 //   ids      stencil >> 2 as a byte (R8_UNORM): only while the stencil debug view is on.
 //
+// The vehicle ID is read from the stencil view the anchor binds (fetch 1, k_8_8_8_8), whose
+// swizzle is ZYXW (the fork's finding): the stencil byte is the view's third component, not its
+// first. The component is found from the fetch constant (StencilChannel), so another swizzle
+// would be followed too, and travels with the slot (StencilRef); hlsl/temporal_common.hlsli
+// explains the layout of that product and why `.x` gave the depth's middle byte instead.
+//
 // They are the images a backend (FSR, DLSS) reads at the anchor, and the ones frame generation
 // keeps for the present (kept()); the depth is double buffered (the previous frame's depth, for the
 // reprojection check). Sizes and formats are in Kept.
@@ -86,6 +92,9 @@ class TemporalMotion {
     uint32_t depth_slot = 0;
     uint32_t stencil_slot = 0;
     uint32_t color_slot = 0;
+    // The six dwords of the anchor's fetch 1, the stencil view: its swizzle says which component of
+    // the view holds the stencil byte.
+    uint32_t stencil_fetch[6] = {};
     uint32_t render_size[2] = {};  // the main view, host pixels
     uint32_t guest_size[2] = {};   // c62
     float jitter[2] = {};          // this frame's, render pixels, +y down (zero when not armed)
@@ -145,6 +154,18 @@ class TemporalMotion {
 
   // The cvars, read once a frame (declared in temporal_mv.cpp).
   static View ReadView();
+
+  // The component (0 to 3) of the stencil view that holds the stencil byte, from the six dwords of
+  // its fetch constant: the host swizzle the texture cache gives the view (the fetch constant's
+  // over k_8_8_8_8's) names, for each component, the product's channel it reads, and the stencil
+  // is the product's red. 4 when no component reads red (or the constant is no texture): no ID.
+  // `host_swizzle` (optional) gets the swizzle, for the log.
+  static uint32_t StencilChannel(const uint32_t fetch[6], uint32_t* host_swizzle = nullptr);
+  // What the passes take for the view: the slot (the gamma bit dropped) in bits 0 to 27 and the
+  // component in bits 28 to 30 (hlsl/temporal_common.hlsli).
+  static uint32_t StencilRef(uint32_t slot, uint32_t channel) {
+    return (slot & 0x0FFFFFFFu) | ((channel & 7u) << 28);
+  }
 
  private:
   // hlsl/temporal_mv_ps.hlsl MotionPush.
@@ -233,6 +254,8 @@ class TemporalMotion {
   View reported_view_ = View::kOff;
   bool reported_vehicles_ = false;
   uint32_t reported_check_ = 0;
+  uint32_t reported_stencil_swizzle_ = 0xFFFFFFFFu;  // the stencil view's swizzle the log last named
+  uint32_t stencil_ref_ = 0;  // StencilRef of the frame being recorded
 
   std::unique_ptr<plume::RenderPipelineLayout> motion_layout_;  // the host layout with 96 bytes of push
   std::unique_ptr<plume::RenderShader> motion_shader_;

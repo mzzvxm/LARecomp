@@ -530,6 +530,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.frame = fr.frame;
   pending_.color_slot = fr.anchor_textures.table[0];
   pending_.stencil_slot = fr.anchor_textures.table[1];
+  std::memcpy(pending_.stencil_fetch, fr.anchor_textures.fetch[1], sizeof(pending_.stencil_fetch));
   pending_.depth_slot = fr.anchor_textures.table[2];
   for (int i = 0; i < 2; ++i) {
     pending_.render_size[i] = fr.render_size[i];

@@ -10,12 +10,15 @@
 #include <string>
 
 #include <rex/cvar.h>
+#include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
 #include "descriptors.h"
 #include "device.h"
+#include "format.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
+#include "textures.h"
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_temporal_view, "off", "MCLA/GPU",
@@ -108,6 +111,32 @@ double ViewDistance(double stored, double near_plane, double far_plane) {
 }
 
 }  // namespace
+
+uint32_t TemporalMotion::StencilChannel(const uint32_t fetch[6], uint32_t* host_swizzle) {
+  rex::graphics::xenos::xe_gpu_texture_fetch_t constant;
+  static_assert(sizeof(constant) == 6 * sizeof(uint32_t));
+  std::memcpy(&constant, fetch, sizeof(constant));
+  if (host_swizzle) {
+    *host_swizzle = 0;
+  }
+  if (constant.type != rex::graphics::xenos::FetchConstantType::kTexture) {
+    return 4;
+  }
+  // The very swizzle the texture cache gives the view the anchor binds (textures.cpp Bind2D).
+  const uint16_t host = GuestToHostSwizzle(
+      uint16_t(constant.swizzle),
+      format::TextureHost(uint32_t(rex::graphics::xenos::TextureFormat::k_8_8_8_8)).host_swizzle);
+  if (host_swizzle) {
+    *host_swizzle = host;
+  }
+  // The depth resolve into k_8_8_8_8 puts the stencil in the product's red (resolve_ps.hlsl).
+  for (uint32_t component = 0; component < 4; ++component) {
+    if (((host >> (3 * component)) & 7u) == 0u) {
+      return component;
+    }
+  }
+  return 4;
+}
 
 TemporalMotion::View TemporalMotion::ReadView() {
   std::string value = REXCVAR_GET(mcla_gpu_temporal_view);
@@ -337,8 +366,28 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
   // CHECK: the depth and stencil products the anchor binds are the render size (the guest size at
   // the scene's scale), not a copy reduced to another scale; the depth view (mcla_gpu_temporal_view
   // = depth) shows it, and shows the host value's direction (census CHECK 2).
-  // CHECK: `.x` of the stencil view, through the guest's own fetch swizzle, is the stencil byte
-  // (the vehicle ID is its value >> 2); the stencil view (IDs in colour) settles it.
+  // The stencil byte is where the view's swizzle puts the product's red, not `.x`: the product of
+  // the depth resolve into k_8_8_8_8 holds the raw dword depth24 << 8 | stencil as RGBA8 (R the
+  // stencil), and the anchor's view of it is swizzled ZYXW, so `.x` is the depth's middle byte
+  // (which is what made the first stencil view stripes over the whole world). The vehicle ID is
+  // the byte >> 2.
+  // CHECK: the swizzle the log names below (ZYXW, the fork's finding, component 2); the stencil
+  // view (IDs in colour: black world, coloured cars) settles it.
+  uint32_t host_swizzle = 0;
+  const uint32_t stencil_channel = StencilChannel(f.stencil_fetch, &host_swizzle);
+  stencil_ref_ = StencilRef(f.stencil_slot, stencil_channel);
+  if (host_swizzle != reported_stencil_swizzle_) {
+    reported_stencil_swizzle_ = host_swizzle;
+    if (stencil_channel < 4) {
+      REXLOG_INFO("{} the stencil view's host swizzle is {:#05x}: the stencil byte (the product's "
+                  "red) is its component {}",
+                  kPrefix, host_swizzle, stencil_channel);
+    } else {
+      REXLOG_ERROR("{} the stencil view's host swizzle is {:#05x}, which reads no red: no vehicle "
+                   "IDs (every pixel is the world)",
+                   kPrefix, host_swizzle);
+    }
+  }
   CopyPush copy{};
   pass_timing_->Mark(list, "temporal depth copy");
   copy.source = f.depth_slot;
@@ -350,7 +399,7 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
   if (view_ == View::kStencil &&
       passes_->EnsureImage(ids_, rw, rh, kIdsFormat, "temporal vehicle IDs")) {
     pass_timing_->Mark(list, "temporal vehicle IDs");
-    copy.source = f.stencil_slot;
+    copy.source = stencil_ref_;
     passes_->DrawInto(list, ids_, ids_pipeline_.get(), &copy, sizeof(copy));
     ids_recorded_ = true;
   }
@@ -397,7 +446,7 @@ void TemporalMotion::RecordMotion(plume::RenderCommandList* list, const Frame& f
                                   bool has_previous) {
   MotionPush push{};
   push.depth = f.depth_slot;
-  push.stencil = f.stencil_slot;
+  push.stencil = stencil_ref_;
   push.jitter[0] = f.jitter[0];
   push.jitter[1] = f.jitter[1];
   push.size[0] = float(f.render_size[0]);
@@ -502,7 +551,7 @@ void TemporalMotion::RecordCheck(plume::RenderCommandList* list, const Frame& f)
   pass_timing_->Mark(list, "temporal check");
   CheckPush push{};
   push.depth = depth_[cur_].slot;
-  push.stencil = f.stencil_slot;
+  push.stencil = stencil_ref_;
   push.motion = motion_.slot;
   push.prev_depth = depth_[before].slot;
   push.color = color_[cur_].slot;

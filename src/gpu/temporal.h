@@ -125,7 +125,7 @@ class TemporalSystem {
   struct AnchorTextures {
     bool bound = false;
     uint32_t fetch[3][6] = {};  // the six dwords of fetch slots 0 (scene colour), 1 (stencil view
-                                // of the depth, vehicle ID in x >> 2), 2 (depth, 1 near)
+                                // of the depth, vehicle ID in its stencil byte >> 2), 2 (depth, 1 near)
     uint32_t table[3] = {};
   };
 

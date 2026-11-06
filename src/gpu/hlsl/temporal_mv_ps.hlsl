@@ -3,7 +3,9 @@
 // One pixel of the vector image = where the scene point seen here was one frame ago, minus where it is
 // now, in render pixels, +y down, with this frame's jitter taken out (F4-DESIGN.md 2.4):
 //
-//   id      = (stencil.x * 255 + 0.5) >> 2, 0 when 24 or more   (the vehicle ID the game's draws write)
+//   id      = stencil byte >> 2, 0 when 24 or more             (the vehicle ID the game's draws write;
+//                                                                 the byte is the view's red, wherever the
+//                                                                 fetch swizzle put it: temporal_common.hlsli)
 //   pos     = pixel + 0.5 - jitter                                (render pixels)
 //   clip    = (2 pos.x / w - 1, 1 - 2 pos.y / h, 1 - depth, 1)    (the stored depth is 1 near, 0 far)
 //   prev    = clip * M                                            (row vector times the 4x4 below: the
@@ -18,13 +20,15 @@
 // writes zero (no previous frame: the history starts again).
 //
 // The depth and the stencil view are read through the bindless slots the anchor draw binds, so the
-// format, the swizzle and the size are the guest shader's own.
+// format and the size are the guest shader's own. The stencil's component is not `.x`: the view is
+// swizzled and the byte sits where the swizzle puts the product's red (temporal_common.hlsli).
 
-#include "host_pass_common.hlsli"
+#include "temporal_common.hlsli"
 
 struct MotionPush {
   uint depth;        // slot: the scene's depth, R32_FLOAT, 1 near / 0 far (the anchor's fetch 2)
-  uint stencil;      // slot: the stencil view of the depth, 8_8_8_8 (the anchor's fetch 1)
+  uint stencil;      // stencil reference: the slot of the stencil view of the depth, 8_8_8_8 (the
+                     // anchor's fetch 1), and in bits 28-30 the component that holds the stencil
   uint mode;         // 0 every pixel, 1 only the pixels of `id`, 2 zero
   uint id;
   float2 jitter;     // render pixels this frame's draws were moved by, +y down
@@ -47,15 +51,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
   const int3 at = int3(int2(position.xy), 0);
-  // The texture index may carry the gamma bit (bit 31): not an index.
-  const uint raw = uint(g_textures[g_push.stencil & 0x7FFFFFFFu].Load(at).x * 255.0f + 0.5f);
-  uint id = raw >> 2;
-  if (id >= 24u) {
-    id = 0u;
-  }
+  const uint id = VehicleId(g_push.stencil, at);
   if (g_push.mode == 1u && id != g_push.id) {
     discard;
   }
+  // The texture index may carry the gamma bit (bit 31): not an index.
   const float depth = g_textures[g_push.depth & 0x7FFFFFFFu].Load(at).x;
   const float2 pos = float2(at.xy) + 0.5f - g_push.jitter;
   const float4 clip = float4(2.0f * pos.x / g_push.size.x - 1.0f, 1.0f - 2.0f * pos.y / g_push.size.y,

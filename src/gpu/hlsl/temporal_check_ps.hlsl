@@ -12,11 +12,11 @@
 // of 1 / 2.2 (the scene colour is HDR and linear); "with the vector" reads the previous colour at q
 // bilinearly, "without" is the previous colour at the same pixel.
 
-#include "host_pass_common.hlsli"
+#include "temporal_common.hlsli"
 
 struct CheckPush {
   uint depth;       // this frame's kept depth (our R32_FLOAT image)
-  uint stencil;     // the anchor's stencil view
+  uint stencil;     // the anchor's stencil view as a stencil reference (temporal_common.hlsli)
   uint motion;      // our RG16_FLOAT vectors
   uint prev_depth;  // the previous frame's kept depth
   uint color;       // this frame's colour (our copy)
@@ -59,12 +59,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 mv = g_textures[g_push.motion].Load(at).xy;
   if ((cell.x & 1u) == 0u) {
     const float depth = g_textures[g_push.depth].Load(at).x;
-    const uint raw = uint(g_textures[g_push.stencil & 0x7FFFFFFFu].Load(at).x * 255.0f + 0.5f);
-    uint id = raw >> 2;
-    if (id >= 24u) {
-      id = 0u;
-    }
-    return float4(depth, float(id), mv);
+    return float4(depth, float(VehicleId(g_push.stencil, at)), mv);
   }
   const float2 q = float2(pixel) + 0.5f + mv + g_push.delta;
   const int2 size = int2(width, height);
