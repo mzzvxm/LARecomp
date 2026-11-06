@@ -43,12 +43,31 @@ struct PresentPush {
 ConstantBuffer<PresentPush> g_push : register(b0, space4);
 #endif
 
-float3 Ramp(float3 color) {
-  // The display reads the 8-bit value: UNORM conversion, D3D10+ rules.
-  const uint3 index = uint3(saturate(color) * 255.0f + 0.5f);
+float3 RampAt(uint3 index) {
   return float3(g_textures[g_push.ramp].Load(int3(index.r, 0, 0)).r,
                 g_textures[g_push.ramp].Load(int3(index.g, 0, 0)).g,
                 g_textures[g_push.ramp].Load(int3(index.b, 0, 0)).b);
+}
+
+// hdr_flags bit 2 (hdr.h kHdrFlagExtendedCodes): the source is the HdrScene's float image, whose
+// code values may exceed 1.
+static const uint kExtendedCodes = 4u;
+
+float3 Ramp(float3 color) {
+  if ((g_push.hdr_flags & kExtendedCodes) != 0u) {
+    // Up to 1 as below (the nearest of the 256 entries, so the 8-bit values of a frame whose UI
+    // was blended in float map as the front buffer's do); above 1 the table goes on by the slope
+    // of its last step, continuous and not clamped, so the excess keeps rising.
+    const float3 scaled = max(color, float3(0.0f, 0.0f, 0.0f)) * 255.0f;
+    float3 value = RampAt(uint3(min(scaled, float3(255.0f, 255.0f, 255.0f)) + 0.5f));
+    const float3 excess = max(scaled - 255.0f, float3(0.0f, 0.0f, 0.0f));
+    if (any(excess > 0.0f)) {
+      value += (RampAt(uint3(255u, 255u, 255u)) - RampAt(uint3(254u, 254u, 254u))) * excess;
+    }
+    return value;
+  }
+  // The display reads the 8-bit value: UNORM conversion, D3D10+ rules.
+  return RampAt(uint3(saturate(color) * 255.0f + 0.5f));
 }
 
 float3 Texel(int2 at) {

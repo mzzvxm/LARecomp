@@ -485,6 +485,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   watch::BeginFrame(frame_serial_);
   ResetListState();
   marked_framebuffer_ = nullptr;
+  if (layers_) {
+    layers_->BeginFrame();
+  }
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
@@ -495,6 +498,10 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   // The render pass closes before the geometry's copies and the present pass.
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
+  }
+  if (layers_) {
+    // A frame that ended with the UI layer started puts its target back first.
+    layers_->EndFrame(list);
   }
   // The colour encodes of the frame into the resolve memory, as one batch.
   pass_timing_->Mark(list, "resolve memory encode (batch)");
@@ -531,6 +538,21 @@ void Scene::BindFramebuffer(plume::RenderCommandList* list,
   }
   list->setFramebuffer(framebuffer);
   bound_.framebuffer = framebuffer;
+}
+
+void Scene::UiLayersBeforeDraw(FrameLayers::DrawAction action, plume::RenderCommandList* list) {
+  if (bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+    bound_.framebuffer = nullptr;
+  }
+  if (action == FrameLayers::DrawAction::kStart) {
+    layers_->Start(list);
+  } else {
+    layers_->End(list);
+  }
+  // It bound its own layout, pipeline, viewport and scissor, and drew into the UI target.
+  ResetListState();
+  marked_framebuffer_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +603,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
+      if (d.ui_layer != FrameLayers::DrawAction::kNone) {
+        UiLayersBeforeDraw(d.ui_layer, list);
+      }
       bool empty = false;
       const Skip recorded = Record(d, r, list, &empty, &detail);
       if (empty) {
@@ -838,6 +863,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   d.scale = scale;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
+  // The UI layer split (frame_layers.h): a draw into the UI target after the composite marker
+  // gets the alpha blend that collects coverage, in the key only (the memo above keeps the game's).
+  if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
+    d.ui_layer = layers_->ClassifyDraw(ColorEdramKey(s, 0), host_samples, r.ps_identity, d.key);
+  }
   if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= scale.value();
     if (!pipelines_->dynamic_depth_bias()) {
@@ -1812,6 +1842,11 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       list->setFramebuffer(nullptr);
       bound_.framebuffer = nullptr;
     }
+    if (layers_ && layers_->ui_phase() && layers_->OnColorClear(list, key)) {
+      // The UI layer started: the UI target was put back before this clear (it drew into it).
+      ResetListState();
+      marked_framebuffer_ = nullptr;
+    }
     bool unset = false;
     EdramTargets::Target* target =
         edram_->Get(key, uint32_t(y1), clear_scale, declared_size, list, &unset);
@@ -1901,6 +1936,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     list->setFramebuffer(nullptr);
     bound_.framebuffer = nullptr;
   }
+  if (list && layers_ && layers_->ui_phase()) {
+    // The first resolve of the UI target: its UI goes to the layer and the target is put back
+    // for this resolve (frame_layers.h).
+    layers_->OnResolve(record, list);
+  }
   resolve_->Execute(record, list);
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
@@ -1942,16 +1982,28 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
   const PostAa::Mode mode = post_->FrameMode();
-  if (!last_color0_ || !list || mode == PostAa::Mode::kOff) {
+  const bool layers = layers_ && layers_->active();
+  if (!last_color0_ || !list || (mode == PostAa::Mode::kOff && !layers)) {
     return;
   }
-  // The anti-aliasing reads and writes that target (M6c.2/M6c.3): the scene's
-  // render pass ends first.
+  // The anti-aliasing reads and writes that target (M6c.2/M6c.3), and the UI layer split starts
+  // at it: the scene's render pass ends first.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
     bound_.framebuffer = nullptr;
   }
-  if (post_->Apply(list, slot_, mode, *last_color0_, last_color0_width_, last_color0_height_)) {
+  bool recorded = false;
+  if (mode != PostAa::Mode::kOff) {
+    recorded = post_->Apply(list, slot_, mode, *last_color0_, last_color0_width_,
+                            last_color0_height_);
+  }
+  if (layers) {
+    // After the anti-aliasing: what it left in the target is the scene the layers keep. A second
+    // marker in a frame with the layer started puts the target back here.
+    layers_->OnComposite(list, last_color0_, last_color0_width_, last_color0_height_);
+    recorded = true;
+  }
+  if (recorded) {
     // It bound its own layout, pipelines, viewport and scissor: the next draw
     // binds everything again (the M6a caches skip nothing).
     ResetListState();
@@ -2017,6 +2069,9 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  if (layers_) {
+    layers_->OnGuestPresent();
+  }
   last_color0_ = nullptr;
   last_color0_width_ = 0;
   last_color0_height_ = 0;

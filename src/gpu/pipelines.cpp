@@ -223,26 +223,8 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
   return offset < 0.0f ? -value : value;
 }
 
-// Blend field packing (4 bits each): enable, src, dst, op, srcA, dstA, opA, mask.
-uint32_t PackBlend(const plume::RenderBlendDesc& b) {
-  return uint32_t(b.blendEnabled) | (uint32_t(b.srcBlend) << 4) | (uint32_t(b.dstBlend) << 8) |
-         (uint32_t(b.blendOp) << 12) | (uint32_t(b.srcBlendAlpha) << 16) |
-         (uint32_t(b.dstBlendAlpha) << 20) | (uint32_t(b.blendOpAlpha) << 24) |
-         (uint32_t(b.renderTargetWriteMask) << 28);
-}
-
-plume::RenderBlendDesc UnpackBlend(uint32_t v) {
-  plume::RenderBlendDesc b;
-  b.blendEnabled = (v & 0xF) != 0;
-  b.srcBlend = RenderBlend((v >> 4) & 0xF);
-  b.dstBlend = RenderBlend((v >> 8) & 0xF);
-  b.blendOp = RenderBlendOperation((v >> 12) & 0xF);
-  b.srcBlendAlpha = RenderBlend((v >> 16) & 0xF);
-  b.dstBlendAlpha = RenderBlend((v >> 20) & 0xF);
-  b.blendOpAlpha = RenderBlendOperation((v >> 24) & 0xF);
-  b.renderTargetWriteMask = uint8_t((v >> 28) & 0xF);
-  return b;
-}
+// PackBlend and UnpackBlend (the blend words of a key) are in pipelines.h: the UI layer split reads
+// and changes them (frame_layers.h).
 
 // Whether the draw that missed may be left out for now (Pipelines::Get).
 bool MaySkip(const Deferral* deferral) {

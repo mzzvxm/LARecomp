@@ -224,6 +224,23 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                              swap_chain_.format(), swap_chain_.hdr());
   }
   if (ok) {
+    // The frame's scene and UI as two layers: HDR10 output keeps the UI at paper white with them
+    // (frame_layers.h). Not wanted, they make nothing and touch no draw; a failure to make them
+    // leaves the HDR output on the front buffer (stage 1), which is not a reason to stop.
+    layers_.Request(FrameLayers::kRequesterHdr, swap_chain_.hdr());
+    const bool layers_ok = layers_.Initialize(passes_, edram_, pass_timing_);
+    scene_.SetFrameLayers(&layers_);  // a draw is touched only while the layers are active
+    if (swap_chain_.hdr()) {
+      if (layers_ok && hdr_scene_.Initialize(passes_, layers_, pass_timing_)) {
+        present_.SetHdrScene(&hdr_scene_);
+      } else {
+        REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
+                     "the front buffer as it is (the scene and the UI together)");
+        layers_.Request(FrameLayers::kRequesterHdr, false);
+      }
+    }
+  }
+  if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
@@ -242,6 +259,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     pass_timing_.Shutdown();
     timing_.Shutdown();
     flicker_probe_.Shutdown();
+    hdr_scene_.Shutdown();
+    layers_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
     post_.Shutdown();
@@ -327,6 +346,8 @@ void Renderer::Shutdown() {
   pass_timing_.Shutdown();
   timing_.Shutdown();
   flicker_probe_.Shutdown();
+  hdr_scene_.Shutdown();
+  layers_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
   post_.Shutdown();
@@ -778,12 +799,17 @@ void Renderer::ReportFrameStats() {
     return;
   }
   const auto vram = device_.QueryVideoMemory();
-  // What the renderer itself holds, by kind: where the VRAM goes (the budget trim releases these
-  // same four when memory runs short, vram_budget.cpp).
+  // What the renderer itself holds, by kind: where the VRAM goes (the budget trim releases the first
+  // four when memory runs short, vram_budget.cpp; the frame layers give theirs back after
+  // FrameLayers::kReleaseAfterFrames guest frames without layers).
   const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
   const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
                            mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
-                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) + " MiB)";
+                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) +
+                           (layers_.active() ? ", frame layers " + mib(layers_.HeldBytes() +
+                                                                      hdr_scene_.HeldBytes())
+                                             : std::string()) +
+                           " MiB)";
   const std::string vram_text =
       (vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
                          " MiB"
@@ -814,6 +840,10 @@ void Renderer::ReportFrameStats() {
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
   REXLOG_INFO("[gpu] {}", post_.TakeSummary());
+  if (layers_.active()) {
+    REXLOG_INFO("[gpu] {}", layers_.TakeSummary());
+    REXLOG_INFO("[gpu] {}", hdr_scene_.TakeSummary());
+  }
   if (flicker_probe_.enabled()) {
     REXLOG_INFO("[gpu] {}", flicker_probe_.TakeSummary());
   }

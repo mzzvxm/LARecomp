@@ -47,6 +47,10 @@ struct HdrLevels {
 };
 // HdrLevels::flags. Bit 0 (a 2.2 power instead of the sRGB curve) is in the shaders and not set.
 inline constexpr uint32_t kHdrFlagTestPattern = 1u << 1;
+// The present's push constants only (never in HdrLevels): the source holds code values that may
+// exceed 1 (the HdrScene's float image, hdr_scene.h), so the display's gamma table is read as
+// before up to 1 and extended above 1 by the slope of its last step (hlsl/present_ps.hlsl Ramp).
+inline constexpr uint32_t kHdrFlagExtendedCodes = 1u << 2;
 
 namespace hdr {
 
