@@ -150,6 +150,8 @@ void FrameValidator::CheckShaderObject(const ShaderStore::Entry& entry, uint32_t
     case ShaderStore::ShaderResult::kNoVariant: Count(kVariantMissing); break;
     case ShaderStore::ShaderResult::kBadBlob: Count(kShaderBadBlob); break;
     case ShaderStore::ShaderResult::kCreateFailed: Count(kShaderCreateFailed); break;
+    // Find is null while no pack is attached, so a draw never gets here without one.
+    case ShaderStore::ShaderResult::kNoPack: break;
   }
 }
 

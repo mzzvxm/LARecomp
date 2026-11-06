@@ -233,6 +233,7 @@ set(LARECOMP_SOURCES
     src/profile/larecomp_profile_store.cpp
     src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
+    src/bootprogress/larecomp_shader_build.cpp
     src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
     src/mc_engine/ui/imgui_theme.cpp
     src/mc_engine/ui/debug_overlay.cpp
@@ -382,6 +383,14 @@ else()
         target_compile_definitions(larecomp PRIVATE LARECOMP_HAS_GPU=1)
         message(STATUS "larecomp: Plume renderer (src/gpu) built for ${LARECOMP_GPU_BACKENDS}")
     endif()
+
+    # The shader pack builder (src/shaderpack): builds the packs the renderer reads from the
+    # player's own game files. The shader translator is LAR-XenosRecomp, thirdparty/LAR-XenosRecomp
+    # or the checkout LARECOMP_XENOSRECOMP_DIR names. tools/shaderpack_tool is its command line,
+    # built on request:  cmake --build <dir> --target larecomp_shaderpack_tool
+    add_subdirectory(src/shaderpack)
+    add_subdirectory(tools/shaderpack_tool EXCLUDE_FROM_ALL)
+    target_link_libraries(larecomp PRIVATE larecomp_shaderpack)
 
     # rexglue 0.7.4
     if(WIN32)
