@@ -56,8 +56,12 @@ class Samplers {
   // and `mip_max` as texture_util::GetSubresourcesFromFetchConstant leaves
   // them (clamped to the size, the base excluded when it is absent), which
   // the raw fetch fields are not. Falls back to the fixed
-  // linear-wrap sampler, logged, when one cannot be made.
-  uint32_t Get(const uint32_t fetch[6], uint32_t mip_min, uint32_t mip_max);
+  // linear-wrap sampler, logged, when one cannot be made. `extra_bias`: levels
+  // added to the fetch constant's LOD bias, in 1/32 (the same unit), for the
+  // scene's draws while an upscaler has it drawn smaller than the output
+  // (Scene::SceneBias); 0 for every other draw.
+  uint32_t Get(const uint32_t fetch[6], uint32_t mip_min, uint32_t mip_max,
+               int32_t extra_bias = 0);
 
   size_t size() const { return slots_.size(); }
 
@@ -73,6 +77,7 @@ class Samplers {
     uint8_t border = 0;          // xenos::BorderColor
     uint8_t mip_min = 0, mip_max = 0;
     int16_t lod_bias = 0;        // 5 fractional bits
+    int8_t extra_bias = 0;       // the same unit, added to it (Get's extra_bias)
     uint64_t Key() const;
   };
 

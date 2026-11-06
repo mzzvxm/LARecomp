@@ -52,6 +52,7 @@ class FfxBackend final : public TemporalBackend {
   BackendStatus Status() const override;
   void Request(const BackendRequest& request) override;
   bool Ready(const BackendRequest& request) const override;
+  uint32_t JitterPhaseCount() const override;
   void Release() override;
   void Fail(const std::string& reason) override;
   bool Upscale(plume::RenderCommandList* list, const TemporalInputs& inputs) override;

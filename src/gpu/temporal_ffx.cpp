@@ -224,6 +224,8 @@ struct Context {
   ffxOverrideVersion override_version{};
   ffx_glue::BackendDesc backend;
   bool dispatched = false;  // the first dispatch of a context resets the history
+  uint32_t phases = 0;      // the runtime's jitter sequence length for its sizes (0: not asked)
+  uint64_t bytes = 0;       // the video memory it reports for itself
 };
 
 }  // namespace
@@ -554,6 +556,7 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
   }
 
   // What it costs and how many jitter phases it wants (ours is 8 at ratio 1).
+  uint64_t usage_bytes = 0;
   uint64_t megabytes = 0;
   {
     FfxApiEffectMemoryUsage usage{};
@@ -561,7 +564,8 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
     q.header.type = FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE;
     q.gpuMemoryUsageUpscaler = &usage;
     if (query(&context->handle, &q.header) == FFX_API_RETURN_OK) {
-      megabytes = usage.totalUsageInBytes >> 20;
+      usage_bytes = usage.totalUsageInBytes;
+      megabytes = usage_bytes >> 20;
     }
   }
   int32_t phases = 0;
@@ -573,8 +577,10 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
     q.pOutPhaseCount = &phases;
     query(&context->handle, &q.header);
   }
+  context->phases = phases > 0 ? uint32_t(phases) : 0u;
+  context->bytes = usage_bytes;
   REXLOG_INFO("{} context for {} at {}x{} (output {}x{}) made in {:.0f} ms: provider '{}', about {} "
-              "MB, {} jitter phases (the renderer uses 8 at this ratio)",
+              "MB, {} jitter phases (the renderer follows that count)",
               kPrefix, UpscalerName(request.upscaler), request.render_size[0], request.render_size[1],
               request.output_size[0], request.output_size[1], ms,
               context->provider.empty() ? "?" : context->provider, megabytes, phases);
@@ -621,6 +627,7 @@ void FfxBackend::Impl::WorkerMain() {
         FailLocked(lock, request.upscaler, false, std::format("its context could not be made: {}", why));
       } else if (want && want_request == request && !ctx && !stop) {
         status.provider = made->provider;
+        status.context_bytes = made->bytes;
         ctx = std::move(made);
       } else {
         // The request moved on while it was made.
@@ -681,6 +688,7 @@ BackendStatus FfxBackend::Status() const {
 }
 
 void FfxBackend::Impl::RetireCurrentLocked(std::vector<std::shared_ptr<Context>>* retire) {
+  status.context_bytes = 0;
   if (ctx) {
     retire->push_back(std::move(ctx));
     ctx.reset();
@@ -733,6 +741,12 @@ bool FfxBackend::Ready(const BackendRequest& request) const {
   const Impl& i = *impl_;
   std::lock_guard lock(i.mu);
   return i.ctx && i.ctx->request == request && !i.status.failed;
+}
+
+uint32_t FfxBackend::JitterPhaseCount() const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  return i.ctx && !i.status.failed ? i.ctx->phases : 0u;
 }
 
 void FfxBackend::Release() {

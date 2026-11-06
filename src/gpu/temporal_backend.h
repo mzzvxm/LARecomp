@@ -55,6 +55,12 @@ bool ParseUpscaleMode(std::string_view text, UpscaleMode* out);
 // Whether `mode` can run with `upscaler` (FSR 3.1 and 4: all five).
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode);
 
+// True when the saved settings could draw the 3D scene smaller than the output at this start (an
+// upscaler chosen, in a mode below 100%). The pipelines a smaller scene needs are listed for it
+// before the start's own decision exists (resolve.cpp ListPrecache); an upscaler this PC cannot
+// run only makes that list longer than it had to be.
+bool MayDrawSceneSmaller();
+
 // What the settings say now (cvars read; a mode that cannot run is Native AA).
 struct UpscalerSettings {
   Upscaler upscaler = Upscaler::kOff;  // as saved, before the PC's availability is applied
@@ -77,6 +83,7 @@ struct BackendStatus {
   bool failed = false;    // a creation or a dispatch failed: off for the rest of the session
   std::string reason;     // kUnavailable, or why it failed
   std::string provider;   // the running provider's name once a context exists
+  uint64_t context_bytes = 0;  // video memory the ready context holds, as the runtime reports it
 };
 
 // One image of a dispatch.
@@ -141,6 +148,9 @@ class TemporalBackend {
   virtual void Request(const BackendRequest& request) = 0;
   // A context for exactly this request exists and nothing failed. Any thread.
   virtual bool Ready(const BackendRequest& request) const = 0;
+  // The length of the jitter sequence the runtime wants for the ready context's sizes (FFX: its own
+  // query, 8 x ratio^2), 0 when there is no context or the runtime has no say. Any thread.
+  virtual uint32_t JitterPhaseCount() const { return 0; }
   // No request any more: the context goes, as when a request changes. Render thread.
   virtual void Release() = 0;
 

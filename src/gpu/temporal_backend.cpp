@@ -171,6 +171,11 @@ UpscalerSettings ReadUpscalerSettings() {
   return out;
 }
 
+bool MayDrawSceneSmaller() {
+  const UpscalerSettings s = ReadUpscalerSettings();
+  return s.upscaler != Upscaler::kOff && ModeInfoOf(s.mode).ratio > 1.0;
+}
+
 void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4) {
   g_availability.store(uint32_t(probed) | uint32_t(fsr31) << 1 | uint32_t(fsr4) << 2,
                        std::memory_order_relaxed);
