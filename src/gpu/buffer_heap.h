@@ -12,7 +12,11 @@
 //
 // Pages of kPageSize, first fit over a free list per page with neighbours
 // merged on release, kAlignment-aligned ranges; a request larger than a page
-// gets a dedicated buffer. Free() is deferred by the FrameRing's serial rule:
+// gets a dedicated buffer. The size is 16 MiB because a page is only added and
+// never given back: the logged scenes hold 10-35 MiB of vertices and 2-5 MiB of
+// indices live (up to 108 and 16 MiB on a slow GPU with frames queued), yet
+// 32 MiB pages ended at 2-3 vertex pages and an index page, 96-128 MiB on the
+// RTX at 1x and 3x. Free() is deferred by the FrameRing's serial rule:
 // the range becomes reusable only once every use recorded so far has completed
 // on the GPU (frame.h). Pages are kept for the life of the renderer (M4); a
 // compaction or trim policy is a measurement for M6.
@@ -34,7 +38,7 @@ class FrameRing;
 
 class BufferHeap {
  public:
-  static constexpr uint64_t kPageSize = 32ull << 20;
+  static constexpr uint64_t kPageSize = 16ull << 20;
   static constexpr uint64_t kAlignment = 256;
 
   struct Allocation {
