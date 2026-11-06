@@ -59,11 +59,17 @@ FrameTrace::~FrameTrace() {
 }
 
 bool FrameTrace::ShouldTrace(uint64_t frames) {
-  if (g_trace_for_command.load(std::memory_order_relaxed) != this) {
-    g_trace_for_command.store(this, std::memory_order_release);
-  }
   if (file_) {
     return true;
+  }
+  // Called for every record: past a frame's first one, only a request can start a dump, and
+  // that is read without a write (it is acted on at the next frame's first record).
+  if (frames == checked_frames_ && !request_next_.load(std::memory_order_relaxed)) {
+    return false;
+  }
+  checked_frames_ = frames;
+  if (g_trace_for_command.load(std::memory_order_relaxed) != this) {
+    g_trace_for_command.store(this, std::memory_order_release);
   }
   if (frames_left_ > 0 && frames == frame_ + 1) {
     --frames_left_;
