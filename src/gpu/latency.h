@@ -56,18 +56,13 @@
 //    wait, the present stage before the present; D3D12: the end of the frame's
 //    main rendering at the start of the present).
 //
-// The frame rate limit. LARecomp's own limiter (hooks/frame_timing.cpp) waits
-// before the present (pace_at_swap) or after the engine timer's clock read, both
-// after the frame's input. Reflex has a limiter that waits before the frame's
-// input instead (the minimum interval of its sleep mode), and that is the better
-// place: the input is then as new as the frame's start allows. So while Reflex is
-// on the cap goes to the driver and the game's limiter waits for nothing
-// (DriverLimits). It is only ever taken from the game's limiter while it is
-// confirmed -- the mode was taken and this frame's wait was made -- so a frame
-// where the driver failed is held by the game's own limiter, and the frame rate
-// is never left uncapped by a failure. Anti-Lag 2 takes a limit too, but it has
-// not run on a Radeon yet: the game's limiter keeps the cap there.
-// mcla_gpu_low_latency_driver_limit turns the hand-over off for comparing.
+// The frame rate limit stays with LARecomp's own limiter (hooks/frame_timing.cpp),
+// which waits after the frame's input; the vendors' own limits are left at none.
+// Reflex can hold the cap instead, its wait before the input (the minimum interval
+// of its sleep mode), but on an RTX 5080 at a 60 FPS cap that paced frames worse
+// (1% low 55.9 against 58.8 FPS, 0.1% low 48.6 against 57.8) for no less latency
+// (from the frame's start to the screen, 95th percentile 19.2 against 17.9 ms)
+// than Reflex beside the game's limiter.
 //
 // Vsync is left to the driver: the reducers work with it, and the vsync wait
 // comes after the markers, inside the present they bracket.
@@ -97,7 +92,7 @@ Kind AvailableKind();
 // What mcla_gpu_low_latency = auto comes to on this GPU.
 bool AutoIsOn();
 // kPaused: the driver kept the game waiting too long and the reducer is off for
-// a few seconds (the game's own limiter holds the frame rate meanwhile);
+// a few seconds;
 // kFailed: the driver refused the mode, and it stays off until the next start.
 enum class Health : uint8_t { kOk, kPaused, kFailed };
 Health CurrentHealth();
@@ -106,15 +101,11 @@ Health CurrentHealth();
 
 // The update thread, once per pass through the engine timer, before the timer
 // reads the clock: the driver's wait, then the frame's SIMULATION_START and
-// INPUT_SAMPLE. `fps_limit` is the game's frame rate cap in force (0: none), the
-// minimum interval handed to Reflex while it holds the cap.
-void OnFrameStart(uint32_t fps_limit);
+// INPUT_SAMPLE.
+void OnFrameStart();
 // The guest render thread, at every swap, after the frame limiter's wait: the
 // frame the swap ends has SIMULATION_END.
 void OnGuestSwap();
-// The vendor's reducer holds the frame rate cap now (the mode was taken, this
-// frame's wait was made): the game's own limiter waits for nothing.
-bool DriverLimits();
 
 // --- the renderer (renderer.cpp), render thread unless noted --------------------
 

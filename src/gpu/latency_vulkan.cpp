@@ -94,7 +94,7 @@ class VulkanReducer final : public Reducer {
           why = "the driver made the swap chain without the latency mode";
           return nullptr;
         }
-        const VkResult result = reducer->SetSleepModeLocked(false, false, 0);
+        const VkResult result = reducer->SetSleepModeLocked(false, false);
         if (result != VK_SUCCESS) {
           why = "vkSetLatencySleepModeNV refused the neutral mode (VkResult " +
                 std::to_string(int32_t(result)) + ")";
@@ -117,11 +117,9 @@ class VulkanReducer final : public Reducer {
   const char* Name() const override { return nvidia_ ? "NVIDIA Reflex" : "AMD Anti-Lag 2"; }
   bool IsReflex() const override { return nvidia_; }
   bool SupportsBoost() const override { return nvidia_; }
-  bool SupportsLimit() const override { return nvidia_; }
   bool OnByDefault() const override { return nvidia_; }
-  bool Untested() const override { return !nvidia_; }
 
-  bool SetMode(bool on, bool boost, uint32_t minimum_interval_us) override {
+  bool SetMode(bool on, bool boost) override {
     std::shared_lock lock(mutex_);
     if (shut_down_) {
       return true;
@@ -129,7 +127,6 @@ class VulkanReducer final : public Reducer {
     mode_set_ = true;
     mode_on_ = on;
     mode_boost_ = boost;
-    mode_interval_us_ = minimum_interval_us;
     if (nvidia_) {
       if (swap_chain_->vk == VK_NULL_HANDLE) {
         // Told to the chain when there is one (EndSwapChainChange).
@@ -138,7 +135,7 @@ class VulkanReducer final : public Reducer {
       if (!swap_chain_->latencyMode) {
         return false;
       }
-      const VkResult result = SetSleepModeLocked(on, boost, minimum_interval_us);
+      const VkResult result = SetSleepModeLocked(on, boost);
       if (result != VK_SUCCESS) {
         REXLOG_WARN("[gpu] low latency: vkSetLatencySleepModeNV failed ({})", int32_t(result));
         return false;
@@ -147,11 +144,10 @@ class VulkanReducer final : public Reducer {
     }
     // Not on: left to the driver's own setting (the player's Adrenalin choice), not forced off.
     anti_lag_on_.store(on, std::memory_order_relaxed);
-    anti_lag_max_fps_ = 0;  // the game's limiter keeps the cap while this is untested
     VkAntiLagDataAMD data = {};
     data.sType = VK_STRUCTURE_TYPE_ANTI_LAG_DATA_AMD;
     data.mode = on ? VK_ANTI_LAG_MODE_ON_AMD : VK_ANTI_LAG_MODE_DRIVER_CONTROL_AMD;
-    data.maxFPS = anti_lag_max_fps_;
+    data.maxFPS = 0;  // the game's own limiter holds the cap
     anti_lag_fn_(device_->vk, &data);
     return true;
   }
@@ -159,7 +155,6 @@ class VulkanReducer final : public Reducer {
   bool Sleep(uint64_t frame_id) override {
     if (nvidia_) {
       uint64_t value;
-      uint32_t interval_us;
       // Held for the whole call, the wait included, so that Shutdown does not destroy the
       // semaphore under it; the swap chain's lock is only held for the driver call (a wait never
       // holds a swap chain change off).
@@ -171,7 +166,6 @@ class VulkanReducer final : public Reducer {
           return false;
         }
         value = ++sleep_value_;
-        interval_us = mode_interval_us_;
         VkLatencySleepInfoNV info = {};
         info.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV;
         info.signalSemaphore = sleep_semaphore_;
@@ -181,9 +175,9 @@ class VulkanReducer final : public Reducer {
         }
       }
       // Bounded: a driver that never signals must not hold the game. A little over what
-      // latency.cpp counts as a long wait (a quarter of a second, or four frame intervals), so a
-      // wait that times out counts as one.
-      const uint64_t timeout_ns = (std::max<uint64_t>(250'000, 4ull * interval_us) + 20'000) * 1000;
+      // latency.cpp counts as a long wait (a quarter of a second), so a wait that times out counts
+      // as one.
+      const uint64_t timeout_ns = (250'000ull + 20'000ull) * 1000ull;
       VkSemaphoreWaitInfo wait_info = {};
       wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
       wait_info.semaphoreCount = 1;
@@ -255,7 +249,7 @@ class VulkanReducer final : public Reducer {
 
   void EndSwapChainChange() override {
     if (nvidia_ && mode_set_ && swap_chain_->vk != VK_NULL_HANDLE && swap_chain_->latencyMode) {
-      const VkResult result = SetSleepModeLocked(mode_on_, mode_boost_, mode_interval_us_);
+      const VkResult result = SetSleepModeLocked(mode_on_, mode_boost_);
       if (result != VK_SUCCESS) {
         REXLOG_WARN("[gpu] low latency: vkSetLatencySleepModeNV failed on the rebuilt swap chain "
                     "({})",
@@ -281,12 +275,11 @@ class VulkanReducer final : public Reducer {
       : device_(device), swap_chain_(swap_chain) {}
 
   // With mutex_ held (shared or exclusive), on a chain in the latency mode.
-  VkResult SetSleepModeLocked(bool on, bool boost, uint32_t minimum_interval_us) {
+  VkResult SetSleepModeLocked(bool on, bool boost) {
     VkLatencySleepModeInfoNV mode = {};
     mode.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV;
     mode.lowLatencyMode = on ? VK_TRUE : VK_FALSE;
     mode.lowLatencyBoost = (on && boost) ? VK_TRUE : VK_FALSE;
-    mode.minimumIntervalUs = minimum_interval_us;
     return set_sleep_mode_(device_->vk, swap_chain_->vk, &mode);
   }
 
@@ -299,7 +292,7 @@ class VulkanReducer final : public Reducer {
     VkAntiLagDataAMD data = {};
     data.sType = VK_STRUCTURE_TYPE_ANTI_LAG_DATA_AMD;
     data.mode = anti_lag_on_.load(std::memory_order_relaxed) ? VK_ANTI_LAG_MODE_ON_AMD : VK_ANTI_LAG_MODE_DRIVER_CONTROL_AMD;
-    data.maxFPS = anti_lag_max_fps_;
+    data.maxFPS = 0;
     data.pPresentationInfo = &presentation;
     anti_lag_fn_(device_->vk, &data);
   }
@@ -322,9 +315,7 @@ class VulkanReducer final : public Reducer {
   bool mode_set_ = false;
   bool mode_on_ = false;
   bool mode_boost_ = false;
-  uint32_t mode_interval_us_ = 0;
   std::atomic<bool> anti_lag_on_{false};
-  uint32_t anti_lag_max_fps_ = 0;
 };
 
 }  // namespace

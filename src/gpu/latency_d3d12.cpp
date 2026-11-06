@@ -140,7 +140,7 @@ class NvapiReflex final : public Reducer {
     // their driver's own. NVIDIA's samples test support the same way, by this call's result.
     // CHECK: not run here. A refusal at this point (a driver that wants a swap chain first) would
     // hide the row on a GPU that has Reflex; the log line says the status.
-    const NvAPI_Status status = reflex->SetSleepMode(false, false, 0);
+    const NvAPI_Status status = reflex->SetSleepMode(false, false);
     if (status != kNvApiOk) {
       why = "NvAPI_D3D_SetSleepMode refused the neutral mode (status " + std::to_string(status) +
             "): this GPU or driver has no Reflex";
@@ -152,13 +152,12 @@ class NvapiReflex final : public Reducer {
   const char* Name() const override { return "NVIDIA Reflex"; }
   bool IsReflex() const override { return true; }
   bool SupportsBoost() const override { return true; }
-  bool SupportsLimit() const override { return true; }
   // The fork measured it on an RTX 5080: 13 to 15 ms less from the swap to the screen at 3x
   // resolution, for 3 to 5% of the frame rate on D3D12 and nothing at native resolution.
   bool OnByDefault() const override { return true; }
 
-  bool SetMode(bool on, bool boost, uint32_t minimum_interval_us) override {
-    const NvAPI_Status status = SetSleepMode(on, boost, minimum_interval_us);
+  bool SetMode(bool on, bool boost) override {
+    const NvAPI_Status status = SetSleepMode(on, boost);
     if (status != kNvApiOk) {
       REXLOG_WARN("[gpu] low latency: NvAPI_D3D_SetSleepMode failed ({})", status);
       return false;
@@ -166,7 +165,7 @@ class NvapiReflex final : public Reducer {
     return true;
   }
 
-  // NvAPI_D3D_Sleep waits for the moment the driver picks (and for the minimum interval) and
+  // NvAPI_D3D_Sleep waits for the moment the driver picks and
   // cannot be cancelled, so unlike Vulkan's wait it has no bound: latency.cpp times it when it
   // returns and gives the reducer up for a while when it takes too long. A call that never
   // returns is not covered.
@@ -209,12 +208,11 @@ class NvapiReflex final : public Reducer {
  private:
   explicit NvapiReflex(ID3D12Device* device) : device_(device) {}
 
-  NvAPI_Status SetSleepMode(bool on, bool boost, uint32_t minimum_interval_us) {
+  NvAPI_Status SetSleepMode(bool on, bool boost) {
     NvSetSleepModeParams params = {};
     params.version = NvVersion1<NvSetSleepModeParams>();
     params.bLowLatencyMode = on ? 1 : 0;
     params.bLowLatencyBoost = (on && boost) ? 1 : 0;
-    params.minimumIntervalUs = minimum_interval_us;
     // The markers decide where the wait goes (the neutral mode has no wait to place).
     params.bUseMarkersToOptimize = on ? 1 : 0;
     return set_sleep_mode_(device_.Get(), &params);
@@ -261,16 +259,11 @@ class AmdAntiLag2 final : public Reducer {
 
   const char* Name() const override { return "AMD Anti-Lag 2"; }
   bool IsReflex() const override { return false; }
-  // Written from AMD's header and documentation; not run on a Radeon yet, so its limit stays
-  // with the game's limiter and auto leaves it off.
-  bool Untested() const override { return true; }
-
-  bool SetMode(bool on, bool, uint32_t minimum_interval_us) override {
+  bool SetMode(bool on, bool) override {
     if (!on) {
       if (initialized_.load(std::memory_order_acquire)) {
         // Told off once (a disabled Update has no wait).
         enabled_ = false;
-        max_fps_ = 0;
         AMD::AntiLag2DX12::Update(&context_, false, 0);
       }
       return true;
@@ -280,14 +273,13 @@ class AmdAntiLag2 final : public Reducer {
     }
     // The state goes to the driver with the frame's Update (Sleep, just after this).
     enabled_ = true;
-    max_fps_ = minimum_interval_us ? uint32_t(1000000u / minimum_interval_us) : 0;
     return true;
   }
 
   // The per-frame call goes just before the input is polled: it waits where the driver wants.
   bool Sleep(uint64_t) override {
     return initialized_.load(std::memory_order_acquire) &&
-           SUCCEEDED(AMD::AntiLag2DX12::Update(&context_, enabled_, max_fps_));
+           SUCCEEDED(AMD::AntiLag2DX12::Update(&context_, enabled_, 0));
   }
 
   void SetMarker(Marker marker, uint64_t) override {
@@ -338,7 +330,6 @@ class AmdAntiLag2 final : public Reducer {
   // The update thread's.
   bool initialize_failed_ = false;
   bool enabled_ = false;
-  uint32_t max_fps_ = 0;
 };
 
 }  // namespace

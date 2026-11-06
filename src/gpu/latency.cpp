@@ -1,6 +1,6 @@
 // MCLA GPU renderer -- the GPU vendor's latency reducer: the policy, the frame
 // bookkeeping and the calls the game and the renderer make. See latency.h for
-// what it is, where each marker goes and who holds the frame rate cap; the
+// what it is, where each marker goes and why the game's limiter keeps the cap; the
 // driver halves are latency_d3d12.cpp and latency_vulkan.cpp.
 //
 // Design followed (not copied): the MCLA fork's rexglue-low-latency.patch
@@ -38,15 +38,6 @@ REXCVAR_DEFINE_STRING(
     "row for it and it stays off whatever this says (the log says why at start). Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_low_latency_driver_limit, true, "MCLA/GPU",
-    "While NVIDIA Reflex is on, give the frame rate cap (fps_limit) to the driver as its minimum "
-    "frame interval, so that its wait comes before the frame's input is read, and let the game's "
-    "own limiter wait for nothing. Off: the game's limiter keeps the cap, after the input. The "
-    "game's limiter takes the cap back by itself for any frame where the driver's wait did not "
-    "run. Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace mcla::gpu::latency {
 
 namespace {
@@ -77,9 +68,8 @@ constexpr uint32_t kWarmupPasses = 2;
 // not working.
 constexpr uint32_t kMaxRefusals = 3;
 constexpr uint64_t kRetryUs = 1'000'000;
-// A wait before the frame over this (or over four of the cap's frame intervals, where that is
-// longer) is long. Three long waits among the last eight give the reducer up for a while: the
-// driver is told to leave the mode and the game's own limiter holds the frame rate. It is tried
+// A wait before the frame over this is long. Three long waits among the last eight give the
+// reducer up for a while: the driver is told to leave the mode. It is tried
 // again after 5 s, then 10, 20, 40 and at most 60 s while it keeps failing; 30 s without a long
 // wait starts the pause at 5 s again.
 constexpr uint64_t kLongWaitUs = 250'000;
@@ -87,9 +77,6 @@ constexpr uint32_t kLongWaitsToGiveUp = 3;
 constexpr uint64_t kFirstBackoffUs = 5'000'000;
 constexpr uint64_t kMaxBackoffUs = 60'000'000;
 constexpr uint64_t kHealthyUs = 30'000'000;
-// DriverLimits() is false when the update thread has not passed the frame start for this long
-// (loading screens, a stalled game): nothing it says then is current.
-constexpr uint64_t kStaleDriverLimitUs = 250'000;
 
 struct Want {
   bool on = false;
@@ -118,7 +105,6 @@ struct UpdateState {
   // The mode the driver has.
   bool applied_on = false;
   bool applied_boost = false;
-  uint32_t applied_interval_us = 0;
   uint32_t warmup_passes = 0;
   uint32_t refusals = 0;
   uint64_t retry_at_us = 0;
@@ -153,9 +139,6 @@ struct Module {
   // with a swap.
   std::atomic<uint64_t> guest_cursor{0};
   std::atomic<uint64_t> host_cursor{0};
-
-  std::atomic<bool> driver_limits{false};
-  std::atomic<uint64_t> last_start_us{0};
 
   UpdateState update;  // the update thread
   // The host render thread: the marked frame it is recording (0: none), and whether the present
@@ -201,23 +184,18 @@ uint64_t Pair(Module& m, std::atomic<uint64_t>& cursor, bool* marked) {
   return id;
 }
 
-// Tells the driver the mode `on` / `boost` / `interval_us`, and keeps what it answered.
-void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint32_t interval_us,
-               uint64_t now) {
-  if (reducer.SetMode(on, boost, interval_us)) {
+// Tells the driver the mode `on` / `boost`, and keeps what it answered.
+void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint64_t now) {
+  if (reducer.SetMode(on, boost)) {
     const bool was_on = u.applied_on;
     u.applied_on = on;
     u.applied_boost = on && boost;
-    u.applied_interval_us = on ? interval_us : 0;
     u.refusals = 0;
     if (on && !was_on) {
       u.warmup_passes = kWarmupPasses;
       u.on_since_us = now;
       u.long_history = 0;
-      REXLOG_INFO("[gpu] low latency: {} on{}{}", reducer.Name(), boost ? " with boost" : "",
-                  interval_us ? ", the driver holds the frame rate cap (" +
-                                    std::to_string(interval_us) + " us a frame)"
-                              : std::string());
+      REXLOG_INFO("[gpu] low latency: {} on{}", reducer.Name(), boost ? " with boost" : "");
     } else if (!on && was_on) {
       REXLOG_INFO("[gpu] low latency: {} off", reducer.Name());
     }
@@ -227,7 +205,6 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint32_t i
     // The driver would not leave the mode; nothing more can be done about it.
     u.applied_on = false;
     u.applied_boost = false;
-    u.applied_interval_us = 0;
     return;
   }
   if (++u.refusals >= kMaxRefusals) {
@@ -235,10 +212,9 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint32_t i
     REXLOG_WARN("[gpu] low latency: the driver refused {}'s mode {} times; it stays off until the "
                 "game is started again",
                 reducer.Name(), kMaxRefusals);
-    reducer.SetMode(false, false, 0);
+    reducer.SetMode(false, false);
     u.applied_on = false;
     u.applied_boost = false;
-    u.applied_interval_us = 0;
     return;
   }
   u.retry_at_us = now + kRetryUs;
@@ -246,24 +222,21 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint32_t i
 
 // One wait of the driver's, timed by the caller. Gives the reducer up for a while when too many
 // are long.
-void WatchWait(UpdateState& u, Reducer& reducer, uint64_t waited_us, uint32_t interval_us,
-               uint64_t now) {
-  const uint64_t limit = std::max<uint64_t>(kLongWaitUs, 4ull * interval_us);
+void WatchWait(UpdateState& u, Reducer& reducer, uint64_t waited_us, uint64_t now) {
+  const uint64_t limit = kLongWaitUs;
   const bool is_long = waited_us > limit;
   u.long_history = uint8_t((u.long_history << 1) | (is_long ? 1u : 0u));
   if (std::popcount(u.long_history) >= int(kLongWaitsToGiveUp)) {
     u.paused_until_us = now + u.backoff_us;
     REXLOG_WARN("[gpu] low latency: {} kept the game waiting too long ({} of the last 8 frames "
-                "waited over {} ms, the last {} ms); off for {} s, the game's own limiter holds "
-                "the frame rate meanwhile",
+                "waited over {} ms, the last {} ms); off for {} s",
                 reducer.Name(), std::popcount(u.long_history), limit / 1000, waited_us / 1000,
                 u.backoff_us / 1'000'000);
     u.backoff_us = std::min(u.backoff_us * 2, kMaxBackoffUs);
     u.long_history = 0;
-    reducer.SetMode(false, false, 0);
+    reducer.SetMode(false, false);
     u.applied_on = false;
     u.applied_boost = false;
-    u.applied_interval_us = 0;
   } else if (!is_long && u.on_since_us && now - u.on_since_us > kHealthyUs) {
     u.backoff_us = kFirstBackoffUs;
   }
@@ -291,7 +264,7 @@ Health CurrentHealth() {
 // The guest's threads
 // ---------------------------------------------------------------------------------------
 
-void OnFrameStart(uint32_t fps_limit) {
+void OnFrameStart() {
   Module& m = M();
   if (!m.counting.load(std::memory_order_acquire)) {
     return;
@@ -309,38 +282,29 @@ void OnFrameStart(uint32_t fps_limit) {
   const bool paused = now < u.paused_until_us;
   const bool on = want.on && !u.failed && !paused;
   const bool boost = on && want.boost;
-  const uint32_t interval_us =
-      (on && reducer->SupportsLimit() && fps_limit > 0 &&
-       REXCVAR_GET(mcla_gpu_low_latency_driver_limit))
-          ? 1'000'000u / fps_limit
-          : 0u;
-  if (on != u.applied_on ||
-      (on && (boost != u.applied_boost || interval_us != u.applied_interval_us))) {
+  if (on != u.applied_on || (on && boost != u.applied_boost)) {
     if (now >= u.retry_at_us) {
-      ApplyMode(u, *reducer, on, boost, interval_us, now);
+      ApplyMode(u, *reducer, on, boost, now);
     }
   }
   m.health.store(u.failed ? Health::kFailed : (paused ? Health::kPaused : Health::kOk),
                  std::memory_order_relaxed);
 
-  // The driver's wait, before the game reads its input. The driver holds the cap here only when
-  // this wait ran; the warm-up passes and a failed call leave it to the game's limiter.
-  bool slept = false;
+  // The driver's wait, before the game reads its input (none in the warm-up passes).
   if (u.applied_on) {
     if (u.warmup_passes > 0) {
       --u.warmup_passes;
     } else {
       const uint64_t before = NowUs();
-      slept = reducer->Sleep(id);
+      const bool slept = reducer->Sleep(id);
       now = NowUs();
       if (!slept && !u.sleep_failure_logged) {
         u.sleep_failure_logged = true;
         REXLOG_WARN("[gpu] low latency: {}'s wait before the frame did not run (no swap chain "
-                    "yet, or the driver refused the call); the game's own limiter holds the "
-                    "frame rate for any frame where it does not",
+                    "yet, or the driver refused the call)",
                     reducer->Name());
       }
-      WatchWait(u, *reducer, now - before, u.applied_interval_us, now);
+      WatchWait(u, *reducer, now - before, now);
     }
   }
 
@@ -352,9 +316,6 @@ void OnFrameStart(uint32_t fps_limit) {
   m.ring_marked[id % kRing].store(marked, std::memory_order_relaxed);
   u.started = id;
   m.published.store(id, std::memory_order_release);
-  m.last_start_us.store(now, std::memory_order_relaxed);
-  m.driver_limits.store(marked && slept && interval_us != 0 && u.applied_interval_us == interval_us,
-                        std::memory_order_relaxed);
   if (marked) {
     // The input sample is taken at the frame's start too: the game reads its pad in the update
     // that follows the engine timer, and nothing in a frame comes before the timer.
@@ -376,16 +337,6 @@ void OnGuestSwap() {
   if (const std::shared_ptr<Reducer> reducer = m.Get()) {
     reducer->SetMarker(Marker::kSimulationEnd, id);
   }
-}
-
-bool DriverLimits() {
-  Module& m = M();
-  if (!m.driver_limits.load(std::memory_order_relaxed)) {
-    return false;
-  }
-  const uint64_t now = NowUs();
-  const uint64_t last = m.last_start_us.load(std::memory_order_relaxed);
-  return now <= last || now - last < kStaleDriverLimitUs;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -422,7 +373,6 @@ void Initialize(Device& device, SwapChain& swap_chain) {
   m.published.store(0, std::memory_order_relaxed);
   m.guest_cursor.store(0, std::memory_order_relaxed);
   m.host_cursor.store(0, std::memory_order_relaxed);
-  m.driver_limits.store(false, std::memory_order_relaxed);
   m.render_id = 0;
   m.idle_present = false;
   {
@@ -430,9 +380,8 @@ void Initialize(Device& device, SwapChain& swap_chain) {
     m.reducer = reducer;
   }
   m.counting.store(true, std::memory_order_release);
-  REXLOG_INFO("[gpu] low latency: {} is available on {} ({}){}; mcla_gpu_low_latency = {} ({})",
+  REXLOG_INFO("[gpu] low latency: {} is available on {} ({}); mcla_gpu_low_latency = {} ({})",
               reducer->Name(), device.backend_info(), device.description().name,
-              reducer->Untested() ? ", untested on this GPU" : "",
               REXCVAR_GET(mcla_gpu_low_latency),
               ReadWant(*reducer).on ? "on" : "off");
 }
@@ -440,7 +389,6 @@ void Initialize(Device& device, SwapChain& swap_chain) {
 void Shutdown() {
   Module& m = M();
   m.counting.store(false, std::memory_order_release);
-  m.driver_limits.store(false, std::memory_order_relaxed);
   std::shared_ptr<Reducer> reducer;
   {
     std::lock_guard lock(m.mutex);
@@ -453,7 +401,7 @@ void Shutdown() {
   // The driver is told to leave the mode (the swap chain is still there for Vulkan's to name),
   // then the vendor's objects go. A call another thread has in progress finishes first.
   if (m.update.applied_on) {
-    reducer->SetMode(false, false, 0);
+    reducer->SetMode(false, false);
   }
   reducer->Shutdown();
   m.update = UpdateState{};

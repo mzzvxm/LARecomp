@@ -232,15 +232,6 @@ static void EnforceFrameLimit() {
     // stale value is load-bearing; clearing it here keeps the invariant simple.
     static uint64_t next_us = 0;
 
-#if defined(LARECOMP_HAS_GPU)
-    // NVIDIA Reflex holds the cap (gpu/latency.h DriverLimits): its wait comes before the frame's
-    // input, so this limiter, which waits after it, waits for nothing, and starts from a fresh
-    // deadline if the cap comes back to it.
-    if (mcla::gpu::latency::DriverLimits()) {
-        next_us = 0;
-        return;
-    }
-#endif
     const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
     if (limit <= 0) {
         next_us = 0;
@@ -356,18 +347,6 @@ static void TickGuestProfiler() {
     last = now;
 }
 
-#if defined(LARECOMP_HAS_GPU)
-// The frame cap in force, as EnforceFrameLimit reads it (MCLA_FPS_CAP overrides fps_limit); 0 for none.
-static uint32_t FrameLimitInForce() {
-    static const int32_t env_limit = [] {
-        if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
-        return -1;
-    }();
-    const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
-    return limit > 0 ? uint32_t(limit) : 0u;
-}
-#endif
-
 // 0x821BDA90, the engine timer's first instruction: where a frame starts for the GPU vendor's
 // latency reducer (NVIDIA Reflex, AMD Anti-Lag 2; gpu/latency.h). Its wait comes here, before the
 // timer reads the clock (so the time step the timer then measures is the one after the wait, not
@@ -389,7 +368,7 @@ void MCLAFrameStart() {
     if (now - last_start_us < 100) {
         return;
     }
-    mcla::gpu::latency::OnFrameStart(FrameLimitInForce());
+    mcla::gpu::latency::OnFrameStart();
     // After the driver's wait.
     last_start_us = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(

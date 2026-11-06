@@ -47,18 +47,14 @@ class Reducer {
   virtual bool IsReflex() const = 0;
   // Reflex's On + Boost (the GPU clocks stay high).
   virtual bool SupportsBoost() const { return false; }
-  // Whether the frame rate cap can go to the driver (the minimum interval of SetMode).
-  virtual bool SupportsLimit() const { return false; }
   // What mcla_gpu_low_latency = auto comes to.
   virtual bool OnByDefault() const { return false; }
-  // Written from the vendor's headers and documentation, never run on its GPU.
-  virtual bool Untested() const { return false; }
 
-  // The mode: on or off, boost, and the minimum frame interval in microseconds (0: none). False
-  // when the driver refused it. Called by the update thread only.
-  virtual bool SetMode(bool on, bool boost, uint32_t minimum_interval_us) = 0;
-  // The driver's wait at the start of a frame. True when it was made (and so held the frame rate
-  // to the minimum interval); false where it could not be: no swap chain yet, a call that failed.
+  // The mode: on or off, and boost. False when the driver refused it. The vendor's own frame
+  // limit is left at none (latency.h: the frame rate limit). Called by the update thread only.
+  virtual bool SetMode(bool on, bool boost) = 0;
+  // The driver's wait at the start of a frame. True when it was made; false where it could not
+  // be: no swap chain yet, a call that failed.
   virtual bool Sleep(uint64_t frame_id) = 0;
   virtual void SetMarker(Marker marker, uint64_t frame_id) = 0;
 
