@@ -14,10 +14,13 @@
 // Storage. Guest physical memory in 64 KiB chunks; a chunk gets a place in a
 // pool buffer the first time a resolve or a read needs it, through a table of
 // kChunkCount entries the shaders read (hlsl/resolve_memory.hlsli). The pool
-// starts at kInitialPoolChunks and doubles when full (copied on the GPU, in
-// list order; the old buffer retired by the FrameRing). Chunks are never given
-// back: the RAGE render-target pools resolve into fixed ranges (425 chunks,
-// 26.6 MiB, in the measured frames).
+// starts at kInitialPoolChunks and grows by a quarter (at least
+// kMinPoolGrowthChunks) when full (copied on the GPU, in list order; the old
+// buffer retired by the FrameRing). Chunks are never given back: the RAGE
+// render-target pools resolve into fixed ranges (425 chunks, 26.6 MiB, in the
+// measured frames; at most 608 chunks, 38 MiB, in any logged run, so the start
+// size holds them all: the old 512 chunks always doubled to 64 MiB, 26 MiB of
+// it never used).
 //
 // Pages (4 KiB, the CPU's bookkeeping):
 //  - valid: the pool holds the console's bytes for the whole page. Set when the
@@ -107,7 +110,8 @@ class ResolveMemory {
   static constexpr uint32_t kPageCount = kChunkCount << (kChunkShift - kPageShift);
   static constexpr uint32_t kPagesPerChunk = 1u << (kChunkShift - kPageShift);
   static constexpr uint32_t kNoChunk = 0xFFFFFFFFu;
-  static constexpr uint32_t kInitialPoolChunks = 512;  // 32 MiB
+  static constexpr uint32_t kInitialPoolChunks = 640;  // 40 MiB
+  static constexpr uint32_t kMinPoolGrowthChunks = 128;  // 8 MiB
   static constexpr uint64_t kEvictFrames = 600;
 
   ResolveMemory() = default;
