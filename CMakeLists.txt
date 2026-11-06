@@ -86,6 +86,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
     src/mc_engine/map_warp.cpp

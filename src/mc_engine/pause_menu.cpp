@@ -6,6 +6,7 @@
 #include "config_save.h"
 #include "cutscene_gallery.h"
 #include "menu_items.h"
+#include "upscaling_menu.h"
 #include "logging.h"
 #include "online/online_toast.h"
 #include "online/server_browser/browser_ui.h"
@@ -1550,8 +1551,9 @@ const ItemDef kNativeItems[] = {
     Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
          kApiVals, kApiNames, 3, " (RESTART)"),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
-                    kNativeAaVals, kNativeAaNames, 3)),
+    NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
+                                 kNativeAaVals, kNativeAaNames, 3),
+                            &mcla_menu::kNativeAaDynamics)),
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
 #endif
@@ -1860,7 +1862,8 @@ const MenuDef kMenus[] = {
     // Reached through a hub.
     {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
      "RxVideoMenu",
-     kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0]))},
+     kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
+     UpscalingMenuRows},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
