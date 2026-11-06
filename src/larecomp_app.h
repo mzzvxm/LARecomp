@@ -362,6 +362,26 @@ class LarecompApp : public rex::ReXApp {
     }
   }
 
+  // The emulated GPU's memory and CPU settings for this game, unless the player set them (an
+  // SDK without them ignores the names):
+  // - render targets no taller than 1024 rows (the game's tallest surface is 736; the SDK makes
+  //   each as tall as the whole EDRAM), unused ones freed after 60 s, and above 90% of the
+  //   system's video memory budget the trim comes sooner and the texture cache limits halve;
+  // - a guest memory page the game writes 4 times within 10 s stays "hot": its writes are
+  //   uploaded instead of trapped one by one;
+  // - on D3D12, the guest memory a draw needs is uploaded ahead of the run of draws that use it
+  //   (the SDK has it off by default).
+  void SetXeniaHostDefaults() {
+    static const char* const kDefaults[][2] = {
+        {"render_target_max_height", "1024"},     {"render_target_trim_seconds", "60"},
+        {"gpu_memory_pressure_percent", "90"},    {"shared_memory_hot_page_faults", "4"},
+        {"shared_memory_hot_page_ms", "10000"},   {"d3d12_hoist_shared_memory_uploads", "true"},
+    };
+    for (const auto& d : kDefaults) {
+      if (!FlagWasConfigured(d[0])) SetFlag(d[0], d[1]);
+    }
+  }
+
   // The emulated GPU's resolve rules for this game, unless the player set them (an SDK without
   // the settings ignores the names):
   // - readback_resolve_rules: the 512x512 8_8_8_8 target the game bakes custom vinyls into, and
@@ -370,24 +390,6 @@ class LarecompApp : public rex::ReXApp {
   // - resolve_unscaled_copy_rules: above 1x, the rain's four 128x128 32_32_FLOAT simulation
   //   targets are also written at 1x into guest memory, which the rain's vertex shader reads
   //   (without it no rain is drawn above 1x). Nothing to copy at 1x.
-  // The emulated GPU's memory and CPU settings for this game, unless the player set them (an
-  // SDK without them ignores the names):
-  // - render targets no taller than 1024 rows (the game's tallest surface is 736; the SDK makes
-  //   each as tall as the whole EDRAM), unused ones freed after 60 s, and above 90% of the
-  //   system's video memory budget the trim comes sooner and the texture cache limits halve;
-  // - a guest memory page the game writes 4 times within 10 s stays "hot": its writes are
-  //   uploaded instead of trapped one by one.
-  void SetXeniaHostDefaults() {
-    static const char* const kDefaults[][2] = {
-        {"render_target_max_height", "1024"},     {"render_target_trim_seconds", "60"},
-        {"gpu_memory_pressure_percent", "90"},    {"shared_memory_hot_page_faults", "4"},
-        {"shared_memory_hot_page_ms", "10000"},
-    };
-    for (const auto& d : kDefaults) {
-      if (!FlagWasConfigured(d[0])) SetFlag(d[0], d[1]);
-    }
-  }
-
   void SetXeniaResolveRules() {
     if (!FlagWasConfigured("readback_resolve_rules")) {
       SetFlag("readback_resolve_rules",
