@@ -39,6 +39,7 @@
 #include "mc_engine/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "shaderpack/builder.h"
+#include "shaderpack/hdr_variant.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
@@ -79,12 +80,18 @@ std::filesystem::path ShaderCompilerFolder() {
   return rex::filesystem::GetExecutableFolder() / "D3D12";
 }
 
-// The HDR variant pack's step. CHECK: src/shaderpack/hdr_variant.* (agent W6) has no factory in
-// this branch yet. Once it lands, return its step here: the startup check, the check in
-// BuildShaderPacks and the build request all read it from this one place. Null: no HDR pack is
-// built or looked for.
+// The HDR variant pack's step: the startup check, the check inside BuildShaderPacks and the
+// build request all read it from this one place. Null when this build of larecomp has no tone map
+// curve embedded (the HDR feature's file is not in the tree): no HDR pack is built or looked for.
 sp::HdrStep* HdrStepForBuild() {
-  return nullptr;
+  static const std::unique_ptr<sp::HdrStep> step = [] {
+    std::unique_ptr<sp::HdrStep> made = sp::CreateHdrStep();
+    if (!made) {
+      LARECOMP_APP_INFO("[shaderpack] no HDR variant pack is built: {}", sp::HdrStepUnavailableReason());
+    }
+    return made;
+  }();
+  return step.get();
 }
 
 std::string PathUtf8(const std::filesystem::path& path) {
