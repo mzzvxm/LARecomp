@@ -77,6 +77,24 @@ if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
     target_sources(larecomp_gpu PRIVATE backend_vulkan.cpp)
 endif()
 
+# The temporal upscaler's FidelityFX backend (temporal_ffx.h): only when the top-level CMake found
+# the SDK (LARECOMP_FFX_SDK_DIR); LARECOMP_FFX_KIT is its Kits/FidelityFX folder. Without it
+# temporal_backend.cpp makes no backend and none of this is compiled. The D3D12 and Vulkan headers
+# of AMD's API cannot share a translation unit, so each API has its own small file.
+if(LARECOMP_FFX_KIT)
+    target_sources(larecomp_gpu PRIVATE temporal_ffx.cpp)
+    if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+        target_sources(larecomp_gpu PRIVATE temporal_ffx_dx12.cpp)
+    endif()
+    if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+        target_sources(larecomp_gpu PRIVATE temporal_ffx_vk.cpp)
+    endif()
+    target_include_directories(larecomp_gpu PRIVATE
+        "${LARECOMP_FFX_KIT}/api/include"
+        "${LARECOMP_FFX_KIT}/upscalers/include")
+    target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX=1)
+endif()
+
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 # src/ too: the guest decoders the renderer reuses from the legacy runtime are
 # included as "native_gfx/...", which keeps every such dependency visible by
