@@ -1012,7 +1012,19 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
     depth = DepthEdramKey(d.state);
     f.depth = &depth;
   }
-  temporal_->OnDraw(f, shared);
+  if (temporal_->OnDraw(f, shared)) {
+    // The anchor was taken: its passes (the scene's depth kept, the motion vectors) read products
+    // the main view's resolves made, so the open render pass ends first.
+    if (list_ && bound_.framebuffer) {
+      list_->setFramebuffer(nullptr);
+      bound_.framebuffer = nullptr;
+    }
+    if (temporal_->RecordAnchorPasses(list_)) {
+      // They bound their own layout, pipelines and framebuffers: the draw binds everything again.
+      ResetListState();
+      marked_framebuffer_ = nullptr;
+    }
+  }
 }
 
 void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {

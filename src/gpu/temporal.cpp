@@ -110,6 +110,7 @@ void TemporalSystem::SetEnabled(bool enabled) {
   pending_frames_ = 0;
   status_logged_.fill(false);
   reset_lines_ = 0;
+  rigid_lines_ = 0;
   still_logged_.clear();
   logged_lens_[0] = logged_lens_[1] = logged_lens_[2] = 0.0;
   lens_lines_ = 0;
@@ -121,13 +122,46 @@ void TemporalSystem::SetEnabled(bool enabled) {
                 "out yet. A summary every {:.0f} s",
                 kPrefix, kReportSeconds);
   } else {
+    motion_.Release();
     REXLOG_INFO("{} off", kPrefix);
+  }
+}
+
+void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
+                                HostPasses& passes, PassTiming& pass_timing,
+                                plume::RenderFormat target_format) {
+  motion_.Initialize(device, frames, heap, passes, pass_timing, target_format);
+}
+
+void TemporalSystem::Shutdown() {
+  motion_.Shutdown();
+  pending_ready_ = false;
+}
+
+bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
+  if (!pending_ready_) {
+    return false;
+  }
+  pending_ready_ = false;
+  if (!motion_.Record(list, pending_)) {
+    ++window_.mv_missed;
+    return false;
+  }
+  return true;
+}
+
+void TemporalSystem::DrawDebug(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
+  // The last frame had an accepted anchor, so its vectors were made (the view is a development tool).
+  if (enabled_ && frame_.anchor_ok) {
+    motion_.DrawDebug(list, width, height);
   }
 }
 
 void TemporalSystem::ResetRun() {
   ran_last_ = false;
   last_step_known_ = false;
+  last_jitter_[0] = last_jitter_[1] = 0.0f;
+  pending_ready_ = false;
   jitter_index_ = 0;
   misses_ = 0;
   disarmed_ = false;
@@ -175,19 +209,19 @@ void TemporalSystem::OnComposite() {
 // draws
 // ---------------------------------------------------------------------------
 
-void TemporalSystem::OnDraw(const DrawFacts& facts, SharedConstants& shared) {
+bool TemporalSystem::OnDraw(const DrawFacts& facts, SharedConstants& shared) {
   if (!frame_open_) {
-    return;
+    return false;
   }
   const DrawRecord& r = facts.view->record();
   if (facts.ps && r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
-    OnAnchor(facts, shared);
-    return;
+    return OnAnchor(facts, shared);
   }
   const temporal::MainMatch match = temporal::MatchMainView(facts.color0, facts.depth);
   if (match) {
     OnMainView(facts, match, shared);
   }
+  return false;
 }
 
 uint32_t TemporalSystem::EvaluateGate(const XenosState& s, const DrawRecord& r,
@@ -359,13 +393,13 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
   return AnchorStatus::kAccepted;
 }
 
-void TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared) {
+bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared) {
   FrameState& fr = frame_;
   ++window_.anchors;
   fr.anchor_seen = true;  // the main view's draws are done: no more jitter
   if (fr.anchors++ != 0) {
     ++window_.second_anchors;
-    return;
+    return false;
   }
   uint32_t width = 0;
   uint32_t height = 0;
@@ -388,7 +422,7 @@ void TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
                   "the summaries count them)",
                   kPrefix, fr.frame, StatusName(status), why.empty() ? "" : ": ", why);
     }
-    return;
+    return false;
   }
 
   // Accepted. What the frame's camera is, and whether its history starts again.
@@ -486,6 +520,61 @@ void TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
     window_.history_flip += h.flip < temporal::kHistoryTolerance;
     window_.history_noflip += h.noflip < temporal::kHistoryTolerance;
   }
+  NoteRigid(camera, fr.frame);
+
+  // What the passes of step 1b need, for the Scene's call of RecordAnchorPasses right after this
+  // draw's constants are known: the anchor's own fetches (the depth, the stencil view, the colour),
+  // the sizes, both jitters and the cameras. The vectors use the frame before's camera only when it
+  // follows this one without a restart (a cut, a size change or a gap leave them zero).
+  pending_ = TemporalMotion::Frame{};
+  pending_.frame = fr.frame;
+  pending_.color_slot = fr.anchor_textures.table[0];
+  pending_.stencil_slot = fr.anchor_textures.table[1];
+  pending_.depth_slot = fr.anchor_textures.table[2];
+  for (int i = 0; i < 2; ++i) {
+    pending_.render_size[i] = fr.render_size[i];
+    pending_.guest_size[i] = fr.guest_size[i];
+    pending_.jitter[i] = fr.jitter[i];
+    pending_.previous_jitter[i] = last_jitter_[i];
+  }
+  pending_.camera = &fr.camera;
+  pending_.previous =
+      (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
+  pending_ready_ = motion_.available();
+  return pending_ready_;
+}
+
+void TemporalSystem::NoteRigid(const temporal::Camera& camera, uint64_t frame) {
+  // The census could not say what the vehicle slots c69 + 4k mean (the world's turned out not to be
+  // the previous camera). If a slot is the vehicle's world to the previous frame's pixels, then
+  // c(69+4k) * inverse(c69) is the vehicle's own motion over one frame, a rigid transform: a
+  // rotation block of determinant 1, last column 0 0 0 1, a translation of about speed times
+  // frame time (0.5 units at 28 units a second). Counted always, the first lines of moving ones.
+  constexpr double kRigidTolerance = 1e-3;
+  constexpr double kMoving = 1e-3;
+  constexpr uint32_t kMaxRigidLines = 24;
+  for (uint32_t k = 1; k < temporal::kVehicleMatrices; ++k) {
+    const temporal::Rigid& r = camera.rigid[k];
+    if (!(camera.previous_valid & (1u << k)) || !r.valid) {
+      continue;
+    }
+    ++window_.rigid_checked;
+    const bool rigid = std::fabs(r.determinant - 1.0) <= kRigidTolerance &&
+                       r.orthonormal <= kRigidTolerance && r.last_column <= kRigidTolerance;
+    window_.rigid_ok += rigid;
+    const bool moving = r.translation > kMoving;
+    window_.rigid_moving += moving;
+    if (moving && rigid_lines_ < kMaxRigidLines) {
+      ++rigid_lines_;
+      REXLOG_INFO("[gpu] temporal mv: vehicle ID {} in frame {}: c(69+4k) * inverse(c69) has "
+                  "determinant {:.6f}, orthonormality error {:.2e}, last column error {:.2e}, "
+                  "moves {:.4f} units: {}{}",
+                  k, frame, r.determinant, r.orthonormal, r.last_column, r.translation,
+                  rigid ? "a rigid transform" : "NOT a rigid transform",
+                  rigid_lines_ == kMaxRigidLines ? " (the last of these lines; the summaries count)"
+                                                 : "");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +633,8 @@ void TemporalSystem::EndFrame() {
   ran_last_ = ran;
   if (ran) {
     last_camera_ = fr.camera;
+    last_jitter_[0] = fr.jitter[0];
+    last_jitter_[1] = fr.jitter[1];
     last_scale_ = fr.scale;
     ++jitter_index_;  // advances in the frames the pass ran in only
   }
@@ -711,6 +802,13 @@ void TemporalSystem::Report(const char* why) {
               w.history_flip, w.history_checks, w.history_noflip,
               running != 0 ? double(w.vehicle_matrices) / double(running) : 0.0,
               w.pixel_to_world_agrees, running);
+  const TemporalMotion::Counters mv = motion_.TakeCounters();
+  REXLOG_INFO("[gpu] temporal mv: ({}) vectors in {} frames ({} zero after a history restart, {} "
+              "anchors whose passes could not be recorded, {} images failed), vehicle ID passes {}, "
+              "checks judged {} | vehicle slots measured as rigid transforms: {} checked, {} rigid "
+              "within 1e-3, {} moving",
+              why, mv.frames, mv.zero_frames, w.mv_missed, mv.failed, mv.vehicle_draws, mv.checks,
+              w.rigid_checked, w.rigid_ok, w.rigid_moving);
   window_ = Window{};
   window_start_ = Clock::now();
 }

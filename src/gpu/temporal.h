@@ -23,8 +23,10 @@
 //             before), the jitter and its phase, the sizes, the camera, the anchor's bound
 //             textures, the counts of draws; and the states of the run in the log.
 //
-// It does not make motion vectors, keep depth, run an upscaler or draw anything: step 1b and the
-// backend steps read `frame()` and `previous_camera()` below, at the anchor or later in the frame.
+// Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
+// the motion vectors from this system's own camera history, the debug views and the checks; the
+// backend steps read `frame()`, `previous_camera()` and `motion().kept()` below. It still runs no
+// upscaler and changes no picture: everything is behind mcla_gpu_temporal.
 //
 // Development switch: mcla_gpu_temporal (off, read each frame). With it off no hook of the Scene
 // does anything beyond one branch, no constant changes, no draw is added. On, it jitters, reads
@@ -49,6 +51,7 @@
 #include "shaders.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
+#include "temporal_mv.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
@@ -171,12 +174,25 @@ class TemporalSystem {
   // do nothing otherwise.
   bool active() const { return enabled_; }
 
+  // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
+                  PassTiming& pass_timing, plume::RenderFormat target_format);
+  // GPU idle, before HostPasses and the BindlessHeap shut down.
+  void Shutdown();
+
   // The Renderer opened the frame's first list (frame slot `slot`). Reads the switch.
   void BeginFrame(uint32_t slot);
   // A prepared draw of the frame, after FillTextureTables and before UploadConstants: finds the
   // main view's draws and moves them (`shared` is the draw's own copy), finds the anchor and reads
-  // the camera.
-  void OnDraw(const DrawFacts& facts, SharedConstants& shared);
+  // the camera. True when this draw is the anchor, it was taken and its passes are due: the Scene
+  // then ends its render pass, calls RecordAnchorPasses and forgets its list state.
+  bool OnDraw(const DrawFacts& facts, SharedConstants& shared);
+  // The anchor's passes (depth, motion vectors, the checks' copies) into `list`, outside any render
+  // pass. False when nothing was recorded.
+  bool RecordAnchorPasses(plume::RenderCommandList* list);
+  // Inside the back buffer's render pass after the present's draw: the debug view
+  // (mcla_gpu_temporal_view) of the last frame, when it had vectors.
+  void DrawDebug(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // The composite marker: the UI starts.
   void OnComposite();
   // The guest's present: the frame ends, the state machine moves on, the log.
@@ -189,6 +205,8 @@ class TemporalSystem {
   // The camera of the frame before when its anchor was accepted and this frame follows it
   // directly (null: the history starts again).
   const temporal::Camera* previous_camera() const { return ran_last_ ? &last_camera_ : nullptr; }
+  // The depth and motion vector images kept for the last frame (temporal_mv.h Kept: sizes, formats).
+  const TemporalMotion& motion() const { return motion_; }
 
  private:
   using Clock = std::chrono::steady_clock;
@@ -220,6 +238,10 @@ class TemporalSystem {
     uint64_t history_noflip = 0;
     uint64_t pixel_to_world_agrees = 0;
     uint64_t vehicle_matrices = 0;  // usable previous matrices, summed over the accepted frames
+    uint64_t rigid_checked = 0;     // vehicle slots measured as c(69+4k) * inverse(c69)
+    uint64_t rigid_ok = 0;          // ... of them a rigid transform within 1e-3
+    uint64_t rigid_moving = 0;      // ... of them that moved more than 1e-3 units
+    uint64_t mv_missed = 0;         // anchors taken whose passes could not be recorded
     uint64_t misses = 0;            // jittered main view frames with no accepted anchor
     // The last accepted camera, for the line.
     bool have_camera = false;
@@ -229,7 +251,9 @@ class TemporalSystem {
 
   void SetEnabled(bool enabled);
   void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
-  void OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
+  bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
+  // The vehicle slots as rigid transforms (temporal_camera.h Rigid): the counts and the first lines.
+  void NoteRigid(const temporal::Camera& camera, uint64_t frame);
   static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
                                const ViewportInfo& viewport, Scale scale);
   void NoteStencil(const XenosState& state);
@@ -256,11 +280,17 @@ class TemporalSystem {
   // next one from; unknown at the first step of a run.
   double last_step_[3] = {};
   bool last_step_known_ = false;
+  float last_jitter_[2] = {};  // the jitter of the frame before (zero when it was not armed)
   Scale last_scale_ = Scale::None();
   Clock::time_point last_anchor_time_{};
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
   uint32_t misses_ = 0;
   bool disarmed_ = false;
+
+  // Step 1b: the passes and what they keep (temporal_mv.h), and what the anchor told them.
+  TemporalMotion motion_;
+  TemporalMotion::Frame pending_;
+  bool pending_ready_ = false;
 
   // The log.
   Window window_;
@@ -270,6 +300,7 @@ class TemporalSystem {
   uint32_t pending_frames_ = 0;
   std::array<bool, size_t(AnchorStatus::kCount)> status_logged_{};
   uint32_t reset_lines_ = 0;
+  uint32_t rigid_lines_ = 0;
   std::unordered_set<uint64_t> still_logged_;  // main view draws kept still, by shaders and reason
   double logged_lens_[3] = {};                 // field of view (rad), near, far of the last line
   uint32_t lens_lines_ = 0;

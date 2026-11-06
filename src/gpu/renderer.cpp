@@ -219,6 +219,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
+    // The temporal groundwork's passes (mcla_gpu_temporal): made on first use, never fail the renderer.
+    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, swap_chain_.format());
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
@@ -235,6 +237,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
+    temporal_.Shutdown();
     flicker_probe_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
@@ -320,6 +323,7 @@ void Renderer::Shutdown() {
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
+  temporal_.Shutdown();
   flicker_probe_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
@@ -723,6 +727,8 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   // Black around the letterboxed front buffer.
   list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
   present_.Draw(list, swap_chain_.width(), swap_chain_.height());
+  // The temporal groundwork's debug view (mcla_gpu_temporal_view), over the picture.
+  temporal_.DrawDebug(list, swap_chain_.width(), swap_chain_.height());
   markers_.Pop(list, PerfMarkers::kPhase);  // Present
   timing_.Mark(list, slot, GpuTiming::kOverlayBegin);
   pass_timing_.Mark(list, "overlay");
