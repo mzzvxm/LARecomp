@@ -641,6 +641,9 @@ const char* const kDeferredCvars[] = {
     // an FSR1 preset picks that size too.
     "mcla_gpu_resolution_scale",
     "mcla_gpu_fsr_preset",
+    // The 3D scene's size under an upscaler mode is fixed at the start too (gpu.h StartUpscale).
+    "mcla_gpu_fsr31_mode",
+    "mcla_gpu_fsr4_mode",
 };
 
 std::mutex g_deferred_mutex;

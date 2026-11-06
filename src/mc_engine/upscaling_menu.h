@@ -10,12 +10,16 @@
 // really loads. A saved choice that cannot run shows as OFF and is kept as it was saved.
 //
 //   UPSCALING        OFF / FSR 3.1 / FSR 4          mcla_gpu_upscaler
-//   FSR 3.1 MODE     NATIVE AA (100%)               mcla_gpu_fsr31_mode  (grey unless FSR 3.1 is on)
-//   FSR 4 MODE       NATIVE AA (100%)               mcla_gpu_fsr4_mode   (grey unless FSR 4 is on)
+//   FSR 3.1 MODE     NATIVE AA (100%) / QUALITY (67%) / BALANCED (59%) / PERFORMANCE (50%) /
+//                    ULTRA PERFORMANCE (33%)        mcla_gpu_fsr31_mode  (grey unless FSR 3.1 is on)
+//   FSR 4 MODE       the same                       mcla_gpu_fsr4_mode   (grey unless FSR 4 is on)
 //   SHARPNESS        OFF / 0.2 .. 1                 mcla_gpu_upscaler_sharpness (grey while off)
 //
-// Each technology keeps its own mode. NATIVE AA (100%) is the only mode in this step: the scene is
-// drawn at the full size and only smoothed; the vendors' other modes come with a scene drawn smaller.
+// Each technology keeps its own mode; the value is the vendor's name and the share of the output
+// the 3D scene is drawn at, per direction. NATIVE AA draws it at the full size and only smooths it;
+// the others draw it smaller and the upscaler makes it whole. The scene's size is fixed when the
+// game starts, so the mode rows are restart-only like RENDER SCALE: held for the next start, with
+// "(RESTART)" on the row.
 //
 // The set of rows depends only on what the probe found, which is final a moment after start, so it
 // does not change under an open menu.
