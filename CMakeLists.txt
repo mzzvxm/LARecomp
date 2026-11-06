@@ -408,6 +408,14 @@ else()
         set(LARECOMP_FFX_SDK_DIR "" CACHE PATH
             "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR")
         option(LARECOMP_FFX_FETCH "Fetch the pinned FidelityFX SDK 2.4.0 files when LARECOMP_FFX_SDK_DIR is unset" ON)
+        # The fetch runs at every configure (it only hashes what is there), so a new pin or a new file
+        # reaches a build folder that was configured before. A fetched folder that an earlier configure
+        # left in the cache counts as unset.
+        string(FIND "${LARECOMP_FFX_SDK_DIR}" "${CMAKE_BINARY_DIR}/_deps/" _larecomp_ffx_fetched_before)
+        if(_larecomp_ffx_fetched_before EQUAL 0)
+            set(LARECOMP_FFX_SDK_DIR "" CACHE PATH
+                "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR" FORCE)
+        endif()
         if(NOT LARECOMP_FFX_SDK_DIR AND LARECOMP_FFX_FETCH AND WIN32)
             include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchFidelityFX.cmake")
         endif()
@@ -440,6 +448,12 @@ else()
         set(LARECOMP_STREAMLINE_ZIP "" CACHE FILEPATH
             "A local copy of streamline-sdk-v2.14.16.zip, used instead of the download")
         option(LARECOMP_DLSS_FETCH "Fetch the pinned Streamline SDK 2.14.16 files when LARECOMP_STREAMLINE_DIR is unset" ON)
+        # As FidelityFX's above: checked at every configure; a fetched folder left in the cache counts as unset.
+        string(FIND "${LARECOMP_STREAMLINE_DIR}" "${CMAKE_BINARY_DIR}/_deps/" _larecomp_sl_fetched_before)
+        if(_larecomp_sl_fetched_before EQUAL 0)
+            set(LARECOMP_STREAMLINE_DIR "" CACHE PATH
+                "NVIDIA Streamline SDK (the folder holding include/ and bin/x64/); empty builds without DLSS" FORCE)
+        endif()
         if(NOT LARECOMP_STREAMLINE_DIR AND LARECOMP_DLSS_FETCH AND WIN32)
             include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchStreamline.cmake")
         endif()

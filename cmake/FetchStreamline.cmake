@@ -191,7 +191,7 @@ if(_sl_missing)
 endif()
 
 if(_sl_ok)
-    set(LARECOMP_STREAMLINE_DIR "${_sl_root}" CACHE PATH
-        "NVIDIA Streamline SDK (the folder holding include/ and bin/x64/); empty builds without DLSS" FORCE)
+    # A plain variable, not the cache: the next configure checks the files again (CMakeLists.txt).
+    set(LARECOMP_STREAMLINE_DIR "${_sl_root}")
     message(STATUS "larecomp: Streamline ${_sl_version} files fetched and checked in ${_sl_root}")
 endif()
