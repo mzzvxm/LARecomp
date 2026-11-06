@@ -77,13 +77,19 @@ float4 ResolveSample(int2 source, uint i) {
 #else
   float4 c = g_textures[g_push.source].Load(int3(source, 0));
 #endif
-  if ((g_push.mode & kFlagSourceNanToZero) != 0u) {
-    // Per sample, before the samples are summed: one NaN sample would otherwise make the whole
-    // pixel NaN and cost an edge its antialiasing. Tested on the bits so no optimizer assuming
-    // finite maths can fold it away.
+  // kFlagSourceNanToZero: a NaN component reads as 0. Per sample, before the samples are summed:
+  // one NaN sample would otherwise make the whole pixel NaN and cost an edge its antialiasing.
+  // Tested on the bits so no optimizer assuming finite maths can fold it away, and without a
+  // branch: in HLSL 2021 `?:` and `if` both become branches here, and NVIDIA's Vulkan shader
+  // compiler (nvgpucomp64.dll) hit an internal breakpoint on any branch on the flag between this
+  // load and the rest of the sample's conversion, crashing the game while the resolve pipelines
+  // were made at startup. A magnitude above infinity's (0x7F800000) is a NaN: the subtraction
+  // wraps and sets the top bit.
+  {
+    const uint nan_to_zero = select((g_push.mode & kFlagSourceNanToZero) != 0u, 1u, 0u);
     const uint4 bits = asuint(c);
-    const bool4 nan = (bits & 0x7FFFFFFFu) > 0x7F800000u;
-    c = float4(nan.x ? 0.0f : c.x, nan.y ? 0.0f : c.y, nan.z ? 0.0f : c.z, nan.w ? 0.0f : c.w);
+    const uint4 nan = ((0x7F800000u - (bits & 0x7FFFFFFFu)) >> 31u) & nan_to_zero;
+    c = asfloat(bits & (nan - 1u));
   }
   if ((g_push.mode & kFlagGammaSource) != 0u) {
     c.rgb = XeLinearToPWLGamma3(c.rgb);
