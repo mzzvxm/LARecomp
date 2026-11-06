@@ -43,6 +43,8 @@
 
 #include <plume_render_interface.h>
 
+#include "shaderpack/pack_format.h"
+
 namespace rex::memory {
 class MappedMemory;
 }
@@ -53,8 +55,9 @@ class Device;
 
 class ShaderStore {
  public:
-  static constexpr const char* kPackFileName = "mcla_shaders.v8.pack";
-  static constexpr uint32_t kPackVersion = 8;
+  // The file layout and its constants are shared with the pack writer: shaderpack/pack_format.h.
+  static constexpr const char* kPackFileName = larecomp::shaderpack::kPackFileName;
+  static constexpr uint32_t kPackVersion = larecomp::shaderpack::kPackVersion;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
@@ -65,16 +68,17 @@ class ShaderStore {
   };
 
   enum EntryFlags : uint32_t {
-    kComputedFetchIndex = 1u << 0,  // a vfetch takes its index from something other than r0.x
+    // a vfetch takes its index from something other than r0.x
+    kComputedFetchIndex = larecomp::shaderpack::kFlagComputedFetchIndex,
   };
 
   // Pixel shader outputs (pack flags bits 8..12, PixelShader::outputs of the container).
   enum PixelOutputs : uint8_t {
-    kOutputColor0 = 1u << 0,
-    kOutputColor1 = 1u << 1,
-    kOutputColor2 = 1u << 2,
-    kOutputColor3 = 1u << 3,
-    kOutputDepth = 1u << 4,
+    kOutputColor0 = larecomp::shaderpack::kPixelOutputColor0,
+    kOutputColor1 = larecomp::shaderpack::kPixelOutputColor1,
+    kOutputColor2 = larecomp::shaderpack::kPixelOutputColor2,
+    kOutputColor3 = larecomp::shaderpack::kPixelOutputColor3,
+    kOutputDepth = larecomp::shaderpack::kPixelOutputDepth,
   };
 
   struct Entry {

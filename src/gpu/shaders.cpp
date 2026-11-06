@@ -14,16 +14,13 @@
 #include "backend.h"
 #include "device.h"
 #include "native_gfx/shader_identity.h"
+#include "shaderpack/pack_format.h"
 
 namespace mcla::gpu {
 
 namespace {
 
-constexpr uint32_t kHeaderBytes = 32;
-constexpr uint32_t kEntryBytes = 88;
-constexpr uint32_t kFormatDxil = 1u << 0;
-constexpr uint32_t kFormatSpirv = 1u << 1;
-constexpr uint32_t kSpirvMagic = 0x07230203u;
+namespace pack = larecomp::shaderpack;
 
 uint32_t ReadU32(const uint8_t* p) {
   uint32_t v;
@@ -93,19 +90,20 @@ bool ShaderStore::Validate() {
     REXLOG_ERROR("[gpu] shader pack {}: {}", rex::path_to_utf8(path_), why);
     return false;
   };
-  if (size < kHeaderBytes || std::memcmp(data, "MSPK", 4) != 0) {
+  if (size < pack::kPackHeaderBytes || std::memcmp(data, pack::kPackMagic, 4) != 0) {
     return fail("not a shader pack");
   }
-  const uint32_t version = ReadU32(data + 4);
-  const uint32_t count = ReadU32(data + 8);
-  const uint32_t formats = ReadU32(data + 12);
-  if (version != kPackVersion) {
-    return fail("version " + std::to_string(version) + ", expected " + std::to_string(kPackVersion));
+  const uint32_t version = ReadU32(data + pack::kHeaderVersion);
+  const uint32_t count = ReadU32(data + pack::kHeaderCount);
+  const uint32_t formats = ReadU32(data + pack::kHeaderFormats);
+  if (version != pack::kPackVersion) {
+    return fail("version " + std::to_string(version) + ", expected " +
+                std::to_string(pack::kPackVersion));
   }
-  if ((formats & (Dxil() ? kFormatDxil : kFormatSpirv)) == 0) {
+  if ((formats & (Dxil() ? pack::kDxil : pack::kSpirv)) == 0) {
     return fail(std::string("carries no ") + (Dxil() ? "DXIL" : "SPIR-V"));
   }
-  if (uint64_t(kHeaderBytes) + uint64_t(count) * kEntryBytes > size) {
+  if (uint64_t(pack::kPackHeaderBytes) + uint64_t(count) * pack::kPackEntryBytes > size) {
     return fail("entry table past the end of the file");
   }
   const auto in_file = [&](uint64_t offset, uint64_t bytes) {
@@ -114,24 +112,26 @@ bool ShaderStore::Validate() {
   entries_.reserve(count);
   uint64_t previous_key = 0;
   for (uint32_t i = 0; i < count; ++i) {
-    const uint8_t* e = data + kHeaderBytes + uint64_t(i) * kEntryBytes;
+    const uint8_t* e = data + pack::kPackHeaderBytes + uint64_t(i) * pack::kPackEntryBytes;
     Entry entry;
-    entry.key = ReadU64(e);
-    const uint8_t stage = e[8];
-    entry.spec_mask = e[9];
-    entry.velem_count = uint16_t(e[10] | e[11] << 8);
-    entry.velem_offset = ReadU32(e + 12);
-    entry.flags = ReadU32(e + 16);
-    entry.ps_outputs = static_cast<uint8_t>((entry.flags >> 8) & 0x1Fu);
-    entry.texture_fetch_mask = ReadU32(e + 20);
-    entry.dxil[0] = ReadBlob(e + 24);
-    entry.dxil[1] = ReadBlob(e + 40);
-    entry.spirv[0] = ReadBlob(e + 56);
-    entry.spirv[1] = ReadBlob(e + 72);
-    if (stage != 'v' && stage != 'p') {
+    entry.key = ReadU64(e + pack::kEntryKey);
+    const uint8_t stage = e[pack::kEntryStage];
+    entry.spec_mask = e[pack::kEntrySpecMask];
+    entry.velem_count = uint16_t(e[pack::kEntryVertexElementCount] |
+                                 e[pack::kEntryVertexElementCount + 1] << 8);
+    entry.velem_offset = ReadU32(e + pack::kEntryVertexElementOffset);
+    entry.flags = ReadU32(e + pack::kEntryFlags);
+    entry.ps_outputs = static_cast<uint8_t>((entry.flags >> pack::kFlagPixelOutputsShift) &
+                                            pack::kFlagPixelOutputsMask);
+    entry.texture_fetch_mask = ReadU32(e + pack::kEntryTextureFetchMask);
+    entry.dxil[0] = ReadBlob(e + pack::kEntryDxil0);
+    entry.dxil[1] = ReadBlob(e + pack::kEntryDxil1);
+    entry.spirv[0] = ReadBlob(e + pack::kEntrySpirv0);
+    entry.spirv[1] = ReadBlob(e + pack::kEntrySpirv1);
+    if (stage != pack::kStageVertex && stage != pack::kStagePixel) {
       return fail("entry " + std::to_string(i) + " has stage " + std::to_string(stage));
     }
-    entry.stage = stage == 'v' ? Stage::kVertex : Stage::kPixel;
+    entry.stage = stage == pack::kStageVertex ? Stage::kVertex : Stage::kPixel;
     if (i != 0 && entry.key <= previous_key) {
       return fail("keys are not strictly increasing at entry " + std::to_string(i));
     }
@@ -186,8 +186,9 @@ void ShaderStore::GetVertexElements(const Entry& entry, std::vector<VertexElemen
 
 bool ShaderStore::VerifyBlob(const Entry& entry, const Blob& blob, bool spirv) {
   const uint8_t* bytes = file_->data() + blob.offset;
-  const bool magic = spirv ? blob.size >= 20 && ReadU32(bytes) == kSpirvMagic
-                           : blob.size >= 4 && std::memcmp(bytes, "DXBC", 4) == 0;
+  const bool magic = spirv ? blob.size >= pack::kSpirvMinBytes &&
+                                 ReadU32(bytes) == pack::kSpirvMagic
+                           : blob.size >= 4 && std::memcmp(bytes, pack::kDxbcMagic, 4) == 0;
   const bool fnv = mcla::native_gfx::Fnv1a64(bytes, blob.size) == blob.fnv;
   ++stats_.blobs_verified;
   if (!magic || !fnv) {
