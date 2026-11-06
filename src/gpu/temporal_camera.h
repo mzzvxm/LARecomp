@@ -43,6 +43,18 @@ inline constexpr double kCutSpeedTolerance = 0.5;
 inline constexpr double kCutCosine = 0.866;
 inline constexpr double kCutFov = 0.05;
 
+// What a vehicle slot's matrix is, if it is "the vehicle's world to the previous frame's pixels":
+// c(69+4k) times the inverse of c69 (the world's slot) is then the vehicle's own motion since the
+// frame before, a rigid transform (row vectors; 3x3 block a rotation of determinant 1, last column 0 0
+// 0 1, row 3 the translation). Measured here for the log (step 1b); nothing is decided by it.
+struct Rigid {
+  bool valid = false;
+  double determinant = 0.0;   // of the upper 3x3 block
+  double orthonormal = 0.0;   // largest entry of R R^T - I
+  double last_column = 0.0;   // largest of |m03|, |m13|, |m23|, |m33 - 1|
+  double translation = 0.0;   // length of row 3, in world units
+};
+
 struct Camera {
   uint64_t frame = 0;      // the guest frame it was read in (TemporalSystem's count)
   uint32_t width = 0;      // c62.xy: the frame in guest pixels
@@ -75,6 +87,9 @@ struct Camera {
   // computed in double and rounded; row-major, row vectors (prev = clip * M). Only the entries
   // with a bit in previous_valid are written.
   float clip_to_previous_pixels[kVehicleMatrices][16] = {};
+  // The vehicles' own motion by the test above (k >= 1, only the entries in previous_valid when the
+  // world's matrix was usable too).
+  Rigid rigid[kVehicleMatrices];
 };
 
 // Why a set of constants was not taken as the camera.
@@ -111,6 +126,16 @@ struct Cut {
   double step[3] = {};       // position now minus position before
 };
 Cut TestCut(const Camera& now, const Camera& before, const double* previous_step);
+
+// Guest clip space to guest pixels as the game's c69 block applies it (the census, CHECK 3): row
+// vectors, x_pix = w/2 x + w/2 clip_w, y_pix = h/2 clip_w - h/2 y, depth and w columns kept.
+Mat4 ClipToPixels(double width, double height);
+
+// This frame's clip space to the previous frame's guest pixels through the camera alone: this
+// frame's view-projection inverse, the previous frame's own view-projection (the history this
+// renderer kept, not c69) and ClipToPixels of the frame's size. Row vectors: prev = clip * M, divide
+// x and y by w. What the motion vectors use for the world and for every pixel without a vehicle matrix.
+Mat4 CameraToPreviousPixels(const Camera& now, const Camera& before);
 
 // How close `now`'s c69-c72 (k = 0) is to the view-projection of the frame before times a pixel
 // matrix of the frame's size, the largest difference over x, y and w (the columns the motion

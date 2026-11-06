@@ -38,19 +38,6 @@ double RowMax(const Mat4& a, int r) {
   return worst;
 }
 
-// Guest clip space to guest pixels as the game's c69 block applies it (the census, section 1.1,
-// CHECK 3): x_pix = w/2 x + w/2 clip_w, y_pix = h/2 clip_w - h/2 y, depth and w columns kept.
-Mat4 ClipToPixels(double width, double height) {
-  Mat4 m;
-  m.m[0][0] = width * 0.5;
-  m.m[1][1] = -height * 0.5;
-  m.m[2][2] = 1.0;
-  m.m[3][0] = width * 0.5;
-  m.m[3][1] = height * 0.5;
-  m.m[3][3] = 1.0;
-  return m;
-}
-
 // A previous-frame matrix that can be the game's: finite, and neither the denormals nor the huge
 // numbers the slots of absent vehicles hold.
 // CHECK: the bounds (the garbage seen was NaN, 2.2e29 and 1.4e-45; real entries are in the tens
@@ -63,7 +50,53 @@ bool SanePrevious(const Mat4& a) {
   return biggest >= 1e-3 && biggest <= 1e12;
 }
 
+// The upper 3x3 block's determinant.
+double Determinant3(const Mat4& a) {
+  const auto& m = a.m;
+  return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+         m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+         m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+}
+
+Rigid MeasureRigid(const Mat4& t) {
+  Rigid r;
+  if (!Finite(t)) {
+    return r;
+  }
+  r.valid = true;
+  r.determinant = Determinant3(t);
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      double dot = 0.0;
+      for (int k = 0; k < 3; ++k) {
+        dot += t.m[i][k] * t.m[j][k];
+      }
+      r.orthonormal = std::fmax(r.orthonormal, std::fabs(dot - (i == j ? 1.0 : 0.0)));
+    }
+  }
+  r.last_column = std::fmax(std::fmax(std::fabs(t.m[0][3]), std::fabs(t.m[1][3])),
+                            std::fmax(std::fabs(t.m[2][3]), std::fabs(t.m[3][3] - 1.0)));
+  r.translation = std::sqrt(t.m[3][0] * t.m[3][0] + t.m[3][1] * t.m[3][1] + t.m[3][2] * t.m[3][2]);
+  return r;
+}
+
 }  // namespace
+
+Mat4 ClipToPixels(double width, double height) {
+  Mat4 m;
+  m.m[0][0] = width * 0.5;
+  m.m[1][1] = -height * 0.5;
+  m.m[2][2] = 1.0;
+  m.m[3][0] = width * 0.5;
+  m.m[3][1] = height * 0.5;
+  m.m[3][3] = 1.0;
+  return m;
+}
+
+Mat4 CameraToPreviousPixels(const Camera& now, const Camera& before) {
+  return Mul(Mul(now.view_projection_inverse, before.view_projection),
+             ClipToPixels(double(now.width), double(now.height)));
+}
 
 const char* RejectName(Reject reject) {
   switch (reject) {
@@ -162,6 +195,8 @@ Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetc
   // The previous frame's matrices, only of the stencil IDs the main view wrote (the world's, k = 0,
   // always) and only when sane.
   cam.stencil_ids = stencil_ids;
+  Mat4 world_inverse;
+  bool have_world_inverse = false;
   for (uint32_t k = 0; k < kVehicleMatrices; ++k) {
     if (k != kWorldId && !(stencil_ids & (uint64_t(1) << k))) {
       continue;
@@ -176,6 +211,10 @@ Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetc
     }
     if (k == kWorldId) {
       cam.previous_world = raw;
+      have_world_inverse = Inverse(raw, &world_inverse);
+    } else if (have_world_inverse) {
+      // The vehicle's own motion, if the slot is its world to the previous frame's pixels.
+      cam.rigid[k] = MeasureRigid(Mul(raw, world_inverse));
     }
     for (int r = 0; r < 4; ++r) {
       for (int c = 0; c < 4; ++c) {
