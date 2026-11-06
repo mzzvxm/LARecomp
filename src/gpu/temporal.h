@@ -39,6 +39,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 
 #include "constants.h"
 #include "draw_decode.h"
@@ -146,6 +147,7 @@ class TemporalSystem {
     std::array<uint32_t, kKinds> jittered{};
     std::array<uint32_t, kGateReasons> gate_failed{};  // by bit, in GateBit order
     uint32_t gate_rejected = 0;   // main view draws that were not world draws
+    uint32_t forward_z_draws = 0;  // world draws whose depth range is not mirrored (census 3.6)
     uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
     uint32_t late_draws = 0;      // main view draws after the anchor or the composite marker
     uint64_t stencil_ids = 0;     // bit n: a main view draw wrote the stencil ID n (value >> 2)
@@ -204,6 +206,7 @@ class TemporalSystem {
     uint64_t jittered[kKinds] = {};
     uint64_t gate_failed[kGateReasons] = {};
     uint64_t gate_rejected = 0;
+    uint64_t forward_z_draws = 0;
     uint64_t view4x_draws = 0;
     uint64_t late_draws = 0;
     uint64_t resets = 0;
@@ -226,6 +229,8 @@ class TemporalSystem {
   static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
                                const ViewportInfo& viewport, Scale scale);
   void NoteStencil(const XenosState& state);
+  // A main view draw that is not a world draw: the first few distinct ones are logged.
+  void NoteStill(const DrawFacts& facts, uint32_t failed);
   // Structure of the anchor: its fetches and its target. Fills `*width`, `*height` (the fetches'
   // size) and `*why` on a refusal.
   AnchorStatus CheckAnchor(const DrawFacts& facts, uint32_t* width, uint32_t* height,
@@ -257,6 +262,9 @@ class TemporalSystem {
   uint32_t pending_frames_ = 0;
   std::array<bool, size_t(AnchorStatus::kCount)> status_logged_{};
   uint32_t reset_lines_ = 0;
+  std::unordered_set<uint64_t> still_logged_;  // main view draws kept still, by shaders and reason
+  double logged_lens_[3] = {};                 // field of view (rad), near, far of the last line
+  uint32_t lens_lines_ = 0;
 };
 
 }  // namespace mcla::gpu

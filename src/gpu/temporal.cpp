@@ -13,6 +13,7 @@
 #include <rex/logging.h>
 
 #include "records.h"
+#include "topology.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_temporal, false, "MCLA/GPU",
@@ -29,6 +30,8 @@ namespace {
 
 constexpr const char* kPrefix = "[gpu] temporal:";
 constexpr uint32_t kMaxResetLines = 16;
+constexpr uint32_t kMaxStillLines = 12;
+constexpr uint32_t kMaxLensLines = 24;
 constexpr double kPi = 3.14159265358979323846;
 
 // The anchor's three textures, in fetch slots 0, 1, 2 (census 1.1: it has a fourth, a half-size
@@ -108,6 +111,9 @@ void TemporalSystem::SetEnabled(bool enabled) {
   pending_frames_ = 0;
   status_logged_.fill(false);
   reset_lines_ = 0;
+  still_logged_.clear();
+  logged_lens_[0] = logged_lens_[1] = logged_lens_[2] = 0.0;
+  lens_lines_ = 0;
   frame_number_ = 0;
   if (enabled) {
     REXLOG_WARN("{} ON (mcla_gpu_temporal, development): the 3D scene is moved by a sub-pixel "
@@ -221,6 +227,29 @@ void TemporalSystem::NoteStencil(const XenosState& s) {
   }
 }
 
+void TemporalSystem::NoteStill(const DrawFacts& f, uint32_t failed) {
+  if (still_logged_.size() >= kMaxStillLines) {
+    return;
+  }
+  const DrawRecord& r = f.view->record();
+  const uint64_t key = r.vs_identity * 0x9E3779B97F4A7C15ull ^ r.ps_identity ^ (uint64_t(failed) << 60);
+  if (!still_logged_.insert(key).second) {
+    return;
+  }
+  std::string reasons;
+  static const char* const kNames[kGateReasons] = {"clipping off", "no viewport transform",
+                                                   "rectangle list", "narrow viewport"};
+  for (uint32_t i = 0; i < kGateReasons; ++i) {
+    if (failed & (1u << i)) {
+      reasons += std::format("{}{}", reasons.empty() ? "" : ", ", kNames[i]);
+    }
+  }
+  REXLOG_INFO("{} a main view draw is kept still ({}): VS {:016X} PS {:016X}, {} {} (the first {} "
+              "kinds; the summaries count them)",
+              kPrefix, reasons, r.vs_identity, r.ps_identity, r.count, PrimitiveName(r.primitive),
+              kMaxStillLines);
+}
+
 void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& match,
                                 SharedConstants& shared) {
   FrameState& fr = frame_;
@@ -254,8 +283,12 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     for (uint32_t i = 0; i < kGateReasons; ++i) {
       fr.gate_failed[i] += (failed >> i) & 1u;
     }
+    NoteStill(f, failed);
     return;
   }
+  // A viewport whose depth is not mirrored is a forward-Z draw (the scene's depth is 1 near, 0
+  // far: ComputeViewport mirrors the guest's reversed range); a few draws a frame are.
+  fr.forward_z_draws += f.viewport->ndc_scale[2] >= 0.0f;
   if (!fr.armed) {
     return;
   }
@@ -397,6 +430,26 @@ void TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   last_anchor_time_ = now;
   fr.reset = reset;
 
+  // The lens (field of view, near, far): a line when it changes, not only in the summaries (the
+  // census logged it in its first two frames only and saw 25 degrees in play, 53.75 in the pause).
+  const auto changed = [](double a, double b) { return std::fabs(a - b) > 0.01 * std::fabs(b); };
+  if (lens_lines_ < kMaxLensLines &&
+      (changed(camera.fov_y, logged_lens_[0]) || changed(camera.near_plane, logged_lens_[1]) ||
+       changed(camera.far_plane, logged_lens_[2]))) {
+    ++lens_lines_;
+    logged_lens_[0] = camera.fov_y;
+    logged_lens_[1] = camera.near_plane;
+    logged_lens_[2] = camera.far_plane;
+    REXLOG_INFO("{} lens in frame {}: field of view {:.3f} deg, aspect {:.4f}, near {:.3f}, far "
+                "{:.1f}, camera at {:.2f}, {:.2f}, {:.2f}, looking along {:.3f}, {:.3f}, {:.3f}, "
+                "c64-c67 {} the inverse view-projection{}",
+                kPrefix, fr.frame, camera.fov_y * 180.0 / kPi, camera.aspect, camera.near_plane,
+                camera.far_plane, camera.position[0], camera.position[1], camera.position[2],
+                camera.forward[0], camera.forward[1], camera.forward[2],
+                camera.pixel_to_world_agrees ? "agree with" : "DO NOT agree with",
+                lens_lines_ == kMaxLensLines ? " (the last of these lines)" : "");
+  }
+
   if (reset != 0 && reset_lines_ < kMaxResetLines) {
     ++reset_lines_;
     REXLOG_INFO("{} history starts again in frame {}: {}{} (camera at {:.1f}, {:.1f}, {:.1f}, field "
@@ -490,6 +543,7 @@ void TemporalSystem::EndFrame() {
     w.gate_failed[i] += fr.gate_failed[i];
   }
   w.gate_rejected += fr.gate_rejected;
+  w.forward_z_draws += fr.forward_z_draws;
   w.view4x_draws += fr.view4x_draws;
   w.late_draws += fr.late_draws;
   if (ran) {
@@ -613,8 +667,8 @@ void TemporalSystem::Report(const char* why) {
       w.jittered[kColorDepth] + w.jittered[kColorOnly] + w.jittered[kDepthOnly];
   REXLOG_INFO("{} ({}) per 3D scene frame: main view draws {:.1f} (colour+depth {:.1f}, colour only "
               "{:.1f}, depth only {:.1f}), moved {:.1f} (colour+depth {:.1f}, colour only {:.1f}, "
-              "depth only {:.1f}), kept still {:.2f} ({}), after the anchor {:.2f}, second anchors "
-              "{} | c69 is the previous view-projection times the pixel matrix in {} of {} checks "
+              "depth only {:.1f}), kept still {:.2f} ({}), forward-Z {:.2f}, after the anchor "
+              "{:.2f}, second anchors {} | c69 is the previous view-projection times the pixel matrix in {} of {} checks "
               "(with y down: {}) | usable previous matrices {:.2f} a frame | c64-c67 agree with "
               "the inverse view-projection in {} of {}",
               kPrefix, why, double(drawn) * per_scene, double(w.main_draws[kColorDepth]) * per_scene,
@@ -623,7 +677,8 @@ void TemporalSystem::Report(const char* why) {
               double(w.jittered[kColorDepth]) * per_scene,
               double(w.jittered[kColorOnly]) * per_scene,
               double(w.jittered[kDepthOnly]) * per_scene, double(w.gate_rejected) * per_scene,
-              gate.empty() ? "none" : gate, double(w.late_draws) * per_scene, w.second_anchors,
+              gate.empty() ? "none" : gate, double(w.forward_z_draws) * per_scene,
+              double(w.late_draws) * per_scene, w.second_anchors,
               w.history_flip, w.history_checks, w.history_noflip,
               running != 0 ? double(w.vehicle_matrices) / double(running) : 0.0,
               w.pixel_to_world_agrees, running);
