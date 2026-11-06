@@ -49,14 +49,6 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// Development switches (nothing here is for players).
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_temporal_debug, 0, "MCLA/GPU",
-    "Development: bits for the upscaler. 2 the scene is not moved (the upscaler still runs, with no "
-    "jitter), 4 the upscaler is told the jitter's x flipped, 8 told y flipped (the picture is "
-    "sharpest with the jitter as it is: the jitter convention check). Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 REXCVAR_DECLARE(std::string, mcla_gpu_msaa);  // edram.cpp
 
 namespace mcla::gpu {

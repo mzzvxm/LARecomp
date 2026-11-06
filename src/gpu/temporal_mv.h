@@ -90,14 +90,6 @@ class TemporalMotion {
 
   Kept kept() const;
 
-  // The counters since the last call, for the temporal summary; false when nothing happened.
-  struct Counters {
-    uint64_t frames = 0;        // frames with vectors
-    uint64_t zero_frames = 0;   // ... of them with no previous frame (vectors zero)
-    uint64_t failed = 0;        // frames the images could not be made for
-  };
-  Counters TakeCounters();
-
  private:
   // hlsl/temporal_mv_ps.hlsl MotionPush.
   struct MotionPush {
@@ -144,8 +136,6 @@ class TemporalMotion {
   uint64_t recorded_frame_ = 0;
   bool motion_zero_ = false;
   uint32_t logged_size_[2] = {};  // the render size the log last named
-
-  Counters counters_;
 };
 
 }  // namespace mcla::gpu

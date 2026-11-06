@@ -53,11 +53,10 @@
 // over the guest's size, the output size the anchor's (an image of the screen), the jitter
 // sequence follows the ratio and the scene's textures are sampled sharper (scene.cpp SceneBias).
 //
-// Development switch: mcla_gpu_temporal (off, read each frame). With it off and no upscaler chosen no
-// hook of the Scene does anything beyond one branch, no constant changes, no draw is added. On, it
-// jitters, reads the camera and logs: "[gpu] temporal: ..." lines, one for each change of what the
-// frames are (no 3D scene, 3D scene at 4x samples, anchor missing or refused, running) and a summary
-// every few seconds. It also runs the vector passes and the debug views of temporal_mv.h.
+// With no upscaler chosen (or one this PC cannot run) no hook of the Scene does anything beyond one
+// branch, no constant changes, no draw is added. With one on, the system jitters, reads the camera
+// and logs: "[gpu] temporal: ..." lines, one for each change of what the frames are (no 3D scene,
+// 3D scene at 4x samples, anchor missing or refused, running) and a summary when the game exits.
 //
 // Threading: render thread only.
 // ===========================================================================
@@ -67,7 +66,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_set>
 
 #include "constants.h"
 #include "draw_decode.h"
@@ -88,7 +86,6 @@ class TextureCache;
 
 class TemporalSystem {
  public:
-  static constexpr double kReportSeconds = 5.0;
   // Phases of the sequence at ratio 1: 8 x ratio^2, rounded up (F4-DESIGN.md 3); at another
   // ratio the runtime's own count (FFX's query for the sizes) or that formula (JitterPhases).
   static constexpr uint32_t kPhasesAtRatio1 = 8;
@@ -96,7 +93,7 @@ class TemporalSystem {
   // A longer gap between two anchors resets the history; the frame time is clamped to this.
   static constexpr double kMaxGapMs = 100.0;
   // Frames that were jittered, saw the main view, and had no accepted anchor, before the jitter is
-  // switched off (until mcla_gpu_temporal is set off and on): a safety net, the census saw none.
+  // switched off (until the upscaler is turned off and on): a safety net, the census saw none.
   static constexpr uint32_t kDisarmAfterMisses = 3;
   // A new state of the frames is logged once it has lasted this many frames.
   static constexpr uint32_t kModeDebounce = 5;
@@ -112,7 +109,6 @@ class TemporalSystem {
     kGateRectList = 1u << 2,       // a rectangle list (the clears, the fog quad)
     kGateNarrow = 1u << 3,         // a viewport narrower than the target
   };
-  static constexpr uint32_t kGateReasons = 4;
   // Why the history starts again (a bit each).
   enum ResetBit : uint32_t {
     kResetFirst = 1u << 0,       // no accepted anchor in the frame before (first, a menu, a pause)
@@ -181,11 +177,7 @@ class TemporalSystem {
     uint32_t samples = 0;         // guest samples of the first one: 2, or 1 without MSAA
     std::array<uint32_t, kKinds> main_draws{};
     std::array<uint32_t, kKinds> jittered{};
-    std::array<uint32_t, kGateReasons> gate_failed{};  // by bit, in GateBit order
-    uint32_t gate_rejected = 0;   // main view draws that were not world draws
-    uint32_t forward_z_draws = 0;  // world draws whose depth range is not mirrored (census 3.6)
     uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
-    uint32_t late_draws = 0;      // main view draws after the anchor or the composite marker
     bool composite_seen = false;
 
     // The anchor.
@@ -212,8 +204,8 @@ class TemporalSystem {
     uint32_t anchor_color_slot = 0;      // the bindless slot the anchor's colour fetch reads instead
   };
 
-  // True while mcla_gpu_temporal was on at the start of the frame being recorded: the Scene's hooks
-  // do nothing otherwise.
+  // True while an upscaler was chosen and able to run at the start of the frame being recorded: the
+  // Scene's hooks do nothing otherwise.
   bool active() const { return enabled_; }
 
   // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
@@ -224,7 +216,7 @@ class TemporalSystem {
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
-  // The Renderer opened the frame's first list (frame slot `slot`). Reads the switch.
+  // The Renderer opened the frame's first list (frame slot `slot`). Reads the upscaler's settings.
   void BeginFrame(uint32_t slot);
   // A prepared draw of the frame, after FillTextureTables and before UploadConstants: finds the
   // main view's draws and moves them (`shared` is the draw's own copy), finds the anchor and reads
@@ -270,49 +262,36 @@ class TemporalSystem {
     uint64_t frames = 0;
     uint64_t armed = 0;
     uint64_t modes[size_t(Mode::kCount)] = {};
-    uint64_t anchors = 0;
-    uint64_t second_anchors = 0;
     uint64_t anchor_status[size_t(AnchorStatus::kCount)] = {};
-    uint64_t main_draws[kKinds] = {};
-    uint64_t jittered[kKinds] = {};
-    uint64_t gate_failed[kGateReasons] = {};
-    uint64_t gate_rejected = 0;
-    uint64_t forward_z_draws = 0;
-    uint64_t view4x_draws = 0;
-    uint64_t late_draws = 0;
     uint64_t resets = 0;
     uint64_t reset_reasons[kResetReasons] = {};
     uint64_t cut_distance = 0;  // camera cuts by clause (a cut may have several)
     uint64_t cut_turn = 0;
     uint64_t cut_fov = 0;
-    uint64_t mv_missed = 0;         // anchors taken whose passes could not be recorded
     // The upscaler: frames it ran in, and the frames with an upscaler chosen that it did not run in.
     uint64_t upscaled = 0;
     uint64_t upscale_plain_not_ready = 0;  // no context yet (or the sizes changed): plain, no jitter
     uint64_t upscale_plain_no_vectors = 0;
     uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
     uint64_t upscale_resets = 0;           // upscaled frames the history started again in
-    uint64_t misses = 0;            // jittered main view frames with no accepted anchor
     // The last accepted camera, for the line.
     bool have_camera = false;
     temporal::Camera camera;
     uint32_t render_size[2] = {};
   };
 
-  void SetEnabled(bool enabled, bool development);
+  void SetEnabled(bool enabled);
   void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
   bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
   static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
                                const ViewportInfo& viewport, Scale scale);
-  // A main view draw that is not a world draw: the first few distinct ones are logged.
-  void NoteStill(const DrawFacts& facts, uint32_t failed);
   // Structure of the anchor: its fetches and its target. Fills `*width`, `*height` (the fetches'
   // size) and `*why` on a refusal.
   AnchorStatus CheckAnchor(const DrawFacts& facts, uint32_t* width, uint32_t* height,
                            std::string* why) const;
   static Mode ModeOf(const FrameState& frame);
   void NoteMode(Mode mode, const FrameState& frame);
-  void Report(const char* why);
+  void Report();
   void ResetRun();
 
   bool enabled_ = false;
@@ -364,9 +343,7 @@ class TemporalSystem {
   Upscaler effective_ = Upscaler::kOff;
   uint32_t choice_key_ = 0;
   bool choice_reported_ = false;
-  bool development_ = false;         // mcla_gpu_temporal, read each frame
   bool ready_reported_ = false;
-  uint32_t debug_bits_ = 0;          // mcla_gpu_temporal_debug
   HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, output size
   uint32_t last_render_size_[2] = {};  // of the last accepted frame
   uint32_t last_output_size_[2] = {};  // ... and what the upscaler made of it
@@ -392,7 +369,6 @@ class TemporalSystem {
   uint32_t pending_frames_ = 0;
   std::array<bool, size_t(AnchorStatus::kCount)> status_logged_{};
   uint32_t reset_lines_ = 0;
-  std::unordered_set<uint64_t> still_logged_;  // main view draws kept still, by shaders and reason
   double logged_lens_[3] = {};                 // field of view (rad), near, far of the last line
   uint32_t lens_lines_ = 0;
 };

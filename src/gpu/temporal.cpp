@@ -24,24 +24,12 @@
 #include "textures.h"
 #include "topology.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_temporal, false, "MCLA/GPU",
-    "Development switch for the groundwork of the temporal upscaler (the player's setting is "
-    "mcla_gpu_upscaler): moves the 3D scene by a different sub-pixel amount every frame (the world "
-    "only: the menus and the HUD keep their positions), reads the game's camera, and makes the "
-    "motion vectors. With no upscaler running, nothing smooths the movement out, so the scene "
-    "shimmers a little. Logs '[gpu] temporal:' lines. Read every frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(uint32_t, mcla_gpu_temporal_debug);
-
 namespace mcla::gpu {
 
 namespace {
 
 constexpr const char* kPrefix = "[gpu] temporal:";
 constexpr uint32_t kMaxResetLines = 16;
-constexpr uint32_t kMaxStillLines = 12;
 constexpr uint32_t kMaxLensLines = 24;
 constexpr double kPi = 3.14159265358979323846;
 
@@ -115,7 +103,7 @@ uint32_t Colored(const std::array<uint32_t, TemporalSystem::kKinds>& a) {
 // the switch and the frame
 // ---------------------------------------------------------------------------
 
-void TemporalSystem::SetEnabled(bool enabled, bool development) {
+void TemporalSystem::SetEnabled(bool enabled) {
   enabled_ = enabled;
   ResetRun();
   window_ = Window{};
@@ -125,7 +113,6 @@ void TemporalSystem::SetEnabled(bool enabled, bool development) {
   pending_frames_ = 0;
   status_logged_.fill(false);
   reset_lines_ = 0;
-  still_logged_.clear();
   logged_lens_[0] = logged_lens_[1] = logged_lens_[2] = 0.0;
   lens_lines_ = 0;
   frame_number_ = 0;
@@ -133,18 +120,10 @@ void TemporalSystem::SetEnabled(bool enabled, bool development) {
   last_dispatch_frame_ = ~uint64_t(0);
   plain_logged_.fill(false);
   if (enabled) {
-    if (development) {
-      REXLOG_WARN("{} ON (mcla_gpu_temporal, development): the 3D scene is moved by a sub-pixel "
-                  "amount that changes every frame (the world only: the UI keeps still), and the "
-                  "game's camera is read from its motion blur draw; with no upscaler running "
-                  "nothing smooths the movement out. A summary every {:.0f} s",
-                  kPrefix, kReportSeconds);
-    } else {
-      REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
-                  "scene is moved by a sub-pixel amount every frame once the upscaler is ready. A "
-                  "summary every {:.0f} s",
-                  kPrefix, UpscalerName(effective_), kReportSeconds);
-    }
+    REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
+                "scene is moved by a sub-pixel amount every frame once the upscaler is ready. A "
+                "summary is logged when the game exits",
+                kPrefix, UpscalerName(effective_));
   } else {
     ClearStandIn();
     motion_.Release();
@@ -214,7 +193,6 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
     }
   }
   if (!motion_.Record(list, pending_)) {
-    ++window_.mv_missed;
     if (frame_.upscaler != Upscaler::kOff && frame_.backend_ready) {
       // The upscaler cannot be fed this session: the passes themselves could not be made.
       FailUpscaler("the depth and motion vector passes could not be recorded");
@@ -485,14 +463,6 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   in.output = {output_.texture.get(), out_width, out_height, kOutputFormat, kOutputFlags};
   in.jitter[0] = fr.jitter[0];
   in.jitter[1] = fr.jitter[1];
-  // Development: the upscaler is told the jitter flipped (the convention check); the scene was
-  // moved as it was.
-  if (debug_bits_ & 4u) {
-    in.jitter[0] = -in.jitter[0];
-  }
-  if (debug_bits_ & 8u) {
-    in.jitter[1] = -in.jitter[1];
-  }
   in.frame_time_ms = fr.frame_time_ms;
   in.reset = fr.reset != 0 || last_dispatch_frame_ == ~uint64_t(0) ||
              last_dispatch_frame_ + 1 != fr.frame;
@@ -565,12 +535,10 @@ void TemporalSystem::ResetRun() {
 }
 
 void TemporalSystem::BeginFrame(uint32_t slot) {
-  development_ = REXCVAR_GET(mcla_gpu_temporal);
-  debug_bits_ = REXCVAR_GET(mcla_gpu_temporal_debug);
   ReadUpscalerChoice();
-  const bool want = development_ || effective_ != Upscaler::kOff;
+  const bool want = effective_ != Upscaler::kOff;
   if (want != enabled_ && !frame_open_) {
-    SetEnabled(want, development_);  // only between frames: a frame is jittered whole or not at all
+    SetEnabled(want);  // only between frames: a frame is jittered whole or not at all
   }
   // The context and the output image of an upscaler that has been off for a while go (10 s).
   if (effective_ != Upscaler::kOff) {
@@ -634,12 +602,9 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
                        : 1.0;
     frame_.phase_count = JitterPhases(frame_.ratio, ready && backend_ ? backend_->JitterPhaseCount() : 0u);
     frame_.jitter_index = jitter_index_ % frame_.phase_count;
-    // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down. (Development,
-    // bit 2: the scene is not moved.)
-    if (!(debug_bits_ & 2u)) {
-      frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
-      frame_.jitter[1] = float(temporal::Halton(frame_.jitter_index + 1, 3) - 0.5);
-    }
+    // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
+    frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
+    frame_.jitter[1] = float(temporal::Halton(frame_.jitter_index + 1, 3) - 0.5);
   }
 }
 
@@ -689,29 +654,6 @@ uint32_t TemporalSystem::EvaluateGate(const XenosState& s, const DrawRecord& r,
   return failed;
 }
 
-void TemporalSystem::NoteStill(const DrawFacts& f, uint32_t failed) {
-  if (still_logged_.size() >= kMaxStillLines) {
-    return;
-  }
-  const DrawRecord& r = f.view->record();
-  const uint64_t key = r.vs_identity * 0x9E3779B97F4A7C15ull ^ r.ps_identity ^ (uint64_t(failed) << 60);
-  if (!still_logged_.insert(key).second) {
-    return;
-  }
-  std::string reasons;
-  static const char* const kNames[kGateReasons] = {"clipping off", "no viewport transform",
-                                                   "rectangle list", "narrow viewport"};
-  for (uint32_t i = 0; i < kGateReasons; ++i) {
-    if (failed & (1u << i)) {
-      reasons += std::format("{}{}", reasons.empty() ? "" : ", ", kNames[i]);
-    }
-  }
-  REXLOG_INFO("{} a main view draw is kept still ({}): VS {:016X} PS {:016X}, {} {} (the first {} "
-              "kinds; the summaries count them)",
-              kPrefix, reasons, r.vs_identity, r.ps_identity, r.count, PrimitiveName(r.primitive),
-              kMaxStillLines);
-}
-
 void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& match,
                                 SharedConstants& shared) {
   FrameState& fr = frame_;
@@ -723,7 +665,6 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     // The UI phase draws into a depth key that equals the main view's when the game runs without
     // MSAA (one depth-only draw a frame, census round 2); the anchor and the marker are what
     // separate them (census 3.4).
-    ++fr.late_draws;
     return;
   }
   if (fr.samples == 0) {
@@ -745,18 +686,9 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
   }
   ++fr.main_draws[kind];
 
-  const uint32_t failed = EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale);
-  if (failed != 0) {
-    ++fr.gate_rejected;
-    for (uint32_t i = 0; i < kGateReasons; ++i) {
-      fr.gate_failed[i] += (failed >> i) & 1u;
-    }
-    NoteStill(f, failed);
-    return;
+  if (EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale) != 0) {
+    return;  // not a world draw: kept still
   }
-  // A viewport whose depth is not mirrored is a forward-Z draw (the scene's depth is 1 near, 0
-  // far: ComputeViewport mirrors the guest's reversed range); a few draws a frame are.
-  fr.forward_z_draws += f.viewport->ndc_scale[2] >= 0.0f;
   if (!fr.armed) {
     return;
   }
@@ -829,10 +761,8 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
 
 bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared) {
   FrameState& fr = frame_;
-  ++window_.anchors;
   fr.anchor_seen = true;  // the main view's draws are done: no more jitter
   if (fr.anchors++ != 0) {
-    ++window_.second_anchors;
     return false;
   }
   uint32_t width = 0;
@@ -1009,11 +939,10 @@ void TemporalSystem::EndFrame() {
     if (ran) {
       misses_ = 0;
     } else {
-      ++window_.misses;
       if (++misses_ >= kDisarmAfterMisses && !disarmed_) {
         disarmed_ = true;
         REXLOG_WARN("{} {} frames in a row were jittered and had no usable anchor ({}): the "
-                    "jitter is off until mcla_gpu_temporal is turned off and on",
+                    "jitter is off until the upscaler is turned off and on",
                     kPrefix, misses_, StatusName(fr.anchor_status));
       }
     }
@@ -1059,17 +988,6 @@ void TemporalSystem::EndFrame() {
   const Mode mode = ModeOf(fr);
   ++w.modes[size_t(mode)];
   ++w.anchor_status[size_t(fr.anchor_status)];
-  for (uint32_t i = 0; i < kKinds; ++i) {
-    w.main_draws[i] += fr.main_draws[i];
-    w.jittered[i] += fr.jittered[i];
-  }
-  for (uint32_t i = 0; i < kGateReasons; ++i) {
-    w.gate_failed[i] += fr.gate_failed[i];
-  }
-  w.gate_rejected += fr.gate_rejected;
-  w.forward_z_draws += fr.forward_z_draws;
-  w.view4x_draws += fr.view4x_draws;
-  w.late_draws += fr.late_draws;
   if (ran) {
     if (fr.reset != 0) {
       ++w.resets;
@@ -1091,9 +1009,6 @@ void TemporalSystem::EndFrame() {
   NoteMode(mode, fr);
   ++frame_number_;
   frame_open_ = false;
-  if (std::chrono::duration<double>(Clock::now() - window_start_).count() >= kReportSeconds) {
-    Report("interval");
-  }
 }
 
 void TemporalSystem::NoteMode(Mode mode, const FrameState& fr) {
@@ -1144,12 +1059,11 @@ void TemporalSystem::NoteMode(Mode mode, const FrameState& fr) {
   }
 }
 
-void TemporalSystem::Report(const char* why) {
+void TemporalSystem::Report() {
   const Window& w = window_;
   const double seconds = std::chrono::duration<double>(Clock::now() - window_start_).count();
   const uint64_t running = w.modes[size_t(Mode::kRunning)];
   const uint64_t scene = running + w.modes[size_t(Mode::kNoAnchor)];
-  const double per_scene = scene != 0 ? 1.0 / double(scene) : 0.0;
 
   std::string refused;
   for (size_t i = size_t(AnchorStatus::kNoMainView); i < size_t(AnchorStatus::kCount); ++i) {
@@ -1176,60 +1090,28 @@ void TemporalSystem::Report(const char* why) {
                          w.camera.fov_y * 180.0 / kPi, w.camera.near_plane, w.camera.far_plane,
                          w.camera.width, w.camera.height, w.render_size[0], w.render_size[1]);
   }
-  REXLOG_INFO("{} ({}) {} frames in {:.1f} s: 3D scene {} (anchor taken {}, at 4x samples {}), no "
-              "scene {}, jitter armed {} | refused anchors: {} | history restarts: {} ({}) | camera "
-              "{}",
-              kPrefix, why, w.frames, seconds, scene, running, w.modes[size_t(Mode::kView4x)],
+  REXLOG_INFO("{} summary: {} frames in {:.1f} s: 3D scene {} (anchor taken {}, at 4x samples {}), "
+              "no scene {}, jitter armed {} | refused anchors: {} | history restarts: {} ({}) | "
+              "camera {}",
+              kPrefix, w.frames, seconds, scene, running, w.modes[size_t(Mode::kView4x)],
               w.modes[size_t(Mode::kNoScene)], w.armed, refused.empty() ? "none" : refused,
               w.resets, resets.empty() ? "none" : resets, camera);
-
-  std::string gate;
-  static const char* const kGateNames[kGateReasons] = {"clipping off", "no viewport transform",
-                                                       "rectangle list", "narrow viewport"};
-  for (uint32_t i = 0; i < kGateReasons; ++i) {
-    if (w.gate_failed[i] != 0) {
-      gate += std::format("{}{} {:.2f}", gate.empty() ? "" : ", ", kGateNames[i],
-                          double(w.gate_failed[i]) * per_scene);
-    }
-  }
-  const uint64_t drawn =
-      w.main_draws[kColorDepth] + w.main_draws[kColorOnly] + w.main_draws[kDepthOnly];
-  const uint64_t moved =
-      w.jittered[kColorDepth] + w.jittered[kColorOnly] + w.jittered[kDepthOnly];
-  REXLOG_INFO("{} ({}) per 3D scene frame: main view draws {:.1f} (colour+depth {:.1f}, colour only "
-              "{:.1f}, depth only {:.1f}), moved {:.1f} (colour+depth {:.1f}, colour only {:.1f}, "
-              "depth only {:.1f}), kept still {:.2f} ({}), forward-Z {:.2f}, after the anchor "
-              "{:.2f}, second anchors {}",
-              kPrefix, why, double(drawn) * per_scene, double(w.main_draws[kColorDepth]) * per_scene,
-              double(w.main_draws[kColorOnly]) * per_scene,
-              double(w.main_draws[kDepthOnly]) * per_scene, double(moved) * per_scene,
-              double(w.jittered[kColorDepth]) * per_scene,
-              double(w.jittered[kColorOnly]) * per_scene,
-              double(w.jittered[kDepthOnly]) * per_scene, double(w.gate_rejected) * per_scene,
-              gate.empty() ? "none" : gate, double(w.forward_z_draws) * per_scene,
-              double(w.late_draws) * per_scene, w.second_anchors);
-  const TemporalMotion::Counters mv = motion_.TakeCounters();
-  REXLOG_INFO("[gpu] temporal mv: ({}) vectors in {} frames ({} zero after a history restart, {} "
-              "anchors whose passes could not be recorded, {} images failed)",
-              why, mv.frames, mv.zero_frames, w.mv_missed, mv.failed);
   if (effective_ != Upscaler::kOff || w.upscaled != 0) {
     const BackendStatus status = backend_ ? backend_->Status() : BackendStatus{};
-    REXLOG_INFO("[gpu] temporal upscaler: ({}) {} ({}{}) in {} frames: upscaled {} ({} of them with "
+    REXLOG_INFO("[gpu] temporal upscaler: {} ({}{}) in {} frames: upscaled {} ({} of them with "
                 "the history started again), plain: context not ready {}, no vectors {}, colour not "
                 "an input {}{}",
-                why, UpscalerName(effective_), ModeInfoOf(settings_.mode).name,
+                UpscalerName(effective_), ModeInfoOf(settings_.mode).name,
                 status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
                 w.upscaled, w.upscale_resets, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
                 w.upscale_plain_no_color,
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }
-  window_ = Window{};
-  window_start_ = Clock::now();
 }
 
 void TemporalSystem::Finish() {
   if (enabled_ && window_.frames != 0) {
-    Report("final");
+    Report();
   }
 }
 

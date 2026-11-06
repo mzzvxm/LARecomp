@@ -172,7 +172,6 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
   recorded_ = false;
   if (!passes_->EnsureImage(depth, rw, rh, kDepthFormat, "temporal depth") ||
       !passes_->EnsureImage(motion_, rw, rh, kMotionFormat, "temporal motion vectors")) {
-    ++counters_.failed;
     return false;
   }
 
@@ -197,8 +196,6 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
   recorded_ = true;
   recorded_frame_ = f.frame;
   motion_zero_ = !has_previous;
-  ++counters_.frames;
-  counters_.zero_frames += !has_previous;
   return true;
 }
 
@@ -271,12 +268,6 @@ TemporalMotion::Kept TemporalMotion::kept() const {
   k.motion = &motion_;
   k.motion_is_zero = motion_zero_;
   return k;
-}
-
-TemporalMotion::Counters TemporalMotion::TakeCounters() {
-  const Counters c = counters_;
-  counters_ = Counters{};
-  return c;
 }
 
 }  // namespace mcla::gpu
