@@ -29,6 +29,7 @@ add_library(larecomp_gpu OBJECT
     host_precache.cpp
     guest_capture.cpp
     guest_memory.cpp
+    hdr.cpp
     input_layout.cpp
     layout.cpp
     memory_census.cpp
@@ -203,6 +204,14 @@ larecomp_gpu_host_shader(reduce_ps ps_6_0)
 larecomp_gpu_host_shader(fsr_easu_ps ps_6_0 HLSL_VERSION 2018)
 larecomp_gpu_host_shader(fsr_rcas_ps ps_6_0 HLSL_VERSION 2018)
 larecomp_gpu_host_shader(present_stretch_ps ps_6_0 SOURCE present_ps DEFINES PRESENT_NO_RAMP=1)
+# HDR10 output (hdr.h): the passes that write the back buffer end with hlsl/hdr_output.hlsli.
+# The intermediates' passes (the gamma table into FSR1's images, EASU, RCAS into an image) stay SDR.
+larecomp_gpu_host_shader(present_hdr_ps ps_6_0 SOURCE present_ps DEFINES PRESENT_HDR=1)
+larecomp_gpu_host_shader(present_stretch_hdr_ps ps_6_0 SOURCE present_ps
+                         DEFINES PRESENT_NO_RAMP=1 PRESENT_HDR=1)
+larecomp_gpu_host_shader(fsr_rcas_hdr_ps ps_6_0 SOURCE fsr_rcas_ps HLSL_VERSION 2018
+                         DEFINES RCAS_HDR=1)
+larecomp_gpu_host_shader(overlay_hdr_ps ps_6_0 SOURCE overlay_ps DEFINES OVERLAY_HDR=1)
 # M6c.2/M6c.3: the scene's anti-aliasing before the UI -- the copy
 # (luma in alpha), FXAA 3.11, SMAA 1x's three passes.
 larecomp_gpu_host_shader(post_luma_ps ps_6_0)

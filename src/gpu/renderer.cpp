@@ -16,6 +16,7 @@
 
 #include "gpu.h"
 #include "guest_capture.h"
+#include "hdr.h"
 #include "native_gfx/guest/guest_fence.h"
 #include "native_gfx/guest/occlusion.h"
 #include "native_gfx/guest/vblank_probe.h"
@@ -152,6 +153,11 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     return false;
   }
   overlay_host_ = std::move(overlay_host);
+  // mcla_gpu_hdr: reads the setting and the display the window is on; the swap chain asks whether
+  // to try HDR10 (hdr.h).
+  hdr::Start(render_window);
+  SwapChain::Options swap_options = options.swap_chain;
+  swap_options.hdr10 = hdr::Wanted();
   // Each step needs the ones before it; on a failure everything already made
   // is torn down in reverse (each Shutdown is a no-op on a component that was
   // never initialized).
@@ -164,9 +170,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     ok = upload_.Initialize(device_) &&
          geometry_.Initialize(device_, frames_, upload_, guest_memory_) &&
          // Before the EDRAM: the window's size can pick the render scale.
-         swap_chain_.Initialize(device_, render_window, options.swap_chain);
+         swap_chain_.Initialize(device_, render_window, swap_options);
   }
   if (ok) {
+    hdr::SetActive(swap_chain_.hdr());
     // The window's size: the swap chain's; a window with no area yet has none,
     // then what the window reports; with neither it measures as the game's
     // screen (1x).
@@ -212,9 +219,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetOcclusion(&occlusion_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
-                             swap_chain_.format()) &&
+                             swap_chain_.format(), swap_chain_.hdr()) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
-                             swap_chain_.format());
+                             swap_chain_.format(), swap_chain_.hdr());
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
@@ -245,6 +252,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     passes_.Shutdown();
     edram_.Shutdown();
     swap_chain_.Shutdown();
+    hdr::Stop();
     geometry_.Shutdown();
     upload_.Shutdown();
     pipelines_.Shutdown();
@@ -329,6 +337,7 @@ void Renderer::Shutdown() {
   passes_.Shutdown();
   edram_.Shutdown();
   swap_chain_.Shutdown();
+  hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
@@ -587,6 +596,31 @@ bool Renderer::RebuildSwapChain() {
   return true;
 }
 
+void Renderer::UpdateHdr() {
+  if (!swap_chain_.hdr()) {
+    return;
+  }
+  const HdrLevels levels = hdr::Levels();
+  present_.SetHdrLevels(levels);
+  overlay_.SetHdrLevels(levels);
+  // The display tone maps towards what it is told the content reaches: the peak setting.
+  const plume::RenderHdrMetadata metadata = hdr::Metadata();
+  if (!hdr_metadata_sent_ || metadata.maxMasteringLuminance != hdr_metadata_.maxMasteringLuminance ||
+      metadata.minMasteringLuminance != hdr_metadata_.minMasteringLuminance ||
+      metadata.maxContentLightLevel != hdr_metadata_.maxContentLightLevel ||
+      metadata.maxFrameAverageLightLevel != hdr_metadata_.maxFrameAverageLightLevel) {
+    hdr_metadata_ = metadata;
+    hdr_metadata_sent_ = true;
+    if (!swap_chain_.SetHdrMetadata(metadata)) {
+      // Once per change: Vulkan without VK_EXT_hdr_metadata lands here, the display then uses its
+      // own defaults.
+      REXLOG_WARN("[gpu] hdr: the display could not be told the content's levels (peak {:.0f} "
+                  "nits); it uses its own",
+                  metadata.maxContentLightLevel);
+    }
+  }
+}
+
 void Renderer::ExecutePresent(PresentSource source) {
   tail_open_ = false;
   if (device_.IsLost()) {
@@ -603,6 +637,7 @@ void Renderer::ExecutePresent(PresentSource source) {
     last_guest_present_ = std::chrono::steady_clock::now();
   }
   swap_chain_.SetVsync(REXCVAR_GET(mcla_gpu_vsync));
+  UpdateHdr();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
       swap_chain_.NeedsRebuild()) {

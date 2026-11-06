@@ -163,6 +163,9 @@ class Renderer final : public RenderThread::Executor {
   void SubmitFrameWithoutPresent();
   void ExecutePresent(PresentSource source);
   bool RebuildSwapChain();
+  // HDR10 only, once per present: this frame's levels to the present pass and the overlay, and the
+  // display's metadata when the peak moved.
+  void UpdateHdr();
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
@@ -210,6 +213,9 @@ class Renderer final : public RenderThread::Executor {
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
   bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
+  // The last HDR10 metadata given to the swap chain (UpdateHdr).
+  bool hdr_metadata_sent_ = false;
+  plume::RenderHdrMetadata hdr_metadata_;
   // The internal resolution scale chosen at Initialize from the swap chain's
   // size; render thread: the last scale a later window size was reported to
   // give (NoteRenderScaleWindow).

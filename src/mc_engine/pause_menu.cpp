@@ -1376,6 +1376,49 @@ constexpr RowDynamics kRenderResDynamics = {
 constexpr RowDynamics kFsrToggleDynamics = {.suffix = FsrToggleSuffix};
 constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
 constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
+
+// ── HDR ────────────────────────────────────────────────────────────────
+//
+// HDR (mcla_gpu_hdr) is read at start. The level rows work while HDR output is on: AUTO shows
+// what it stands for now (Windows' report for the display the window is on), and without HDR
+// output they are grey.
+
+// CHECK: the longest row is "PEAK BRIGHTNESS: AUTO (1000 NITS)", 33 characters against RENDER RES's
+// "RENDER RES: SCREEN (1080P)" at 26: look that it fits the row's width, shorten the prefix if not.
+constexpr const char* kHdrModeVals[]  = {"off", "auto", "on"};
+constexpr const char* kHdrModeNames[] = {"OFF", "AUTO", "ON"};
+// Windows' SDR content brightness slider covers 80 to 480 nits.
+constexpr double kHdrPaperWhiteVals[] = {0.0, 80.0, 100.0, 120.0, 160.0, 200.0,
+                                         240.0, 280.0, 320.0, 400.0, 480.0};
+constexpr double kHdrPeakVals[] = {0.0, 200.0, 400.0, 600.0, 800.0, 1000.0,
+                                   1200.0, 1500.0, 2000.0, 3000.0, 4000.0};
+
+bool HdrActive() { return mcla::gpu::HdrOutputActive(); }
+
+// "240 NITS", and for 0 "AUTO (240 NITS)": what AUTO is on this display.
+std::string HdrNitsLabel(double value, float automatic) {
+    char buf[32];
+    if (value <= 0.0) {
+        std::snprintf(buf, sizeof(buf), "AUTO (%.0f NITS)", double(automatic));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.0f NITS", value);
+    }
+    return buf;
+}
+std::string HdrPaperWhiteLabel(double value) {
+    return HdrNitsLabel(value, mcla::gpu::HdrAutoPaperWhiteNits());
+}
+std::string HdrPeakLabel(double value) {
+    return HdrNitsLabel(value, mcla::gpu::HdrAutoPeakNits());
+}
+
+const char* HdrLevelSuffix() { return HdrActive() ? "" : " (HDR OFF)"; }
+
+constexpr RowDynamics kHdrPaperWhiteDynamics = {
+    .value_label = HdrPaperWhiteLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrPeakDynamics = {
+    .value_label = HdrPeakLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrTestDynamics = {.enabled = HdrActive, .suffix = HdrLevelSuffix};
 #endif
 
 // ── Menu contents ──────────────────────────────────────────────────────
@@ -1400,6 +1443,7 @@ const ItemDef kVideoItems[] = {
                                 "RENDER RES: ", kRenderResVals, 7, "%g", " (RESTART)"),
                             &kRenderResDynamics)),
     NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
+    NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
 #endif
 #if defined(LARECOMP_HAS_GPU)
     XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
@@ -1568,6 +1612,20 @@ const ItemDef kGpuFsrItems[] = {
     WithDynamics(Dbl("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "SHARP REDUCE: ",
                      kFsrSharpVals, 5, "%g"),
                  &kFsrSharpDynamics),
+};
+
+// DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
+const ItemDef kGpuHdrItems[] = {
+    Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
+        kHdrModeVals, kHdrModeNames, 3, " (RESTART)"),
+    WithDynamics(Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
+                     kHdrPaperWhiteVals, 11, "%.0f"),
+                 &kHdrPaperWhiteDynamics),
+    WithDynamics(Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
+                     kHdrPeakVals, 11, "%.0f"),
+                 &kHdrPeakDynamics),
+    WithDynamics(Bool("PM_RxGpuHdrTest", "mcla_gpu_hdr_test_pattern", "TEST PATTERN: "),
+                 &kHdrTestDynamics),
 };
 #endif
 
@@ -1891,6 +1949,9 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
      "RxGpuFsrMenu",
      kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
+    {"PM_RxTabGpuHdr", "HDR", "HDR10 output and its brightness levels.",
+     "RxGpuHdrMenu",
+     kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif
     {"PM_RxTabCam", "CAMERA", "Chase camera, free camera and rear view.",
      "RxCamMenu",
