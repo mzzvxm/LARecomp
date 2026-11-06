@@ -1582,13 +1582,17 @@ void AbandonVulkanHook(const std::string& why) {
 // upgradeSwapChainAtPresent) until the worker has published the end of the start; the next
 // present then swaps the wrapper in. The wrapper passes everything to the swap chain it wraps, and
 // the back buffers Plume holds are the swap chain's own, so nothing else changes.
-// CHECK: the first run with it: sl.log says "Upgrading IDXGISwapChain to use SL proxy" and no
-// longer logs "presentCommon() was not observed"; no new warning or error from the wrapper (it
-// is untested that GetDevice(ID3D12Device) on Plume's swap chain, which Streamline's constructor
-// asks, answers); frame times and the resize rebuild unchanged; and that Streamline's
-// presentCommon on the render thread does not race the worker's feature creation (Streamline
-// documents slEvaluateFeature as not thread safe against other API calls; its hooks are not API
-// calls, and engines present from a thread other than the evaluating one).
+// CHECK: nothing of this has run. The first run with it: sl.log says "Upgrading IDXGISwapChain to
+// use SL proxy" and no longer logs "presentCommon() was not observed"; no new warning or error
+// from the wrapper (that GetDevice(ID3D12Device) on Plume's swap chain, which the wrapper's
+// constructor asks, answers; that it answers QueryInterface for IDXGISwapChain4); frame times,
+// the resize rebuild and HDR (SetColorSpace1 and SetHDRMetaData are passed through) unchanged;
+// no "native swap chain still has refcount" warning from the wrapper at exit (the original's
+// reference is released by the caller); and that Streamline's presentCommon on the render thread
+// does not race the worker's creation of a feature, which also happens at every later context (a
+// mode change). Its garbage collection takes the resource lock (sl.chi generic.cpp
+// collectGarbage, read in its source) and the rest of presentCommon is a counter and the video
+// memory budget, but only a run settles it.
 
 namespace dlss {
 
@@ -1602,8 +1606,9 @@ bool UpgradeSwapChain(void** swap_chain) {
   }
   Runtime& rt = Rt();
   // A present never waits for Streamline: the worker holds the lock for the seconds a feature's
-  // creation takes. The next present asks again (the first evaluation of a feature is after that
-  // creation, so Streamline has seen presents before it counts the frames it evaluated without one).
+  // creation takes, so the next present asks again. Only the frames' own evaluations count
+  // towards Streamline's "evaluated without a present" warning (60 of them), and they start after
+  // the creation, at whose first present the swap chain is taken.
   std::unique_lock lock(rt.mu, std::try_to_lock);
   if (!lock.owns_lock()) {
     return false;
