@@ -244,6 +244,25 @@ class TextureCache {
   Binding Bind2D(const TextureFetch& fetch, Scale reader_scale,
                  plume::RenderCommandList* list);
 
+  // The image that stands for a scene colour product for the rest of a frame (the temporal
+  // upscaler's output, temporal.h): every fetch whose texture is `image_key`'s image (the key
+  // without its mip fields, as ResolveCache::Find reads it) binds `texture` instead, through its own
+  // swizzle's view, as a per-frame binding. The fetches memoized with the product are bound again
+  // (the pages' product generation moves at the set and at the clear). `texture` stays alive and
+  // in SHADER_READ while it is set. Render thread.
+  struct Override {
+    TextureKey image_key;
+    const plume::RenderTexture* texture = nullptr;
+    plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+    Scale scale;  // host texels per guest texel of `texture`
+  };
+  void SetOverride(const Override& override);
+  void ClearOverride();
+  bool has_override() const { return override_active_; }
+  // The views of the override's texture go (retired behind the frames that name them): before the
+  // texture is released.
+  void ReleaseOverrideViews();
+
   // Takes the write notifications of textures and resolve products.
   void Sync();
   uint64_t epoch() const { return epoch_; }
@@ -381,6 +400,10 @@ class TextureCache {
   uint64_t frame_ = 1;
   std::vector<TextureKey> evict_scan_;
   size_t evict_cursor_ = 0;
+
+  Override override_;
+  bool override_active_ = false;
+  TextureViews override_views_;  // of override_.texture, per host swizzle
 
   TextureMods mods_;
   // By content hash; null = no file for it, or its file was refused.
