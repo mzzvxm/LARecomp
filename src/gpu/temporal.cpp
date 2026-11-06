@@ -127,6 +127,8 @@ void TemporalSystem::SetEnabled(bool enabled) {
   frame_number_ = 0;
   upscale_misses_ = 0;
   last_dispatch_frame_ = ~uint64_t(0);
+  last_stand_in_product_ = nullptr;
+  post_stand_in_reported_ = false;
   plain_logged_.fill(false);
   if (enabled) {
     REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
@@ -197,6 +199,7 @@ void TemporalSystem::Shutdown() {
 
 bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
   if (!pending_ready_) {
+    DropPostStandIn();
     return false;
   }
   pending_ready_ = false;
@@ -222,10 +225,20 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
       // The upscaler cannot be fed this session: the passes themselves could not be made.
       FailUpscaler("the depth and motion vector passes could not be recorded");
     }
+    DropPostStandIn();
     return false;
   }
   RecordUpscale(list);
+  DropPostStandIn();
   return true;
+}
+
+void TemporalSystem::DropPostStandIn() {
+  // An upscaled frame has the anchor's own stand-in by now (the same image, this frame's picture).
+  if (frame_.post_on_previous && !frame_.upscaled) {
+    ClearStandIn();
+  }
+  frame_.post_on_previous = false;
 }
 
 uint64_t TemporalSystem::HeldBytes() const {
@@ -397,6 +410,62 @@ void TemporalSystem::ClearStandIn() {
   }
   stand_in_set_ = false;
   frame_.upscaled = false;
+}
+
+void TemporalSystem::StandInForPostChain() {
+  // The post chain's first reads of the scene colour come before the anchor, so before this frame's
+  // upscale (temporal.h, "The post chain before the anchor"). The upscale needs this frame's camera
+  // and the anchor's own fetches, and the camera is known only at the anchor's draw (nothing before
+  // it carries one in a form that has been verified); so those reads are given what the previous
+  // frame's upscale made: the output image still holds it, and the stand-in the anchor sets later
+  // is the same image with this frame's picture in it. Nothing before the anchor writes the image,
+  // so the draws recorded before and after it see the frame before's and this frame's picture each.
+  // CHECK: that the half-size downsample (sub_8260DA68's first sub_8260D678 call, dofObj+92 into
+  // dofObj+12, read in the recompiled guest code, not seen in a draw log) is the only reader of
+  // the scene colour product before the anchor; any other one is redirected the same way and
+  // shows in the cause of a flicker that stays.
+  FrameState& fr = frame_;
+  if (!fr.armed || fr.upscaler == Upscaler::kOff || !textures_ || stand_in_set_) {
+    return;
+  }
+  // The frame before was upscaled (so the image holds its picture), by a gap the history rule
+  // accepts. A camera cut cannot be known yet: the cut frame's bloom and exposure show the view
+  // before it, for that one frame.
+  if (last_dispatch_frame_ == ~uint64_t(0) || last_dispatch_frame_ + 1 != fr.frame ||
+      !last_stand_in_product_ ||
+      std::chrono::duration<double, std::milli>(Clock::now() - last_anchor_time_).count() >
+          kMaxGapMs) {
+    return;
+  }
+  // The scene drawn at the output's size (Native AA, DLAA) has no sub-pixel glint the jitter
+  // drops: its bloom is as steady as without the jitter (measured: 0.2% of bright pixels flicker
+  // against 3% at Quality), and the lag would buy nothing.
+  if (last_render_size_[0] == last_output_size_[0] && last_render_size_[1] == last_output_size_[1]) {
+    return;
+  }
+  if (!output_.texture || output_.layout != plume::RenderTextureLayout::SHADER_READ ||
+      output_.width != last_output_size_[0] || output_.height != last_output_size_[1]) {
+    return;
+  }
+  TextureCache::Override stand_in;
+  stand_in.product = last_stand_in_product_;
+  stand_in.page = last_stand_in_page_;
+  stand_in.texture = output_.texture.get();
+  stand_in.format = output_.format;
+  stand_in.scale = last_stand_in_scale_;
+  textures_->SetOverride(stand_in);
+  stand_in_set_ = true;
+  fr.post_on_previous = true;
+  ++window_.post_on_previous;
+  if (!post_stand_in_reported_) {
+    post_stand_in_reported_ = true;
+    REXLOG_INFO("{} the game's post chain before the anchor (the half-size downsample the bloom, "
+                "the exposure and the motion blur's half-size layer are made from) reads the "
+                "previous frame's upscaled picture, so the jitter cannot reach them; they are one "
+                "frame late. The scene is drawn at {}x{} for an output of {}x{}",
+                kPrefix, last_render_size_[0], last_render_size_[1], last_output_size_[0],
+                last_output_size_[1]);
+  }
 }
 
 void TemporalSystem::ReleaseUpscaler() {
@@ -654,6 +723,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   textures_->SetOverride(stand_in);
   stand_in_set_ = true;
   fr.upscaled = true;
+  // What the next frame's post chain is given before its anchor (StandInForPostChain).
+  last_stand_in_product_ = stand_in.product;
+  last_stand_in_page_ = stand_in.page;
+  last_stand_in_scale_ = stand_in.scale;
   // The anchor's own colour fetch: the binding the stand-in gives this fetch's swizzle (the anchor
   // draws at the output's scale).
   fr.anchor_color_slot = textures_->Bind2D(fetch, fr.output_scale, list).slot;
@@ -827,6 +900,14 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     fr.scale = f.scale;
   }
   ++fr.main_draws[kind];
+  if (kind != kDepthOnly) {
+    // The first draw that draws colour into the main view: this frame has a 3D scene, and the post
+    // chain that reads its colour comes later.
+    if (!fr.post_checked) {
+      fr.post_checked = true;
+      StandInForPostChain();
+    }
+  }
 
   if (EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale) != 0) {
     return;  // not a world draw: kept still
@@ -928,6 +1009,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
                   "the summaries count them)",
                   kPrefix, fr.frame, StatusName(status), why.empty() ? "" : ": ", why);
     }
+    DropPostStandIn();  // the post chain was given the previous picture: the rest reads this frame's
     return false;
   }
 
@@ -1039,6 +1121,9 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
   pending_ready_ = motion_.available();
+  if (!pending_ready_) {
+    DropPostStandIn();  // no passes: RecordAnchorPasses is not called
+  }
   return pending_ready_;
 }
 
@@ -1242,12 +1327,12 @@ void TemporalSystem::Report() {
     const TemporalBackend* running_backend = BackendFor(effective_);
     const BackendStatus status = running_backend ? running_backend->Status() : BackendStatus{};
     REXLOG_INFO("[gpu] temporal upscaler: {} ({}{}) in {} frames: upscaled {} ({} of them with "
-                "the history started again), plain: context not ready {}, no vectors {}, colour not "
-                "an input {}{}",
+                "the history started again; the post chain read the previous frame's picture in "
+                "{}), plain: context not ready {}, no vectors {}, colour not an input {}{}",
                 UpscalerName(effective_), ModeInfoOf(effective_, settings_.mode).name,
                 status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
-                w.upscaled, w.upscale_resets, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
-                w.upscale_plain_no_color,
+                w.upscaled, w.upscale_resets, w.post_on_previous, w.upscale_plain_not_ready,
+                w.upscale_plain_no_vectors, w.upscale_plain_no_color,
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }
 }

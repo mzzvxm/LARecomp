@@ -50,6 +50,20 @@
 //                runs without it (gpu.h GuestMsaa, decided when the game makes its renderer; the
 //                player's choice is kept); one that started with MSAA keeps it until the next start.
 //
+// The post chain before the anchor. The game's first reads of the scene colour (the guest's post
+// function makes a half-size downsample of it, then a quarter-size one, the log-luminance chain of
+// the exposure, the bright pass and the bloom's blurs from those; the half-size image is also the
+// motion blur's half-size layer) run before the anchor, so before the upscale, and would read the
+// raw jittered scene: a glint smaller than a render pixel lands on one in some jitter phases and
+// not in others, its bloom pulses with the jitter, and no upscaler can steady what is already in
+// the bloom. While the scene is drawn smaller than the output (at the output's size the jitter
+// does not do this), those reads are given the previous frame's upscaled picture instead
+// (StandInForPostChain): the same stand-in as after the anchor, set at the frame's first main view
+// draw, while the output image still holds the frame before. What they make is one frame late: the
+// bloom, the exposure and the motion blur's half-size layer. The scene colour the anchor's own
+// fetch and the tone map read is this frame's. A camera cut shows the view before it in the cut
+// frame's bloom.
+//
 // Step 3 (F4-DESIGN.md 4, stage U3) draws the scene smaller than the output: with an upscaler in a
 // mode below 100% at the start (gpu.h GetStartUpscale) the main view's colour and depth are made
 // at a scale of their own (edram.h SceneScale: the images of the screen's over the mode's ratio,
@@ -207,6 +221,9 @@ class TemporalSystem {
     bool backend_ready = false;          // its context exists for the sizes of the last frame
     bool upscaled = false;               // the output is made and the stand-in set for this frame
     uint32_t anchor_color_slot = 0;      // the bindless slot the anchor's colour fetch reads instead
+    // The post chain before the anchor reads the previous frame's output (StandInForPostChain).
+    bool post_checked = false;           // the frame's first main view draw decided
+    bool post_on_previous = false;
   };
 
   // True while an upscaler was chosen and able to run at the start of the frame being recorded: the
@@ -280,6 +297,7 @@ class TemporalSystem {
     uint64_t upscale_plain_no_vectors = 0;
     uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
     uint64_t upscale_resets = 0;           // upscaled frames the history started again in
+    uint64_t post_on_previous = 0;         // frames whose post chain read the previous output
     // The last accepted camera, for the line.
     bool have_camera = false;
     temporal::Camera camera;
@@ -337,6 +355,12 @@ class TemporalSystem {
   // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
   // failure turns the upscaler off for the session.
   bool RecordUpscale(plume::RenderCommandList* list);
+  // The first main view draw of an armed frame: the post chain's reads before the anchor get the
+  // previous frame's upscaled picture when there is one that fits (see the header comment).
+  void StandInForPostChain();
+  // The anchor did not upscale the frame: what the post chain was given goes, the tone map and
+  // the rest read this frame's own product.
+  void DropPostStandIn();
   void FailUpscaler(const std::string& why);
   void ReleaseUpscaler();
   void ClearStandIn();
@@ -375,6 +399,12 @@ class TemporalSystem {
   Clock::time_point off_since_{};
   bool stand_in_set_ = false;
   uint64_t last_dispatch_frame_ = ~uint64_t(0);
+  // What the last upscaled frame set as the stand-in: the product replaced, its page and the
+  // output's scale (the output image is output_). The product is only compared.
+  const void* last_stand_in_product_ = nullptr;
+  uint32_t last_stand_in_page_ = 0;
+  Scale last_stand_in_scale_ = Scale::None();
+  bool post_stand_in_reported_ = false;
   uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
   bool aa_hold_reported_ = false;
   uint32_t msaa_key_ = ~0u;          // the game's MSAA and the upscaler, as last said (NoteMsaa)
