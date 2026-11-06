@@ -18,10 +18,9 @@
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_temporal, false, "MCLA/GPU",
     "Development switch for the temporal anti-aliasing and upscaling that is being built: moves "
-    "the 3D scene by a different sub-pixel amount every frame (the world only: the menus, the HUD "
-    "and the post-processing keep their positions) and reads the game's camera. Nothing smooths "
-    "the movement out yet, so the scene shimmers a little. Logs '[gpu] temporal:' lines. Read "
-    "every frame.")
+    "the 3D scene by a different sub-pixel amount every frame (the world only: the menus and the "
+    "HUD keep their positions) and reads the game's camera. Nothing smooths the movement out "
+    "yet, so the scene shimmers a little. Logs '[gpu] temporal:' lines. Read every frame.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
