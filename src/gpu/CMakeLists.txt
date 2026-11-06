@@ -52,6 +52,7 @@ add_library(larecomp_gpu OBJECT
     shaders.cpp
     stream.cpp
     swap_chain.cpp
+    temporal.cpp
     temporal_camera.cpp
     texture_decode.cpp
     texture_mods.cpp
