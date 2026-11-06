@@ -57,7 +57,9 @@ REXCVAR_DEFINE_STRING(
     "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
     "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
     "own). Targets the game does not multisample, or that are not images of the screen, keep "
-    "the game's samples.")
+    "the game's samples. A game started with an upscaler (mcla_gpu_upscaler) that runs on this PC "
+    "starts without MSAA whatever this says; the choice is kept and applies again at a start "
+    "with no upscaler.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

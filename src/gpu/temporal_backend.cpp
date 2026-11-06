@@ -6,9 +6,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_upscaler, "off", "MCLA/GPU",
@@ -16,7 +20,10 @@ REXCVAR_DEFINE_STRING(
     "graphics card and driver run it). The scene is moved by a different sub-pixel amount every "
     "frame and AMD's upscaler rebuilds a sharper, steadier picture from the frames; the menus, the "
     "HUD and the bloom, glow and tone map stay at full size. While one is on, FXAA and SMAA are "
-    "held off (MSAA stays your choice). A choice this PC cannot run is treated as off. Live.")
+    "held off, and a game started with one on runs without MSAA (your MSAA choice, "
+    "mcla_gpu_msaa, is kept and applies again at a start with no upscaler: the game's MSAA is a "
+    "start-up switch). A choice this PC cannot run is treated as off. Live, except that MSAA "
+    "follows at the next start.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
@@ -58,6 +65,8 @@ REXCVAR_DEFINE_UINT32(
     "draws its debug view over the output (2). Read when the upscaler's context is made.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DECLARE(std::string, mcla_gpu_msaa);  // edram.cpp
+
 namespace mcla::gpu {
 
 namespace {
@@ -80,6 +89,7 @@ std::string Lower(std::string_view text) {
 // Packed for one atomic: bit 0 probed, 1 fsr31, 2 fsr4.
 std::atomic<uint32_t> g_availability{0};
 std::atomic<uint32_t> g_running{0};
+std::atomic<uint8_t> g_guest_msaa{uint8_t(GuestMsaa::kUndecided)};
 
 }  // namespace
 
@@ -163,6 +173,68 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.fsr4 = (v & 4u) != 0;
   a.running = Upscaler(g_running.load(std::memory_order_relaxed) & 3u);
   return a;
+}
+
+namespace {
+
+void DecideGuestMsaa() {
+  const std::string msaa = REXCVAR_GET(mcla_gpu_msaa);
+  std::string choice = msaa;
+  choice.erase(std::remove_if(choice.begin(), choice.end(),
+                              [](unsigned char c) { return std::isspace(c) != 0; }),
+               choice.end());
+  if (Lower(choice) == "off") {
+    g_guest_msaa.store(uint8_t(GuestMsaa::kOffChosen), std::memory_order_relaxed);
+    return;
+  }
+  Upscaler chosen = Upscaler::kOff;
+  ParseUpscaler(REXCVAR_GET(mcla_gpu_upscaler), &chosen);
+  if (chosen == Upscaler::kOff) {
+    g_guest_msaa.store(uint8_t(GuestMsaa::kOn), std::memory_order_relaxed);
+    return;
+  }
+  // An upscaler is chosen: whether this PC can run it is known once its probe ends. The probe is
+  // started with the renderer (before the game runs) and takes well under a second. A build with
+  // no FidelityFX never starts one, and nothing is waited for.
+  // CHECK: that the game makes its renderer after the renderer has started the probe (in a log, the
+  // "[gpu] ffx: ready" line comes before "[gpu] msaa:"); if not, the hold is missed and logged.
+#if defined(LARECOMP_HAS_FFX)
+  constexpr auto kProbeWait = std::chrono::seconds(4);  // the game's thread, at its renderer's creation
+  const auto give_up = std::chrono::steady_clock::now() + kProbeWait;
+  while (!GetUpscalerAvailability().probed && std::chrono::steady_clock::now() < give_up) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+#endif
+  const UpscalerAvailability a = GetUpscalerAvailability();
+  const bool runs = a.probed && ((chosen == Upscaler::kFsr31 && a.fsr31) ||
+                                 (chosen == Upscaler::kFsr4 && a.fsr4));
+  if (runs) {
+    g_guest_msaa.store(uint8_t(GuestMsaa::kOffForUpscaler), std::memory_order_relaxed);
+    REXLOG_INFO("[gpu] msaa: the game starts without MSAA: {} is chosen and runs on this PC, and "
+                "MSAA under it only costs time. mcla_gpu_msaa = '{}' is kept and applies again at "
+                "a start with no upscaler (the game's MSAA is a start-up switch)",
+                UpscalerName(chosen), msaa);
+  } else {
+    g_guest_msaa.store(uint8_t(GuestMsaa::kOn), std::memory_order_relaxed);
+    REXLOG_INFO("[gpu] msaa: {} is chosen but {}: the game starts with the MSAA chosen "
+                "(mcla_gpu_msaa = '{}')",
+                UpscalerName(chosen),
+                a.probed ? "this PC cannot run it"
+                         : "its probe has not ended (or this build has no upscaler runtime)",
+                msaa);
+  }
+}
+
+}  // namespace
+
+bool GuestMsaaOff() {
+  static std::once_flag once;
+  std::call_once(once, DecideGuestMsaa);
+  return GetGuestMsaa() != GuestMsaa::kOn;
+}
+
+GuestMsaa GetGuestMsaa() {
+  return GuestMsaa(g_guest_msaa.load(std::memory_order_relaxed));
 }
 
 #if !defined(LARECOMP_HAS_FFX)

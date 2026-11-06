@@ -230,4 +230,24 @@ struct UpscalerAvailability {
 };
 UpscalerAvailability GetUpscalerAvailability();
 
+// --- MSAA while an upscaler runs ---------------------------------------------------------------
+// FSR smooths the picture itself, and MSAA under it only costs time. The game's MSAA is a start-up
+// switch (its renderer is made once, with 2 samples or without: hooks/graphics.cpp
+// Patch_DisableMSAA), so the hold is decided once, when the game makes its renderer: a game started
+// with an upscaler chosen and able to run is started without MSAA, and the player's MSAA choice
+// (mcla_gpu_msaa) is kept and applies again at a start with no upscaler. An upscaler turned on
+// later finds the game's MSAA running (it works with it) until the next start.
+enum class GuestMsaa : uint8_t {
+  kUndecided,       // the game has not made its renderer yet
+  kOn,              // as the player chose: the console's 2 samples (host samples 4 or 8 on top)
+  kOffChosen,       // mcla_gpu_msaa is off
+  kOffForUpscaler,  // started without MSAA because an upscaler runs; the choice is kept
+};
+// Called once by the game's own thread when its renderer is made; later calls give the same answer.
+// True: the game starts without MSAA. Waits up to a few seconds for the upscaler probe when an
+// upscaler is chosen (it ends within a second of the renderer starting).
+bool GuestMsaaOff();
+// Any thread.
+GuestMsaa GetGuestMsaa();
+
 }  // namespace mcla::gpu
