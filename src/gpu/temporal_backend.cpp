@@ -223,12 +223,17 @@ void DecideStartUpscale() {
   UpscaleMode mode = UpscaleMode::kNativeAa;
   if (chosen != Upscaler::kOff) {
     // Whether this PC can run it is known once the probe of its backend ends. The probes are
-    // started with the renderer (before the game runs) and take well under a second (DLSS, when it
-    // is the choice, loads Streamline in its probe: about a second). A build without that backend
-    // never starts one, and nothing is waited for.
+    // started with the renderer (before the game runs) and take well under a second. DLSS's
+    // answer does not wait for Streamline's own start (slInit and NGX: from 2 s to over 10 s on a
+    // cold start): an RTX card whose files are in place and signed counts as able to run it as soon
+    // as the worker has looked at them (temporal_dlss.cpp PublishEarlyVerdict), and the rest of the
+    // start finishes in the background; if it fails, the backend says so plainly and the game
+    // goes on without DLSS. So a slow Streamline start never changes the player's mode here. A
+    // build without that backend never starts a probe, and nothing is waited for.
     // CHECK: that the game makes its renderer after the renderer has started the probe (in a log,
-    // the "[gpu] ffx: ready" or "[gpu] dlss: ready" line comes before "[gpu] msaa:" and "[gpu]
-    // upscaler at start:"); if not, the hold is missed and logged.
+    // the "[gpu] ffx: ready" line, or for DLSS the "[gpu] dlss: ... counts as able to run" line,
+    // comes before "[gpu] msaa:" and "[gpu] upscaler at start:"); if not, the hold is missed and
+    // logged.
     const auto ended = [chosen] {
       const UpscalerAvailability a = GetUpscalerAvailability();
       return chosen == Upscaler::kDlss ? a.dlss_probed : a.probed;
@@ -272,7 +277,10 @@ void DecideStartUpscale() {
                   "scale",
                   UpscalerName(chosen),
                   probed ? "this PC cannot run it"
-                         : "its probe has not ended (or this build has no upscaler runtime)");
+                         : chosen == Upscaler::kDlss
+                               ? "Streamline did not say within the wait whether this card can run "
+                                 "it (this is not an RTX card by its name, or its start is very slow)"
+                               : "its probe has not ended (or this build has no upscaler runtime)");
     }
   }
 }
@@ -308,7 +316,9 @@ void DecideGuestMsaa() {
                 "(mcla_gpu_msaa = '{}')",
                 UpscalerName(chosen),
                 start.probed ? "this PC cannot run it"
-                             : "its probe has not ended (or this build has no upscaler runtime)",
+                : chosen == Upscaler::kDlss
+                    ? "Streamline did not say within the wait whether this card can run it"
+                    : "its probe has not ended (or this build has no upscaler runtime)",
                 msaa);
   }
 }

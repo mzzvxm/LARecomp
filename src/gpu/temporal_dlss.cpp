@@ -151,7 +151,8 @@ bool SignaturesOk(const std::wstring& dir, std::string* why) {
 // not loaded) is worth listing: every GeForce RTX, Quadro RTX, RTX A-series and Titan RTX has it in
 // its name. The runtime's own query (slIsFeatureSupported) is the final word whenever it can run.
 // CHECK: a future card name without "RTX" is only found when DLSS is the saved choice (the query is
-// then asked at the start); the menu would not list it before.
+// then asked at the start); the menu would not list it before, and the start decision (one that
+// waits for the query) may not wait long enough for it.
 bool NameLooksLikeRtx(const std::string& name) {
   for (size_t i = 0; i + 3 <= name.size(); ++i) {
     if (std::toupper(static_cast<unsigned char>(name[i])) == 'R' &&
@@ -426,6 +427,7 @@ struct DlssBackend::Impl {
   void StartWorkerLocked();
   void WorkerMain();
   bool StartRuntime(std::string* why, bool* files_problem);
+  void PublishEarlyVerdict();
   void FailStart(const std::string& why, bool files_problem);
   void FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why);
   std::shared_ptr<Context> MakeContext(const BackendRequest& request, std::string* why);
@@ -544,7 +546,9 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
 #endif
       return;
     }
-    // Started before the device: the worker finishes it (the support query).
+    // Started before the device: the worker finishes it (the support query). The files are known
+    // good, so an RTX card is published as able to run it as soon as the worker has looked at them
+    // (PublishEarlyVerdict); the query is not waited for by the start decision.
     std::lock_guard lock(i.mu);
     i.status.state = BackendState::kProbing;
     i.StartWorkerLocked();
@@ -552,7 +556,10 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
   }
 
   // D3D12: Streamline starts now when DLSS is the saved choice (the start's scene size needs the
-  // answer), otherwise at its first use.
+  // answer), otherwise at its first use. Its start (slInit and NGX) takes from 2 s to over 10 s on
+  // a cold start, so the answer the start decision waits for is not that one: the worker publishes
+  // "can run" (PublishEarlyVerdict) once the files, their signatures and the card's name are
+  // checked, and finishes the start in the background.
   if (chosen) {
     std::lock_guard lock(i.mu);
     i.status.state = BackendState::kProbing;
@@ -568,6 +575,32 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
               "is chosen",
               kPrefix, i.gpu_name);
   settle(BackendState::kAvailable, {}, true, false, false);
+}
+
+// The fast part of the answer, from the worker, once the files are there, signed and opened (the
+// worker's first step, a fraction of a second): an RTX card with usable files can run DLSS. That is
+// what the start decision (temporal_backend.cpp DecideStartUpscale) waits for, so a slow Streamline
+// start (slInit, NGX and the support query: seconds) never decides the scene's size. If the rest
+// of the start fails, FailStart says so plainly and the game goes on without DLSS. A card whose
+// name does not say RTX waits for the support query (the final word) as before.
+void DlssBackend::Impl::PublishEarlyVerdict() {
+  if (!NameLooksLikeRtx(gpu_name)) {
+    return;
+  }
+  {
+    std::lock_guard lock(mu);
+    if (probed) {
+      return;
+    }
+    status.dlss = true;
+    probed = true;
+    needs_setup = false;
+    after_restart = false;
+    PublishLocked();
+  }
+  REXLOG_INFO("{} '{}' is an RTX card and its DLSS files are in place and signed: DLSS counts as "
+              "able to run; Streamline finishes starting in the background",
+              kPrefix, gpu_name);
 }
 
 void DlssBackend::Impl::WorkerMain() {
@@ -610,6 +643,7 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
     *files_problem = rt.files_problem;
     return false;
   }
+  PublishEarlyVerdict();
   if (!rt.initialized) {
     if (api == Backend::kVulkan) {
       *why = "on Vulkan Streamline has to start before the device is made";
@@ -625,9 +659,11 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
     // call slSetD3DDevice". Super Resolution needs no proxy of the device, the factory or the
     // swap chain.
     // CHECK: that Super Resolution runs with the native device alone (no slUpgradeInterface, no
-    // call of the common plugin's presentCommon): if Streamline asks for the per-frame present
-    // call (memory growing across frames, or the first dispatch failing), the swap chain has to
-    // go through Plume's D3D12InterfaceHooks.upgradeSwapChain.
+    // call of the common plugin's presentCommon): D3D12 runs (a clean picture, 2026-11-06) but
+    // Streamline logs "presentCommon() was not observed" once, and the manual hooking guide says
+    // the missing call leads to memory growth across swap chain resizes; the swap chain should go
+    // through Plume's D3D12InterfaceHooks.upgradeSwapChain (Vulkan loads through the interposer
+    // and has no such line).
     const sl::Result result = rt.api.set_d3d_device(native.device);
     if (result != sl::Result::eOk) {
       *why = "slSetD3DDevice failed: " + ResultText(result);
@@ -685,8 +721,24 @@ void DlssBackend::Impl::FailStart(const std::string& why, bool files_problem) {
     listed_setup = needs_setup;
     PublishLocked();
   }
-  REXLOG_WARN("{} DLSS is off for this session: {}{}", kPrefix, why,
-              listed_setup ? ". Run the game's setup again to get its files" : "");
+  // What the player sees now, when the start decided on DLSS before this failed (the decision does
+  // not wait for Streamline's slow start): the game goes on without it.
+  std::string effect;
+  const StartUpscale start = PeekStartUpscale();
+  if (start.decided && start.runs && start.upscaler == Upscaler::kDlss) {
+    effect = start.ratio > 1.0
+                 ? std::format(". This start drew the 3D scene at {}% of the output for DLSS, and "
+                               "nothing upscales it now, so the picture stays soft until the game "
+                               "is started again with DLSS off (or this is fixed)",
+                               ModeInfoOf(Upscaler::kDlss, start.mode).percent)
+                 : std::string(". The picture is the game's own at full size, with none of DLSS's "
+                               "smoothing");
+    if (GetGuestMsaa() == GuestMsaa::kOffForUpscaler) {
+      effect += "; this start also turned MSAA off for DLSS, so there is no anti-aliasing at all";
+    }
+  }
+  REXLOG_WARN("{} DLSS is off for this session: {}{}{}", kPrefix, why,
+              listed_setup ? ". Run the game's setup again to get its files" : "", effect);
 }
 
 // ---------------------------------------------------------------------------
