@@ -428,6 +428,33 @@ else()
                 message(STATUS "larecomp: FidelityFX upscalers from ${LARECOMP_FFX_KIT}")
             endif()
         endif()
+        # NVIDIA's Streamline SDK (2.14.16, the folder that holds include/ and bin/x64/): the headers
+        # the DLSS backend (src/gpu/temporal_dlss.h) is compiled with, and the production DLLs and
+        # licence files copied next to the exe below. Nothing of it is committed: by default the
+        # pinned release is fetched into the build folder and every file checked
+        # (cmake/FetchStreamline.cmake); LARECOMP_STREAMLINE_DIR names an unpacked SDK instead,
+        # LARECOMP_STREAMLINE_ZIP a local copy of the release zip, LARECOMP_DLSS_FETCH=OFF with
+        # neither builds without DLSS. Nothing is linked: the DLL is opened at run time.
+        set(LARECOMP_STREAMLINE_DIR "" CACHE PATH
+            "NVIDIA Streamline SDK (the folder holding include/ and bin/x64/); empty builds without DLSS")
+        set(LARECOMP_STREAMLINE_ZIP "" CACHE FILEPATH
+            "A local copy of streamline-sdk-v2.14.16.zip, used instead of the download")
+        option(LARECOMP_DLSS_FETCH "Fetch the pinned Streamline SDK 2.14.16 files when LARECOMP_STREAMLINE_DIR is unset" ON)
+        if(NOT LARECOMP_STREAMLINE_DIR AND LARECOMP_DLSS_FETCH AND WIN32)
+            include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchStreamline.cmake")
+        endif()
+        set(LARECOMP_STREAMLINE_KIT "")
+        if(LARECOMP_STREAMLINE_DIR AND WIN32)
+            if(EXISTS "${LARECOMP_STREAMLINE_DIR}/include/sl.h" AND
+               EXISTS "${LARECOMP_STREAMLINE_DIR}/include/sl_dlss.h" AND
+               EXISTS "${LARECOMP_STREAMLINE_DIR}/bin/x64/sl.interposer.dll")
+                set(LARECOMP_STREAMLINE_KIT "${LARECOMP_STREAMLINE_DIR}")
+                message(STATUS "larecomp: DLSS (Streamline) from ${LARECOMP_STREAMLINE_KIT}")
+            else()
+                message(WARNING "LARECOMP_STREAMLINE_DIR=${LARECOMP_STREAMLINE_DIR} holds no include/sl.h, "
+                                "include/sl_dlss.h and bin/x64/sl.interposer.dll: building without DLSS")
+            endif()
+        endif()
         add_subdirectory(src/gpu)
         # The renderer's objects, and plume's archive without plume's include
         # directories in larecomp's own translation units (CMP0131 is NEW with
@@ -605,6 +632,38 @@ else()
                         "$<TARGET_FILE_DIR:larecomp>/amd_fidelityfx_license.md"
                 COMMENT "Copying the FidelityFX licence next to larecomp.exe")
         endif()
+    endif()
+
+    # NVIDIA Streamline and DLSS (when LARECOMP_STREAMLINE_DIR is set): the production DLLs of Super
+    # Resolution, NVIDIA-signed and unchanged, and the licence texts that go with them. The renderer
+    # opens them by full path from this folder after checking their signature, and nowhere else.
+    if(LARECOMP_STREAMLINE_KIT)
+        foreach(_larecomp_sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll)
+            if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}")
+                message(WARNING "Streamline: ${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll} is missing")
+                continue()
+            endif()
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}"
+                        "$<TARGET_FILE_DIR:larecomp>/${_larecomp_sl_dll}"
+                COMMENT "Copying ${_larecomp_sl_dll} next to larecomp.exe")
+        endforeach()
+        foreach(_larecomp_sl_notice
+                "bin/x64/nvngx_dlss.license.txt|nvngx_dlss_license.txt"
+                "license.txt|streamline_license.txt"
+                "3rd-party-licenses.md|streamline_third_party_licenses.md")
+            string(REPLACE "|" ";" _larecomp_sl_pair "${_larecomp_sl_notice}")
+            list(GET _larecomp_sl_pair 0 _larecomp_sl_from)
+            list(GET _larecomp_sl_pair 1 _larecomp_sl_to)
+            if(EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_from}")
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_from}"
+                            "$<TARGET_FILE_DIR:larecomp>/${_larecomp_sl_to}"
+                    COMMENT "Copying ${_larecomp_sl_to} next to larecomp.exe")
+            endif()
+        endforeach()
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
