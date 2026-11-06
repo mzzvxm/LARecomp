@@ -22,10 +22,18 @@
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_temporal_view, "off", "MCLA/GPU",
-    "Development view of what the temporal groundwork keeps (needs mcla_gpu_temporal), drawn over "
-    "the whole picture: off, mv (motion vectors: mid grey is no motion), depth (as stored: near is "
-    "bright) or stencil (the vehicle ID of the game's draws: black for the world, a colour for 1 to "
-    "23, white for 24 and above). Live.")
+    "Development view of what the temporal groundwork keeps (needs mcla_gpu_temporal), drawn in "
+    "the bottom-right quarter of the picture (all of it with mcla_gpu_temporal_view_full): off, mv "
+    "(motion vectors: mid grey is no motion), depth (as stored: near is bright) or stencil (the "
+    "vehicle ID of the game's draws: black for the world, a colour for 1 to 23, white for 24 and "
+    "above). Live.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_temporal_view_full, false, "MCLA/GPU",
+    "With mcla_gpu_temporal_view: draw the view over the whole picture instead of the "
+    "bottom-right quarter. It hides the game, so a test that recognises the screen from a picture "
+    "needs the default. Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(
@@ -776,12 +784,26 @@ void TemporalMotion::DrawDebug(plume::RenderCommandList* list, uint32_t width, u
   if (!image || !image->texture || image->width == 0 || image->height == 0 || !PrepareDebug()) {
     return;
   }
-  // Letterboxed like the present: the largest rectangle of the image's aspect, centred.
-  const double fit = std::min(double(width) / image->width, double(height) / image->height);
-  const uint32_t fw = std::max(uint32_t(std::lround(image->width * fit)), 1u);
-  const uint32_t fh = std::max(uint32_t(std::lround(image->height * fit)), 1u);
-  const uint32_t fx = (width - std::min(fw, width)) / 2;
-  const uint32_t fy = (height - std::min(fh, height)) / 2;
+  // Where it goes: the bottom-right quarter of the picture (half the width and half the height,
+  // so the title, the menus and the road stay visible to whoever looks at the picture, and a test
+  // that recognises the screen from it keeps working), or all of it with
+  // mcla_gpu_temporal_view_full. Letterboxed like the present: the largest rectangle of the
+  // image's aspect in that area, centred in it.
+  uint32_t area_x = 0;
+  uint32_t area_y = 0;
+  uint32_t area_w = width;
+  uint32_t area_h = height;
+  if (!REXCVAR_GET(mcla_gpu_temporal_view_full)) {
+    area_x = width / 2;
+    area_y = height / 2;
+    area_w = width - area_x;
+    area_h = height - area_y;
+  }
+  const double fit = std::min(double(area_w) / image->width, double(area_h) / image->height);
+  const uint32_t fw = std::min(std::max(uint32_t(std::lround(image->width * fit)), 1u), area_w);
+  const uint32_t fh = std::min(std::max(uint32_t(std::lround(image->height * fit)), 1u), area_h);
+  const uint32_t fx = area_x + (area_w - fw) / 2;
+  const uint32_t fy = area_y + (area_h - fh) / 2;
   const plume::RenderViewport viewport{float(fx), float(fy), float(fw), float(fh)};
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(int32_t(fx), int32_t(fy), int32_t(fx + fw), int32_t(fy + fh));

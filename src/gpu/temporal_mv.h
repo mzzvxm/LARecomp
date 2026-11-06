@@ -32,9 +32,11 @@
 // keeps for the present (kept()); the depth is double buffered (the previous frame's depth, for the
 // reprojection check). Sizes and formats are in Kept.
 //
-// Development views (mcla_gpu_temporal_view: off, mv, depth, stencil): the chosen image over the
-// whole picture in the present, letterboxed. Mid grey in the vector view is no motion; `range`
-// (mcla_gpu_temporal_view_range, render pixels) is full colour.
+// Development views (mcla_gpu_temporal_view: off, mv, depth, stencil): the chosen image in the
+// present, as an inset in the bottom-right quarter of the picture (half its width and height) so
+// that the rest of the picture, and what a test harness recognises in it, stays visible; with
+// mcla_gpu_temporal_view_full over the whole picture. Letterboxed in either. Mid grey in the
+// vector view is no motion; `range` (mcla_gpu_temporal_view_range, render pixels) is full colour.
 //
 // Checks (mcla_gpu_temporal_check = N, development): every N-th frame whose vectors have a previous
 // frame, 16 x 9 sample pixels are gathered on the GPU (hlsl/temporal_check_ps.hlsl), read back

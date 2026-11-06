@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the temporal system's debug views (temporal_mv.h, mcla_gpu_temporal_view).
 //
-// One of the images the system keeps, over the whole letterboxed picture in the present:
+// One of the images the system keeps, letterboxed in the present's bottom-right quarter (the
+// whole picture with mcla_gpu_temporal_view_full; the host sets the viewport, `origin` and `scale`):
 //   mode 0  motion vectors: mid grey is no motion; red and green move with the vector's x and y,
 //           saturating at `range` render pixels. A still camera over still scenery is one flat grey.
 //   mode 1  depth, as stored (1 near, 0 far) with a 4th-root curve so the far scene is visible:
