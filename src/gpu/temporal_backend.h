@@ -6,13 +6,14 @@
 // anchor, jitters the scene, makes the depth and the motion vectors; a TemporalBackend turns
 // colour + depth + vectors + jitter + camera into the picture the rest of the frame uses. This
 // step has one backend, AMD's FidelityFX upscaler (FSR 3.1, and FSR 4 where its provider loads),
-// at ratio 1 (render size = output size: "Native AA"); the interface is what DLSS and the other
-// ratios plug into later.
+// at the vendor's five ratios (render size = output size over 1, 1.5, 1.7, 2 or 3: "Native AA" to
+// "Ultra Performance"); the interface is what DLSS plugs into later.
 //
 // The player's settings (REXCVAR, read every frame, saved by the menu like any cvar):
 //   mcla_gpu_upscaler            off | fsr31 | fsr4          "Upscaling"
-//   mcla_gpu_fsr31_mode          native_aa                   "FSR 3.1 Mode" (this step: only Native AA, 100%)
-//   mcla_gpu_fsr4_mode           native_aa                   "FSR 4 Mode"
+//   mcla_gpu_fsr31_mode          native_aa | quality | balanced | performance | ultra_performance
+//                                                            "FSR 3.1 Mode": 100%, 67%, 59%, 50%, 33%
+//   mcla_gpu_fsr4_mode           the same                    "FSR 4 Mode"
 //   mcla_gpu_upscaler_sharpness  0 .. 1                      FSR's sharpening (RCAS); 0 is none
 // A choice this PC cannot run is treated as Off and kept as it was saved (the menu does not list it).
 //
@@ -51,7 +52,7 @@ const char* UpscalerCvarValue(Upscaler upscaler);  // off, fsr31, fsr4
 // False (and kOff in `*out`) for anything else.
 bool ParseUpscaler(std::string_view text, Upscaler* out);
 bool ParseUpscaleMode(std::string_view text, UpscaleMode* out);
-// Whether `mode` can run with `upscaler` now (this step: Native AA only).
+// Whether `mode` can run with `upscaler` (FSR 3.1 and 4: all five).
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode);
 
 // What the settings say now (cvars read; a mode that cannot run is Native AA).

@@ -208,8 +208,8 @@ bool AutoBackendIsVulkan(const std::string& preferred_adapter);
 enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4 };
 const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4
 
-// The vendors' quality modes: their names and the render size as a share of the output. Only
-// NATIVE AA (100%) runs in the first step; the rest is the table the next one fills in.
+// The vendors' quality modes: their names and the render size as a share of the output (FSR 3.1
+// and FSR 4; DLSS's table differs a little and arrives with it).
 enum class UpscaleMode : uint8_t { kNativeAa, kQuality, kBalanced, kPerformance, kUltraPerformance,
                                    kCount };
 struct ModeInfo {
@@ -249,5 +249,27 @@ enum class GuestMsaa : uint8_t {
 bool GuestMsaaOff();
 // Any thread.
 GuestMsaa GetGuestMsaa();
+
+// --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
+// The scene is drawn smaller than the output only while an upscaler can make it whole again, and
+// its size is fixed when its targets are made (restart only, like RES SCALE). So the choice is read
+// once: the upscaler and mode chosen at the start, and whether this PC can run that upscaler (known
+// when the upscaler probe has ended). `ratio` is the mode's output over render, per axis (1 when no
+// upscaler runs); the renderer turns it into the scene's scale (render_scale.h ChooseSceneScale).
+// A change of upscaler or mode afterwards is only noted: it applies at the next start.
+struct StartUpscale {
+  bool decided = false;
+  bool probed = false;  // the upscaler probe had ended when it was decided
+  Upscaler upscaler = Upscaler::kOff;  // as chosen
+  bool runs = false;                   // chosen, and this PC can run it
+  UpscaleMode mode = UpscaleMode::kNativeAa;
+  double ratio = 1.0;  // the mode's, when `runs`; else 1
+};
+// Decides on the first call (any thread; waits a few seconds for the probe when an upscaler is
+// chosen), the same answer ever after. The game's own thread calls it first, when it makes its
+// renderer (GuestMsaaOff).
+StartUpscale GetStartUpscale();
+// What has been decided so far, never waiting: `decided` is false before.
+StartUpscale PeekStartUpscale();
 
 }  // namespace mcla::gpu
