@@ -200,6 +200,26 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
     return false;
   }
   pending_ready_ = false;
+  if (frame_.scale != frame_.output_scale) {
+    // The anchor draws at the output's scale, and what it is bound to read is the scene's products
+    // at the render scale: a colour one directly, but a depth source made below 1x (the depth, and
+    // the stencil view of it) through a copy enlarged to the output's size. The passes read texel
+    // for texel at the render size, so they take the products themselves: the same fetches bound at
+    // the render scale, which is the products' own.
+    // CHECK: only a scene scale under 1x (Radeon at 1x, any mode; Ultra Performance at 2x) gets an
+    // enlarged copy; above it the two bindings are the same slot.
+    uint32_t* const slots[3] = {&pending_.color_slot, &pending_.stencil_slot, &pending_.depth_slot};
+    for (uint32_t i = 0; i < 3; ++i) {
+      const TextureFetch fetch = ReadTextureFetch(frame_.anchor_textures.fetch[i]);
+      if (!fetch.is_texture) {
+        continue;
+      }
+      const TextureCache::Binding bound = textures_->Bind2D(fetch, frame_.scale, list);
+      if (bound.from_product) {
+        *slots[i] = bound.slot;
+      }
+    }
+  }
   if (!motion_.Record(list, pending_)) {
     ++window_.mv_missed;
     if (frame_.upscaler != Upscaler::kOff && frame_.backend_ready) {

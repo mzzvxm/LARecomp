@@ -47,6 +47,13 @@
 //                runs without it (gpu.h GuestMsaa, decided when the game makes its renderer; the
 //                player's choice is kept); one that started with MSAA keeps it until the next start.
 //
+// Step 3 (F4-DESIGN.md 4, stage U3) draws the scene smaller than the output: with an upscaler in a
+// mode below 100% at the start (gpu.h GetStartUpscale) the main view's colour and depth are made
+// at a scale of their own (edram.h SceneScale: the images of the screen's over the mode's ratio,
+// render_scale.h ChooseSceneScale), fixed until the next start. The render size is that scale
+// over the guest's size, the output size the anchor's (an image of the screen), the jitter
+// sequence follows the ratio and the scene's textures are sampled sharper (scene.cpp SceneBias).
+//
 // Development switch: mcla_gpu_temporal (off, read each frame). With it off and no upscaler chosen no
 // hook of the Scene does anything beyond one branch, no constant changes, no draw is added. On, it
 // jitters, reads the camera and logs: "[gpu] temporal: ..." lines, one for each change of what the
