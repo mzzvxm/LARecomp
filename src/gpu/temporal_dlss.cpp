@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <rex/logging.h>
 
@@ -50,6 +53,17 @@ constexpr uint32_t kMaxSlLogLines = 200;
 // engine is "custom"; NVIDIA RTX SDKs licence, Programming Guide 2.2 and 5.2.1).
 constexpr const char* kProjectId = "ee04879d-28bc-46b8-a12d-8a0bdff650dc";
 constexpr const char* kEngineVersion = "1.0.0";
+
+// The images of the DLSS dispatch, as the temporal system makes them (temporal.cpp RecordUpscale,
+// temporal_mv.cpp): the warm-up (Warmup) makes the same ones, once, to make the feature in the
+// background.
+constexpr plume::RenderFormat kColorFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
+constexpr plume::RenderFormat kDepthFormat = plume::RenderFormat::R32_FLOAT;
+constexpr plume::RenderFormat kMotionFormat = plume::RenderFormat::R16G16_FLOAT;
+constexpr plume::RenderTextureFlags kColorFlags = plume::RenderTextureFlag::NONE;
+constexpr plume::RenderTextureFlags kDepthMotionFlags = plume::RenderTextureFlag::RENDER_TARGET;
+constexpr plume::RenderTextureFlags kOutputFlags =
+    plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
 
 // The files the game folder carries (cmake/FetchStreamline.cmake copies them next to the exe).
 const wchar_t* const kFiles[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll",
@@ -243,6 +257,12 @@ struct SlApi {
 
 // Streamline, once per process: the module, its start-up and every call (its API is not thread
 // safe: `mu` serialises them). Shut down once, at the end of the run; it is not started again.
+//
+// Lock order: Runtime::mu, then DlssBackend::Impl::mu (never the other way round). Nothing that
+// holds Impl::mu waits for Runtime::mu, and the render thread never waits for it for long: the
+// calls that can take seconds (the start-up and the creation of a feature) are made on the worker,
+// and the render thread only calls Streamline while a ready context exists, which is only when the
+// worker is not busy making one.
 struct Runtime {
   std::mutex mu;
   HMODULE interposer = nullptr;
@@ -386,14 +406,109 @@ sl::Extent MakeExtent(uint32_t width, uint32_t height) {
   return extent;
 }
 
+// What every evaluation says about the game's projection and vectors, whoever records it (a frame,
+// or the warm-up): DLSS reads depthInverted and the vector flags when it makes its feature, so the
+// two must agree. Every field Streamline validates is given a value; cameraPinholeOffset (the
+// camera has none) is zero, not left invalid.
+void FillStaticConstants(sl::Constants& consts) {
+  consts.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
+  consts.depthInverted = sl::Boolean::eTrue;           // the game stores 1 near, 0 far
+  consts.cameraMotionIncluded = sl::Boolean::eTrue;    // the vectors are the camera's motion
+  consts.motionVectors3D = sl::Boolean::eFalse;
+  consts.orthographicProjection = sl::Boolean::eFalse;
+  consts.motionVectorsDilated = sl::Boolean::eFalse;
+  consts.motionVectorsJittered = sl::Boolean::eFalse;  // the jitter is taken out of them
+}
+
+void SetIdentity(float (&m)[16]) {
+  for (uint32_t i = 0; i < 16; ++i) {
+    m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+  }
+}
+
 // One context: a viewport of its own (its resources are freed after the frames that may use them,
 // by which time the next context has started, so the ids are never reused) and the sizes and mode
 // its options were set for.
 struct Context {
   BackendRequest request;
   uint32_t viewport_id = 0;
-  bool dispatched = false;  // the first dispatch resets the history
+  bool dispatched = false;    // render thread: the first dispatch resets the history
+  bool created = false;       // the feature was made in the background (Warmup), not by the first dispatch
+  bool bytes_asked = false;   // under Runtime::mu
+  uint64_t bytes = 0;         // the video memory Streamline reports for it (0 until asked)
 };
+
+// What the creation of the feature needs outside the frames' own objects: a command queue of its
+// own (a second direct queue Plume makes: on D3D12 a queue of its own, on Vulkan a queue of the same
+// family that Plume shares under the queue's mutex, so a submission never races a frame's), a list
+// and a fence. Made once, on the render thread (Plume's create calls are the render thread's), used
+// by the worker only, and destroyed after it has stopped.
+struct SideKit {
+  std::unique_ptr<plume::RenderCommandQueue> queue;  // first: destroyed last
+  std::unique_ptr<plume::RenderCommandList> list;
+  std::unique_ptr<plume::RenderCommandFence> fence;
+  bool usable = false;
+};
+
+// The four images of the warm-up dispatch, the sizes of the request (the render size for the colour,
+// the depth and the vectors, the output's for the output). Made on the render thread (Device::Create*),
+// handed to the worker with the request, destroyed once its list has finished on the GPU.
+struct WarmImages {
+  std::unique_ptr<plume::RenderTexture> color;
+  std::unique_ptr<plume::RenderTexture> depth;
+  std::unique_ptr<plume::RenderTexture> motion;
+  std::unique_ptr<plume::RenderTexture> output;
+};
+
+std::unique_ptr<SideKit> MakeSideKit(Device& device, std::string* why) {
+  plume::RenderDevice* plume_device = device.device();
+  if (!plume_device || device.IsLost()) {
+    *why = "there is no graphics device";
+    return {};
+  }
+  auto kit = std::make_unique<SideKit>();
+  kit->queue = plume_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
+  if (!kit->queue || backend::IsNullBacked(kit->queue.get())) {
+    *why = "Plume could not make a second queue";
+    return {};
+  }
+  kit->list = kit->queue->createCommandList();
+  kit->fence = plume_device->createCommandFence();
+  if (!kit->list || !kit->fence || !backend::NativeListHandle(kit->list.get())) {
+    *why = "Plume could not make a command list and a fence for it";
+    return {};
+  }
+  kit->usable = true;
+  return kit;
+}
+
+// The inputs of the warm-up dispatch: the images above, a still camera and no motion. The picture
+// DLSS makes of them is never looked at; what counts is that every size, format and flag is what a
+// frame's is, so the feature it makes is the one the frames use.
+TemporalInputs MakeWarmupInputs(const BackendRequest& request, const WarmImages& images) {
+  TemporalInputs in;
+  in.render_size[0] = request.render_size[0];
+  in.render_size[1] = request.render_size[1];
+  in.output_size[0] = request.output_size[0];
+  in.output_size[1] = request.output_size[1];
+  in.color = {images.color.get(), in.render_size[0], in.render_size[1], kColorFormat, kColorFlags};
+  in.depth = {images.depth.get(), in.render_size[0], in.render_size[1], kDepthFormat,
+              kDepthMotionFlags};
+  in.motion = {images.motion.get(), in.render_size[0], in.render_size[1], kMotionFormat,
+               kDepthMotionFlags};
+  in.output = {images.output.get(), in.output_size[0], in.output_size[1], kColorFormat,
+               kOutputFlags};
+  in.reset = true;
+  in.camera_aspect = float(in.output_size[0]) / float(std::max(in.output_size[1], 1u));
+  SetIdentity(in.view_to_clip);
+  SetIdentity(in.clip_to_view);
+  SetIdentity(in.clip_to_prev_clip);
+  SetIdentity(in.prev_clip_to_clip);
+  in.camera_up[1] = 1.0f;
+  in.camera_right[0] = 1.0f;
+  in.camera_forward[2] = 1.0f;
+  return in;
+}
 
 }  // namespace
 
@@ -407,32 +522,49 @@ struct DlssBackend::Impl {
   std::string gpu_name;
   bool probe_started = false;
 
+  // ---- render thread only
+  bool kit_tried = false;       // the side kit was asked for (made or not)
+  uint64_t dispatches = 0;
+
   // ---- shared (under `mu`)
   mutable std::mutex mu;
+  std::condition_variable cv;
   std::thread worker;
+  bool stop = false;
   BackendStatus status;
   bool probed = false;          // the answer the menu reads is final
   bool needs_setup = false;     // an RTX card whose DLSS files are missing or unusable
   bool after_restart = false;   // Vulkan: it runs from a start with DLSS chosen
   bool init_done = false;       // the start-up (load, slInit, device, support) succeeded
+  bool want = false;            // a context for `want_request` is wanted
+  BackendRequest want_request;
+  std::unique_ptr<WarmImages> want_images;  // for `want_request`, null when they could not be made
   std::shared_ptr<Context> ctx; // the ready context
-
-  // ---- render thread only
-  uint32_t frame_counter = 0;   // Streamline's frame index: its own count, always rising
-  uint64_t dispatches = 0;
+  std::vector<std::shared_ptr<Context>> doomed;  // to be freed by the worker
+  std::unique_ptr<SideKit> kit;
+  std::atomic<bool> building{false};  // the worker is making a context
+  // Streamline's frame index: its own count, always rising, from any thread that evaluates.
+  std::atomic<uint32_t> frame_counter{0};
 
   void PublishLocked() {
     PublishDlssAvailability(probed, status.dlss && !status.failed, needs_setup, after_restart);
   }
   void StartWorkerLocked();
   void WorkerMain();
+  void JobLoop();
   bool StartRuntime(std::string* why, bool* files_problem);
   void PublishEarlyVerdict();
   void FailStart(const std::string& why, bool files_problem);
-  void FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why);
+  void FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why, bool render_thread);
+  std::unique_ptr<WarmImages> MakeImages(const BackendRequest& request);
   std::shared_ptr<Context> MakeContext(const BackendRequest& request, std::string* why);
+  std::shared_ptr<Context> Build(const BackendRequest& request, WarmImages* images, SideKit* side,
+                                 std::string* why);
+  bool Warmup(Context& context, WarmImages& images, SideKit& side, std::string* error);
+  std::string Evaluate(void* native_list, Context& context, const TemporalInputs& in);
   void FreeContext(const Context& context);
-  void RetireContext(std::shared_ptr<Context> context);
+  // Render thread: the contexts go to the worker once the frames that may use them have finished.
+  void RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire);
 };
 
 DlssBackend::DlssBackend() : impl_(std::make_unique<Impl>()) {}
@@ -625,6 +757,7 @@ void DlssBackend::Impl::WorkerMain() {
     PublishLocked();
   }
   REXLOG_INFO("{} ready: DLSS can run on '{}' ({})", kPrefix, gpu_name, BackendName(api));
+  JobLoop();
 }
 
 // Streamline's start-up for this device, on the worker: the module (signature checked), slInit (on
@@ -750,7 +883,8 @@ BackendStatus DlssBackend::Status() const {
   return impl_->status;
 }
 
-void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why) {
+void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why,
+                                   bool render_thread) {
   // Under `mu`. One log line; DLSS is off for the session, the context goes after the frames that
   // may use it.
   const bool first = !status.failed;
@@ -759,6 +893,8 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
   status.dlss = false;
   status.reason = why;
   status.context_bytes = 0;
+  want = false;
+  want_images.reset();
   std::shared_ptr<Context> retire = std::move(ctx);
   ctx.reset();
   PublishLocked();
@@ -766,12 +902,25 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
   if (first) {
     REXLOG_WARN("{} DLSS is off for this session: {}", kPrefix, why);
   }
-  RetireContext(std::move(retire));
+  if (retire) {
+    std::vector<std::shared_ptr<Context>> list;
+    list.push_back(std::move(retire));
+    if (render_thread) {
+      RetireOutsideLock(list);
+    } else {
+      {
+        std::lock_guard guard(mu);
+        doomed.push_back(std::move(list.front()));
+      }
+      cv.notify_all();
+    }
+  }
   lock.lock();
 }
 
 void DlssBackend::Impl::FreeContext(const Context& context) {
-  // After the frames that may use it, so no dispatch of this viewport is pending on a list.
+  // On the worker, after the frames that may use it, so no dispatch of this viewport is pending on
+  // a list.
   Runtime& rt = Rt();
   std::lock_guard lock(rt.mu);
   if (!rt.initialized || rt.shut_down || !rt.api.free_resources) {
@@ -780,19 +929,61 @@ void DlssBackend::Impl::FreeContext(const Context& context) {
   rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(context.viewport_id));
 }
 
-void DlssBackend::Impl::RetireContext(std::shared_ptr<Context> context) {
-  if (!context) {
-    return;
+void DlssBackend::Impl::RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire) {
+  // The context may be named by a list the GPU has not finished: it goes to the worker (which frees
+  // it, and may be busy for seconds with another context) once the frames recorded so far are done.
+  for (std::shared_ptr<Context>& old : retire) {
+    if (!frames) {
+      {
+        std::lock_guard lock(mu);
+        doomed.push_back(std::move(old));
+      }
+      cv.notify_all();
+      continue;
+    }
+    frames->RetireAction([this, old] {
+      {
+        std::lock_guard lock(mu);
+        doomed.push_back(old);
+      }
+      cv.notify_all();
+    });
   }
-  if (!frames) {
-    FreeContext(*context);
-    return;
-  }
-  // Run on the render thread once every frame recorded so far has finished (the renderer drains
-  // the ring before it shuts this backend down).
-  frames->RetireAction([this, context] { FreeContext(*context); });
+  retire.clear();
 }
 
+// The four images of the warm-up for this request, on the render thread. Null when there is no side
+// kit or an image cannot be made (the feature is then made by the first dispatch, as without the
+// warm-up).
+std::unique_ptr<WarmImages> DlssBackend::Impl::MakeImages(const BackendRequest& request) {
+  if (!device || !kit || !kit->usable || device->IsLost()) {
+    return nullptr;
+  }
+  auto images = std::make_unique<WarmImages>();
+  const uint32_t rw = request.render_size[0];
+  const uint32_t rh = request.render_size[1];
+  const uint32_t ow = request.output_size[0];
+  const uint32_t oh = request.output_size[1];
+  images->color = device->CreateTexture(
+      plume::RenderTextureDesc::Texture2D(rw, rh, 1, kColorFormat, kColorFlags), "dlss warm-up color");
+  images->depth = device->CreateTexture(
+      plume::RenderTextureDesc::Texture2D(rw, rh, 1, kDepthFormat, kDepthMotionFlags),
+      "dlss warm-up depth");
+  images->motion = device->CreateTexture(
+      plume::RenderTextureDesc::Texture2D(rw, rh, 1, kMotionFormat, kDepthMotionFlags),
+      "dlss warm-up vectors");
+  images->output = device->CreateTexture(
+      plume::RenderTextureDesc::Texture2D(ow, oh, 1, kColorFormat, kOutputFlags),
+      "dlss warm-up output");
+  if (!images->color || !images->depth || !images->motion || !images->output) {
+    return nullptr;
+  }
+  return images;
+}
+
+// The fast part of a context, on the worker: the options of its viewport (mode, output size) and the
+// check that the scene's size is one DLSS takes. The feature itself is made by Build's warm-up, or
+// failing that by the first dispatch.
 std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& request,
                                                         std::string* why) {
   Runtime& rt = Rt();
@@ -813,8 +1004,8 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
   options.useAutoExposure = sl::Boolean::eTrue;
   options.alphaUpscalingEnabled = sl::Boolean::eFalse;
 
-  // CHECK: the meaning of renderWidthMin/Max: read as DLSS's dynamic resolution range; when the
-  // runtime reports none (0) the scene must be within two pixels of the optimal size.
+  // The renderWidthMin/Max range is DLSS's dynamic resolution range (measured on an RTX 5080: 1267x713
+  // to 1280x720 for DLAA at 1280x720, 640x360 to 1280x720 for Quality).
   // The size DLSS wants for this mode and output. The scene was drawn at the start's size (the
   // vendor's ratio over the render scale: temporal_backend.cpp kDlssModes), which can differ from
   // it by a few pixels, or by a mode picked since from another vendor's list: anything in DLSS's
@@ -851,7 +1042,7 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
     return {};
   }
   REXLOG_INFO("{} context for {} at {}x{} to {}x{} (viewport {}): DLSS asks for {}x{} (range {}x{} to "
-              "{}x{}); the feature itself is made at its first dispatch",
+              "{}x{})",
               kPrefix, ModeInfoOf(Upscaler::kDlss, request.mode).name, rw, rh,
               request.output_size[0], request.output_size[1], context->viewport_id,
               optimal.optimalRenderWidth, optimal.optimalRenderHeight, optimal.renderWidthMin,
@@ -859,11 +1050,148 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
   return context;
 }
 
+// A context for `request`, on the worker: the options (MakeContext) and then the feature itself.
+// DLSS builds its network inside the first slEvaluateFeature of a viewport (NGX CreateFeature: 8.2 s
+// on an RTX 5080, on whichever thread it is called), so that first evaluation is made here, on the
+// worker, with a command list, queue and fence of its own and images of the right sizes
+// (Warmup), while the render thread goes on with plain frames. The viewport then has its feature
+// and the first evaluation of a frame is as fast as the later ones. If the warm-up cannot be made
+// (no side kit or images, or it fails) the context is returned anyway and the first frame makes the
+// feature, with the pause the warm-up was there to avoid.
+std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
+                                                  WarmImages* images, SideKit* side,
+                                                  std::string* why) {
+  std::shared_ptr<Context> context = MakeContext(request, why);
+  if (!context) {
+    return {};
+  }
+  if (!images || !side || !side->usable) {
+    REXLOG_WARN("{} the feature is not made in the background (the objects for it could not be "
+                "made): the first frame makes it, which pauses the game for several seconds",
+                kPrefix);
+    return context;
+  }
+  const auto started = std::chrono::steady_clock::now();
+  std::string error;
+  if (!Warmup(*context, *images, *side, &error)) {
+    REXLOG_WARN("{} the feature could not be made in the background ({}): the first frame makes it "
+                "instead, which pauses the game for several seconds",
+                kPrefix, error);
+    return context;
+  }
+  context->created = true;
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - started)
+                      .count();
+  REXLOG_INFO("{} the feature for {} at {}x{} to {}x{} (viewport {}) was made in the background in "
+              "{} ms (about {} MB): the game went on meanwhile",
+              kPrefix, ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0],
+              request.render_size[1], request.output_size[0], request.output_size[1],
+              context->viewport_id, ms, context->bytes >> 20);
+  return context;
+}
+
+// One evaluation of the context's viewport on the side queue, on the worker: the first one makes the
+// feature. Outside the frames' lists and queue and on images no frame uses, so nothing it does can
+// touch a frame.
+// CHECK: that Streamline's evaluation and NGX's CreateFeature are free of thread affinity (both are
+// documented as "not thread safe", which Runtime::mu answers, not as bound to a thread), that a
+// feature made on one queue works from the main queue after the fence wait here (the D3D12 debug
+// layer and Vulkan validation over the first start), and that the dispatch over images nobody
+// filled (their contents are whatever the allocator gave) does no harm; the camera it is told is a
+// still identity one.
+bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& side,
+                               std::string* error) {
+  const TemporalInputs in = MakeWarmupInputs(context.request, images);
+  plume::RenderCommandList* list = side.list.get();
+  list->begin();
+  void* native_list = backend::NativeListHandle(list);
+  if (!native_list) {
+    list->end();
+    *error = "the side command list has no native object";
+    return false;
+  }
+  // The same states a frame's dispatch has the images in (temporal.cpp RecordUpscale).
+  namespace Stage = plume::RenderBarrierStage;
+  plume::RenderTextureBarrier to_read[3] = {
+      plume::RenderTextureBarrier(images.color.get(), plume::RenderTextureLayout::SHADER_READ),
+      plume::RenderTextureBarrier(images.depth.get(), plume::RenderTextureLayout::SHADER_READ),
+      plume::RenderTextureBarrier(images.motion.get(), plume::RenderTextureLayout::SHADER_READ)};
+  list->barriers(Stage::COMPUTE, to_read, 3);
+  list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(images.output.get(),
+                                                              plume::RenderTextureLayout::GENERAL));
+  *error = Evaluate(native_list, context, in);
+  backend::InvalidateAfterExternalWork(list);
+  list->end();
+  if (!error->empty()) {
+    return false;
+  }
+  side.queue->executeCommandLists(list, side.fence.get());
+  side.queue->waitForCommandFence(side.fence.get());
+  return true;
+}
+
+// The worker after the start-up: makes the context that is wanted, frees the contexts that are
+// done with. Streamline calls that take seconds (the creation of a feature) happen here and
+// nowhere else, with no lock but Runtime::mu held, which only this thread and a frame's own
+// dispatch of a ready context ever take.
+void DlssBackend::Impl::JobLoop() {
+  std::unique_lock lock(mu);
+  for (;;) {
+    cv.wait(lock, [this] { return stop || !doomed.empty() || (want && !ctx && !status.failed); });
+    if (stop) {
+      break;
+    }
+    if (!doomed.empty()) {
+      std::vector<std::shared_ptr<Context>> list = std::move(doomed);
+      doomed.clear();
+      lock.unlock();
+      for (const std::shared_ptr<Context>& old : list) {
+        FreeContext(*old);
+      }
+      list.clear();
+      lock.lock();
+      continue;
+    }
+    if (want && !ctx && !status.failed) {
+      const BackendRequest request = want_request;
+      std::unique_ptr<WarmImages> images = std::move(want_images);
+      SideKit* side = kit.get();
+      building = true;
+      lock.unlock();
+      std::string why;
+      std::shared_ptr<Context> made = Build(request, images.get(), side, &why);
+      images.reset();  // Build waited for the side queue: the GPU is done with them
+      lock.lock();
+      building = false;
+      if (!made) {
+        FailLocked(lock, "its context could not be made: " + why, /*render_thread=*/false);
+      } else if (want && want_request == request && !ctx && !status.failed && !stop) {
+        status.context_bytes = made->bytes;
+        ctx = std::move(made);
+      } else {
+        // The request moved on (or DLSS failed, or the game is closing) while it was made: it goes.
+        doomed.push_back(std::move(made));
+      }
+    }
+  }
+  // Shutdown: what is left (the GPU is idle, the renderer drained its frames).
+  std::vector<std::shared_ptr<Context>> left = std::move(doomed);
+  doomed.clear();
+  if (ctx) {
+    left.push_back(std::move(ctx));
+    ctx.reset();
+  }
+  lock.unlock();
+  for (const std::shared_ptr<Context>& old : left) {
+    FreeContext(*old);
+  }
+}
+
 void DlssBackend::Request(const BackendRequest& request) {
   Impl& i = *impl_;
-  std::shared_ptr<Context> retire;
   {
-    std::unique_lock lock(i.mu);
+    std::lock_guard lock(i.mu);
     if (i.status.failed || i.status.state != BackendState::kAvailable) {
       return;
     }
@@ -873,25 +1201,40 @@ void DlssBackend::Request(const BackendRequest& request) {
       i.StartWorkerLocked();
       return;
     }
-    if (i.ctx && i.ctx->request == request) {
+    if (i.want && i.want_request == request) {
       return;
     }
-    if (i.ctx) {
-      retire = std::move(i.ctx);
+  }
+  // A new request. The side queue, list and fence once, the images of the warm-up for these sizes:
+  // made here, on the render thread (Plume's create calls are its own), before the worker is told.
+  if (!i.kit_tried) {
+    i.kit_tried = true;
+    std::string why;
+    std::unique_ptr<SideKit> made = MakeSideKit(*i.device, &why);
+    if (!made) {
+      REXLOG_WARN("{} no background creation of the feature: {}", kPrefix, why);
+    }
+    std::lock_guard lock(i.mu);
+    i.kit = std::move(made);
+  }
+  std::unique_ptr<WarmImages> images = i.MakeImages(request);
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.stop) {
+      return;
+    }
+    if (i.ctx && !(i.ctx->request == request)) {
+      retire.push_back(std::move(i.ctx));
       i.ctx.reset();
       i.status.context_bytes = 0;
     }
-    lock.unlock();
-    std::string why;
-    std::shared_ptr<Context> made = i.MakeContext(request, &why);
-    lock.lock();
-    if (!made) {
-      i.FailLocked(lock, "its context could not be made: " + why);
-    } else if (!i.status.failed) {
-      i.ctx = std::move(made);
-    }
+    i.want = true;
+    i.want_request = request;
+    i.want_images = std::move(images);
   }
-  i.RetireContext(std::move(retire));
+  i.cv.notify_all();
+  i.RetireOutsideLock(retire);
 }
 
 bool DlssBackend::Ready(const BackendRequest& request) const {
@@ -902,40 +1245,32 @@ bool DlssBackend::Ready(const BackendRequest& request) const {
 
 void DlssBackend::Release() {
   Impl& i = *impl_;
-  std::shared_ptr<Context> retire;
+  std::vector<std::shared_ptr<Context>> retire;
   {
     std::lock_guard lock(i.mu);
-    retire = std::move(i.ctx);
-    i.ctx.reset();
+    i.want = false;
+    i.want_images.reset();
+    if (i.ctx) {
+      retire.push_back(std::move(i.ctx));
+      i.ctx.reset();
+    }
     i.status.context_bytes = 0;
   }
-  i.RetireContext(std::move(retire));
+  i.RetireOutsideLock(retire);
 }
 
 void DlssBackend::Fail(const std::string& why) {
   Impl& i = *impl_;
   std::unique_lock lock(i.mu);
-  i.FailLocked(lock, why);
+  i.FailLocked(lock, why, /*render_thread=*/true);
 }
 
-bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& in) {
-  Impl& i = *impl_;
-  std::shared_ptr<Context> context;
-  {
-    std::lock_guard lock(i.mu);
-    context = i.ctx;
-  }
-  const auto fail = [this](const std::string& why) {
-    Fail(why);
-    return false;
-  };
-  if (!context) {
-    return fail("a dispatch was asked for with no context");
-  }
-  void* native_list = backend::NativeListHandle(list);
-  if (!native_list) {
-    return fail("the command list has no native object");
-  }
+// One evaluation of `context`'s viewport recorded into `native_list`, on the render thread (a frame's
+// dispatch) or the worker (Warmup): the frame token, the constants, and slEvaluateFeature with the
+// four images as local tags. Streamline's lock is taken here. Empty when it was recorded, otherwise
+// why not.
+std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
+                                        const TemporalInputs& in) {
   const backend::NativeImage color_native =
       backend::NativeImageOf(in.color.texture, backend::ImageUse::kComputeRead);
   const backend::NativeImage depth_native =
@@ -946,7 +1281,7 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
       backend::NativeImageOf(in.output.texture, backend::ImageUse::kStorage);
   if (!color_native.complete || !depth_native.complete || !motion_native.complete ||
       !output_native.complete) {
-    return fail("an input image has no native object, or Plume cannot describe it to Streamline");
+    return "an input image has no native object, or Plume cannot describe it to Streamline";
   }
 
   // The images and their tags, local to this evaluation (no global tags, so no frame-based tagging
@@ -970,8 +1305,9 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
                              &output_extent);
 
   // The constants (row-major matrices of row vectors without the jitter, as the game's own are).
-  const bool reset = in.reset || !context->dispatched;
+  const bool reset = in.reset || !context.dispatched;
   sl::Constants consts;
+  FillStaticConstants(consts);
   consts.cameraViewToClip = ToSl(in.view_to_clip);
   consts.clipToCameraView = ToSl(in.clip_to_view);
   consts.clipToPrevClip = ToSl(in.clip_to_prev_clip);
@@ -985,7 +1321,6 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   // direction or the scale is the first suspect.
   consts.mvecScale = sl::float2(in.motion_scale[0] / float(in.render_size[0]),
                                 in.motion_scale[1] / float(in.render_size[1]));
-  consts.cameraPinholeOffset = sl::float2(0.0f, 0.0f);  // the camera has none (not left invalid)
   consts.cameraPos = sl::float3(in.camera_position[0], in.camera_position[1], in.camera_position[2]);
   consts.cameraUp = sl::float3(in.camera_up[0], in.camera_up[1], in.camera_up[2]);
   consts.cameraRight = sl::float3(in.camera_right[0], in.camera_right[1], in.camera_right[2]);
@@ -994,56 +1329,74 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   consts.cameraFar = in.camera_far;
   consts.cameraFOV = in.camera_fov_y;
   consts.cameraAspectRatio = in.camera_aspect;
-  consts.depthInverted = sl::Boolean::eTrue;           // the game stores 1 near, 0 far
-  consts.cameraMotionIncluded = sl::Boolean::eTrue;    // the vectors are the camera's motion
-  consts.motionVectors3D = sl::Boolean::eFalse;
   consts.reset = reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-  consts.orthographicProjection = sl::Boolean::eFalse;
-  consts.motionVectorsDilated = sl::Boolean::eFalse;
-  consts.motionVectorsJittered = sl::Boolean::eFalse;  // the jitter is taken out of them
 
-  std::string error;
-  uint64_t estimated_bytes = 0;
-  {
-    Runtime& rt = Rt();
-    std::lock_guard sl_lock(rt.mu);
-    if (!rt.initialized || rt.shut_down) {
-      error = "Streamline is not running";
-    } else {
-      sl::FrameToken* token = nullptr;
-      uint32_t frame_index = ++i.frame_counter;
-      sl::Result result = rt.api.new_frame_token(token, &frame_index);
-      if (result != sl::Result::eOk || !token) {
-        error = "slGetNewFrameToken failed: " + ResultText(result);
-      } else {
-        const sl::ViewportHandle viewport(context->viewport_id);
-        result = rt.api.set_constants(consts, *token, viewport);
-        if (result != sl::Result::eOk) {
-          error = "slSetConstants failed: " + ResultText(result);
-        } else {
-          const sl::BaseStructure* inputs[] = {&viewport, &color_tag, &depth_tag, &motion_tag,
-                                               &output_tag};
-          result = rt.api.evaluate(sl::kFeatureDLSS, *token, inputs, uint32_t(std::size(inputs)),
-                                   native_list);
-          if (result != sl::Result::eOk) {
-            error = "slEvaluateFeature failed: " + ResultText(result);
-          } else if (!context->dispatched && rt.api.dlss_state) {
-            sl::DLSSState state;
-            if (rt.api.dlss_state(viewport, state) == sl::Result::eOk) {
-              estimated_bytes = state.estimatedVRAMUsageInBytes;
-            }
-          }
-        }
-      }
+  Runtime& rt = Rt();
+  std::lock_guard sl_lock(rt.mu);
+  if (!rt.initialized || rt.shut_down) {
+    return "Streamline is not running";
+  }
+  sl::FrameToken* token = nullptr;
+  uint32_t frame_index = ++frame_counter;
+  sl::Result result = rt.api.new_frame_token(token, &frame_index);
+  if (result != sl::Result::eOk || !token) {
+    return "slGetNewFrameToken failed: " + ResultText(result);
+  }
+  const sl::ViewportHandle viewport(context.viewport_id);
+  result = rt.api.set_constants(consts, *token, viewport);
+  if (result != sl::Result::eOk) {
+    return "slSetConstants failed: " + ResultText(result);
+  }
+  const sl::BaseStructure* inputs[] = {&viewport, &color_tag, &depth_tag, &motion_tag, &output_tag};
+  result = rt.api.evaluate(sl::kFeatureDLSS, *token, inputs, uint32_t(std::size(inputs)),
+                           native_list);
+  if (result != sl::Result::eOk) {
+    return "slEvaluateFeature failed: " + ResultText(result);
+  }
+  if (!context.bytes_asked && rt.api.dlss_state) {
+    context.bytes_asked = true;
+    sl::DLSSState state;
+    if (rt.api.dlss_state(viewport, state) == sl::Result::eOk) {
+      context.bytes = state.estimatedVRAMUsageInBytes;
     }
   }
+  return {};
+}
+
+bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& in) {
+  Impl& i = *impl_;
+  std::shared_ptr<Context> context;
+  {
+    std::lock_guard lock(i.mu);
+    context = i.ctx;
+  }
+  const auto fail = [this](const std::string& why) {
+    Fail(why);
+    return false;
+  };
+  if (!context) {
+    return fail("a dispatch was asked for with no context");
+  }
+  void* native_list = backend::NativeListHandle(list);
+  if (!native_list) {
+    return fail("the command list has no native object");
+  }
+  if (!context->created && !context->dispatched) {
+    REXLOG_INFO("{} the feature was not made in the background: this first dispatch makes it, which "
+                "pauses the game for several seconds",
+                kPrefix);
+  }
+  const bool reset = in.reset || !context->dispatched;
+  const std::string error = i.Evaluate(native_list, *context, in);
   if (!error.empty()) {
     return fail(error);
   }
   if (!context->dispatched) {
     context->dispatched = true;
-    std::lock_guard lock(i.mu);
-    i.status.context_bytes = estimated_bytes;
+    if (context->bytes != 0) {
+      std::lock_guard lock(i.mu);
+      i.status.context_bytes = context->bytes;
+    }
   }
   if (i.dispatches++ == 0) {
     REXLOG_INFO("{} first dispatch recorded: {}x{} to {}x{}, jitter {:+.3f}, {:+.3f}, near {:.3f}, "
@@ -1051,22 +1404,39 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
                 kPrefix, in.render_size[0], in.render_size[1], in.output_size[0], in.output_size[1],
                 in.jitter[0], in.jitter[1], in.camera_near, in.camera_far,
                 double(in.camera_fov_y) * 57.29577951308232, reset ? "yes" : "no",
-                estimated_bytes >> 20);
+                context->bytes >> 20);
   }
   return true;
 }
 
 void DlssBackend::Shutdown() {
   Impl& i = *impl_;
-  // The start-up on the worker is short; the device is still alive, so wait for it.
-  if (i.worker.joinable()) {
-    i.worker.join();
-  }
-  std::shared_ptr<Context> last;
   {
     std::lock_guard lock(i.mu);
-    last = std::move(i.ctx);
-    i.ctx.reset();
+    i.stop = true;
+    i.want = false;
+    i.want_images.reset();
+  }
+  i.cv.notify_all();
+  if (i.worker.joinable()) {
+    // The worker cannot be interrupted inside Streamline: a start-up or a creation in progress
+    // finishes first (the device is still alive, so it is safe), up to the seconds it takes.
+    if (i.building.load()) {
+      REXLOG_INFO("{} waiting for the feature that is being made in the background before shutting "
+                  "down",
+                  kPrefix);
+    }
+    i.worker.join();
+  }
+  std::vector<std::shared_ptr<Context>> left;
+  {
+    std::lock_guard lock(i.mu);
+    left = std::move(i.doomed);
+    i.doomed.clear();
+    if (i.ctx) {
+      left.push_back(std::move(i.ctx));
+      i.ctx.reset();
+    }
   }
   if (i.probe_started) {
     // The GPU is idle (the renderer drained its frames): the resources go, then Streamline, before
@@ -1075,13 +1445,19 @@ void DlssBackend::Shutdown() {
     Runtime& rt = Rt();
     std::lock_guard lock(rt.mu);
     if (rt.initialized && !rt.shut_down) {
-      if (last) {
-        rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(last->viewport_id));
+      for (const std::shared_ptr<Context>& old : left) {
+        rt.api.free_resources(sl::kFeatureDLSS, sl::ViewportHandle(old->viewport_id));
       }
       rt.api.shutdown();
       rt.initialized = false;
       rt.shut_down = true;
     }
+  }
+  left.clear();
+  {
+    // The side queue, list and fence go before the device does (the worker is gone).
+    std::lock_guard lock(i.mu);
+    i.kit.reset();
   }
   i.frames = nullptr;
   i.probe_started = false;

@@ -40,8 +40,29 @@
 // presets, HDR colour, automatic exposure) are set when a context is made.
 //
 // Threads: see temporal_backend.h. Every Streamline call is serialised by one mutex (its API is
-// not thread safe); the worker makes the one-time start-up (load, slInit, device, support query)
-// and Request() makes a context (slDLSSGetOptimalSettings, slDLSSSetOptions) inline.
+// not thread safe). The worker makes everything that can take seconds, and the render thread never
+// waits for it:
+//   - the one-time start-up (load, signature check, slInit, device, support query: 2 s to over 10 s
+//     on a cold start). The start decision does not wait for the end of it: once the files are in
+//     place and signed, an RTX card counts as able to run DLSS (PublishEarlyVerdict); if the rest
+//     fails, the log says so and what the player then sees (FailStart).
+//   - every context (JobLoop, Build). DLSS makes its feature (NGX builds the network, 8.2 s on an
+//     RTX 5080) inside the first slEvaluateFeature of a viewport, so Build makes that first
+//     evaluation itself, once, on a command list, queue and fence of its own (SideKit: a second
+//     direct queue made through Plume, so on Vulkan a submission shares a VkQueue only under
+//     Plume's own queue mutex) over four images of the request's sizes (WarmImages, made by
+//     Request() on the render thread), and waits for the fence. Request() only records what is
+//     wanted; Ready() is false until the worker has published the context, and the frames in
+//     between are plain, as for FSR's context. A request that changes while the worker is inside
+//     Streamline is not cancelled (nothing can interrupt it): the context it makes is freed when it
+//     is done, and the new one is made next. Freeing a context (slFreeResources) is also the
+//     worker's, after the frames that may use it (FrameRing::RetireAction). Shutdown() waits for
+//     the worker, so a game closed in the first seconds of a creation waits for the rest of it.
+//   - without a side kit or warm-up images (or if the warm-up fails) the context is published
+//     anyway and the first dispatch makes the feature on the render thread, with the pause.
+//
+// Streamline's log: every line goes to sl.log in the logs folder (InitLocked); only its warnings
+// and errors reach the game's log.
 // ===========================================================================
 
 #include <memory>
