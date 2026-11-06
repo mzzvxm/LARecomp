@@ -19,6 +19,11 @@
 //
 // The set of rows depends only on what the probe found, which is final a moment after start, so it
 // does not change under an open menu.
+//
+// The AA rows of the NATIVE renderer follow the upscaler too: NATIVE AA (FXAA, SMAA) and MSAA are
+// grey and say "(HANDLED BY FSR 3.1)" while one is active. MSAA is a start-up switch of the game:
+// when the upscaler was turned on after a start with MSAA the row says "(FSR 3.1 AFTER RESTART)"
+// instead, and with the upscaler off it keeps its own "(RESTART)".
 
 #include "menu_items.h"
 
@@ -29,7 +34,10 @@ const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
 namespace mcla_menu {
 
 // The NATIVE AA row's dynamics: grey, "(HANDLED BY FSR 3.1)", while an upscaler is chosen and can
-// run (FXAA and SMAA are held off then; MSAA is its own row).
+// run (FXAA and SMAA are held off then).
 extern const RowDynamics kNativeAaDynamics;
+// The MSAA row's: grey while an upscaler is chosen and can run; the suffix says whether the game
+// already runs without MSAA for it or does from the next start.
+extern const RowDynamics kMsaaDynamics;
 
 }  // namespace mcla_menu

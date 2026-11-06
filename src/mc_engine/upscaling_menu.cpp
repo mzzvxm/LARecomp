@@ -53,6 +53,19 @@ const char* HandledSuffix() {
 }
 bool AaFree() { return Active() == Upscaler::kOff; }
 
+// The MSAA row. MSAA is a start-up switch of the game (gpu.h GuestMsaa): a game started with the
+// upscaler on runs without it ("handled by"), one started with MSAA keeps it until the next start,
+// which runs without it. With no upscaler the row is the player's own choice, which applies at the
+// next start (as it always did).
+const char* MsaaSuffix() {
+    const bool running = mcla::gpu::GetGuestMsaa() == mcla::gpu::GuestMsaa::kOn;
+    switch (Active()) {
+    case Upscaler::kFsr31: return running ? " (FSR 3.1 AFTER RESTART)" : " (HANDLED BY FSR 3.1)";
+    case Upscaler::kFsr4:  return running ? " (FSR 4 AFTER RESTART)"   : " (HANDLED BY FSR 4)";
+    default:               return " (RESTART)";
+    }
+}
+
 // What the vendors call the only mode of this step, and its share of the output.
 const char* const kModeVals[]  = {"native_aa"};
 const char* const kModeNames[] = {"NATIVE AA (100%)"};
@@ -133,8 +146,10 @@ namespace mcla_menu {
 
 #if defined(LARECOMP_HAS_GPU)
 extern const RowDynamics kNativeAaDynamics = {.enabled = AaFree, .suffix = HandledSuffix};
+extern const RowDynamics kMsaaDynamics = {.enabled = AaFree, .suffix = MsaaSuffix};
 #else
 extern const RowDynamics kNativeAaDynamics = {};
+extern const RowDynamics kMsaaDynamics = {};
 #endif
 
 }  // namespace mcla_menu

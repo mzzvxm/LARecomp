@@ -1406,8 +1406,9 @@ const ItemDef kVideoItems[] = {
     XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
     // NATIVE: OFF is the game's own switch, 2X the console's, 4X more samples on
     // the host for the images of the screen the game multisamples (M6d.2).
-    NativeOnly(Str("PM_RxGpuMsaa", "mcla_gpu_msaa", "MSAA: ",
-                   kGpuMsaaVals, kGpuMsaaNames, 4, " (RESTART)")),
+    NativeOnly(WithDynamics(Str("PM_RxGpuMsaa", "mcla_gpu_msaa", "MSAA: ",
+                                kGpuMsaaVals, kGpuMsaaNames, 4, " (RESTART)"),
+                            &mcla_menu::kMsaaDynamics)),
 #else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
