@@ -62,6 +62,7 @@
 #include "host_passes.h"
 #include "layout.h"
 #include "memory_census.h"
+#include "occlusion.h"
 #include "overlay.h"
 #include "pass_timing.h"
 #include "perf_markers.h"
@@ -184,6 +185,7 @@ class Renderer final : public RenderThread::Executor {
   UploadRing upload_;
   GeometryCache geometry_;  // reads guest memory through guest_memory_
   EdramTargets edram_;
+  GuestOcclusion occlusion_;  // render thread; the guest's occlusion queries (occlusion.h)
   HostPasses passes_;       // layout and vertex shader of the full-screen passes
   ResolveMemory resolve_memory_;  // what resolves write, as guest bytes
   ResolveCache resolve_;    // resolve products (owns their textures and views)

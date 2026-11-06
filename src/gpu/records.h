@@ -6,7 +6,8 @@
 // rendering, and the present. Each carries the device state its event
 // consumed, copied at the moment it was valid. Plus the guest's GPU fences
 // (24.20), which the render thread retires as it executes, the CPU locks of
-// resolve destinations (24.32) and the end of the scene's composition (24.47).
+// resolve destinations (24.32), the end of the scene's composition (24.47) and
+// the begin and end of the guest's occlusion queries.
 //
 // Conventions:
 //  - Blocks copied out of guest memory (register and fetch windows, constant
@@ -45,6 +46,7 @@ enum class RecordType : uint8_t {
   kFence,
   kLock,
   kComposite,
+  kOcclusion,
   kCount,  // number of types; not a record
 };
 
@@ -357,6 +359,19 @@ struct CompositeRecord {
   uint32_t reserved = 0;
 };
 
+// --- occlusion ---------------------------------------------------------------------
+
+// The begin or the end of a guest occlusion query: D3DQuery::Issue's sample count
+// event (sub_824302F0), which the console turns into an EVENT_WRITE_ZPD that writes
+// the GPU's counters to the query's record. The draws between the two are counted
+// by the render thread (occlusion.h). Batched, in order with the draws around it.
+struct OcclusionRecord {
+  uint32_t query = 0;  // the guest's D3DQuery object: the key of its use
+  uint32_t use = 0;    // the use the guest hook numbered at the begin (occlusion.h)
+  uint32_t end = 0;    // 0: begin, 1: end
+  uint32_t reserved = 0;
+};
+
 static_assert(std::is_trivially_copyable_v<ClearRecord>);
 static_assert(std::is_trivially_copyable_v<ResolveRecord>);
 static_assert(std::is_trivially_copyable_v<TilingBeginRecord>);
@@ -365,6 +380,7 @@ static_assert(std::is_trivially_copyable_v<PresentRecord>);
 static_assert(std::is_trivially_copyable_v<FenceRecord>);
 static_assert(std::is_trivially_copyable_v<LockRecord>);
 static_assert(std::is_trivially_copyable_v<CompositeRecord>);
+static_assert(std::is_trivially_copyable_v<OcclusionRecord>);
 
 // Raw guest reads, for decoders.
 inline uint32_t LoadBe32(const uint8_t* p) {

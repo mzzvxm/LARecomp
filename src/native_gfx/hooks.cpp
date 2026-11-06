@@ -50,6 +50,9 @@
 //   sub_82425C18  the "GPU is hung" detector (reports instead of trapping)
 //   sub_8260EFD0  the end of the post chain: the scene is composed when it
 //                 returns, before anything copies it (M6c)
+//   sub_824302F0  D3DQuery::Issue's sample count event (begin or end of an occlusion
+//                 query; the sun's glare), sub_8241E088 D3DQuery::GetData: the
+//                 query's count is made by the host (src/gpu/occlusion.h)
 // ===========================================================================
 
 #include <chrono>
@@ -110,6 +113,8 @@ REX_EXTERN(__imp__rex_sub_82411CD0);
 REX_EXTERN(__imp__rex_sub_82425C18);
 REX_EXTERN(__imp__D3DDevice_BlockOnFence);
 REX_EXTERN(__imp__rex_sub_8260EFD0);
+REX_EXTERN(__imp__rex_sub_824302F0);
+REX_EXTERN(__imp__rex_sub_8241E088);
 #endif
 REX_EXTERN(__imp__D3DDevice_CreateTexture);
 REX_EXTERN(__imp__grcTextureXenon_dtor);
@@ -397,6 +402,36 @@ extern "C" REX_FUNC(rex_sub_82425C18) {
     return;
   }
   __imp__rex_sub_82425C18(ctx, base);
+}
+
+// The sample count event of an occlusion query -- sub_824302F0(device, query,
+// is_begin), called only by D3DQuery::Issue (sub_8241DE08) for a query of type 9,
+// and the only function that emits an EVENT_WRITE_ZPD. With no command processor
+// nothing runs that packet, so no count was ever written to the query's record and the
+// game's read of it (the sun's glare: how many samples of the sun pass the depth test)
+// said "not finished" for ever. Before the original, which reads nothing this writes:
+// for the Plume renderer the hook zeroes the begin snapshots, or stores the sentinel in
+// the end snapshot, and queues the begin or end record that makes the host count the draws
+// between them. Pass-through otherwise.
+extern "C" REX_FUNC(rex_sub_824302F0) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_824302F0");
+  if (mcla::gpu::Enabled()) {
+    mcla::gpu::OnGuestOcclusionEvent(base, ctx.r4.u32, ctx.r5.u32 != 0);
+  }
+  __imp__rex_sub_824302F0(ctx, base);
+}
+
+// D3DQuery::GetData(query, data, size) -- sub_8241E088, for the game's read of the sun's
+// query. Before the original: a count the host has delivered for this very use of the
+// query is written to its record, where the original finds it (it reads the records, and
+// says "not finished" while the end snapshot holds the sentinel). Guest thread, so no
+// other thread writes the guest's memory; see src/gpu/occlusion.h.
+extern "C" REX_FUNC(rex_sub_8241E088) {
+  mcla::native_gfx::nocp::NoteHook("rex_sub_8241E088");
+  if (mcla::gpu::Enabled()) {
+    mcla::gpu::OnGuestQueryGetData(base, ctx.r3.u32);
+  }
+  __imp__rex_sub_8241E088(ctx, base);
 }
 #endif
 

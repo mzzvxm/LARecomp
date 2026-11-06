@@ -33,6 +33,7 @@ add_library(larecomp_gpu OBJECT
     layout.cpp
     memory_census.cpp
     native_window.cpp
+    occlusion.cpp
     overlay.cpp
     pass_timing.cpp
     perf_markers.cpp
