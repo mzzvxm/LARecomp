@@ -9,6 +9,7 @@
 #include "backend_impl.h"
 
 #include <algorithm>
+#include <cstring>
 #include <format>
 #include <string>
 #include <vector>
@@ -420,6 +421,11 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   const auto* dev = static_cast<const plume::D3D12Device*>(device);
   if (dev) {
     out.device = dev->d3d;
+    if (dev->d3d) {
+      static_assert(sizeof(LUID) == sizeof(uint64_t));
+      const LUID luid = dev->d3d->GetAdapterLuid();
+      std::memcpy(&out.adapter_luid, &luid, sizeof(luid));
+    }
   }
   return out;
 }
@@ -432,6 +438,23 @@ void* NativeListHandle(plume::RenderCommandList* list) {
 void* NativeTextureHandle(const plume::RenderTexture* texture) {
   const auto* t = static_cast<const plume::D3D12Texture*>(texture);
   return t ? t->d3d : nullptr;
+}
+
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
+  NativeImage out;
+  const auto* t = static_cast<const plume::D3D12Texture*>(texture);
+  if (!t || !t->d3d) {
+    return out;
+  }
+  out.resource = t->d3d;
+  // The states Plume leaves a texture in for these layouts (toTextureState): shader read at the
+  // compute stage is NON_PIXEL_SHADER_RESOURCE, general with the storage flag UNORDERED_ACCESS.
+  out.state = use == ImageUse::kStorage ? uint32_t(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                                        : uint32_t(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  out.mip_levels = t->desc.mipLevels ? t->desc.mipLevels : 1;
+  out.array_layers = t->desc.arraySize ? t->desc.arraySize : 1;
+  out.complete = true;
+  return out;
 }
 
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {

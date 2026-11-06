@@ -1,0 +1,98 @@
+#pragma once
+// ===========================================================================
+// MCLA GPU renderer -- the DLSS Super Resolution backend (F4 step 6, F4-DESIGN.md sections 7, 14, 15)
+// ===========================================================================
+// NVIDIA DLSS Super Resolution, and DLAA at ratio 1, through NVIDIA Streamline (the SDK's
+// sl.interposer.dll, sl.common.dll, sl.dlss.dll and nvngx_dlss.dll). Compiled only when CMake found
+// the Streamline headers (LARECOMP_HAS_DLSS, cmake/FetchStreamline.cmake: fetched into the build
+// folder and checked against their SHA-256, never committed); otherwise MakeDlssBackend() returns
+// null and nothing of it exists. Windows only.
+//
+// Nothing is linked. sl.interposer.dll is opened at run time by its FULL PATH in the folder of the
+// exe (LoadLibraryExW with the DLL's own folder and the system folder as the only places its
+// dependencies are looked for) after Streamline's own signature check
+// (sl::security::verifyEmbeddedSignature: WinVerifyTrust, and the signer's key against NVIDIA's) of
+// the three sl.*.dll files, and its functions are taken with GetProcAddress, so both toolchains
+// (Clang for MSVC and llvm-mingw) build it without an import library. Production DLLs only.
+//
+// How Streamline is hooked in (the choice that keeps FSR and the game without DLSS untouched):
+//
+//   D3D12   Super Resolution needs none of Streamline's proxies (no swap chain, queue or device
+//           wrapper): the manual hooking guide (docs/ProgrammingGuideManualHooking.md, "slSetD3DDevice":
+//           "When using D3D simply create your device and call slSetD3DDevice") gives the
+//           interposer the native device and nothing else. slInit with eUseManualHooking runs after
+//           the device exists, on the probe's worker thread, and only when DLSS is the saved choice
+//           (or at its first use, when it is chosen from the pause menu). Plume is not touched.
+//   Vulkan  The instance and the device have to be made with the extensions, features and queues
+//           Streamline asks for, so on Vulkan it starts BEFORE the device (Device::Open ->
+//           dlss::BeforeDevice), only when DLSS is the saved choice at the start and the GPU is an
+//           NVIDIA one, and Plume loads every Vulkan function through the interposer's
+//           vkGetInstanceProcAddr (Plume's VulkanInterfaceHooks): its vkCreateInstance and
+//           vkCreateDevice proxies add what DLSS needs, so slSetVulkanInfo is not used. A Vulkan
+//           game that was not started with DLSS chosen lists it as "after restart". If the
+//           hooked instance or device cannot be made, the game starts again without it (Device).
+//
+// Per frame (Upscale, on the render thread, inside the frame's list and outside a render pass):
+// slGetNewFrameToken, slSetConstants (matrices, jitter, vector scale, reset), then slEvaluateFeature
+// with the viewport and four local resource tags (depth, vectors, colour in, colour out) with
+// Plume's native image states; the caller then forgets the list's cached state
+// (backend.h InvalidateAfterExternalWork). The DLSS options (mode, output size, NVIDIA's default
+// presets, HDR colour, automatic exposure) are set when a context is made.
+//
+// Threads: see temporal_backend.h. Every Streamline call is serialised by one mutex (its API is
+// not thread safe); the worker makes the one-time start-up (load, slInit, device, support query)
+// and Request() makes a context (slDLSSGetOptimalSettings, slDLSSSetOptions) inline.
+// ===========================================================================
+
+#include <memory>
+#include <string>
+
+#include "backend.h"
+#include "temporal_backend.h"
+
+namespace mcla::gpu {
+
+class DlssBackend final : public TemporalBackend {
+ public:
+  DlssBackend();
+  ~DlssBackend() override;
+
+  const char* Name() const override { return "DLSS (Streamline)"; }
+  void Probe(Device& device, FrameRing& frames) override;
+  BackendStatus Status() const override;
+  void Request(const BackendRequest& request) override;
+  bool Ready(const BackendRequest& request) const override;
+  uint32_t JitterPhaseCount() const override { return 0; }  // 8 x ratio^2, as NVIDIA recommends
+  void Release() override;
+  void Fail(const std::string& reason) override;
+  bool Upscale(plume::RenderCommandList* list, const TemporalInputs& inputs) override;
+  void Shutdown() override;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+// Before the graphics interface exists (Device::Open). Vulkan only: when DLSS is the saved choice
+// and this build and GPU can run it, starts Streamline now so that the interface is made through
+// its vkGetInstanceProcAddr. A no-op for D3D12 (Streamline starts after the device there) and for a
+// build without DLSS.
+#if defined(LARECOMP_HAS_DLSS)
+namespace dlss {
+void BeforeDevice(Backend backend, const std::string& preferred_adapter);
+// A PFN_vkGetInstanceProcAddr in a void*: sl.interposer.dll's, when BeforeDevice started
+// Streamline for this device; null otherwise (Plume then uses the Vulkan loader's).
+void* VulkanInstanceProcAddr();
+// The Vulkan interface or device could not be made with the hook: DLSS is off for the rest of the
+// process and the hook is not offered again (the caller tries again without it).
+void AbandonVulkanHook(const std::string& why);
+}  // namespace dlss
+#else
+namespace dlss {
+inline void BeforeDevice(Backend, const std::string&) {}
+inline void* VulkanInstanceProcAddr() { return nullptr; }
+inline void AbandonVulkanHook(const std::string&) {}
+}  // namespace dlss
+#endif
+
+}  // namespace mcla::gpu

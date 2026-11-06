@@ -16,6 +16,8 @@
 
 #include <plume_vulkan.h>
 
+#include "temporal_dlss.h"
+
 namespace plume {
 extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
 }  // namespace plume
@@ -45,6 +47,16 @@ void ReportLiveObjects(void*) {}
 void ReleaseDebugDevice(void*) {}
 
 std::unique_ptr<plume::RenderInterface> CreateInterface() {
+#if defined(LARECOMP_PLUME_STREAMLINE)
+  // NVIDIA Streamline (temporal_dlss.h), started before the instance when DLSS is the choice:
+  // Plume loads every Vulkan function through the interposer's vkGetInstanceProcAddr, whose
+  // vkCreateInstance and vkCreateDevice add the extensions, features and queues DLSS needs.
+  if (void* hook = dlss::VulkanInstanceProcAddr()) {
+    plume::VulkanInterfaceHooks hooks;
+    hooks.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(hook);
+    return plume::CreateVulkanInterface(hooks);
+  }
+#endif
   return plume::CreateVulkanInterface();
 }
 
@@ -219,6 +231,31 @@ void* NativeListHandle(plume::RenderCommandList* list) {
 void* NativeTextureHandle(const plume::RenderTexture* texture) {
   const auto* t = static_cast<const plume::VulkanTexture*>(texture);
   return t ? reinterpret_cast<void*>(t->vk) : nullptr;
+}
+
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
+  NativeImage out;
+  const auto* t = static_cast<const plume::VulkanTexture*>(texture);
+  if (!t || t->vk == VK_NULL_HANDLE || t->imageView == VK_NULL_HANDLE) {
+    return out;
+  }
+  out.resource = reinterpret_cast<void*>(t->vk);
+  out.view = reinterpret_cast<void*>(t->imageView);
+  out.memory = reinterpret_cast<void*>(t->allocationInfo.deviceMemory);
+  out.native_format = uint32_t(t->imageFormat);
+  out.state = use == ImageUse::kStorage ? uint32_t(VK_IMAGE_LAYOUT_GENERAL)
+                                        : uint32_t(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  out.mip_levels = t->desc.mipLevels ? t->desc.mipLevels : 1;
+  out.array_layers = t->desc.arraySize ? t->desc.arraySize : 1;
+#if defined(LARECOMP_PLUME_STREAMLINE)
+  // Plume's feat/streamline-hooks keeps the usage and creation flags the image was made with.
+  out.usage = uint32_t(t->imageUsage);
+  out.create_flags = uint32_t(t->imageFlags);
+  out.complete = out.usage != 0;
+#else
+  out.complete = false;
+#endif
+  return out;
 }
 
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
