@@ -34,11 +34,14 @@
 //   BeginFrame   the chosen upscaler is asked for a context (render and output size of the last
 //                accepted frame: ratio 1, "Native AA"); the jitter is armed only while the context is
 //                ready, so a frame the upscaler cannot take is plain and never shakes.
-//   anchor       after the depth and the vectors, the colour product the anchor reads, the depth and
-//                the vectors go through the backend into the output image; a stand-in in the texture
-//                cache (textures.h Override) makes every fetch of that product for the rest of the
-//                frame read the output: the anchor's own fetch (patched in its constants here), the
-//                tone map, the glow and the UI draw on it.
+//   anchor       after the depth and the vectors, the colour product the anchor reads is compressed
+//                (c / (1 + max channel), temporal_tonemap.h: the upscalers average a sub-pixel glint
+//                that blinks with the jitter far better in that range), goes with the depth and the
+//                vectors through the backend, which is told its input is not HDR, and the result is
+//                expanded again into the output image; a stand-in in the texture cache (textures.h
+//                Override) makes every fetch of that product for the rest of the frame read the
+//                output: the anchor's own fetch (patched in its constants here), the tone map, the
+//                glow and the UI draw on it.
 //   failure      a frame that cannot be upscaled is plain (no stand-in); three armed frames in a row
 //                that could not be, or one failed dispatch or context, and the backend is off for the
 //                session (one log line), the jitter stops, FXAA and SMAA come back.
@@ -78,6 +81,7 @@
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "temporal_mv.h"
+#include "temporal_tonemap.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
@@ -248,9 +252,10 @@ class TemporalSystem {
   const temporal::Camera* previous_camera() const { return ran_last_ ? &last_camera_ : nullptr; }
   // The depth and motion vector images kept for the last frame (temporal_mv.h Kept: sizes, formats).
   const TemporalMotion& motion() const { return motion_; }
-  // The video memory the temporal path holds now: the upscaler's output image, the depth and the
-  // vectors at the render size, and the runtime's own context as it reports it (about 500 MB at
-  // 4K for FSR). Render thread (the backend's status is read under its lock).
+  // The video memory the temporal path holds now: the output image, the tone map's two images
+  // (render size in, output size out), the depth and the vectors at the render size, and the
+  // runtime's own context as it reports it (about 500 MB at 4K for FSR). Render thread (the
+  // backend's status is read under its lock).
   uint64_t HeldBytes() const;
 
  private:
@@ -313,6 +318,9 @@ class TemporalSystem {
   uint32_t misses_ = 0;
   bool disarmed_ = false;
 
+  // The tone map around the upscalers (temporal_tonemap.h).
+  TemporalToneMap tone_map_;
+
   // Step 1b: the passes and what they keep (temporal_mv.h), and what the anchor told them.
   TemporalMotion motion_;
   TemporalMotion::Frame pending_;
@@ -335,6 +343,7 @@ class TemporalSystem {
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
+  BindlessHeap* heap_ = nullptr;
   HostPasses* passes_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   TextureCache* textures_ = nullptr;
@@ -353,7 +362,8 @@ class TemporalSystem {
   uint32_t choice_key_ = 0;
   bool choice_reported_ = false;
   bool ready_reported_ = false;
-  HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, output size
+  HostImage output_;                 // what the upscale makes of the frame (the expansion's render
+                                     // target): R16G16B16A16_FLOAT, output size
   uint32_t last_render_size_[2] = {};  // of the last accepted frame
   uint32_t last_output_size_[2] = {};  // ... and what the upscaler made of it
   // The mode the scene was drawn for: the start's (gpu.h GetStartUpscale), whatever the setting says

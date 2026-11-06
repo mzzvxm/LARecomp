@@ -56,6 +56,7 @@ add_library(larecomp_gpu OBJECT
     temporal_backend.cpp
     temporal_camera.cpp
     temporal_mv.cpp
+    temporal_tonemap.cpp
     texture_decode.cpp
     texture_mods.cpp
     texture_names.cpp
@@ -269,6 +270,12 @@ larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3
 # (temporal_mv.h).
 larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
 larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
+# The reversible tone map around the upscalers: the scene colour compressed before them and their output
+# expanded after (temporal_tonemap.h).
+larecomp_gpu_host_shader(temporal_compress_ps ps_6_0 SOURCE temporal_tonemap_ps
+                         DEFINES TONEMAP_EXPAND=0)
+larecomp_gpu_host_shader(temporal_expand_ps ps_6_0 SOURCE temporal_tonemap_ps
+                         DEFINES TONEMAP_EXPAND=1)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

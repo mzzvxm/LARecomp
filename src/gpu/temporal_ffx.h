@@ -24,9 +24,10 @@
 //
 // Context. Made and destroyed on the worker (about 0.6 s, hundreds of MB at 4K): for one request
 // (the upscaler, the sizes) at a time; a request that differs retires the old one behind the frames
-// that may use it. Flags: HDR input (the scene is linear and scene referred), inverted depth (the
-// game stores 1 near, 0 far), automatic exposure, motion vectors at render size with the jitter
-// already taken out (no jitter cancellation), no dynamic resolution.
+// that may use it. Flags: an input that is not HDR (the scene arrives tone mapped,
+// temporal_tonemap.h), inverted depth (the game stores 1 near, 0 far), automatic exposure, motion
+// vectors at render size with the jitter already taken out (no jitter cancellation), no dynamic
+// resolution.
 //
 // Dispatch (Upscale): the inputs arrive in the states the caller transitioned them to (the
 // graphics-and-compute-readable images at the compute stage: D3D12 NON_PIXEL_SHADER_RESOURCE, Vulkan
