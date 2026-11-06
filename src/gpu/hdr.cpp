@@ -39,9 +39,9 @@ REXCVAR_DEFINE_STRING(
     "HDR output for an HDR10 display. off: the usual picture. auto: HDR when Windows has HDR "
     "turned on for the display the game is on. on: HDR even if Windows does not say its HDR is "
     "on; where the display or the driver cannot show it the usual picture is used and the log "
-    "says why. The game's picture is shown at your paper white setting, so it looks as it does "
-    "without HDR but follows the display's HDR mode; brighter lights are not added yet. Takes "
-    "effect at the next start.")
+    "says why. The HUD and the menus are shown at your paper white setting; the game's lights, "
+    "the sun, the sky at dusk and the headlights go above it (how far: mcla_gpu_hdr_highlights). "
+    "Takes effect at the next start.")
     .allowed({"off", "auto", "on"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(

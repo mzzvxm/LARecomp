@@ -1392,6 +1392,9 @@ constexpr double kHdrPaperWhiteVals[] = {0.0, 80.0, 100.0, 120.0, 160.0, 200.0,
                                          240.0, 280.0, 320.0, 400.0, 480.0};
 constexpr double kHdrPeakVals[] = {0.0, 200.0, 400.0, 600.0, 800.0, 1000.0,
                                    1200.0, 1500.0, 2000.0, 3000.0, 4000.0};
+// How far the scene's lights go above paper white (mcla_gpu_hdr_highlights, the HDR curve's slope):
+// NORMAL, BRIGHT, BRIGHTER (the default), BRIGHTEST.
+constexpr double kHdrHighlightVals[] = {1.0, 1.5, 2.0, 3.0};
 
 bool HdrActive() { return mcla::gpu::HdrOutputActive(); }
 
@@ -1414,11 +1417,23 @@ std::string HdrPeakLabel(double value) {
 
 const char* HdrLevelSuffix() { return HdrActive() ? "" : " (HDR OFF)"; }
 
+std::string HdrHighlightLabel(double value) {
+    if (value == 1.0) return "NORMAL";
+    if (value == 1.5) return "BRIGHT";
+    if (value == 2.0) return "BRIGHTER";
+    if (value == 3.0) return "BRIGHTEST";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%g", value);  // set by hand between the steps
+    return buf;
+}
+
 constexpr RowDynamics kHdrPaperWhiteDynamics = {
     .value_label = HdrPaperWhiteLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
 constexpr RowDynamics kHdrPeakDynamics = {
     .value_label = HdrPeakLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
 constexpr RowDynamics kHdrTestDynamics = {.enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrHighlightDynamics = {
+    .value_label = HdrHighlightLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
 #endif
 
 // ── Menu contents ──────────────────────────────────────────────────────
@@ -1624,6 +1639,10 @@ const ItemDef kGpuHdrItems[] = {
     WithDynamics(Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
                      kHdrPeakVals, 11, "%.0f"),
                  &kHdrPeakDynamics),
+    // How far lights, the sun, the dusk sky and the headlights go above paper white.
+    WithDynamics(Dbl("PM_RxGpuHdrHighlights", "mcla_gpu_hdr_highlights", "HIGHLIGHTS: ",
+                     kHdrHighlightVals, 4, "%g"),
+                 &kHdrHighlightDynamics),
     WithDynamics(Bool("PM_RxGpuHdrTest", "mcla_gpu_hdr_test_pattern", "TEST PATTERN: "),
                  &kHdrTestDynamics),
 };
