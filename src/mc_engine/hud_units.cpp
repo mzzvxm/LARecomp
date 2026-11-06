@@ -27,11 +27,11 @@
 //     k,m,h keeps the record the same length, which is what makes this a poke
 //     rather than a re-serialisation. 'k' borrows 'h' advance.
 //
-// The speed-limit sign is deliberately left alone: its number is produced by
-// the guest in mph. sub_822068F8 @0x82206E7C does have a km/h branch (|v| *
-// 3.6 * 0.2 + 1, then x5, i.e. rounded to the nearest 5) but it is dead code --
-// it needs bit 0x80 of the byte at mcUILogic+0x515B0, and that bit is only set
-// when sub_82387928() returns 6, which it never does (it returns 0..4).
+// The radar detector's speed-limit sign: its number comes from sub_822068F8, whose km/h branch
+// (|v| * 3.6 * 0.2 + 1, then x5, i.e. rounded to the nearest 5) needs bit 0x80 of the byte at
+// mcUILogic+0x515B0, which the game never sets (sub_82387928() would have to return 6);
+// Patch_SpeedLimitUnits (hooks/ui.cpp) sets it from speed_units. Its unit is a string constant
+// of the movie's ActionScript, rewritten here (FindSignUnit below).
 //
 
 #include <rex/cvar.h>
@@ -165,6 +165,58 @@ bool SiteStillOurs(rex::memory::Memory* mem, const Site& site) {
            std::memcmp(p, site.mph, site.field_len) == 0;
 }
 
+// The radar detector's speed-limit sign shows its limit followed by a unit its ActionScript takes
+// from the movie's constant pool, "...t_speed_limit\0mph\0cameraNumber..." (hud.xsf offset 0xC1C1;
+// the sign has no static "mph" text). "kmh" has the same length, so the string is rewritten in
+// place, as the speedometer's label is; the sign's number itself is converted by
+// Patch_SpeedLimitUnits (hooks/ui.cpp). The script reads the constant whenever it rebuilds the
+// sign's text, so a change of units shows from the next limit. Found once, after the speedometer's
+// label, by searching the movie around it.
+constexpr uint32_t kMovieLabelOffset = 0x74A30;  // the speedometer label's offset in hud.xsf
+constexpr uint32_t kMovieSearchSpan = 0x200000;  // from the movie's start: hud.xsf is smaller
+constexpr char kSignUnitSig[] = "t_speed_limit\0mph";  // sizeof includes the terminating NUL
+constexpr uint32_t kSignUnitOffset = 14;                // of "mph" in the signature
+uint32_t g_sign_unit = 0;  // guest address of the constant's "mph" / "kmh"
+bool g_sign_searched = false;
+
+bool ChunkReadable(rex::memory::Memory* mem, uint32_t chunk_base);  // below
+
+void FindSignUnit(rex::memory::Memory* mem, uint32_t speedometer_label) {
+    g_sign_searched = true;
+    g_sign_unit = 0;
+    const uint32_t start = speedometer_label > kMovieLabelOffset ? speedometer_label - kMovieLabelOffset
+                                                                 : speedometer_label;
+    constexpr uint32_t kSigLen = sizeof(kSignUnitSig);  // "t_speed_limit", NUL, "mph", NUL
+    for (uint32_t chunk = start & ~(kChunk - 1); chunk < start + kMovieSearchSpan && !g_sign_unit;
+         chunk += kChunk) {
+        if (!ChunkReadable(mem, chunk)) continue;
+        const uint8_t* b = HostPointer(mem, chunk);
+        if (!b) continue;
+        for (uint32_t i = 0; i + kSigLen <= kChunk; ++i) {
+            if (b[i] == 't' && std::memcmp(b + i, kSignUnitSig, kSigLen) == 0) {
+                g_sign_unit = chunk + i + kSignUnitOffset;
+                break;
+            }
+        }
+    }
+    if (g_sign_unit) {
+        MC_INFO("[hud_units] speed-limit sign unit found at 0x{:08X}", g_sign_unit);
+    } else {
+        MC_INFO("[hud_units] speed-limit sign unit not found: the sign keeps mph");
+    }
+}
+
+// Writes the sign's unit if it still holds one of its two spellings.
+void WriteSignUnit(rex::memory::Memory* mem, bool to_kmh) {
+    if (!g_sign_unit || !PageAccessible(mem, g_sign_unit, true) ||
+        !PageAccessible(mem, g_sign_unit + 2, true)) {
+        return;
+    }
+    uint8_t* p = HostPointer(mem, g_sign_unit);
+    if (!p || (std::memcmp(p, "mph", 3) != 0 && std::memcmp(p, "kmh", 3) != 0)) return;
+    std::memcpy(p, to_kmh ? "kmh" : "mph", 3);
+}
+
 bool AllFound() {
     for (const Site& s : g_sites) {
         if (!s.found_at) return false;
@@ -174,6 +226,8 @@ bool AllFound() {
 
 void RestartScan() {
     for (Site& s : g_sites) s.found_at = 0;
+    g_sign_searched = false;
+    g_sign_unit = 0;
     g_cursor = kScanBegin;
     g_scanning = true;
     g_logged_miss = false;
@@ -245,6 +299,8 @@ void ScanStep(rex::memory::Memory* mem) {
     if (AllFound()) {
         g_scanning = false;
         for (Site& site : g_sites) WriteSite(mem, site, true);
+        FindSignUnit(mem, g_sites[1].found_at);
+        WriteSignUnit(mem, true);
         g_applied = Want::kKmh;
         MC_INFO("[hud_units] km/h applied");
         return;
@@ -287,6 +343,7 @@ void TickHudUnits() {
             for (Site& site : g_sites) {
                 if (SiteStillOurs(mem, site)) WriteSite(mem, site, false);
             }
+            WriteSignUnit(mem, false);
             MC_INFO("[hud_units] reverted to mph");
         }
         g_applied = Want::kGame;
@@ -307,6 +364,8 @@ void TickHudUnits() {
         }
         if (g_applied != Want::kKmh) {
             for (Site& site : g_sites) WriteSite(mem, site, true);
+            if (!g_sign_searched) FindSignUnit(mem, g_sites[1].found_at);
+            WriteSignUnit(mem, true);
             g_applied = Want::kKmh;
             MC_INFO("[hud_units] km/h applied");
         }

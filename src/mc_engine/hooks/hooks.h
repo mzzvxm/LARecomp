@@ -48,6 +48,7 @@ bool Patch_ImpostorShadowGuard(PPCRegister& r3);
 void Hook_CaptureDistrict(PPCRegister& r3);
 
 bool Patch_SpeedUnits(PPCRegister& r11);
+void Patch_SpeedLimitUnits(PPCRegister& r8);
 
 // Button prompt glyphs (button_prompts cvar). The UI movies carry both the 360
 // and the PS3 art and choose with the mcRegistry int "platform"; these own that

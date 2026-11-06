@@ -42,8 +42,8 @@ REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
     "kmh also converts the live HUD speedometer, which does NOT go through that "
     "formatter: the HUD movie multiplies m/s by 2.237 in its own ActionScript, so "
     "hud_units.cpp rewrites that constant (and the per-glyph unit label) in guest "
-    "memory. The radar detector's speed-limit sign stays in mph -- its number comes "
-    "from the guest and the game's metric branch for it is dead code.")
+    "memory. The radar detector's speed-limit sign follows it too, through the game's "
+    "own km/h branch for it (rounded to the nearest 5), which the game never takes.")
     .allowed({"game", "kmh", "mph"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -218,6 +218,23 @@ bool Patch_SpeedUnits(PPCRegister& r11) {
     if (units == "kmh") { r11.u64 = 1; return true; }
     if (units == "mph") { r11.u64 = 0; return true; }
     return false;  // "game": keep the profile/region default
+}
+
+// The radar detector's speed-limit sign follows the same setting. sub_822068F8 writes its number:
+// at 0x82206E94 it tests bit 0x80 of the byte at mcUILogic+0x515B0 (r8 = that byte & 0x80), then
+// 0 takes the mph branch (speed x 2.237, truncated) and anything else the game's own km/h branch
+// (speed x 3.6, rounded to the nearest 5). The game never sets that bit (only when sub_82387928()
+// returns 6, and it returns 0..4), so the sign was always mph. r8 is set here before the test:
+// kmh -> km/h, mph -> mph, game -> the game's metric flag, as the unit formatter reads it.
+void Patch_SpeedLimitUnits(PPCRegister& r8) {
+    const std::string units = REXCVAR_GET(speed_units);
+    bool metric = units == "kmh";
+    if (units == "game") {
+        const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+        const uint8_t* p = base + 0x8288E5A0u;  // the formatter's metric flag (Patch_SpeedUnits)
+        metric = (uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]) != 0;
+    }
+    r8.u64 = metric ? 0x80 : 0;
 }
 
 // ── Button prompt glyphs (Xbox <-> PlayStation) ──────────────────────────
@@ -921,6 +938,7 @@ bool SkipIntro() { return false; }
 void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {}
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) { return false; }
 bool Patch_SpeedUnits(PPCRegister& r11) { return false; }
+void Patch_SpeedLimitUnits(PPCRegister& r8) {}
 void TickButtonPrompts() {}
 bool ButtonPromptsArePlayStation() { return false; }
 void Hook_PlatformVarInit(PPCRegister& r27) {}

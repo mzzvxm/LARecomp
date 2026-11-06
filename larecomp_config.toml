@@ -25645,6 +25645,14 @@ name = "Patch_SpeedUnits"
 registers = ["r11"]
 jump_address_on_true = 0x8238DE58
 
+# The radar detector's speed-limit sign, the same speed_units switch. sub_822068F8 tests bit 0x80
+# of mcUILogic+0x515B0 here (cmplwi cr6,r8,0) to pick mph or its own km/h branch, which the game
+# never takes. Runs before the compare: r8 is set from the cvar (hooks/ui.cpp).
+[[midasm_hook]]
+address = 0x82206E94
+name = "Patch_SpeedLimitUnits"
+registers = ["r8"]
+
 # Button prompt glyphs, Xbox <-> PlayStation (button_prompts cvar). Every UI
 # movie ships both sets, and so does the texture dictionary the 360 build loads
 # (resources/ui/shared_latin.xtd: shared_13 circle, shared_15 square,
