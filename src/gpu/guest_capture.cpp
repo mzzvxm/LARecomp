@@ -26,6 +26,7 @@
 #include "draw_decode.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_fence.h"
+#include "occlusion.h"
 #include "textures.h"
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
@@ -1348,6 +1349,35 @@ void GuestCapture::Composite(uint32_t bucket) {
   auto* r = new (payload) CompositeRecord();
   r->bucket = bucket;
   CountRecord(sizeof(CompositeRecord));
+  frame_.capture_cycles += ElapsedCycles(t0);
+  writer.Commit(Publication::kBatched);
+}
+
+// ---------------------------------------------------------------------------
+// occlusion queries
+// ---------------------------------------------------------------------------
+
+void GuestCapture::OcclusionEvent(const uint8_t* base, uint32_t query, bool is_begin) {
+  if (!enabled() || !occlusion::Active()) {
+    return;
+  }
+  const uint64_t t0 = cycles::Now();
+  // Not a draw-state event, like a fence: a pending inline draw stays open (the sun's
+  // draws are inline ones, and are emitted at their EndVertices, inside the query).
+  CommandStream::Writer writer(stream_);
+  uint32_t use = 0;
+  if (!occlusion::OnGuestIssue(const_cast<uint8_t*>(base), query, is_begin, &use)) {
+    return;
+  }
+  uint8_t* payload = writer.Begin(RecordType::kOcclusion, sizeof(OcclusionRecord));
+  if (!payload) {
+    return;
+  }
+  auto* r = new (payload) OcclusionRecord();
+  r->query = query;
+  r->use = use;
+  r->end = is_begin ? 0 : 1;
+  CountRecord(sizeof(OcclusionRecord));
   frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kBatched);
 }

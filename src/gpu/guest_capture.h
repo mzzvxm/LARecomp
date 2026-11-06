@@ -128,6 +128,13 @@ class GuestCapture {
   // thread.
   void Composite(uint32_t bucket);
 
+  // D3DQuery::Issue's sample count event (sub_824302F0), before the original: the
+  // begin or the end of the guest's occlusion query `query`. Writes what the console's
+  // GPU would leave in the query's record (occlusion.h) and, for a query the host
+  // counts, an occlusion record batched in order with the draws between the two.
+  // Guest render thread.
+  void OcclusionEvent(const uint8_t* base, uint32_t query, bool is_begin);
+
  private:
   struct DeviceState {
     uint32_t device = 0;

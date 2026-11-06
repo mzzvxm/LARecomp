@@ -77,6 +77,7 @@ namespace mcla::gpu {
 
 class BindlessHeap;
 class GuestLayout;
+class GuestOcclusion;
 class PassTiming;
 class PostAa;
 class ResolveCache;
@@ -95,6 +96,10 @@ class Scene {
                   GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                   ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap,
                   PassTiming& pass_timing, PostAa& post);
+
+  // The guest's occlusion queries: while one is open, the draws are counted
+  // (occlusion.h). Null: none are.
+  void SetOcclusion(GuestOcclusion* occlusion) { occlusion_ = occlusion; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -245,6 +250,7 @@ class Scene {
   const GuestLayout* layout_ = nullptr;
   const BindlessHeap* heap_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  GuestOcclusion* occlusion_ = nullptr;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.

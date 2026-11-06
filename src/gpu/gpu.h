@@ -165,6 +165,15 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
 // render thread.
 void OnGuestSceneComposited(uint32_t bucket);
 
+// --- occlusion queries (occlusion.h) --------------------------------------
+
+// sub_824302F0 (D3DQuery::Issue's sample count event: `query` the D3DQuery object,
+// `is_begin` its begin or end), BEFORE the original. Guest render thread.
+void OnGuestOcclusionEvent(const uint8_t* base, uint32_t query, bool is_begin);
+// sub_8241E088 (D3DQuery::GetData), BEFORE the original: a count the host has delivered
+// for the query is written to its record first. Guest thread.
+void OnGuestQueryGetData(const uint8_t* base, uint32_t query);
+
 // UI thread, on a window pixel-size change. The rebuild happens on the render
 // thread at the next present (an idle one if the guest is not swapping).
 void RequestResize();

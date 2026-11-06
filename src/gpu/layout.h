@@ -15,10 +15,12 @@
 //   Vulkan         one VERTEX|PIXEL push range of 24 bytes: the three buffer
 //                  device addresses the shaders read with vk::RawBufferLoad
 //
-// No occlusion counter: the reserve M3 kept (a root UAV / a fifth set) left
-// before the first pipeline, the game never arming a query (viz query 0 and
-// RB_SAMPLE_COUNT_CTL constant in every measured scene
-// item 4).
+// No occlusion counter in the layout: the reserve M3 kept (a root UAV / a fifth set) left
+// before the first pipeline, on the reading that the game never arms a query (viz query 0
+// and RB_SAMPLE_COUNT_CTL constant in every measured scene). Viz queries it does not use,
+// but it does issue D3D9 sample count (ZPD) queries -- the sun's glare, one a frame -- and
+// those are counted by host occlusion queries around the draws between their begin and
+// end, outside the shaders (occlusion.h).
 //
 // Input-assembler input is allowed: the guest's vertex streams arrive through
 // vertex buffers.

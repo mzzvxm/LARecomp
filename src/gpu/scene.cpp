@@ -27,6 +27,7 @@
 #include "format.h"
 #include "layout.h"
 #include "native_gfx/vertex_declaration.h"
+#include "occlusion.h"
 #include "pass_timing.h"
 #include "post.h"
 #include "resolve.h"
@@ -1315,6 +1316,10 @@ bool Scene::EdramNoteKey::operator==(const EdramNoteKey& o) const {
 
 void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail) {
   ++window_.skips[size_t(skip)];
+  if (occlusion_) {
+    // A draw left out inside a guest occlusion query: the count would be too low.
+    occlusion_->NoteLostDraw();
+  }
   uint32_t& logged = skip_logged_[size_t(skip)];
   if (skip == Skip::kPipelinePending) {
     return;  // expected and repaired by the next frame: counted, not logged
@@ -1602,6 +1607,25 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                                uint64_t(std::max<int64_t>(width, 0) *
                                         std::max<int64_t>(height, 0) * d.key.sample_count));
   }
+  // A draw inside a guest occlusion query is counted by a host query of its own, around
+  // the draw: the count the game is told is the sum of its draws', in guest samples (host
+  // samples per guest sample and the resolution scale squared divided out). A host
+  // query never nests with the coverage check's.
+  // CHECK: that this is the console's count. The fork's runs on its own renderer read
+  // about 4,000 to 6,600 samples at the title scene and with the sun in open sky (the game
+  // clamps the ratio over 1,250 at 1), with the same count at 1x and 2x after dividing by
+  // the scale squared; the samples-per-guest-sample factor (a host target with fewer
+  // samples than the guest's) is the one part the fork did not have. Also unverified: that
+  // the host depth target holds the scene's depth when the sun's draws test against it.
+  uint32_t occlusion_query = GuestOcclusion::kNoQuery;
+  if (occlusion_ && occlusion_->query_open()) {
+    const double scale = double(target_scale.value());
+    occlusion_query = occlusion_->BeginDraw(
+        list, slot_,
+        double(MsaaSampleCount(s.msaa)) / double(std::max(d.key.sample_count, 1u)) /
+            (scale * scale),
+        coverage_check == EdramTargets::kNoCheck);
+  }
   if (g.indexed) {
     if (!bound_.index_bound || !SameIndexBuffer(bound_.index_view, g.index_view)) {
       list->setIndexBuffer(&g.index_view);
@@ -1613,6 +1637,9 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   } else {
     Lap(Stage::kBindStreams);
     list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  if (occlusion_query != GuestOcclusion::kNoQuery) {
+    occlusion_->EndDraw(list, occlusion_query);
   }
   if (coverage_check != EdramTargets::kNoCheck) {
     edram_->EndCoverageCheck(list, coverage_check);

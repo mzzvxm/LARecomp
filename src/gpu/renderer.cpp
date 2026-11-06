@@ -207,6 +207,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     vram_.Initialize(device_, textures_, resolve_, resolve_memory_, edram_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_, pass_timing_, post_);
+    // The guest's occlusion queries (the sun's glare): never fails the renderer.
+    occlusion_.Initialize(device_);
+    scene_.SetOcclusion(&occlusion_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format()) &&
@@ -228,6 +231,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (!ok) {
     capture_.Shutdown();
+    occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
     flicker_probe_.Shutdown();
@@ -311,6 +315,7 @@ void Renderer::Shutdown() {
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
   capture_.Shutdown();
+  occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
   flicker_probe_.Shutdown();
@@ -454,6 +459,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), list);
       return;
     }
+    case RecordType::kOcclusion:
+      occlusion_.OnRecord(*reinterpret_cast<const OcclusionRecord*>(payload));
+      return;
     case RecordType::kPad:
     case RecordType::kCount:
       break;
@@ -494,6 +502,7 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);
   heap_.RecordPendingBarriers(list);
+  occlusion_.BeginFrame(list, slot);
   scene_.BeginFrame(list, slot);
   // After the caches' own frame start, before any record of the frame: what
   // the budget releases is retired behind this frame's submission.
@@ -531,10 +540,12 @@ void Renderer::SubmitFrameWithoutPresent() {
   if (frames_.Submit(nullptr, 0, nullptr, 0)) {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
+    occlusion_.OnSubmitted(slot);
   }
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
+  occlusion_.OnSlotReady(frames_.slot());
 }
 
 void Renderer::OnIdle() {
@@ -646,6 +657,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   }
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
+  occlusion_.OnSubmitted(slot);
 
   if (!swap_chain_.Present(image)) {
     // DXGI and Vulkan both report a chain that no longer matches the window
@@ -658,6 +670,8 @@ void Renderer::ExecutePresent(PresentSource source) {
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
+  // What its previous round counted for the guest's occlusion queries is readable now.
+  occlusion_.OnSlotReady(frames_.slot());
   ++presented_;
   if (source == PresentSource::kGuest) {
     ++guest_presents_;
@@ -1107,6 +1121,18 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
 void OnGuestSceneComposited(uint32_t bucket) {
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
     c->Composite(bucket);
+  }
+}
+
+void OnGuestOcclusionEvent(const uint8_t* base, uint32_t query, bool is_begin) {
+  if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
+    c->OcclusionEvent(base, query, is_begin);
+  }
+}
+
+void OnGuestQueryGetData(const uint8_t* base, uint32_t query) {
+  if (g_capture_active.load(std::memory_order_acquire) != nullptr) {
+    occlusion::OnGuestGetData(const_cast<uint8_t*>(base), query);
   }
 }
 

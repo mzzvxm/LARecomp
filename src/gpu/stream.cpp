@@ -79,6 +79,7 @@ const char* RecordTypeName(RecordType type) {
     case RecordType::kFence: return "fence";
     case RecordType::kLock: return "lock";
     case RecordType::kComposite: return "composite";
+    case RecordType::kOcclusion: return "occlusion";
     case RecordType::kCount: break;
   }
   return "unknown";

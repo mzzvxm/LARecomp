@@ -217,6 +217,12 @@ void FrameTrace::OnRecord(uint64_t frames, const RecordHeader& header, const uin
              r.bucket, draws_);
       break;
     }
+    case RecordType::kOcclusion: {
+      const auto& r = *reinterpret_cast<const OcclusionRecord*>(payload);
+      Printf("OQ seq=%" PRIu64 " query=%08x use=%u %s after_draws=%" PRIu64 "\n", header.sequence,
+             r.query, r.use, r.end ? "end" : "begin", draws_);
+      break;
+    }
     default:
       Printf("? type=%u seq=%" PRIu64 " size=%u\n", unsigned(header.type), header.sequence,
              header.size);
