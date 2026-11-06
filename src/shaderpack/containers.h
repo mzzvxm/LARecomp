@@ -25,7 +25,7 @@
 // read_vertex_elements, v3's computed_fetch_index, v8's pixel_shader_outputs/texture_fetch_mask),
 // by mzzvxm; the microcode walks are the Python's, instruction for instruction.
 //
-// No logging except warnings through log.h; no threads.
+// No logging, no threads.
 // ===========================================================================
 
 #include <cstddef>
