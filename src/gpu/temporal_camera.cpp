@@ -50,36 +50,6 @@ bool SanePrevious(const Mat4& a) {
   return biggest >= 1e-3 && biggest <= 1e12;
 }
 
-// The upper 3x3 block's determinant.
-double Determinant3(const Mat4& a) {
-  const auto& m = a.m;
-  return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
-         m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
-         m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-}
-
-Rigid MeasureRigid(const Mat4& t) {
-  Rigid r;
-  if (!Finite(t)) {
-    return r;
-  }
-  r.valid = true;
-  r.determinant = Determinant3(t);
-  for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 3; ++j) {
-      double dot = 0.0;
-      for (int k = 0; k < 3; ++k) {
-        dot += t.m[i][k] * t.m[j][k];
-      }
-      r.orthonormal = std::fmax(r.orthonormal, std::fabs(dot - (i == j ? 1.0 : 0.0)));
-    }
-  }
-  r.last_column = std::fmax(std::fmax(std::fabs(t.m[0][3]), std::fabs(t.m[1][3])),
-                            std::fmax(std::fabs(t.m[2][3]), std::fabs(t.m[3][3] - 1.0)));
-  r.translation = std::sqrt(t.m[3][0] * t.m[3][0] + t.m[3][1] * t.m[3][1] + t.m[3][2] * t.m[3][2]);
-  return r;
-}
-
 }  // namespace
 
 Mat4 ClipToPixels(double width, double height) {
@@ -112,7 +82,7 @@ const char* RejectName(Reject reject) {
 }
 
 Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetch_height,
-                     uint64_t frame, uint64_t stencil_ids, Camera* out) {
+                     uint64_t frame, Camera* out) {
   *out = Camera{};
   Camera& cam = *out;
   cam.frame = frame;
@@ -176,53 +146,9 @@ Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetc
     return Reject::kLens;
   }
 
-  // c64-c67 against pixel-to-clip * inverse(VP): a free cross-check of the pixel convention.
-  cam.pixel_to_world = ReadMat(b, 64);
-  Mat4 pixels_inverse;
-  if (Finite(cam.pixel_to_world) &&
-      Inverse(ClipToPixels(double(fetch_width), double(fetch_height)), &pixels_inverse)) {
-    const Mat4 expected = Mul(pixels_inverse, cam.view_projection_inverse);
-    bool agrees = true;
-    for (int r = 2; r < 4; ++r) {
-      const double bound = 1e-3 * RowMax(expected, r) + 1e-9;
-      for (int c = 0; c < 4; ++c) {
-        agrees &= std::fabs(cam.pixel_to_world.m[r][c] - expected.m[r][c]) <= bound;
-      }
-    }
-    cam.pixel_to_world_agrees = agrees;
-  }
-
-  // The previous frame's matrices, only of the stencil IDs the main view wrote (the world's, k = 0,
-  // always) and only when sane.
-  cam.stencil_ids = stencil_ids;
-  Mat4 world_inverse;
-  bool have_world_inverse = false;
-  for (uint32_t k = 0; k < kVehicleMatrices; ++k) {
-    if (k != kWorldId && !(stencil_ids & (uint64_t(1) << k))) {
-      continue;
-    }
-    const Mat4 raw = ReadMat(b, 69 + 4 * k);
-    if (!SanePrevious(raw)) {
-      continue;
-    }
-    const Mat4 combined = Mul(cam.view_projection_inverse, raw);
-    if (!Finite(combined)) {
-      continue;
-    }
-    if (k == kWorldId) {
-      cam.previous_world = raw;
-      have_world_inverse = Inverse(raw, &world_inverse);
-    } else if (have_world_inverse) {
-      // The vehicle's own motion, if the slot is its world to the previous frame's pixels.
-      cam.rigid[k] = MeasureRigid(Mul(raw, world_inverse));
-    }
-    for (int r = 0; r < 4; ++r) {
-      for (int c = 0; c < 4; ++c) {
-        cam.clip_to_previous_pixels[k][r * 4 + c] = float(combined.m[r][c]);
-      }
-    }
-    cam.previous_valid |= 1u << k;
-  }
+  // The game's previous-frame matrix of the world (c69), when it is sane.
+  const Mat4 previous = ReadMat(b, 69);
+  cam.previous_valid = SanePrevious(previous) && Finite(Mul(cam.view_projection_inverse, previous));
   return Reject::kNone;
 }
 
@@ -257,29 +183,6 @@ Cut TestCut(const Camera& now, const Camera& before, const double* previous_step
   cut.by_fov = cut.fov_change > kCutFov;
   cut.fires = cut.by_distance || cut.by_turn || cut.by_fov;
   return cut;
-}
-
-History CompareToHistory(const Camera& now, const Camera& before) {
-  const Mat4 q = Mul(before.view_projection_inverse, now.previous_world);
-  const double w = double(now.width);
-  const double h = double(now.height);
-  Mat4 flip = ClipToPixels(w, h);
-  Mat4 noflip = flip;
-  noflip.m[1][1] = h * 0.5;
-  // x, y and w only: the columns the motion vectors use (z may be scaled otherwise).
-  const auto error = [&](const Mat4& expected) {
-    double worst = 0.0;
-    for (int i = 0; i < 4; ++i) {
-      for (int j : {0, 1, 3}) {
-        worst = std::fmax(worst, std::fabs(q.m[i][j] - expected.m[i][j]));
-      }
-    }
-    return worst;
-  };
-  History history;
-  history.flip = error(flip);
-  history.noflip = error(noflip);
-  return history;
 }
 
 double Halton(uint32_t index, uint32_t base) {

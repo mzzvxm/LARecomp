@@ -25,8 +25,7 @@
 //             textures, the counts of draws; and the states of the run in the log.
 //
 // Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
-// the motion vectors from this system's own camera history, the debug views and the checks; the
-// backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
+// the motion vectors from this system's own camera history; the backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
 //
 // Step 2 (temporal_backend.h, temporal_ffx.h) adds the backend: with an upscaler chosen
 // (mcla_gpu_upscaler: FSR 3.1, FSR 4) and able to run, the system is on and the frame goes
@@ -187,7 +186,6 @@ class TemporalSystem {
     uint32_t forward_z_draws = 0;  // world draws whose depth range is not mirrored (census 3.6)
     uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
     uint32_t late_draws = 0;      // main view draws after the anchor or the composite marker
-    uint64_t stencil_ids = 0;     // bit n: a main view draw wrote the stencil ID n (value >> 2)
     bool composite_seen = false;
 
     // The anchor.
@@ -222,8 +220,7 @@ class TemporalSystem {
   // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
   // Probes the upscaler backend (a worker thread; nothing on this one).
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
-                  PassTiming& pass_timing, plume::RenderFormat target_format, TextureCache& textures,
-                  ResolveCache& resolve);
+                  PassTiming& pass_timing, TextureCache& textures, ResolveCache& resolve);
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
@@ -244,9 +241,6 @@ class TemporalSystem {
   // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
   // once per change when `aa_asked` (mcla_gpu_aa is not off).
   bool HoldsAaOff(bool aa_asked);
-  // Inside the back buffer's render pass after the present's draw: the debug view
-  // (mcla_gpu_temporal_view) of the last frame, when it had vectors.
-  void DrawDebug(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // The composite marker: the UI starts.
   void OnComposite();
   // The guest's present: the frame ends, the state machine moves on, the log.
@@ -291,14 +285,6 @@ class TemporalSystem {
     uint64_t cut_distance = 0;  // camera cuts by clause (a cut may have several)
     uint64_t cut_turn = 0;
     uint64_t cut_fov = 0;
-    uint64_t history_checks = 0;  // c69 against the previous frame's own view-projection
-    uint64_t history_flip = 0;
-    uint64_t history_noflip = 0;
-    uint64_t pixel_to_world_agrees = 0;
-    uint64_t vehicle_matrices = 0;  // usable previous matrices, summed over the accepted frames
-    uint64_t rigid_checked = 0;     // vehicle slots measured as c(69+4k) * inverse(c69)
-    uint64_t rigid_ok = 0;          // ... of them a rigid transform within 1e-3
-    uint64_t rigid_moving = 0;      // ... of them that moved more than 1e-3 units
     uint64_t mv_missed = 0;         // anchors taken whose passes could not be recorded
     // The upscaler: frames it ran in, and the frames with an upscaler chosen that it did not run in.
     uint64_t upscaled = 0;
@@ -316,11 +302,8 @@ class TemporalSystem {
   void SetEnabled(bool enabled, bool development);
   void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
   bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
-  // The vehicle slots as rigid transforms (temporal_camera.h Rigid): the counts and the first lines.
-  void NoteRigid(const temporal::Camera& camera, uint64_t frame);
   static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
                                const ViewportInfo& viewport, Scale scale);
-  void NoteStencil(const XenosState& state);
   // A main view draw that is not a world draw: the first few distinct ones are logged.
   void NoteStill(const DrawFacts& facts, uint32_t failed);
   // Structure of the anchor: its fetches and its target. Fills `*width`, `*height` (the fetches'
@@ -344,7 +327,6 @@ class TemporalSystem {
   // next one from; unknown at the first step of a run.
   double last_step_[3] = {};
   bool last_step_known_ = false;
-  float last_jitter_[2] = {};  // the jitter of the frame before (zero when it was not armed)
   Scale last_scale_ = Scale::None();
   Clock::time_point last_anchor_time_{};
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
@@ -410,7 +392,6 @@ class TemporalSystem {
   uint32_t pending_frames_ = 0;
   std::array<bool, size_t(AnchorStatus::kCount)> status_logged_{};
   uint32_t reset_lines_ = 0;
-  uint32_t rigid_lines_ = 0;
   std::unordered_set<uint64_t> still_logged_;  // main view draws kept still, by shaders and reason
   double logged_lens_[3] = {};                 // field of view (rad), near, far of the last line
   uint32_t lens_lines_ = 0;

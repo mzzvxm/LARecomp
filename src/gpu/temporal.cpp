@@ -125,7 +125,6 @@ void TemporalSystem::SetEnabled(bool enabled, bool development) {
   pending_frames_ = 0;
   status_logged_.fill(false);
   reset_lines_ = 0;
-  rigid_lines_ = 0;
   still_logged_.clear();
   logged_lens_[0] = logged_lens_[1] = logged_lens_[2] = 0.0;
   lens_lines_ = 0;
@@ -155,9 +154,8 @@ void TemporalSystem::SetEnabled(bool enabled, bool development) {
 
 void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                                 HostPasses& passes, PassTiming& pass_timing,
-                                plume::RenderFormat target_format, TextureCache& textures,
-                                ResolveCache& resolve) {
-  motion_.Initialize(device, frames, heap, passes, pass_timing, target_format);
+                                TextureCache& textures, ResolveCache& resolve) {
+  motion_.Initialize(device, heap, passes, pass_timing);
   device_ = &device;
   frames_ = &frames;
   passes_ = &passes;
@@ -201,22 +199,17 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
   }
   pending_ready_ = false;
   if (frame_.scale != frame_.output_scale) {
-    // The anchor draws at the output's scale, and what it is bound to read is the scene's products
-    // at the render scale: a colour one directly, but a depth source made below 1x (the depth, and
-    // the stencil view of it) through a copy enlarged to the output's size. The passes read texel
-    // for texel at the render size, so they take the products themselves: the same fetches bound at
-    // the render scale, which is the products' own.
+    // The anchor draws at the output's scale, and what it is bound to read is the scene's depth at
+    // the render scale: a depth source made below 1x through a copy enlarged to the output's size.
+    // The passes read texel for texel at the render size, so they take the product itself: the same
+    // fetch bound at the render scale, which is the product's own.
     // CHECK: only a scene scale under 1x (Radeon at 1x, any mode; Ultra Performance at 2x) gets an
     // enlarged copy; above it the two bindings are the same slot.
-    uint32_t* const slots[3] = {&pending_.color_slot, &pending_.stencil_slot, &pending_.depth_slot};
-    for (uint32_t i = 0; i < 3; ++i) {
-      const TextureFetch fetch = ReadTextureFetch(frame_.anchor_textures.fetch[i]);
-      if (!fetch.is_texture) {
-        continue;
-      }
+    const TextureFetch fetch = ReadTextureFetch(frame_.anchor_textures.fetch[2]);
+    if (fetch.is_texture) {
       const TextureCache::Binding bound = textures_->Bind2D(fetch, frame_.scale, list);
       if (bound.from_product) {
-        *slots[i] = bound.slot;
+        pending_.depth_slot = bound.slot;
       }
     }
   }
@@ -560,17 +553,9 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   return true;
 }
 
-void TemporalSystem::DrawDebug(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
-  // The last frame had an accepted anchor, so its vectors were made (the view is a development tool).
-  if (enabled_ && frame_.anchor_ok) {
-    motion_.DrawDebug(list, width, height);
-  }
-}
-
 void TemporalSystem::ResetRun() {
   ran_last_ = false;
   last_step_known_ = false;
-  last_jitter_[0] = last_jitter_[1] = 0.0f;
   pending_ready_ = false;
   jitter_index_ = 0;
   misses_ = 0;
@@ -704,22 +689,6 @@ uint32_t TemporalSystem::EvaluateGate(const XenosState& s, const DrawRecord& r,
   return failed;
 }
 
-void TemporalSystem::NoteStencil(const XenosState& s) {
-  // The vehicle IDs: a draw that REPLACEs the stencil with a reference of 4k + {0, 1} writes ID k
-  // (census 1.1). Either face may do it.
-  if (!s.depth_bound || !s.depth_control.stencil_enable) {
-    return;
-  }
-  const xreg::RB_DEPTHCONTROL& dc = s.depth_control;
-  if ((s.stencil.stencilwritemask & 0xFFu) != 0 && dc.stencilzpass == xe::StencilOp::kReplace) {
-    frame_.stencil_ids |= uint64_t(1) << ((s.stencil.stencilref & 0xFFu) >> 2);
-  }
-  if (dc.backface_enable && (s.stencil_bf.stencilwritemask & 0xFFu) != 0 &&
-      dc.stencilzpass_bf == xe::StencilOp::kReplace) {
-    frame_.stencil_ids |= uint64_t(1) << ((s.stencil_bf.stencilref & 0xFFu) >> 2);
-  }
-}
-
 void TemporalSystem::NoteStill(const DrawFacts& f, uint32_t failed) {
   if (still_logged_.size() >= kMaxStillLines) {
     return;
@@ -775,7 +744,6 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     fr.scale = f.scale;
   }
   ++fr.main_draws[kind];
-  NoteStencil(*f.state);
 
   const uint32_t failed = EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale);
   if (failed != 0) {
@@ -874,7 +842,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   temporal::Camera camera;
   if (status == AnchorStatus::kAccepted) {
     const temporal::Reject reject = temporal::ExtractCamera(
-        f.banks->ps.data(), width, height, fr.frame, fr.stencil_ids, &camera);
+        f.banks->ps.data(), width, height, fr.frame, &camera);
     if (reject != temporal::Reject::kNone) {
       status = StatusOf(reject);
       why = temporal::RejectName(reject);
@@ -932,7 +900,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
       reset |= kResetCut;
     }
   }
-  if (!(camera.previous_valid & 1u)) {
+  if (!camera.previous_valid) {
     reset |= kResetNoPrevious;
   }
   last_anchor_time_ = now;
@@ -949,12 +917,10 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
     logged_lens_[1] = camera.near_plane;
     logged_lens_[2] = camera.far_plane;
     REXLOG_INFO("{} lens in frame {}: field of view {:.3f} deg, aspect {:.4f}, near {:.3f}, far "
-                "{:.1f}, camera at {:.2f}, {:.2f}, {:.2f}, looking along {:.3f}, {:.3f}, {:.3f}, "
-                "c64-c67 {} the inverse view-projection{}",
+                "{:.1f}, camera at {:.2f}, {:.2f}, {:.2f}, looking along {:.3f}, {:.3f}, {:.3f}{}",
                 kPrefix, fr.frame, camera.fov_y * 180.0 / kPi, camera.aspect, camera.near_plane,
                 camera.far_plane, camera.position[0], camera.position[1], camera.position[2],
                 camera.forward[0], camera.forward[1], camera.forward[2],
-                camera.pixel_to_world_agrees ? "agree with" : "DO NOT agree with",
                 lens_lines_ == kMaxLensLines ? " (the last of these lines)" : "");
   }
 
@@ -985,70 +951,23 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
                                                : "");
   }
 
-  // c69 against the view-projection this renderer saw a frame ago: is it the previous frame's, and
-  // in which pixel layout (the census could not tell: the camera never moved).
-  if (ran_last_ && reset == 0) {
-    const temporal::History h = temporal::CompareToHistory(camera, last_camera_);
-    ++window_.history_checks;
-    window_.history_flip += h.flip < temporal::kHistoryTolerance;
-    window_.history_noflip += h.noflip < temporal::kHistoryTolerance;
-  }
-  NoteRigid(camera, fr.frame);
-
   // What the passes of step 1b need, for the Scene's call of RecordAnchorPasses right after this
-  // draw's constants are known: the anchor's own fetches (the depth, the stencil view, the colour),
-  // the sizes, both jitters and the cameras. The vectors use the frame before's camera only when it
-  // follows this one without a restart (a cut, a size change or a gap leave them zero).
+  // draw's constants are known: the anchor's own depth fetch, the sizes, the jitter and the
+  // cameras. The vectors use the frame before's camera only when it follows this one without a
+  // restart (a cut, a size change or a gap leave them zero).
   pending_ = TemporalMotion::Frame{};
   pending_.frame = fr.frame;
-  pending_.color_slot = fr.anchor_textures.table[0];
-  pending_.stencil_slot = fr.anchor_textures.table[1];
-  std::memcpy(pending_.stencil_fetch, fr.anchor_textures.fetch[1], sizeof(pending_.stencil_fetch));
   pending_.depth_slot = fr.anchor_textures.table[2];
   for (int i = 0; i < 2; ++i) {
     pending_.render_size[i] = fr.render_size[i];
     pending_.guest_size[i] = fr.guest_size[i];
     pending_.jitter[i] = fr.jitter[i];
-    pending_.previous_jitter[i] = last_jitter_[i];
   }
   pending_.camera = &fr.camera;
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
   pending_ready_ = motion_.available();
   return pending_ready_;
-}
-
-void TemporalSystem::NoteRigid(const temporal::Camera& camera, uint64_t frame) {
-  // The census could not say what the vehicle slots c69 + 4k mean (the world's turned out not to be
-  // the previous camera). If a slot is the vehicle's world to the previous frame's pixels, then
-  // c(69+4k) * inverse(c69) is the vehicle's own motion over one frame, a rigid transform: a
-  // rotation block of determinant 1, last column 0 0 0 1, a translation of about speed times
-  // frame time (0.5 units at 28 units a second). Counted always, the first lines of moving ones.
-  constexpr double kRigidTolerance = 1e-3;
-  constexpr double kMoving = 1e-3;
-  constexpr uint32_t kMaxRigidLines = 24;
-  for (uint32_t k = 1; k < temporal::kVehicleMatrices; ++k) {
-    const temporal::Rigid& r = camera.rigid[k];
-    if (!(camera.previous_valid & (1u << k)) || !r.valid) {
-      continue;
-    }
-    ++window_.rigid_checked;
-    const bool rigid = std::fabs(r.determinant - 1.0) <= kRigidTolerance &&
-                       r.orthonormal <= kRigidTolerance && r.last_column <= kRigidTolerance;
-    window_.rigid_ok += rigid;
-    const bool moving = r.translation > kMoving;
-    window_.rigid_moving += moving;
-    if (moving && rigid_lines_ < kMaxRigidLines) {
-      ++rigid_lines_;
-      REXLOG_INFO("[gpu] temporal mv: vehicle ID {} in frame {}: c(69+4k) * inverse(c69) has "
-                  "determinant {:.6f}, orthonormality error {:.2e}, last column error {:.2e}, "
-                  "moves {:.4f} units: {}{}",
-                  k, frame, r.determinant, r.orthonormal, r.last_column, r.translation,
-                  rigid ? "a rigid transform" : "NOT a rigid transform",
-                  rigid_lines_ == kMaxRigidLines ? " (the last of these lines; the summaries count)"
-                                                 : "");
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1125,8 +1044,6 @@ void TemporalSystem::EndFrame() {
   ran_last_ = ran;
   if (ran) {
     last_camera_ = fr.camera;
-    last_jitter_[0] = fr.jitter[0];
-    last_jitter_[1] = fr.jitter[1];
     last_scale_ = fr.scale;
     last_render_size_[0] = fr.render_size[0];
     last_render_size_[1] = fr.render_size[1];
@@ -1165,8 +1082,6 @@ void TemporalSystem::EndFrame() {
         w.cut_fov += fr.cut.by_fov;
       }
     }
-    w.vehicle_matrices += uint64_t(std::popcount(fr.camera.previous_valid));
-    w.pixel_to_world_agrees += fr.camera.pixel_to_world_agrees;
     w.have_camera = true;
     w.camera = fr.camera;
     w.render_size[0] = fr.render_size[0];
@@ -1284,9 +1199,7 @@ void TemporalSystem::Report(const char* why) {
   REXLOG_INFO("{} ({}) per 3D scene frame: main view draws {:.1f} (colour+depth {:.1f}, colour only "
               "{:.1f}, depth only {:.1f}), moved {:.1f} (colour+depth {:.1f}, colour only {:.1f}, "
               "depth only {:.1f}), kept still {:.2f} ({}), forward-Z {:.2f}, after the anchor "
-              "{:.2f}, second anchors {} | c69 is the previous view-projection times the pixel matrix in {} of {} checks "
-              "(with y down: {}) | usable previous matrices {:.2f} a frame | c64-c67 agree with "
-              "the inverse view-projection in {} of {}",
+              "{:.2f}, second anchors {}",
               kPrefix, why, double(drawn) * per_scene, double(w.main_draws[kColorDepth]) * per_scene,
               double(w.main_draws[kColorOnly]) * per_scene,
               double(w.main_draws[kDepthOnly]) * per_scene, double(moved) * per_scene,
@@ -1294,17 +1207,11 @@ void TemporalSystem::Report(const char* why) {
               double(w.jittered[kColorOnly]) * per_scene,
               double(w.jittered[kDepthOnly]) * per_scene, double(w.gate_rejected) * per_scene,
               gate.empty() ? "none" : gate, double(w.forward_z_draws) * per_scene,
-              double(w.late_draws) * per_scene, w.second_anchors,
-              w.history_flip, w.history_checks, w.history_noflip,
-              running != 0 ? double(w.vehicle_matrices) / double(running) : 0.0,
-              w.pixel_to_world_agrees, running);
+              double(w.late_draws) * per_scene, w.second_anchors);
   const TemporalMotion::Counters mv = motion_.TakeCounters();
   REXLOG_INFO("[gpu] temporal mv: ({}) vectors in {} frames ({} zero after a history restart, {} "
-              "anchors whose passes could not be recorded, {} images failed), vehicle ID passes {}, "
-              "checks judged {} | vehicle slots measured as rigid transforms: {} checked, {} rigid "
-              "within 1e-3, {} moving",
-              why, mv.frames, mv.zero_frames, w.mv_missed, mv.failed, mv.vehicle_draws, mv.checks,
-              w.rigid_checked, w.rigid_ok, w.rigid_moving);
+              "anchors whose passes could not be recorded, {} images failed)",
+              why, mv.frames, mv.zero_frames, w.mv_missed, mv.failed);
   if (effective_ != Upscaler::kOff || w.upscaled != 0) {
     const BackendStatus status = backend_ ? backend_->Status() : BackendStatus{};
     REXLOG_INFO("[gpu] temporal upscaler: ({}) {} ({}{}) in {} frames: upscaled {} ({} of them with "
