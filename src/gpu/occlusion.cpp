@@ -261,10 +261,12 @@ void GuestOcclusion::Shutdown() {
   if (begins_ != 0) {
     REXLOG_INFO(
         "[gpu] occlusion: {} guest queries begun, {} delivered (latency from the end to the "
-        "count: mean {:.1f} ms, max {:.1f} ms); not delivered: {} a draw was left out, {} pool "
-        "full or draw not countable, {} nested, {} frame never submitted; {} stray ends",
+        "count: mean {:.1f} ms, max {:.1f} ms; {} saw samples, at most {}); not delivered: {} a "
+        "draw was left out, {} pool full or draw not countable, {} nested, {} frame never "
+        "submitted; {} stray ends",
         begins_, delivered_, delivered_ ? latency_sum_ms_ / double(delivered_) : 0.0,
-        latency_max_ms_, lost_draw_, lost_overflow_, lost_nested_, lost_frame_, stray_ends_);
+        latency_max_ms_, seen_, max_samples_, lost_draw_, lost_overflow_, lost_nested_,
+        lost_frame_, stray_ends_);
     begins_ = 0;
   }
   usable_ = false;
@@ -460,8 +462,16 @@ void GuestOcclusion::Finish(uint64_t serial) {
                         .count());
   latency_sum_ms_ += latency_ms;
   latency_max_ms_ = std::max(latency_max_ms_, latency_ms);
-  if (logged_ < 16 || delivered_ % 600 == 0) {
+  if (samples != 0) {
+    ++seen_;
+    max_samples_ = std::max(max_samples_, samples);
+  }
+  // The first results, every 600th, and the first 16 that saw anything (most of a drive can
+  // count 0: the sun off the screen or behind something).
+  const bool first_seen = samples != 0 && logged_seen_ < 16;
+  if (logged_ < 16 || delivered_ % 600 == 0 || first_seen) {
     ++logged_;
+    logged_seen_ += first_seen ? 1 : 0;
     REXLOG_INFO("[gpu] occlusion: query {:#010x}, use {}: {} draws, {} host samples, {} guest "
                 "samples told to the game, {:.1f} ms after its end ({} delivered so far)",
                 use.query, use.use, use.draws, uint64_t(use.raw), samples, latency_ms, delivered_);

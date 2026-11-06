@@ -183,6 +183,9 @@ class GuestOcclusion {
   uint64_t lost_frame_ = 0;     // the frame was never submitted
   uint64_t stray_ends_ = 0;     // an end with no matching begin
   uint64_t logged_ = 0;
+  uint64_t seen_ = 0;          // results with any samples
+  uint64_t logged_seen_ = 0;
+  uint32_t max_samples_ = 0;   // the most guest samples told to the game
   double latency_sum_ms_ = 0;
   double latency_max_ms_ = 0;
 };
