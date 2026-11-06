@@ -12,8 +12,15 @@
 // PRESENT_NO_RAMP (present_stretch_ps): the same bilinear stretch
 // of an image the table was already applied to (FSR1's output, when its passes
 // stopped short of the letterbox).
+//
+// PRESENT_HDR (present_hdr_ps, present_stretch_hdr_ps): the back buffer is an HDR10 swap
+// chain. The picture is made exactly as above, in SDR code values, and its last step is
+// hdr_output.hlsli's HdrFromSdr (or the test pattern) with the levels in the push constants.
 
 #include "host_pass_common.hlsli"
+#if PRESENT_HDR
+#include "hdr_output.hlsli"
+#endif
 
 struct PresentPush {
   uint source;         // front buffer view, the Swap's swizzle applied
@@ -24,6 +31,10 @@ struct PresentPush {
   float origin_y;
   float scale_x;       // source texels per back buffer pixel
   float scale_y;
+  float hdr_white;     // PRESENT_HDR only (hdr.h HdrLevels): SDR white in nits
+  float hdr_peak;
+  float hdr_knee;
+  uint hdr_flags;
 };
 
 #ifdef __spirv__
@@ -50,6 +61,26 @@ float3 Texel(int2 at) {
 #endif
 }
 
+// The pixel's colour: the picture's SDR code values, or HDR10 code values of them.
+float4 Finish(float3 color, float2 p) {
+#if PRESENT_HDR
+  HdrLevels levels;
+  levels.white = g_push.hdr_white;
+  levels.peak = g_push.hdr_peak;
+  levels.knee = g_push.hdr_knee;
+  levels.flags = g_push.hdr_flags;
+  if ((levels.flags & 2u) != 0u) {
+    // p is in source texels (less the half texel); the pattern covers the picture's area.
+    return float4(HdrTestPattern((p + 0.5f) / float2(g_push.source_width, g_push.source_height),
+                                 levels),
+                  1.0f);
+  }
+  return float4(HdrFromSdr(color, levels), 1.0f);
+#else
+  return float4(color, 1.0f);
+#endif
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const float2 p = (position.xy - float2(g_push.origin_x, g_push.origin_y)) *
                        float2(g_push.scale_x, g_push.scale_y) -
@@ -61,9 +92,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // texels add nothing (lerp(a, b, 0) is a exactly): one texel and its three table reads instead
   // of four and twelve, the same result. Every pixel of the draw takes the same branch then.
   if (all(f == 0.0f)) {
-    return float4(Texel(at), 1.0f);
+    return Finish(Texel(at), p);
   }
   const float3 top = lerp(Texel(at), Texel(at + int2(1, 0)), f.x);
   const float3 bottom = lerp(Texel(at + int2(0, 1)), Texel(at + int2(1, 1)), f.x);
-  return float4(lerp(top, bottom, f.y), 1.0f);
+  return Finish(lerp(top, bottom, f.y), p);
 }

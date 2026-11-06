@@ -35,6 +35,7 @@
 //   RequestResize         window pixel-size changes
 //   RequestTexture*       the pause menu's TEXTURE MODS rows (any thread)
 //   PreviewRenderScale    the pause menu's RENDER RES and FSR1 rows (any thread)
+//   HdrOutputActive, HdrAuto*   the pause menu's HDR rows (any thread)
 //   Shutdown              LarecompApp::FinishWindowClose (the window's close) and OnShutdown
 // ===========================================================================
 
@@ -180,6 +181,14 @@ void RequestTextureReload();
 // last size; before the renderer is up, a window measured as the game's
 // screen. The pause menu labels its RENDER RES and FSR1 rows with it.
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset);
+
+// Any thread: the window's swap chain is HDR10 (hdr.h). False before the renderer is up and when
+// HDR is off or could not be had; the pause menu greys its HDR level rows then.
+bool HdrOutputActive();
+// Any thread: what 0 (AUTO) stands for in the HDR level settings now, in nits: Windows' report for
+// the display the window is on, else 200 and 1000.
+float HdrAutoPaperWhiteNits();
+float HdrAutoPeakNits();
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
 // stops the render thread (with a deadline), drains the GPU and releases every
