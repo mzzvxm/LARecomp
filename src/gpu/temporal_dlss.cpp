@@ -105,6 +105,9 @@ std::string MissingFiles(const std::wstring& dir) {
   return missing;
 }
 
+// CHECK: that sl_security.h compiles with llvm-mingw too (it loads wintrust.dll and crypt32.dll by
+// name, so no import library is needed), and that nvngx_dlss.dll, which sl.dlss.dll loads, is
+// signature-checked by Streamline itself (its source says "secureLoadLibrary"; not read).
 bool SignaturesOk(const std::wstring& dir, std::string* why) {
   for (const wchar_t* file : kSignedFiles) {
     const std::wstring path = dir + file;
@@ -120,6 +123,8 @@ bool SignaturesOk(const std::wstring& dir, std::string* why) {
 // Only to decide whether a card that cannot be asked (the files are not there, or the runtime is
 // not loaded) is worth listing: every GeForce RTX, Quadro RTX, RTX A-series and Titan RTX has it in
 // its name. The runtime's own query (slIsFeatureSupported) is the final word whenever it can run.
+// CHECK: a future card name without "RTX" is only found when DLSS is the saved choice (the query is
+// then asked at the start); the menu would not list it before.
 bool NameLooksLikeRtx(const std::string& name) {
   for (size_t i = 0; i + 3 <= name.size(); ++i) {
     if (std::toupper(static_cast<unsigned char>(name[i])) == 'R' &&
@@ -300,6 +305,11 @@ sl::float4x4 ToSl(const float* m) {
   return out;
 }
 
+// CHECK: the names and constructors below (sl::Resource(type, native, memory, view, state),
+// ResourceTag(resource, type, lifecycle, extent*), kBufferTypeMotionVectors, DLSSOptions' fields)
+// were read from Streamline 2.14.16's headers through a web page, not compiled: the first build
+// settles them. Vulkan: the view must be a whole-image view that can be used for the image's usage
+// flags, `memory` is passed but may be unnecessary.
 sl::Resource MakeSlResource(const TemporalImage& image, const backend::NativeImage& native) {
   sl::Resource resource(sl::ResourceType::eTex2d, native.resource, native.memory, native.view,
                         native.state);
@@ -698,6 +708,8 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
   options.useAutoExposure = sl::Boolean::eTrue;
   options.alphaUpscalingEnabled = sl::Boolean::eFalse;
 
+  // CHECK: the meaning of renderWidthMin/Max: read as DLSS's dynamic resolution range; when the
+  // runtime reports none (0) the scene must be within two pixels of the optimal size.
   // The size DLSS wants for this mode and output. The scene was drawn at the start's size (the
   // vendor's ratio over the render scale: temporal_backend.cpp kDlssModes), which can differ from
   // it by a few pixels, or by a mode picked since from another vendor's list: anything in DLSS's
@@ -835,6 +847,10 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   // The images and their tags, local to this evaluation (no global tags, so no frame-based tagging
   // flag and nothing that waits for a present). The states are the ones the caller transitioned
   // them to; Streamline takes them back to those.
+  // CHECK: that Streamline leaves the four images in the states declared here (the caller's
+  // barriers after the dispatch assume it, as they do for FidelityFX): the D3D12 debug layer with
+  // GPU-based validation, and Vulkan validation with synchronization validation, over the first
+  // frames. Local tags with the eValidUntilEvaluate lifecycle are also unverified.
   sl::Resource color_res = MakeSlResource(in.color, color_native);
   sl::Resource depth_res = MakeSlResource(in.depth, depth_native);
   sl::Resource motion_res = MakeSlResource(in.motion, motion_native);
@@ -989,6 +1005,12 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
               kPrefix);
   (void)preferred_adapter;
 #else
+  // CHECK: that Streamline's vkCreateDevice proxy accepts Plume's device chain (individual feature
+  // structs such as VkPhysicalDeviceDescriptorIndexingFeatures and pEnabledFeatures): it adds
+  // VkPhysicalDeviceVulkan12Features of its own, which the specification does not allow next to the
+  // individual ones. If the device cannot be made the game starts again without DLSS (Device); the
+  // fix would be in Plume (Vulkan12Features instead of the individual structs) or a vkCreateDevice
+  // wrapper of ours that merges.
   const uint32_t vendor = backend::RenderingAdapterVendor(preferred_adapter);
   if (vendor != kVendorNvidia) {
     REXLOG_INFO("{} DLSS is chosen, but the Vulkan device will not be an NVIDIA one (vendor "
