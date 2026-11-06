@@ -228,6 +228,13 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     ++fr.late_draws;
     return;
   }
+  // The colour-only draws (no depth test and no stencil: the sky and effects drawn without depth)
+  // and the depth-only draws (the occlusion draws at dusk and night, 256 a frame) are the same
+  // world as the rest, so they are moved when they pass the gate below: a world draw left still
+  // would sit at a different place than everything the temporal pass will treat as jittered.
+  // CHECK: that no colour-only draw is a screen-space effect with clipping on (the census could
+  // not tell them apart from the world; the counts per kind are in the summary), and that the 256
+  // depth-only draws are the occlusion queries (census finding 12, an inference).
   const Kind kind = match.color ? (match.depth ? kColorDepth : kColorOnly) : kDepthOnly;
   if (fr.scale.none()) {
     fr.scale = f.scale;
@@ -594,8 +601,10 @@ void TemporalSystem::Report(const char* why) {
                           double(w.gate_failed[i]) * per_scene);
     }
   }
-  const uint64_t drawn = w.main_draws[kColorDepth] + w.main_draws[kColorOnly] + w.main_draws[kDepthOnly];
-  const uint64_t moved = w.jittered[kColorDepth] + w.jittered[kColorOnly] + w.jittered[kDepthOnly];
+  const uint64_t drawn =
+      w.main_draws[kColorDepth] + w.main_draws[kColorOnly] + w.main_draws[kDepthOnly];
+  const uint64_t moved =
+      w.jittered[kColorDepth] + w.jittered[kColorOnly] + w.jittered[kDepthOnly];
   REXLOG_INFO("{} ({}) per 3D scene frame: main view draws {:.1f} (colour+depth {:.1f}, colour only "
               "{:.1f}, depth only {:.1f}), moved {:.1f} (colour+depth {:.1f}, colour only {:.1f}, "
               "depth only {:.1f}), kept still {:.2f} ({}), after the anchor {:.2f}, second anchors "

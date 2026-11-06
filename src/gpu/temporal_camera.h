@@ -45,7 +45,7 @@ struct Camera {
   Mat4 view_inverse;               // c12-c15
   Mat4 view_projection;            // c8-c11, without the jitter
   Mat4 view_projection_inverse;    // computed here, in double
-  Mat4 projection;                 // view inverse * view-projection (row vectors: view space to clip)
+  Mat4 projection;                 // view inverse * view-projection (view space to clip)
 
   double position[3] = {};         // row 3 of the view inverse
   double right[3] = {};            // row 0

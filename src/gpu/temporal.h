@@ -79,7 +79,7 @@ class TemporalSystem {
   static constexpr uint32_t kGateReasons = 4;
   // Why the history starts again (a bit each).
   enum ResetBit : uint32_t {
-    kResetFirst = 1u << 0,       // no accepted anchor in the frame before (the first, a menu, a pause)
+    kResetFirst = 1u << 0,       // no accepted anchor in the frame before (first, a menu, a pause)
     kResetCut = 1u << 1,         // the camera cut rule fired
     kResetSize = 1u << 2,        // the frame's size or the scene's scale changed
     kResetTime = 1u << 3,        // more than kMaxGapMs since the previous anchor
