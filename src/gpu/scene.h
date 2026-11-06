@@ -208,7 +208,7 @@ class Scene {
                          SharedConstants& sc, int32_t bias);
   // The mip bias of the scene's draws while the scene is drawn at a scale below the images of the
   // screen's, in 1/32 levels: log2(render scale / output scale), the levels the output size would
-  // have picked, plus mcla_gpu_temporal_lod_bias (FSR's guide: one more). Once a frame.
+  // have picked, plus one more (FSR's guide). Once a frame.
   int32_t SceneBias();
   // Records a prepared draw. kCount when recorded; kTarget/kFramebuffer when
   // not; *no_effect for an empty scissor.
@@ -246,7 +246,7 @@ class Scene {
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
-  // mcla_gpu_temporal: a prepared draw, before its constants are uploaded; may move it.
+  // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
   void Report(const char* why);

@@ -70,7 +70,6 @@ REXCVAR_DEFINE_BOOL(
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
-REXCVAR_DECLARE(double, mcla_gpu_temporal_lod_bias);  // temporal_backend.cpp
 
 namespace mcla::gpu {
 
@@ -1084,11 +1083,13 @@ int32_t Scene::SceneBias() {
     scene_bias_ = 0;
     if (edram_->SceneApart()) {
       // The scene's textures pick their mip levels from a picture smaller than the output: the
-      // levels the output's size would have picked are log2(render / output) lower. The extra
-      // (AMD's guide: -1) is on top. A fetch constant's own bias is added to it by the sampler.
+      // levels the output's size would have picked are log2(render / output) lower. One more
+      // level on top is what AMD's guide recommends for FSR. A fetch constant's own bias is added
+      // to it by the sampler.
+      constexpr double kExtraBias = -1.0;
       const double render = edram_->SceneScale().value();
       const double output = edram_->resolution_scale().value();
-      const double bias = std::log2(render / output) + REXCVAR_GET(mcla_gpu_temporal_lod_bias);
+      const double bias = std::log2(render / output) + kExtraBias;
       scene_bias_ = int32_t(std::lround(std::clamp(bias, -3.9, 3.9) * 32.0));
     }
   }

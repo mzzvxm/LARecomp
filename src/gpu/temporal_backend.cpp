@@ -57,28 +57,6 @@ REXCVAR_DEFINE_UINT32(
     "sharpest with the jitter as it is: the jitter convention check). Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_temporal_lod_bias, -1.0, "MCLA/GPU",
-    "Development: texture detail while the scene is drawn smaller than the output (an upscaler mode "
-    "below 100%). The scene's textures always get the sharper mip levels the output size would "
-    "have picked (log2 of render over output size: about -0.58 at 67%, -1 at 50%); this adds that "
-    "many more levels on top. -1 is what AMD's guide recommends for FSR, 0 is only the "
-    "compensation. Not applied when the scene is not drawn smaller (Native AA). Live.")
-    .range(-3.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_temporal_fail, 0, "MCLA/GPU",
-    "Development: make the upscaler fail on purpose, to test that the frame stays right. 1 the "
-    "creation of its context fails, 2 its dispatch fails. Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_ffx_debug, 0, "MCLA/GPU",
-    "Development: AMD's FidelityFX runtime checks what it is given and logs its messages (1), and "
-    "draws its debug view over the output (2). Read when the upscaler's context is made.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
 REXCVAR_DECLARE(std::string, mcla_gpu_msaa);  // edram.cpp
 
 namespace mcla::gpu {

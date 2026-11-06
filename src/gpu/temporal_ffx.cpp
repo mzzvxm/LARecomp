@@ -34,9 +34,6 @@
 #include "frame.h"
 #include "temporal_ffx_glue.h"
 
-REXCVAR_DECLARE(uint32_t, mcla_gpu_temporal_fail);
-REXCVAR_DECLARE(uint32_t, mcla_gpu_ffx_debug);
-
 namespace mcla::gpu {
 
 namespace {
@@ -422,8 +419,7 @@ void FfxBackend::Impl::ProbeRuntime() {
     config.header.type = FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG;
     config.effectId = FFX_API_EFFECT_ID_UPSCALE;
     config.fpMessage = &FfxMessage;
-    config.debugLevel = REXCVAR_GET(mcla_gpu_ffx_debug) != 0 ? FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_VERBOSE
-                                                             : FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_WARNINGS;
+    config.debugLevel = FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_WARNINGS;
     const ffxReturnCode_t rc = configure(nullptr, &config.header);
     if (rc != FFX_API_RETURN_OK) {
       REXLOG_INFO("{} the runtime's message hook was not taken ({}); its messages are not logged",
@@ -492,10 +488,6 @@ void FfxBackend::Impl::ProbeRuntime() {
 
 std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& request,
                                                          std::string* why) {
-  if (REXCVAR_GET(mcla_gpu_temporal_fail) == 1) {
-    *why = "failed on purpose (mcla_gpu_temporal_fail = 1)";
-    return {};
-  }
   const uint64_t id = request.upscaler == Upscaler::kFsr4 ? id4 : id31;
   if (!id) {
     *why = "no provider of that version";
@@ -508,15 +500,8 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
     *why = "the device's native objects are not available";
     return {};
   }
-  const uint32_t debug = REXCVAR_GET(mcla_gpu_ffx_debug);
-  uint32_t flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
-                   FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
-  if (debug != 0) {
-    flags |= FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
-  }
-  if (debug >= 2) {
-    flags |= FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION;
-  }
+  const uint32_t flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
+                         FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
   context->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
   context->upscale.flags = flags;
   context->upscale.maxRenderSize = {request.render_size[0], request.render_size[1]};
@@ -787,9 +772,6 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
   if (!context || !context->handle) {
     return fail("a dispatch was asked for with no context");
   }
-  if (REXCVAR_GET(mcla_gpu_temporal_fail) == 2) {
-    return fail("failed on purpose (mcla_gpu_temporal_fail = 2)");
-  }
   void* native_list = backend::NativeListHandle(list);
   if (!native_list) {
     return fail("the command list has no native object");
@@ -805,8 +787,9 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
   }
   // exposure, reactive and transparencyAndComposition stay empty: automatic exposure, no masks.
   d.jitterOffset = {in.jitter[0], in.jitter[1]};
-  // CHECK: the vectors are previous minus current, in render pixels (the groundwork's analytic check
-  // measured them), which is what FSR reads with a scale of 1: pixelSpaceMV = vector * scale.
+  // The vectors are previous minus current, in render pixels (measured in game against the world
+  // point seen at sample pixels), which is what FSR reads with a scale of 1: pixelSpaceMV = vector *
+  // scale.
   d.motionVectorScale = {in.motion_scale[0], in.motion_scale[1]};
   d.renderSize = {in.render_size[0], in.render_size[1]};
   d.upscaleSize = {in.output_size[0], in.output_size[1]};
@@ -820,7 +803,6 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
   d.cameraFovAngleVertical = in.camera_fov_y;
   // CHECK: the game's world unit is about a metre (a car at 64 mph covers 28.7 units a second).
   d.viewSpaceToMetersFactor = 1.0f;
-  d.flags = REXCVAR_GET(mcla_gpu_ffx_debug) >= 2 ? FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW : 0u;
 
   const ffxReturnCode_t rc = i.dispatch(&context->handle, &d.header);
   if (rc != FFX_API_RETURN_OK) {
