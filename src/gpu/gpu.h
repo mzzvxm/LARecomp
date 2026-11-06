@@ -201,4 +201,33 @@ void Shutdown();
 // setting; backend.h itself needs Plume's headers, this one doesn't.
 bool AutoBackendIsVulkan(const std::string& preferred_adapter);
 
+// --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
+// What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
+// mcla_gpu_upscaler is off | fsr31 | fsr4; a choice this PC cannot run is treated as off and the
+// menu does not list it.
+enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4 };
+const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4
+
+// The vendors' quality modes: their names and the render size as a share of the output. Only
+// NATIVE AA (100%) runs in the first step; the rest is the table the next one fills in.
+enum class UpscaleMode : uint8_t { kNativeAa, kQuality, kBalanced, kPerformance, kUltraPerformance,
+                                   kCount };
+struct ModeInfo {
+  const char* cvar;   // native_aa, quality, balanced, performance, ultra_performance
+  const char* name;   // NATIVE AA, QUALITY, ...
+  uint32_t percent;   // 100, 67, 59, 50, 33
+  double ratio;       // output size over render size: 1, 1.5, 1.7, 2, 3
+};
+const ModeInfo& ModeInfoOf(UpscaleMode mode);
+
+// Any thread. Written by the renderer's upscaler backend when its probe ends (and when something
+// fails) and by the temporal system as frames go.
+struct UpscalerAvailability {
+  bool probed = false;  // the answer below is final
+  bool fsr31 = false;   // can run on this PC: listed under Upscaling
+  bool fsr4 = false;    // its provider really loads here
+  Upscaler running = Upscaler::kOff;  // the one doing the work this moment
+};
+UpscalerAvailability GetUpscalerAvailability();
+
 }  // namespace mcla::gpu

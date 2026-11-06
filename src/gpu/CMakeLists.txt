@@ -53,6 +53,7 @@ add_library(larecomp_gpu OBJECT
     stream.cpp
     swap_chain.cpp
     temporal.cpp
+    temporal_backend.cpp
     temporal_camera.cpp
     temporal_mv.cpp
     texture_decode.cpp
