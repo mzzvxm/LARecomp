@@ -401,9 +401,8 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   // (D3D12 NON_PIXEL_SHADER_RESOURCE, Vulkan SHADER_READ_ONLY_OPTIMAL), the output to general; the
   // runtime takes them back to those states; they then go back to what the draws and the passes
   // read them in.
-  using Stage = plume::RenderBarrierStage;
-  const plume::RenderBarrierStages graphics_and_compute =
-      plume::RenderBarrierStages(Stage::GRAPHICS | Stage::COMPUTE);
+  namespace Stage = plume::RenderBarrierStage;
+  const plume::RenderBarrierStages graphics_and_compute = Stage::GRAPHICS_AND_COMPUTE;
   pass_timing_->Mark(list, "temporal upscale");
   plume::RenderTextureBarrier to_read[3] = {
       plume::RenderTextureBarrier(product->texture.get(), plume::RenderTextureLayout::SHADER_READ),
@@ -433,7 +432,8 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
 
   // Every fetch of the scene colour from here on reads the output.
   TextureCache::Override stand_in;
-  stand_in.image_key = ResolveCache::ImageKey(fetch.key);
+  stand_in.product = product;
+  stand_in.page = fetch.key.base_page ? fetch.key.base_page : fetch.key.mip_page;
   stand_in.texture = output_.texture.get();
   stand_in.format = kOutputFormat;
   stand_in.scale = fr.scale;

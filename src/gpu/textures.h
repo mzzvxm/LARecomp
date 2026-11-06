@@ -245,13 +245,13 @@ class TextureCache {
                  plume::RenderCommandList* list);
 
   // The image that stands for a scene colour product for the rest of a frame (the temporal
-  // upscaler's output, temporal.h): every fetch whose texture is `image_key`'s image (the key
-  // without its mip fields, as ResolveCache::Find reads it) binds `texture` instead, through its own
-  // swizzle's view, as a per-frame binding. The fetches memoized with the product are bound again
-  // (the pages' product generation moves at the set and at the clear). `texture` stays alive and
-  // in SHADER_READ while it is set. Render thread.
+  // upscaler's output, temporal.h): every fetch whose resolve product (ResolveCache::Find) is
+  // `product` binds `texture` instead, through its own swizzle's view, as a per-frame binding. The
+  // fetches memoized with the product are bound again (the pages' product generation moves at the
+  // set and at the clear). `texture` stays alive and in SHADER_READ while it is set. Render thread.
   struct Override {
-    TextureKey image_key;
+    const void* product = nullptr;  // the ResolveCache::Product replaced (compared, never read)
+    uint32_t page = 0;              // its base page, where the memoized fetches are bumped
     const plume::RenderTexture* texture = nullptr;
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
     Scale scale;  // host texels per guest texel of `texture`
