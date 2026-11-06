@@ -17,18 +17,14 @@
 
 #include "contract_checks.h"
 #include "dxc.h"
+#include "shaderpack/pack_format.h"
 
 namespace larecomp::shaderpack {
 
 namespace {
 
-// CHECK: the v8 layout is copied here from build_shader_pack_v8.py so this file
-// stands alone. Use shaderpack/pack_format.h (W2) once it is merged.
-constexpr uint32_t kPackVersion = 8;
-constexpr size_t kHeaderSize = 32;
-constexpr size_t kEntrySize = 88;
+// The pack layout is pack_format.h's.
 constexpr size_t kBlobsPerEntry = 4;  // DXIL 0, DXIL 1, SPIR-V 0, SPIR-V 1
-constexpr uint32_t kFlagPsOutputsShift = 8;
 
 uint32_t Le32(const uint8_t* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
@@ -79,15 +75,15 @@ class PackFile {
       *error = std::format("cannot open the pack {}", PathText(path));
       return false;
     }
-    uint8_t header[kHeaderSize];
-    file_.read(reinterpret_cast<char*>(header), kHeaderSize);
-    if (!file_ || std::memcmp(header, "MSPK", 4) != 0 || Le32(header + 4) != kPackVersion) {
+    uint8_t header[kPackHeaderBytes];
+    file_.read(reinterpret_cast<char*>(header), kPackHeaderBytes);
+    if (!file_ || std::memcmp(header, kPackMagic, 4) != 0 || Le32(header + kHeaderVersion) != kPackVersion) {
       *error = std::format("{} is not a v{} shader pack", PathText(path), kPackVersion);
       return false;
     }
-    const uint32_t count = Le32(header + 8);
-    const uint64_t table_bytes = uint64_t(count) * kEntrySize;
-    if (kHeaderSize + table_bytes > file_size_) {
+    const uint32_t count = Le32(header + kHeaderCount);
+    const uint64_t table_bytes = uint64_t(count) * kPackEntryBytes;
+    if (kPackHeaderBytes + table_bytes > file_size_) {
       *error = "the pack's entry table runs past the end of the file";
       return false;
     }
@@ -99,14 +95,16 @@ class PackFile {
     }
     entries_.resize(count);
     for (uint32_t i = 0; i < count; ++i) {
-      const uint8_t* p = table.data() + size_t(i) * kEntrySize;
+      const uint8_t* p = table.data() + size_t(i) * kPackEntryBytes;
       PackEntry& entry = entries_[i];
-      entry.key = Le64(p);
-      entry.stage = p[8];
-      entry.spec_mask = p[9];
-      entry.flags = Le32(p + 16);
+      entry.key = Le64(p + kEntryKey);
+      entry.stage = p[kEntryStage];
+      entry.spec_mask = p[kEntrySpecMask];
+      entry.flags = Le32(p + kEntryFlags);
       for (size_t b = 0; b < kBlobsPerEntry; ++b) {
-        entry.blobs[b] = {Le32(p + 24 + 16 * b), Le32(p + 28 + 16 * b), Le64(p + 32 + 16 * b)};
+        // The four blob records follow each other: DXIL 0, DXIL 1, SPIR-V 0, SPIR-V 1.
+        const uint8_t* record = p + kEntryDxil0 + kBlobRecordBytes * b;
+        entry.blobs[b] = {Le32(record), Le32(record + 4), Le64(record + 8)};
         if (uint64_t(entry.blobs[b].offset) + entry.blobs[b].size > file_size_) {
           *error = std::format("entry {}: a blob runs past the end of the pack", i);
           return false;
@@ -289,7 +287,7 @@ FileReport RunOne(const SelfTestFile& file, DxcWorker& worker, PackFile& pack, c
 
   if (options.check_contract) {
     Problems problems;
-    const uint32_t outputs = (entry->flags >> kFlagPsOutputsShift) & 0x1F;
+    const uint32_t outputs = (entry->flags >> kFlagPixelOutputsShift) & kFlagPixelOutputsMask;
     HlslCheckInput text_input;
     text_input.name = name;
     text_input.hlsl = hlsl;

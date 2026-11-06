@@ -19,7 +19,7 @@
 // dump folder the two blobs are written side by side for `dxc -dumpbin` /
 // spirv-dis.
 //
-// Intended use (the shaderpack tool's --selftest, W7): 20 sampled files from
+// Intended use (tools/shaderpack_tool dxc-selftest): 20 sampled files from
 // the v8 tree with the pack in native/work/pack, `ok` must be true.
 // ===========================================================================
 
