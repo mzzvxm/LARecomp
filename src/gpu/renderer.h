@@ -114,6 +114,14 @@ class Renderer final : public RenderThread::Executor {
                   std::shared_ptr<OverlayChannel> overlay_channel,
                   std::shared_ptr<OverlayHost> overlay_host);
 
+  // Main thread, after Initialize, with the guest not drawing yet (before it is launched): attaches
+  // the shader packs in `folder` (the shader_pack_dir cvar replaces it) and starts the pipeline
+  // persistence and precache against them (shaders.h: the renderer starts without a pack when none
+  // is in place). True when the packs are attached, also when they were already.
+  bool AttachShaderPacks(const std::filesystem::path& folder);
+  // Any thread.
+  bool shader_packs_attached() const { return shaders_.attached(); }
+
   // Any thread.
   void BeginShutdown();
   // Lifecycle thread. Implies BeginShutdown.
@@ -146,6 +154,9 @@ class Renderer final : public RenderThread::Executor {
 
  private:
   enum class PresentSource : uint8_t { kGuest, kIdle };
+
+  // Once the main shader pack is attached, in Initialize or in AttachShaderPacks.
+  void OnShaderPackAttached();
 
   void Execute(const RecordHeader& header, const uint8_t* payload) override;
   void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);

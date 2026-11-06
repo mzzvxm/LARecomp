@@ -122,7 +122,11 @@ class ShaderStore {
     kNoVariant,     // the variant asked for was not compiled for this shader
     kBadBlob,       // FNV or magic mismatch (logged once)
     kCreateFailed,  // the backend refused it (logged once)
-    kNoPack,        // no pack is attached yet (the store is pending)
+    // No pack is attached yet (the store is pending).
+    // CHECK: FrameValidator::CheckShaderObject (validation.cpp) switches over this enum and has no
+    // case for it (a -Wswitch warning, no harm: its entries come from Find, which is null while
+    // pending, so it never sees this result). Add `case kNoPack: break;` there.
+    kNoPack,
   };
   static const char* ResultName(ShaderResult result);
 
@@ -163,6 +167,9 @@ class ShaderStore {
   // %LOCALAPPDATA%\larecomp\cache\shaders (~/.cache/larecomp/shaders off Windows). Makes the
   // folder.
   static std::filesystem::path DefaultPackFolder();
+  // Where a build of the packs writes: the cvar shader_pack_dir when it is set, else
+  // `configured` when it is not empty, else DefaultPackFolder().
+  static std::filesystem::path BuildFolder(const std::filesystem::path& configured);
 
   // Any thread. False while the store is pending.
   bool attached() const { return attached_.load(std::memory_order_acquire); }

@@ -55,6 +55,12 @@ bool CanWriteTo(const std::filesystem::path& dir) {
   return true;
 }
 
+// shader_pack_dir as a path; empty when it is not set.
+std::filesystem::path CvarPackFolder() {
+  const std::string dir = REXCVAR_GET(shader_pack_dir);
+  return std::filesystem::path(std::u8string(dir.begin(), dir.end()));
+}
+
 // %LOCALAPPDATA%/larecomp/cache/shaders on Windows; $XDG_CACHE_HOME or ~/.cache, then
 // larecomp/shaders elsewhere. Empty when the environment names no place.
 std::filesystem::path LocalPackFolder() {
@@ -129,12 +135,18 @@ std::filesystem::path ShaderStore::DefaultPackFolder() {
   return beside;  // neither can be written: the build reports it, with this path
 }
 
+std::filesystem::path ShaderStore::BuildFolder(const std::filesystem::path& configured) {
+  if (std::filesystem::path dir = CvarPackFolder(); !dir.empty()) {
+    return dir;
+  }
+  return configured.empty() ? DefaultPackFolder() : configured;
+}
+
 std::vector<std::filesystem::path> ShaderStore::SearchFolders(
     const std::filesystem::path& configured) {
   std::vector<std::filesystem::path> folders;
-  const std::string dir = REXCVAR_GET(shader_pack_dir);
-  if (!dir.empty()) {
-    folders.emplace_back(std::u8string(dir.begin(), dir.end()));
+  if (std::filesystem::path dir = CvarPackFolder(); !dir.empty()) {
+    folders.push_back(std::move(dir));
     return folders;
   }
   if (!configured.empty()) {
@@ -184,7 +196,7 @@ bool ShaderStore::Attach(const std::filesystem::path& folder) {
   path_ = folder / kPackFileName;
   std::error_code ec;
   if (!std::filesystem::exists(path_, ec)) {
-    REXLOG_INFO("[gpu] shader pack: none at {}", rex::path_to_utf8(path_));
+    REXLOG_DEBUG("[gpu] shader pack: none at {}", rex::path_to_utf8(path_));
     path_.clear();
     return false;
   }
