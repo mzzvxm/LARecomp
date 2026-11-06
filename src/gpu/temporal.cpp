@@ -134,8 +134,14 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
   if (want != enabled_ && !frame_open_) {
     SetEnabled(want);  // only between frames: a frame is jittered whole or not at all
   }
-  if (!enabled_ || frame_open_) {
-    return;  // off, or a frame reopened after an abandoned list: its state stands
+  if (!enabled_) {
+    return;
+  }
+  if (frame_open_) {
+    // A frame the Renderer opened again (an idle present opens a list too, an abandoned frame
+    // starts a new one): the state of the frame stands.
+    frame_.slot = slot;
+    return;
   }
   frame_open_ = true;
   frame_ = FrameState{};
