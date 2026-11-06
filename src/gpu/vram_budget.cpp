@@ -10,6 +10,7 @@
 
 #include "device.h"
 #include "edram.h"
+#include "process_memory.h"
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "textures.h"
@@ -53,6 +54,8 @@ void VideoMemoryBudget::BeginFrame() {
     return;
   }
   const uint64_t frame = device_->frame();
+  // The diagnostic that says what the rest of the process holds (off by default).
+  ProcessMemoryTick(frame);
   if (frame < next_check_) {
     return;
   }
