@@ -11,7 +11,8 @@
 //   coverage) -- what the game's own draws left there, so its resolves and readbacks see its frame.
 // LAYERS_COMPOSE = 1 (hdr_compose_ps): the same sum, for the HDR present, into an
 //   R16G16B16A16_FLOAT image: the scene and the UI in the game's code values with nothing clamped
-//   (stage 3 will put the scene above 1 here; the UI stays under it). With a debug view
+//   (the scene may be above 1 here: HDR stage 3's float scene, hdr_tonemap.h, is read in place of the
+//   underlay when the frame has one; the UI stays under it). With a debug view
 //   (mcla_gpu_hdr_layers_view) the pass shows one layer instead.
 //
 // Both draw 1:1 from the image's origin: the pixel the shader sees is the texel it reads.
@@ -19,10 +20,11 @@
 #include "host_pass_common.hlsli"
 
 struct LayersPush {
-  uint underlay;  // R8G8B8A8_UNORM image, a bindless 2D slot
+  uint underlay;  // the scene: R8G8B8A8_UNORM underlay, or (compose) the float scene; a bindless 2D slot
   uint ui;        // LAYERS_COMPOSE only: the UI layer's slot
-  uint view;      // LAYERS_COMPOSE only: 0 the frame, 1 the UI layer, 2 the underlay, 3 coverage
-  uint reserved;
+  uint view;      // LAYERS_COMPOSE only: 0 the frame, 1 the UI layer, 2 the scene, 3 coverage,
+                  // 4 where the float scene is above 1, 5 its difference from the 8-bit scene
+  uint reference; // LAYERS_COMPOSE only: the 8-bit underlay's slot (views 4 and 5)
 };
 
 #ifdef __spirv__
@@ -45,9 +47,26 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (g_push.view == 3u) {
     return float4(ui.a, ui.a, ui.a, 1.0f);
   }
+  if (g_push.view >= 4u) {
+    const float3 reference = g_textures[g_push.reference].Load(at).rgb;
+    if (g_push.view == 4u) {
+      // The scene's light above the game's white (code values past the 8-bit 1) in magenta, over
+      // the 8-bit scene dimmed.
+      const float largest = max(underlay.r, max(underlay.g, underlay.b));
+      return largest > 1.002f ? float4(1.0f, 0.0f, 1.0f, 1.0f) : float4(reference * 0.25f, 1.0f);
+    }
+    // The float scene against the 8-bit one: sixteen times the difference, per channel.
+    return float4(saturate(abs(underlay.rgb - reference) * 16.0f), 1.0f);
+  }
   // Premultiplied "over", as the game blends the UI: no clamp, so what the scene holds above 1
-  // later is kept; the UI's own part never exceeds its coverage.
-  return float4(ui.rgb + underlay.rgb * (1.0f - ui.a), 1.0f);
+  // is kept; the UI's own part never exceeds its coverage. The display's table is indexed by what
+  // this writes, so it is made finite and non-negative here: a NaN a float16 draw left in the float
+  // scene is none, and 65504 is the most a float16 holds.
+  const float3 code = ui.rgb + underlay.rgb * (1.0f - ui.a);
+  const uint3 bits = asuint(code) & 0x7FFFFFFFu;
+  return float4((bits.x <= 0x7F800000u) ? clamp(code.x, 0.0f, 65504.0f) : 0.0f,
+                (bits.y <= 0x7F800000u) ? clamp(code.y, 0.0f, 65504.0f) : 0.0f,
+                (bits.z <= 0x7F800000u) ? clamp(code.z, 0.0f, 65504.0f) : 0.0f, 1.0f);
 #else
   return underlay;
 #endif

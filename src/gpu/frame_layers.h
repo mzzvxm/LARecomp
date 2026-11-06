@@ -53,6 +53,11 @@
 // buffer's size and shows that where it shows the front buffer, with the gamma table extended
 // above 1. An idle present repeats the last guest frame's layers.
 //
+// HDR stage 3 (hdr_tonemap.h) makes a float image of the scene as well, with the tone map's light
+// above white and the glows drawn after it, up to the marker. It is not made here: the frame's
+// capture asks the SceneImageSource (the HdrToneMap) for it, and a frame that has one carries it
+// as Frame::scene, which the present composes under the UI in place of the 8-bit underlay.
+//
 // Cost (RGBA8, the target's region): the underlay and the ui images 3.7 MB each at 1x and 33 MB
 // at 3x, made on the first separated frame and released after kReleaseAfterFrames guest frames
 // without layers; per separated frame two copies of the region, one clear and one blended
@@ -79,6 +84,18 @@
 namespace mcla::gpu {
 
 class PassTiming;
+
+// The float image of the scene (HDR stage 3, hdr_tonemap.h) a frame's capture may carry.
+class SceneImageSource {
+ public:
+  virtual ~SceneImageSource() = default;
+  // The finished float scene when the frame has one at exactly `width` x `height` host pixels (the
+  // layers' region), else null. `epoch` is what SceneEpoch said then.
+  virtual const HostImage* FinishedScene(uint32_t width, uint32_t height, uint32_t* epoch) = 0;
+  // Changes whenever the image's content or identity changes: a frame whose epoch is not the
+  // current one no longer has its scene.
+  virtual uint32_t SceneEpoch() const = 0;
+};
 
 class FrameLayers {
  public:
@@ -118,6 +135,10 @@ class FrameLayers {
     uint32_t height = 0;
     const HostImage* hudless = nullptr;  // R8G8B8A8_UNORM, the scene in the game's code values
     const HostImage* ui = nullptr;       // R8G8B8A8_UNORM, premultiplied, coverage in alpha
+    // R16G16B16A16_FLOAT: the same scene with the light the tone map clipped (HDR stage 3), or null.
+    // Valid while the source's epoch is scene_epoch.
+    const HostImage* scene = nullptr;
+    uint32_t scene_epoch = 0;
     // Counts up with each capture: a consumer that kept something made from this frame knows it
     // is still this frame's.
     uint64_t generation = 0;
@@ -144,6 +165,8 @@ class FrameLayers {
   // GPU idle, before HostPasses shuts down.
   void Shutdown();
 
+  // The float scene's source (not owned), asked at each capture. Null: frames have none.
+  void SetSceneSource(SceneImageSource* source) { scene_source_ = source; }
   // `requester` (Requester bits) wants the layers, or no longer does. A requester set before
   // Initialize counts from it.
   void Request(uint32_t requester, bool wanted);
@@ -156,6 +179,9 @@ class FrameLayers {
   // A UI phase is under way: the Scene asks ClassifyDraw for each draw and OnResolve for each
   // resolve. One load and a compare when it is not.
   bool ui_phase() const { return phase_ == Phase::kUi || phase_ == Phase::kStarted; }
+  // Right after OnComposite: the region the layers will cover in host pixels. False when the marker
+  // found the frame cannot be separated.
+  bool Region(EdramKey* target, uint32_t* width, uint32_t* height) const;
   // The composite record, outside a render pass, after the scene's anti-aliasing: `target` is the
   // frame's last colour target, `width` x `height` the guest rectangle its draws covered.
   void OnComposite(plume::RenderCommandList* list, EdramTargets::Target* target, uint32_t width,
@@ -230,6 +256,7 @@ class FrameLayers {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  SceneImageSource* scene_source_ = nullptr;
   uint32_t requesters_ = 0;
   bool initialized_ = false;
   bool active_ = false;

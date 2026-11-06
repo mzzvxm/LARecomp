@@ -89,6 +89,10 @@ class PresentPass {
 
   // HDR10 only: the levels Draw puts in its constants, each frame before it.
   void SetHdrLevels(const HdrLevels& levels) { hdr_levels_ = levels; }
+  // The game's display gamma table as the last guest present left it, the green channel as the
+  // table value over 1023 per code (HDR stage 3 inverts the viewing transfer through it, hdr_tonemap.h).
+  // False while the table was not built yet (all zero): the identity applies.
+  bool GreenGammaTable(float out[256]) const;
   // HDR10 only: where Prepare takes the frame from when the guest frame kept its UI as a layer
   // (hdr_scene.h) -- the float image of the scene and the UI composed -- instead of the front
   // buffer. Not owned; null: the front buffer always.
@@ -224,6 +228,13 @@ class PresentPass {
   HdrScene* hdr_scene_ = nullptr;
   // Prepare bound the HdrScene's image: its codes may exceed 1 (kHdrFlagExtendedCodes).
   bool extended_ = false;
+  // ... and it is the float scene (HDR stage 3): the table is read between its entries.
+  bool interpolated_ = false;
+  // hdr.h kHdrFlagExtendedCodes / kHdrFlagInterpolatedCodes for the image Prepare bound.
+  uint32_t CodeFlags() const {
+    return extended_ ? (kHdrFlagExtendedCodes | (interpolated_ ? kHdrFlagInterpolatedCodes : 0u))
+                     : 0u;
+  }
   Route route_ = Route::kBilinear;
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;

@@ -32,6 +32,7 @@ add_library(larecomp_gpu OBJECT
     guest_memory.cpp
     hdr.cpp
     hdr_scene.cpp
+    hdr_tonemap.cpp
     input_layout.cpp
     layout.cpp
     memory_census.cpp

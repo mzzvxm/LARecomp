@@ -287,6 +287,16 @@ void FrameLayers::OnComposite(plume::RenderCommandList* list, EdramTargets::Targ
   phase_ = Phase::kUi;
 }
 
+bool FrameLayers::Region(EdramKey* target, uint32_t* width, uint32_t* height) const {
+  if (phase_ != Phase::kUi || !target_) {
+    return false;
+  }
+  *target = ui_key_;
+  *width = host_width_;
+  *height = host_height_;
+  return true;
+}
+
 FrameLayers::DrawAction FrameLayers::ClassifyDraw(const EdramKey& color0, uint32_t host_samples,
                                                   uint64_t ps_identity, PipelineKey& key) {
   if (!(color0 == ui_key_) || host_samples != 1) {
@@ -409,6 +419,11 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
   captured_.height = host_height_;
   captured_.hudless = &underlay_;
   captured_.ui = &ui_;
+  // HDR stage 3: the float scene of this frame, when its tone map and the draws after it were
+  // made again at this region's size (hdr_tonemap.h).
+  captured_.scene = scene_source_ ? scene_source_->FinishedScene(host_width_, host_height_,
+                                                                  &captured_.scene_epoch)
+                                  : nullptr;
   captured_.generation = ++generation_;
   captured_.destination = destination;
   phase_ = Phase::kDone;

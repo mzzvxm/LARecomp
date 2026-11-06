@@ -16,9 +16,10 @@
 REXCVAR_DEFINE_INT32(
     mcla_gpu_hdr_layers_view, 0, "MCLA/GPU",
     "Diagnostic (HDR output): what a frame whose UI was kept as a layer shows. 0 the frame, 1 the "
-    "UI layer alone, 2 the scene alone, 3 the UI's coverage as grey. Frames without layers show "
-    "the front buffer whatever this says. Live.")
-    .range(0, 3)
+    "UI layer alone, 2 the scene alone, 3 the UI's coverage as grey, 4 magenta where the scene "
+    "is above the game's white, 5 the float scene's difference from the 8-bit scene times 16. "
+    "Frames without layers show the front buffer whatever this says. Live.")
+    .range(0, 5)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
@@ -81,7 +82,7 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, 
     layers_->NoteUnusable(false);
     return false;
   }
-  const uint32_t view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_hdr_layers_view), 0, 3));
+  const uint32_t view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_hdr_layers_view), 0, 5));
   const bool kept = image_.texture && image_.width == width && image_.height == height;
   if (kept && composed_generation_ == frame.generation && composed_view_ == view) {
     ++stats_.reused;
@@ -94,12 +95,27 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, 
       return false;
     }
   }
+  // The scene under the UI: the frame's float scene (HDR stage 3) while it is still what the source
+  // holds, else the 8-bit one the game's post chain finished.
+  const HostImage* scene = frame.hudless;
+  bool float_scene = false;
+  if (frame.scene && scene_source_) {
+    if (frame.scene_epoch == scene_source_->SceneEpoch() && frame.scene->texture &&
+        frame.scene->width >= width && frame.scene->height >= height) {
+      scene = frame.scene;
+      float_scene = true;
+    } else {
+      ++stats_.stale_scene;
+    }
+  }
   pass_timing_->Mark(list, "hdr compose");
-  const Push push{frame.hudless->slot, frame.ui->slot, view, 0};
+  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot};
   passes_->DrawInto(list, image_, pipeline_.get(), &push, sizeof(push));
   composed_generation_ = frame.generation;
   composed_view_ = view;
+  float_scene_ = float_scene;
   ++stats_.composed;
+  stats_.composed_float += float_scene ? 1 : 0;
   return true;
 }
 
@@ -108,9 +124,11 @@ uint64_t HdrScene::HeldBytes() const {
 }
 
 std::string HdrScene::TakeSummary() {
-  std::string text = std::format("hdr scene: {} frames composed, {} idle presents reused, {} failed | {:.1f} MiB",
-                                 stats_.composed, stats_.reused, stats_.failed,
-                                 double(HeldBytes()) / double(1u << 20));
+  std::string text = std::format(
+      "hdr scene: {} frames composed ({} with the float scene, {} lost it before the present), {} "
+      "idle presents reused, {} failed | {:.1f} MiB",
+      stats_.composed, stats_.composed_float, stats_.stale_scene, stats_.reused, stats_.failed,
+      double(HeldBytes()) / double(1u << 20));
   stats_ = Stats{};
   return text;
 }

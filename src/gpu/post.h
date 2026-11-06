@@ -68,6 +68,8 @@ class PostAa {
   // mcla_gpu_aa, read once a frame at the composite record, off included: a
   // change is logged and the summary names the mode of the last frame read.
   Mode FrameMode();
+  // mcla_gpu_aa as it is now, without FrameMode's note (the HDR scene asks at its tone map).
+  Mode CurrentMode() const;
 
   // The composed scene in `target`, `width` x `height` guest pixels from its
   // origin: `mode`'s passes into `list` (outside a render pass; `slot` the

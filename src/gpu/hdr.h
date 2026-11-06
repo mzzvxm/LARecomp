@@ -9,7 +9,8 @@
 // Windows shows SDR on an HDR desktop, placed at paper white in nits, rolled
 // off towards the peak, and written as PQ. The game's own display gamma table
 // is applied first, as in SDR, so DISPLAY GAMMA means the same. The picture is
-// the SDR one placed at paper white: nothing goes above it yet (HDR-PLAN.md).
+// the SDR one placed at paper white: stage 2 (frame_layers.h) keeps the UI as a layer of its own and
+// stage 3 (hdr_tonemap.h) puts the scene's lights above paper white (HDR-PLAN.md).
 //
 // The setting (mcla_gpu_hdr: off / auto / on) is read once, at start: the swap
 // chain's format cannot change without making the pipelines that draw into it
@@ -51,6 +52,10 @@ inline constexpr uint32_t kHdrFlagTestPattern = 1u << 1;
 // exceed 1 (the HdrScene's float image, hdr_scene.h), so the display's gamma table is read as
 // before up to 1 and extended above 1 by the slope of its last step (hlsl/present_ps.hlsl Ramp).
 inline constexpr uint32_t kHdrFlagExtendedCodes = 1u << 2;
+// With kHdrFlagExtendedCodes, for a source that holds HDR stage 3's float scene (not the 8-bit
+// underlay): the table is read between its entries (linearly, and past the last one along its last
+// step) instead of at the nearest of the 256, since the scene is not made of 8-bit values.
+inline constexpr uint32_t kHdrFlagInterpolatedCodes = 1u << 3;
 
 namespace hdr {
 

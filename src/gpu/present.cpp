@@ -230,6 +230,22 @@ void PresentPass::OnGuestPresent(const PresentRecord& r) {
   }
 }
 
+bool PresentPass::GreenGammaTable(float out[256]) const {
+  bool zero = true;
+  for (uint8_t b : ramp_bytes_) {
+    zero &= b == 0;
+  }
+  if (zero) {
+    return false;
+  }
+  // As Prepare writes the table texture: 16-bit big-endian entries holding 10 bits in their top.
+  for (uint32_t i = 0; i < 256; ++i) {
+    const uint8_t* entry = ramp_bytes_.data() + 1 * 512 + i * 2;
+    out[i] = float((uint32_t(entry[0]) << 8 | entry[1]) >> 6) / 1023.0f;
+  }
+  return true;
+}
+
 void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_t width,
                           uint32_t height) {
   source_ready_ = false;
@@ -315,10 +331,13 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
   // A frame that kept its UI as a layer (HDR10): the scene and the UI composed in the game's
   // code values, in float, where the front buffer would be read.
   extended_ = false;
+  interpolated_ = false;
   if (hdr_scene_ != nullptr &&
       hdr_scene_->Compose(list, fetch.key, source_width_, source_height_)) {
     source_slot_ = hdr_scene_->slot();
     extended_ = true;
+    // The float scene (HDR stage 3) reads the table between its entries.
+    interpolated_ = hdr_scene_->scene_is_float();
   }
   fit_ = FitOf(source_width_, source_height_, width, height);
   if (REXCVAR_GET(mcla_gpu_fsr)) {
@@ -358,7 +377,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   push.source_height = source_height_;
   push.scale_x = 1.0f;
   push.scale_y = 1.0f;
-  push.hdr_flags = extended_ ? kHdrFlagExtendedCodes : 0u;
+  push.hdr_flags = CodeFlags();
   passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
   route_ = Route::kRamped;
   ++stats_.ramped;
@@ -465,7 +484,7 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_white = hdr_levels_.white;
   push.hdr_peak = hdr_levels_.peak;
   push.hdr_knee = hdr_levels_.knee;
-  push.hdr_flags = hdr_levels_.flags | (extended_ ? kHdrFlagExtendedCodes : 0u);
+  push.hdr_flags = hdr_levels_.flags | CodeFlags();
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
@@ -531,7 +550,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     push.source_height = source_height_;
     push.scale_x = 1.0f;
     push.scale_y = 1.0f;
-    push.hdr_flags = extended_ ? kHdrFlagExtendedCodes : 0u;
+    push.hdr_flags = CodeFlags();
     passes_->DrawInto(list, chain_[0], ramp_pipeline_.get(), &push, sizeof(push));
   }
   for (uint32_t i = 1; i <= passes; ++i) {

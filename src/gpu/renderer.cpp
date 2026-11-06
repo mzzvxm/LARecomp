@@ -166,6 +166,16 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
             shaders_.Initialize(device_);
   if (ok) {
     samplers_.Initialize(device_, heap_);
+    if (swap_options.hdr10) {
+      // The HDR scene variants of the game's shaders (stage 3, hdr_tonemap.h), before the pipeline
+      // records are read: a record that names one is dropped while the variants are not loaded.
+      std::string why;
+      if (!shaders_.LoadHdrVariants(&why)) {
+        REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
+                    "the HDR output keeps the scene at paper white (stage 2)",
+                    why);
+      }
+    }
     pipelines_.Initialize(device_, guest_layout_, shaders_);
     ok = upload_.Initialize(device_) &&
          geometry_.Initialize(device_, frames_, upload_, guest_memory_) &&
@@ -233,6 +243,12 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     if (swap_chain_.hdr()) {
       if (layers_ok && hdr_scene_.Initialize(passes_, layers_, pass_timing_)) {
         present_.SetHdrScene(&hdr_scene_);
+        // Stage 3, the scene above paper white. Without the variants the scene stays at paper white.
+        if (hdr_tone_.Initialize(passes_, shaders_, layers_, post_, pass_timing_)) {
+          layers_.SetSceneSource(&hdr_tone_);
+          hdr_scene_.SetSceneSource(&hdr_tone_);
+          scene_.SetHdrToneMap(&hdr_tone_);
+        }
       } else {
         REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
                      "the front buffer as it is (the scene and the UI together)");
@@ -259,6 +275,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     pass_timing_.Shutdown();
     timing_.Shutdown();
     flicker_probe_.Shutdown();
+    hdr_tone_.Shutdown();
     hdr_scene_.Shutdown();
     layers_.Shutdown();
     overlay_.Shutdown();
@@ -346,6 +363,7 @@ void Renderer::Shutdown() {
   pass_timing_.Shutdown();
   timing_.Shutdown();
   flicker_probe_.Shutdown();
+  hdr_tone_.Shutdown();
   hdr_scene_.Shutdown();
   layers_.Shutdown();
   overlay_.Shutdown();
@@ -624,6 +642,10 @@ void Renderer::UpdateHdr() {
   const HdrLevels levels = hdr::Levels();
   present_.SetHdrLevels(levels);
   overlay_.SetHdrLevels(levels);
+  // The scene's curve is bent towards the display's peak (stage 3): the levels, and the game's display
+  // gamma table the peak is inverted through.
+  float gamma_table[256];
+  hdr_tone_.SetDisplay(levels, present_.GreenGammaTable(gamma_table) ? gamma_table : nullptr);
   // The display tone maps towards what it is told the content reaches: the peak setting.
   const plume::RenderHdrMetadata metadata = hdr::Metadata();
   if (!hdr_metadata_sent_ || metadata.maxMasteringLuminance != hdr_metadata_.maxMasteringLuminance ||
@@ -807,7 +829,8 @@ void Renderer::ReportFrameStats() {
                            mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
                            ", resolve memory " + mib(resolve_memory_.HeldBytes()) +
                            (layers_.active() ? ", frame layers " + mib(layers_.HeldBytes() +
-                                                                      hdr_scene_.HeldBytes())
+                                                                      hdr_scene_.HeldBytes() +
+                                                                      hdr_tone_.HeldBytes())
                                              : std::string()) +
                            " MiB)";
   const std::string vram_text =
@@ -843,6 +866,9 @@ void Renderer::ReportFrameStats() {
   if (layers_.active()) {
     REXLOG_INFO("[gpu] {}", layers_.TakeSummary());
     REXLOG_INFO("[gpu] {}", hdr_scene_.TakeSummary());
+    if (hdr_tone_.active()) {
+      REXLOG_INFO("[gpu] {}", hdr_tone_.TakeSummary());
+    }
   }
   if (flicker_probe_.enabled()) {
     REXLOG_INFO("[gpu] {}", flicker_probe_.TakeSummary());

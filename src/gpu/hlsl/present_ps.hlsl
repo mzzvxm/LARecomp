@@ -53,7 +53,23 @@ float3 RampAt(uint3 index) {
 // code values may exceed 1.
 static const uint kExtendedCodes = 4u;
 
+// hdr_flags bit 3 (hdr.h kHdrFlagInterpolatedCodes): with the extended codes, the source is the float
+// scene (HDR stage 3), not 8-bit values: the table is read between its entries.
+static const uint kInterpolatedCodes = 8u;
+
 float3 Ramp(float3 color) {
+  if ((g_push.hdr_flags & kExtendedCodes) != 0u && (g_push.hdr_flags & kInterpolatedCodes) != 0u) {
+    // Linear between entry i and i + 1 (at 8-bit values this is the nearest entry's value), and
+    // along the last step above the table's end (i stays 254, the fraction passes 1): continuous and
+    // not clamped, so the scene's light above the game's white keeps rising. Never NaN as an index
+    // (the float scene is cleaned when it is written).
+    const float3 scaled = max(color, float3(0.0f, 0.0f, 0.0f)) * 255.0f;
+    const uint3 index = uint3(min(floor(scaled), float3(254.0f, 254.0f, 254.0f)));
+    const float3 fraction = scaled - float3(index);
+    const float3 low = RampAt(index);
+    const float3 high = RampAt(index + 1u);
+    return low + (high - low) * fraction;
+  }
   if ((g_push.hdr_flags & kExtendedCodes) != 0u) {
     // Up to 1 as below (the nearest of the 256 entries, so the 8-bit values of a frame whose UI
     // was blended in float map as the front buffer's do); above 1 the table goes on by the slope
