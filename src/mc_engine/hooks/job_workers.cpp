@@ -65,7 +65,7 @@ void ApplyToThisThread(const uint8_t* base, uint32_t slot) {
     std::memcpy(name, base + slot, kNameBytes);
     name[kNameBytes] = '\0';
     const bool physics = std::strncmp(name, kPhysicsPoolName, sizeof(kPhysicsPoolName) - 1) == 0;
-    const DWORD logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const DWORD logical = mc::UsableLogicalProcessors();
     const int priority = physics ? PhysicsThreadPriority() : kLeaveAlone;
     if (priority == kLeaveAlone) {
         LARECOMP_APP_INFO("[JobWorker] pool thread \"{}\" started, priority left alone ({}, {} "
