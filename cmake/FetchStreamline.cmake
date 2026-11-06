@@ -154,7 +154,7 @@ if(_sl_missing)
             string(SUBSTRING "${_sl_entry}" ${_sl_path_at} -1 _sl_path)
             list(APPEND _sl_patterns "*${_sl_path}")
         endforeach()
-        # CHECK: libarchive's patterns let `*` match `/`, so a zip with or without a top folder works.
+        # libarchive's patterns let `*` match `/`, so a zip with or without a top folder works.
         file(ARCHIVE_EXTRACT INPUT "${_sl_zip}" DESTINATION "${_sl_extract}" PATTERNS ${_sl_patterns})
         foreach(_sl_entry IN LISTS _sl_missing)
             string(FIND "${_sl_entry}" " " _sl_space)

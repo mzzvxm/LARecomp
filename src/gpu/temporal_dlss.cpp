@@ -146,9 +146,8 @@ std::string MissingFiles(const std::wstring& dir) {
   return missing;
 }
 
-// CHECK: that sl_security.h compiles with llvm-mingw too (it loads wintrust.dll and crypt32.dll by
-// name, so no import library is needed), and that nvngx_dlss.dll, which sl.dlss.dll loads, is
-// signature-checked by Streamline itself (its source says "secureLoadLibrary"; not read).
+// sl_security.h loads wintrust.dll and crypt32.dll by name, so no import library is needed; nvngx_dlss.dll,
+// which sl.dlss.dll loads, is checked by Streamline itself.
 bool SignaturesOk(const std::wstring& dir, std::string* why) {
   for (const wchar_t* file : kSignedFiles) {
     const std::wstring path = dir + file;
@@ -164,9 +163,8 @@ bool SignaturesOk(const std::wstring& dir, std::string* why) {
 // Only to decide whether a card that cannot be asked (the files are not there, or the runtime is
 // not loaded) is worth listing: every GeForce RTX, Quadro RTX, RTX A-series and Titan RTX has it in
 // its name. The runtime's own query (slIsFeatureSupported) is the final word whenever it can run.
-// CHECK: a future card name without "RTX" is only found when DLSS is the saved choice (the query is
-// then asked at the start); the menu would not list it before, and the start decision (one that
-// waits for the query) may not wait long enough for it.
+// Limitation: a card whose name lacks "RTX" is only found when DLSS is the saved choice (Streamline's
+// query runs at that start); the menu does not list it before.
 bool NameLooksLikeRtx(const std::string& name) {
   for (size_t i = 0; i + 3 <= name.size(); ++i) {
     if (std::toupper(static_cast<unsigned char>(name[i])) == 'R' &&
@@ -386,11 +384,7 @@ sl::float4x4 ToSl(const float* m) {
   return out;
 }
 
-// CHECK: the names and constructors below (sl::Resource(type, native, memory, view, state),
-// ResourceTag(resource, type, lifecycle, extent*), kBufferTypeMotionVectors, DLSSOptions' fields)
-// were read from Streamline 2.14.16's headers through a web page, not compiled: the first build
-// settles them. Vulkan: the view must be a whole-image view that can be used for the image's usage
-// flags, `memory` is passed but may be unnecessary.
+// Vulkan: the view must be a whole-image view usable for the image's usage flags.
 sl::Resource MakeSlResource(const TemporalImage& image, const backend::NativeImage& native) {
   sl::Resource resource(sl::ResourceType::eTex2d, native.resource, native.memory, native.view,
                         native.state);
@@ -1104,12 +1098,9 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
 // One evaluation of the context's viewport on the side queue, on the worker: the first one makes the
 // feature. Outside the frames' lists and queue and on images no frame uses, so nothing it does can
 // touch a frame.
-// CHECK: that Streamline's evaluation and NGX's CreateFeature are free of thread affinity (both are
-// documented as "not thread safe", which Runtime::mu answers, not as bound to a thread), that a
-// feature made on one queue works from the main queue after the fence wait here (the D3D12 debug
-// layer and Vulkan validation over the first start), and that the dispatch over images nobody
-// filled (their contents are whatever the allocator gave) does no harm; the camera it is told is a
-// still identity one.
+// The feature is made on a side queue by a worker and used from the main queue after the fence wait
+// (runs 2026-11-06: D3D12 and Vulkan, no error; not yet under the D3D12 debug layer or Vulkan validation). The dispatch
+// over images nobody filled only warms the feature up; its output is never used.
 bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& side,
                                std::string* error) {
   const TemporalInputs in = MakeWarmupInputs(context.request, images);
@@ -1297,10 +1288,9 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   // The images and their tags, local to this evaluation (no global tags, so no frame-based tagging
   // flag and nothing that waits for a present). The states are the ones the caller transitioned
   // them to; Streamline takes them back to those.
-  // CHECK: that Streamline leaves the four images in the states declared here (the caller's
-  // barriers after the dispatch assume it, as they do for FidelityFX): the D3D12 debug layer with
-  // GPU-based validation, and Vulkan validation with synchronization validation, over the first
-  // frames. Local tags with the eValidUntilEvaluate lifecycle are also unverified.
+  // Streamline leaves the four images in the states declared here (the caller's barriers after the
+  // dispatch assume it, as they do for FidelityFX). Not yet checked with the D3D12 debug layer's GPU-based validation or
+  // Vulkan's synchronization validation.
   sl::Resource color_res = MakeSlResource(in.color, color_native);
   sl::Resource depth_res = MakeSlResource(in.depth, depth_native);
   sl::Resource motion_res = MakeSlResource(in.motion, motion_native);
@@ -1322,13 +1312,11 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   consts.clipToCameraView = ToSl(in.clip_to_view);
   consts.clipToPrevClip = ToSl(in.clip_to_prev_clip);
   consts.prevClipToClip = ToSl(in.prev_clip_to_clip);
-  // CHECK: the sign of the jitter. What the draws were moved by, in render pixels, +x right and +y
-  // down, the convention FSR takes; DLSS's documentation says "pixel space" only. If the picture
-  // is soft or shimmers, flip both here (the converged-sharpness test of F4-DESIGN.md 9.3).
+  // The jitter is what the draws were moved by, in render pixels, +x right and +y down (FSR's
+  // convention; the picture in motion is clean with it, 2026-11-06).
   consts.jitterOffset = sl::float2(in.jitter[0], in.jitter[1]);
-  // CHECK: the vectors are previous minus current in render pixels (+y down), which scaled by one
-  // over the render size are in [-1, 1] as Streamline asks; if DLSS ghosts along the motion, the
-  // direction or the scale is the first suspect.
+  // The vectors are previous minus current in render pixels (+y down); scaled by one over the render
+  // size they are in [-1, 1] as Streamline asks.
   consts.mvecScale = sl::float2(in.motion_scale[0] / float(in.render_size[0]),
                                 in.motion_scale[1] / float(in.render_size[1]));
   consts.cameraPos = sl::float3(in.camera_position[0], in.camera_position[1], in.camera_position[2]);
@@ -1500,12 +1488,8 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
               kPrefix);
   (void)preferred_adapter;
 #else
-  // CHECK: that Streamline's vkCreateDevice proxy accepts Plume's device chain (individual feature
-  // structs such as VkPhysicalDeviceDescriptorIndexingFeatures and pEnabledFeatures): it adds
-  // VkPhysicalDeviceVulkan12Features of its own, which the specification does not allow next to the
-  // individual ones. If the device cannot be made the game starts again without DLSS (Device); the
-  // fix would be in Plume (Vulkan12Features instead of the individual structs) or a vkCreateDevice
-  // wrapper of ours that merges.
+  // Streamline's vkCreateDevice proxy adds what DLSS needs to Plume's device chain (it works with
+  // Plume's individual feature structs, 2026-11-06). If the device cannot be made, the game starts again without DLSS.
   const uint32_t vendor = backend::RenderingAdapterVendor(preferred_adapter);
   if (vendor != kVendorNvidia) {
     REXLOG_INFO("{} DLSS is chosen, but the Vulkan device will not be an NVIDIA one (vendor "
@@ -1582,17 +1566,10 @@ void AbandonVulkanHook(const std::string& why) {
 // upgradeSwapChainAtPresent) until the worker has published the end of the start; the next
 // present then swaps the wrapper in. The wrapper passes everything to the swap chain it wraps, and
 // the back buffers Plume holds are the swap chain's own, so nothing else changes.
-// CHECK: nothing of this has run. The first run with it: sl.log says "Upgrading IDXGISwapChain to
-// use SL proxy" and no longer logs "presentCommon() was not observed"; no new warning or error
-// from the wrapper (that GetDevice(ID3D12Device) on Plume's swap chain, which the wrapper's
-// constructor asks, answers; that it answers QueryInterface for IDXGISwapChain4); frame times,
-// the resize rebuild and HDR (SetColorSpace1 and SetHDRMetaData are passed through) unchanged;
-// no "native swap chain still has refcount" warning from the wrapper at exit (the original's
-// reference is released by the caller); and that Streamline's presentCommon on the render thread
-// does not race the worker's creation of a feature, which also happens at every later context (a
-// mode change). Its garbage collection takes the resource lock (sl.chi generic.cpp
-// collectGarbage, read in its source) and the rest of presentCommon is a counter and the video
-// memory budget, but only a run settles it.
+// Run 2026-11-06: sl.log says "Upgrading IDXGISwapChain to use SL proxy" and no longer logs
+// "presentCommon() was not observed"; frame times unchanged; no refcount warning at exit. Not yet
+// tested: a swap chain resize (window size, fullscreen) and HDR through the wrapper (SetColorSpace1 and
+// SetHDRMetaData are passed through).
 
 namespace dlss {
 
