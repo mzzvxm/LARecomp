@@ -160,6 +160,7 @@ class TemporalSystem {
     AnchorStatus anchor_status = AnchorStatus::kNotSeen;
     temporal::Camera camera;
     uint32_t reset = 0;           // ResetBit: this frame starts the history again
+    temporal::Cut cut;            // the cut test against the frame before (when there was one)
     float frame_time_ms = 1000.0f / 60.0f;  // between this anchor and the one before, 1 to 100
     uint32_t guest_size[2] = {};   // c62: the frame in guest pixels
     uint32_t render_size[2] = {};  // the main view in host pixels (guest size at the scene's scale)
@@ -211,6 +212,9 @@ class TemporalSystem {
     uint64_t late_draws = 0;
     uint64_t resets = 0;
     uint64_t reset_reasons[kResetReasons] = {};
+    uint64_t cut_distance = 0;  // camera cuts by clause (a cut may have several)
+    uint64_t cut_turn = 0;
+    uint64_t cut_fov = 0;
     uint64_t history_checks = 0;  // c69 against the previous frame's own view-projection
     uint64_t history_flip = 0;
     uint64_t history_noflip = 0;
@@ -248,6 +252,10 @@ class TemporalSystem {
   // The run: what the frames before this one left.
   bool ran_last_ = false;    // the previous frame's anchor was accepted
   temporal::Camera last_camera_;
+  // The camera's last step (position now minus position before), what the cut test predicts the
+  // next one from; unknown at the first step of a run.
+  double last_step_[3] = {};
+  bool last_step_known_ = false;
   Scale last_scale_ = Scale::None();
   Clock::time_point last_anchor_time_{};
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted

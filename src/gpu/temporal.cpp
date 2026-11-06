@@ -127,6 +127,7 @@ void TemporalSystem::SetEnabled(bool enabled) {
 
 void TemporalSystem::ResetRun() {
   ran_last_ = false;
+  last_step_known_ = false;
   jitter_index_ = 0;
   misses_ = 0;
   disarmed_ = false;
@@ -418,7 +419,8 @@ void TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
         last_scale_ != fr.scale) {
       reset |= kResetSize;
     }
-    cut = temporal::TestCut(camera, last_camera_);
+    cut = temporal::TestCut(camera, last_camera_, last_step_known_ ? last_step_ : nullptr);
+    fr.cut = cut;
     if (cut.fires) {
       reset |= kResetCut;
     }
@@ -455,9 +457,20 @@ void TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
                 "of view {:.2f} deg){}",
                 kPrefix, fr.frame, ResetText(reset),
                 (reset & kResetCut)
-                    ? std::format(" (moved {:.1f}, turn cosine {:.4f}, field of view changed "
-                                  "{:.1f}%)",
-                                  cut.distance, cut.cosine, 100.0 * cut.fov_change)
+                    ? std::format(" ({}{}{}: moved {:.1f}, {:.1f} away from the {:.1f} the step "
+                                  "before predicts (allowed {:.1f}); turn cosine {:.4f}; field of "
+                                  "view changed {:.1f}%)",
+                                  cut.by_distance ? "distance" : "",
+                                  cut.by_turn ? (cut.by_distance ? " + turn" : "turn") : "",
+                                  cut.by_fov ? (cut.by_distance || cut.by_turn ? " + field of view"
+                                                                               : "field of view")
+                                             : "",
+                                  cut.distance, cut.deviation,
+                                  last_step_known_ ? std::sqrt(last_step_[0] * last_step_[0] +
+                                                               last_step_[1] * last_step_[1] +
+                                                               last_step_[2] * last_step_[2])
+                                                   : 0.0,
+                                  cut.tolerance, cut.cosine, 100.0 * cut.fov_change)
                     : std::string(),
                 camera.position[0], camera.position[1], camera.position[2],
                 camera.fov_y * 180.0 / kPi,
@@ -519,7 +532,15 @@ void TemporalSystem::EndFrame() {
     }
   }
 
-  // The run for the next frame.
+  // The run for the next frame. The camera's step first: it needs the camera of the frame before.
+  if (ran && ran_last_ && !(fr.reset & kResetTime)) {
+    for (int i = 0; i < 3; ++i) {
+      last_step_[i] = fr.camera.position[i] - last_camera_.position[i];
+    }
+    last_step_known_ = true;
+  } else {
+    last_step_known_ = false;
+  }
   ran_last_ = ran;
   if (ran) {
     last_camera_ = fr.camera;
@@ -550,6 +571,11 @@ void TemporalSystem::EndFrame() {
       ++w.resets;
       for (uint32_t i = 0; i < kResetReasons; ++i) {
         w.reset_reasons[i] += (fr.reset >> i) & 1u;
+      }
+      if (fr.reset & kResetCut) {
+        w.cut_distance += fr.cut.by_distance;
+        w.cut_turn += fr.cut.by_turn;
+        w.cut_fov += fr.cut.by_fov;
       }
     }
     w.vehicle_matrices += uint64_t(std::popcount(fr.camera.previous_valid));
@@ -634,6 +660,10 @@ void TemporalSystem::Report(const char* why) {
   for (uint32_t i = 0; i < kResetReasons; ++i) {
     if (w.reset_reasons[i] != 0) {
       resets += std::format("{}{} {}", resets.empty() ? "" : ", ", ResetName(i), w.reset_reasons[i]);
+      if (i == 1) {
+        resets += std::format(" (by jump {}, turn {}, field of view {})", w.cut_distance, w.cut_turn,
+                              w.cut_fov);
+      }
     }
   }
   std::string camera = "none";

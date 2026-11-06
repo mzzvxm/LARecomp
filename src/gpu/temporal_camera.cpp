@@ -187,23 +187,36 @@ Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetc
   return Reject::kNone;
 }
 
-Cut TestCut(const Camera& now, const Camera& before) {
+Cut TestCut(const Camera& now, const Camera& before, const double* previous_step) {
   double dist2 = 0.0;
+  double deviation2 = 0.0;
+  double previous2 = 0.0;
   double dot = 0.0;
   double n_now = 0.0;
   double n_before = 0.0;
+  Cut cut;
   for (int i = 0; i < 3; ++i) {
     const double d = now.position[i] - before.position[i];
+    const double predicted = previous_step ? previous_step[i] : 0.0;
+    cut.step[i] = d;
     dist2 += d * d;
+    deviation2 += (d - predicted) * (d - predicted);
+    previous2 += predicted * predicted;
     dot += now.forward[i] * before.forward[i];
     n_now += now.forward[i] * now.forward[i];
     n_before += before.forward[i] * before.forward[i];
   }
-  Cut cut;
   cut.distance = std::sqrt(dist2);
+  cut.deviation = std::sqrt(deviation2);
+  cut.tolerance = kCutDistance + kCutSpeedTolerance * std::sqrt(previous2);
   cut.cosine = dot / std::max(1e-30, std::sqrt(n_now * n_before));
   cut.fov_change = std::fabs(now.fov_y - before.fov_y) / std::max(1e-30, before.fov_y);
-  cut.fires = cut.distance > kCutDistance || cut.cosine < kCutCosine || cut.fov_change > kCutFov;
+  // A camera that stopped after a jump (a step under the limit) is not a second cut, whatever the
+  // step before was.
+  cut.by_distance = cut.distance > kCutDistance && cut.deviation > cut.tolerance;
+  cut.by_turn = cut.cosine < kCutCosine;
+  cut.by_fov = cut.fov_change > kCutFov;
+  cut.fires = cut.by_distance || cut.by_turn || cut.by_fov;
   return cut;
 }
 

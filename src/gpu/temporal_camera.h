@@ -29,10 +29,17 @@ namespace mcla::gpu::temporal {
 inline constexpr uint32_t kVehicleMatrices = 24;
 inline constexpr uint32_t kWorldId = 0;
 
-// The camera cut rule of the fork (F4-DESIGN.md 2.5): the camera moved more than 25 units, turned
+// The camera cut rule (F4-DESIGN.md 2.5, the fork's, made velocity-aware): the camera jumped, turned
 // more than 30 degrees (the cosine of the angle between the forward vectors below 0.866), or the
 // vertical field of view changed by more than 5%.
+//
+// A jump is a step of more than 25 units that the step before does not predict: the game's opening
+// fly-in moves the camera 28 units a frame growing to 100 and more, smoothly (the first form of
+// the rule, "moved more than 25 units", fired on every frame of it), while a teleport (the map
+// warp, 1,600 units) is one step nothing predicted. The prediction is the previous step; the
+// allowed difference is 25 units plus half the previous step.
 inline constexpr double kCutDistance = 25.0;
+inline constexpr double kCutSpeedTolerance = 0.5;
 inline constexpr double kCutCosine = 0.866;
 inline constexpr double kCutFov = 0.05;
 
@@ -88,14 +95,22 @@ const char* RejectName(Reject reject);
 Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetch_height,
                      uint64_t frame, uint64_t stencil_ids, Camera* out);
 
-// The cut rule between two consecutive frames' cameras.
+// The cut rule between two consecutive frames' cameras. `previous_step` is the position change of
+// the step before (three doubles), or null when it is not known (the first step of a run): the
+// camera is then predicted to stand still.
 struct Cut {
   bool fires = false;
-  double distance = 0.0;     // units the position moved
+  bool by_distance = false;  // the clauses that fired (a cut may have several)
+  bool by_turn = false;
+  bool by_fov = false;
+  double distance = 0.0;     // units the position moved (this step)
+  double deviation = 0.0;    // units this step is away from the predicted one
+  double tolerance = 0.0;    // what the deviation may be
   double cosine = 1.0;       // between the forward vectors
   double fov_change = 0.0;   // relative
+  double step[3] = {};       // position now minus position before
 };
-Cut TestCut(const Camera& now, const Camera& before);
+Cut TestCut(const Camera& now, const Camera& before, const double* previous_step);
 
 // How close `now`'s c69-c72 (k = 0) is to the view-projection of the frame before times a pixel
 // matrix of the frame's size, the largest difference over x, y and w (the columns the motion
