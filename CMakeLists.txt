@@ -233,6 +233,7 @@ set(LARECOMP_SOURCES
     src/profile/larecomp_profile_store.cpp
     src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
+    src/bootprogress/larecomp_shader_build.cpp
     src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
     src/mc_engine/ui/imgui_theme.cpp
     src/mc_engine/ui/debug_overlay.cpp
