@@ -5,3 +5,6 @@
 [submodule "thirdparty/dxc-bin"]
 	path = thirdparty/dxc-bin
 	url = https://github.com/renderbag/dxc-bin.git
+[submodule "thirdparty/LAR-XenosRecomp"]
+	path = thirdparty/LAR-XenosRecomp
+	url = https://github.com/mzzvxm/LAR-XenosRecomp.git
