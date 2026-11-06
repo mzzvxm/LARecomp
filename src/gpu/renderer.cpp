@@ -220,7 +220,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
     // The temporal groundwork's passes (mcla_gpu_temporal): made on first use, never fail the renderer.
-    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, swap_chain_.format());
+    // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
+    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, swap_chain_.format(),
+                         textures_, resolve_);
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);

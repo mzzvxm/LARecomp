@@ -1020,9 +1020,12 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
       bound_.framebuffer = nullptr;
     }
     if (temporal_->RecordAnchorPasses(list_)) {
-      // They bound their own layout, pipelines and framebuffers: the draw binds everything again.
+      // They bound their own layout, pipelines and framebuffers (and an upscaler its own heaps and
+      // pipeline state): the draw binds everything again. With an upscaler running, the anchor's own
+      // colour fetch reads its output.
       ResetListState();
       marked_framebuffer_ = nullptr;
+      temporal_->PatchAnchor(shared);
     }
   }
 }
@@ -1985,7 +1988,11 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   if (temporal_) {
     temporal_->OnComposite();
   }
-  const PostAa::Mode mode = post_->FrameMode();
+  PostAa::Mode mode = post_->FrameMode();
+  // FXAA and SMAA are held off while an upscaler is chosen and can run (MSAA stays the player's).
+  if (temporal_ && temporal_->HoldsAaOff(mode != PostAa::Mode::kOff)) {
+    mode = PostAa::Mode::kOff;
+  }
   if (!last_color0_ || !list || mode == PostAa::Mode::kOff) {
     return;
   }

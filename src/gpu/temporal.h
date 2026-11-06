@@ -25,14 +25,30 @@
 //
 // Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
 // the motion vectors from this system's own camera history, the debug views and the checks; the
-// backend steps read `frame()`, `previous_camera()` and `motion().kept()` below. It still runs no
-// upscaler and changes no picture: everything is behind mcla_gpu_temporal.
+// backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
 //
-// Development switch: mcla_gpu_temporal (off, read each frame). With it off no hook of the Scene
-// does anything beyond one branch, no constant changes, no draw is added. On, it jitters, reads
-// the camera and logs: "[gpu] temporal: ..." lines, one for each change of what the frames are
-// (no 3D scene, 3D scene at 4x samples, anchor missing or refused, running) and a summary every
-// few seconds.
+// Step 2 (temporal_backend.h, temporal_ffx.h) adds the backend: with an upscaler chosen
+// (mcla_gpu_upscaler: FSR 3.1, FSR 4) and able to run, the system is on and the frame goes
+//
+//   BeginFrame   the chosen upscaler is asked for a context (render and output size of the last
+//                accepted frame: ratio 1, "Native AA"); the jitter is armed only while the context is
+//                ready, so a frame the upscaler cannot take is plain and never shakes.
+//   anchor       after the depth and the vectors, the colour product the anchor reads, the depth and
+//                the vectors go through the backend into the output image; a stand-in in the texture
+//                cache (textures.h Override) makes every fetch of that product for the rest of the
+//                frame read the output: the anchor's own fetch (patched in its constants here), the
+//                tone map, the glow and the UI draw on it.
+//   failure      a frame that cannot be upscaled is plain (no stand-in); three armed frames in a row
+//                that could not be, or one failed dispatch or context, and the backend is off for the
+//                session (one log line), the jitter stops, FXAA and SMAA come back.
+//   AA           FXAA and SMAA are held off while an upscaler is chosen and can run (MSAA stays the
+//                player's choice).
+//
+// Development switch: mcla_gpu_temporal (off, read each frame). With it off and no upscaler chosen no
+// hook of the Scene does anything beyond one branch, no constant changes, no draw is added. On, it
+// jitters, reads the camera and logs: "[gpu] temporal: ..." lines, one for each change of what the
+// frames are (no 3D scene, 3D scene at 4x samples, anchor missing or refused, running) and a summary
+// every few seconds. It also runs the vector passes and the debug views of temporal_mv.h.
 //
 // Threading: render thread only.
 // ===========================================================================
@@ -40,6 +56,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_set>
 
@@ -49,12 +66,16 @@
 #include "edram.h"
 #include "scale.h"
 #include "shaders.h"
+#include "temporal_backend.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "temporal_mv.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
+
+class ResolveCache;
+class TextureCache;
 
 class TemporalSystem {
  public:
@@ -168,6 +189,12 @@ class TemporalSystem {
     uint32_t guest_size[2] = {};   // c62: the frame in guest pixels
     uint32_t render_size[2] = {};  // the main view in host pixels (guest size at the scene's scale)
     AnchorTextures anchor_textures;
+
+    // The upscaler (step 2).
+    Upscaler upscaler = Upscaler::kOff;  // the chosen one when this PC can run it, else off
+    bool backend_ready = false;          // its context exists for the sizes of the last frame
+    bool upscaled = false;               // the output is made and the stand-in set for this frame
+    uint32_t anchor_color_slot = 0;      // the bindless slot the anchor's colour fetch reads instead
   };
 
   // True while mcla_gpu_temporal was on at the start of the frame being recorded: the Scene's hooks
@@ -175,8 +202,11 @@ class TemporalSystem {
   bool active() const { return enabled_; }
 
   // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
+  // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
+  // Probes the upscaler backend (a worker thread; nothing on this one).
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
-                  PassTiming& pass_timing, plume::RenderFormat target_format);
+                  PassTiming& pass_timing, plume::RenderFormat target_format, TextureCache& textures,
+                  ResolveCache& resolve);
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
@@ -189,7 +219,14 @@ class TemporalSystem {
   bool OnDraw(const DrawFacts& facts, SharedConstants& shared);
   // The anchor's passes (depth, motion vectors, the checks' copies) into `list`, outside any render
   // pass. False when nothing was recorded.
+  // With an upscaler running it also records the upscale and sets the stand-in for the scene colour.
   bool RecordAnchorPasses(plume::RenderCommandList* list);
+  // The anchor draw's own constants after RecordAnchorPasses: its colour fetch reads the upscaler's
+  // output when there is one this frame.
+  void PatchAnchor(SharedConstants& shared) const;
+  // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
+  // once per change when `aa_asked` (mcla_gpu_aa is not off).
+  bool HoldsAaOff(bool aa_asked);
   // Inside the back buffer's render pass after the present's draw: the debug view
   // (mcla_gpu_temporal_view) of the last frame, when it had vectors.
   void DrawDebug(plume::RenderCommandList* list, uint32_t width, uint32_t height);
@@ -242,6 +279,12 @@ class TemporalSystem {
     uint64_t rigid_ok = 0;          // ... of them a rigid transform within 1e-3
     uint64_t rigid_moving = 0;      // ... of them that moved more than 1e-3 units
     uint64_t mv_missed = 0;         // anchors taken whose passes could not be recorded
+    // The upscaler: frames it ran in, and the frames with an upscaler chosen that it did not run in.
+    uint64_t upscaled = 0;
+    uint64_t upscale_plain_not_ready = 0;  // no context yet (or the sizes changed): plain, no jitter
+    uint64_t upscale_plain_no_vectors = 0;
+    uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
+    uint64_t upscale_resets = 0;           // upscaled frames the history started again in
     uint64_t misses = 0;            // jittered main view frames with no accepted anchor
     // The last accepted camera, for the line.
     bool have_camera = false;
@@ -249,7 +292,7 @@ class TemporalSystem {
     uint32_t render_size[2] = {};
   };
 
-  void SetEnabled(bool enabled);
+  void SetEnabled(bool enabled, bool development);
   void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
   bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
   // The vehicle slots as rigid transforms (temporal_camera.h Rigid): the counts and the first lines.
@@ -291,6 +334,42 @@ class TemporalSystem {
   TemporalMotion motion_;
   TemporalMotion::Frame pending_;
   bool pending_ready_ = false;
+
+  // Step 2: the upscaler. `effective_` is what the settings and this PC's answer make of the
+  // player's choice, read at BeginFrame.
+  void ReadUpscalerChoice();
+  void MakeRequest(BackendRequest* request) const;
+  // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
+  // failure turns the upscaler off for the session.
+  bool RecordUpscale(plume::RenderCommandList* list);
+  void FailUpscaler(const std::string& why);
+  void ReleaseUpscaler();
+  void ClearStandIn();
+
+  Device* device_ = nullptr;
+  FrameRing* frames_ = nullptr;
+  HostPasses* passes_ = nullptr;
+  PassTiming* pass_timing_ = nullptr;
+  TextureCache* textures_ = nullptr;
+  ResolveCache* resolve_ = nullptr;
+  std::unique_ptr<TemporalBackend> backend_;
+  UpscalerSettings settings_;
+  Upscaler effective_ = Upscaler::kOff;
+  uint32_t choice_key_ = 0;
+  bool choice_reported_ = false;
+  bool development_ = false;         // mcla_gpu_temporal, read each frame
+  bool ready_reported_ = false;
+  uint32_t debug_bits_ = 0;          // mcla_gpu_temporal_debug
+  HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, render size
+  uint32_t last_render_size_[2] = {};  // of the last accepted frame
+  bool request_made_ = false;        // a context was asked for and not released
+  BackendRequest request_;
+  Clock::time_point off_since_{};
+  bool stand_in_set_ = false;
+  uint64_t last_dispatch_frame_ = ~uint64_t(0);
+  uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
+  bool aa_hold_reported_ = false;
+  std::array<bool, 4> plain_logged_{};
 
   // The log.
   Window window_;

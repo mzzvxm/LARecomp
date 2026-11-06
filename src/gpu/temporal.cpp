@@ -12,16 +12,27 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "backend.h"
+#include "constants.h"
+#include "device.h"
+#include "format.h"
+#include "frame.h"
+#include "pass_timing.h"
 #include "records.h"
+#include "resolve.h"
+#include "textures.h"
 #include "topology.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_temporal, false, "MCLA/GPU",
-    "Development switch for the temporal anti-aliasing and upscaling that is being built: moves "
-    "the 3D scene by a different sub-pixel amount every frame (the world only: the menus and the "
-    "HUD keep their positions) and reads the game's camera. Nothing smooths the movement out "
-    "yet, so the scene shimmers a little. Logs '[gpu] temporal:' lines. Read every frame.")
+    "Development switch for the groundwork of the temporal upscaler (the player's setting is "
+    "mcla_gpu_upscaler): moves the 3D scene by a different sub-pixel amount every frame (the world "
+    "only: the menus and the HUD keep their positions), reads the game's camera, and makes the "
+    "motion vectors. With no upscaler running, nothing smooths the movement out, so the scene "
+    "shimmers a little. Logs '[gpu] temporal:' lines. Read every frame.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DECLARE(uint32_t, mcla_gpu_temporal_debug);
 
 namespace mcla::gpu {
 
@@ -100,7 +111,7 @@ uint32_t Sum(const std::array<uint32_t, TemporalSystem::kKinds>& a) {
 // the switch and the frame
 // ---------------------------------------------------------------------------
 
-void TemporalSystem::SetEnabled(bool enabled) {
+void TemporalSystem::SetEnabled(bool enabled, bool development) {
   enabled_ = enabled;
   ResetRun();
   window_ = Window{};
@@ -115,13 +126,24 @@ void TemporalSystem::SetEnabled(bool enabled) {
   logged_lens_[0] = logged_lens_[1] = logged_lens_[2] = 0.0;
   lens_lines_ = 0;
   frame_number_ = 0;
+  upscale_misses_ = 0;
+  last_dispatch_frame_ = ~uint64_t(0);
+  plain_logged_.fill(false);
   if (enabled) {
-    REXLOG_WARN("{} ON (mcla_gpu_temporal, development): the 3D scene is moved by a sub-pixel "
-                "amount that changes every frame (the world only: the UI keeps still), and the "
-                "game's camera is read from its motion blur draw; nothing smooths the movement "
-                "out yet. A summary every {:.0f} s",
-                kPrefix, kReportSeconds);
+    if (development) {
+      REXLOG_WARN("{} ON (mcla_gpu_temporal, development): the 3D scene is moved by a sub-pixel "
+                  "amount that changes every frame (the world only: the UI keeps still), and the "
+                  "game's camera is read from its motion blur draw; with no upscaler running "
+                  "nothing smooths the movement out. A summary every {:.0f} s",
+                  kPrefix, kReportSeconds);
+    } else {
+      REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
+                  "scene is moved by a sub-pixel amount every frame once the upscaler is ready. A "
+                  "summary every {:.0f} s",
+                  kPrefix, UpscalerName(effective_), kReportSeconds);
+    }
   } else {
+    ClearStandIn();
     motion_.Release();
     REXLOG_INFO("{} off", kPrefix);
   }
@@ -129,13 +151,44 @@ void TemporalSystem::SetEnabled(bool enabled) {
 
 void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                                 HostPasses& passes, PassTiming& pass_timing,
-                                plume::RenderFormat target_format) {
+                                plume::RenderFormat target_format, TextureCache& textures,
+                                ResolveCache& resolve) {
   motion_.Initialize(device, frames, heap, passes, pass_timing, target_format);
+  device_ = &device;
+  frames_ = &frames;
+  passes_ = &passes;
+  pass_timing_ = &pass_timing;
+  textures_ = &textures;
+  resolve_ = &resolve;
+  // The upscaler runtime, if this build has one: a worker thread loads it and asks it what this PC
+  // can do; the menu lists what it finds. Nothing here waits for it.
+  backend_ = MakeFfxBackend();
+  if (backend_) {
+    backend_->Probe(device, frames);
+  }
 }
 
 void TemporalSystem::Shutdown() {
+  // The GPU is idle and the heap goes later: the output's slot is not handed back.
+  if (textures_) {
+    textures_->ClearOverride();
+    textures_->DropOverrideViews();
+  }
+  stand_in_set_ = false;
+  output_ = HostImage{};
+  if (backend_) {
+    backend_->Shutdown();
+    backend_.reset();
+  }
+  PublishRunningUpscaler(Upscaler::kOff);
   motion_.Shutdown();
   pending_ready_ = false;
+  device_ = nullptr;
+  frames_ = nullptr;
+  passes_ = nullptr;
+  pass_timing_ = nullptr;
+  textures_ = nullptr;
+  resolve_ = nullptr;
 }
 
 bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
@@ -145,8 +198,253 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
   pending_ready_ = false;
   if (!motion_.Record(list, pending_)) {
     ++window_.mv_missed;
+    if (frame_.upscaler != Upscaler::kOff && frame_.backend_ready) {
+      // The upscaler cannot be fed this session: the passes themselves could not be made.
+      FailUpscaler("the depth and motion vector passes could not be recorded");
+    }
     return false;
   }
+  RecordUpscale(list);
+  return true;
+}
+
+void TemporalSystem::PatchAnchor(SharedConstants& shared) const {
+  if (frame_.upscaled) {
+    // The anchor's own colour fetch (slot 0) was bound before the upscale existed.
+    shared.texture_2d[0] = frame_.anchor_color_slot;
+  }
+}
+
+bool TemporalSystem::HoldsAaOff(bool aa_asked) {
+  const bool hold = effective_ != Upscaler::kOff;
+  if (hold && aa_asked && !aa_hold_reported_) {
+    aa_hold_reported_ = true;
+    REXLOG_INFO("{} FXAA and SMAA (mcla_gpu_aa) are held off while {} is on; MSAA is not touched",
+                kPrefix, UpscalerName(effective_));
+  }
+  if (!hold) {
+    aa_hold_reported_ = false;
+  }
+  return hold;
+}
+
+// ---------------------------------------------------------------------------
+// the upscaler
+// ---------------------------------------------------------------------------
+
+void TemporalSystem::ReadUpscalerChoice() {
+  settings_ = ReadUpscalerSettings();
+  const UpscalerAvailability available = GetUpscalerAvailability();
+  Upscaler effective = Upscaler::kOff;
+  if (backend_ && ((settings_.upscaler == Upscaler::kFsr31 && available.fsr31) ||
+                   (settings_.upscaler == Upscaler::kFsr4 && available.fsr4))) {
+    effective = settings_.upscaler;
+  }
+  // A line when what the choice comes to changes. A choice this PC cannot run is off (the saved
+  // choice stays as it is, and comes back where it can run).
+  const uint32_t key = uint32_t(settings_.upscaler) | uint32_t(effective) << 2 |
+                       uint32_t(available.probed) << 4 | uint32_t(backend_ != nullptr) << 5;
+  if (!choice_reported_ || key != choice_key_) {
+    choice_reported_ = true;
+    choice_key_ = key;
+    if (settings_.upscaler != Upscaler::kOff) {
+      if (effective != Upscaler::kOff) {
+        REXLOG_INFO("{} upscaling: {} ({} {}%), sharpness {:.2f}", kPrefix, UpscalerName(effective),
+                    ModeInfoOf(settings_.mode).name, ModeInfoOf(settings_.mode).percent,
+                    settings_.sharpness);
+      } else if (!backend_) {
+        REXLOG_INFO("{} {} is chosen but this build has no FidelityFX: treated as off", kPrefix,
+                    UpscalerName(settings_.upscaler));
+      } else if (available.probed) {
+        REXLOG_INFO("{} {} is chosen but this PC cannot run it: treated as off (the choice is "
+                    "kept)",
+                    kPrefix, UpscalerName(settings_.upscaler));
+      }
+    }
+  }
+  effective_ = effective;
+}
+
+void TemporalSystem::MakeRequest(BackendRequest* request) const {
+  request->upscaler = effective_;
+  request->mode = settings_.mode;
+  // Ratio 1: the scene is drawn at the size it is shown at.
+  request->render_size[0] = request->output_size[0] = last_render_size_[0];
+  request->render_size[1] = request->output_size[1] = last_render_size_[1];
+}
+
+void TemporalSystem::ClearStandIn() {
+  if (stand_in_set_ && textures_) {
+    textures_->ClearOverride();
+  }
+  stand_in_set_ = false;
+  frame_.upscaled = false;
+}
+
+void TemporalSystem::ReleaseUpscaler() {
+  // No upscaler for a while: the context and the output image go (the GPU may still be reading
+  // them: the backend retires the context behind the frames, the image goes through the ring).
+  if (backend_) {
+    backend_->Release();
+  }
+  if (textures_) {
+    textures_->ReleaseOverrideViews();
+  }
+  if (passes_) {
+    passes_->ReleaseImage(output_);
+  }
+  if (request_made_) {
+    REXLOG_INFO("{} the upscaler has been off for a while: its context and output are released",
+                kPrefix);
+  }
+  request_made_ = false;
+  off_since_ = Clock::time_point{};
+}
+
+void TemporalSystem::FailUpscaler(const std::string& why) {
+  if (backend_) {
+    backend_->Fail(why);
+  }
+}
+
+bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
+  FrameState& fr = frame_;
+  if (effective_ == Upscaler::kOff || !backend_) {
+    return false;
+  }
+  // A frame the upscaler does not take is plain: counted, the first of each kind logged. Armed
+  // frames that keep missing end it (EndFrame).
+  const auto plain = [&](uint64_t& counter, size_t kind, const std::string& why) {
+    ++counter;
+    if (!plain_logged_[kind]) {
+      plain_logged_[kind] = true;
+      REXLOG_INFO("{} frame {} is not upscaled: {} (the first of its kind; the summaries count them)",
+                  kPrefix, fr.frame, why);
+    }
+    return false;
+  };
+  if (!fr.backend_ready || !backend_->Ready(request_)) {
+    return plain(window_.upscale_plain_not_ready, 0, "the upscaler's context is not ready");
+  }
+  const uint32_t width = fr.render_size[0];
+  const uint32_t height = fr.render_size[1];
+  const TemporalMotion::Kept kept = motion_.kept();
+  if (!kept.valid || kept.frame != fr.frame || !kept.depth || !kept.motion ||
+      !kept.depth->texture || !kept.motion->texture || kept.depth->width != width ||
+      kept.depth->height != height || kept.motion->width != width || kept.motion->height != height) {
+    return plain(window_.upscale_plain_no_vectors, 1,
+                 "the depth and the motion vectors of this frame are not there");
+  }
+
+  // The colour the anchor reads: the scene's resolve product (R16G16B16A16_FLOAT, linear).
+  const TextureFetch fetch = ReadTextureFetch(fr.anchor_textures.fetch[0]);
+  ResolveCache::Product* product =
+      fetch.is_texture ? resolve_->Find(fetch.key, fetch.image_base_page) : nullptr;
+  if (!product || !product->texture) {
+    return plain(window_.upscale_plain_no_color, 2, "the anchor's colour is not a resolve product");
+  }
+  if (product->format != plume::RenderFormat::R16G16B16A16_FLOAT || product->key.levels() != 1 ||
+      product->scale.Edge(product->key.width) != width ||
+      product->scale.Edge(product->key.height) != height ||
+      product->layout != plume::RenderTextureLayout::SHADER_READ) {
+    return plain(window_.upscale_plain_no_color, 2,
+                 std::format("the anchor's colour product is {} {}x{}, {} level(s), layout {} "
+                             "(wanted R16G16B16A16_FLOAT {}x{}, one level, readable)",
+                             format::PlumeFormatName(product->format),
+                             product->scale.Edge(product->key.width),
+                             product->scale.Edge(product->key.height), product->key.levels(),
+                             int(product->layout), width, height));
+  }
+
+  // The output.
+  constexpr plume::RenderFormat kOutputFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
+  constexpr plume::RenderTextureFlags kOutputFlags =
+      plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+  if (output_.texture && (output_.width != width || output_.height != height)) {
+    textures_->ReleaseOverrideViews();  // before the texture they name goes
+  }
+  if (!passes_->EnsureImage(output_, width, height, kOutputFormat, "temporal upscaler output",
+                            kOutputFlags)) {
+    FailUpscaler(std::format("its {}x{} output image could not be made", width, height));
+    return false;
+  }
+
+  TemporalInputs in;
+  in.frame = fr.frame;
+  in.render_size[0] = in.output_size[0] = width;
+  in.render_size[1] = in.output_size[1] = height;
+  in.color = {product->texture.get(), width, height, kOutputFormat, plume::RenderTextureFlag::NONE};
+  in.depth = {kept.depth->texture.get(), kept.depth->width, kept.depth->height, kept.depth->format,
+              kept.depth->flags};
+  in.motion = {kept.motion->texture.get(), kept.motion->width, kept.motion->height,
+               kept.motion->format, kept.motion->flags};
+  in.output = {output_.texture.get(), width, height, kOutputFormat, kOutputFlags};
+  in.jitter[0] = fr.jitter[0];
+  in.jitter[1] = fr.jitter[1];
+  // Development: the upscaler is told the jitter flipped (the convention check); the scene was
+  // moved as it was.
+  if (debug_bits_ & 4u) {
+    in.jitter[0] = -in.jitter[0];
+  }
+  if (debug_bits_ & 8u) {
+    in.jitter[1] = -in.jitter[1];
+  }
+  in.frame_time_ms = fr.frame_time_ms;
+  in.reset = fr.reset != 0 || last_dispatch_frame_ == ~uint64_t(0) ||
+             last_dispatch_frame_ + 1 != fr.frame;
+  in.camera_near = float(fr.camera.near_plane);
+  in.camera_far = float(fr.camera.far_plane);
+  in.camera_fov_y = float(fr.camera.fov_y);
+  in.sharpness = settings_.sharpness;
+
+  // Outside a render pass (the Scene ended it). The inputs go to the compute stage's read state
+  // (D3D12 NON_PIXEL_SHADER_RESOURCE, Vulkan SHADER_READ_ONLY_OPTIMAL), the output to general; the
+  // runtime takes them back to those states; they then go back to what the draws and the passes
+  // read them in.
+  using Stage = plume::RenderBarrierStage;
+  const plume::RenderBarrierStages graphics_and_compute =
+      plume::RenderBarrierStages(Stage::GRAPHICS | Stage::COMPUTE);
+  pass_timing_->Mark(list, "temporal upscale");
+  plume::RenderTextureBarrier to_read[3] = {
+      plume::RenderTextureBarrier(product->texture.get(), plume::RenderTextureLayout::SHADER_READ),
+      plume::RenderTextureBarrier(kept.depth->texture.get(), plume::RenderTextureLayout::SHADER_READ),
+      plume::RenderTextureBarrier(kept.motion->texture.get(),
+                                  plume::RenderTextureLayout::SHADER_READ)};
+  list->barriers(Stage::COMPUTE, to_read, 3);
+  list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(output_.texture.get(),
+                                                              plume::RenderTextureLayout::GENERAL));
+  const bool ok = backend_->Upscale(list, in);
+  backend::InvalidateAfterExternalWork(list);
+  list->barriers(graphics_and_compute,
+                 plume::RenderTextureBarrier(product->texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  plume::RenderTextureBarrier back[2] = {
+      plume::RenderTextureBarrier(kept.depth->texture.get(), plume::RenderTextureLayout::SHADER_READ),
+      plume::RenderTextureBarrier(kept.motion->texture.get(),
+                                  plume::RenderTextureLayout::SHADER_READ)};
+  list->barriers(Stage::GRAPHICS, back, 2);
+  list->barriers(graphics_and_compute,
+                 plume::RenderTextureBarrier(output_.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  output_.layout = plume::RenderTextureLayout::SHADER_READ;
+  if (!ok) {
+    return false;  // the backend logged it and is off for the session; this frame is plain
+  }
+
+  // Every fetch of the scene colour from here on reads the output.
+  TextureCache::Override stand_in;
+  stand_in.image_key = ResolveCache::ImageKey(fetch.key);
+  stand_in.texture = output_.texture.get();
+  stand_in.format = kOutputFormat;
+  stand_in.scale = fr.scale;
+  textures_->SetOverride(stand_in);
+  stand_in_set_ = true;
+  fr.upscaled = true;
+  // The anchor's own colour fetch: the binding the stand-in gives this fetch's swizzle.
+  fr.anchor_color_slot = textures_->Bind2D(fetch, fr.scale, list).slot;
+  last_dispatch_frame_ = fr.frame;
+  ++window_.upscaled;
+  window_.upscale_resets += in.reset;
   return true;
 }
 
@@ -170,9 +468,23 @@ void TemporalSystem::ResetRun() {
 }
 
 void TemporalSystem::BeginFrame(uint32_t slot) {
-  const bool want = REXCVAR_GET(mcla_gpu_temporal);
+  development_ = REXCVAR_GET(mcla_gpu_temporal);
+  debug_bits_ = REXCVAR_GET(mcla_gpu_temporal_debug);
+  ReadUpscalerChoice();
+  const bool want = development_ || effective_ != Upscaler::kOff;
   if (want != enabled_ && !frame_open_) {
-    SetEnabled(want);  // only between frames: a frame is jittered whole or not at all
+    SetEnabled(want, development_);  // only between frames: a frame is jittered whole or not at all
+  }
+  // The context and the output image of an upscaler that has been off for a while go (10 s).
+  if (effective_ != Upscaler::kOff) {
+    off_since_ = Clock::time_point{};
+  } else if (request_made_ && !frame_open_) {
+    const Clock::time_point now = Clock::now();
+    if (off_since_ == Clock::time_point{}) {
+      off_since_ = now;
+    } else if (now - off_since_ > std::chrono::seconds(10)) {
+      ReleaseUpscaler();
+    }
   }
   if (!enabled_) {
     return;
@@ -187,15 +499,43 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
   frame_ = FrameState{};
   frame_.frame = frame_number_;
   frame_.slot = slot;
+  // The upscaler's context, for the size the last accepted frame had (ratio 1): asked for while the
+  // upscaler is chosen and can run; the jitter waits for it, so a frame it cannot take never shakes.
+  frame_.upscaler = effective_;
+  bool ready = false;
+  if (effective_ != Upscaler::kOff && backend_ && ran_last_ && last_render_size_[0] != 0) {
+    BackendRequest request;
+    MakeRequest(&request);
+    backend_->Request(request);
+    request_ = request;
+    request_made_ = true;
+    ready = backend_->Ready(request);
+  }
+  frame_.backend_ready = ready;
+  if (ready != ready_reported_) {
+    ready_reported_ = ready;
+    if (ready) {
+      REXLOG_INFO("{} {} is ready for {}x{} ({} {}%): the jitter starts and the scene colour is "
+                  "replaced by its output",
+                  kPrefix, UpscalerName(effective_), request_.render_size[0],
+                  request_.render_size[1], ModeInfoOf(request_.mode).name,
+                  ModeInfoOf(request_.mode).percent);
+    } else if (effective_ != Upscaler::kOff) {
+      REXLOG_INFO("{} the upscaler's context is not ready: frames are plain until it is", kPrefix);
+    }
+  }
   // Armed only after a frame in which the anchor was accepted: a frame without one never shakes
-  // (F4-DESIGN.md 2.5).
-  frame_.armed = ran_last_ && !disarmed_;
+  // (F4-DESIGN.md 2.5); with an upscaler chosen, only while its context is ready.
+  frame_.armed = ran_last_ && !disarmed_ && (effective_ == Upscaler::kOff || ready);
   if (frame_.armed) {
     frame_.phase_count = kPhasesAtRatio1;  // 8 x ratio^2, ratio 1
     frame_.jitter_index = jitter_index_ % frame_.phase_count;
-    // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
-    frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
-    frame_.jitter[1] = float(temporal::Halton(frame_.jitter_index + 1, 3) - 0.5);
+    // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down. (Development,
+    // bit 2: the scene is not moved.)
+    if (!(debug_bits_ & 2u)) {
+      frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
+      frame_.jitter[1] = float(temporal::Halton(frame_.jitter_index + 1, 3) - 0.5);
+    }
   }
 }
 
@@ -596,6 +936,11 @@ TemporalSystem::Mode TemporalSystem::ModeOf(const FrameState& fr) {
 }
 
 void TemporalSystem::EndFrame() {
+  // The scene colour product is the product again for the next frame's first draws.
+  const bool upscaled = frame_.upscaled;
+  const Upscaler running = frame_.upscaler;
+  ClearStandIn();
+  PublishRunningUpscaler(upscaled ? running : Upscaler::kOff);
   if (!enabled_) {
     return;
   }
@@ -622,6 +967,19 @@ void TemporalSystem::EndFrame() {
     }
   }
 
+  // The upscaler: a frame that was jittered and not upscaled is a wrong frame (the raw jittered
+  // scene); a few in a row and it is over for the session. Frames that were not jittered, or whose
+  // 3D scene was not the main view (the pause menu's 4x), are plain and right.
+  if (fr.upscaler != Upscaler::kOff && fr.armed && Sum(fr.jittered) != 0 && !upscaled) {
+    if (++upscale_misses_ >= kDisarmAfterMisses) {
+      upscale_misses_ = 0;
+      FailUpscaler(std::format("{} jittered frames in a row could not be upscaled ({})",
+                               kDisarmAfterMisses, StatusName(fr.anchor_status)));
+    }
+  } else {
+    upscale_misses_ = 0;
+  }
+
   // The run for the next frame. The camera's step first: it needs the camera of the frame before.
   if (ran && ran_last_ && !(fr.reset & kResetTime)) {
     for (int i = 0; i < 3; ++i) {
@@ -637,6 +995,8 @@ void TemporalSystem::EndFrame() {
     last_jitter_[0] = fr.jitter[0];
     last_jitter_[1] = fr.jitter[1];
     last_scale_ = fr.scale;
+    last_render_size_[0] = fr.render_size[0];
+    last_render_size_[1] = fr.render_size[1];
     ++jitter_index_;  // advances in the frames the pass ran in only
   }
 
@@ -810,6 +1170,17 @@ void TemporalSystem::Report(const char* why) {
               "within 1e-3, {} moving",
               why, mv.frames, mv.zero_frames, w.mv_missed, mv.failed, mv.vehicle_draws, mv.checks,
               w.rigid_checked, w.rigid_ok, w.rigid_moving);
+  if (effective_ != Upscaler::kOff || w.upscaled != 0) {
+    const BackendStatus status = backend_ ? backend_->Status() : BackendStatus{};
+    REXLOG_INFO("[gpu] temporal upscaler: ({}) {} ({}{}) in {} frames: upscaled {} ({} of them with "
+                "the history started again), plain: context not ready {}, no vectors {}, colour not "
+                "an input {}{}",
+                why, UpscalerName(effective_), ModeInfoOf(settings_.mode).name,
+                status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
+                w.upscaled, w.upscale_resets, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
+                w.upscale_plain_no_color,
+                status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
+  }
   window_ = Window{};
   window_start_ = Clock::now();
 }

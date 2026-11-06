@@ -262,6 +262,8 @@ class TextureCache {
   // The views of the override's texture go (retired behind the frames that name them): before the
   // texture is released.
   void ReleaseOverrideViews();
+  // At shutdown (GPU idle, the heap going): the views go at once, their slots are not handed back.
+  void DropOverrideViews() { override_views_.Drop(); }
 
   // Takes the write notifications of textures and resolve products.
   void Sync();
