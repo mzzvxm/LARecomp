@@ -637,8 +637,10 @@ else()
     # NVIDIA Streamline and DLSS (when LARECOMP_STREAMLINE_DIR is set): the production DLLs of Super
     # Resolution, NVIDIA-signed and unchanged, and the licence texts that go with them. The renderer
     # opens them by full path from this folder after checking their signature, and nowhere else.
+    # NvLowLatencyVk.dll is the Vulkan Reflex runtime that sl.common.dll loads by itself on Vulkan.
     if(LARECOMP_STREAMLINE_KIT)
-        foreach(_larecomp_sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll)
+        foreach(_larecomp_sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
+                NvLowLatencyVk.dll)
             if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}")
                 message(WARNING "Streamline: ${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll} is missing")
                 continue()
@@ -651,6 +653,7 @@ else()
         endforeach()
         foreach(_larecomp_sl_notice
                 "bin/x64/nvngx_dlss.license.txt|nvngx_dlss_license.txt"
+                "bin/x64/reflex.license.txt|reflex_license.txt"
                 "license.txt|streamline_license.txt"
                 "3rd-party-licenses.md|streamline_third_party_licenses.md")
             string(REPLACE "|" ";" _larecomp_sl_pair "${_larecomp_sl_notice}")

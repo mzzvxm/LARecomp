@@ -1,7 +1,9 @@
 # NVIDIA Streamline SDK 2.14.16, for DLSS Super Resolution (src/gpu/temporal_dlss.h): the headers the
 # DLSS backend is compiled with (Streamline's own, MIT) and the production DLLs the game folder carries
 # (sl.interposer.dll, sl.common.dll, sl.dlss.dll and nvngx_dlss.dll, NVIDIA-signed, with their licence
-# files). Nothing from NVIDIA is committed to this repository: everything is fetched once into the build
+# files, and NvLowLatencyVk.dll, the Vulkan Reflex runtime sl.common.dll loads on Vulkan: without it
+# Streamline logs a load error at every Vulkan start). Nothing from NVIDIA is committed to this
+# repository: everything is fetched once into the build
 # folder from NVIDIA's release (one zip, the same as `streamline-sdk-v2.14.16.zip` on
 # github.com/NVIDIA-RTX/Streamline/releases), and every file that is used is checked against its SHA-256.
 # F4-DESIGN.md section 15 (the NVIDIA RTX SDKs licence allows redistributing the binaries; fetching them
@@ -42,6 +44,8 @@ set(_sl_files
     "18871eea87c90345da97d8109faa81ea7d5840e8d99b51b55b0e46cfa177f84e bin/x64/sl.dlss.dll"
     "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e bin/x64/nvngx_dlss.dll"
     "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294 bin/x64/nvngx_dlss.license.txt"
+    "2a77dc3e1c724b7eea5755be0ae7423752e79a2459fae72181a9f00e3507e5d6 bin/x64/NvLowLatencyVk.dll"
+    "ebf83c07fb3b2939908c3795d887afde3161c89a28ba391724efc784ce1bdabe bin/x64/reflex.license.txt"
     "7b6f23e7d6f3ad6292f9308d2b42cdc3d82ae4e9b2abb55f230279d83bedd43d license.txt"
     "cb251639994465f31d2178c16acedf1ff4f9cef1c370a09782ed36d4c86c1dca 3rd-party-licenses.md")
 
