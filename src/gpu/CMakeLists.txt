@@ -54,6 +54,7 @@ add_library(larecomp_gpu OBJECT
     swap_chain.cpp
     temporal.cpp
     temporal_camera.cpp
+    temporal_mv.cpp
     texture_decode.cpp
     texture_mods.cpp
     texture_names.cpp
@@ -212,6 +213,17 @@ larecomp_gpu_host_shader(fxaa_ps ps_6_0)
 larecomp_gpu_host_shader(smaa_edges_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=1)
 larecomp_gpu_host_shader(smaa_weights_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=2)
 larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3)
+# F4 step 1b: the temporal system's passes -- motion vectors, the copies it keeps, the check's
+# sample gather, the debug views (temporal_mv.h).
+larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
+larecomp_gpu_host_shader(temporal_copy_depth_ps ps_6_0 SOURCE temporal_copy_ps
+                         DEFINES TEMPORAL_COPY=0)
+larecomp_gpu_host_shader(temporal_copy_color_ps ps_6_0 SOURCE temporal_copy_ps
+                         DEFINES TEMPORAL_COPY=1)
+larecomp_gpu_host_shader(temporal_copy_ids_ps ps_6_0 SOURCE temporal_copy_ps
+                         DEFINES TEMPORAL_COPY=2)
+larecomp_gpu_host_shader(temporal_check_ps ps_6_0)
+larecomp_gpu_host_shader(temporal_debug_ps ps_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs
