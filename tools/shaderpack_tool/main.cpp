@@ -33,13 +33,9 @@
 #include "shaderpack/pack_writer.h"
 #include "shaderpack/rpf_shaders.h"
 
-// The HDR variant step is written separately. When its header is there the tool builds the HDR
-// pack too (--no-hdr leaves it out); the header is expected to declare
-//   std::unique_ptr<larecomp::shaderpack::HdrStep> larecomp::shaderpack::CreateHdrStep();
-#if __has_include("shaderpack/hdr_variant.h")
+// The HDR variant step: the tool builds the HDR pack too when the build has the HDR curve embedded
+// (--no-hdr leaves it out).
 #include "shaderpack/hdr_variant.h"
-#define LARECOMP_TOOL_HAS_HDR 1
-#endif
 
 namespace sp = larecomp::shaderpack;
 namespace fs = std::filesystem;
@@ -197,12 +193,10 @@ class ConsoleSink : public sp::ProgressSink {
 };
 
 std::unique_ptr<sp::HdrStep> MakeHdrStep(const Args& args) {
-#ifdef LARECOMP_TOOL_HAS_HDR
-  if (!args.Flag("--no-hdr")) return sp::CreateHdrStep();
-#else
-  (void)args;
-#endif
-  return nullptr;
+  if (args.Flag("--no-hdr")) return nullptr;
+  std::unique_ptr<sp::HdrStep> step = sp::CreateHdrStep();
+  if (!step) std::printf("no HDR step: %s\n", sp::HdrStepUnavailableReason().c_str());
+  return step;
 }
 
 // ---------------------------------------------------------------------------
