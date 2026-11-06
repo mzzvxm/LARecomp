@@ -3,6 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,6 +26,16 @@ namespace {
 // would be a flash of a window nobody can read.
 constexpr auto kShowAfter = std::chrono::milliseconds(400);
 
+// What the shader build asks of the popup (SetBootBuildHeading), and what the popup tells the
+// build back (the player pressed CANCEL, or the app is closing).
+std::mutex g_heading_lock;
+std::string g_subtitle;
+bool g_cancellable = false;
+std::atomic<bool> g_cancel{false};
+std::atomic<bool> g_closing{false};
+
+constexpr const char* kDefaultSubtitle = "Loading mods and music before launch.";
+
 // Shared between the worker's completion and the dialog. The dialog deletes
 // itself from inside its own Draw, so nothing else holds a raw pointer to it: a
 // close is asked for through `want_close`.
@@ -41,7 +53,10 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
  protected:
     // The popup reads the shared progress until it is gone; clearing it is the
     // last thing that happens to it.
-    void OnClose() override { mc::boot::Reset(); }
+    void OnClose() override {
+        mc::boot::Reset();
+        SetBootBuildHeading(std::string(), false);
+    }
 
     void OnDraw(ImGuiIO& io) override {
         if (state_->want_close.load()) {
@@ -60,6 +75,20 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
 
         const std::vector<mc::boot::Phase> phases = mc::boot::Read();
 
+        std::string subtitle;
+        bool cancellable = false;
+        {
+            std::lock_guard<std::mutex> guard(g_heading_lock);
+            subtitle = g_subtitle;
+            cancellable = g_cancellable;
+        }
+        if (subtitle.empty()) subtitle = kDefaultSubtitle;
+        // Once pressed, the build stops within a moment: say so, and take the prompt away.
+        const bool cancelling = g_cancel.load();
+        if (cancellable && cancelling) subtitle = "Stopping...";
+        const mcla::ui::Prompt cancel_prompts[] = {{"CANCEL", "ESC", mcla::ui::kPromptBack}};
+        const bool offer_cancel = cancellable && !cancelling;
+
         // Bottom-right, out of the way of anything the game puts on screen and
         // where a progress toast is expected to be.
         const float margin = 16.0f;
@@ -73,8 +102,10 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
                                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                      ImGuiWindowFlags_NoSavedSettings |
                                      ImGuiWindowFlags_NoFocusOnAppearing,
-                                 {}, 27.0f)) {
-            mcla::ui::PanelSubtitle("Loading mods and music before launch.");
+                                 offer_cancel ? std::span<const mcla::ui::Prompt>(cancel_prompts)
+                                              : std::span<const mcla::ui::Prompt>(),
+                                 27.0f)) {
+            mcla::ui::PanelSubtitle(subtitle.c_str());
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
             if (phases.empty()) {
@@ -88,7 +119,7 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
                 std::string count;
                 if (phase.total > 0) {
                     count = std::to_string(phase.done) + " / " + std::to_string(phase.total);
-                } else {
+                } else if (phase.done > 0) {
                     count = std::to_string(phase.done);
                 }
                 // Right-aligned, so the numbers do not dance as they grow.
@@ -129,7 +160,11 @@ class BootProgressDialog final : public rex::ui::ImGuiDialog {
                 ImGui::PopFont();
             }
         }
-        mcla::ui::EndPanel();
+        const int clicked = mcla::ui::EndPanel();
+        if (offer_cancel && (clicked == 0 || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+            REXLOG_INFO("Boot content build: cancelled from the progress popup");
+            g_cancel.store(true);
+        }
     }
 
  private:
@@ -164,6 +199,8 @@ void StartBootBuildWithOverlay(rex::ui::WindowedAppContext& app_context,
     }
 
     JoinBootWorker();
+    // A cancel left over from an earlier build must not stop this one; a close must.
+    g_cancel.store(g_closing.load());
     auto state = std::make_shared<OverlayState>();
     (void)new BootProgressDialog(drawer, state);
 
@@ -189,5 +226,20 @@ void StartBootBuildWithOverlay(rex::ui::WindowedAppContext& app_context,
 }
 
 void WaitForBootBuild() { JoinBootWorker(); }
+
+void SetBootBuildHeading(std::string subtitle, bool cancellable) {
+    std::lock_guard<std::mutex> guard(g_heading_lock);
+    g_subtitle = std::move(subtitle);
+    g_cancellable = cancellable;
+}
+
+bool BootBuildCancelRequested() { return g_cancel.load(); }
+
+bool BootBuildClosing() { return g_closing.load(); }
+
+void RequestBootBuildCancel() {
+    g_closing.store(true);
+    g_cancel.store(true);
+}
 
 }  // namespace larecomp
