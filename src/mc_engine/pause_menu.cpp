@@ -644,6 +644,7 @@ const char* const kDeferredCvars[] = {
     // The 3D scene's size under an upscaler mode is fixed at the start too (gpu.h StartUpscale).
     "mcla_gpu_fsr31_mode",
     "mcla_gpu_fsr4_mode",
+    "mcla_gpu_dlss_mode",
 };
 
 std::mutex g_deferred_mutex;
