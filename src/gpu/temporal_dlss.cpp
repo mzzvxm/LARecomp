@@ -249,6 +249,7 @@ struct SlApi {
   PFun_slEvaluateFeature* evaluate = nullptr;
   PFun_slFreeResources* free_resources = nullptr;
   PFun_slSetD3DDevice* set_d3d_device = nullptr;
+  PFun_slUpgradeInterface* upgrade_interface = nullptr;  // optional: D3D12's swap chain wrapper
   // Taken through slGetFeatureFunction once the device is known.
   PFun_slDLSSGetOptimalSettings* dlss_optimal = nullptr;
   PFun_slDLSSSetOptions* dlss_set_options = nullptr;
@@ -275,7 +276,12 @@ struct Runtime {
   uint32_t last_viewport = 0; // viewport ids are never reused (a context's resources are freed late)
   void* vk_get_instance_proc_addr = nullptr;  // the interposer's, when started for Vulkan
   bool vk_hook = false;                       // Plume is to load Vulkan through it
+  bool swap_chain_tried = false;              // D3D12: the swap chain was offered to slUpgradeInterface
 };
+
+// D3D12: Streamline has fully started and the swap chain is still to be handed to it
+// (dlss::UpgradeSwapChain). Read at every present, so not behind Runtime::mu.
+std::atomic<bool> g_swap_chain_pending{false};
 
 Runtime& Rt() {
   static Runtime runtime;
@@ -314,6 +320,7 @@ bool LoadRuntimeLocked(Runtime& rt, std::string* why) {
   a.evaluate = Import<PFun_slEvaluateFeature>(rt.interposer, "slEvaluateFeature");
   a.free_resources = Import<PFun_slFreeResources>(rt.interposer, "slFreeResources");
   a.set_d3d_device = Import<PFun_slSetD3DDevice>(rt.interposer, "slSetD3DDevice");
+  a.upgrade_interface = Import<PFun_slUpgradeInterface>(rt.interposer, "slUpgradeInterface");
   if (!a.init || !a.shutdown || !a.is_supported || !a.get_function || !a.new_frame_token ||
       !a.set_constants || !a.evaluate || !a.free_resources || !a.set_d3d_device) {
     *why = "sl.interposer.dll lacks functions of Streamline's API";
@@ -789,14 +796,12 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
   }
   if (api == Backend::kD3D12) {
     // The manual hooking guide, "slSetD3DDevice": "When using D3D simply create your device and
-    // call slSetD3DDevice". Super Resolution needs no proxy of the device, the factory or the
-    // swap chain.
-    // CHECK: that Super Resolution runs with the native device alone (no slUpgradeInterface, no
-    // call of the common plugin's presentCommon): D3D12 runs (a clean picture, 2026-11-06) but
-    // Streamline logs "presentCommon() was not observed" once, and the manual hooking guide says
-    // the missing call leads to memory growth across swap chain resizes; the swap chain should go
-    // through Plume's D3D12InterfaceHooks.upgradeSwapChain (Vulkan loads through the interposer
-    // and has no such line).
+    // call slSetD3DDevice". Super Resolution needs no proxy of the device or the factory. The
+    // swap chain is the one thing that does get a wrapper (slUpgradeInterface): the common
+    // plugin's presentCommon runs from its Present, and without it Streamline logs
+    // "presentCommon() was not observed" and, as its guide says, grows its memory across swap
+    // chain resizes. The wrapper goes in once this start has ended (pending flag, below), not at
+    // the swap chain's creation: see UpgradeSwapChain.
     const sl::Result result = rt.api.set_d3d_device(native.device);
     if (result != sl::Result::eOk) {
       *why = "slSetD3DDevice failed: " + ResultText(result);
@@ -837,6 +842,11 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
   rt.api.dlss_optimal = reinterpret_cast<PFun_slDLSSGetOptimalSettings*>(get_optimal);
   rt.api.dlss_set_options = reinterpret_cast<PFun_slDLSSSetOptions*>(set_options);
   rt.api.dlss_state = reinterpret_cast<PFun_slDLSSGetState*>(get_state);
+  if (api == Backend::kD3D12 && rt.api.upgrade_interface) {
+    // The plugins have started (slSetD3DDevice ran their start and filled the hook lists the
+    // swap chain's wrapper reads): the next present may hand Streamline the swap chain.
+    g_swap_chain_pending.store(true, std::memory_order_release);
+  }
   return true;
 }
 
@@ -1441,7 +1451,10 @@ void DlssBackend::Shutdown() {
   if (i.probe_started) {
     // The GPU is idle (the renderer drained its frames): the resources go, then Streamline, before
     // the device does ("Call slShutdown() before destroying those instances"). The module stays
-    // loaded to the end of the process.
+    // loaded to the end of the process. The swap chain's wrapper (D3D12) outlives it: Streamline
+    // ignores the hook calls it gets after its shutdown, and Plume releases the wrapper with the
+    // swap chain.
+    g_swap_chain_pending.store(false, std::memory_order_release);
     Runtime& rt = Rt();
     std::lock_guard lock(rt.mu);
     if (rt.initialized && !rt.shut_down) {
@@ -1548,6 +1561,75 @@ void AbandonVulkanHook(const std::string& why) {
   }
   rt.shut_down = true;
   REXLOG_WARN("{} DLSS is off for this session: {}", kPrefix, why);
+}
+
+}  // namespace dlss
+
+// ---------------------------------------------------------------------------
+// D3D12: Streamline sees the presents
+// ---------------------------------------------------------------------------
+// The common plugin's presentCommon (its frame counter, its deferred freeing of resources, the
+// clearing of its caches at a resize) runs from the Present and ResizeBuffers of Streamline's
+// wrapper of the swap chain, which the manual hooking guide has the application make with
+// slUpgradeInterface "immediately after creating the swap chain". That cannot be done here:
+//   - the wrapper asks the plugin manager for its hook lists in every call (Present, GetBuffer,
+//     GetCurrentBackBufferIndex, ResizeBuffers). Before slSetD3DDevice has finished starting the
+//     plugins (about 8 s of NGX on an RTX 5080, after about 2 s of slInit) such a call starts them
+//     itself, a second time and racing the worker's start, or logs an error at every call.
+//   - the swap chain is made at the start of the game, before anything else of it can run, and
+//     Streamline's start must not delay that by ten seconds (nothing runs in parallel with it).
+// So the swap chain goes native and Plume offers it at every present (backend_d3d12.cpp, Plume's
+// upgradeSwapChainAtPresent) until the worker has published the end of the start; the next
+// present then swaps the wrapper in. The wrapper passes everything to the swap chain it wraps, and
+// the back buffers Plume holds are the swap chain's own, so nothing else changes.
+// CHECK: the first run with it: sl.log says "Upgrading IDXGISwapChain to use SL proxy" and no
+// longer logs "presentCommon() was not observed"; no new warning or error from the wrapper (it
+// is untested that GetDevice(ID3D12Device) on Plume's swap chain, which Streamline's constructor
+// asks, answers); frame times and the resize rebuild unchanged; and that Streamline's
+// presentCommon on the render thread does not race the worker's feature creation (Streamline
+// documents slEvaluateFeature as not thread safe against other API calls; its hooks are not API
+// calls, and engines present from a thread other than the evaluating one).
+
+namespace dlss {
+
+bool SwapChainUpgradePending() {
+  return g_swap_chain_pending.load(std::memory_order_acquire);
+}
+
+bool UpgradeSwapChain(void** swap_chain) {
+  if (!swap_chain || !*swap_chain || !g_swap_chain_pending.load(std::memory_order_acquire)) {
+    return false;
+  }
+  Runtime& rt = Rt();
+  // A present never waits for Streamline: the worker holds the lock for the seconds a feature's
+  // creation takes. The next present asks again (the first evaluation of a feature is after that
+  // creation, so Streamline has seen presents before it counts the frames it evaluated without one).
+  std::unique_lock lock(rt.mu, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    return false;
+  }
+  g_swap_chain_pending.store(false, std::memory_order_release);  // once
+  if (!rt.initialized || rt.shut_down || rt.swap_chain_tried || !rt.api.upgrade_interface) {
+    return false;
+  }
+  rt.swap_chain_tried = true;
+  void* wrapper = *swap_chain;
+  const sl::Result result = rt.api.upgrade_interface(&wrapper);
+  if (result != sl::Result::eOk || !wrapper) {
+    REXLOG_WARN("{} Streamline did not take the swap chain ({}): it does not see the presents, "
+                "which only costs it memory across window resizes; DLSS itself runs",
+                kPrefix, ResultText(result));
+    return false;
+  }
+  if (wrapper == *swap_chain) {
+    REXLOG_WARN("{} Streamline gave the swap chain back unchanged (its interposer is disabled): it "
+                "does not see the presents",
+                kPrefix);
+    return false;
+  }
+  *swap_chain = wrapper;
+  REXLOG_INFO("{} Streamline's swap chain wrapper is in: it sees every present from now on", kPrefix);
+  return true;
 }
 
 }  // namespace dlss

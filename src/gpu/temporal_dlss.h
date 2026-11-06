@@ -17,12 +17,16 @@
 //
 // How Streamline is hooked in (the choice that keeps FSR and the game without DLSS untouched):
 //
-//   D3D12   Super Resolution needs none of Streamline's proxies (no swap chain, queue or device
-//           wrapper): the manual hooking guide (docs/ProgrammingGuideManualHooking.md, "slSetD3DDevice":
-//           "When using D3D simply create your device and call slSetD3DDevice") gives the
-//           interposer the native device and nothing else. slInit with eUseManualHooking runs after
-//           the device exists, on the probe's worker thread, and only when DLSS is the saved choice
-//           (or at its first use, when it is chosen from the pause menu). Plume is not touched.
+//   D3D12   Super Resolution needs none of Streamline's proxies for the device, the factory or
+//           the queues: the manual hooking guide (docs/ProgrammingGuideManualHooking.md,
+//           "slSetD3DDevice": "When using D3D simply create your device and call slSetD3DDevice")
+//           gives the interposer the native device. slInit with eUseManualHooking runs after the
+//           device exists, on the probe's worker thread, and only when DLSS is the saved choice
+//           (or at its first use, when it is chosen from the pause menu). The swap chain does get
+//           Streamline's wrapper (slUpgradeInterface), which is how its common plugin sees the
+//           presents (presentCommon: its garbage collection and the clearing of its caches at a
+//           resize); it goes in at the first present after Streamline has finished starting, not at
+//           the swap chain's creation (UpgradeSwapChain below).
 //   Vulkan  The instance and the device have to be made with the extensions, features and queues
 //           Streamline asks for, so on Vulkan it starts BEFORE the device (Device::Open ->
 //           dlss::BeforeDevice), only when DLSS is the saved choice at the start and the GPU is an
@@ -107,12 +111,25 @@ void* VulkanInstanceProcAddr();
 // The Vulkan interface or device could not be made with the hook: DLSS is off for the rest of the
 // process and the hook is not offered again (the caller tries again without it).
 void AbandonVulkanHook(const std::string& why);
+
+// D3D12, from the thread that presents (backend_d3d12.cpp, Plume's upgradeSwapChainAtPresent hook,
+// before every present). SwapChainUpgradePending is a plain atomic read: true from the end of
+// Streamline's start until the swap chain was handed to it. UpgradeSwapChain then replaces
+// `*swap_chain` (the IDXGISwapChain Plume presents on) with Streamline's wrapper of it and returns
+// true; the wrapper holds a reference of its own to the original, so the caller releases the
+// original's. It returns false, with `*swap_chain` untouched, when it is not time yet (Streamline
+// is busy making a feature: asked again at the next present), when Streamline would not take it
+// (logged), and always after the first time it took it or refused.
+bool SwapChainUpgradePending();
+bool UpgradeSwapChain(void** swap_chain);
 }  // namespace dlss
 #else
 namespace dlss {
 inline void BeforeDevice(Backend, const std::string&) {}
 inline void* VulkanInstanceProcAddr() { return nullptr; }
 inline void AbandonVulkanHook(const std::string&) {}
+inline bool SwapChainUpgradePending() { return false; }
+inline bool UpgradeSwapChain(void**) { return false; }
 }  // namespace dlss
 #endif
 
