@@ -91,7 +91,8 @@ class TemporalMotion {
   Kept kept() const;
 
  private:
-  // hlsl/temporal_mv_ps.hlsl MotionPush.
+  // hlsl/temporal_mv_ps.hlsl MotionPush. CHECK: the same offsets there (depth 0, mode 4, jitter 8,
+  // size 16, to_render 24, columns 32, 48 and 64) under both the D3D and the Vulkan packing.
   struct MotionPush {
     uint32_t depth;
     uint32_t mode;  // 0 every pixel, 2 zero

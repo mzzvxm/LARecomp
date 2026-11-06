@@ -184,6 +184,8 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
     // fetch bound at the render scale, which is the product's own.
     // CHECK: only a scene scale under 1x (Radeon at 1x, any mode; Ultra Performance at 2x) gets an
     // enlarged copy; above it the two bindings are the same slot.
+    // CHECK: the colour and stencil fetches are no longer bound at the render scale here (only the
+    // depth is read by the passes); the anchor draw binds all three itself.
     const TextureFetch fetch = ReadTextureFetch(frame_.anchor_textures.fetch[2]);
     if (fetch.is_texture) {
       const TextureCache::Binding bound = textures_->Bind2D(fetch, frame_.scale, list);
