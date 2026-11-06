@@ -24988,6 +24988,83 @@ address = 0x821BDB90
 after_instruction = true
 registers = ["r3", "f11"]
 
+# Timer precision (hooks/timer_precision.cpp).
+#
+# The engine timer adds the frame time to two float clocks, [r3+0x14] and [r3+0x18], by
+# `fadds` + `stfs`, once on each of four paths through sub_821BDA90 (f0 is the frame time
+# the path adds). A float cannot hold the sum for long: its step is 0.24 ms near an hour
+# and 3.9 ms near ten, so the clock runs a few percent fast or slow, and stops after
+# about 36 hours at 240 FPS. After each of the eight stores the hook keeps an exact
+# double sum and stores that, rounded to a float, in place of the guest's own sum.
+[[midasm_hook]]
+name = "MCLATimeAccumTotal"
+address = 0x821BDB40
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumTotal"
+address = 0x821BDBB0
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumTotal"
+address = 0x821BDC0C
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumTotal"
+address = 0x821BDCA8
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumGame"
+address = 0x821BDB54
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumGame"
+address = 0x821BDBC0
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumGame"
+address = 0x821BDC20
+after_instruction = true
+registers = ["r3", "f0"]
+
+[[midasm_hook]]
+name = "MCLATimeAccumGame"
+address = 0x821BDCC0
+after_instruction = true
+registers = ["r3", "f0"]
+
+# The audio engine's clock: sub_821E63F0 adds [timer+0x60] to the float at 0x8286CF34 every
+# frame and gives the audio engine the sum in milliseconds. 0x821E6634 is the `stfs` of
+# the sum; the hook replaces f0 (which the next instructions turn into milliseconds) and the
+# stored clock with the exact sum rounded to a float. r9 is the high half of the clock's
+# address, r29 the engine timer.
+[[midasm_hook]]
+name = "MCLAAudioClockAccum"
+address = 0x821E6634
+after_instruction = true
+registers = ["r9", "r29", "f0"]
+
+# The race / time trial / capture-the-flag clock: sub_82256220 adds `(int)(dt * 1000)` to the
+# whole milliseconds at [obj+0xEA4] every frame it runs, dropping the fraction (16 ms for a
+# 16.67 ms frame at 60 FPS: 4% slow; 14% at 144, 28% at 360). 0x822562E8 is the `fctiwz`; f0
+# holds the frame time in milliseconds. The hook hands it the whole part of this frame plus
+# the fractions the earlier frames left, and keeps the rest.
+[[midasm_hook]]
+name = "MCLAGameClockCarry"
+address = 0x822562E8
+registers = ["f0"]
+
 [[midasm_hook]]
 address = 0x82419AA0
 name = "Patch_60FPS_Byte"

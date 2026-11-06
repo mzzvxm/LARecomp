@@ -159,6 +159,15 @@ void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31);
 bool MCLAUseRealDelta();
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11);
 
+// Clocks kept true over a long session and at a high frame rate (hooks/timer_precision.cpp):
+// the engine timer's two float clocks and the audio engine's clock keep an exact double sum, and
+// the race / time trial / capture-the-flag millisecond clock carries the fraction of a
+// millisecond from frame to frame instead of dropping it.
+void MCLATimeAccumTotal(PPCRegister& r3, PPCRegister& f0);
+void MCLATimeAccumGame(PPCRegister& r3, PPCRegister& f0);
+void MCLAAudioClockAccum(PPCRegister& r9, PPCRegister& r29, PPCRegister& f0);
+void MCLAGameClockCarry(PPCRegister& f0);
+
 // Logs the audio dropout counter's closing line, once (hooks/audio_mixer.cpp). Safe from any
 // thread; logs nothing if the game closed before the counter started.
 void LogAudioDropoutSummary();

@@ -46,6 +46,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/frame_timing.cpp
+    src/mc_engine/hooks/timer_precision.cpp
     src/mc_engine/hooks/timing_log.cpp
     src/mc_engine/hooks/graphics.cpp
     src/mc_engine/hooks/dev_options.cpp
