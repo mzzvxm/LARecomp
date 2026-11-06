@@ -10,6 +10,10 @@ namespace mcla::native_gfx {
 
 namespace {
 
+// D3D12_BARRIER_SYNC_INDEX_INPUT, 0x4: the Windows SDK 10.0.26100 and Agility SDK name of what
+// older d3d12.h generations (mingw-w64's) call D3D12_BARRIER_SYNC_INPUT_ASSEMBLER. Same value.
+constexpr D3D12_BARRIER_SYNC kBarrierSyncIndexInput = static_cast<D3D12_BARRIER_SYNC>(0x4);
+
 void MapLegacyState(D3D12_RESOURCE_STATES state,
                     bool is_before,
                     D3D12_BARRIER_SYNC& out_sync,
@@ -82,7 +86,7 @@ void MapLegacyState(D3D12_RESOURCE_STATES state,
     out_access |= D3D12_BARRIER_ACCESS_VERTEX_BUFFER | D3D12_BARRIER_ACCESS_CONSTANT_BUFFER;
   }
   if (state & D3D12_RESOURCE_STATE_INDEX_BUFFER) {
-    out_sync |= D3D12_BARRIER_SYNC_INDEX_INPUT;
+    out_sync |= kBarrierSyncIndexInput;
     out_access |= D3D12_BARRIER_ACCESS_INDEX_BUFFER;
   }
 

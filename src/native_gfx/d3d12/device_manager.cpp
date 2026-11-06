@@ -52,7 +52,7 @@ bool DeviceManager::SelectAdapter(IDXGIFactory2* factory, IDXGIAdapter1** out_ad
         continue;
       }
       if (SUCCEEDED(D3D12CreateDevice(best_adapter.Get(), D3D_FEATURE_LEVEL_11_0,
-                                      _uuidof(ID3D12Device), nullptr))) {
+                                      __uuidof(ID3D12Device), nullptr))) {
         *out_adapter = best_adapter.Detach();
         return true;
       }
@@ -71,7 +71,7 @@ bool DeviceManager::SelectAdapter(IDXGIFactory2* factory, IDXGIAdapter1** out_ad
       continue;
     }
     if (SUCCEEDED(D3D12CreateDevice(current_adapter.Get(), D3D_FEATURE_LEVEL_11_0,
-                                    _uuidof(ID3D12Device), nullptr))) {
+                                    __uuidof(ID3D12Device), nullptr))) {
       if (desc.DedicatedVideoMemory > max_vram || !selected_adapter) {
         max_vram = desc.DedicatedVideoMemory;
         selected_adapter = current_adapter;
@@ -116,7 +116,8 @@ void DeviceManager::QueryCapabilities() {
 
   // Shader Model
   static constexpr D3D_SHADER_MODEL kModels[] = {
-      D3D_SHADER_MODEL_6_8,
+      // D3D_SHADER_MODEL_6_8: written as its value, 0x68, as mingw-w64's d3d12.h stops at 6_7.
+      static_cast<D3D_SHADER_MODEL>(0x68),
       D3D_SHADER_MODEL_6_7,
       D3D_SHADER_MODEL_6_6,
       D3D_SHADER_MODEL_6_5,

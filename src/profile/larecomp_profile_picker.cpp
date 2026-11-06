@@ -123,7 +123,15 @@ Plan g_plan;
 
 std::string FormatTime(fs::file_time_type when) {
   using namespace std::chrono;
-  const std::time_t t = system_clock::to_time_t(clock_cast<system_clock>(when));
+#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+  const auto system_time = clock_cast<system_clock>(when);
+#else
+  // libc++ (llvm-mingw) has no clock_cast yet; its file clock converts with to_sys, which the
+  // Microsoft STL's does not have.
+  const auto system_time = file_clock::to_sys(when);
+#endif
+  const std::time_t t =
+      system_clock::to_time_t(time_point_cast<system_clock::duration>(system_time));
   std::tm local{};
 #if defined(_WIN32)
   localtime_s(&local, &t);
