@@ -101,8 +101,11 @@ std::string ResetText(uint32_t mask) {
   return text.empty() ? std::string("none") : text;
 }
 
-uint32_t Sum(const std::array<uint32_t, TemporalSystem::kKinds>& a) {
-  return a[0] + a[1] + a[2];
+// The main view draws that draw colour: what says a frame has a 3D scene. Depth-only draws alone do
+// not: without MSAA the UI draws one into the main depth key (temporal_identities.h), also in a
+// frame with no 3D scene.
+uint32_t Colored(const std::array<uint32_t, TemporalSystem::kKinds>& a) {
+  return a[TemporalSystem::kColorDepth] + a[TemporalSystem::kColorOnly];
 }
 
 }  // namespace
@@ -219,8 +222,8 @@ bool TemporalSystem::HoldsAaOff(bool aa_asked) {
   const bool hold = effective_ != Upscaler::kOff;
   if (hold && aa_asked && !aa_hold_reported_) {
     aa_hold_reported_ = true;
-    REXLOG_INFO("{} FXAA and SMAA (mcla_gpu_aa) are held off while {} is on; MSAA is not touched",
-                kPrefix, UpscalerName(effective_));
+    REXLOG_INFO("{} FXAA and SMAA (mcla_gpu_aa) are held off while {} is on", kPrefix,
+                UpscalerName(effective_));
   }
   if (!hold) {
     aa_hold_reported_ = false;
@@ -263,6 +266,30 @@ void TemporalSystem::ReadUpscalerChoice() {
     }
   }
   effective_ = effective;
+  NoteMsaa();
+}
+
+void TemporalSystem::NoteMsaa() {
+  // What the upscaler comes to for the game's MSAA (gpu.h GuestMsaa). The game's start decided it
+  // and logged it ("[gpu] msaa:"); what is said here is when the upscaler's state has since
+  // changed: the cases where the game's MSAA and the upscaler do not agree until the next start.
+  const GuestMsaa msaa = GetGuestMsaa();
+  const bool upscaling = effective_ != Upscaler::kOff;
+  const uint32_t key = uint32_t(msaa) | uint32_t(upscaling) << 4;
+  if (key == msaa_key_) {
+    return;
+  }
+  msaa_key_ = key;
+  if (upscaling && msaa == GuestMsaa::kOn) {
+    REXLOG_INFO("{} the game's MSAA is running under {}: the game was started with MSAA, before "
+                "the upscaler was on. It works with it; a start with the upscaler on runs without "
+                "MSAA (mcla_gpu_msaa is kept)",
+                kPrefix, UpscalerName(effective_));
+  } else if (!upscaling && msaa == GuestMsaa::kOffForUpscaler) {
+    REXLOG_INFO("{} the upscaler is off, but the game was started without MSAA for it: no MSAA "
+                "until the next start (mcla_gpu_msaa applies then)",
+                kPrefix);
+  }
 }
 
 void TemporalSystem::MakeRequest(BackendRequest* request) const {
@@ -627,16 +654,23 @@ void TemporalSystem::NoteStill(const DrawFacts& f, uint32_t failed) {
 void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& match,
                                 SharedConstants& shared) {
   FrameState& fr = frame_;
-  if (match.samples != temporal::kPlaySamples) {
+  if (!temporal::IsPlaySamples(match.samples)) {
     ++fr.view4x_draws;  // the pause menu, the map: known, never moved
     return;
   }
   if (fr.anchor_seen || fr.composite_seen) {
     // The UI phase draws into a depth key that equals the main view's when the game runs without
-    // MSAA; the anchor and the marker are what separate them (census 3.4).
+    // MSAA (one depth-only draw a frame, census round 2); the anchor and the marker are what
+    // separate them (census 3.4).
     ++fr.late_draws;
     return;
   }
+  if (fr.samples == 0) {
+    fr.samples = match.samples;
+  }
+  // CHECK: without MSAA the UI's depth-only draw, in the first frame with no 3D scene after one with
+  // it (the frame is armed, there is no anchor), is moved by the jitter like a main view draw: a
+  // sub-pixel shift of a stencil mask for one frame, counted as a miss only when colour was drawn.
   // The colour-only draws (no depth test and no stencil: the sky and effects drawn without depth)
   // and the depth-only draws (the occlusion draws at dusk and night, 256 a frame) are the same
   // world as the rest, so they are moved when they pass the gate below: a world draw left still
@@ -681,7 +715,7 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
   if (fr.view4x_draws != 0) {
     return AnchorStatus::kView4x;
   }
-  if (Sum(fr.main_draws) == 0) {
+  if (Colored(fr.main_draws) == 0) {
     return AnchorStatus::kNoMainView;
   }
   // Fetches 0, 1, 2: 2D textures of one size, the colour, the stencil view and the depth.
@@ -923,7 +957,7 @@ void TemporalSystem::NoteRigid(const temporal::Camera& camera, uint64_t frame) {
 // ---------------------------------------------------------------------------
 
 TemporalSystem::Mode TemporalSystem::ModeOf(const FrameState& fr) {
-  if (Sum(fr.main_draws) == 0 && fr.view4x_draws == 0) {
+  if (Colored(fr.main_draws) == 0 && fr.view4x_draws == 0) {
     return Mode::kNoScene;
   }
   if (fr.anchor_ok) {
@@ -953,7 +987,7 @@ void TemporalSystem::EndFrame() {
   const bool ran = fr.anchor_ok;
 
   // The safety net: a frame that was jittered, had the main view and no accepted anchor.
-  if (fr.armed && Sum(fr.jittered) != 0) {
+  if (fr.armed && Colored(fr.jittered) != 0) {
     if (ran) {
       misses_ = 0;
     } else {
@@ -970,7 +1004,7 @@ void TemporalSystem::EndFrame() {
   // The upscaler: a frame that was jittered and not upscaled is a wrong frame (the raw jittered
   // scene); a few in a row and it is over for the session. Frames that were not jittered, or whose
   // 3D scene was not the main view (the pause menu's 4x), are plain and right.
-  if (fr.upscaler != Upscaler::kOff && fr.armed && Sum(fr.jittered) != 0 && !upscaled) {
+  if (fr.upscaler != Upscaler::kOff && fr.armed && Colored(fr.jittered) != 0 && !upscaled) {
     if (++upscale_misses_ >= kDisarmAfterMisses) {
       upscale_misses_ = 0;
       FailUpscaler(std::format("{} jittered frames in a row could not be upscaled ({})",
@@ -1078,10 +1112,10 @@ void TemporalSystem::NoteMode(Mode mode, const FrameState& fr) {
                   kPrefix, fr.frame, StatusName(fr.anchor_status));
       break;
     case Mode::kRunning:
-      REXLOG_INFO("{} frame {}: running: the 3D scene at 2x samples, the anchor taken (camera at "
+      REXLOG_INFO("{} frame {}: running: the 3D scene at {}x samples, the anchor taken (camera at "
                   "{:.1f}, {:.1f}, {:.1f}, field of view {:.2f} deg, near {:.2f}, far {:.0f}, "
                   "frame {}x{}, render {}x{}), jitter {}",
-                  kPrefix, fr.frame, fr.camera.position[0], fr.camera.position[1],
+                  kPrefix, fr.frame, fr.samples, fr.camera.position[0], fr.camera.position[1],
                   fr.camera.position[2], fr.camera.fov_y * 180.0 / kPi,
                   fr.camera.near_plane, fr.camera.far_plane, fr.guest_size[0], fr.guest_size[1],
                   fr.render_size[0], fr.render_size[1],

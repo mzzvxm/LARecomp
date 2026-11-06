@@ -10,7 +10,8 @@
 //   Jitter.   A Halton(2,3) sub-pixel offset is added to SharedConstants::pos_offset, on the copy
 //             of the shared constants a draw is about to upload (the memo keeps the unjittered
 //             block), of the draws that go to the main view: the scene's colour and depth, found by
-//             their exact EDRAM identity at 2x samples (temporal_identities.h), only before the
+//             their exact EDRAM identity at 2x samples, or 1x when the game runs without MSAA
+//             (temporal_identities.h), only before the
 //             anchor and the composite marker, and only world draws (clipping and the viewport
 //             transform on, not a rectangle list, a viewport as wide as the target). Everything
 //             else keeps its position: the shadow maps, the reflections, the post chain, the UI.
@@ -41,8 +42,10 @@
 //   failure      a frame that cannot be upscaled is plain (no stand-in); three armed frames in a row
 //                that could not be, or one failed dispatch or context, and the backend is off for the
 //                session (one log line), the jitter stops, FXAA and SMAA come back.
-//   AA           FXAA and SMAA are held off while an upscaler is chosen and can run (MSAA stays the
-//                player's choice).
+//   AA           FXAA and SMAA are held off while an upscaler is chosen and can run. MSAA is held off
+//                too, but it is a start-up switch of the game: a game started with the upscaler on
+//                runs without it (gpu.h GuestMsaa, decided when the game makes its renderer; the
+//                player's choice is kept); one that started with MSAA keeps it until the next start.
 //
 // Development switch: mcla_gpu_temporal (off, read each frame). With it off and no upscaler chosen no
 // hook of the Scene does anything beyond one branch, no constant changes, no draw is added. On, it
@@ -165,8 +168,9 @@ class TemporalSystem {
     float jitter[2] = {};
     double ratio = 1.0;  // output size over render size: 1 until the scene is drawn smaller
 
-    // The main view (2x samples, before the anchor).
+    // The main view (2x samples, 1x without MSAA, before the anchor).
     Scale scale = Scale::None();  // of the first main view draw's targets
+    uint32_t samples = 0;         // guest samples of the first one: 2, or 1 without MSAA
     std::array<uint32_t, kKinds> main_draws{};
     std::array<uint32_t, kKinds> jittered{};
     std::array<uint32_t, kGateReasons> gate_failed{};  // by bit, in GateBit order
@@ -338,6 +342,7 @@ class TemporalSystem {
   // Step 2: the upscaler. `effective_` is what the settings and this PC's answer make of the
   // player's choice, read at BeginFrame.
   void ReadUpscalerChoice();
+  void NoteMsaa();
   void MakeRequest(BackendRequest* request) const;
   // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
   // failure turns the upscaler off for the session.
@@ -369,6 +374,7 @@ class TemporalSystem {
   uint64_t last_dispatch_frame_ = ~uint64_t(0);
   uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
   bool aa_hold_reported_ = false;
+  uint32_t msaa_key_ = ~0u;          // the game's MSAA and the upscaler, as last said (NoteMsaa)
   std::array<bool, 4> plain_logged_{};
 
   // The log.
