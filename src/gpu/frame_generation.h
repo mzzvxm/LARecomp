@@ -66,10 +66,38 @@
 // more, else the player's fps_limit applies; 0 uncapped; or N rendered frames, 2N shown) replaces
 // fps_limit in the frame limiter while frame generation runs (gpu.h FrameGenerationFpsLimit).
 //
-// Memory: the present images (4 at the window's size, 4 bytes a pixel), the scene image, the generated
-// image and the composed image (RGBA16F at the generation size) and FFX's own context (about 450 MB at
-// 4K). After kReleaseAfterFrames guest frames in a row with nothing generated the context and the
-// images are released until there is something to generate again.
+// Memory: the present images (4 at the window's size, the swap chain's format), the scene image, the
+// generated image and the composed image (RGBA16F at the generation size) and FFX's own context
+// (hundreds of MB at 4K). After kReleaseAfterFrames guest frames in a row with nothing generated the
+// context and the generation images are released until there is something to generate again; the
+// present images and the pacer go with the setting.
+//
+// The renderer has no ledger of its video memory. The budget (vram_budget.h) reads the use the OS
+// reports for the process, which holds all of this already; a texture made through Device that does
+// not fit is noted there (Device::NoteFailed), which makes the budget release what the caches can
+// make again; and what a cache retires is told to the device (NoteReleased). The images here are
+// made through Device, so those two cover them. What the device cannot see is FFX's context, which
+// the runtime makes itself, and what nothing checks is whether all of it fits before it is asked
+// for: an allocation that does not fit would make the budget release the caches' textures and EDRAM
+// targets, or the OS page them out, to make room for an extra. So frame generation asks first:
+//   - when it is to be switched on (Poll), for the present images, the generation images, the
+//     context and the groundwork it asks the frame layers and the temporal system for (the generated
+//     frame at the size of the window, the most it can be), and
+//   - when the generation needs a context of another size or a new one (Generate), for that and
+//     the generation images at their exact size,
+// against VideoMemoryBudget::HasRoomFor: the use plus what it needs must stay under the line where
+// the budget's response starts. The context's size is not known before it exists (the runtime
+// answers only for a context), so it is estimated from the last context the runtime made and
+// reported on, scaled by the generated frame's size (FrameGenerationBackend::EstimateContextBytes;
+// the probe's small context at 1280x720 is the first measurement).
+// Where it does not fit, nothing is made and nothing else is released: frame generation is off (the
+// swap chain goes back to the render queue, or is never moved), the log says what it needed and
+// what is in use once, the pause menu row says NO ROOM (gpu.h FrameGenerationAvailability::no_room
+// and `why`), and it looks again after 2 s, then 4, 8 and so on up to a minute; when there is room
+// it switches on by itself, as if the setting had just been chosen. A context the runtime itself
+// refuses for want of memory, or present or generation images that cannot be made, count the same
+// way: no room, not a failure of the session. The budget's own lines name what frame generation
+// holds (VideoMemoryBudget::AddHolder).
 //
 // The vendor's latency reducer is forced on while frame generation runs (latency.cpp). The presents'
 // reducer markers are the pacer's (latency.h).
@@ -105,8 +133,19 @@
 //    present of the composed image, an HDR switch while it runs (the copy pass for the new format);
 //  - D3D12 with Streamline: its swap chain wrapper goes in at the first present, which is the pacer's
 //    now (temporal_dlss.h); Reflex: the present markers and VkPresentIdKHR on the pacer thread;
-//  - mcla_gpu_present_wait is ignored while it runs; the video memory budget is not told about the
-//    generation images or the context.
+//  - mcla_gpu_present_wait is ignored while it runs;
+//  - the video memory checks (Memory, above): that the context's reported size at 1280x720 (the log
+//    line "context for 1280x720 ... about N MB") scaled to the real size lands near the size the real
+//    context reports (the estimate and the real figure are both in the log), that the OS use after
+//    switching on grows by about what the check asked for (the periodic "VRAM x of y MiB (held: ...
+//    frame generation N)" line, before and after), that on a card with too little room (a pretended
+//    small budget) the row says NO ROOM, nothing else is released
+//    ("[gpu] video memory: released" stays quiet) and it switches on once room is made, that
+//    FFX_API_RETURN_ERROR_MEMORY is what the runtime answers when the card is full (the
+//    "ran out of video memory" line), and that nothing here fights the budget's response: no switch
+//    on and off in a row near the line;
+//  - the context's destruction is told to the device (NoteReleased) on the worker thread: the atomics
+//    only, no lock.
 // ===========================================================================
 
 #include <atomic>
@@ -285,7 +324,28 @@ class FrameGeneration {
   // the generation images go.
   void NoteNotGenerated();
   bool MakeGenerationPasses();
-  bool EnsureImages(uint32_t generation_w, uint32_t generation_h);
+
+  // ---- video memory (see Memory above)
+  // The size of the generated frame for a picture of src_w x src_h shown in a window of window_w x
+  // window_h: the picture's, or the window's where that is smaller.
+  static void GenerationSize(uint32_t src_w, uint32_t src_h, uint32_t window_w, uint32_t window_h,
+                             uint32_t* gen_w, uint32_t* gen_h);
+  // Empty when `request`'s three generation images, `other_bytes` more of images and AMD's context
+  // (estimated) fit under the budget's line now, else one plain sentence saying what it needs and
+  // what is in use. `figures`, when given, gets that account in either case.
+  std::string MemoryProblem(const FgContextRequest& request, uint64_t other_bytes,
+                            std::string* figures = nullptr) const;
+  // The same for switching on, at the size of the window or of the last picture: with the present
+  // images and the groundwork (frame layers, depth and vectors) that the others make for it.
+  std::string SwitchOnProblem(std::string* figures = nullptr) const;
+  // Switching on: whether it fits (looked at when first wanted and again after a wait that doubles).
+  bool RoomToSwitchOn();
+  // Off for want of room (frame_generation.h Memory): remembered, logged once, published.
+  void BlockForMemory(const std::string& problem);
+  void ClearMemoryBlock();
+  // `bytes` of images could not be made. True (and off for want of room) unless the card reports
+  // plenty of free video memory, in which case the cause is another one that waiting would not cure.
+  bool ImagesFailed(const char* what, uint64_t bytes);
 
   // ---- the pacer
   bool MakeQueue(plume::RenderFormat format);
@@ -314,6 +374,18 @@ class FrameGeneration {
   bool failed_ = false;        // switching on could not be done: off for the session
   bool wanted_ = false;        // last read of the setting with the runtime able
   bool logged_unavailable_ = false;
+  // No room for it (Memory above): set by Poll's check, by Generate and AcquireSlot, or by the
+  // backend running out; cleared when it fits again or the setting goes off.
+  bool memory_blocked_ = false;
+  bool memory_logged_ = false;        // this episode was logged
+  std::string memory_reason_;
+  std::chrono::steady_clock::time_point memory_retry_{};
+  static constexpr std::chrono::seconds kMemoryRetryFirst{2};
+  static constexpr std::chrono::seconds kMemoryRetryMax{60};
+  std::chrono::seconds memory_delay_ = kMemoryRetryFirst;
+  uint32_t last_source_[2] = {};      // the picture the last generation saw, for the estimate
+  bool have_request_ = false;         // a context was asked of the backend for `requested_`
+  FgContextRequest requested_;
   uint32_t refresh_hz_ = 0;
   std::chrono::steady_clock::time_point refresh_read_{};
   bool initialized_ = false;
@@ -372,6 +444,7 @@ class FrameGeneration {
     uint64_t guest_frames = 0;
     uint64_t generated = 0;           // generated frames handed over
     uint64_t not_generated_context = 0;   // the context was not ready (or being made)
+    uint64_t not_generated_memory = 0;    // no room for the images or the context
     uint64_t not_generated_frame = 0;     // the frame had nothing to generate from
     uint64_t not_generated_reset = 0;     // the history starts again
     uint64_t dropped = 0;             // frames dropped: no slot in time

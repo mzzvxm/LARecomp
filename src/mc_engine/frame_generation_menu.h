@@ -9,7 +9,9 @@
 //
 //   FRAME GENERATION        OFF / FSR 3.1              mcla_gpu_frame_generation  (live)
 //                           ("(WAIT)" while the swap chain is made again and the generation context
-//                           is made; "(FAILED)" after a failure: off until the next start)
+//                           is made; "(FAILED)" after a failure: off until the next start;
+//                           "(NO ROOM)" while the card has no free video memory for it: it is off
+//                           and switches on by itself when there is room)
 //   FRAME GEN FPS LIMIT     HALF DISPLAY 116 / 30 (60 SHOWN) .. 120 (240 SHOWN) / UNCAPPED
 //                                                      mcla_gpu_frame_generation_fps_limit  (grey
 //                           unless frame generation is on). The number is the frames the game
@@ -25,8 +27,8 @@
 //
 // Width (pause_menu.cpp "Page width"): these rows are on DISPLAY, whose widest label is
 // "RENDER RES (SET BY FSR1)" (24 characters) and widest value "PERFORMANCE (50%)" (17): the longest
-// label here is "FPS LIMIT (FRAME GEN)" (21) and the longest values "FSR 3.1 (FAILED)" and "HALF
-// DISPLAY 116" (16 each).
+// label here is "FPS LIMIT (FRAME GEN)" (21) and the longest values "FSR 3.1 (NO ROOM)" (17) and
+// "FSR 3.1 (FAILED)" and "HALF DISPLAY 116" (16 each).
 
 #include "menu_items.h"
 

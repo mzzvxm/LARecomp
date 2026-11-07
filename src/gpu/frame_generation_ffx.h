@@ -25,6 +25,13 @@
 // Threads. Probe() starts a worker that loads the runtime and asks it what it can do; contexts are
 // made and destroyed on it (tens of milliseconds to half a second; hundreds of MB at 4K); Generate()
 // and Request() are render thread only; Status() and Ready() any thread.
+//
+// Memory. The runtime makes its images with the device's own calls, not through Device::CreateTexture,
+// so the device never hears of a context's creation failing or of its going. Three things stand in
+// for that (frame_generation.h "Memory"): the size the runtime reports for a context is kept
+// (Status().context_bytes, and EstimateContextBytes before the next one is made); a context that
+// fails for want of memory is not a failure of the session (Status().no_memory); and a context that
+// is destroyed is told to the device as video memory given back (Device::NoteReleased).
 // ===========================================================================
 
 #include <cstdint>
@@ -84,6 +91,9 @@ enum class FgBackendState : uint8_t {
 struct FgBackendStatus {
   FgBackendState state = FgBackendState::kUnknown;
   bool failed = false;       // a creation or a dispatch failed: off for the rest of the session
+  // The runtime ran out of video memory making a context (not a failure: nothing is asked again
+  // until Release, and the caller tries again later). `reason` says so.
+  bool no_memory = false;
   std::string reason;        // kUnavailable, or why it failed: one plain sentence
   std::string provider;      // the provider's name once a context exists
   uint64_t context_bytes = 0;  // video memory the ready context holds, as the runtime reports it
@@ -105,7 +115,12 @@ class FrameGenerationBackend {
   virtual void Request(const FgContextRequest& request) = 0;
   // A context for exactly this request exists and nothing failed. Any thread.
   virtual bool Ready(const FgContextRequest& request) const = 0;
-  // No request any more: the context goes (retired behind the frames that may use it). Render thread.
+  // The video memory a context for `request` would take, from the last one the runtime made and
+  // reported on (the probe's small trial counts), scaled by the size of the generated frame; 0 when
+  // none was measured. The runtime has no way to say it without a context. Any thread.
+  virtual uint64_t EstimateContextBytes(const FgContextRequest& request) const = 0;
+  // No request any more: the context goes (retired behind the frames that may use it) and a
+  // no_memory answer is forgotten, so that the next Request tries again. Render thread.
   virtual void Release() = 0;
   // The caller found it unusable (a generation's inputs never came right): off for the session.
   virtual void Fail(const std::string& reason) = 0;

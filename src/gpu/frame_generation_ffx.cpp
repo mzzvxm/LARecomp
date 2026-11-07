@@ -72,6 +72,8 @@ struct Context {
   ffx_glue::BackendDesc backend;
   bool dispatched = false;  // the first generation of a context starts the history
   uint64_t bytes = 0;       // the video memory it reports for itself
+  bool held = false;        // a context the renderer asked for (not the probe's trial): its bytes
+                            // are told to the device as given back when it is destroyed
 };
 
 }  // namespace
@@ -91,6 +93,17 @@ class FfxFrameGeneration final : public FrameGenerationBackend {
     std::lock_guard lock(mu_);
     return ctx_ && ctx_->request == request && !status_.failed;
   }
+  uint64_t EstimateContextBytes(const FgContextRequest& request) const override {
+    std::lock_guard lock(mu_);
+    if (measured_bytes_ == 0 || measured_pixels_ == 0) {
+      return 0;
+    }
+    // Linear in the generated frame's pixels from the last measurement: the part of a context that
+    // does not grow with the size is counted again at each size above it, so where the two differ
+    // the answer is the larger one.
+    const uint64_t pixels = uint64_t(request.generation_size[0]) * request.generation_size[1];
+    return measured_bytes_ * pixels / measured_pixels_;
+  }
   void Release() override;
   void Fail(const std::string& why) override;
   bool Generate(plume::RenderCommandList* list, const FgInputs& in) override;
@@ -101,7 +114,9 @@ class FfxFrameGeneration final : public FrameGenerationBackend {
   void ProbeRuntime();
   bool LoadRuntime(std::string* why);
   bool QueryVersions(std::string* why);
-  std::shared_ptr<Context> CreateContext(const FgContextRequest& request, std::string* why);
+  // `out_of_memory` (when given) is set when the runtime refused for want of video memory.
+  std::shared_ptr<Context> CreateContext(const FgContextRequest& request, std::string* why,
+                                         bool* out_of_memory = nullptr);
   void DestroyContext(Context& context);
   void SetStatus(FgBackendState state, std::string reason);
   // Under `mu_`: the ready context goes after the frames that may use it.
@@ -137,6 +152,9 @@ class FfxFrameGeneration final : public FrameGenerationBackend {
   std::thread worker_;
   bool stop_ = false;
   FgBackendStatus status_;
+  // What the last context the runtime reported on took, and the pixels of its generated frame.
+  uint64_t measured_bytes_ = 0;
+  uint64_t measured_pixels_ = 0;
   bool want_ = false;
   FgContextRequest want_request_;
   std::shared_ptr<Context> ctx_;
@@ -317,7 +335,7 @@ void FfxFrameGeneration::ProbeRuntime() {
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<Context> FfxFrameGeneration::CreateContext(const FgContextRequest& request,
-                                                           std::string* why) {
+                                                           std::string* why, bool* out_of_memory) {
   auto context = std::make_shared<Context>();
   context->request = request;
   if (!ffx_common::FillBackend(api_, native_, &context->backend)) {
@@ -347,6 +365,9 @@ std::shared_ptr<Context> FfxFrameGeneration::CreateContext(const FgContextReques
   if (rc != FFX_API_RETURN_OK || !context->handle) {
     context->handle = nullptr;
     *why = std::format("ffxCreateContext returned {} ({})", rc, ReturnName(rc));
+    if (out_of_memory) {
+      *out_of_memory = rc == FFX_API_RETURN_ERROR_MEMORY;
+    }
     return {};
   }
   const double ms =
@@ -374,6 +395,12 @@ std::shared_ptr<Context> FfxFrameGeneration::CreateContext(const FgContextReques
     if (query_(&context->handle, &q.header) == FFX_API_RETURN_OK) {
       context->bytes = usage.totalUsageInBytes;
       megabytes = context->bytes >> 20;
+      const uint64_t pixels = uint64_t(request.generation_size[0]) * request.generation_size[1];
+      if (context->bytes != 0 && pixels != 0) {
+        std::lock_guard lock(mu_);
+        measured_bytes_ = context->bytes;
+        measured_pixels_ = pixels;
+      }
     }
   }
   REXLOG_INFO("{} context for {}x{} (render {}x{}) made in {:.0f} ms: provider '{}', about {} MB",
@@ -388,6 +415,14 @@ void FfxFrameGeneration::DestroyContext(Context& context) {
     destroy_(&context.handle, nullptr);
   }
   context.handle = nullptr;
+  if (context.held) {
+    // The runtime's own images are not the device's, so the device is told what went: a creation
+    // that failed for want of room may be tried again (Device::NoteReleased).
+    context.held = false;
+    if (device_) {
+      device_->NoteReleased(context.bytes);
+    }
+  }
 }
 
 void FfxFrameGeneration::WorkerMain() {
@@ -412,9 +447,21 @@ void FfxFrameGeneration::WorkerMain() {
       const FgContextRequest request = want_request_;
       lock.unlock();
       std::string why;
-      std::shared_ptr<Context> made = CreateContext(request, &why);
+      bool out_of_memory = false;
+      std::shared_ptr<Context> made = CreateContext(request, &why, &out_of_memory);
       lock.lock();
-      if (!made) {
+      if (!made && out_of_memory) {
+        // The card is full: not a failure of the session. Nothing is asked again until the renderer
+        // releases the request (it switches frame generation off and looks again later).
+        if (!status_.no_memory) {
+          REXLOG_WARN("{} the context for {}x{} could not be made: the runtime is out of video "
+                      "memory ({}); frame generation goes off until there is room again",
+                      kPrefix, request.generation_size[0], request.generation_size[1], why);
+        }
+        status_.no_memory = true;
+        status_.reason = "AMD's context could not be made: the card ran out of video memory";
+        want_ = false;
+      } else if (!made) {
         // Off for the session, with one line; the renderer reads it from Status().
         if (!status_.failed) {
           REXLOG_WARN("{} frame generation is off for this session: its context could not be made: "
@@ -425,10 +472,12 @@ void FfxFrameGeneration::WorkerMain() {
         status_.reason = std::format("its context could not be made: {}", why);
         want_ = false;
       } else if (want_ && want_request_ == request && !ctx_ && !stop_) {
+        made->held = true;
         status_.provider = made->provider;
         status_.context_bytes = made->bytes;
         ctx_ = std::move(made);
       } else {
+        made->held = true;
         doomed_.push_back(std::move(made));  // the request moved on while it was made
       }
     }
@@ -479,7 +528,7 @@ void FfxFrameGeneration::Request(const FgContextRequest& request) {
   std::vector<std::shared_ptr<Context>> retire;
   {
     std::lock_guard lock(mu_);
-    if (status_.state != FgBackendState::kAvailable || status_.failed) {
+    if (status_.state != FgBackendState::kAvailable || status_.failed || status_.no_memory) {
       return;
     }
     if (want_ && want_request_ == request) {
@@ -500,6 +549,7 @@ void FfxFrameGeneration::Release() {
   {
     std::lock_guard lock(mu_);
     want_ = false;
+    status_.no_memory = false;
     RetireCurrentLocked(&retire);
   }
   RetireOutside(retire);
