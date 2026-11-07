@@ -248,7 +248,7 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
   out.mip_levels = t->desc.mipLevels ? t->desc.mipLevels : 1;
   out.array_layers = t->desc.arraySize ? t->desc.arraySize : 1;
 #if defined(LARECOMP_PLUME_STREAMLINE)
-  // Plume's feat/streamline-hooks keeps the usage and creation flags the image was made with.
+  // Plume (larecomp branch, PR #8) keeps the usage and creation flags the image was made with.
   out.usage = uint32_t(t->imageUsage);
   out.create_flags = uint32_t(t->imageFlags);
   out.complete = out.usage != 0;

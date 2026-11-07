@@ -67,6 +67,25 @@
 //
 // Streamline's log: every line goes to sl.log in the logs folder (InitLocked); only its warnings
 // and errors reach the game's log.
+//
+// Beside Reflex (latency.h) and HDR output (hdr.h), which use Plume's own paths and not
+// Streamline's: the Reflex plugin (sl.reflex) is not loaded, so Streamline makes no latency calls of
+// its own; the reducer's calls (NvAPI on the native D3D12 device, which is never wrapped;
+// VK_NV_low_latency2 on Vulkan) are the only ones. The scene colour DLSS reads and writes is the
+// same linear scene-referred picture FSR gets, so the HDR float scene (hdr_tonemap.h) takes the
+// output image as the tone map's input here exactly as it does under FSR; mcla_gpu_aa is held off
+// by TemporalSystem::HoldsAaOff for either.
+// CHECK: Reflex or Anti-Lag 2 with DLSS on one device, both APIs. Vulkan: Plume enables the
+// reducers' extensions and feature structs itself (VK_NV_low_latency2 with VkPhysicalDevice
+// PresentIdFeaturesKHR and TimelineSemaphoreFeatures, VK_AMD_anti_lag), the interposer's
+// vkCreateDevice adds its own: look for a duplicate extension name or a feature struct twice
+// (validation, sl.log), the swap chain made through the interposer with the latency mode in its
+// pNext and the HDR10 colour space (R10G10B10A2), the presents with VkPresentIdKHR and
+// VkLatencySubmissionPresentIdNV through the interposer's vkQueuePresentKHR, and the lock the
+// swap chain's Present/Acquire hold (swap_chain.cpp) with Streamline's own calls. D3D12: the HDR10
+// colour space is applied on the native swap chain at creation; after the wrapper goes in,
+// resizes and SetHdrMetadata reach it through the wrapper (QueryInterface for IDXGISwapChain4,
+// SetColorSpace1, SetHDRMetaData, ResizeBuffers).
 // ===========================================================================
 
 #include <memory>

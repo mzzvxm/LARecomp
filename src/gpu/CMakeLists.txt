@@ -119,8 +119,8 @@ if(LARECOMP_STREAMLINE_KIT)
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS=1)
 endif()
 # Plume's creation hooks for Streamline on Vulkan and the usage flags it keeps of an image
-# (Plume's feat/streamline-hooks): a Plume without them leaves DLSS out of the Vulkan backend
-# (D3D12 needs neither).
+# (Plume's larecomp branch: PR #10 and PR #8, both in the pin): a Plume without them leaves DLSS out
+# of the Vulkan backend (D3D12 needs neither).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_vulkan.h")
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_vulkan.h" _larecomp_plume_vulkan_header)
     if(_larecomp_plume_vulkan_header MATCHES "struct VulkanInterfaceHooks" AND
@@ -130,7 +130,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_vulkan.h")
     unset(_larecomp_plume_vulkan_header)
 endif()
 # Plume's hook that wraps the D3D12 swap chain at a present (upgradeSwapChainAtPresent, Plume's
-# feat/streamline-hooks): Streamline's wrapper can only go in once Streamline has started, long after
+# larecomp branch, PR #10): Streamline's wrapper can only go in once Streamline has started, long after
 # the swap chain exists. A Plume without it still runs DLSS on D3D12, but Streamline does not see
 # the presents (temporal_dlss.h).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_d3d12.h")
