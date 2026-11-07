@@ -215,7 +215,8 @@ void EdramTargets::DecideScene() {
               "{}x, {}x{} of the guest's 1280x720, for the output at {}x, {}x{}: {} {} ({}%, "
               "ratio {:.2f}; the nearest step of the scale grid gives {:.3f}{}). The pause menu's "
               "and the map's views, the post chain, the tone map and the UI stay at {}x, and the "
-              "upscaler makes the output from the scene. Fixed until the game is started again",
+              "upscaler makes the output from the scene. A change of upscaler or mode moves it "
+              "between two frames",
               scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
               scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_,
               resolution_scale_.Edge(kAssumedScreenWidth),

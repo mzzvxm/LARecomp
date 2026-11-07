@@ -527,7 +527,8 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
                 "on; the switch is made at the first frame boundary after it is ready",
                 kPrefix, PathText(effective_, mode_in_use_), PathText(to, to_mode),
                 request.render_size[0], request.render_size[1], request.output_size[0],
-                request.output_size[1], effective_ == Upscaler::kOff ? "the plain scene" : "the old path");
+                request.output_size[1],
+                effective_ == Upscaler::kOff ? "the plain scene" : "the old path");
   }
   // Every frame while it is wanted (the same request again does nothing; DLSS's first use starts
   // Streamline here, a step at a time).
