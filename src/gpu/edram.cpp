@@ -56,18 +56,16 @@ REXCVAR_DEFINE_UINT32(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_msaa, "2", "MCLA/GPU",
-    "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
-    "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
-    "own). The pause menu's and the map's world view, which the game draws with 4 samples, gets "
-    "the same samples as the game view (1 when the game runs without MSAA). Targets the game "
-    "does not multisample, or that are not images of the screen, keep the game's samples. "
-    "2, 4 and 8 among themselves change while the game runs, between two "
-    "frames (the pipelines for the new sample count are made first; not while an upscaler "
-    "runs, which holds the change until it is off). Off against on is the game's own start-up "
-    "switch and applies at the next start. A game started with an upscaler (mcla_gpu_upscaler) "
-    "that runs on this PC starts without MSAA whatever this says; the choice is kept and applies "
-    "again at a start with no upscaler.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
+    "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
+    "layout; the host gives its images of the screen the samples chosen here, so its pause menu "
+    "and map world view, which the game draws with 4 samples, get the same as the game view. "
+    "Targets the game does not multisample, or that are not images of the screen, keep the "
+    "game's samples. Live: a change is made between two frames, after the pipelines for the new "
+    "sample count are made. While an upscaler (mcla_gpu_upscaler) runs, MSAA is 1 sample "
+    "whatever this says (the upscaler smooths the picture, and MSAA under it only costs time); "
+    "the choice is kept and comes back when the upscaler is off.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -206,6 +204,18 @@ void EdramTargets::DecideScene() {
   const StartUpscale start = GetStartUpscale();
   const SceneScaleChoice choice = ChooseSceneScale(resolution_scale_, start.ratio);
   scene_scale_ = choice.scale;
+  if (start.runs && msaa_level_ != 1) {
+    // An upscaler that runs from the start smooths the picture itself, and MSAA under it only
+    // costs time: the game still draws its own 2 sample layout and the host gives it 1 sample
+    // (msaa_level.h; the temporal system adopts the same start path, so MsaaLevel finds the level
+    // already where it wants it). The player's level is kept in the setting and comes back when
+    // the upscaler stops.
+    REXLOG_INFO("[gpu] msaa: {} runs from the start: the images of the screen the game multisamples "
+                "get 1 sample on the host, not the {} of mcla_gpu_msaa = '{}', which is kept and "
+                "applies again when the upscaler is off",
+                UpscalerName(start.upscaler), msaa_level_, ReadMsaaSetting().text);
+    msaa_level_ = 1;
+  }
   if (!start.runs) {
     return;
   }
@@ -233,24 +243,29 @@ void EdramTargets::DecideScene() {
               resolution_scale_);
 }
 
-uint32_t EdramTargets::HostLevelFor(uint32_t level) {
-  const GuestMsaa guest = GetGuestMsaa();
-  return guest == GuestMsaa::kOffChosen || guest == GuestMsaa::kOffForUpscaler ? 1u : level;
-}
-
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
+  DecideScene();  // an upscaler that runs from the start gives the level up before any target takes it
   return HostSamplesAt(key, FollowsMsaaLevel(key, size_bits), msaa_level_);
 }
 
-void EdramTargets::NotePauseView(const Target& target) {
-  if (temporal::MainColorSamples(target.key) != temporal::kPauseSamples ||
-      target.host_samples == pause_view_samples_) {
+void EdramTargets::NoteMainViews(const Target& target) {
+  const uint32_t guest = temporal::MainColorSamples(target.key);
+  if (guest == 0) {
     return;
   }
-  const uint32_t before = pause_view_samples_;
-  pause_view_samples_ = target.host_samples;
-  REXLOG_INFO("[gpu] edram: the pause view (the pause menu's and the map's world, which the game "
-              "draws with {} samples) is drawn with {} sample{} on the host{}",
+  // The game view is drawn by the game with 2 samples (1 only where a game was made without
+  // MSAA, which the native renderer no longer does), the pause menu's and the map's world with 4.
+  const bool pause = guest == temporal::kPauseSamples;
+  uint32_t& logged = pause ? pause_view_samples_ : game_view_samples_;
+  if (target.host_samples == logged) {
+    return;
+  }
+  const uint32_t before = logged;
+  logged = target.host_samples;
+  REXLOG_INFO("[gpu] edram: the {} ({}, which the game draws with {} samples) is drawn with {} "
+              "sample{} on the host{}",
+              pause ? "pause view" : "game view",
+              pause ? "the pause menu's and the map's world" : "the 3D scene in play",
               target.key.samples, target.host_samples, target.host_samples == 1 ? "" : "s",
               before != 0 ? std::format(" (was {})", before) : std::string());
 }
@@ -267,9 +282,11 @@ EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
     setting.level = 4;
   } else if (v == "8") {
     setting.level = 8;
-  } else if (v == "off") {
+  } else if (v == "off" || v == "1") {
+    // One host sample over the game's own 2 sample layout.
+    setting.level = 1;
     setting.off = true;
-  } else if (v != "2" && v != "1") {
+  } else if (v != "2") {
     setting.invalid = true;
   }
   return setting;
@@ -370,15 +387,16 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   }
   // The host MSAA level, chosen at start, within what the device can do for
   // every format an image of the screen is stored as. A change while the game runs reads the
-  // same two things (ReadMsaaSetting, SupportedMsaaLevel).
+  // same two things (ReadMsaaSetting, SupportedMsaaLevel). The game always runs its own 2 sample
+  // layout (hooks/graphics.cpp), so off is a host level of 1 here, not a game without MSAA. An
+  // upscaler that runs from the start takes the level down to 1 in DecideScene.
   {
     const MsaaSetting setting = ReadMsaaSetting();
     if (setting.invalid) {
       REXLOG_ERROR("[gpu] edram: mcla_gpu_msaa = '{}' is not off, 2, 4 or 8; the console's 2x "
-                   "is kept",
+                   "is used",
                    setting.text);
     }
-    // off is the game's own switch (Patch_DisableMSAA): its targets come 1x.
     plume::RenderDevice* rd = device.device();
     msaa_supported_ = 0xFFu;
     for (plume::RenderFormat format :
@@ -393,10 +411,10 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                    setting.level, level, msaa_supported_);
     }
     msaa_level_ = level;
-    if (msaa_level_ > 2) {
-      REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples get {} samples on "
-                  "the host (mcla_gpu_msaa)",
-                  msaa_level_);
+    if (msaa_level_ != 2) {
+      REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples get {} sample{} on "
+                  "the host (mcla_gpu_msaa); the game draws its own 2 sample layout",
+                  msaa_level_, msaa_level_ == 1 ? "" : "s");
     }
   }
   // The detector and its checks are chosen at start.
@@ -665,6 +683,7 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) 
 }
 
 bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
+  DecideScene();  // may give the host MSAA level up for an upscaler that runs from the start
   return Retarget(output, scene, msaa_level_, list);
 }
 
@@ -675,7 +694,11 @@ bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) 
   // views for the resolves), the picture in the frames after the change against a start at the new
   // level (the resolves read the target's own sample count: resolve.cpp host_samples), the peak
   // video memory (old and new targets live together for the frames in flight: 8x at a render scale
-  // of 2 is large) and the hitch of the switch frame ("switched in N ms" in the log).
+  // of 2 is large) and the hitch of the switch frame ("switched in N ms" in the log). For a level of
+  // 1 over the game's 2 sample layout, and back: the scene colour and depth products of the guest's
+  // resolves (one host sample read for all of the guest's, resolve.cpp), the sun's glare (the
+  // occlusion count is scaled by guest over host samples), alpha-to-mask (solid offsets at 1, dithered
+  // above) and the pause view, in the frame of the switch and after it.
   DecideScene();  // the scene's scale is the start's decision: kept as it is
   return Retarget(resolution_scale_, scene_scale_, level, list);
 }
@@ -694,7 +717,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   if (output == resolution_scale_ && scene == scene_scale_ && level == msaa_level_) {
     return true;
   }
-  if (!device_ || !frames_ || !list || output.none() || scene.none() || level < 2) {
+  if (!device_ || !frames_ || !list || output.none() || scene.none() || level < 1) {
     return false;
   }
   // The new textures first, all of them: nothing is changed unless every one can be made.
@@ -774,7 +797,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
     // Also a target released for want of memory: Get makes it at this scale and these samples.
     target->scale = ScaleAfter(*target, output, scene);
     target->host_samples = HostSamplesAt(key, target->msaa_follows, level);
-    NotePauseView(*target);
+    NoteMainViews(*target);
   }
   if (old_bytes != 0) {
     device_->NoteReleased(old_bytes);
@@ -788,10 +811,10 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   ++change_serial_;
   if (output == output_before && scene == scene_before) {
     // Only the host MSAA level moved (SetMsaaLevel).
-    REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples now get {} samples on "
+    REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples now get {} sample{} on "
                 "the host (were {}): {} target(s) remade ({} with other samples), {:.1f} MiB (was "
                 "{:.1f} MiB)",
-                level, level_before, remade.size(), samples_changed,
+                level, level == 1 ? "" : "s", level_before, remade.size(), samples_changed,
                 double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
     return true;
   }
@@ -848,6 +871,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     if (std::find(failed_.begin(), failed_.end(), key) != failed_.end()) {
       return nullptr;
     }
+    DecideScene();  // the start's upscaler first: it sets the host MSAA level this target takes
     auto target = std::make_unique<Target>();
     target->key = key;
     target->creation_size_bits = size_bits;
@@ -879,7 +903,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
                   "first use {} rows)",
                   DescribeEdramKey(key), target->host_samples, height);
     }
-    NotePauseView(*target);
+    NoteMainViews(*target);
     if (!resolution_scale_.unit() || (scene_decided_ && !scene_scale_.unit())) {
       // The census of the rule: what each identity became, once.
       REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
@@ -1704,16 +1728,16 @@ std::string EdramTargets::TakeSummary() {
   }
   {
     // The targets that have other samples than the guest's now (a live change of the level made
-    // some again): more at 4x and 8x, and fewer on the pause menu's and the map's world view,
-    // which the game draws with 4.
+    // some again): more at 4x and 8x, fewer at 1x, and fewer on the pause menu's and the map's
+    // world view, which the game draws with 4.
     size_t other = 0;
     for (const auto& [key, target] : targets_) {
       other += target->host_samples != key.samples;
     }
-    if (msaa_level_ > 2 || other != 0) {
+    if (msaa_level_ != 2 || other != 0) {
       text += std::format(" | host MSAA {}x: {} of {} targets have other samples than the guest's "
                           "(made with them {})",
-                          HostLevelFor(msaa_level_), other, targets_.size(), stats_.made_host_msaa);
+                          msaa_level_, other, targets_.size(), stats_.made_host_msaa);
     }
   }
   if (aliasing_) {

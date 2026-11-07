@@ -314,28 +314,27 @@ struct UpscalerAvailability {
 };
 UpscalerAvailability GetUpscalerAvailability();
 
-// --- MSAA while an upscaler runs ---------------------------------------------------------------
-// FSR smooths the picture itself, and MSAA under it only costs time. The game's MSAA is a start-up
-// switch (its renderer is made once, with 2 samples or without: hooks/graphics.cpp
-// Patch_DisableMSAA), so the hold is decided once, when the game makes its renderer: a game started
-// with an upscaler chosen and able to run is started without MSAA, and the player's MSAA choice
-// (mcla_gpu_msaa) is kept and applies again at a start with no upscaler. An upscaler turned on
-// later finds the game's MSAA running (it works with it) until the next start.
+// --- MSAA --------------------------------------------------------------------------------------
+// The native renderer never turns the game's own MSAA switch off (hooks/graphics.cpp MsaaOff): the
+// game always draws its 2 sample layout, and the host's MSAA level (EdramTargets::msaa_level: 1, 2,
+// 4 or 8 samples on the images of the screen) is the player's choice, 1 for OFF and while an upscaler
+// runs (an upscaler smooths the picture itself, and MSAA under it only costs time). The level
+// changes while the game runs (msaa_level.h).
+//
+// GuestMsaa is what is left of the old start-up decision, and only for temporal_dlss.cpp's failure
+// text, which still names kOffForUpscaler. The game is never started without MSAA any more, so
+// GetGuestMsaa always says kOn. To remove (temporal_dlss.cpp is another agent's file, left alone):
+// that text's GetGuestMsaa branch, then this enum and function.
 enum class GuestMsaa : uint8_t {
-  kUndecided,       // the game has not made its renderer yet
-  kOn,              // as the player chose: the console's 2 samples (host samples 4 or 8 on top)
-  kOffChosen,       // mcla_gpu_msaa is off
-  kOffForUpscaler,  // started without MSAA because an upscaler runs; the choice is kept
+  kOn,              // the game's own 2 sample layout, always
+  kOffForUpscaler,  // never returned
 };
-// Called once by the game's own thread when its renderer is made; later calls give the same answer.
-// True: the game starts without MSAA. Waits up to a few seconds for the upscaler probe when an
-// upscaler is chosen (it ends within a second of the renderer starting).
-bool GuestMsaaOff();
-// Any thread.
-GuestMsaa GetGuestMsaa();
-// The host MSAA level (2, 4 or 8 among themselves) changes while the game runs (msaa_level.h): true
-// from when a new level has stood still until its pipelines are made and the targets are made
-// again. The pause menu's MSAA row says (WAIT). Any thread.
+inline GuestMsaa GetGuestMsaa() {
+  return GuestMsaa::kOn;
+}
+// The host MSAA level changes while the game runs (msaa_level.h): true from when a new level has
+// stood still until its pipelines are made and the targets are made again. The pause menu's MSAA
+// row says (WAIT). Any thread.
 bool MsaaSwitching();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
@@ -343,9 +342,10 @@ bool MsaaSwitching();
 // scene's first targets are made for the choice read once at the start: the upscaler and mode
 // chosen, and whether this PC can run that upscaler (known when the upscaler probe has ended).
 // `ratio` is the mode's output over render, per axis (1 when no upscaler runs); the renderer turns
-// it into the scene's scale (render_scale.h ChooseSceneScale). The game's MSAA is decided from it
-// too. A change of upscaler or mode afterwards is made live by the temporal system at a frame
-// boundary (temporal.h, "Changing the path"), with the MSAA staying as the start decided it.
+// it into the scene's scale (render_scale.h ChooseSceneScale). The host's MSAA level is decided from
+// it too (EdramTargets::DecideScene: 1 when `runs`). A change of upscaler or mode afterwards is made
+// live by the temporal system at a frame boundary (temporal.h, "Changing the path"), and the MSAA
+// level follows it (msaa_level.h).
 struct StartUpscale {
   bool decided = false;
   bool probed = false;  // the upscaler probe had ended when it was decided
@@ -356,7 +356,7 @@ struct StartUpscale {
 };
 // Decides on the first call (any thread; waits a few seconds for the probe when an upscaler is
 // chosen), the same answer ever after. The game's own thread calls it first, when it makes its
-// renderer (GuestMsaaOff).
+// renderer (hooks/graphics.cpp MsaaOff), so the wait for the probe is not the renderer's.
 StartUpscale GetStartUpscale();
 // What has been decided so far, never waiting: `decided` is false before.
 StartUpscale PeekStartUpscale();

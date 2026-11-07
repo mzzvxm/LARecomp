@@ -545,26 +545,18 @@ const char* HandledSuffix() {
 }
 bool AaFree() { return Active() == Upscaler::kOff; }
 
-// The MSAA row. MSAA on against off is a start-up switch of the game (gpu.h GuestMsaa): a game
-// started with the upscaler on runs without it (the row names the upscaler), one started with MSAA
-// keeps it until the next start, which runs without it (the row says "(RESTART)"). With no upscaler
-// the row is the player's own choice: 2X, 4X and 8X among themselves are live in a game that runs
-// with MSAA (the renderer changes the host's samples between two frames once the pipelines for them
-// are made, msaa_level.h: the row says "(WAIT)" meanwhile); OFF against one of them applies at the
-// next start, so the row says "(RESTART)" when the saved choice and the running game disagree about
-// on and off (which is what the "Restart now?" prompt reads), and nothing otherwise.
-// CHECK: in a game started with MSAA 2X, the values 2X, 4X and 8X carry no suffix (and "(WAIT)" for
-// the seconds a change is being prepared) and "Restart now?" is not offered when the menu is left;
-// OFF says "(RESTART)" and offers it, and going back to any of the three drops the suffix; in a game
-// started with MSAA OFF, 2X, 4X and 8X say "(RESTART)" and OFF says nothing.
+// The MSAA row. The game always draws its own 2 sample layout and the renderer gives the host's
+// targets the samples of the row, so OFF, 2X, 4X and 8X are all live: the renderer changes them
+// between two frames once the pipelines for the new sample count are made (msaa_level.h; the row
+// says "(WAIT)" meanwhile) and no value says RESTART. While a temporal upscaler runs the row is grey
+// and names the upscaler, which does the anti-aliasing: MSAA is 1 sample then, the choice is kept
+// and comes back when the upscaler is off.
+// CHECK: OFF, 2X, 4X and 8X carry no suffix (and "(WAIT)" for the seconds a change is being
+// prepared), "Restart now?" is not offered when the menu is left after changing the row, at start
+// with MSAA OFF as well as with 2X; with an upscaler on the row says "(FSR 3.1 ON)" (or the
+// upscaler's own name) and is grey, and plain again once it is off.
 const char* MsaaSuffix() {
-    const mcla::gpu::GuestMsaa state = mcla::gpu::GetGuestMsaa();
-    const bool running = state == mcla::gpu::GuestMsaa::kOn;
-    if (Active() != Upscaler::kOff) return running ? " (RESTART)" : HandledSuffix();
-    const bool saved_off = Cvar("mcla_gpu_msaa") == "off";
-    const bool running_off = state == mcla::gpu::GuestMsaa::kOffChosen ||
-                             state == mcla::gpu::GuestMsaa::kOffForUpscaler;
-    if ((running && saved_off) || (running_off && !saved_off)) return " (RESTART)";
+    if (Active() != Upscaler::kOff) return HandledSuffix();
     return mcla::gpu::MsaaSwitching() ? " (WAIT)" : "";
 }
 

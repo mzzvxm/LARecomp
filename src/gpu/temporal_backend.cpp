@@ -23,11 +23,10 @@ REXCVAR_DEFINE_STRING(
     "HUD and the bloom, glow and tone map stay at full size. The picture it makes is the size of "
     "the window (its 16:9 area), whatever mcla_gpu_resolution_scale says, and the scene is drawn "
     "at the mode's share of that. While one is on, FXAA and SMAA are "
-    "held off, and a game started with one on runs without MSAA (your MSAA choice, "
-    "mcla_gpu_msaa, is kept and applies again at a start with no upscaler: the game's MSAA is a "
-    "start-up switch). A choice this PC cannot run is treated as off. Live, except that MSAA "
-    "follows at the next start: turning an upscaler on, off or to another one is made at a frame "
-    "boundary once the new one is ready, while the old one keeps working (FSR in about half a "
+    "held off and MSAA is 1 sample (your MSAA choice, mcla_gpu_msaa, is kept and comes back when "
+    "the upscaler is off). A choice this PC cannot run is treated as off. Live: turning an "
+    "upscaler on, off or to another one is made at a frame boundary once the new one is ready, "
+    "while the old one keeps working (FSR in about half a "
     "second, DLSS in several seconds). The exception is DLSS on Vulkan: that graphics device is "
     "made through NVIDIA's Streamline only when dlss is the saved choice at the start (it adds "
     "several seconds to every start), so choosing dlss in a Vulkan game started with something "
@@ -70,8 +69,6 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DECLARE(std::string, mcla_gpu_msaa);  // edram.cpp
-
 namespace mcla::gpu {
 
 namespace {
@@ -111,7 +108,6 @@ std::atomic<uint32_t> g_dlss_refused{0};
 std::atomic<uint32_t> g_running{0};
 std::atomic<uint32_t> g_kept{0};
 std::atomic<bool> g_switching{false};
-std::atomic<uint8_t> g_guest_msaa{uint8_t(GuestMsaa::kUndecided)};
 
 }  // namespace
 
@@ -263,8 +259,8 @@ void DecideStartUpscale() {
     // build without that backend never starts a probe, and nothing is waited for.
     // CHECK: that the game makes its renderer after the renderer has started the probe (in a log,
     // the "[gpu] ffx: ready" line, or for DLSS the "[gpu] dlss: ... counts as able to run" line,
-    // comes before "[gpu] msaa:" and "[gpu] upscaler at start:"); if not, the hold is missed and
-    // logged.
+    // comes before "[gpu] upscaler at start:"); if not, the start is decided as not able to run
+    // and logged so.
     const auto ended = [chosen] {
       const UpscalerAvailability a = GetUpscalerAvailability();
       return chosen == Upscaler::kDlss ? a.dlss_probed : a.probed;
@@ -317,44 +313,6 @@ void DecideStartUpscale() {
   }
 }
 
-void DecideGuestMsaa() {
-  const std::string msaa = REXCVAR_GET(mcla_gpu_msaa);
-  std::string choice = msaa;
-  choice.erase(std::remove_if(choice.begin(), choice.end(),
-                              [](unsigned char c) { return std::isspace(c) != 0; }),
-               choice.end());
-  if (Lower(choice) == "off") {
-    g_guest_msaa.store(uint8_t(GuestMsaa::kOffChosen), std::memory_order_relaxed);
-    return;
-  }
-  Upscaler chosen = Upscaler::kOff;
-  ParseUpscaler(REXCVAR_GET(mcla_gpu_upscaler), &chosen);
-  if (chosen == Upscaler::kOff) {
-    g_guest_msaa.store(uint8_t(GuestMsaa::kOn), std::memory_order_relaxed);
-    return;
-  }
-  // An upscaler is chosen: whether this PC can run it is the start's decision (above).
-  const StartUpscale start = GetStartUpscale();
-  const bool runs = start.runs;
-  if (runs) {
-    g_guest_msaa.store(uint8_t(GuestMsaa::kOffForUpscaler), std::memory_order_relaxed);
-    REXLOG_INFO("[gpu] msaa: the game starts without MSAA: {} is chosen and runs on this PC, and "
-                "MSAA under it only costs time. mcla_gpu_msaa = '{}' is kept and applies again at "
-                "a start with no upscaler (the game's MSAA is a start-up switch)",
-                UpscalerName(chosen), msaa);
-  } else {
-    g_guest_msaa.store(uint8_t(GuestMsaa::kOn), std::memory_order_relaxed);
-    REXLOG_INFO("[gpu] msaa: {} is chosen but {}: the game starts with the MSAA chosen "
-                "(mcla_gpu_msaa = '{}')",
-                UpscalerName(chosen),
-                start.probed ? "this PC cannot run it"
-                : chosen == Upscaler::kDlss
-                    ? "Streamline did not say within the wait whether this card can run it"
-                    : "its probe has not ended (or this build has no upscaler runtime)",
-                msaa);
-  }
-}
-
 }  // namespace
 
 StartUpscale GetStartUpscale() {
@@ -374,16 +332,6 @@ StartUpscale PeekStartUpscale() {
   s.mode = mode < uint32_t(UpscaleMode::kCount) ? UpscaleMode(mode) : UpscaleMode::kNativeAa;
   s.ratio = s.runs ? ModeInfoOf(s.upscaler, s.mode).ratio : 1.0;
   return s;
-}
-
-bool GuestMsaaOff() {
-  static std::once_flag once;
-  std::call_once(once, DecideGuestMsaa);
-  return GetGuestMsaa() != GuestMsaa::kOn;
-}
-
-GuestMsaa GetGuestMsaa() {
-  return GuestMsaa(g_guest_msaa.load(std::memory_order_relaxed));
 }
 
 #if !defined(LARECOMP_HAS_FFX)
