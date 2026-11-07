@@ -1634,6 +1634,11 @@ constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
 #endif
+// The emulated GPU's anisotropic filtering (the SDK's anisotropic_override, which it reads for every
+// sampler it makes, so a change is live): -1 the game's own, 0 off, then 1 = 1x, 2 = 2x, 3 = 4x, 4 = 8x,
+// 5 = 16x. LARecomp starts it at 16x (larecomp_app.h) unless larecomp.toml says otherwise.
+const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
+const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
 
 const ItemDef kNativeItems[] = {
 #if defined(LARECOMP_HAS_GPU)
@@ -1654,6 +1659,10 @@ const ItemDef kNativeItems[] = {
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
 #endif
+    // CHECK: live on the emulated GPU (the SDK says kHotReload): a texture seen before the change
+    // takes the new level when its sampler is made again.
+    XeniaOnly(Str ("PM_RxXeAniso",      "anisotropic_override",  "ANISOTROPIC: ",
+                   kXeniaAnisoVals, kXeniaAnisoNames, 7)),
 };
 
 #if defined(LARECOMP_HAS_GPU)

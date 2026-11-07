@@ -13,6 +13,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+#include <SDL3/SDL.h>
+
+#include "gamepad.h"
 #endif
 
 namespace mcla::ui {
@@ -46,6 +50,25 @@ bool PlayStationControllerPresent() {
       return true;
     }
   }
+#else
+  // Elsewhere SDL knows each pad's USB ids and type. It is the SDK's own SDL (input_backend = sdl),
+  // which keeps its device list current, so this only reads the list.
+  // CHECK: not run on Linux (a DualShock 4 and a DualSense, over USB and Bluetooth).
+  EnsurePadLayer();
+  bool found = false;
+  int count = 0;
+  if (SDL_JoystickID* ids = SDL_GetJoysticks(&count)) {
+    for (int i = 0; i < count && !found; ++i) {
+      if (SDL_IsJoystickVirtual(ids[i])) {
+        continue;
+      }
+      const SDL_GamepadType type = SDL_GetGamepadTypeForID(ids[i]);
+      found = SDL_GetJoystickVendorForID(ids[i]) == 0x054C || type == SDL_GAMEPAD_TYPE_PS3 ||
+              type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5;
+    }
+    SDL_free(ids);
+  }
+  return found;
 #endif
   return false;
 }

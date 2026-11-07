@@ -161,7 +161,8 @@ class LarecompApp : public rex::ReXApp {
         "render_target_path_d3d12", "texture_cache_memory_limit_soft",
         "texture_cache_memory_limit_hard",
         "texture_cache_memory_limit_render_to_texture",
-        "anisotropic_override", "gpu_allow_invalid_fetch_constants", "log_level",
+        "anisotropic_override", "d3d12_adapter", "vulkan_device",
+        "gpu_allow_invalid_fetch_constants", "log_level",
         "audio_maxqframes", "audio_mute", "shader_pack_dir", "shader_pack_threads",
     };
     std::filesystem::create_directories("logs");
@@ -337,6 +338,33 @@ class LarecompApp : public rex::ReXApp {
     SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
   }
 
+  // Which GPU the emulated GPU runs on. Its SDK takes the first adapter that is not software
+  // (d3d12_adapter = -1) or the loader's first Vulkan device (vulkan_device = -1), which on a PC
+  // with two GPUs is often the integrated one that drives the screen. So it is given the number of
+  // the GPU the Plume renderer would use (gpu.h XeniaAdapterIndex): mcla_gpu_adapter's by name, else
+  // Windows' graphics setting for this exe, else the high-performance GPU. A d3d12_adapter or
+  // vulkan_device the player wrote (larecomp.toml, the command line) wins.
+  // CHECK: not run on a PC with two GPUs (the emulated GPU's log line "DXGI adapter: ..." says which
+  // it took; logs/effective_config.txt has the number).
+  void ChooseXeniaAdapter(bool vulkan, const std::string& adapter_name) {
+#if defined(LARECOMP_HAS_GPU)
+    const char* flag = vulkan ? "vulkan_device" : "d3d12_adapter";
+    if (FlagWasConfigured(flag)) {
+      return;
+    }
+    const int index = mcla::gpu::XeniaAdapterIndex(vulkan, adapter_name);
+    if (index < 0) {
+      return;
+    }
+    SetFlag(flag, std::to_string(index).c_str());
+    LARECOMP_APP_INFO("Xenia GPU: {} = {}{}{}", flag, index,
+                      adapter_name.empty() ? "" : " for ", adapter_name);
+#else
+    (void)vulkan;
+    (void)adapter_name;
+#endif
+  }
+
   // The SDK loads the GPU plugin with the plugin's own default backend ("any": Direct3D 12 first
   // where both are built) and has no setting for it, so graphics_backend (GRAPHICS API in the menu,
   // which the Plume renderer reads too) never reached the emulated GPU: it always ran Direct3D 12.
@@ -345,15 +373,22 @@ class LarecompApp : public rex::ReXApp {
   void LoadXenosWithChosenBackend(rex::RuntimeConfig& config) {
     const std::string asked = rex::cvar::GetFlagByName("graphics_backend");
     std::string backend;
+    // The GPU Plume would run on: mcla_gpu_adapter, else (graphics_backend auto, Vulkan) the one
+    // that choice was made for. Empty: no name, the rules of ChooseXeniaAdapter.
+    std::string adapter_name = rex::cvar::GetFlagByName("mcla_gpu_adapter");
     if (asked == "d3d12" || asked == "vulkan") {
       backend = asked;
 #if defined(LARECOMP_HAS_GPU)
     } else if (asked.empty() || asked == "auto") {
-      backend = mcla::gpu::AutoBackendIsVulkan(rex::cvar::GetFlagByName("mcla_gpu_adapter"))
-                    ? "vulkan"
-                    : "d3d12";
+      std::string auto_adapter;
+      backend = mcla::gpu::AutoBackendIsVulkan(adapter_name, &auto_adapter) ? "vulkan" : "d3d12";
+      if (adapter_name.empty()) {
+        adapter_name = auto_adapter;
+      }
 #endif
     }
+    // The emulated GPU is Direct3D 12 first where the SDK picks its own backend.
+    ChooseXeniaAdapter(backend == "vulkan", adapter_name);
     if (backend.empty()) {
       return;
     }

@@ -15,6 +15,7 @@ struct RenderingAdapter {
   std::string name;         // DXGI's description: the name Plume and mcla_gpu_adapter match on
   uint32_t vendor_id = 0;   // PCI vendor id: 0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel
   bool has_outputs = true;  // a display is connected to it; true when DXGI could not say
+  int index = -1;           // its number in IDXGIFactory1's order, which the SDK's d3d12_adapter counts
 };
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
@@ -96,6 +97,10 @@ UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
 bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
                            void** wrapper);
 void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrapper);
+// The Vulkan device the SDK's emulated GPU should be given (its vulkan_device counts devices in the
+// loader's order), asked before any Plume device exists: the device named `name`, else the first of
+// the best type (discrete, then integrated, virtual, CPU: Plume's own order). -1: none found.
+int DeviceIndexFor(const std::string& name);
 }  // namespace vulkan
 #endif
 

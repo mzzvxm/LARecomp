@@ -1,4 +1,4 @@
-// RESTART GAME: see restart.h. As in mcla-recomp's src/mcla_app.cpp.
+// RESTART GAME: see restart.h. The Windows hand-over is as in mcla-recomp's src/mcla_app.cpp.
 #include "restart.h"
 
 #include <cstdint>
@@ -19,6 +19,19 @@
 #endif
 #include <Windows.h>
 #include <shellapi.h>
+#else
+#include <spawn.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include <thread>
+
+extern char** environ;
 #endif
 
 namespace mcla {
@@ -140,8 +153,113 @@ bool RelaunchGame() {
   return true;
 }
 #else
-void WaitForRestartedGame() {}
-bool RelaunchGame() { return false; }
+// POSIX (Linux): the same hand-over with a process id in place of the handle, which the new game
+// polls until the old one is gone. The command line is read back from /proc/self/cmdline.
+// CHECK: not run on Linux (spawn, the wait for the old game, and under an AppImage).
+namespace {
+
+constexpr std::string_view kRestartFlag = "--larecomp_restart_wait_pid=";
+
+// This process's arguments (argv[0] first), from /proc/self/cmdline: its arguments, each ended by a
+// NUL byte.
+std::vector<std::string> OwnArguments() {
+  std::ifstream in("/proc/self/cmdline", std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::vector<std::string> args;
+  size_t start = 0;
+  while (start < text.size()) {
+    const size_t end = text.find('\0', start);
+    args.push_back(text.substr(start, end == std::string::npos ? end : end - start));
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  return args;
+}
+
+// The file to run again. An AppImage mounts itself for as long as it runs, so the executable's own
+// path (/proc/self/exe) is gone once this game has closed; the AppImage file (APPIMAGE) is not.
+std::string OwnExecutable() {
+  if (const char* image = std::getenv("APPIMAGE"); image && *image) {
+    return image;
+  }
+  char path[4096];
+  const ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  return length > 0 ? std::string(path, size_t(length)) : std::string();
+}
+
+// Whether the process still runs. One that has ended but not been collected by its parent yet (a
+// zombie) does not count: it holds nothing the new game needs.
+bool ProcessRunning(pid_t pid) {
+  std::ifstream in("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!in) {
+    // No /proc to ask (or no such process): signal 0 only asks whether the process exists.
+    return kill(pid, 0) == 0 || errno == EPERM;
+  }
+  std::getline(in, line);
+  // "pid (name) state ...": the name may hold spaces and brackets, so the state follows the last ")".
+  const size_t close = line.rfind(')');
+  if (close == std::string::npos || close + 2 >= line.size()) {
+    return true;
+  }
+  const char state = line[close + 2];
+  return state != 'Z' && state != 'X';
+}
+
+}  // namespace
+
+void WaitForRestartedGame() {
+  pid_t old_game = 0;
+  for (const std::string& arg : OwnArguments()) {
+    if (std::string_view(arg).starts_with(kRestartFlag)) {
+      old_game = pid_t(std::strtol(arg.c_str() + kRestartFlag.size(), nullptr, 10));
+    }
+  }
+  if (old_game <= 0) {
+    return;
+  }
+  for (int waited_ms = 0; ProcessRunning(old_game); waited_ms += 50) {
+    if (waited_ms >= 30'000) {
+      std::fputs("LARecomp: the game that was restarting is still running, so this one is not "
+                 "starting. Close it, then start the game again.\n",
+                 stderr);
+      std::_Exit(1);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+}
+
+bool RelaunchGame() {
+  const std::string exe = OwnExecutable();
+  if (exe.empty()) {
+    MC_ERROR("[restart] the game's own file is not known, so it cannot be started again");
+    return false;
+  }
+  std::vector<std::string> command{exe};
+  const std::vector<std::string> args = OwnArguments();
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (!std::string_view(args[i]).starts_with(kRestartFlag)) {
+      command.push_back(args[i]);
+    }
+  }
+  command.push_back(std::string(kRestartFlag) + std::to_string(getpid()));
+  std::vector<char*> argv;
+  for (std::string& arg : command) {
+    argv.push_back(arg.data());
+  }
+  argv.push_back(nullptr);
+
+  pid_t child = 0;
+  const int error = posix_spawn(&child, exe.c_str(), nullptr, nullptr, argv.data(), environ);
+  if (error != 0) {
+    MC_ERROR("[restart] could not start the game again (error {})", error);
+    return false;
+  }
+  MC_INFO("[restart] started again as process {}", int(child));
+  return true;
+}
 #endif
 
 }  // namespace mcla

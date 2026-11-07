@@ -108,9 +108,29 @@ Backend ChooseAutoBackend(const std::string& preferred_adapter, std::string& ada
 #endif
 }
 
-bool AutoBackendIsVulkan(const std::string& preferred_adapter) {
-  std::string adapter;
-  return ChooseAutoBackend(preferred_adapter, adapter) == Backend::kVulkan;
+bool AutoBackendIsVulkan(const std::string& preferred_adapter, std::string* adapter) {
+  std::string chosen;
+  const bool vulkan = ChooseAutoBackend(preferred_adapter, chosen) == Backend::kVulkan;
+  if (adapter) {
+    *adapter = chosen;
+  }
+  return vulkan;
+}
+
+int XeniaAdapterIndex(bool vulkan, const std::string& preferred_adapter) {
+  if (vulkan) {
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+    return backend::vulkan::DeviceIndexFor(preferred_adapter);
+#else
+    return -1;
+#endif
+  }
+#if defined(_WIN32) && defined(LARECOMP_GPU_HAS_D3D12)
+  const backend::RenderingAdapter gpu = backend::d3d12::DescribeRenderingAdapter(preferred_adapter);
+  return gpu.found ? gpu.index : -1;
+#else
+  return -1;
+#endif
 }
 
 namespace backend {

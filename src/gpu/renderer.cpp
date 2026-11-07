@@ -63,7 +63,9 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
                       "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
                       "graphics setting for this app names, else the high-performance GPU; on "
-                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for.")
+                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for. The "
+                      "emulated GPU (RENDERER: XENIA) runs on the same one unless d3d12_adapter or "
+                      "vulkan_device is set.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
