@@ -772,7 +772,12 @@ double CvarGetDouble(const char* name) {
 constexpr const char* kHdrTestPatternCvar = "mcla_gpu_hdr_test_pattern";
 std::atomic<bool> g_hdr_pattern_by_menu{false};
 
+// The menu is about to change `name`: remembers what it was, for the "restart now?" prompt
+// (below, "Restart now?").
+void NoteMenuWrite(const char* name);
+
 void CvarSet(const char* name, const char* value) {
+    NoteMenuWrite(name);
     if (std::string_view(name) == kRendererCvar) {
         RendererSet(value);
         return;
@@ -1185,6 +1190,8 @@ using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
 using mcla_menu::kActionReloadTextures;
 using mcla_menu::kActionRestart;
+using mcla_menu::kActionRestartLater;
+using mcla_menu::kActionRestartNow;
 using mcla_menu::NativeOnly;
 using mcla_menu::RowDynamics;
 using mcla_menu::Str;
@@ -1932,6 +1939,13 @@ const ItemDef kQuitItems[] = {
     Action("PM_RxQuitYes", kActionQuitYes),
     Action("PM_RxQuitRestart", kActionRestart),
 };
+// Shown over the menu that was just left when a setting that needs a restart was changed in
+// this session (RestartPromptTick). NOT NOW first, like NO on the QUIT form: a stray A keeps
+// playing, and B closes it the same way.
+const ItemDef kRestartAskItems[] = {
+    Action("PM_RxRestartLater", kActionRestartLater),
+    Action("PM_RxRestartNow",   kActionRestartNow),
+};
 
 // One RexGlue menu: a native list form (ui_forms.h) of `items` rows. A menu no
 // Submenu row opens gets a button on the pause SETTINGS tab and opens from the
@@ -1952,6 +1966,8 @@ struct MenuDef {
     // rather than a pointer so nothing depends on static initialisation order
     // between two translation units.
     const ItemDef* (*extra)(int& count);
+    // True for a menu only code opens (the "restart now?" prompt): no button on the SETTINGS tab.
+    bool opened_by_code = false;
 };
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
@@ -2115,6 +2131,11 @@ const MenuDef kMenus[] = {
     {"PM_RxQuit", "QUIT", "Close the game and return to the desktop?",
      "RxQuitMenu",
      kQuitItems, int(sizeof(kQuitItems) / sizeof(kQuitItems[0]))},
+    // Opened by RestartPromptTick, never from the SETTINGS tab.
+    {"PM_RxRestartAsk", "RESTART", "Restart to apply the changed settings?",
+     "RxRestartAskMenu",
+     kRestartAskItems, int(sizeof(kRestartAskItems) / sizeof(kRestartAskItems[0])),
+     nullptr, true},
 };
 constexpr int kNumMenus = int(sizeof(kMenus) / sizeof(kMenus[0]));
 
@@ -2133,6 +2154,7 @@ int MenuByKey(const char* menu_key) {
 // True when some Submenu row opens menu m: it then lives inside that menu and
 // has no button of its own on the SETTINGS tab.
 bool MenuIsNested(int m) {
+    if (kMenus[m].opened_by_code) return true;
     for (int p = 0; p < kNumMenus; ++p)
         for (int i = 0; i < MenuRawCount(kMenus[p]); ++i) {
             const ItemDef& it = MenuRawAt(kMenus[p], i);
@@ -2351,6 +2373,8 @@ std::string ItemRowLabel(const ItemDef& it) {
         case kActionDumpTextures:   return "DUMP SCENE TEXTURES";
         case kActionReloadTextures: return "RELOAD TEXTURE MODS";
         case kActionRestart:        return "RESTART GAME";
+        case kActionRestartLater:   return "NOT NOW";
+        case kActionRestartNow:     return "RESTART NOW";
         }
         return "";
     }
@@ -2428,8 +2452,10 @@ void ApplyItem(const ItemDef& it, int dir) {
             break;
         }
         case kActionRestart:
+        case kActionRestartNow:
             PauseMenuRestartGame();
             break;
+        case kActionRestartLater:
         case kActionQuitNo:
             // Closes the QUIT form the way B does; the select sound is the A's.
             larecomp::ui::CloseForm(larecomp::ui::TopForm());
@@ -2861,6 +2887,107 @@ bool OpenMenu(int m, uint32_t from) {
     return true;
 }
 
+// ── "Restart now?" ─────────────────────────────────────────────────────
+//
+// A row whose label says "(RESTART)" (or "AFTER RESTART") writes its cvar at once, but the game
+// reads it at the start, so nothing happens until it is started again. Rather than leave the
+// player to look for RESTART GAME on the QUIT menu, leaving a menu in which such a setting was
+// changed offers it: a form over the menu just left, NOT NOW (first, the form's default) or
+// RESTART NOW (the QUIT menu's RESTART GAME: settings saved, the game started again, this one
+// closed). NOT NOW and B keep today's behaviour: the setting applies at the next start.
+//
+// Which settings count: those the menu wrote (NoteMenuWrite, called by CvarSet, remembers each
+// one's value from before) whose row says it needs a restart now (RowSaysRestart: the suffix is
+// read as drawn, so a row that is live in this state, like the FSR1 toggle without a preset,
+// does not count), and that are not back at the value they had. One prompt per menu exit: what
+// was offered is remembered per setting (`asked`), so leaving the next menu does not ask again
+// until another setting changed. Guest thread only, like the menu.
+struct RestartWatch {
+    std::string cvar;
+    std::string orig;   // its value before the menu first changed it
+    std::string asked;  // its value when the player was last offered a restart
+};
+std::vector<RestartWatch> g_restart_watch;
+// Set when one of our menus closes after B (MenuFormClosed); taken by RestartPromptTick.
+std::atomic<bool> g_restart_check{false};
+
+void NoteMenuWrite(const char* name) {
+    for (const RestartWatch& w : g_restart_watch)
+        if (w.cvar == name) return;
+    const std::string now = CvarGet(name);
+    g_restart_watch.push_back({name, now, now});
+}
+
+// "1" and "1.0" are the same value (a double row writes %g, the toml may say 1.0).
+bool SameCvarValue(const std::string& a, const std::string& b) {
+    if (a == b) return true;
+    if (a.empty() || b.empty()) return false;
+    char* end_a = nullptr;
+    char* end_b = nullptr;
+    const double x = std::strtod(a.c_str(), &end_a);
+    const double y = std::strtod(b.c_str(), &end_b);
+    return *end_a == '\0' && *end_b == '\0' && x == y;
+}
+
+// Whether the row's label, as it is drawn now, says the setting needs a restart.
+bool RowSaysRestart(const ItemDef& it) {
+    const char* suffix = it.dynamics && it.dynamics->suffix ? it.dynamics->suffix() : it.suffix;
+    return suffix && std::strstr(suffix, "RESTART");
+}
+
+// Whether a row that sets `cvar` (in any menu this launch lists) says it needs a restart.
+bool CvarNeedsRestart(const std::string& cvar) {
+    for (int m = 0; m < kNumMenus; ++m) {
+        for (int i = 0; i < MenuItemCount(kMenus[m]); ++i) {
+            const ItemDef& it = MenuItemAt(kMenus[m], i);
+            if (it.kind != ItemKind::kBool && it.kind != ItemKind::kStrCycle &&
+                it.kind != ItemKind::kDblCycle)
+                continue;
+            if (it.cvar && cvar == it.cvar && RowSaysRestart(it)) return true;
+        }
+    }
+    return false;
+}
+
+// A setting that needs a restart has changed and the player has not been offered one for it.
+bool RestartDue() {
+    bool due = false;
+    for (RestartWatch& w : g_restart_watch) {
+        const std::string now = CvarGet(w.cvar.c_str());
+        if (SameCvarValue(now, w.orig)) {  // back where it started: nothing to apply
+            w.asked = now;
+            continue;
+        }
+        if (!SameCvarValue(now, w.asked) && CvarNeedsRestart(w.cvar)) due = true;
+    }
+    return due;
+}
+
+void MarkRestartOffered() {
+    for (RestartWatch& w : g_restart_watch) w.asked = CvarGet(w.cvar.c_str());
+}
+
+// Once per UI update (PauseMenuFormsTick): after a menu of ours was left, opens the prompt over
+// what is on top now (the pause screen, or the menu the one left was opened from) when a setting
+// that needs a restart has changed. A tick later, not inside the key handler that closed the form.
+void RestartPromptTick() {
+    if (!g_restart_check.exchange(false, std::memory_order_relaxed)) return;
+    const uint32_t pause = larecomp::ui::PauseForm();
+    const uint32_t top = larecomp::ui::TopForm();
+    // The pause screen is gone, or a screen of the game's own has the pad: no prompt (the
+    // settings were saved on the way out, and apply at the next start).
+    if (!pause || !top || !larecomp::ui::FormIsOpen(pause)) return;
+    if (top != pause && !larecomp::ui::IsOurForm(top)) return;
+    const int ask = MenuByKey("RxRestartAskMenu");
+    if (ask < 0 || top == g_menu_form[ask].load(std::memory_order_relaxed)) return;
+    if (!RestartDue()) return;
+    MarkRestartOffered();
+    if (OpenMenu(ask, top))
+        MC_INFO("[pause-menu] a setting that needs a restart changed: offered RESTART NOW");
+    else
+        MC_WARN("[pause-menu] could not open the restart prompt (top form 0x{:08X})", top);
+}
+
 bool MenuFormAccept(uint32_t form, int row) {
     const int m = MenuOfForm(form);
     if (m < 0 || row < 0 || row >= MenuItemCount(kMenus[m])) return false;
@@ -2923,6 +3050,9 @@ void MenuFormClosed(uint32_t form) {
     const int m = MenuOfForm(form);
     MC_INFO("[pause-menu] left '{}'", m >= 0 ? kMenus[m].label : "?");
     if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+    // The prompt itself is not a menu a setting is changed in.
+    if (m >= 0 && !kMenus[m].opened_by_code)
+        g_restart_check.store(true, std::memory_order_relaxed);
 }
 
 // An open strip owns the d-pad: left/right walk it, the rest of the list's
@@ -4614,6 +4744,7 @@ void HdrTestPatternTick() {
 
 void PauseMenuFormsTick() {
     HdrTestPatternTick();
+    RestartPromptTick();
     if (g_color_open >= 0 && larecomp::ui::TopForm() != g_color_form) ColorStripClose(false);
     if (!larecomp::ui::TopmostOurForm()) return;
     if (larecomp::ui::FormIsOpen(larecomp::ui::PauseForm())) return;
