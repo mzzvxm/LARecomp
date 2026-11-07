@@ -154,7 +154,12 @@ void SwapChain::SetVsync(bool vsync) {
 }
 
 bool SwapChain::SetHdrMetadata(const plume::RenderHdrMetadata& metadata) {
-  return hdr_ && swap_chain_ && swap_chain_->setHdrMetadata(metadata);
+  if (!hdr_ || !swap_chain_) {
+    return false;
+  }
+  // Vulkan: vkSetHdrMetadataEXT needs the chain to itself too (as Present and Acquire).
+  const latency::SwapChainUse use;
+  return swap_chain_->setHdrMetadata(metadata);
 }
 
 void SwapChain::WaitForPresentSlot() {
