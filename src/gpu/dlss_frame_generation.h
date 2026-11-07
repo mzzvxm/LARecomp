@@ -282,8 +282,9 @@ class DlssFrameGeneration {
     uint64_t presents = 0;
     uint64_t generated = 0;
     uint64_t not_idle = 0;          // an idle present
-    uint64_t not_unmarked = 0;      // the frame had no latency id
-    uint64_t not_reflex = 0;        // Reflex through Streamline was not running yet
+    uint64_t not_unmarked = 0;      // Reflex runs, and the frame had no latency id (not a game frame)
+    uint64_t not_reflex = 0;        // Reflex through Streamline was not running yet (no frame has
+                                    // markers before: the first seconds, or while it waits for Streamline)
     uint64_t not_scene = 0;         // no anchor or no vectors: not a rendered game scene
     uint64_t not_layers = 0;        // the frame layers were not the picture's, or not valid
     uint64_t not_busy = 0;          // Streamline was making a feature

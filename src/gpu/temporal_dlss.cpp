@@ -3142,23 +3142,34 @@ bool Available() {
   return g_reflex_ready.load(std::memory_order_acquire);
 }
 
-bool SetMode(bool on, bool boost) {
+ReflexModeResult SetMode(bool on, bool boost, std::string* why) {
   if (!g_reflex_ready.load(std::memory_order_acquire)) {
-    return false;
+    *why = "Streamline's Reflex plugin is not running";
+    return ReflexModeResult::kRefused;
   }
   Runtime& rt = Rt();
   std::unique_lock<std::mutex> lock;
   if (!LockForFrame(rt, lock)) {
-    return false;  // the latency reducer asks again a second later
+    // The worker has Streamline for a DLSS feature's creation (8 s on an RTX 5080). That is not
+    // Streamline saying no: the latency reducer must not count it as a refusal (three of them, a
+    // second apart, gave Reflex up for the session, and DLSS frame generation never had a marked
+    // frame: the D3D12 runs next6-dlssg-2x and -4x), it asks again soon.
+    return ReflexModeResult::kBusy;
   }
   if (!rt.initialized || rt.shut_down || !rt.api.reflex_set_options) {
-    return false;
+    *why = "Streamline is not running";
+    return ReflexModeResult::kRefused;
   }
   sl::ReflexOptions options;
   options.mode = on ? (boost ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eLowLatency)
                     : sl::ReflexMode::eOff;
   options.frameLimitUs = 0;  // the game's own limiter keeps the cap (latency.h)
-  return rt.api.reflex_set_options(options) == sl::Result::eOk;
+  const sl::Result result = rt.api.reflex_set_options(options);
+  if (result != sl::Result::eOk) {
+    *why = "slReflexSetOptions failed: " + ResultText(result);
+    return ReflexModeResult::kRefused;
+  }
+  return ReflexModeResult::kDone;
 }
 
 bool Sleep(uint32_t frame) {
@@ -3222,8 +3233,9 @@ namespace reflex {
 bool Available() {
   return false;
 }
-bool SetMode(bool, bool) {
-  return false;
+ReflexModeResult SetMode(bool, bool, std::string* why) {
+  *why = "this build has no DLSS frame generation";
+  return ReflexModeResult::kRefused;
 }
 bool Sleep(uint32_t) {
   return false;

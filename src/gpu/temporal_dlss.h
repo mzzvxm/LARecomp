@@ -359,6 +359,11 @@ enum class ReflexMarker : uint8_t {
   kInputSample,
 };
 
+// What slReflexSetOptions came to (reflex::SetMode). kBusy is not a refusal: Streamline is held by the
+// worker making a DLSS feature (8 s on an RTX 5080), nothing was asked of Reflex, and the call is made
+// again soon; kRefused is Streamline saying no (`why` has its answer).
+enum class ReflexModeResult : uint8_t { kDone, kBusy, kRefused };
+
 #if defined(LARECOMP_HAS_DLSS)
 FrameGenerationFacts GetFrameGenerationFacts();
 bool FrameGenerationFilesPresent(std::string* missing);
@@ -387,8 +392,10 @@ namespace reflex {
 // Streamline's Reflex and PC latency plugins can be called now (the start is over, frame generation
 // is supported: they were asked for with it).
 bool Available();
-// slReflexSetOptions: on or off, with boost. False when Streamline refused it.
-bool SetMode(bool on, bool boost);
+// slReflexSetOptions: on or off, with boost. The options call is not thread safe in Streamline, so it
+// goes under Streamline's lock like the rest, which the worker holds for a feature's whole creation:
+// kBusy then (see ReflexModeResult), never a wait of seconds.
+ReflexModeResult SetMode(bool on, bool boost, std::string* why);
 // slReflexSleep for the frame: the wait before the frame starts. False when it could not be made.
 bool Sleep(uint32_t frame);
 // slPCLSetMarker with the frame's token.
@@ -416,7 +423,7 @@ inline bool ReadFrameGenerationState(FrameGenerationState*, bool, std::string*, 
 inline void ShutdownFrameGeneration() {}
 namespace reflex {
 inline bool Available() { return false; }
-inline bool SetMode(bool, bool) { return false; }
+inline ReflexModeResult SetMode(bool, bool, std::string*) { return ReflexModeResult::kRefused; }
 inline bool Sleep(uint32_t) { return false; }
 inline void SetMarker(ReflexMarker, uint32_t) {}
 }  // namespace reflex

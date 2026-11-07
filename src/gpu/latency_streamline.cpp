@@ -13,8 +13,11 @@
 // Threads: as the Reducer interface says: the update thread sleeps and marks, the guest and host
 // render threads mark. Streamline's sleep and markers are thread safe and take no lock of ours.
 
+#include <atomic>
 #include <memory>
 #include <string>
+
+#include <rex/logging.h>
 
 #include "latency_backend.h"
 #include "temporal_dlss.h"
@@ -31,15 +34,27 @@ class StreamlineReducer final : public Reducer {
   bool OnByDefault() const override { return true; }
 
   bool SetMode(bool on, bool boost) override {
+    busy_.store(false, std::memory_order_relaxed);
     if (!on && !ever_on_) {
       return true;  // never taken: nothing to leave
     }
-    const bool ok = dlss::reflex::SetMode(on, boost);
-    if (ok && on) {
+    std::string why;
+    const dlss::ReflexModeResult result = dlss::reflex::SetMode(on, boost, &why);
+    if (result == dlss::ReflexModeResult::kBusy) {
+      busy_.store(true, std::memory_order_relaxed);
+      return false;
+    }
+    if (result == dlss::ReflexModeResult::kRefused) {
+      REXLOG_WARN("[gpu] low latency: Streamline refused the Reflex mode: {}", why);
+      return false;
+    }
+    if (on) {
       ever_on_ = true;
     }
-    return ok;
+    return true;
   }
+
+  bool Busy() const override { return busy_.load(std::memory_order_relaxed); }
 
   bool Sleep(uint64_t frame_id) override { return dlss::reflex::Sleep(uint32_t(frame_id)); }
 
@@ -59,6 +74,7 @@ class StreamlineReducer final : public Reducer {
 
  private:
   bool ever_on_ = false;
+  std::atomic<bool> busy_{false};  // the update thread's SetMode; the render thread's may follow it
 };
 
 }  // namespace
