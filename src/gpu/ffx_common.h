@@ -2,11 +2,10 @@
 // ===========================================================================
 // MCLA GPU renderer -- what the FidelityFX backends share
 // ===========================================================================
-// The small helpers that load AMD's runtime and describe an image to it, as the upscaler backend
-// (temporal_ffx.cpp) has them: the folder of the exe, a DLL opened by its full path, the version
-// names, the image description. The frame generation backend (frame_generation_ffx.cpp) uses these.
-// They are the same code as the upscaler's private copies; temporal_ffx.cpp can take them from here
-// once nothing else is being changed in it.
+// The small helpers that load AMD's runtime and describe an image to it: the folder of the exe, a DLL
+// opened by its full path, the version names, the image description, the backend description of
+// the API in use. The upscaler backend (temporal_ffx.cpp) and the frame generation backend
+// (frame_generation_ffx.cpp) both use these.
 //
 // AMD's D3D12 and Vulkan headers cannot be included in one translation unit (temporal_ffx_glue.h):
 // nothing here includes either, only the API-neutral ones.
