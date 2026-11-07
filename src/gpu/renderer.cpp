@@ -15,6 +15,7 @@
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 
+#include "backend.h"
 #include "gpu.h"
 #include "guest_capture.h"
 #include "hdr.h"
@@ -1025,6 +1026,11 @@ void Renderer::ExecutePresent(PresentSource source) {
       ++skipped_;
       return;
     }
+  }
+  if (dlssg_.active()) {
+    // Streamline's fake swap chain image, which its frame generation may have left in GENERAL: the
+    // present pass overwrites all of it, so the first barrier on it starts from UNDEFINED (Vulkan).
+    backend::ForgetImageContents(swap_chain_.texture(image));
   }
 
   // Already open when the guest frame had scene records.

@@ -278,6 +278,17 @@ class SwapChainFactoryScope {
 // Vulkan validation over the first frames with it settle it.
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 
+// Vulkan: a swap chain image the renderer just acquired is taken as holding nothing to keep, so
+// Plume's first barrier on it starts from UNDEFINED, not from the PRESENT_SRC_KHR it left it in.
+// NVIDIA Streamline's frame generation hands the app its own fake swap chain images and leaves them
+// in GENERAL after its use, and a barrier that says PRESENT_SRC_KHR over that is a validation error
+// (VUID-vkCmdDraw-None-09600 "expects PRESENT_SRC_KHR, current GENERAL" in run next6-vk-dlssg). Only
+// for a frame that draws the whole image (the present pass clears and covers all of it). Nothing on
+// D3D12, whose back buffers Streamline gives back in the present state.
+// CHECK: no such message in the validation layer's output over a DLSS frame generation run on
+// Vulkan (the ones about Streamline's own images, "nv.sl.dlss_g.*", are its own).
+void ForgetImageContents(plume::RenderTexture* texture);
+
 // Whether this device can run a compute temporal upscaler (FidelityFX), checked without loading it.
 // `reason` is one plain sentence when not; `detail` is what was read, for the log.
 struct UpscalerSupport {

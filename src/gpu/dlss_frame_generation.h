@@ -100,7 +100,24 @@
 //  - frame time cost (the two window-size passes and their images: 8 bytes a pixel more video memory;
 //    held, reported with the other held memory), against the plugin's own 1.5 to 5 ms;
 //  - the shutdown order: the proxy chain is destroyed before Streamline is shut down
-//    (DlssFrameGeneration::Shutdown), no object left alive in the debug layer's report.
+//    (DlssFrameGeneration::Shutdown), no object left alive in the debug layer's report;
+//  - (fix/dlssg-markers, from the first runs, 2026-11-07) D3D12: Reflex through Streamline now waits for
+//    Streamline's lock instead of giving up (the DLSS feature's 8 s creation held it, and three refused
+//    calls had turned Reflex off for the session: every present was "not marked"). The log says
+//    "low latency: NVIDIA Reflex (Streamline) is busy with something that takes seconds ..." at the
+//    switch, "... (Streamline) on" some seconds later (when the creation ends), "generating: Nx"
+//    after it, and the summary counts frames generated (D3D12 at 2x and 4x: numFramesActuallyPresented
+//    follows the multiplier, no "Streamline's status says it does not generate");
+//  - Vulkan (same fix): the validation layer's THREADING ERRORs between vkLatencySleepNV /
+//    vkSetLatencyMarkerNV and the pacer's vkQueuePresentKHR are Streamline's (it makes both calls, with a
+//    swap chain it picked, from sl.reflex and its pacer thread): they stay, a few a run, and no game
+//    call is named in them. The one about the game's own command buffer ("expects PRESENT_SRC_KHR,
+//    current GENERAL" on a "fake-swapchain-buffer") is gone (backend::ForgetImageContents); the ones
+//    about "nv.sl.dlss_g.*" command buffers and images are Streamline's own, and so is the repeated
+//    present-semaphore one;
+//  - Vulkan: the 5 s watchdog stall at the first scene (the render thread waited for the end of the
+//    DLSS feature's creation; also in a run with Streamline's PCL plugin but no frame generation) is not
+//    explained: latency_streamline.cpp names a latency call that took over 300 ms, if one was in it.
 // ===========================================================================
 
 #include <atomic>
@@ -282,8 +299,9 @@ class DlssFrameGeneration {
     uint64_t presents = 0;
     uint64_t generated = 0;
     uint64_t not_idle = 0;          // an idle present
-    uint64_t not_unmarked = 0;      // the frame had no latency id
-    uint64_t not_reflex = 0;        // Reflex through Streamline was not running yet
+    uint64_t not_unmarked = 0;      // Reflex runs, and the frame had no latency id (not a game frame)
+    uint64_t not_reflex = 0;        // Reflex through Streamline was not running yet (no frame has
+                                    // markers before: the first seconds, or while it waits for Streamline)
     uint64_t not_scene = 0;         // no anchor or no vectors: not a rendered game scene
     uint64_t not_layers = 0;        // the frame layers were not the picture's, or not valid
     uint64_t not_busy = 0;          // Streamline was making a feature

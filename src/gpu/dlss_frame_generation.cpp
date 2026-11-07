@@ -598,15 +598,19 @@ bool DlssFrameGeneration::Record(plume::RenderCommandList* list, const FrameArgs
   if (REXCVAR_GET(mcla_gpu_hdr_layers_view) != 0 || REXCVAR_GET(mcla_gpu_hdr_test_pattern)) {
     return NotGenerated(stats_.not_scene, args);
   }
+  // Reflex through Streamline must be on and have made a few sleeps before the plugin is told to
+  // generate (its status says so otherwise). Until then no frame carries markers at all, so that
+  // comes first: a frame with no id because Reflex is not on yet is "reflex not running", not an
+  // unmarked frame.
+  if (!latency::StreamlineRunning()) {
+    return NotGenerated(stats_.not_reflex, args);
+  }
   // The frame's id: what the constants, the tags and Reflex's markers share. A frame without one is
-  // not marked (the logos, a loading screen); and Reflex through Streamline must have run for a few
-  // frames before the plugin is told to generate (its status says so otherwise).
+  // not marked (the logos, a loading screen, a frame the update thread started before the reducer
+  // was on).
   const uint64_t id = latency::RenderFrameId();
   if (id == 0) {
     return NotGenerated(stats_.not_unmarked, args);
-  }
-  if (!latency::StreamlineRunning()) {
-    return NotGenerated(stats_.not_reflex, args);
   }
   const TemporalSystem::FrameState& fr = temporal_->frame();
   const TemporalMotion::Kept kept = temporal_->motion().kept();
@@ -806,10 +810,10 @@ std::string DlssFrameGeneration::TakeSummary() {
   const Stats s = stats_;
   stats_ = Stats{};
   return std::format(
-      "dlss frame generation: {} presents, {} generated ({}x), not generated: {} idle, {} not "
-      "marked, {} reflex not running, {} not a game scene, {} layers unusable, {} streamline "
-      "busy, {} too small, {} failed; {} option changes; the display runs at {} Hz",
-      s.presents, s.generated, Multiplier(), s.not_idle, s.not_unmarked, s.not_reflex, s.not_scene,
+      "dlss frame generation: {} presents, {} generated ({}x), not generated: {} idle, {} reflex "
+      "not running, {} with no latency frame id, {} not a game scene, {} layers unusable, {} "
+      "streamline busy, {} too small, {} failed; {} option changes; the display runs at {} Hz",
+      s.presents, s.generated, Multiplier(), s.not_idle, s.not_reflex, s.not_unmarked, s.not_scene,
       s.not_layers, s.not_busy, s.not_small, s.not_failed, s.option_changes, refresh_hz_);
 }
 

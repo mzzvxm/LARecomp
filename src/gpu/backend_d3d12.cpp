@@ -518,6 +518,10 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
   return out;
 }
 
+void ForgetImageContents(plume::RenderTexture* texture) {
+  (void)texture;  // Streamline gives D3D12 back buffers back in the present state
+}
+
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
   auto* l = static_cast<plume::D3D12CommandList*>(list);
   if (!l) {

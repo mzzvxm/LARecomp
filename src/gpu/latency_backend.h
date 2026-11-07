@@ -53,6 +53,10 @@ class Reducer {
   // The mode: on or off, and boost. False when the driver refused it. The vendor's own frame
   // limit is left at none (latency.h: the frame rate limit). Called by the update thread only.
   virtual bool SetMode(bool on, bool boost) = 0;
+  // The last SetMode that returned false did not reach the vendor's API because something else held
+  // it for seconds (NVIDIA Streamline making a DLSS feature): not a refusal, the caller asks again
+  // soon without counting it. Update thread, right after SetMode.
+  virtual bool Busy() const { return false; }
   // The driver's wait at the start of a frame. True when it was made; false where it could not
   // be: no swap chain yet, a call that failed.
   virtual bool Sleep(uint64_t frame_id) = 0;

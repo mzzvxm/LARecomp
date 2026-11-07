@@ -315,6 +315,24 @@ std::string ResultText(sl::Result result) {
   return std::format("{}{}sl::Result {}", name, name[0] ? ", " : "", uint32_t(result));
 }
 
+// Warnings that every start of this integration produces, and that mean nothing here, are said once as
+// information with what they are (the game's log is read for the real ones); sl.log has them all.
+struct KnownSlWarning {
+  const char* needle;
+  const char* meaning;
+};
+constexpr KnownSlWarning kKnownSlWarnings[] = {
+    {"Hook sl.common:Vulkan:",
+     "Streamline's Vulkan hooks for tracking command buffer state (vkCmdBindPipeline, "
+     "vkCmdBindDescriptorSets, vkBeginCommandBuffer) are not installed in manual hooking mode, and "
+     "with eDisableCLStateTracking nothing needs them: the renderer restores the state itself after "
+     "Streamline's work (backend::InvalidateAfterExternalWork). Expected on every Vulkan start."},
+    {"slDLSSGGetState must be synchronized with the present thread",
+     "the one support query at Streamline's start is made on its worker before any present exists; "
+     "the reads while frame generation runs are on the render thread, which presents. Expected."},
+};
+std::atomic<bool> g_known_said[std::size(kKnownSlWarnings)];
+
 // Streamline's own log lines, from whatever thread it is on. Only its warnings and errors go to the
 // game's log (its information lines, a few hundred at every start, are all in sl.log: InitLocked
 // gives it the logs folder), and no more than kMaxSlLogLines of them, so that a message it repeats
@@ -323,6 +341,18 @@ void SlLog(sl::LogType type, const char* message) {
   static std::atomic<uint32_t> lines{0};
   if (!message || type == sl::LogType::eInfo) {
     return;
+  }
+  if (type != sl::LogType::eError) {
+    for (size_t i = 0; i < std::size(kKnownSlWarnings); ++i) {
+      if (std::strstr(message, kKnownSlWarnings[i].needle)) {
+        if (!g_known_said[i].exchange(true, std::memory_order_relaxed)) {
+          REXLOG_INFO("{} streamline: a warning that is expected here (not repeated; sl.log has them "
+                      "all): {}",
+                      kPrefix, kKnownSlWarnings[i].meaning);
+        }
+        return;
+      }
+    }
   }
   const uint32_t count = lines.fetch_add(1, std::memory_order_relaxed);
   if (count > kMaxSlLogLines) {
@@ -3142,23 +3172,34 @@ bool Available() {
   return g_reflex_ready.load(std::memory_order_acquire);
 }
 
-bool SetMode(bool on, bool boost) {
+ReflexModeResult SetMode(bool on, bool boost, std::string* why) {
   if (!g_reflex_ready.load(std::memory_order_acquire)) {
-    return false;
+    *why = "Streamline's Reflex plugin is not running";
+    return ReflexModeResult::kRefused;
   }
   Runtime& rt = Rt();
   std::unique_lock<std::mutex> lock;
   if (!LockForFrame(rt, lock)) {
-    return false;  // the latency reducer asks again a second later
+    // The worker has Streamline for a DLSS feature's creation (8 s on an RTX 5080). That is not
+    // Streamline saying no: the latency reducer must not count it as a refusal (three of them, a
+    // second apart, gave Reflex up for the session, and DLSS frame generation never had a marked
+    // frame: the D3D12 runs next6-dlssg-2x and -4x), it asks again soon.
+    return ReflexModeResult::kBusy;
   }
   if (!rt.initialized || rt.shut_down || !rt.api.reflex_set_options) {
-    return false;
+    *why = "Streamline is not running";
+    return ReflexModeResult::kRefused;
   }
   sl::ReflexOptions options;
   options.mode = on ? (boost ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eLowLatency)
                     : sl::ReflexMode::eOff;
   options.frameLimitUs = 0;  // the game's own limiter keeps the cap (latency.h)
-  return rt.api.reflex_set_options(options) == sl::Result::eOk;
+  const sl::Result result = rt.api.reflex_set_options(options);
+  if (result != sl::Result::eOk) {
+    *why = "slReflexSetOptions failed: " + ResultText(result);
+    return ReflexModeResult::kRefused;
+  }
+  return ReflexModeResult::kDone;
 }
 
 bool Sleep(uint32_t frame) {
@@ -3222,8 +3263,9 @@ namespace reflex {
 bool Available() {
   return false;
 }
-bool SetMode(bool, bool) {
-  return false;
+ReflexModeResult SetMode(bool, bool, std::string* why) {
+  *why = "this build has no DLSS frame generation";
+  return ReflexModeResult::kRefused;
 }
 bool Sleep(uint32_t) {
   return false;

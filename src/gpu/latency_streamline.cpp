@@ -13,8 +13,12 @@
 // Threads: as the Reducer interface says: the update thread sleeps and marks, the guest and host
 // render threads mark. Streamline's sleep and markers are thread safe and take no lock of ours.
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+
+#include <rex/logging.h>
 
 #include "latency_backend.h"
 #include "temporal_dlss.h"
@@ -22,6 +26,38 @@
 namespace mcla::gpu::latency {
 
 namespace {
+
+// A call into Streamline that took long is said (at most one line a second). In run next6-vk-dlssg the
+// game and its present stopped for the 8 s of a DLSS feature's creation on Vulkan, and the logs do not
+// say what the render thread was waiting in; this says whether one of the latency calls was it.
+// CHECK: that a Vulkan start with DLSS frame generation saved, played through the feature's creation
+// (about 8 s into the first scene), has no stall; if it has, whether this line names a call.
+class SlowCall {
+ public:
+  explicit SlowCall(const char* name) : name_(name), start_(std::chrono::steady_clock::now()) {}
+  ~SlowCall() {
+    const auto taken = std::chrono::steady_clock::now() - start_;
+    if (taken < std::chrono::milliseconds(300)) {
+      return;
+    }
+    static std::atomic<int64_t> last_said_ms{-1'000'000};
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+    int64_t before = last_said_ms.load(std::memory_order_relaxed);
+    if (now_ms - before >= 1000 &&
+        last_said_ms.compare_exchange_strong(before, now_ms, std::memory_order_relaxed)) {
+      REXLOG_WARN("[gpu] low latency: Streamline's {} took {} ms on this thread", name_,
+                  std::chrono::duration_cast<std::chrono::milliseconds>(taken).count());
+    }
+  }
+  SlowCall(const SlowCall&) = delete;
+  SlowCall& operator=(const SlowCall&) = delete;
+
+ private:
+  const char* name_;
+  std::chrono::steady_clock::time_point start_;
+};
 
 class StreamlineReducer final : public Reducer {
  public:
@@ -31,17 +67,33 @@ class StreamlineReducer final : public Reducer {
   bool OnByDefault() const override { return true; }
 
   bool SetMode(bool on, bool boost) override {
+    busy_.store(false, std::memory_order_relaxed);
     if (!on && !ever_on_) {
       return true;  // never taken: nothing to leave
     }
-    const bool ok = dlss::reflex::SetMode(on, boost);
-    if (ok && on) {
+    std::string why;
+    const dlss::ReflexModeResult result = dlss::reflex::SetMode(on, boost, &why);
+    if (result == dlss::ReflexModeResult::kBusy) {
+      busy_.store(true, std::memory_order_relaxed);
+      return false;
+    }
+    if (result == dlss::ReflexModeResult::kRefused) {
+      REXLOG_WARN("[gpu] low latency: Streamline refused the Reflex mode: {}", why);
+      return false;
+    }
+    if (on) {
       ever_on_ = true;
     }
-    return ok;
+    return true;
   }
 
-  bool Sleep(uint64_t frame_id) override { return dlss::reflex::Sleep(uint32_t(frame_id)); }
+  bool Busy() const override { return busy_.load(std::memory_order_relaxed); }
+
+  // (The sleep is meant to block for up to a frame; only a wait far beyond that is said.)
+  bool Sleep(uint64_t frame_id) override {
+    const SlowCall timed("Reflex sleep");
+    return dlss::reflex::Sleep(uint32_t(frame_id));
+  }
 
   void SetMarker(Marker marker, uint64_t frame_id) override {
     dlss::ReflexMarker mapped = dlss::ReflexMarker::kSimulationStart;
@@ -54,11 +106,13 @@ class StreamlineReducer final : public Reducer {
       case Marker::kPresentEnd: mapped = dlss::ReflexMarker::kPresentEnd; break;
       case Marker::kInputSample: mapped = dlss::ReflexMarker::kInputSample; break;
     }
+    const SlowCall timed("latency marker");
     dlss::reflex::SetMarker(mapped, uint32_t(frame_id));
   }
 
  private:
   bool ever_on_ = false;
+  std::atomic<bool> busy_{false};  // the update thread's SetMode; the render thread's may follow it
 };
 
 }  // namespace

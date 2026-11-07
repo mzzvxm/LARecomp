@@ -70,6 +70,9 @@ constexpr uint32_t kWarmupPasses = 2;
 // not working.
 constexpr uint32_t kMaxRefusals = 3;
 constexpr uint64_t kRetryUs = 1'000'000;
+// A mode the reducer could not even ask for because its API was held for seconds by something else
+// (Streamline making a DLSS feature) is no refusal: asked again this soon, as often as it takes.
+constexpr uint64_t kBusyRetryUs = 100'000;
 // A wait before the frame over this is long. Three long waits among the last eight give the
 // reducer up for a while: the driver is told to leave the mode. It is tried
 // again after 5 s, then 10, 20, 40 and at most 60 s while it keeps failing; 30 s without a long
@@ -118,6 +121,7 @@ struct UpdateState {
   uint32_t refusals = 0;
   uint64_t retry_at_us = 0;
   bool failed = false;  // refused kMaxRefusals times: off until the next start
+  bool busy_logged = false;  // the first mode that had to wait for the vendor's API was said
   // The watchdog.
   uint8_t long_history = 0;  // bit 0 is the latest wait
   uint64_t paused_until_us = 0;
@@ -220,6 +224,19 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint64_t n
     }
     return;
   }
+  if (reducer.Busy()) {
+    // Not a refusal: the call did not get to the vendor (Streamline's lock is held for a DLSS
+    // feature's creation, 8 s on an RTX 5080). The mode is asked for again soon, with nothing counted
+    // against the reducer; until it is taken the frames carry no markers.
+    u.retry_at_us = now + kBusyRetryUs;
+    if (!u.busy_logged) {
+      u.busy_logged = true;
+      REXLOG_INFO("[gpu] low latency: {} is busy with something that takes seconds (a DLSS feature "
+                  "being made); its mode is taken as soon as it is free",
+                  reducer.Name());
+    }
+    return;
+  }
   if (!on) {
     // The driver would not leave the mode; nothing more can be done about it.
     u.applied_on = false;
@@ -303,6 +320,7 @@ void OnFrameStart() {
     u.refusals = 0;
     u.retry_at_us = 0;
     u.failed = false;
+    u.busy_logged = false;
     u.long_history = 0;
     u.paused_until_us = 0;
     u.backoff_us = kFirstBackoffUs;
