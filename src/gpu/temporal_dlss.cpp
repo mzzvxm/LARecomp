@@ -1082,8 +1082,7 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
   options.outputHeight = request.output_size[1];
   options.preExposure = 1.0f;
   options.exposureScale = 1.0f;
-  // TEST ONLY (mcla_gpu_upscaler_tonemap off): the linear scene colour, HDR as before.
-  options.colorBuffersHDR = UpscalerToneMapEnabled() ? sl::Boolean::eFalse : sl::Boolean::eTrue;
+  options.colorBuffersHDR = sl::Boolean::eFalse;
   options.useAutoExposure = sl::Boolean::eTrue;
   options.alphaUpscalingEnabled = sl::Boolean::eFalse;
 

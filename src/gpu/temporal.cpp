@@ -624,47 +624,36 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
                              int(product->layout), width, height));
   }
 
-  // TEST ONLY (mcla_gpu_upscaler_tonemap): off, the upscaler reads the product and writes the
-  // output image itself, as it did before the tone map.
-  const bool tone_map = UpscalerToneMapEnabled();
   // The compression reads the product at the render size, texel for texel, through a view of its
   // own with no swizzle: the stand-in is read through each fetch's swizzle later, once.
-  uint32_t color_slot = kInvalidBindlessSlot;
-  if (tone_map) {
-    color_slot = product->views.Slot(*device_, *heap_, *product->texture, product->format, 1,
-                                     format::kHostSwizzleRGBA, "temporal upscaler input view");
-    if (color_slot == kInvalidBindlessSlot) {
-      return plain(window_.upscale_plain_no_color, 2,
-                   "the anchor's colour product has no view for the compression");
-    }
+  const uint32_t color_slot =
+      product->views.Slot(*device_, *heap_, *product->texture, product->format, 1,
+                          format::kHostSwizzleRGBA, "temporal upscaler input view");
+  if (color_slot == kInvalidBindlessSlot) {
+    return plain(window_.upscale_plain_no_color, 2,
+                 "the anchor's colour product has no view for the compression");
   }
 
   // The output: the picture the rest of the frame reads in place of the scene colour. The expansion
   // draws it (a render target); the upscaler itself writes the tone map's own image
-  // (temporal_tonemap.h). With the tone map off the upscaler writes it (a compute pass's image).
+  // (temporal_tonemap.h).
   constexpr plume::RenderFormat kOutputFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
-  const plume::RenderTextureFlags output_flags =
-      tone_map ? plume::RenderTextureFlags(plume::RenderTextureFlag::RENDER_TARGET)
-               : plume::RenderTextureFlags(plume::RenderTextureFlag::STORAGE |
-                                           plume::RenderTextureFlag::UNORDERED_ACCESS);
   if (output_.texture && (output_.width != out_width || output_.height != out_height)) {
     textures_->ReleaseOverrideViews();  // before the texture they name goes
   }
   if (!passes_->EnsureImage(output_, out_width, out_height, kOutputFormat,
-                            "temporal upscaler output", output_flags)) {
+                            "temporal upscaler output")) {
     FailUpscaler(std::format("its {}x{} output image could not be made", out_width, out_height));
     return false;
   }
-  if (tone_map && !tone_map_.Prepare(width, height, out_width, out_height)) {
+  if (!tone_map_.Prepare(width, height, out_width, out_height)) {
     FailUpscaler(std::format("the tone map around it could not be made (passes, or its {}x{} and "
                              "{}x{} images)",
                              width, height, out_width, out_height));
     return false;
   }
-  // What the upscaler reads and writes (empty images when the tone map is off).
   HostImage& compressed = tone_map_.compressed();
   HostImage& upscaled = tone_map_.upscaled();
-  HostImage& upscaler_out = tone_map ? upscaled : output_;
 
   TemporalInputs in;
   in.frame = fr.frame;
@@ -672,16 +661,12 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   in.render_size[1] = height;
   in.output_size[0] = out_width;
   in.output_size[1] = out_height;
-  in.color = tone_map ? TemporalImage{compressed.texture.get(), width, height, compressed.format,
-                                      compressed.flags}
-                      : TemporalImage{product->texture.get(), width, height, kOutputFormat,
-                                      plume::RenderTextureFlag::NONE};
+  in.color = {compressed.texture.get(), width, height, compressed.format, compressed.flags};
   in.depth = {kept.depth->texture.get(), kept.depth->width, kept.depth->height, kept.depth->format,
               kept.depth->flags};
   in.motion = {kept.motion->texture.get(), kept.motion->width, kept.motion->height,
                kept.motion->format, kept.motion->flags};
-  in.output = {upscaler_out.texture.get(), out_width, out_height, upscaler_out.format,
-               upscaler_out.flags};
+  in.output = {upscaled.texture.get(), out_width, out_height, upscaled.format, upscaled.flags};
   in.jitter[0] = fr.jitter[0];
   in.jitter[1] = fr.jitter[1];
   in.frame_time_ms = fr.frame_time_ms;
@@ -729,56 +714,37 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   // expansion's pixel shader reads, and the expansion draws the image the rest of the frame reads.
   namespace Stage = plume::RenderBarrierStage;
   const plume::RenderBarrierStages graphics_and_compute = Stage::GRAPHICS_AND_COMPUTE;
-  if (tone_map) {
-    list->barriers(graphics_and_compute,
-                   plume::RenderTextureBarrier(product->texture.get(),
-                                               plume::RenderTextureLayout::SHADER_READ));
-    tone_map_.RecordCompress(list, color_slot);
-  }
+  list->barriers(graphics_and_compute,
+                 plume::RenderTextureBarrier(product->texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  tone_map_.RecordCompress(list, color_slot);
   pass_timing_->Mark(list, "temporal upscale");
   plume::RenderTextureBarrier to_read[3] = {
-      plume::RenderTextureBarrier(tone_map ? compressed.texture.get() : product->texture.get(),
-                                  plume::RenderTextureLayout::SHADER_READ),
+      plume::RenderTextureBarrier(compressed.texture.get(), plume::RenderTextureLayout::SHADER_READ),
       plume::RenderTextureBarrier(kept.depth->texture.get(), plume::RenderTextureLayout::SHADER_READ),
       plume::RenderTextureBarrier(kept.motion->texture.get(),
                                   plume::RenderTextureLayout::SHADER_READ)};
   list->barriers(Stage::COMPUTE, to_read, 3);
-  list->barriers(Stage::COMPUTE,
-                 plume::RenderTextureBarrier(upscaler_out.texture.get(),
-                                             plume::RenderTextureLayout::GENERAL));
+  list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(upscaled.texture.get(),
+                                                              plume::RenderTextureLayout::GENERAL));
   const bool ok = backend->Upscale(list, in);
   backend::InvalidateAfterExternalWork(list);
-  if (!tone_map) {
-    list->barriers(graphics_and_compute,
-                   plume::RenderTextureBarrier(product->texture.get(),
-                                               plume::RenderTextureLayout::SHADER_READ));
-  }
   plume::RenderTextureBarrier back[2] = {
       plume::RenderTextureBarrier(kept.depth->texture.get(), plume::RenderTextureLayout::SHADER_READ),
       plume::RenderTextureBarrier(kept.motion->texture.get(),
                                   plume::RenderTextureLayout::SHADER_READ)};
   list->barriers(Stage::GRAPHICS, back, 2);
-  if (tone_map) {
-    list->barriers(Stage::GRAPHICS, plume::RenderTextureBarrier(
-                                        upscaled.texture.get(),
-                                        plume::RenderTextureLayout::SHADER_READ));
-    upscaled.layout = plume::RenderTextureLayout::SHADER_READ;
-  } else {
-    list->barriers(graphics_and_compute,
-                   plume::RenderTextureBarrier(output_.texture.get(),
-                                               plume::RenderTextureLayout::SHADER_READ));
-    output_.layout = plume::RenderTextureLayout::SHADER_READ;
-  }
+  list->barriers(Stage::GRAPHICS, plume::RenderTextureBarrier(
+                                      upscaled.texture.get(), plume::RenderTextureLayout::SHADER_READ));
+  upscaled.layout = plume::RenderTextureLayout::SHADER_READ;
   if (!ok) {
     return false;  // the backend logged it and is off for the session; this frame is plain
   }
-  if (tone_map) {
-    tone_map_.RecordExpand(list, output_);
-    list->barriers(graphics_and_compute,
-                   plume::RenderTextureBarrier(output_.texture.get(),
-                                               plume::RenderTextureLayout::SHADER_READ));
-    output_.layout = plume::RenderTextureLayout::SHADER_READ;
-  }
+  tone_map_.RecordExpand(list, output_);
+  list->barriers(graphics_and_compute,
+                 plume::RenderTextureBarrier(output_.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  output_.layout = plume::RenderTextureLayout::SHADER_READ;
 
   // Every fetch of the scene colour from here on reads the output.
   TextureCache::Override stand_in;
