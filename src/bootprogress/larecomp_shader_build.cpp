@@ -474,6 +474,10 @@ class CommandLineSink final : public AppSink {
 
 }  // namespace
 
+// CHECK: written without a build of larecomp (the xex image decoder was compiled and run on its own, the
+// rest only syntax checked). Run it: `larecomp.exe --build_shader_packs` in the install's game folder, with
+// the stdout piped; expect the folder, phase, step and result lines, exit 0, and then a normal start of the
+// game that logs no shader build and shows no "preparing" popup (the stamp it wrote is current).
 int RunCommandLine(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
   // The folder the game itself will look in: shader_pack_dir, else the one OnConfigurePaths gave
