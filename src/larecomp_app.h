@@ -68,6 +68,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include <filesystem>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <vector>
 
 #ifdef _WIN32
@@ -83,6 +84,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #endif
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/runtime.h>
 #include <rex/graphics/flags.h>
 #include <rex/ui/flags.h>
@@ -1037,6 +1039,19 @@ class LarecompApp : public rex::ReXApp {
       }
     } else {
       LARECOMP_APP_ERROR("Embedded achievements.toml resource not found");
+    }
+#else
+    // No resources in a Linux executable: CMake copies src/achievements.toml next to it as
+    // assets/achievements.toml.
+    // CHECK: not run on Linux (the labels and descriptions of the achievements).
+    const std::filesystem::path loose =
+        rex::filesystem::GetExecutableFolder() / "assets" / "achievements.toml";
+    std::ifstream in(loose, std::ios::binary);
+    if (in) {
+      const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      larecomp::LoadAchievementMetadata(achievements(), text, "assets/achievements.toml");
+    } else {
+      LARECOMP_APP_WARN("assets/achievements.toml not found next to the executable");
     }
 #endif
   }
