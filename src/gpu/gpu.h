@@ -367,12 +367,17 @@ struct FrameGenerationAvailability {
   bool probed = false;     // the runtime's answer is final
   bool available = false;  // FSR 3.1 frame generation can run on this PC: the pause menu lists the row
   bool failed = false;     // it was turned off for the rest of the session after a failure
+  // The card has no room for it now: frame generation (its images and AMD's context, hundreds of MB
+  // at 4K) would take video memory past the line where the budget starts releasing the caches, or
+  // AMD's runtime ran out of it making the context. It is off meanwhile, looked at again every few
+  // seconds, and `why` says how much it needs and how much is in use. Not a failure: the row stays.
+  bool no_room = false;
   bool running = false;    // on: the swap chain is on the pacer's queue (the cap and the reducer follow)
   uint32_t refresh_hz = 0; // the display the window is on (its highest mode), 0 until read
   // HALF DISPLAY's cap in rendered frames a second (the floor of 97% of half the refresh rate), 0 where
   // it is not offered (a display under 100 Hz, or an unknown one): the player's own cap applies there.
   uint32_t half_display = 0;
-  std::string why;         // not available, or failed: one plain sentence for the log and the launcher
+  std::string why;         // not available, failed or no room: one plain sentence for the log and the launcher
 };
 FrameGenerationAvailability GetFrameGenerationAvailability();
 // Whether frame generation runs now (the swap chain is on the pacer's queue).

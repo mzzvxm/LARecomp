@@ -43,6 +43,7 @@
 #include "temporal.h"
 #include "texture_bytes.h"
 #include "thread_load.h"
+#include "vram_budget.h"
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_frame_generation, "off", "MCLA/GPU",
@@ -92,6 +93,7 @@ constexpr uint32_t kBitProbed = 1u << 0;
 constexpr uint32_t kBitAvailable = 1u << 1;
 constexpr uint32_t kBitFailed = 1u << 2;
 constexpr uint32_t kBitRunning = 1u << 3;
+constexpr uint32_t kBitNoRoom = 1u << 4;
 std::atomic<uint32_t> g_bits{0};
 std::atomic<uint32_t> g_refresh_hz{0};
 std::mutex g_why_mutex;
@@ -161,6 +163,7 @@ FrameGenerationAvailability GetFrameGenerationAvailability() {
   a.probed = (bits & kBitProbed) != 0;
   a.available = (bits & kBitAvailable) != 0;
   a.failed = (bits & kBitFailed) != 0;
+  a.no_room = (bits & kBitNoRoom) != 0;
   a.running = (bits & kBitRunning) != 0;
   a.refresh_hz = g_refresh_hz.load(std::memory_order_relaxed);
   a.half_display = HalfDisplayCap(a.refresh_hz);
@@ -283,6 +286,8 @@ void FrameGeneration::Shutdown() {
   compose_shader_.reset();
   copy_shader_.reset();
   g_bits.store(0, std::memory_order_release);
+  ClearMemoryBlock();
+  have_request_ = false;
   initialized_ = false;
 }
 
@@ -346,6 +351,12 @@ void FrameGeneration::Publish(bool setting) {
     }
   }
   if (active_) bits |= kBitRunning;
+  if (memory_blocked_) {
+    bits |= kBitNoRoom;
+    if (why.empty()) {
+      why = memory_reason_;
+    }
+  }
   (void)setting;
   const uint32_t before = g_bits.exchange(bits, std::memory_order_acq_rel);
   if (!why.empty() || before != bits) {
@@ -365,7 +376,20 @@ FrameGeneration::Change FrameGeneration::Poll() {
     st = backend_->Status();
   }
   const bool can_run = backend_ && st.state == FgBackendState::kAvailable && !st.failed && !failed_;
-  wanted_ = setting && can_run;
+  bool wanted = setting && can_run;
+  if (!wanted) {
+    ClearMemoryBlock();  // a setting that is off, or cannot run, has nothing to wait for
+  } else {
+    if (st.no_memory && !memory_blocked_) {
+      BlockForMemory(st.reason);  // the runtime ran out of video memory making the context
+    }
+    if (active_) {
+      wanted = !memory_blocked_;  // set by Generate, AcquireSlot or the line above: switched off
+    } else if (!switching_on_) {
+      wanted = RoomToSwitchOn();
+    }
+  }
+  wanted_ = wanted;
   Publish(setting);
   if (setting && !can_run && !logged_unavailable_ &&
       (!backend_ || st.state == FgBackendState::kUnavailable || st.failed || failed_)) {
@@ -404,6 +428,141 @@ bool FrameGeneration::MakeGenerationPasses() {
   compose_pipeline_ =
       passes_->CreatePipeline(*compose_shader_, kGenerationFormat, "frame generation compose");
   return prepare_pipeline_ && compose_pipeline_;
+}
+
+// ---------------------------------------------------------------------------
+// video memory (frame_generation.h "Memory")
+// ---------------------------------------------------------------------------
+
+void FrameGeneration::GenerationSize(uint32_t src_w, uint32_t src_h, uint32_t window_w,
+                                     uint32_t window_h, uint32_t* gen_w, uint32_t* gen_h) {
+  *gen_w = src_w;
+  *gen_h = src_h;
+  if (window_w != 0 && window_h != 0 && src_w != 0 && src_h != 0) {
+    const double scale = std::min(double(window_w) / double(src_w), double(window_h) / double(src_h));
+    if (scale < 1.0) {
+      *gen_w = std::max<uint32_t>(uint32_t(std::lround(double(src_w) * scale)), 1u);
+      *gen_h = std::max<uint32_t>(uint32_t(std::lround(double(src_h) * scale)), 1u);
+    }
+  }
+}
+
+std::string FrameGeneration::MemoryProblem(const FgContextRequest& request, uint64_t other_bytes,
+                                           std::string* figures) const {
+  if (!device_ || !backend_) {
+    return {};
+  }
+  // The three generation images, what the caller adds (the present images and the groundwork when
+  // switching on) and AMD's context as the last context the runtime reported on suggests.
+  const uint64_t images =
+      3 * TextureBytes(request.generation_size[0], request.generation_size[1], 1, kGenerationFormat) +
+      other_bytes;
+  const uint64_t context = backend_->EstimateContextBytes(request);
+  const uint64_t need = images + context;
+  const backend::VideoMemory memory = device_->QueryVideoMemory();
+  const std::string account = std::format(
+      "it needs about {} MiB ({} MiB of images, about {} MiB for AMD's context for {}x{}) and {}",
+      need >> 20, images >> 20, context >> 20, request.generation_size[0], request.generation_size[1],
+      memory.budget != 0 ? std::format("{} of {} MiB are in use", memory.used >> 20, memory.budget >> 20)
+                         : std::string("the card reports no budget"));
+  if (figures) {
+    *figures = account;
+  }
+  if (VideoMemoryBudget::HasRoomFor(memory, need)) {
+    return {};
+  }
+  return "not enough free video memory: " + account;
+}
+
+std::string FrameGeneration::SwitchOnProblem(std::string* figures) const {
+  if (!swap_chain_ || !device_ || !layers_ || !temporal_) {
+    return {};
+  }
+  const uint32_t window_w = swap_chain_->width();
+  const uint32_t window_h = swap_chain_->height();
+  if (window_w == 0 || window_h == 0) {
+    return {};
+  }
+  // The picture the last generation saw (forgotten when it went off), else one that fills the
+  // window: the generated frame is never larger than the window, so this is the most it can need.
+  const uint32_t src_w = last_source_[0] != 0 ? last_source_[0] : window_w;
+  const uint32_t src_h = last_source_[1] != 0 ? last_source_[1] : window_h;
+  FgContextRequest request;
+  GenerationSize(src_w, src_h, window_w, window_h, &request.generation_size[0],
+                 &request.generation_size[1]);
+  request.render_size[0] = request.generation_size[0];
+  request.render_size[1] = request.generation_size[1];
+  // What switching on makes besides the generation images and the context: the present images (two
+  // slots of a pair, at the window's size in the swap chain's format) and the groundwork it asks
+  // the others for, unless they have it already: the frame layers' two 8-bit images at the
+  // picture's size, and the temporal system's kept depth (two, R32_FLOAT) and vectors (RG16F), at
+  // most the generated frame's size.
+  uint64_t other = uint64_t(kSlots) * 2 *
+                   TextureBytes(window_w, window_h, 1, swap_chain_->format());
+  if (!layers_->active()) {
+    other += 2 * TextureBytes(src_w, src_h, 1, plume::RenderFormat::R8G8B8A8_UNORM);
+  }
+  if (temporal_->motion().HeldBytes() == 0) {
+    other += uint64_t(2 * 4 + 4) * request.generation_size[0] * request.generation_size[1];
+  }
+  return MemoryProblem(request, other, figures);
+}
+
+bool FrameGeneration::RoomToSwitchOn() {
+  const Clock::time_point now = Clock::now();
+  if (memory_blocked_ && now < memory_retry_) {
+    return false;
+  }
+  std::string figures;
+  const std::string problem = SwitchOnProblem(&figures);
+  if (!problem.empty()) {
+    BlockForMemory(problem);
+    return false;
+  }
+  if (memory_blocked_ && backend_) {
+    backend_->Release();  // forgets an answer that the runtime ran out of memory
+  }
+  REXLOG_INFO("[gpu] frame generation: {}: there is room for it{}", figures,
+              memory_blocked_ ? " now, switching it on" : "");
+  ClearMemoryBlock();
+  return true;
+}
+
+void FrameGeneration::BlockForMemory(const std::string& problem) {
+  const Clock::time_point now = Clock::now();
+  if (memory_blocked_ && now < memory_retry_) {
+    return;  // already waiting: a second sign in the same stretch does not move the wait
+  }
+  memory_blocked_ = true;
+  memory_reason_ = problem;
+  memory_retry_ = now + memory_delay_;
+  if (!memory_logged_) {
+    memory_logged_ = true;
+    REXLOG_INFO("[gpu] frame generation: {}; it is {} and looked at again after {} s, then less "
+                "often (up to {} s); nothing else is released to make room for it",
+                problem, active_ ? "switched off" : "not switched on", memory_delay_.count(),
+                kMemoryRetryMax.count());
+  }
+  memory_delay_ = std::min(memory_delay_ * 2, kMemoryRetryMax);
+}
+
+bool FrameGeneration::ImagesFailed(const char* what, uint64_t bytes) {
+  const backend::VideoMemory memory = device_->QueryVideoMemory();
+  if (memory.budget != 0 && VideoMemoryBudget::HasRoomFor(memory, bytes)) {
+    return false;  // the card has room: not a matter of waiting for it
+  }
+  BlockForMemory(std::format("not enough free video memory: its {} images could not be made ({} of "
+                             "{} MiB are in use)",
+                             what, memory.used >> 20, memory.budget >> 20));
+  return true;
+}
+
+void FrameGeneration::ClearMemoryBlock() {
+  memory_blocked_ = false;
+  memory_logged_ = false;
+  memory_reason_.clear();
+  memory_retry_ = Clock::time_point{};
+  memory_delay_ = kMemoryRetryFirst;
 }
 
 bool FrameGeneration::MakeQueue(plume::RenderFormat format) {
@@ -521,6 +680,7 @@ void FrameGeneration::CompleteSwitch(Change change, bool ok) {
   StopPacer();
   active_ = false;
   switching_on_ = false;
+  last_source_[0] = last_source_[1] = 0;  // the next switch on is estimated from the window
   ReleaseQueue();
   ReleaseResources("frame generation is off");
   for (Slot& slot : slots_) {
@@ -540,6 +700,7 @@ void FrameGeneration::ReleaseResources(const char* why) {
   passes_->ReleaseImage(color_);
   passes_->ReleaseImage(generated_);
   passes_->ReleaseImage(composed_);
+  have_request_ = false;  // the next context is asked for with a look at the budget again
   last_generated_frame_ = ~uint64_t(0);
   idle_guest_frames_ = 0;
   if (had && !released_) {
@@ -591,8 +752,15 @@ bool FrameGeneration::AcquireSlot(uint32_t width, uint32_t height, plume::Render
   Slot& slot = slots_[index];
   if (!passes_->EnsureImage(slot.generated, width, height, format, "frame generation present image") ||
       !passes_->EnsureImage(slot.real, width, height, format, "frame generation present image")) {
-    std::lock_guard lock(mu_);
-    slot_free_[index] = true;
+    {
+      std::lock_guard lock(mu_);
+      slot_free_[index] = true;
+    }
+    if (width != 0 && height != 0) {
+      // Most likely the card is full (Device::CreateTexture said so): off until there is room again,
+      // not frames dropped for as long as it lasts.
+      ImagesFailed("present", 2 * TextureBytes(width, height, 1, format));
+    }
     return false;
   }
   out->index = index;
@@ -642,6 +810,10 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
     NoteNotGenerated();
     return none;
   };
+  // No room for it: nothing is made, and the next frame boundary switches it off (Poll).
+  if (memory_blocked_) {
+    return skip(stats_.not_generated_memory);
+  }
   // The HDR debug views and the test pattern show something else than the frame.
   if (REXCVAR_GET(mcla_gpu_hdr_layers_view) != 0 || REXCVAR_GET(mcla_gpu_hdr_test_pattern)) {
     return skip(stats_.not_generated_frame);
@@ -670,19 +842,30 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
   // size it is shown at (the fork's finding: 1.7 to 2.5 ms at 4K against 0.85 to 1.6 at 1440p).
   uint32_t gen_w = src_w;
   uint32_t gen_h = src_h;
-  if (args.window_width != 0 && args.window_height != 0) {
-    const double scale = std::min(double(args.window_width) / double(src_w),
-                                  double(args.window_height) / double(src_h));
-    if (scale < 1.0) {
-      gen_w = std::max<uint32_t>(uint32_t(std::lround(double(src_w) * scale)), 1u);
-      gen_h = std::max<uint32_t>(uint32_t(std::lround(double(src_h) * scale)), 1u);
-    }
-  }
+  GenerationSize(src_w, src_h, args.window_width, args.window_height, &gen_w, &gen_h);
+  last_source_[0] = src_w;
+  last_source_[1] = src_h;
   FgContextRequest request;
   request.render_size[0] = kept.depth->width;
   request.render_size[1] = kept.depth->height;
   request.generation_size[0] = gen_w;
   request.generation_size[1] = gen_h;
+  if (!have_request_ || !(requested_ == request)) {
+    // A context of this size is new (the first, another size, or after the release): asked for
+    // only where it and the images that go with it fit under the budget's line (the old context
+    // of another size is still there while the new one is made, so nothing is taken off the need).
+    std::string figures;
+    const std::string problem = MemoryProblem(request, 0, &figures);
+    if (!problem.empty()) {
+      BlockForMemory(problem);
+      return skip(stats_.not_generated_memory);
+    }
+    REXLOG_INFO("[gpu] frame generation: {}: asking for a context for the generated frame at "
+                "{}x{} (render {}x{})",
+                figures, gen_w, gen_h, request.render_size[0], request.render_size[1]);
+    requested_ = request;
+    have_request_ = true;
+  }
   backend_->Request(request);
   if (!backend_->Ready(request)) {
     last_generated_frame_ = ~uint64_t(0);  // the first generation of a context starts afresh
@@ -692,6 +875,9 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
       !passes_->EnsureImage(generated_, gen_w, gen_h, kGenerationFormat, "frame generation output",
                             kOutputFlags) ||
       !passes_->EnsureImage(composed_, gen_w, gen_h, kGenerationFormat, "frame generation composed")) {
+    if (ImagesFailed("generation", 3 * TextureBytes(gen_w, gen_h, 1, kGenerationFormat))) {
+      return skip(stats_.not_generated_memory);
+    }
     return skip(stats_.not_generated_frame);
   }
   released_ = false;
@@ -827,11 +1013,12 @@ std::string FrameGeneration::TakeSummary() {
   const double mean_gap = pacer.gaps != 0 ? pacer.gap_sum_ms / double(pacer.gaps) : 0.0;
   return std::format(
       "frame generation: {} guest frames, {} generated; not generated: {} no scene or layers, {} "
-      "context not ready, {} history starting again; {} dropped (no free slot), {} slot waits "
-      "({:.1f} ms) | pacer: {} presents ({} generated), mean gap {:.2f} ms, longest {:.2f} ms, {} "
-      "more than 1 ms late, {} failed | {:.0f} MiB",
+      "context not ready, {} no room in video memory, {} history starting again; {} dropped (no "
+      "free slot), {} slot waits ({:.1f} ms) | pacer: {} presents ({} generated), mean gap {:.2f} "
+      "ms, longest {:.2f} ms, {} more than 1 ms late, {} failed | {:.0f} MiB",
       s.guest_frames, s.generated, s.not_generated_frame, s.not_generated_context,
-      s.not_generated_reset, s.dropped, s.slot_waits, s.slot_wait_ms, pacer.presents,
+      s.not_generated_memory, s.not_generated_reset, s.dropped, s.slot_waits, s.slot_wait_ms,
+      pacer.presents,
       pacer.generated_presents, mean_gap, pacer.gap_max_ms, pacer.late, pacer.failed,
       double(HeldBytes()) / double(1u << 20));
 }

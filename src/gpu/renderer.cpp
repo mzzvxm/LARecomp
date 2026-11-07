@@ -271,6 +271,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
     fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
                    &resize_requested_);
+    // Its images and AMD's context are not something the budget's response can release; its lines
+    // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
+    vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
