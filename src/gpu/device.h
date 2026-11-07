@@ -186,4 +186,11 @@ class Device {
   std::atomic<bool> lost_{false};
 };
 
+// The options the renderer's Startup opens the device with: mcla_gpu_adapter, else the GPU "auto"
+// chose Vulkan for, the debug layer cvar, and the backend graphics_backend asks for (or `forced`,
+// when not null: the adapter "auto" chose then applies only if it is for that backend). Defined in
+// renderer.cpp, which keeps what Enabled() decided; call it only after Enabled() returned true.
+// The pipeline prebuild (pipeline_prebuild.h) opens its device the same way.
+Device::Options PlannedDeviceOptions(const Backend* forced);
+
 }  // namespace mcla::gpu

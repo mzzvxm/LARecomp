@@ -314,7 +314,13 @@ class EdramTargets {
   static MsaaSetting ReadMsaaSetting();
   // `wanted` (1, 2, 4 or 8) or the next lower level the device can do for every format an image of
   // the screen is stored as (1 always works).
-  uint32_t SupportedMsaaLevel(uint32_t wanted) const;
+  uint32_t SupportedMsaaLevel(uint32_t wanted) const { return LevelWithin(msaa_supported_, wanted); }
+  // The sample counts (bits 2, 4, 8) the device can do for every format an image of the screen is
+  // stored as, and the same rule as SupportedMsaaLevel for such a mask. Static so that the pipeline
+  // prebuild (pipeline_prebuild.h), which has a device and no EDRAM, makes pipelines for the level
+  // the game would start with.
+  static uint32_t SupportedScreenSamples(plume::RenderDevice* device);
+  static uint32_t LevelWithin(uint32_t supported_samples, uint32_t wanted);
   // The host samples of `key`'s target: its own when it exists, otherwise
   // HostSamplesFor.
   uint32_t HostSamplesOf(const EdramKey& key, uint32_t size_bits) {

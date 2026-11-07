@@ -107,7 +107,7 @@ $env:REX_LOG_LEVEL="warn"; Start-Process larecomp.exe
 
 Everything else is in the pause menu. It defaults to 60 FPS with real frame delta on and vsync off.
 
-**The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them. `larecomp.exe --build_shader_packs` builds them without starting the game (no window; progress on the console, exit code 0 when they are in place): an installer can run it so the first start has nothing to build.
+**The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them. `larecomp.exe --build_shader_packs` builds them without starting the game (no window; progress on the console, exit code 0 when they are in place): an installer can run it so the first start has nothing to build. After it, `larecomp.exe --precache_pipelines` does the pipelines the game would otherwise compile while the title starts, for your saved MSAA and upscaler choice: it fills your graphics driver's own cache for the game's API (add `--precache_pipelines_backend=vulkan` or `d3d12` for the other one) and, when nothing changed since (same driver, graphics card, settings and files), finishes in about a second.
 
 ---
 

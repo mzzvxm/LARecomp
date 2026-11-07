@@ -406,6 +406,10 @@ void InstallStartupGate(const std::filesystem::path& game_root) {
 #endif
 }
 
+bool PacksCurrent(const std::filesystem::path& game_root) {
+  return PacksCurrentAtStartup(game_root);
+}
+
 bool CommandLineRequested() {
   return REXCVAR_GET(build_shader_packs);
 }

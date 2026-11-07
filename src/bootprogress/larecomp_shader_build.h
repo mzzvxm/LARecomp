@@ -41,6 +41,13 @@ void ConfigurePackFolder(const std::filesystem::path& cache_root);
 // shader_pack_dir by hand) is used as it is. `game_root` is the folder the game files are in.
 void InstallStartupGate(const std::filesystem::path& game_root);
 
+// The question the gate asks, for a caller with no renderer (the pipeline prebuild,
+// bootprogress/larecomp_pipeline_build.h): true when the packs in the folder the game uses are
+// current for `game_root`, or have no stamp (used as they are). False when their stamp says they
+// were built from other inputs (the game rebuilds them first), and in a build with no Plume
+// renderer. Logs why.
+bool PacksCurrent(const std::filesystem::path& game_root);
+
 // UI thread, from SetupEnvironment (the paths and the config are final, logging is up, nothing else
 // has started): whether the program was asked to build the shader packs and close
 // (--build_shader_packs).

@@ -46,6 +46,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "profile/larecomp_profile_picker.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "bootprogress/larecomp_shader_build.h"
+#include "bootprogress/larecomp_pipeline_build.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/adaptive_triggers.h"
@@ -720,13 +721,24 @@ class LarecompApp : public rex::ReXApp {
     if (!rex::ReXApp::SetupEnvironment()) {
       return false;
     }
-    if (larecomp::shaderbuild::CommandLineRequested()) {
+    const bool build_packs = larecomp::shaderbuild::CommandLineRequested();
+    const bool precache_pipelines = larecomp::pipelinebuild::CommandLineRequested();
+    if (build_packs || precache_pipelines) {
       // --build_shader_packs (the launcher's setup runs it): build the packs from the game files and
       // end here, before there is a window, a renderer or a runtime. The paths and the config are
       // final and logging is up, so the folders are the ones the game itself will use.
       // CHECK: the exe is a GUI program (WIN32): its stdout reaches a parent only through a pipe the
       // parent made (the launcher does); run it once from the launcher's step and read the lines.
-      const int code = larecomp::shaderbuild::RunCommandLine(game_data_root());
+      int code = 0;
+      if (build_packs) {
+        code = larecomp::shaderbuild::RunCommandLine(game_data_root());
+      }
+      // --precache_pipelines (the launcher's step after the packs): fill the graphics driver's
+      // pipeline cache from them. On the same command line as the packs it runs once they are in
+      // place; alone it needs them already.
+      if (precache_pipelines && code == 0) {
+        code = larecomp::pipelinebuild::RunCommandLine(game_data_root());
+      }
       rex::FlushLogging();
       ShutdownLarecompLogging();
       std::_Exit(code);

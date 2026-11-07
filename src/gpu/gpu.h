@@ -48,6 +48,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "render_scale.h"
 
@@ -97,6 +98,10 @@ void SetShaderPackGate(std::function<bool()> gate);
 // Where a build of the packs should write: shader_pack_dir, else the folder from
 // SetShaderPackFolder, else the default (made, and tried with a real file). Any thread.
 std::filesystem::path ShaderPackFolder();
+// The folders the renderer looks for a pack in when it starts, in order (ShaderStore::SearchFolders
+// of the folder SetShaderPackFolder gave). The first with a valid pack is the one the game uses.
+// Any thread; needs no renderer (the pipeline prebuild, pipeline_prebuild.h, reads it).
+std::vector<std::filesystem::path> ShaderPackSearchFolders();
 // True once the main pack is attached (at Startup or by AttachShaderPacks); false with no
 // renderer. Any thread. A build is needed when this is false after Startup.
 bool ShaderPacksAttached();

@@ -1581,6 +1581,22 @@ bool Enabled() {
   return enabled;
 }
 
+Device::Options PlannedDeviceOptions(const Backend* forced) {
+  Device::Options options;
+  options.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
+  if (options.preferred_adapter.empty() && (!forced || *forced == g_requested_backend)) {
+    // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
+    options.preferred_adapter = g_auto_adapter;
+  }
+  options.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
+  options.backend = forced ? *forced : g_requested_backend;
+  return options;
+}
+
+std::vector<std::filesystem::path> ShaderPackSearchFolders() {
+  return ShaderStore::SearchFolders(g_shader_pack_folder);
+}
+
 std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
   if (!Enabled()) {
     return nullptr;
@@ -1612,15 +1628,9 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
       std::make_shared<OverlayHost>(app_context, *window, *imgui_drawer, *g_overlay_drawer);
 
   Renderer::Options options;
-  options.device.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
-  if (options.device.preferred_adapter.empty()) {
-    // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
-    options.device.preferred_adapter = g_auto_adapter;
-  }
-  options.device.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
+  options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
   options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
   options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
-  options.device.backend = g_requested_backend;
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");
