@@ -87,6 +87,7 @@ add_library(larecomp_shaderpack STATIC
     log.cpp
     # game files
     image_scan.cpp
+    xex_image.cpp
     rpf_shaders.cpp
     # the compiler
     dxc.cpp

@@ -10,6 +10,10 @@
 //   LaunchModule       Phase                     behind the boot progress popup, before the guest
 //                                                starts: build both formats (DXIL and SPIR-V, so a
 //                                                switch of graphics API needs no build), attach
+//   SetupEnvironment   RunCommandLine            larecomp.exe --build_shader_packs: the same build
+//                                                with no window and no runtime (the launcher's setup
+//                                                runs it, so the first start has nothing to build),
+//                                                then the program ends
 //
 // Nothing here applies when the Xenia backend runs (mcla_gpu off): it needs no pack.
 
@@ -36,6 +40,19 @@ void ConfigurePackFolder(const std::filesystem::path& cache_root);
 // mapped could not be replaced. A pack with no stamp at all (an older install's, or one put in
 // shader_pack_dir by hand) is used as it is. `game_root` is the folder the game files are in.
 void InstallStartupGate(const std::filesystem::path& game_root);
+
+// UI thread, from SetupEnvironment (the paths and the config are final, logging is up, nothing else
+// has started): whether the program was asked to build the shader packs and close
+// (--build_shader_packs).
+bool CommandLineRequested();
+
+// Builds the packs the way the game would at its first start (same folder, formats, compiler,
+// HDR step and stamp, so the game finds them valid and builds nothing), reading the game's
+// executable image from `game_root`/default.xex instead of guest memory. Prints progress for the
+// program that started it (the line format is described in the .cpp). Returns the exit code: 0
+// when the packs are in place, 1 when not (the game then builds them itself when it starts).
+// Packs that are current are left alone (build_shader_packs_force builds anyway).
+int RunCommandLine(const std::filesystem::path& game_root);
 
 // The shader phase of the boot work. Made on the UI thread at LaunchModule, run on the worker
 // thread that builds the mods, finished on the UI thread before the guest starts.
