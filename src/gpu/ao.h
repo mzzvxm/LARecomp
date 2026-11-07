@@ -30,8 +30,8 @@
 //   apply    rgb *= lerp(1, ao, strength * ambient_share * distance_fade) on every sample of the
 //            colour target; ambient_share = La / (La + Ls * N.L) from the game's own constants (PS c26
 //            the ambient, PS c39 the sun colour, VS c16 the direction the sunlight travels: the
-//            direction to the sun is its opposite), N from the depth; mcla_gpu_ao_direct moves the
-//            share towards 1 (the occlusion then darkens the sun-lit part too)
+//            direction to the sun is its opposite), N from the depth; the look's direct number
+//            moves the share towards 1 (the occlusion then darkens the sun-lit part too)
 // The lens (the projection) is the previous frame's: the camera exists only at the game's motion blur
 // draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
 // frame's camera has no occlusion.
@@ -69,11 +69,10 @@
 //
 // Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row) and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
-// occlusion is off). An intensity is four numbers: strength, radius (0.5 to 6 m), power (the
-// visibility's exponent) and direct (how much the sun-lit part is darkened too). Off the menu,
-// mcla_gpu_ao_strength, _radius, _power and _direct replace that one number of the chosen
-// intensity when they are set to 0 or more (they default to -1: not set), so a test can move
-// one of them and keep the rest; also _history (the frames averaged), _fade_end, _view, _sun_flip.
+// occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
+// about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
+// darkened too). Also mcla_gpu_ao_history (the frames averaged), _fade_end, _view (the debug
+// views) and _census (a diagnostic log).
 // The push block stays 128 bytes: power rides in shape.x, direct in the free lane extra.z.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
@@ -310,8 +309,8 @@ class AmbientOcclusion {
                    const Plan& plan, const Push& push);
   void FillPush(Push* push, const ResolveCache::Summary& summary, const Plan& plan,
                 const LightRaw* light) const;
-  // The look (strength, radius, power, direct): mcla_gpu_ao_intensity's, with the testing cvars
-  // that are set on top of it, read when the passes are recorded; logged when it changes.
+  // The look (strength, radius, power, direct): mcla_gpu_ao_intensity's, read when the passes are
+  // recorded; logged when it changes.
   struct Look {
     float strength = 1.0f;
     float radius = 3.0f;
@@ -458,9 +457,7 @@ class AmbientOcclusion {
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};
   Look look_;
-  Look look_logged_;
   uint32_t look_logged_index_ = ~0u;
-  bool look_logged_overridden_ = false;
   HostImage depth_[3];  // the linear depth chain: the AO's size, then 1/2 and 1/4 of it
   HostImage raw_;       // the main pass's visibility
   HostImage denoised_;  // the denoise's

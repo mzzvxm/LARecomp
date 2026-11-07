@@ -15,7 +15,7 @@
 //                  travels, through the camera), N the normal from the full resolution depth. The
 //                  scene colour is albedo * (ambient + sun) + specular, so a multiply by
 //                  lerp(1, ao, share) is the occlusion of the ambient part alone, whatever the
-//                  albedo. mcla_gpu_ao_direct (extra.z) moves the share towards 1:
+//                  albedo. The look's direct number (extra.z) moves the share towards 1:
 //                  share' = lerp(share, 1, direct), so the occlusion darkens the sun-lit part too
 //                  (direct 1: all of it);
 //   distance_fade  1 up to shape.w, to 0 at extra.y (smoothstep).

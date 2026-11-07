@@ -35,46 +35,8 @@ REXCVAR_DEFINE_STRING(
     "numbers: how strongly it darkens, how far it looks for things that block the sky light, how "
     "hard the measure is pushed, and how much it also darkens the part of a surface the sun lights; "
     "the stronger ones reach farther and make every crease, corner and under-car shadow darker. "
-    "Only used while "
-    "mcla_gpu_ao is not off (the pause menu's AO INTENSITY row). mcla_gpu_ao_strength, _radius, "
-    "_power and _direct, each when set to 0 or more, replace that one number of the chosen look "
-    "(for testing). Live.")
+    "Only used while mcla_gpu_ao is not off (the pause menu's AO INTENSITY row). Live.")
     .allowed({"light", "default", "strong", "max"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_strength, -1.0, "MCLA/GPU",
-    "Testing only: how strongly ambient occlusion darkens, 0 to 1, in place of the number the "
-    "chosen mcla_gpu_ao_intensity gives. Below 0 (the default): the intensity's. The game already "
-    "has baked occlusion in the world and a soft shadow under cars; this adds to them. Live.")
-    .range(-1.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_radius, -1.0, "MCLA/GPU",
-    "Testing only: how far, in the game's world units (about metres), ambient occlusion looks for "
-    "things that block the sky light, 0.5 to 6, in place of the number the chosen "
-    "mcla_gpu_ao_intensity gives. Below 0 (the default): the intensity's. A larger radius darkens "
-    "wider and softer; a smaller one only tight creases. Close to the camera the reach is also "
-    "limited to a share of the screen's height, so a very large radius shows mostly on surfaces "
-    "farther away. Live.")
-    .range(-1.0, 6.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_power, -1.0, "MCLA/GPU",
-    "Testing only: how hard ambient occlusion is pushed, 0.5 to 8, in place of the number the "
-    "chosen mcla_gpu_ao_intensity gives. Below 0 (the default): the intensity's. The visibility of "
-    "each pixel (1 is open sky, 0 is fully blocked) is raised to this power before it darkens the "
-    "picture. A higher number makes every crease, corner and under-car shadow darker and spreads "
-    "the darkening wider; 1 is the raw measure. Live.")
-    .range(-1.0, 8.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_direct, -1.0, "MCLA/GPU",
-    "Testing only: how much ambient occlusion also darkens the part of a surface that the sun "
-    "lights, 0 to 1, in place of the number the chosen mcla_gpu_ao_intensity gives. Below 0 (the "
-    "default): the intensity's. At 0 only the sky-light part is darkened, so a surface facing the "
-    "sun in daylight barely changes; at 1 the sun-lit part is darkened as much as the shaded part, "
-    "which is much stronger but can look heavy in bright daylight. Live.")
-    .range(-1.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ao_fade_end, 160.0, "MCLA/GPU",
@@ -100,14 +62,6 @@ REXCVAR_DEFINE_INT32(
     "where it is the same surface; more frames is smoother and slower to follow a moving shadow "
     "(a car's), fewer is noisier. 1: no averaging (two blur passes on every frame instead). Live.")
     .range(1, 64)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ao_sun_flip, false, "MCLA/GPU",
-    "Diagnostic: turns the direction of the sun round when working out how much of a surface's "
-    "light is ambient. The game's lighting constant holds the direction the sunlight travels (at "
-    "noon it points down), so the occlusion uses its opposite as the direction to the sun; if the "
-    "sunlit sides of buildings are darkened and the shaded ones are not (the share view, "
-    "mcla_gpu_ao_view = 3, shows it), turn this on. Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_census, 0, "MCLA/GPU",
@@ -138,9 +92,9 @@ constexpr uint32_t kPsAmbient = 26;
 constexpr uint32_t kPsSunColor = 39;
 constexpr uint32_t kVsSunDirection = 16;
 
-// The settings the passes use that no cvar sets (AO-DESIGN.md 4.5): the effect's falloff range as a
-// share of the radius, the floor of the final visibility (no black blotches). The power of the
-// visibility is mcla_gpu_ao_power.
+// The settings the passes use that no cvar sets: the effect's falloff range as a share of the
+// radius, the floor of the final visibility (no black blotches). The power of the visibility is
+// part of the look (mcla_gpu_ao_intensity).
 constexpr float kFalloffRatio = 0.615f;
 constexpr float kMinVisibility = 0.1f;
 // The frames the occlusion has to stay off before its images are given back.
@@ -187,16 +141,6 @@ uint32_t ReadLookIndex() {
     }
   }
   return kDefaultLook;
-}
-
-// A testing cvar's value when it is set (0 or more, clamped to `lo`..`hi`), else `fallback`; `*any`
-// tells that one was set.
-float Overridden(double value, double lo, double hi, float fallback, bool* any) {
-  if (!(value >= 0.0)) {
-    return fallback;
-  }
-  *any = true;
-  return float(std::clamp(value, lo, hi));
 }
 
 // A matrix that can be a camera's view inverse: finite, the last column (0, 0, 0, 1), unit axes.
@@ -1090,25 +1034,15 @@ void AmbientOcclusion::DrawPass(plume::RenderCommandList* list, HostImage& image
 void AmbientOcclusion::UpdateLook() {
   const uint32_t index = ReadLookIndex();
   const LookDef& def = kLooks[index];
-  bool overridden = false;
-  Look look;
-  look.strength = Overridden(REXCVAR_GET(mcla_gpu_ao_strength), 0.0, 1.0, def.strength, &overridden);
-  look.radius = Overridden(REXCVAR_GET(mcla_gpu_ao_radius), 0.5, 6.0, def.radius, &overridden);
-  look.power = Overridden(REXCVAR_GET(mcla_gpu_ao_power), 0.5, 8.0, def.power, &overridden);
-  look.direct = Overridden(REXCVAR_GET(mcla_gpu_ao_direct), 0.0, 1.0, def.direct, &overridden);
-  look_ = look;
-  if (index != look_logged_index_ || overridden != look_logged_overridden_ ||
-      look.strength != look_logged_.strength || look.radius != look_logged_.radius ||
-      look.power != look_logged_.power || look.direct != look_logged_.direct) {
+  look_.strength = def.strength;
+  look_.radius = def.radius;
+  look_.power = def.power;
+  look_.direct = def.direct;
+  if (index != look_logged_index_) {
     look_logged_index_ = index;
-    look_logged_overridden_ = overridden;
-    look_logged_ = look;
     REXLOG_INFO("[gpu] ao: intensity {} (mcla_gpu_ao_intensity, live): strength {:.3g}, radius {:.3g} "
-                "m, power {:.3g}, direct {:.3g}{}",
-                def.name, look.strength, look.radius, look.power, look.direct,
-                overridden ? " -- a testing setting (mcla_gpu_ao_strength, _radius, _power or "
-                             "_direct) replaces part of it"
-                           : "");
+                "m, power {:.3g}, direct {:.3g}",
+                def.name, look_.strength, look_.radius, look_.power, look_.direct);
   }
 }
 
@@ -1149,9 +1083,9 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
 
   // The light: the ambient and the sun as lumas, and the direction to the sun in this renderer's
   // view space (x right, y up, z forward). The game's view space looks along -z, so z changes
-  // sign. c16 is the direction the light travels (the census at noon: y -0.867, the sun overhead),
-  // so the direction to the sun is -c16; mcla_gpu_ao_sun_flip turns it round. No light constants
-  // or no direction: no sun, the whole light is ambient.
+  // sign. c16 is the direction the light travels (at noon y is -0.867: the sun is overhead), so the
+  // direction to the sun is -c16. No light constants or no direction: no sun, the whole light is
+  // ambient.
   if (light) {
     float ambient[3], sun[3], dir[3];
     DecodeLight(*light, ambient, sun, dir);
@@ -1166,9 +1100,8 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
     view[2] = -view[2];
     const double length = std::sqrt(view[0] * view[0] + view[1] * view[1] + view[2] * view[2]);
     if (std::isfinite(length) && length > 1e-6) {
-      const double sign = REXCVAR_GET(mcla_gpu_ao_sun_flip) ? 1.0 : -1.0;
       for (int i = 0; i < 3; ++i) {
-        push->light[i] = float(sign * view[i] / length);
+        push->light[i] = float(-view[i] / length);
       }
     }
   }
