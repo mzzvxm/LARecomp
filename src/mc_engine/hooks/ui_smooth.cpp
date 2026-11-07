@@ -25,7 +25,8 @@
 // are what the guest's own D3D calls consume afterwards), so it does not depend on which
 // renderer sits below the guest. The picture is one step behind the game's state, which
 // is the price of the smoothness (up to 33 ms at 30 steps a second). Nothing is blended
-// while the frame time is longer than 0.6 of a step (under 50 FPS).
+// while fewer than about one and a half frames are drawn per step (under about 47 FPS:
+// WorthBlending).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
@@ -51,7 +52,7 @@ REXCVAR_DEFINE_BOOL(ui_interpolate, true, "MCLA/UI",
     "what moved in the last step is drawn between where it was and where it is: "
     "needles, the song ticker, the menus' lists and highlights, page changes and "
     "fades glide instead of stepping. The picture is one step (up to 33 ms) behind the "
-    "game; nothing is blended below 50 FPS. Off, only the movies named in "
+    "game; nothing is blended below about 47 FPS. Off, only the movies named in "
     "ui_movie_pacing step at 30 a second and nothing is blended.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -99,6 +100,7 @@ struct StepState {
     std::atomic<uint32_t> frame_us{0};   // the time between updates (smoothed)
     std::atomic<uint32_t> calls{0};      // updates that reached the step
     std::atomic<uint64_t> last_call_us{0};
+    mutable std::atomic<bool> blending{false};  // WorthBlending's answer last time
 };
 std::array<StepState, 32> g_step;
 size_t g_step_next = 0;  // the slot the next new context takes (the movie step's thread only)
@@ -117,8 +119,30 @@ StepState& SlotFor(uint32_t context) {
     s.period_us.store(0, std::memory_order_relaxed);
     s.frame_us.store(0, std::memory_order_relaxed);
     s.last_call_us.store(0, std::memory_order_relaxed);
+    s.blending.store(false, std::memory_order_relaxed);
     s.context.store(context, std::memory_order_release);
     return s;
+}
+
+// Whether the draw blends this movie's last step: only while several frames are drawn per step,
+// else it would only add delay. `frame_us` is the movie's own time between updates, smoothed. A
+// single line would sit on a frame cap: a cap of 50 is a frame of exactly 0.6 of a step (20 ms
+// against 33.3), so the smoothed frame time crossed it both ways all the time and blending went
+// on and off from one frame to the next, the UI one step behind and then not, which stutters.
+// Two lines, both between the caps of 45 and 50 (22.2 and 20 ms), keep each cap on one side:
+// blending starts at a frame of 0.63 of a step or less (21 ms, 47.6 FPS) and stops only above
+// 0.65 (21.7 ms, 46.2 FPS).
+bool WorthBlending(const StepState& s, uint32_t frame_us, uint32_t period_us) {
+    if (!frame_us || !period_us) return false;
+    const uint64_t frame = uint64_t(frame_us) * 100;
+    bool on = s.blending.load(std::memory_order_relaxed);
+    if (on && frame > uint64_t(period_us) * 65) {
+        on = false;
+    } else if (!on && frame <= uint64_t(period_us) * 63) {
+        on = true;
+    }
+    s.blending.store(on, std::memory_order_relaxed);
+    return on;
 }
 
 // The player's arithmetic (sub_825FB348 at 0x825FB38C-0x825FB454): world = local x parent
@@ -223,10 +247,10 @@ void Hook_UiSmoothDraw(PPCRegister& r30, PPCRegister& r31) {
     if (!serial || !period_us) return;
     // The step that hides the UI around a photo must show as it is.
     if (PhotoCaptureInProgress(base) || PhotoCityReturning()) return;
-    // Worth doing only when several frames are drawn per step; else it would only add
-    // delay. The state is tracked anyway so that it is current when the frame rate rises.
-    // (A frame longer than 0.6 of a step is drawn as the step left it.)
-    const bool apply = frame_us && uint64_t(frame_us) * 10 <= uint64_t(period_us) * 6;
+    // Worth doing only when several frames are drawn per step (WorthBlending); else the
+    // frame is drawn as the step left it. The state is tracked anyway so that it is current
+    // when the frame rate rises.
+    const bool apply = WorthBlending(*step, frame_us, period_us);
     const uint32_t calls = step->calls.load(std::memory_order_relaxed);
     const uint64_t window_us = period_us;
 
@@ -477,8 +501,8 @@ bool SceneBlend(uint32_t ctx, uint32_t obj, const SceneSpec& spec, float* v, int
     const uint64_t step_us = step->step_us.load(std::memory_order_relaxed);
     const uint32_t frame_us = step->frame_us.load(std::memory_order_relaxed);
     if (!serial || !period_us) return false;
-    // As for the nodes: nothing to gain with fewer than two frames per step.
-    if (!(frame_us && uint64_t(frame_us) * 10 <= uint64_t(period_us) * 6)) return false;
+    // As for the nodes: nothing to gain with too few frames per step.
+    if (!WorthBlending(*step, frame_us, period_us)) return false;
     const uint32_t calls = step->calls.load(std::memory_order_relaxed);
     const uint64_t window_us = period_us;
 
