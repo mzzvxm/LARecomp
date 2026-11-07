@@ -612,6 +612,12 @@ struct DlssBackend::Impl {
   BackendRequest want_request;
   std::unique_ptr<WarmImages> want_images;  // for `want_request`, null when they could not be made
   std::shared_ptr<Context> ctx; // the ready context
+  // The prepared context (make before break, Prepare/Commit): made in a slot of its own, by the same
+  // worker one at a time, while `ctx` goes on dispatching, and taken over by `ctx` at Commit.
+  bool next_want = false;
+  BackendRequest next_request;
+  std::unique_ptr<WarmImages> next_images;
+  std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;  // to be freed by the worker
   std::unique_ptr<SideKit> kit;
   std::atomic<bool> building{false};  // the worker is making a context
@@ -624,6 +630,21 @@ struct DlssBackend::Impl {
   void StartWorkerLocked();
   void WorkerMain();
   void JobLoop();
+  // Under `mu`: a context is wanted and not there yet, for the current slot and the prepared one.
+  bool WantCurrentLocked() const { return want && !ctx && !status.failed; }
+  bool WantNextLocked() const { return next_want && !next_ctx && !status.failed; }
+  // Under `mu`: the prepared request is not wanted any more (a context being made for it is freed
+  // by the worker when it is done).
+  void DropNextLocked(std::vector<std::shared_ptr<Context>>* retire) {
+    next_want = false;
+    next_images.reset();
+    if (next_ctx) {
+      retire->push_back(std::move(next_ctx));
+      next_ctx.reset();
+    }
+  }
+  // Render thread: the side queue, list and fence, once (made or not).
+  void EnsureKit();
   bool StartRuntime(std::string* why, bool* files_problem);
   void PublishEarlyVerdict();
   void FailStart(const std::string& why, bool files_problem);
@@ -936,8 +957,8 @@ void DlssBackend::Impl::FailStart(const std::string& why, bool files_problem) {
   if (start.decided && start.runs && start.upscaler == Upscaler::kDlss) {
     effect = start.ratio > 1.0
                  ? std::format(". This start drew the 3D scene at {}% of the output for DLSS, and "
-                               "nothing upscales it now, so the picture stays soft until the game "
-                               "is started again with DLSS off (or this is fixed)",
+                               "nothing upscales it now: the scene is moved back to full size at "
+                               "the next frame boundary (a live change), soft until then",
                                ModeInfoOf(Upscaler::kDlss, start.mode).percent)
                  : std::string(". The picture is the game's own at full size, with none of DLSS's "
                                "smoothing");
@@ -970,22 +991,26 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
   status.context_bytes = 0;
   want = false;
   want_images.reset();
-  std::shared_ptr<Context> retire = std::move(ctx);
-  ctx.reset();
+  std::vector<std::shared_ptr<Context>> list;
+  if (ctx) {
+    list.push_back(std::move(ctx));
+    ctx.reset();
+  }
+  DropNextLocked(&list);
   PublishLocked();
   lock.unlock();
   if (first) {
     REXLOG_WARN("{} DLSS is off for this session: {}", kPrefix, why);
   }
-  if (retire) {
-    std::vector<std::shared_ptr<Context>> list;
-    list.push_back(std::move(retire));
+  if (!list.empty()) {
     if (render_thread) {
       RetireOutsideLock(list);
     } else {
       {
         std::lock_guard guard(mu);
-        doomed.push_back(std::move(list.front()));
+        for (std::shared_ptr<Context>& old : list) {
+          doomed.push_back(std::move(old));
+        }
       }
       cv.notify_all();
     }
@@ -1025,6 +1050,20 @@ void DlssBackend::Impl::RetireOutsideLock(std::vector<std::shared_ptr<Context>>&
     });
   }
   retire.clear();
+}
+
+void DlssBackend::Impl::EnsureKit() {
+  if (kit_tried) {
+    return;
+  }
+  kit_tried = true;
+  std::string why;
+  std::unique_ptr<SideKit> made = MakeSideKit(*device, &why);
+  if (!made) {
+    REXLOG_WARN("{} no background creation of the feature: {}", kPrefix, why);
+  }
+  std::lock_guard lock(mu);
+  kit = std::move(made);
 }
 
 // The four images of the warm-up for this request, on the render thread. Null when there is no side
@@ -1210,7 +1249,9 @@ bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& si
 void DlssBackend::Impl::JobLoop() {
   std::unique_lock lock(mu);
   for (;;) {
-    cv.wait(lock, [this] { return stop || !doomed.empty() || (want && !ctx && !status.failed); });
+    cv.wait(lock, [this] {
+      return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked();
+    });
     if (stop) {
       break;
     }
@@ -1225,9 +1266,12 @@ void DlssBackend::Impl::JobLoop() {
       lock.lock();
       continue;
     }
-    if (want && !ctx && !status.failed) {
-      const BackendRequest request = want_request;
-      std::unique_ptr<WarmImages> images = std::move(want_images);
+    // The current slot first (the frames wait for it), then the prepared one.
+    const bool for_current = WantCurrentLocked();
+    if (for_current || WantNextLocked()) {
+      const BackendRequest request = for_current ? want_request : next_request;
+      std::unique_ptr<WarmImages> images =
+          std::move(for_current ? want_images : next_images);
       SideKit* side = kit.get();
       building = true;
       lock.unlock();
@@ -1238,9 +1282,13 @@ void DlssBackend::Impl::JobLoop() {
       building = false;
       if (!made) {
         FailLocked(lock, "its context could not be made: " + why, /*render_thread=*/false);
-      } else if (want && want_request == request && !ctx && !status.failed && !stop) {
+      } else if (for_current && want && want_request == request && !ctx && !status.failed &&
+                 !stop) {
         status.context_bytes = made->bytes;
         ctx = std::move(made);
+      } else if (!for_current && next_want && next_request == request && !next_ctx &&
+                 !status.failed && !stop) {
+        next_ctx = std::move(made);
       } else {
         // The request moved on (or DLSS failed, or the game is closing) while it was made: it goes.
         doomed.push_back(std::move(made));
@@ -1253,6 +1301,10 @@ void DlssBackend::Impl::JobLoop() {
   if (ctx) {
     left.push_back(std::move(ctx));
     ctx.reset();
+  }
+  if (next_ctx) {
+    left.push_back(std::move(next_ctx));
+    next_ctx.reset();
   }
   lock.unlock();
   for (const std::shared_ptr<Context>& old : left) {
@@ -1279,16 +1331,7 @@ void DlssBackend::Request(const BackendRequest& request) {
   }
   // A new request. The side queue, list and fence once, the images of the warm-up for these sizes:
   // made here, on the render thread (Plume's create calls are its own), before the worker is told.
-  if (!i.kit_tried) {
-    i.kit_tried = true;
-    std::string why;
-    std::unique_ptr<SideKit> made = MakeSideKit(*i.device, &why);
-    if (!made) {
-      REXLOG_WARN("{} no background creation of the feature: {}", kPrefix, why);
-    }
-    std::lock_guard lock(i.mu);
-    i.kit = std::move(made);
-  }
+  i.EnsureKit();
   std::unique_ptr<WarmImages> images = i.MakeImages(request);
   std::vector<std::shared_ptr<Context>> retire;
   {
@@ -1315,6 +1358,107 @@ bool DlssBackend::Ready(const BackendRequest& request) const {
   return i.ctx && i.ctx->request == request && !i.status.failed;
 }
 
+// Make before break. The feature of a context takes seconds (NGX builds its network: 8 s on an RTX
+// 5080), so a live change of mode makes the new context in the prepared slot, on the worker, with
+// its own viewport, while the current one keeps dispatching; Commit swaps them between two frames.
+void DlssBackend::Prepare(const BackendRequest& request) {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.status.state != BackendState::kAvailable) {
+      return;
+    }
+    if (!i.init_done) {
+      // The first use of DLSS in a game that was not started with it chosen (D3D12): Streamline
+      // starts now, on the worker (2 to 10 s); asked again every frame until it has.
+      i.StartWorkerLocked();
+      return;
+    }
+    if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
+      // The current slot is, or is being made as, the one asked for: nothing to prepare beside it.
+      i.DropNextLocked(&retire);
+    } else if (i.next_want && i.next_request == request) {
+      return;
+    } else {
+      i.DropNextLocked(&retire);  // a different prepared one goes
+    }
+  }
+  if (!retire.empty()) {
+    i.RetireOutsideLock(retire);
+  }
+  {
+    std::lock_guard lock(i.mu);
+    if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request) ||
+        (i.next_want && i.next_request == request)) {
+      return;
+    }
+  }
+  i.EnsureKit();
+  std::unique_ptr<WarmImages> images = i.MakeImages(request);
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.stop) {
+      return;
+    }
+    i.next_want = true;
+    i.next_request = request;
+    i.next_images = std::move(images);
+  }
+  i.cv.notify_all();
+}
+
+bool DlssBackend::PreparedReady(const BackendRequest& request) const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  if (i.status.failed) {
+    return false;
+  }
+  return (i.ctx && i.ctx->request == request) || (i.next_ctx && i.next_ctx->request == request);
+}
+
+bool DlssBackend::Commit(const BackendRequest& request) {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed) {
+      return false;
+    }
+    if (i.ctx && i.ctx->request == request) {
+      i.want = true;  // the current context already is it
+      i.want_request = request;
+      i.DropNextLocked(&retire);
+    } else if (i.next_ctx && i.next_ctx->request == request) {
+      if (i.ctx) {
+        retire.push_back(std::move(i.ctx));
+      }
+      i.ctx = std::move(i.next_ctx);
+      i.next_ctx.reset();
+      i.next_want = false;
+      i.next_images.reset();
+      i.want = true;
+      i.want_request = request;
+      i.want_images.reset();
+      i.status.context_bytes = i.ctx->bytes;
+    } else {
+      return false;
+    }
+  }
+  i.RetireOutsideLock(retire);
+  return true;
+}
+
+void DlssBackend::CancelPrepared() {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    i.DropNextLocked(&retire);
+  }
+  i.RetireOutsideLock(retire);
+}
+
 void DlssBackend::Release() {
   Impl& i = *impl_;
   std::vector<std::shared_ptr<Context>> retire;
@@ -1326,6 +1470,7 @@ void DlssBackend::Release() {
       retire.push_back(std::move(i.ctx));
       i.ctx.reset();
     }
+    i.DropNextLocked(&retire);
     i.status.context_bytes = 0;
   }
   i.RetireOutsideLock(retire);
@@ -1485,6 +1630,8 @@ void DlssBackend::Shutdown() {
     i.stop = true;
     i.want = false;
     i.want_images.reset();
+    i.next_want = false;
+    i.next_images.reset();
   }
   i.cv.notify_all();
   if (i.worker.joinable()) {
@@ -1505,6 +1652,10 @@ void DlssBackend::Shutdown() {
     if (i.ctx) {
       left.push_back(std::move(i.ctx));
       i.ctx.reset();
+    }
+    if (i.next_ctx) {
+      left.push_back(std::move(i.next_ctx));
+      i.next_ctx.reset();
     }
   }
   if (i.probe_started) {

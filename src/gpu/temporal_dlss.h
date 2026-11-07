@@ -57,7 +57,10 @@
 //     Plume's own queue mutex) over four images of the request's sizes (WarmImages, made by
 //     Request() on the render thread), and waits for the fence. Request() only records what is
 //     wanted; Ready() is false until the worker has published the context, and the frames in
-//     between are plain, as for FSR's context. A request that changes while the worker is inside
+//     between are plain, as for FSR's context. A live change of mode or upscaler is made before the
+//     old one is broken: Prepare() asks for the new context in a second slot (the same worker, one
+//     build at a time, a viewport of its own), the old context goes on dispatching, and Commit()
+//     swaps them between two frames once PreparedReady() says the feature exists. A request that changes while the worker is inside
 //     Streamline is not cancelled (nothing can interrupt it): the context it makes is freed when it
 //     is done, and the new one is made next. Freeing a context (slFreeResources) is also the
 //     worker's, after the frames that may use it (FrameRing::RetireAction). Shutdown() waits for
@@ -107,6 +110,10 @@ class DlssBackend final : public TemporalBackend {
   void Request(const BackendRequest& request) override;
   bool Ready(const BackendRequest& request) const override;
   uint32_t JitterPhaseCount() const override { return 0; }  // 8 x ratio^2, as NVIDIA recommends
+  void Prepare(const BackendRequest& next) override;
+  bool PreparedReady(const BackendRequest& next) const override;
+  bool Commit(const BackendRequest& next) override;
+  void CancelPrepared() override;
   void Release() override;
   void Fail(const std::string& reason) override;
   bool Upscale(plume::RenderCommandList* list, const TemporalInputs& inputs) override;

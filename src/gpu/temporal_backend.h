@@ -10,7 +10,8 @@
 // its vendor's five ratios (render size = output size over 1, 1.5, 1.7, 2 or 3: "Native AA" or
 // "DLAA" to "Ultra Performance").
 //
-// The player's settings (REXCVAR, read every frame, saved by the menu like any cvar):
+// The player's settings (REXCVAR, read every frame, saved by the menu like any cvar; a change takes
+// effect at the next frame boundary once the new upscaler context is ready, temporal.h):
 //   mcla_gpu_upscaler            off | fsr31 | fsr4 | dlss   "Upscaling"
 //   mcla_gpu_fsr31_mode          native_aa | quality | balanced | performance | ultra_performance
 //                                                            "FSR 3.1 Mode": 100%, 67%, 59%, 50%, 33%
@@ -31,8 +32,11 @@
 //   Failure.        Anything not ready or failing gives a plain frame: no override, the jitter off
 //                   from the next frame, the backend unavailable for the session, one log line.
 //   Threads.        Probe() starts a worker; contexts are created and destroyed on it (they take
-//                   about 0.6 s and hundreds of MB at 4K); Upscale() is render thread only;
-//                   Status() and Ready() may be asked from any thread.
+//                   about 0.6 s and hundreds of MB at 4K for FSR, about 8 s for DLSS); Upscale() is
+//                   render thread only; Status() and Ready() may be asked from any thread.
+//   Contexts.       One is current (Request, Ready, Upscale). A second one can be prepared beside it
+//                   (Prepare, PreparedReady) and take over between two frames (Commit): the
+//                   player's change of upscaler or mode never leaves the picture without one.
 //   Availability.   The pause menu lists what Status() says can run; unsupported or broken is not
 //                   listed at all.
 // ===========================================================================
@@ -161,14 +165,34 @@ class TemporalBackend {
 
   // Asks for a context for `request` (render thread, every frame it is wanted; the same request
   // again does nothing). A request that differs from the context's makes the old one go (retired
-  // behind the frames that may use it: the FrameRing given to Probe) and the worker make the new one.
+  // behind the frames that may use it: the FrameRing given to Probe) and the worker make the new one:
+  // the frames in between are plain. The path that is running is asked for this way; a path that is
+  // coming (a live change) is Prepare'd and Commit'ted, so that the old one works until the new one
+  // is made.
   virtual void Request(const BackendRequest& request) = 0;
   // A context for exactly this request exists and nothing failed. Any thread.
   virtual bool Ready(const BackendRequest& request) const = 0;
   // The length of the jitter sequence the runtime wants for the ready context's sizes (FFX: its own
   // query, 8 x ratio^2), 0 when there is no context or the runtime has no say. Any thread.
   virtual uint32_t JitterPhaseCount() const { return 0; }
-  // No request any more: the context goes, as when a request changes. Render thread.
+  // Make before break (a live change of upscaler or mode: temporal.h "Changing the path"). Asks for a
+  // second context, for `next`, while the current one (Request's) goes on dispatching: the worker
+  // makes it in a slot of its own, so nothing the frames use changes. The same request again does
+  // nothing; a different one replaces the prepared one (what the worker makes for the old one is
+  // freed when it is done). A request the current context already is, or is being made for, is not
+  // made twice. Render thread, every frame it is wanted.
+  virtual void Prepare(const BackendRequest& next) = 0;
+  // A context for exactly this request exists, the current one or the prepared one. Any thread.
+  virtual bool PreparedReady(const BackendRequest& next) const = 0;
+  // The prepared context becomes the current one (the old one is retired behind the frames that
+  // may use it): from now on Ready(next) holds and Upscale() uses it. False, nothing changed, when
+  // there is no ready context for `next`. Render thread, between two frames.
+  virtual bool Commit(const BackendRequest& next) = 0;
+  // The prepared request is not wanted any more: its context, made or being made, is freed. Render
+  // thread.
+  virtual void CancelPrepared() = 0;
+  // No request any more: the context goes, as when a request changes, and the prepared one with
+  // it. Render thread.
   virtual void Release() = 0;
 
   // The caller found the backend unusable (its inputs never came right): the same as a failed

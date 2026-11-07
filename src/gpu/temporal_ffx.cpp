@@ -258,6 +258,11 @@ struct FfxBackend::Impl {
   bool want = false;
   BackendRequest want_request;
   std::shared_ptr<Context> ctx;  // the ready context
+  // The prepared context (make before break, Prepare/Commit): made in a slot of its own while `ctx`
+  // goes on working, and taken over by `ctx` at Commit.
+  bool next_want = false;
+  BackendRequest next_request;
+  std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;
   bool failed[3] = {};           // by Upscaler: a creation of that kind failed
 
@@ -275,6 +280,18 @@ struct FfxBackend::Impl {
                   const std::string& why);
   // Under `mu`: the ready context goes after the frames that may use it.
   void RetireCurrentLocked(std::vector<std::shared_ptr<Context>>* retire);
+  // Under `mu`: the prepared one is not wanted any more (a context being made for it is freed by the
+  // worker when it is done).
+  void RetireNextLocked(std::vector<std::shared_ptr<Context>>* retire);
+  // Under `mu`: a context is wanted and not there yet, for the current slot and for the prepared one.
+  bool WantCurrentLocked() const {
+    return want && !ctx && status.state == BackendState::kAvailable &&
+           KindUsableLocked(want_request.upscaler);
+  }
+  bool WantNextLocked() const {
+    return next_want && !next_ctx && status.state == BackendState::kAvailable &&
+           KindUsableLocked(next_request.upscaler);
+  }
   void RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire);
   bool KindUsableLocked(Upscaler kind) const {
     return kind == Upscaler::kFsr31 ? status.fsr31 && !failed[1]
@@ -584,9 +601,7 @@ void FfxBackend::Impl::WorkerMain() {
   std::unique_lock lock(mu);
   for (;;) {
     cv.wait(lock, [this] {
-      return stop || !doomed.empty() ||
-             (want && !ctx && status.state == BackendState::kAvailable &&
-              KindUsableLocked(want_request.upscaler));
+      return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked();
     });
     if (stop) {
       break;
@@ -601,19 +616,22 @@ void FfxBackend::Impl::WorkerMain() {
       list.clear();
       lock.lock();
     }
-    if (want && !ctx && status.state == BackendState::kAvailable &&
-        KindUsableLocked(want_request.upscaler)) {
-      const BackendRequest request = want_request;
+    // The current slot first (the frames wait for it), then the prepared one: one context at a time.
+    const bool for_current = WantCurrentLocked();
+    if (for_current || WantNextLocked()) {
+      const BackendRequest request = for_current ? want_request : next_request;
       lock.unlock();
       std::string why;
       std::shared_ptr<Context> made = CreateContext(request, &why);
       lock.lock();
       if (!made) {
         FailLocked(lock, request.upscaler, false, std::format("its context could not be made: {}", why));
-      } else if (want && want_request == request && !ctx && !stop) {
+      } else if (for_current && want && want_request == request && !ctx && !stop) {
         status.provider = made->provider;
         status.context_bytes = made->bytes;
         ctx = std::move(made);
+      } else if (!for_current && next_want && next_request == request && !next_ctx && !stop) {
+        next_ctx = std::move(made);
       } else {
         // The request moved on while it was made.
         doomed.push_back(std::move(made));
@@ -626,6 +644,10 @@ void FfxBackend::Impl::WorkerMain() {
   if (ctx) {
     list.push_back(std::move(ctx));
     ctx.reset();
+  }
+  if (next_ctx) {
+    list.push_back(std::move(next_ctx));
+    next_ctx.reset();
   }
   lock.unlock();
   for (const auto& c : list) {
@@ -648,7 +670,14 @@ void FfxBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, Upscaler k
     status.fsr4 = false;
   }
   status.reason = why;
-  want = false;
+  // The slot that asked for this kind stops asking; a slot for another kind (the prepared context of
+  // a live change, or the current one) goes on.
+  if (whole || want_request.upscaler == kind) {
+    want = false;
+  }
+  if (whole || next_request.upscaler == kind) {
+    next_want = false;
+  }
   if (!status.fsr31 && !status.fsr4) {
     status.state = BackendState::kUnavailable;
   }
@@ -677,6 +706,14 @@ void FfxBackend::Impl::RetireCurrentLocked(std::vector<std::shared_ptr<Context>>
   if (ctx) {
     retire->push_back(std::move(ctx));
     ctx.reset();
+  }
+}
+
+void FfxBackend::Impl::RetireNextLocked(std::vector<std::shared_ptr<Context>>* retire) {
+  next_want = false;
+  if (next_ctx) {
+    retire->push_back(std::move(next_ctx));
+    next_ctx.reset();
   }
 }
 
@@ -734,6 +771,79 @@ uint32_t FfxBackend::JitterPhaseCount() const {
   return i.ctx && !i.status.failed ? i.ctx->phases : 0u;
 }
 
+void FfxBackend::Prepare(const BackendRequest& request) {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.state != BackendState::kAvailable || !i.KindUsableLocked(request.upscaler)) {
+      return;
+    }
+    if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
+      // The current context is, or is being made as, the one asked for: nothing to prepare beside it.
+      i.RetireNextLocked(&retire);
+    } else if (i.next_want && i.next_request == request) {
+      return;
+    } else {
+      i.RetireNextLocked(&retire);  // a different prepared one goes
+      i.next_want = true;
+      i.next_request = request;
+    }
+  }
+  i.cv.notify_all();
+  i.RetireOutsideLock(retire);
+}
+
+bool FfxBackend::PreparedReady(const BackendRequest& request) const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  if (i.status.failed) {
+    return false;
+  }
+  return (i.ctx && i.ctx->request == request) || (i.next_ctx && i.next_ctx->request == request);
+}
+
+bool FfxBackend::Commit(const BackendRequest& request) {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed) {
+      return false;
+    }
+    if (i.ctx && i.ctx->request == request) {
+      i.want = true;  // the current context already is it
+      i.want_request = request;
+      i.RetireNextLocked(&retire);
+    } else if (i.next_ctx && i.next_ctx->request == request) {
+      if (i.ctx) {
+        retire.push_back(std::move(i.ctx));
+      }
+      i.ctx = std::move(i.next_ctx);
+      i.next_ctx.reset();
+      i.next_want = false;
+      i.want = true;
+      i.want_request = request;
+      i.status.provider = i.ctx->provider;
+      i.status.context_bytes = i.ctx->bytes;
+    } else {
+      return false;
+    }
+  }
+  i.RetireOutsideLock(retire);
+  return true;
+}
+
+void FfxBackend::CancelPrepared() {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    i.RetireNextLocked(&retire);
+  }
+  i.RetireOutsideLock(retire);
+}
+
 void FfxBackend::Release() {
   Impl& i = *impl_;
   std::vector<std::shared_ptr<Context>> retire;
@@ -741,6 +851,7 @@ void FfxBackend::Release() {
     std::lock_guard lock(i.mu);
     i.want = false;
     i.RetireCurrentLocked(&retire);
+    i.RetireNextLocked(&retire);
   }
   i.RetireOutsideLock(retire);
 }
@@ -754,6 +865,7 @@ void FfxBackend::Fail(const std::string& why) {
     std::unique_lock lock(i.mu);
     i.FailLocked(lock, Upscaler::kOff, true, why);
     i.RetireCurrentLocked(&retire);
+    i.RetireNextLocked(&retire);
   }
   i.RetireOutsideLock(retire);
 }
@@ -825,6 +937,7 @@ void FfxBackend::Shutdown() {
     std::lock_guard lock(i.mu);
     i.stop = true;
     i.want = false;
+    i.next_want = false;
   }
   i.cv.notify_all();
   if (i.worker.joinable()) {
@@ -835,6 +948,7 @@ void FfxBackend::Shutdown() {
   {
     std::lock_guard lock(i.mu);
     i.ctx.reset();
+    i.next_ctx.reset();
   }
   if (i.upscaler) {
     // The modules stay loaded to the end of the process: the loader may hold the upscaler.
