@@ -80,6 +80,17 @@
 //     is done, and the new one is made next. Freeing a context (slFreeResources) is also the
 //     worker's, after the frames that may use it (FrameRing::RetireAction). Shutdown() waits for
 //     the worker, so a game closed in the first seconds of a creation waits for the rest of it.
+//   - which modes DLSS takes at the output size (AskModes, Modes): DLSS gives each mode one render
+//     size for an output size, and the scene is drawn on the scale grid, 0.5x of the guest's 1280x720
+//     at the least, so a mode can be unable to run at an output (Ultra Performance at 1280x720 and at
+//     2560x1440). Once Streamline runs the worker asks slDLSSGetOptimalSettings for the five modes at
+//     the sizes the caller works at (a size query: no feature, no video memory) and keeps the answer
+//     per sizes; a context that is refused for its sizes adds the same record. That is a refusal and
+//     not a failure: no context is made for the mode (Request and Prepare return at once for it),
+//     DLSS stays available, and the caller goes on with another mode (temporal.cpp ResolveDlssMode).
+//     The modes refused at the caller's current sizes go to the pause menu (gpu.h
+//     UpscalerAvailability::dlss_modes_refused). Only a real failure of a context (slDLSSSetOptions,
+//     the query itself, the feature) turns DLSS off for the session.
 //   - without a side kit or warm-up images (or if the warm-up fails) the context is published
 //     anyway and the first dispatch makes the feature on the render thread, with the pause.
 //   - the pre-warm (temporal_backend.h Prewarm): on D3D12, on a PC that can run DLSS whose game was
@@ -139,6 +150,8 @@ class DlssBackend final : public TemporalBackend {
   bool Ready(const BackendRequest& request) const override;
   uint32_t JitterPhaseCount() const override { return 0; }  // 8 x ratio^2, as NVIDIA recommends
   bool Busy() const override;
+  void AskModes(const ModeSizes& sizes) override;
+  ModeVerdicts Modes(const ModeSizes& sizes) const override;
   void Prepare(const BackendRequest& next) override;
   bool PreparedReady(const BackendRequest& next) const override;
   bool Commit(const BackendRequest& next) override;

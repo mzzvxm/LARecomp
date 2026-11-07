@@ -1200,20 +1200,6 @@ using mcla_menu::XeniaOnly;
 constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
 constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
-#if defined(LARECOMP_HAS_GPU)
-// RENDER RES (mcla_gpu_resolution_scale), live: 0 is the screen's scale -- the one
-// that renders at the size of the window's 16:9 area and follows the window while the
-// game runs -- and the rest go in steps of 0.5. larecomp.toml takes any step of 0.05.
-constexpr double kRenderResVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0};
-// FSR1's quality presets (mcla_gpu_fsr_preset), in the order of
-// mcla::gpu::FsrPreset. With FSR1 on, a preset picks the render scale from the
-// window; CUSTOM leaves it to RENDER RES.
-constexpr const char* kFsrPresetVals[]  = {"custom", "ultra_quality", "quality",
-                                           "balanced", "performance", "ultra_performance"};
-constexpr const char* kFsrPresetNames[] = {"CUSTOM", "ULTRA QUALITY", "QUALITY",
-                                           "BALANCED", "PERFORMANCE", "ULTRA PERF"};
-constexpr int kNumFsrPresets = int(sizeof(kFsrPresetVals) / sizeof(kFsrPresetVals[0]));
-#endif
 constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
 constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
@@ -1321,86 +1307,6 @@ constexpr RowDynamics kRbNitroStartDynamics = {.value_label = RbNitroStartLabel}
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
 #if defined(LARECOMP_HAS_GPU)
-// ── RENDER RES and FSR1 ────────────────────────────────────────────────
-//
-// What these rows show is what the renderer does now (it follows them at a frame boundary): they
-// ask it what it chooses (gpu.h PreviewRenderScale) from the settings and the window as it is now.
-// Width (see "Page width"): RENDER RES carries no suffix while it is live, and a scale the video
-// memory cannot hold says so in the value ("TOO BIG (2.0X)", narrower than DISPLAY's widest value).
-
-bool FsrOn() { return CvarGetBool("mcla_gpu_fsr"); }
-
-// The preset chosen.
-mcla::gpu::FsrPreset FsrPresetChosen() {
-    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
-    mcla::gpu::ParseFsrPreset(CvarGet("mcla_gpu_fsr_preset"), &preset);
-    return preset;
-}
-
-// FSR1 on with a preset: the preset picks the render scale, not RENDER RES.
-bool FsrPresetDecides() {
-    return FsrOn() && FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom;
-}
-
-unsigned RenderHeight(mcla::gpu::Scale scale) {
-    return unsigned(scale.Edge(mcla::gpu::kAssumedScreenHeight));
-}
-
-// "1.5X (1080P)": the scale with one decimal on the steps of 0.1 and two on
-// the twentieths between them (1.35X), and the height it renders at.
-std::string RenderScaleText(mcla::gpu::Scale scale) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), scale.n % 2 == 0 ? "%.1fX (%uP)" : "%.2fX (%uP)",
-                  double(scale.n) / mcla::gpu::Scale::kDenominator, RenderHeight(scale));
-    return buf;
-}
-
-std::string RenderResValueLabel(double value) {
-    const mcla::gpu::RenderScaleChoice c =
-        mcla::gpu::PreviewRenderScale(value, false, mcla::gpu::FsrPreset::kCustom);
-    // A scale the renderer could not make for want of video memory (a 3X scale is 4K) says so, and
-    // which one it keeps: only the value that asks for that scale is relabelled, so the other values
-    // stay what they are. The screen's scale has its own wording (the one it keeps is not shown).
-    const mcla::gpu::RenderScaleStatus status = mcla::gpu::GetRenderScaleStatus();
-    const bool screen = c.source == mcla::gpu::RenderScaleChoice::Source::kScreen;
-    if (!status.blocked.none() && !status.running.none() && c.scale == status.blocked) {
-        if (screen) return "SCREEN TOO BIG";
-        char buf[32];
-        std::snprintf(buf, sizeof(buf),
-                      status.running.n % 2 == 0 ? "TOO BIG (%.1fX)" : "TOO BIG (%.2fX)",
-                      double(status.running.n) / mcla::gpu::Scale::kDenominator);
-        return buf;
-    }
-    if (screen) return "SCREEN (" + std::to_string(RenderHeight(c.scale)) + "P)";
-    return RenderScaleText(c.scale);
-}
-
-bool RenderResEnabled() { return !FsrPresetDecides(); }
-
-// Grey, the row shows no value: the suffix says what decides instead. The
-// resolution the preset gives is on the preset's own row.
-const char* RenderResSuffix() {
-    return FsrPresetDecides() ? " (SET BY FSR1)" : "";
-}
-
-// "QUALITY (720P)": the preset and the height it renders at in this window.
-std::string FsrPresetLabel(int i) {
-    if (i < 0 || i >= kNumFsrPresets) return "";
-    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
-    mcla::gpu::ParseFsrPreset(kFsrPresetVals[i], &preset);
-    if (preset == mcla::gpu::FsrPreset::kCustom) return kFsrPresetNames[i];
-    const mcla::gpu::RenderScaleChoice c = mcla::gpu::PreviewRenderScale(1.0, true, preset);
-    return std::string(kFsrPresetNames[i]) + " (" + std::to_string(RenderHeight(c.scale)) + "P)";
-}
-
-constexpr RowDynamics kRenderResDynamics = {
-    .value_label = RenderResValueLabel,
-    .enabled = RenderResEnabled,
-    .suffix = RenderResSuffix,
-};
-constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
-constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
-
 // ── HDR ────────────────────────────────────────────────────────────────
 //
 // HDR (mcla_gpu_hdr) is live: the renderer applies it at the end of a frame, making the window's
@@ -1478,12 +1384,8 @@ const ItemDef kVideoItems[] = {
     XeniaOnly(Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ",
                   kResScaleVals, 4, "%gX", " (RESTART)")),
 #if defined(LARECOMP_HAS_GPU)
-    // The render scale, 0.5X to 3.0X or the screen's, each with the height it
-    // renders at; grey while an FSR1 preset picks it. FSR1 opens below it.
-    NativeOnly(WithDynamics(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale",
-                                "RENDER RES: ", kRenderResVals, 7, "%g"),
-                            &kRenderResDynamics)),
-    NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
+    // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
+    // appended after this table, from upscaling_menu.cpp (MenuDef::extra).
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
 #endif
 #if defined(LARECOMP_HAS_GPU)
@@ -1627,17 +1529,18 @@ const ItemDef kFfxItems[] = {
 // Renderer. RENDERER picks the emulated path (Xenia's command processor) or the
 // Plume renderer (NATIVE), and brings the no-CP mode and continuous rendering
 // along (kRendererChoices), so neither has a row of its own. GRAPHICS API is the
-// SDK's graphics_backend, which both read. NATIVE AA and FSR are the Plume
-// renderer's own and only listed while it runs; the legacy runtime is no longer
-// offered here.
+// SDK's graphics_backend, which both read. NATIVE AA and the upscaling rows
+// (DISPLAY) are the Plume renderer's own and only listed while it runs; the
+// legacy runtime is no longer offered here.
 const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
 const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
 #if defined(LARECOMP_HAS_GPU)
 const char* const kRendererVals[]  = {"xenia", "plume"};
 const char* const kRendererNames[] = {"XENIA", "NATIVE"};
 constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
-// The NATIVE (Plume) renderer's post (M6c), all live: the scene's
-// anti-aliasing before the UI, and FSR1 on the present.
+// The NATIVE (Plume) renderer's post (M6c), live: the scene's anti-aliasing
+// before the UI. NATIVE AA is grey and says what does the job while a temporal
+// upscaler runs (upscaling_menu.cpp).
 const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
 // Ambient occlusion (gpu/ao.h, live): off, half resolution, full resolution. The row is at most 23
@@ -1680,18 +1583,6 @@ const ItemDef kNativeItems[] = {
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// DISPLAY > FSR1: the renderer's FSR1 on the present, its quality preset and
-// RCAS. The preset and the sharpness are grey while FSR1 is off.
-const ItemDef kGpuFsrItems[] = {
-    Bool("PM_RxGpuFsr", "mcla_gpu_fsr", "FSR1: "),
-    WithDynamics(Str("PM_RxGpuFsrPreset", "mcla_gpu_fsr_preset", "QUALITY: ",
-                     kFsrPresetVals, kFsrPresetNames, kNumFsrPresets),
-                 &kFsrPresetDynamics),
-    WithDynamics(Dbl("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "SHARP REDUCE: ",
-                     kFsrSharpVals, 5, "%g"),
-                 &kFsrSharpDynamics),
-};
-
 // DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
 const ItemDef kGpuHdrItems[] = {
     Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
@@ -1993,6 +1884,13 @@ struct MenuDef {
     const ItemDef* (*extra)(int& count);
     // True for a menu only code opens (the "restart now?" prompt): no button on the SETTINGS tab.
     bool opened_by_code = false;
+    // For a menu whose `extra` rows can change while the game runs (the upscalers: one that fails is
+    // not listed any more). The guest rows are built once and indexed by position, so `extra` keeps
+    // returning the rows the form was built with until this is applied: apply=false says whether the
+    // live rows are no longer those, apply=true makes them the ones `extra` returns from then on.
+    // EnsureMenuForm builds the form again, when it is closed, if it says so. Null: the rows never
+    // change.
+    bool (*relayout)(bool apply) = nullptr;
 };
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
@@ -2074,7 +1972,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     UpscalingMenuRows},
+     UpscalingMenuRows, false, UpscalingMenuRelayout},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
@@ -2103,9 +2001,6 @@ const MenuDef kMenus[] = {
      "RxNativeMenu",
      kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
-     "RxGpuFsrMenu",
-     kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
     // The paused world is not made brighter than its white (the HIGHLIGHTS row's change shows once
     // the game is resumed), which this line says: it is the only help text a menu has.
     // CHECK: the 38 characters fit under the list.
@@ -2283,12 +2178,25 @@ std::vector<double> DblValues(const ItemDef& it) {
     return values;
 }
 
+// A kStrCycle row with a list of its own (RowDynamics::value_count): how many values it has, which
+// one it is on and what stepping to one writes all come from the row, and the list can change between
+// two draws. The game's row never sees the count: it is given a three-value window (kRowWindow).
+bool ItemOwnsList(const ItemDef& it) {
+    return it.kind == ItemKind::kStrCycle && it.dynamics && it.dynamics->value_count &&
+           it.dynamics->value_index && it.dynamics->set_value;
+}
+
+// Rows whose entry the cvar sits on can differ from the one stepped to, because the list changes
+// under the step (an entry for a value the row does not list is dropped once the row leaves it).
+bool ItemListMoves(const ItemDef& it) { return ItemLabelsValues(it) || ItemOwnsList(it); }
+
 int ItemValueCount(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kDblCycle:  return ItemLabelsValues(it) ? int(DblValues(it).size()) : it.nvals;
-    case ItemKind::kStrCycle:
+    case ItemKind::kStrCycle:  return ItemOwnsList(it) ? std::max(it.dynamics->value_count(), 0)
+                                                       : it.nvals;
     case ItemKind::kColor:     return it.nvals;
     case ItemKind::kAction:
     case ItemKind::kSubmenu:   return 0;
@@ -2332,6 +2240,11 @@ int ItemValueIndex(const ItemDef& it) {
     case ItemKind::kCarbonBit:
         return (CarbonHaveCar() && CarbonHasGroup(uint8_t(it.nvals))) ? 1 : 0;
     case ItemKind::kStrCycle:
+        if (ItemOwnsList(it)) {
+            const int n = ItemValueCount(it);
+            return n > 0 ? std::clamp(it.dynamics->value_index(), 0, n - 1) : 0;
+        }
+        return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle: {
@@ -2363,6 +2276,14 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         break;
     }
     case ItemKind::kStrCycle:
+        if (ItemOwnsList(it)) {
+            it.dynamics->set_value(i, CvarSet);
+            g_settings_saved.store(false, std::memory_order_relaxed);
+            break;
+        }
+        CvarSet(it.cvar, it.svals[i]);
+        g_settings_saved.store(false, std::memory_order_relaxed);
+        break;
     case ItemKind::kColor:
         CvarSet(it.cvar, it.svals[i]);
         g_settings_saved.store(false, std::memory_order_relaxed);
@@ -2390,10 +2311,15 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // right, the button prompts and the scroll bar first, at any screen size. A
 // page comes to about 245 units plus 11 a character of that label and value
 // (capitals of the menu's font: I and digits narrower, M and W wider).
-// DISPLAY's widest pair is "RENDER RES (SET BY FSR1)" + "PERFORMANCE (50%)",
-// 41 characters, about 700 units. A label or a value that is longer than its
-// page's widest needs counting against that before it goes in, in each state a
-// suffix can be in.
+// DISPLAY must stay at or under 41 characters of that pair (24 and 17, say),
+// about 700 units. Its widest label is "SHARPNESS (FSR ONLY)" (20) and its
+// widest value 17 ("PERFORMANCE (50%)" and the mode row's other longest:
+// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"), 37 together,
+// so a row that joins the page may bring a label of up to 24 characters with
+// a value of up to 17. A label or a value that is longer than its page's
+// widest needs counting against that before it goes in, in each state a
+// suffix can be in; the upscaling rows' states are counted in
+// upscaling_menu.cpp.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
@@ -2416,7 +2342,8 @@ std::string ItemRowLabel(const ItemDef& it) {
         return "";
     }
 
-    std::string label = it.prefix;
+    // A row named for what it sets now ("DLSS MODE", "RENDER SCALE") says so in RowDynamics::label.
+    std::string label = it.dynamics && it.dynamics->label ? it.dynamics->label() : it.prefix;
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
 
@@ -2436,9 +2363,9 @@ void ApplyItem(const ItemDef& it, int dir) {
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kStrCycle: {
-        int i = FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
-        CvarSet(it.cvar, it.svals[(i + dir + it.nvals) % it.nvals]);
-        g_settings_saved.store(false, std::memory_order_relaxed);
+        // Through the row's own list, which for a row with one (ItemOwnsList) is not the cvar's.
+        const int n = ItemValueCount(it);
+        if (n > 0) ItemSetValueIndex(it, ((ItemValueIndex(it) + dir) % n + n) % n);
         break;
     }
     case ItemKind::kDblCycle: {
@@ -2770,8 +2697,9 @@ void PollNativeRows(int m) {
             const int idx = ((nr.last_index[i] + dir) % n + n) % n;
             ItemSetValueIndex(it, idx);
             // A row that lists the cvar's own value drops that entry once the
-            // value leaves it, so where it now is is read again.
-            CentreRowWindow(nr, i, it, ItemLabelsValues(it) ? ItemValueIndex(it) : idx);
+            // value leaves it, and a row with a list of its own can have another one now
+            // (the choice above its mode row), so where it now is is read again.
+            CentreRowWindow(nr, i, it, ItemListMoves(it) ? ItemValueIndex(it) : idx);
             continue;
         }
 
@@ -2881,11 +2809,55 @@ bool MenuFormCancel(uint32_t form);
 void MenuFormClosed(uint32_t form);
 bool MenuFormKey(uint32_t form, uint32_t key);
 
-uint32_t EnsureMenuForm(int m) {
-    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) return form;
-    if (!BuildNativeRows(m)) return 0;
+// How many times a menu's form may be built again for rows that changed (MenuDef::relayout): each
+// one is a new form the game keeps (ui_forms.cpp holds 40, the menus use 30), and the layout changes
+// once or twice in a run (an upscaler failing).
+constexpr int kMaxFormRebuilds = 4;
+int g_form_rebuilds = 0;
 
+// CHECK: the page built again (needs a real DLSS failure, e.g. the fail injection of
+// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'DISPLAY': its rows changed
+// ... built again (1 of 4)" and a second "[ui-forms] form 'DISPLAY' created" when DISPLAY is next
+// opened (not before), the page opens with no DLSS in UPSCALING and no DLSS mode row, its rows and
+// the highlight work, B and re-entering work, and a DISPLAY left open across the failure keeps its
+// rows (DLSS mode row grey "(UNAVAILABLE)") with no row showing another row's label or value.
+uint32_t EnsureMenuForm(int m) {
     const MenuDef& md = kMenus[m];
+    // A form that was built with other rows than the live ones (an upscaler failed since): built
+    // again, with the new rows, once it is closed. The old form and its rows stay where they are
+    // (the game owns them; they are never opened again). A form that is open keeps its rows until it
+    // is left (UpscalingMenuRows still returns them), so it is never indexed by the wrong ones.
+    uint32_t old_form = 0;
+    NativeRows old_rows;
+    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) {
+        if (!md.relayout || larecomp::ui::FormIsOpen(form) || g_form_rebuilds >= kMaxFormRebuilds ||
+            !md.relayout(/*apply=*/false)) {
+            return form;
+        }
+        old_form = form;
+        old_rows = g_rows[m];
+        g_rows[m] = NativeRows{};
+        g_menu_form[m].store(0, std::memory_order_relaxed);
+        md.relayout(/*apply=*/true);
+        ++g_form_rebuilds;
+        MC_INFO("[pause-menu] '{}': its rows changed since the page was built (an upscaler is not "
+                "available any more): the page is built again ({} of {})",
+                md.label, g_form_rebuilds, kMaxFormRebuilds);
+    } else if (md.relayout) {
+        md.relayout(/*apply=*/true);  // the rows as they are now
+    }
+    // The page cannot be built again: the old one is put back (its rows are the ones UpscalingMenuRows
+    // no longer returns, so a row or two may be the wrong one until the next start; a build that fails
+    // already warned).
+    const auto fail = [&]() -> uint32_t {
+        if (old_form) {
+            g_menu_form[m].store(old_form, std::memory_order_relaxed);
+            g_rows[m] = old_rows;
+        }
+        return 0;
+    };
+    if (!BuildNativeRows(m)) return fail();
+
     // Title and description are resolved through the string table once, by
     // the ctor. The description's key is the title's plus "_desc", the way
     // the game pairs "options" with "options_desc".
@@ -2902,7 +2874,7 @@ uint32_t EnsureMenuForm(int m) {
     const NativeRows& nr = g_rows[m];
     const uint32_t form = larecomp::ui::CreateListForm(
         md.menu_key, md.desc ? desc_key.c_str() : nullptr, nr.count, handler);
-    if (!form) return 0;
+    if (!form) return fail();
     for (int i = 0; i < nr.count; ++i) {
         if (!larecomp::ui::AddFormRow(form, nr.row[i])) {
             MC_WARN("[pause-menu] '{}': row {} did not fit in the form", md.label, i);

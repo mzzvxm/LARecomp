@@ -33,6 +33,10 @@
 //                   override makes every later fetch of the scene colour read it.
 //   Failure.        Anything not ready or failing gives a plain frame: no override, the jitter off
 //                   from the next frame, the backend unavailable for the session, one log line.
+//   Sizes.          A mode the runtime does not take at the sizes asked for (DLSS fixes the render
+//                   size of each mode for an output size, AskModes below) is refused, which is not a
+//                   failure: no context is made for it, the backend stays available, and the caller
+//                   goes on with the mode that runs (temporal.cpp ResolveDlssMode).
 //   Threads.        Probe() starts a worker; contexts are created and destroyed on it (they take
 //                   about 0.6 s and hundreds of MB at 4K for FSR, about 8 s for DLSS); Upscale() is
 //                   render thread only; Status() and Ready() may be asked from any thread.
@@ -44,6 +48,7 @@
 // ===========================================================================
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -150,6 +155,36 @@ struct BackendRequest {
   }
 };
 
+// Whether a runtime takes a mode at an output size. DLSS gives each mode one render size for an
+// output size (Ultra Performance exactly, the others a range around it) and the scene is drawn at a
+// size of the scale grid (render_scale.h ChooseSceneScale: multiples of 1/20 of the guest's 1280x720,
+// 0.5x at the least), so a mode can be refused for a size only the grid cannot make: Ultra
+// Performance at 1280x720 (it needs 427x240) or at 2560x1440 (853x480, the grid gives 832x468).
+// FidelityFX takes any size.
+enum class ModeVerdict : uint8_t { kUnknown, kRuns, kRefused };
+// What the caller would draw for each mode, and the output it is made for (host pixels).
+struct ModeSizes {
+  uint32_t output[2] = {};
+  uint32_t render[size_t(UpscaleMode::kCount)][2] = {};
+  bool operator==(const ModeSizes& o) const {
+    for (size_t axis = 0; axis < 2; ++axis) {
+      if (output[axis] != o.output[axis]) {
+        return false;
+      }
+      for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+        if (render[mode][axis] != o.render[mode][axis]) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+};
+struct ModeVerdicts {
+  ModeVerdict verdict[size_t(UpscaleMode::kCount)] = {};
+  std::string why[size_t(UpscaleMode::kCount)];  // kRefused: what the runtime takes instead
+};
+
 class TemporalBackend {
  public:
   virtual ~TemporalBackend() = default;
@@ -193,6 +228,22 @@ class TemporalBackend {
   // No request any more: the context goes, as when a request changes, and the prepared one with
   // it. Render thread.
   virtual void Release() = 0;
+
+  // Which modes the runtime takes at these sizes. AskModes (render thread, at every frame boundary;
+  // the same sizes again does nothing) says which sizes the caller works at; the runtime finds out in
+  // the background once it runs (DLSS: slDLSSGetOptimalSettings per mode, on the worker, never
+  // starting Streamline for it: Probe, Request and Prepare do that) and keeps what it found per
+  // sizes. Modes (any thread) reads it: kUnknown until it is known, kRefused with the reason once a
+  // mode cannot run at those sizes, whether from the answer or from a context that was refused for
+  // them. A refused mode is never asked for again at those sizes. The defaults: every mode runs.
+  virtual void AskModes(const ModeSizes&) {}
+  virtual ModeVerdicts Modes(const ModeSizes&) const {
+    ModeVerdicts all;
+    for (ModeVerdict& v : all.verdict) {
+      v = ModeVerdict::kRuns;
+    }
+    return all;
+  }
 
   // The caller found the backend unusable (its inputs never came right): the same as a failed
   // dispatch. Render thread.
@@ -247,6 +298,9 @@ std::unique_ptr<TemporalBackend> MakeDlssBackend();
 // temporal system what is running.
 void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4);  // FidelityFX
 void PublishDlssAvailability(bool probed, bool dlss, bool needs_setup, bool after_restart);
+// DLSS: the modes (bit i = UpscaleMode i) that cannot run at the output the renderer works at
+// (gpu.h UpscalerAvailability::dlss_modes_refused).
+void PublishDlssRefusedModes(uint32_t refused);
 void PublishRunningUpscaler(Upscaler running);
 // DLSS is chosen but runs only from the next start: the upscaler the renderer keeps until then
 // (what the path runs, not what the setting says; kOff when none runs or nothing is waiting).

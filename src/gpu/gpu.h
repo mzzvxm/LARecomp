@@ -291,6 +291,18 @@ struct UpscalerAvailability {
   bool dlss = false;                // can run on this PC now: listed under Upscaling
   bool dlss_needs_setup = false;    // an NVIDIA RTX card, files missing: listed greyed
   bool dlss_after_restart = false;  // listed; runs from the next start
+  // DLSS takes a render size of its own for each mode at an output size (Ultra Performance's is exact,
+  // the others lie in a range), so a mode can be unable to run at the output the renderer works at:
+  // Ultra Performance needs a scene of a third of the output, which is under the 0.5x the scene is
+  // drawn at as its smallest for an output under 1.5x, and off the scale grid at 2560x1440. Bit i
+  // set: UpscaleMode i cannot run there, as the DLSS runtime said (temporal_backend.h ModeVerdicts).
+  // No bit while that is not known yet (the runtime has not started) or DLSS cannot run at all. The
+  // pause menu's DLSS mode row says "(N/A)" for these, and a pick of one keeps the mode that runs.
+  uint32_t dlss_modes_refused = 0;
+  bool DlssModeRefused(UpscaleMode mode) const {
+    return uint32_t(mode) < uint32_t(UpscaleMode::kCount) &&
+           ((dlss_modes_refused >> uint32_t(mode)) & 1u) != 0;
+  }
   Upscaler running = Upscaler::kOff;  // the one doing the work this moment
   // DLSS is chosen but this game can run it only from the next start (dlss_after_restart): the
   // upscaler the renderer keeps until then, with the mode it had (kOff: none runs, or nothing is
