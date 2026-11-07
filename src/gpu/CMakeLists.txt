@@ -310,6 +310,10 @@ larecomp_gpu_host_shader(dlssg_ui_hdr_ps ps_6_0 SOURCE dlssg_ui_ps DEFINES PRESE
 # target, and the HDR present's compose of the two layers.
 larecomp_gpu_host_shader(layers_restore_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=0)
 larecomp_gpu_host_shader(hdr_compose_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=1)
+# The same layers from a multisampled target (the pause menu's and the map's UI target): the samples of
+# each pixel averaged into a single-sampled image.
+larecomp_gpu_host_shader(layers_resolve_ps ps_6_0 SOURCE frame_layers_ps
+                         DEFINES LAYERS_COMPOSE=0 LAYERS_RESOLVE=1)
 # M6c.2/M6c.3: the scene's anti-aliasing before the UI -- the copy
 # (luma in alpha), FXAA 3.11, SMAA 1x's three passes.
 larecomp_gpu_host_shader(post_luma_ps ps_6_0)
