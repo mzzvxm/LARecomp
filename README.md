@@ -228,10 +228,10 @@ Fixes made directly in LARecomp:
 - **Adaptive texture cache limits & D3D12 primary buffer submission.** Replaced hardcoded texture cache overrides with a universally safe 2560 MB soft / 4096 MB hard baseline that prevents VRAM exhaustion on 6 GB and 8 GB GPUs while respecting user TOML overrides on high-VRAM cards (12 GB–24 GB). Enabled `d3d12_submit_on_primary_buffer_end = true` to allow asynchronous overlap of GPU rendering with CPU command recording, smoothing out pipeline bubbles.
 - **Guest profiler 144 FPS / GPU Commands call-stack sampling.** Added `profile_gpu_commands.ps1` helper for targeting `GPU Commands` with `RtlVirtualUnwind` stack sampling at 144 FPS / 7.0ms threshold.
 
-**[Foxxyyy](https://github.com/Foxxyyy)**, for reverse-engineering work on **[CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)**: the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here.
+**[Foxxyyy](https://github.com/Foxxyyy)**, for reverse-engineering work on **[CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)**: the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here, and the texture tiling and size maths the mod loader ports from its code (`RPF3/Rpf3Crypto.cs`).
 
 **[ReXGlue Team](https://github.com/rexglue/rexglue)**, for the Xbox 360 static recompilation toolkit and runtime.
 
-**NVIDIA DLSS**, through **NVIDIA Streamline**, for the DLSS upscaling option. NVIDIA's files stay under NVIDIA's licences, which are copied next to the exe with them (`nvngx_dlss_license.txt`, `reflex_license.txt`, `streamline_license.txt`, `streamline_third_party_licenses.md`).
+**NVIDIA DLSS** and **NVIDIA Reflex**. LARecomp uses NVIDIA DLSS Super Resolution through NVIDIA Streamline, and NVIDIA Reflex, on NVIDIA RTX graphics cards. NVIDIA, NVIDIA RTX, DLSS and Reflex are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries. NVIDIA's files stay under NVIDIA's licences, which are copied next to the exe with them (`nvngx_dlss_license.txt`, `reflex_license.txt`, `streamline_license.txt`, `streamline_third_party_licenses.md`).
 
 **Rockstar San Diego**, who made the game.
