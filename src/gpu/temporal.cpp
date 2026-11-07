@@ -117,6 +117,31 @@ void Flatten(const temporal::Mat4& m, float* out) {
   }
 }
 
+// The camera for Streamline's constants (the same matrices RecordUpscale gives DLSS Super Resolution),
+// from the frame's camera and the one before it (null: the history starts again, so the previous clip
+// space is this frame's own).
+void FillStreamlineCamera(const temporal::Camera& cam, const temporal::Camera* previous,
+                          TemporalSystem::FrameState::StreamlineCamera* out) {
+  temporal::Mat4 to_prev = temporal::Identity();
+  if (previous) {
+    to_prev = temporal::Mul(cam.view_projection_inverse, previous->view_projection);
+  }
+  temporal::Mat4 from_prev = temporal::Identity();
+  if (!temporal::Inverse(to_prev, &from_prev)) {
+    to_prev = from_prev = temporal::Identity();
+  }
+  temporal::Mat4 clip_to_view = temporal::Identity();
+  if (!temporal::Inverse(cam.projection, &clip_to_view)) {
+    clip_to_view = temporal::Identity();
+  }
+  Flatten(cam.projection, out->view_to_clip);
+  Flatten(clip_to_view, out->clip_to_view);
+  Flatten(to_prev, out->clip_to_prev_clip);
+  Flatten(from_prev, out->prev_clip_to_clip);
+  out->aspect = float(cam.aspect);
+  out->valid = true;
+}
+
 // The main view draws that draw colour: what says a frame has a 3D scene. Depth-only draws alone do
 // not: without MSAA the UI draws one into the main depth key (temporal_identities.h), also in a
 // frame with no 3D scene.
@@ -169,10 +194,11 @@ void TemporalSystem::SetEnabled(bool enabled) {
 }
 
 void TemporalSystem::SyncVectors() {
-  if (vectors_wanted_ == vectors_on_) {
+  const bool wanted = vectors_wanted_ || vectors_wanted_dlssg_;
+  if (wanted == vectors_on_) {
     return;
   }
-  vectors_on_ = vectors_wanted_;
+  vectors_on_ = wanted;
   if (vectors_on_ && !enabled_) {
     SetEnabled(true);
   } else if (!vectors_on_ && enabled_ && effective_ == Upscaler::kOff) {
@@ -243,6 +269,11 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
     return false;
   }
   pending_ready_ = false;
+  if (vectors_on_) {
+    // For DLSS frame generation, which presents after the frame's list was recorded: the camera's
+    // matrices as the previous camera in `pending_` makes them (the same rule as the vectors').
+    FillStreamlineCamera(frame_.camera, pending_.previous, &frame_.streamline_camera);
+  }
   if (frame_.scale != frame_.output_scale) {
     // The anchor draws at the output's scale, and what it is bound to read is the scene's depth at
     // the render scale: a depth source made below 1x through a copy enlarged to the output's size.

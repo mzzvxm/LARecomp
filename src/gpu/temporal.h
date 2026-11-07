@@ -291,6 +291,20 @@ class TemporalSystem {
     Scale output_scale = Scale::None();
     uint32_t output_size[2] = {};  // the guest size at output_scale
     AnchorTextures anchor_textures;
+    // The camera as Streamline's constants want it (DLSS Super Resolution reads it from the
+    // TemporalInputs it is given; DLSS frame generation, which presents later, from here): filled
+    // at the anchor while the vectors are kept (RequestVectors), `valid` false before and
+    // without. Row-major matrices of row vectors, no jitter; the previous clip space is this
+    // frame's own when the history starts again (clip_to_prev_clip is then the identity).
+    struct StreamlineCamera {
+      bool valid = false;
+      float view_to_clip[16] = {};
+      float clip_to_view[16] = {};
+      float clip_to_prev_clip[16] = {};
+      float prev_clip_to_clip[16] = {};
+      float aspect = 1.0f;
+    };
+    StreamlineCamera streamline_camera;
 
     // The upscaler (step 2).
     Upscaler upscaler = Upscaler::kOff;  // the chosen one when this PC can run it, else off
@@ -316,6 +330,9 @@ class TemporalSystem {
   // upscaler running it changes nothing (the upscaler keeps the system on). Taken at the next frame
   // boundary (BeginFrame). Render thread.
   void RequestVectors(bool wanted) { vectors_wanted_ = wanted; }
+  // The same for DLSS frame generation (dlss_frame_generation.h), which runs instead of the FSR one
+  // and asks every frame of its own: the system is on for the vectors while either wants them.
+  void RequestVectorsForDlssFrameGeneration(bool wanted) { vectors_wanted_dlssg_ = wanted; }
 
   // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
   // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
@@ -433,6 +450,7 @@ class TemporalSystem {
 
   bool enabled_ = false;
   bool vectors_wanted_ = false;  // RequestVectors
+  bool vectors_wanted_dlssg_ = false;  // RequestVectorsForDlssFrameGeneration
   bool vectors_on_ = false;      // SyncVectors acted on it
   bool frame_open_ = false;  // BeginFrame ran and no present has ended the frame yet
   uint64_t frame_number_ = 0;

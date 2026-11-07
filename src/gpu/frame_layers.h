@@ -108,6 +108,9 @@ class FrameLayers {
   enum Requester : uint32_t {
     kRequesterHdr = 1u << 0,              // HDR10 output (stage 2: the UI stays at paper white)
     kRequesterFrameGeneration = 1u << 1,  // the HUD-less colour and the UI layer (F4)
+    // DLSS frame generation (dlss_frame_generation.h): its own bit, since FSR's one is set and
+    // cleared by FSR's every frame.
+    kRequesterDlssFrameGeneration = 1u << 2,
   };
 
   // What the Scene does for a draw it asked about.
