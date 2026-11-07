@@ -91,8 +91,9 @@ struct EdramKey {
   uint8_t format = 0;     // xenos Color/DepthRenderTargetFormat, _AS_ folded
   uint8_t samples = 1;
   // The layer: 0 for every identity but one case (EdramTargets::DepthLayer): the main view's depth
-  // at 1x samples, which the game's UI phase draws with too, is two host targets (the scene's,
-  // layer 0, and the UI's, layer 1) while the scene is drawn at another scale than the UI.
+  // at 1x samples (a game made without MSAA) or at 4x (behind the pause menu and on the map), which
+  // the game's UI phase may draw with too, is two host targets (the scene's, layer 0, and the UI's,
+  // layer 1) while the scene is drawn at another scale than the UI.
   uint8_t reserved = 0;
   bool operator==(const EdramKey& o) const {
     return base_tiles == o.base_tiles && pitch == o.pitch && depth == o.depth &&
@@ -362,12 +363,12 @@ class EdramTargets {
 
   // --- the scene at its own scale (F4-DESIGN.md 4, render_scale.h ChooseSceneScale) ---
   // While a temporal upscaler works on the 3D scene the scene's identities -- the main view's
-  // colour and depth in play, 1x or 2x samples (temporal_identities.h) -- are made at
-  // SceneScale(): the images of the screen's scale over the mode's ratio. Everything else keeps its
-  // scale, so the post chain, the tone map and the UI stay at the output's size. The pause menu's
-  // and the map's 4x identities are the scene's too, but not in play: they stay at the images of
-  // the screen's. Decided on first use from the upscaler as the start found it (gpu.h
-  // GetStartUpscale); SetSceneScale moves it afterwards, between two guest frames.
+  // colour and depth, 1x or 2x samples in play and 4x behind the pause menu and on the map
+  // (temporal_identities.h) -- are made at SceneScale(): the images of the screen's scale over the
+  // mode's ratio. Everything else keeps its scale, so the post chain, the tone map and the UI (the
+  // pause menu's too: its 4x colour target and its depth layer) stay at the output's size. Decided on
+  // first use from the upscaler as the start found it (gpu.h GetStartUpscale); SetSceneScale moves it
+  // afterwards, between two guest frames.
   Scale SceneScale() {
     DecideScene();
     return scene_scale_;
@@ -388,17 +389,21 @@ class EdramTargets {
     DecideScene();
     return scene_scale_ != resolution_scale_;
   }
-  // The scene's colour at play samples, or its depth at play samples in layer 0.
+  // The main view's colour (at the play or the pause samples), or its depth in layer 0.
   static bool IsSceneKey(const EdramKey& key);
   // The layer of the depth key `depth` as a use names it. The main view's depth at 1x samples (a
   // game made without MSAA: the native renderer no longer does, the game always draws its 2 sample
   // layout, so this is a case for the identities' sake only) has the very key the UI phase draws
   // with (a 1x depth at the same tile and pitch, with colour k_8_8_8_8 or on its own for its
-  // stencil masks), so while the scene is drawn at another scale the two are told apart: a use
+  // stencil masks), and so may the one at 4x samples, the pause view's: its UI pass draws into a
+  // 4x k_8_8_8_8 colour target and the 4x group holds one depth. So while the scene is drawn at
+  // another scale the two are told apart: a use
   // with a colour target is the scene's when that colour is the main view's; a use with none (a
   // depth-only draw or clear, a depth resolve) is the scene's until the frame's anchor draw or
   // composite marker (SetScenePhase). 0 (the scene's, and always while the scene is not apart) or
   // 1 (the UI's, an image of the screen: made at its scale). `color0`: the use's colour 0 or null.
+  // CHECK: that the pause view's UI pass uses the 4x depth key (then it is the layer 1 target the
+  // "made at" lines list) and nothing in it reads what the world left in that depth.
   uint8_t DepthLayer(const EdramKey& depth, const EdramKey* color0);
   // The frame's scene phase: open from a guest frame's start, closed by the anchor draw and by the
   // composite marker (Scene), reopened by the guest's present. Moving it changes what a depth-only
