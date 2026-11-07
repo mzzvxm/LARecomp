@@ -60,6 +60,14 @@ std::unique_ptr<plume::RenderInterface> CreateInterface() {
   return plume::CreateVulkanInterface();
 }
 
+// Vulkan has no factory: with the interposer's functions loaded (backend_vulkan.cpp CreateInterface)
+// a swap chain made while the frame generation plugin is loaded is Streamline's own.
+bool BeginSwapChainFactory(plume::RenderDevice*, bool (*)(void**), void**, void**) {
+  return false;
+}
+
+void EndSwapChainFactory(plume::RenderDevice*, void*, void*) {}
+
 bool IsNullBacked(const plume::RenderTexture* texture) {
   return !texture || static_cast<const plume::VulkanTexture*>(texture)->vk == VK_NULL_HANDLE;
 }

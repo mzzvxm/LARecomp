@@ -51,6 +51,11 @@ void* NativeTextureHandle(const plume::RenderTexture* texture);
 NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
+// SwapChainFactoryScope: the factory replaced by its wrapper (`original`, `wrapper` filled), and put
+// back and the wrapper released.
+bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
+                           void** wrapper);
+void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrapper);
 }  // namespace d3d12
 #endif
 
@@ -86,6 +91,9 @@ void* NativeTextureHandle(const plume::RenderTexture* texture);
 NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
+bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
+                           void** wrapper);
+void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrapper);
 }  // namespace vulkan
 #endif
 

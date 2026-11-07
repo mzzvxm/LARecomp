@@ -250,6 +250,25 @@ UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryUpscalerSupport(device));
 }
 
+SwapChainFactoryScope::SwapChainFactoryScope(plume::RenderDevice* device,
+                                             bool (*wrap)(void** factory))
+    : device_(device) {
+  if (device_ && wrap) {
+    void* original = nullptr;
+    void* wrapper = nullptr;
+    if (MCLA_GPU_ACTIVE(BeginSwapChainFactory(device_, wrap, &original, &wrapper))) {
+      original_ = original;
+      wrapper_ = wrapper;
+    }
+  }
+}
+
+SwapChainFactoryScope::~SwapChainFactoryScope() {
+  if (wrapper_) {
+    MCLA_GPU_ACTIVE(EndSwapChainFactory(device_, original_, wrapper_));
+  }
+}
+
 }  // namespace backend
 
 }  // namespace mcla::gpu

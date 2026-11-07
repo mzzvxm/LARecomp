@@ -246,6 +246,28 @@ struct NativeImage {
 };
 NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 
+// D3D12: swap chains are made by the DXGI factory of Plume's interface. NVIDIA Streamline's DLSS frame
+// generation needs the chain made through its own proxy of that factory (a manual hooking
+// integration "recreates the swap chain" through the proxy when frame generation goes on). For the
+// life of the scope `wrap` (dlss::UpgradeFactory) has turned the factory into its wrapper, and the
+// chain made in it is the wrapper's; the destructor puts Plume's own back and releases the wrapper.
+// Does nothing (wrapped() false) on Vulkan, whose chains are made through Streamline's functions when
+// the interposer is loaded, and when `wrap` is null or says no. Render thread, with no swap chain
+// call in flight.
+class SwapChainFactoryScope {
+ public:
+  SwapChainFactoryScope(plume::RenderDevice* device, bool (*wrap)(void** factory));
+  ~SwapChainFactoryScope();
+  SwapChainFactoryScope(const SwapChainFactoryScope&) = delete;
+  SwapChainFactoryScope& operator=(const SwapChainFactoryScope&) = delete;
+  bool wrapped() const { return wrapper_ != nullptr; }
+
+ private:
+  plume::RenderDevice* device_ = nullptr;
+  void* original_ = nullptr;
+  void* wrapper_ = nullptr;
+};
+
 // After a runtime recorded work into `list` (outside any render pass, no framebuffer bound): what
 // Plume remembers of the list's state is forgotten, so the next call sets it again. D3D12: the
 // descriptor heaps, the pipeline layouts, the active pipeline and the topology (a runtime sets its

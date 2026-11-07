@@ -44,6 +44,13 @@ plume::RenderCommandQueue* SwapChain::Queue() const {
 bool SwapChain::MakeChain(bool hdr10) {
   format_ = kSdrFormat;
   hdr_ = false;
+  // NVIDIA Streamline's proxy factory, while DLSS frame generation is on (D3D12): the chains made in
+  // this call are its own. The frame latency is then the number of buffers: its pacer presents the
+  // generated frames behind the game's, and the guide asks for room for them ("raising the limit to
+  // the internal back-buffer count"); Plume sets the value on the chain after it is made.
+  const backend::SwapChainFactoryScope factory(device_->device(), factory_wrapper_);
+  through_wrapper_ = factory.wrapped();
+  const uint32_t latency = factory.wrapped() ? kFramesInFlight + 1 : kFramesInFlight;
   if (hdr10) {
     // The output has to take the HDR10 colour space (D3D12 CheckColorSpaceSupport, Vulkan's
     // surface formats); Plume says no by returning null, with the reason on stderr. The SDR chain
@@ -51,7 +58,7 @@ bool SwapChain::MakeChain(bool hdr10) {
     // CHECK: with the renderer on one GPU and the display on another, whether D3D12 accepts the HDR10
     // colour space is not verified; a refusal lands in the SDR chain below with the log line.
     const plume::RenderSwapChainDesc hdr_desc(
-        window_, FormatFor(true), kFramesInFlight + 1, present_wait_, kFramesInFlight,
+        window_, FormatFor(true), kFramesInFlight + 1, present_wait_, latency,
         plume::RenderSwapChainColorSpace::HDR10_ST2084);
     swap_chain_ = Queue()->createSwapChain(hdr_desc);
     if (swap_chain_) {
@@ -66,7 +73,7 @@ bool SwapChain::MakeChain(bool hdr10) {
   }
   if (!swap_chain_) {
     const plume::RenderSwapChainDesc desc(window_, kSdrFormat, kFramesInFlight + 1, present_wait_,
-                                          kFramesInFlight);
+                                          latency);
     swap_chain_ = Queue()->createSwapChain(desc);
   }
   if (!swap_chain_) {
@@ -112,7 +119,7 @@ SwapChain::Recreated SwapChain::Recreate(bool hdr10) {
 }
 
 SwapChain::Recreated SwapChain::RecreateOn(plume::RenderCommandQueue* queue, bool hdr10,
-                                           bool vsync) {
+                                           bool vsync, const std::function<void()>& between) {
   if (!device_) {
     return Recreated::kLost;
   }
@@ -123,6 +130,9 @@ SwapChain::Recreated SwapChain::RecreateOn(plume::RenderCommandQueue* queue, boo
   framebuffers_.clear();
   render_semaphores_.clear();
   swap_chain_.reset();
+  if (between) {
+    between();  // the old chain is gone, the new one not made yet
+  }
   // The format asked for, else the one it had: a refused HDR10 chain falls back to SDR inside
   // MakeChain (which says why), and an SDR chain that could not be made is tried in HDR10 again.
   if (!MakeChain(hdr10) && !MakeChain(was_hdr)) {

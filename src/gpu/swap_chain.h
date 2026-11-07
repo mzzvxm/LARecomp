@@ -16,6 +16,12 @@
 // Exactly one swap chain may exist on a window (DXGI flip model), which is why
 // mcla_gpu mode never creates the SDK's D3D12Presenter.
 //
+// DLSS frame generation (dlss_frame_generation.h) needs the chain to be NVIDIA Streamline's own proxy
+// chain: SetFactoryWrapper gives the chain's creation a wrapper of the DXGI factory to make it with
+// (D3D12; Vulkan's chains are Streamline's when its frame generation plugin is loaded), and
+// RecreateOn's `between` runs after the old chain is gone and before the new one is made, which is
+// where the plugin is unloaded again when frame generation goes off.
+//
 // The format is B8G8R8A8_UNORM, or R10G10B10A2_UNORM in the HDR10 colour space when
 // Options::hdr10 asks and the output takes it (hdr.h). It is chosen in Initialize and changes only
 // in Recreate (mcla_gpu_hdr is live, Renderer::SwitchHdr): what draws into the back buffer (the
@@ -36,6 +42,7 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -90,7 +97,13 @@ class SwapChain {
   Recreated Recreate(bool hdr10);
   // The same on the queue `queue` (null: the device's render queue), which stays the chain's from
   // then on, with `vsync` as the presentation mode. The old chain is destroyed first, as above.
-  Recreated RecreateOn(plume::RenderCommandQueue* queue, bool hdr10, bool vsync);
+  Recreated RecreateOn(plume::RenderCommandQueue* queue, bool hdr10, bool vsync,
+                       const std::function<void()>& between = {});
+  // D3D12: the wrapper of the DXGI factory the next chains are made with (dlss::UpgradeFactory), or
+  // null: Plume's own. Takes effect for the chains made from now on.
+  void SetFactoryWrapper(bool (*wrap)(void** factory)) { factory_wrapper_ = wrap; }
+  // The chain was made through the wrapper (D3D12): it is Streamline's own proxy chain.
+  bool through_wrapper() const { return through_wrapper_; }
   // Recreate found no chain to make: the renderer calls it again until one exists. Nothing is
   // presented meanwhile (empty() is true).
   bool lost() const { return device_ != nullptr && !swap_chain_; }
@@ -160,6 +173,8 @@ class SwapChain {
   std::vector<std::unique_ptr<plume::RenderFramebuffer>> framebuffers_;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> render_semaphores_;
   bool present_wait_ = false;
+  bool (*factory_wrapper_)(void** factory) = nullptr;
+  bool through_wrapper_ = false;
 };
 
 }  // namespace mcla::gpu
