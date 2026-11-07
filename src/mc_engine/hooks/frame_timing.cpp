@@ -296,7 +296,16 @@ static void EnforceFrameLimit() {
         } else
 #endif
         {
+#if defined(_WIN32)
+            // The 1 ms system timer wakes sleep_for up to 1.5 ms late: sleep to well before the
+            // deadline and finish on the spin below.
             const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 1200 : 1500;
+#else
+            // nanosleep wakes within about 0.1 ms of its time, so the sleep goes to 0.3 ms before
+            // the deadline (0.6 without the spin) and the core is only burned for the last stretch.
+            // CHECK: not run on Linux (frame times at a 60 FPS cap, and the CPU use, against 1.2 ms).
+            const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 300 : 600;
+#endif
             if (remaining > slack_us + 500) {
                 std::this_thread::sleep_for(std::chrono::microseconds(remaining - slack_us));
             }
@@ -309,6 +318,8 @@ static void EnforceFrameLimit() {
         while (now_us() < next_us) {
 #if defined(_WIN32)
             if (spin) { YieldProcessor(); continue; }
+#elif defined(__x86_64__)
+            if (spin) { _mm_pause(); continue; }
 #endif
             std::this_thread::yield();
         }
