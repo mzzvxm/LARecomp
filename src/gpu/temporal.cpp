@@ -576,6 +576,16 @@ Scale TemporalSystem::UpscalerOutputScale(Scale fallback) const {
       .scale;
 }
 
+// CHECK: not run (written without a build). In 720p, 1080p and 1440p windows at the default (Upscaling
+// Off, mcla_gpu_resolution_scale 0) with each upscaler picked from the menu and back: the upscaled
+// picture is the window's size ("live change: ...; upscaling to the window's 1920x1080" and the first
+// upscaled frame "1280x720 to 1920x1080" for QUALITY at 1080p), one "making the new context" line per
+// change (not one at the old output and another at the new), and going back to Off leaves the picture
+// at the window's size. With a saved scale other than 0 (say 2) the same switch moves the output from
+// that scale to the screen's and back in one step each way. A window resized while an upscaler runs
+// moves the output after 0.4 s (DLSS: a new context of several seconds per settled size). A game
+// started with DLSS chosen on a PC that cannot run it and a saved scale other than 0 starts at the
+// screen's scale and moves to the saved one once at the first frame boundary (log line "live change").
 void TemporalSystem::ReadRenderScale() {
   // The cvars and the window as they are now. The window's size is the swap chain's last one: while
   // none has been published (or a minimised window left none) there is nothing to measure the screen's

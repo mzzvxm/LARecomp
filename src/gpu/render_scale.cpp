@@ -169,6 +169,11 @@ RenderScaleStatus GetRenderScaleStatus() {
   return out;
 }
 
+// CHECK: not run (written without a build). A start with an upscaler chosen logs "[gpu] render scale 1.5x
+// ...: DLSS is chosen, so the output is the screen's ...: upscaling to the window's 1920x1080" in a
+// 1080p window (one line, before "[gpu] edram: the 3D scene ... is made at 1x"); a start at the new
+// default in a 4K window on a weak GPU makes the images of the screen at 3x (3840x2160) with no
+// fallback (only a live change has the "too big" answer), as a saved 3 did before.
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height) {
   const double asked = REXCVAR_GET(mcla_gpu_resolution_scale);
   const bool fsr = REXCVAR_GET(mcla_gpu_fsr);
