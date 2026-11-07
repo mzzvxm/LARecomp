@@ -246,6 +246,10 @@ void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
   MCLA_GPU_ACTIVE(InvalidateAfterExternalWork(list));
 }
 
+void ForgetImageContents(plume::RenderTexture* texture) {
+  MCLA_GPU_ACTIVE(ForgetImageContents(texture));
+}
+
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryUpscalerSupport(device));
 }

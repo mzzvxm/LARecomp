@@ -266,6 +266,14 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
   return out;
 }
 
+void ForgetImageContents(plume::RenderTexture* texture) {
+  auto* t = static_cast<plume::VulkanTexture*>(texture);
+  if (t) {
+    // Plume's next barrier on it takes this as the old layout: UNDEFINED, whatever it was left in.
+    t->textureLayout = plume::RenderTextureLayout::UNKNOWN;
+  }
+}
+
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
   auto* l = static_cast<plume::VulkanCommandList*>(list);
   if (!l) {
