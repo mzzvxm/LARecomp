@@ -29,35 +29,52 @@ REXCVAR_DEFINE_STRING(
     "behind the pause menu and on the map, so a change made there shows at once. Live.")
     .allowed({"off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_strength, 0.8, "MCLA/GPU",
-    "How strongly ambient occlusion darkens, 0 to 1. The game already has baked occlusion in the "
-    "world and a soft shadow under cars; this adds to them. Live.")
-    .range(0.0, 1.0)
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_ao_intensity, "default", "MCLA/GPU",
+    "How strong ambient occlusion looks: light, default, strong or max. Each is a set of four "
+    "numbers: how strongly it darkens, how far it looks for things that block the sky light, how "
+    "hard the measure is pushed, and how much it also darkens the part of a surface the sun lights; "
+    "the stronger ones reach farther and make every crease, corner and under-car shadow darker. "
+    "Only used while "
+    "mcla_gpu_ao is not off (the pause menu's AO INTENSITY row). mcla_gpu_ao_strength, _radius, "
+    "_power and _direct, each when set to 0 or more, replace that one number of the chosen look "
+    "(for testing). Live.")
+    .allowed({"light", "default", "strong", "max"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_radius, 1.5, "MCLA/GPU",
-    "How far, in the game's world units (about metres), ambient occlusion looks for things that "
-    "block the sky light, 0.5 to 6. A larger radius darkens wider and softer; a smaller one only "
-    "tight creases. Close to the camera the reach is also limited to a share of the screen's "
-    "height, so a very large radius shows mostly on surfaces farther away. Live.")
-    .range(0.5, 6.0)
+    mcla_gpu_ao_strength, -1.0, "MCLA/GPU",
+    "Testing only: how strongly ambient occlusion darkens, 0 to 1, in place of the number the "
+    "chosen mcla_gpu_ao_intensity gives. Below 0 (the default): the intensity's. The game already "
+    "has baked occlusion in the world and a soft shadow under cars; this adds to them. Live.")
+    .range(-1.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_power, 2.0, "MCLA/GPU",
-    "How hard ambient occlusion is pushed, 0.5 to 8: the visibility of each pixel (1 is open sky, "
-    "0 is fully blocked) is raised to this power before it darkens the picture. A higher number "
-    "makes every crease, corner and under-car shadow darker and spreads the darkening wider; 1 is "
-    "the raw measure. Live.")
-    .range(0.5, 8.0)
+    mcla_gpu_ao_radius, -1.0, "MCLA/GPU",
+    "Testing only: how far, in the game's world units (about metres), ambient occlusion looks for "
+    "things that block the sky light, 0.5 to 6, in place of the number the chosen "
+    "mcla_gpu_ao_intensity gives. Below 0 (the default): the intensity's. A larger radius darkens "
+    "wider and softer; a smaller one only tight creases. Close to the camera the reach is also "
+    "limited to a share of the screen's height, so a very large radius shows mostly on surfaces "
+    "farther away. Live.")
+    .range(-1.0, 6.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_direct, 0.0, "MCLA/GPU",
-    "How much ambient occlusion also darkens the part of a surface that the sun lights, 0 to 1. At "
-    "0 only the sky-light part is darkened, so a surface facing the sun in daylight barely changes; "
-    "at 1 the sun-lit part is darkened as much as the shaded part, which is much stronger but can "
-    "look heavy in bright daylight. Live.")
-    .range(0.0, 1.0)
+    mcla_gpu_ao_power, -1.0, "MCLA/GPU",
+    "Testing only: how hard ambient occlusion is pushed, 0.5 to 8, in place of the number the "
+    "chosen mcla_gpu_ao_intensity gives. Below 0 (the default): the intensity's. The visibility of "
+    "each pixel (1 is open sky, 0 is fully blocked) is raised to this power before it darkens the "
+    "picture. A higher number makes every crease, corner and under-car shadow darker and spreads "
+    "the darkening wider; 1 is the raw measure. Live.")
+    .range(-1.0, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ao_direct, -1.0, "MCLA/GPU",
+    "Testing only: how much ambient occlusion also darkens the part of a surface that the sun "
+    "lights, 0 to 1, in place of the number the chosen mcla_gpu_ao_intensity gives. Below 0 (the "
+    "default): the intensity's. At 0 only the sky-light part is darkened, so a surface facing the "
+    "sun in daylight barely changes; at 1 the sun-lit part is darkened as much as the shaded part, "
+    "which is much stronger but can look heavy in bright daylight. Live.")
+    .range(-1.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ao_fade_end, 160.0, "MCLA/GPU",
@@ -122,6 +139,48 @@ constexpr uint32_t kReleaseAfterFrames = 60;
 constexpr uint32_t kMinRenderSize = 64;
 // The sky and anything the linearisation could not place (hlsl/ao_common.hlsli kAoSky).
 constexpr float kSkyDistance = 60000.0f;
+
+// The looks of mcla_gpu_ao_intensity (the pause menu's AO INTENSITY row): the darkening's strength,
+// the radius in the game's world units, the power of the visibility and the direct share (how much
+// of the sun-lit part is darkened too). "default" is the setting's default.
+struct LookDef {
+  const char* name;
+  float strength;
+  float radius;
+  float power;
+  float direct;
+};
+constexpr LookDef kLooks[] = {
+    {"light", 1.0f, 2.5f, 3.2f, 0.25f},
+    {"default", 1.0f, 3.0f, 3.6f, 0.375f},
+    {"strong", 1.0f, 3.5f, 4.0f, 0.5f},
+    {"max", 1.0f, 3.75f, 4.5f, 0.75f},
+};
+constexpr uint32_t kLookCount = sizeof(kLooks) / sizeof(kLooks[0]);
+constexpr uint32_t kDefaultLook = 1;
+
+// The index of mcla_gpu_ao_intensity's look; anything the list does not know is the default.
+uint32_t ReadLookIndex() {
+  std::string value = REXCVAR_GET(mcla_gpu_ao_intensity);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  for (uint32_t i = 0; i < kLookCount; ++i) {
+    if (value == kLooks[i].name) {
+      return i;
+    }
+  }
+  return kDefaultLook;
+}
+
+// A testing cvar's value when it is set (0 or more, clamped to `lo`..`hi`), else `fallback`; `*any`
+// tells that one was set.
+float Overridden(double value, double lo, double hi, float fallback, bool* any) {
+  if (!(value >= 0.0)) {
+    return fallback;
+  }
+  *any = true;
+  return float(std::clamp(value, lo, hi));
+}
 
 float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
   return std::bit_cast<float>(LoadBe32(bank + reg * 16 + comp * 4));
@@ -922,6 +981,31 @@ void AmbientOcclusion::DrawPass(plume::RenderCommandList* list, HostImage& image
   image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
+void AmbientOcclusion::UpdateLook() {
+  const uint32_t index = ReadLookIndex();
+  const LookDef& def = kLooks[index];
+  bool overridden = false;
+  Look look;
+  look.strength = Overridden(REXCVAR_GET(mcla_gpu_ao_strength), 0.0, 1.0, def.strength, &overridden);
+  look.radius = Overridden(REXCVAR_GET(mcla_gpu_ao_radius), 0.5, 6.0, def.radius, &overridden);
+  look.power = Overridden(REXCVAR_GET(mcla_gpu_ao_power), 0.5, 8.0, def.power, &overridden);
+  look.direct = Overridden(REXCVAR_GET(mcla_gpu_ao_direct), 0.0, 1.0, def.direct, &overridden);
+  look_ = look;
+  if (index != look_logged_index_ || overridden != look_logged_overridden_ ||
+      look.strength != look_logged_.strength || look.radius != look_logged_.radius ||
+      look.power != look_logged_.power || look.direct != look_logged_.direct) {
+    look_logged_index_ = index;
+    look_logged_overridden_ = overridden;
+    look_logged_ = look;
+    REXLOG_INFO("[gpu] ao: intensity {} (mcla_gpu_ao_intensity, live): strength {:.3g}, radius {:.3g} "
+                "m, power {:.3g}, direct {:.3g}{}",
+                def.name, look.strength, look.radius, look.power, look.direct,
+                overridden ? " -- a testing setting (mcla_gpu_ao_strength, _radius, _power or "
+                             "_direct) replaces part of it"
+                           : "");
+  }
+}
+
 void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary, const Plan& plan,
                                 const LightRaw* light) const {
   std::memset(push, 0, sizeof(*push));
@@ -940,7 +1024,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // down -z): tan of the half field of view from its x and y scales, the depth rows for the
   // linearisation (t = (P32 - ndc P33) / (P22 - ndc P23), ndc = 1 - stored depth).
   const temporal::Mat4& p = previous_.projection;
-  const float radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_radius), 0.5, 6.0));
+  const float radius = look_.radius;
   const float fade_end = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_fade_end), 20.0, 1000.0));
   push->lens[0] = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
   push->lens[1] = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
@@ -950,12 +1034,12 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   push->lin[1] = float(p.m[2][3]);
   push->lin[2] = float(p.m[3][2]);
   push->lin[3] = float(p.m[3][3]);
-  push->shape[0] = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_power), 0.5, 8.0));
+  push->shape[0] = look_.power;
   push->shape[1] = kMinVisibility;
-  push->shape[2] = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_strength), 0.0, 1.0));
+  push->shape[2] = look_.strength;
   push->shape[3] = 0.5f * fade_end;
   push->extra[1] = fade_end;
-  push->extra[2] = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_direct), 0.0, 1.0));
+  push->extra[2] = look_.direct;
 
   // The light: the ambient and the sun as lumas, and the direction to the sun in this renderer's
   // view space (x right, y up, z forward). The game's view space looks along -z, so z changes
@@ -1011,6 +1095,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   LightRaw light;
   uint32_t with_it = 0;
   const bool have_light = PickLight(&light, &with_it);
+  UpdateLook();
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
 
