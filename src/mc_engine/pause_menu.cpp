@@ -5,6 +5,7 @@
 #include "camera_look.h"
 #include "config_save.h"
 #include "cutscene_gallery.h"
+#include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "upscaling_menu.h"
 #include "logging.h"
@@ -1499,7 +1500,11 @@ const ItemDef kVideoItems[] = {
 #else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
-    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "", "UNCAPPED"),
+    // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
+    // (frame_generation_menu.h) and counts rendered frames.
+    WithDynamics(Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
+                     "UNCAPPED"),
+                 &mcla_menu::kFpsLimitDynamics),
     Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
@@ -1729,8 +1734,10 @@ std::string LowLatencyLabel(int i) {
     }
 }
 
-// Says why a reducer that is asked for is not working right now.
+// Says why a reducer that is asked for is not working right now. While frame generation runs it is
+// forced on (latency.cpp): the row is grey and says so.
 const char* LowLatencySuffix() {
+    if (mcla_menu::LatencyRowLocked()) return " (FRAME GEN)";
     switch (mcla::gpu::latency::CurrentHealth()) {
     case mcla::gpu::latency::Health::kPaused: return " (PAUSED)";
     case mcla::gpu::latency::Health::kFailed: return " (NOT WORKING)";
@@ -1738,7 +1745,10 @@ const char* LowLatencySuffix() {
     }
 }
 
+bool LowLatencyFree() { return !mcla_menu::LatencyRowLocked(); }
+
 constexpr RowDynamics kLowLatencyDynamics = {.str_label = LowLatencyLabel,
+                                             .enabled = LowLatencyFree,
                                              .suffix = LowLatencySuffix};
 
 const ItemDef kReflexRows[] = {
@@ -2074,7 +2084,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     UpscalingMenuRows},
+     DisplayMenuRows},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
