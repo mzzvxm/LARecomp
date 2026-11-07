@@ -3,31 +3,51 @@
 // MCLA GPU renderer -- screen-space ambient occlusion (feature-parity/AO-DESIGN.md)
 // ===========================================================================
 // The game has baked vertex occlusion in the world and a contact shadow under cars, and nothing that
-// darkens creases, kerbs and wheel arches. This adds a screen-space term of its own, GTAO after
-// Intel's XeGTAO (MIT) written as pixel shaders, applied as a weighted multiply on the scene colour.
+// darkens creases, kerbs and wheel arches. This adds a screen-space term of its own: GTAO after
+// Intel's XeGTAO (MIT) written as pixel shaders (hlsl/ao_*_ps.hlsl), applied as a weighted multiply
+// on the scene colour.
 //
 // WHERE: at the game's mid-scene depth resolve (the first resolve per frame of the main view's depth,
 // outside EndTiling, into 078B0000): after every opaque draw of the main view, before the soft
-// particles, the rain, the fog quad and the post chain. The depth is complete there and is read
-// straight from the EDRAM depth target, guest sample 0 (the sample the game's own particle and fog
-// reads see).
+// particles, the rain, the fog quad and the post chain, so fog and particles cover the darkened scene
+// as they cover everything else, and a temporal upscaler (temporal.h) sees the occlusion as part of
+// the colour it accumulates. The depth is complete there and is read straight from the EDRAM depth
+// target, guest sample 0 (the sample the game's own particle and fog reads see).
 //
-// This file is built in steps. Step 0 (the census, below) only watches: it counts the main view's
-// draws around the trigger, keeps the light constants the design needs (PS c26 ambient, PS c39 sun
-// colour, VS c16 sun direction), reads the camera at the game's motion blur draw and logs all of it,
-// one line per census frame, so that a run can settle the design's CHECK items before any shader
-// exists (mcla_gpu_ao_census, off by default).
+// WHAT: four passes into images of their own, then one into the main view's colour target:
+//   depth    the linear view-space distance, R32_FLOAT, at the AO's size (the render size, or half of
+//            it at LOW), and two coarser levels, R16_FLOAT
+//   main     the GTAO visibility (R16_FLOAT)
+//   denoise  a depth-aware blur of it (R16_FLOAT)
+//   apply    rgb *= lerp(1, ao, strength * ambient_share * distance_fade) on every sample of the
+//            colour target; ambient_share = La / (La + Ls * N.L) from the game's own constants (PS c26
+//            the ambient, PS c39 the sun colour, VS c16 the sun direction), N from the depth
+// The lens (the projection) is the previous frame's: the camera exists only at the game's motion blur
+// draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
+// frame's camera has no occlusion. The pause menu's and the map's world (4x samples) has none.
 //
-// Threading: render thread only.
+// The census (mcla_gpu_ao_census, off by default) is step 0 of the design: it logs the trigger, the
+// light constants, the lens and, at its frames, a statistic of the linear depth read back from the
+// GPU, so that a run can settle the design's CHECK items.
+//
+// Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row), and off the
+// menu mcla_gpu_ao_strength, _radius, _fade_end, _view, _sun_flip.
+//
+// Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
+// made ahead on the host builder thread (host_precache.h).
 // ===========================================================================
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include <plume_render_interface.h>
+
 #include "constants.h"
 #include "edram.h"
+#include "host_passes.h"
 #include "records.h"
 #include "resolve.h"
 #include "temporal_camera.h"
@@ -35,8 +55,15 @@
 
 namespace mcla::gpu {
 
+class BindlessHeap;
+class Device;
+class FrameRing;
+class PassTiming;
+
 class AmbientOcclusion {
  public:
+  enum class Mode : uint8_t { kOff, kLow, kHigh };
+
   // The destination of the game's mid-scene depth resolve in the retail build (k_24_8_FLOAT,
   // 1280x720, the product the soft particles and the fog quad read), as the other identities of
   // temporal_identities.h: a different build gives another address and then there is no AO, never a
@@ -62,13 +89,21 @@ class AmbientOcclusion {
   };
 
   AmbientOcclusion() = default;
+  ~AmbientOcclusion();
   AmbientOcclusion(const AmbientOcclusion&) = delete;
   AmbientOcclusion& operator=(const AmbientOcclusion&) = delete;
 
+  // Makes the layout and the shaders and lists the pipelines with the host precache (before the
+  // Renderer starts it). Never fails the renderer: without them there is no occlusion (logged).
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
+                  EdramTargets& edram, PassTiming& pass_timing);
+  // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
+  void Shutdown();
+
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
-  // True while the draw hooks have anything to do (the census is on).
-  bool wants_draws() const { return census_every_ != 0; }
+  // True while the draw hooks have anything to do (the occlusion is on, or the census).
+  bool wants_draws() const { return mode_ != Mode::kOff || census_every_ != 0; }
 
   // A prepared draw into the main view's identities (not the pause view's), with the draw's own
   // banks, before the draw is recorded.
@@ -78,14 +113,59 @@ class AmbientOcclusion {
   // A depth clear of the identity `key` (the main view's depth is cleared at the start of the main
   // view; its z says which end of the range is far).
   void OnDepthClear(const EdramKey& key, float z);
-  // A resolve, after ResolveCache::Execute made its copy.
-  void OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary);
+  // A resolve, after ResolveCache::Execute made its copy, with `list` the frame's open list
+  // outside any render pass. `upscaler_running`: a temporal upscaler works on this frame (the
+  // noise then rotates). True when passes were recorded: the caller's list state is gone.
+  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
+                 plume::RenderCommandList* list, bool upscaler_running);
   // The scene is composed: the UI starts.
   void OnComposite() { composite_seen_ = true; }
   // A guest present: the frame boundary. Prints the census frame.
   void OnPresent();
 
+  // The video memory the images hold now.
+  uint64_t HeldBytes() const;
+
  private:
+  // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
+  struct Push {
+    uint32_t slots[4];
+    uint32_t slots2[4];
+    float sizes[4];
+    float lens[4];
+    float lin[4];
+    float shape[4];
+    float light[4];
+    float extra[4];
+  };
+  static_assert(sizeof(Push) == 128);
+
+  // The pixel shaders, in the order host_shaders.h AmbientOcclusionPixelShader numbers them.
+  enum Pass : uint32_t {
+    kPassDepth,
+    kPassDepthMs,
+    kPassMip,
+    kPassMain,
+    kPassDenoise,
+    kPassApply,
+    kPassApplyMs,
+    kPassCount,
+  };
+
+  // The pipelines: one per pass and kind of depth plane, and the apply pass per colour target's
+  // sample count and per kind of output (the multiply, or a debug view's write).
+  enum Variant : uint32_t {
+    kVDepth = 0,
+    kVDepthMs = 1,
+    kVMip = 2,
+    kVMain = 3,
+    kVDenoise = 4,
+    kVApplyBase = 8,  // + 4 * debug + log2(samples)
+    kVariantCount = kVApplyBase + 8,
+  };
+  static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
+  static std::string VariantName(uint32_t variant);
+
   // The light constants of a draw, as the raw big-endian dwords of the registers: PS c26.xyz (the
   // ambient, gLightAmbient), PS c39.xyz (the sun colour, gLightColor), VS c16.xyz (the sun
   // direction, gLightPosDir). Compared as bytes; decoded for the log and the shaders.
@@ -126,8 +206,44 @@ class AmbientOcclusion {
   static void DecodeLight(const LightRaw& raw, float ambient[3], float sun[3], float dir[3]);
   void Census();
 
-  // Settings.
+  // --- the passes (ao.cpp) ---
+  struct Plan {
+    Mode mode = Mode::kHigh;
+    bool probe = false;            // read the coarsest level back for the census
+    bool apply = true;             // the apply pass runs (false: the census's probe only)
+    bool upscaler = false;
+    uint32_t render[2] = {};       // the main view, host pixels
+    uint32_t ao[2] = {};           // the AO's size
+    uint32_t level[2][2] = {};     // the coarser levels' sizes
+    uint32_t view = 0;
+  };
+  // Records the passes for the trigger `summary` (whose source target is the depth). True when
+  // anything was recorded.
+  bool Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list, const Plan& plan);
+  bool EnsureImages(const Plan& plan);
+  void ReleaseImages();
+  plume::RenderPipeline* Pipeline(uint32_t variant);
+  std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
+  void ListPrecache();
+  void Bind(plume::RenderCommandList* list) const;
+  // A full-screen triangle into `image` (all of it) with `pipeline` and `push`.
+  void DrawPass(plume::RenderCommandList* list, HostImage& image,
+                const plume::RenderPipeline* pipeline, const Push& push);
+  // The apply pass into the main view's colour target; false when it could not be made.
+  bool RecordApply(plume::RenderCommandList* list, const ResolveCache::Summary& summary,
+                   const Plan& plan, const Push& push);
+  void FillPush(Push* push, const ResolveCache::Summary& summary, const Plan& plan,
+                const LightRaw* light) const;
+  // The census's depth statistic: a copy of the coarsest level into a readback buffer, and its
+  // processing when the GPU has run the copy.
+  void RecordProbe(plume::RenderCommandList* list, const Plan& plan);
+  void ProcessProbe(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height,
+                    uint32_t row_texels, uint32_t level_shift);
+
+  // Settings, read at the frame's start.
+  Mode mode_ = Mode::kOff;
   uint32_t census_every_ = 0;
+  uint32_t off_frames_ = 0;
 
   // The frame.
   uint64_t frame_ = 0;
@@ -151,6 +267,8 @@ class AmbientOcclusion {
   uint32_t depth_clears_ = 0;
   std::vector<DepthResolveNote> depth_resolves_;
   uint32_t other_resolves_ = 0;
+  bool frame_had_main_view_ = false;
+  bool ran_this_frame_ = false;
 
   // The camera: this frame's (read at the anchor) and the frame before's.
   temporal::Camera camera_;
@@ -169,7 +287,38 @@ class AmbientOcclusion {
   // The census.
   uint32_t census_frames_logged_ = 0;
   uint32_t census_anomalies_logged_ = 0;
-  bool frame_had_main_view_ = false;
+  uint32_t probes_done_ = 0;
+  uint32_t probe_frames_ = 0;
+
+  // The GPU side.
+  Device* device_ = nullptr;
+  FrameRing* frames_ = nullptr;
+  BindlessHeap* heap_ = nullptr;
+  HostPasses* passes_ = nullptr;
+  EdramTargets* edram_ = nullptr;
+  PassTiming* pass_timing_ = nullptr;
+  bool ready_ = false;  // the layout and the shaders exist
+  std::unique_ptr<plume::RenderPipelineLayout> layout_;
+  std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
+  std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
+  std::array<bool, kVariantCount> pipeline_failed_{};
+  HostImage depth_[3];  // the linear depth chain: the AO's size, then 1/2 and 1/4 of it
+  HostImage raw_;       // the main pass's visibility
+  HostImage denoised_;  // the denoise's
+  uint32_t images_made_for_[2] = {};
+  bool images_failed_logged_ = false;
+  // The census probe's readback.
+  std::unique_ptr<plume::RenderBuffer> probe_buffer_;
+  uint64_t probe_buffer_bytes_ = 0;
+  bool probe_busy_ = false;
+  uint64_t generation_ = 1;  // bumped when the images go: a probe in flight is then ignored
+
+  // What the log has said once.
+  bool no_lens_logged_ = false;
+  bool refused_target_logged_ = false;
+  uint32_t last_mode_logged_ = ~0u;
+  uint64_t runs_ = 0;
+  uint64_t skipped_no_lens_ = 0;
 };
 
 }  // namespace mcla::gpu

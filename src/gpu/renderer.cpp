@@ -228,6 +228,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                              pass_timing_, resolve_memory_);
   }
   if (ok) {
+    // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
+    ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -297,6 +299,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     pass_timing_.Shutdown();
     timing_.Shutdown();
     temporal_.Shutdown();
+    ao_.Shutdown();
     flicker_probe_.Shutdown();
     hdr_tone_.Shutdown();
     hdr_scene_.Shutdown();
@@ -420,6 +423,7 @@ void Renderer::Shutdown() {
   pass_timing_.Shutdown();
   timing_.Shutdown();
   temporal_.Shutdown();
+  ao_.Shutdown();
   flicker_probe_.Shutdown();
   hdr_tone_.Shutdown();
   hdr_scene_.Shutdown();
@@ -900,6 +904,7 @@ void Renderer::ReportFrameStats() {
                                                                       hdr_scene_.HeldBytes() +
                                                                       hdr_tone_.HeldBytes())
                                              : std::string()) +
+                           ", ambient occlusion " + mib(ao_.HeldBytes()) +
                            ", upscaler (output, depth, vectors, its own context) " +
                            mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =

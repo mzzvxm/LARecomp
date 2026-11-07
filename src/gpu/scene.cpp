@@ -1187,6 +1187,11 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
   }
 }
 
+bool Scene::UpscalerRunning() const {
+  return temporal_ && temporal_->active() && temporal_->frame().armed &&
+         temporal_->frame().upscaler != Upscaler::kOff;
+}
+
 void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d) {
   EdramKey color;
   EdramKey depth;
@@ -2205,7 +2210,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   }
   const ResolveCache::Summary summary = resolve_->Execute(record, list);
   if (ao_ && ao_->wants_draws()) {
-    ao_->OnResolve(record, summary);
+    // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
+    // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
+    // below forgets for the next draw.
+    ao_->OnResolve(record, summary, list, UpscalerRunning());
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.

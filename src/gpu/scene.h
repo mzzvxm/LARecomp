@@ -282,6 +282,9 @@ class Scene {
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion: a prepared draw, before it is recorded (only main view draws are told).
   void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d);
+  // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
+  // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
+  bool UpscalerRunning() const;
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);

@@ -249,22 +249,19 @@ inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
 }
 
-// The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl): the depth pass and the apply pass
-// read the EDRAM depth plane, multisampled or not.
-enum class AoPass : uint8_t { kDepth, kDepthMs, kMip, kMain, kDenoise, kApply, kApplyMs, kCount };
-
-inline HostShaderBlob AmbientOcclusionPixelShader(AoPass pass) {
+// The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0
+// the linear depth, 1 the same from a multisampled depth plane, 2 a coarser level, 3 the
+// visibility, 4 the denoise, 5 the apply, 6 the apply over a multisampled depth plane.
+inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
   switch (pass) {
-    case AoPass::kDepth: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
-    case AoPass::kDepthMs: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ms_ps);
-    case AoPass::kMip: return MCLA_GPU_HOST_SHADER_BLOB(ao_mip_ps);
-    case AoPass::kMain: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
-    case AoPass::kDenoise: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_ps);
-    case AoPass::kApply: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
-    case AoPass::kApplyMs: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
-    case AoPass::kCount: break;
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(ao_mip_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
   }
-  return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).
