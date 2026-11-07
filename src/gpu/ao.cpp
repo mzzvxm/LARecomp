@@ -51,8 +51,8 @@ REXCVAR_DEFINE_INT32(
     "(only while it is on): 1 the factor the picture is multiplied by (white: none), 2 the "
     "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
     "(a log scale), 6 how much of the last frames each pixel kept (white: all it can, black: none, "
-    "so it is new or a vehicle; the history starts again after each frame of this view). 0: off. "
-    "Live.")
+    "so it is new, a vehicle, or has no history yet; the history itself goes on as usual). 0: "
+    "off. Live.")
     .range(0, 6)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
@@ -353,6 +353,7 @@ void AmbientOcclusion::Shutdown() {
   for (HostImage& image : history_) {
     image = HostImage{};
   }
+  weight_ = HostImage{};
   history_valid_ = false;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
@@ -470,6 +471,7 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   for (const HostImage& image : history_) {
     add(image);
   }
+  add(weight_);
   return bytes;
 }
 
@@ -485,6 +487,7 @@ void AmbientOcclusion::ReleaseImages() {
   for (HostImage& image : history_) {
     passes_->ReleaseImage(image);
   }
+  passes_->ReleaseImage(weight_);
   history_valid_ = false;
   history_cut_ = false;
   ++generation_;
@@ -977,6 +980,13 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 1");
   }
+  // The picture of debug view 6, made only while that view is shown.
+  if (ok && plan.apply && plan.view == 6u) {
+    ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_FLOAT,
+                              "ao history weight");
+  } else if (weight_.texture) {
+    passes_->ReleaseImage(weight_);
+  }
   if (ok && (images_made_for_[0] != plan.ao[0] || images_made_for_[1] != plan.ao[1])) {
     images_made_for_[0] = plan.ao[0];
     images_made_for_[1] = plan.ao[1];
@@ -1111,7 +1121,7 @@ const char* AmbientOcclusion::HistoryWhyName(HistoryWhy why) {
   switch (why) {
     case HistoryWhy::kUsed: return "used";
     case HistoryWhy::kFirst:
-      return "none yet (the first frame, the occlusion just turned on, a debug view before)";
+      return "none yet (the first frame, the occlusion just turned on)";
     case HistoryWhy::kGap: return "not the frame after the one that made it";
     case HistoryWhy::kView: return "the other kind of view (play against pause/map)";
     case HistoryWhy::kSize: return "another image size";
@@ -1346,10 +1356,16 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.extra[0] = history_tan_[0];
     push.extra[2] = history_tan_[1];
     push.extra[3] = use.on ? float(1.0 - 1.0 / double(std::min(use.age + 2, use.cap))) : 0.0f;
+    // Debug view 6 shows how much history each pixel kept: the pass runs once more into an image of
+    // its own, so that the history that goes on to the next frame is the normal one whatever the
+    // view.
+    if (plan.view == 6u) {
+      DrawPass(list, weight_, temporal_pipeline, push);
+    }
+    push.slots2[2] &= ~0xFFu;  // the frame's own run writes no debug picture
     DrawPass(list, history_out, temporal_pipeline, push);
     history_index_ = out_index;
-    // The debug view of the weights overwrites the visibility: nothing to average into after it.
-    history_valid_ = plan.view != 6u;
+    history_valid_ = true;
     history_cut_ = false;
     history_frame_ = frame_;
     history_pause_ = trigger_pause_;
@@ -1360,7 +1376,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     history_age_ = use.on ? std::min(use.age + 1, use.cap) : 0u;
     // The apply into the scene colour.
     push = base;
-    push.slots[2] = history_out.slot;
+    push.slots[2] = (plan.view == 6u ? weight_ : history_out).slot;
     push.slots[3] = depth_[0].slot;
     push.sizes[0] = float(plan.render[0]);
     push.sizes[1] = float(plan.render[1]);

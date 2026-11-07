@@ -59,9 +59,8 @@
 // constants of its draws (c12-c15: trusted only once it matched the anchor's camera in a frame the
 // camera moved in) or the last step repeated (the constant velocity guess); FrameMotion. The
 // history starts again after a cut (the temporal system's own rule on the camera), a gap of frames,
-// the pause/map view switching, a new image size, and the debug view that overwrites it. One
-// history serves both views: switching is a reset (the pause view's first frame has no occlusion
-// anyway).
+// the pause/map view switching and a new image size. One history serves both views: switching is
+// a reset (the pause view's first frame has no occlusion anyway).
 //
 // The census (mcla_gpu_ao_census, off by default) is step 0 of the design: it logs the trigger, the
 // light constants, the lens and, at its frames, a statistic of the linear depth read back from the
@@ -323,7 +322,7 @@ class AmbientOcclusion {
   // Why a frame's occlusion had no history to lean on (ChooseHistory), or kUsed.
   enum class HistoryWhy : uint8_t {
     kUsed,
-    kFirst,  // none yet, or given back with the images, or dropped by a debug view
+    kFirst,  // none yet, or given back with the images
     kGap,    // not the frame after the one that made it
     kView,   // the other kind of view (play against pause/map)
     kSize,   // another image size
@@ -465,6 +464,9 @@ class AmbientOcclusion {
   // two images that take turns (a pass does not read the image it writes); history_[history_index_]
   // is the one written last.
   HostImage history_[2];
+  // Debug view 6's picture: the temporal pass's weights, in the same format; only while that view
+  // is shown.
+  HostImage weight_;
   uint32_t history_index_ = 0;
   bool history_valid_ = false;    // it holds a picture the next frame may lean on
   bool history_cut_ = false;      // ... and was dropped by a cut (for the census)

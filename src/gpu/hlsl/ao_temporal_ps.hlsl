@@ -25,8 +25,9 @@
 //   switching, a new size) had its two denoise passes already and passes through.
 //
 // Output: RG16_FLOAT, (the result, the linear depth of this frame as the sky-capped distance), the
-// next frame's history. Debug view 6 writes the confidence in place of the visibility (the apply
-// pass then shows it; ao.cpp drops the history after such a frame).
+// next frame's history. Debug view 6 is a second run of the pass, into an image of its own, that
+// writes the confidence in place of the visibility (the apply pass then shows it); the frame's
+// own run, which makes the history, is made with the view cleared.
 //
 // Both the camera's motion and the lens are the previous frame's, and the depth is rendered with a
 // sub-pixel jitter while an upscaler runs: a pixel finds its history within a pixel or so, not
