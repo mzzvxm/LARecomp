@@ -37,6 +37,10 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
   return true;
 }
 
+plume::RenderCommandQueue* SwapChain::Queue() const {
+  return queue_ ? queue_ : device_->queue();
+}
+
 bool SwapChain::MakeChain(bool hdr10) {
   format_ = kSdrFormat;
   hdr_ = false;
@@ -49,7 +53,7 @@ bool SwapChain::MakeChain(bool hdr10) {
     const plume::RenderSwapChainDesc hdr_desc(
         window_, FormatFor(true), kFramesInFlight + 1, present_wait_, kFramesInFlight,
         plume::RenderSwapChainColorSpace::HDR10_ST2084);
-    swap_chain_ = device_->queue()->createSwapChain(hdr_desc);
+    swap_chain_ = Queue()->createSwapChain(hdr_desc);
     if (swap_chain_) {
       format_ = FormatFor(true);
       hdr_ = true;
@@ -63,7 +67,7 @@ bool SwapChain::MakeChain(bool hdr10) {
   if (!swap_chain_) {
     const plume::RenderSwapChainDesc desc(window_, kSdrFormat, kFramesInFlight + 1, present_wait_,
                                           kFramesInFlight);
-    swap_chain_ = device_->queue()->createSwapChain(desc);
+    swap_chain_ = Queue()->createSwapChain(desc);
   }
   if (!swap_chain_) {
     REXLOG_ERROR("[gpu] Plume could not create the swap chain");
@@ -101,13 +105,20 @@ bool SwapChain::MakeChain(bool hdr10) {
 // surface are destroyed straight after FrameRing::WaitIdle, as Rebuild does before it resizes; the
 // validation layer is the judge (VUID-vkDestroySwapchainKHR, binary semaphores of a present).
 SwapChain::Recreated SwapChain::Recreate(bool hdr10) {
+  if (device_ && swap_chain_) {
+    vsync_ = swap_chain_->isVsyncEnabled();
+  }
+  return RecreateOn(queue_, hdr10, vsync_);
+}
+
+SwapChain::Recreated SwapChain::RecreateOn(plume::RenderCommandQueue* queue, bool hdr10,
+                                           bool vsync) {
   if (!device_) {
     return Recreated::kLost;
   }
   const bool was_hdr = hdr_;
-  if (swap_chain_) {
-    vsync_ = swap_chain_->isVsyncEnabled();
-  }
+  queue_ = queue;
+  vsync_ = vsync;
   // The framebuffers name the back buffers, so they go before the chain.
   framebuffers_.clear();
   render_semaphores_.clear();
@@ -127,6 +138,7 @@ void SwapChain::Shutdown() {
   render_semaphores_.clear();
   swap_chain_.reset();
   device_ = nullptr;
+  queue_ = nullptr;
 }
 
 bool SwapChain::NeedsRebuild() const {
@@ -169,6 +181,7 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
   // Vulkan: the acquire needs the chain to itself, so the latency reducer's calls on the update
   // thread that name it wait (latency.h).
   const latency::SwapChainUse use;
+  const std::lock_guard lock(use_mutex_);
   return swap_chain_->acquireTexture(signal, image);
 }
 
@@ -178,6 +191,7 @@ bool SwapChain::Present(uint32_t image) {
   // Vulkan: the present needs the chain to itself, so the latency reducer's calls on the update
   // thread that name it wait (latency.h).
   const latency::SwapChainUse use;
+  const std::lock_guard lock(use_mutex_);
   return swap_chain_->present(image, waits, 1);
 }
 
@@ -193,6 +207,7 @@ bool SwapChain::SetHdrMetadata(const plume::RenderHdrMetadata& metadata) {
   }
   // Vulkan: vkSetHdrMetadataEXT needs the chain to itself too (as Present and Acquire).
   const latency::SwapChainUse use;
+  const std::lock_guard lock(use_mutex_);
   return swap_chain_->setHdrMetadata(metadata);
 }
 

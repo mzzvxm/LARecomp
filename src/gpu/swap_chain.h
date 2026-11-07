@@ -22,12 +22,22 @@
 // present pass, the overlay) keeps its pipelines for FormatFor(false) and FormatFor(true) and is
 // told which set to use.
 //
+// The queue the chain is made on is the device's render queue, or the present queue of frame
+// generation (frame_generation.h) while it runs: a present made on the render queue sits behind the
+// frame that follows it, and the pacer thread presents on a queue of its own. RecreateOn moves the
+// chain from one to the other.
+//
 // Threading: Initialize on the lifecycle thread before the render thread
-// starts; everything else on the render thread (Recreate at a frame boundary, with the GPU idle).
+// starts; everything else on the render thread (Recreate at a frame boundary, with the GPU idle),
+// except that while frame generation runs the pacer thread calls Acquire, Present and the readers of
+// the back buffers (texture, framebuffer, render_semaphore) and the render thread does not: the three
+// calls that need the chain to themselves (Acquire, Present, SetHdrMetadata) hold a lock, and
+// Rebuild, Recreate and RecreateOn are called with the pacer paused.
 // ===========================================================================
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -78,6 +88,9 @@ class SwapChain {
   // logged; the other values are in the enum. Anything that drew into the old back buffers (the
   // framebuffers, the semaphores) is gone with it.
   Recreated Recreate(bool hdr10);
+  // The same on the queue `queue` (null: the device's render queue), which stays the chain's from
+  // then on, with `vsync` as the presentation mode. The old chain is destroyed first, as above.
+  Recreated RecreateOn(plume::RenderCommandQueue* queue, bool hdr10, bool vsync);
   // Recreate found no chain to make: the renderer calls it again until one exists. Nothing is
   // presented meanwhile (empty() is true).
   bool lost() const { return device_ != nullptr && !swap_chain_; }
@@ -117,18 +130,28 @@ class SwapChain {
   uint32_t width() const;
   uint32_t height() const;
   plume::RenderFormat format() const { return format_; }
+  // The window the chain presents to, for what is asked of the display it is on.
+  plume::RenderWindow window() const { return window_; }
+  // Whether the chain is on its way to the vsync it was asked for (SetVsync): the Vulkan chain
+  // changes its presentation mode at the next rebuild.
+  bool vsync_enabled() const { return swap_chain_ && swap_chain_->isVsyncEnabled(); }
   // The chain is HDR10 (R10G10B10A2 in ST 2084): what is drawn into it must be PQ code values.
   bool hdr() const { return hdr_; }
 
  private:
   static constexpr plume::RenderFormat kSdrFormat = plume::RenderFormat::B8G8R8A8_UNORM;
 
+  plume::RenderCommandQueue* Queue() const;
   // Makes swap_chain_ (HDR10 first when `hdr10`, else, or when that is refused, SDR), its per-image
   // objects and logs it; false (logged) when no chain could be made, with swap_chain_ empty.
   bool MakeChain(bool hdr10);
   bool BuildPerImageObjects();
 
   Device* device_ = nullptr;
+  // The queue the chain is made on (null: the device's).
+  plume::RenderCommandQueue* queue_ = nullptr;
+  // Held by Acquire, Present and SetHdrMetadata: the chain wants one thread at a time in each.
+  std::mutex use_mutex_;
   plume::RenderWindow window_{};
   bool vsync_ = false;  // what the next chain starts with
   plume::RenderFormat format_ = kSdrFormat;
