@@ -186,6 +186,21 @@ void FrameRing::Advance() {
   ReleaseCompleted();
 }
 
+void FrameRing::WaitPreviousFrame() {
+  if (!device_) {
+    return;
+  }
+  // Every submission before the previous frame's is complete already (Advance waited for the slot
+  // this frame records into), and what the open list recorded so far names only objects retired
+  // with a later serial, which ReleaseCompleted leaves alone.
+  Slot& previous = slots_[(slot_ + kFramesInFlight - 1) % kFramesInFlight];
+  if (!previous.submitted) {
+    return;
+  }
+  WaitSlot(previous);
+  ReleaseCompleted();
+}
+
 void FrameRing::WaitIdle() {
   if (!device_) {
     return;

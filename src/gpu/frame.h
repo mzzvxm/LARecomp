@@ -106,6 +106,14 @@ class FrameRing {
   // whatever retired object that wait proved idle.
   void Advance();
 
+  // Waits for the frame submitted just before the one being recorded (the other slot) to complete,
+  // and destroys what its completion proves idle. For a library that releases things of its own a
+  // fixed number of calls after it made them (AMD's FidelityFX Vulkan backend: FFX_MAX_QUEUED_FRAMES)
+  // and counts two calls where this ring counts one frame (frame_generation_ffx.cpp). Cheap when the
+  // frame is done, as it nearly always is by the time the next one is being recorded. Valid with a
+  // list open. No-op when that slot has nothing outstanding.
+  void WaitPreviousFrame();
+
   // Waits until the queue is idle -- every submission, and the queue work that
   // follows the last one (the swap chain's present), which no frame fence
   // covers -- then waits each slot's outstanding fence (consuming its signal,

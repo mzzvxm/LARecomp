@@ -600,6 +600,26 @@ bool FfxFrameGeneration::Generate(plume::RenderCommandList* list, const FgInputs
   if (!native_list) {
     return fail("the command list has no native object");
   }
+  // AMD's Vulkan backend (ffx_vk.cpp, ffxUnregisterResources) counts a frame at the end of every
+  // dispatch of an effect and, with FFX_MAX_QUEUED_FRAMES 4, destroys the image views a dispatch
+  // registered when the third one after it ends. The preparation and the generation are two
+  // dispatches, so the views of a frame's preparation go when the NEXT frame's generation ends: while
+  // the render queue may still be executing that frame (two are in flight), with the descriptor set
+  // that holds the view bound in its command buffer: VUID-vkDestroyImageView-imageView-01026, seen
+  // once in a validation run (frame generation on, next2-vk-val). One frame in flight at this point
+  // makes its views safe to destroy: the previous frame must have completed before this one's calls
+  // are recorded. Nearly always it has (the GPU needs less than a frame of the CPU's time). The
+  // D3D12 backend writes its descriptors on a ring of the same size, which two frames of lag already
+  // covers, and destroys nothing.
+  // CHECK: this is read from the SDK's source at tag v1.1.4 (sdk/src/backends/vk/ffx_vk.cpp);
+  // the DLL we ship reports provider 3.1.6 and its source was not read. The run that settles it:
+  // Vulkan validation with frame generation on and a run of some minutes (MSAA changes among
+  // them): VUID-vkDestroyImageView-imageView-01026 must not come again; and that the wait costs no
+  // visible frame time (the render thread's frame time with the wait; it only waits where the GPU is
+  // slower than the CPU frame).
+  if (ActiveBackend() == Backend::kVulkan && frames_) {
+    frames_->WaitPreviousFrame();
+  }
   const int32_t gen_w = int32_t(in.generation_size[0]);
   const int32_t gen_h = int32_t(in.generation_size[1]);
 
