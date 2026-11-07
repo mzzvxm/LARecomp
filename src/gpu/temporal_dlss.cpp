@@ -351,6 +351,11 @@ struct Runtime {
 // D3D12: Streamline has fully started and the swap chain is still to be handed to it
 // (dlss::UpgradeSwapChain). Read at every present, so not behind Runtime::mu.
 std::atomic<bool> g_swap_chain_pending{false};
+// D3D12: a swap chain was offered to Streamline once (taken or refused), and the chain was made
+// again since (dlss::SwapChainRecreated: the HDR switch destroys the wrapped chain and makes a plain
+// one): the next present offers the new one. Both read at every present.
+std::atomic<bool> g_swap_chain_offered{false};
+std::atomic<bool> g_swap_chain_again{false};
 
 Runtime& Rt() {
   static Runtime runtime;
@@ -1645,11 +1650,22 @@ void AbandonVulkanHook(const std::string& why) {
 namespace dlss {
 
 bool SwapChainUpgradePending() {
-  return g_swap_chain_pending.load(std::memory_order_acquire);
+  return g_swap_chain_pending.load(std::memory_order_acquire) ||
+         g_swap_chain_again.load(std::memory_order_acquire);
+}
+
+void SwapChainRecreated() {
+  // Before the first offer the pending flag does it all (Streamline is still starting, or the
+  // first present will offer the chain that exists then).
+  if (g_swap_chain_offered.load(std::memory_order_acquire)) {
+    g_swap_chain_again.store(true, std::memory_order_release);
+  }
 }
 
 bool UpgradeSwapChain(void** swap_chain) {
-  if (!swap_chain || !*swap_chain || !g_swap_chain_pending.load(std::memory_order_acquire)) {
+  if (!swap_chain || !*swap_chain ||
+      (!g_swap_chain_pending.load(std::memory_order_acquire) &&
+       !g_swap_chain_again.load(std::memory_order_acquire))) {
     return false;
   }
   Runtime& rt = Rt();
@@ -1661,11 +1677,15 @@ bool UpgradeSwapChain(void** swap_chain) {
   if (!lock.owns_lock()) {
     return false;
   }
-  g_swap_chain_pending.store(false, std::memory_order_release);  // once
+  g_swap_chain_pending.store(false, std::memory_order_release);  // once per chain
+  if (g_swap_chain_again.exchange(false, std::memory_order_acq_rel)) {
+    rt.swap_chain_tried = false;  // a new chain: its own offer (the old wrapper went with its chain)
+  }
   if (!rt.initialized || rt.shut_down || rt.swap_chain_tried || !rt.api.upgrade_interface) {
     return false;
   }
   rt.swap_chain_tried = true;
+  g_swap_chain_offered.store(true, std::memory_order_release);
   void* wrapper = *swap_chain;
   const sl::Result result = rt.api.upgrade_interface(&wrapper);
   if (result != sl::Result::eOk || !wrapper) {
