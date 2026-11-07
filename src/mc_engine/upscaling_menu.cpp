@@ -488,6 +488,13 @@ void SharpnessSet(int i, CvarWriter write) {
 // CHECK: open DISPLAY at 1280x720 with a temporal upscaler on, the mode row on PERFORMANCE and MSAA
 // held ("MSAA (DONE BY FSR 3.1)"), and look at the right edge (nothing cut); then the same with FSR 1
 // on ULTRA QUAL.
+// CHECK: in a game, with DISPLAY open, step UPSCALING through every choice: the row under it is
+// relabelled at once (RENDER SCALE, FSR 1 MODE, FSR 3.1 MODE, FSR 4 MODE, DLSS MODE) with its own
+// saved mode on the middle value and no text of another row or state left in it; left and right wrap
+// at both ends of the lists of 4 and 5 entries, and of RENDER SCALE with an entry of its own ("67%" in
+// a 1080p window at the default scale 1) that goes when the row steps off it; the page is not built
+// again ("[pause-menu] 'DISPLAY' native rows built" once); the render scale and the FSR 1 preset
+// change the picture at a frame boundary (log "[gpu] temporal: live change").
 
 constexpr RowDynamics kUpscalerDynamics = {.str_label = UpscalerLabel,
                                            .suffix = UpscalerRowSuffix,
