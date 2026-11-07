@@ -101,6 +101,15 @@ class HostPasses {
                                                         plume::RenderFormat format,
                                                         const char* name);
 
+  // The same with another pipeline layout, the target's blend as given and its sample count (1, 2,
+  // 4 or 8): for a pass drawing into a multisampled scene target (ao.h's apply pass, which
+  // multiplies the colour of every sample by one factor).
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,
+                                                        const plume::RenderShader& pixel_shader,
+                                                        plume::RenderFormat format,
+                                                        const plume::RenderBlendDesc& blend,
+                                                        uint32_t sample_count, const char* name);
+
   // Binds the layout, the four texture sets and the sampler set on `list`.
   void Bind(plume::RenderCommandList* list) const;
 

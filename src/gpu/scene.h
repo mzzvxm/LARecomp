@@ -77,6 +77,7 @@
 
 namespace mcla::gpu {
 
+class AmbientOcclusion;
 class BindlessHeap;
 class GuestLayout;
 class GuestOcclusion;
@@ -111,6 +112,9 @@ class Scene {
   // The temporal groundwork (temporal.h): called at the frame's start, for every prepared draw,
   // at the composite marker and at the present. Null: none.
   void SetTemporal(TemporalSystem* temporal) { temporal_ = temporal; }
+  // The screen-space ambient occlusion (ao.h): told of the main view's draws, the camera, the
+  // depth clears and the resolves, and run at the mid-scene depth resolve. Null: none.
+  void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -276,6 +280,11 @@ class Scene {
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
+  // The ambient occlusion: a prepared draw, before it is recorded (only main view draws are told).
+  void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d);
+  // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
+  // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
+  bool UpscalerRunning() const;
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
@@ -296,6 +305,7 @@ class Scene {
   PassTiming* pass_timing_ = nullptr;
   GuestOcclusion* occlusion_ = nullptr;
   TemporalSystem* temporal_ = nullptr;
+  AmbientOcclusion* ao_ = nullptr;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.

@@ -1634,6 +1634,19 @@ constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0
 // anti-aliasing before the UI, and FSR1 on the present.
 const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
+// Ambient occlusion (gpu/ao.h, live): off, half resolution, full resolution. The row is at most 23
+// characters with its longest value.
+const char* const kNativeAoVals[]  = {"off", "low", "high"};
+const char* const kNativeAoNames[] = {"OFF", "LOW", "HIGH"};
+// How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
+// off. At most 21 characters with its longest value.
+const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
+const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
+bool AoOn() {
+    const std::string mode = CvarGet("mcla_gpu_ao");
+    return mode == "low" || mode == "high";
+}
+constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1650,6 +1663,11 @@ const ItemDef kNativeItems[] = {
     NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
                                  kNativeAaVals, kNativeAaNames, 3),
                             &mcla_menu::kNativeAaDynamics)),
+    NativeOnly(Str ("PM_RxGpuAo",       "mcla_gpu_ao",           "AMBIENT OCCLUSION: ",
+                    kNativeAoVals, kNativeAoNames, 3)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
+                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
+                            &kAoIntensityDynamics)),
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
 #endif
