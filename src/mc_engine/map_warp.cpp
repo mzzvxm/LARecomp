@@ -75,8 +75,9 @@ REXCVAR_DEFINE_STRING(start_garage_last, "hollywood", "MCLA/World",
 REXCVAR_DEFINE_STRING(start_garage, "hollywood", "MCLA/World",
     "Which district garage the car starts the session at: hollywood (what the game "
     "always does), beaches, sc, or last (the garage nearest the car when the game was "
-    "closed). The car is moved there once, when it first appears at Hollywood's door.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    "closed). The car is moved there once, when it first appears at Hollywood's door, so a "
+    "change is seen at the next start of the game.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
 

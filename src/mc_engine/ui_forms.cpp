@@ -93,7 +93,8 @@ struct Entry {
     uint32_t form = 0;
     FormHandler handler;
 };
-constexpr int kMaxForms = 32;
+// The pause menu makes one form per menu, on first open: 30 with the restart prompt.
+constexpr int kMaxForms = 40;
 Entry g_forms[kMaxForms];  // guest thread only
 int g_form_count = 0;
 
