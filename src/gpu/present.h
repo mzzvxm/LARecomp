@@ -57,6 +57,7 @@
 #include "hdr.h"
 #include "host_passes.h"
 #include "records.h"
+#include "textures.h"
 
 namespace mcla::gpu {
 
@@ -123,10 +124,27 @@ class PresentPass {
   // (the flicker probe); not counted in the summary.
   void DrawUnscaled(plume::RenderCommandList* list);
 
+  // The same as Prepare for a picture the caller made: `image` (an image of code values that may
+  // exceed 1, as HdrScene's: RGBA16F, the display table read by the extended-code rule;
+  // `interpolated`: between the table's entries, as for the float scene) fitted into `width` x
+  // `height` where the front buffer would be. Frame generation's generated frame is shown this way
+  // (frame_generation.h). Needs the table written (a Prepare ran before). Outside a render pass; Draw
+  // then draws it. The route's log lines stay quiet: they describe the real frame.
+  void PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
+                    const HostImage& image, bool interpolated);
+
   // What Prepare bound for this frame.
   bool source_ready() const { return source_ready_; }
   uint32_t source_width() const { return source_width_; }
   uint32_t source_height() const { return source_height_; }
+  // The front buffer's texture key and the size of what the pass reads of it, after a Prepare that
+  // bound it (source_ready); false before one (or for PrepareImage's picture).
+  bool front_key(TextureKey* key) const {
+    if (key) {
+      *key = front_key_;
+    }
+    return front_key_valid_;
+  }
 
   std::string TakeSummary();
 
@@ -141,6 +159,9 @@ class PresentPass {
   };
   static Fit FitOf(uint32_t source_width, uint32_t source_height, uint32_t width,
                    uint32_t height);
+  // The tail of Prepare and PrepareImage: the letterbox, FSR1's passes or the table pass, for the
+  // source bound.
+  void PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // Draw's body: false when there is nothing to draw.
   bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // The bilinear present of `source` (`width` x `height` texels) into `fit`,
@@ -278,6 +299,12 @@ class PresentPass {
   uint32_t source_width_ = 0;
   uint32_t source_height_ = 0;
   bool source_ready_ = false;
+
+  // The front buffer Prepare bound last (the frame layers' picture test, frame generation).
+  TextureKey front_key_;
+  bool front_key_valid_ = false;
+  // PrepareImage is on: PrepareFsr says nothing of the route it takes.
+  bool quiet_route_ = false;
 
   bool reported_unreadable_ = false;
   bool reported_zero_ramp_ = false;

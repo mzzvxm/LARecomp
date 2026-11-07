@@ -278,6 +278,8 @@ bool PresentPass::GreenGammaTable(float out[256]) const {
 void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_t width,
                           uint32_t height) {
   source_ready_ = false;
+  front_key_valid_ = false;
+  quiet_route_ = false;
   route_ = Route::kBilinear;
   if (ramp_dirty_ || !ramp_written_) {
     bool zero = true;
@@ -357,6 +359,8 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
   source_width_ = bound.scale.Edge(fetch.key.width);
   source_height_ = bound.scale.Edge(fetch.key.height);
   source_ready_ = true;
+  front_key_ = fetch.key;
+  front_key_valid_ = true;
   // A frame that kept its UI as a layer (HDR10): the scene and the UI composed in the game's
   // code values, in float, where the front buffer would be read.
   extended_ = false;
@@ -368,10 +372,33 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
     // The float scene (HDR stage 3) reads the table between its entries.
     interpolated_ = hdr_scene_->scene_is_float();
   }
+  PrepareRoute(list, width, height);
+}
+
+void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
+                               const HostImage& image, bool interpolated) {
+  source_ready_ = false;
+  front_key_valid_ = false;
+  route_ = Route::kBilinear;
+  if (!ramp_written_ || !image.texture || image.slot == kInvalidBindlessSlot) {
+    return;
+  }
+  source_slot_ = image.slot;
+  source_width_ = image.width;
+  source_height_ = image.height;
+  source_ready_ = true;
+  extended_ = true;
+  interpolated_ = interpolated;
+  quiet_route_ = true;
+  PrepareRoute(list, width, height);
+  quiet_route_ = false;
+}
+
+void PresentPass::PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   fit_ = FitOf(source_width_, source_height_, width, height);
   if (REXCVAR_GET(mcla_gpu_fsr)) {
     PrepareFsr(list, fit_);
-  } else if (!reported_route_.empty()) {
+  } else if (!quiet_route_ && !reported_route_.empty()) {
     reported_route_.clear();
     REXLOG_INFO("[gpu] present: FSR1 off (mcla_gpu_fsr); bilinear present");
   }
@@ -528,7 +555,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
   if (fit.w <= source_width_ || fit.h <= source_height_) {
     const std::string route = std::format("bilinear {}x{} -> {}x{}", source_width_,
                                           source_height_, fit.w, fit.h);
-    if (route != reported_route_) {
+    if (!quiet_route_ && route != reported_route_) {
       reported_route_ = route;
       REXLOG_INFO("[gpu] present: FSR1 on, not used: the letterbox {}x{} is not larger than the "
                   "front buffer {}x{} on both axes; bilinear present",
@@ -565,7 +592,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
       std::format("fsr1 {}x{} -> {}x{}, {} EASU pass{}{}", source_width_, source_height_, fit.w,
                   fit.h, passes, passes == 1 ? "" : "es",
                   stretch ? std::format(" to {}x{} then bilinear", w, h) : std::string());
-  if (route != reported_route_) {
+  if (!quiet_route_ && route != reported_route_) {
     reported_route_ = route;
     REXLOG_INFO("[gpu] present: {}, RCAS sharpness {:.3f}", route, sharpness_);
   }

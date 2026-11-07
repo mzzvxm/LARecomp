@@ -220,6 +220,10 @@ class FrameLayers {
   // ---- Consumers (HDR compose, later upscalers and frame generation) -------------------------
   // The layers of the guest frame last presented; valid is false when it had none.
   Frame presentable() const;
+  // The float scene of `frame` (HDR stage 3) while the source still has it (its epoch is the frame's)
+  // and it covers `width` x `height` host pixels, else null: the frame's scene is then its 8-bit
+  // hudless image. What HdrScene::Compose and frame generation (frame_generation.h) read as the scene.
+  const HostImage* FloatSceneOf(const Frame& frame, uint32_t width, uint32_t height) const;
   // Memory held by the images.
   uint64_t HeldBytes() const;
   // Counts a present that could not use the layers it had (the front buffer was not their
