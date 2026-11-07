@@ -139,6 +139,11 @@ std::string ResolutionLabel(int i) {
 
 int ResolutionIndex() { return ResolutionList().current; }
 
+// CHECK: that writing `resolution` while the game runs does not reach the game. The SDK also reads it
+// as the guest's video mode (xboxkrnl_video.cpp VdQueryVideoMode) every time the guest asks, which the
+// game is believed to do once, at start-up (its screen stays 1280x720 whatever `resolution` says: the
+// owner's larecomp.toml has "4k"). Step RESOLUTION in a game and look for a change of the game's own
+// screen size (the log's "[gpu] edram: the game's screen is ..." must not come again) or aspect.
 void ResolutionSet(int i, CvarWriter write) {
   const List list = ResolutionList();
   if (i < 0 || i >= int(list.sizes.size())) return;

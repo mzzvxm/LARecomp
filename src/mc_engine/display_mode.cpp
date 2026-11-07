@@ -486,6 +486,10 @@ void Shutdown() {
   RestoreDesktopMode("the game is closing", false);
 }
 
+// CHECK: Alt+Tab out of FULLSCREEN and back: the display has its own mode while another window has the
+// focus and the chosen one again afterwards, once each way (the mode change itself must not cause
+// focus events that switch it back and forth); the log has one "[display] ... is back (the window
+// lost the focus)" and one "[display] FULLSCREEN: the display is now ..." per round trip.
 void OnFocusChanged(bool focused) {
   if (WantedMode() != Mode::kExclusive) return;
   if (focused) {

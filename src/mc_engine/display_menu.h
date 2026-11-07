@@ -27,6 +27,12 @@
 // the display's size cannot be asked). Values: "BORDERLESS" and "FULLSCREEN" 10; sizes 9 at most
 // ("3840X2160"), 10 at five digits across. The page's widest label is 23 and its widest value 17: 40
 // of 41.
+// CHECK: DISPLAY open on a 4K display in BORDERLESS ("RESOLUTION (3840X2160)" grey, the longest label
+// on the page with a native upscaler at "PERFORMANCE (50%)"), in FULLSCREEN and in WINDOWED, on NATIVE
+// and on XENIA ("RENDER SCALE (RESTART)"): the right edge, the button prompts and the scroll bar are not
+// cut. The page is built once ("native rows built" once) while the lists change under it: stepping DISPLAY
+// MODE greys and relabels RESOLUTION at once, and its value list changes length (a handful of sizes in
+// WINDOWED, about 20 modes in FULLSCREEN, one in BORDERLESS) without the row showing a stale text.
 
 #include "menu_items.h"
 

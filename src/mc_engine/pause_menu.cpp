@@ -1382,6 +1382,12 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // to the running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list).
 // A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
 // comes back when the renderer is switched back.
+// CHECK: on XENIA (RENDERER set to XENIA, restarted) the DISPLAY page lists DISPLAY MODE, VSYNC,
+// RESOLUTION, MSAA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI and RENDER SCALE (last), VSYNC writes
+// vsync, MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
+// 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of the
+// last two offers "Restart now?". On NATIVE the page is as before with the new first rows, and VSYNC
+// writes mcla_gpu_vsync.
 
 // VSYNC: the Plume renderer's mcla_gpu_vsync (live, at the next present), or the SDK's vsync.
 const char* VsyncCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_vsync" : "vsync"; }
