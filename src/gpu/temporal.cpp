@@ -419,13 +419,13 @@ void TemporalSystem::NoteMsaa() {
 // the path: the scene's size, the upscaler and its mode, changed while the game runs
 // ---------------------------------------------------------------------------
 
-bool TemporalSystem::GuestFrameSize(uint32_t out[2]) const {
+bool TemporalSystem::GuestFrameSize(uint32_t out[2], bool quiet) const {
   if (last_camera_.width != 0 && last_camera_.height != 0) {
     out[0] = last_camera_.width;
     out[1] = last_camera_.height;
     return true;
   }
-  return edram_ && edram_->GuestScreen(&out[0], &out[1]);
+  return edram_ && edram_->GuestScreen(&out[0], &out[1], quiet);
 }
 
 BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
@@ -539,6 +539,38 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   if (backend->PreparedReady(request)) {
     SwitchPath(list, to, to_mode, &request);
     PublishUpscalerSwitching(change_pending_);
+  }
+}
+
+void TemporalSystem::PrewarmDlss() {
+  // A PC that can run DLSS, whose game was not started with it: NGX's first-time work (Streamline's
+  // own start on D3D12, then the first feature of each kind: seconds each, 1.2 s to 8.4 s measured)
+  // is done now, in the background, with features that are freed at once, so that the first switch to
+  // DLSS from the menu finds it done (temporal_dlss.cpp, "the pre-warm"). Nothing here waits for it.
+  if (!dlss_ || !path_adopted_ || !edram_ || !dlss_->PrewarmPending()) {
+    return;
+  }
+  // The settings ask for DLSS (or it runs): the backend ends the pre-warm itself at its Request or
+  // Prepare, and the real context is the worker's first job.
+  if (wanted_ == Upscaler::kDlss || effective_ == Upscaler::kDlss) {
+    return;
+  }
+  uint32_t guest[2] = {};
+  if (!GuestFrameSize(guest, /*quiet=*/true)) {
+    return;  // the game has not set its screen size yet
+  }
+  const Clock::time_point now = Clock::now();
+  if (prewarm_wait_since_ == Clock::time_point{}) {
+    prewarm_wait_since_ = now;
+  }
+  if (now - prewarm_wait_since_ < kPrewarmDelay) {
+    return;
+  }
+  UpscaleMode mode = UpscaleMode::kNativeAa;
+  if (dlss_->PrewarmNext(&mode)) {
+    // The context a live change to this mode would ask for (the same sizes), so that what the
+    // pre-warm made is what the switch needs.
+    dlss_->Prewarm(RequestFor(Upscaler::kDlss, mode, guest));
   }
 }
 
@@ -971,6 +1003,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     // A frame is jittered whole or not at all, and drawn at one scale: the path changes only
     // between frames, here, before the frame's first draw.
     UpdatePath(list);
+    PrewarmDlss();
   }
   // The context and the output image of an upscaler that has been off for a while go (10 s); not
   // while another one is being made (the stage).

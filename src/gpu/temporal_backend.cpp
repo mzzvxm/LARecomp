@@ -167,15 +167,19 @@ bool ModeRuns(Upscaler upscaler, UpscaleMode mode) {
   return upscaler != Upscaler::kOff && size_t(mode) < size_t(UpscaleMode::kCount);
 }
 
+UpscaleMode SavedUpscaleMode(Upscaler upscaler) {
+  const std::string mode = upscaler == Upscaler::kFsr4   ? REXCVAR_GET(mcla_gpu_fsr4_mode)
+                           : upscaler == Upscaler::kDlss ? REXCVAR_GET(mcla_gpu_dlss_mode)
+                                                         : REXCVAR_GET(mcla_gpu_fsr31_mode);
+  UpscaleMode parsed = UpscaleMode::kNativeAa;
+  ParseUpscaleMode(mode, &parsed);
+  return ModeRuns(upscaler, parsed) ? parsed : UpscaleMode::kNativeAa;
+}
+
 UpscalerSettings ReadUpscalerSettings() {
   UpscalerSettings out;
   ParseUpscaler(REXCVAR_GET(mcla_gpu_upscaler), &out.upscaler);
-  const std::string mode = out.upscaler == Upscaler::kFsr4   ? REXCVAR_GET(mcla_gpu_fsr4_mode)
-                           : out.upscaler == Upscaler::kDlss ? REXCVAR_GET(mcla_gpu_dlss_mode)
-                                                             : REXCVAR_GET(mcla_gpu_fsr31_mode);
-  UpscaleMode parsed = UpscaleMode::kNativeAa;
-  ParseUpscaleMode(mode, &parsed);
-  out.mode = ModeRuns(out.upscaler, parsed) ? parsed : UpscaleMode::kNativeAa;
+  out.mode = SavedUpscaleMode(out.upscaler);
   out.sharpness = float(std::clamp(REXCVAR_GET(mcla_gpu_upscaler_sharpness), 0.0, 1.0));
   return out;
 }

@@ -242,6 +242,15 @@ uint32_t RenderingAdapterVendor(const std::string& preferred_adapter) {
 #endif
 }
 
+std::string RenderingAdapterName(const std::string& preferred_adapter) {
+#if defined(_WIN32) && defined(LARECOMP_GPU_HAS_D3D12)
+  return d3d12::DescribeRenderingAdapter(preferred_adapter).name;
+#else
+  (void)preferred_adapter;
+  return {};
+#endif
+}
+
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
   MCLA_GPU_ACTIVE(InvalidateAfterExternalWork(list));
 }

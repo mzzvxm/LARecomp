@@ -25,9 +25,11 @@
 //
 // DLSS on an RTX card whose files are missing (or fail their signature check) is listed too, as
 // "DLSS (SETUP)", with its mode row grey ("DLSS (NEEDS SETUP)"); the game runs without it. On
-// Vulkan DLSS is listed as "DLSS (RESTART)" until the game was started with it chosen (the device
-// is made with NVIDIA Streamline's help): that is the one upscaler choice that still waits for a
-// start; its mode row says "DLSS (AFTER RESTART)" meanwhile.
+// Vulkan the device is made with NVIDIA Streamline's help whenever the PC can run DLSS (an RTX
+// card with the files in place), whatever is chosen at the start, so DLSS switches on live there
+// too. Only an RTX card whose device was made without it (Plume took another GPU than the one the
+// hook looked at) lists DLSS as "DLSS (RESTART)", and its mode row says "DLSS (AFTER RESTART)":
+// the one upscaler choice that can still wait for a start.
 //
 // Each technology keeps its own mode; the value is the vendor's name and the share of the output
 // the 3D scene is drawn at, per direction. NATIVE AA and DLAA draw it at the full size and only

@@ -405,12 +405,18 @@ class TemporalSystem {
   // waits. SwitchPath makes the switch (false: the scene's targets could not be made, nothing
   // changed). The stage is the new path while its context is being made.
   void UpdatePath(plume::RenderCommandList* list);
+  // DLSS's first-time work done in the background while the game runs some other way (temporal_backend.h
+  // Prewarm): called at every frame boundary, one atomic read when there is nothing to do. It waits
+  // for the guest's frame size and kPrewarmDelay after it was first known, so that the first seconds
+  // of the game's own start-up are left alone, then issues one step at a time.
+  void PrewarmDlss();
   void AdoptStartPath();
   bool SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
                   const BackendRequest* request);
   void CancelStage(const char* why);
   // The guest's frame size: the last accepted anchor's, else the game's screen; false until known.
-  bool GuestFrameSize(uint32_t out[2]) const;
+  // `quiet`: a poll (PrewarmDlss) that must not log the game's unset screen size as an error.
+  bool GuestFrameSize(uint32_t out[2], bool quiet = false) const;
   // The context the path (`upscaler`, `mode`) needs for a guest frame of `guest` pixels: the render
   // size at the scene's scale for that mode and the output size at the images of the screen's.
   BackendRequest RequestFor(Upscaler upscaler, UpscaleMode mode, const uint32_t guest[2]) const;
@@ -460,6 +466,8 @@ class TemporalSystem {
   Upscaler wanted_ = Upscaler::kOff;
   UpscaleMode wanted_mode_ = UpscaleMode::kNativeAa;
   bool path_adopted_ = false;  // the start's path was taken (AdoptStartPath)
+  Clock::time_point prewarm_wait_since_{};  // the guest's size was first known with a pre-warm armed
+  static constexpr std::chrono::seconds kPrewarmDelay{5};
   // The new path whose context is being made while the old one runs.
   struct Stage {
     bool active = false;

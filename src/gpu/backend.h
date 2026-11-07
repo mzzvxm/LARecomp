@@ -203,6 +203,10 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device);
 // as DefaultAdapterName makes it, else Plume's). 0 when it cannot be told (no DXGI, no adapter).
 // Asked before the device exists: Streamline is only started for an NVIDIA GPU on Vulkan.
 uint32_t RenderingAdapterVendor(const std::string& preferred_adapter);
+// The name DXGI gives that same GPU (empty when it cannot be told). Asked before the device exists:
+// Streamline on Vulkan is started for a card that is an RTX by its name, whatever upscaler is chosen
+// (temporal_dlss.cpp dlss::BeforeDevice).
+std::string RenderingAdapterName(const std::string& preferred_adapter);
 
 // --- a runtime that records its own work next to Plume's (FidelityFX, temporal_ffx.h) ---------
 // Plume's lists are live recordings; a runtime writes into the same native list, with native

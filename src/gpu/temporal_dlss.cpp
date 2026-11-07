@@ -48,6 +48,8 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "texture_bytes.h"
+#include "vram_budget.h"
 
 namespace mcla::gpu {
 
@@ -62,6 +64,9 @@ constexpr uint32_t kMaxSlLogLines = 200;
 // engine is "custom"; NVIDIA RTX SDKs licence, Programming Guide 2.2 and 5.2.1).
 constexpr const char* kProjectId = "ee04879d-28bc-46b8-a12d-8a0bdff650dc";
 constexpr const char* kEngineVersion = "1.0.0";
+// A pre-warm step (Prewarm) makes one feature and frees it at once. What it may take of video memory
+// besides its four images: the feature (47 to 100 MB at 1280x720, more at 4K), with room to spare.
+constexpr uint64_t kPrewarmFeatureReserveBytes = 256ull << 20;
 
 // The images of the DLSS dispatch, as the temporal system makes them (temporal.cpp RecordUpscale,
 // temporal_mv.cpp): the warm-up (Warmup) makes the same ones, once, to make the feature in the
@@ -508,6 +513,7 @@ struct Context {
   bool created = false;       // the feature was made in the background (Warmup), not by the first dispatch
   bool bytes_asked = false;   // under Runtime::mu
   uint64_t bytes = 0;         // the video memory Streamline reports for it (0 until asked)
+  uint64_t made_ms = 0;       // how long its feature took to make (pre-warm steps only: they log it)
 };
 
 // What the creation of the feature needs outside the frames' own objects: a command queue of its
@@ -624,6 +630,22 @@ struct DlssBackend::Impl {
   // Streamline's frame index: its own count, always rising, from any thread that evaluates.
   std::atomic<uint32_t> frame_counter{0};
 
+  // ---- the pre-warm (under `mu`, except `prewarm_pending`): the first-time work of NGX and the driver
+  // done in the background, with nothing kept (Prewarm). Armed by the probe when this PC can run DLSS
+  // and it is not the start's choice; ended by a real request, a failure or its own last step.
+  bool prewarm_armed = false;
+  std::atomic<bool> prewarm_pending{false};  // armed, not finished and not dropped: read every frame
+  std::vector<UpscaleMode> prewarm_modes;    // still to do, in order (the saved mode first)
+  uint32_t prewarm_total = 0;                // the steps it was armed with
+  uint32_t prewarm_done = 0;                 // finished by the worker (made and freed, or refused)
+  double prewarm_slowest_ms = 0.0;
+  bool prewarm_job = false;                  // a step is handed over and the worker has not begun it
+  bool prewarm_busy = false;                 // ... or it has, and has not ended it: one step at a time
+  BackendRequest prewarm_request;
+  std::unique_ptr<WarmImages> prewarm_images;
+  std::chrono::steady_clock::time_point prewarm_began{};  // the first step's start
+  bool prewarm_start_logged = false;
+
   void PublishLocked() {
     PublishDlssAvailability(probed, status.dlss && !status.failed, needs_setup, after_restart);
   }
@@ -643,6 +665,18 @@ struct DlssBackend::Impl {
       next_ctx.reset();
     }
   }
+  // Under `mu`: the worker has a pre-warm step to make. A real request (the current or the prepared
+  // slot) always comes first, and drops the pre-warm besides (DropPrewarmLocked).
+  bool PrewarmJobLocked() const { return prewarm_job && !status.failed && !stop; }
+  // Under `mu`: arms the pre-warm for the modes in the order of the player's likely use: the saved
+  // DLSS mode first, then the others. Probe only.
+  void ArmPrewarmLocked();
+  // Under `mu`: the pre-warm goes (a real request, a failure, the end of the game). True when one was
+  // pending, so that the caller says so once, outside the lock.
+  bool DropPrewarmLocked();
+  // The reason a pre-warm step for `request` should not take video memory now (the card is nearly
+  // full), empty when it may. Render thread.
+  std::string PrewarmMemoryProblem(const BackendRequest& request) const;
   // Render thread: the side queue, list and fence, once (made or not).
   void EnsureKit();
   bool StartRuntime(std::string* why, bool* files_problem);
@@ -650,9 +684,11 @@ struct DlssBackend::Impl {
   void FailStart(const std::string& why, bool files_problem);
   void FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why, bool render_thread);
   std::unique_ptr<WarmImages> MakeImages(const BackendRequest& request);
-  std::shared_ptr<Context> MakeContext(const BackendRequest& request, std::string* why);
+  std::shared_ptr<Context> MakeContext(const BackendRequest& request, std::string* why, bool prewarm);
+  // `prewarm`: a pre-warm step (Prewarm): the context is made to be freed, and a feature that
+  // could not be made is `created == false` with `why` set, never "the first frame makes it".
   std::shared_ptr<Context> Build(const BackendRequest& request, WarmImages* images, SideKit* side,
-                                 std::string* why);
+                                 std::string* why, bool prewarm);
   bool Warmup(Context& context, WarmImages& images, SideKit& side, std::string* error);
   // `wait` false (a frame's dispatch on the render thread): Streamline's mutex is tried first, and
   // when the worker holds it to make a feature (`building`) `*busy` is set and nothing is recorded.
@@ -751,12 +787,14 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
 
   if (i.api == Backend::kVulkan) {
     if (!vulkan_hooked) {
-      // The Vulkan device is made with Streamline's help, so DLSS has to be the choice when the
-      // game starts (Device::Open, dlss::BeforeDevice).
+      // The Vulkan device is made with Streamline's help, and BeforeDevice does that for an RTX card
+      // whatever is chosen (the files in place and signed); a device that was not (a GPU Plume
+      // took that is not the one BeforeDevice looked at, or a build without Plume's hooks) gets DLSS
+      // from the next start at the earliest.
 #if defined(LARECOMP_PLUME_STREAMLINE)
       if (rtx_name) {
-        REXLOG_INFO("{} listed for Vulkan, but this game was started without it: choosing DLSS "
-                    "applies from the next start (the Vulkan device is made with Streamline)",
+        REXLOG_INFO("{} listed for Vulkan, but this game's device was made without Streamline: "
+                    "choosing DLSS applies from the next start",
                     kPrefix);
         settle(BackendState::kUnavailable, "on Vulkan DLSS starts with the game", false, false, true);
       } else {
@@ -776,18 +814,24 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
     }
     // Started before the device: the worker finishes it (the support query). The files are known
     // good, so an RTX card is published as able to run it as soon as the worker has looked at them
-    // (PublishEarlyVerdict); the query is not waited for by the start decision.
+    // (PublishEarlyVerdict); the query is not waited for by the start decision. DLSS is not the
+    // start's choice when the hook was made for another upscaler's game: its first-time work is
+    // warmed up in the background (Prewarm), so that switching to it from the menu is quick.
     std::lock_guard lock(i.mu);
     i.status.state = BackendState::kProbing;
+    if (!chosen) {
+      i.ArmPrewarmLocked();
+    }
     i.StartWorkerLocked();
     return;
   }
 
   // D3D12: Streamline starts now when DLSS is the saved choice (the start's scene size needs the
-  // answer), otherwise at its first use. Its start (slInit and NGX) takes from 2 s to over 10 s on
-  // a cold start, so the answer the start decision waits for is not that one: the worker publishes
-  // "can run" (PublishEarlyVerdict) once the files, their signatures and the card's name are
-  // checked, and finishes the start in the background.
+  // answer), otherwise in the background a few seconds after the game first draws (the pre-warm,
+  // PrewarmNext) or at its first use, whichever comes first. Its start (slInit and NGX) takes from
+  // 2 s to over 10 s on a cold start, so the answer the start decision waits for is not that one:
+  // the worker publishes "can run" (PublishEarlyVerdict) once the files, their signatures and the
+  // card's name are checked, and finishes the start in the background.
   if (chosen) {
     std::lock_guard lock(i.mu);
     i.status.state = BackendState::kProbing;
@@ -799,9 +843,16 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
     settle(BackendState::kUnavailable, "this is not an RTX card", false, false, false);
     return;
   }
-  REXLOG_INFO("{} listed: '{}' is an RTX card and the files are there; Streamline starts when DLSS "
-              "is chosen",
+  REXLOG_INFO("{} listed: '{}' is an RTX card and the files are there; Streamline starts in the "
+              "background a few seconds after the game first draws (the warm-up), or at once "
+              "when DLSS is chosen before that",
               kPrefix, i.gpu_name);
+  {
+    // D3D12 starts Streamline on the worker (slInit and NGX: about 10 s), so the pre-warm's first
+    // step is its start (PrewarmNext). Armed before the answer is published.
+    std::lock_guard lock(i.mu);
+    i.ArmPrewarmLocked();
+  }
   settle(BackendState::kAvailable, {}, true, false, false);
 }
 
@@ -951,6 +1002,7 @@ void DlssBackend::Impl::FailStart(const std::string& why, bool files_problem) {
     needs_setup = files_problem && NameLooksLikeRtx(gpu_name);
     after_restart = false;
     listed_setup = needs_setup;
+    DropPrewarmLocked();  // nothing to warm: the start failed (said below)
     PublishLocked();
   }
   // What the player sees now, when the start decided on DLSS before this failed (the decision does
@@ -994,6 +1046,7 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
   status.context_bytes = 0;
   want = false;
   want_images.reset();
+  DropPrewarmLocked();
   std::vector<std::shared_ptr<Context>> list;
   if (ctx) {
     list.push_back(std::move(ctx));
@@ -1069,6 +1122,72 @@ void DlssBackend::Impl::EnsureKit() {
   kit = std::move(made);
 }
 
+// ---------------------------------------------------------------------------
+// the pre-warm
+// ---------------------------------------------------------------------------
+// What was measured (RTX 5080, live switching runs 2026-11-06, D3D12): the first feature of a
+// process took 1.2 s (Performance at 640x360) and the first DLAA one 8.4 s (1280x720 to 1280x720),
+// the Vulkan runs' first feature (Quality at 832x468) 8.4 to 8.7 s, and every later one 25 to 30 ms,
+// Quality, Performance and DLAA alike, including after all earlier features had been freed by the
+// live switches. So the slow part is first-time work of NGX and the driver per kind of feature, not a
+// property of one live context; paying it once in the background, with a feature that is freed at
+// once (no video memory is kept), leaves every later creation at its 30 ms. Which sizes and modes
+// make a kind is not known (the runs cannot tell a mode's network from the size's class), so one
+// step makes each of the five modes at the real sizes, the saved mode first.
+
+void DlssBackend::Impl::ArmPrewarmLocked() {
+  if (prewarm_armed) {
+    return;
+  }
+  prewarm_armed = true;
+  const UpscaleMode saved = SavedUpscaleMode(Upscaler::kDlss);
+  prewarm_modes.clear();
+  prewarm_modes.push_back(saved);
+  for (const UpscaleMode mode : {UpscaleMode::kNativeAa, UpscaleMode::kQuality,
+                                 UpscaleMode::kPerformance, UpscaleMode::kBalanced,
+                                 UpscaleMode::kUltraPerformance}) {
+    if (mode != saved) {
+      prewarm_modes.push_back(mode);
+    }
+  }
+  prewarm_total = uint32_t(prewarm_modes.size());
+  prewarm_pending.store(true, std::memory_order_release);
+}
+
+bool DlssBackend::Impl::DropPrewarmLocked() {
+  const bool was_pending = prewarm_pending.exchange(false, std::memory_order_acq_rel);
+  prewarm_modes.clear();
+  if (prewarm_job) {
+    // Handed over and never begun: nobody else ends it (a begun step is ended by the worker).
+    prewarm_busy = false;
+  }
+  prewarm_job = false;
+  prewarm_images.reset();
+  return was_pending;
+}
+
+std::string DlssBackend::Impl::PrewarmMemoryProblem(const BackendRequest& request) const {
+  if (!device) {
+    return "there is no graphics device";
+  }
+  const backend::VideoMemory vram = device->QueryVideoMemory();
+  if (vram.budget == 0) {
+    return {};  // the backend reports none: nothing to compare with (the vram budget's own rule)
+  }
+  const uint32_t rw = request.render_size[0];
+  const uint32_t rh = request.render_size[1];
+  const uint32_t ow = request.output_size[0];
+  const uint32_t oh = request.output_size[1];
+  const uint64_t images = TextureBytes(rw, rh, 1, kColorFormat) + TextureBytes(rw, rh, 1, kDepthFormat) +
+                          TextureBytes(rw, rh, 1, kMotionFormat) + TextureBytes(ow, oh, 1, kColorFormat);
+  const uint64_t need = images + kPrewarmFeatureReserveBytes;
+  if (vram.used + need > vram.budget / 100 * VideoMemoryBudget::kHighPercent) {
+    return std::format("video memory is nearly full ({} of {} MiB in use, a step needs about {} MiB)",
+                       vram.used >> 20, vram.budget >> 20, need >> 20);
+  }
+  return {};
+}
+
 // The four images of the warm-up for this request, on the render thread. Null when there is no side
 // kit or an image cannot be made (the feature is then made by the first dispatch, as without the
 // warm-up).
@@ -1102,7 +1221,7 @@ std::unique_ptr<WarmImages> DlssBackend::Impl::MakeImages(const BackendRequest& 
 // check that the scene's size is one DLSS takes. The feature itself is made by Build's warm-up, or
 // failing that by the first dispatch.
 std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& request,
-                                                        std::string* why) {
+                                                        std::string* why, bool prewarm) {
   Runtime& rt = Rt();
   std::lock_guard lock(rt.mu);
   if (!rt.initialized || rt.shut_down || !rt.api.dlss_optimal || !rt.api.dlss_set_options) {
@@ -1158,9 +1277,10 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
     *why = "slDLSSSetOptions failed: " + ResultText(set);
     return {};
   }
-  REXLOG_INFO("{} context for {} at {}x{} to {}x{} (viewport {}): DLSS asks for {}x{} (range {}x{} to "
+  REXLOG_INFO("{} {} for {} at {}x{} to {}x{} (viewport {}): DLSS asks for {}x{} (range {}x{} to "
               "{}x{})",
-              kPrefix, ModeInfoOf(Upscaler::kDlss, request.mode).name, rw, rh,
+              kPrefix, prewarm ? "warm-up context" : "context",
+              ModeInfoOf(Upscaler::kDlss, request.mode).name, rw, rh,
               request.output_size[0], request.output_size[1], context->viewport_id,
               optimal.optimalRenderWidth, optimal.optimalRenderHeight, optimal.renderWidthMin,
               optimal.renderHeightMin, optimal.renderWidthMax, optimal.renderHeightMax);
@@ -1177,29 +1297,41 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
 // feature, with the pause the warm-up was there to avoid.
 std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
                                                   WarmImages* images, SideKit* side,
-                                                  std::string* why) {
-  std::shared_ptr<Context> context = MakeContext(request, why);
+                                                  std::string* why, bool prewarm) {
+  std::shared_ptr<Context> context = MakeContext(request, why, prewarm);
   if (!context) {
     return {};
   }
   if (!images || !side || !side->usable) {
-    REXLOG_WARN("{} the feature is not made in the background (the objects for it could not be "
-                "made): the first frame makes it, which pauses the game for several seconds",
-                kPrefix);
+    if (prewarm) {
+      *why = "the objects for it could not be made";  // created stays false
+    } else {
+      REXLOG_WARN("{} the feature is not made in the background (the objects for it could not be "
+                  "made): the first frame makes it, which pauses the game for several seconds",
+                  kPrefix);
+    }
     return context;
   }
   const auto started = std::chrono::steady_clock::now();
   std::string error;
   if (!Warmup(*context, *images, *side, &error)) {
-    REXLOG_WARN("{} the feature could not be made in the background ({}): the first frame makes it "
-                "instead, which pauses the game for several seconds",
-                kPrefix, error);
+    if (prewarm) {
+      *why = error;  // created stays false
+    } else {
+      REXLOG_WARN("{} the feature could not be made in the background ({}): the first frame makes "
+                  "it instead, which pauses the game for several seconds",
+                  kPrefix, error);
+    }
     return context;
   }
   context->created = true;
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - started)
                       .count();
+  if (prewarm) {
+    context->made_ms = uint64_t(ms);  // the worker's step line says it (JobLoop)
+    return context;
+  }
   REXLOG_INFO("{} the feature for {} at {}x{} to {}x{} (viewport {}) was made in the background in "
               "{} ms (about {} MB): the game went on meanwhile",
               kPrefix, ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0],
@@ -1254,7 +1386,8 @@ void DlssBackend::Impl::JobLoop() {
   std::unique_lock lock(mu);
   for (;;) {
     cv.wait(lock, [this] {
-      return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked();
+      return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked() ||
+             PrewarmJobLocked();
     });
     if (stop) {
       break;
@@ -1280,7 +1413,7 @@ void DlssBackend::Impl::JobLoop() {
       building = true;
       lock.unlock();
       std::string why;
-      std::shared_ptr<Context> made = Build(request, images.get(), side, &why);
+      std::shared_ptr<Context> made = Build(request, images.get(), side, &why, /*prewarm=*/false);
       images.reset();  // Build waited for the side queue: the GPU is done with them
       lock.lock();
       building = false;
@@ -1297,6 +1430,66 @@ void DlssBackend::Impl::JobLoop() {
         // The request moved on (or DLSS failed, or the game is closing) while it was made: it goes.
         doomed.push_back(std::move(made));
       }
+    } else if (PrewarmJobLocked()) {
+      // A pre-warm step: one feature at the real sizes for one mode, made (which is what NGX and the
+      // driver need seconds for the first time) and freed at once. A real request never waits for
+      // more than the step in hand: it comes first here, and it ends the pre-warm (Request, Prepare).
+      // Nothing of it reaches a frame: the context is not published, and a failure is not DLSS's
+      // (the real request meets it for itself, and says so then).
+      const BackendRequest request = prewarm_request;
+      std::unique_ptr<WarmImages> images = std::move(prewarm_images);
+      prewarm_job = false;
+      SideKit* side = kit.get();
+      building = true;
+      lock.unlock();
+      std::string why;
+      std::shared_ptr<Context> made = Build(request, images.get(), side, &why, /*prewarm=*/true);
+      images.reset();  // Build waited for the side queue: the GPU is done with them
+      const bool created = made && made->created;
+      const uint64_t made_ms = made ? made->made_ms : 0;
+      const uint64_t made_mb = made ? made->bytes >> 20 : 0;
+      lock.lock();
+      building = false;
+      prewarm_busy = false;
+      const uint32_t step = ++prewarm_done;
+      const uint32_t total = prewarm_total;
+      if (created) {
+        prewarm_slowest_ms = std::max(prewarm_slowest_ms, double(made_ms));
+      }
+      const bool over = prewarm_pending.load() && prewarm_modes.empty();
+      if (over) {
+        prewarm_pending = false;
+      }
+      const double slowest = prewarm_slowest_ms;
+      const double total_s = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                           prewarm_began).count();
+      if (made) {
+        doomed.push_back(std::move(made));  // freed at the top of this loop, by this thread
+      }
+      lock.unlock();
+      const char* mode_name = ModeInfoOf(Upscaler::kDlss, request.mode).name;
+      if (created) {
+        REXLOG_INFO("{} warm-up {}/{}: {} at {}x{} to {}x{}: the feature was made in {} ms (about {} "
+                    "MB) and is freed again, nothing is kept",
+                    kPrefix, step, total, mode_name, request.render_size[0], request.render_size[1],
+                    request.output_size[0], request.output_size[1], made_ms, made_mb);
+      } else if (!made) {
+        REXLOG_INFO("{} warm-up {}/{}: {} at {}x{} to {}x{} skipped: {}", kPrefix, step, total,
+                    mode_name, request.render_size[0], request.render_size[1],
+                    request.output_size[0], request.output_size[1], why);
+      } else {
+        REXLOG_WARN("{} warm-up {}/{}: {} at {}x{} to {}x{}: the feature could not be made ({}); the "
+                    "warm-up goes on, and a switch to this mode makes the feature itself",
+                    kPrefix, step, total, mode_name, request.render_size[0], request.render_size[1],
+                    request.output_size[0], request.output_size[1], why);
+      }
+      if (over) {
+        REXLOG_INFO("{} warm-up done in {:.1f} s ({} steps, the slowest {:.0f} ms): the first-time work "
+                    "of NGX and the driver is paid for, so DLSS chosen from the menu makes its "
+                    "context in about the time of the later features (tens of milliseconds)",
+                    kPrefix, total_s, total, slowest);
+      }
+      lock.lock();
     }
   }
   // Shutdown: what is left (the GPU is idle, the renderer drained its frames).
@@ -1322,6 +1515,13 @@ void DlssBackend::Request(const BackendRequest& request) {
     std::lock_guard lock(i.mu);
     if (i.status.failed || i.status.state != BackendState::kAvailable) {
       return;
+    }
+    // The settings ask for DLSS: the pre-warm is over (its next steps would only delay the context
+    // that is wanted, and make the frames wait for the worker).
+    if (i.DropPrewarmLocked()) {
+      REXLOG_INFO("{} warm-up stopped: DLSS was asked for ({} of {} steps done); the context asked "
+                  "for is the worker's next job",
+                  kPrefix, i.prewarm_done, i.prewarm_total);
     }
     if (!i.init_done) {
       // The first use of a DLSS that was not the choice at the start (D3D12): Streamline starts
@@ -1384,6 +1584,12 @@ void DlssBackend::Prepare(const BackendRequest& request) {
     std::lock_guard lock(i.mu);
     if (i.status.failed || i.status.state != BackendState::kAvailable) {
       return;
+    }
+    // A live change to DLSS: the pre-warm is over (see Request).
+    if (i.DropPrewarmLocked()) {
+      REXLOG_INFO("{} warm-up stopped: DLSS was asked for ({} of {} steps done); the context asked "
+                  "for is the worker's next job",
+                  kPrefix, i.prewarm_done, i.prewarm_total);
     }
     if (!i.init_done) {
       // The first use of DLSS in a game that was not started with it chosen (D3D12): Streamline
@@ -1496,6 +1702,119 @@ void DlssBackend::Fail(const std::string& why) {
   Impl& i = *impl_;
   std::unique_lock lock(i.mu);
   i.FailLocked(lock, why, /*render_thread=*/true);
+}
+
+bool DlssBackend::PrewarmPending() const {
+  return impl_->prewarm_pending.load(std::memory_order_acquire);
+}
+
+bool DlssBackend::PrewarmNext(UpscaleMode* mode) {
+  Impl& i = *impl_;
+  bool started_streamline = false;
+  {
+    std::lock_guard lock(i.mu);
+    if (!i.prewarm_pending.load(std::memory_order_acquire)) {
+      return false;
+    }
+    if (i.status.failed || i.stop) {
+      i.DropPrewarmLocked();  // the failure was said by whoever made it
+      return false;
+    }
+    if (!i.init_done) {
+      // D3D12: Streamline's own start (slInit, then slSetD3DDevice with NGX: about 10 s) is the
+      // pre-warm's first step, on the worker. On Vulkan the worker has run since the probe (the
+      // start before the device) and this only waits for it to be done.
+      if (!i.worker.joinable()) {
+        i.StartWorkerLocked();
+        started_streamline = true;
+      }
+    } else if (!i.prewarm_busy && !i.prewarm_modes.empty()) {
+      *mode = i.prewarm_modes.front();
+      return true;
+    }
+  }
+  if (started_streamline) {
+    REXLOG_INFO("{} warm-up: Streamline starts in the background (slInit and NGX, several seconds), "
+                "then one feature per mode is made and freed, so that DLSS chosen from the menu "
+                "is quick; nothing is kept in video memory",
+                kPrefix);
+  }
+  return false;
+}
+
+// Render thread. One step: the four images for `request` (the worker needs them to make the
+// feature) and a note to the worker. The worker makes the feature and frees it (JobLoop).
+void DlssBackend::Prewarm(const BackendRequest& request) {
+  Impl& i = *impl_;
+  {
+    std::lock_guard lock(i.mu);
+    if (!i.prewarm_pending.load(std::memory_order_acquire) || !i.init_done || i.prewarm_busy ||
+        i.prewarm_modes.empty() || i.prewarm_modes.front() != request.mode || i.status.failed ||
+        i.stop) {
+      return;
+    }
+  }
+  const std::string memory = i.PrewarmMemoryProblem(request);
+  if (!memory.empty()) {
+    // Not now, and not at the next frame either: a card this full gets no pre-warm (the first
+    // live switch pays for itself, as before).
+    bool pending = false;
+    uint32_t done = 0;
+    uint32_t total = 0;
+    {
+      std::lock_guard lock(i.mu);
+      pending = i.DropPrewarmLocked();
+      done = i.prewarm_done;
+      total = i.prewarm_total;
+    }
+    if (pending) {
+      REXLOG_INFO("{} warm-up stopped after {} of {} steps: {}", kPrefix, done, total, memory);
+    }
+    return;
+  }
+  i.EnsureKit();
+  std::unique_ptr<WarmImages> images = i.MakeImages(request);
+  bool first = false;
+  bool unusable = false;
+  uint32_t done = 0;
+  uint32_t total = 0;
+  {
+    std::lock_guard lock(i.mu);
+    if (!i.prewarm_pending.load(std::memory_order_acquire) || i.stop) {
+      return;  // dropped while the images were made (a real request): they go with `images`
+    }
+    if (!images) {
+      unusable = i.DropPrewarmLocked();
+      done = i.prewarm_done;
+      total = i.prewarm_total;
+    } else {
+      i.prewarm_modes.erase(i.prewarm_modes.begin());
+      i.prewarm_job = true;
+      i.prewarm_busy = true;
+      i.prewarm_request = request;
+      i.prewarm_images = std::move(images);
+      if (!i.prewarm_start_logged) {
+        i.prewarm_start_logged = true;
+        i.prewarm_began = std::chrono::steady_clock::now();
+        first = true;
+      }
+      total = i.prewarm_total;
+    }
+  }
+  if (unusable) {
+    REXLOG_INFO("{} warm-up stopped after {} of {} steps: the objects for a feature (a second queue, "
+                "four images) could not be made",
+                kPrefix, done, total);
+    return;
+  }
+  if (first) {
+    REXLOG_INFO("{} warm-up begins: {} steps (one feature per mode, the first at {}x{} to {}x{} and "
+                "the others at their modes' sizes, each freed at once), off the render thread; a DLSS "
+                "request ends it after the step in hand",
+                kPrefix, total, request.render_size[0], request.render_size[1],
+                request.output_size[0], request.output_size[1]);
+  }
+  i.cv.notify_all();
 }
 
 // One evaluation of `context`'s viewport recorded into `native_list`, on the render thread (a frame's
@@ -1664,6 +1983,7 @@ void DlssBackend::Shutdown() {
     i.want_images.reset();
     i.next_want = false;
     i.next_images.reset();
+    i.DropPrewarmLocked();
   }
   i.cv.notify_all();
   if (i.worker.joinable()) {
@@ -1733,22 +2053,56 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
     (void)preferred_adapter;
     return;
   }
-  if (ReadUpscalerSettings().upscaler != Upscaler::kDlss) {
-    return;
-  }
+  const bool chosen = ReadUpscalerSettings().upscaler == Upscaler::kDlss;
 #if !defined(LARECOMP_PLUME_STREAMLINE)
-  REXLOG_INFO("{} DLSS is chosen, but this build's Plume has no creation hooks for Streamline: "
-              "it is not available on Vulkan in this build",
-              kPrefix);
+  if (chosen) {
+    REXLOG_INFO("{} DLSS is chosen, but this build's Plume has no creation hooks for Streamline: "
+                "it is not available on Vulkan in this build",
+                kPrefix);
+  }
   (void)preferred_adapter;
 #else
-  // Streamline's vkCreateDevice proxy adds what DLSS needs to Plume's device chain (it works with
-  // Plume's individual feature structs, 2026-11-06). If the device cannot be made, the game starts again without DLSS.
+  // The Vulkan instance and device have to be made through Streamline's interposer for DLSS to run
+  // at all (its vkCreateInstance and vkCreateDevice proxies add the extensions, features and queues
+  // DLSS needs; Plume works with its individual feature structs, 2026-11-06), so this is where the
+  // choice is made, and it cannot be taken back once the device exists. It is made whenever this PC
+  // can run DLSS, not only when DLSS is the saved choice: a game started with FSR or no upscaler
+  // can then switch to DLSS while it runs (the pause menu's UPSCALING row). "Can run" is what the
+  // fast start checks say (the same as D3D12's early verdict): an NVIDIA GPU that is an RTX card by
+  // its name (a card whose name lacks RTX is only taken when DLSS is the saved choice, as before),
+  // the four files next to the exe and the three Streamline ones signed by NVIDIA. If the instance
+  // or the device cannot be made through it the game makes them again without it (Device::Initialize,
+  // AbandonVulkanHook): DLSS is off for that session and says so.
+  // The cost, measured with DLSS chosen (runs 2026-11-06, RTX 5080): the renderer's device is up
+  // about 9.6 s after the process starts instead of about 0.7 s: slInit about 1.6 s, then NGX
+  // starting inside the hooked vkCreateInstance/vkCreateDevice about 7.7 s, all on the game's own
+  // thread. That is now paid at every Vulkan start on an RTX card.
+  // CHECK: the start-up time, and the frame time with DLSS off, with and without the hook (log: the
+  // "[gpu] Vulkan ... on" line's time since the first line; frame.csv).
+  static std::atomic<bool> said{false};
+  const auto say_once = [](auto&& line) {
+    if (!said.exchange(true)) {
+      line();
+    }
+  };
   const uint32_t vendor = backend::RenderingAdapterVendor(preferred_adapter);
   if (vendor != kVendorNvidia) {
-    REXLOG_INFO("{} DLSS is chosen, but the Vulkan device will not be an NVIDIA one (vendor "
-                "{:#06x}): Streamline is not started",
-                kPrefix, vendor);
+    if (chosen) {
+      say_once([&] {
+        REXLOG_INFO("{} DLSS is chosen, but the Vulkan device will not be an NVIDIA one (vendor "
+                    "{:#06x}): Streamline is not started",
+                    kPrefix, vendor);
+      });
+    }
+    return;
+  }
+  const std::string gpu_name = backend::RenderingAdapterName(preferred_adapter);
+  if (!chosen && !NameLooksLikeRtx(gpu_name)) {
+    say_once([&] {
+      REXLOG_INFO("{} Vulkan: the device is made without Streamline: '{}' is not recognised as an "
+                  "RTX card and DLSS is not the choice",
+                  kPrefix, gpu_name);
+    });
     return;
   }
   Runtime& rt = Rt();
@@ -1760,22 +2114,34 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   if (!LoadRuntimeLocked(rt, &why) || !InitLocked(rt, sl::RenderAPI::eVulkan, &why)) {
     // The probe reports it (greyed as "needs setup" when the files are the problem).
     rt.failure = why;
-    REXLOG_INFO("{} Streamline is not started for Vulkan: {}", kPrefix, why);
+    say_once([&] {
+      REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
+                  kPrefix, why);
+    });
     return;
   }
   void* get_instance_proc_addr =
       reinterpret_cast<void*>(GetProcAddress(rt.interposer, "vkGetInstanceProcAddr"));
   if (!get_instance_proc_addr) {
     rt.failure = "sl.interposer.dll does not export vkGetInstanceProcAddr";
-    REXLOG_INFO("{} Streamline is not started for Vulkan: {}", kPrefix, rt.failure);
+    say_once([&] {
+      REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
+                  kPrefix, rt.failure);
+    });
     return;
   }
   rt.vk_get_instance_proc_addr = get_instance_proc_addr;
   rt.vk_hook = true;
-  REXLOG_INFO("{} Streamline started for Vulkan before the device: Plume loads Vulkan through its "
-              "vkGetInstanceProcAddr, whose vkCreateInstance and vkCreateDevice add what DLSS "
-              "needs",
-              kPrefix);
+  say_once([&] {
+    REXLOG_INFO("{} Streamline started for Vulkan before the device ({}): Plume loads Vulkan through "
+                "its vkGetInstanceProcAddr, whose vkCreateInstance and vkCreateDevice add what DLSS "
+                "needs. The device is made this way whichever upscaler is chosen, so that DLSS can be "
+                "switched on while the game runs; the start takes several seconds longer for it "
+                "(Streamline's start and NGX's, on this thread)",
+                kPrefix,
+                chosen ? "DLSS is the saved choice"
+                       : "'" + gpu_name + "' is an RTX card and the DLSS files are in place and signed");
+  });
 #endif
 }
 

@@ -101,7 +101,7 @@ uint32_t FoldColorFormat(uint32_t color_format) {
   }
 }
 
-bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height) {
+bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height, bool quiet) {
   if (screen_width_ == 0) {
     const rex::Runtime* runtime = rex::Runtime::instance();
     const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
@@ -112,7 +112,7 @@ bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height) {
     const uint32_t h = LoadBe32(base + kGuestScreenHeightAddress);
     // Static 1x1 until the game sets it at start.
     if (w < 64 || h < 64 || w > kMaxExtent || h > kMaxExtent) {
-      if (!screen_unset_logged_) {
+      if (!quiet && !screen_unset_logged_) {
         screen_unset_logged_ = true;
         REXLOG_ERROR("[gpu] edram: the game's screen size reads {}x{}, not set yet: targets made "
                      "now get the guest's size (counted as unknown); read again on the next one",

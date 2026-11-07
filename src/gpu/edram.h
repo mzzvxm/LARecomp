@@ -310,7 +310,11 @@ class EdramTargets {
   bool SetSceneScale(Scale scale, plume::RenderCommandList* list);
   // The game's screen size in guest pixels (grcDevice's width and height, read on first use): false
   // until the game has set it. The size the main view and the images of the screen are made from.
-  bool GuestScreen(uint32_t* width, uint32_t* height) { return ScreenSize(width, height); }
+  // `quiet`: a caller that only asks whether it is known yet (a poll every frame) does not make the
+  // "not set yet" error the first read of an unset size logs.
+  bool GuestScreen(uint32_t* width, uint32_t* height, bool quiet = false) {
+    return ScreenSize(width, height, quiet);
+  }
   // The scene is drawn at another scale than the images of the screen.
   bool SceneApart() {
     DecideScene();
@@ -606,7 +610,7 @@ class EdramTargets {
   bool Create(Target& target, uint32_t height);
   // The screen's size from the game (grcDevice's width and height): false
   // until the game has set it (read again on the next call).
-  bool ScreenSize(uint32_t* width, uint32_t* height);
+  bool ScreenSize(uint32_t* width, uint32_t* height, bool quiet = false);
   // NoteDeclaredScale's slow path: a size not seen with this target before.
   void CheckDeclaredScale(Target& target, uint32_t size_bits);
   void AssignOwner(Target& target);
