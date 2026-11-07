@@ -273,25 +273,118 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
   // the records below in place.
   const bool persist = REXCVAR_GET(mcla_gpu_pipeline_cache);
   if (persist) {
-    // The cache is <executable>/cache/mcla_gpu_pipelines_<api>.bin and the starter list
-    // <executable>/assets/mcla_pipelines.bin, whichever folder the shader pack came from.
-    const std::filesystem::path exe_folder = rex::filesystem::GetExecutableFolder();
-    std::string backend = BackendName();
-    std::transform(backend.begin(), backend.end(), backend.begin(),
-                   [](unsigned char ch) { return char(std::tolower(ch)); });
-    cache_path_ = exe_folder / "cache" / std::format("mcla_gpu_pipelines_{}.bin", backend);
-    std::string other = BackendName(ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan
-                                                                       : Backend::kD3D12);
-    std::transform(other.begin(), other.end(), other.begin(),
-                   [](unsigned char ch) { return char(std::tolower(ch)); });
-    other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
-    starter_path_ = exe_folder / "assets" / "mcla_pipelines.bin";
-    LoadRecords();
+    LoadPersistent();
   }
   // The workers run without a cache file too: they make what the render
   // thread hands them (background builds).
   StartPrecache();
   persist_ = persist;
+}
+
+void Pipelines::LoadPersistent() {
+  // The cache is <executable>/cache/mcla_gpu_pipelines_<api>.bin and the starter list
+  // <executable>/assets/mcla_pipelines.bin, whichever folder the shader pack came from.
+  const std::filesystem::path exe_folder = rex::filesystem::GetExecutableFolder();
+  std::string backend = BackendName();
+  std::transform(backend.begin(), backend.end(), backend.begin(),
+                 [](unsigned char ch) { return char(std::tolower(ch)); });
+  cache_path_ = exe_folder / "cache" / std::format("mcla_gpu_pipelines_{}.bin", backend);
+  std::string other = BackendName(ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan
+                                                                     : Backend::kD3D12);
+  std::transform(other.begin(), other.end(), other.begin(),
+                 [](unsigned char ch) { return char(std::tolower(ch)); });
+  other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
+  starter_path_ = exe_folder / "assets" / "mcla_pipelines.bin";
+  LoadRecords();
+}
+
+uint64_t Pipelines::HashRecords() const {
+  // The persistent keys in list order: the same files in the same state give the same hash.
+  std::vector<uint8_t> bytes;
+  bytes.reserve(records_.size() * sizeof(PipelineKey));
+  for (const Record& r : records_) {
+    const uint8_t* key = reinterpret_cast<const uint8_t*>(&r.key);
+    bytes.insert(bytes.end(), key, key + sizeof(PipelineKey));
+  }
+  return uint64_t(XXH3_64bits(bytes.data(), bytes.size()));
+}
+
+Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
+                                                   const SetupOptions& options) {
+  using Clock = std::chrono::steady_clock;
+  SetupResult result;
+  if (!device_ || persistence_started_) {
+    return result;
+  }
+  persistence_started_ = true;
+  shaders_ = &shaders;
+  if (!REXCVAR_GET(mcla_gpu_pipeline_cache)) {
+    result.outcome = SetupOutcome::kDisabled;
+    return result;
+  }
+  LoadPersistent();
+  result.list.records = records_.size();
+  result.list.hash = HashRecords();
+  if (records_.empty()) {
+    result.outcome = SetupOutcome::kEmpty;
+    return result;
+  }
+  if (options.wanted && !options.wanted(result.list)) {
+    result.outcome = SetupOutcome::kNotWanted;
+    return result;
+  }
+
+  // Every usable processor but one (the machine stays usable for whoever waits for this), at
+  // normal priority: nothing else of ours runs.
+  const uint32_t usable = UsableProcessors();
+  result.threads = options.threads != 0
+                       ? std::min(options.threads, kSetupMaxThreads)
+                       : std::clamp(usable > 1 ? usable - 1 : 1u, 1u, kSetupMaxThreads);
+  setup_mode_ = true;
+  const Clock::time_point start = Clock::now();
+  StartPrecache(result.threads);
+  const uint32_t total = uint32_t(precached_.size());
+
+  uint32_t last_done = 0;
+  Clock::time_point last_change = start;
+  for (;;) {
+    const uint32_t done = precache_finished_.load();
+    if (options.progress) {
+      options.progress(done, total);
+    }
+    if (done >= total) {
+      break;
+    }
+    const Clock::time_point now = Clock::now();
+    if (done != last_done) {
+      last_done = done;
+      last_change = now;
+    } else if (now - last_change > std::chrono::seconds(kSetupStallSeconds)) {
+      REXLOG_ERROR("[gpu] pipelines: no pipeline finished in {} s ({} of {} done): the driver "
+                   "seems stuck; the prebuild gives up",
+                   kSetupStallSeconds, done, total);
+      result.ready = precache_ready_.load();
+      result.failed = precache_failed_.load();
+      result.outcome = SetupOutcome::kStalled;
+      return result;  // the workers stay: joining one that is inside the driver would hang
+    }
+    // The workers notify per entry; the timeout keeps the progress and the stall check going.
+    std::unique_lock<std::mutex> lock(precache_mutex_);
+    precache_done_.wait_for(lock, std::chrono::milliseconds(100));
+  }
+  StopPrecache();
+  setup_mode_ = false;
+  result.ready = precache_ready_.load();
+  result.failed = precache_failed_.load();
+  result.seconds = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              Clock::now() - start)
+                              .count()) /
+                   1000.0;
+  // As the game does at its exit: this API's file now holds the other API's records and the
+  // starter list too (nothing is written when it already did).
+  SaveRecords();
+  result.outcome = SetupOutcome::kBuilt;
+  return result;
 }
 
 void Pipelines::Shutdown() {
@@ -427,7 +520,7 @@ uint32_t Pipelines::UsableProcessors() {
   return std::max(1u, std::thread::hardware_concurrency());
 }
 
-void Pipelines::StartPrecache() {
+void Pipelines::StartPrecache(uint32_t setup_threads) {
   precached_.reserve(records_.size());
   for (const Record& r : records_) {
     auto p = std::make_unique<Precached>();
@@ -443,9 +536,10 @@ void Pipelines::StartPrecache() {
   // make the pipelines the render thread hands them (background builds).
   // With fewer than kBootBoostBelow processors the first seconds are different
   // (boot mode, pipelines.h): up to all the processors but one, at normal priority.
+  // The command line prebuild (setup_threads): no guest runs, so the workers are all there is.
   const uint32_t usable = UsableProcessors();
-  steady_workers_ = std::clamp(usable / 2, 1u, 6u);
-  const bool boot = !precached_.empty() && usable < kBootBoostBelow;
+  steady_workers_ = setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, 6u);
+  const bool boot = setup_threads == 0 && !precached_.empty() && usable < kBootBoostBelow;
   const uint32_t count =
       boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, 6u) : steady_workers_;
   precache_start_ = std::chrono::steady_clock::now();
@@ -463,7 +557,11 @@ void Pipelines::StartPrecache() {
   for (uint32_t i = 0; i < count; ++i) {
     workers_.emplace_back([this, i] { PrecacheWorker(i); });
   }
-  if (precached_.empty()) {
+  if (setup_threads != 0) {
+    REXLOG_INFO("[gpu] pipelines: command line prebuild: precaching {} pipelines on {} threads at "
+                "normal priority ({} usable processors)",
+                precached_.size(), count, usable);
+  } else if (precached_.empty()) {
     REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
   } else if (boot) {
     REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads; boot mode on {} usable "
@@ -544,8 +642,8 @@ void Pipelines::PrecacheWorker(uint32_t index) {
     }
 #if defined(_WIN32)
     // Normal priority in boot mode, below normal after: the guest's threads come first once
-    // the render thread no longer waits for the list.
-    const bool boosted = boot_mode_.load();
+    // the render thread no longer waits for the list. The command line prebuild has no guest.
+    const bool boosted = boot_mode_.load() || setup_mode_;
     if (!priority_set || boosted != priority_boosted) {
       SetThreadPriority(GetCurrentThread(),
                         boosted ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL);
@@ -646,6 +744,11 @@ void Pipelines::BuildPrecached(Precached& p) {
     }
   }
   const bool made = pipeline != nullptr;
+  if (setup_mode_) {
+    // Nobody takes it: the driver has compiled it (and keeps the result on disk). Holding the
+    // whole list of pipelines would only cost memory.
+    pipeline.reset();
+  }
   {
     // The render thread may take it the moment the state says so.
     std::lock_guard<std::mutex> lock(precache_mutex_);

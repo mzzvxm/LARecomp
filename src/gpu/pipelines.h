@@ -93,6 +93,12 @@
 // it, not at the end of the frame like other background builds: copies for a level the player went
 // back from leave nothing in the cache file.
 //
+// Command line prebuild (larecomp.exe --precache_pipelines, pipeline_prebuild.h): the launcher
+// runs the same precache before the first start, with no render thread and no guest
+// (PrecacheForSetup): the same files are read, the same workers make the same pipelines, only more
+// of them, at normal priority, each dropped as soon as it is made (the driver keeps its compiled
+// form in its own cache on disk, which is the point), and the records are written back at the end.
+//
 // Threading: the render thread; the builder threads (the precache workers)
 // touch only the entries and requests they were handed, the ShaderStore
 // (GetShader locks) and the device; the autosave thread only the bytes it was
@@ -109,6 +115,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -310,6 +317,51 @@ class Pipelines {
   Stats TakeStats();
   size_t size() const { return pipelines_.size(); }
 
+  // --- the command line prebuild (pipeline_prebuild.h) --------------------------------------------
+  // The list a prebuild works on: the records of this API's file, the other API's and the starter
+  // list that the pack has the shaders for, and a hash of their keys (what a stamp binds).
+  struct SetupList {
+    size_t records = 0;
+    uint64_t hash = 0;
+  };
+  struct SetupOptions {
+    // Worker threads; 0 = every usable processor but one, at most kSetupMaxThreads.
+    uint32_t threads = 0;
+    // Called once with the list, before any pipeline is made; false: nothing to do (the cache is
+    // complete for this driver and pack). May be empty (always build).
+    std::function<bool(const SetupList&)> wanted;
+    // Called from the thread that called PrecacheForSetup, about every 100 ms while the workers
+    // build: pipelines finished of the list's size. May be empty.
+    std::function<void(uint32_t done, uint32_t total)> progress;
+  };
+  enum class SetupOutcome : uint8_t {
+    kNotReady,   // not initialized, or persistence started already
+    kDisabled,   // mcla_gpu_pipeline_cache is off: the game reads and writes no cache
+    kNotWanted,  // `wanted` said no
+    kEmpty,      // nothing is listed (no starter list and no cache file)
+    kBuilt,      // every pipeline of the list was tried and the records are in this API's file
+    kStalled,    // no pipeline finished for kSetupStallSeconds: the workers are left running, the
+                 // caller must end the process without joining them (and not destroy this object)
+  };
+  struct SetupResult {
+    SetupOutcome outcome = SetupOutcome::kNotReady;
+    SetupList list;
+    uint32_t threads = 0;
+    uint32_t ready = 0;   // made
+    uint32_t failed = 0;  // not made (shader missing or refused, logged; the game fails the same)
+    double seconds = 0;
+  };
+  static constexpr uint32_t kSetupMaxThreads = 16;
+  static constexpr uint32_t kSetupStallSeconds = 180;
+  // The second half of the start for a process that draws nothing: instead of StartPersistence.
+  // Reads the files, asks `wanted`, makes every pipeline of the list on the workers (waiting for
+  // them here), then writes the records to this API's file as the game would at its exit. The
+  // device, layout and a shader pack that is attached (and its HDR variants, if wanted) must be in
+  // place, as for StartPersistence. Once per object; persist_ stays off, so Shutdown writes nothing.
+  SetupResult PrecacheForSetup(ShaderStore& shaders, const SetupOptions& options);
+  // This API's cache file; set once the files were read.
+  const std::filesystem::path& cache_path() const { return cache_path_; }
+
  private:
   // An input layout by content, the persistent stand-in of InputLayout::id:
   // the elements (their semantic names owned by names_) and slots, and the
@@ -360,8 +412,14 @@ class Pipelines {
   // Counts a pipeline that could not be made and reports it (the first few).
   void LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
                   ShaderStore::ShaderResult ps_result);
-  void StartPrecache();
+  // `setup_threads` != 0: the command line prebuild (PrecacheForSetup): that many workers, none
+  // leaves, normal priority, no boot mode.
+  void StartPrecache(uint32_t setup_threads = 0);
   void StopPrecache();
+  // The paths of the cache files and the starter list, and the records they hold (StartPersistence
+  // and PrecacheForSetup).
+  void LoadPersistent();
+  uint64_t HashRecords() const;
   void PrecacheWorker(uint32_t index);
 
   // How a lookup that gave no pipeline ended: nothing is known of the key
@@ -470,6 +528,9 @@ class Pipelines {
   // moves the workers on to the entries after it (FollowRenderThread). Then the extra workers
   // leave and the others drop to below normal, as with more processors, which never have it.
   std::atomic<bool> boot_mode_{false};
+  // The command line prebuild: set before the workers start, not changed while they run. Its
+  // workers run at normal priority and drop each pipeline once it is made.
+  bool setup_mode_ = false;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
   std::chrono::steady_clock::time_point boot_deadline_;
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode

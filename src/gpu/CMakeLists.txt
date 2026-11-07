@@ -47,6 +47,7 @@ add_library(larecomp_gpu OBJECT
     overlay.cpp
     pass_timing.cpp
     perf_markers.cpp
+    pipeline_prebuild.cpp
     pipelines.cpp
     post.cpp
     present.cpp
