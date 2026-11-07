@@ -1343,9 +1343,31 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
 // One evaluation of the context's viewport on the side queue, on the worker: the first one makes the
 // feature. Outside the frames' lists and queue and on images no frame uses, so nothing it does can
 // touch a frame.
-// The feature is made on a side queue by a worker and used from the main queue after the fence wait
-// (runs 2026-11-06: D3D12 and Vulkan, no error; not yet under the D3D12 debug layer or Vulkan validation). The dispatch
-// over images nobody filled only warms the feature up; its output is never used.
+// The feature is made on a side queue by a worker and used from the main queue after the fence wait.
+// The dispatch over images nobody filled only warms the feature up; its output is never used.
+//
+// Where the creation's commands are: Streamline's sl.dlss makes the NGX feature inside the first
+// slEvaluateFeature of a viewport (dlssBeginEvent calls NVSDK_NGX_VULKAN_CreateFeature1 /
+// D3D12_CreateFeature on the command buffer or list given to slEvaluateFeature), and
+// slAllocateResources runs the same function on the buffer it is given and needs the viewport's
+// tags set first, so there is no separate creation list. Everything NGX records for the creation is
+// in `list`, ahead of its evaluation, and is submitted and waited for here before the context is
+// published: no frame can evaluate the feature earlier.
+//
+// Vulkan validation, run vv9 (2026-11-07, the switching cycle after the warm-up): 6 messages
+// VUID-vkCmdDraw-None-09600 at this submit, "[nv.ngx.dlss.resource] expected GENERAL, current
+// UNDEFINED", two NGX-owned images each time, all for the PERFORMANCE mode's feature (warm-up step
+// 3 and both live switches to it), none for DLAA, Quality or Balanced, which this same path made
+// without a message (vv5 as well). sl.log shows what differs: an NVIDIA override on this PC
+// (SL_DLSS_OVERRIDE DRS key 1, "Using DRS Overridden Preset") gave preset K to DLAA, Quality and
+// Balanced and preset M ("Override Reported: ModelPreset, Value: 13") to Performance; M's creation
+// logs no PaddedWindowNetwork containers and its feature is about 13 MB bigger. M's evaluation uses
+// two of its own images in GENERAL with no transition recorded for them in the buffer that made
+// them: NGX's bookkeeping, not an ordering fault of ours (same buffer, submitted and fenced first,
+// and the frames that evaluate it afterwards raise nothing).
+// CHECK: that reading. Run the vv9 cycle again with NVIDIA's DLSS model override off (sl.log then
+// names another preset for Performance and the messages should be gone), or without the PERFORMANCE
+// steps (nothing expected). A message for a feature of preset K means it is something else.
 bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& side,
                                std::string* error) {
   const TemporalInputs in = MakeWarmupInputs(context.request, images);
