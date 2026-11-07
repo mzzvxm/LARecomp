@@ -38,6 +38,7 @@
 #include "frame.h"
 #include "host_passes.h"
 #include "host_shaders.h"
+#include "temporal_backend.h"
 #include "texture_decode.h"
 #include "watch.h"
 
@@ -378,8 +379,10 @@ void ResolveCache::ListPrecache() {
   }
   // The reduction runs only for a reader at another scale than its product:
   // with every target at 1x there is none (0 through a reduced copy in the
-  // measured drives).
-  if (!edram_->resolution_scale().unit()) {
+  // measured drives). The 3D scene drawn smaller than the output is another scale
+  // (MayDrawSceneSmaller: its scale is decided at the first draw, after this list).
+  const bool scene_smaller = MayDrawSceneSmaller();
+  if (!edram_->resolution_scale().unit() || scene_smaller) {
     for (plume::RenderFormat format : kListedReduces) {
       precache.Add(HostPrecache::Key(HostPrecache::kResolveReduce, uint32_t(format)),
                    ReducePipelineName(format),
@@ -387,7 +390,7 @@ void ResolveCache::ListPrecache() {
     }
   }
   // The fused depth resolve of a fractional scale runs only at one.
-  if (!edram_->resolution_scale().whole()) {
+  if (!edram_->resolution_scale().whole() || scene_smaller) {
     resolve_memory_->ListFractionalPrecache();
   }
 }
@@ -1154,6 +1157,10 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       key->depth = 1;
       key->format = uint8_t(depth_info.depth_format);
       *exp_bias = 0;
+      // The scene's depth or the UI's (EdramTargets::DepthLayer): by the frame's phase, not by
+      // the colour bound beside it, which a copy of the depth need not be the scene's (the main
+      // view's depth is copied before the anchor draw, the UI's after it).
+      key->reserved = edram_->DepthLayer(*key, nullptr);
     } else {
       xreg::RB_COLOR_INFO color_info;
       color_info.value = header_or_register(0x1C, info_register(surface));

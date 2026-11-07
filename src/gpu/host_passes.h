@@ -48,6 +48,7 @@ struct HostImage {
   uint32_t width = 0;
   uint32_t height = 0;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+  plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET;
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
 };
 
@@ -110,9 +111,13 @@ class HostPasses {
   // `image` at `width` x `height` in `format`, a colour target with a 2D view
   // in a bindless slot: kept when it already is that, otherwise made anew (the
   // old one retired after the lists that name it). False when it cannot be
-  // made (logged with `name`; the image is left empty).
+  // made (logged with `name`; the image is left empty). `flags` other than the
+  // default make an image a compute pass writes (a temporal upscaler's output:
+  // plume::RenderTextureFlag::STORAGE | UNORDERED_ACCESS): with no RENDER_TARGET
+  // in them it has no framebuffer and DrawInto must not be used on it.
   bool EnsureImage(HostImage& image, uint32_t width, uint32_t height, plume::RenderFormat format,
-                   const char* name);
+                   const char* name,
+                   plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET);
   // Its slot back to the heap and its objects to the FrameRing.
   void ReleaseImage(HostImage& image);
   // Outside a render pass: the full-screen triangle into all of `image` with

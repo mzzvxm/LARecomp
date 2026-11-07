@@ -415,4 +415,73 @@ RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter) 
   return out;
 }
 
+NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
+  NativeDevice out;
+  const auto* dev = static_cast<const plume::D3D12Device*>(device);
+  if (dev) {
+    out.device = dev->d3d;
+  }
+  return out;
+}
+
+void* NativeListHandle(plume::RenderCommandList* list) {
+  const auto* l = static_cast<const plume::D3D12CommandList*>(list);
+  return l ? l->d3d : nullptr;
+}
+
+void* NativeTextureHandle(const plume::RenderTexture* texture) {
+  const auto* t = static_cast<const plume::D3D12Texture*>(texture);
+  return t ? t->d3d : nullptr;
+}
+
+void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
+  auto* l = static_cast<plume::D3D12CommandList*>(list);
+  if (!l) {
+    return;
+  }
+  // What a compute runtime changes on the list: the descriptor heaps (SetDescriptorHeaps drops the
+  // root tables bound to the old ones), its own compute root signature and pipeline. Plume's
+  // cached pointers go, so the next setGraphicsPipelineLayout / setPipeline sets them again, and
+  // the topology is set again with the next draw. The stencil reference and the dynamic depth bias
+  // are not touched by a dispatch, so their caches stay true (resetting the stencil reference to 0
+  // would skip the next set when a pipeline wants 0 while the list still holds another value).
+  l->notifyDescriptorHeapWasChangedExternally();
+  l->activeComputePipelineLayout = nullptr;
+  l->activeGraphicsPipelineLayout = nullptr;
+  l->activeGraphicsPipeline = nullptr;
+  l->activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+}
+
+UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
+  UpscalerSupport out;
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    out.reason = "there is no Direct3D 12 device";
+    return out;
+  }
+  // The highest shader model the runtime (the Agility SDK next to the exe) and the driver offer: a
+  // runtime that does not know a model answers E_INVALIDARG, so ask downwards.
+  uint32_t shader_model = 0;
+  for (uint32_t candidate = 0x69; candidate >= 0x60; --candidate) {
+    D3D12_FEATURE_DATA_SHADER_MODEL model = {};
+    model.HighestShaderModel = D3D_SHADER_MODEL(candidate);
+    if (SUCCEEDED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model)))) {
+      shader_model = uint32_t(model.HighestShaderModel);
+      break;
+    }
+  }
+  out.detail = std::format("shader model {}.{}", shader_model >> 4, shader_model & 0xF);
+  // CHECK: FidelityFX's Direct3D 12 upscaler asks for shader model 6.2 at least (its documentation:
+  // 6.2, the wave size shaders 6.6 where the driver has them); the runtime's own creation is the
+  // final word, and its refusal is handled like any failure (off for the session, one log line).
+  constexpr uint32_t kMinimum = 0x62;
+  if (shader_model < kMinimum) {
+    out.reason = std::format("the graphics card or driver offers shader model {}.{} and FidelityFX "
+                             "needs 6.2", shader_model >> 4, shader_model & 0xF);
+    return out;
+  }
+  out.ok = true;
+  return out;
+}
+
 }  // namespace mcla::gpu::backend::d3d12

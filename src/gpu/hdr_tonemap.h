@@ -32,7 +32,8 @@
 //     RGB, no alpha test, no depth or stencil test that could reject, its scissor and viewport
 //     starting at the origin (the float image is where they overlap);
 //   - no anti-aliasing (mcla_gpu_aa fxaa/smaa runs on the 8-bit target at the marker; its luma
-//     passes were written for 8-bit values, so the HDR scene is off while it is on);
+//     passes were written for 8-bit values, so the HDR scene is off while it is on -- unless a
+//     temporal upscaler is on, which holds those two off, DrawFacts::aa_held_off);
 //   - every later draw into the target before the marker reproducible: the same target (one
 //     colour output, one sample), blending as the game has it, no depth or stencil test that could
 //     reject. A
@@ -123,6 +124,9 @@ class HdrToneMap : public SceneImageSource {
     const XenosState* state = nullptr;
     const plume::RenderViewport* viewport = nullptr;  // host pixels
     const uint8_t* ps_bank = nullptr;        // the guest's pixel constant bank (big-endian)
+    // An upscaler is on, which holds mcla_gpu_aa's FXAA and SMAA off (TemporalSystem::HoldsAaOff):
+    // they do not run at the marker, so the setting is not a reason to keep the float scene off.
+    bool aa_held_off = false;
   };
 
   HdrToneMap() = default;
@@ -130,8 +134,13 @@ class HdrToneMap : public SceneImageSource {
   HdrToneMap(const HdrToneMap&) = delete;
   HdrToneMap& operator=(const HdrToneMap&) = delete;
 
-  // After the FrameLayers, the PostAa and the ShaderStore (whose HDR pack is loaded or not).
-  // False when there is nothing to draw with (logged): the HDR output stays at stage 2.
+  // After the FrameLayers, the PostAa and the ShaderStore. The store's HDR pack may not be loaded
+  // yet (a shader pack attached after the renderer started: Renderer::OnShaderPackAttached loads
+  // it); active() is false until it is, and the HDR output stays at stage 2 meanwhile (or for good
+  // when the pack is not usable: the Renderer logged why).
+  // CHECK: a first run whose packs are built after the renderer is up (AttachShaderPacks): the
+  // variants load on that thread while the render thread idles; the float scene should start with
+  // the first guest frames, no restart needed ("shader pack: N HDR scene variants" in the log).
   bool Initialize(HostPasses& passes, ShaderStore& shaders, FrameLayers& layers, PostAa& post,
                   PassTiming& pass_timing);
   // GPU idle, before HostPasses shuts down.
@@ -139,7 +148,10 @@ class HdrToneMap : public SceneImageSource {
 
   // HDR output is on, its UI layers are active and the variants are loaded: what the Scene checks
   // for each draw.
-  bool active() const { return initialized_ && layers_ != nullptr && layers_->active(); }
+  bool active() const {
+    return initialized_ && layers_ != nullptr && layers_->active() && shaders_ != nullptr &&
+           shaders_->has_hdr_variants();
+  }
 
   // Once per present, before the frame's draws: the display's levels and the game's display gamma
   // table (the green channel, `ramp[256]`, 10-bit values over 1023; null: the identity), for the

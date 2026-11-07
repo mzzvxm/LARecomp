@@ -111,12 +111,10 @@ bool HdrToneMap::Initialize(HostPasses& passes, ShaderStore& shaders, FrameLayer
   for (uint32_t i = 0; i < 257; ++i) {
     ramp_[i] = float(std::min(i, 255u)) / 255.0f;
   }
-  if (!shaders.has_hdr_variants()) {
-    return false;  // the Renderer logged why when it tried to load them
-  }
   initialized_ = true;
-  REXLOG_INFO("[gpu] hdr scene: on (the tone map is drawn again into a float image; "
-              "highlights {}, knee {})",
+  REXLOG_INFO("[gpu] hdr scene: set up (the tone map is drawn again into a float image once the HDR "
+              "variants of the game's shaders are loaded: {}; highlights {}, knee {})",
+              shaders.has_hdr_variants() ? "they are" : "not yet",
               REXCVAR_GET(mcla_gpu_hdr_highlights), kKnee);
   return true;
 }
@@ -224,7 +222,7 @@ HdrToneMap::Action HdrToneMap::ClassifyToneMap(const DrawFacts& f) {
     Fail(cause, detail);
     return Action::kNone;
   };
-  if (post_->CurrentMode() != PostAa::Mode::kOff) {
+  if (!f.aa_held_off && post_->CurrentMode() != PostAa::Mode::kOff) {
     return refuse(Cause::kAa, std::string());
   }
   if (key.color_count != 1 || key.sample_count != 1 || f.host_samples != 1 ||

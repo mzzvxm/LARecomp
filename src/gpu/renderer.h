@@ -80,6 +80,7 @@
 #include "scene.h"
 #include "shaders.h"
 #include "swap_chain.h"
+#include "temporal.h"
 #include "textures.h"
 #include "timing.h"
 #include "upload.h"
@@ -117,6 +118,14 @@ class Renderer final : public RenderThread::Executor {
                   std::shared_ptr<OverlayChannel> overlay_channel,
                   std::shared_ptr<OverlayHost> overlay_host);
 
+  // Main thread, after Initialize, with the guest not drawing yet (before it is launched): attaches
+  // the shader packs in `folder` (the shader_pack_dir cvar replaces it) and starts the pipeline
+  // persistence and precache against them (shaders.h: the renderer starts without a pack when none
+  // is in place). True when the packs are attached, also when they were already.
+  bool AttachShaderPacks(const std::filesystem::path& folder);
+  // Any thread.
+  bool shader_packs_attached() const { return shaders_.attached(); }
+
   // Any thread.
   void BeginShutdown();
   // Lifecycle thread. Implies BeginShutdown.
@@ -149,6 +158,9 @@ class Renderer final : public RenderThread::Executor {
 
  private:
   enum class PresentSource : uint8_t { kGuest, kIdle };
+
+  // Once the main shader pack is attached, in Initialize or in AttachShaderPacks.
+  void OnShaderPackAttached();
 
   void Execute(const RecordHeader& header, const uint8_t* payload) override;
   void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);
@@ -183,6 +195,7 @@ class Renderer final : public RenderThread::Executor {
   GuestLayout guest_layout_;
   ShaderStore shaders_;
   FrameValidator validator_;  // render thread; reads shaders_; on with mcla_gpu_validate
+  TemporalSystem temporal_;   // render thread; the temporal upscalers' groundwork (temporal.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

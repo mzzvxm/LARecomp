@@ -44,6 +44,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "saveporter/larecomp_save_porter.h"
 #include "profile/larecomp_profile_picker.h"
 #include "bootprogress/larecomp_boot_progress.h"
+#include "bootprogress/larecomp_shader_build.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/adaptive_triggers.h"
@@ -156,7 +157,7 @@ class LarecompApp : public rex::ReXApp {
         "texture_cache_memory_limit_hard",
         "texture_cache_memory_limit_render_to_texture",
         "anisotropic_override", "gpu_allow_invalid_fetch_constants", "log_level",
-        "audio_maxqframes", "audio_mute",
+        "audio_maxqframes", "audio_mute", "shader_pack_dir", "shader_pack_threads",
     };
     std::filesystem::create_directories("logs");
     if (FILE* f = fopen("logs/effective_config.txt", "w")) {
@@ -566,6 +567,9 @@ class LarecompApp : public rex::ReXApp {
     // The base has already built the ImGui drawer on CreateOverlayDrawer's
     // drawer; the renderer runs its passes from here on.
     if (mcla::gpu::Enabled()) {
+      // Shader packs whose stamp is stale are rebuilt before they are attached (the shader phase
+      // of LaunchModule), so Startup leaves those alone.
+      larecomp::shaderbuild::InstallStartupGate(game_data_root());
       return mcla::gpu::Startup(window(), app_context(), imgui_drawer());
     }
 #endif
@@ -650,6 +654,7 @@ class LarecompApp : public rex::ReXApp {
     if (close_started_.exchange(true, std::memory_order_acq_rel)) {
       return;
     }
+    larecomp::RequestBootBuildCancel();  // a shader build that is running stops
     const auto started = std::chrono::steady_clock::now();
     MclaWaitForSaves();
     LogAudioDropoutSummary();
@@ -688,7 +693,9 @@ class LarecompApp : public rex::ReXApp {
 
   void OnShutdown() override {
     // Closing the window while the boot content build runs: let it finish
-    // writing the mod archive before the process goes, as it always did.
+    // writing the mod archive before the process goes, as it always did. A
+    // shader build is not waited for: it is told to stop.
+    larecomp::RequestBootBuildCancel();
     larecomp::WaitForBootBuild();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
@@ -803,6 +810,8 @@ class LarecompApp : public rex::ReXApp {
     // The MCLA settings panel saves here, as the SDK's overlay does.
     settings_config_path_ = paths.config_path;
     ChooseWritableUserFolder(paths);
+    // The shader packs follow a cache folder the player chose; else the renderer's default.
+    larecomp::shaderbuild::ConfigurePackFolder(paths.cache_root);
     const auto root = ExeDir();
 
     // A bare default.xex is not enough to call a directory the game root: the
@@ -1149,10 +1158,32 @@ class LarecompApp : public rex::ReXApp {
   // about. ReXApp::LaunchModule is what starts the guest; it only runs once the
   // build is done. Everything OnPostSetup used to do after the build follows it
   // here, in the same order, so none of it ever runs beside the build.
-  void LaunchModule() override {
+  void LaunchModule() override { StartBootBuild(false); }
+
+  // The boot work behind the progress popup: first the shader packs, when the renderer has none
+  // (LARecomp builds them from the player's game files, both formats, see
+  // bootprogress/larecomp_shader_build.h), then the mods and the music. A shader build that
+  // fails or is cancelled ends in a dialog and the guest does not start; its Retry comes back
+  // here.
+  void StartBootBuild(bool force_shader_build) {
+    auto shaders = std::make_shared<larecomp::shaderbuild::Phase>(
+        game_data_root(), runtime() ? runtime()->virtual_membase() : nullptr, force_shader_build);
     larecomp::StartBootBuildWithOverlay(
-        app_context(), imgui_drawer(), []() { mc::modloader::Init(); },
-        [this]() {
+        app_context(), imgui_drawer(),
+        [shaders]() {
+          shaders->Run();
+          if (shaders->Ok()) {
+            mc::modloader::Init();
+          }
+        },
+        [this, shaders]() {
+          if (!shaders->Finish()) {
+            shaders->ShowFailure(
+                imgui_drawer(), app_context(),
+                [this](bool force) { StartBootBuild(force); },
+                [this]() { OnWindowCloseRequested(); });
+            return;
+          }
           FinishSetupAfterBootBuild();
           rex::ReXApp::LaunchModule();
         });

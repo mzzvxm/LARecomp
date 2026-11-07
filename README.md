@@ -87,6 +87,7 @@ Codegen is separate: `larecomp_manifest.toml` points at `../MCLA_Game_Files/defa
 ### Build
 
 ```powershell
+git submodule update --init --recursive
 cmake --preset win-amd64-relwithdebinfo .
 cmake --build out/build/win-amd64-relwithdebinfo
 ```
@@ -105,6 +106,8 @@ $env:REX_LOG_LEVEL="warn"; Start-Process larecomp.exe
 **Set `REX_LOG_LEVEL=warn`.** Non-Release builds log at `trace`, which is roughly 7,500 lines and 1.4 MB of synchronous disk writes per second during gameplay. That is enough to cause stutter on its own.
 
 Everything else is in the pause menu. It defaults to 60 FPS with real frame delta on and vsync off.
+
+**The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them.
 
 ---
 

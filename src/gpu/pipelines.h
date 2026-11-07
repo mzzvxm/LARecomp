@@ -44,11 +44,13 @@
 // created is recorded -- its key, with the input layout by content (the
 // session's InputLayout::id means nothing to the next one) -- and the records
 // go to cache/mcla_gpu_pipelines_<backend>.bin beside the executable, the
-// earlier ones first, read back at the next Initialize. They are written on
+// earlier ones first, read back at the next StartPersistence (when the shader pack is
+// attached: the records are checked against it). They are written on
 // Shutdown and during play (Autosave), so a crash or a killed process keeps
-// what the session had seen by then. A starter list ships beside the pack
-// (assets/mcla_pipelines.bin, built with tools/pipelines/pipeline_list.py) and
-// is read after them, so a first start precaches what play usually needs.
+// what the session had seen by then. A starter list ships in <executable>/assets
+// (mcla_pipelines.bin, built with tools/pipelines/pipeline_list.py; the pack's own
+// folder does not matter) and is read after them, so a first start precaches what
+// play usually needs.
 // Precache (M5.3b): workers make the records' pipelines ahead of use, in the
 // file's order; Get takes one that is ready, waits for one being made, and
 // makes one no worker has taken yet itself (the workers then skip it). A
@@ -203,7 +205,16 @@ class Pipelines {
   Pipelines(const Pipelines&) = delete;
   Pipelines& operator=(const Pipelines&) = delete;
 
+  // Takes the device, the layout and the shader store (which may still be pending: its Find
+  // then returns null and no draw reaches the pipelines). Starts nothing: no cache is read and
+  // no thread runs until StartPersistence.
   void Initialize(Device& device, const GuestLayout& layout, ShaderStore& shaders);
+  // The second half of the start, once the shader pack is attached (the records are checked
+  // against it, and the precache workers call GetShader): reads the cache file and the starter
+  // list, then starts the precache. Called right after Initialize when a pack was in place at
+  // start, and from the main thread after the pack was built and attached otherwise; with the
+  // guest not drawing yet. A second call does nothing.
+  void StartPersistence(ShaderStore& shaders);
   // The GPU must be idle.
   void Shutdown();
 
@@ -351,10 +362,13 @@ class Pipelines {
   //), the layouts and records they hold plus the session's new
   // ones, the persistent keys recorded, how many records came from the files
   // and how many from this API's own.
-  bool persist_ = false;
-  std::filesystem::path cache_path_;
+  // persist_ is atomic because StartPersistence sets it (last) on the thread that attaches the
+  // pack while the render thread may already be running idle ticks.
+  std::atomic<bool> persist_{false};
+  bool persistence_started_ = false;  // StartPersistence ran (main thread)
+  std::filesystem::path cache_path_;  // <exe>/cache/mcla_gpu_pipelines_<api>.bin
   std::filesystem::path other_cache_path_;
-  std::filesystem::path starter_path_;  // assets/mcla_pipelines.bin
+  std::filesystem::path starter_path_;  // <exe>/assets/mcla_pipelines.bin
   std::deque<std::string> names_;
   std::vector<std::unique_ptr<StoredLayout>> stored_layouts_;
   std::unordered_map<uint64_t, uint32_t> stored_layout_index_;  // hash -> stored_layouts_

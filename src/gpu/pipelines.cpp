@@ -18,6 +18,7 @@
 #include <string>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
 
@@ -260,25 +261,37 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
   REXLOG_INFO("[gpu] pipelines: depth bias {}", dynamic_depth_bias_
                                                     ? "dynamic (set per draw on the command list)"
                                                     : "static (part of each pipeline)");
-  persist_ = REXCVAR_GET(mcla_gpu_pipeline_cache);
-  if (persist_) {
-    // The pack is <executable>/assets/mcla_shaders.*.pack.
+}
+
+void Pipelines::StartPersistence(ShaderStore& shaders) {
+  if (!device_ || persistence_started_) {
+    return;
+  }
+  persistence_started_ = true;
+  shaders_ = &shaders;
+  // persist_ is set last: the render thread's Autosave (EndFrame) reads it first, and then finds
+  // the records below in place.
+  const bool persist = REXCVAR_GET(mcla_gpu_pipeline_cache);
+  if (persist) {
+    // The cache is <executable>/cache/mcla_gpu_pipelines_<api>.bin and the starter list
+    // <executable>/assets/mcla_pipelines.bin, whichever folder the shader pack came from.
+    const std::filesystem::path exe_folder = rex::filesystem::GetExecutableFolder();
     std::string backend = BackendName();
     std::transform(backend.begin(), backend.end(), backend.begin(),
                    [](unsigned char ch) { return char(std::tolower(ch)); });
-    cache_path_ = shaders.path().parent_path().parent_path() / "cache" /
-                  std::format("mcla_gpu_pipelines_{}.bin", backend);
+    cache_path_ = exe_folder / "cache" / std::format("mcla_gpu_pipelines_{}.bin", backend);
     std::string other = BackendName(ActiveBackend() == Backend::kD3D12 ? Backend::kVulkan
                                                                        : Backend::kD3D12);
     std::transform(other.begin(), other.end(), other.begin(),
                    [](unsigned char ch) { return char(std::tolower(ch)); });
     other_cache_path_ = cache_path_.parent_path() / std::format("mcla_gpu_pipelines_{}.bin", other);
-    starter_path_ = shaders.path().parent_path() / "mcla_pipelines.bin";
+    starter_path_ = exe_folder / "assets" / "mcla_pipelines.bin";
     LoadRecords();
   }
   // The workers run without a cache file too: they make what the render
   // thread hands them (background builds).
   StartPrecache();
+  persist_ = persist;
 }
 
 void Pipelines::Shutdown() {
@@ -298,6 +311,7 @@ void Pipelines::Shutdown() {
   own_file_records_ = 0;
   frame_ = 0;
   persist_ = false;
+  persistence_started_ = false;
   device_ = nullptr;
   layout_ = nullptr;
   shaders_ = nullptr;

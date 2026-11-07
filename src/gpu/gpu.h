@@ -29,7 +29,10 @@
 //
 // Call order (all on the UI thread except where noted):
 //   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer
+//   SetShaderPackFolder   from LarecompApp::OnConfigurePaths, before Startup (optional)
+//   SetShaderPackGate     from LarecompApp::SetupPresentation, before Startup (optional)
 //   Startup               from LarecompApp::SetupPresentation, after the base
+//   AttachShaderPacks     once the shader packs are built, when ShaderPacksAttached() is false
 //   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
 //                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
@@ -40,6 +43,8 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -69,6 +74,36 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
 // reason is logged and the app should not start.
 bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
              rex::ui::ImGuiDrawer* imgui_drawer);
+
+// --- the shader packs (shaders.h) ---------------------------------------------
+// The renderer starts without the shader packs when there are none yet: on a first run they are
+// built from the player's game files, which exist only after the ISO wizard, and the wizard is
+// drawn by this renderer. A pack that is in place when Startup runs is attached by Startup, as
+// always. Without one the renderer is pending: guest draws find no shaders and are skipped
+// (counted; nothing draws guest content). Once a build finished, AttachShaderPacks makes the
+// renderer usable, before the guest is launched.
+
+// UI thread, before Startup (LarecompApp::OnConfigurePaths): the folder the packs are looked for
+// in first and built into. Not called: <exe>/cache/shaders, else the local application data
+// folder. The cvar shader_pack_dir replaces both and then is the only folder. A pack that an
+// older install left in <exe>/assets is still read when the folder has none.
+void SetShaderPackFolder(const std::filesystem::path& folder);
+// UI thread, before Startup: lets the app decide whether Startup attaches the packs that are in
+// place. Startup asks once, after the device exists; false leaves the renderer pending. The app
+// does that for packs its stamp says are stale: they are rebuilt, and a pack the renderer has
+// mapped could not be replaced. Not set: whatever pack is valid is attached, as before.
+void SetShaderPackGate(std::function<bool()> gate);
+// Where a build of the packs should write: shader_pack_dir, else the folder from
+// SetShaderPackFolder, else the default (made, and tried with a real file). Any thread.
+std::filesystem::path ShaderPackFolder();
+// True once the main pack is attached (at Startup or by AttachShaderPacks); false with no
+// renderer. Any thread. A build is needed when this is false after Startup.
+bool ShaderPacksAttached();
+// UI thread, after Startup and a finished build, before the guest runs: attaches the packs in
+// `folder` (empty: ShaderPackFolder()) and starts the pipeline cache and precache against them.
+// True when attached (also when they were already). False, logged, when the pack is missing or
+// invalid there: the renderer stays pending.
+bool AttachShaderPacks(const std::filesystem::path& folder);
 
 // --- guest capture (hooks.cpp) ------------------------------------------------
 // Each hooked D3D call is bracketed: Before* runs before the original (it reads
@@ -209,5 +244,76 @@ void Shutdown();
 // true when that is Vulkan. For the emulated GPU's backend (larecomp_app.h), which follows the same
 // setting; backend.h itself needs Plume's headers, this one doesn't.
 bool AutoBackendIsVulkan(const std::string& preferred_adapter);
+
+// --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
+// What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
+// mcla_gpu_upscaler is off | fsr31 | fsr4; a choice this PC cannot run is treated as off and the
+// menu does not list it.
+enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4 };
+const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4
+
+// The vendors' quality modes: their names and the render size as a share of the output (FSR 3.1
+// and FSR 4; DLSS's table differs a little and arrives with it).
+enum class UpscaleMode : uint8_t { kNativeAa, kQuality, kBalanced, kPerformance, kUltraPerformance,
+                                   kCount };
+struct ModeInfo {
+  const char* cvar;   // native_aa, quality, balanced, performance, ultra_performance
+  const char* name;   // NATIVE AA, QUALITY, ...
+  uint32_t percent;   // 100, 67, 59, 50, 33
+  double ratio;       // output size over render size: 1, 1.5, 1.7, 2, 3
+};
+const ModeInfo& ModeInfoOf(UpscaleMode mode);
+
+// Any thread. Written by the renderer's upscaler backend when its probe ends (and when something
+// fails) and by the temporal system as frames go.
+struct UpscalerAvailability {
+  bool probed = false;  // the answer below is final
+  bool fsr31 = false;   // can run on this PC: listed under Upscaling
+  bool fsr4 = false;    // its provider really loads here
+  Upscaler running = Upscaler::kOff;  // the one doing the work this moment
+};
+UpscalerAvailability GetUpscalerAvailability();
+
+// --- MSAA while an upscaler runs ---------------------------------------------------------------
+// FSR smooths the picture itself, and MSAA under it only costs time. The game's MSAA is a start-up
+// switch (its renderer is made once, with 2 samples or without: hooks/graphics.cpp
+// Patch_DisableMSAA), so the hold is decided once, when the game makes its renderer: a game started
+// with an upscaler chosen and able to run is started without MSAA, and the player's MSAA choice
+// (mcla_gpu_msaa) is kept and applies again at a start with no upscaler. An upscaler turned on
+// later finds the game's MSAA running (it works with it) until the next start.
+enum class GuestMsaa : uint8_t {
+  kUndecided,       // the game has not made its renderer yet
+  kOn,              // as the player chose: the console's 2 samples (host samples 4 or 8 on top)
+  kOffChosen,       // mcla_gpu_msaa is off
+  kOffForUpscaler,  // started without MSAA because an upscaler runs; the choice is kept
+};
+// Called once by the game's own thread when its renderer is made; later calls give the same answer.
+// True: the game starts without MSAA. Waits up to a few seconds for the upscaler probe when an
+// upscaler is chosen (it ends within a second of the renderer starting).
+bool GuestMsaaOff();
+// Any thread.
+GuestMsaa GetGuestMsaa();
+
+// --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
+// The scene is drawn smaller than the output only while an upscaler can make it whole again, and
+// its size is fixed when its targets are made (restart only, like RES SCALE). So the choice is read
+// once: the upscaler and mode chosen at the start, and whether this PC can run that upscaler (known
+// when the upscaler probe has ended). `ratio` is the mode's output over render, per axis (1 when no
+// upscaler runs); the renderer turns it into the scene's scale (render_scale.h ChooseSceneScale).
+// A change of upscaler or mode afterwards is only noted: it applies at the next start.
+struct StartUpscale {
+  bool decided = false;
+  bool probed = false;  // the upscaler probe had ended when it was decided
+  Upscaler upscaler = Upscaler::kOff;  // as chosen
+  bool runs = false;                   // chosen, and this PC can run it
+  UpscaleMode mode = UpscaleMode::kNativeAa;
+  double ratio = 1.0;  // the mode's, when `runs`; else 1
+};
+// Decides on the first call (any thread; waits a few seconds for the probe when an upscaler is
+// chosen), the same answer ever after. The game's own thread calls it first, when it makes its
+// renderer (GuestMsaaOff).
+StartUpscale GetStartUpscale();
+// What has been decided so far, never waiting: `decided` is false before.
+StartUpscale PeekStartUpscale();
 
 }  // namespace mcla::gpu

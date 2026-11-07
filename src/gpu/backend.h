@@ -198,6 +198,44 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 // answers 0 there; the device also latches loss it sees on its own paths.
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 
+// --- a runtime that records its own work next to Plume's (FidelityFX, temporal_ffx.h) ---------
+// Plume's lists are live recordings; a runtime writes into the same native list, with native
+// resources, so these four give it the handles, and the last one tells Plume that the list's cached
+// state is stale afterwards.
+
+// The objects a runtime creates its context on.
+struct NativeDevice {
+  void* device = nullptr;                // D3D12: ID3D12Device*; Vulkan: VkDevice
+  void* physical_device = nullptr;       // Vulkan: VkPhysicalDevice
+  void* get_device_proc_addr = nullptr;  // Vulkan: PFN_vkGetDeviceProcAddr
+};
+NativeDevice NativeDeviceOf(plume::RenderDevice* device);
+
+// D3D12: the ID3D12GraphicsCommandList*; Vulkan: the VkCommandBuffer. Null when `list` is null.
+void* NativeListHandle(plume::RenderCommandList* list);
+
+// D3D12: the ID3D12Resource*; Vulkan: the VkImage (a handle in a pointer, 64-bit builds).
+void* NativeTextureHandle(const plume::RenderTexture* texture);
+
+// After a runtime recorded work into `list` (outside any render pass, no framebuffer bound): what
+// Plume remembers of the list's state is forgotten, so the next call sets it again. D3D12: the
+// descriptor heaps, the pipeline layouts, the active pipeline and the topology (a runtime sets its
+// own heaps, root signature and pipeline state); the stencil reference and the depth bias stay
+// (a compute dispatch leaves them). Vulkan: the pipeline layouts.
+// CHECK: that FidelityFX's D3D12 and Vulkan dispatches change nothing else Plume caches (the sample
+// positions, the viewport and scissor are not touched by a compute dispatch); the debug layer and
+// Vulkan validation over the first frames with it settle it.
+void InvalidateAfterExternalWork(plume::RenderCommandList* list);
+
+// Whether this device can run a compute temporal upscaler (FidelityFX), checked without loading it.
+// `reason` is one plain sentence when not; `detail` is what was read, for the log.
+struct UpscalerSupport {
+  bool ok = false;
+  std::string reason;
+  std::string detail;
+};
+UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
+
 }  // namespace backend
 
 }  // namespace mcla::gpu

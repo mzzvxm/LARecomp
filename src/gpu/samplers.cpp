@@ -93,6 +93,7 @@ uint64_t Samplers::Description::Key() const {
   k |= uint64_t(mip_min) << 18;
   k |= uint64_t(mip_max) << 22;
   k |= uint64_t(uint16_t(lod_bias) & 0x3FFu) << 26;
+  k |= uint64_t(uint8_t(extra_bias)) << 36;
   return k;
 }
 
@@ -127,7 +128,8 @@ void Samplers::Shutdown() {
   heap_ = nullptr;
 }
 
-uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_t mip_max) {
+uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_t mip_max,
+                       int32_t extra_bias) {
   xe::xe_gpu_texture_fetch_t fetch;
   std::memcpy(&fetch, fetch_dwords, sizeof(fetch));
 
@@ -158,6 +160,7 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   d.mip_min = uint8_t(mip_min);
   d.mip_max = uint8_t(mip_max);
   d.lod_bias = int16_t(fetch.lod_bias);
+  d.extra_bias = int8_t(std::clamp(extra_bias, -128, 127));
 
   const uint64_t key = d.Key();
   const auto it = slots_.find(key);
@@ -178,7 +181,10 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   desc.addressW = AddressMode(d.clamp[2]);
   desc.anisotropyEnabled = aniso != xe::AnisoFilter::kDisabled;
   desc.maxAnisotropy = desc.anisotropyEnabled ? (1u << (uint32_t(aniso) - 1)) : 1u;
-  desc.mipLODBias = float(d.lod_bias) * (1.0f / 32.0f);
+  // CHECK: Vulkan's maxSamplerLodBias is at least 2 and 16 or so on desktop drivers; Plume does not
+  // clamp, so a total beyond what the device takes (the scene's bias reaches about -2.6 at 33%) is
+  // for the driver to limit.
+  desc.mipLODBias = float(int32_t(d.lod_bias) + int32_t(d.extra_bias)) * (1.0f / 32.0f);
   switch (xe::BorderColor(d.border)) {
     case xe::BorderColor::k_ABGR_White:
       desc.borderColor = plume::RenderBorderColor::OPAQUE_WHITE;

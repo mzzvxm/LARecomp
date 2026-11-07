@@ -705,7 +705,7 @@ std::string SourceStamp(const fs::path& path) {
     const auto written = fs::last_write_time(path, ec);
     if (ec) return {};
     return "wave-order-v3:" + std::to_string(size) + ":" +
-           std::to_string(written.time_since_epoch().count());
+           std::to_string(static_cast<long long>(written.time_since_epoch().count()));
 }
 
 }  // namespace
