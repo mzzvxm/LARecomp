@@ -232,4 +232,6 @@ Fixes made directly in LARecomp:
 
 **[ReXGlue Team](https://github.com/rexglue/rexglue)**, for the Xbox 360 static recompilation toolkit and runtime.
 
+**NVIDIA DLSS**, through **NVIDIA Streamline**, for the DLSS upscaling option. NVIDIA's files stay under NVIDIA's licences, which are copied next to the exe with them (`nvngx_dlss_license.txt`, `reflex_license.txt`, `streamline_license.txt`, `streamline_third_party_licenses.md`).
+
 **Rockstar San Diego**, who made the game.

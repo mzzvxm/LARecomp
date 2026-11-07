@@ -56,7 +56,7 @@ foreach(_ffx_entry IN LISTS _ffx_files)
     file(RENAME "${_ffx_local}.part" "${_ffx_local}")
 endforeach()
 if(_ffx_ok)
-    set(LARECOMP_FFX_SDK_DIR "${_ffx_root}" CACHE PATH
-        "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR" FORCE)
+    # A plain variable, not the cache: the next configure checks the files again (CMakeLists.txt).
+    set(LARECOMP_FFX_SDK_DIR "${_ffx_root}")
     message(STATUS "larecomp: FidelityFX SDK 2.4.0 files fetched and checked in ${_ffx_root}")
 endif()

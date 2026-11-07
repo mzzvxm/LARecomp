@@ -198,6 +198,12 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 // answers 0 there; the device also latches loss it sees on its own paths.
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 
+// The PCI vendor id (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel) of the GPU the renderer will use, as
+// DXGI lists it, for the adapter named `preferred_adapter` (mcla_gpu_adapter; empty: Windows' choice
+// as DefaultAdapterName makes it, else Plume's). 0 when it cannot be told (no DXGI, no adapter).
+// Asked before the device exists: Streamline is only started for an NVIDIA GPU on Vulkan.
+uint32_t RenderingAdapterVendor(const std::string& preferred_adapter);
+
 // --- a runtime that records its own work next to Plume's (FidelityFX, temporal_ffx.h) ---------
 // Plume's lists are live recordings; a runtime writes into the same native list, with native
 // resources, so these four give it the handles, and the last one tells Plume that the list's cached
@@ -208,6 +214,7 @@ struct NativeDevice {
   void* device = nullptr;                // D3D12: ID3D12Device*; Vulkan: VkDevice
   void* physical_device = nullptr;       // Vulkan: VkPhysicalDevice
   void* get_device_proc_addr = nullptr;  // Vulkan: PFN_vkGetDeviceProcAddr
+  uint64_t adapter_luid = 0;             // D3D12: the adapter's LUID (LowPart | HighPart << 32)
 };
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 
@@ -216,6 +223,28 @@ void* NativeListHandle(plume::RenderCommandList* list);
 
 // D3D12: the ID3D12Resource*; Vulkan: the VkImage (a handle in a pointer, 64-bit builds).
 void* NativeTextureHandle(const plume::RenderTexture* texture);
+
+// What a runtime that wants every property of an image given (Streamline: Vulkan cannot be asked
+// for them) needs of a texture Plume made, with the state the image is in when the runtime gets it.
+enum class ImageUse : uint8_t {
+  kComputeRead,  // shader-readable at the compute stage: D3D12 NON_PIXEL_SHADER_RESOURCE, Vulkan
+                 // SHADER_READ_ONLY_OPTIMAL
+  kStorage,      // written by a compute shader: D3D12 UNORDERED_ACCESS, Vulkan GENERAL
+};
+struct NativeImage {
+  void* resource = nullptr;     // as NativeTextureHandle; null when the texture has no native object
+  void* view = nullptr;         // Vulkan: Plume's whole-image VkImageView (null on D3D12)
+  void* memory = nullptr;       // Vulkan: the VkDeviceMemory the image lives in (null when none)
+  uint32_t native_format = 0;   // Vulkan: VkFormat
+  uint32_t state = 0;           // D3D12: D3D12_RESOURCE_STATES; Vulkan: VkImageLayout
+  uint32_t usage = 0;           // Vulkan: VkImageUsageFlags the image was made with
+  uint32_t create_flags = 0;    // Vulkan: VkImageCreateFlags
+  uint32_t mip_levels = 1;
+  uint32_t array_layers = 1;
+  bool complete = false;        // every field this API needs is known (a Plume without the Vulkan
+                                // image usage fields never is, and Streamline is not used then)
+};
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 
 // After a runtime recorded work into `list` (outside any render pass, no framebuffer bound): what
 // Plume remembers of the list's state is forgotten, so the next call sets it again. D3D12: the

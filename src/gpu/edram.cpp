@@ -207,7 +207,8 @@ void EdramTargets::DecideScene() {
   if (scene_scale_ == resolution_scale_) {
     REXLOG_INFO("[gpu] edram: the 3D scene is made at the output's {}x ({} {}: not smaller than "
                 "the output)",
-                resolution_scale_, UpscalerName(start.upscaler), ModeInfoOf(start.mode).name);
+                resolution_scale_, UpscalerName(start.upscaler),
+                ModeInfoOf(start.upscaler, start.mode).name);
     return;
   }
   REXLOG_INFO("[gpu] edram: the 3D scene (the main view's colour and depth in play) is made at "
@@ -219,7 +220,8 @@ void EdramTargets::DecideScene() {
               scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_,
               resolution_scale_.Edge(kAssumedScreenWidth),
               resolution_scale_.Edge(kAssumedScreenHeight), UpscalerName(start.upscaler),
-              ModeInfoOf(start.mode).name, ModeInfoOf(start.mode).percent, start.ratio,
+              ModeInfoOf(start.upscaler, start.mode).name,
+              ModeInfoOf(start.upscaler, start.mode).percent, start.ratio,
               choice.actual_ratio(resolution_scale_),
               choice.limited ? "; limited, 0.5x is the smallest scale tried" : "",
               resolution_scale_);

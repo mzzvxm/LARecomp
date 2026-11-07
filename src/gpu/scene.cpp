@@ -1073,6 +1073,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
                    "(reported once)");
     }
   }
+  if (temporal_ && temporal_->active()) {
+    temporal_->BeforeTextures(r);  // the anchor draw's textures are bound without the stand-in
+  }
   Lap(Stage::kConstants);
   // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
   // again into the float scene image (hdr_tonemap.h).

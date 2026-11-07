@@ -27,8 +27,9 @@
 // Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
 // the motion vectors from this system's own camera history; the backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
 //
-// Step 2 (temporal_backend.h, temporal_ffx.h) adds the backend: with an upscaler chosen
-// (mcla_gpu_upscaler: FSR 3.1, FSR 4) and able to run, the system is on and the frame goes
+// Step 2 (temporal_backend.h, temporal_ffx.h, temporal_dlss.h) adds the backends: with an upscaler
+// chosen (mcla_gpu_upscaler: FSR 3.1, FSR 4, DLSS) and able to run, the system is on and the frame
+// goes
 //
 //   BeginFrame   the chosen upscaler is asked for a context (render and output size of the last
 //                accepted frame: ratio 1, "Native AA"); the jitter is armed only while the context is
@@ -45,6 +46,30 @@
 //                too, but it is a start-up switch of the game: a game started with the upscaler on
 //                runs without it (gpu.h GuestMsaa, decided when the game makes its renderer; the
 //                player's choice is kept); one that started with MSAA keeps it until the next start.
+//
+// The post chain before the anchor. The game's first reads of the scene colour (the guest's post
+// function makes a half-size downsample of it, then a quarter-size one, the log-luminance chain of
+// the exposure, the bright pass and the bloom's blurs from those; the half-size image is also the
+// motion blur's half-size layer) run before the anchor, so before the upscale, and would read the
+// raw jittered scene: a glint smaller than a render pixel lands on one in some jitter phases and
+// not in others, its bloom pulses with the jitter, and no upscaler can steady what is already in
+// the bloom. While the scene is drawn smaller than the output (at the output's size the jitter
+// does not do this), those reads are given the previous frame's upscaled picture instead
+// (StandInForPostChain): the same stand-in as after the anchor, set at the frame's first main view
+// draw, while the output image still holds the frame before. What they make is one frame late: the
+// bloom, the exposure and the motion blur's half-size layer. The scene colour the anchor's own
+// fetch and the tone map read is this frame's. A camera cut shows the view before it in the cut
+// frame's bloom.
+//
+// The game double-buffers the scene colour: it draws the scene into one of a pair of resolve
+// products (the same format, size and guest memory range apart) and alternates them every frame.
+// The product this frame's reads name is the anchor's from two frames ago, not the last frame's,
+// so the stand-in covers the last two products the anchor read (scene_colors_) and a read of
+// either gets the picture. It ends where the anchor draw begins (BeforeTextures): the anchor's
+// own fetch is then bound plain, and the anchor's stand-in, this frame's picture, takes over
+// after the upscale. The summary counts the frames it was set in, the frames something read it
+// before the anchor, and those reads: a run with the stand-in set and no read served means the
+// reads name a product it does not cover.
 //
 // Step 3 (F4-DESIGN.md 4, stage U3) draws the scene smaller than the output: with an upscaler in a
 // mode below 100% at the start (gpu.h GetStartUpscale) the main view's colour and depth are made
@@ -97,6 +122,9 @@ class TemporalSystem {
   static constexpr uint32_t kDisarmAfterMisses = 3;
   // A new state of the frames is logged once it has lasted this many frames.
   static constexpr uint32_t kModeDebounce = 5;
+  // Frames in a row with the post chain's stand-in set and no read before the anchor served by it,
+  // before a warning (once): the reads name a scene colour product the stand-in does not cover.
+  static constexpr uint32_t kPostUnservedWarn = 120;
 
   // The kinds of main view draw: colour and depth, colour only (the pass "k_2_10_10_10_FLOAT@1024
   // pitch 1280 2x | no depth" of the census, under 22 draws a frame), depth only (the occlusion
@@ -202,6 +230,12 @@ class TemporalSystem {
     bool backend_ready = false;          // its context exists for the sizes of the last frame
     bool upscaled = false;               // the output is made and the stand-in set for this frame
     uint32_t anchor_color_slot = 0;      // the bindless slot the anchor's colour fetch reads instead
+    // The post chain before the anchor reads the previous frame's output (StandInForPostChain).
+    bool post_checked = false;           // the frame's first main view draw decided
+    bool post_on_previous = false;       // the stand-in is set for the post chain (until the anchor)
+    bool post_counted = false;           // the reads it served are counted (CountPostStandIn)
+    uint32_t post_products = 0;          // scene colour products the stand-in covers
+    uint64_t post_binds_at_set = 0;      // TextureCache::override_binds() when it was set
   };
 
   // True while an upscaler was chosen and able to run at the start of the frame being recorded: the
@@ -218,6 +252,16 @@ class TemporalSystem {
 
   // The Renderer opened the frame's first list (frame slot `slot`). Reads the upscaler's settings.
   void BeginFrame(uint32_t slot);
+  // A draw of the frame about to have its textures bound (before FillTextureTables): the anchor
+  // draw ends the stand-in the post chain was given, so that its own colour fetch is bound plain
+  // (the anchor's stand-in, with this frame's picture, is set after the upscale; a frame whose
+  // anchor is not upscaled keeps the plain binding).
+  void BeforeTextures(const DrawRecord& record) {
+    if (frame_.post_on_previous && record.ps_identity == temporal::kAnchorPs &&
+        record.vs_identity == temporal::kAnchorVs) {
+      DropPostStandIn();
+    }
+  }
   // A prepared draw of the frame, after FillTextureTables and before UploadConstants: finds the
   // main view's draws and moves them (`shared` is the draw's own copy), finds the anchor and reads
   // the camera. True when this draw is the anchor, it was taken and its passes are due: the Scene
@@ -274,6 +318,9 @@ class TemporalSystem {
     uint64_t upscale_plain_no_vectors = 0;
     uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
     uint64_t upscale_resets = 0;           // upscaled frames the history started again in
+    uint64_t post_stand_in_set = 0;        // frames the post chain was offered the previous output
+    uint64_t post_on_previous = 0;         // ... of them, frames a read before the anchor got it
+    uint64_t post_reads_served = 0;        // reads before the anchor the stand-in served
     // The last accepted camera, for the line.
     bool have_camera = false;
     temporal::Camera camera;
@@ -328,6 +375,17 @@ class TemporalSystem {
   // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
   // failure turns the upscaler off for the session.
   bool RecordUpscale(plume::RenderCommandList* list);
+  // The first main view draw of an armed frame: the post chain's reads before the anchor get the
+  // previous frame's upscaled picture when there is one that fits (see the header comment).
+  void StandInForPostChain();
+  // The product the anchor read as the scene colour in a frame it upscaled: the stand-in of the
+  // next frames' post chains covers the last two (the game alternates a pair).
+  void NoteSceneColor(const void* product, uint32_t page, uint64_t frame);
+  // The reads the stand-in served before the anchor are counted, once for the frame.
+  void CountPostStandIn();
+  // The anchor did not upscale the frame: what the post chain was given goes, the tone map and
+  // the rest read this frame's own product.
+  void DropPostStandIn();
   void FailUpscaler(const std::string& why);
   void ReleaseUpscaler();
   void ClearStandIn();
@@ -338,7 +396,15 @@ class TemporalSystem {
   PassTiming* pass_timing_ = nullptr;
   TextureCache* textures_ = nullptr;
   ResolveCache* resolve_ = nullptr;
-  std::unique_ptr<TemporalBackend> backend_;
+  // The upscaler backends (each null in a build without its runtime): FidelityFX for FSR 3.1 and
+  // FSR 4, Streamline for DLSS. Both are probed; the chosen one runs.
+  std::unique_ptr<TemporalBackend> ffx_;
+  std::unique_ptr<TemporalBackend> dlss_;
+  TemporalBackend* BackendFor(Upscaler upscaler) const {
+    return upscaler == Upscaler::kDlss ? dlss_.get()
+           : (upscaler == Upscaler::kFsr31 || upscaler == Upscaler::kFsr4) ? ffx_.get()
+                                                                           : nullptr;
+  }
   UpscalerSettings settings_;
   Upscaler effective_ = Upscaler::kOff;
   uint32_t choice_key_ = 0;
@@ -356,6 +422,23 @@ class TemporalSystem {
   Clock::time_point off_since_{};
   bool stand_in_set_ = false;
   uint64_t last_dispatch_frame_ = ~uint64_t(0);
+  // What the last upscaled frames set as the anchor's stand-in: the scene colour products replaced
+  // (newest first; the game alternates two, NoteSceneColor), with the frame of each and its page,
+  // and the output's scale (the output image is output_). The products are only compared.
+  struct SceneColor {
+    const void* product = nullptr;
+    uint32_t page = 0;
+    uint64_t frame = 0;
+  };
+  static constexpr size_t kSceneColorProducts = 2;
+  // A product older than this many frames is not trusted any more (a frame in between that was
+  // not upscaled, a size change): the pair's other buffer was last read two frames ago.
+  static constexpr uint64_t kSceneColorMaxAge = 2;
+  std::array<SceneColor, kSceneColorProducts> scene_colors_{};
+  Scale scene_color_scale_ = Scale::None();
+  bool post_stand_in_reported_ = false;
+  uint32_t post_unserved_run_ = 0;  // frames in a row the stand-in was set and nothing read it
+  bool post_unserved_reported_ = false;
   uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
   bool aa_hold_reported_ = false;
   uint32_t msaa_key_ = ~0u;          // the game's MSAA and the upscaler, as last said (NoteMsaa)
