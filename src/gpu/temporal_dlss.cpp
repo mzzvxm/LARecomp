@@ -1324,9 +1324,6 @@ void DlssBackend::Impl::FailStart(const std::string& why, bool files_problem) {
                                ModeInfoOf(Upscaler::kDlss, start.mode).percent)
                  : std::string(". The picture is the game's own at full size, with none of DLSS's "
                                "smoothing");
-    if (GetGuestMsaa() == GuestMsaa::kOffForUpscaler) {
-      effect += "; this start also turned MSAA off for DLSS, so there is no anti-aliasing at all";
-    }
   }
   REXLOG_WARN("{} DLSS is off for this session: {}{}{}", kPrefix, why,
               listed_setup ? ". Run the game's setup again to get its files" : "", effect);

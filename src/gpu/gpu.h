@@ -320,18 +320,6 @@ UpscalerAvailability GetUpscalerAvailability();
 // 4 or 8 samples on the images of the screen) is the player's choice, 1 for OFF and while an upscaler
 // runs (an upscaler smooths the picture itself, and MSAA under it only costs time). The level
 // changes while the game runs (msaa_level.h).
-//
-// GuestMsaa is what is left of the old start-up decision, and only for temporal_dlss.cpp's failure
-// text, which still names kOffForUpscaler. The game is never started without MSAA any more, so
-// GetGuestMsaa always says kOn. To remove (temporal_dlss.cpp is another agent's file, left alone):
-// that text's GetGuestMsaa branch, then this enum and function.
-enum class GuestMsaa : uint8_t {
-  kOn,              // the game's own 2 sample layout, always
-  kOffForUpscaler,  // never returned
-};
-inline GuestMsaa GetGuestMsaa() {
-  return GuestMsaa::kOn;
-}
 // The host MSAA level changes while the game runs (msaa_level.h): true from when a new level has
 // stood still until its pipelines are made and the targets are made again. The pause menu's MSAA
 // row says (WAIT). Any thread.
