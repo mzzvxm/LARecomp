@@ -37,6 +37,23 @@ std::chrono::microseconds SpinBeforeSleep() {
   return spin;
 }
 
+// How long the guest polls for the present it waits for (WaitExecuted) before it sleeps. The render
+// thread is a few tens of microseconds from the release point when the guest starts waiting (about 60
+// us a frame measured, 200 at the 99th percentile), and a sleeping waiter needs a wake-up on top: a
+// kernel call on the render thread and the scheduler's delay before the guest runs again, tens of
+// microseconds, more when idle cores sleep deeply. Not with 5 or fewer logical processors, where a
+// polling guest can hold the very core the render thread needs to finish.
+// CHECK: not built or run. The gain (the guest's present wait, gpresent_ms in the frame log, was 0.06
+// ms a frame mean and 0.2 at p99 with 16 logical processors) is an estimate: the wake-up share of that
+// wait is not measured. A real loss would show as guest-thread CPU per frame up with no wait saved.
+constexpr std::chrono::microseconds kSpinWaitExecuted{100};
+
+std::chrono::microseconds SpinWaitExecuted() {
+  static const std::chrono::microseconds spin =
+      ::mc::FewLogicalProcessors() ? std::chrono::microseconds{0} : kSpinWaitExecuted;
+  return spin;
+}
+
 inline void CpuRelax() {
 #if defined(_M_X64) || defined(__x86_64__)
   _mm_pause();
@@ -103,6 +120,7 @@ bool CommandStream::Initialize(uint32_t capacity) {
   next_sequence_ = 1;
   unpublished_records_ = 0;
   unpublished_bytes_ = 0;
+  consumer_woken_ = false;
   published_tail_.store(0, std::memory_order_relaxed);
   head_.store(0, std::memory_order_relaxed);
   executed_sequence_.store(0, std::memory_order_relaxed);
@@ -183,9 +201,21 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   s.bytes_written_.store(s.bytes_written_.load(std::memory_order_relaxed) + record_size_,
                          std::memory_order_relaxed);
   if (publication != Publication::kBatched || s.unpublished_records_ >= kPublishRecords ||
-      s.unpublished_bytes_ >= kPublishBytes ||
-      s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
+      s.unpublished_bytes_ >= kPublishBytes) {
     s.Publish(s.tail_);
+  } else if (s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
+    // CHECK: not built or run; the effect is read from the guest thread's frame time with 4 logical
+    // processors, and from "consumer wakes" per frame (the stats line), which must not change.
+    // The consumer is asleep: the first record it can read wakes it. It needs 50 to 100 us to
+    // run (longer with every core busy) and the guest commits a record about every 1.4 us, so
+    // publishing each of those records too was a locked store, the wake mutex and a notify per
+    // record for a consumer that was already on its way. They join one batch; a thread that
+    // keeps sleeping is woken again after a few records.
+    if (!s.consumer_woken_ || s.unpublished_records_ >= kWakingPublishRecords) {
+      s.Publish(s.tail_);
+    }
+  } else {
+    s.consumer_woken_ = false;
   }
   return sequence;
 }
@@ -220,12 +250,30 @@ void CommandStream::Publish(uint64_t tail) {
       std::lock_guard lock(wake_mutex_);
     }
     work_cv_.notify_one();
+    consumer_woken_ = true;
+  } else {
+    consumer_woken_ = false;
   }
 }
 
 void CommandStream::WaitExecuted(uint64_t sequence) {
   if (sequence == 0 || executed_sequence_.load(std::memory_order_acquire) >= sequence) {
     return;
+  }
+  const auto spin = SpinWaitExecuted();
+  if (spin.count() != 0) {
+    const auto spin_until = std::chrono::steady_clock::now() + spin;
+    for (;;) {
+      for (int i = 0; i < 64; ++i) {
+        if (stopped() || executed_sequence_.load(std::memory_order_acquire) >= sequence) {
+          return;
+        }
+        CpuRelax();
+      }
+      if (std::chrono::steady_clock::now() >= spin_until) {
+        break;
+      }
+    }
   }
   std::unique_lock lock(done_mutex_);
   done_cv_.wait(lock, [&] {
