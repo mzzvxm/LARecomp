@@ -77,6 +77,36 @@
 // Threading: everything on the render thread except the pacer's own functions; Initialize and
 // Shutdown on the thread that owns the renderer's lifecycle (the latter with the GPU idle, after the
 // render thread stopped); StopPacer from that thread too, before the swap chain goes.
+//
+// CHECK (not run: none of this was built or run; each point is settled by a run with the D3D12 debug
+// layer and with Vulkan validation on, frame dumps of generated frames, the frame time log and the
+// pause menu):
+//  - it compiles on both backends (the touched files passed clang -fsyntax-only here; the three
+//    shaders compile to DXIL and SPIR-V);
+//  - the second queue: the swap chain made on it, its lists and fences, and the present images that
+//    the render queue writes and the present queue reads after the pacer's CPU wait for the frame's
+//    fence (no semaphore between the queues: D3D12 resource states and Vulkan layouts across two
+//    DIRECT queues of one family);
+//  - the pacer's lists bind the bindless heap's sets (HostPasses::Bind) from another thread while the
+//    render thread writes descriptors of other slots;
+//  - a GPU whose DIRECT family has one queue (AMD and Intel on Vulkan): Plume then gives the present
+//    queue the render queue's VkQueue and its lock, and a FIFO present that blocks holds the lock
+//    the render thread submits under. The fork refused frame generation there; here it is tried, and
+//    a Plume query for the family's queue count would let the setting be hidden;
+//  - FFX: the V2 preparation on the FSR 3.1 provider (it says provider-too-old in the log if it takes
+//    only the old one), the effect DLL found by the loader through the module already loaded, the
+//    Vulkan device features the frame generation shaders need (the probe's trial context says), the
+//    camera vectors and viewSpaceToMetersFactor 1 (only the generated picture shows a wrong one), a
+//    reset frame whose generated image is not shown (the runtime's behaviour on reset is not read);
+//  - the swap chain's three buffers are enough for two presents a frame (D3D12 frame latency 2);
+//  - the display's refresh rate comes from its current mode (EnumDisplaySettings); variable refresh
+//    is not detected, so only the 100 Hz rule decides HALF DISPLAY;
+//  - HDR: the float scene's compress and expand pair (fg_prepare_ps, fg_compose_ps), the extended-code
+//    present of the composed image, an HDR switch while it runs (the copy pass for the new format);
+//  - D3D12 with Streamline: its swap chain wrapper goes in at the first present, which is the pacer's
+//    now (temporal_dlss.h); Reflex: the present markers and VkPresentIdKHR on the pacer thread;
+//  - mcla_gpu_present_wait is ignored while it runs; the video memory budget is not told about the
+//    generation images or the context.
 // ===========================================================================
 
 #include <atomic>
