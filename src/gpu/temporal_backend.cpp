@@ -104,6 +104,8 @@ std::string Lower(std::string_view text) {
 std::atomic<uint32_t> g_availability{0};
 // DLSS: bit 0 probed, 1 dlss, 2 needs setup, 3 after restart.
 std::atomic<uint32_t> g_dlss_availability{0};
+// DLSS: the modes that cannot run at the output size (bit i = UpscaleMode i).
+std::atomic<uint32_t> g_dlss_refused{0};
 std::atomic<uint32_t> g_running{0};
 std::atomic<uint32_t> g_kept{0};
 std::atomic<bool> g_switching{false};
@@ -169,7 +171,8 @@ bool ParseUpscaleMode(std::string_view text, UpscaleMode* out) {
 
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode) {
   // FSR 3.1, FSR 4 and DLSS all take the five modes of their vendor (the scene's size is the
-  // start's choice: GetStartUpscale).
+  // start's choice: GetStartUpscale). DLSS can refuse a mode at some output sizes (ModeVerdicts):
+  // that is not decided here but by the backend, for the sizes the renderer works at.
   return upscaler != Upscaler::kOff && size_t(mode) < size_t(UpscaleMode::kCount);
 }
 
@@ -201,6 +204,10 @@ void PublishDlssAvailability(bool probed, bool dlss, bool needs_setup, bool afte
                             std::memory_order_relaxed);
 }
 
+void PublishDlssRefusedModes(uint32_t refused) {
+  g_dlss_refused.store(refused, std::memory_order_relaxed);
+}
+
 void PublishRunningUpscaler(Upscaler running) {
   g_running.store(uint32_t(running), std::memory_order_relaxed);
 }
@@ -224,6 +231,7 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.dlss = (d & 2u) != 0;
   a.dlss_needs_setup = (d & 4u) != 0;
   a.dlss_after_restart = (d & 8u) != 0;
+  a.dlss_modes_refused = g_dlss_refused.load(std::memory_order_relaxed);
   a.running = Upscaler(g_running.load(std::memory_order_relaxed) & 3u);
   a.kept = Upscaler(g_kept.load(std::memory_order_relaxed) & 3u);
   a.switching = g_switching.load(std::memory_order_relaxed);

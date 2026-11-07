@@ -208,6 +208,7 @@ void TemporalSystem::Shutdown() {
   PublishRunningUpscaler(Upscaler::kOff);
   PublishKeptUpscaler(Upscaler::kOff);
   PublishUpscalerSwitching(false);
+  PublishDlssRefusedModes(0);
   motion_.Shutdown();
   pending_ready_ = false;
   edram_ = nullptr;
@@ -466,6 +467,85 @@ BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
   return request;
 }
 
+ModeSizes TemporalSystem::DlssModeSizes(const uint32_t guest[2], Scale output) const {
+  // The same sizes RequestFor makes a context for: the scene's render size per mode on the scale
+  // grid, and the output's.
+  ModeSizes sizes;
+  for (int axis = 0; axis < 2; ++axis) {
+    sizes.output[axis] = output.Edge(guest[axis]);
+  }
+  for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+    const Scale scene =
+        ChooseSceneScale(output, ModeInfoOf(Upscaler::kDlss, UpscaleMode(mode)).ratio).scale;
+    for (int axis = 0; axis < 2; ++axis) {
+      sizes.render[mode][axis] = scene.Edge(guest[axis]);
+    }
+  }
+  return sizes;
+}
+
+// CHECK: at 1280x720 with DLSS chosen: a start with ULTRA PERFORMANCE saved logs "ULTRA PERFORMANCE
+// (33%) cannot run ... PERFORMANCE (50%) runs instead", DLSS stays available (no "DLSS is off for this
+// session"), and the first upscaled frame is PERFORMANCE at 640x360 to 1280x720; picking ULTRA PERF.
+// live from DLAA logs "... DLAA (100%) keeps running" and nothing switches; the same at 2560x1440
+// (Performance there is 1280x720 to 2560x1440, so the scene targets do move at a start); 1920x1080 and
+// 3840x2160 run ULTRA PERFORMANCE itself. A render scale change that leaves the running mode unable to
+// run (ULTRA PERFORMANCE at 4K, then RENDER RES 1x) moves to PERFORMANCE at the new scale.
+UpscaleMode TemporalSystem::ResolveDlssMode(UpscaleMode wanted, const ModeSizes& sizes, bool* any) {
+  *any = true;
+  const ModeVerdicts verdicts = dlss_->Modes(sizes);
+  const auto runs = [&verdicts](UpscaleMode mode) {
+    return verdicts.verdict[size_t(mode)] != ModeVerdict::kRefused;
+  };
+  if (runs(wanted)) {
+    dlss_refusal_key_ = 0;
+    return wanted;
+  }
+  // The mode the settings ask for cannot run at this output. The DLSS mode that runs goes on if it
+  // still can (a pick in the menu of a mode that cannot run changes nothing, as RENDER RES keeps the
+  // scale that runs when a larger one is too big); a start or an output change that left nothing
+  // running takes the nearest mode that can, toward higher quality first.
+  UpscaleMode use = wanted;
+  bool kept = false;
+  bool found = false;
+  if (effective_ == Upscaler::kDlss && runs(mode_in_use_)) {
+    use = mode_in_use_;
+    kept = true;
+    found = true;
+  } else {
+    for (int m = int(wanted) - 1; m >= 0 && !found; --m) {
+      if (runs(UpscaleMode(m))) {
+        use = UpscaleMode(m);
+        found = true;
+      }
+    }
+    for (int m = int(wanted) + 1; m < int(UpscaleMode::kCount) && !found; ++m) {
+      if (runs(UpscaleMode(m))) {
+        use = UpscaleMode(m);
+        found = true;
+      }
+    }
+  }
+  *any = found;
+  const uint64_t key = 1u | uint64_t(wanted) << 4 | uint64_t(found ? use : wanted) << 8 |
+                       uint64_t(found) << 12 | uint64_t(kept) << 13 |
+                       uint64_t(sizes.output[0]) << 16 | uint64_t(sizes.output[1]) << 40;
+  if (key != dlss_refusal_key_) {
+    dlss_refusal_key_ = key;
+    const std::string& why = verdicts.why[size_t(wanted)];
+    const std::string tail =
+        !found ? std::string("no DLSS mode takes this output, so nothing upscales the scene (the "
+                             "setting is kept)")
+               : std::format("{} {} (the setting stays {})", PathText(Upscaler::kDlss, use),
+                             kept ? "keeps running" : "runs instead",
+                             ModeInfoOf(Upscaler::kDlss, wanted).name);
+    REXLOG_INFO("{} {} cannot run at an output of {}x{}: {}. {}", kPrefix,
+                PathText(Upscaler::kDlss, wanted), sizes.output[0], sizes.output[1],
+                why.empty() ? std::string("DLSS does not take its size here") : why, tail);
+  }
+  return use;
+}
+
 void TemporalSystem::AdoptStartPath() {
   // The scene's first targets are made for the upscaler as the start found it (gpu.h
   // GetStartUpscale, EdramTargets::DecideScene): that is the path the frames follow until the
@@ -563,6 +643,28 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   if (to_output == output_now) {
     PublishRenderScaleStatus(output_now, Scale::None());  // nothing is asked that could not be made
   }
+  // DLSS takes only some render sizes per mode at an output size (temporal.h "Changing the path"):
+  // the backend is told the sizes this path is made for, so that it finds out which modes cannot run
+  // there (the pause menu marks them), and a mode that cannot run is not asked for: the one that
+  // runs goes on, or the nearest one that can takes its place. Not for the DLSS that waits for a
+  // restart (the path that runs stays).
+  if (dlss_) {
+    uint32_t fit_guest[2] = {};
+    if (GuestFrameSize(fit_guest, /*quiet=*/true)) {
+      const ModeSizes sizes = DlssModeSizes(fit_guest, to_output);
+      dlss_->AskModes(sizes);
+      if (to == Upscaler::kDlss && !keep_running) {
+        bool any = true;
+        to_mode = ResolveDlssMode(to_mode, sizes, &any);
+        if (!any) {
+          to = Upscaler::kOff;
+          to_mode = UpscaleMode::kNativeAa;
+        }
+      } else {
+        dlss_refusal_key_ = 0;  // DLSS is not what the path is for: the next time says it again
+      }
+    }
+  }
   // The wait after a change that could not be made belongs to that change: another one (a smaller
   // scale picked after "too big", another mode) is tried at once.
   const uint64_t change_key = (uint64_t(1) << 63) | uint64_t(to) | uint64_t(to_mode) << 8 |
@@ -575,7 +677,8 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   }
   if (to == effective_ && to_mode == mode_in_use_ && to_output == output_now) {
     CancelStage(keep_running ? "DLSS is chosen and waits for the restart; the running path stays"
-                             : "the setting is back on the path that runs");
+                : dlss_refusal_key_ != 0 ? "DLSS does not take that mode at this output; the running path stays"
+                                         : "the setting is back on the path that runs");
     change_pending_ = false;
     PublishUpscalerSwitching(false);
     return;

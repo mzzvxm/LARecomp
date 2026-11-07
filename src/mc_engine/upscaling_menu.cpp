@@ -89,6 +89,10 @@ const char* DlssModeSuffix() {
     const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
     if (a.dlss_needs_setup && !a.dlss) return " (SETUP)";
     if (a.dlss_after_restart && !a.dlss) return " (RESTART)";
+    // A page that was built while DLSS could run and DLSS has been turned off since (it failed): its
+    // rows stay as they are until the page is left, and are made again without DLSS the next time it
+    // opens (UpscalingMenuRelayout).
+    if (a.dlss_probed && !a.dlss) return " (UNAVAILABLE)";
     return active == Upscaler::kOff ? " (UPSCALING OFF)" : " (NOT IN USE)";
 }
 // FSR's sharpening (RCAS) only; DLSS has none. One suffix for both reasons the row is grey (no
@@ -145,6 +149,10 @@ const char* MsaaSuffix() {
 // mode rows are labelled with the technology alone ("FSR 3.1: ", "FSR 4: ", "DLSS: ": several can be
 // listed on one PC, so the label still names it), and ULTRA PERFORMANCE is "ULTRA PERF.". The cvars
 // store the full names (ultra_performance).
+// CHECK: the "(N/A)" values of the DLSS mode row (kDlssModeNa) keep the page inside its width: each
+// has the characters of its "(NN%)" value, "N/A" a little wider than two digits, and the widest,
+// "PERFORMANCE (N/A)" and "ULTRA PERF. (N/A)", are 17 characters like "PERFORMANCE (50%)". Open
+// DISPLAY at 1280x720 with DLSS on and look at the right edge, with every row on its widest value.
 const char* const kModeVals[]  = {"native_aa", "quality", "balanced", "performance",
                                   "ultra_performance"};
 const char* const kModeNames[] = {"NATIVE AA (100%)", "QUALITY (67%)", "BALANCED (59%)",
@@ -153,7 +161,18 @@ const char* const kDlssModeVals[]  = {"dlaa", "quality", "balanced", "performanc
                                       "ultra_performance"};
 const char* const kDlssModeNames[] = {"DLAA (100%)", "QUALITY (67%)", "BALANCED (58%)",
                                       "PERFORMANCE (50%)", "ULTRA PERF. (33%)"};
+// A DLSS mode the card cannot take at the output the renderer works at (gpu.h
+// UpscalerAvailability::dlss_modes_refused: Ultra Performance at 1280x720 or 2560x1440) says "(N/A)"
+// in place of its share. Picking it saves the choice and changes nothing on screen: the mode that
+// runs goes on, as RENDER RES keeps the scale that runs when "TOO BIG (2.0X)" is picked.
+const char* const kDlssModeNa[] = {"DLAA (N/A)", "QUALITY (N/A)", "BALANCED (N/A)",
+                                   "PERFORMANCE (N/A)", "ULTRA PERF. (N/A)"};
 constexpr int kModeCount = 5;
+std::string DlssModeLabel(int i) {
+    if (i < 0 || i >= kModeCount) return "";
+    const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    return a.DlssModeRefused(mcla::gpu::UpscaleMode(i)) ? kDlssModeNa[i] : kDlssModeNames[i];
+}
 // FSR's sharpening (RCAS), 0 to 1.
 constexpr double kSharpVals[] = {0.0, 0.2, 0.4, 0.6, 0.8, 1.0};
 
@@ -176,12 +195,14 @@ const char* UpscalerRowSuffix() {
 constexpr RowDynamics kUpscalerDynamics = {.suffix = UpscalerRowSuffix};
 constexpr RowDynamics kFsr31ModeDynamics = {.enabled = Fsr31Chosen, .suffix = Fsr31ModeSuffix};
 constexpr RowDynamics kFsr4ModeDynamics  = {.enabled = Fsr4Chosen, .suffix = Fsr4ModeSuffix};
-constexpr RowDynamics kDlssModeDynamics  = {.enabled = DlssChosen, .suffix = DlssModeSuffix};
+constexpr RowDynamics kDlssModeDynamics  = {
+    .str_label = DlssModeLabel, .enabled = DlssChosen, .suffix = DlssModeSuffix};
 constexpr RowDynamics kSharpnessDynamics = {.enabled = FsrChosen, .suffix = SharpnessSuffix};
 
 // The rows that can be listed depend on what the probes found (FSR 3.1, FSR 4; DLSS: runs, needs
-// setup, or after a restart), which is final a moment after start, so one table of rows is built
-// the first time each combination is asked for and kept: the menu holds pointers into it.
+// setup, or after a restart), which is final a moment after start, and on a backend that fails
+// later (DLSS turned off for the session), so one table of rows is built the first time each
+// combination is asked for and kept: the menu holds pointers into it.
 // NativeOnly: the upscalers are the Plume renderer's.
 struct RowSet {
     bool built = false;
@@ -254,15 +275,40 @@ const RowSet& RowSetFor(bool fsr31, bool fsr4, int dlss_state) {
     return set;
 }
 
+// Which rows availability lists now: FSR 3.1, FSR 4 and DLSS's state, as RowSetFor takes them.
+int LiveLayoutKey() {
+    const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    const int dlss_state = a.dlss ? 1 : a.dlss_needs_setup ? 2 : a.dlss_after_restart ? 3 : 0;
+    return (a.fsr31 ? 1 : 0) | (a.fsr4 ? 2 : 0) | (dlss_state << 2);
+}
+
+// The layout the page's rows are built from, kept until the page is built again (UpscalingMenuRelayout).
+// The pause menu builds the guest rows of a page once and indexes them by position (pause_menu.cpp
+// BuildNativeRows), so the table behind UpscalingMenuRows must not change while a built page holds
+// it: an upscaler that fails after the page was built would shift every row below its own. -1: none yet.
+// Guest thread only, like the menu.
+int g_latched_key = -1;
+
 #endif  // LARECOMP_HAS_GPU
 
 }  // namespace
 
+bool UpscalingMenuRelayout(bool apply) {
+#if defined(LARECOMP_HAS_GPU)
+    const int key = LiveLayoutKey();
+    if (key == g_latched_key) return false;
+    if (apply) g_latched_key = key;
+    return true;
+#else
+    (void)apply;
+    return false;
+#endif
+}
+
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count) {
 #if defined(LARECOMP_HAS_GPU)
-    const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
-    const int dlss_state = a.dlss ? 1 : a.dlss_needs_setup ? 2 : a.dlss_after_restart ? 3 : 0;
-    const RowSet& set = RowSetFor(a.fsr31, a.fsr4, dlss_state);
+    if (g_latched_key < 0) UpscalingMenuRelayout(true);  // the first ask: the layout as it is now
+    const RowSet& set = RowSetFor((g_latched_key & 1) != 0, (g_latched_key & 2) != 0, g_latched_key >> 2);
     if (set.count > 0) {
         count = set.count;
         return set.rows;

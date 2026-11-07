@@ -46,8 +46,20 @@
 // seconds for DLSS, during which the UPSCALING row says "(WAIT)"). The picture itself changes after
 // resuming: the pause menu draws the world at 4x samples, which the upscalers do not take.
 //
-// The set of rows depends only on what the probe found, which is final a moment after start, so it
-// does not change under an open menu.
+// The set of rows depends on what the probes found, which is final a moment after start, and on a
+// backend that fails later: DLSS turned off for the session (a real failure of its context; a mode it
+// cannot take at the output size is not one) is not listed any more. The pause menu builds a page's
+// rows once, so the rows a built page holds are kept (UpscalingMenuRows returns the layout the page was
+// built with) and the page is built again the next time it opens, once it is closed, when the layout
+// availability gives has changed (UpscalingMenuRelayout): DLSS then disappears from UPSCALING and
+// from the mode rows together. A page left open across the change keeps its rows meanwhile, with the
+// DLSS mode row grey and saying "(UNAVAILABLE)".
+//
+// A DLSS mode the card cannot take at the output the renderer works at shows "(N/A)" in place of its
+// share (gpu.h UpscalerAvailability::dlss_modes_refused): ULTRA PERF. at 1280x720 and 2560x1440 (it
+// needs a scene of a third of the output, which is under the 0.5x the scene is drawn at as its
+// smallest, or between two steps of the scale grid). Picking one saves the choice and the mode that
+// runs goes on; a start whose saved mode cannot run takes the nearest mode that can.
 //
 // The AA rows of the NATIVE renderer follow the upscaler too: NATIVE AA (FXAA, SMAA) and MSAA are
 // grey and say "(FSR 3.1 ON)" (or FSR 4, DLSS) while one is active. MSAA on against off is a
@@ -62,6 +74,13 @@
 // The rows the DISPLAY tab appends after its own (MenuDef::extra). 0 and a null pointer where no
 // upscaler can run.
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
+
+// Whether the rows availability lists now are not the ones UpscalingMenuRows returns (the layout the
+// page was last built with). With `apply` the layout is brought up to date: the rows UpscalingMenuRows
+// returns from then on are the live ones, and the caller builds the page again. The pause menu calls
+// it before it builds the DISPLAY page and, for a page that is built and closed, to find out whether
+// to build it again (MenuDef::relayout). Guest thread.
+bool UpscalingMenuRelayout(bool apply);
 
 namespace mcla_menu {
 

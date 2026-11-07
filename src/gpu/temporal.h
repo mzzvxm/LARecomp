@@ -114,6 +114,17 @@
 //     with little memory) nothing changes, it is logged, the pause menu's RENDER RES row says "TOO
 //     BIG" (gpu.h GetRenderScaleStatus) and the change is asked again after a few seconds, then
 //     less often (a failed creation also asks the video memory budget to release what is idle).
+//   - DLSS takes one render size per mode for an output size, and the scene is drawn on the scale grid
+//     (render_scale.h ChooseSceneScale: multiples of 1/20 of the guest's 1280x720, 0.5x at the least),
+//     so a mode can be unable to run at an output: Ultra Performance at 1280x720 or 2560x1440. That
+//     is not a failure of DLSS. The backend says which modes cannot run at the output the path is made
+//     for (TemporalBackend::AskModes and Modes; the pause menu's DLSS mode row marks them "(N/A)"), and
+//     UpdatePath asks for a mode that can: the setting's own when it runs; else the DLSS mode that runs
+//     now, if it still can at that output (a mode picked in the menu that cannot run keeps what runs);
+//     else the nearest one that can, toward higher quality first (a start or a render scale change
+//     that left the setting's mode unable to run: Ultra Performance becomes Performance); else, when
+//     no DLSS mode can, no upscaler at that output. The setting itself is never changed. One log line
+//     says which and why (ResolveDlssMode).
 //   - One case cannot keep the old path upscaled: from one DLSS mode to another. Streamline's API is
 //     serialised and the new feature's creation holds it for seconds (TemporalBackend::Busy), so
 //     those frames are plain and not jittered, at the old scene scale, until the feature exists.
@@ -455,6 +466,15 @@ class TemporalSystem {
   // at the images of the screen's.
   BackendRequest RequestFor(Upscaler upscaler, UpscaleMode mode, const uint32_t guest[2],
                             Scale output) const;
+  // What each DLSS mode would draw the scene at for an output of `output` (the same render sizes
+  // RequestFor gives), for the backend's question which of them DLSS takes (AskModes).
+  ModeSizes DlssModeSizes(const uint32_t guest[2], Scale output) const;
+  // The DLSS mode the path is to have at `output`'s sizes `sizes` when the settings ask for `wanted`
+  // (see "Changing the path": the mode itself, else the one that runs now, else the nearest that can
+  // run). `*any` is false when no DLSS mode can run there. Logs, once for a change of the answer,
+  // when `wanted` cannot run. A mode the backend does not know yet counts as able to run: its
+  // context makes the check itself (temporal_dlss.cpp MakeContext) and the answer comes next frame.
+  UpscaleMode ResolveDlssMode(UpscaleMode wanted, const ModeSizes& sizes, bool* any);
   // The jitter sequence's length for `ratio` (output over render): `from_runtime` is what the
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
@@ -529,6 +549,9 @@ class TemporalSystem {
   std::chrono::seconds retry_delay_{3};
   uint64_t retry_key_ = 0;  // the change (path and render scale) retry_after_ and retry_delay_ are for
   bool switch_failure_logged_ = false;
+  // The answer ResolveDlssMode last logged (the mode asked for, the mode it came to, the output),
+  // 0 when the mode asked for runs: a line is written when it changes.
+  uint64_t dlss_refusal_key_ = 0;
   // The render scale the settings ask for (ReadRenderScale): the scale, what it came from (for the
   // log), and when it last changed. A change is taken once it has stood for kScaleSettle.
   Scale render_wanted_ = Scale::None();

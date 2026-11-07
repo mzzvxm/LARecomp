@@ -1993,6 +1993,13 @@ struct MenuDef {
     const ItemDef* (*extra)(int& count);
     // True for a menu only code opens (the "restart now?" prompt): no button on the SETTINGS tab.
     bool opened_by_code = false;
+    // For a menu whose `extra` rows can change while the game runs (the upscalers: one that fails is
+    // not listed any more). The guest rows are built once and indexed by position, so `extra` keeps
+    // returning the rows the form was built with until this is applied: apply=false says whether the
+    // live rows are no longer those, apply=true makes them the ones `extra` returns from then on.
+    // EnsureMenuForm builds the form again, when it is closed, if it says so. Null: the rows never
+    // change.
+    bool (*relayout)(bool apply) = nullptr;
 };
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
@@ -2074,7 +2081,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     UpscalingMenuRows},
+     UpscalingMenuRows, false, UpscalingMenuRelayout},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
@@ -2881,11 +2888,55 @@ bool MenuFormCancel(uint32_t form);
 void MenuFormClosed(uint32_t form);
 bool MenuFormKey(uint32_t form, uint32_t key);
 
-uint32_t EnsureMenuForm(int m) {
-    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) return form;
-    if (!BuildNativeRows(m)) return 0;
+// How many times a menu's form may be built again for rows that changed (MenuDef::relayout): each
+// one is a new form the game keeps (ui_forms.cpp holds 40, the menus use 30), and the layout changes
+// once or twice in a run (an upscaler failing).
+constexpr int kMaxFormRebuilds = 4;
+int g_form_rebuilds = 0;
 
+// CHECK: the page built again (needs a real DLSS failure, e.g. the fail injection of
+// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'DISPLAY': its rows changed
+// ... built again (1 of 4)" and a second "[ui-forms] form 'DISPLAY' created" when DISPLAY is next
+// opened (not before), the page opens with no DLSS in UPSCALING and no DLSS mode row, its rows and
+// the highlight work, B and re-entering work, and a DISPLAY left open across the failure keeps its
+// rows (DLSS mode row grey "(UNAVAILABLE)") with no row showing another row's label or value.
+uint32_t EnsureMenuForm(int m) {
     const MenuDef& md = kMenus[m];
+    // A form that was built with other rows than the live ones (an upscaler failed since): built
+    // again, with the new rows, once it is closed. The old form and its rows stay where they are
+    // (the game owns them; they are never opened again). A form that is open keeps its rows until it
+    // is left (UpscalingMenuRows still returns them), so it is never indexed by the wrong ones.
+    uint32_t old_form = 0;
+    NativeRows old_rows;
+    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) {
+        if (!md.relayout || larecomp::ui::FormIsOpen(form) || g_form_rebuilds >= kMaxFormRebuilds ||
+            !md.relayout(/*apply=*/false)) {
+            return form;
+        }
+        old_form = form;
+        old_rows = g_rows[m];
+        g_rows[m] = NativeRows{};
+        g_menu_form[m].store(0, std::memory_order_relaxed);
+        md.relayout(/*apply=*/true);
+        ++g_form_rebuilds;
+        MC_INFO("[pause-menu] '{}': its rows changed since the page was built (an upscaler is not "
+                "available any more): the page is built again ({} of {})",
+                md.label, g_form_rebuilds, kMaxFormRebuilds);
+    } else if (md.relayout) {
+        md.relayout(/*apply=*/true);  // the rows as they are now
+    }
+    // The page cannot be built again: the old one is put back (its rows are the ones UpscalingMenuRows
+    // no longer returns, so a row or two may be the wrong one until the next start; a build that fails
+    // already warned).
+    const auto fail = [&]() -> uint32_t {
+        if (old_form) {
+            g_menu_form[m].store(old_form, std::memory_order_relaxed);
+            g_rows[m] = old_rows;
+        }
+        return 0;
+    };
+    if (!BuildNativeRows(m)) return fail();
+
     // Title and description are resolved through the string table once, by
     // the ctor. The description's key is the title's plus "_desc", the way
     // the game pairs "options" with "options_desc".
@@ -2902,7 +2953,7 @@ uint32_t EnsureMenuForm(int m) {
     const NativeRows& nr = g_rows[m];
     const uint32_t form = larecomp::ui::CreateListForm(
         md.menu_key, md.desc ? desc_key.c_str() : nullptr, nr.count, handler);
-    if (!form) return 0;
+    if (!form) return fail();
     for (int i = 0; i < nr.count; ++i) {
         if (!larecomp::ui::AddFormRow(form, nr.row[i])) {
             MC_WARN("[pause-menu] '{}': row {} did not fit in the form", md.label, i);

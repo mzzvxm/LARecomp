@@ -307,6 +307,54 @@ sl::DLSSMode SlMode(UpscaleMode mode) {
   }
 }
 
+// The options of a viewport for a mode and an output size, which are also what
+// slDLSSGetOptimalSettings is asked with: NVIDIA's default presets (no preset row), the scene colour
+// is linear HDR with no exposure of its own (automatic exposure).
+sl::DLSSOptions OptionsFor(UpscaleMode mode, uint32_t output_width, uint32_t output_height) {
+  sl::DLSSOptions options;
+  options.mode = SlMode(mode);
+  options.outputWidth = output_width;
+  options.outputHeight = output_height;
+  options.preExposure = 1.0f;
+  options.exposureScale = 1.0f;
+  options.colorBuffersHDR = sl::Boolean::eTrue;
+  options.useAutoExposure = sl::Boolean::eTrue;
+  options.alphaUpscalingEnabled = sl::Boolean::eFalse;
+  return options;
+}
+
+// Whether a scene of rw x rh is a size DLSS takes for the mode and output `optimal` was asked for. The
+// renderWidthMin/Max range is DLSS's dynamic resolution range (measured on an RTX 5080: 1267x713 to
+// 1280x720 for DLAA at 1280x720, 640x360 to 1280x720 for Quality there, 1920x1080 to 3840x2160 for
+// Performance at 3840x2160, and exactly 1280x720 for Ultra Performance at 3840x2160). Without a range
+// the size must be the optimal one, within two pixels.
+bool SceneFits(const sl::DLSSOptimalSettings& optimal, uint32_t rw, uint32_t rh) {
+  const auto near_to = [](uint32_t a, uint32_t b) { return (a > b ? a - b : b - a) <= 2u; };
+  const bool has_range = optimal.renderWidthMax != 0 && optimal.renderHeightMax != 0;
+  return has_range ? (rw >= optimal.renderWidthMin && rw <= optimal.renderWidthMax &&
+                      rh >= optimal.renderHeightMin && rh <= optimal.renderHeightMax)
+                   : (near_to(rw, optimal.optimalRenderWidth) &&
+                      near_to(rh, optimal.optimalRenderHeight));
+}
+
+// What DLSS takes for the mode and output `optimal` was asked for, against the scene's size.
+std::string SceneWhy(const sl::DLSSOptimalSettings& optimal, uint32_t rw, uint32_t rh,
+                     uint32_t output_width, uint32_t output_height) {
+  const bool exact = optimal.renderWidthMin == optimal.renderWidthMax &&
+                     optimal.renderHeightMin == optimal.renderHeightMax;
+  if (exact) {
+    return std::format("for {}x{} DLSS takes a scene of {}x{} in this mode, and the scene would be "
+                       "drawn at {}x{}",
+                       output_width, output_height, optimal.optimalRenderWidth,
+                       optimal.optimalRenderHeight, rw, rh);
+  }
+  return std::format("for {}x{} DLSS takes a scene of {}x{} to {}x{} in this mode (best {}x{}), and "
+                     "the scene would be drawn at {}x{}",
+                     output_width, output_height, optimal.renderWidthMin, optimal.renderHeightMin,
+                     optimal.renderWidthMax, optimal.renderHeightMax, optimal.optimalRenderWidth,
+                     optimal.optimalRenderHeight, rw, rh);
+}
+
 template <typename Fn>
 Fn* Import(HMODULE module, const char* name) {
   return reinterpret_cast<Fn*>(reinterpret_cast<void*>(GetProcAddress(module, name)));
@@ -651,9 +699,38 @@ struct DlssBackend::Impl {
   std::chrono::steady_clock::time_point prewarm_began{};  // the first step's start
   bool prewarm_start_logged = false;
 
+  // ---- which modes DLSS takes at an output size (AskModes, Modes), under `mu`. A record is one mode at
+  // one pair of sizes: made by the worker's query (RunFitJob) or by a context that was refused for
+  // them (JobLoop). Newest last, bounded: a few output sizes are in use at a time.
+  struct FitRecord {
+    UpscaleMode mode = UpscaleMode::kNativeAa;
+    uint32_t output[2] = {};
+    uint32_t render[2] = {};
+    bool fits = true;
+    std::string why;
+  };
+  static constexpr size_t kMaxFitRecords = 64;
+  std::vector<FitRecord> fits;
+  ModeSizes fit_ask;            // the sizes the caller works at now
+  bool fit_asked = false;
+  bool fit_dirty = false;       // a mode of `fit_ask` has no record: the worker asks Streamline
+
   void PublishLocked() {
     PublishDlssAvailability(probed, status.dlss && !status.failed, needs_setup, after_restart);
   }
+  // Under `mu`.
+  const FitRecord* FindFitLocked(UpscaleMode mode, const uint32_t output[2],
+                                 const uint32_t render[2]) const;
+  void RecordFitLocked(UpscaleMode mode, const uint32_t output[2], const uint32_t render[2],
+                       bool fits_now, const std::string& why);
+  bool RefusedLocked(const BackendRequest& request) const;
+  bool UnknownModesLocked(const ModeSizes& sizes) const;
+  // The modes refused at the sizes asked for, to the pause menu (gpu.h dlss_modes_refused).
+  void PublishModesLocked();
+  bool FitJobLocked() const { return fit_dirty && init_done && !status.failed && !stop; }
+  // On the worker, `lock` held on entry and on exit: asks Streamline about every mode of `fit_ask`
+  // that has no record. Only the options and a size query: no feature, no video memory.
+  void RunFitJob(std::unique_lock<std::mutex>& lock);
   void StartWorkerLocked();
   void WorkerMain();
   void JobLoop();
@@ -689,11 +766,15 @@ struct DlssBackend::Impl {
   void FailStart(const std::string& why, bool files_problem);
   void FailLocked(std::unique_lock<std::mutex>& lock, const std::string& why, bool render_thread);
   std::unique_ptr<WarmImages> MakeImages(const BackendRequest& request);
-  std::shared_ptr<Context> MakeContext(const BackendRequest& request, std::string* why, bool prewarm);
+  // Null with `why` when no context was made. `*refused` says whether that is a size refusal (DLSS
+  // does not take this mode at these sizes: not a failure, the backend stays available) or a real
+  // failure.
+  std::shared_ptr<Context> MakeContext(const BackendRequest& request, std::string* why, bool prewarm,
+                                       bool* refused);
   // `prewarm`: a pre-warm step (Prewarm): the context is made to be freed, and a feature that
   // could not be made is `created == false` with `why` set, never "the first frame makes it".
   std::shared_ptr<Context> Build(const BackendRequest& request, WarmImages* images, SideKit* side,
-                                 std::string* why, bool prewarm);
+                                 std::string* why, bool prewarm, bool* refused);
   bool Warmup(Context& context, WarmImages& images, SideKit& side, std::string* error);
   // `wait` false (a frame's dispatch on the render thread): Streamline's mutex is tried first, and
   // when the worker holds it to make a feature (`building`) `*busy` is set and nothing is recorded.
@@ -1009,6 +1090,7 @@ void DlssBackend::Impl::FailStart(const std::string& why, bool files_problem) {
     listed_setup = needs_setup;
     DropPrewarmLocked();  // nothing to warm: the start failed (said below)
     PublishLocked();
+    PublishModesLocked();
   }
   // What the player sees now, when the start decided on DLSS before this failed (the decision does
   // not wait for Streamline's slow start): the game goes on without it.
@@ -1059,6 +1141,7 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
   }
   DropNextLocked(&list);
   PublishLocked();
+  PublishModesLocked();  // nothing is refused for a DLSS that is off
   lock.unlock();
   if (first) {
     REXLOG_WARN("{} DLSS is off for this session: {}", kPrefix, why);
@@ -1228,31 +1311,23 @@ std::unique_ptr<WarmImages> DlssBackend::Impl::MakeImages(const BackendRequest& 
 // check that the scene's size is one DLSS takes. The feature itself is made by Build's warm-up, or
 // failing that by the first dispatch.
 std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& request,
-                                                        std::string* why, bool prewarm) {
+                                                        std::string* why, bool prewarm,
+                                                        bool* refused) {
   Runtime& rt = Rt();
   std::lock_guard lock(rt.mu);
+  *refused = false;
   if (!rt.initialized || rt.shut_down || !rt.api.dlss_optimal || !rt.api.dlss_set_options) {
     *why = "Streamline is not running";
     return {};
   }
-  // NVIDIA's default presets (no preset row), the scene colour is linear HDR with no exposure of
-  // its own (automatic exposure).
-  sl::DLSSOptions options;
-  options.mode = SlMode(request.mode);
-  options.outputWidth = request.output_size[0];
-  options.outputHeight = request.output_size[1];
-  options.preExposure = 1.0f;
-  options.exposureScale = 1.0f;
-  options.colorBuffersHDR = sl::Boolean::eTrue;
-  options.useAutoExposure = sl::Boolean::eTrue;
-  options.alphaUpscalingEnabled = sl::Boolean::eFalse;
+  const sl::DLSSOptions options =
+      OptionsFor(request.mode, request.output_size[0], request.output_size[1]);
 
-  // The renderWidthMin/Max range is DLSS's dynamic resolution range (measured on an RTX 5080: 1267x713
-  // to 1280x720 for DLAA at 1280x720, 640x360 to 1280x720 for Quality).
   // The size DLSS wants for this mode and output. The scene was drawn at the start's size (the
   // vendor's ratio over the render scale: temporal_backend.cpp kDlssModes), which can differ from
   // it by a few pixels, or by a mode picked since from another vendor's list: anything in DLSS's
-  // dynamic range works.
+  // dynamic range works (SceneFits). A size it does not take is a refusal, not a failure: the
+  // caller records it (JobLoop) and goes on with the mode that runs.
   sl::DLSSOptimalSettings optimal;
   const sl::Result got = rt.api.dlss_optimal(options, optimal);
   if (got != sl::Result::eOk) {
@@ -1261,19 +1336,9 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
   }
   const uint32_t rw = request.render_size[0];
   const uint32_t rh = request.render_size[1];
-  const auto near_to = [](uint32_t a, uint32_t b) { return (a > b ? a - b : b - a) <= 2u; };
-  const bool has_range = optimal.renderWidthMax != 0 && optimal.renderHeightMax != 0;
-  const bool fits = has_range ? (rw >= optimal.renderWidthMin && rw <= optimal.renderWidthMax &&
-                                 rh >= optimal.renderHeightMin && rh <= optimal.renderHeightMax)
-                              : (near_to(rw, optimal.optimalRenderWidth) &&
-                                 near_to(rh, optimal.optimalRenderHeight));
-  if (!fits) {
-    *why = std::format("the scene is drawn at {}x{}, which DLSS does not take for {}x{} in this "
-                       "mode: it asks for {}x{} (range {}x{} to {}x{})",
-                       rw, rh, request.output_size[0], request.output_size[1],
-                       optimal.optimalRenderWidth, optimal.optimalRenderHeight,
-                       optimal.renderWidthMin, optimal.renderHeightMin, optimal.renderWidthMax,
-                       optimal.renderHeightMax);
+  if (!SceneFits(optimal, rw, rh)) {
+    *why = SceneWhy(optimal, rw, rh, request.output_size[0], request.output_size[1]);
+    *refused = true;
     return {};
   }
   auto context = std::make_shared<Context>();
@@ -1304,8 +1369,8 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
 // feature, with the pause the warm-up was there to avoid.
 std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
                                                   WarmImages* images, SideKit* side,
-                                                  std::string* why, bool prewarm) {
-  std::shared_ptr<Context> context = MakeContext(request, why, prewarm);
+                                                  std::string* why, bool prewarm, bool* refused) {
+  std::shared_ptr<Context> context = MakeContext(request, why, prewarm, refused);
   if (!context) {
     return {};
   }
@@ -1407,6 +1472,157 @@ bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& si
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// which modes DLSS takes at an output size
+// ---------------------------------------------------------------------------
+// DLSS gives each mode one render size for an output size, with a range around it for every mode but
+// Ultra Performance (SceneFits), and the scene is drawn at a size of the scale grid, 0.5x of the
+// guest's 1280x720 at the least (render_scale.h ChooseSceneScale), so some modes cannot run at some
+// outputs: Ultra Performance needs a third of the output, which is under 0.5x for an output under
+// 1.5x (1280x720: 427x240 against 640x360) and between two steps of the grid at 2560x1440 (853x480
+// against 832x468); it fits at 1920x1080 (640x360) and at 3840x2160 (1280x720). Such a mode is not a
+// failure of DLSS: it is refused, the caller goes on with a mode that runs (temporal.cpp
+// ResolveDlssMode), and the pause menu says "(N/A)" for it.
+// CHECK: the ranges slDLSSGetOptimalSettings gives at 1280x720, 1920x1080, 2560x1440 and 3840x2160 for
+// all five modes (the census line "at WxH these modes cannot run" lists what it refused; measured
+// before: Ultra Performance exact, the others a range), and which modes this refuses at each.
+
+auto DlssBackend::Impl::FindFitLocked(UpscaleMode mode, const uint32_t output[2],
+                                      const uint32_t render[2]) const -> const FitRecord* {
+  for (auto it = fits.rbegin(); it != fits.rend(); ++it) {
+    if (it->mode == mode && it->output[0] == output[0] && it->output[1] == output[1] &&
+        it->render[0] == render[0] && it->render[1] == render[1]) {
+      return &*it;
+    }
+  }
+  return nullptr;
+}
+
+void DlssBackend::Impl::RecordFitLocked(UpscaleMode mode, const uint32_t output[2],
+                                        const uint32_t render[2], bool fits_now,
+                                        const std::string& why) {
+  bool found = false;
+  for (FitRecord& r : fits) {
+    if (r.mode == mode && r.output[0] == output[0] && r.output[1] == output[1] &&
+        r.render[0] == render[0] && r.render[1] == render[1]) {
+      r.fits = fits_now;
+      r.why = why;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    FitRecord r;
+    r.mode = mode;
+    r.output[0] = output[0];
+    r.output[1] = output[1];
+    r.render[0] = render[0];
+    r.render[1] = render[1];
+    r.fits = fits_now;
+    r.why = why;
+    fits.push_back(std::move(r));
+    if (fits.size() > kMaxFitRecords) {
+      fits.erase(fits.begin());
+    }
+  }
+  PublishModesLocked();
+}
+
+bool DlssBackend::Impl::RefusedLocked(const BackendRequest& request) const {
+  const FitRecord* record = FindFitLocked(request.mode, request.output_size, request.render_size);
+  return record && !record->fits;
+}
+
+bool DlssBackend::Impl::UnknownModesLocked(const ModeSizes& sizes) const {
+  for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+    if (!FindFitLocked(UpscaleMode(mode), sizes.output, sizes.render[mode])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void DlssBackend::Impl::PublishModesLocked() {
+  uint32_t refused = 0;
+  if (fit_asked && !status.failed) {
+    for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+      const FitRecord* record = FindFitLocked(UpscaleMode(mode), fit_ask.output, fit_ask.render[mode]);
+      if (record && !record->fits) {
+        refused |= 1u << mode;
+      }
+    }
+  }
+  PublishDlssRefusedModes(refused);
+}
+
+// CHECK: slDLSSGetOptimalSettings called five times in a row on the worker with no viewport and while
+// the render thread dispatches (Runtime::mu serialises them; MakeContext makes the same call), and that
+// a card or driver whose answer differs from the measured ranges still gets a sensible "(N/A)" set.
+void DlssBackend::Impl::RunFitJob(std::unique_lock<std::mutex>& lock) {
+  const ModeSizes asked = fit_ask;
+  fit_dirty = false;
+  bool wanted[size_t(UpscaleMode::kCount)] = {};
+  bool any = false;
+  for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+    wanted[mode] = !FindFitLocked(UpscaleMode(mode), asked.output, asked.render[mode]);
+    any = any || wanted[mode];
+  }
+  if (!any) {
+    return;
+  }
+  lock.unlock();
+  struct Answer {
+    UpscaleMode mode;
+    bool fits;
+    std::string why;
+  };
+  std::vector<Answer> answers;
+  {
+    Runtime& rt = Rt();
+    std::lock_guard sl_lock(rt.mu);
+    if (rt.initialized && !rt.shut_down && rt.api.dlss_optimal) {
+      for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+        if (!wanted[mode]) {
+          continue;
+        }
+        sl::DLSSOptimalSettings optimal;
+        const sl::Result got = rt.api.dlss_optimal(
+            OptionsFor(UpscaleMode(mode), asked.output[0], asked.output[1]), optimal);
+        if (got != sl::Result::eOk) {
+          continue;  // stays unknown: the context made for the mode decides (MakeContext)
+        }
+        const uint32_t rw = asked.render[mode][0];
+        const uint32_t rh = asked.render[mode][1];
+        const bool fits_now = SceneFits(optimal, rw, rh);
+        answers.push_back({UpscaleMode(mode), fits_now,
+                           fits_now ? std::string()
+                                    : SceneWhy(optimal, rw, rh, asked.output[0], asked.output[1])});
+      }
+    }
+  }
+  lock.lock();
+  std::string refused_names;
+  for (const Answer& a : answers) {
+    RecordFitLocked(a.mode, asked.output, asked.render[size_t(a.mode)], a.fits, a.why);
+    if (!a.fits) {
+      refused_names += (refused_names.empty() ? "" : ", ");
+      refused_names += ModeInfoOf(Upscaler::kDlss, a.mode).name;
+    }
+  }
+  if (!answers.empty()) {
+    // Information, once per output size: what the pause menu will mark "(N/A)". What the renderer
+    // does about it, if DLSS is in use, is said by the temporal system (ResolveDlssMode).
+    const std::string text =
+        refused_names.empty() ? std::string("all five modes can run")
+                              : std::format("these cannot run (the scene is drawn on the scale grid, "
+                                            "0.5x at the least): {}",
+                                            refused_names);
+    lock.unlock();
+    REXLOG_INFO("{} at an output of {}x{}: {}", kPrefix, asked.output[0], asked.output[1], text);
+    lock.lock();
+  }
+}
+
 // The worker after the start-up: makes the context that is wanted, frees the contexts that are
 // done with. Streamline calls that take seconds (the creation of a feature) happen here and
 // nowhere else, with no lock but Runtime::mu held, which only this thread and a frame's own
@@ -1415,11 +1631,16 @@ void DlssBackend::Impl::JobLoop() {
   std::unique_lock lock(mu);
   for (;;) {
     cv.wait(lock, [this] {
-      return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked() ||
+      return stop || FitJobLocked() || !doomed.empty() || WantCurrentLocked() || WantNextLocked() ||
              PrewarmJobLocked();
     });
     if (stop) {
       break;
+    }
+    // The sizes the caller works at come first: a size query, fast.
+    if (FitJobLocked()) {
+      RunFitJob(lock);
+      continue;
     }
     if (!doomed.empty()) {
       std::vector<std::shared_ptr<Context>> list = std::move(doomed);
@@ -1442,11 +1663,27 @@ void DlssBackend::Impl::JobLoop() {
       building = true;
       lock.unlock();
       std::string why;
-      std::shared_ptr<Context> made = Build(request, images.get(), side, &why, /*prewarm=*/false);
+      bool refused = false;
+      std::shared_ptr<Context> made =
+          Build(request, images.get(), side, &why, /*prewarm=*/false, &refused);
       images.reset();  // Build waited for the side queue: the GPU is done with them
       lock.lock();
       building = false;
-      if (!made) {
+      if (!made && refused) {
+        // DLSS does not take this mode at these sizes: not a failure. It is remembered (a request
+        // for it is not made again, and the pause menu says "(N/A)"), nothing is wanted any more
+        // for it, and the caller goes on with what runs; it says so (temporal.cpp ResolveDlssMode).
+        RecordFitLocked(request.mode, request.output_size, request.render_size, false, why);
+        if (for_current) {
+          if (want && want_request == request) {
+            want = false;
+            want_images.reset();
+          }
+        } else if (next_want && next_request == request) {
+          next_want = false;
+          next_images.reset();
+        }
+      } else if (!made) {
         FailLocked(lock, "its context could not be made: " + why, /*render_thread=*/false);
       } else if (for_current && want && want_request == request && !ctx && !status.failed &&
                  !stop) {
@@ -1472,7 +1709,9 @@ void DlssBackend::Impl::JobLoop() {
       building = true;
       lock.unlock();
       std::string why;
-      std::shared_ptr<Context> made = Build(request, images.get(), side, &why, /*prewarm=*/true);
+      bool refused = false;
+      std::shared_ptr<Context> made =
+          Build(request, images.get(), side, &why, /*prewarm=*/true, &refused);
       images.reset();  // Build waited for the side queue: the GPU is done with them
       const bool created = made && made->created;
       const uint64_t made_ms = made ? made->made_ms : 0;
@@ -1480,6 +1719,9 @@ void DlssBackend::Impl::JobLoop() {
       lock.lock();
       building = false;
       prewarm_busy = false;
+      if (!made && refused) {
+        RecordFitLocked(request.mode, request.output_size, request.render_size, false, why);
+      }
       const uint32_t step = ++prewarm_done;
       const uint32_t total = prewarm_total;
       if (created) {
@@ -1561,6 +1803,12 @@ void DlssBackend::Request(const BackendRequest& request) {
     if (i.want && i.want_request == request) {
       return;
     }
+    if (i.RefusedLocked(request)) {
+      // DLSS does not take this mode at these sizes (a refused context, or the size query): no
+      // context is made for it, and Ready() stays false. The caller resolves another mode
+      // (temporal.cpp ResolveDlssMode).
+      return;
+    }
   }
   // A new request. The side queue, list and fence once, the images of the warm-up for these sizes:
   // made here, on the render thread (Plume's create calls are its own), before the worker is told.
@@ -1589,6 +1837,42 @@ bool DlssBackend::Ready(const BackendRequest& request) const {
   const Impl& i = *impl_;
   std::lock_guard lock(i.mu);
   return i.ctx && i.ctx->request == request && !i.status.failed;
+}
+
+void DlssBackend::AskModes(const ModeSizes& sizes) {
+  Impl& i = *impl_;
+  bool wake = false;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.stop || (i.fit_asked && i.fit_ask == sizes)) {
+      return;
+    }
+    i.fit_ask = sizes;
+    i.fit_asked = true;
+    // The worker answers once Streamline runs; this never starts it (Probe, Request and Prepare
+    // do), so a PC that is not using DLSS pays nothing for the menu knowing.
+    i.fit_dirty = i.UnknownModesLocked(sizes);
+    i.PublishModesLocked();
+    wake = i.fit_dirty;
+  }
+  if (wake) {
+    i.cv.notify_all();
+  }
+}
+
+ModeVerdicts DlssBackend::Modes(const ModeSizes& sizes) const {
+  const Impl& i = *impl_;
+  ModeVerdicts out;
+  std::lock_guard lock(i.mu);
+  for (size_t mode = 0; mode < size_t(UpscaleMode::kCount); ++mode) {
+    const Impl::FitRecord* record =
+        i.FindFitLocked(UpscaleMode(mode), sizes.output, sizes.render[mode]);
+    if (record) {
+      out.verdict[mode] = record->fits ? ModeVerdict::kRuns : ModeVerdict::kRefused;
+      out.why[mode] = record->why;
+    }
+  }
+  return out;
 }
 
 bool DlssBackend::Busy() const {
@@ -1641,8 +1925,8 @@ void DlssBackend::Prepare(const BackendRequest& request) {
   {
     std::lock_guard lock(i.mu);
     if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request) ||
-        (i.next_want && i.next_request == request)) {
-      return;
+        (i.next_want && i.next_request == request) || i.RefusedLocked(request)) {
+      return;  // (a refused one: see Request)
     }
   }
   i.EnsureKit();
@@ -1775,6 +2059,9 @@ bool DlssBackend::PrewarmNext(UpscaleMode* mode) {
 // feature) and a note to the worker. The worker makes the feature and frees it (JobLoop).
 void DlssBackend::Prewarm(const BackendRequest& request) {
   Impl& i = *impl_;
+  std::string skipped_why;
+  uint32_t skipped_step = 0;
+  uint32_t skipped_total = 0;
   {
     std::lock_guard lock(i.mu);
     if (!i.prewarm_pending.load(std::memory_order_acquire) || !i.init_done || i.prewarm_busy ||
@@ -1782,6 +2069,25 @@ void DlssBackend::Prewarm(const BackendRequest& request) {
         i.stop) {
       return;
     }
+    // A mode DLSS does not take at these sizes has nothing to warm up: no images are made for it.
+    const Impl::FitRecord* record =
+        i.FindFitLocked(request.mode, request.output_size, request.render_size);
+    if (record && !record->fits) {
+      skipped_why = record->why;
+      skipped_step = ++i.prewarm_done;
+      skipped_total = i.prewarm_total;
+      i.prewarm_modes.erase(i.prewarm_modes.begin());
+      if (i.prewarm_modes.empty()) {
+        i.prewarm_pending.store(false, std::memory_order_release);
+      }
+    }
+  }
+  if (skipped_step != 0) {
+    REXLOG_INFO("{} warm-up {}/{}: {} at {}x{} to {}x{} skipped: {}", kPrefix, skipped_step,
+                skipped_total, ModeInfoOf(Upscaler::kDlss, request.mode).name,
+                request.render_size[0], request.render_size[1], request.output_size[0],
+                request.output_size[1], skipped_why);
+    return;
   }
   const std::string memory = i.PrewarmMemoryProblem(request);
   if (!memory.empty()) {
