@@ -61,14 +61,15 @@ const char* Fsr4ModeSuffix() {
     default:               return " (NOT IN USE)";
     }
 }
-// DLSS without its files (an RTX card): the row is listed and grey, "needs setup"; on Vulkan the
-// choice only takes effect from the next start (the device is made with Streamline's help).
+// DLSS without its files (an RTX card): the row is listed and grey, "(SETUP)" as the UPSCALING
+// row's value says; on Vulkan a game started without DLSS cannot switch to it (the device is made
+// with Streamline's help only when DLSS is the saved choice at the start): grey, "(RESTART)".
 const char* DlssModeSuffix() {
     const Upscaler active = Active();
     if (active == Upscaler::kDlss) return "";
     const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
-    if (a.dlss_needs_setup && !a.dlss) return " (NEEDS SETUP)";
-    if (a.dlss_after_restart && !a.dlss) return " (AFTER RESTART)";
+    if (a.dlss_needs_setup && !a.dlss) return " (SETUP)";
+    if (a.dlss_after_restart && !a.dlss) return " (RESTART)";
     return active == Upscaler::kOff ? " (UPSCALING OFF)" : " (NOT IN USE)";
 }
 // FSR's sharpening (RCAS) only; DLSS has none.
@@ -113,10 +114,12 @@ const char* MsaaSuffix() {
 // are the technology alone ("FSR 3.1: ", "FSR 4: ", "DLSS: ": several can be listed on one PC, so
 // the label still has to name it) and the longest value is 17 characters ("PERFORMANCE (50%)",
 // "ULTRA PERF. (33%)"): 9 + 17 = 26 at most, so those rows carry no suffix while they are live. The
-// UPSCALING row's longest value is 14 ("DLSS (RESTART)"; "DLSS (SETUP)" is 12): 11 + 14 = 25; while
-// a change is being made it says " (WAIT)" (7 characters), which only the shorter values (the
-// longest of them "FSR 3.1", 7) can show: 11 + 7 + 7 = 25. The cvars store the full names
-// (ultra_performance).
+// UPSCALING row's longest value is 12 ("DLSS (SETUP)"): 11 + 12 = 23; while a change is being made
+// it says " (WAIT)" (7 characters), which only the shorter values (the longest of them "FSR 3.1", 7)
+// can show: 11 + 7 + 7 = 25. DLSS chosen in a Vulkan game that was started without it cannot run
+// until the next start: the label says " (RESTART)" (10 characters, like the other rows that wait
+// for a start, and what the "Restart now?" prompt looks for) beside the value "DLSS": 9 + 10 + 4 =
+// 23. The cvars store the full names (ultra_performance).
 const char* const kModeVals[]  = {"native_aa", "quality", "balanced", "performance",
                                   "ultra_performance"};
 const char* const kModeNames[] = {"NATIVE AA (100%)", "QUALITY (67%)", "BALANCED (59%)",
@@ -129,10 +132,20 @@ constexpr int kModeCount = 5;
 // FSR's sharpening (RCAS), 0 to 1.
 constexpr double kSharpVals[] = {0.0, 0.2, 0.4, 0.6, 0.8, 1.0};
 
-// The UPSCALING row: " (WAIT)" while the settings ask for another upscaler or mode than the one
-// running and its context is still being made (DLSS takes several seconds; the old one goes on).
+// The UPSCALING row: " (RESTART)" while DLSS is the saved choice but this game cannot run it until
+// it is started again (a Vulkan game started without DLSS: the device is made through Streamline
+// only when DLSS is chosen at the start). The choice is saved and applies at the next start, the
+// renderer goes on without DLSS meanwhile, and leaving the menu offers "Restart now?" (the prompt
+// reads this suffix). Otherwise " (WAIT)" while the settings ask for another upscaler or mode than
+// the one running and its context is still being made (DLSS takes several seconds; the old one
+// goes on).
+// CHECK: the prompt finds this row through the suffix (pause_menu.cpp RowSaysRestart): in a Vulkan
+// game started with FSR or no upscaler on an RTX PC, picking DLSS, then leaving the menu, logs
+// "[pause-menu] a setting that needs a restart changed: offered RESTART NOW".
 const char* UpscalerRowSuffix() {
-    return mcla::gpu::GetUpscalerAvailability().switching ? " (WAIT)" : "";
+    const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    if (Chosen() == Upscaler::kDlss && a.dlss_after_restart && !a.dlss) return " (RESTART)";
+    return a.switching ? " (WAIT)" : "";
 }
 
 constexpr RowDynamics kUpscalerDynamics = {.suffix = UpscalerRowSuffix};
@@ -175,9 +188,9 @@ const RowSet& RowSetFor(bool fsr31, bool fsr4, int dlss_state) {
     }
     if (dlss_state != 0) {
         set.upscaler_vals[n] = "dlss";
-        set.upscaler_names[n++] = dlss_state == 1 ? "DLSS"
-                                  : dlss_state == 2 ? "DLSS (SETUP)"
-                                                    : "DLSS (RESTART)";
+        // State 3 (a start is needed) is plain "DLSS": the row's label says (RESTART) while it is the
+        // choice (UpscalerRowSuffix), which is where the "Restart now?" prompt reads it.
+        set.upscaler_names[n++] = dlss_state == 2 ? "DLSS (SETUP)" : "DLSS";
     }
     set.upscaler_count = n;
     if (n == 1) {

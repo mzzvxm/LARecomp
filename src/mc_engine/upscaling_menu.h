@@ -24,12 +24,15 @@
 // either; they have none while they are live); the cvars keep the full values (ultra_performance).
 //
 // DLSS on an RTX card whose files are missing (or fail their signature check) is listed too, as
-// "DLSS (SETUP)", with its mode row grey ("DLSS (NEEDS SETUP)"); the game runs without it. On
-// Vulkan the device is made with NVIDIA Streamline's help whenever the PC can run DLSS (an RTX
-// card with the files in place), whatever is chosen at the start, so DLSS switches on live there
-// too. Only an RTX card whose device was made without it (Plume took another GPU than the one the
-// hook looked at) lists DLSS as "DLSS (RESTART)", and its mode row says "DLSS (AFTER RESTART)":
-// the one upscaler choice that can still wait for a start.
+// "DLSS (SETUP)", with its mode row grey ("DLSS (SETUP)"); the game runs without it. On D3D12
+// DLSS switches on live. On Vulkan the device is made with NVIDIA Streamline's help only when DLSS
+// is the saved choice at the start (it costs seconds at every start, used or not), so a Vulkan game
+// started with FSR or no upscaler cannot switch to it: choosing DLSS saves the choice for the next
+// start, the UPSCALING row's label says "(RESTART)" ("UPSCALING (RESTART)" and the value "DLSS"),
+// its mode row is grey with "DLSS (RESTART)", the renderer goes on without DLSS (an upscaler that
+// was running is turned off: a choice this game cannot run is treated as off), and leaving the menu
+// offers "Restart now?" (pause_menu.cpp reads the "RESTART" in the row's label). The one upscaler
+// choice that waits for a start.
 //
 // Each technology keeps its own mode; the value is the vendor's name and the share of the output
 // the 3D scene is drawn at, per direction. NATIVE AA and DLAA draw it at the full size and only
