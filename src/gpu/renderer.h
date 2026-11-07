@@ -51,6 +51,7 @@
 #include <memory>
 #include <string>
 
+#include "ao.h"
 #include "capture.h"
 #include "descriptors.h"
 #include "device.h"
@@ -215,6 +216,7 @@ class Renderer final : public RenderThread::Executor {
   ShaderStore shaders_;
   FrameValidator validator_;  // render thread; reads shaders_; on with mcla_gpu_validate
   TemporalSystem temporal_;   // render thread; the temporal upscalers' groundwork (temporal.h)
+  AmbientOcclusion ao_;       // render thread; screen-space ambient occlusion (ao.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

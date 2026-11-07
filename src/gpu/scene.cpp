@@ -21,6 +21,7 @@
 
 #include "backend.h"
 #include "ab.h"
+#include "ao.h"
 #include "cycles.h"
 #include "descriptors.h"
 #include "draw_decode.h"
@@ -520,6 +521,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   // have remade the targets this frame, and not while an upscaler runs.
   msaa_.BeginFrame(list, temporal_ && temporal_->PathBusy(),
                    edram_->change_serial() != targets_before);
+  if (ao_) {
+    ao_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -729,6 +733,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   // after the main view's last draw (EdramTargets::DepthLayer).
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     edram_->SetScenePhase(false);
+    if (ao_ && ao_->wants_draws()) {
+      ao_->OnAnchor(banks);  // this frame's camera: the next frame's occlusion uses its lens
+    }
   }
 
   if (!list) {
@@ -745,6 +752,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
+      if (ao_ && ao_->wants_draws()) {
+        NoteAmbientOcclusion(banks, d);
+      }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
       }
@@ -1194,6 +1204,33 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
   if (d.key.depth_format != 0) {
     edram_->NoteDrawn(DrawDepthKey(*edram_, s, d.key.color_count), frame_serial_);
   }
+}
+
+bool Scene::UpscalerRunning() const {
+  return temporal_ && temporal_->active() && temporal_->frame().armed &&
+         temporal_->frame().upscaler != Upscaler::kOff;
+}
+
+void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d) {
+  EdramKey color;
+  EdramKey depth;
+  const EdramKey* color0 = nullptr;
+  const EdramKey* depth0 = nullptr;
+  if (d.key.color_count != 0) {
+    color = ColorEdramKey(d.state, 0);
+    color0 = &color;
+  }
+  if (d.key.depth_format != 0) {
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+    depth0 = &depth;
+  }
+  AmbientOcclusion::MainDraw draw;
+  draw.match = temporal::MatchMainView(color0, depth0);
+  if (!draw.match) {
+    return;
+  }
+  draw.writes_depth = (d.key.depth & 2u) != 0;
+  ao_->OnMainDraw(draw, banks);
 }
 
 void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -2135,6 +2172,9 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
     // With RT0 bound its colour says whose depth this is; without, the frame's phase does.
     key.reserved = edram_->DepthLayer(key, sized_surface == 0 ? &first_key : nullptr);
+    if (ao_ && ao_->wants_draws() && (flags & 0x10u) != 0) {
+      ao_->OnDepthClear(key, record.z);
+    }
     if (bound_.framebuffer) {
       list->setFramebuffer(nullptr);
       bound_.framebuffer = nullptr;
@@ -2187,7 +2227,13 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
-  resolve_->Execute(record, list);
+  const ResolveCache::Summary summary = resolve_->Execute(record, list);
+  if (ao_ && ao_->wants_draws()) {
+    // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
+    // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
+    // below forgets for the next draw.
+    ao_->OnResolve(record, summary, list, UpscalerRunning());
+  }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
   ResetListState();
@@ -2228,6 +2274,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
   edram_->SetScenePhase(false);
+  if (ao_) {
+    ao_->OnComposite();
+  }
   if (temporal_) {
     temporal_->OnComposite();
   }
@@ -2340,6 +2389,9 @@ void Scene::OnPresent() {
     hdr_tone_->OnGuestPresent();
   }
   edram_->SetScenePhase(true);  // the next frame's scene
+  if (ao_) {
+    ao_->OnPresent();
+  }
   if (temporal_) {
     temporal_->EndFrame();
   }

@@ -17,6 +17,15 @@
 #include "backend.h"
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
+#include "ao_apply_ms_ps.hlsl.dxil.h"
+#include "ao_apply_ps.hlsl.dxil.h"
+#include "ao_denoise_ps.hlsl.dxil.h"
+#include "ao_depth_ms_ps.hlsl.dxil.h"
+#include "ao_depth_ps.hlsl.dxil.h"
+#include "ao_main_ps.hlsl.dxil.h"
+#include "ao_mip_ps.hlsl.dxil.h"
+#include "ao_temporal_ms_ps.hlsl.dxil.h"
+#include "ao_temporal_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
@@ -53,6 +62,15 @@
 #include "temporal_mv_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
+#include "ao_apply_ms_ps.hlsl.spirv.h"
+#include "ao_apply_ps.hlsl.spirv.h"
+#include "ao_denoise_ps.hlsl.spirv.h"
+#include "ao_depth_ms_ps.hlsl.spirv.h"
+#include "ao_depth_ps.hlsl.spirv.h"
+#include "ao_main_ps.hlsl.spirv.h"
+#include "ao_mip_ps.hlsl.spirv.h"
+#include "ao_temporal_ms_ps.hlsl.spirv.h"
+#include "ao_temporal_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
@@ -233,6 +251,24 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
+}
+
+// The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0
+// the linear depth, 1 the same from a multisampled depth plane, 2 a coarser level, 3 the
+// visibility, 4 the denoise, 5 the apply, 6 the apply over a multisampled depth plane, 7 the
+// accumulation over frames, 8 the same over a multisampled depth target.
+inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(ao_mip_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
+    case 6: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
+    case 7: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ms_ps);
+  }
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).
