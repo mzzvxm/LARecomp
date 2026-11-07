@@ -80,6 +80,16 @@ BlendKind KindOf(const plume::RenderBlendDesc& b) {
   return BlendKind::kOther;
 }
 
+const char* BlendKindName(uint8_t kind) {
+  switch (BlendKind(kind)) {
+    case BlendKind::kNoWrite: return "writes no colour";
+    case BlendKind::kOpaque: return "blending off";
+    case BlendKind::kOver: return "over";
+    case BlendKind::kOther: return "other blend";
+  }
+  return "?";
+}
+
 // The scene under the UI: colour and alpha both result = underlay x (1 - target alpha) + target.
 plume::RenderBlendDesc RestoreBlend() {
   plume::RenderBlendDesc blend;
@@ -112,6 +122,14 @@ bool FrameLayers::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming
 }
 
 void FrameLayers::Shutdown() {
+  if (initialized_) {
+    // The summary is logged once a minute of guest frames, so what happened after the last one (a
+    // pause menu opened late in a run) is reported here, with the pause-view run in progress.
+    LogSpell();
+    if (stats_.presents != 0) {
+      REXLOG_INFO("[gpu] {} (since the last summary, at shutdown)", TakeSummary());
+    }
+  }
   // The GPU is idle and the heap goes later: the slots are not handed back.
   underlay_ = HostImage{};
   ui_ = HostImage{};
@@ -213,6 +231,9 @@ void FrameLayers::BeginFrame() {
   pause_view_ = false;
   pause_opaque_draws_ = 0;
   captured_ = Frame{};
+  ClearTrace();
+  pause_kind_drawn_ = false;
+  frame_adopted_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +393,8 @@ void FrameLayers::OnComposite(plume::RenderCommandList* list, EdramTargets::Targ
   phase_ = Phase::kIdle;
   target_ = nullptr;
   target_samples_ = 1;
+  ClearTrace();  // the frame's records after the marker start here
+  pause_kind_drawn_ = false;
   if (!target || !list || width == 0 || height == 0) {
     return;
   }
@@ -412,11 +435,14 @@ bool FrameLayers::IsPauseUiKey(const EdramKey& key) const {
          key.format == marker_key_.format;
 }
 
-bool FrameLayers::AdoptPauseTarget(const EdramKey& key, uint32_t host_samples) {
+bool FrameLayers::AdoptPauseTarget(const EdramKey& key, uint32_t host_samples, uint8_t* note) {
+  uint8_t unused = kAdoptNone;
+  uint8_t& result = note ? *note : unused;
   const EdramTargets::Target* found = edram_->Find(key);
   if (!found || !found->texture) {
     // Not made yet (the first draw of the first pause view makes it) or released: this draw goes on
     // as it is and the next one looks again.
+    result = found ? kAdoptNoTexture : kAdoptNoTarget;
     return false;
   }
   // Find hands the target out read-only so that nobody creates one; this is the frame's UI target
@@ -428,6 +454,7 @@ bool FrameLayers::AdoptPauseTarget(const EdramKey& key, uint32_t host_samples) {
   if (target->format != kLayerFormat || samples != host_samples ||
       (samples != 1 && samples != 2 && samples != 4 && samples != 8) || guest_width == 0 ||
       guest_height == 0) {
+    result = kAdoptRefused;
     phase_ = Phase::kFailed;
     Fail(Cause::kPauseTarget,
          std::format("{}, {} host samples, {}x{} guest pixels", DescribeEdramKey(key), samples,
@@ -443,6 +470,8 @@ bool FrameLayers::AdoptPauseTarget(const EdramKey& key, uint32_t host_samples) {
   host_height_ = target->scale.Edge(guest_height_);
   pause_opaque_draws_ = 0;
   phase_ = Phase::kUi;
+  result = kAdoptDone;
+  frame_adopted_ = true;
   ++stats_.pause_adopted;
   if (!pause_logged_) {
     pause_logged_ = true;
@@ -456,12 +485,33 @@ bool FrameLayers::AdoptPauseTarget(const EdramKey& key, uint32_t host_samples) {
 
 FrameLayers::DrawAction FrameLayers::ClassifyDraw(const EdramKey& color0, uint32_t host_samples,
                                                   uint64_t ps_identity, PipelineKey& key) {
+  // The frame's records after the marker, for the one-time reports: every draw but the plain
+  // UI-phase draw into the marker's target (a play frame has about forty of those).
+  TraceEvent event;
+  const bool plain = phase_ != Phase::kPause && !pause_view_ && color0 == ui_key_;
+  if (!plain) {
+    event.kind = TraceEvent::Kind::kDraw;
+    event.phase = phase_;
+    event.key = color0;
+    event.host_samples = uint8_t(std::min<uint32_t>(host_samples, 255u));
+    event.ps = ps_identity;
+    event.blend_kind = uint8_t(KindOf(UnpackBlend(key.blend[0])));
+    if (IsPauseUiKey(color0)) {
+      pause_kind_drawn_ = true;
+    }
+  }
   if (phase_ == Phase::kPause) {
     // The marker's target was resolved with no UI in it: the UI is drawn in the pause view's own
     // target. Its first draw makes it this frame's UI target; any other draw is not ours.
-    if (!IsPauseUiKey(color0) || !AdoptPauseTarget(color0, host_samples)) {
+    uint8_t note = IsPauseUiKey(color0) ? uint8_t(kAdoptNone) : uint8_t(kAdoptNotPauseKind);
+    const bool adopted = note == kAdoptNone && AdoptPauseTarget(color0, host_samples, &note);
+    event.adopt = note;
+    Trace(event);
+    if (!adopted) {
       return DrawAction::kNone;
     }
+  } else if (!plain) {
+    Trace(event);
   }
   if (!(color0 == ui_key_) || host_samples != target_samples_) {
     return DrawAction::kNone;
@@ -560,12 +610,32 @@ void FrameLayers::PutBack(plume::RenderCommandList* list, Cause cause) {
 }
 
 void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
-  if (!ui_phase() || phase_ == Phase::kPause) {
-    // (In kPause the pause view's UI target is not drawn into yet: a resolve now is not its picture.)
+  if (!ui_phase()) {
     return;
   }
   EdramKey source;
-  if (!ResolveSourceKey(record, &source) || !(source == ui_key_)) {
+  const bool known = ResolveSourceKey(record, &source);
+  const bool copy = (record.resolve_flags & 0x2000) == 0;
+  TextureKey destination;
+  const bool has_destination = ResolveDestination(record, &destination);
+  {
+    TraceEvent event;
+    event.kind = TraceEvent::Kind::kResolve;
+    event.phase = phase_;
+    event.known = known;
+    event.key = source;
+    event.is_ui_target = known && source == ui_key_;
+    event.copy = copy;
+    event.dest = has_destination;
+    event.unmoved = ResolveIsUnmoved(record);
+    event.resolve_flags = record.resolve_flags;
+    Trace(event);
+  }
+  if (phase_ == Phase::kPause) {
+    // (In kPause the pause view's UI target is not drawn into yet: a resolve now is not its picture.)
+    return;
+  }
+  if (!known || !(source == ui_key_)) {
     return;  // another target's resolve
   }
   if (phase_ == Phase::kUi) {
@@ -584,9 +654,7 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
     }
     return;
   }
-  TextureKey destination;
-  const bool copy = (record.resolve_flags & 0x2000) == 0;
-  if (!copy || !ResolveDestination(record, &destination) || !ResolveIsUnmoved(record)) {
+  if (!copy || !has_destination || !ResolveIsUnmoved(record)) {
     PutBack(list, Cause::kResolve);
     return;
   }
@@ -626,6 +694,14 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
 }
 
 bool FrameLayers::OnColorClear(plume::RenderCommandList* list, const EdramKey& key) {
+  if (ui_phase()) {
+    TraceEvent event;
+    event.kind = TraceEvent::Kind::kClear;
+    event.phase = phase_;
+    event.key = key;
+    event.is_ui_target = key == ui_key_;
+    Trace(event);
+  }
   if (!ui_phase() || phase_ == Phase::kPause || !(key == ui_key_)) {
     return false;  // (in kPause no layer has started: a clear is the scene's)
   }
@@ -637,7 +713,11 @@ bool FrameLayers::OnColorClear(plume::RenderCommandList* list, const EdramKey& k
 }
 
 void FrameLayers::EndFrame(plume::RenderCommandList* list) {
-  if (phase_ == Phase::kStarted) {
+  // A frame that ends with the layer started puts its target back (and has no layers). An abandoned
+  // frame (no list: the renderer is shutting down or the device was lost) records nothing and counts
+  // as nothing: the last frame of every run is cut in the middle of its UI phase, and was reported
+  // as a frame that "ended with the layer started".
+  if (phase_ == Phase::kStarted && list) {
     PutBack(list, Cause::kUnresolved);
   }
   phase_ = Phase::kIdle;
@@ -650,6 +730,36 @@ void FrameLayers::OnGuestPresent() {
     return;
   }
   ++stats_.presents;
+  if (frame_adopted_) {
+    // A pause-view frame (its UI target was found): how it ended, and the run of them it belongs to.
+    if (spell_.frames == 0) {
+      spell_.samples = target_samples_;
+    }
+    ++spell_.frames;
+    if (captured_.valid) {
+      ++spell_.layers;
+      ++stats_.pause_layers;
+    } else if (phase_ == Phase::kDone) {
+      ++spell_.no_ui;
+      ++stats_.pause_no_ui;
+    } else {
+      ++spell_.other;
+      ++stats_.pause_other;
+    }
+  } else if (spell_.frames != 0) {
+    LogSpell();
+  }
+  LogTraceIfWorthIt(captured_.valid             ? "with layers"
+                    : phase_ == Phase::kDone    ? "the target was resolved with no UI to separate"
+                    : phase_ == Phase::kFailed  ? "failed"
+                    : phase_ == Phase::kStarted ? "the target was never resolved (layer started)"
+                    : phase_ == Phase::kPause   ? "no second target was found"
+                                                : "the target was never resolved");
+  // Counted: a guest present with no frame list open (no scene records) must not count this frame
+  // again.
+  frame_adopted_ = false;
+  pause_kind_drawn_ = false;
+  ClearTrace();
   presented_ = captured_;
   captured_ = Frame{};
   if (presented_.valid) {
@@ -774,6 +884,106 @@ void FrameLayers::NoteBlend(const plume::RenderBlendDesc& blend, uint64_t ps_ide
               FactorName(blend.dstBlendAlpha), uint32_t(blend.renderTargetWriteMask));
 }
 
+void FrameLayers::Trace(const TraceEvent& event) {
+  if (trace_count_ < kTraceEvents) {
+    trace_[trace_count_++] = event;
+  } else {
+    ++trace_dropped_;
+  }
+}
+
+void FrameLayers::ClearTrace() {
+  trace_count_ = 0;
+  trace_dropped_ = 0;
+}
+
+void FrameLayers::LogSpell() {
+  if (spell_.frames == 0) {
+    return;
+  }
+  // CHECK: a run with the pause menu open at MSAA 2x shows a line here with nearly all frames "with
+  // layers" (at one host sample 775 of 781 pause-view frames had them); anything else is explained
+  // by the frame traces logged next to it.
+  if (spells_logged_ < kSpellLines) {
+    ++spells_logged_;
+    REXLOG_INFO("[gpu] frame layers: pause-view run of {} frames at {} host samples: {} with layers, "
+                "{} with no UI to separate, {} with none for another reason{}",
+                spell_.frames, spell_.samples, spell_.layers, spell_.no_ui, spell_.other,
+                spells_logged_ == kSpellLines ? " (further runs are counted, not logged)" : "");
+  }
+  spell_ = Spell{};
+  traced_[1] = 0;  // the next run may log its own frames with no layers
+}
+
+void FrameLayers::LogTraceIfWorthIt(const char* outcome) {
+  // CHECK: these lines show, once, what a pause-view frame draws and resolves after the marker (the
+  // order the layers rely on: the marker target's resolve, then draws into the second target, then its
+  // tile resolves) and what a frame that fell short did instead; not run yet, the format may need a
+  // look.
+  uint32_t why = 3;
+  const char* what = "";
+  if (frame_adopted_ && captured_.valid && traced_[0] == 0) {
+    why = 0;
+    what = "the first pause-view frame";
+  } else if (frame_adopted_ && !captured_.valid && traced_[1] < kTracePerSpell) {
+    why = 1;
+    what = "a pause-view frame without layers";
+  } else if (!frame_adopted_ && pause_kind_drawn_ && traced_[2] < kTraceMissed) {
+    why = 2;
+    what = "a frame that drew a second target of the pause kind and never took it as its UI target";
+  }
+  if (why == 3 || traced_[0] + traced_[1] + traced_[2] >= kTraceLines) {
+    return;
+  }
+  ++traced_[why];
+  const auto phase_name = [](Phase phase) {
+    switch (phase) {
+      case Phase::kIdle: return "idle";
+      case Phase::kUi: return "UI";
+      case Phase::kStarted: return "started";
+      case Phase::kDone: return "done";
+      case Phase::kFailed: return "failed";
+      case Phase::kPause: return "waiting";
+    }
+    return "?";
+  };
+  static const char* const kAdoptText[] = {"",
+                                           ", not of the pause kind",
+                                           ", no target yet",
+                                           ", target without texture",
+                                           ", taken as the UI target",
+                                           ", refused"};
+  std::string events;
+  for (uint32_t i = 0; i < trace_count_; ++i) {
+    const TraceEvent& e = trace_[i];
+    std::string text;
+    switch (e.kind) {
+      case TraceEvent::Kind::kDraw:
+        text = std::format("draw into {} ({} host samples) PS {:016X} {}{}", DescribeEdramKey(e.key),
+                           e.host_samples, e.ps, BlendKindName(e.blend_kind),
+                           size_t(e.adopt) < std::size(kAdoptText) ? kAdoptText[e.adopt] : "");
+        break;
+      case TraceEvent::Kind::kResolve:
+        text = std::format("resolve of {}{}, {}{}{}, flags {:#x}",
+                           e.known ? DescribeEdramKey(e.key) : std::string("an unreadable source"),
+                           e.is_ui_target ? " (the layers' target)" : "",
+                           e.copy ? "a copy" : "clear only", e.dest ? "" : ", no destination",
+                           e.unmoved ? "" : ", moved", e.resolve_flags);
+        break;
+      case TraceEvent::Kind::kClear:
+        text = std::format("clear of {}{}", DescribeEdramKey(e.key),
+                           e.is_ui_target ? " (the layers' target)" : "");
+        break;
+    }
+    events += std::format("{}[{}] {}", events.empty() ? "" : " | ", phase_name(e.phase), text);
+  }
+  REXLOG_INFO("[gpu] frame layers: trace of {} (marker target {}, layer {}, {}): {}{}", what,
+              DescribeEdramKey(marker_key_), phase_name(phase_), outcome,
+              events.empty() ? std::string("nothing after the marker") : events,
+              trace_dropped_ != 0 ? std::format(" | and {} more not kept", trace_dropped_)
+                                  : std::string());
+}
+
 std::string FrameLayers::TakeSummary() {
   std::string failures;
   for (size_t i = 0; i < stats_.failed.size(); ++i) {
@@ -784,11 +994,15 @@ std::string FrameLayers::TakeSummary() {
   }
   std::string text = std::format(
       "frame layers: {} markers, {} started, {} captured, {} resolved with no UI to separate, {} "
-      "draws separated | pause view: {} frames waited for its UI target, {} found it, {} of "
-      "those had no picture copy under the UI, {} repeated markers ignored | {} guest presents, "
-      "{} with layers ({} not the front buffer, {} not covering it) | no layers: {} | {:.1f} MiB",
+      "draws separated | pause view: {} frames had the marker's target resolved with no UI in it "
+      "and waited for a second target (a pause view; a title or loading frame never finds one), {} "
+      "found it ({} presented with layers, {} with no UI to separate, {} with none for another "
+      "reason; {} had no picture copy under the UI), {} repeated markers ignored | {} guest "
+      "presents, {} with layers ({} not the front buffer, {} not covering it) | no layers: {} | "
+      "{:.1f} MiB",
       stats_.markers, stats_.started, stats_.captured, stats_.resolved_unstarted,
-      stats_.separated_draws, stats_.pause_armed, stats_.pause_adopted, stats_.pause_no_picture,
+      stats_.separated_draws, stats_.pause_armed, stats_.pause_adopted, stats_.pause_layers,
+      stats_.pause_no_ui, stats_.pause_other, stats_.pause_no_picture,
       stats_.markers_ignored, stats_.presents, stats_.presents_valid, stats_.unusable_picture,
       stats_.unusable_size, failures.empty() ? "none" : failures,
       double(HeldBytes()) / double(1u << 20));
