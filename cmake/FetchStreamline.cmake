@@ -1,8 +1,11 @@
-# NVIDIA Streamline SDK 2.14.16, for DLSS Super Resolution (src/gpu/temporal_dlss.h): the headers the
-# DLSS backend is compiled with (Streamline's own, MIT) and the production DLLs the game folder carries
-# (sl.interposer.dll, sl.common.dll, sl.dlss.dll and nvngx_dlss.dll, NVIDIA-signed, with their licence
-# files, and NvLowLatencyVk.dll, the Vulkan Reflex runtime sl.common.dll loads on Vulkan: without it
-# Streamline logs a load error at every Vulkan start). Nothing from NVIDIA is committed to this
+# NVIDIA Streamline SDK 2.14.16, for DLSS Super Resolution (src/gpu/temporal_dlss.h) and DLSS Frame
+# Generation (src/gpu/dlss_frame_generation.h): the headers the DLSS backend is compiled with
+# (Streamline's own, MIT) and the production DLLs the game folder carries (sl.interposer.dll,
+# sl.common.dll, sl.dlss.dll and nvngx_dlss.dll, NVIDIA-signed, with their licence files, and
+# NvLowLatencyVk.dll, the Vulkan Reflex runtime sl.common.dll loads on Vulkan: without it Streamline
+# logs a load error at every Vulkan start; for frame generation sl.dlss_g.dll with its network
+# nvngx_dlssg.dll, and the two plugins DLSS-G requires, sl.reflex.dll and sl.pcl.dll: Reflex and the
+# PC latency markers through Streamline). Nothing from NVIDIA is committed to this
 # repository: everything is fetched once into the build
 # folder from NVIDIA's release (one zip, the same as `streamline-sdk-v2.14.16.zip` on
 # github.com/NVIDIA-RTX/Streamline/releases), and every file that is used is checked against its SHA-256.
@@ -26,7 +29,12 @@ set(_sl_root "${CMAKE_BINARY_DIR}/_deps/streamline-${_sl_version}")
 
 # "<sha256> <path in the SDK>", the path under the zip's SDK root (package.bat of Streamline lays out
 # include/, bin/x64/ and the licence files at the root). The same path is used under _sl_root.
-# The hashes were taken from the release zip's own files (2026-11-06).
+# The hashes were taken from the release zip's own files (2026-11-06; the frame generation members,
+# the Reflex and PC latency plugins and their headers 2026-11-07).
+# CHECK: the package has no licence file of its own for nvngx_dlssg.dll (bin/x64 has nvngx_dlss.license.txt,
+# nis.license.txt and reflex.license.txt only). F4-DESIGN.md section 15 read the NVIDIA RTX SDKs licence
+# that covers the DLSS SDK; whether the frame generation network falls under the same grant is to be
+# confirmed before a release that carries it (the launcher fetches it only on a PC with an RTX card).
 set(_sl_files
     "e1e81a7428d15b30db37587e9469bd68a56d630d820a4accec0aee3b17e157dd include/sl.h"
     "1337385ac9867d66fa6beb34c750e79aaf25a74a156a47e83f24937299dade87 include/sl_appidentity.h"
@@ -35,6 +43,9 @@ set(_sl_files
     "f420cb052ce14489fc9fa0d933c3ed81a010deb01fa13b1aa8d45da1c5ba3234 include/sl_core_types.h"
     "af7741305b1a468c3a83efaa2005ecd53d2ffd7aadb8ec6868c9dcb4a8a8e3a1 include/sl_device_wrappers.h"
     "d2c8c61fa71794c8ba424cebce5b3079ebfab8e47ed98b4b00cf8b257ecfd6b5 include/sl_dlss.h"
+    "1fc18cbe004e280df1f787276d08a1b28b8a8c4c65856fbaa659f56dff6a915d include/sl_dlss_g.h"
+    "f43c5135fc8d5349ccd345e424f8cf1f61953a9f17e9897204b0741a3ab7b0fb include/sl_pcl.h"
+    "3b623a1189e04a686384d224a58c4ad9974c4e6e3204077676f6ec529475164c include/sl_reflex.h"
     "2a0f6c12863bdc00b38910a5ec85d1f083c5671ee817a920afe626ac2a9100f7 include/sl_result.h"
     "a36b1c20394402bee7ce738089a5a1305ff6e9dd9dd517566154ce834f7c32b4 include/sl_security.h"
     "28deda67ea1a74371dd4f33ff4842b7db03b2db007001da6db06f6982297928d include/sl_struct.h"
@@ -43,6 +54,10 @@ set(_sl_files
     "38eea3b4209afc455636ea372b5933d65fcc13becec6c84d101dcfc4d8648f75 bin/x64/sl.common.dll"
     "18871eea87c90345da97d8109faa81ea7d5840e8d99b51b55b0e46cfa177f84e bin/x64/sl.dlss.dll"
     "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e bin/x64/nvngx_dlss.dll"
+    "3ed9538df724993bea8a050195a6a78b9c8c8a566d5b05ade477aab3c390e90f bin/x64/sl.dlss_g.dll"
+    "8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7 bin/x64/nvngx_dlssg.dll"
+    "443577e869352436ff7ec8f4d9c90418d3e95368436ce219261e0f4f07a38122 bin/x64/sl.reflex.dll"
+    "5698c38e722318681f215c9fe68e45b9bedd51378acc699d8eee26e961e57770 bin/x64/sl.pcl.dll"
     "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294 bin/x64/nvngx_dlss.license.txt"
     "2a77dc3e1c724b7eea5755be0ae7423752e79a2459fae72181a9f00e3507e5d6 bin/x64/NvLowLatencyVk.dll"
     "ebf83c07fb3b2939908c3795d887afde3161c89a28ba391724efc784ce1bdabe bin/x64/reflex.license.txt"

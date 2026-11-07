@@ -20,6 +20,7 @@ add_library(larecomp_gpu OBJECT
     device.cpp
     draw_census.cpp
     draw_state.cpp
+    dlss_frame_generation.cpp
     edram.cpp
     flicker_probe.cpp
     format.cpp
@@ -37,6 +38,7 @@ add_library(larecomp_gpu OBJECT
     hdr_tonemap.cpp
     input_layout.cpp
     latency.cpp
+    latency_streamline.cpp
     layout.cpp
     memory_census.cpp
     msaa_level.cpp
@@ -127,6 +129,11 @@ if(LARECOMP_STREAMLINE_KIT)
     target_sources(larecomp_gpu PRIVATE temporal_dlss.cpp)
     target_include_directories(larecomp_gpu SYSTEM PRIVATE "${LARECOMP_STREAMLINE_KIT}/include")
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS=1)
+    # DLSS Frame Generation and Reflex through Streamline (the Streamline-typed half is in
+    # temporal_dlss.cpp; dlss_frame_generation.cpp below is Streamline-free and always built).
+    if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS_G=1)
+    endif()
 endif()
 # Plume's creation hooks for Streamline on Vulkan and the usage flags it keeps of an image
 # (Plume's larecomp branch: PR #10 and PR #8, both in the pin): a Plume without them leaves DLSS out
@@ -295,6 +302,10 @@ larecomp_gpu_host_shader(overlay_hdr_ps ps_6_0 SOURCE overlay_ps DEFINES OVERLAY
 larecomp_gpu_host_shader(fg_prepare_ps ps_6_0)
 larecomp_gpu_host_shader(fg_compose_ps ps_6_0)
 larecomp_gpu_host_shader(fg_copy_ps ps_6_0)
+# DLSS frame generation (dlss_frame_generation.h): the UI layer fitted to the window as the present
+# pass fits the picture, with the display's table (and, for an HDR10 back buffer, the HDR output step).
+larecomp_gpu_host_shader(dlssg_ui_ps ps_6_0)
+larecomp_gpu_host_shader(dlssg_ui_hdr_ps ps_6_0 SOURCE dlssg_ui_ps DEFINES PRESENT_HDR=1)
 # The UI layer split (frame_layers.h, hdr_scene.h): the scene put back under the UI in the guest's
 # target, and the HDR present's compose of the two layers.
 larecomp_gpu_host_shader(layers_restore_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=0)

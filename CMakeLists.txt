@@ -482,6 +482,27 @@ else()
                                 "include/sl_dlss.h and bin/x64/sl.interposer.dll: building without DLSS")
             endif()
         endif()
+        # DLSS Frame Generation (src/gpu/dlss_frame_generation.h) needs the headers of the frame generation,
+        # Reflex and PC latency plugins and their DLLs: an unpacked SDK folder without them builds DLSS Super
+        # Resolution only (the fetched files above always carry them).
+        set(LARECOMP_STREAMLINE_HAS_FRAMEGEN OFF)
+        if(LARECOMP_STREAMLINE_KIT)
+            set(_larecomp_sl_fg_ok ON)
+            foreach(_larecomp_sl_fg_file include/sl_dlss_g.h include/sl_reflex.h include/sl_pcl.h
+                    bin/x64/sl.dlss_g.dll bin/x64/nvngx_dlssg.dll bin/x64/sl.reflex.dll bin/x64/sl.pcl.dll)
+                if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_fg_file}")
+                    set(_larecomp_sl_fg_ok OFF)
+                endif()
+            endforeach()
+            if(_larecomp_sl_fg_ok)
+                set(LARECOMP_STREAMLINE_HAS_FRAMEGEN ON)
+                message(STATUS "larecomp: DLSS frame generation (Streamline sl.dlss_g, sl.reflex, sl.pcl)")
+            else()
+                message(STATUS "larecomp: the Streamline folder lacks the frame generation, Reflex or PC latency "
+                                "files: building DLSS without frame generation")
+            endif()
+            unset(_larecomp_sl_fg_ok)
+        endif()
         add_subdirectory(src/gpu)
         # The renderer's objects, and plume's archive without plume's include
         # directories in larecomp's own translation units (CMP0131 is NEW with
@@ -675,8 +696,12 @@ else()
     # opens them by full path from this folder after checking their signature, and nowhere else.
     # NvLowLatencyVk.dll is the Vulkan Reflex runtime that sl.common.dll loads by itself on Vulkan.
     if(LARECOMP_STREAMLINE_KIT)
-        foreach(_larecomp_sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
-                NvLowLatencyVk.dll)
+        set(_larecomp_sl_dlls sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll NvLowLatencyVk.dll)
+        if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
+            # Frame generation and the two plugins it requires (Reflex and PC latency through Streamline).
+            list(APPEND _larecomp_sl_dlls sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
+        endif()
+        foreach(_larecomp_sl_dll IN LISTS _larecomp_sl_dlls)
             if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}")
                 message(WARNING "Streamline: ${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll} is missing")
                 continue()
