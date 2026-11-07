@@ -17,11 +17,13 @@
 // mcla_gpu mode never creates the SDK's D3D12Presenter.
 //
 // The format is B8G8R8A8_UNORM, or R10G10B10A2_UNORM in the HDR10 colour space when
-// Options::hdr10 asks and the output takes it (hdr.h). It is chosen once, in Initialize: what
-// draws into the back buffer (the present pass, the overlay) builds its pipelines for format().
+// Options::hdr10 asks and the output takes it (hdr.h). It is chosen in Initialize and changes only
+// in Recreate (mcla_gpu_hdr is live, Renderer::SwitchHdr): what draws into the back buffer (the
+// present pass, the overlay) keeps its pipelines for FormatFor(false) and FormatFor(true) and is
+// told which set to use.
 //
 // Threading: Initialize on the lifecycle thread before the render thread
-// starts; everything else on the render thread.
+// starts; everything else on the render thread (Recreate at a frame boundary, with the GPU idle).
 // ===========================================================================
 
 #include <cstdint>
@@ -57,6 +59,28 @@ class SwapChain {
   bool Initialize(Device& device, plume::RenderWindow window, const Options& options);
   // The GPU must be idle with respect to the back buffers (FrameRing::WaitIdle).
   void Shutdown();
+
+  // The back buffer's format for an SDR (false) or an HDR10 (true) chain.
+  static constexpr plume::RenderFormat FormatFor(bool hdr10) {
+    return hdr10 ? plume::RenderFormat::R10G10B10A2_UNORM : plume::RenderFormat::B8G8R8A8_UNORM;
+  }
+
+  enum class Recreated : uint8_t {
+    kChanged,  // the chain is made in the format asked for
+    kKept,     // the chain is made again in the format it had: the other one was refused
+    kLost,     // no chain could be made; Recreate is asked again later (lost())
+  };
+  // Makes the chain again, in the HDR10 colour space (`hdr10`) or the SDR one, at the window's size,
+  // with the vsync it had: the old chain is destroyed first (a window has one flip-model chain, and
+  // on Vulkan one chain per surface), so the caller has waited the GPU idle (FrameRing::WaitIdle) and
+  // holds latency::SwapChainChange. native() is another object afterwards. When the new format is
+  // refused (the output does not present HDR10) the old one is made again: kKept, with the reason
+  // logged; the other values are in the enum. Anything that drew into the old back buffers (the
+  // framebuffers, the semaphores) is gone with it.
+  Recreated Recreate(bool hdr10);
+  // Recreate found no chain to make: the renderer calls it again until one exists. Nothing is
+  // presented meanwhile (empty() is true).
+  bool lost() const { return device_ != nullptr && !swap_chain_; }
 
   // True when the window size no longer matches the buffers.
   bool NeedsRebuild() const;
@@ -97,11 +121,16 @@ class SwapChain {
   bool hdr() const { return hdr_; }
 
  private:
-  static constexpr plume::RenderFormat kSdrFormat = plume::RenderFormat::B8G8R8A8_UNORM;
+  static constexpr plume::RenderFormat kSdrFormat = FormatFor(false);
 
+  // Makes swap_chain_ (HDR10 first when `hdr10`, else, or when that is refused, SDR), its per-image
+  // objects and logs it; false (logged) when no chain could be made, with swap_chain_ empty.
+  bool MakeChain(bool hdr10);
   bool BuildPerImageObjects();
 
   Device* device_ = nullptr;
+  plume::RenderWindow window_{};
+  bool vsync_ = false;  // what the next chain starts with
   plume::RenderFormat format_ = kSdrFormat;
   bool hdr_ = false;
   std::unique_ptr<plume::RenderSwapChain> swap_chain_;
