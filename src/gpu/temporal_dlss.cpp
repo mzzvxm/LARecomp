@@ -38,22 +38,24 @@
 #include <sl_dlss.h>
 #if defined(LARECOMP_HAS_DLSS_G)
 // DLSS frame generation, and Reflex with the PC latency markers, which it requires.
-// Streamline's sl_pcl.h and sl_reflex.h call std::to_underlying (C++23). The MSVC standard library
-// the Windows build uses offers it only in its own C++23 mode, which clang's -std=gnu++23 does not
-// turn on there: a stand-in with the same meaning when the library has none.
-#include <type_traits>
-#include <utility>
-#if !defined(__cpp_lib_to_underlying)
-namespace std {
-template <class Enum>
-constexpr underlying_type_t<Enum> to_underlying(Enum value) noexcept {
-  return static_cast<underlying_type_t<Enum>>(value);
-}
-}  // namespace std
-#endif
+// Streamline 2.14's sl_pcl.h reads `#if __cplusplus == 202302L` and then aliases the function
+// template std::to_underlying with `using`, which no compiler takes; its other branch defines
+// sl::to_underlying itself, which sl_reflex.h uses. This build is C++23, so the two headers are
+// read with the C++20 value of __cplusplus and the real one is put back right after them.
 #include <sl_dlss_g.h>
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wbuiltin-macro-redefined"
+#endif
+#pragma push_macro("__cplusplus")
+#undef __cplusplus
+#define __cplusplus 202002L
 #include <sl_pcl.h>
 #include <sl_reflex.h>
+#pragma pop_macro("__cplusplus")
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #endif
 #if defined(__MINGW32__)
 // Streamline's sl_security.h counts a file's nested signatures with WINTRUST_SIGNATURE_SETTINGS
