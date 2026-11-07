@@ -1200,20 +1200,6 @@ using mcla_menu::XeniaOnly;
 constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
 constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
-#if defined(LARECOMP_HAS_GPU)
-// RENDER RES (mcla_gpu_resolution_scale), live: 0 is the screen's scale -- the one
-// that renders at the size of the window's 16:9 area and follows the window while the
-// game runs -- and the rest go in steps of 0.5. larecomp.toml takes any step of 0.05.
-constexpr double kRenderResVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0};
-// FSR1's quality presets (mcla_gpu_fsr_preset), in the order of
-// mcla::gpu::FsrPreset. With FSR1 on, a preset picks the render scale from the
-// window; CUSTOM leaves it to RENDER RES.
-constexpr const char* kFsrPresetVals[]  = {"custom", "ultra_quality", "quality",
-                                           "balanced", "performance", "ultra_performance"};
-constexpr const char* kFsrPresetNames[] = {"CUSTOM", "ULTRA QUALITY", "QUALITY",
-                                           "BALANCED", "PERFORMANCE", "ULTRA PERF"};
-constexpr int kNumFsrPresets = int(sizeof(kFsrPresetVals) / sizeof(kFsrPresetVals[0]));
-#endif
 constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
 constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
@@ -1321,86 +1307,6 @@ constexpr RowDynamics kRbNitroStartDynamics = {.value_label = RbNitroStartLabel}
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
 #if defined(LARECOMP_HAS_GPU)
-// ── RENDER RES and FSR1 ────────────────────────────────────────────────
-//
-// What these rows show is what the renderer does now (it follows them at a frame boundary): they
-// ask it what it chooses (gpu.h PreviewRenderScale) from the settings and the window as it is now.
-// Width (see "Page width"): RENDER RES carries no suffix while it is live, and a scale the video
-// memory cannot hold says so in the value ("TOO BIG (2.0X)", narrower than DISPLAY's widest value).
-
-bool FsrOn() { return CvarGetBool("mcla_gpu_fsr"); }
-
-// The preset chosen.
-mcla::gpu::FsrPreset FsrPresetChosen() {
-    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
-    mcla::gpu::ParseFsrPreset(CvarGet("mcla_gpu_fsr_preset"), &preset);
-    return preset;
-}
-
-// FSR1 on with a preset: the preset picks the render scale, not RENDER RES.
-bool FsrPresetDecides() {
-    return FsrOn() && FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom;
-}
-
-unsigned RenderHeight(mcla::gpu::Scale scale) {
-    return unsigned(scale.Edge(mcla::gpu::kAssumedScreenHeight));
-}
-
-// "1.5X (1080P)": the scale with one decimal on the steps of 0.1 and two on
-// the twentieths between them (1.35X), and the height it renders at.
-std::string RenderScaleText(mcla::gpu::Scale scale) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), scale.n % 2 == 0 ? "%.1fX (%uP)" : "%.2fX (%uP)",
-                  double(scale.n) / mcla::gpu::Scale::kDenominator, RenderHeight(scale));
-    return buf;
-}
-
-std::string RenderResValueLabel(double value) {
-    const mcla::gpu::RenderScaleChoice c =
-        mcla::gpu::PreviewRenderScale(value, false, mcla::gpu::FsrPreset::kCustom);
-    // A scale the renderer could not make for want of video memory (a 3X scale is 4K) says so, and
-    // which one it keeps: only the value that asks for that scale is relabelled, so the other values
-    // stay what they are. The screen's scale has its own wording (the one it keeps is not shown).
-    const mcla::gpu::RenderScaleStatus status = mcla::gpu::GetRenderScaleStatus();
-    const bool screen = c.source == mcla::gpu::RenderScaleChoice::Source::kScreen;
-    if (!status.blocked.none() && !status.running.none() && c.scale == status.blocked) {
-        if (screen) return "SCREEN TOO BIG";
-        char buf[32];
-        std::snprintf(buf, sizeof(buf),
-                      status.running.n % 2 == 0 ? "TOO BIG (%.1fX)" : "TOO BIG (%.2fX)",
-                      double(status.running.n) / mcla::gpu::Scale::kDenominator);
-        return buf;
-    }
-    if (screen) return "SCREEN (" + std::to_string(RenderHeight(c.scale)) + "P)";
-    return RenderScaleText(c.scale);
-}
-
-bool RenderResEnabled() { return !FsrPresetDecides(); }
-
-// Grey, the row shows no value: the suffix says what decides instead. The
-// resolution the preset gives is on the preset's own row.
-const char* RenderResSuffix() {
-    return FsrPresetDecides() ? " (SET BY FSR1)" : "";
-}
-
-// "QUALITY (720P)": the preset and the height it renders at in this window.
-std::string FsrPresetLabel(int i) {
-    if (i < 0 || i >= kNumFsrPresets) return "";
-    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
-    mcla::gpu::ParseFsrPreset(kFsrPresetVals[i], &preset);
-    if (preset == mcla::gpu::FsrPreset::kCustom) return kFsrPresetNames[i];
-    const mcla::gpu::RenderScaleChoice c = mcla::gpu::PreviewRenderScale(1.0, true, preset);
-    return std::string(kFsrPresetNames[i]) + " (" + std::to_string(RenderHeight(c.scale)) + "P)";
-}
-
-constexpr RowDynamics kRenderResDynamics = {
-    .value_label = RenderResValueLabel,
-    .enabled = RenderResEnabled,
-    .suffix = RenderResSuffix,
-};
-constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
-constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
-
 // ── HDR ────────────────────────────────────────────────────────────────
 //
 // HDR (mcla_gpu_hdr) is live: the renderer applies it at the end of a frame, making the window's
@@ -1478,12 +1384,8 @@ const ItemDef kVideoItems[] = {
     XeniaOnly(Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ",
                   kResScaleVals, 4, "%gX", " (RESTART)")),
 #if defined(LARECOMP_HAS_GPU)
-    // The render scale, 0.5X to 3.0X or the screen's, each with the height it
-    // renders at; grey while an FSR1 preset picks it. FSR1 opens below it.
-    NativeOnly(WithDynamics(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale",
-                                "RENDER RES: ", kRenderResVals, 7, "%g"),
-                            &kRenderResDynamics)),
-    NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
+    // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
+    // appended after this table, from upscaling_menu.cpp (MenuDef::extra).
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
 #endif
 #if defined(LARECOMP_HAS_GPU)
@@ -1627,17 +1529,18 @@ const ItemDef kFfxItems[] = {
 // Renderer. RENDERER picks the emulated path (Xenia's command processor) or the
 // Plume renderer (NATIVE), and brings the no-CP mode and continuous rendering
 // along (kRendererChoices), so neither has a row of its own. GRAPHICS API is the
-// SDK's graphics_backend, which both read. NATIVE AA and FSR are the Plume
-// renderer's own and only listed while it runs; the legacy runtime is no longer
-// offered here.
+// SDK's graphics_backend, which both read. NATIVE AA and the upscaling rows
+// (DISPLAY) are the Plume renderer's own and only listed while it runs; the
+// legacy runtime is no longer offered here.
 const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
 const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
 #if defined(LARECOMP_HAS_GPU)
 const char* const kRendererVals[]  = {"xenia", "plume"};
 const char* const kRendererNames[] = {"XENIA", "NATIVE"};
 constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
-// The NATIVE (Plume) renderer's post (M6c), all live: the scene's
-// anti-aliasing before the UI, and FSR1 on the present.
+// The NATIVE (Plume) renderer's post (M6c), live: the scene's anti-aliasing
+// before the UI. NATIVE AA is grey and says what does the job while a temporal
+// upscaler runs (upscaling_menu.cpp).
 const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
 // Ambient occlusion (gpu/ao.h, live): off, half resolution, full resolution. The row is at most 23
@@ -1680,18 +1583,6 @@ const ItemDef kNativeItems[] = {
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// DISPLAY > FSR1: the renderer's FSR1 on the present, its quality preset and
-// RCAS. The preset and the sharpness are grey while FSR1 is off.
-const ItemDef kGpuFsrItems[] = {
-    Bool("PM_RxGpuFsr", "mcla_gpu_fsr", "FSR1: "),
-    WithDynamics(Str("PM_RxGpuFsrPreset", "mcla_gpu_fsr_preset", "QUALITY: ",
-                     kFsrPresetVals, kFsrPresetNames, kNumFsrPresets),
-                 &kFsrPresetDynamics),
-    WithDynamics(Dbl("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "SHARP REDUCE: ",
-                     kFsrSharpVals, 5, "%g"),
-                 &kFsrSharpDynamics),
-};
-
 // DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
 const ItemDef kGpuHdrItems[] = {
     Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
@@ -2110,9 +2001,6 @@ const MenuDef kMenus[] = {
      "RxNativeMenu",
      kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
-     "RxGpuFsrMenu",
-     kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
     // The paused world is not made brighter than its white (the HIGHLIGHTS row's change shows once
     // the game is resumed), which this line says: it is the only help text a menu has.
     // CHECK: the 38 characters fit under the list.
@@ -2423,10 +2311,15 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // right, the button prompts and the scroll bar first, at any screen size. A
 // page comes to about 245 units plus 11 a character of that label and value
 // (capitals of the menu's font: I and digits narrower, M and W wider).
-// DISPLAY's widest pair is "RENDER RES (SET BY FSR1)" + "PERFORMANCE (50%)",
-// 41 characters, about 700 units. A label or a value that is longer than its
-// page's widest needs counting against that before it goes in, in each state a
-// suffix can be in.
+// DISPLAY must stay at or under 41 characters of that pair (24 and 17, say),
+// about 700 units. Its widest label is "MSAA (DONE BY FSR 3.1)" (22) and its
+// widest value 17 ("PERFORMANCE (50%)" and the mode row's other longest:
+// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"), 39 together,
+// so a row that joins the page may bring a label of up to 24 characters with
+// a value of up to 17. A label or a value that is longer than its page's
+// widest needs counting against that before it goes in, in each state a
+// suffix can be in; the upscaling rows' states are counted in
+// upscaling_menu.cpp.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
