@@ -40,6 +40,12 @@ std::optional<std::string> CvarTomlValue(std::string_view name, std::string_view
 // user_name): that stays a change.
 void NoteStartupCvar(std::string_view name);
 
+// A cvar that belongs to this run only, such as a preview a menu row switches on while the row is
+// highlighted: a save never writes its live value, whoever set it. A line the file already has for it
+// is put back to the cvar's default (so an old save of the cvar is cleaned, not kept), and no line is
+// ever added. Call it once at startup.
+void NoteSessionOnlyCvar(std::string_view name);
+
 // Merges into the file what the player changed while the game ran (cvars whose
 // last writer was SetFlagByName), plus `held`. Everything else in the file stays
 // as it is: other lines, comments, keys of cvars this build does not have. Values

@@ -61,7 +61,9 @@ REXCVAR_DEFINE_BOOL(
     mcla_gpu_hdr_test_pattern, false, "MCLA/GPU",
     "In HDR, shows brightness bars instead of the game. The top row starts at 100 nits and "
     "doubles every 4 bars, to see where the display stops showing steps; the bottom left is "
-    "paper white and the bottom right the same bars rolled off to the peak setting. Changes at "
+    "paper white and the bottom right the same bars rolled off to the peak setting. It covers the "
+    "whole picture, the menus too. The pause menu's TEST PATTERN row shows it only while that row "
+    "is highlighted and never saves it; set on the command line it stays on for the run. Changes at "
     "once.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

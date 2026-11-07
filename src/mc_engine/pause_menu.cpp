@@ -764,11 +764,21 @@ double CvarGetDouble(const char* name) {
     return std::strtod(CvarGet(name).c_str(), nullptr);
 }
 
+// DISPLAY > HDR > TEST PATTERN is a preview, not a setting: the bars replace the whole picture, this
+// menu included (the game draws the pause menu into the same frame: a pause frame has no UI layer
+// the present could keep above the bars, frame_layers.h), so they show only while their row is the
+// highlighted row of the open HDR menu (HdrTestPatternTick), and they are never written to
+// larecomp.toml (config_save.h NoteSessionOnlyCvar). True while the menu's row has them on.
+constexpr const char* kHdrTestPatternCvar = "mcla_gpu_hdr_test_pattern";
+std::atomic<bool> g_hdr_pattern_by_menu{false};
+
 void CvarSet(const char* name, const char* value) {
     if (std::string_view(name) == kRendererCvar) {
         RendererSet(value);
         return;
     }
+    if (std::string_view(name) == kHdrTestPatternCvar)
+        g_hdr_pattern_by_menu.store(std::string_view(value) == "true", std::memory_order_relaxed);
     if (IsDeferredCvar(name)) {
         MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
         SetDeferred(name, value);
@@ -3082,6 +3092,15 @@ void InitPauseMenuHooks() {
     // Runs from FinishSetupAfterBootBuild, before ReXApp::LaunchModule starts
     // the guest -- the only point where the online cvar is still the player's.
     InitOnlineSettings();
+    // The test pattern lives for the run: a save never writes it, and one an older save left in the
+    // file is switched off now (it would cover the menu that could switch it off).
+    larecomp::NoteSessionOnlyCvar(kHdrTestPatternCvar);
+    if (const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(kHdrTestPatternCvar);
+        info && info->source == rex::cvar::Source::kConfig && info->getter() == "true") {
+        MC_INFO("[pause-menu] {} = true in larecomp.toml is ignored: the test pattern is never kept",
+                kHdrTestPatternCvar);
+        rex::cvar::SetFlagByName(kHdrTestPatternCvar, "false");
+    }
     MC_INFO("[pause-menu] hooks registered");
 }
 
@@ -4544,7 +4563,36 @@ void PauseMenuLeaveSubmenu() {
 // the open-form stack holding the pad. The color strip closes as soon as its
 // form is not the top one.
 
+// Whether the highlighted row of the menu on top is DISPLAY > HDR > TEST PATTERN.
+bool HdrTestPatternRowFocused() {
+    const int m = MenuByKey("RxGpuHdrMenu");
+    if (m < 0) return false;
+    const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed);
+    if (!form || larecomp::ui::TopForm() != form) return false;
+    const int row = larecomp::ui::FormSelectedRow(form);
+    if (row < 0 || row >= MenuItemCount(kMenus[m])) return false;
+    const char* cvar = MenuItemAt(kMenus[m], row).cvar;
+    return cvar && std::strcmp(cvar, kHdrTestPatternCvar) == 0;
+}
+
+// The test pattern the menu's row switched on goes off as soon as that row is not the highlighted
+// row of the open HDR menu: the cursor moved, the HDR menu was left or the pause menu closed.
+// Its box follows the cvar (PollNativeRows). A pattern set on the command line (or from the F4
+// panel or the console) is not the menu's and stays as it is.
+// CHECK: the box clears when the cursor leaves the row; FormSelectedRow is the row the cursor is on
+// at the tick, not one frame behind.
+void HdrTestPatternTick() {
+    if (!g_hdr_pattern_by_menu.load(std::memory_order_relaxed)) return;
+    if (CvarGetBool(kHdrTestPatternCvar) && HdrTestPatternRowFocused()) return;
+    if (CvarGetBool(kHdrTestPatternCvar)) {
+        MC_INFO("[pause-menu] the HDR test pattern is off: its row is not highlighted any more");
+        CvarSet(kHdrTestPatternCvar, "false");  // clears g_hdr_pattern_by_menu
+    }
+    g_hdr_pattern_by_menu.store(false, std::memory_order_relaxed);
+}
+
 void PauseMenuFormsTick() {
+    HdrTestPatternTick();
     if (g_color_open >= 0 && larecomp::ui::TopForm() != g_color_form) ColorStripClose(false);
     if (!larecomp::ui::TopmostOurForm()) return;
     if (larecomp::ui::FormIsOpen(larecomp::ui::PauseForm())) return;
