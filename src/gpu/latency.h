@@ -58,7 +58,9 @@
 //
 // Frame generation forces the reducer on while it runs, whatever mcla_gpu_low_latency says (the
 // frames would queue in front of the paced presents otherwise); boost stays where the setting asks
-// for it. The pause menu's row says so (pause_menu.cpp).
+// for it. The pause menu's row says so (pause_menu.cpp). DLSS frame generation also takes the
+// reducer over: Streamline requires its own Reflex and PC latency plugins to make every call,
+// with the frame index its constants and tags carry (UseStreamline, latency_streamline.cpp).
 //
 // The frame rate limit stays with LARecomp's own limiter (hooks/frame_timing.cpp),
 // which waits after the frame's input; the vendors' own limits are left at none.
@@ -138,6 +140,19 @@ void OnPresentEnd();
 uint64_t DetachRenderFrame();
 void OnPresentBegin(uint64_t frame_id);
 void OnPresentEnd(uint64_t frame_id);
+
+// DLSS frame generation (dlss_frame_generation.h), render thread at a frame boundary: the reducer
+// becomes NVIDIA Reflex through Streamline (`on`), or the device's own again. The mode the old one
+// had is left and the new one is told at the next frame's start (the update thread notices the
+// change). While `on` the reducer is forced on, like for FSR's frame generation. False (and nothing
+// changes) when `on` and Streamline's plugins are not running.
+bool UseStreamline(bool on);
+// The id of the frame the host render thread is recording and presenting (0: the frame is not
+// marked), what the constants and the tags of DLSS frame generation are indexed by. Render thread.
+uint64_t RenderFrameId();
+// The reducer is on and has made a few sleeps since the last UseStreamline: Streamline's check that
+// Reflex runs (DLSS-G's status) will find it. Any thread.
+bool StreamlineRunning();
 
 // The presents the renderer makes by itself while the guest is not swapping (the
 // overlays) are not guest frames; a list opened inside one is not a frame to mark.

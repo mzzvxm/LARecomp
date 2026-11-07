@@ -32,9 +32,9 @@ enum class Marker : uint8_t {
 
 // This is the one place the vendors' calls (sleep mode, sleep, markers) sit behind: latency.cpp and
 // the call sites in renderer.cpp / hooks/frame_timing.cpp only use Reducer and latency.h's free
-// functions. DLSS frame generation will need Reflex to run through NVIDIA Streamline (sl.reflex)
-// instead of NvAPI directly; that is a third Reducer made in the same factories (a Streamline
-// one would replace NvapiReflex and VulkanReducer's NVIDIA half), with nothing else changing.
+// functions. DLSS frame generation needs Reflex to run through NVIDIA Streamline (sl.reflex, sl.pcl)
+// instead of NvAPI directly: that is a third Reducer (latency_streamline.cpp), taken over from the
+// device's own while frame generation runs (latency.h UseStreamline).
 //
 // Calls may come from several threads at once (the update thread sleeps and marks, the guest
 // render thread and the host render thread mark); an implementation takes no lock across a
@@ -74,6 +74,10 @@ class Reducer {
   // Releases what the vendor's API holds; after it every call does nothing.
   virtual void Shutdown() {}
 };
+
+// Reflex through Streamline's plugins (temporal_dlss.h dlss::reflex); null, with why, where they are
+// not running. Built in every build: without DLSS it never finds Streamline.
+std::shared_ptr<Reducer> CreateStreamlineReducer(std::string& why);
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
 // Null where the device has no reducer, with why in plain words.

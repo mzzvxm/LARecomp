@@ -86,9 +86,12 @@ struct Want {
 };
 
 // What mcla_gpu_low_latency asks for, for this reducer.
+// DLSS frame generation runs and the reducer is Streamline's (UseStreamline).
+std::atomic<bool> g_streamline_on{false};
+
 Want ReadWant(const Reducer& reducer) {
   const std::string mode = REXCVAR_GET(mcla_gpu_low_latency);
-  if (FrameGenerationRunning()) {
+  if (FrameGenerationRunning() || g_streamline_on.load(std::memory_order_relaxed)) {
     // Forced on while frame generation runs; Reflex's boost where it is asked for.
     return {true, mode == "boost" && reducer.SupportsBoost()};
   }
@@ -146,7 +149,16 @@ struct Module {
   std::atomic<uint64_t> guest_cursor{0};
   std::atomic<uint64_t> host_cursor{0};
 
+  // The device's own reducer, kept while Streamline's is the one in use (UseStreamline); `epoch`
+  // counts the changes of `reducer`, which the update thread sees to forget what it applied to the
+  // old one. `mode_applied` and `sleeps` mirror the update thread's state for the other threads.
+  std::shared_ptr<Reducer> base;
+  std::atomic<uint32_t> epoch{0};
+  std::atomic<bool> mode_applied{false};
+  std::atomic<uint32_t> sleeps{0};
+
   UpdateState update;  // the update thread
+  uint32_t update_epoch = 0;
   // The host render thread: the marked frame it is recording (0: none), and whether the present
   // in progress is an idle one.
   uint64_t render_id = 0;
@@ -196,6 +208,7 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint64_t n
     const bool was_on = u.applied_on;
     u.applied_on = on;
     u.applied_boost = on && boost;
+    M().mode_applied.store(on, std::memory_order_relaxed);
     u.refusals = 0;
     if (on && !was_on) {
       u.warmup_passes = kWarmupPasses;
@@ -280,6 +293,23 @@ void OnFrameStart() {
     return;
   }
   UpdateState& u = m.update;
+  if (const uint32_t epoch = m.epoch.load(std::memory_order_acquire); epoch != m.update_epoch) {
+    // The reducer changed (UseStreamline): what the old one was told and what it refused do not
+    // carry over; the new one takes the mode at once and makes no wait for the first passes.
+    m.update_epoch = epoch;
+    u.applied_on = false;
+    u.applied_boost = false;
+    u.warmup_passes = 0;
+    u.refusals = 0;
+    u.retry_at_us = 0;
+    u.failed = false;
+    u.long_history = 0;
+    u.paused_until_us = 0;
+    u.backoff_us = kFirstBackoffUs;
+    u.sleep_failure_logged = false;
+    m.mode_applied.store(false, std::memory_order_relaxed);
+    m.sleeps.store(0, std::memory_order_relaxed);
+  }
   const uint64_t id = u.started + 1;
   uint64_t now = NowUs();
 
@@ -304,6 +334,9 @@ void OnFrameStart() {
       const uint64_t before = NowUs();
       const bool slept = reducer->Sleep(id);
       now = NowUs();
+      if (slept) {
+        m.sleeps.fetch_add(1, std::memory_order_relaxed);
+      }
       if (!slept && !u.sleep_failure_logged) {
         u.sleep_failure_logged = true;
         REXLOG_WARN("[gpu] low latency: {}'s wait before the frame did not run (no swap chain "
@@ -376,6 +409,7 @@ void Initialize(Device& device, SwapChain& swap_chain) {
   m.auto_on.store(reducer->OnByDefault(), std::memory_order_relaxed);
   m.health.store(Health::kOk, std::memory_order_relaxed);
   m.update = UpdateState{};
+  m.update_epoch = m.epoch.load(std::memory_order_relaxed);
   m.published.store(0, std::memory_order_relaxed);
   m.guest_cursor.store(0, std::memory_order_relaxed);
   m.host_cursor.store(0, std::memory_order_relaxed);
@@ -410,6 +444,16 @@ void Shutdown() {
     reducer->SetMode(false, false);
   }
   reducer->Shutdown();
+  std::shared_ptr<Reducer> base;
+  {
+    std::lock_guard lock(m.mutex);
+    base.swap(m.base);
+  }
+  if (base) {
+    base->Shutdown();  // the device's own, put aside while Streamline's was in use
+  }
+  g_streamline_on.store(false, std::memory_order_relaxed);
+  m.mode_applied.store(false, std::memory_order_relaxed);
   m.update = UpdateState{};
 }
 
@@ -460,6 +504,74 @@ void OnPresentEnd() {
   if (const std::shared_ptr<Reducer> reducer = m.Get()) {
     reducer->SetMarker(Marker::kPresentEnd, id);
   }
+}
+
+bool UseStreamline(bool on) {
+  Module& m = M();
+  std::shared_ptr<Reducer> old;
+  std::shared_ptr<Reducer> next;
+  {
+    std::lock_guard lock(m.mutex);
+    if (on == g_streamline_on.load(std::memory_order_relaxed)) {
+      return true;
+    }
+    old = m.reducer;
+  }
+  if (on) {
+    // (A device with no reducer of its own, `old` null, is fine: Streamline's Reflex is its own.)
+    std::string why;
+    next = CreateStreamlineReducer(why);
+    if (!next) {
+      REXLOG_WARN("[gpu] low latency: Reflex through Streamline cannot be used for frame generation: {}",
+                  why);
+      return false;
+    }
+  }
+  // The old reducer is left (it was told its mode; the driver takes the mode away), the new one is
+  // taken at the update thread's next frame start.
+  if (old && m.mode_applied.load(std::memory_order_relaxed)) {
+    old->SetMode(false, false);
+  }
+  {
+    std::lock_guard lock(m.mutex);
+    if (on) {
+      m.base = m.reducer;
+      m.reducer = next;
+    } else {
+      m.reducer = m.base;
+      m.base.reset();
+    }
+    g_streamline_on.store(on, std::memory_order_relaxed);
+    if (on) {
+      // The frames are numbered whether a reducer is on or not (Initialize arms the counting only
+      // when the device has one): with Streamline's the counting has to run too.
+      m.kind.store(Kind::kReflex, std::memory_order_relaxed);
+      m.auto_on.store(true, std::memory_order_relaxed);
+      m.counting.store(true, std::memory_order_release);
+    } else if (!m.reducer) {
+      m.counting.store(false, std::memory_order_release);
+      m.kind.store(Kind::kNone, std::memory_order_relaxed);
+    } else {
+      m.kind.store(m.reducer->IsReflex() ? Kind::kReflex : Kind::kAntiLag, std::memory_order_relaxed);
+      m.auto_on.store(m.reducer->OnByDefault(), std::memory_order_relaxed);
+    }
+    m.epoch.fetch_add(1, std::memory_order_release);
+  }
+  REXLOG_INFO("[gpu] low latency: the reducer is {} now",
+              on ? "NVIDIA Reflex through Streamline (DLSS frame generation requires it)"
+                 : "the device's own");
+  return true;
+}
+
+uint64_t RenderFrameId() {
+  return M().render_id;
+}
+
+bool StreamlineRunning() {
+  Module& m = M();
+  return g_streamline_on.load(std::memory_order_relaxed) &&
+         m.mode_applied.load(std::memory_order_relaxed) &&
+         m.sleeps.load(std::memory_order_relaxed) >= 3;
 }
 
 uint64_t DetachRenderFrame() {
