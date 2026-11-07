@@ -30,6 +30,7 @@
 #include "hooks_internal.h"
 #include "../guest_profiler.h"
 #if defined(LARECOMP_HAS_GPU)
+#include "gpu/gpu.h"
 #include "gpu/latency.h"
 #endif
 
@@ -44,7 +45,9 @@ REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
 // Default to 60 FPS: with vsync=false for low input lag and fast pacing,
 // the precision frame limiter caps to 60 FPS out-of-the-box.
 REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
-    "Frame rate cap in FPS (0 = uncapped). The pause menu offers 30, 40, 45, 50, 60, 120 and 144.")
+    "Frame rate cap in FPS (0 = uncapped). The pause menu offers 30, 40, 45, 50, 60, 120 and 144. "
+    "While frame generation runs the cap counts the frames the game renders (twice as many are "
+    "shown) and mcla_gpu_frame_generation_fps_limit is the cap instead.")
     .range(0, 360)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -232,7 +235,14 @@ static void EnforceFrameLimit() {
     // stale value is load-bearing; clearing it here keeps the invariant simple.
     static uint64_t next_us = 0;
 
-    const int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
+    int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
+#if defined(LARECOMP_HAS_GPU)
+    // With frame generation running the cap is its own, in rendered frames (the frames shown are twice
+    // as many): HALF DISPLAY by default. MCLA_FPS_CAP stays the override of everything.
+    if (env_limit < 0) {
+        limit = mcla::gpu::FrameGenerationFpsLimit(limit);
+    }
+#endif
     if (limit <= 0) {
         next_us = 0;
         return;
