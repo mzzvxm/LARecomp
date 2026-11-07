@@ -62,6 +62,11 @@ class Reducer {
   // need the handle wait in between.
   virtual void BeginSwapChainChange() {}
   virtual void EndSwapChainChange() {}
+  // Vulkan: the render thread's present and acquire use the swap chain "externally synchronized"
+  // (the spec), so the calls that take the chain (the sleep mode, the sleep, the markers) must not
+  // overlap them; they wait in between. Nothing on D3D12.
+  virtual void BeginSwapChainUse() {}
+  virtual void EndSwapChainUse() {}
   // Releases what the vendor's API holds; after it every call does nothing.
   virtual void Shutdown() {}
 };

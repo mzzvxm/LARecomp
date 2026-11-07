@@ -11,6 +11,13 @@
 // sends it with the present (VkPresentIdKHR). Anti-Lag 2 is vkAntiLagUpdateAMD
 // with the input stage before the frame and the present stage before its present.
 //
+// Threads: the calls here that name the swap chain run on the update thread and the render
+// thread, while the render thread's present and acquire need the chain "externally synchronized"
+// (the spec; the validation layer's threading check flags an overlap). One shared_mutex: these
+// calls hold it shared, for the driver call only, and the present, the acquire and the rebuild hold
+// it exclusively (BeginSwapChainUse / BeginSwapChainChange). The wait on the sleep semaphore after
+// vkLatencySleepNV is outside it.
+//
 // Design followed (not copied): the MCLA fork's vulkan_low_latency.cpp, written by
 // the same author. Not ported: its explicit attribution of each submission to
 // its frame (VkLatencySubmissionPresentIdNV), which the fork measured as a small
@@ -170,6 +177,8 @@ class VulkanReducer final : public Reducer {
         info.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV;
         info.signalSemaphore = sleep_semaphore_;
         info.value = value;
+        // CHECK: vkLatencySleepNV returns at once and the driver signals the semaphore later; if it
+        // blocked inside the call, the render thread's present would wait behind it here.
         if (sleep_fn_(device_->vk, swap_chain_->vk, &info) != VK_SUCCESS) {
           return false;
         }
@@ -225,6 +234,8 @@ class VulkanReducer final : public Reducer {
       case Marker::kPresentStart:
         type = VK_LATENCY_MARKER_PRESENT_START_NV;
         // The present that follows on this thread carries the frame's id (Plume's present()).
+        // Only the render thread comes here (OnPresentBegin) and it is the one that presents, so
+        // nothing else reads the field.
         swap_chain_->latencyPresentId = frame_id;
         break;
       case Marker::kPresentEnd:
@@ -257,6 +268,20 @@ class VulkanReducer final : public Reducer {
       }
     }
     mutex_.unlock();
+  }
+
+  // The render thread's present and acquire (SwapChainUse): the chain to themselves. Only NVIDIA's
+  // calls name the chain; Anti-Lag 2's do not, so nothing is held for it.
+  void BeginSwapChainUse() override {
+    if (nvidia_) {
+      mutex_.lock();
+    }
+  }
+
+  void EndSwapChainUse() override {
+    if (nvidia_) {
+      mutex_.unlock();
+    }
   }
 
   // After the calls in progress (the wait for the driver's signal is bounded) and for good.
@@ -306,8 +331,9 @@ class VulkanReducer final : public Reducer {
   PFN_vkAntiLagUpdateAMD anti_lag_fn_ = nullptr;
   VkSemaphore sleep_semaphore_ = VK_NULL_HANDLE;
   uint64_t sleep_value_ = 0;  // the update thread's
-  // The swap chain's handle (VulkanSwapChain::vk) is read under this, shared; Rebuild holds it
-  // exclusively. The mode below is written under it too, by the update thread, and read by
+  // The swap chain's handle (VulkanSwapChain::vk) is read under this, shared, by every call that
+  // names the chain; Rebuild, the present and the acquire hold it exclusively (see the top of the
+  // file). The mode below is written under it too, by the update thread, and read by
   // EndSwapChainChange under the exclusive hold.
   std::shared_mutex mutex_;
   std::shared_mutex semaphore_mutex_;

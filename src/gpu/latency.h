@@ -153,5 +153,19 @@ class SwapChainChange {
   std::shared_ptr<void> reducer_;  // the Reducer, type-erased (latency_backend.h)
 };
 
+// Around the swap chain's present and acquire calls (swap_chain.cpp): Vulkan needs the chain to
+// itself for them, so the reducer's calls that name it wait until they are done (nothing on
+// D3D12). Held for the call only, never nested with SwapChainChange.
+class SwapChainUse {
+ public:
+  SwapChainUse();
+  ~SwapChainUse();
+  SwapChainUse(const SwapChainUse&) = delete;
+  SwapChainUse& operator=(const SwapChainUse&) = delete;
+
+ private:
+  std::shared_ptr<void> reducer_;  // the Reducer, type-erased (latency_backend.h)
+};
+
 }  // namespace latency
 }  // namespace mcla::gpu

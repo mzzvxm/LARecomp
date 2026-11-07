@@ -485,4 +485,21 @@ SwapChainChange::~SwapChainChange() {
   }
 }
 
+SwapChainUse::SwapChainUse() {
+  Module& m = M();
+  if (!m.counting.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (std::shared_ptr<Reducer> reducer = m.Get()) {
+    reducer->BeginSwapChainUse();
+    reducer_ = std::move(reducer);
+  }
+}
+
+SwapChainUse::~SwapChainUse() {
+  if (reducer_) {
+    static_cast<Reducer*>(reducer_.get())->EndSwapChainUse();
+  }
+}
+
 }  // namespace mcla::gpu::latency
