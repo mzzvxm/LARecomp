@@ -90,6 +90,15 @@ std::string ResetText(uint32_t mask) {
   return text.empty() ? std::string("none") : text;
 }
 
+// A row-major 4x4 of row vectors as 16 floats, the layout of Streamline's float4x4.
+void Flatten(const temporal::Mat4& m, float* out) {
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      out[r * 4 + c] = float(m.m[r][c]);
+    }
+  }
+}
+
 // The main view draws that draw colour: what says a frame has a 3D scene. Depth-only draws alone do
 // not: without MSAA the UI draws one into the main depth key (temporal_identities.h), also in a
 // frame with no 3D scene.
@@ -118,6 +127,11 @@ void TemporalSystem::SetEnabled(bool enabled) {
   frame_number_ = 0;
   upscale_misses_ = 0;
   last_dispatch_frame_ = ~uint64_t(0);
+  scene_colors_ = {};
+  scene_color_scale_ = Scale::None();
+  post_stand_in_reported_ = false;
+  post_unserved_run_ = 0;
+  post_unserved_reported_ = false;
   plain_logged_.fill(false);
   if (enabled) {
     REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
@@ -141,11 +155,17 @@ void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   pass_timing_ = &pass_timing;
   textures_ = &textures;
   resolve_ = &resolve;
-  // The upscaler runtime, if this build has one: a worker thread loads it and asks it what this PC
-  // can do; the menu lists what it finds. Nothing here waits for it.
-  backend_ = MakeFfxBackend();
-  if (backend_) {
-    backend_->Probe(device, frames);
+  // The upscaler runtimes, if this build has them: FidelityFX and DLSS (Streamline). A worker
+  // thread of each loads its runtime and asks it what this PC can do; the menu lists what they
+  // find. Nothing here waits for them. DLSS loads Streamline only when it is the saved choice (or
+  // when it is chosen later: temporal_dlss.h).
+  ffx_ = MakeFfxBackend();
+  if (ffx_) {
+    ffx_->Probe(device, frames);
+  }
+  dlss_ = MakeDlssBackend();
+  if (dlss_) {
+    dlss_->Probe(device, frames);
   }
 }
 
@@ -157,9 +177,13 @@ void TemporalSystem::Shutdown() {
   }
   stand_in_set_ = false;
   output_ = HostImage{};
-  if (backend_) {
-    backend_->Shutdown();
-    backend_.reset();
+  if (ffx_) {
+    ffx_->Shutdown();
+    ffx_.reset();
+  }
+  if (dlss_) {
+    dlss_->Shutdown();
+    dlss_.reset();
   }
   PublishRunningUpscaler(Upscaler::kOff);
   motion_.Shutdown();
@@ -174,6 +198,7 @@ void TemporalSystem::Shutdown() {
 
 bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
   if (!pending_ready_) {
+    DropPostStandIn();
     return false;
   }
   pending_ready_ = false;
@@ -199,10 +224,68 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
       // The upscaler cannot be fed this session: the passes themselves could not be made.
       FailUpscaler("the depth and motion vector passes could not be recorded");
     }
+    DropPostStandIn();
     return false;
   }
   RecordUpscale(list);
+  DropPostStandIn();
   return true;
+}
+
+void TemporalSystem::DropPostStandIn() {
+  // The reads before the anchor are over (the anchor draw is being prepared, BeforeTextures).
+  CountPostStandIn();
+  // An upscaled frame has the anchor's own stand-in by now (the same image, this frame's picture).
+  if (frame_.post_on_previous && !frame_.upscaled) {
+    ClearStandIn();
+  }
+  frame_.post_on_previous = false;
+}
+
+void TemporalSystem::CountPostStandIn() {
+  FrameState& fr = frame_;
+  if (!fr.post_on_previous || fr.post_counted || !textures_) {
+    return;
+  }
+  fr.post_counted = true;
+  const uint64_t served = textures_->override_binds() - fr.post_binds_at_set;
+  window_.post_reads_served += served;
+  if (served != 0) {
+    ++window_.post_on_previous;
+    post_unserved_run_ = 0;
+    if (!post_stand_in_reported_) {
+      post_stand_in_reported_ = true;
+      REXLOG_INFO("{} the game's post chain before the anchor (the half-size downsample the bloom, "
+                  "the exposure and the motion blur's half-size layer are made from) reads the "
+                  "previous frame's upscaled picture, so the jitter cannot reach them; they are one "
+                  "frame late. The scene is drawn at {}x{} for an output of {}x{}; the game "
+                  "alternates {} scene colour products and the stand-in covers {} of them",
+                  kPrefix, last_render_size_[0], last_render_size_[1], last_output_size_[0],
+                  last_output_size_[1], kSceneColorProducts, fr.post_products);
+    }
+  } else if (++post_unserved_run_ >= kPostUnservedWarn && !post_unserved_reported_) {
+    post_unserved_reported_ = true;
+    REXLOG_WARN("{} the stand-in for the game's post chain was set in {} frames in a row and no "
+                "read before the anchor was given it: the bloom still reads the jittered scene (the "
+                "scene colour products it covers are not the ones that read)",
+                kPrefix, post_unserved_run_);
+  }
+}
+
+void TemporalSystem::NoteSceneColor(const void* product, uint32_t page, uint64_t frame) {
+  // Newest first; a product that is in the list moves to the front, a new one pushes the oldest
+  // out.
+  size_t at = scene_colors_.size() - 1;
+  for (size_t i = 0; i < scene_colors_.size(); ++i) {
+    if (scene_colors_[i].product == product) {
+      at = i;
+      break;
+    }
+  }
+  for (size_t i = at; i > 0; --i) {
+    scene_colors_[i] = scene_colors_[i - 1];
+  }
+  scene_colors_[0] = SceneColor{product, page, frame};
 }
 
 uint64_t TemporalSystem::HeldBytes() const {
@@ -210,8 +293,11 @@ uint64_t TemporalSystem::HeldBytes() const {
   if (output_.texture) {
     bytes += TextureBytes(output_.width, output_.height, 1, output_.format);
   }
-  if (backend_) {
-    bytes += backend_->Status().context_bytes;
+  if (ffx_) {
+    bytes += ffx_->Status().context_bytes;
+  }
+  if (dlss_) {
+    bytes += dlss_->Status().context_bytes;
   }
   return bytes;
 }
@@ -248,30 +334,47 @@ void TemporalSystem::ReadUpscalerChoice() {
   mode_in_use_ = start.decided && start.runs ? start.mode : UpscaleMode::kNativeAa;
   const UpscalerAvailability available = GetUpscalerAvailability();
   Upscaler effective = Upscaler::kOff;
-  if (backend_ && ((settings_.upscaler == Upscaler::kFsr31 && available.fsr31) ||
-                   (settings_.upscaler == Upscaler::kFsr4 && available.fsr4))) {
+  const TemporalBackend* chosen_backend = BackendFor(settings_.upscaler);
+  if (chosen_backend && ((settings_.upscaler == Upscaler::kFsr31 && available.fsr31) ||
+                         (settings_.upscaler == Upscaler::kFsr4 && available.fsr4) ||
+                         (settings_.upscaler == Upscaler::kDlss && available.dlss))) {
     effective = settings_.upscaler;
   }
+  const bool chosen_probed =
+      settings_.upscaler == Upscaler::kDlss ? available.dlss_probed : available.probed;
   // A line when what the choice comes to changes. A choice this PC cannot run is off (the saved
   // choice stays as it is, and comes back where it can run).
   const uint32_t key = uint32_t(settings_.upscaler) | uint32_t(effective) << 2 |
-                       uint32_t(available.probed) << 4 | uint32_t(backend_ != nullptr) << 5;
+                       uint32_t(chosen_probed) << 4 | uint32_t(chosen_backend != nullptr) << 5;
   if (!choice_reported_ || key != choice_key_) {
     choice_reported_ = true;
     choice_key_ = key;
     if (settings_.upscaler != Upscaler::kOff) {
       if (effective != Upscaler::kOff) {
         REXLOG_INFO("{} upscaling: {} ({} {}%), sharpness {:.2f}", kPrefix, UpscalerName(effective),
-                    ModeInfoOf(mode_in_use_).name, ModeInfoOf(mode_in_use_).percent,
-                    settings_.sharpness);
-      } else if (!backend_) {
-        REXLOG_INFO("{} {} is chosen but this build has no FidelityFX: treated as off", kPrefix,
+                    ModeInfoOf(effective, mode_in_use_).name,
+                    ModeInfoOf(effective, mode_in_use_).percent,
+                    effective == Upscaler::kDlss ? 0.0f : settings_.sharpness);
+      } else if (!chosen_backend) {
+        REXLOG_INFO("{} {} is chosen but this build has no runtime for it: treated as off", kPrefix,
                     UpscalerName(settings_.upscaler));
-      } else if (available.probed) {
-        REXLOG_INFO("{} {} is chosen but this PC cannot run it: treated as off (the choice is "
+      } else if (chosen_probed) {
+        REXLOG_INFO("{} {} is chosen but this PC cannot run it{}: treated as off (the choice is "
                     "kept)",
-                    kPrefix, UpscalerName(settings_.upscaler));
+                    kPrefix, UpscalerName(settings_.upscaler),
+                    settings_.upscaler == Upscaler::kDlss && available.dlss_needs_setup
+                        ? " (its files are missing: it needs setup)"
+                        : settings_.upscaler == Upscaler::kDlss && available.dlss_after_restart
+                              ? " until the game is started again"
+                              : "");
       }
+    }
+  }
+  if (effective_ != effective) {
+    // From one upscaler to another: the one that stops holds no context any more.
+    TemporalBackend* old_backend = BackendFor(effective_);
+    if (old_backend && old_backend != BackendFor(effective)) {
+      old_backend->Release();
     }
   }
   effective_ = effective;
@@ -290,15 +393,17 @@ void TemporalSystem::ReadUpscalerChoice() {
       REXLOG_INFO("{} {} {} ({}%) is chosen, but this game was started with the 3D scene drawn "
                   "for {} ({}%): the scene's size is fixed at the start, so the new mode applies "
                   "at the next start",
-                  kPrefix, UpscalerName(effective), ModeInfoOf(settings_.mode).name,
-                  ModeInfoOf(settings_.mode).percent, ModeInfoOf(mode_in_use_).name,
-                  ModeInfoOf(mode_in_use_).percent);
+                  kPrefix, UpscalerName(effective), ModeInfoOf(effective, settings_.mode).name,
+                  ModeInfoOf(effective, settings_.mode).percent,
+                  ModeInfoOf(start.upscaler, mode_in_use_).name,
+                  ModeInfoOf(start.upscaler, mode_in_use_).percent);
     }
     if (soft) {
       REXLOG_INFO("{} no upscaler is running, but this game was started with the 3D scene drawn "
                   "for {} ({}% of the output): the scene is soft until the upscaler is on again "
                   "(or the game is started again with none)",
-                  kPrefix, ModeInfoOf(mode_in_use_).name, ModeInfoOf(mode_in_use_).percent);
+                  kPrefix, ModeInfoOf(start.upscaler, mode_in_use_).name,
+                  ModeInfoOf(start.upscaler, mode_in_use_).percent);
     }
   }
   NoteMsaa();
@@ -354,11 +459,86 @@ void TemporalSystem::ClearStandIn() {
   frame_.upscaled = false;
 }
 
+void TemporalSystem::StandInForPostChain() {
+  // The post chain's first reads of the scene colour come before the anchor, so before this frame's
+  // upscale (temporal.h, "The post chain before the anchor"). The upscale needs this frame's camera
+  // and the anchor's own fetches, and the camera is known only at the anchor's draw (nothing before
+  // it carries one in a form that has been verified); so those reads are given what the previous
+  // frame's upscale made: the output image still holds it, and the stand-in the anchor sets later
+  // is the same image with this frame's picture in it. Nothing before the anchor writes the image,
+  // so the draws recorded before and after it see the frame before's and this frame's picture each.
+  // Which product is this frame's is not known yet either (the anchor's fetch comes later), and
+  // it is not the last frame's: the game draws the scene into one of a pair of products and
+  // alternates them (the log showed the downsample reading base 07fe0000 and 07c48000 in turn,
+  // 194 reads a second, none on the stand-in while it covered the other one). The stand-in covers
+  // the last two products the anchor read, scene_colors_: this frame's is the one of two frames
+  // ago.
+  // CHECK: that the half-size downsample (sub_8260DA68's first sub_8260D678 call, dofObj+92 into
+  // dofObj+12, read in the recompiled guest code, not seen in a draw log) is the only reader of
+  // the scene colour product before the anchor; any other one is redirected the same way and
+  // shows in the cause of a flicker that stays.
+  FrameState& fr = frame_;
+  if (!fr.armed || fr.upscaler == Upscaler::kOff || !textures_ || stand_in_set_) {
+    return;
+  }
+  // The frame before was upscaled (so the image holds its picture), by a gap the history rule
+  // accepts. A camera cut cannot be known yet: the cut frame's bloom and exposure show the view
+  // before it, for that one frame.
+  if (last_dispatch_frame_ == ~uint64_t(0) || last_dispatch_frame_ + 1 != fr.frame ||
+      std::chrono::duration<double, std::milli>(Clock::now() - last_anchor_time_).count() >
+          kMaxGapMs) {
+    return;
+  }
+  // The scene drawn at the output's size (Native AA, DLAA) has no sub-pixel glint the jitter
+  // drops: its bloom is as steady as without the jitter (measured: 0.2% of bright pixels flicker
+  // against 3% at Quality), and the lag would buy nothing.
+  if (last_render_size_[0] == last_output_size_[0] && last_render_size_[1] == last_output_size_[1]) {
+    return;
+  }
+  if (!output_.texture || output_.layout != plume::RenderTextureLayout::SHADER_READ ||
+      output_.width != last_output_size_[0] || output_.height != last_output_size_[1]) {
+    return;
+  }
+  // The products the anchor read in the frames just before (the newest is the frame before's).
+  // An older one is not trusted: a frame in between that was not upscaled, or a size change.
+  static_assert(kSceneColorProducts == 2, "TextureCache::Override holds a pair of products");
+  TextureCache::Override stand_in;
+  uint32_t products = 0;
+  for (const SceneColor& c : scene_colors_) {
+    if (!c.product || c.frame + kSceneColorMaxAge < fr.frame) {
+      continue;
+    }
+    if (products == 0) {
+      stand_in.product = c.product;
+      stand_in.page = c.page;
+    } else {
+      stand_in.other_product = c.product;
+      stand_in.other_page = c.page;
+    }
+    ++products;
+  }
+  if (products == 0) {
+    return;
+  }
+  stand_in.texture = output_.texture.get();
+  stand_in.format = output_.format;
+  stand_in.scale = scene_color_scale_;
+  textures_->SetOverride(stand_in);
+  stand_in_set_ = true;
+  fr.post_on_previous = true;
+  fr.post_products = products;
+  fr.post_binds_at_set = textures_->override_binds();
+  ++window_.post_stand_in_set;
+}
+
 void TemporalSystem::ReleaseUpscaler() {
   // No upscaler for a while: the context and the output image go (the GPU may still be reading
   // them: the backend retires the context behind the frames, the image goes through the ring).
-  if (backend_) {
-    backend_->Release();
+  if (ffx_) {
+    ffx_->Release();
+  }
+  if (dlss_) {
+    dlss_->Release();
   }
   if (textures_) {
     textures_->ReleaseOverrideViews();
@@ -375,14 +555,15 @@ void TemporalSystem::ReleaseUpscaler() {
 }
 
 void TemporalSystem::FailUpscaler(const std::string& why) {
-  if (backend_) {
-    backend_->Fail(why);
+  if (TemporalBackend* backend = BackendFor(effective_)) {
+    backend->Fail(why);
   }
 }
 
 bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   FrameState& fr = frame_;
-  if (effective_ == Upscaler::kOff || !backend_) {
+  TemporalBackend* backend = BackendFor(effective_);
+  if (effective_ == Upscaler::kOff || !backend) {
     return false;
   }
   // A frame the upscaler does not take is plain: counted, the first of each kind logged. Armed
@@ -396,7 +577,7 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     }
     return false;
   };
-  if (!fr.backend_ready || !backend_->Ready(request_)) {
+  if (!fr.backend_ready || !backend->Ready(request_)) {
     return plain(window_.upscale_plain_not_ready, 0, "the upscaler's context is not ready");
   }
   // The scene at the render size (the vectors, the depth and the colour the anchor reads are made
@@ -471,7 +652,36 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   in.camera_near = float(fr.camera.near_plane);
   in.camera_far = float(fr.camera.far_plane);
   in.camera_fov_y = float(fr.camera.fov_y);
-  in.sharpness = settings_.sharpness;
+  in.sharpness = effective_ == Upscaler::kDlss ? 0.0f : settings_.sharpness;
+  {
+    // The camera for the backends that read matrices (DLSS): row vectors, no jitter. The frame
+    // before's clip space is this frame's own when the history starts again (the same rule as the
+    // motion vectors': pending_.previous).
+    const temporal::Camera& cam = fr.camera;
+    temporal::Mat4 to_prev = temporal::Identity();
+    if (pending_.previous) {
+      to_prev = temporal::Mul(cam.view_projection_inverse, pending_.previous->view_projection);
+    }
+    temporal::Mat4 from_prev = temporal::Identity();
+    if (!temporal::Inverse(to_prev, &from_prev)) {
+      to_prev = from_prev = temporal::Identity();
+    }
+    temporal::Mat4 clip_to_view = temporal::Identity();
+    if (!temporal::Inverse(cam.projection, &clip_to_view)) {
+      clip_to_view = temporal::Identity();
+    }
+    Flatten(cam.projection, in.view_to_clip);
+    Flatten(clip_to_view, in.clip_to_view);
+    Flatten(to_prev, in.clip_to_prev_clip);
+    Flatten(from_prev, in.prev_clip_to_clip);
+    for (int i = 0; i < 3; ++i) {
+      in.camera_position[i] = float(cam.position[i]);
+      in.camera_up[i] = float(cam.up[i]);
+      in.camera_right[i] = float(cam.right[i]);
+      in.camera_forward[i] = float(cam.forward[i]);
+    }
+    in.camera_aspect = float(cam.aspect);
+  }
 
   // Outside a render pass (the Scene ended it). The inputs go to the compute stage's read state
   // (D3D12 NON_PIXEL_SHADER_RESOURCE, Vulkan SHADER_READ_ONLY_OPTIMAL), the output to general; the
@@ -488,7 +698,7 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   list->barriers(Stage::COMPUTE, to_read, 3);
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(output_.texture.get(),
                                                               plume::RenderTextureLayout::GENERAL));
-  const bool ok = backend_->Upscale(list, in);
+  const bool ok = backend->Upscale(list, in);
   backend::InvalidateAfterExternalWork(list);
   list->barriers(graphics_and_compute,
                  plume::RenderTextureBarrier(product->texture.get(),
@@ -516,6 +726,9 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   textures_->SetOverride(stand_in);
   stand_in_set_ = true;
   fr.upscaled = true;
+  // What the next frames' post chains are given before their anchors (StandInForPostChain).
+  NoteSceneColor(stand_in.product, stand_in.page, fr.frame);
+  scene_color_scale_ = stand_in.scale;
   // The anchor's own colour fetch: the binding the stand-in gives this fetch's swizzle (the anchor
   // draws at the output's scale).
   fr.anchor_color_slot = textures_->Bind2D(fetch, fr.output_scale, list).slot;
@@ -571,14 +784,15 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
   // run; the jitter waits for it, so a frame it cannot take never shakes.
   frame_.upscaler = effective_;
   bool ready = false;
-  if (effective_ != Upscaler::kOff && backend_ && ran_last_ && last_render_size_[0] != 0 &&
+  TemporalBackend* backend = BackendFor(effective_);
+  if (effective_ != Upscaler::kOff && backend && ran_last_ && last_render_size_[0] != 0 &&
       last_output_size_[0] != 0) {
     BackendRequest request;
     MakeRequest(&request);
-    backend_->Request(request);
+    backend->Request(request);
     request_ = request;
     request_made_ = true;
-    ready = backend_->Ready(request);
+    ready = backend->Ready(request);
   }
   frame_.backend_ready = ready;
   if (ready != ready_reported_) {
@@ -588,7 +802,8 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
                   "colour is replaced by its output",
                   kPrefix, UpscalerName(effective_), request_.render_size[0],
                   request_.render_size[1], request_.output_size[0], request_.output_size[1],
-                  ModeInfoOf(request_.mode).name, ModeInfoOf(request_.mode).percent);
+                  ModeInfoOf(request_.upscaler, request_.mode).name,
+                  ModeInfoOf(request_.upscaler, request_.mode).percent);
     } else if (effective_ != Upscaler::kOff) {
       REXLOG_INFO("{} the upscaler's context is not ready: frames are plain until it is", kPrefix);
     }
@@ -602,7 +817,7 @@ void TemporalSystem::BeginFrame(uint32_t slot) {
     frame_.ratio = (last_render_size_[0] != 0 && last_output_size_[0] != 0)
                        ? double(last_output_size_[0]) / double(last_render_size_[0])
                        : 1.0;
-    frame_.phase_count = JitterPhases(frame_.ratio, ready && backend_ ? backend_->JitterPhaseCount() : 0u);
+    frame_.phase_count = JitterPhases(frame_.ratio, ready && backend ? backend->JitterPhaseCount() : 0u);
     frame_.jitter_index = jitter_index_ % frame_.phase_count;
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
@@ -687,6 +902,14 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     fr.scale = f.scale;
   }
   ++fr.main_draws[kind];
+  if (kind != kDepthOnly) {
+    // The first draw that draws colour into the main view: this frame has a 3D scene, and the post
+    // chain that reads its colour comes later.
+    if (!fr.post_checked) {
+      fr.post_checked = true;
+      StandInForPostChain();
+    }
+  }
 
   if (EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale) != 0) {
     return;  // not a world draw: kept still
@@ -788,6 +1011,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
                   "the summaries count them)",
                   kPrefix, fr.frame, StatusName(status), why.empty() ? "" : ": ", why);
     }
+    DropPostStandIn();  // the post chain was given the previous picture: the rest reads this frame's
     return false;
   }
 
@@ -899,6 +1123,9 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
   pending_ready_ = motion_.available();
+  if (!pending_ready_) {
+    DropPostStandIn();  // no passes: RecordAnchorPasses is not called
+  }
   return pending_ready_;
 }
 
@@ -923,6 +1150,7 @@ void TemporalSystem::EndFrame() {
   // The scene colour product is the product again for the next frame's first draws.
   const bool upscaled = frame_.upscaled;
   const Upscaler running = frame_.upscaler;
+  CountPostStandIn();  // a frame whose anchor draw never came
   ClearStandIn();
   PublishRunningUpscaler(upscaled ? running : Upscaler::kOff);
   if (!enabled_) {
@@ -1099,13 +1327,18 @@ void TemporalSystem::Report() {
               w.modes[size_t(Mode::kNoScene)], w.armed, refused.empty() ? "none" : refused,
               w.resets, resets.empty() ? "none" : resets, camera);
   if (effective_ != Upscaler::kOff || w.upscaled != 0) {
-    const BackendStatus status = backend_ ? backend_->Status() : BackendStatus{};
+    const TemporalBackend* running_backend = BackendFor(effective_);
+    const BackendStatus status = running_backend ? running_backend->Status() : BackendStatus{};
     REXLOG_INFO("[gpu] temporal upscaler: {} ({}{}) in {} frames: upscaled {} ({} of them with "
-                "the history started again), plain: context not ready {}, no vectors {}, colour not "
-                "an input {}{}",
-                UpscalerName(effective_), ModeInfoOf(settings_.mode).name,
+                "the history started again); the game's post chain before the anchor was offered "
+                "the previous frame's picture in {} frames and read it in {} of them ({} reads "
+                "served by the stand-in before the anchor; about one a frame when it works, none "
+                "when the reads name a product it does not cover), plain: context not ready {}, "
+                "no vectors {}, colour not an input {}{}",
+                UpscalerName(effective_), ModeInfoOf(effective_, settings_.mode).name,
                 status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
-                w.upscaled, w.upscale_resets, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
+                w.upscaled, w.upscale_resets, w.post_stand_in_set, w.post_on_previous,
+                w.post_reads_served, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
                 w.upscale_plain_no_color,
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }

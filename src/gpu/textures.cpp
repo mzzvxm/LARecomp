@@ -305,9 +305,14 @@ void TextureCache::SetOverride(const Override& override) {
   if (override_.texture != override.texture) {
     ReleaseOverrideViews();
   }
+  // What was memoized under the override that goes (a product it replaced that the new one does
+  // not) and under the one that comes is bound again.
+  if (override_active_) {
+    BumpOverridePages(override_);
+  }
   override_ = override;
   override_active_ = override.texture != nullptr;
-  BumpProductGeneration(override.page);
+  BumpOverridePages(override);
 }
 
 void TextureCache::ClearOverride() {
@@ -315,6 +320,9 @@ void TextureCache::ClearOverride() {
     return;
   }
   override_active_ = false;
+  if (override_.other_product) {
+    BumpProductGeneration(override_.other_page);
+  }
   BumpProductGeneration(override_.page);
 }
 
@@ -489,9 +497,9 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
   // levels, or the first ones when the fetch names fewer; a fetch whose mip
   // range starts above level 0 by the base the SDK dropped, resolve.h).
   ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page);
-  // The temporal upscaler's output stands for the scene colour product after the anchor: bound
-  // through this fetch's swizzle, good for this frame only.
-  if (override_active_ && override_.texture && product && product == override_.product) {
+  // The temporal upscaler's output stands for the scene colour product (the anchor's, and the post
+  // chain's reads before it): bound through this fetch's swizzle, good for this frame only.
+  if (override_active_ && override_.texture && product && override_.Replaces(product)) {
     const uint32_t slot = override_views_.Slot(*device_, *heap_, *override_.texture,
                                                override_.format, 1, host_swizzle,
                                                "temporal upscaler output view");
@@ -502,6 +510,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
                                key.Describe()));
       }
       Binding binding = bound(slot, true);
+      ++override_binds_;
       binding.from_product = true;
       binding.scale = override_.scale;
       binding.product_scale = override_.scale;

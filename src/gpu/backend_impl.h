@@ -48,6 +48,7 @@ RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 void* NativeListHandle(plume::RenderCommandList* list);
 void* NativeTextureHandle(const plume::RenderTexture* texture);
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
 }  // namespace d3d12
@@ -82,6 +83,7 @@ std::string DefaultAdapterName();
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 void* NativeListHandle(plume::RenderCommandList* list);
 void* NativeTextureHandle(const plume::RenderTexture* texture);
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
 }  // namespace vulkan

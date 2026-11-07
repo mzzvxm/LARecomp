@@ -108,6 +108,39 @@ if(LARECOMP_FFX_KIT)
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX=1)
 endif()
 
+# The temporal upscaler's DLSS backend (temporal_dlss.h): only when the top-level CMake found
+# Streamline's headers (LARECOMP_STREAMLINE_DIR, fetched by cmake/FetchStreamline.cmake);
+# LARECOMP_STREAMLINE_KIT is that folder. Without it temporal_backend.cpp makes no DLSS backend and
+# none of this is compiled. Streamline's headers are only read (types and constants): nothing is
+# linked, the DLL is opened at run time.
+if(LARECOMP_STREAMLINE_KIT)
+    target_sources(larecomp_gpu PRIVATE temporal_dlss.cpp)
+    target_include_directories(larecomp_gpu SYSTEM PRIVATE "${LARECOMP_STREAMLINE_KIT}/include")
+    target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS=1)
+endif()
+# Plume's creation hooks for Streamline on Vulkan and the usage flags it keeps of an image
+# (Plume's larecomp branch: PR #10 and PR #8, both in the pin): a Plume without them leaves DLSS out
+# of the Vulkan backend (D3D12 needs neither).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_vulkan.h")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_vulkan.h" _larecomp_plume_vulkan_header)
+    if(_larecomp_plume_vulkan_header MATCHES "struct VulkanInterfaceHooks" AND
+       _larecomp_plume_vulkan_header MATCHES "imageUsage")
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_PLUME_STREAMLINE=1)
+    endif()
+    unset(_larecomp_plume_vulkan_header)
+endif()
+# Plume's hook that wraps the D3D12 swap chain at a present (upgradeSwapChainAtPresent, Plume's
+# larecomp branch, PR #10): Streamline's wrapper can only go in once Streamline has started, long after
+# the swap chain exists. A Plume without it still runs DLSS on D3D12, but Streamline does not see
+# the presents (temporal_dlss.h).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_d3d12.h")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty/plume/plume_d3d12.h" _larecomp_plume_d3d12_header)
+    if(_larecomp_plume_d3d12_header MATCHES "upgradeSwapChainAtPresent")
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_PLUME_D3D12_PRESENT_HOOK=1)
+    endif()
+    unset(_larecomp_plume_d3d12_header)
+endif()
+
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 # src/ too: the guest decoders the renderer reuses from the legacy runtime are
 # included as "native_gfx/...", which keeps every such dependency visible by

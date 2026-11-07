@@ -5,16 +5,20 @@
 // feature-parity/F4-DESIGN.md sections 6.2, 7 and 14. The TemporalSystem (temporal.h) finds the
 // anchor, jitters the scene, makes the depth and the motion vectors; a TemporalBackend turns
 // colour + depth + vectors + jitter + camera into the picture the rest of the frame uses. This
-// step has one backend, AMD's FidelityFX upscaler (FSR 3.1, and FSR 4 where its provider loads),
-// at the vendor's five ratios (render size = output size over 1, 1.5, 1.7, 2 or 3: "Native AA" to
-// "Ultra Performance"); the interface is what DLSS plugs into later.
+// step has two backends: AMD's FidelityFX upscaler (FSR 3.1, and FSR 4 where its provider loads;
+// temporal_ffx.h) and NVIDIA's DLSS Super Resolution through Streamline (temporal_dlss.h), each at
+// its vendor's five ratios (render size = output size over 1, 1.5, 1.7, 2 or 3: "Native AA" or
+// "DLAA" to "Ultra Performance").
 //
 // The player's settings (REXCVAR, read every frame, saved by the menu like any cvar):
-//   mcla_gpu_upscaler            off | fsr31 | fsr4          "Upscaling"
+//   mcla_gpu_upscaler            off | fsr31 | fsr4 | dlss   "Upscaling"
 //   mcla_gpu_fsr31_mode          native_aa | quality | balanced | performance | ultra_performance
 //                                                            "FSR 3.1 Mode": 100%, 67%, 59%, 50%, 33%
 //   mcla_gpu_fsr4_mode           the same                    "FSR 4 Mode"
+//   mcla_gpu_dlss_mode           dlaa | quality | balanced | performance | ultra_performance
+//                                                            "DLSS Mode": 100%, 67%, 58%, 50%, 33%
 //   mcla_gpu_upscaler_sharpness  0 .. 1                      FSR's sharpening (RCAS); 0 is none
+//                                                            (DLSS has none)
 // A choice this PC cannot run is treated as Off and kept as it was saved (the menu does not list it).
 //
 // Rules of every backend (6.2):
@@ -48,11 +52,11 @@ namespace mcla::gpu {
 class Device;
 class FrameRing;
 
-const char* UpscalerCvarValue(Upscaler upscaler);  // off, fsr31, fsr4
+const char* UpscalerCvarValue(Upscaler upscaler);  // off, fsr31, fsr4, dlss
 // False (and kOff in `*out`) for anything else.
 bool ParseUpscaler(std::string_view text, Upscaler* out);
 bool ParseUpscaleMode(std::string_view text, UpscaleMode* out);
-// Whether `mode` can run with `upscaler` (FSR 3.1 and 4: all five).
+// Whether `mode` can run with `upscaler` (FSR 3.1, FSR 4 and DLSS: all five).
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode);
 
 // True when the saved settings could draw the 3D scene smaller than the output at this start (an
@@ -80,6 +84,7 @@ struct BackendStatus {
   BackendState state = BackendState::kUnknown;
   bool fsr31 = false;     // the FSR 3.1 provider can run on this PC
   bool fsr4 = false;      // the FSR 4 provider really loads (its own query, not a GPU list)
+  bool dlss = false;      // DLSS can run on this PC (the DLSS backend; its own query)
   bool failed = false;    // a creation or a dispatch failed: off for the rest of the session
   std::string reason;     // kUnavailable, or why it failed
   std::string provider;   // the running provider's name once a context exists
@@ -115,6 +120,18 @@ struct TemporalInputs {
   float camera_far = 1000.0f;
   float camera_fov_y = 1.0f;   // radians
   float sharpness = 0.0f;      // 0 .. 1; 0 sends no sharpening pass
+  // The camera as Streamline's constants want it (DLSS; FSR does not read these): row-major
+  // matrices of row vectors (v' = v M, as the game's constants are), without the jitter. The previous
+  // clip space is this frame's own when the history starts again (clip_to_prev_clip is the identity).
+  float camera_aspect = 1.0f;
+  float view_to_clip[16] = {};         // the projection
+  float clip_to_view[16] = {};
+  float clip_to_prev_clip[16] = {};    // this frame's clip space to the frame before's
+  float prev_clip_to_clip[16] = {};
+  float camera_position[3] = {};       // world space
+  float camera_up[3] = {};
+  float camera_right[3] = {};
+  float camera_forward[3] = {};
 };
 
 // What a context is made for.
@@ -168,11 +185,15 @@ class TemporalBackend {
 
 // The FidelityFX backend, or null in a build without LARECOMP_FFX_SDK_DIR.
 std::unique_ptr<TemporalBackend> MakeFfxBackend();
+// The DLSS (Streamline) backend, or null in a build without the Streamline headers
+// (LARECOMP_HAS_DLSS, cmake/FetchStreamline.cmake).
+std::unique_ptr<TemporalBackend> MakeDlssBackend();
 
 // --- what the app's menu asks (gpu.h GetUpscalerAvailability) -----------------------------------
-// The backend publishes what can run (at the end of its probe and when something fails), the
+// The backends publish what can run (at the end of their probes and when something fails), the
 // temporal system what is running.
-void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4);
+void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4);  // FidelityFX
+void PublishDlssAvailability(bool probed, bool dlss, bool needs_setup, bool after_restart);
 void PublishRunningUpscaler(Upscaler running);
 
 }  // namespace mcla::gpu

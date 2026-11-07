@@ -8,7 +8,10 @@
 
 #include "backend_impl.h"
 
+#include "temporal_dlss.h"
+
 #include <algorithm>
+#include <cstring>
 #include <format>
 #include <string>
 #include <vector>
@@ -151,8 +154,35 @@ void ReleaseDebugDevice(void* debug_device) {
   static_cast<ID3D12DebugDevice*>(debug_device)->Release();
 }
 
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+namespace {
+
+// NVIDIA Streamline's wrapper of the swap chain (temporal_dlss.h): it can only go in once
+// Streamline has finished starting, seconds after the swap chain was made, so Plume asks before
+// every present. With nothing to do this is one atomic read.
+void UpgradeSwapChainAtPresent(void*, IDXGISwapChain1** swap_chain) {
+  if (!dlss::SwapChainUpgradePending() || !*swap_chain) {
+    return;
+  }
+  IDXGISwapChain1* native = *swap_chain;
+  void* wrapper = native;
+  if (dlss::UpgradeSwapChain(&wrapper)) {
+    *swap_chain = static_cast<IDXGISwapChain1*>(wrapper);
+    native->Release();  // the wrapper holds a reference of its own to it
+  }
+}
+
+}  // namespace
+#endif
+
 std::unique_ptr<plume::RenderInterface> CreateInterface() {
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+  plume::D3D12InterfaceHooks hooks;
+  hooks.upgradeSwapChainAtPresent = &UpgradeSwapChainAtPresent;
+  return plume::CreateD3D12Interface(hooks);
+#else
   return plume::CreateD3D12Interface();
+#endif
 }
 
 bool IsNullBacked(const plume::RenderTexture* texture) {
@@ -420,6 +450,11 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   const auto* dev = static_cast<const plume::D3D12Device*>(device);
   if (dev) {
     out.device = dev->d3d;
+    if (dev->d3d) {
+      static_assert(sizeof(LUID) == sizeof(uint64_t));
+      const LUID luid = dev->d3d->GetAdapterLuid();
+      std::memcpy(&out.adapter_luid, &luid, sizeof(luid));
+    }
   }
   return out;
 }
@@ -432,6 +467,23 @@ void* NativeListHandle(plume::RenderCommandList* list) {
 void* NativeTextureHandle(const plume::RenderTexture* texture) {
   const auto* t = static_cast<const plume::D3D12Texture*>(texture);
   return t ? t->d3d : nullptr;
+}
+
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
+  NativeImage out;
+  const auto* t = static_cast<const plume::D3D12Texture*>(texture);
+  if (!t || !t->d3d) {
+    return out;
+  }
+  out.resource = t->d3d;
+  // The states Plume leaves a texture in for these layouts (toTextureState): shader read at the
+  // compute stage is NON_PIXEL_SHADER_RESOURCE, general with the storage flag UNORDERED_ACCESS.
+  out.state = use == ImageUse::kStorage ? uint32_t(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                                        : uint32_t(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  out.mip_levels = t->desc.mipLevels ? t->desc.mipLevels : 1;
+  out.array_layers = t->desc.arraySize ? t->desc.arraySize : 1;
+  out.complete = true;
+  return out;
 }
 
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {

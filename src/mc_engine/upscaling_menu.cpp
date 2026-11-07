@@ -26,20 +26,23 @@ Upscaler Chosen() {
     const std::string value = rex::cvar::GetFlagByName("mcla_gpu_upscaler");
     if (value == "fsr31") return Upscaler::kFsr31;
     if (value == "fsr4") return Upscaler::kFsr4;
+    if (value == "dlss") return Upscaler::kDlss;
     return Upscaler::kOff;
 }
 
 Upscaler Active() {
     const Upscaler chosen = Chosen();
     const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
-    if ((chosen == Upscaler::kFsr31 && a.fsr31) || (chosen == Upscaler::kFsr4 && a.fsr4))
+    if ((chosen == Upscaler::kFsr31 && a.fsr31) || (chosen == Upscaler::kFsr4 && a.fsr4) ||
+        (chosen == Upscaler::kDlss && a.dlss))
         return chosen;
     return Upscaler::kOff;
 }
 
 bool Fsr31Chosen() { return Active() == Upscaler::kFsr31; }
 bool Fsr4Chosen() { return Active() == Upscaler::kFsr4; }
-bool AnyChosen() { return Active() != Upscaler::kOff; }
+bool DlssChosen() { return Active() == Upscaler::kDlss; }
+bool FsrChosen() { return Active() == Upscaler::kFsr31 || Active() == Upscaler::kFsr4; }
 
 // The mode rows: grey while their upscaler is not the one in use; while it is, a mode picked now
 // applies at the next start.
@@ -57,12 +60,30 @@ const char* Fsr4ModeSuffix() {
     default:               return " (NOT IN USE)";
     }
 }
-const char* SharpnessSuffix() { return AnyChosen() ? "" : " (UPSCALING OFF)"; }
+// DLSS without its files (an RTX card): the row is listed and grey, "needs setup"; on Vulkan the
+// choice only takes effect from the next start (the device is made with Streamline's help).
+const char* DlssModeSuffix() {
+    const Upscaler active = Active();
+    if (active == Upscaler::kDlss) return " (RESTART)";
+    const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    if (a.dlss_needs_setup && !a.dlss) return " (NEEDS SETUP)";
+    if (a.dlss_after_restart && !a.dlss) return " (AFTER RESTART)";
+    return active == Upscaler::kOff ? " (UPSCALING OFF)" : " (NOT IN USE)";
+}
+// FSR's sharpening (RCAS) only; DLSS has none.
+const char* SharpnessSuffix() {
+    switch (Active()) {
+    case Upscaler::kOff:  return " (UPSCALING OFF)";
+    case Upscaler::kDlss: return " (NOT FOR DLSS)";
+    default:              return "";
+    }
+}
 
 const char* HandledSuffix() {
     switch (Active()) {
     case Upscaler::kFsr31: return " (HANDLED BY FSR 3.1)";
     case Upscaler::kFsr4:  return " (HANDLED BY FSR 4)";
+    case Upscaler::kDlss:  return " (HANDLED BY DLSS)";
     default:               return "";
     }
 }
@@ -77,66 +98,112 @@ const char* MsaaSuffix() {
     switch (Active()) {
     case Upscaler::kFsr31: return running ? " (FSR 3.1 AFTER RESTART)" : " (HANDLED BY FSR 3.1)";
     case Upscaler::kFsr4:  return running ? " (FSR 4 AFTER RESTART)"   : " (HANDLED BY FSR 4)";
+    case Upscaler::kDlss:  return running ? " (DLSS AFTER RESTART)"    : " (HANDLED BY DLSS)";
     default:               return " (RESTART)";
     }
 }
 
-// The vendors' modes (FSR 3.1 and FSR 4 alike) and the share of the output the scene is drawn at,
-// per direction (gpu.h ModeInfo). The mode is the start's: the scene's size is fixed when the game
-// starts (restart only, like RENDER SCALE).
+// The vendors' modes and the share of the output the scene is drawn at, per direction (gpu.h
+// ModeInfo): AMD's for FSR 3.1 and FSR 4, NVIDIA's for DLSS. The mode is the start's: the scene's
+// size is fixed when the game starts (restart only, like RENDER SCALE).
+//
+// Row width: a row's label and its value share one line of the menu, and the widest line of the
+// rest of the pause menu is 26 characters ("RENDER RES: SCREEN (1080P)"). The mode rows' labels
+// are the technology alone ("FSR 3.1: ", "FSR 4: ", "DLSS: ": several can be listed on one PC, so
+// the label still has to name it) and the longest value is 17 characters ("PERFORMANCE (50%)",
+// "ULTRA PERF. (33%)"): 9 + 17 = 26 at most. The UPSCALING row's longest value is 14
+// ("DLSS (RESTART)"; "DLSS (SETUP)" is 12): 11 + 14 = 25. The cvars store the full names
+// (ultra_performance).
 const char* const kModeVals[]  = {"native_aa", "quality", "balanced", "performance",
                                   "ultra_performance"};
 const char* const kModeNames[] = {"NATIVE AA (100%)", "QUALITY (67%)", "BALANCED (59%)",
-                                  "PERFORMANCE (50%)", "ULTRA PERFORMANCE (33%)"};
+                                  "PERFORMANCE (50%)", "ULTRA PERF. (33%)"};
+const char* const kDlssModeVals[]  = {"dlaa", "quality", "balanced", "performance",
+                                      "ultra_performance"};
+const char* const kDlssModeNames[] = {"DLAA (100%)", "QUALITY (67%)", "BALANCED (58%)",
+                                      "PERFORMANCE (50%)", "ULTRA PERF. (33%)"};
 constexpr int kModeCount = 5;
 // FSR's sharpening (RCAS), 0 to 1.
 constexpr double kSharpVals[] = {0.0, 0.2, 0.4, 0.6, 0.8, 1.0};
 
-const char* const kUpscalerBoth[]       = {"off", "fsr31", "fsr4"};
-const char* const kUpscalerBothNames[]  = {"OFF", "FSR 3.1", "FSR 4"};
-const char* const kUpscaler31[]         = {"off", "fsr31"};
-const char* const kUpscaler31Names[]    = {"OFF", "FSR 3.1"};
-const char* const kUpscaler4[]          = {"off", "fsr4"};
-const char* const kUpscaler4Names[]     = {"OFF", "FSR 4"};
-
 constexpr RowDynamics kFsr31ModeDynamics = {.enabled = Fsr31Chosen, .suffix = Fsr31ModeSuffix};
 constexpr RowDynamics kFsr4ModeDynamics  = {.enabled = Fsr4Chosen, .suffix = Fsr4ModeSuffix};
-constexpr RowDynamics kSharpnessDynamics = {.enabled = AnyChosen, .suffix = SharpnessSuffix};
+constexpr RowDynamics kDlssModeDynamics  = {.enabled = DlssChosen, .suffix = DlssModeSuffix};
+constexpr RowDynamics kSharpnessDynamics = {.enabled = FsrChosen, .suffix = SharpnessSuffix};
 
-#define UPSCALING_ROW(values, names, n) \
-    Str("PM_RxGpuUpsc", "mcla_gpu_upscaler", "UPSCALING: ", values, names, n)
-#define FSR31_MODE_ROW \
-    WithDynamics(Str("PM_RxGpuFsr31M", "mcla_gpu_fsr31_mode", "FSR 3.1 MODE: ", kModeVals, \
-                     kModeNames, kModeCount), &kFsr31ModeDynamics)
-#define FSR4_MODE_ROW \
-    WithDynamics(Str("PM_RxGpuFsr4M", "mcla_gpu_fsr4_mode", "FSR 4 MODE: ", kModeVals, \
-                     kModeNames, kModeCount), &kFsr4ModeDynamics)
-#define SHARPNESS_ROW \
-    WithDynamics(Dbl("PM_RxGpuUpscSharp", "mcla_gpu_upscaler_sharpness", "SHARPNESS: ", \
-                     kSharpVals, 6, "%g", "", "OFF"), &kSharpnessDynamics)
+// The rows that can be listed depend on what the probes found (FSR 3.1, FSR 4; DLSS: runs, needs
+// setup, or after a restart), which is final a moment after start, so one table of rows is built
+// the first time each combination is asked for and kept: the menu holds pointers into it.
+// NativeOnly: the upscalers are the Plume renderer's.
+struct RowSet {
+    bool built = false;
+    const char* upscaler_vals[4] = {};
+    const char* upscaler_names[4] = {};
+    int upscaler_count = 0;
+    ItemDef rows[5] = {};
+    int count = 0;
+};
+RowSet g_row_sets[16];
 
-// NativeOnly: the upscaler is the Plume renderer's.
-const ItemDef kBothRows[] = {
-    mcla_menu::NativeOnly(UPSCALING_ROW(kUpscalerBoth, kUpscalerBothNames, 3)),
-    mcla_menu::NativeOnly(FSR31_MODE_ROW),
-    mcla_menu::NativeOnly(FSR4_MODE_ROW),
-    mcla_menu::NativeOnly(SHARPNESS_ROW),
-};
-const ItemDef k31Rows[] = {
-    mcla_menu::NativeOnly(UPSCALING_ROW(kUpscaler31, kUpscaler31Names, 2)),
-    mcla_menu::NativeOnly(FSR31_MODE_ROW),
-    mcla_menu::NativeOnly(SHARPNESS_ROW),
-};
-const ItemDef k4Rows[] = {
-    mcla_menu::NativeOnly(UPSCALING_ROW(kUpscaler4, kUpscaler4Names, 2)),
-    mcla_menu::NativeOnly(FSR4_MODE_ROW),
-    mcla_menu::NativeOnly(SHARPNESS_ROW),
-};
-
-#undef UPSCALING_ROW
-#undef FSR31_MODE_ROW
-#undef FSR4_MODE_ROW
-#undef SHARPNESS_ROW
+const RowSet& RowSetFor(bool fsr31, bool fsr4, int dlss_state) {
+    // dlss_state: 0 not listed, 1 runs, 2 needs setup, 3 after restart.
+    RowSet& set = g_row_sets[(fsr31 ? 1 : 0) | (fsr4 ? 2 : 0) | (dlss_state << 2)];
+    if (set.built) {
+        return set;
+    }
+    set.built = true;
+    int n = 0;
+    set.upscaler_vals[n] = "off";
+    set.upscaler_names[n++] = "OFF";
+    if (fsr31) {
+        set.upscaler_vals[n] = "fsr31";
+        set.upscaler_names[n++] = "FSR 3.1";
+    }
+    if (fsr4) {
+        set.upscaler_vals[n] = "fsr4";
+        set.upscaler_names[n++] = "FSR 4";
+    }
+    if (dlss_state != 0) {
+        set.upscaler_vals[n] = "dlss";
+        set.upscaler_names[n++] = dlss_state == 1 ? "DLSS"
+                                  : dlss_state == 2 ? "DLSS (SETUP)"
+                                                    : "DLSS (RESTART)";
+    }
+    set.upscaler_count = n;
+    if (n == 1) {
+        return set;  // nothing can run: no rows
+    }
+    int r = 0;
+    set.rows[r++] = mcla_menu::NativeOnly(
+        Str("PM_RxGpuUpsc", "mcla_gpu_upscaler", "UPSCALING: ", set.upscaler_vals,
+            set.upscaler_names, set.upscaler_count));
+    if (fsr31) {
+        set.rows[r++] = mcla_menu::NativeOnly(
+            WithDynamics(Str("PM_RxGpuFsr31M", "mcla_gpu_fsr31_mode", "FSR 3.1: ", kModeVals,
+                             kModeNames, kModeCount),
+                         &kFsr31ModeDynamics));
+    }
+    if (fsr4) {
+        set.rows[r++] = mcla_menu::NativeOnly(
+            WithDynamics(Str("PM_RxGpuFsr4M", "mcla_gpu_fsr4_mode", "FSR 4: ", kModeVals,
+                             kModeNames, kModeCount),
+                         &kFsr4ModeDynamics));
+    }
+    if (dlss_state != 0) {
+        set.rows[r++] = mcla_menu::NativeOnly(
+            WithDynamics(Str("PM_RxGpuDlssM", "mcla_gpu_dlss_mode", "DLSS: ", kDlssModeVals,
+                             kDlssModeNames, kModeCount),
+                         &kDlssModeDynamics));
+    }
+    if (fsr31 || fsr4) {
+        set.rows[r++] = mcla_menu::NativeOnly(
+            WithDynamics(Dbl("PM_RxGpuUpscSharp", "mcla_gpu_upscaler_sharpness", "SHARPNESS: ",
+                             kSharpVals, 6, "%g", "", "OFF"),
+                         &kSharpnessDynamics));
+    }
+    set.count = r;
+    return set;
+}
 
 #endif  // LARECOMP_HAS_GPU
 
@@ -145,17 +212,11 @@ const ItemDef k4Rows[] = {
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count) {
 #if defined(LARECOMP_HAS_GPU)
     const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
-    if (a.fsr31 && a.fsr4) {
-        count = int(sizeof(kBothRows) / sizeof(kBothRows[0]));
-        return kBothRows;
-    }
-    if (a.fsr31) {
-        count = int(sizeof(k31Rows) / sizeof(k31Rows[0]));
-        return k31Rows;
-    }
-    if (a.fsr4) {
-        count = int(sizeof(k4Rows) / sizeof(k4Rows[0]));
-        return k4Rows;
+    const int dlss_state = a.dlss ? 1 : a.dlss_needs_setup ? 2 : a.dlss_after_restart ? 3 : 0;
+    const RowSet& set = RowSetFor(a.fsr31, a.fsr4, dlss_state);
+    if (set.count > 0) {
+        count = set.count;
+        return set.rows;
     }
 #endif
     count = 0;

@@ -3,6 +3,7 @@
 #include "device.h"
 
 #include "format.h"
+#include "temporal_dlss.h"
 
 #include <rex/logging.h>
 
@@ -36,6 +37,16 @@ bool Device::Initialize(const Options& options) {
     if (Open(options)) {
       return true;
     }
+    // A Vulkan interface or device that was made through NVIDIA Streamline's hook (DLSS is the
+    // choice, temporal_dlss.h) and could not be made: once more without it, before another
+    // backend is tried. DLSS is then off for the rest of the process.
+    if (backend == Backend::kVulkan && dlss::VulkanInstanceProcAddr() != nullptr) {
+      dlss::AbandonVulkanHook(
+          "the Vulkan instance or device could not be made through Streamline's functions");
+      if (Open(options)) {
+        return true;
+      }
+    }
   }
   REXLOG_ERROR("[gpu] no graphics backend could be started");
   return false;
@@ -48,6 +59,10 @@ bool Device::Open(const Options& options) {
   if (debug_layer) {
     REXLOG_INFO("[gpu] {} debug layer enabled (mcla_gpu_debug_layer)", BackendName());
   }
+
+  // NVIDIA Streamline on Vulkan has to start before the instance exists (only when DLSS is the
+  // saved choice, on an NVIDIA GPU; nothing otherwise, and nothing on D3D12).
+  dlss::BeforeDevice(ActiveBackend(), options.preferred_adapter);
 
   interface_ = backend::CreateInterface();
   if (!interface_) {

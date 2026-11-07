@@ -229,6 +229,19 @@ void* NativeTextureHandle(const plume::RenderTexture* texture) {
   return MCLA_GPU_ACTIVE(NativeTextureHandle(texture));
 }
 
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
+  return MCLA_GPU_ACTIVE(NativeImageOf(texture, use));
+}
+
+uint32_t RenderingAdapterVendor(const std::string& preferred_adapter) {
+#if defined(_WIN32) && defined(LARECOMP_GPU_HAS_D3D12)
+  return d3d12::DescribeRenderingAdapter(preferred_adapter).vendor_id;
+#else
+  (void)preferred_adapter;
+  return 0;
+#endif
+}
+
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
   MCLA_GPU_ACTIVE(InvalidateAfterExternalWork(list));
 }
