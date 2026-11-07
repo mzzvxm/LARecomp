@@ -721,6 +721,15 @@ class LarecompApp : public rex::ReXApp {
     if (!rex::ReXApp::SetupEnvironment()) {
       return false;
     }
+    if (larecomp::shaderbuild::CommandLineRequested()) {
+      // --build_shader_packs (the launcher's setup runs it): build the packs from the game files and
+      // end here, before there is a window, a renderer or a runtime. The paths and the config are
+      // final and logging is up, so the folders are the ones the game itself will use.
+      const int code = larecomp::shaderbuild::RunCommandLine(game_data_root());
+      rex::FlushLogging();
+      ShutdownLarecompLogging();
+      std::_Exit(code);
+    }
     larecomp::PrepareProfileChoice(user_data_root());
     larecomp::identity::SetUserDataRoot(user_data_root());
     // Before the window starts SDL's joystick layer: keeps known wheels out of the gamepad layer.
