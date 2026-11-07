@@ -1311,6 +1311,8 @@ constexpr RowDynamics kRbNitroStartDynamics = {.value_label = RbNitroStartLabel}
 
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
+constexpr double kImpulseStrengthVals[] = {25.0, 50.0, 75.0, 100.0};
+
 #if defined(LARECOMP_HAS_GPU)
 // ── HDR ────────────────────────────────────────────────────────────────
 //
@@ -1483,6 +1485,12 @@ const ItemDef kRecompItems[] = {
     Bool("PM_RxTrigResist",  "trigger_resistance",       "DUALSENSE RESISTANCE: "),
     // Live. A DualSense only: R2 vibrates while the wheels spin, L2 while the brakes lock them.
     Bool("PM_RxTrigVibrate", "trigger_vibration",        "DUALSENSE VIBRATION: "),
+    // Live. Xbox One and Series pads: the same slip, in the trigger motors. (Page width: the
+    // longest label here is 21 characters and the longest value 7, "CONSOLE", under the 41 a page
+    // can take, "Page width" above ItemRowLabel.)
+    Bool("PM_RxImpulse",     "impulse_triggers",         "XBOX TRIGGER RUMBLE: "),
+    Dbl ("PM_RxImpulseStr",  "impulse_trigger_strength", "XBOX TRIGGER STRENGTH: ",
+         kImpulseStrengthVals, 4, "%.0f%%"),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
     // Live: the game's rumble stops reaching the controller, and one that runs stops.

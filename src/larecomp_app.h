@@ -50,6 +50,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/adaptive_triggers.h"
+#include "mc_engine/impulse_triggers.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/debug_overlay.h"
 #include "mc_engine/ui/controller_toast.h"
@@ -657,6 +658,7 @@ class LarecompApp : public rex::ReXApp {
     MclaWaitForSaves();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
+    larecomp::impulse::Shutdown();   // the Xbox triggers back to still
     mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
@@ -698,6 +700,7 @@ class LarecompApp : public rex::ReXApp {
     larecomp::WaitForBootBuild();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
+    larecomp::impulse::Shutdown();
     mcla::display::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
@@ -745,6 +748,9 @@ class LarecompApp : public rex::ReXApp {
     }
     larecomp::PrepareProfileChoice(user_data_root());
     larecomp::identity::SetUserDataRoot(user_data_root());
+    // Before anything starts this executable's SDL joystick layer (the wheel thread starts it):
+    // the GameInput driver for the Xbox trigger rumble.
+    larecomp::impulse::EarlyInit();
     // Before the window starts SDL's joystick layer: keeps known wheels out of the gamepad layer.
     larecomp::wheel::EarlyInit();
     return true;
