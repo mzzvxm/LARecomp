@@ -15,7 +15,9 @@
 //                  travels, through the camera), N the normal from the full resolution depth. The
 //                  scene colour is albedo * (ambient + sun) + specular, so a multiply by
 //                  lerp(1, ao, share) is the occlusion of the ambient part alone, whatever the
-//                  albedo;
+//                  albedo. mcla_gpu_ao_direct (extra.z) moves the share towards 1:
+//                  share' = lerp(share, 1, direct), so the occlusion darkens the sun-lit part too
+//                  (direct 1: all of it);
 //   distance_fade  1 up to shape.w, to 0 at extra.y (smoothstep).
 //
 // Where the factor is near 1 (the sky, flat surfaces, past the fade) the pixel is not written.
@@ -90,7 +92,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The share of the light that is ambient.
   const float ambient = g_push.light.w;
   const float sun = g_push.extra.x * saturate(dot(normal, g_push.light.xyz));
-  const float share = (ambient + sun) > 1e-6f ? ambient / (ambient + sun) : 1.0f;
+  const float ambient_share = (ambient + sun) > 1e-6f ? ambient / (ambient + sun) : 1.0f;
+  const float share = lerp(ambient_share, 1.0f, saturate(g_push.extra.z));
   const float fade = 1.0f - smoothstep(g_push.shape.w, fade_end, tc);
   const float factor = lerp(1.0f, ao, saturate(g_push.shape.z * share * fade));
 

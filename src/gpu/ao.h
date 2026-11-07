@@ -26,7 +26,8 @@
 //   apply    rgb *= lerp(1, ao, strength * ambient_share * distance_fade) on every sample of the
 //            colour target; ambient_share = La / (La + Ls * N.L) from the game's own constants (PS c26
 //            the ambient, PS c39 the sun colour, VS c16 the direction the sunlight travels: the
-//            direction to the sun is its opposite), N from the depth
+//            direction to the sun is its opposite), N from the depth; mcla_gpu_ao_direct moves the
+//            share towards 1 (the occlusion then darkens the sun-lit part too)
 // The lens (the projection) is the previous frame's: the camera exists only at the game's motion blur
 // draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
 // frame's camera has no occlusion. The pause menu's and the map's world (4x samples) has none.
@@ -36,7 +37,9 @@
 // GPU, so that a run can settle the design's CHECK items.
 //
 // Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row), and off the
-// menu mcla_gpu_ao_strength, _radius, _fade_end, _view, _sun_flip.
+// menu mcla_gpu_ao_strength, _radius (0.5 to 6 m), _power (the visibility's exponent), _direct (how
+// much the sun-lit part is darkened too), _fade_end, _view, _sun_flip. The push block stays 128
+// bytes: power rides in shape.x, direct in the free lane extra.z.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
 // made ahead on the host builder thread (host_precache.h).

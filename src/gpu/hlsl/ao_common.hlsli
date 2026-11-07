@@ -38,12 +38,14 @@ struct AoPush {
   float4 lens;
   // t = (P32 - ndc * P33) / (P22 - ndc * P23), ndc = 1 - stored depth: the projection's z rows
   float4 lin;
-  // x: the final power of the visibility; y: its floor; z: strength; w: the distance fade's start
+  // x: the final power of the visibility (mcla_gpu_ao_power); y: its floor; z: strength; w: the
+  // distance fade's start
   float4 shape;
   // xyz: the direction to the sun in view space (unit length; zero when unknown); w: the ambient
   // light's luma
   float4 light;
-  // x: the sun light's luma; y: the distance fade's end; zw: reserved
+  // x: the sun light's luma; y: the distance fade's end; z: how far the ambient share moves towards
+  // 1 (mcla_gpu_ao_direct: the occlusion also darkens the sun-lit part); w: reserved
   float4 extra;
 };
 

@@ -38,9 +38,26 @@ REXCVAR_DEFINE_DOUBLE(
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ao_radius, 1.5, "MCLA/GPU",
     "How far, in the game's world units (about metres), ambient occlusion looks for things that "
-    "block the sky light, 0.5 to 4. A larger radius darkens wider and softer; a smaller one only "
-    "tight creases. Live.")
-    .range(0.5, 4.0)
+    "block the sky light, 0.5 to 6. A larger radius darkens wider and softer; a smaller one only "
+    "tight creases. Close to the camera the reach is also limited to a share of the screen's "
+    "height, so a very large radius shows mostly on surfaces farther away. Live.")
+    .range(0.5, 6.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ao_power, 2.0, "MCLA/GPU",
+    "How hard ambient occlusion is pushed, 0.5 to 8: the visibility of each pixel (1 is open sky, "
+    "0 is fully blocked) is raised to this power before it darkens the picture. A higher number "
+    "makes every crease, corner and under-car shadow darker and spreads the darkening wider; 1 is "
+    "the raw measure. Live.")
+    .range(0.5, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ao_direct, 0.0, "MCLA/GPU",
+    "How much ambient occlusion also darkens the part of a surface that the sun lights, 0 to 1. At "
+    "0 only the sky-light part is darkened, so a surface facing the sun in daylight barely changes; "
+    "at 1 the sun-lit part is darkened as much as the shaded part, which is much stronger but can "
+    "look heavy in bright daylight. Live.")
+    .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ao_fade_end, 160.0, "MCLA/GPU",
@@ -95,9 +112,9 @@ constexpr uint32_t kPsSunColor = 39;
 constexpr uint32_t kVsSunDirection = 16;
 
 // The settings the passes use that no cvar sets (AO-DESIGN.md 4.5): the effect's falloff range as a
-// share of the radius, the power of the final visibility, its floor (no black blotches).
+// share of the radius, the floor of the final visibility (no black blotches). The power of the
+// visibility is mcla_gpu_ao_power.
 constexpr float kFalloffRatio = 0.615f;
-constexpr float kFinalPower = 2.0f;
 constexpr float kMinVisibility = 0.1f;
 // The frames the occlusion has to stay off before its images are given back.
 constexpr uint32_t kReleaseAfterFrames = 60;
@@ -814,7 +831,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // down -z): tan of the half field of view from its x and y scales, the depth rows for the
   // linearisation (t = (P32 - ndc P33) / (P22 - ndc P23), ndc = 1 - stored depth).
   const temporal::Mat4& p = previous_.projection;
-  const float radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_radius), 0.5, 4.0));
+  const float radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_radius), 0.5, 6.0));
   const float fade_end = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_fade_end), 20.0, 1000.0));
   push->lens[0] = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
   push->lens[1] = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
@@ -824,11 +841,12 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   push->lin[1] = float(p.m[2][3]);
   push->lin[2] = float(p.m[3][2]);
   push->lin[3] = float(p.m[3][3]);
-  push->shape[0] = kFinalPower;
+  push->shape[0] = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_power), 0.5, 8.0));
   push->shape[1] = kMinVisibility;
   push->shape[2] = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_strength), 0.0, 1.0));
   push->shape[3] = 0.5f * fade_end;
   push->extra[1] = fade_end;
+  push->extra[2] = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_direct), 0.0, 1.0));
 
   // The light: the ambient and the sun as lumas, and the direction to the sun in this renderer's
   // view space (x right, y up, z forward). The game's view space looks along -z, so z changes
