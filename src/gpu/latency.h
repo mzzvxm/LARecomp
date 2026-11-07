@@ -142,12 +142,19 @@ class IdlePresentScope {
 // Around SwapChain::Rebuild: Vulkan's swap chain handle changes there while the
 // update thread may be calling the driver with it, and the sleep mode belongs to
 // the chain, so it is told again to the new one. Nothing on D3D12.
+// Around SwapChain::Recreate (the HDR switch) the chain is another object: Replaced hands the
+// reducer the new one before the scope ends (and so before the sleep mode is told to it); the old
+// one is gone by then, so the calls that name the chain wait on this lock the whole time.
 class SwapChainChange {
  public:
   SwapChainChange();
   ~SwapChainChange();
   SwapChainChange(const SwapChainChange&) = delete;
   SwapChainChange& operator=(const SwapChainChange&) = delete;
+
+  // The swap chain was made again: the reducer names `swap_chain.native()` from now on. Nothing on
+  // D3D12.
+  void Replaced(SwapChain& swap_chain);
 
  private:
   std::shared_ptr<void> reducer_;  // the Reducer, type-erased (latency_backend.h)

@@ -135,7 +135,7 @@ class VulkanReducer final : public Reducer {
     mode_on_ = on;
     mode_boost_ = boost;
     if (nvidia_) {
-      if (swap_chain_->vk == VK_NULL_HANDLE) {
+      if (Chain() == VK_NULL_HANDLE) {
         // Told to the chain when there is one (EndSwapChainChange).
         return true;
       }
@@ -168,7 +168,7 @@ class VulkanReducer final : public Reducer {
       std::shared_lock semaphore_lock(semaphore_mutex_);
       {
         std::shared_lock lock(mutex_);
-        if (shut_down_ || swap_chain_->vk == VK_NULL_HANDLE || !swap_chain_->latencyMode ||
+        if (shut_down_ || Chain() == VK_NULL_HANDLE || !swap_chain_->latencyMode ||
             sleep_semaphore_ == VK_NULL_HANDLE) {
           return false;
         }
@@ -214,7 +214,7 @@ class VulkanReducer final : public Reducer {
       }
       return;
     }
-    if (swap_chain_->vk == VK_NULL_HANDLE || !swap_chain_->latencyMode) {
+    if (Chain() == VK_NULL_HANDLE || !swap_chain_->latencyMode) {
       return;
     }
     VkLatencyMarkerNV type;
@@ -258,8 +258,13 @@ class VulkanReducer final : public Reducer {
   // which belongs to the chain, is told again to the new one.
   void BeginSwapChainChange() override { mutex_.lock(); }
 
+  // Under the exclusive hold BeginSwapChainChange took: nothing else reads swap_chain_.
+  void SwapChainReplaced(plume::RenderSwapChain* chain) override {
+    swap_chain_ = static_cast<plume::VulkanSwapChain*>(chain);
+  }
+
   void EndSwapChainChange() override {
-    if (nvidia_ && mode_set_ && swap_chain_->vk != VK_NULL_HANDLE && swap_chain_->latencyMode) {
+    if (nvidia_ && mode_set_ && Chain() != VK_NULL_HANDLE && swap_chain_->latencyMode) {
       const VkResult result = SetSleepModeLocked(mode_on_, mode_boost_);
       if (result != VK_SUCCESS) {
         REXLOG_WARN("[gpu] low latency: vkSetLatencySleepModeNV failed on the rebuilt swap chain "
@@ -298,6 +303,10 @@ class VulkanReducer final : public Reducer {
  private:
   VulkanReducer(plume::VulkanDevice* device, plume::VulkanSwapChain* swap_chain)
       : device_(device), swap_chain_(swap_chain) {}
+
+  // The swap chain's handle; null while there is no chain (SwapChainReplaced with none, a window
+  // with no area). With mutex_ held.
+  VkSwapchainKHR Chain() const { return swap_chain_ ? swap_chain_->vk : VK_NULL_HANDLE; }
 
   // With mutex_ held (shared or exclusive), on a chain in the latency mode.
   VkResult SetSleepModeLocked(bool on, bool boost) {

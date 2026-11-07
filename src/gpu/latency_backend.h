@@ -62,6 +62,10 @@ class Reducer {
   // need the handle wait in between.
   virtual void BeginSwapChainChange() {}
   virtual void EndSwapChainChange() {}
+  // Vulkan: between the two, when the chain is another Plume object, not the same one with a new
+  // handle (the HDR switch makes it again: SwapChain::Recreate). `chain` may be null when no chain
+  // could be made; the calls that name it then do nothing until a later change brings one.
+  virtual void SwapChainReplaced(plume::RenderSwapChain* /*chain*/) {}
   // Vulkan: the render thread's present and acquire use the swap chain "externally synchronized"
   // (the spec), so the calls that take the chain (the sleep mode, the sleep, the markers) must not
   // overlap them; they wait in between. Nothing on D3D12.
