@@ -13,11 +13,18 @@
 //                         FULLSCREEN (exclusive: the display is switched to the size of `resolution`)
 //   resolution            the SDK's text ("720p", "1080p", "1440p", "4k", "1920x1080" or empty): the
 //                         window's size in WINDOWED, the display's mode in FULLSCREEN, not used in
-//                         BORDERLESS (the display's own size). Empty is the app's default: 1280x720
-//                         in a window, the display's size in FULLSCREEN. The SDK also reads it when
-//                         it starts, for the first window and as the game's video mode, which is why
-//                         it stays the one setting; window_width and window_height, when set, win
-//                         over it for the window as they do there.
+//                         BORDERLESS (the display's own size). Empty: a window keeps the size it has,
+//                         FULLSCREEN uses the display's size.
+//
+// Units. Every size here, in the RESOLUTION row, in `resolution` and in the log is in PHYSICAL pixels:
+// the window's client area as the swap chain and the picture see it (what GetClientRect says), the
+// pixels of a display mode. The window's frame is on top of it, at the window's DPI. The SDK reads the
+// same `resolution` text, and window_width / window_height, as LOGICAL pixels when it makes the first
+// window (the window is then that times the display's scaling: 1280x720 at 150% is 1920x1080 pixels),
+// and the first look at start-up (Initialize) puts the window right, so a window and the row never
+// disagree for long. Once the game runs, `resolution` is the only setting of the window's size:
+// window_width and window_height are start-up values (kRequiresRestart) and are not read here. A
+// window with no `resolution` keeps the size it has, and the row shows that size.
 //
 // What the SDK's window can and cannot do (LAR-RXSDK src/ui/window_sdl.cpp): it is an SDL window
 // whose only live change is SDL_SetWindowFullscreen(on/off) (borderless: no display mode is ever
@@ -98,8 +105,8 @@ Size DesktopSize();
 std::vector<Size> ExclusiveSizes();
 std::vector<Size> WindowedSizes();
 
-// What the window is asked to be: in a window, `window_width`/`window_height` where set, else
-// `resolution`, else 1280x720. In FULLSCREEN, the listed mode nearest to `resolution`, or the
+// What the window is asked to be, in physical pixels: in a window, `resolution`; with none, the size the
+// window has now (what the row shows). In FULLSCREEN, the listed mode nearest to `resolution`, or the
 // display's own for empty text.
 Size WantedWindowedSize();
 Size WantedExclusiveSize();

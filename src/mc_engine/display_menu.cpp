@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -21,7 +20,6 @@ using mcla_menu::CvarWriter;
 using mcla_menu::RowDynamics;
 
 std::string Cvar(const char* name) { return rex::cvar::GetFlagByName(name); }
-int IntCvar(const char* name) { return int(std::strtol(Cvar(name).c_str(), nullptr, 10)); }
 
 // A setting written only when it differs, through the pause menu's own writer.
 void Put(CvarWriter write, const char* name, const std::string& value) {
@@ -115,9 +113,9 @@ List ResolutionList() {
   }
   list.sizes = mcla::display::WindowedSizes();
   if (list.sizes.empty()) list.sizes = PresetSizes();
-  // The size the window is asked to be. One that is none of the steps (a larecomp.toml number, a
-  // size from before) is an entry of its own, in its place, while it is the setting; stepping off it
-  // drops it.
+  // The size the window is asked to be (physical pixels), else the size it has. One that is none of
+  // the steps (a larecomp.toml number, a size from before, a window the player dragged) is an entry of
+  // its own, in its place, while it is the setting; stepping off it drops it.
   const Size saved = mcla::display::WantedWindowedSize();
   int at = IndexOf(list.sizes, saved);
   if (at < 0) {
@@ -147,12 +145,9 @@ int ResolutionIndex() { return ResolutionList().current; }
 void ResolutionSet(int i, CvarWriter write) {
   const List list = ResolutionList();
   if (i < 0 || i >= int(list.sizes.size())) return;
-  // The SDK lets window_width and window_height win over `resolution` for the window: a window that
-  // is asked a size here must not be held at the other, so they are cleared when they are set.
-  if (mcla::display::WantedMode() == Mode::kWindowed) {
-    if (IntCvar("window_width") > 0) Put(write, "window_width", "0");
-    if (IntCvar("window_height") > 0) Put(write, "window_height", "0");
-  }
+  // The size is physical pixels (display_mode.h). window_width and window_height, which the SDK reads
+  // for the first window and which win over `resolution` there, are not looked at once the game runs:
+  // `resolution` alone sizes the window, so there is nothing else to write.
   Put(write, "resolution", mcla::display::SizeText(list.sizes[size_t(i)]));
 }
 

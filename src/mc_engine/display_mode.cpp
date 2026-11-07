@@ -52,10 +52,6 @@ std::atomic<bool> g_pending{false};
 
 bool Flag(const char* name) { return rex::cvar::GetFlagByName(name) == "true"; }
 
-int IntFlag(const char* name) {
-  return int(std::strtol(rex::cvar::GetFlagByName(name).c_str(), nullptr, 10));
-}
-
 void ScheduleApply(int pass);
 
 void SettingChanged(std::string_view, std::string_view) { ScheduleApply(0); }
@@ -107,17 +103,42 @@ std::string SizeLabel(Size size) {
   return buf;
 }
 
+namespace {
+
+// The size `resolution` asks for the window, in PHYSICAL pixels (the client area; see display_mode.h
+// for the units). False when `resolution` is empty or no size: the window is then left as it is.
+//
+// window_width and window_height are not looked at here. They are the SDK's start-up size in LOGICAL
+// pixels (kRequiresRestart; at 150% scaling 1280 is a window of 1920 pixels), they win over
+// `resolution` where the SDK makes the window, and until this was written they won here too: a
+// harness that starts the game with window_width=1280 had every later write of `resolution` answered
+// with 1280x720, and the window then already was that size, so no write did anything.
+bool AskedWindowedSize(Size* out) {
+  Size asked;
+  if (!ParseSize(rex::cvar::GetFlagByName("resolution"), &asked)) return false;
+  *out = asked;
+  return true;
+}
+
+}  // namespace
+
 Size WantedWindowedSize() {
-  // As the SDK reads them when it makes the window (window_sdl.cpp ResolveWindowWidth): the window_*
-  // settings first, each on its own, then the `resolution` text, then the app's 1280x720.
-  Size preset;
-  const bool have_preset = ParseSize(rex::cvar::GetFlagByName("resolution"), &preset);
-  const int width = IntFlag("window_width");
-  const int height = IntFlag("window_height");
-  Size size;
-  size.width = width > 0 ? uint32_t(width) : (have_preset ? preset.width : kMinWidth);
-  size.height = height > 0 ? uint32_t(height) : (have_preset ? preset.height : kMinHeight);
-  return size;
+  Size asked;
+  if (AskedWindowedSize(&asked)) return asked;
+  // No size asked: the window's own, in physical pixels, for the row to show what is true. Its client
+  // area while it is a window; while it is not (fullscreen on the way to a window), the size the SDK
+  // keeps for the window state (its logical size, at the window's DPI).
+  rex::ui::Window* window = g_window.load();
+  if (window && !window->IsFullscreen()) {
+    const Size own = OutputSize();
+    if (!own.empty()) return own;
+  }
+  if (window) {
+    const Size kept = {window->SizeToPhysical(window->GetDesiredLogicalWidth()),
+                       window->SizeToPhysical(window->GetDesiredLogicalHeight())};
+    if (!kept.empty()) return kept;
+  }
+  return {kMinWidth, kMinHeight};
 }
 
 namespace {
@@ -250,6 +271,29 @@ UINT WindowDpi(HWND hwnd) {
   return dpi ? dpi : 96;
 }
 
+// How the process sees pixels: the window's coordinates (GetClientRect, SetWindowPos) are physical
+// pixels only when it is DPI aware. SDL3 declares per-monitor awareness when it starts its video
+// system (and the window's size at 150% scaling, 1920 pixels for 1280 logical, says it did); this asks
+// instead of assuming, for the log line of a resize. 0 unaware, 1 system, 2 per monitor, -1 not known.
+int DpiAwareness(HWND hwnd) {
+  using GetContext = HANDLE(WINAPI*)(HWND);
+  using GetAwareness = int(WINAPI*)(HANDLE);
+  static const GetContext get_context = User32<GetContext>("GetWindowDpiAwarenessContext");
+  static const GetAwareness get_awareness =
+      User32<GetAwareness>("GetAwarenessFromDpiAwarenessContext");
+  if (!get_context || !get_awareness) return -1;
+  return get_awareness(get_context(hwnd));
+}
+
+const char* DpiAwarenessText(int awareness) {
+  switch (awareness) {
+    case 0:  return "DPI unaware: sizes are NOT physical pixels";
+    case 1:  return "system DPI aware";
+    case 2:  return "per-monitor DPI aware";
+    default: return "DPI awareness not known";
+  }
+}
+
 // The outer rectangle for a client rectangle, at the window's DPI where Windows can say it
 // (Windows 10 1607 and later).
 void AdjustForWindow(HWND hwnd, RECT* rc, DWORD style, DWORD ex_style) {
@@ -371,27 +415,51 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
 
 // ── Changing the window's size (UI thread) ─────────────────────────────────────────────────────
 
-// The client area of the window made `want`, centred on the work area of its display. False when it
-// already is, or when the window has no frame to size (SDL has not given it back yet).
+// A size the window was asked and Windows would not give (a window larger than the display), and the
+// size it kept instead: the same ask is not made again, and not logged again, while the window is still
+// at that size. UI thread only.
+Size g_refused_want;
+Size g_refused_got;
+
+// What ResizeWindow found.
+enum class Resized {
+  kAlready,  // the client area already is that size (or there is nothing to size: no window, minimised)
+  kDone,     // the window was sized
+  kNotYet,   // the window has no frame to size yet (SDL has not given it back since fullscreen)
+};
+
+// The client area of the window made `want` (PHYSICAL pixels: the units of GetClientRect, of
+// SetWindowPos and of the swap chain), the whole window centred on the work area of its display. The
+// frame is added at the window's own DPI (AdjustWindowRectExForDpi), so at 150% scaling a client area of
+// 1600x900 is 1600x900 pixels plus the frame at that DPI, never 2400x1350. The result is read back and
+// corrected once if Windows made the client area anything else (a frame that is not the one asked
+// for), and a size it will not give is said in the log instead of being left silent.
 // CHECK: SetWindowPos in the pixels SDL reports (the process is per-monitor DPI aware once SDL has
-// started its video system; the SDK makes the first window with SizeToPhysical the same way).
-bool ResizeWindow(HWND hwnd, Size want) {
-  if (!hwnd || want.empty() || IsIconic(hwnd)) return false;
+// started its video system; the SDK makes the first window with SizeToPhysical the same way). The first
+// run (next3-window) shows it: 1280x720 asked at 150% scaling made a client area of exactly 1280x720
+// ("the window 1280x720 (1x)" in the render scale line). The log line below says the DPI awareness and
+// the scaling; "DPI unaware" there would mean every size in this file is virtualised.
+Resized ResizeWindow(HWND hwnd, Size want) {
+  if (!hwnd || want.empty() || IsIconic(hwnd)) return Resized::kAlready;
   LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-  if (!(style & WS_CAPTION)) return false;
+  if (!(style & WS_CAPTION)) return Resized::kNotYet;
   if (style & WS_MAXIMIZE) {
     ShowWindow(hwnd, SW_RESTORE);
     style = GetWindowLongPtrW(hwnd, GWL_STYLE);
   }
   RECT client = {};
   GetClientRect(hwnd, &client);
-  if (uint32_t(client.right) == want.width && uint32_t(client.bottom) == want.height) return false;
+  if (uint32_t(client.right) == want.width && uint32_t(client.bottom) == want.height) {
+    return Resized::kAlready;
+  }
+  const Size have = {uint32_t(client.right), uint32_t(client.bottom)};
+  if (want == g_refused_want && have == g_refused_got) return Resized::kAlready;
 
   const LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
   RECT outer = {0, 0, LONG(want.width), LONG(want.height)};
   AdjustForWindow(hwnd, &outer, DWORD(style), DWORD(ex_style));
-  const LONG outer_width = outer.right - outer.left;
-  const LONG outer_height = outer.bottom - outer.top;
+  LONG outer_width = outer.right - outer.left;
+  LONG outer_height = outer.bottom - outer.top;
 
   LONG x = 0;
   LONG y = 0;
@@ -401,10 +469,29 @@ bool ResizeWindow(HWND hwnd, Size want) {
     x = std::max(work.left, work.left + ((work.right - work.left) - outer_width) / 2);
     y = std::max(work.top, work.top + ((work.bottom - work.top) - outer_height) / 2);
   }
-  MC_INFO("[display] WINDOWED: the window is now {}x{} (was {}x{})", want.width, want.height,
-          client.right, client.bottom);
+  const UINT dpi = WindowDpi(hwnd);
+  MC_INFO("[display] WINDOWED: the window's client area is now {}x{} physical pixels (was {}x{}; "
+          "{}% scaling, {})",
+          want.width, want.height, client.right, client.bottom, (dpi * 100 + 48) / 96,
+          DpiAwarenessText(DpiAwareness(hwnd)));
   SetWindowPos(hwnd, nullptr, x, y, outer_width, outer_height, SWP_NOZORDER | SWP_NOACTIVATE);
-  return true;
+
+  RECT now = {};
+  GetClientRect(hwnd, &now);
+  if (uint32_t(now.right) != want.width || uint32_t(now.bottom) != want.height) {
+    outer_width += LONG(want.width) - now.right;
+    outer_height += LONG(want.height) - now.bottom;
+    SetWindowPos(hwnd, nullptr, x, y, outer_width, outer_height, SWP_NOZORDER | SWP_NOACTIVATE);
+    GetClientRect(hwnd, &now);
+    if (uint32_t(now.right) != want.width || uint32_t(now.bottom) != want.height) {
+      MC_WARN("[display] WINDOWED: asked for a client area of {}x{}, the window has {}x{} (a size "
+              "the display or its frame does not allow)",
+              want.width, want.height, now.right, now.bottom);
+      g_refused_want = want;
+      g_refused_got = {uint32_t(now.right), uint32_t(now.bottom)};
+    }
+  }
+  return Resized::kDone;
 }
 
 }  // namespace
@@ -443,21 +530,35 @@ std::vector<Size> WindowedSizes() {
 
 namespace {
 
-// UI thread: makes the window what the settings say. Idempotent; reads the settings when it runs.
+// How many times after the first the settings are looked at again while the window is still catching
+// up (the passes stop at the first one that finds nothing to do).
+constexpr int kLastPass = 3;
+
+// UI thread: makes the window what the settings say. Idempotent; reads the settings when it runs, so a
+// write that comes while one is queued is seen by it, and one that comes after it is queued again.
 void ApplyNow(int pass) {
   rex::ui::Window* window = g_window.load();
   const HWND hwnd = NativeWindow();
   if (!window || !hwnd) return;
   bool changed = false;
+  bool not_yet = false;
   switch (WantedMode()) {
-    case Mode::kWindowed:
+    case Mode::kWindowed: {
       RestoreDesktopMode("the window is a window", false);
       if (window->IsFullscreen()) {
         window->SetFullscreen(false);
         changed = true;
       }
-      changed |= ResizeWindow(hwnd, WantedWindowedSize());
+      // The size comes from `resolution` alone (see AskedWindowedSize); with none the window keeps
+      // the size it has, which SDL also puts back when the window leaves fullscreen.
+      Size asked;
+      if (AskedWindowedSize(&asked)) {
+        const Resized resized = ResizeWindow(hwnd, asked);
+        changed |= resized == Resized::kDone;
+        not_yet = resized == Resized::kNotYet;
+      }
       break;
+    }
     case Mode::kBorderless:
       changed |= RestoreDesktopMode("BORDERLESS", false);
       if (!window->IsFullscreen()) {
@@ -474,10 +575,14 @@ void ApplyNow(int pass) {
       break;
   }
   // SDL finishes some of this with the events that follow (the frame it gives back when the window
-  // leaves fullscreen, the size it takes for the display): the settings are looked at once more.
-  // CHECK: in the log, "[display] WINDOWED: the window is now ..." comes from the second look only
-  // when SDL had not given the frame back by the first.
-  if (changed && pass == 0) ScheduleApply(1);
+  // leaves fullscreen, the size it takes for the display): the settings are looked at again, up to
+  // kLastPass times, while something changed or the window had no frame to size yet.
+  // CHECK: in the log, "[display] WINDOWED: the window's client area is now ..." comes from a later
+  // look when SDL had not given the frame back by the first (leaving FULLSCREEN or BORDERLESS with a
+  // `resolution` that is not the size SDL puts back), and a window that SDL moves or sizes after this
+  // (WM_DPICHANGED on another display, the restore of its old rectangle) is brought back to the asked
+  // size by the look that follows, not left at SDL's.
+  if ((changed || not_yet) && pass < kLastPass) ScheduleApply(pass + 1);
 }
 
 }  // namespace
@@ -559,8 +664,15 @@ void Initialize(rex::ui::Window* window) {
   rex::cvar::RegisterChangeCallback("fullscreen", SettingChanged);
   rex::cvar::RegisterChangeCallback("fullscreen_exclusive", SettingChanged);
   rex::cvar::RegisterChangeCallback("resolution", SettingChanged);
-  // The SDK opened the window borderless for a saved `fullscreen`; FULLSCREEN is ours to finish.
-  if (WantedMode() == Mode::kExclusive) ScheduleApply(0);
+  // The window the SDK made is the start of it: borderless for a saved `fullscreen` (FULLSCREEN is
+  // ours to finish), and a window of `resolution` read as LOGICAL pixels, which at 150% scaling is 1.5
+  // times as many physical ones as the RESOLUTION row says. One look now makes the window the physical
+  // size the setting means, and does nothing where it already is (100% scaling, or no `resolution`).
+  // CHECK: at a scaling other than 100% with a `resolution` saved (1600x900 at 150%), the window opens
+  // at 2400x1350 and settles at 1600x900 in the first moments: the log has one "[display] WINDOWED: the
+  // window's client area is now 1600x900 physical pixels (was 2400x1350; 150% scaling, ...)" and the
+  // renderers one swap chain rebuild, before the game's first picture or just after it.
+  ScheduleApply(0);
 }
 
 }  // namespace mcla::display
