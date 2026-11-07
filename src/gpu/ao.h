@@ -12,7 +12,11 @@
 // particles, the rain, the fog quad and the post chain, so fog and particles cover the darkened scene
 // as they cover everything else, and a temporal upscaler (temporal.h) sees the occlusion as part of
 // the colour it accumulates. The depth is complete there and is read straight from the EDRAM depth
-// target, guest sample 0 (the sample the game's own particle and fog reads see).
+// target, guest sample 0 (the sample the game's own particle and fog reads see). The game resolves
+// that depth in tiles (two: the rows 0-512 and 512-720, a leftover of the 360 drawing the frame once
+// per tile), but the renderer draws the frame once, so the target is whole at the first resolve: the
+// occlusion is worked out over the whole picture there (the destination texture's size, not the
+// tile's), and the later tiles' resolves of the same picture are not triggers.
 //
 // WHAT: four passes into images of their own, then one into the main view's colour target:
 //   depth    the linear view-space distance, R32_FLOAT, at the AO's size (the render size, or half of
@@ -21,7 +25,8 @@
 //   denoise  a depth-aware blur of it (R16_FLOAT)
 //   apply    rgb *= lerp(1, ao, strength * ambient_share * distance_fade) on every sample of the
 //            colour target; ambient_share = La / (La + Ls * N.L) from the game's own constants (PS c26
-//            the ambient, PS c39 the sun colour, VS c16 the sun direction), N from the depth
+//            the ambient, PS c39 the sun colour, VS c16 the direction the sunlight travels: the
+//            direction to the sun is its opposite), N from the depth
 // The lens (the projection) is the previous frame's: the camera exists only at the game's motion blur
 // draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
 // frame's camera has no occlusion. The pause menu's and the map's world (4x samples) has none.
@@ -85,7 +90,8 @@ class AmbientOcclusion {
     kRefusedAfterAnchor = 1u << 4,    // the anchor draw or the composite marker came first
     kRefusedDestination = 1u << 5,    // not into kTriggerDestination
     kRefusedClearsDepth = 1u << 6,    // the same call clears the depth after the copy
-    kRefusedRectangle = 1u << 7,      // the rectangle is not the whole picture from the origin
+    kRefusedRectangle = 1u << 7,      // the rectangle does not start at the origin or leaves the picture
+    kRefusedLaterTile = 1u << 8,      // another tile of the picture the trigger already covered whole
   };
 
   AmbientOcclusion() = default;
@@ -167,8 +173,9 @@ class AmbientOcclusion {
   static std::string VariantName(uint32_t variant);
 
   // The light constants of a draw, as the raw big-endian dwords of the registers: PS c26.xyz (the
-  // ambient, gLightAmbient), PS c39.xyz (the sun colour, gLightColor), VS c16.xyz (the sun
-  // direction, gLightPosDir). Compared as bytes; decoded for the log and the shaders.
+  // ambient, gLightAmbient), PS c39.xyz (the sun colour, gLightColor), VS c16.xyz (gLightPosDir:
+  // the direction the sunlight travels, measured at noon: y negative; the direction to the sun is
+  // its opposite). Compared as bytes; decoded for the log and the shaders.
   struct LightRaw {
     uint32_t dwords[9] = {};
     bool operator==(const LightRaw& o) const;
@@ -200,6 +207,12 @@ class AmbientOcclusion {
 
   // The trigger test of AO-DESIGN.md 2.2: 0 = this resolve is the trigger.
   uint32_t Judge(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
+  // The whole picture the resolve belongs to, in the source's guest pixels: the destination
+  // texture's size, within the source target (the target's height is rounded up to rows of 32:
+  // 736 for the picture's 720). The tile a resolve copies is a part of it.
+  static void PictureSize(const ResolveCache::Summary& summary, uint32_t* width, uint32_t* height);
+  // True when `summary` is another tile of the picture the trigger of this frame covered.
+  bool IsLaterTile(const ResolveCache::Summary& summary) const;
   // The light constants most main view draws carried before the trigger (the last one's when none
   // repeats); false when no draw has been seen.
   bool PickLight(LightRaw* out, uint32_t* draws_with_it) const;
@@ -251,6 +264,14 @@ class AmbientOcclusion {
   bool composite_seen_ = false;
   bool play_view_ = false;            // the frame had main view draws at the play samples
   uint32_t qualifying_resolves_ = 0;  // resolves that passed every test but "the first"
+  // The picture the frame's first qualifying resolve covered, and how many resolves of its other
+  // tiles followed (they are not triggers, and not counted as qualifying).
+  EdramKey trigger_source_;
+  uint32_t trigger_destination_ = 0;
+  uint32_t trigger_format_ = 0;
+  uint32_t trigger_size_[2] = {};
+  int32_t trigger_rect_[4] = {};
+  uint32_t later_tiles_ = 0;
   uint32_t draws_before_ = 0;         // main view draws before the first qualifying resolve
   uint32_t color_draws_before_ = 0;
   uint32_t draws_after_ = 0;          // ... after it, before the anchor

@@ -59,10 +59,11 @@ REXCVAR_DEFINE_INT32(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_ao_sun_flip, false, "MCLA/GPU",
-    "Diagnostic: uses the opposite of the direction the game's lighting constants give for the "
-    "sun when working out how much of a surface's light is ambient. If the sunlit sides of "
-    "buildings are darkened and the shaded ones are not (ambient_share view, mcla_gpu_ao_view = "
-    "3, shows it), turn this on. Live.")
+    "Diagnostic: turns the direction of the sun round when working out how much of a surface's "
+    "light is ambient. The game's lighting constant holds the direction the sunlight travels (at "
+    "noon it points down), so the occlusion uses its opposite as the direction to the sun; if the "
+    "sunlit sides of buildings are darkened and the shaded ones are not (the share view, "
+    "mcla_gpu_ao_view = 3, shows it), turn this on. Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_census, 0, "MCLA/GPU",
@@ -88,7 +89,7 @@ constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) |
                               uint8_t(plume::RenderColorWriteEnable::BLUE);
 
 // The registers the design reads (AO-DESIGN.md 3.2): PS c26 gLightAmbient, PS c39 gLightColor, VS
-// c16 gLightPosDir.
+// c16 gLightPosDir (the direction the sunlight travels: the census at noon reads y -0.867).
 constexpr uint32_t kPsAmbient = 26;
 constexpr uint32_t kPsSunColor = 39;
 constexpr uint32_t kVsSunDirection = 16;
@@ -119,12 +120,17 @@ std::string Vec3(const float v[3]) {
 
 std::string RefusalNames(uint32_t refused) {
   static const char* const kNames[] = {
-      "not a depth copy",        "not the main view's depth",
-      "inside EndTiling",        "not the first qualifying one of the frame",
-      "after the anchor or the composite marker", "not into 078B0000",
-      "the same call clears the depth", "not the whole picture from the origin"};
+      "not a depth copy",
+      "not the main view's depth",
+      "inside EndTiling",
+      "not the first qualifying one of the frame",
+      "after the anchor or the composite marker",
+      "not into 078B0000",
+      "the same call clears the depth",
+      "the rectangle does not start at the origin or leaves the picture",
+      "another tile of the picture the trigger covered whole"};
   std::string out;
-  for (uint32_t i = 0; i < 8; ++i) {
+  for (uint32_t i = 0; i < 9; ++i) {
     if (refused & (1u << i)) {
       out += std::format("{}{}", out.empty() ? "" : ", ", kNames[i]);
     }
@@ -570,7 +576,13 @@ uint32_t AmbientOcclusion::Judge(const ResolveRecord& record,
   if (record.flags & kEventInsideEndTiling) {
     refused |= kRefusedEndTiling;
   }
-  if (qualifying_resolves_ != 0) {
+  // The game resolves the picture in tiles. The first is the trigger, which covers the whole
+  // picture (the frame is drawn once: the depth target is complete); the others of the same
+  // picture are not triggers, whatever their rectangle.
+  const bool later_tile = IsLaterTile(summary);
+  if (later_tile) {
+    refused |= kRefusedLaterTile;
+  } else if (qualifying_resolves_ != 0) {
     refused |= kRefusedNotFirst;
   }
   if (anchor_seen_ || composite_seen_) {
@@ -582,10 +594,36 @@ uint32_t AmbientOcclusion::Judge(const ResolveRecord& record,
   if (summary.clears_depth) {
     refused |= kRefusedClearsDepth;
   }
-  if (summary.x0 != 0 || summary.y0 != 0 || summary.x1 <= 0 || summary.y1 <= 0) {
-    refused |= kRefusedRectangle;
+  if (!later_tile) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    PictureSize(summary, &width, &height);
+    if (summary.x0 != 0 || summary.y0 != 0 || summary.x1 <= 0 || summary.y1 <= 0 ||
+        uint32_t(summary.x1) > width || uint32_t(summary.y1) > height) {
+      refused |= kRefusedRectangle;
+    }
   }
   return refused;
+}
+
+void AmbientOcclusion::PictureSize(const ResolveCache::Summary& summary, uint32_t* width,
+                                   uint32_t* height) {
+  *width = summary.dest_width;
+  *height = summary.dest_height;
+  if (summary.source) {
+    *width = std::min(*width, summary.source->width);
+    *height = std::min(*height, summary.source->height);
+  }
+}
+
+bool AmbientOcclusion::IsLaterTile(const ResolveCache::Summary& summary) const {
+  // The same picture (source, destination texture) as the frame's first qualifying resolve, and a
+  // rectangle of its own: the same rectangle again is a second copy, not a tile.
+  return qualifying_resolves_ != 0 && summary.source_key == trigger_source_ &&
+         summary.dest_address == trigger_destination_ && summary.dest_format == trigger_format_ &&
+         summary.dest_width == trigger_size_[0] && summary.dest_height == trigger_size_[1] &&
+         (summary.x0 != trigger_rect_[0] || summary.y0 != trigger_rect_[1] ||
+          summary.x1 != trigger_rect_[2] || summary.y1 != trigger_rect_[3]);
 }
 
 bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
@@ -619,7 +657,20 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     depth_resolves_.push_back(note);
   }
   if (qualifies) {
+    if (qualifying_resolves_ == 0) {
+      trigger_source_ = summary.source_key;
+      trigger_destination_ = summary.dest_address;
+      trigger_format_ = summary.dest_format;
+      trigger_size_[0] = summary.dest_width;
+      trigger_size_[1] = summary.dest_height;
+      trigger_rect_[0] = summary.x0;
+      trigger_rect_[1] = summary.y0;
+      trigger_rect_[2] = summary.x1;
+      trigger_rect_[3] = summary.y1;
+    }
     ++qualifying_resolves_;
+  } else if (refused & kRefusedLaterTile) {
+    ++later_tiles_;
   }
   if (refused != 0 || !list || !ready_ || !summary.source) {
     return false;
@@ -651,9 +702,16 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     }
     return false;
   }
+  // The whole picture, not the tile this resolve copies (the game resolves it in two: the rows
+  // 0-512 and 512-720), at the source's own host scale (the render scale, an upscaler's render
+  // size): the target is complete now, so the occlusion covers all of it and the lens's field of
+  // view spans the rows it was made for.
+  uint32_t picture_width = 0;
+  uint32_t picture_height = 0;
+  PictureSize(summary, &picture_width, &picture_height);
   const Scale scale = summary.source->scale;
-  plan.render[0] = scale.Edge(uint32_t(summary.x1));
-  plan.render[1] = scale.Edge(uint32_t(summary.y1));
+  plan.render[0] = scale.Edge(picture_width);
+  plan.render[1] = scale.Edge(picture_height);
   if (plan.render[0] < kMinRenderSize || plan.render[1] < kMinRenderSize) {
     return false;
   }
@@ -774,8 +832,9 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
 
   // The light: the ambient and the sun as lumas, and the direction to the sun in this renderer's
   // view space (x right, y up, z forward). The game's view space looks along -z, so z changes
-  // sign; c16 is taken to point at the sun (CHECK 3; mcla_gpu_ao_sun_flip turns it round). No
-  // light constants or no direction: no sun, the whole light is ambient.
+  // sign. c16 is the direction the light travels (the census at noon: y -0.867, the sun overhead),
+  // so the direction to the sun is -c16; mcla_gpu_ao_sun_flip turns it round. No light constants
+  // or no direction: no sun, the whole light is ambient.
   if (light) {
     float ambient[3], sun[3], dir[3];
     DecodeLight(*light, ambient, sun, dir);
@@ -790,7 +849,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
     view[2] = -view[2];
     const double length = std::sqrt(view[0] * view[0] + view[1] * view[1] + view[2] * view[2]);
     if (std::isfinite(length) && length > 1e-6) {
-      const double sign = REXCVAR_GET(mcla_gpu_ao_sun_flip) ? -1.0 : 1.0;
+      const double sign = REXCVAR_GET(mcla_gpu_ao_sun_flip) ? 1.0 : -1.0;
       for (int i = 0; i < 3; ++i) {
         push->light[i] = float(sign * view[i] / length);
       }
@@ -1104,6 +1163,7 @@ void AmbientOcclusion::OnPresent() {
   play_view_ = false;
   frame_had_main_view_ = false;
   qualifying_resolves_ = 0;
+  later_tiles_ = 0;
   draws_before_ = 0;
   color_draws_before_ = 0;
   draws_after_ = 0;
@@ -1135,12 +1195,12 @@ void AmbientOcclusion::Census() {
   REXLOG_INFO("{} frame {}{}: {} view, main view draws {} before the first qualifying depth "
               "resolve ({} with colour), {} after it before the anchor ({} of them write the main "
               "depth), {} after the anchor, 4x (pause/map) draws {}; qualifying resolves {} "
-              "(expect exactly 1); anchor draw {}; clears of the main depth {} (last z {}); "
-              "resolves of other kinds {}",
+              "(expect exactly 1), later tiles of its picture {}; anchor draw {}; clears of the "
+              "main depth {} (last z {}); resolves of other kinds {}",
               kPrefix, frame_, anomaly ? " (UNEXPECTED trigger count)" : "",
               play_view_ ? "play" : "pause/map", draws_before_, color_draws_before_, draws_after_,
               depth_writes_after_, draws_at_anchor_, view4x_draws_, qualifying_resolves_,
-              anchor_seen_ ? "seen" : "NOT seen", depth_clears_,
+              later_tiles_, anchor_seen_ ? "seen" : "NOT seen", depth_clears_,
               depth_clears_ ? std::format("{}", depth_clear_z_) : std::string("none"),
               other_resolves_);
   uint32_t index = 0;
@@ -1167,27 +1227,30 @@ void AmbientOcclusion::Census() {
     DecodeLight(last_light_, last_a, last_s, last_d);
     REXLOG_INFO("{}   light constants: {} distinct values over {} colour draws before the trigger "
                 "({} draws past the table); the commonest ({} draws): PS c26 ambient {}, PS c39 sun "
-                "colour {}, VS c16 sun direction {} (length {:.4f}); first draw: {} {} {}; last "
-                "draw: {} {} {}",
+                "colour {}, VS c16 the direction the light travels {} (length {:.4f}); first draw: "
+                "{} {} {}; last draw: {} {} {}",
                 kPrefix, light_count_ + (light_overflow_ ? 1 : 0), light_draws_, light_overflow_,
                 with_it, Vec3(ambient), Vec3(sun), Vec3(dir), Length3(dir), Vec3(first_a),
                 Vec3(first_s), Vec3(first_d), Vec3(last_a), Vec3(last_s), Vec3(last_d));
     if (have_camera_) {
-      // The sun direction through this frame's view (row vectors, v' = v M, the game's view space
-      // looks along -z): the up-facing ground at noon wants L.y > 0 if c16 points at the sun.
+      // The direction to the sun, -c16, through this frame's view (row vectors, v' = v M, the
+      // game's view space looks along -z): at noon the sun is overhead, so it is up in the world
+      // (y > 0) when c16 is the direction the light travels.
       double view[3] = {};
       for (int j = 0; j < 3; ++j) {
         for (int i = 0; i < 3; ++i) {
-          view[j] += double(dir[i]) * camera_.view.m[i][j];
+          view[j] -= double(dir[i]) * camera_.view.m[i][j];
         }
       }
       const double ambient_luma = Luma(ambient);
       const double sun_luma = Luma(sun);
-      REXLOG_INFO("{}   sun: world direction y {:+.3f} (a sun overhead at noon with c16 pointing at "
-                  "it gives +), in the game's view space ({:+.3f}, {:+.3f}, {:+.3f}); luma "
-                  "ambient {:.4g}, sun {:.4g}: ambient share for a surface facing the sun "
-                  "{:.3f}, a surface in shade 1.000",
-                  kPrefix, double(dir[1]), view[0], view[1], view[2], ambient_luma, sun_luma,
+      REXLOG_INFO("{}   sun: c16 is the direction the light travels, y {:+.3f}, so the direction to "
+                  "the sun (-c16) has world y {:+.3f} (+ is up: a sun overhead at noon gives +) and, "
+                  "in the game's view space, ({:+.3f}, {:+.3f}, {:+.3f}); luma ambient {:.4g}, "
+                  "sun {:.4g}: ambient share for a surface facing the sun {:.3f}, a surface in "
+                  "shade 1.000",
+                  kPrefix, double(dir[1]), -double(dir[1]), view[0], view[1], view[2],
+                  ambient_luma, sun_luma,
                   ambient_luma + sun_luma > 1e-9 ? ambient_luma / (ambient_luma + sun_luma) : 1.0);
     }
   } else {

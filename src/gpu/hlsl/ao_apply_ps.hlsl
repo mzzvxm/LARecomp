@@ -11,10 +11,11 @@
 //                  it does not leak over an edge;
 //   ambient_share  how much of the light on this surface is ambient, from the game's own constants:
 //                  La / (La + Ls * N.L), La the ambient light's luma (PS c26), Ls the sun's (PS
-//                  c39), L the direction to the sun (VS c16 through the camera), N the normal from
-//                  the full resolution depth. The scene colour is albedo * (ambient + sun) +
-//                  specular, so a multiply by lerp(1, ao, share) is the occlusion of the ambient
-//                  part alone, whatever the albedo;
+//                  c39), L the direction to the sun (minus VS c16, which holds the way the light
+//                  travels, through the camera), N the normal from the full resolution depth. The
+//                  scene colour is albedo * (ambient + sun) + specular, so a multiply by
+//                  lerp(1, ao, share) is the occlusion of the ambient part alone, whatever the
+//                  albedo;
 //   distance_fade  1 up to shape.w, to 0 at extra.y (smoothstep).
 //
 // Where the factor is near 1 (the sky, flat surfaces, past the fade) the pixel is not written.
