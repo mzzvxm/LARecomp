@@ -88,8 +88,10 @@ const SamplePosition* Positions(uint32_t samples) {
 // Guest sample `s` of a `guest`-sample target: the host sample of a
 // `host`-sample texture that stands for it. With the guest's count it is
 // Xenia's order (2x: guest 0 is host 1; 4x: guest s is host
-// ((s & 1) << 1) | (s >> 1)); with more host samples (M6d.2) the host sample
-// nearest to where that one sits.
+// ((s & 1) << 1) | (s >> 1)); with another count (M6d.2) the host sample
+// nearest to where that one sits, which for fewer host samples than the guest's
+// is the host sample two or more guest samples share (4x on 2: guest 0 and 1 on
+// host 1, guest 2 and 3 on host 0); with one host sample, that one.
 uint32_t HostSampleOf(uint32_t s, uint32_t guest, uint32_t host) {
   if (guest <= 1 || host <= 1) {
     return 0;
@@ -1397,12 +1399,25 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
                       dx, dy);
         }
       }
-      // The host samples to read: all of them when the copy reads every guest
-      // sample; otherwise, for each guest sample, the host sample nearest to
-      // where it sits (the same one when the host has the guest's count).
+      // The host samples to read, by the source target's own count (an image of the screen the
+      // guest multisamples has the host's, which may be more or fewer than the guest's). With one
+      // host sample every selection reads it, once. When the copy reads every guest sample and
+      // the host has another count, it reads every host sample once, which weighs them equally
+      // whatever their number (4x on 2 host samples: each stands for two guest samples). Otherwise,
+      // for each guest sample, the host sample nearest to where it sits (the same one when the
+      // host has the guest's count; a depth copy reads one).
+      // CHECK: the pause menu's and the map's world view (a guest 4x source) on 1 and on 2 host
+      // samples, at MSAA off, 2x, 4x and 8x with the D3D12 debug layer and Vulkan validation: the
+      // plain 2D view of the one-sample depth and colour read by the non-multisampled pipelines
+      // (copy, fused depth, encode), the scene colour and depth products of the three tile copies
+      // equal to the multisampled ones (depth: one sample, colour: the mean of the host samples),
+      // and the occlusion pass reading the same depth sample (Summary::host_sample).
       uint32_t host_samples[8] = {};
       uint32_t count = 0;
-      if (guest_count == samples && samples > 1 && src->host_samples > samples) {
+      const bool host_multisampled = src->host_samples > 1;
+      if (!host_multisampled) {
+        host_samples[count++] = 0;
+      } else if (guest_count == samples && samples > 1 && src->host_samples != samples) {
         for (uint32_t s = 0; s < src->host_samples; ++s) host_samples[count++] = s;
       } else {
         for (uint32_t i = 0; i < guest_count; ++i) {
@@ -1462,7 +1477,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         break;
       }
       plume::RenderFramebuffer* framebuffer = LevelFramebuffer(*p, level);
-      plume::RenderPipeline* pipeline = Pipeline(depth_source, samples > 1, host.format);
+      plume::RenderPipeline* pipeline = Pipeline(depth_source, host_multisampled, host.format);
       if (!framebuffer || !pipeline) {
         Fail(framebuffer ? Failure::kPipeline : Failure::kProduct, key.Describe());
         break;
@@ -1578,7 +1593,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       memory_copy.resolution_scale = resolution_scale;
       if (depth_source) {
         memory_copy.depth = true;
-        memory_copy.msaa = samples > 1;
+        memory_copy.msaa = host_multisampled;
         memory_copy.source_slot = sample_slot;
         memory_copy.stencil_slot = stencil_slot;
         memory_copy.offset_x = -dx;
@@ -1613,9 +1628,9 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       plume::RenderPipeline* fused_pipeline = nullptr;
       if (memory_copy.depth && !memory_copy.from_product && resolution_scale.whole() &&
           resolution_scale.n >= Scale::kDenominator) {
-        fused_pipeline = resolve_memory_->FusedPipeline(samples > 1, host.format, false);
+        fused_pipeline = resolve_memory_->FusedPipeline(host_multisampled, host.format, false);
       } else if (memory_copy.depth && !memory_copy.from_product && depth_fractional_ok) {
-        fused_pipeline = resolve_memory_->FusedPipeline(samples > 1, host.format, true);
+        fused_pipeline = resolve_memory_->FusedPipeline(host_multisampled, host.format, true);
       }
       struct FusedPush {
         Push resolve;

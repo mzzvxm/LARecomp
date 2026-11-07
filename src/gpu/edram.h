@@ -166,10 +166,12 @@ class EdramTargets {
     uint32_t width = 0;   // guest pixels (the host texture is scale.Edge(width))
     uint32_t height = 0;  // guest pixels
     Scale scale;          // host pixels per guest pixel, each way
-    // Samples of the host texture: the guest's (key.samples), or the host's
-    // MSAA level on an image of the screen the guest multisamples (M6d.2,
-    // HostSamplesFor). Fixed when it is made, like the scale; SetMsaaLevel
-    // (or SetScales) makes the textures again with the new level between two frames.
+    // Samples of the host texture: the guest's (key.samples), or, on an image of the screen the
+    // guest multisamples, the host's samples for the screen (M6d.2, HostSamplesFor): the MSAA
+    // level, or 1 while the game runs without MSAA. That may be fewer than the guest's: the
+    // pause menu's and the map's world view is drawn by the game with 4 samples and gets the
+    // samples of the game view. Fixed when it is made, like the scale; SetMsaaLevel (or
+    // SetScales) makes the textures again with the new level between two frames.
     uint32_t host_samples = 1;
     // Whether the host's MSAA level applies to it: the guest multisamples it and its first use bound
     // it through a surface declared with the screen's size over 2^k (an image of the screen).
@@ -269,13 +271,21 @@ class EdramTargets {
   // when unknown.
   bool IsScreenImage(uint32_t size_bits);
   // The host MSAA level (mcla_gpu_msaa 2, 4 or 8, within what the device supports): 2 = the
-  // console's. Chosen at start; SetMsaaLevel moves it while the game runs.
+  // console's. Chosen at start; SetMsaaLevel moves it while the game runs. It is the player's
+  // level whether or not the game runs with MSAA; HostLevelFor says what the targets get.
   uint32_t msaa_level() const { return msaa_level_; }
+  // The samples an image of the screen the guest multisamples gets on the host when the player's
+  // MSAA level is `level`: the level while the game runs with its own MSAA layout, 1 while it runs
+  // without MSAA (mcla_gpu_msaa off, or an upscaler held it off at the start: gpu.h GuestMsaa).
+  // The game decides that once, when it makes its renderer, so it does not change while the game
+  // runs. CHECK: that the game has made its renderer before the first target is made; a target made
+  // while that is undecided takes the level.
+  static uint32_t HostLevelFor(uint32_t level);
   // The samples a target of `key` has when it is multisampled by the guest and `follows` the host's
-  // MSAA level (an image of the screen) and the level is `level`: the level, never fewer than the
-  // guest's; every other target keeps the guest's.
+  // MSAA level (an image of the screen) and the player's level is `level`: HostLevelFor, which may
+  // be fewer than the guest's; every other target keeps the guest's.
   static uint32_t HostSamplesAt(const EdramKey& key, bool follows, uint32_t level) {
-    return follows ? std::max<uint32_t>(key.samples, level) : key.samples;
+    return follows ? HostLevelFor(level) : key.samples;
   }
   // Whether a new target of `key` bound through a surface declared with `size_bits` takes the
   // host's MSAA level: the guest multisamples it and it is an image of the screen.
@@ -283,7 +293,7 @@ class EdramTargets {
     return key.samples > 1 && IsScreenImage(size_bits);
   }
   // Samples a new target of `key` bound through a surface declared with
-  // `size_bits` gets on the host: the MSAA level when the guest multisamples
+  // `size_bits` gets on the host: HostLevelFor when the guest multisamples
   // it and it is an image of the screen, else the guest's.
   uint32_t HostSamplesFor(const EdramKey& key, uint32_t size_bits);
   // Whether `key`'s target takes the host's MSAA level: its own answer when it exists, otherwise
@@ -675,6 +685,9 @@ class EdramTargets {
   // SetScales and SetMsaaLevel: the targets that change scale or host samples are made again in one
   // step.
   bool Retarget(Scale output, Scale scene, uint32_t msaa_level, plume::RenderCommandList* list);
+  // The pause menu's and the map's world view is the main view's colour at the guest's 4 samples:
+  // logs once, and again when it changes, the samples the host gives it.
+  void NotePauseView(const Target& target);
   // The screen's size from the game (grcDevice's width and height): false
   // until the game has set it (read again on the next call).
   bool ScreenSize(uint32_t* width, uint32_t* height, bool quiet = false);
@@ -759,6 +772,8 @@ class EdramTargets {
   // (the screen's, or an FSR1 preset): ScreenSize checks that assumption.
   bool scale_from_window_ = false;
   uint32_t msaa_level_ = 2;
+  // The samples of the pause menu's and the map's world view last logged (NotePauseView); 0: none yet.
+  uint32_t pause_view_samples_ = 0;
   // The sample counts the device can do for every format an image of the screen is stored as
   // (bits 2, 4, 8), read at start (SupportedMsaaLevel).
   uint32_t msaa_supported_ = 0xFFu;
@@ -815,7 +830,7 @@ class EdramTargets {
     uint64_t made_unscaled = 0;     // ... at the guest's size
     uint64_t declared_unknown = 0;  // classifications with no declared size (guest's size)
     uint64_t scale_conflicts = 0;   // uses whose declared size gives another scale than the target's
-    uint64_t made_host_msaa = 0;    // targets made with more samples than the guest's (M6d.2)
+    uint64_t made_host_msaa = 0;    // targets made with other samples than the guest's (M6d.2)
     uint64_t trimmed = 0;           // textures released for want of video memory (Trim)
     uint64_t remade = 0;            // ... made again by a Get
     uint64_t rescaled = 0;          // targets made again at another scale or MSAA level (Retarget)

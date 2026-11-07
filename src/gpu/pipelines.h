@@ -259,9 +259,9 @@ class Pipelines {
 
   // The host MSAA level is about to become `level` (2, 4 or 8): hands the builder threads one copy,
   // at the sample count `level` gives it, of every pipeline Get was asked for with
-  // PipelineInputs::msaa_guest_samples set (the sample count is max(guest samples, level)). A
-  // pipeline that is already there, queued or being made for another reason is not made again.
-  // Render thread. Calling it again for the same or another level starts a new count.
+  // PipelineInputs::msaa_guest_samples set (the sample count is `level`, also where the guest's
+  // is higher). A pipeline that is already there, queued or being made for another reason is not
+  // made again. Render thread. Calling it again for the same or another level starts a new count.
   struct LevelPrebuild {
     uint32_t known = 0;    // pipelines remembered (draws into targets that take the level)
     uint32_t present = 0;  // ... whose copy at `level` was there already or needs nothing made

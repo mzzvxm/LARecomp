@@ -3,11 +3,13 @@
 // MCLA GPU renderer -- the host MSAA level changes while the game runs
 // ===========================================================================
 // mcla_gpu_msaa 2, 4 or 8 sets the samples the host gives the images of the screen the game
-// multisamples (EdramTargets::HostSamplesAt); the game's own MSAA stays the 2 samples it made its
-// renderer with. Off against on is the game's start-up switch (hooks/graphics.cpp
-// Patch_DisableMSAA, read once) and stays a restart: this changes the level among 2, 4 and 8 only,
-// and only in a game that started with MSAA (GuestMsaa::kOn; one without has no multisampled
-// target the level could apply to).
+// multisamples (EdramTargets::HostSamplesAt), the pause menu's and the map's world view among
+// them: the game draws that one with 4 samples and the host gives it the same samples as the game
+// view (1 while the game runs without MSAA, which is not this class's to change). The game's own
+// MSAA stays the 2 samples it made its renderer with. Off against on is the game's start-up
+// switch (hooks/graphics.cpp Patch_DisableMSAA, read once) and stays a restart: this changes the
+// level among 2, 4 and 8 only, and only in a game that started with MSAA (GuestMsaa::kOn; one
+// without has no multisampled target the level could apply to).
 //
 // The steps, each frame at the boundary before the first draw (Scene::BeginFrame, after the
 // temporal system's own path change):

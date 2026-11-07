@@ -39,10 +39,11 @@ void MsaaLevel::Initialize(EdramTargets& edram, Pipelines& pipelines) {
 // the pipelines exist): "live change" lines with the switch's milliseconds (a few ms is the targets
 // and their clears), no hitch beyond it in the frame times, no draw left out for more than a frame or
 // two ("pending" in the pipeline statistics), the picture N frames after equal to a start at the
-// new level (the 4x and 8x edges), the pause menu and the map (guest 4x targets move only to 8x),
-// video memory at 8x (old and new targets live together for the frames in flight), D3D12 debug
-// layer and Vulkan validation clean in the switch frame, and no switch while an upscaler runs
-// (the hold line), then the saved level applies the frame after it is off.
+// new level (the 4x and 8x edges), the pause menu and the map (their guest 4x targets take the new
+// level too, at 2x with fewer samples than the guest's), video memory at 8x (old and new targets
+// live together for the frames in flight), D3D12 debug layer and Vulkan validation clean in the
+// switch frame, and no switch while an upscaler runs (the hold line), then the saved level applies
+// the frame after it is off.
 uint32_t MsaaLevel::Wanted() {
   // A game that started without MSAA (off, or held off for an upscaler) has no multisampled target
   // the level could apply to, and the game's own switch is read once: the setting waits for the
