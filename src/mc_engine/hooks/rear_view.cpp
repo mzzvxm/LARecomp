@@ -449,6 +449,11 @@ void Patch_RearViewDiag() {
 // tick and this update, which is how an off mirror used to get through. The first site counts
 // how often the bit is found set while off and says so in the log (at 1, 2, 4, 8, ... times),
 // which is the proof in a test drive.
+//
+// CHECK: read from the generated code only, not run. Which HUD event refreshes the form
+// (sub_82652860 is only reached through vtables) is not traced; a scripted drive with
+// rearview off should show the "saw the visible bit" line at the moments the mirror used
+// to pop up, and no mirror view or white frame at all.
 void Patch_RearViewUpdateVisible(PPCRegister& r3) {
     if (REXCVAR_GET(rearview)) return;
     if (r3.u32 & 0xFFu) {
@@ -469,6 +474,10 @@ void Patch_RearViewUpdateActive(PPCRegister& r3) {
 // and alpha ([r3+1216], in f13) > 0 -- it never looks at the visible bit. Off, alpha reads 0
 // (f0 is 0.0 there), so the wrapper returns before the frame's meshes and their render
 // state are touched.
+//
+// CHECK: that the recompiled wrapper takes the blelr with f13 forced to 0.0 (read from the
+// generated sub_82234128, not run); turning rearview off while the mirror is up should
+// drop the frame at once instead of fading it.
 void Patch_RearViewDrawAlpha(PPCRegister& f13) {
     if (!REXCVAR_GET(rearview)) f13.f64 = 0.0;
 }
