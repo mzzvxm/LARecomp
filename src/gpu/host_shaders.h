@@ -17,6 +17,13 @@
 #include "backend.h"
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
+#include "ao_apply_ms_ps.hlsl.dxil.h"
+#include "ao_apply_ps.hlsl.dxil.h"
+#include "ao_denoise_ps.hlsl.dxil.h"
+#include "ao_depth_ms_ps.hlsl.dxil.h"
+#include "ao_depth_ps.hlsl.dxil.h"
+#include "ao_main_ps.hlsl.dxil.h"
+#include "ao_mip_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
@@ -53,6 +60,13 @@
 #include "temporal_mv_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
+#include "ao_apply_ms_ps.hlsl.spirv.h"
+#include "ao_apply_ps.hlsl.spirv.h"
+#include "ao_denoise_ps.hlsl.spirv.h"
+#include "ao_depth_ms_ps.hlsl.spirv.h"
+#include "ao_depth_ps.hlsl.spirv.h"
+#include "ao_main_ps.hlsl.spirv.h"
+#include "ao_mip_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
@@ -233,6 +247,24 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
+}
+
+// The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl): the depth pass and the apply pass
+// read the EDRAM depth plane, multisampled or not.
+enum class AoPass : uint8_t { kDepth, kDepthMs, kMip, kMain, kDenoise, kApply, kApplyMs, kCount };
+
+inline HostShaderBlob AmbientOcclusionPixelShader(AoPass pass) {
+  switch (pass) {
+    case AoPass::kDepth: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
+    case AoPass::kDepthMs: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ms_ps);
+    case AoPass::kMip: return MCLA_GPU_HOST_SHADER_BLOB(ao_mip_ps);
+    case AoPass::kMain: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
+    case AoPass::kDenoise: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_ps);
+    case AoPass::kApply: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
+    case AoPass::kApplyMs: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
+    case AoPass::kCount: break;
+  }
+  return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).
