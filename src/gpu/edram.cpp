@@ -311,6 +311,7 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   resolution_scale_ = scale.scale;
   scale_from_window_ = scale.from_window();
   // The scene's scale is decided on the first use of one of its identities (DecideScene).
+  // SetScales moves both while the game runs.
   scene_scale_ = resolution_scale_;
   scene_decided_ = false;
   scene_phase_ = true;
@@ -597,47 +598,79 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   return true;
 }
 
-bool EdramTargets::SetSceneScale(Scale scale, plume::RenderCommandList* list) {
+bool EdramTargets::ClassifiesAsScreenImage(uint32_t size_bits) {
+  uint32_t screen_width = 0, screen_height = 0;
+  if (size_bits == 0 || !ScreenSize(&screen_width, &screen_height, /*quiet=*/true)) {
+    return false;
+  }
+  const uint32_t width = (size_bits >> 18) + 1;
+  const uint32_t height = ((size_bits >> 3) & 0x7FFFu) + 1;
+  for (uint32_t k = 0; k <= kMaxScreenShift; ++k) {
+    if (width == (screen_width >> k) && height == (screen_height >> k)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) {
+  // The rule ScaleForUse and ScaleForDeclared apply to a new target, for the scales given: the scene's
+  // identities at the scene's, an image of the screen at the output's (1x is the guest's size, as
+  // ScaleForDeclared says), anything else at the guest's size.
+  if (IsSceneKey(target.key)) {
+    return scene;
+  }
+  return !output.unit() && ClassifiesAsScreenImage(target.creation_size_bits) ? output : Scale{};
+}
+
+bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
   DecideScene();  // the start's decision first: a change before the first use must not be undone by it
-  if (scale == scene_scale_) {
+  if (output == resolution_scale_ && scene == scene_scale_) {
     return true;
   }
-  if (!device_ || !frames_ || !list || scale.none()) {
+  if (!device_ || !frames_ || !list || output.none() || scene.none()) {
     return false;
   }
   // The new textures first, all of them: nothing is changed unless every one can be made.
   struct Remade {
     Target* target = nullptr;
+    Scale scale;
     format::Mapping mapping;
     std::unique_ptr<plume::RenderTexture> texture;
   };
   std::vector<Remade> remade;
   for (const auto& [key, target] : targets_) {
-    if (!IsSceneKey(key) || !target->texture || target->scale == scale) {
+    const Scale wanted = ScaleAfter(*target, output, scene);
+    if (!target->texture || target->scale == wanted) {
       continue;
     }
     Remade r;
     r.target = target.get();
+    r.scale = wanted;
     r.mapping = key.depth ? format::DepthTargetFormat(key.format)
                           : format::ColorTargetFormat(key.format);
     if (r.mapping.status == format::Status::kOk) {
-      r.texture = MakeTargetTexture(*device_, key, r.mapping, scale, target->host_samples,
+      r.texture = MakeTargetTexture(*device_, key, r.mapping, wanted, target->host_samples,
                                     target->height);
     }
     if (!r.texture) {
       // Asked again every few seconds by the caller: the first few are logged.
       if (scale_move_failures_logged_ < 4) {
         ++scale_move_failures_logged_;
-        REXLOG_ERROR("[gpu] edram: the 3D scene could not be moved from {}x to {}x: {} could not "
-                     "be made at the new size (the scene stays at {}x)",
-                     scene_scale_, scale, DescribeEdramKey(key), scene_scale_);
+        REXLOG_ERROR("[gpu] edram: the images of the screen could not be moved from {}x to {}x (the "
+                     "3D scene from {}x to {}x): {} could not be made at the new size, most likely "
+                     "for want of video memory; {} target(s) made before it were freed again and "
+                     "everything stays as it was",
+                     resolution_scale_, output, scene_scale_, scene, DescribeEdramKey(key),
+                     remade.size());
       }
       return false;
     }
     remade.push_back(std::move(r));
   }
 
-  const Scale before = scene_scale_;
+  const Scale output_before = resolution_scale_;
+  const Scale scene_before = scene_scale_;
   uint64_t old_bytes = 0;
   uint64_t new_bytes = 0;
   for (Remade& r : remade) {
@@ -651,11 +684,12 @@ bool EdramTargets::SetSceneScale(Scale scale, plume::RenderCommandList* list) {
     std::unique_ptr<plume::RenderTexture> old = std::move(t.texture);
     t.texture = std::move(r.texture);
     t.format = r.mapping.format;
-    t.scale = scale;
+    t.scale = r.scale;
     t.layout = plume::RenderTextureLayout::UNKNOWN;
     ++t.generation;
     t.views_generation = t.generation;
-    new_bytes += TextureBytes(scale.Edge(t.width), scale.Edge(t.height), 1, t.format, t.host_samples);
+    new_bytes += TextureBytes(r.scale.Edge(t.width), r.scale.Edge(t.height), 1, t.format,
+                              t.host_samples);
     frames_->Retire(std::move(old));
     // A new colour target or depth buffer is cleared whole before anything else touches it
     // (D3D12 debug layer id 1422), as every new target is.
@@ -663,23 +697,34 @@ bool EdramTargets::SetSceneScale(Scale scale, plume::RenderCommandList* list) {
     ++stats_.rescaled;
   }
   for (const auto& [key, target] : targets_) {
-    if (IsSceneKey(key)) {
-      target->scale = scale;  // also a target released for want of memory: Get makes it at this scale
-    }
+    // Also a target released for want of memory: Get makes it at this scale.
+    target->scale = ScaleAfter(*target, output, scene);
   }
   if (old_bytes != 0) {
     device_->NoteReleased(old_bytes);
   }
-  scene_scale_ = scale;
+  resolution_scale_ = output;
+  scene_scale_ = scene;
   scene_decided_ = true;
   // What was memoized from the targets (a draw's scale and framebuffers, the depth's layer, which
   // follows whether the scene is apart from the images of the screen) is stale.
   ++change_serial_;
-  REXLOG_INFO("[gpu] edram: the 3D scene is now made at {}x, {}x{} of the guest's 1280x720 (was {}x): "
-              "{} target(s) remade, {:.1f} MiB (was {:.1f} MiB){}",
-              scale, scale.Edge(kAssumedScreenWidth), scale.Edge(kAssumedScreenHeight), before,
-              remade.size(), double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0,
-              scale == resolution_scale_ ? "; the images of the screen's scale again" : "");
+  if (output == output_before) {
+    REXLOG_INFO("[gpu] edram: the 3D scene is now made at {}x, {}x{} of the guest's 1280x720 (was {}x): "
+                "{} target(s) remade, {:.1f} MiB (was {:.1f} MiB){}",
+                scene, scene.Edge(kAssumedScreenWidth), scene.Edge(kAssumedScreenHeight),
+                scene_before, remade.size(), double(new_bytes) / 1048576.0,
+                double(old_bytes) / 1048576.0,
+                scene == resolution_scale_ ? "; the images of the screen's scale again" : "");
+  } else {
+    REXLOG_INFO("[gpu] edram: the images of the screen are now made at {}x, {}x{} of the guest's "
+                "1280x720 (was {}x), the 3D scene at {}x, {}x{} (was {}x): {} target(s) remade, "
+                "{:.1f} MiB (was {:.1f} MiB)",
+                output, output.Edge(kAssumedScreenWidth), output.Edge(kAssumedScreenHeight),
+                output_before, scene, scene.Edge(kAssumedScreenWidth),
+                scene.Edge(kAssumedScreenHeight), scene_before, remade.size(),
+                double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+  }
   return true;
 }
 
@@ -719,6 +764,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     }
     auto target = std::make_unique<Target>();
     target->key = key;
+    target->creation_size_bits = size_bits;
     // An image of the screen at the internal scale, the scene at its own (when the scene is drawn
     // smaller: the scale of a use is ScaleOf's, which gave no other); anything else at the
     // guest's size.
@@ -1564,7 +1610,8 @@ std::string EdramTargets::TakeSummary() {
                         scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_);
   }
   if (stats_.rescaled != 0) {
-    text += std::format(" | scene targets made again at another scale (a live upscaler change) {}",
+    text += std::format(" | targets made again at another scale (a live change of the render scale "
+                        "or the upscaler) {}",
                         stats_.rescaled);
   }
   if (msaa_level_ > 2) {

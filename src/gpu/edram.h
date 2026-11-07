@@ -172,6 +172,9 @@ class EdramTargets {
     // The last declared size (D3DSurface SizeBits) seen binding it that
     // agreed with its scale or was reported (NoteDeclaredScale).
     uint32_t declared_size_bits = 0;
+    // The declared size of the use that made it (0: unknown): whether it is an image of the screen
+    // is what a change of the render scale asks again (SetScales).
+    uint32_t creation_size_bits = 0;
     uint32_t generation = 0;  // bumped when the texture is replaced
     plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
     uint64_t last_frame = 0;
@@ -234,8 +237,8 @@ class EdramTargets {
   // (mcla_gpu_coverage_queries, on a device that counts samples exactly).
   // Callers do no ownership work at all while aliasing() is false.
   bool aliasing() const { return aliasing_; }
-  // The internal resolution scale (chosen at start, render_scale.h) and the
-  // rule a target gets it by. A target is an image of the screen when the surface
+  // The internal resolution scale (chosen at start, render_scale.h; SetScales moves it while the
+  // game runs) and the rule a target gets it by. A target is an image of the screen when the surface
   // that binds it in a use -- RT0, or the depth surface when there is no RT0:
   // the one whose header gives RB_SURFACE_INFO its pitch -- was declared by
   // the game with the screen's size divided by 2^k, k from 0 to
@@ -244,8 +247,8 @@ class EdramTargets {
   // at the internal scale; every other target -- luminance, shadow,
   // reflection, impostors, noise, the rain's particle state, the vinyl -- at
   // the guest's size. The screen is the game's own (grcDevice's width and
-  // height, read on first use). A target's scale is fixed when it is made (the 3D scene's
-  // colour and depth are the one exception, SetSceneScale): a
+  // height, read on first use). A target keeps the scale it was made at until SetScales moves
+  // every target it applies to at once (a live change of the render scale, or of the scene's): a
   // use whose surface classifies otherwise is counted and reported once per
   // identity (NoteDeclaredScale).
   static constexpr uint32_t kMaxScreenShift = 3;
@@ -283,6 +286,25 @@ class EdramTargets {
   // when it is not the images of the screen's.
   Scale ScaleForUse(const EdramKey& key, uint32_t size_bits);
 
+  // --- the scales change while the game runs ---
+  // The images of the screen move to `output` and the 3D scene to `scene` (temporal.cpp SwitchPath:
+  // the render scale, or the upscaler and its mode, changed). Only between two guest frames, with
+  // `list` the frame's open list outside a render pass and no draw recorded in it yet. Every target
+  // that exists and whose scale changes is made again at its new one: the scene's identities
+  // (IsSceneKey) at `scene`, an image of the screen -- a target whose first use bound it through a
+  // surface declared with the screen's size over 2^k (IsScreenImage) -- at `output`, any other at the
+  // guest's size. Each is a new texture, cleared as a new target's is, recorded into `list`; the old
+  // one, its framebuffers and views are retired behind the frames that may use them; a target
+  // released for want of memory only takes the scale and the next Get makes it. What is made from
+  // the targets follows by itself: a draw's scale is its target's (ScaleOf), a resolve product is
+  // made again when a resolve arrives at another scale (ResolveCache::Activate), a read across
+  // scales takes a reduced copy or the product as it is, and the memos of the Scene are dropped
+  // (change_serial). True when the scales are the wanted ones afterwards, also when they already
+  // were. False when a texture could not be made (a 3x render scale is 4K: it can fail on a card
+  // with little memory): nothing was changed, the new textures made so far are freed, and the caller
+  // keeps what it had and may try again later.
+  bool SetScales(Scale output, Scale scene, plume::RenderCommandList* list);
+
   // --- the scene at its own scale (F4-DESIGN.md 4, render_scale.h ChooseSceneScale) ---
   // While a temporal upscaler works on the 3D scene the scene's identities -- the main view's
   // colour and depth in play, 1x or 2x samples (temporal_identities.h) -- are made at
@@ -295,19 +317,10 @@ class EdramTargets {
     DecideScene();
     return scene_scale_;
   }
-  // The scene's scale becomes `scale` (temporal.cpp SwitchPath: the upscaler, or its mode, changed
-  // while the game runs). Only between two guest frames, with `list` the frame's open list outside a
-  // render pass and no draw recorded in it yet: every scene target that exists is made again at the
-  // new scale (a new texture, cleared as a new target's is, recorded into `list`; the old one, its
-  // framebuffers and views are retired behind the frames that may use them), a target released
-  // for want of memory only takes the scale, and the next Get makes it. What is made from the
-  // scene's targets follows by itself: a draw's scale is its target's (ScaleOf), a resolve product
-  // is made again when a resolve arrives at another scale (ResolveCache::Activate), a read across
-  // scales takes a reduced copy or the product as it is, and the memos of the Scene are dropped
-  // (change_serial). True when the scene is at `scale` afterwards, also when it already was. False
-  // when a texture could not be made: nothing was changed (a 3x scene at 4K can fail on a card with
-  // little memory), and the caller keeps what it had.
-  bool SetSceneScale(Scale scale, plume::RenderCommandList* list);
+  // The scene's scale becomes `scale`, the images of the screen staying where they are: SetScales.
+  bool SetSceneScale(Scale scale, plume::RenderCommandList* list) {
+    return SetScales(resolution_scale_, scale, list);
+  }
   // The game's screen size in guest pixels (grcDevice's width and height, read on first use): false
   // until the game has set it. The size the main view and the images of the screen are made from.
   // `quiet`: a caller that only asks whether it is known yet (a poll every frame) does not make the
@@ -608,6 +621,11 @@ class EdramTargets {
   };
 
   bool Create(Target& target, uint32_t height);
+  // Whether a surface declared with `size_bits` is an image of the screen (IsScreenImage), asked
+  // without counting or logging: a target made earlier is classified again when the scale changes.
+  bool ClassifiesAsScreenImage(uint32_t size_bits);
+  // The scale `target` has when the images of the screen are at `output` and the 3D scene at `scene`.
+  Scale ScaleAfter(const Target& target, Scale output, Scale scene);
   // The screen's size from the game (grcDevice's width and height): false
   // until the game has set it (read again on the next call).
   bool ScreenSize(uint32_t* width, uint32_t* height, bool quiet = false);
@@ -650,7 +668,7 @@ class EdramTargets {
       framebuffers_;
   std::vector<EdramKey> failed_;  // identities reported as impossible
   uint32_t grow_failures_logged_ = 0;
-  uint32_t scale_move_failures_logged_ = 0;  // SetSceneScale
+  uint32_t scale_move_failures_logged_ = 0;  // SetScales
   uint64_t frame_ = 0;
   uint64_t change_serial_ = 1;
 
@@ -683,7 +701,7 @@ class EdramTargets {
   // The scene's scale (SceneScale): the images of the screen's until DecideScene has run. It
   // reads the upscaler as the start found it, which can wait for the upscaler's probe, so it runs
   // on the first use of a scene identity, long after the game's own thread asked the same question.
-  // SetSceneScale changes it later.
+  // SetScales changes it later.
   void DecideScene();
   Scale scene_scale_;
   bool scene_decided_ = false;
@@ -748,7 +766,7 @@ class EdramTargets {
     uint64_t made_host_msaa = 0;    // targets made with more samples than the guest's (M6d.2)
     uint64_t trimmed = 0;           // textures released for want of video memory (Trim)
     uint64_t remade = 0;            // ... made again by a Get
-    uint64_t rescaled = 0;          // scene targets made again at another scale (SetSceneScale)
+    uint64_t rescaled = 0;          // targets made again at another scale (SetScales)
   };
   Stats stats_;
   uint32_t remake_failures_logged_ = 0;
