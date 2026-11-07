@@ -65,15 +65,14 @@ REXCVAR_DEFINE_INT32(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_census, 0, "MCLA/GPU",
-    "Diagnostic for the ambient occlusion design (feature-parity/AO-DESIGN.md step 0): every Nth "
-    "guest frame (and the first three frames with the main view), one block of log lines with the "
-    "main view's draws around the game's mid-scene depth resolve, that resolve (where it is, how "
-    "big, inside EndTiling or not), the light constants the occlusion would use (PS c26 ambient, PS "
-    "c39 sun colour, VS c16 sun direction), the depth clear value, the lens the game's motion "
-    "blur draw gives and a statistic of the linear depth (read back from the graphics card, so "
-    "the first three frames and every Nth one run the depth passes even with the occlusion off). "
-    "Frames where the main view does not have exactly one qualifying resolve are logged as they "
-    "come (the first 40). 0: off. Live.")
+    "Diagnostic: every Nth guest frame (and the first three frames with the main view), one block "
+    "of log lines with the main view's draws around the game's mid-scene depth resolve, that "
+    "resolve (where it is, how big, inside EndTiling or not), the light constants the occlusion "
+    "uses (PS c26 ambient, PS c39 sun colour, VS c16 sun direction), the depth clear value, the "
+    "lens the game's motion blur draw gives, what the history did and a statistic of the linear "
+    "depth (read back from the graphics card, so the first three frames and every Nth one run the "
+    "depth passes even with the occlusion off). Frames where the main view does not have exactly "
+    "one qualifying resolve are logged as they come (the first 40). 0: off. Live.")
     .range(0, 100000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -86,8 +85,8 @@ constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) |
                               uint8_t(plume::RenderColorWriteEnable::GREEN) |
                               uint8_t(plume::RenderColorWriteEnable::BLUE);
 
-// The registers the design reads (AO-DESIGN.md 3.2): PS c26 gLightAmbient, PS c39 gLightColor, VS
-// c16 gLightPosDir (the direction the sunlight travels: the census at noon reads y -0.867).
+// The registers the occlusion reads: PS c26 gLightAmbient, PS c39 gLightColor, VS c16 gLightPosDir
+// (the direction the sunlight travels: at noon y is -0.867).
 constexpr uint32_t kPsAmbient = 26;
 constexpr uint32_t kPsSunColor = 39;
 constexpr uint32_t kVsSunDirection = 16;
@@ -591,9 +590,10 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   lens_step_valid_ = false;
   vs_compare_valid_ = false;
   // The play view's camera and the pause/map world's (4x samples) are kept apart: the lens differs
-  // (a field of view of 25 to 54 degrees in the census), and the anchor draw runs in the 4x frames
-  // too with a valid camera (918 of 918 in cen-pause). A frame with draws of both kinds or of
-  // neither (the anchor without a main view) gives no camera; the frame after it has none to use.
+  // (a field of view of 25 to 54 degrees), and the anchor draw runs in the 4x frames too with a
+  // valid camera (918 of 918 frames in a recorded pause and map session). A frame with draws of
+  // both kinds or of neither (the anchor without a main view) gives no camera; the frame after it
+  // has none to use.
   if (play_view_ == pause_view_) {
     have_previous_ = false;
     have_last_step_ = false;
@@ -628,8 +628,8 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
     }
     return;
   }
-  // The lens the previous frame's camera gave the trigger, against this frame's own (CHECK 7: the
-  // previous frame's lens is this frame's outside cuts).
+  // The lens the previous frame's camera gave the trigger, against this frame's own (the trigger
+  // works with the previous frame's lens, which is this frame's outside cuts).
   lens_delta_valid_ = have_previous_ && previous_frame_ + 1 == frame_ && previous_pause_ == pause;
   if (lens_delta_valid_) {
     const auto rel = [](double a, double b) {
@@ -703,7 +703,7 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   have_previous_ = true;
   previous_frame_ = frame_;
 
-  // CHECK 7, log only: the main view's vertex bank against the camera just read. If c12-c15 of a
+  // The main view's vertex bank against the camera just read, for the census. If c12-c15 of a
   // vertex bank are the view inverse, the frame's own lens exists before the anchor.
   if (vs_view_inverse_draws_ != 0) {
     double worst = 0.0;
@@ -773,8 +773,7 @@ uint32_t AmbientOcclusion::Judge(const ResolveRecord& record,
     }
     // The pause/map view's destination must be the whole picture (1280x720 within the 1280x736
     // target), not a tile's own texture: the passes cover what the destination's size says.
-    // CHECK: the destination of the pause/map view's mid-scene depth copy and its size (the
-    // census prints every copy).
+    // (mcla_gpu_ao_census prints every depth copy.)
     if (pause && summary.source &&
         (width != summary.source->width ||
          height + EdramTargets::kHeightAlignment <= summary.source->height)) {
@@ -835,16 +834,14 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     note.anchor_before = anchor_seen_;
     depth_resolves_.push_back(note);
   }
-  // A pause/map view's copy of the main depth that fails only on its destination: the pinned
-  // address may not be the one this view uses (the play view's was read from the census, this
-  // one's was not).
+  // A pause/map view's copy of the main depth that fails only on its destination: a build that
+  // copies it elsewhere has no occlusion in that view, and the log says so once.
   if (pause && qualifying_resolves_ == 0 && refused == kRefusedDestination &&
       !pause_destination_logged_) {
     pause_destination_logged_ = true;
     REXLOG_INFO("[gpu] ao: a pause/map frame copies its main depth into {:08x} (format {}, {}x{}), "
                 "not into {:08x} where the play view's mid-scene copy goes: no occlusion in that "
-                "view until the address is known (reported once; mcla_gpu_ao_census prints every "
-                "copy)",
+                "view (reported once; mcla_gpu_ao_census prints every copy)",
                 summary.dest_address, summary.dest_format, summary.dest_width, summary.dest_height,
                 kTriggerDestination);
   }
@@ -869,7 +866,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   }
 
   // The trigger. The depth chain also runs, with the occlusion off, at the census's frames: its
-  // statistic is the check of the depth convention.
+  // statistic shows whether the depth convention holds (1 near, 0 far).
   trigger_pause_ = pause;
   trigger_camera_valid_ = false;
   outcome_ = Outcome::kIdle;
@@ -912,8 +909,8 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   // swing when the menu opens, the map's zoom), or whose rate of change is not known yet (the
   // second frame of a spell, the second after the setting was turned on): this frame's lens may be
   // as far from the previous one's, and a wrong lens is worse than none for a frame, so no
-  // occlusion until it is known to be steady. The play view keeps its rule: the census saw its
-  // lens move by 1e-4 a frame.
+  // occlusion until it is known to be steady. The play view keeps its rule: its lens moves by
+  // about 1e-4 a frame.
   trigger_lens_step_ = lens_step_valid_ ? lens_step_ : 0.0;
   if (pause && (!lens_step_valid_ || lens_step_ > temporal::kCutFov)) {
     ++pause_skipped_lens_;
@@ -927,10 +924,6 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     }
     return false;
   }
-  // CHECK (AO5, no run yet): the 4x view's trigger (destination, tile order, whole picture), the
-  // pause camera's steadiness (the census line of the lens against the previous frame's, in pause
-  // frames), the swing at the menu's opening, and the apply on the 4-sample colour target under
-  // the D3D12 debug layer and Vulkan validation.
   trigger_camera_ = previous_;
   trigger_camera_valid_ = true;
   // The whole picture, not the tile this resolve copies (the game resolves it in two: the rows
@@ -1009,11 +1002,10 @@ void AmbientOcclusion::Bind(plume::RenderCommandList* list) const {
 
 void AmbientOcclusion::DrawPass(plume::RenderCommandList* list, HostImage& image,
                                 const plume::RenderPipeline* pipeline, const Push& push) {
-  // The same sequence as HostPasses::DrawInto, with this pass's own layout.
-  // CHECK: 128 bytes of push constants for the vertex and the pixel stage on both backends (the
-  // temporal motion pass uses 80, the host passes' layout 48; Vulkan guarantees 128) and the host
-  // layout's texture sets and sampler set bound again by Bind; the D3D12 debug layer and Vulkan
-  // validation over the passes settle it.
+  // The same sequence as HostPasses::DrawInto, with this pass's own layout: 128 bytes of push
+  // constants for the vertex and the pixel stage on both backends (the temporal motion pass uses
+  // 80, the host passes' layout 48; Vulkan guarantees 128), and the host layout's texture sets and
+  // sampler set bound again by Bind.
   const bool first_use = image.layout == plume::RenderTextureLayout::UNKNOWN;
   if (image.layout != plume::RenderTextureLayout::COLOR_WRITE) {
     list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -1319,16 +1311,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
     // The accumulation over frames: this frame's visibility with the history's into the other
     // history image, which is the next frame's history and what the apply reads.
-    // CHECK (AO6, no run yet): (1) the two R16G16_FLOAT history images as render targets and
-    // shader resources in turn (DrawPass's barriers, the first use clear, the D3D12 debug layer and
-    // Vulkan validation), the stencil plane view of the depth target read by the temporal pass
-    // (Texture2D<uint4> / Texture2DMS<uint4>) in the depth target's SHADER_READ layout; (2) the
-    // census line "history:": frames that used a history against the resets, the motion's source
-    // (the vertex constants once trusted: the exact one; "the last step repeated" all the time
-    // would mean they never matched the anchor's camera in a moving frame); (3) in the picture:
-    // noise (none when parked, none while driving), ghosts behind moving cars (mcla_gpu_ao_view 6
-    // shows what the history kept), halos at depth edges (more with an upscaler: its sub-pixel
-    // jitter is not in the camera), a trail of darkness where a car's shadow was.
+    // The two R16G16_FLOAT history images are render targets and shader resources in turn
+    // (DrawPass's barriers and first use clear); the pass also reads the stencil plane view of the
+    // depth target (Texture2D<uint4> / Texture2DMS<uint4>) in the depth target's SHADER_READ
+    // layout. The census line "history:" counts the frames that used a history against the resets
+    // and where the camera's motion came from.
     pass_timing_->Mark(list, "ao temporal");
     const uint32_t out_index = 1 - history_index_;
     HostImage& history_in = history_[history_index_];
@@ -1452,11 +1439,10 @@ bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
     return false;
   }
   // The scene's own sequence for a target it draws into: the layout, a framebuffer of that target
-  // alone (no depth: nothing here tests or writes it). CHECK: a colour-only render pass on the
-  // main target in the middle of the frame, on both APIs (barriers and layouts around it: the
-  // depth plane stays in SHADER_READ, the colour goes to COLOR_WRITE as for any draw; the next
-  // draw of the game moves the depth back to DEPTH_WRITE itself), under the D3D12 debug layer and
-  // Vulkan validation.
+  // alone (no depth: nothing here tests or writes it). It is a colour-only render pass on the main
+  // target in the middle of the frame: the depth plane stays in SHADER_READ, the colour goes to
+  // COLOR_WRITE as for any draw, and the next draw of the game moves the depth back to DEPTH_WRITE
+  // itself.
   edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
   EdramTargets::Target* only[1] = {colour};
   plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
@@ -1809,10 +1795,10 @@ void AmbientOcclusion::Census() {
                 anchor_seen_ ? temporal::RejectName(reject_) : "no anchor draw");
   }
   if (vs_compare_valid_) {
-    REXLOG_INFO("{}   CHECK (log only): VS c12-c15 of the last colour draw before the trigger "
+    REXLOG_INFO("{}   vertex bank: VS c12-c15 of the last colour draw before the trigger "
                 "against the view inverse the anchor reads from PS c12-c15: largest entry "
                 "difference {:.3e} ({}); frames compared so far: play {} of {} equal, pause/map {} "
-                "of {} equal (if all agree, the frame's own camera exists in the vertex bank "
+                "of {} equal (where they agree, the frame's own camera exists in the vertex bank "
                 "before the anchor)",
                 kPrefix, vs_compare_diff_,
                 vs_compare_diff_ <= 1e-4 ? "equal" : "DIFFERENT", vs_equal_[0], vs_compared_[0],

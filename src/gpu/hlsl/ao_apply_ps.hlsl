@@ -27,8 +27,6 @@
 // holds the share of the history each pixel kept instead of the visibility: white a full history,
 // black none, grey part of it); written as a grey of 0.3 of the value so that 1.0 reads below the
 // tone map's white.
-// CHECK: the 0.3 against the real exposure of the scene colour (a float target holding the colour
-// times the game's exponent bias).
 
 #include "ao_common.hlsli"
 

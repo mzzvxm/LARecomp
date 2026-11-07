@@ -11,7 +11,7 @@
 //
 // View space here: x right, y up, z forward (away from the camera, positive in front of it), the
 // depth along z in the game's world units ("linear depth", t). Pixels are in the pass's own target
-// pixels, y down; the guest's depth is 1 near and 0 far (AO-DESIGN.md CHECK 2).
+// pixels, y down; the guest's depth is 1 near and 0 far.
 
 #ifndef MCLA_GPU_AO_COMMON_HLSLI
 #define MCLA_GPU_AO_COMMON_HLSLI

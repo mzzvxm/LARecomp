@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- screen-space ambient occlusion (feature-parity/AO-DESIGN.md)
+// MCLA GPU renderer -- screen-space ambient occlusion
 // ===========================================================================
 // The game has baked vertex occlusion in the world and a contact shadow under cars, and nothing that
 // darkens creases, kerbs and wheel arches. This adds a screen-space term of its own: GTAO after
@@ -39,13 +39,14 @@
 // The pause menu's, the race pause's and the map's world (the same main view identities at 4x
 // samples, drawn once a frame like the play view, resolved in three tiles) is handled the same way,
 // with its own camera: its motion blur draw runs in every one of those frames with a valid camera
-// (the census: 918 of 918), so the camera kept is the previous frame's of a pause/map view, never
-// the play view's (the pause camera has another field of view, 53.75 degrees against 25). The first
-// two frames of a pause spell have none (the second has no rate of change of the lens yet), and
-// neither has a frame after a sweep of the lens (the camera's swing when the pause opens, the
-// map): a change of the setting in the pause menu shows two frames later, without closing it. The
-// trigger there is the same resolve (into 078B0000, the first of the frame); the host draws the 4x
-// target once, so it is whole at the first tile.
+// (918 of 918 frames in a recorded pause and map session), so the camera kept is the previous
+// frame's of a pause/map view, never the play view's (the pause camera has another field of view,
+// 53.75 degrees against 25). The first two frames of a pause spell have none (the second has no
+// rate of change of the lens yet), and neither has a frame after a sweep of the lens (the camera's
+// swing when the pause opens, the map): a change of the setting in the pause menu shows a couple of
+// frames later, which looks immediate, without closing the menu. The trigger there is the same
+// resolve (into 078B0000, the first of the frame); the host draws the 4x target once, so it is
+// whole at the first tile.
 //
 // THE HISTORY (hlsl/ao_temporal_ps.hlsl): the sampling noise changes every frame and the
 // occlusion averages it over frames, as the games' own do (mcla_gpu_ao_history: the frames, 12 by
@@ -57,14 +58,15 @@
 // camera of the trigger's own frame is not known when it fires (the anchor draw comes later), so
 // the motion into the last frame is either the frame's own view inverse read from the vertex
 // constants of its draws (c12-c15: trusted only once it matched the anchor's camera in a frame the
-// camera moved in) or the last step repeated (the constant velocity guess); FrameMotion. The
-// history starts again after a cut (the temporal system's own rule on the camera), a gap of frames,
-// the pause/map view switching and a new image size. One history serves both views: switching is
-// a reset (the pause view's first frame has no occlusion anyway).
+// camera moved in) or the last step repeated (the constant velocity guess); FrameMotion. In a 45
+// second drive the vertex constants were trusted in 3610 of 4736 history frames, and the rest used
+// the last step. The history starts again after a cut (the temporal system's own rule on the
+// camera), a gap of frames, the pause/map view switching and a new image size. One history serves
+// both views: switching is a reset (the pause view's first frame has no occlusion anyway).
 //
-// The census (mcla_gpu_ao_census, off by default) is step 0 of the design: it logs the trigger, the
-// light constants, the lens and, at its frames, a statistic of the linear depth read back from the
-// GPU, so that a run can settle the design's CHECK items.
+// The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
+// constants, the lens, what the history did and, at its frames, a statistic of the linear depth
+// read back from the GPU.
 //
 // Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row) and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
@@ -260,9 +262,9 @@ class AmbientOcclusion {
     bool anchor_before = false;
   };
 
-  // The trigger test of AO-DESIGN.md 2.2: 0 = this resolve is the trigger. A 4x main depth (the
-  // pause/map view) is judged by the same rules, except that its first tile may start anywhere
-  // (the tile order is not known) and its destination must be the whole picture.
+  // The trigger test: 0 = this resolve is the trigger. A 4x main depth (the pause/map view) is
+  // judged by the same rules, except that its first tile may start anywhere (the tile order is not
+  // known) and its destination must be the whole picture.
   uint32_t Judge(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   // The whole picture the resolve belongs to, in the source's guest pixels: the destination
   // texture's size, within the source target (the target's height is rounded up to rows of 32:
@@ -421,13 +423,13 @@ class AmbientOcclusion {
   double trigger_lens_step_ = 0.0;    // lens_step_ as the frame's trigger saw it
   temporal::Reject reject_ = temporal::Reject::kNone;
   uint32_t rejects_logged_ = 0;
-  // The previous frame's lens against this frame's (CHECK 7): relative change of the vertical field
-  // of view, the aspect, near and far, then the distance the camera moved and the cosine between
-  // the two forward vectors.
+  // The previous frame's lens against this frame's: relative change of the vertical field of view,
+  // the aspect, near and far, then the distance the camera moved and the cosine between the two
+  // forward vectors.
   bool lens_delta_valid_ = false;
   double lens_delta_[6] = {};
-  // CHECK 7, log only: whether the main view's vertex bank holds the camera, so that a frame's own
-  // lens could be had before the anchor. VS c12-c15 of the last colour draw before the trigger
+  // Whether the main view's vertex bank holds the camera, so that a frame's own lens could be had
+  // before the anchor (for the census): VS c12-c15 of the last colour draw before the trigger
   // against the view inverse the anchor reads (PS c12-c15), per kind of view.
   float vs_view_inverse_[16] = {};
   uint32_t vs_view_inverse_draws_ = 0;
