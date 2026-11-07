@@ -29,6 +29,12 @@
 //   DLSS      DLSS MODE     DLAA (100%) / QUALITY (67%) / BALANCED (58%) / PERFORMANCE (50%) /
 //                           ULTRA PERF. (33%)                  mcla_gpu_dlss_mode
 //
+// The mode row is on both renderers. On XENIA it is RENDER SCALE alone (UPSCALING and SHARPNESS are the
+// NATIVE renderer's): the SDK's draw scale resolution_scale, whole multiples of the game's 1280x720
+// screen made when the game starts ("RENDER SCALE (RESTART)"), each step labelled with its share of the
+// output, e.g. 67% / 133% / 200% in a 1080p window and 33% / 67% / 100% at 4K. The old RES SCALE row's
+// 4X is kept as an entry of its own while it is the setting.
+//
 // The percentage is the share of the output the 3D scene is drawn at, per direction (the vendors'
 // own names and ratios). RENDER SCALE is a share of the output too: 100% is the screen's scale (the
 // window's 16:9 area, mcla_gpu_resolution_scale = 0, the default, which follows the window), and 150%,

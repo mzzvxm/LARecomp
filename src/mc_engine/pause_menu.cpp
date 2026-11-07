@@ -5,6 +5,7 @@
 #include "camera_look.h"
 #include "config_save.h"
 #include "cutscene_gallery.h"
+#include "display_menu.h"
 #include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "upscaling_menu.h"
@@ -1178,6 +1179,7 @@ using mcla_menu::ActionId;
 using mcla_menu::Bool;
 using mcla_menu::Carbon;
 using mcla_menu::Color;
+using mcla_menu::CvarWriter;
 using mcla_menu::Dbl;
 using mcla_menu::ItemDef;
 using mcla_menu::ItemKind;
@@ -1198,9 +1200,11 @@ using mcla_menu::XeniaOnly;
 
 // ── Value tables ───────────────────────────────────────────────────────
 
-constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
-constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
+#if !defined(LARECOMP_HAS_GPU)
+// A build without the Plume renderer has no RENDER SCALE row (upscaling_menu.cpp): the emulated
+// renderer's own draw scale stays a row of the DISPLAY page.
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
+#endif
 constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
 constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
@@ -1371,32 +1375,89 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
-// Rows tagged XeniaOnly / NativeOnly are listed only when that renderer is the
-// one this launch runs (MenuItemCount): RES SCALE and VSYNC are two different
-// mechanisms, the emulated path's and the Plume renderer's own.
-const ItemDef kVideoItems[] = {
-    Bool("PM_RxFullscreen", "fullscreen", "FULLSCREEN: "),
-    XeniaOnly(Bool("PM_RxVsync", "vsync", "VSYNC: ")),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Bool("PM_RxGpuVsync", "mcla_gpu_vsync", "VSYNC: ")),
+// ── VSYNC and MSAA: one row each, whichever renderer runs ──────────────
+//
+// The DISPLAY page is one page for both renderers: a row has the same name and place on both and maps
+// to the running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list).
+// A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
+// comes back when the renderer is switched back.
+// CHECK: on XENIA (RENDERER set to XENIA, restarted) the DISPLAY page lists DISPLAY MODE, VSYNC,
+// RESOLUTION, MSAA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI and RENDER SCALE (last), VSYNC writes
+// vsync, MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
+// 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of the
+// last two offers "Restart now?". On NATIVE the page is as before with the new first rows, and VSYNC
+// writes mcla_gpu_vsync.
+
+// VSYNC: the Plume renderer's mcla_gpu_vsync (live, at the next present), or the SDK's vsync.
+const char* VsyncCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_vsync" : "vsync"; }
+constexpr RowDynamics kVsyncDynamics = {.cvar = VsyncCvar};
+
+int FindStringIndex(const std::string& value, const char* const* vals, int count);
+
+// MSAA. NATIVE: OFF, 2X, 4X, 8X in mcla_gpu_msaa, all live (gpu/msaa_level.h; the row says "(WAIT)"
+// while the pipelines for a new level are made, and is grey while a temporal upscaler does the
+// anti-aliasing: upscaling_menu.cpp). XENIA: only the game's own switch, which the game reads at
+// start: OFF or 2X in disable_msaa, "(RESTART)". A saved 4X or 8X shows as 2X on XENIA.
+// Width: "MSAA (FSR 3.1 ON)" 17 at most, values 3.
+const char* MsaaCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_msaa" : "disable_msaa"; }
+int MsaaCount() { return mcla_menu::NativeRendererRuns() ? 4 : 2; }
+std::string MsaaLabel(int i) { return i >= 0 && i < MsaaCount() ? kGpuMsaaNames[i] : ""; }
+int MsaaIndex() {
+    if (mcla_menu::NativeRendererRuns()) return FindStringIndex(CvarGet("mcla_gpu_msaa"), kGpuMsaaVals, 4);
+    return CvarGetBool("disable_msaa") ? 0 : 1;
+}
+void MsaaSet(int i, CvarWriter write) {
+    if (mcla_menu::NativeRendererRuns()) {
+        if (i >= 0 && i < 4) write("mcla_gpu_msaa", kGpuMsaaVals[i]);
+    } else {
+        write("disable_msaa", i == 0 ? "true" : "false");
+    }
+}
+bool MsaaEnabled() {
+    return !mcla_menu::NativeRendererRuns() || !mcla_menu::kMsaaDynamics.enabled ||
+           mcla_menu::kMsaaDynamics.enabled();
+}
+const char* MsaaSuffix() {
+    if (!mcla_menu::NativeRendererRuns()) return " (RESTART)";
+    return mcla_menu::kMsaaDynamics.suffix ? mcla_menu::kMsaaDynamics.suffix() : "";
+}
+constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
+                                          .enabled = MsaaEnabled,
+                                          .suffix = MsaaSuffix,
+                                          .value_count = MsaaCount,
+                                          .value_index = MsaaIndex,
+                                          .set_value = MsaaSet,
+                                          .cvar = MsaaCvar};
 #endif
-    Str ("PM_RxResolution", "resolution", "RESOLUTION: ",
-         kResVals, kResNames, 5, " (RESTART)"),
-    XeniaOnly(Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ",
-                  kResScaleVals, 4, "%gX", " (RESTART)")),
+
+// DISPLAY: every row is one row for both renderers. DISPLAY MODE, RESOLUTION and VSYNC are live on
+// both; MSAA, RENDER SCALE (upscaling_menu.cpp, appended after this table) and the rest map to the
+// running renderer's own setting. What only one renderer has (UPSCALING, SHARPNESS, HDR, frame
+// generation) is tagged XeniaOnly / NativeOnly and listed only when that renderer is the one this
+// launch runs (MenuItemCount).
+const ItemDef kVideoItems[] = {
+    // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
+    // (display_menu.h, display_mode.h). Both are live where the window can do it (Windows).
+    WithDynamics(Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
+                 &mcla_menu::kDisplayModeDynamics),
+#if defined(LARECOMP_HAS_GPU)
+    WithDynamics(Bool("PM_RxVsync", "vsync", "VSYNC: "), &kVsyncDynamics),
+#else
+    Bool("PM_RxVsync", "vsync", "VSYNC: "),
+#endif
+    WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
+                 &mcla_menu::kResolutionDynamics),
+#if !defined(LARECOMP_HAS_GPU)
+    Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ", kResScaleVals, 4, "%gX", " (RESTART)"),
+#endif
 #if defined(LARECOMP_HAS_GPU)
     // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
-    // appended after this table, from upscaling_menu.cpp (MenuDef::extra).
+    // appended after this table, from upscaling_menu.cpp (MenuDef::extra); its mode row is RENDER
+    // SCALE on both renderers.
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
-#endif
-#if defined(LARECOMP_HAS_GPU)
-    XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
-    // NATIVE: the host samples of the images of the screen the game multisamples (the game always
-    // draws its own 2 sample layout): OFF is 1, 2X the console's, 4X and 8X more; every choice
-    // changes while the game runs (gpu/msaa_level.h; the suffix is upscaling_menu.cpp MsaaSuffix).
-    NativeOnly(WithDynamics(Str("PM_RxGpuMsaa", "mcla_gpu_msaa", "MSAA: ",
-                                kGpuMsaaVals, kGpuMsaaNames, 4),
-                            &mcla_menu::kMsaaDynamics)),
+    WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
+                 &kMsaaRowDynamics),
 #else
     Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
@@ -2162,6 +2223,13 @@ bool ItemIsLabelOnly(const ItemDef& it) {
            it.kind == ItemKind::kSubmenu;
 }
 
+// The setting a row reads and writes (a checkbox) and the "restart now?" prompt looks up: its own
+// `cvar`, or what RowDynamics::cvar says for the renderer this launch runs (VSYNC, MSAA and RENDER SCALE
+// are one row each, mapped to the running renderer's own setting). Null for a row that has none.
+const char* ItemCvar(const ItemDef& it) {
+    return it.dynamics && it.dynamics->cvar ? it.dynamics->cvar() : it.cvar;
+}
+
 // RowDynamics::enabled; a row without one is always enabled.
 bool ItemEnabled(const ItemDef& it) {
     return !it.dynamics || !it.dynamics->enabled || it.dynamics->enabled();
@@ -2241,7 +2309,7 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
 int ItemValueIndex(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool: {
-        bool on = CvarGetBool(it.cvar);
+        bool on = CvarGetBool(ItemCvar(it));
         if (it.inverted) on = !on;
         return on ? 1 : 0;
     }
@@ -2279,7 +2347,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
     case ItemKind::kBool: {
         bool on = (i != 0);
         if (it.inverted) on = !on;
-        CvarSet(it.cvar, on ? "true" : "false");
+        CvarSet(ItemCvar(it), on ? "true" : "false");
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     }
@@ -2320,14 +2388,17 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // page comes to about 245 units plus 11 a character of that label and value
 // (capitals of the menu's font: I and digits narrower, M and W wider).
 // DISPLAY must stay at or under 41 characters of that pair (24 and 17, say),
-// about 700 units. Its widest label is "SHARPNESS (FSR ONLY)" (20) and its
-// widest value 17 ("PERFORMANCE (50%)" and the mode row's other longest:
-// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"), 37 together,
-// so a row that joins the page may bring a label of up to 24 characters with
-// a value of up to 17. A label or a value that is longer than its page's
-// widest needs counting against that before it goes in, in each state a
-// suffix can be in; the upscaling rows' states are counted in
-// upscaling_menu.cpp.
+// about 700 units, in every state of every row (the Windows and the other
+// platforms' suffixes, both renderers, sizes such as "2560X1440"). Its widest
+// label is "RESOLUTION (7680X4320)" (22; 23 at five digits across), then "RENDER
+// SCALE (RESTART)" (XENIA, 22) and "SHARPNESS (FSR ONLY)" (20); its widest value
+// 17 ("PERFORMANCE (50%)" and the mode row's other longest: "ULTRA PERF. (33%)",
+// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"; the DISPLAY MODE and RESOLUTION values
+// are 10 and 9): 40 together, so a row that joins the page may bring a label of
+// up to 24 characters with a value of up to 17, or one of 23 with 18. A label or a
+// value that is longer than its page's widest needs counting against that before
+// it goes in, in each state a suffix can be in; the upscaling rows' states are
+// counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
@@ -2367,7 +2438,7 @@ std::string ItemRowLabel(const ItemDef& it) {
 void ApplyItem(const ItemDef& it, int dir) {
     switch (it.kind) {
     case ItemKind::kBool:
-        CvarSet(it.cvar, CvarGetBool(it.cvar) ? "false" : "true");
+        CvarSet(ItemCvar(it), CvarGetBool(ItemCvar(it)) ? "false" : "true");
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kStrCycle: {
@@ -2960,7 +3031,8 @@ bool CvarNeedsRestart(const std::string& cvar) {
             if (it.kind != ItemKind::kBool && it.kind != ItemKind::kStrCycle &&
                 it.kind != ItemKind::kDblCycle)
                 continue;
-            if (it.cvar && cvar == it.cvar && RowSaysRestart(it)) return true;
+            const char* row_cvar = ItemCvar(it);
+            if (row_cvar && cvar == row_cvar && RowSaysRestart(it)) return true;
         }
     }
     return false;
@@ -3226,6 +3298,12 @@ void EnsureControllerButtonRow(uint32_t list) {
 }
 
 }  // anonymous namespace
+
+namespace mcla_menu {
+
+bool NativeRendererRuns() { return RunningRendererMask() == kRendNative; }
+
+}  // namespace mcla_menu
 
 // ── Public API ──────────────────────────────────────────────────────────
 

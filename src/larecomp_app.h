@@ -10,6 +10,7 @@
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
 #include "mc_engine/graphics_button.h"
+#include "mc_engine/display_mode.h"
 #include "spdlog_console.h"
 #include "larecomp_log.h"
 #include "crash_handler.h"
@@ -510,23 +511,13 @@ class LarecompApp : public rex::ReXApp {
       return false;
     }
 
-    // The SDK's callback for `fullscreen` calls Window::SetFullscreen on the
-    // thread that set the cvar, with the cvar registry locked. The pause menu
-    // sets it on the game thread; SetFullscreen then waits for the UI thread,
-    // and with the settings panel or the console open the UI thread is waiting
-    // for that lock when it reads a cvar, so the game hung for good. The window
-    // change is queued for the UI thread instead and runs after the lock is
-    // released. The SDK registers no other callback for this name.
-    rex::cvar::UnregisterChangeCallbacks("fullscreen");
-    rex::cvar::RegisterChangeCallback(
-        "fullscreen", [this](std::string_view, std::string_view value) {
-          const bool fullscreen = rex::string::from_string<bool>(value, false);
-          app_context().CallInUIThreadDeferred([this, fullscreen] {
-            if (auto* w = window()) {
-              w->SetFullscreen(fullscreen);
-            }
-          });
-        });
+    // The window's display mode (windowed, borderless, exclusive fullscreen) and its size follow the
+    // `fullscreen`, `fullscreen_exclusive` and `resolution` settings while the game runs
+    // (mc_engine/display_mode.h). The SDK's callback for `fullscreen`, which called
+    // Window::SetFullscreen on the thread that set the cvar with the cvar registry locked (the pause
+    // menu's thread then waited for the UI thread, which waited for that lock: the game hung for
+    // good), is replaced there by ones that queue the change for the UI thread.
+    mcla::display::Initialize(window());
 
     if (imgui_drawer()) {
       mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
@@ -615,6 +606,12 @@ class LarecompApp : public rex::ReXApp {
 #endif
   }
 
+  // FULLSCREEN (exclusive) gives the display its own mode back while another window has the focus.
+  void OnWindowFocusChanged(bool focused) override {
+    rex::ReXApp::OnWindowFocusChanged(focused);
+    mcla::display::OnFocusChanged(focused);
+  }
+
   // A normal window close never reaches OnShutdown: ReXApp::OnClosing
   // terminates the title and _Exit()s. The work before that (the Plume renderer
   // stops its render thread, drains the GPU and gives the swap chain back) is
@@ -659,6 +656,7 @@ class LarecompApp : public rex::ReXApp {
     MclaWaitForSaves();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
+    mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
@@ -699,6 +697,7 @@ class LarecompApp : public rex::ReXApp {
     larecomp::WaitForBootBuild();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
+    mcla::display::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
