@@ -2312,9 +2312,9 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // page comes to about 245 units plus 11 a character of that label and value
 // (capitals of the menu's font: I and digits narrower, M and W wider).
 // DISPLAY must stay at or under 41 characters of that pair (24 and 17, say),
-// about 700 units. Its widest label is "MSAA (DONE BY FSR 3.1)" (22) and its
+// about 700 units. Its widest label is "SHARPNESS (FSR ONLY)" (20) and its
 // widest value 17 ("PERFORMANCE (50%)" and the mode row's other longest:
-// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"), 39 together,
+// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"), 37 together,
 // so a row that joins the page may bring a label of up to 24 characters with
 // a value of up to 17. A label or a value that is longer than its page's
 // widest needs counting against that before it goes in, in each state a

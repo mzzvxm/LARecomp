@@ -484,9 +484,9 @@ void SharpnessSet(int i, CvarWriter write) {
 //               (300%)" 14.
 //   SHARPNESS   label 9, with " (FSR ONLY)" 20. Values "OFF", "0.2" to "1", an entry of its own such as
 //               "0.85" 4.
-// DISPLAY's widest label comes to 22 (MSAA, in "The AA rows" below) and its widest value to 17.
+// DISPLAY's widest label comes to 20 (SHARPNESS (FSR ONLY)) and its widest value to 17.
 // CHECK: open DISPLAY at 1280x720 with a temporal upscaler on, the mode row on PERFORMANCE and MSAA
-// held ("MSAA (DONE BY FSR 3.1)"), and look at the right edge (nothing cut); then the same with FSR 1
+// held ("MSAA (FSR 3.1 ON)"), and look at the right edge (nothing cut); then the same with FSR 1
 // on ULTRA QUAL.
 // CHECK: in a game, with DISPLAY open, step UPSCALING through every choice: the row under it is
 // relabelled at once (RENDER SCALE, FSR 1 MODE, FSR 3.1 MODE, FSR 4 MODE, DLSS MODE) with its own
@@ -533,13 +533,13 @@ constexpr ItemDef kRows[] = {
 // ── The AA rows (the page width is counted above) ──────────────────────────────────────────────
 
 // NATIVE AA and MSAA while a temporal upscaler runs: grey, and the suffix names the upscaler that
-// does the anti-aliasing instead. Width: "MSAA (DONE BY FSR 3.1)" is 22 on DISPLAY, "NATIVE AA (DONE
-// BY FSR 3.1)" 27 on RENDERER (whose widest label and value come to 27 + 6 = 33 with it).
+// does the anti-aliasing instead ("MSAA (FSR 3.1 ON)"). Width: "MSAA (FSR 3.1 ON)" is 17 on DISPLAY,
+// "NATIVE AA (FSR 3.1 ON)" 22 on RENDERER.
 const char* HandledSuffix() {
     switch (Active()) {
-    case Upscaler::kFsr31: return " (DONE BY FSR 3.1)";
-    case Upscaler::kFsr4:  return " (DONE BY FSR 4)";
-    case Upscaler::kDlss:  return " (DONE BY DLSS)";
+    case Upscaler::kFsr31: return " (FSR 3.1 ON)";
+    case Upscaler::kFsr4:  return " (FSR 4 ON)";
+    case Upscaler::kDlss:  return " (DLSS ON)";
     default:               return "";
     }
 }
