@@ -1514,10 +1514,13 @@ const ItemDef kRecompItems[] = {
 
 // Everything that trades image quality for framerate, in one place.
 //
-// The four SHADOWS/IMPOSTORS/FOLIAGE/SCREEN BLUR toggles reactivate the game's
-// own dev switches (noshadows, noimpostors, notrees, nofsblur). They are read
-// once, during renderer init, so they only take effect on a restart — the
-// suffix says so on the row.
+// CHEAP CAR SHADOW, TREE IMPOSTORS, FOLIAGE and SCREEN BLUR reactivate the game's
+// own dev switches (fastVehShadows, noimpostors, notrees, nofsblur). The game
+// reads them when a system is made, not every frame: the first, the second and
+// the last at the start (the fork measured it for the impostor targets and lists
+// the car shadow and full-screen blur with them), so those rows say "(RESTART)";
+// FOLIAGE's prop parse is "(ON RELOAD)" (render_phases.cpp, unmeasured). The
+// SHADOWS and FOLIAGE SHADOWS rows are live.
 //
 // PROP DRAW DIST and BREAK FPS FLOOR patch rage::fragTuneStruct in place after
 // the game has parsed $/tune/types/fragments, so they apply live. "Prop" here
@@ -1537,16 +1540,22 @@ const ItemDef kPerfShadItems[] = {
          kShadowBitVals, kShadowBitNames, 4),
     Bool("PM_RxFastVehShad", "perf_fast_vehicle_shadows", "CHEAP CAR SHADOW: ", false, " (RESTART)"),
     // Load-time switches: noimpostors skips allocating the impostor render
-    // targets, notrees skips the prop parse. node+4 is kept in sync with the
-    // cvar every frame, so a change lands the next time that system loads —
-    // a district change — rather than needing the process restarted.
-    Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (ON RELOAD)"),
+    // targets, which the game makes once, with the world, at start-up (the fork
+    // measured it): a restart. notrees skips the prop parse; node+4 is kept in
+    // sync with the cvar every frame, so a change lands the next time that
+    // system loads.
+    // CHECK: whether the prop parse runs again after a district change or only
+    // at start-up; if only then, FOLIAGE says "(RESTART)" too.
+    Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (RESTART)"),
     Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
 };
 
 const ItemDef kPerfRendItems[] = {
     Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
     Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
+    // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
+    // Patch_EdramLimit lets through only while this is on (graphics.cpp)? If a live ON
+    // misbehaves, this row says "(RESTART)" and the cvar is tagged for it.
     Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
     // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so
     // the next fence poll already sees a change made here. Worth a row rather
@@ -1580,20 +1589,25 @@ const ItemDef kPerfWorldItems[] = {
 };
 
 const ItemDef kPerfLodItems[] = {
-    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
+    // Live: the hook reads the cvar on every pass (graphics.cpp).
+    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
 };
 
+// The SDK presenter builds its paint config from these four cvars once, when it is
+// made (BuildGuestOutputPaintConfigFromCVar in presenter.cpp, called only from
+// InitializeCommonSurfaceIndependent), and nothing calls its
+// SetGuestOutputPaintConfigFromUIThread, so a change here is seen at the next start.
 const ItemDef kFfxItems[] = {
     XeniaOnly(Str("PM_RxUpscaler",   "present_effect", "UPSCALER: ",
-         kEffectVals, kEffectNames, 5)),
+         kEffectVals, kEffectNames, 5, " (RESTART)")),
     XeniaOnly(Str("PM_RxFsrQuality", "present_fsr_quality_mode", "FSR QUALITY: ",
-         kFsrQVals, kFsrQNames, 6)),
+         kFsrQVals, kFsrQNames, 6, " (RESTART)")),
     XeniaOnly(Dbl("PM_RxCasSharp",   "present_cas_additional_sharpness",
-         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g")),
+         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g", " (RESTART)")),
     XeniaOnly(Dbl("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
-         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g")),
+         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g", " (RESTART)")),
 };
 
 // Renderer. RENDERER picks the emulated path (Xenia's command processor) or the
@@ -1869,6 +1883,10 @@ const ItemDef kDiffItems[] = {
     WithDynamics(Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
                      kAiDiffVals, int(sizeof(kAiDiffVals) / sizeof(kAiDiffVals[0])), "%g"),
                  &kAiDiffDynamics),
+    // CHECK: when the three manager hooks run (rubberband.cpp). They read the cvar on every
+    // call, so it may not need a restart, but whether a flip mid-race shows at once, at the
+    // next race or only at the next start is unmeasured (nothing in the code says). "(RESTART)"
+    // is true whichever it is; if a flip shows at once, drop the suffix and retag the cvar.
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Dbl ("PM_RxRbCatchup",   "rubberband_catchup_scale", "CATCH-UP (AI BEHIND): ",
          kRbScaleVals, int(sizeof(kRbScaleVals) / sizeof(kRbScaleVals[0])), "%gX"),
