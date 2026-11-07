@@ -242,6 +242,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     occlusion_.Initialize(device_);
     scene_.SetOcclusion(&occlusion_);
     scene_.SetTemporal(&temporal_);
+    scene_.SetAmbientOcclusion(&ao_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&

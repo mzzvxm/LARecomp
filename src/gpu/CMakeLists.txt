@@ -10,6 +10,7 @@
 
 add_library(larecomp_gpu OBJECT
     ab.cpp
+    ao.cpp
     backend.cpp
     buffer_heap.cpp
     capture.cpp
