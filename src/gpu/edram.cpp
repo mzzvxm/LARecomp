@@ -59,9 +59,12 @@ REXCVAR_DEFINE_STRING(
     "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
     "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
     "own). Targets the game does not multisample, or that are not images of the screen, keep "
-    "the game's samples. A game started with an upscaler (mcla_gpu_upscaler) that runs on this PC "
-    "starts without MSAA whatever this says; the choice is kept and applies again at a start "
-    "with no upscaler.")
+    "the game's samples. 2, 4 and 8 among themselves change while the game runs, between two "
+    "frames (the pipelines for the new sample count are made first; not while an upscaler "
+    "runs, which holds the change until it is off). Off against on is the game's own start-up "
+    "switch and applies at the next start. A game started with an upscaler (mcla_gpu_upscaler) "
+    "that runs on this PC starts without MSAA whatever this says; the choice is kept and applies "
+    "again at a start with no upscaler.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
@@ -229,10 +232,35 @@ void EdramTargets::DecideScene() {
 }
 
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
-  if (key.samples <= 1 || msaa_level_ <= key.samples) {
-    return key.samples;
+  return HostSamplesAt(key, FollowsMsaaLevel(key, size_bits), msaa_level_);
+}
+
+EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
+  MsaaSetting setting;
+  setting.text = REXCVAR_GET(mcla_gpu_msaa);
+  std::string v;
+  for (unsigned char c : setting.text) {
+    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
   }
-  return IsScreenImage(size_bits) ? msaa_level_ : key.samples;
+  if (!v.empty() && v.back() == 'x') v.pop_back();
+  if (v == "4") {
+    setting.level = 4;
+  } else if (v == "8") {
+    setting.level = 8;
+  } else if (v == "off") {
+    setting.off = true;
+  } else if (v != "2" && v != "1") {
+    setting.invalid = true;
+  }
+  return setting;
+}
+
+uint32_t EdramTargets::SupportedMsaaLevel(uint32_t wanted) const {
+  uint32_t level = wanted;
+  while (level > 2 && (msaa_supported_ & level) == 0) {
+    level >>= 1;
+  }
+  return level;
 }
 
 void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
@@ -321,40 +349,28 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                 resolution_scale_, resolution_scale_.Edge(1280), resolution_scale_.Edge(720));
   }
   // The host MSAA level, chosen at start, within what the device can do for
-  // every format an image of the screen is stored as.
+  // every format an image of the screen is stored as. A change while the game runs reads the
+  // same two things (ReadMsaaSetting, SupportedMsaaLevel).
   {
-    std::string value = REXCVAR_GET(mcla_gpu_msaa);
-    std::string v;
-    for (unsigned char c : value) {
-      if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
-    }
-    if (!v.empty() && v.back() == 'x') v.pop_back();
-    uint32_t wanted = 2;
-    if (v == "4") {
-      wanted = 4;
-    } else if (v == "8") {
-      wanted = 8;
-    } else if (v != "2" && v != "off" && v != "1") {
+    const MsaaSetting setting = ReadMsaaSetting();
+    if (setting.invalid) {
       REXLOG_ERROR("[gpu] edram: mcla_gpu_msaa = '{}' is not off, 2, 4 or 8; the console's 2x "
                    "is kept",
-                   value);
+                   setting.text);
     }
     // off is the game's own switch (Patch_DisableMSAA): its targets come 1x.
     plume::RenderDevice* rd = device.device();
-    uint32_t supported = 0xFFu;
-    for (plume::RenderFormat f :
+    msaa_supported_ = 0xFFu;
+    for (plume::RenderFormat format :
          {plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R16G16B16A16_FLOAT,
           plume::RenderFormat::D32_FLOAT_S8_UINT}) {
-      supported &= uint32_t(rd->getSampleCountsSupported(f));
+      msaa_supported_ &= uint32_t(rd->getSampleCountsSupported(format));
     }
-    uint32_t level = wanted;
-    while (level > 2 && (supported & level) == 0) {
-      level >>= 1;
-    }
-    if (level != wanted) {
+    const uint32_t level = SupportedMsaaLevel(setting.level);
+    if (level != setting.level) {
       REXLOG_ERROR("[gpu] edram: MSAA {}x asked, {}x used (device sample counts {:#x} for the "
                    "screen formats)",
-                   wanted, level, supported);
+                   setting.level, level, msaa_supported_);
     }
     msaa_level_ = level;
     if (msaa_level_ > 2) {
@@ -629,6 +645,23 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) 
 }
 
 bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
+  return Retarget(output, scene, msaa_level_, list);
+}
+
+bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) {
+  // CHECK: the frame that remakes the MSAA targets under the D3D12 debug layer and Vulkan validation
+  // (the same list as SetScales: new textures cleared at the frame's start, the retired ones behind
+  // the frames in flight, no framebuffer or view of an old texture used; the multisampled depth's
+  // views for the resolves), the picture in the frames after the change against a start at the new
+  // level (the resolves read the target's own sample count: resolve.cpp host_samples), the peak
+  // video memory (old and new targets live together for the frames in flight: 8x at a render scale
+  // of 2 is large) and the hitch of the switch frame ("switched in N ms" in the log).
+  DecideScene();  // the scene's scale is the start's decision: kept as it is
+  return Retarget(resolution_scale_, scene_scale_, level, list);
+}
+
+bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
+                            plume::RenderCommandList* list) {
   // CHECK: the frame that remakes every image of the screen under the D3D12 debug layer and Vulkan
   // validation (new textures cleared before use, the retired ones behind the frames in flight, no
   // framebuffer or view of an old texture used), the hitch of that frame at 2x and 3x ("switched in N
@@ -638,32 +671,37 @@ bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList
   // are cleared here); photo mode reads what an earlier frame left (memory project_native_gfx_photo_
   // capture): a render scale change just before it shows a cleared target until a frame is drawn.
   DecideScene();  // the start's decision first: a change before the first use must not be undone by it
-  if (output == resolution_scale_ && scene == scene_scale_) {
+  if (output == resolution_scale_ && scene == scene_scale_ && level == msaa_level_) {
     return true;
   }
-  if (!device_ || !frames_ || !list || output.none() || scene.none()) {
+  if (!device_ || !frames_ || !list || output.none() || scene.none() || level < 2) {
     return false;
   }
   // The new textures first, all of them: nothing is changed unless every one can be made.
   struct Remade {
     Target* target = nullptr;
     Scale scale;
+    uint32_t samples = 1;
     format::Mapping mapping;
     std::unique_ptr<plume::RenderTexture> texture;
   };
   std::vector<Remade> remade;
+  uint32_t samples_changed = 0;  // of them, those whose sample count changes
   for (const auto& [key, target] : targets_) {
     const Scale wanted = ScaleAfter(*target, output, scene);
-    if (!target->texture || target->scale == wanted) {
+    const uint32_t wanted_samples = HostSamplesAt(key, target->msaa_follows, level);
+    if (!target->texture ||
+        (target->scale == wanted && target->host_samples == wanted_samples)) {
       continue;
     }
     Remade r;
     r.target = target.get();
     r.scale = wanted;
+    r.samples = wanted_samples;
     r.mapping = key.depth ? format::DepthTargetFormat(key.format)
                           : format::ColorTargetFormat(key.format);
     if (r.mapping.status == format::Status::kOk) {
-      r.texture = MakeTargetTexture(*device_, key, r.mapping, wanted, target->host_samples,
+      r.texture = MakeTargetTexture(*device_, key, r.mapping, wanted, wanted_samples,
                                     target->height);
     }
     if (!r.texture) {
@@ -671,19 +709,21 @@ bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList
       if (scale_move_failures_logged_ < 4) {
         ++scale_move_failures_logged_;
         REXLOG_ERROR("[gpu] edram: the images of the screen could not be moved from {}x to {}x (the "
-                     "3D scene from {}x to {}x): {} could not be made at the new size, most likely "
-                     "for want of video memory; {} target(s) made before it were freed again and "
-                     "everything stays as it was",
-                     resolution_scale_, output, scene_scale_, scene, DescribeEdramKey(key),
-                     remade.size());
+                     "3D scene from {}x to {}x, host MSAA from {}x to {}x): {} could not be made "
+                     "at the new size and samples, most likely for want of video memory; {} "
+                     "target(s) made before it were freed again and everything stays as it was",
+                     resolution_scale_, output, scene_scale_, scene, msaa_level_, level,
+                     DescribeEdramKey(key), remade.size());
       }
       return false;
     }
+    samples_changed += wanted_samples != target->host_samples;
     remade.push_back(std::move(r));
   }
 
   const Scale output_before = resolution_scale_;
   const Scale scene_before = scene_scale_;
+  const uint32_t level_before = msaa_level_;
   uint64_t old_bytes = 0;
   uint64_t new_bytes = 0;
   for (Remade& r : remade) {
@@ -698,6 +738,7 @@ bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList
     t.texture = std::move(r.texture);
     t.format = r.mapping.format;
     t.scale = r.scale;
+    t.host_samples = r.samples;
     t.layout = plume::RenderTextureLayout::UNKNOWN;
     ++t.generation;
     t.views_generation = t.generation;
@@ -710,18 +751,29 @@ bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList
     ++stats_.rescaled;
   }
   for (const auto& [key, target] : targets_) {
-    // Also a target released for want of memory: Get makes it at this scale.
+    // Also a target released for want of memory: Get makes it at this scale and these samples.
     target->scale = ScaleAfter(*target, output, scene);
+    target->host_samples = HostSamplesAt(key, target->msaa_follows, level);
   }
   if (old_bytes != 0) {
     device_->NoteReleased(old_bytes);
   }
   resolution_scale_ = output;
   scene_scale_ = scene;
+  msaa_level_ = level;
   scene_decided_ = true;
   // What was memoized from the targets (a draw's scale and framebuffers, the depth's layer, which
   // follows whether the scene is apart from the images of the screen) is stale.
   ++change_serial_;
+  if (output == output_before && scene == scene_before) {
+    // Only the host MSAA level moved (SetMsaaLevel).
+    REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples now get {} samples on "
+                "the host (were {}): {} target(s) remade ({} with other samples), {:.1f} MiB (was "
+                "{:.1f} MiB)",
+                level, level_before, remade.size(), samples_changed,
+                double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+    return true;
+  }
   if (output == output_before) {
     REXLOG_INFO("[gpu] edram: the 3D scene is now made at {}x, {}x{} of the guest's 1280x720 (was {}x): "
                 "{} target(s) remade, {:.1f} MiB (was {:.1f} MiB){}",
@@ -784,7 +836,8 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     target->scale = (scale == resolution_scale_ || (scene_decided_ && scale == scene_scale_))
                         ? scale
                         : Scale{};
-    target->host_samples = HostSamplesFor(key, size_bits);
+    target->msaa_follows = FollowsMsaaLevel(key, size_bits);
+    target->host_samples = HostSamplesAt(key, target->msaa_follows, msaa_level_);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
       REXLOG_ERROR("[gpu] edram: no host target for {} format {} at tile {} pitch {} {}x "
@@ -1628,8 +1681,13 @@ std::string EdramTargets::TakeSummary() {
                         stats_.rescaled);
   }
   if (msaa_level_ > 2) {
-    text += std::format(" | host MSAA {}x: {} targets made with it", msaa_level_,
-                        stats_.made_host_msaa);
+    // The targets that have it now (a live change of the level made some again).
+    size_t multisampled = 0;
+    for (const auto& [key, target] : targets_) {
+      multisampled += target->host_samples != key.samples;
+    }
+    text += std::format(" | host MSAA {}x: {} of {} targets have it (made with it {})", msaa_level_,
+                        multisampled, targets_.size(), stats_.made_host_msaa);
   }
   if (aliasing_) {
     text += std::format(
