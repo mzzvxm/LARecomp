@@ -21,6 +21,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -28,10 +29,14 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>  // _mm_pause, for the pacer's last-microseconds spin
+#endif
 
 #include "backend.h"
 #include "descriptors.h"
 #include "device.h"
+#include "display_refresh.h"
 #include "frame.h"
 #include "frame_layers.h"
 #include "gpu.h"
@@ -110,20 +115,7 @@ uint32_t HalfDisplayCap(uint32_t hz) {
 // The refresh rate of the display the window is on, from its current mode (a variable refresh
 // display reports its highest). 0 when it cannot be told.
 uint32_t ReadDisplayRefresh(plume::RenderWindow window) {
-  const HWND hwnd = window;
-  const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-  MONITORINFOEXW info{};
-  info.cbSize = sizeof(info);
-  if (!monitor || !GetMonitorInfoW(monitor, &info)) {
-    return 0;
-  }
-  DEVMODEW mode{};
-  mode.dmSize = sizeof(mode);
-  if (!EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
-    return 0;
-  }
-  // 0 and 1 mean the hardware's default.
-  return mode.dmDisplayFrequency > 1 ? mode.dmDisplayFrequency : 0u;
+  return ReadDisplayRefreshHz(window);  // display_refresh.h: Windows' monitor, or SDL's display
 }
 
 struct PreparePush {  // hlsl/fg_prepare_ps.hlsl
@@ -1100,6 +1092,7 @@ void FrameGeneration::DrainPresentQueue() {
 }
 
 void FrameGeneration::WaitUntil(int64_t target_us) {
+#if defined(_WIN32)
   // A high-resolution waitable timer wakes a fraction of a millisecond after its time, where a sleep
   // on the 1 ms system timer can be 1.5 ms late (the frame limiter does the same,
   // hooks/frame_timing.cpp); it sleeps to 0.5 ms before the target and spins the rest.
@@ -1120,12 +1113,32 @@ void FrameGeneration::WaitUntil(int64_t target_us) {
   while (NowUs() < target_us) {
     YieldProcessor();
   }
+#else
+  // Elsewhere: sleep to 1 ms before the target (a Linux sleep wakes about 50-100 us late, the timer
+  // slack) and spin the rest.
+  // CHECK: not run on Linux (frame generation is not offered there: it needs the FidelityFX or
+  // Streamline runtimes, which are Windows DLLs).
+  constexpr int64_t kSpinUs = 1000;
+  const int64_t remaining = target_us - NowUs();
+  if (remaining > kSpinUs + 100) {
+    std::this_thread::sleep_for(std::chrono::microseconds(remaining - kSpinUs));
+  }
+  while (NowUs() < target_us) {
+#if defined(__x86_64__) || defined(__i386__)
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+  }
+#endif
 }
 
 void FrameGeneration::PacerMain() {
+#if defined(_WIN32)
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                   TIMER_ALL_ACCESS);
+#endif
   int64_t idle_since_us = NowUs();
   for (;;) {
     Item item;
@@ -1142,10 +1155,12 @@ void FrameGeneration::PacerMain() {
           running_ = false;
           cv_.notify_all();
           lock.unlock();
+#if defined(_WIN32)
           if (timer_) {
             CloseHandle(static_cast<HANDLE>(timer_));
             timer_ = nullptr;
           }
+#endif
           return;
         }
         if (pause_) {
