@@ -85,6 +85,8 @@ REXCVAR_DEFINE_DOUBLE(impulse_trigger_strength, 50.0, "MCLA/Input",
     .range(10.0, 100.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DECLARE(bool, trigger_slip_log);  // wheel_slip.cpp
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -277,7 +279,14 @@ int Step(int64_t now) {
         g_next_scan_ms = now + kScanMs;
         Scan();
     }
-    if (g_pads.empty()) return kIdleMs;
+    if (g_pads.empty()) {
+        // The slip log (trigger_slip_log, a test aid) also runs with no pad, e.g. on a scripted drive.
+        if (REXCVAR_GET(trigger_slip_log) && larecomp::triggers::IsDriving()) {
+            larecomp::slip::Current();
+            return kStepMs;
+        }
+        return kIdleMs;
+    }
     const bool driving = larecomp::triggers::IsDriving() && larecomp::triggers::IsWindowInFront();
     if (driving) {
         const larecomp::slip::Amounts slip = larecomp::slip::Current();
