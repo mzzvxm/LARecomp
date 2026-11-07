@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/ppc.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -926,7 +927,15 @@ bool ReadCapBytes(const std::string& key, uint32_t width, uint32_t height,
     bytes->assign(data, data + size);
     return true;
 #else
-    return false;
+    // No resources in a Linux executable: CMake copies src/keycaps next to it as keycaps/.
+    // CHECK: not run on Linux (the key prompts of the keyboard; a missing folder gives the blank cap).
+    const std::filesystem::path path =
+        rex::filesystem::GetExecutableFolder() / "keycaps" / (stem + ".png");
+    if (!bytes) return std::filesystem::exists(path);
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    bytes->assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    return !bytes->empty();
 #endif
 }
 

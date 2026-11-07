@@ -733,11 +733,57 @@ else()
         endforeach()
     endif()
 
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
+    if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
         add_custom_command(TARGET larecomp POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12"
                     "$<TARGET_FILE_DIR:larecomp>/D3D12"
             COMMENT "Copying Agility SDK runtime binaries next to larecomp.exe")
+    endif()
+
+    if(NOT WIN32 AND NOT APPLE)
+        # Linux. What a Windows executable carries inside it or in assets/D3D12 sits next to the
+        # executable instead.
+        #
+        # The shader compiler the shader pack builder loads, from <exe folder>/D3D12/ as on Windows
+        # (bootprogress/larecomp_shader_build.cpp): libdxcompiler.so, fetched and checked by
+        # cmake/FetchDxcLinux.cmake, with the licences that travel with it (the Windows DLLs of
+        # assets/D3D12 are not copied here).
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDxcLinux.cmake")
+        if(LARECOMP_DXC_LINUX_LIB)
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/D3D12"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_DXC_LINUX_LIB}"
+                        "$<TARGET_FILE_DIR:larecomp>/D3D12/libdxcompiler.so"
+                COMMENT "Copying libdxcompiler.so next to larecomp")
+            if(LARECOMP_DXC_LINUX_LICENCE)
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${LARECOMP_DXC_LINUX_LICENCE}"
+                            "$<TARGET_FILE_DIR:larecomp>/D3D12/LICENSE-LLVM.txt"
+                    COMMENT "Copying the DXC licence next to libdxcompiler.so")
+            endif()
+            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt")
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt"
+                            "$<TARGET_FILE_DIR:larecomp>/D3D12/LICENCE-MIT.txt"
+                    COMMENT "Copying the DXC MIT licence next to libdxcompiler.so")
+            endif()
+        endif()
+
+        # Key caps (src/keycaps: RCDATA in the Windows executable) and the achievements' labels
+        # (src/achievements.toml: ACHIEVEMENTS_TOML in larecomp.rc), read from files here
+        # (mc_engine/keyboard_native.cpp ReadCapBytes, larecomp_app.h OnPostLoadXexImage).
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/src/achievements.toml"
+                    "$<TARGET_FILE_DIR:larecomp>/assets/achievements.toml"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/src/keycaps"
+                    "$<TARGET_FILE_DIR:larecomp>/keycaps"
+            COMMENT "Copying the key caps and the achievements file next to larecomp")
     endif()
 endif()
