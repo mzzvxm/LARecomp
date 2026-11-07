@@ -140,6 +140,15 @@
 //    apart, 230 or so presents a second, slot waits close to none, and most gaps in the 3-5 ms
 //    bucket; where the pacer thread's time goes (copy fence, Present, timer) says what limits it
 //    if not;
+//  - Vulkan validation noise that is AMD's, not ours (frame generation on, run next2-vk-val): the
+//    10 reports of VUID-vkCmdDispatch-OpImageWrite-08795 ("rw_output" R16G16B16A16_SFLOAT, the
+//    OpImageWrite texel has 3 components: the name is in amd_fidelityfx_framegeneration_vk.dll, 13
+//    times, and in none of our shaders, which have no storage image at all), the
+//    Undefined-Value-StorageImage-FormatMismatch warnings ("rw_optical_flow" Rg32i against an
+//    R16G16_SINT view), and, most likely, VUID-VkShaderModuleCreateInfo-pCode-08740/08742 (compute
+//    shaders that declare SPV_KHR_compute_shader_derivatives, made while its contexts are made; we
+//    have no compute shader on Vulkan, but this one was not traced to a module). None changes a
+//    result on the card tested; a newer DLL may have fixed them.
 //  - the display's refresh rate comes from its current mode (EnumDisplaySettings); variable refresh
 //    is not detected, so only the 100 Hz rule decides HALF DISPLAY;
 //  - HDR: the float scene's compress and expand pair (fg_prepare_ps, fg_compose_ps), the extended-code
