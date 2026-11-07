@@ -9,6 +9,7 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "latency.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -107,12 +108,18 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
     return false;
   }
   const ScopedGpuWait wait;  // may block for a free image
+  // Vulkan: the acquire needs the chain to itself, so the latency reducer's calls on the update
+  // thread that name it wait (latency.h).
+  const latency::SwapChainUse use;
   return swap_chain_->acquireTexture(signal, image);
 }
 
 bool SwapChain::Present(uint32_t image) {
   plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
   const ScopedGpuWait wait;  // may block on the queue of presents
+  // Vulkan: the present needs the chain to itself, so the latency reducer's calls on the update
+  // thread that name it wait (latency.h).
+  const latency::SwapChainUse use;
   return swap_chain_->present(image, waits, 1);
 }
 

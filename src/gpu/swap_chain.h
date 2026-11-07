@@ -71,6 +71,8 @@ class SwapChain {
   void WaitForPresentSlot();  // no-op unless present wait is active
 
   plume::RenderTexture* texture(uint32_t image) const;
+  // Plume's chain, for the vendor's latency reducer to name (latency_vulkan.cpp).
+  plume::RenderSwapChain* native() const { return swap_chain_.get(); }
   plume::RenderFramebuffer* framebuffer(uint32_t image) const {
     return framebuffers_[image].get();
   }

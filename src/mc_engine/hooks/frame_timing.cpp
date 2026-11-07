@@ -29,6 +29,9 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../guest_profiler.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/latency.h"
+#endif
 
 // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
 REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
@@ -196,6 +199,12 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
             EnforceFrameLimit();
         }
     }
+#if defined(LARECOMP_HAS_GPU)
+    // The swap ends a frame for the GPU vendor's latency reducer (SIMULATION_END), after the
+    // limiter's wait above. Every swap, timed or not: the reducer pairs swaps with the passes
+    // through the engine timer itself, and a swap it has no pass for is not marked.
+    mcla::gpu::latency::OnGuestSwap();
+#endif
     HoldUntimedSwap(timed);
     if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
@@ -336,6 +345,35 @@ static void TickGuestProfiler() {
             std::chrono::steady_clock::now().time_since_epoch()).count());
     if (last != 0) mc::profiler::Tick(double(now - last) / 1000.0);
     last = now;
+}
+
+// 0x821BDA90, the engine timer's first instruction: where a frame starts for the GPU vendor's
+// latency reducer (NVIDIA Reflex, AMD Anti-Lag 2; gpu/latency.h). Its wait comes here, before the
+// timer reads the clock (so the time step the timer then measures is the one after the wait, not
+// a gap between two steps) and before anything in the frame reads the input; SIMULATION_START and
+// INPUT_SAMPLE follow it. sub_821BDA90 has callers on more than one thread: the frame is the
+// first one's, the game loop's, the same thread MCLAFrameDelta binds its limiter to. The timer's
+// own retry (it jumps back to this address when the low half of the time it read was 0, about
+// once in 2^32 reads) is the same frame: a pass less than 100 us after the last does nothing.
+void MCLAFrameStart() {
+#if defined(LARECOMP_HAS_GPU)
+    static const std::thread::id frame_thread = std::this_thread::get_id();
+    static uint64_t last_start_us = 0;  // the frame thread's
+    if (std::this_thread::get_id() != frame_thread) {
+        return;
+    }
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (now - last_start_us < 100) {
+        return;
+    }
+    mcla::gpu::latency::OnFrameStart();
+    // After the driver's wait.
+    last_start_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
 }
 
 void MCLAFrameDelta(PPCRegister& r8) {

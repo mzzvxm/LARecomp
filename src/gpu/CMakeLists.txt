@@ -30,6 +30,7 @@ add_library(larecomp_gpu OBJECT
     guest_capture.cpp
     guest_memory.cpp
     input_layout.cpp
+    latency.cpp
     layout.cpp
     memory_census.cpp
     native_window.cpp
@@ -75,6 +76,14 @@ if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
 endif()
 if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
     target_sources(larecomp_gpu PRIVATE backend_vulkan.cpp)
+endif()
+
+# The latency reducers' vendor halves (latency.h), beside the backend files they sit with.
+if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+    target_sources(larecomp_gpu PRIVATE latency_d3d12.cpp)
+endif()
+if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+    target_sources(larecomp_gpu PRIVATE latency_vulkan.cpp)
 endif()
 
 # The temporal upscaler's FidelityFX backend (temporal_ffx.h): only when the top-level CMake found
