@@ -760,7 +760,15 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
       !MakeResource(in.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, &d.output)) {
     return fail("an input image has no native object or a format the runtime does not know");
   }
-  // exposure, reactive and transparencyAndComposition stay empty: automatic exposure, no masks.
+  // exposure and transparencyAndComposition stay empty: automatic exposure. The reactive mask is the
+  // cars' shadow decals' (vehicle_motion_mask.h), in the frames that have one: the dark patch under a
+  // car moves with the car and the road under it with the camera, so no vector is right for its
+  // pixels and their history is trusted less in proportion to the patch's opacity.
+  // CHECK: FSR 4 (the ML provider) may ignore the reactive mask; FSR 3.1 reads it.
+  if (in.mask.texture &&
+      !MakeResource(in.mask, FFX_API_RESOURCE_STATE_COMPUTE_READ, &d.reactive)) {
+    return fail("the shadow mask has no native object or a format the runtime does not know");
+  }
   d.jitterOffset = {in.jitter[0], in.jitter[1]};
   // The vectors are previous minus current, in render pixels (measured in game against the world
   // point seen at sample pixels), which is what FSR reads with a scale of 1: pixelSpaceMV = vector *
