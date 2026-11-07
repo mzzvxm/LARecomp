@@ -147,10 +147,33 @@ class ResolveCache {
   void BeginFrame(uint32_t slot);
   ResolveMemory& memory() const { return *resolve_memory_; }
 
+  // What one Execute did that a caller outside this file may want to see: the ambient occlusion
+  // (ao.h) runs at the game's mid-scene depth copy and reads the very target the copy read.
+  struct Summary {
+    // A copy of an EDRAM depth target was recorded: the fields below are valid.
+    bool depth_copy = false;
+    EdramTargets::Target* source = nullptr;  // the target it read; valid until the next change
+    EdramKey source_key;
+    uint32_t sample_slot = 0;    // its depth plane's bindless slot
+    uint32_t stencil_slot = 0;   // its stencil plane's
+    uint32_t host_sample = 0;    // the host sample the copy read for guest sample 0
+    uint32_t dest_address = 0;   // the destination texture's first byte in guest memory
+    uint32_t dest_format = 0;    // its texture format (xenos::TextureFormat)
+    uint32_t dest_width = 0;
+    uint32_t dest_height = 0;
+    // The rectangle read, in the source's guest pixels.
+    int32_t x0 = 0;
+    int32_t y0 = 0;
+    int32_t x1 = 0;
+    int32_t y1 = 0;
+    // The same call also clears the depth and stencil of the source, after the copy.
+    bool clears_depth = false;
+  };
+
   // Executes a resolve record into `list` (null: the device is lost; counted).
   // Records outside any render pass and leaves none open; it binds its own
   // pipeline state, which the caller binds again.
-  void Execute(const ResolveRecord& record, plume::RenderCommandList* list);
+  Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list);
 
   // Takes the write notifications (TextureCache::Sync calls it once per draw).
   void Sync() { DrainInvalidations(); }

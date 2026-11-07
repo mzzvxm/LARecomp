@@ -1088,15 +1088,17 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
 // execution
 // ---------------------------------------------------------------------------
 
-void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* list) {
+ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
+                                            plume::RenderCommandList* list) {
+  Summary summary;
   ++stats_.resolves;
   if (!list) {
     Fail(Failure::kDeviceLost, "");
-    return;
+    return summary;
   }
   if (r.flags & (kEventSurfaceUnreadable | kEventStackUnreadable)) {
     Fail(Failure::kUnreadable, std::format("event flags {:#x}", r.flags));
-    return;
+    return summary;
   }
   const uint32_t flags = r.resolve_flags;
   const uint32_t source = flags & 7;
@@ -1211,7 +1213,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
     y1 = int32_t(LoadBe32(r.src_rect + 12));
   } else if (!have_dest) {
     Fail(Failure::kUnreadable, "no rectangle and no destination to size it");
-    return;
+    return summary;
   }
   int32_t px = 0, py = 0;
   if (r.flags & kEventHasPoint) {
@@ -1704,6 +1706,22 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       ++stats_.copies;
       ++stats_.modes[mode & 0xFF];
       stats_.pixels += uint64_t(tx1 - tx0) * uint64_t(ty1 - ty0);
+      if (depth_source) {
+        summary.depth_copy = true;
+        summary.source = src;
+        summary.source_key = src_key;
+        summary.sample_slot = sample_slot;
+        summary.stencil_slot = stencil_slot;
+        summary.host_sample = host_samples[0];
+        summary.dest_address = key.base_page << 12;
+        summary.dest_format = key.format;
+        summary.dest_width = key.width;
+        summary.dest_height = key.height;
+        summary.x0 = tx0 - dx;
+        summary.y0 = ty0 - dy;
+        summary.x1 = tx1 - dx;
+        summary.y1 = ty1 - dy;
+      }
     } while (false);
     if (edram_->aliasing()) {
       // Outside a tiled section the map answered at the Note (reach).
@@ -1712,6 +1730,8 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
   } else {
     ++stats_.clear_only;
   }
+
+  summary.clears_depth = (flags & 0x200) != 0;
 
   // The clears the call asked for, after the copy, on the aligned rectangle.
   if (flags & 0x100) {
@@ -1766,6 +1786,7 @@ void ResolveCache::Execute(const ResolveRecord& r, plume::RenderCommandList* lis
       }
     }
   }
+  return summary;
 }
 
 // ---------------------------------------------------------------------------
