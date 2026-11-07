@@ -556,7 +556,7 @@ class Scene {
   uint32_t mismatches_logged_ = 0;
   // The game's alpha-to-mask offsets already reported as replaced, one bit
   // per value.
-  std::array<uint64_t, 4> alpha_to_mask_replaced_logged_{};
+  std::array<uint64_t, 8> alpha_to_mask_replaced_logged_{};  // [solid taken: +4]
 };
 
 }  // namespace mcla::gpu

@@ -32,15 +32,19 @@
 // 2.38 in the HDR target, a white dot. That is what the hardware rule the
 // shaders follow gives (Xenia's; Xenia shows the same dots): half a pixel at
 // the console's 2x, the whole pixel at 1x (mcla_gpu_msaa off); dots on fences
-// and foliage, a checkerboard on LOD cross-fades. Every draw on the dithered
-// pattern -- the one the game gives its colour passes, the same materials
-// included -- makes a surface's depth and colour cover the same samples at any
-// sample count.
+// and foliage, a checkerboard on LOD cross-fades. Every draw on one pattern
+// makes a surface's depth and colour cover the same samples at any sample
+// count. With MSAA it is the dithered one the game gives its colour passes.
+// At 1 sample (mcla_gpu_msaa off, every upscaler) a dither has one sample per
+// pixel to spread over: a fixed 2x2 screen door on grass and fences that no
+// upscaler takes out (it does not move with the jitter). There every draw
+// takes the solid 2, 2, 2, 2 of the game's pre-passes, a plain threshold.
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_a2c_dither_all, true, "MCLA/GPU",
-    "Alpha to coverage: every draw takes the dithered offsets (3, 1, 0, 2) the game gives its "
-    "colour passes, so a depth pre-pass the game draws with the solid ones (2, 2, 2, 2) covers "
-    "the samples its colour pass covers. Off: each draw keeps the game's offsets, as the "
+    "Alpha to coverage: every draw takes the same offsets, so a depth pre-pass the game draws "
+    "with the solid ones (2, 2, 2, 2) covers the samples its colour pass (dithered 3, 1, 0, 2) "
+    "covers: the dithered with MSAA, the solid at 1 sample (a dither there is a fixed screen "
+    "door on grass and fences). Off: each draw keeps the game's offsets, as the "
     "console and Xenia -- samples the pre-pass gave depth and the colour pass dropped keep the "
     "clear (white dots on fences and foliage, a white checkerboard on LOD cross-fades; with "
     "MSAA off, whole pixels). Hot reload.")
@@ -52,6 +56,8 @@ namespace {
 
 // RB_COLORCONTROL alpha_to_mask_offset0..3 of MCLA's colour passes: 3, 1, 0, 2.
 constexpr uint32_t kAlphaToMaskDithered = 0x87;
+// ... and of its depth pre-passes: 2, 2, 2, 2.
+constexpr uint32_t kAlphaToMaskSolid = 0xAA;
 
 // Premult modes of shader_common.h (blendPremultRgb / blendPremultAlpha).
 enum PremultMode : uint32_t {
@@ -231,9 +237,16 @@ AlphaTest ComputeAlphaTest(const XenosState& state) {
   return test;
 }
 
-bool AlphaToMaskOffsetsReplaced(const XenosState& state) {
-  return state.color_control.alpha_to_mask_enable && REXCVAR_GET(mcla_gpu_a2c_dither_all) &&
-         (state.color_control.value >> 24) != kAlphaToMaskDithered;
+uint32_t AlphaToMaskOffsets(const XenosState& state, uint32_t host_samples) {
+  if (!REXCVAR_GET(mcla_gpu_a2c_dither_all)) {
+    return state.color_control.value >> 24;
+  }
+  return host_samples > 1 ? kAlphaToMaskDithered : kAlphaToMaskSolid;
+}
+
+bool AlphaToMaskOffsetsReplaced(const XenosState& state, uint32_t host_samples) {
+  return state.color_control.alpha_to_mask_enable &&
+         AlphaToMaskOffsets(state, host_samples) != (state.color_control.value >> 24);
 }
 
 uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples) {
@@ -248,10 +261,7 @@ uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples) {
   } else if (host_samples >= 2) {
     samples_log2 = 1;
   }
-  const uint32_t offsets = REXCVAR_GET(mcla_gpu_a2c_dither_all)
-                               ? kAlphaToMaskDithered
-                               : state.color_control.value >> 24;
-  return offsets | 0x100u | (samples_log2 << 9);
+  return AlphaToMaskOffsets(state, host_samples) | 0x100u | (samples_log2 << 9);
 }
 
 uint32_t FillSharedConstants(const XenosState& state, const ViewportInfo& viewport,

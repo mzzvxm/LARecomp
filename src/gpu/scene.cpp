@@ -1120,15 +1120,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     ++window_.alpha_to_mask_draws;
     if (d.key.sample_count == 1) ++window_.alpha_to_mask_1x;
     if (s.color[0].exp_bias != 0) ++window_.alpha_to_mask_biased;
-    if (AlphaToMaskOffsetsReplaced(s)) {
+    if (AlphaToMaskOffsetsReplaced(s, d.key.sample_count)) {
       ++window_.alpha_to_mask_replaced;
       const uint32_t offsets = s.color_control.value >> 24;
-      uint64_t& logged = alpha_to_mask_replaced_logged_[offsets >> 6];
+      const bool solid = d.key.sample_count <= 1;
+      uint64_t& logged = alpha_to_mask_replaced_logged_[(offsets >> 6) + (solid ? 4 : 0)];
       if (!(logged & (uint64_t(1) << (offsets & 63)))) {
         logged |= uint64_t(1) << (offsets & 63);
         REXLOG_INFO("[gpu] alpha to mask: the game's offsets {:#04x} ({}, {}, {}, {}) take the "
-                    "dithered 3, 1, 0, 2 (mcla_gpu_a2c_dither_all)",
-                    offsets, offsets & 3, (offsets >> 2) & 3, (offsets >> 4) & 3, offsets >> 6);
+                    "{} (mcla_gpu_a2c_dither_all, {} sample(s))",
+                    offsets, offsets & 3, (offsets >> 2) & 3, (offsets >> 4) & 3, offsets >> 6,
+                    solid ? "solid 2, 2, 2, 2" : "dithered 3, 1, 0, 2", d.key.sample_count);
       }
     }
   }
