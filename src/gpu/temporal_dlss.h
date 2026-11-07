@@ -110,10 +110,22 @@
 // Streamline's log: every line goes to sl.log in the logs folder (InitLocked); only its warnings
 // and errors reach the game's log.
 //
-// Beside Reflex (latency.h) and HDR output (hdr.h), which use Plume's own paths and not
-// Streamline's: the Reflex plugin (sl.reflex) is not loaded, so Streamline makes no latency calls of
-// its own; the reducer's calls (NvAPI on the native D3D12 device, which is never wrapped;
-// VK_NV_low_latency2 on Vulkan) are the only ones. The scene colour DLSS reads and writes is the
+// DLSS Frame Generation and Reflex through Streamline (dlss_frame_generation.h, latency_streamline.cpp)
+// are the second half of this file's Streamline services, behind the neutral functions at the end of
+// this header (no Streamline type in them). Streamline's start asks for the plugins of frame
+// generation, Reflex and the PC latency markers where they may be used (InitLocked: DLSS frame
+// generation chosen, or on D3D12 an RTX 40 or 50 series card, since plugins cannot be added later),
+// asks whether the feature is supported and what it can do (QueryFrameGenerationLocked: the most
+// generated frames, the smallest size), and unloads the frame generation plugin again: while it is
+// loaded Streamline owns the swap chain Plume makes, so it is loaded only while frame generation
+// runs, with the swap chain made again each way (LoadFrameGeneration, the factory's proxy).
+//
+// Beside Reflex (latency.h) and HDR output (hdr.h), which use Plume's own paths unless frame
+// generation runs: while it does the reducer is Streamline's (sl.reflex, sl.pcl: slReflexSleep and
+// the PC latency markers with the same frame token as the constants and the tags, which DLSS-G
+// requires) and the NvAPI / VK_NV_low_latency2 one is put aside; otherwise Streamline makes no
+// latency calls of its own, and the reducer's calls (NvAPI on the native D3D12 device, which is never
+// wrapped; VK_NV_low_latency2 on Vulkan) are the only ones. The scene colour DLSS reads and writes is the
 // same linear scene-referred picture FSR gets, so the HDR float scene (hdr_tonemap.h) takes the
 // output image as the tone map's input here exactly as it does under FSR; mcla_gpu_aa is held off
 // by TemporalSystem::HoldsAaOff for either.
@@ -130,6 +142,8 @@
 // SetColorSpace1, SetHDRMetaData, ResizeBuffers).
 // ===========================================================================
 
+#include <cctype>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -210,5 +224,204 @@ inline bool UpgradeSwapChain(void**) { return false; }
 inline void SwapChainRecreated() {}
 }  // namespace dlss
 #endif
+
+// ---------------------------------------------------------------------------
+// DLSS Frame Generation and Reflex through Streamline: the neutral functions
+// ---------------------------------------------------------------------------
+// What dlss_frame_generation.cpp and latency_streamline.cpp call (no Streamline type in any of them;
+// the bodies are in temporal_dlss.cpp, or inline stubs where the build has no Streamline or no
+// frame generation plugins). Streamline's API is not thread safe: every call takes its one lock
+// (Runtime::mu), except Reflex's sleep and the PC latency markers (thread safe in Streamline, and
+// they must not wait behind the seconds a DLSS feature takes to make). The render thread's calls
+// never wait for a feature's creation: they say `busy` and are asked again at the next frame.
+namespace dlss {
+
+// By name only (the runtime's support query is the final word): a GeForce RTX 40 or 50 series card
+// (and the workstation cards of those generations, "RTX 5000 Ada", "RTX PRO 6000 Blackwell"), the
+// cards DLSS frame generation runs on. A card that looks like one and is not (Quadro RTX 4000, a
+// Turing) is only asked.
+inline bool NameLooksLikeFrameGeneration(const std::string& name) {
+  std::string upper;
+  for (char c : name) {
+    upper += char(std::toupper(static_cast<unsigned char>(c)));
+  }
+  if (upper.find("BLACKWELL") != std::string::npos || upper.find(" ADA") != std::string::npos) {
+    return true;
+  }
+  const size_t rtx = upper.find("RTX");
+  if (rtx == std::string::npos) {
+    return false;
+  }
+  size_t at = rtx + 3;
+  while (at < upper.size() && upper[at] == ' ') {
+    ++at;
+  }
+  return at < upper.size() && (upper[at] == '4' || upper[at] == '5');
+}
+// An RTX 50 series (Blackwell): the cards that take more than one generated frame (3x and 4x).
+inline bool NameLooksLikeMultiFrameGeneration(const std::string& name) {
+  std::string upper;
+  for (char c : name) {
+    upper += char(std::toupper(static_cast<unsigned char>(c)));
+  }
+  if (upper.find("BLACKWELL") != std::string::npos) {
+    return true;
+  }
+  const size_t rtx = upper.find("RTX");
+  if (rtx == std::string::npos) {
+    return false;
+  }
+  size_t at = rtx + 3;
+  while (at < upper.size() && upper[at] == ' ') {
+    ++at;
+  }
+  return at < upper.size() && upper[at] == '5';
+}
+
+// What Streamline said about frame generation (any thread, never waits for a feature's creation).
+struct FrameGenerationFacts {
+  bool asked = false;      // Streamline was started with the frame generation, Reflex and PC latency plugins
+  bool queried = false;    // the support question was asked: the start is over, the answer is final
+  bool supported = false;  // this card, this driver, Windows and its graphics settings can run it
+  uint32_t max_frames_generated = 0;  // slDLSSGGetState: 1 is 2x, 2 is 3x, 3 is 4x
+  uint32_t min_size = 0;              // the smallest width or height it takes
+  bool vsync_supported = false;
+  bool dynamic_supported = false;     // dynamic multi frame generation (not used)
+  std::string why;                    // not supported, or left out of the start: one plain sentence
+};
+
+// FrameGenerationFilesPresent: the files frame generation needs are next to the exe (nothing is
+// loaded); `missing` lists the ones that are not there.
+
+// The frame generation plugin loaded or unloaded (slSetFeatureLoaded), at a frame boundary on the
+// render thread, with no swap chain of the game's alive when unloading and the chain made after
+// loading (Streamline's own proxy chain exists only for a chain made while the plugin is loaded).
+// kBusy: Streamline is making a feature, ask again.
+enum class LoadResult : uint8_t { kDone, kBusy, kFailed };
+
+// The size and the content of what is tagged for a frame, and the camera it was made with (Streamline's
+// constants).
+struct FrameGenerationInputs {
+  uint32_t frame_index = 0;           // the latency frame's id: the constants, the tags and the markers share it
+  uint32_t render_size[2] = {};       // the depth and the vectors (the scene's size)
+  uint32_t back_size[2] = {};         // the back buffer, the HUD-less colour and the UI
+  TemporalImage depth;                // R32_FLOAT, 1 near / 0 far
+  TemporalImage motion;               // RG16_FLOAT, render pixels, previous minus current, +y down
+  TemporalImage hudless;              // the scene as the back buffer has it, without the UI
+  TemporalImage ui;                   // the UI, premultiplied colour and coverage in alpha
+  float jitter[2] = {};               // render pixels, +y down: what the frame's draws were moved by
+  bool reset = false;                 // the history starts again with this frame
+  float camera_near = 0.1f;
+  float camera_far = 1000.0f;
+  float camera_fov_y = 1.0f;          // radians
+  float camera_aspect = 1.0f;
+  float view_to_clip[16] = {};        // row-major matrices of row vectors, no jitter (temporal.h StreamlineCamera)
+  float clip_to_view[16] = {};
+  float clip_to_prev_clip[16] = {};
+  float prev_clip_to_clip[16] = {};
+  float camera_position[3] = {};
+  float camera_up[3] = {};
+  float camera_right[3] = {};
+  float camera_forward[3] = {};
+};
+
+struct FrameGenerationOptions {
+  bool on = false;                    // generate: else the plugin passes the frames through (and keeps its memory)
+  uint32_t frames_to_generate = 1;    // 1 is 2x, 2 is 3x, 3 is 4x
+  uint32_t color_size[2] = {};        // the back buffer
+  uint32_t mvec_depth_size[2] = {};   // the depth and the vectors
+  uint32_t back_buffers = 0;
+  bool request_vram_estimate = false; // slDLSSGGetState then fills vram_bytes (not every frame: it is costly)
+};
+
+// slDLSSGGetState, for the checks and the log.
+struct FrameGenerationState {
+  bool ok = false;                    // the call worked
+  uint32_t frames_presented = 0;      // per application frame since the last call (2 at 2x)
+  uint32_t max_frames_generated = 0;
+  uint32_t min_size = 0;
+  uint64_t vram_bytes = 0;
+  // sl::DLSSGStatus, split: why Streamline would not generate.
+  bool resolution_too_low = false;
+  bool reflex_missing = false;        // Reflex did not run with the frame's markers
+  bool hdr_format_unsupported = false;
+  bool constants_invalid = false;
+  bool back_buffer_index_not_asked = false;
+};
+
+enum class ReflexMarker : uint8_t {
+  kSimulationStart,
+  kSimulationEnd,
+  kRenderSubmitStart,
+  kRenderSubmitEnd,
+  kPresentStart,
+  kPresentEnd,
+  kInputSample,
+};
+
+#if defined(LARECOMP_HAS_DLSS)
+FrameGenerationFacts GetFrameGenerationFacts();
+bool FrameGenerationFilesPresent(std::string* missing);
+LoadResult LoadFrameGeneration(bool loaded, std::string* why);
+// D3D12: replaces `*factory` (Plume's native IDXGIFactory4, not given a reference) with Streamline's
+// proxy of it when the frame generation plugin is loaded; the caller owns the proxy's one reference
+// and releases it after the swap chain is made. False with `*factory` untouched otherwise.
+bool UpgradeFactory(void** factory);
+// The swap chain Plume presents on is, or is no longer, Streamline's own proxy chain: no wrapper of
+// ours goes over it (SwapChainUpgradePending says false) and SwapChainRecreated waits.
+void NoteSwapChainProxied(bool proxied);
+bool SetFrameGenerationOptions(const FrameGenerationOptions& options, std::string* why, bool* busy);
+// Records nothing itself: sets this frame's constants and the tags (slSetConstants,
+// slSetTagForFrame with `native_list` as the command buffer the tags' states are given on). The
+// four images must already be in the compute read state (backend::ImageUse::kComputeRead) and stay
+// in it until the present.
+bool TagFrameGeneration(void* native_list, const FrameGenerationInputs& inputs, std::string* why,
+                        bool* busy);
+bool ReadFrameGenerationState(FrameGenerationState* state, bool request_vram_estimate,
+                              std::string* why, bool* busy);
+// Frame generation is going: the plugin's resources go, then it is unloaded (the GPU idle, the
+// swap chain's proxy gone or about to).
+void ShutdownFrameGeneration();
+
+namespace reflex {
+// Streamline's Reflex and PC latency plugins can be called now (the start is over, frame generation
+// is supported: they were asked for with it).
+bool Available();
+// slReflexSetOptions: on or off, with boost. False when Streamline refused it.
+bool SetMode(bool on, bool boost);
+// slReflexSleep for the frame: the wait before the frame starts. False when it could not be made.
+bool Sleep(uint32_t frame);
+// slPCLSetMarker with the frame's token.
+void SetMarker(ReflexMarker marker, uint32_t frame);
+}  // namespace reflex
+#else
+inline FrameGenerationFacts GetFrameGenerationFacts() {
+  FrameGenerationFacts facts;
+  facts.queried = true;
+  facts.why = "this build has no DLSS";
+  return facts;
+}
+inline bool FrameGenerationFilesPresent(std::string* missing) {
+  if (missing) {
+    *missing = "this build has no DLSS";
+  }
+  return false;
+}
+inline LoadResult LoadFrameGeneration(bool, std::string*) { return LoadResult::kFailed; }
+inline bool UpgradeFactory(void**) { return false; }
+inline void NoteSwapChainProxied(bool) {}
+inline bool SetFrameGenerationOptions(const FrameGenerationOptions&, std::string*, bool*) { return false; }
+inline bool TagFrameGeneration(void*, const FrameGenerationInputs&, std::string*, bool*) { return false; }
+inline bool ReadFrameGenerationState(FrameGenerationState*, bool, std::string*, bool*) { return false; }
+inline void ShutdownFrameGeneration() {}
+namespace reflex {
+inline bool Available() { return false; }
+inline bool SetMode(bool, bool) { return false; }
+inline bool Sleep(uint32_t) { return false; }
+inline void SetMarker(ReflexMarker, uint32_t) {}
+}  // namespace reflex
+#endif
+
+}  // namespace dlss
 
 }  // namespace mcla::gpu

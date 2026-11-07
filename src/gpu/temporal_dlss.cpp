@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -35,6 +36,12 @@
 // GetProcAddress, so none of the SL_API declarations or header helpers is ever called.
 #include <sl.h>
 #include <sl_dlss.h>
+#if defined(LARECOMP_HAS_DLSS_G)
+// DLSS frame generation, and Reflex with the PC latency markers, which it requires.
+#include <sl_dlss_g.h>
+#include <sl_pcl.h>
+#include <sl_reflex.h>
+#endif
 #if defined(__MINGW32__)
 // Streamline's sl_security.h counts a file's nested signatures with WINTRUST_SIGNATURE_SETTINGS
 // (Windows 8's wintrust), which mingw-w64's headers do not declare: VerifiedByNvidia below.
@@ -48,8 +55,11 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "latency.h"
 #include "texture_bytes.h"
 #include "vram_budget.h"
+
+REXCVAR_DECLARE(std::string, mcla_gpu_frame_generation);  // frame_generation.cpp
 
 namespace mcla::gpu {
 
@@ -86,6 +96,12 @@ const wchar_t* const kFiles[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dl
 // own check: Windows trusts the file and the signer's key is NVIDIA's). nvngx_dlss.dll is loaded
 // by sl.dlss.dll, which checks it itself.
 const wchar_t* const kSignedFiles[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll"};
+// Frame generation's (dlss_frame_generation.h): the plugin and its network, and the two plugins it
+// requires. Needed only when Streamline is started with them (InitLocked); the three plugins are
+// checked like the others, nvngx_dlssg.dll is loaded and checked by sl.dlss_g.dll.
+const wchar_t* const kFrameGenFiles[] = {L"sl.dlss_g.dll", L"nvngx_dlssg.dll", L"sl.reflex.dll",
+                                         L"sl.pcl.dll"};
+const wchar_t* const kFrameGenSignedFiles[] = {L"sl.dlss_g.dll", L"sl.reflex.dll", L"sl.pcl.dll"};
 
 std::string Utf8(const wchar_t* text) {
   if (!text) {
@@ -252,6 +268,19 @@ bool NameLooksLikeRtx(const std::string& name) {
   return false;
 }
 
+// Whether Streamline is started with the frame generation plugins (InitLocked): where the player has
+// chosen DLSS frame generation, and on D3D12 for every card that can run it (the choice may come
+// while the game runs). On Vulkan only the saved choice at the start counts: the device is made
+// through Streamline then, which costs seconds, and the plugins' extensions and queues go into it.
+bool WantFrameGenerationPlugins(Backend backend, const std::string& gpu_name) {
+  if (REXCVAR_GET(mcla_gpu_frame_generation) == "dlss") {
+    return true;
+  }
+  // On D3D12 for every card that can run it by its name (plugins cannot be added after slInit, and
+  // the choice may come while the game runs); the support query is the final word.
+  return backend == Backend::kD3D12 && dlss::NameLooksLikeFrameGeneration(gpu_name);
+}
+
 std::string ResultText(sl::Result result) {
   const char* name = "";
   switch (result) {
@@ -262,6 +291,10 @@ std::string ResultText(sl::Result result) {
       name = "no graphics card that runs it (DLSS needs an NVIDIA RTX card)";
       break;
     case sl::Result::eErrorAdapterNotSupported: name = "this graphics card does not run it"; break;
+    case sl::Result::eErrorOSDisabledHWS:
+      name = "hardware-accelerated GPU scheduling is off (Windows Settings, System, Display, "
+             "Graphics, Default graphics settings)";
+      break;
     default: break;
   }
   return std::format("{}{}sl::Result {}", name, name[0] ? ", " : "", uint32_t(result));
@@ -372,10 +405,22 @@ struct SlApi {
   PFun_slFreeResources* free_resources = nullptr;
   PFun_slSetD3DDevice* set_d3d_device = nullptr;
   PFun_slUpgradeInterface* upgrade_interface = nullptr;  // optional: D3D12's swap chain wrapper
+  // Optional: frame generation's (tags for a frame, a feature loaded and unloaded again).
+  PFun_slSetTagForFrame* set_tag_for_frame = nullptr;
+  PFun_slSetFeatureLoaded* set_feature_loaded = nullptr;
   // Taken through slGetFeatureFunction once the device is known.
   PFun_slDLSSGetOptimalSettings* dlss_optimal = nullptr;
   PFun_slDLSSSetOptions* dlss_set_options = nullptr;
   PFun_slDLSSGetState* dlss_state = nullptr;
+#if defined(LARECOMP_HAS_DLSS_G)
+  // The frame generation, Reflex and PC latency plugins' functions, taken through slGetFeatureFunction
+  // (the frame generation ones again whenever the feature is loaded again).
+  PFun_slDLSSGSetOptions* dlssg_set_options = nullptr;
+  PFun_slDLSSGGetState* dlssg_get_state = nullptr;
+  PFun_slReflexSetOptions* reflex_set_options = nullptr;
+  PFun_slReflexSleep* reflex_sleep = nullptr;
+  PFun_slPCLSetMarker* pcl_set_marker = nullptr;
+#endif
 };
 
 // Streamline, once per process: the module, its start-up and every call (its API is not thread
@@ -399,7 +444,29 @@ struct Runtime {
   void* vk_get_instance_proc_addr = nullptr;  // the interposer's, when started for Vulkan
   bool vk_hook = false;                       // Plume is to load Vulkan through it
   bool swap_chain_tried = false;              // D3D12: the swap chain was offered to slUpgradeInterface
+  // slInit was given the frame generation, Reflex and PC latency plugins (InitLocked), and the three
+  // are loaded: the frame generation one is unloaded again after the support query and loaded while
+  // it runs (dlss::LoadFrameGeneration), Reflex and PC latency stay.
+  bool frame_gen_asked = false;
+  bool frame_gen_loaded = false;  // the frame generation plugin is loaded now
 };
+
+// The frame generation facts the menu and the module read (dlss::FrameGenerationFacts): written by
+// the worker with Runtime::mu held, read under their own lock so that a reader never waits for a
+// feature's creation (seconds).
+std::mutex g_fg_mutex;
+dlss::FrameGenerationFacts g_fg_facts;
+// The worker is making a feature (or Streamline's start): the render thread's Streamline calls that
+// would wait for the lock say busy instead (Impl::building is this).
+std::atomic<bool> g_building{false};
+// The swap chain Plume presents on is Streamline's own proxy (frame generation made it through the
+// proxy factory): no wrapper of ours goes over it, and a chain made again is plain until frame
+// generation is on again.
+std::atomic<bool> g_chain_proxied{false};
+// Reflex and the PC latency markers can be called (the functions are there, Streamline runs): read by
+// the update thread and the render thread without the lock; Reflex's sleep and the markers are
+// thread safe in Streamline and must not wait behind a feature's creation.
+std::atomic<bool> g_reflex_ready{false};
 
 // D3D12: Streamline has fully started and the swap chain is still to be handed to it
 // (dlss::UpgradeSwapChain). Read at every present, so not behind Runtime::mu.
@@ -448,6 +515,8 @@ bool LoadRuntimeLocked(Runtime& rt, std::string* why) {
   a.free_resources = Import<PFun_slFreeResources>(rt.interposer, "slFreeResources");
   a.set_d3d_device = Import<PFun_slSetD3DDevice>(rt.interposer, "slSetD3DDevice");
   a.upgrade_interface = Import<PFun_slUpgradeInterface>(rt.interposer, "slUpgradeInterface");
+  a.set_tag_for_frame = Import<PFun_slSetTagForFrame>(rt.interposer, "slSetTagForFrame");
+  a.set_feature_loaded = Import<PFun_slSetFeatureLoaded>(rt.interposer, "slSetFeatureLoaded");
   if (!a.init || !a.shutdown || !a.is_supported || !a.get_function || !a.new_frame_token ||
       !a.set_constants || !a.evaluate || !a.free_resources || !a.set_d3d_device) {
     *why = "sl.interposer.dll lacks functions of Streamline's API";
@@ -458,20 +527,69 @@ bool LoadRuntimeLocked(Runtime& rt, std::string* why) {
   return true;
 }
 
+// Whether the frame generation files are there and the three plugins signed (`why` says what not).
+bool FrameGenFilesOk(const std::wstring& dir, std::string* why) {
+  std::string missing;
+  for (const wchar_t* file : kFrameGenFiles) {
+    if (dir.empty() || !FileExists(dir + file)) {
+      missing += (missing.empty() ? "" : ", ") + Utf8(file);
+    }
+  }
+  if (!missing.empty()) {
+    *why = "these files are not next to the game's exe: " + missing;
+    return false;
+  }
+  for (const wchar_t* file : kFrameGenSignedFiles) {
+    if (!VerifiedByNvidia(dir + file)) {
+      *why = std::format("{} does not carry NVIDIA's signature, or Windows does not trust it",
+                         Utf8(file));
+      return false;
+    }
+  }
+  return true;
+}
+
 // slInit, in the manual hooking mode: no proxies of the D3D12 or DXGI interfaces (Super Resolution
 // needs none), the game's own device is given later. Not the defaults: no over-the-air plugin
 // updates and no downloaded plugins (the files shipped with the game are the ones that run), the
 // host (Plume's InvalidateAfterExternalWork) restores the command list state.
 //
+// `frame_gen`: also the plugins of DLSS frame generation, Reflex and the PC latency markers (the
+// build has them, their files are in place and signed): features can only be asked for here, so this
+// is decided by who may use them (WantFrameGenerationPlugins). With them the tags are the frame
+// based kind (slSetTagForFrame), which frame generation needs: Super Resolution's own tags are local
+// to its evaluation and unaffected.
+//
 // Streamline's log: every line goes to sl.log in the logs folder (what a bug report needs); the
 // callback hands the game's log only the warnings and errors (SlLog).
-bool InitLocked(Runtime& rt, sl::RenderAPI api, std::string* why) {
+bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, std::string* why) {
   if (rt.initialized) {
     return true;
   }
   const std::wstring dir = ExeDirectory();
   const wchar_t* plugin_paths[] = {dir.c_str()};
-  const sl::Feature features[] = {sl::kFeatureDLSS};
+  std::vector<sl::Feature> features = {sl::kFeatureDLSS};
+  sl::PreferenceFlags flags =
+      sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseManualHooking;
+#if defined(LARECOMP_HAS_DLSS_G)
+  if (frame_gen) {
+    std::string fg_why;
+    if (FrameGenFilesOk(dir, &fg_why)) {
+      features.push_back(sl::kFeatureDLSS_G);
+      features.push_back(sl::kFeatureReflex);
+      features.push_back(sl::kFeaturePCL);
+      flags |= sl::PreferenceFlags::eUseFrameBasedResourceTagging;
+      rt.frame_gen_asked = true;
+      rt.frame_gen_loaded = true;
+    } else {
+      REXLOG_INFO("{} frame generation is left out of Streamline's start: {}", kPrefix, fg_why);
+      std::lock_guard fg_lock(g_fg_mutex);
+      g_fg_facts.why = fg_why;
+    }
+  }
+#else
+  (void)frame_gen;
+#endif
   const std::wstring logs = StreamlineLogFolder();
   sl::Preferences pref;
   pref.showConsole = false;
@@ -480,9 +598,9 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, std::string* why) {
   pref.numPathsToPlugins = 1;
   pref.pathToLogsAndData = logs.empty() ? nullptr : logs.c_str();
   pref.logMessageCallback = &SlLog;
-  pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseManualHooking;
-  pref.featuresToLoad = features;
-  pref.numFeaturesToLoad = 1;
+  pref.flags = flags;
+  pref.featuresToLoad = features.data();
+  pref.numFeaturesToLoad = uint32_t(features.size());
   pref.engine = sl::EngineType::eCustom;
   pref.engineVersion = kEngineVersion;
   pref.projectId = kProjectId;
@@ -504,6 +622,107 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, std::string* why) {
   rt.initialized = true;
   return true;
 }
+
+#if defined(LARECOMP_HAS_DLSS_G)
+// Streamline's answer on frame generation, once the device is set (slSetD3DDevice, or the Vulkan
+// device made through the interposer): whether the feature is supported here, its functions and the
+// functions of the Reflex and PC latency plugins it requires, and what slDLSSGGetState says (the most
+// generated frames, the smallest size, vertical sync). Then the frame generation plugin is unloaded
+// until it is wanted: a loaded plugin takes over the swap chains made after it, and Plume's chain
+// is already made without it (dlss::LoadFrameGeneration). Never fails Super Resolution.
+void QueryFrameGenerationLocked(Runtime& rt, const sl::AdapterInfo& adapter,
+                                const std::string& gpu_name) {
+  dlss::FrameGenerationFacts facts;
+  {
+    std::lock_guard fg_lock(g_fg_mutex);
+    facts = g_fg_facts;  // `why` of a start that left the plugins out
+  }
+  facts.asked = rt.frame_gen_asked;
+  facts.queried = true;
+  if (!rt.frame_gen_asked) {
+    if (facts.why.empty()) {
+      facts.why = "Streamline was started without the frame generation plugins";
+    }
+    std::lock_guard fg_lock(g_fg_mutex);
+    g_fg_facts = facts;
+    return;
+  }
+  std::string why;
+  const auto function_of = [&rt, &why](sl::Feature feature, const char* name) -> void* {
+    void* function = nullptr;
+    const sl::Result r = rt.api.get_function(feature, name, function);
+    if (r != sl::Result::eOk || !function) {
+      why = std::format("Streamline has no {}: {}", name, ResultText(r));
+      return nullptr;
+    }
+    return function;
+  };
+  const sl::Result g = rt.api.is_supported(sl::kFeatureDLSS_G, adapter);
+  const sl::Result reflex = g == sl::Result::eOk ? rt.api.is_supported(sl::kFeatureReflex, adapter)
+                                                 : sl::Result::eOk;
+  if (g != sl::Result::eOk) {
+    why = "Streamline says DLSS frame generation cannot run on '" + gpu_name + "': " + ResultText(g);
+  } else if (reflex != sl::Result::eOk) {
+    why = "Streamline says Reflex, which frame generation requires, cannot run on '" + gpu_name +
+          "': " + ResultText(reflex);
+  } else {
+    void* set_options = function_of(sl::kFeatureDLSS_G, "slDLSSGSetOptions");
+    void* get_state = set_options ? function_of(sl::kFeatureDLSS_G, "slDLSSGetState") : nullptr;
+    void* reflex_options = get_state ? function_of(sl::kFeatureReflex, "slReflexSetOptions") : nullptr;
+    void* reflex_sleep = reflex_options ? function_of(sl::kFeatureReflex, "slReflexSleep") : nullptr;
+    void* pcl_marker = reflex_sleep ? function_of(sl::kFeaturePCL, "slPCLSetMarker") : nullptr;
+    if (pcl_marker) {
+      rt.api.dlssg_set_options = reinterpret_cast<PFun_slDLSSGSetOptions*>(set_options);
+      rt.api.dlssg_get_state = reinterpret_cast<PFun_slDLSSGGetState*>(get_state);
+      rt.api.reflex_set_options = reinterpret_cast<PFun_slReflexSetOptions*>(reflex_options);
+      rt.api.reflex_sleep = reinterpret_cast<PFun_slReflexSleep*>(reflex_sleep);
+      rt.api.pcl_set_marker = reinterpret_cast<PFun_slPCLSetMarker*>(pcl_marker);
+      sl::DLSSGState state;
+      const sl::Result r = rt.api.dlssg_get_state(sl::ViewportHandle(0u), state, nullptr);
+      if (r == sl::Result::eOk) {
+        facts.supported = true;
+        facts.max_frames_generated = state.numFramesToGenerateMax;
+        facts.min_size = state.minWidthOrHeight;
+        facts.vsync_supported = state.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
+        facts.dynamic_supported = state.bIsDynamicMFGSupported == sl::Boolean::eTrue;
+      } else {
+        why = "slDLSSGGetState failed: " + ResultText(r);
+      }
+    }
+  }
+  facts.why = facts.supported ? std::string() : why;
+  // Reflex and the markers work while frame generation is off (and are used only while it is on).
+  g_reflex_ready.store(facts.supported, std::memory_order_release);
+  if (rt.api.set_feature_loaded) {
+    const sl::Result r = rt.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
+    rt.frame_gen_loaded = r != sl::Result::eOk;
+    if (r != sl::Result::eOk) {
+      REXLOG_WARN("{} the frame generation plugin could not be unloaded after the support query: {}; "
+                  "it stays loaded, so Streamline's wrapper of the swap chain is the plugin's",
+                  kPrefix, ResultText(r));
+    }
+  }
+  {
+    std::lock_guard fg_lock(g_fg_mutex);
+    g_fg_facts = facts;
+  }
+  if (facts.supported) {
+    REXLOG_INFO("{} DLSS frame generation is supported on '{}': up to {}x ({} generated frame(s) at "
+                "most), the smallest size {}, vertical sync {}, dynamic multi frame {}",
+                kPrefix, gpu_name, facts.max_frames_generated + 1, facts.max_frames_generated,
+                facts.min_size, facts.vsync_supported ? "yes" : "no",
+                facts.dynamic_supported ? "yes" : "no");
+  } else {
+    REXLOG_INFO("{} DLSS frame generation is not offered: {}", kPrefix, facts.why);
+  }
+}
+#else
+void QueryFrameGenerationLocked(Runtime&, const sl::AdapterInfo&, const std::string&) {
+  std::lock_guard fg_lock(g_fg_mutex);
+  g_fg_facts.queried = true;
+  g_fg_facts.why = "this build has no DLSS frame generation";
+}
+#endif
 
 sl::float4x4 ToSl(const float* m) {
   sl::float4x4 out;
@@ -679,7 +898,7 @@ struct DlssBackend::Impl {
   std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;  // to be freed by the worker
   std::unique_ptr<SideKit> kit;
-  std::atomic<bool> building{false};  // the worker is making a context
+  std::atomic<bool>& building = g_building;  // the worker is making a context
   // Streamline's frame index: its own count, always rising, from any thread that evaluates.
   std::atomic<uint32_t> frame_counter{0};
 
@@ -1015,7 +1234,7 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
       *why = "on Vulkan Streamline has to start before the device is made";
       return false;
     }
-    if (!InitLocked(rt, sl::RenderAPI::eD3D12, why)) {
+    if (!InitLocked(rt, sl::RenderAPI::eD3D12, WantFrameGenerationPlugins(api, gpu_name), why)) {
       rt.failure = *why;
       return false;
     }
@@ -1068,6 +1287,7 @@ bool DlssBackend::Impl::StartRuntime(std::string* why, bool* files_problem) {
   rt.api.dlss_optimal = reinterpret_cast<PFun_slDLSSGetOptimalSettings*>(get_optimal);
   rt.api.dlss_set_options = reinterpret_cast<PFun_slDLSSSetOptions*>(set_options);
   rt.api.dlss_state = reinterpret_cast<PFun_slDLSSGetState*>(get_state);
+  QueryFrameGenerationLocked(rt, adapter, gpu_name);
   if (api == Backend::kD3D12 && rt.api.upgrade_interface) {
     // The plugins have started (slSetD3DDevice ran their start and filled the hook lists the
     // swap chain's wrapper reads): the next present may hand Streamline the swap chain.
@@ -2234,6 +2454,14 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   }
   sl::FrameToken* token = nullptr;
   uint32_t frame_index = ++frame_counter;
+  if (!wait && g_chain_proxied.load(std::memory_order_acquire)) {
+    // DLSS frame generation is on: Streamline's tokens are one ring and the same index gives the same
+    // token, so the frame's Super Resolution, its constants, tags and Reflex markers share the
+    // frame's one index, the latency id (a frame's dispatch only: the render thread reads it).
+    if (const uint64_t id = latency::RenderFrameId(); id != 0) {
+      frame_index = uint32_t(id);
+    }
+  }
   sl::Result result = rt.api.new_frame_token(token, &frame_index);
   if (result != sl::Result::eOk || !token) {
     return "slGetNewFrameToken failed: " + ResultText(result);
@@ -2352,6 +2580,8 @@ void DlssBackend::Shutdown() {
     // ignores the hook calls it gets after its shutdown, and Plume releases the wrapper with the
     // swap chain.
     g_swap_chain_pending.store(false, std::memory_order_release);
+    g_reflex_ready.store(false, std::memory_order_release);
+    dlss::ShutdownFrameGeneration();  // its resources and the plugin, before Streamline itself
     Runtime& rt = Rt();
     std::lock_guard lock(rt.mu);
     if (rt.initialized && !rt.shut_down) {
@@ -2400,12 +2630,18 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   // after the process starts and logs nothing here (the Probe's "listed for Vulkan" line follows);
   // a start with DLSS saved logs the "DLSS is the saved choice: Streamline started for Vulkan" line
   // below, with the device about 9.7 s in (LIVE2.txt).
-  if (ReadUpscalerSettings().upscaler != Upscaler::kDlss) {
+  // DLSS frame generation counts as well (mcla_gpu_frame_generation = dlss): it needs the instance and
+  // the device made through Streamline too, with its plugins' extensions, features and queues, so it is
+  // a start-time choice on Vulkan like DLSS itself (a Vulkan game started without it lists it as
+  // after-restart, dlss_frame_generation.h). On D3D12 neither needs a start-time decision.
+  const bool dlss_chosen = ReadUpscalerSettings().upscaler == Upscaler::kDlss;
+  const bool frame_gen_chosen = REXCVAR_GET(mcla_gpu_frame_generation) == "dlss";
+  if (!dlss_chosen && !frame_gen_chosen) {
     return;
   }
 #if !defined(LARECOMP_PLUME_STREAMLINE)
-  REXLOG_INFO("{} DLSS is chosen, but this build's Plume has no creation hooks for Streamline: "
-              "it is not available on Vulkan in this build",
+  REXLOG_INFO("{} DLSS or DLSS frame generation is chosen, but this build's Plume has no creation "
+              "hooks for Streamline: it is not available on Vulkan in this build",
               kPrefix);
   (void)preferred_adapter;
 #else
@@ -2426,7 +2662,8 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
     return;
   }
   std::string why;
-  if (!LoadRuntimeLocked(rt, &why) || !InitLocked(rt, sl::RenderAPI::eVulkan, &why)) {
+  if (!LoadRuntimeLocked(rt, &why) ||
+      !InitLocked(rt, sl::RenderAPI::eVulkan, frame_gen_chosen, &why)) {
     // The probe reports it (greyed as "needs setup" when the files are the problem).
     rt.failure = why;
     REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
@@ -2443,11 +2680,13 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   }
   rt.vk_get_instance_proc_addr = get_instance_proc_addr;
   rt.vk_hook = true;
-  REXLOG_INFO("{} DLSS is the saved choice: Streamline started for Vulkan before the device. Plume "
+  REXLOG_INFO("{} {} is the saved choice: Streamline started for Vulkan before the device. Plume "
               "loads Vulkan through its vkGetInstanceProcAddr, whose vkCreateInstance and "
               "vkCreateDevice add what DLSS needs (the start takes several seconds longer for "
               "it: Streamline's start and NGX's, on this thread)",
-              kPrefix);
+              kPrefix,
+              dlss_chosen && frame_gen_chosen ? "DLSS with frame generation"
+                                              : (dlss_chosen ? "DLSS" : "DLSS frame generation"));
 #endif
 }
 
@@ -2500,6 +2739,11 @@ void AbandonVulkanHook(const std::string& why) {
 namespace dlss {
 
 bool SwapChainUpgradePending() {
+  // Not over a chain that is Streamline's own proxy already (frame generation made it through the
+  // proxy factory): its calls would be a second wrapper's.
+  if (g_chain_proxied.load(std::memory_order_acquire)) {
+    return false;
+  }
   return g_swap_chain_pending.load(std::memory_order_acquire) ||
          g_swap_chain_again.load(std::memory_order_acquire);
 }
@@ -2510,14 +2754,19 @@ bool SwapChainUpgradePending() {
 // released with its chain).
 void SwapChainRecreated() {
   // Before the first offer the pending flag does it all (Streamline is still starting, or the
-  // first present will offer the chain that exists then).
+  // first present will offer the chain that exists then). A proxy chain of Streamline's own
+  // (frame generation) is not offered: when it goes, NoteSwapChainProxied(false) and the call for
+  // the plain chain that replaces it make the offer.
+  if (g_chain_proxied.load(std::memory_order_acquire)) {
+    return;
+  }
   if (g_swap_chain_offered.load(std::memory_order_acquire)) {
     g_swap_chain_again.store(true, std::memory_order_release);
   }
 }
 
 bool UpgradeSwapChain(void** swap_chain) {
-  if (!swap_chain || !*swap_chain ||
+  if (!swap_chain || !*swap_chain || g_chain_proxied.load(std::memory_order_acquire) ||
       (!g_swap_chain_pending.load(std::memory_order_acquire) &&
        !g_swap_chain_again.load(std::memory_order_acquire))) {
     return false;
@@ -2558,6 +2807,409 @@ bool UpgradeSwapChain(void** swap_chain) {
   REXLOG_INFO("{} Streamline's swap chain wrapper is in: it sees every present from now on", kPrefix);
   return true;
 }
+
+}  // namespace dlss
+
+// ---------------------------------------------------------------------------
+// Frame generation and Reflex through Streamline
+// ---------------------------------------------------------------------------
+// The neutral functions of temporal_dlss.h's second half (dlss_frame_generation.h and
+// latency_streamline.cpp call them). Everything that needs Streamline's lock takes it the way a
+// frame's dispatch does: tried first, and when the worker holds it for a feature's creation
+// (g_building) the answer is "busy" and the caller asks again at the next frame; a short hold
+// (options, freeing a context) is waited for.
+
+namespace dlss {
+
+FrameGenerationFacts GetFrameGenerationFacts() {
+  std::lock_guard lock(g_fg_mutex);
+  return g_fg_facts;
+}
+
+bool FrameGenerationFilesPresent(std::string* missing) {
+  const std::wstring dir = ExeDirectory();
+  std::string list = MissingFiles(dir);
+  for (const wchar_t* file : kFrameGenFiles) {
+    if (dir.empty() || !FileExists(dir + file)) {
+      list += (list.empty() ? "" : ", ") + Utf8(file);
+    }
+  }
+  if (missing) {
+    *missing = list;
+  }
+  return list.empty();
+}
+
+void NoteSwapChainProxied(bool proxied) {
+  g_chain_proxied.store(proxied, std::memory_order_release);
+}
+
+#if defined(LARECOMP_HAS_DLSS_G)
+
+namespace {
+
+// Streamline's lock for a call of the render thread's: false (and not held) when the worker is making
+// a feature.
+bool LockForFrame(Runtime& rt, std::unique_lock<std::mutex>& lock) {
+  lock = std::unique_lock<std::mutex>(rt.mu, std::try_to_lock);
+  if (lock.owns_lock()) {
+    return true;
+  }
+  if (g_building.load()) {
+    return false;
+  }
+  lock.lock();
+  return true;
+}
+
+// The frame token of `index` (Streamline keeps a ring of a few and gives the same token again for the
+// same index, so every call of a frame, from any thread, with the frame's index names one frame).
+sl::FrameToken* TokenFor(Runtime& rt, uint32_t index) {
+  sl::FrameToken* token = nullptr;
+  uint32_t value = index;
+  if (rt.api.new_frame_token(token, &value) != sl::Result::eOk) {
+    return nullptr;
+  }
+  return token;
+}
+
+// The last options asked for (under Runtime::mu): slDLSSGGetState wants them for the video memory
+// estimate.
+sl::DLSSGOptions g_last_options;
+
+constexpr uint32_t kViewport = 0;  // frame generation's own viewport: Super Resolution's contexts start at 1
+
+}  // namespace
+
+LoadResult LoadFrameGeneration(bool loaded, std::string* why) {
+  Runtime& rt = Rt();
+  std::unique_lock<std::mutex> lock;
+  if (!LockForFrame(rt, lock)) {
+    return LoadResult::kBusy;
+  }
+  if (!rt.initialized || rt.shut_down || !rt.frame_gen_asked || !rt.api.set_feature_loaded) {
+    *why = "Streamline does not run with the frame generation plugins";
+    return LoadResult::kFailed;
+  }
+  if (rt.frame_gen_loaded == loaded) {
+    return LoadResult::kDone;
+  }
+  if (loaded && !GetFrameGenerationFacts().supported) {
+    *why = "Streamline said frame generation is not supported here";
+    return LoadResult::kFailed;
+  }
+  const sl::Result result = rt.api.set_feature_loaded(sl::kFeatureDLSS_G, loaded);
+  if (result != sl::Result::eOk) {
+    *why = std::format("slSetFeatureLoaded({}) failed: {}", loaded ? "true" : "false",
+                       ResultText(result));
+    return LoadResult::kFailed;
+  }
+  rt.frame_gen_loaded = loaded;
+  if (loaded) {
+    // The plugin starts again with the device it was given: its functions are taken again.
+    void* set_options = nullptr;
+    void* get_state = nullptr;
+    const sl::Result a = rt.api.get_function(sl::kFeatureDLSS_G, "slDLSSGSetOptions", set_options);
+    const sl::Result b = rt.api.get_function(sl::kFeatureDLSS_G, "slDLSSGetState", get_state);
+    if (a != sl::Result::eOk || b != sl::Result::eOk || !set_options || !get_state) {
+      *why = "the frame generation plugin's functions are missing after it was loaded";
+      rt.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
+      rt.frame_gen_loaded = false;
+      return LoadResult::kFailed;
+    }
+    rt.api.dlssg_set_options = reinterpret_cast<PFun_slDLSSGSetOptions*>(set_options);
+    rt.api.dlssg_get_state = reinterpret_cast<PFun_slDLSSGGetState*>(get_state);
+    g_last_options = sl::DLSSGOptions{};
+  }
+  return LoadResult::kDone;
+}
+
+bool UpgradeFactory(void** factory) {
+  if (!factory || !*factory) {
+    return false;
+  }
+  Runtime& rt = Rt();
+  std::unique_lock<std::mutex> lock;
+  if (!LockForFrame(rt, lock)) {
+    return false;
+  }
+  if (!rt.initialized || rt.shut_down || !rt.api.upgrade_interface || !rt.frame_gen_loaded) {
+    return false;
+  }
+  void* proxy = *factory;
+  const sl::Result result = rt.api.upgrade_interface(&proxy);
+  if (result != sl::Result::eOk || !proxy || proxy == *factory) {
+    REXLOG_WARN("{} Streamline did not give a proxy of the DXGI factory ({}): the swap chain is made "
+                "without it, and frame generation cannot present",
+                kPrefix, ResultText(result));
+    return false;
+  }
+  *factory = proxy;
+  return true;
+}
+
+bool SetFrameGenerationOptions(const FrameGenerationOptions& o, std::string* why, bool* busy) {
+  Runtime& rt = Rt();
+  std::unique_lock<std::mutex> lock;
+  if (!LockForFrame(rt, lock)) {
+    *busy = true;
+    return false;
+  }
+  if (!rt.initialized || rt.shut_down || !rt.frame_gen_loaded || !rt.api.dlssg_set_options) {
+    *why = "the frame generation plugin is not loaded";
+    return false;
+  }
+  sl::DLSSGOptions options;
+  options.mode = o.on ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
+  options.numFramesToGenerate = std::max<uint32_t>(o.frames_to_generate, 1u);
+  // The plugin keeps its memory while off (the pause menu, a loading screen), so that switching back
+  // is not a stutter; the whole plugin is unloaded by LoadFrameGeneration when the setting goes off.
+  options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+  options.numBackBuffers = o.back_buffers;
+  options.colorWidth = o.color_size[0];
+  options.colorHeight = o.color_size[1];
+  options.mvecDepthWidth = o.mvec_depth_size[0];
+  options.mvecDepthHeight = o.mvec_depth_size[1];
+  options.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
+  const sl::Result result = rt.api.dlssg_set_options(sl::ViewportHandle(kViewport), options);
+  if (result != sl::Result::eOk) {
+    *why = "slDLSSGSetOptions failed: " + ResultText(result);
+    return false;
+  }
+  g_last_options = options;
+  return true;
+}
+
+bool TagFrameGeneration(void* native_list, const FrameGenerationInputs& in, std::string* why,
+                        bool* busy) {
+  const backend::NativeImage depth_native =
+      backend::NativeImageOf(in.depth.texture, backend::ImageUse::kComputeRead);
+  const backend::NativeImage motion_native =
+      backend::NativeImageOf(in.motion.texture, backend::ImageUse::kComputeRead);
+  const backend::NativeImage hudless_native =
+      backend::NativeImageOf(in.hudless.texture, backend::ImageUse::kComputeRead);
+  const backend::NativeImage ui_native =
+      backend::NativeImageOf(in.ui.texture, backend::ImageUse::kComputeRead);
+  if (!depth_native.complete || !motion_native.complete || !hudless_native.complete ||
+      !ui_native.complete) {
+    *why = "an input image has no native object, or Plume cannot describe it to Streamline";
+    return false;
+  }
+  sl::Resource depth_res = MakeSlResource(in.depth, depth_native);
+  sl::Resource motion_res = MakeSlResource(in.motion, motion_native);
+  sl::Resource hudless_res = MakeSlResource(in.hudless, hudless_native);
+  sl::Resource ui_res = MakeSlResource(in.ui, ui_native);
+  const sl::Extent render_extent = MakeExtent(in.render_size[0], in.render_size[1]);
+  const sl::Extent back_extent = MakeExtent(in.back_size[0], in.back_size[1]);
+  // Valid until the present: the four are made in this frame's list, are not written again before
+  // the present (the next frame's work is on the same queue, which Streamline holds until its own
+  // work on them is done: DLSSGQueueParallelismMode::eBlockPresentingClientQueue) and are left in the
+  // compute read state they were given.
+  const sl::ResourceLifecycle lifecycle = sl::ResourceLifecycle::eValidUntilPresent;
+  const sl::ResourceTag tags[] = {
+      sl::ResourceTag(&depth_res, sl::kBufferTypeDepth, lifecycle, &render_extent),
+      sl::ResourceTag(&motion_res, sl::kBufferTypeMotionVectors, lifecycle, &render_extent),
+      sl::ResourceTag(&hudless_res, sl::kBufferTypeHUDLessColor, lifecycle, &back_extent),
+      sl::ResourceTag(&ui_res, sl::kBufferTypeUIColorAndAlpha, lifecycle, &back_extent),
+  };
+
+  sl::Constants consts;
+  FillStaticConstants(consts);
+  consts.cameraViewToClip = ToSl(in.view_to_clip);
+  consts.clipToCameraView = ToSl(in.clip_to_view);
+  consts.clipToPrevClip = ToSl(in.clip_to_prev_clip);
+  consts.prevClipToClip = ToSl(in.prev_clip_to_clip);
+  consts.jitterOffset = sl::float2(in.jitter[0], in.jitter[1]);
+  // The vectors are render pixels (the temporal system's motion pass); over the render size they are
+  // in [-1, 1] as Streamline asks.
+  consts.mvecScale = sl::float2(1.0f / float(std::max(in.render_size[0], 1u)),
+                                1.0f / float(std::max(in.render_size[1], 1u)));
+  consts.cameraPos = sl::float3(in.camera_position[0], in.camera_position[1], in.camera_position[2]);
+  consts.cameraUp = sl::float3(in.camera_up[0], in.camera_up[1], in.camera_up[2]);
+  consts.cameraRight = sl::float3(in.camera_right[0], in.camera_right[1], in.camera_right[2]);
+  consts.cameraFwd = sl::float3(in.camera_forward[0], in.camera_forward[1], in.camera_forward[2]);
+  consts.cameraNear = in.camera_near;
+  consts.cameraFar = in.camera_far;
+  consts.cameraFOV = in.camera_fov_y;
+  consts.cameraAspectRatio = in.camera_aspect;
+  consts.reset = in.reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+
+  Runtime& rt = Rt();
+  std::unique_lock<std::mutex> lock;
+  if (!LockForFrame(rt, lock)) {
+    *busy = true;
+    return false;
+  }
+  if (!rt.initialized || rt.shut_down || !rt.frame_gen_loaded || !rt.api.set_tag_for_frame) {
+    *why = "the frame generation plugin is not loaded";
+    return false;
+  }
+  sl::FrameToken* token = TokenFor(rt, in.frame_index);
+  if (!token) {
+    *why = "slGetNewFrameToken failed";
+    return false;
+  }
+  const sl::ViewportHandle viewport(kViewport);
+  sl::Result result = rt.api.set_constants(consts, *token, viewport);
+  if (result != sl::Result::eOk) {
+    *why = "slSetConstants failed: " + ResultText(result);
+    return false;
+  }
+  result = rt.api.set_tag_for_frame(*token, viewport, tags, uint32_t(std::size(tags)), native_list);
+  if (result != sl::Result::eOk) {
+    *why = "slSetTagForFrame failed: " + ResultText(result);
+    return false;
+  }
+  return true;
+}
+
+bool ReadFrameGenerationState(FrameGenerationState* out, bool request_vram_estimate,
+                              std::string* why, bool* busy) {
+  Runtime& rt = Rt();
+  std::unique_lock<std::mutex> lock;
+  if (!LockForFrame(rt, lock)) {
+    *busy = true;
+    return false;
+  }
+  if (!rt.initialized || rt.shut_down || !rt.frame_gen_loaded || !rt.api.dlssg_get_state) {
+    *why = "the frame generation plugin is not loaded";
+    return false;
+  }
+  sl::DLSSGState state;
+  sl::DLSSGOptions with_estimate = g_last_options;
+  with_estimate.flags |= sl::DLSSGFlags::eRequestVRAMEstimate;
+  const sl::Result result = rt.api.dlssg_get_state(sl::ViewportHandle(kViewport), state,
+                                                   request_vram_estimate ? &with_estimate : nullptr);
+  if (result != sl::Result::eOk) {
+    *why = "slDLSSGGetState failed: " + ResultText(result);
+    return false;
+  }
+  const uint32_t status = uint32_t(state.status);
+  out->ok = true;
+  out->frames_presented = state.numFramesActuallyPresented;
+  out->max_frames_generated = state.numFramesToGenerateMax;
+  out->min_size = state.minWidthOrHeight;
+  out->vram_bytes = state.estimatedVRAMUsageInBytes;
+  out->resolution_too_low = (status & uint32_t(sl::DLSSGStatus::eFailResolutionTooLow)) != 0;
+  out->reflex_missing = (status & uint32_t(sl::DLSSGStatus::eFailReflexNotDetectedAtRuntime)) != 0;
+  out->hdr_format_unsupported = (status & uint32_t(sl::DLSSGStatus::eFailHDRFormatNotSupported)) != 0;
+  out->constants_invalid = (status & uint32_t(sl::DLSSGStatus::eFailCommonConstantsInvalid)) != 0;
+  out->back_buffer_index_not_asked =
+      (status & uint32_t(sl::DLSSGStatus::eFailGetCurrentBackBufferIndexNotCalled)) != 0;
+  return true;
+}
+
+void ShutdownFrameGeneration() {
+  Runtime& rt = Rt();
+  std::lock_guard lock(rt.mu);
+  if (!rt.initialized || rt.shut_down || !rt.frame_gen_loaded) {
+    return;
+  }
+  if (rt.api.free_resources) {
+    rt.api.free_resources(sl::kFeatureDLSS_G, sl::ViewportHandle(kViewport));
+  }
+  if (rt.api.set_feature_loaded) {
+    rt.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
+  }
+  rt.frame_gen_loaded = false;
+}
+
+namespace reflex {
+
+bool Available() {
+  return g_reflex_ready.load(std::memory_order_acquire);
+}
+
+bool SetMode(bool on, bool boost) {
+  if (!g_reflex_ready.load(std::memory_order_acquire)) {
+    return false;
+  }
+  Runtime& rt = Rt();
+  std::unique_lock<std::mutex> lock;
+  if (!LockForFrame(rt, lock)) {
+    return false;  // the latency reducer asks again a second later
+  }
+  if (!rt.initialized || rt.shut_down || !rt.api.reflex_set_options) {
+    return false;
+  }
+  sl::ReflexOptions options;
+  options.mode = on ? (boost ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eLowLatency)
+                    : sl::ReflexMode::eOff;
+  options.frameLimitUs = 0;  // the game's own limiter keeps the cap (latency.h)
+  return rt.api.reflex_set_options(options) == sl::Result::eOk;
+}
+
+bool Sleep(uint32_t frame) {
+  if (!g_reflex_ready.load(std::memory_order_acquire)) {
+    return false;
+  }
+  // Thread safe in Streamline, and it blocks until the driver says the frame may start: not under the
+  // lock a feature's creation holds.
+  Runtime& rt = Rt();
+  sl::FrameToken* token = TokenFor(rt, frame);
+  return token && rt.api.reflex_sleep && rt.api.reflex_sleep(*token) == sl::Result::eOk;
+}
+
+void SetMarker(ReflexMarker marker, uint32_t frame) {
+  if (!g_reflex_ready.load(std::memory_order_acquire)) {
+    return;
+  }
+  sl::PCLMarker mapped = sl::PCLMarker::eSimulationStart;
+  switch (marker) {
+    case ReflexMarker::kSimulationStart: mapped = sl::PCLMarker::eSimulationStart; break;
+    case ReflexMarker::kSimulationEnd: mapped = sl::PCLMarker::eSimulationEnd; break;
+    case ReflexMarker::kRenderSubmitStart: mapped = sl::PCLMarker::eRenderSubmitStart; break;
+    case ReflexMarker::kRenderSubmitEnd: mapped = sl::PCLMarker::eRenderSubmitEnd; break;
+    case ReflexMarker::kPresentStart: mapped = sl::PCLMarker::ePresentStart; break;
+    case ReflexMarker::kPresentEnd: mapped = sl::PCLMarker::ePresentEnd; break;
+    case ReflexMarker::kInputSample:
+      return;  // Streamline's PC latency plugin has no input sample marker (it was removed)
+  }
+  Runtime& rt = Rt();
+  sl::FrameToken* token = TokenFor(rt, frame);
+  if (token && rt.api.pcl_set_marker) {
+    rt.api.pcl_set_marker(mapped, *token);
+  }
+}
+
+}  // namespace reflex
+
+#else  // no frame generation plugins in this build
+
+LoadResult LoadFrameGeneration(bool, std::string* why) {
+  *why = "this build has no DLSS frame generation";
+  return LoadResult::kFailed;
+}
+bool UpgradeFactory(void**) {
+  return false;
+}
+bool SetFrameGenerationOptions(const FrameGenerationOptions&, std::string* why, bool*) {
+  *why = "this build has no DLSS frame generation";
+  return false;
+}
+bool TagFrameGeneration(void*, const FrameGenerationInputs&, std::string* why, bool*) {
+  *why = "this build has no DLSS frame generation";
+  return false;
+}
+bool ReadFrameGenerationState(FrameGenerationState*, bool, std::string* why, bool*) {
+  *why = "this build has no DLSS frame generation";
+  return false;
+}
+void ShutdownFrameGeneration() {}
+namespace reflex {
+bool Available() {
+  return false;
+}
+bool SetMode(bool, bool) {
+  return false;
+}
+bool Sleep(uint32_t) {
+  return false;
+}
+void SetMarker(ReflexMarker, uint32_t) {}
+}  // namespace reflex
+
+#endif
 
 }  // namespace dlss
 

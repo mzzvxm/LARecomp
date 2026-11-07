@@ -27,6 +27,8 @@
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
+#include "dlssg_ui_hdr_ps.hlsl.dxil.h"
+#include "dlssg_ui_ps.hlsl.dxil.h"
 #include "fg_copy_ps.hlsl.dxil.h"
 #include "fg_prepare_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
@@ -75,6 +77,8 @@
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
+#include "dlssg_ui_hdr_ps.hlsl.spirv.h"
+#include "dlssg_ui_ps.hlsl.spirv.h"
 #include "fg_copy_ps.hlsl.spirv.h"
 #include "fg_prepare_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
@@ -271,6 +275,12 @@ inline HostShaderBlob FrameGenerationComposePixelShader() {
 
 inline HostShaderBlob FrameGenerationCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(fg_copy_ps);
+}
+
+// DLSS frame generation (dlss_frame_generation.h): the UI layer in the back buffer's terms, for an SDR
+// and for an HDR10 back buffer.
+inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
+  return hdr ? MCLA_GPU_HOST_SHADER_BLOB(dlssg_ui_hdr_ps) : MCLA_GPU_HOST_SHADER_BLOB(dlssg_ui_ps);
 }
 
 // The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0

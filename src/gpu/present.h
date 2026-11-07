@@ -133,6 +133,20 @@ class PresentPass {
   void PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
                     const HostImage& image, bool interpolated);
 
+  // The letterbox of the last Prepare or PrepareImage: where the picture lies in the `width` x `height`
+  // target it was prepared for, in pixels. The display's table texture (a bindless slot, the 256x1 float
+  // image) and the HDR10 output's levels: what a pass that puts another image into the window as the
+  // picture is put there needs (DLSS frame generation's UI buffer, dlssg_ui_ps.hlsl).
+  void LastFit(uint32_t* x, uint32_t* y, uint32_t* width, uint32_t* height) const {
+    *x = fit_.x;
+    *y = fit_.y;
+    *width = fit_.w;
+    *height = fit_.h;
+  }
+  uint32_t ramp_slot() const { return ramp_slot_; }
+  bool ramp_ready() const { return ramp_written_; }
+  const HdrLevels& hdr_levels() const { return hdr_levels_; }
+
   // What Prepare bound for this frame.
   bool source_ready() const { return source_ready_; }
   uint32_t source_width() const { return source_width_; }

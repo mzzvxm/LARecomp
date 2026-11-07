@@ -55,6 +55,7 @@
 #include "capture.h"
 #include "descriptors.h"
 #include "device.h"
+#include "dlss_frame_generation.h"
 #include "edram.h"
 #include "flicker_probe.h"
 #include "frame.h"
@@ -192,6 +193,13 @@ class Renderer final : public RenderThread::Executor {
   // changed. Render thread.
   bool ApplyFrameGenerationSetting();
   bool SwitchFrameGeneration(FrameGeneration::Change change);
+  // DLSS frame generation (dlss_frame_generation.h), the same live setting: switched on, the swap
+  // chain is made again as Streamline's proxy chain (the plugin loaded, the DXGI factory's wrapper
+  // on D3D12) and the real frame is presented as ever on the render queue, with the extra inputs
+  // recorded after the present pass (RecordPresentPass); switched off, it is made again plain after
+  // the plugin is unloaded. `resize`: the switch off is for a change of the window's size, which the
+  // proxy chain is not resized through. True when the swap chain was changed.
+  bool SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, bool resize);
   // The present of a guest or idle frame while frame generation runs: the real frame (and, when the
   // frame can be generated, the generated one) painted into a pair of present images and handed to the
   // pacer, which presents them (ExecutePresent's second half).
@@ -257,6 +265,7 @@ class Renderer final : public RenderThread::Executor {
   HdrScene hdr_scene_;      // HDR10: the two layers composed at the present
   HdrToneMap hdr_tone_;     // HDR10: the tone map drawn again, the scene above paper white
   FrameGeneration fg_;      // FSR 3.1 frame generation and its pacer (frame_generation.h)
+  DlssFrameGeneration dlssg_;  // DLSS frame generation through Streamline (dlss_frame_generation.h)
   FlickerProbe flicker_probe_;  // diagnostic, mcla_gpu_flicker_probe
   OverlayRenderer overlay_;
   GpuTiming timing_;

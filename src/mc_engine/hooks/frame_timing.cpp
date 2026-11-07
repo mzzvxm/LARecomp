@@ -241,6 +241,9 @@ static void EnforceFrameLimit() {
     // as many): HALF DISPLAY by default. MCLA_FPS_CAP stays the override of everything.
     if (env_limit < 0) {
         limit = mcla::gpu::FrameGenerationFpsLimit(limit);
+        // DLSS frame generation's cap (the same setting; HALF DISPLAY is the display's rate over its
+        // multiplier). Only one of the two runs.
+        limit = mcla::gpu::DlssFrameGenerationFpsLimit(limit);
     }
 #endif
     if (limit <= 0) {

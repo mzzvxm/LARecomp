@@ -185,6 +185,38 @@ std::unique_ptr<plume::RenderInterface> CreateInterface() {
 #endif
 }
 
+// The DXGI factory a swap chain is made with is Plume's interface's member, read when the chain is made
+// (plume_d3d12.cpp D3D12SwapChain's constructor): a wrapper of it in its place for the call gives a chain
+// that is the wrapper's (NVIDIA Streamline's proxy factory, for DLSS frame generation).
+// CHECK: Plume keeps no other use of the factory while a swap chain is made (the constructor calls its
+// CreateSwapChainForHwnd and MakeWindowAssociation only), and the wrapper answers both.
+bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
+                           void** wrapper) {
+  auto* d3d_device = static_cast<plume::D3D12Device*>(device);
+  if (!wrap || !d3d_device || !d3d_device->renderInterface ||
+      !d3d_device->renderInterface->dxgiFactory) {
+    return false;
+  }
+  void* factory = d3d_device->renderInterface->dxgiFactory;
+  void* proxy = factory;
+  if (!wrap(&proxy) || !proxy || proxy == factory) {
+    return false;
+  }
+  *original = factory;
+  *wrapper = proxy;
+  d3d_device->renderInterface->dxgiFactory = static_cast<IDXGIFactory4*>(proxy);
+  return true;
+}
+
+void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrapper) {
+  auto* d3d_device = static_cast<plume::D3D12Device*>(device);
+  if (d3d_device && d3d_device->renderInterface) {
+    d3d_device->renderInterface->dxgiFactory = static_cast<IDXGIFactory4*>(original);
+  }
+  // The wrapper's own reference; it holds one of the factory's, which it gives back.
+  static_cast<IUnknown*>(wrapper)->Release();
+}
+
 bool IsNullBacked(const plume::RenderTexture* texture) {
   return !texture || static_cast<const plume::D3D12Texture*>(texture)->d3d == nullptr;
 }
