@@ -58,6 +58,7 @@
 #include "edram.h"
 #include "flicker_probe.h"
 #include "frame.h"
+#include "frame_generation.h"
 #include "frame_layers.h"
 #include "frame_trace.h"
 #include "geometry.h"
@@ -184,6 +185,24 @@ class Renderer final : public RenderThread::Executor {
   // display's metadata when the peak moved.
   void UpdateHdr();
 
+  // mcla_gpu_frame_generation is live (frame_generation.h). At a frame boundary, with the HDR
+  // setting's check, the setting and what the runtime says are compared with whether it runs, and a
+  // difference is switched at once: SwitchFrameGeneration makes the swap chain again on the present
+  // queue (on) or on the render queue (off) with the pacer paused. True when the swap chain was
+  // changed. Render thread.
+  bool ApplyFrameGenerationSetting();
+  bool SwitchFrameGeneration(FrameGeneration::Change change);
+  // The present of a guest or idle frame while frame generation runs: the real frame (and, when the
+  // frame can be generated, the generated one) painted into a pair of present images and handed to the
+  // pacer, which presents them (ExecutePresent's second half).
+  void ExecutePresentGenerated(PresentSource source);
+  // True when the pair holds a generated image as well as the real one.
+  bool RecordGeneratedPresent(plume::RenderCommandList* list, uint32_t slot,
+                              const FrameGeneration::Pair& pair, PresentSource source);
+  // The present pass and the overlay into a present image (a colour target that the pacer reads next).
+  void DrawPresentInto(plume::RenderCommandList* list, uint32_t slot, HostImage& target,
+                       uint32_t width, uint32_t height);
+
   // mcla_gpu_hdr is live. At a frame boundary (no list open; not inside a present) the output the
   // setting and the display ask for (hdr.h SwitchWanted) is compared with the swap chain's, and a
   // difference is switched at once: SwitchHdr. A swap chain that was lost is made again here too.
@@ -237,6 +256,7 @@ class Renderer final : public RenderThread::Executor {
   FrameLayers layers_;      // the frame's scene and UI as two layers (HDR output, frame generation)
   HdrScene hdr_scene_;      // HDR10: the two layers composed at the present
   HdrToneMap hdr_tone_;     // HDR10: the tone map drawn again, the scene above paper white
+  FrameGeneration fg_;      // FSR 3.1 frame generation and its pacer (frame_generation.h)
   FlickerProbe flicker_probe_;  // diagnostic, mcla_gpu_flicker_probe
   OverlayRenderer overlay_;
   GpuTiming timing_;

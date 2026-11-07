@@ -349,4 +349,24 @@ StartUpscale GetStartUpscale();
 // What has been decided so far, never waiting: `decided` is false before.
 StartUpscale PeekStartUpscale();
 
+// --- frame generation (frame_generation.h) -----------------------------------------------------------
+// AMD's FSR 3.1 frame generation, mcla_gpu_frame_generation = off | fsr31 (live). Any thread.
+struct FrameGenerationAvailability {
+  bool probed = false;     // the runtime's answer is final
+  bool available = false;  // FSR 3.1 frame generation can run on this PC: the pause menu lists the row
+  bool failed = false;     // it was turned off for the rest of the session after a failure
+  bool running = false;    // on: the swap chain is on the pacer's queue (the cap and the reducer follow)
+  uint32_t refresh_hz = 0; // the display the window is on (its highest mode), 0 until read
+  // HALF DISPLAY's cap in rendered frames a second (the floor of 97% of half the refresh rate), 0 where
+  // it is not offered (a display under 100 Hz, or an unknown one): the player's own cap applies there.
+  uint32_t half_display = 0;
+  std::string why;         // not available, or failed: one plain sentence for the log and the launcher
+};
+FrameGenerationAvailability GetFrameGenerationAvailability();
+// Whether frame generation runs now (the swap chain is on the pacer's queue).
+bool FrameGenerationRunning();
+// The frame limiter's cap now: `player_limit` (fps_limit) normally, the frame generation cap
+// (mcla_gpu_frame_generation_fps_limit) while it runs. 0 is uncapped. Counts rendered frames.
+int32_t FrameGenerationFpsLimit(int32_t player_limit);
+
 }  // namespace mcla::gpu

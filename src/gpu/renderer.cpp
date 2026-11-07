@@ -268,6 +268,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
     temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
                          edram_);
+    // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
+    fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
+                   &resize_requested_);
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
@@ -287,6 +290,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
+    fg_.Shutdown();
     temporal_.Shutdown();
     ao_.Shutdown();
     flicker_probe_.Shutdown();
@@ -303,6 +307,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     passes_.Shutdown();
     edram_.Shutdown();
     swap_chain_.Shutdown();
+    fg_.ReleaseQueue();
     hdr::Stop();
     geometry_.Shutdown();
     upload_.Shutdown();
@@ -403,6 +408,8 @@ void Renderer::Shutdown() {
                  presented_);
     return;
   }
+  // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
+  fg_.StopPacer();
   if (release_early_) {
     REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early",
                 early_releases_, guest_presents_);
@@ -438,6 +445,7 @@ void Renderer::Shutdown() {
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
+  fg_.Shutdown();
   temporal_.Shutdown();
   ao_.Shutdown();
   flicker_probe_.Shutdown();
@@ -454,6 +462,7 @@ void Renderer::Shutdown() {
   passes_.Shutdown();
   edram_.Shutdown();
   swap_chain_.Shutdown();
+  fg_.ReleaseQueue();  // the swap chain made on it is gone
   hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
@@ -624,8 +633,10 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
     // The order of the live changes at a frame boundary: this one first (GPU idle, the swap chain
     // made again, the window's size published again), then Scene::BeginFrame: the render scale and
     // the upscaler path (TemporalSystem::BeginFrame, which reads the size published here), then the
-    // MSAA level (MsaaLevel::BeginFrame, after the path's own change).
+    // MSAA level (MsaaLevel::BeginFrame, after the path's own change). Frame generation's swap chain
+    // switch comes right after the HDR one (both make the swap chain again).
     ApplyHdrSetting();
+    ApplyFrameGenerationSetting();
   }
   plume::RenderCommandList* list = frames_.Begin();
   if (!list) {
@@ -704,7 +715,7 @@ void Renderer::OnIdle() {
   // The guest is quiet (not started yet, or stalled): keep the UI passes coming
   // and present when there is something new to show. No frame is open, so this is a boundary where
   // the HDR setting is applied (and what it changed is shown).
-  const bool hdr_changed = ApplyHdrSetting();
+  const bool hdr_changed = ApplyHdrSetting() | ApplyFrameGenerationSetting();
   overlay_host_->RequestPass();
   const bool first_frame = presented_ == 0;
   const bool resize = resize_requested_.load(std::memory_order_acquire);
@@ -714,6 +725,9 @@ void Renderer::OnIdle() {
 }
 
 bool Renderer::RebuildSwapChain() {
+  // With frame generation the pacer presents: it stops first, and the present queue's work (every
+  // image it copied or presented) is waited for.
+  const FrameGeneration::PauseScope pause(fg_);
   // The back buffers are about to be released (and on D3D12 Release()d by
   // Plume's resize): nothing in flight may still write them.
   frames_.WaitIdle();
@@ -737,6 +751,7 @@ bool Renderer::ApplyHdrSetting() {
       return false;
     }
     swap_chain_retry_ = now;
+    const FrameGeneration::PauseScope pause(fg_);
     frames_.WaitIdle();
     SwapChain::Recreated result;
     {
@@ -745,6 +760,9 @@ bool Renderer::ApplyHdrSetting() {
       latency_change.Replaced(swap_chain_);
     }
     dlss::SwapChainRecreated();
+    if (result != SwapChain::Recreated::kLost) {
+      fg_.OnSwapChainChanged();
+    }
     if (result == SwapChain::Recreated::kLost) {
       if (!swap_chain_lost_logged_) {
         swap_chain_lost_logged_ = true;
@@ -791,7 +809,9 @@ void Renderer::AdoptSwapChain() {
   // The scene half of HDR output follows the chain: layers, float scene and tone map up, or down
   // (their images released at once; the idle wait frees them). Their failures leave an HDR10 output
   // at stage 1 (the front buffer at paper white), as at a start.
-  if (hdr && !layers_.active()) {
+  if (hdr) {
+    // Also when frame generation already holds the layers up (frame_generation.h): the HDR scene
+    // and the tone map are set up (and are no-ops when they are) whenever the output goes HDR10.
     layers_.Request(FrameLayers::kRequesterHdr, true);
     SetUpHdrScene(layers_.active());
   } else if (!hdr && (layers_.active() || hdr_scene_.ready())) {
@@ -842,7 +862,9 @@ bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
   const auto built = Clock::now();
 
   // 2. The swap chain, in the other format: nothing in flight may name the back buffers, and the
-  //    latency reducer's calls that name the chain wait until the new one is in.
+  //    latency reducer's calls that name the chain wait until the new one is in. With frame
+  //    generation the pacer is paused for it (the new chain stays on the present queue).
+  const FrameGeneration::PauseScope fg_pause(fg_);
   frames_.WaitIdle();
   SwapChain::Recreated result;
   {
@@ -851,6 +873,9 @@ bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
     latency_change.Replaced(swap_chain_);
   }
   dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
+  if (result != SwapChain::Recreated::kLost) {
+    fg_.OnSwapChainChanged();  // the pacer's copy pass is for the chain's format
+  }
   const auto remade = Clock::now();
 
   if (result == SwapChain::Recreated::kLost) {
@@ -934,13 +959,15 @@ void Renderer::ExecutePresent(PresentSource source) {
     // A present with no frame recorded before it: a boundary too (a frame that has scene records
     // applied the setting when it opened).
     ApplyHdrSetting();
+    ApplyFrameGenerationSetting();
   }
   struct PresentingScope {
     explicit PresentingScope(bool& flag) : flag_(flag) { flag_ = true; }
     ~PresentingScope() { flag_ = false; }
     bool& flag_;
   } presenting(presenting_);
-  swap_chain_.SetVsync(REXCVAR_GET(mcla_gpu_vsync));
+  // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
+  swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync));
   UpdateHdr();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
@@ -953,6 +980,10 @@ void Renderer::ExecutePresent(PresentSource source) {
     // overlay uploads and deaths wait in the channel for the next frame.
     SubmitFrameWithoutPresent();
     ++skipped_;
+    return;
+  }
+  if (fg_.active()) {
+    ExecutePresentGenerated(source);
     return;
   }
 
@@ -1014,6 +1045,194 @@ void Renderer::ExecutePresent(PresentSource source) {
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
   // What its previous round counted for the guest's occlusion queries is readable now.
+  occlusion_.OnSlotReady(frames_.slot());
+  ++presented_;
+  if (source == PresentSource::kGuest) {
+    ++guest_presents_;
+  } else {
+    ++idle_presents_;
+  }
+  ReportFrameStats();
+  overlay_host_->RequestPass();
+  if (tail_open_ && source == PresentSource::kGuest) {
+    tail_short_ = std::chrono::steady_clock::now() - tail_start_ <= kEarlyReleaseMaxTail;
+  }
+  tail_open_ = false;
+}
+
+bool Renderer::ApplyFrameGenerationSetting() {
+  const FrameGeneration::Change change = fg_.Poll();
+  if (change == FrameGeneration::Change::kNone) {
+    return false;
+  }
+  return SwitchFrameGeneration(change);
+}
+
+// CHECK: not run (written without a build). Look for, in the log of a switch: "frame generation:
+// switching on/off", then "frame generation: on (FSR 3.1; ...)" or "off"; the first frames after it
+// are real frames only until the context is made ("[gpu] frame generation (ffx): context for ... made
+// in N ms"), then "first generation recorded". The swap chain is made again on the other queue, as an
+// HDR switch does: the picture may flicker once. D3D12: the debug layer on the present queue's lists
+// and the cross-queue use of the present images (the render queue wrote them, the present queue read
+// them after a CPU wait on a fence); Vulkan: validation on the second queue (the swap chain's images
+// are used on a queue other than the one that made the frame, the family is the same) and, on a GPU
+// whose DIRECT family has one queue (AMD, Intel), that the shared VkQueue's lock does not hold the
+// render thread's submissions behind a blocked present.
+bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
+  using Clock = std::chrono::steady_clock;
+  const bool on = change == FrameGeneration::Change::kOn;
+  const auto begin = Clock::now();
+  REXLOG_INFO("[gpu] frame generation: switching {} (the swap chain is made again on the {} queue)",
+              on ? "on" : "off", on ? "present" : "render");
+  if (on && !fg_.PrepareSwitchOn(swap_chain_.format())) {
+    return false;  // logged; frame generation stays off for the session
+  }
+  // The swap chain on the other queue: nothing in flight may name the back buffers (on the render
+  // queue by WaitIdle, on the present queue by the pacer's pause), and the latency reducer's calls
+  // that name the chain wait until the new one is in.
+  const bool hdr = swap_chain_.hdr();
+  bool ok = true;
+  {
+    const FrameGeneration::PauseScope pause(fg_);
+    frames_.WaitIdle();
+    SwapChain::Recreated result;
+    {
+      latency::SwapChainChange latency_change;
+      result = swap_chain_.RecreateOn(on ? fg_.present_queue() : nullptr, hdr,
+                                      on ? fg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync));
+      latency_change.Replaced(swap_chain_);
+    }
+    dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
+    if (result == SwapChain::Recreated::kLost && on) {
+      // The present queue could not have it: the render queue's chain is made again, and frame
+      // generation is off for the session.
+      ok = false;
+      latency::SwapChainChange latency_change;
+      result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync));
+      latency_change.Replaced(swap_chain_);
+      dlss::SwapChainRecreated();
+    }
+    if (result == SwapChain::Recreated::kLost) {
+      REXLOG_ERROR("[gpu] frame generation: switching {} left the window without a swap chain; "
+                   "trying again each second (nothing is presented meanwhile)",
+                   on ? "on" : "off");
+      swap_chain_lost_logged_ = true;
+      swap_chain_retry_ = Clock::now();
+      ok = false;
+    }
+  }
+  // A new chain has no metadata (UpdateHdr sends it before the next present), and its size is what the
+  // render scale is measured against.
+  hdr_metadata_sent_ = false;
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  fg_.CompleteSwitch(change, ok);
+  REXLOG_INFO("[gpu] frame generation: switched {} in {:.0f} ms", on ? "on" : "off",
+              std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
+  return true;
+}
+
+void Renderer::DrawPresentInto(plume::RenderCommandList* list, uint32_t slot, HostImage& target,
+                               uint32_t width, uint32_t height) {
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(target.texture.get(),
+                                             plume::RenderTextureLayout::COLOR_WRITE));
+  list->setFramebuffer(target.framebuffer.get());
+  // Black around the letterboxed picture (and a first use of the image is initialised).
+  list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
+  present_.Draw(list, width, height);
+  overlay_draws_ += overlay_.Draw(list, slot, width, height);
+  list->setFramebuffer(nullptr);
+  // The pacer's copy pass reads it next (on the present queue, after a CPU wait for the frame).
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(target.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  target.layout = plume::RenderTextureLayout::SHADER_READ;
+}
+
+bool Renderer::RecordGeneratedPresent(plume::RenderCommandList* list, uint32_t slot,
+                                      const FrameGeneration::Pair& pair, PresentSource source) {
+  const uint32_t width = swap_chain_.width();
+  const uint32_t height = swap_chain_.height();
+  pass_timing_.Mark(list, "present");
+  markers_.Push(list, "Present", PerfMarkers::kPhase);
+  // The real frame, as ever, into the pair's real image: the front buffer through the display's
+  // table, FSR1, the overlay.
+  present_.Prepare(list, slot, width, height);
+  if (source == PresentSource::kGuest && !swap_chain_.hdr()) {
+    flicker_probe_.Record(list, present_, guest_presents_ + 1);
+  }
+  ReleaseGuest();
+  FrameGeneration::GenerateArgs args;
+  const bool have_front = present_.front_key(&args.front) && present_.source_ready();
+  args.guest_frame = source == PresentSource::kGuest && have_front;
+  args.front_width = present_.source_width();
+  args.front_height = present_.source_height();
+  args.window_width = width;
+  args.window_height = height;
+  timing_.Mark(list, slot, GpuTiming::kOverlayBegin);
+  DrawPresentInto(list, slot, *pair.real, width, height);
+  timing_.Mark(list, slot, GpuTiming::kOverlayEnd);
+  // The generated frame, when this frame can be generated: the same present path over the generated
+  // scene with this frame's UI on it, into the pair's other image.
+  bool has_generated = false;
+  const FrameGeneration::Generated generated = fg_.Generate(list, args);
+  if (generated.image) {
+    present_.PrepareImage(list, width, height, *generated.image, generated.float_scene);
+    if (present_.source_ready()) {
+      DrawPresentInto(list, slot, *pair.generated, width, height);
+      has_generated = true;
+    }
+  }
+  markers_.Pop(list, PerfMarkers::kPhase);  // Present
+  markers_.PopAll(list);                    // Frame
+  timing_.Mark(list, slot, GpuTiming::kFrameEnd);
+  pass_timing_.CompleteFrame(list, slot);
+  return has_generated;
+}
+
+void Renderer::ExecutePresentGenerated(PresentSource source) {
+  // ExecutePresent's second half with frame generation running: the swap chain is the pacer's, so
+  // nothing is acquired or presented here; a slot of present images is taken (waiting for the pacer
+  // when it is a frame behind), the frame is painted into it and the pair is handed over.
+  FrameGeneration::Pair pair;
+  if (!fg_.AcquireSlot(swap_chain_.width(), swap_chain_.height(), swap_chain_.format(), &pair)) {
+    // No free slot in time (the pacer is stalled), or no image: this frame is not shown.
+    SubmitFrameWithoutPresent();
+    ++skipped_;
+    return;
+  }
+  // Already open when the guest frame had scene records.
+  plume::RenderCommandList* list = OpenFrameList();
+  if (!list) {
+    fg_.ReturnSlot(pair);
+    ++skipped_;
+    return;
+  }
+  const uint32_t slot = frames_.slot();
+  markers_.Pop(list, PerfMarkers::kPhase);  // Scene
+  markers_.Push(list, "EndOfFrame", PerfMarkers::kPhase);
+  scene_.EndFrame(list);
+  markers_.Pop(list, PerfMarkers::kPhase);
+  overlay_.Prepare(list, slot);
+  const bool has_generated = RecordGeneratedPresent(list, slot, pair, source);
+
+  if (!frames_.Submit(nullptr, 0, nullptr, 0)) {
+    fg_.ReturnSlot(pair);
+    frames_.Advance();
+    ++skipped_;
+    return;
+  }
+  timing_.OnSubmitted(slot);
+  pass_timing_.OnSubmitted(slot);
+  occlusion_.OnSubmitted(slot);
+  latency::OnRenderSubmitted();
+  // The present markers are the pacer's: it names the frame around the real image's present.
+  const uint64_t latency_frame = latency::DetachRenderFrame();
+  fg_.Submit(pair, has_generated, latency_frame, source == PresentSource::kGuest);
+  capture_.OnPresented();
+  frames_.Advance();
+  // The slot about to be recorded had its fence waited by Advance.
+  upload_.ResetSlot(frames_.slot());
   occlusion_.OnSlotReady(frames_.slot());
   ++presented_;
   if (source == PresentSource::kGuest) {
@@ -1099,6 +1318,8 @@ void Renderer::ReportFrameStats() {
                                                                       hdr_tone_.HeldBytes())
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
+                           (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
+                                         : std::string()) +
                            ", upscaler (output, depth, vectors, its own context) " +
                            mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
@@ -1130,6 +1351,9 @@ void Renderer::ReportFrameStats() {
       locks_on_destinations, fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
+  if (fg_.active()) {
+    REXLOG_INFO("[gpu] {}", fg_.TakeSummary());
+  }
   REXLOG_INFO("[gpu] {}", post_.TakeSummary());
   if (layers_.active()) {
     REXLOG_INFO("[gpu] {}", layers_.TakeSummary());

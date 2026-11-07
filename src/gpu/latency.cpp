@@ -24,6 +24,7 @@
 
 #include "backend.h"
 #include "device.h"
+#include "gpu.h"
 #include "latency_backend.h"
 #include "swap_chain.h"
 
@@ -35,7 +36,8 @@ REXCVAR_DEFINE_STRING(
     "it is. auto (Reflex on; Anti-Lag 2 off until it has been tried on a Radeon), off, on, or "
     "boost (Reflex's On + Boost: the GPU clocks stay high; Anti-Lag 2 has no boost and takes it "
     "as on). Where the GPU, the driver or the graphics API has no reducer the pause menu has no "
-    "row for it and it stays off whatever this says (the log says why at start). Live.")
+    "row for it and it stays off whatever this says (the log says why at start). While frame "
+    "generation runs (mcla_gpu_frame_generation) it is on whatever this says. Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu::latency {
@@ -86,6 +88,10 @@ struct Want {
 // What mcla_gpu_low_latency asks for, for this reducer.
 Want ReadWant(const Reducer& reducer) {
   const std::string mode = REXCVAR_GET(mcla_gpu_low_latency);
+  if (FrameGenerationRunning()) {
+    // Forced on while frame generation runs; Reflex's boost where it is asked for.
+    return {true, mode == "boost" && reducer.SupportsBoost()};
+  }
   if (mode == "off") {
     return {};
   }
@@ -453,6 +459,31 @@ void OnPresentEnd() {
   }
   if (const std::shared_ptr<Reducer> reducer = m.Get()) {
     reducer->SetMarker(Marker::kPresentEnd, id);
+  }
+}
+
+uint64_t DetachRenderFrame() {
+  Module& m = M();
+  const uint64_t id = m.render_id;
+  m.render_id = 0;
+  return id;
+}
+
+void OnPresentBegin(uint64_t frame_id) {
+  if (!frame_id) {
+    return;
+  }
+  if (const std::shared_ptr<Reducer> reducer = M().Get()) {
+    reducer->SetMarker(Marker::kPresentStart, frame_id);
+  }
+}
+
+void OnPresentEnd(uint64_t frame_id) {
+  if (!frame_id) {
+    return;
+  }
+  if (const std::shared_ptr<Reducer> reducer = M().Get()) {
+    reducer->SetMarker(Marker::kPresentEnd, frame_id);
   }
 }
 
