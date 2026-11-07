@@ -15,13 +15,25 @@
 //
 //   mcHUDForm::update (sub_8264F100) calls the child's update unconditionally.
 //   mcRearView::update (sub_82233C18) reads vtbl+60 (flags+16 & 0x20). Visible:
-//   alpha ramps up and the 0x1000000 phase is requested. Hidden: alpha ramps
-//   down, the phase is dropped and the consumer's active byte is cleared, so a
-//   hidden mirror costs nothing and leaves no black strip behind.
+//   alpha (+1216) ramps up by 4 a second and the 0x1000000 phase is requested
+//   (sub_822E5B00). Hidden: alpha ramps down, the phase is dropped (sub_822E5B10)
+//   and the consumer's active byte is cleared, so a hidden mirror costs nothing
+//   and leaves no black strip behind. The frame is drawn by sub_82227428 through
+//   sub_82234128, which tests only the option and alpha > 0, never the visible bit.
 //
-// The visible bit is not ours: sub_82652860 copies the form's own visibility into
-// the child (vtbl+64) whenever the HUD is shown or hidden. So off is re-asserted
-// every frame, and on mirrors the form's bit instead of remembering one.
+// The visible bit is not ours: sub_82652860 (mcHUDForm vtbl+176, the form's refresh,
+// reached from the HUD's invalidate calls whenever something in it changes) copies the
+// form's own visibility into the child (vtbl+64). That can happen at any point of a
+// frame, so clearing the bit once per frame from TickRearView (which runs at the top of
+// the frame, after the clock update) is not enough: a refresh between the clear and the
+// mirror's update shows the mirror for that update -- its scene phase for a frame, its
+// white frame at a growing alpha for as long as refreshes keep coming and 0.25 s after.
+//
+// So a switched-off mirror is made hidden where the game decides, not by writing the bit
+// back: Patch_RearViewUpdateVisible / Patch_RearViewUpdateActive answer "not visible" at
+// both of mcRearView::update's visibility tests, and Patch_RearViewDrawAlpha reads the
+// frame's alpha as 0 in sub_82234128. The bit is left alone while off. On mirrors the
+// form's bit every frame (below) and the three hooks pass everything through.
 //
 // Placement is live as well. The viewport the scene is drawn into is four ints
 // at [dword_8288D004]+0..12 (ctor default 960,57,256,51); sub_82307F28 and
@@ -247,8 +259,8 @@ void TickRearView() {
 
     static int last_state = -1;  // -1 unknown, 0 hidden, 1 shown
     if (!want) {
-        if (widget_flags & kWidgetVisible)
-            WriteGuestU32(base, widget + kWidgetFlags, widget_flags & ~kWidgetVisible);
+        // Nothing to write: the update and draw tests are overridden while off (see the
+        // Patch_RearView* hooks below), whatever the bit says.
         if (last_state != 0) {
             LARECOMP_APP_INFO("[RearView] hidden");
             last_state = 0;
@@ -420,6 +432,47 @@ void Patch_RearViewDiag() {
     LARECOMP_APP_INFO("[RearView] diag at mirror phase begin:{}", out);
 }
 
+// What a switched-off mirror must never do is draw or request its phase, and both
+// follow from three tests the game makes itself (two in the update, one in the draw wrapper).
+// These hooks answer them while `rearview` is off and leave them alone while it is on.
+//
+// mcRearView::update (sub_82233C18) asks the widget whether it is visible twice, through
+// vtbl+60 (flags+16 & 0x20), and uses only the low byte of r3 each time:
+//   0x82233C54  bctrl                  the ramp test: visible = alpha up and the 0x1000000
+//   0x82233C58  lis r11,-32256   <--   phase requested; hidden = alpha down and the phase
+//                                      dropped
+//   0x82233CE4  bctrl                  the consumer's active byte (sub_82308298 stores
+//   0x82233CE8  mr r4,r3         <--   r4's low byte at [pass + 32])
+// Hooked before the instruction after each call, r3 = the answer.
+//
+// The HUD form's refresh (sub_82652860) can set the bit between TickRearView's frame-start
+// tick and this update, which is how an off mirror used to get through. The first site counts
+// how often the bit is found set while off and says so in the log (at 1, 2, 4, 8, ... times),
+// which is the proof in a test drive.
+void Patch_RearViewUpdateVisible(PPCRegister& r3) {
+    if (REXCVAR_GET(rearview)) return;
+    if (r3.u32 & 0xFFu) {
+        static std::atomic<uint32_t> blocked{0};
+        const uint32_t n = blocked.fetch_add(1, std::memory_order_relaxed) + 1;
+        if ((n & (n - 1)) == 0)
+            LARECOMP_APP_INFO("[RearView] mirror update saw the visible bit while off, answered hidden (#{})", n);
+    }
+    r3.u64 = 0;
+}
+
+void Patch_RearViewUpdateActive(PPCRegister& r3) {
+    if (!REXCVAR_GET(rearview)) r3.u64 = 0;
+}
+
+// Hooked at 0x82234148, the `fcmpu cr6, f13, f0` of sub_82234128 (called from sub_82227428,
+// the HUD draw, with r3 = the mcRearView). The wrapper draws the frame when the option is on
+// and alpha ([r3+1216], in f13) > 0 -- it never looks at the visible bit. Off, alpha reads 0
+// (f0 is 0.0 there), so the wrapper returns before the frame's meshes and their render
+// state are touched.
+void Patch_RearViewDrawAlpha(PPCRegister& f13) {
+    if (!REXCVAR_GET(rearview)) f13.f64 = 0.0;
+}
+
 // Hooked at 0x822340F4 in mcRearView::Draw (sub_82233E18): the `lwzx` that loads the
 // frame mesh just before its vtbl+32 draw call. True jumps to 0x82234108, past the
 // draw, so the frame is not drawn; the mirror's scene viewport is a separate pass
@@ -433,6 +486,9 @@ bool Patch_RearViewFrameSkip() {
 
 void TickRearView() {}
 bool Patch_RearViewFrameSkip() { return false; }
+void Patch_RearViewUpdateVisible(PPCRegister& r3) {}
+void Patch_RearViewUpdateActive(PPCRegister& r3) {}
+void Patch_RearViewDrawAlpha(PPCRegister& f13) {}
 void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {}
 void Patch_RearViewDiag() {}
 void Patch_RearViewCullBits(PPCRegister& r3) {}
