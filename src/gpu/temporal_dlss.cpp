@@ -682,7 +682,7 @@ void QueryFrameGenerationLocked(Runtime& rt, const sl::AdapterInfo& adapter,
           "': " + ResultText(reflex);
   } else {
     void* set_options = function_of(sl::kFeatureDLSS_G, "slDLSSGSetOptions");
-    void* get_state = set_options ? function_of(sl::kFeatureDLSS_G, "slDLSSGetState") : nullptr;
+    void* get_state = set_options ? function_of(sl::kFeatureDLSS_G, "slDLSSGGetState") : nullptr;
     void* reflex_options = get_state ? function_of(sl::kFeatureReflex, "slReflexSetOptions") : nullptr;
     void* reflex_sleep = reflex_options ? function_of(sl::kFeatureReflex, "slReflexSleep") : nullptr;
     void* pcl_marker = reflex_sleep ? function_of(sl::kFeaturePCL, "slPCLSetMarker") : nullptr;
@@ -2932,7 +2932,7 @@ LoadResult LoadFrameGeneration(bool loaded, std::string* why) {
     void* set_options = nullptr;
     void* get_state = nullptr;
     const sl::Result a = rt.api.get_function(sl::kFeatureDLSS_G, "slDLSSGSetOptions", set_options);
-    const sl::Result b = rt.api.get_function(sl::kFeatureDLSS_G, "slDLSSGetState", get_state);
+    const sl::Result b = rt.api.get_function(sl::kFeatureDLSS_G, "slDLSSGGetState", get_state);
     if (a != sl::Result::eOk || b != sl::Result::eOk || !set_options || !get_state) {
       *why = "the frame generation plugin's functions are missing after it was loaded";
       rt.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
