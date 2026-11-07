@@ -46,8 +46,11 @@
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_frame_generation, "off", "MCLA/GPU",
-    "Frame generation: off, or fsr31 (AMD FSR 3.1 frame generation, on any graphics card, with or "
-    "without an upscaler). An interpolated frame is made between every two the game renders and "
+    "Frame generation: off, fsr31 (AMD FSR 3.1 frame generation, on any graphics card, with or "
+    "without an upscaler) or dlss (NVIDIA DLSS frame generation through Streamline, on an RTX 40 or "
+    "50 series card: 2x, and 3x or 4x on an RTX 50 with mcla_gpu_frame_generation_multiplier; "
+    "Streamline presents the frames, and on Vulkan it applies from the next start). An interpolated "
+    "frame is made between every two the game renders and "
     "shown half a frame before the real one, so a game that renders 60 frames a second shows 120. "
     "It does not make the game react faster: the real frames are shown one frame later and the "
     "latency reducer (NVIDIA Reflex, AMD Anti-Lag 2) is switched on while it runs, where the card "

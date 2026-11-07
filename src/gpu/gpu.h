@@ -381,4 +381,30 @@ bool FrameGenerationRunning();
 // (mcla_gpu_frame_generation_fps_limit) while it runs. 0 is uncapped. Counts rendered frames.
 int32_t FrameGenerationFpsLimit(int32_t player_limit);
 
+// --- DLSS frame generation (dlss_frame_generation.h) -------------------------------------------------
+// NVIDIA's DLSS frame generation through Streamline, mcla_gpu_frame_generation = dlss (live), with
+// mcla_gpu_frame_generation_multiplier beside it. Any thread.
+struct DlssFrameGenerationAvailability {
+  bool probed = false;         // the answer is final (Streamline has started and been asked)
+  bool listed = false;         // the FRAME GENERATION row lists DLSS: an RTX 40 or 50 series card with the files
+  bool supported = false;      // Streamline said it can run here now
+  bool after_restart = false;  // listed, but runs from the next start (Vulkan: the device is made through
+                               // Streamline only when it is saved at the start)
+  bool failed = false;         // it was turned off for the rest of the session after a failure
+  bool running = false;        // on: the swap chain is Streamline's proxy chain
+  uint32_t max_multiplier = 2; // 2 to 4: the most the card takes (2 until the plugin has said)
+  bool multiplier_choice = false;  // more than 2x is possible: the pause menu has the multiplier row
+  uint32_t refresh_hz = 0;
+  std::string why;             // not supported, or failed: one plain sentence for the log and the launcher
+};
+DlssFrameGenerationAvailability GetDlssFrameGenerationAvailability();
+// Whether DLSS frame generation runs now (the frame cap and the latency reducer follow).
+bool DlssFrameGenerationRunning();
+// The multiplier the setting comes to on this card: 2, 3 or 4.
+uint32_t DlssFrameGenerationMultiplier();
+// The frame limiter's cap now: `player_limit` normally, the frame generation cap
+// (mcla_gpu_frame_generation_fps_limit; HALF DISPLAY is the display's rate over the multiplier) while it
+// runs. 0 is uncapped. Counts rendered frames.
+int32_t DlssFrameGenerationFpsLimit(int32_t player_limit);
+
 }  // namespace mcla::gpu

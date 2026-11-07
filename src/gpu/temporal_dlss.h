@@ -142,6 +142,7 @@
 // SetColorSpace1, SetHDRMetaData, ResizeBuffers).
 // ===========================================================================
 
+#include <cctype>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -234,6 +235,48 @@ inline void SwapChainRecreated() {}
 // they must not wait behind the seconds a DLSS feature takes to make). The render thread's calls
 // never wait for a feature's creation: they say `busy` and are asked again at the next frame.
 namespace dlss {
+
+// By name only (the runtime's support query is the final word): a GeForce RTX 40 or 50 series card
+// (and the workstation cards of those generations, "RTX 5000 Ada", "RTX PRO 6000 Blackwell"), the
+// cards DLSS frame generation runs on. A card that looks like one and is not (Quadro RTX 4000, a
+// Turing) is only asked.
+inline bool NameLooksLikeFrameGeneration(const std::string& name) {
+  std::string upper;
+  for (char c : name) {
+    upper += char(std::toupper(static_cast<unsigned char>(c)));
+  }
+  if (upper.find("BLACKWELL") != std::string::npos || upper.find(" ADA") != std::string::npos) {
+    return true;
+  }
+  const size_t rtx = upper.find("RTX");
+  if (rtx == std::string::npos) {
+    return false;
+  }
+  size_t at = rtx + 3;
+  while (at < upper.size() && upper[at] == ' ') {
+    ++at;
+  }
+  return at < upper.size() && (upper[at] == '4' || upper[at] == '5');
+}
+// An RTX 50 series (Blackwell): the cards that take more than one generated frame (3x and 4x).
+inline bool NameLooksLikeMultiFrameGeneration(const std::string& name) {
+  std::string upper;
+  for (char c : name) {
+    upper += char(std::toupper(static_cast<unsigned char>(c)));
+  }
+  if (upper.find("BLACKWELL") != std::string::npos) {
+    return true;
+  }
+  const size_t rtx = upper.find("RTX");
+  if (rtx == std::string::npos) {
+    return false;
+  }
+  size_t at = rtx + 3;
+  while (at < upper.size() && upper[at] == ' ') {
+    ++at;
+  }
+  return at < upper.size() && upper[at] == '5';
+}
 
 // What Streamline said about frame generation (any thread, never waits for a feature's creation).
 struct FrameGenerationFacts {

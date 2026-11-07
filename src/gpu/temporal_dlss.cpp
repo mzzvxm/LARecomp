@@ -267,30 +267,6 @@ bool NameLooksLikeRtx(const std::string& name) {
   return false;
 }
 
-// Only to decide whether Streamline's start asks for the frame generation plugins on D3D12, where
-// they cannot be added after slInit: a GeForce RTX 40 or 50 series card by name (and the workstation
-// cards of those generations: "RTX 5000 Ada", "RTX PRO 6000 Blackwell"). A card that looks like one and
-// is not (Quadro RTX 4000 is a Turing) only loads three plugins it does not use; the support query
-// (slIsFeatureSupported) is the final word on whether frame generation is offered.
-bool NameLooksLikeFrameGeneration(const std::string& name) {
-  std::string upper;
-  for (char c : name) {
-    upper += char(std::toupper(static_cast<unsigned char>(c)));
-  }
-  if (upper.find("BLACKWELL") != std::string::npos || upper.find(" ADA") != std::string::npos) {
-    return true;
-  }
-  const size_t rtx = upper.find("RTX");
-  if (rtx == std::string::npos) {
-    return false;
-  }
-  size_t at = rtx + 3;
-  while (at < upper.size() && upper[at] == ' ') {
-    ++at;
-  }
-  return at < upper.size() && (upper[at] == '4' || upper[at] == '5');
-}
-
 // Whether Streamline is started with the frame generation plugins (InitLocked): where the player has
 // chosen DLSS frame generation, and on D3D12 for every card that can run it (the choice may come
 // while the game runs). On Vulkan only the saved choice at the start counts: the device is made
@@ -299,7 +275,9 @@ bool WantFrameGenerationPlugins(Backend backend, const std::string& gpu_name) {
   if (REXCVAR_GET(mcla_gpu_frame_generation) == "dlss") {
     return true;
   }
-  return backend == Backend::kD3D12 && NameLooksLikeFrameGeneration(gpu_name);
+  // On D3D12 for every card that can run it by its name (plugins cannot be added after slInit, and
+  // the choice may come while the game runs); the support query is the final word.
+  return backend == Backend::kD3D12 && dlss::NameLooksLikeFrameGeneration(gpu_name);
 }
 
 std::string ResultText(sl::Result result) {

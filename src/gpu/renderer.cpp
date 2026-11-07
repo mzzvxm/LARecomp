@@ -271,6 +271,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
     fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
                    &resize_requested_);
+    // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
+    // frame boundary.
+    dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
+                      swap_chain_);
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
@@ -291,6 +295,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     pass_timing_.Shutdown();
     timing_.Shutdown();
     fg_.Shutdown();
+    dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ao_.Shutdown();
     flicker_probe_.Shutdown();
@@ -446,6 +451,9 @@ void Renderer::Shutdown() {
   pass_timing_.Shutdown();
   timing_.Shutdown();
   fg_.Shutdown();
+  // DLSS frame generation: the proxy swap chain is destroyed and the plugin unloaded before
+  // Streamline itself is shut down (temporal_.Shutdown below).
+  dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ao_.Shutdown();
   flicker_probe_.Shutdown();
@@ -725,6 +733,14 @@ void Renderer::OnIdle() {
 }
 
 bool Renderer::RebuildSwapChain() {
+  if (dlssg_.active()) {
+    // DLSS frame generation must be off before any change of the window, and the proxy chain is not
+    // resized: it is switched off, which makes the chain again, plain, at the window's size; frame
+    // generation comes back by itself once the window has been still (DlssFrameGeneration::kSettle).
+    if (SwitchDlssFrameGeneration(DlssFrameGeneration::Change::kOff, /*resize=*/true)) {
+      return !swap_chain_.empty();
+    }
+  }
   // With frame generation the pacer presents: it stops first, and the present queue's work (every
   // image it copied or presented) is waited for.
   const FrameGeneration::PauseScope pause(fg_);
@@ -762,6 +778,7 @@ bool Renderer::ApplyHdrSetting() {
     dlss::SwapChainRecreated();
     if (result != SwapChain::Recreated::kLost) {
       fg_.OnSwapChainChanged();
+      dlssg_.OnSwapChainChanged();
     }
     if (result == SwapChain::Recreated::kLost) {
       if (!swap_chain_lost_logged_) {
@@ -875,6 +892,7 @@ bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
   dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
   if (result != SwapChain::Recreated::kLost) {
     fg_.OnSwapChainChanged();  // the pacer's copy pass is for the chain's format
+    dlssg_.OnSwapChainChanged();  // and DLSS frame generation's images and UI pass
   }
   const auto remade = Clock::now();
 
@@ -967,7 +985,9 @@ void Renderer::ExecutePresent(PresentSource source) {
     bool& flag_;
   } presenting(presenting_);
   // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
-  swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync));
+  swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync()
+                                    : (dlssg_.active() ? dlssg_.WantsVsync()
+                                                       : REXCVAR_GET(mcla_gpu_vsync)));
   UpdateHdr();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
@@ -1033,6 +1053,9 @@ void Renderer::ExecutePresent(PresentSource source) {
   latency::OnPresentBegin();
   const bool present_ok = swap_chain_.Present(image);
   latency::OnPresentEnd();
+  if (dlssg_.active()) {
+    dlssg_.AfterPresent();  // Streamline's status now and then
+  }
   if (!present_ok) {
     // DXGI and Vulkan both report a chain that no longer matches the window
     // here; anything else that fails here is the device.
@@ -1062,10 +1085,82 @@ void Renderer::ExecutePresent(PresentSource source) {
 
 bool Renderer::ApplyFrameGenerationSetting() {
   const FrameGeneration::Change change = fg_.Poll();
-  if (change == FrameGeneration::Change::kNone) {
-    return false;
+  if (change != FrameGeneration::Change::kNone) {
+    return SwitchFrameGeneration(change);
   }
-  return SwitchFrameGeneration(change);
+  // The two never run together: the setting names one of them (FSR's Poll ignores "dlss").
+  const DlssFrameGeneration::Change dlss_change = dlssg_.Poll();
+  if (dlss_change != DlssFrameGeneration::Change::kNone) {
+    return SwitchDlssFrameGeneration(dlss_change, /*resize=*/false);
+  }
+  return false;
+}
+
+// CHECK: not run (written without a build). The log of a switch on: "[gpu] dlss frame generation:
+// switching on", then Streamline's own sl.log lines for the plugin loading and the proxy factory,
+// "on (Nx: ...)", and once Reflex has made a few sleeps "generating: Nx". The swap chain is made
+// again twice around a resize (off, then on after the window has been still): the picture may flicker.
+bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, bool resize) {
+  using Clock = std::chrono::steady_clock;
+  const bool on = change == DlssFrameGeneration::Change::kOn;
+  const auto begin = Clock::now();
+  if (on) {
+    // The plugin is loaded before the chain is made through its proxy of the DXGI factory.
+    switch (dlssg_.PrepareSwitchOn()) {
+      case DlssFrameGeneration::Prepared::kWait:
+        return false;  // Streamline is making a feature: asked again at the next frame boundary
+      case DlssFrameGeneration::Prepared::kFailed:
+        return false;  // logged; off for the session
+      case DlssFrameGeneration::Prepared::kReady:
+        break;
+    }
+  }
+  REXLOG_INFO("[gpu] dlss frame generation: switching {}{} (the swap chain is made again{})",
+              on ? "on" : "off", resize ? " for a change of the window" : "",
+              on ? " as Streamline's own" : ", plain");
+  const bool hdr = swap_chain_.hdr();
+  bool ok = true;
+  frames_.WaitIdle();
+  SwapChain::Recreated result;
+  {
+    // The latency reducer's calls that name the chain wait until the new one is in.
+    latency::SwapChainChange latency_change;
+    swap_chain_.SetFactoryWrapper(on ? &dlss::UpgradeFactory : nullptr);
+    result = swap_chain_.RecreateOn(nullptr, hdr,
+                                    on ? dlssg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync),
+                                    on ? std::function<void()>{}
+                                       : std::function<void()>([this] { dlssg_.BeforePlainChain(); }));
+    latency_change.Replaced(swap_chain_);
+  }
+  if (result == SwapChain::Recreated::kLost && on) {
+    // Streamline's proxy chain could not be made: the plain chain is made again, and frame
+    // generation is off for the session.
+    ok = false;
+    latency::SwapChainChange latency_change;
+    swap_chain_.SetFactoryWrapper(nullptr);
+    result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync),
+                                    [this] { dlssg_.BeforePlainChain(); });
+    latency_change.Replaced(swap_chain_);
+  }
+  if (!on || !ok) {
+    dlss::SwapChainRecreated();  // the plain new chain is offered to Streamline's wrapper again
+  }
+  if (result == SwapChain::Recreated::kLost) {
+    REXLOG_ERROR("[gpu] dlss frame generation: switching {} left the window without a swap chain; "
+                 "trying again each second (nothing is presented meanwhile)",
+                 on ? "on" : "off");
+    swap_chain_lost_logged_ = true;
+    swap_chain_retry_ = Clock::now();
+    ok = false;
+  }
+  // A new chain has no metadata (UpdateHdr sends it before the next present), and its size is what the
+  // render scale is measured against.
+  hdr_metadata_sent_ = false;
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  dlssg_.CompleteSwitch(change, ok, resize);
+  REXLOG_INFO("[gpu] dlss frame generation: switched {} in {:.0f} ms", on ? "on" : "off",
+              std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
+  return true;
 }
 
 // CHECK: not run (written without a build). Look for, in the log of a switch: "frame generation:
@@ -1294,6 +1389,21 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   list->setFramebuffer(nullptr);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
+  if (dlssg_.active()) {
+    // DLSS frame generation: what the plugin is given with the back buffer (the picture without the
+    // UI, the UI, the depth and the vectors) and its options for this frame; the present pass's own
+    // state (the front buffer it bound) is read first, the passes below overwrite it.
+    DlssFrameGeneration::FrameArgs args;
+    const bool have_front = present_.front_key(&args.front) && present_.source_ready();
+    args.guest_frame = source == PresentSource::kGuest && have_front;
+    args.front_width = present_.source_width();
+    args.front_height = present_.source_height();
+    args.window_width = swap_chain_.width();
+    args.window_height = swap_chain_.height();
+    args.back_buffers = swap_chain_.image_count();
+    args.hdr = swap_chain_.hdr();
+    dlssg_.Record(list, args);
+  }
   markers_.PopAll(list);  // Frame
   timing_.Mark(list, slot, GpuTiming::kFrameEnd);
   pass_timing_.CompleteFrame(list, slot);
@@ -1320,6 +1430,8 @@ void Renderer::ReportFrameStats() {
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
+                           (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
+                                            : std::string()) +
                            ", upscaler (output, depth, vectors, its own context) " +
                            mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
@@ -1353,6 +1465,9 @@ void Renderer::ReportFrameStats() {
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
   if (fg_.active()) {
     REXLOG_INFO("[gpu] {}", fg_.TakeSummary());
+  }
+  if (dlssg_.active()) {
+    REXLOG_INFO("[gpu] {}", dlssg_.TakeSummary());
   }
   REXLOG_INFO("[gpu] {}", post_.TakeSummary());
   if (layers_.active()) {
