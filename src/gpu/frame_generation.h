@@ -39,9 +39,14 @@
 // rendered interval apart, less a tenth of the mean deviation of that interval and 0.1 ms (the
 // formula of AMD's FidelityFX frame interpolation swap chain, MIT), by a high-resolution waitable
 // timer and a short spin; the generated image goes out first and not before the last present plus
-// that, the real one after it. Presents are FIFO (no tearing; with variable refresh the display
-// follows); mcla_gpu_frame_generation_tearing asks for immediate presents instead. Never MAILBOX:
-// it could replace a generated image with the real one before it is shown.
+// that, the real one after it. The rendered interval is the time between the render thread's
+// hand-overs of the last ten guest frames LESS the time it waited for a free slot before each, and a
+// present's time is the start of its Present call: both keep the pacer's own slowness out of the
+// pace it is given (a feedback that held the rate at 77 presents a second on a 240 Hz display, where
+// 232 were wanted: Process, PresentImage). TakeSummary says where the pacer thread's time goes.
+// Presents are FIFO (no tearing; with variable refresh the display follows);
+// mcla_gpu_frame_generation_tearing asks for immediate presents instead. Never MAILBOX: it could
+// replace a generated image with the real one before it is shown.
 //
 // Queues and threads (F4-DESIGN.md P4). The swap chain is made on a second DIRECT queue of its own
 // (the present queue) while frame generation runs, and on the render queue otherwise: a present on
@@ -126,7 +131,24 @@
 //    Vulkan device features the frame generation shaders need (the probe's trial context says), the
 //    camera vectors and viewSpaceToMetersFactor 1 (only the generated picture shows a wrong one), a
 //    reset frame whose generated image is not shown (the runtime's behaviour on reset is not read);
-//  - the swap chain's three buffers are enough for two presents a frame (D3D12 frame latency 2);
+//  - the swap chain's three buffers are enough for two presents a frame (D3D12 frame latency 2): the
+//    summary's Present time per image (about 4 ms and the gaps in the 3-5 ms bucket at 240 Hz
+//    means the display's queue paces the presents, as it should; a Present that blocks for longer
+//    than one refresh with few gaps under 5 ms means the queue is too shallow);
+//  - the pacer's pace (the fix of the 77 presents a second, no run yet): at 240 Hz, HALF DISPLAY, the
+//    summary reads "paced from a rendered interval of" about 8.6 ms into presents about 4.3 ms
+//    apart, 230 or so presents a second, slot waits close to none, and most gaps in the 3-5 ms
+//    bucket; where the pacer thread's time goes (copy fence, Present, timer) says what limits it
+//    if not;
+//  - Vulkan validation noise that is AMD's, not ours (frame generation on, run next2-vk-val): the
+//    10 reports of VUID-vkCmdDispatch-OpImageWrite-08795 ("rw_output" R16G16B16A16_SFLOAT, the
+//    OpImageWrite texel has 3 components: the name is in amd_fidelityfx_framegeneration_vk.dll, 13
+//    times, and in none of our shaders, which have no storage image at all), the
+//    Undefined-Value-StorageImage-FormatMismatch warnings ("rw_optical_flow" Rg32i against an
+//    R16G16_SINT view), and, most likely, VUID-VkShaderModuleCreateInfo-pCode-08740/08742 (compute
+//    shaders that declare SPV_KHR_compute_shader_derivatives, made while its contexts are made; we
+//    have no compute shader on Vulkan, but this one was not traced to a module). None changes a
+//    result on the card tested; a newer DLL may have fixed them.
 //  - the display's refresh rate comes from its current mode (EnumDisplaySettings); variable refresh
 //    is not detected, so only the 100 Hz rule decides HALF DISPLAY;
 //  - HDR: the float scene's compress and expand pair (fg_prepare_ps, fg_compose_ps), the extended-code
@@ -307,6 +329,9 @@ class FrameGeneration {
     uint64_t latency_frame = 0;
     bool guest_frame = false;
     int64_t handed_us = 0;
+    // How long the render thread waited for a free slot since the last guest frame was handed over:
+    // time the pacer itself caused, left out of the rendered interval it paces from.
+    int64_t slot_wait_us = 0;
   };
   // One acquire semaphore, copy list and fence for each present in flight on the pacer's side.
   struct Lane {
@@ -416,6 +441,7 @@ class FrameGeneration {
   bool slot_images_ready_[kSlots] = {false, false};
   uint32_t slot_cursor_ = 0;
   bool stalled_ = false;         // a wait for a slot ran out: no more waiting until the pacer takes one
+  int64_t pending_slot_wait_us_ = 0;  // waited for slots since the last guest frame was handed over
 
   // The pacer.
   std::unique_ptr<plume::RenderCommandQueue> present_queue_;
@@ -450,6 +476,7 @@ class FrameGeneration {
     uint64_t dropped = 0;             // frames dropped: no slot in time
     uint64_t slot_waits = 0;
     double slot_wait_ms = 0.0;
+    uint64_t handed_while_busy = 0;   // pairs handed over while the pacer was still on the one before
   };
   Stats stats_;
   // The pacer's counters (its thread writes, the summary reads under mu_).
@@ -458,11 +485,33 @@ class FrameGeneration {
     uint64_t generated_presents = 0;
     uint64_t late = 0;                // presents more than 1 ms after their time
     uint64_t failed = 0;
-    double gap_sum_ms = 0.0;          // time between consecutive presents
+    // The time between the starts of consecutive Present calls (the gaps of a pause of over half a
+    // second are counted apart, not summed).
+    double gap_sum_ms = 0.0;
     double gap_max_ms = 0.0;
     uint64_t gaps = 0;
+    uint64_t gap_stalls = 0;
+    // Gaps by length: under 3 ms, 3 to 5, 5 to 7, 7 to 10, 10 to 20, 20 and over (up to half a second).
+    static constexpr uint32_t kGapBuckets = 6;
+    uint64_t gap_buckets[kGapBuckets] = {};
+    // What the pacing was made from, one pair at a time: the rendered interval (the mean of the
+    // window) and the delay between presents that came of it.
+    uint64_t paced_pairs = 0;
+    double interval_sum_ms = 0.0;
+    double delay_sum_ms = 0.0;
+    // Where the pacer thread's time goes (milliseconds, summed).
+    double wait_frame_ms = 0.0;       // idle: no pair handed to it
+    double frame_fence_ms = 0.0;      // the CPU wait for the pair's frame on the render queue
+    double acquire_ms = 0.0;          // Acquire of a back buffer
+    double copy_record_ms = 0.0;      // recording and submitting the copy
+    double copy_fence_ms = 0.0;       // the CPU wait for the copy on the present queue
+    double timer_ms = 0.0;            // waiting for the time a present is due (timer and spin)
+    double present_ms = 0.0;          // the Present call (FIFO blocks here when the display's queue is full)
+    uint64_t images = 0;              // images that went through the steps above
+    uint64_t items = 0;               // pairs the pacer took
   };
   PacerStats pacer_stats_;
+  std::chrono::steady_clock::time_point summary_begin_{};  // the summary's window starts here (render thread)
 };
 
 }  // namespace mcla::gpu

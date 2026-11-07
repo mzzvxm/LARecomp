@@ -658,6 +658,8 @@ void FrameGeneration::CompleteSwitch(Change change, bool ok) {
       running_ = true;
     }
     stalled_ = false;
+    pending_slot_wait_us_ = 0;
+    summary_begin_ = Clock::now();
     slot_cursor_ = 0;
     interval_count_ = 0;
     interval_next_ = 0;
@@ -738,8 +740,11 @@ bool FrameGeneration::AcquireSlot(uint32_t width, uint32_t height, plume::Render
       ++stats_.slot_waits;
       const ScopedGpuWait gpu_wait;  // the render thread waits for the pacer, which waits for the GPU
       cv_.wait_for(lock, kStallTimeout, [&] { return slot_free_[index] || stop_; });
-      stats_.slot_wait_ms +=
-          std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+      const auto waited = Clock::now() - begin;
+      stats_.slot_wait_ms += std::chrono::duration<double, std::milli>(waited).count();
+      // The pacer's own doing: left out of the rendered interval it paces from (Process).
+      pending_slot_wait_us_ +=
+          std::chrono::duration_cast<std::chrono::microseconds>(waited).count();
       if (!slot_free_[index]) {
         stalled_ = true;
         ++stats_.dropped;
@@ -794,6 +799,13 @@ bool FrameGeneration::Submit(const Pair& pair, bool has_generated, uint64_t late
     item.latency_frame = latency_frame;
     item.guest_frame = guest_frame;
     item.handed_us = NowUs();
+    if (guest_frame) {
+      item.slot_wait_us = pending_slot_wait_us_;
+      pending_slot_wait_us_ = 0;
+    }
+    if (busy_ || !queue_.empty()) {
+      ++stats_.handed_while_busy;
+    }
     queue_.push_back(item);
     cv_.notify_all();
   }
@@ -1013,16 +1025,36 @@ std::string FrameGeneration::TakeSummary() {
   }
   const Stats s = stats_;
   stats_ = Stats{};
+  const auto now = Clock::now();
+  const double window_ms =
+      summary_begin_ == Clock::time_point{}
+          ? 0.0
+          : std::chrono::duration<double, std::milli>(now - summary_begin_).count();
+  summary_begin_ = now;
   const double mean_gap = pacer.gaps != 0 ? pacer.gap_sum_ms / double(pacer.gaps) : 0.0;
+  const double paced = double(std::max<uint64_t>(pacer.paced_pairs, 1));
+  const double images = double(std::max<uint64_t>(pacer.images, 1));
   return std::format(
       "frame generation: {} guest frames, {} generated; not generated: {} no scene or layers, {} "
       "context not ready, {} no room in video memory, {} history starting again; {} dropped (no "
-      "free slot), {} slot waits ({:.1f} ms) | pacer: {} presents ({} generated), mean gap {:.2f} "
-      "ms, longest {:.2f} ms, {} more than 1 ms late, {} failed | {:.0f} MiB",
+      "free slot), {} slot waits ({:.1f} ms), {} pairs handed over while the pacer was busy | pacer: "
+      "{} presents ({} generated), mean gap {:.2f} ms (the {} gaps under half a second; {} longer "
+      "ones left out), longest {:.2f} ms, gaps under 3 ms {}, 3-5 {}, 5-7 {}, 7-10 {}, 10-20 {}, "
+      "over 20 {}, {} more than 1 ms late, {} failed; paced from a rendered interval of {:.2f} ms "
+      "into presents {:.2f} ms apart (over {} pairs) | pacer thread, of {:.0f} ms: {:.0f} ms waiting "
+      "for a frame, {:.0f} the frame's fence, {:.0f} timer, {:.0f} Present, {:.0f} acquire, {:.0f} "
+      "copy recording, {:.0f} copy fence (per image: Present {:.2f} ms, copy fence {:.2f} ms, "
+      "frame fence {:.2f} ms per pair) | {:.0f} MiB",
       s.guest_frames, s.generated, s.not_generated_frame, s.not_generated_context,
       s.not_generated_memory, s.not_generated_reset, s.dropped, s.slot_waits, s.slot_wait_ms,
-      pacer.presents,
-      pacer.generated_presents, mean_gap, pacer.gap_max_ms, pacer.late, pacer.failed,
+      s.handed_while_busy, pacer.presents, pacer.generated_presents, mean_gap, pacer.gaps,
+      pacer.gap_stalls, pacer.gap_max_ms, pacer.gap_buckets[0], pacer.gap_buckets[1],
+      pacer.gap_buckets[2], pacer.gap_buckets[3], pacer.gap_buckets[4], pacer.gap_buckets[5],
+      pacer.late, pacer.failed, pacer.interval_sum_ms / paced, pacer.delay_sum_ms / paced,
+      pacer.paced_pairs, window_ms, pacer.wait_frame_ms, pacer.frame_fence_ms, pacer.timer_ms,
+      pacer.present_ms, pacer.acquire_ms, pacer.copy_record_ms, pacer.copy_fence_ms,
+      pacer.present_ms / images, pacer.copy_fence_ms / images,
+      pacer.frame_fence_ms / double(std::max<uint64_t>(pacer.items, 1)),
       double(HeldBytes()) / double(1u << 20));
 }
 
@@ -1094,6 +1126,7 @@ void FrameGeneration::PacerMain() {
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                   TIMER_ALL_ACCESS);
+  int64_t idle_since_us = NowUs();
   for (;;) {
     Item item;
     {
@@ -1124,6 +1157,7 @@ void FrameGeneration::PacerMain() {
         }
         cv_.wait(lock, [this] { return stop_ || pause_ || !queue_.empty(); });
       }
+      pacer_stats_.wait_frame_ms += double(NowUs() - idle_since_us) / 1000.0;
     }
     Process(item);
     {
@@ -1133,23 +1167,42 @@ void FrameGeneration::PacerMain() {
       stalled_ = false;
       cv_.notify_all();
     }
+    idle_since_us = NowUs();
   }
 }
 
 void FrameGeneration::Process(const Item& item) {
   Slot& slot = slots_[item.slot];
   // The frame's work (and so both present images) is complete when its fence is.
+  const int64_t fence_begin_us = NowUs();
   present_queue_->waitForCommandFence(slot.frame_done.get());
+  const double fence_ms = double(NowUs() - fence_begin_us) / 1000.0;
 
   // The rendered interval as the pacer sees it: the time between the hand-overs of the last ten guest
-  // frames; a pause of over half a second starts the window again, a shorter hitch stays in it.
+  // frames, less the time the render thread waited for a free slot before each; a pause of over half
+  // a second starts the window again, a shorter hitch stays in it.
+  //
+  // The wait is the pacer's own doing, and it has to stay out. A pacer that is a little slower than
+  // the pace it was given holds the render thread back (all slots full); the hand-overs are then as
+  // far apart as the pacer's own presents, the delay made from them is half of that, and the pacer
+  // is as slow as before or slower: the rate settles wherever a stall or a hitch left it (77 presents
+  // a second on a 240 Hz display, with 63 s of slot waits in 89 s, before this). Without the wait the
+  // interval is the pace the game would keep if the pacer kept up with it; the pacer, a little
+  // faster than that by AMD's margin, never holds the render thread back, and the interval is exact.
+  // CHECK: a run with frame generation on at 240 Hz (HALF DISPLAY, 116 rendered frames a second):
+  // the summary's "paced from a rendered interval of" should read about 8.6 ms, the presents about
+  // 4.3 ms apart, and the slot waits close to none.
   if (item.guest_frame) {
     if (last_handed_us_ != 0) {
-      const int64_t gap = item.handed_us - last_handed_us_;
-      if (gap > 0 && gap < 500'000) {
-        intervals_[interval_next_] = gap;
-        interval_next_ = (interval_next_ + 1) % kWindow;
-        interval_count_ = std::min(interval_count_ + 1, kWindow);
+      const int64_t raw = item.handed_us - last_handed_us_;
+      const int64_t gap = raw - item.slot_wait_us;
+      if (raw > 0 && raw < 500'000) {
+        // A frame that took under a millisecond of its own says nothing about the pace.
+        if (gap >= 1000) {
+          intervals_[interval_next_] = gap;
+          interval_next_ = (interval_next_ + 1) % kWindow;
+          interval_count_ = std::min(interval_count_ + 1, kWindow);
+        }
       } else {
         interval_count_ = 0;
         interval_next_ = 0;
@@ -1160,6 +1213,7 @@ void FrameGeneration::Process(const Item& item) {
   // AMD's formula: the presents are half the rendered interval apart, less a tenth of its mean
   // deviation and 0.1 ms.
   int64_t delay_us = 0;
+  double mean_interval_us = 0.0;
   if (interval_count_ >= 2) {
     double mean = 0.0;
     for (uint32_t i = 0; i < interval_count_; ++i) {
@@ -1172,6 +1226,17 @@ void FrameGeneration::Process(const Item& item) {
     }
     deviation /= double(interval_count_);
     delay_us = std::max<int64_t>(int64_t(mean / 2.0 - 0.1 * deviation - 100.0), 0);
+    mean_interval_us = mean;
+  }
+  {
+    std::lock_guard lock(mu_);
+    pacer_stats_.frame_fence_ms += fence_ms;
+    ++pacer_stats_.items;
+    if (mean_interval_us > 0.0) {
+      ++pacer_stats_.paced_pairs;
+      pacer_stats_.interval_sum_ms += mean_interval_us / 1000.0;
+      pacer_stats_.delay_sum_ms += double(delay_us) / 1000.0;
+    }
   }
 
   bool ok = true;
@@ -1210,9 +1275,11 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
   }
   Lane& lane = lanes_[lane_index];
   uint32_t back = 0;
+  const int64_t acquire_begin_us = NowUs();
   if (!swap_chain_->Acquire(lane.acquire.get(), &back)) {
     return fail();  // out of date: the render thread rebuilds the chain
   }
+  const int64_t record_begin_us = NowUs();
   // The copy: the present image texel for texel into the back buffer, a colour attachment write.
   plume::RenderCommandList* list = lane.list.get();
   plume::RenderTexture* target = swap_chain_->texture(back);
@@ -1238,9 +1305,17 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
   plume::RenderCommandSemaphore* signals[] = {swap_chain_->render_semaphore(back)};
   const plume::RenderCommandList* lists[] = {list};
   present_queue_->executeCommandLists(lists, 1, waits, 1, signals, 1, lane.fence.get());
+  const int64_t fence_begin_us = NowUs();
   present_queue_->waitForCommandFence(lane.fence.get());
+  const int64_t wait_begin_us = NowUs();
 
   WaitUntil(due_us);
+  // The time a present counts at is the start of the call: a Present that blocks (FIFO, the display's
+  // queue full) must not push the next present's time later by as long as it blocked, or the cost of
+  // every present would be added to the pace (the second way, with the rendered interval measured
+  // from the render thread's own waits, that the pacer fell behind the game; the fork's pacer takes
+  // the start too).
+  const int64_t present_begin_us = NowUs();
   if (latency_frame != 0) {
     latency::OnPresentBegin(latency_frame);
   }
@@ -1248,27 +1323,41 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
   if (latency_frame != 0) {
     latency::OnPresentEnd(latency_frame);
   }
-  const int64_t at = NowUs();
+  const int64_t present_end_us = NowUs();
   {
     std::lock_guard lock(mu_);
     ++pacer_stats_.presents;
-    if (at - due_us > 1000) {
+    ++pacer_stats_.images;
+    pacer_stats_.acquire_ms += double(record_begin_us - acquire_begin_us) / 1000.0;
+    pacer_stats_.copy_record_ms += double(fence_begin_us - record_begin_us) / 1000.0;
+    pacer_stats_.copy_fence_ms += double(wait_begin_us - fence_begin_us) / 1000.0;
+    pacer_stats_.timer_ms += double(present_begin_us - wait_begin_us) / 1000.0;
+    pacer_stats_.present_ms += double(present_end_us - present_begin_us) / 1000.0;
+    if (present_begin_us - due_us > 1000) {
       ++pacer_stats_.late;
     }
     if (last_present_us_ != 0) {
-      const double gap = double(at - last_present_us_) / 1000.0;
-      pacer_stats_.gap_sum_ms += gap;
+      const int64_t gap_us = present_begin_us - last_present_us_;
+      const double gap = double(gap_us) / 1000.0;
       pacer_stats_.gap_max_ms = std::max(pacer_stats_.gap_max_ms, gap);
-      ++pacer_stats_.gaps;
+      if (gap_us < 500'000) {
+        pacer_stats_.gap_sum_ms += gap;
+        ++pacer_stats_.gaps;
+        const uint32_t bucket = gap < 3.0 ? 0 : gap < 5.0 ? 1 : gap < 7.0 ? 2 : gap < 10.0 ? 3
+                                                                : gap < 20.0 ? 4 : 5;
+        ++pacer_stats_.gap_buckets[bucket];
+      } else {
+        ++pacer_stats_.gap_stalls;
+      }
     }
   }
-  last_present_us_ = at;
+  last_present_us_ = present_begin_us;
   if (!presented) {
     fail();  // the chain no longer matches the window: the render thread makes it again
-    return at;
+    return present_begin_us;
   }
   *ok = true;
-  return at;
+  return present_begin_us;
 }
 
 }  // namespace mcla::gpu
