@@ -554,6 +554,25 @@ plume::RenderFramebuffer* EdramTargets::ClearDepthStencil(plume::RenderCommandLi
   return framebuffer;
 }
 
+namespace {
+
+// The host texture of an identity: the guest's size at `scale`, `host_samples` samples. Null when
+// the device cannot make it (logged by the device).
+std::unique_ptr<plume::RenderTexture> MakeTargetTexture(Device& device, const EdramKey& k,
+                                                        const format::Mapping& m, Scale scale,
+                                                        uint32_t host_samples, uint32_t height) {
+  plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
+      scale.Edge(k.pitch), scale.Edge(height), 1, m.format,
+      k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
+  desc.multisampling.sampleCount = plume::RenderSampleCounts(host_samples);
+  const std::string name =
+      std::format("edram {} {}@{} pitch {} {}x scale {} host {}x", k.depth ? "depth" : "colour",
+                  m.guest_name, k.base_tiles, k.pitch, k.samples, scale, host_samples);
+  return device.CreateTexture(desc, name.c_str());
+}
+
+}  // namespace
+
 bool EdramTargets::Create(Target& target, uint32_t height) {
   const EdramKey& k = target.key;
   const format::Mapping m = k.depth ? format::DepthTargetFormat(k.format)
@@ -562,15 +581,8 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
     return false;
   }
   // The host texture: the guest's size at the target's scale.
-  plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-      target.scale.Edge(k.pitch), target.scale.Edge(height), 1, m.format,
-      k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
-  desc.multisampling.sampleCount = plume::RenderSampleCounts(target.host_samples);
-  const std::string name =
-      std::format("edram {} {}@{} pitch {} {}x scale {} host {}x", k.depth ? "depth" : "colour",
-                  m.guest_name, k.base_tiles, k.pitch, k.samples, target.scale,
-                  target.host_samples);
-  std::unique_ptr<plume::RenderTexture> texture = device_->CreateTexture(desc, name.c_str());
+  std::unique_ptr<plume::RenderTexture> texture =
+      MakeTargetTexture(*device_, k, m, target.scale, target.host_samples, height);
   if (!texture) {
     return false;
   }
@@ -581,6 +593,88 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   target.layout = plume::RenderTextureLayout::UNKNOWN;
   ++target.generation;
   ++change_serial_;
+  return true;
+}
+
+bool EdramTargets::SetSceneScale(Scale scale, plume::RenderCommandList* list) {
+  DecideScene();  // the start's decision first: a change before the first use must not be undone by it
+  if (scale == scene_scale_) {
+    return true;
+  }
+  if (!device_ || !frames_ || !list || scale.none()) {
+    return false;
+  }
+  // The new textures first, all of them: nothing is changed unless every one can be made.
+  struct Remade {
+    Target* target = nullptr;
+    format::Mapping mapping;
+    std::unique_ptr<plume::RenderTexture> texture;
+  };
+  std::vector<Remade> remade;
+  for (const auto& [key, target] : targets_) {
+    if (!IsSceneKey(key) || !target->texture || target->scale == scale) {
+      continue;
+    }
+    Remade r;
+    r.target = target.get();
+    r.mapping = key.depth ? format::DepthTargetFormat(key.format)
+                          : format::ColorTargetFormat(key.format);
+    if (r.mapping.status == format::Status::kOk) {
+      r.texture = MakeTargetTexture(*device_, key, r.mapping, scale, target->host_samples,
+                                    target->height);
+    }
+    if (!r.texture) {
+      REXLOG_ERROR("[gpu] edram: the 3D scene could not be moved from {}x to {}x: {} could not be "
+                   "made at the new size (the scene stays at {}x)",
+                   scene_scale_, scale, DescribeEdramKey(key), scene_scale_);
+      return false;
+    }
+    remade.push_back(std::move(r));
+  }
+
+  const Scale before = scene_scale_;
+  uint64_t old_bytes = 0;
+  uint64_t new_bytes = 0;
+  for (Remade& r : remade) {
+    Target& t = *r.target;
+    old_bytes += TextureBytes(t.scale.Edge(t.width), t.scale.Edge(t.height), 1, t.format,
+                              t.host_samples);
+    // The framebuffers that name it, the shader views and their slots, then the texture, each after
+    // the lists that still use them (FrameRing serials); the same as a growth, with a new scale.
+    RetireFramebuffersOf(&t);
+    ReleaseViews(t);
+    std::unique_ptr<plume::RenderTexture> old = std::move(t.texture);
+    t.texture = std::move(r.texture);
+    t.format = r.mapping.format;
+    t.scale = scale;
+    t.layout = plume::RenderTextureLayout::UNKNOWN;
+    ++t.generation;
+    t.views_generation = t.generation;
+    new_bytes += TextureBytes(scale.Edge(t.width), scale.Edge(t.height), 1, t.format, t.host_samples);
+    frames_->Retire(std::move(old));
+    // A new colour target or depth buffer is cleared whole before anything else touches it
+    // (D3D12 debug layer id 1422), as every new target is.
+    Clear(t, list);
+    ++stats_.rescaled;
+  }
+  for (const auto& [key, target] : targets_) {
+    if (IsSceneKey(key)) {
+      target->scale = scale;  // also a target released for want of memory: Get makes it at this scale
+    }
+  }
+  if (old_bytes != 0) {
+    device_->NoteReleased(old_bytes);
+  }
+  scene_scale_ = scale;
+  scene_decided_ = true;
+  // What was memoized from the targets (a draw's scale and framebuffers, the depth's layer, which
+  // follows whether the scene is apart from the images of the screen) is stale.
+  ++change_serial_;
+  REXLOG_INFO("[gpu] edram: the 3D scene is now made at {}x, {}x{} of the guest's 1280x720 (was {}x): "
+              "{} target(s) remade, {:.1f} MiB (was {:.1f} MiB){}",
+              scale, scale.Edge(kAssumedScreenWidth), scale.Edge(kAssumedScreenHeight), before,
+              remade.size(), double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0,
+              scale == resolution_scale_ ? "; the images of the screen's scale again" : "");
   return true;
 }
 
@@ -1463,6 +1557,10 @@ std::string EdramTargets::TakeSummary() {
     text += std::format(" | the 3D scene at {}x ({}x{}) under images of the screen at {}x",
                         scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
                         scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_);
+  }
+  if (stats_.rescaled != 0) {
+    text += std::format(" | scene targets made again at another scale (a live upscaler change) {}",
+                        stats_.rescaled);
   }
   if (msaa_level_ > 2) {
     text += std::format(" | host MSAA {}x: {} targets made with it", msaa_level_,

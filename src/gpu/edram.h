@@ -244,7 +244,8 @@ class EdramTargets {
   // at the internal scale; every other target -- luminance, shadow,
   // reflection, impostors, noise, the rain's particle state, the vinyl -- at
   // the guest's size. The screen is the game's own (grcDevice's width and
-  // height, read on first use). A target's scale is fixed when it is made: a
+  // height, read on first use). A target's scale is fixed when it is made (the 3D scene's
+  // colour and depth are the one exception, SetSceneScale): a
   // use whose surface classifies otherwise is counted and reported once per
   // identity (NoteDeclaredScale).
   static constexpr uint32_t kMaxScreenShift = 3;
@@ -283,16 +284,33 @@ class EdramTargets {
   Scale ScaleForUse(const EdramKey& key, uint32_t size_bits);
 
   // --- the scene at its own scale (F4-DESIGN.md 4, render_scale.h ChooseSceneScale) ---
-  // While a temporal upscaler works on the 3D scene (the start's choice, gpu.h GetStartUpscale) the
-  // scene's identities -- the main view's colour and depth in play, 1x or 2x samples
-  // (temporal_identities.h) -- are made at SceneScale(): the images of the screen's scale over the
-  // mode's ratio. Everything else keeps its scale, so the post chain, the tone map and the UI stay
-  // at the output's size. The pause menu's and the map's 4x identities are the scene's too, but
-  // not in play: they stay at the images of the screen's. Decided on first use, never changed.
+  // While a temporal upscaler works on the 3D scene the scene's identities -- the main view's
+  // colour and depth in play, 1x or 2x samples (temporal_identities.h) -- are made at
+  // SceneScale(): the images of the screen's scale over the mode's ratio. Everything else keeps its
+  // scale, so the post chain, the tone map and the UI stay at the output's size. The pause menu's
+  // and the map's 4x identities are the scene's too, but not in play: they stay at the images of
+  // the screen's. Decided on first use from the upscaler as the start found it (gpu.h
+  // GetStartUpscale); SetSceneScale moves it afterwards, between two guest frames.
   Scale SceneScale() {
     DecideScene();
     return scene_scale_;
   }
+  // The scene's scale becomes `scale` (temporal.cpp SwitchPath: the upscaler, or its mode, changed
+  // while the game runs). Only between two guest frames, with `list` the frame's open list outside a
+  // render pass and no draw recorded in it yet: every scene target that exists is made again at the
+  // new scale (a new texture, cleared as a new target's is, recorded into `list`; the old one, its
+  // framebuffers and views are retired behind the frames that may use them), a target released
+  // for want of memory only takes the scale, and the next Get makes it. What is made from the
+  // scene's targets follows by itself: a draw's scale is its target's (ScaleOf), a resolve product
+  // is made again when a resolve arrives at another scale (ResolveCache::Activate), a read across
+  // scales takes a reduced copy or the product as it is, and the memos of the Scene are dropped
+  // (change_serial). True when the scene is at `scale` afterwards, also when it already was. False
+  // when a texture could not be made: nothing was changed (a 3x scene at 4K can fail on a card with
+  // little memory), and the caller keeps what it had.
+  bool SetSceneScale(Scale scale, plume::RenderCommandList* list);
+  // The game's screen size in guest pixels (grcDevice's width and height, read on first use): false
+  // until the game has set it. The size the main view and the images of the screen are made from.
+  bool GuestScreen(uint32_t* width, uint32_t* height) { return ScreenSize(width, height); }
   // The scene is drawn at another scale than the images of the screen.
   bool SceneApart() {
     DecideScene();
@@ -660,6 +678,7 @@ class EdramTargets {
   // The scene's scale (SceneScale): the images of the screen's until DecideScene has run. It
   // reads the upscaler as the start found it, which can wait for the upscaler's probe, so it runs
   // on the first use of a scene identity, long after the game's own thread asked the same question.
+  // SetSceneScale changes it later.
   void DecideScene();
   Scale scene_scale_;
   bool scene_decided_ = false;
@@ -724,6 +743,7 @@ class EdramTargets {
     uint64_t made_host_msaa = 0;    // targets made with more samples than the guest's (M6d.2)
     uint64_t trimmed = 0;           // textures released for want of video memory (Trim)
     uint64_t remade = 0;            // ... made again by a Get
+    uint64_t rescaled = 0;          // scene targets made again at another scale (SetSceneScale)
   };
   Stats stats_;
   uint32_t remake_failures_logged_ = 0;
