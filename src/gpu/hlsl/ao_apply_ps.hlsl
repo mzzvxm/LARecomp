@@ -23,8 +23,10 @@
 // Where the factor is near 1 (the sky, flat surfaces, past the fade) the pixel is not written.
 //
 // Debug views (flags bits 0-7): 1 the factor, 2 the visibility, 3 the ambient share, 4 the
-// view-space normal, 5 the linear depth (log); written as a grey of 0.3 of the value so that 1.0
-// reads below the tone map's white.
+// view-space normal, 5 the linear depth (log), 6 the temporal pass's mask (the image it reads then
+// holds the share of the history each pixel kept instead of the visibility: white a full history,
+// black none, grey part of it); written as a grey of 0.3 of the value so that 1.0 reads below the
+// tone map's white.
 // CHECK: the 0.3 against the real exposure of the scene colour (a float target holding the colour
 // times the game's exponent bias).
 
@@ -99,7 +101,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   if (view != 0u) {
     float3 grey = float3(factor, factor, factor);
-    if (view == 2u) {
+    if (view == 2u || view == 6u) {
       grey = float3(ao, ao, ao);
     } else if (view == 3u) {
       grey = float3(share, share, share);

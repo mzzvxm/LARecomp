@@ -18,11 +18,15 @@
 // occlusion is worked out over the whole picture there (the destination texture's size, not the
 // tile's), and the later tiles' resolves of the same picture are not triggers.
 //
-// WHAT: four passes into images of their own, then one into the main view's colour target:
+// WHAT: five passes into images of their own, then one into the main view's colour target:
 //   depth    the linear view-space distance, R32_FLOAT, at the AO's size (the render size, or half of
 //            it at LOW), and two coarser levels, R16_FLOAT
-//   main     the GTAO visibility (R16_FLOAT)
-//   denoise  a depth-aware blur of it (R16_FLOAT)
+//   main     the GTAO visibility (R16_FLOAT), its noise changing every frame
+//   denoise  a depth-aware 3x3 blur of it (R16_FLOAT): once when the occlusion has a history of its
+//            own, twice when it has none; never left out
+//   temporal the accumulation over frames: this frame's visibility averaged with the last frame's,
+//            found again by the camera's own motion and kept only where it is the same surface
+//            (see below); R16G16_FLOAT = (visibility, linear depth), the next frame's history
 //   apply    rgb *= lerp(1, ao, strength * ambient_share * distance_fade) on every sample of the
 //            colour target; ambient_share = La / (La + Ls * N.L) from the game's own constants (PS c26
 //            the ambient, PS c39 the sun colour, VS c16 the direction the sunlight travels: the
@@ -43,6 +47,22 @@
 // trigger there is the same resolve (into 078B0000, the first of the frame); the host draws the 4x
 // target once, so it is whole at the first tile.
 //
+// THE HISTORY (hlsl/ao_temporal_ps.hlsl): the sampling noise changes every frame and the
+// occlusion averages it over frames, as the games' own do (mcla_gpu_ao_history: the frames, 12 by
+// default; an exponential average once that many have been added up, the plain mean before). The
+// game has no motion vectors for what moves by itself, so a pixel is found in the last frame from
+// the camera alone, and the history is trusted only where it is the same surface: the plane test
+// and the depth test of the shader, a clamp to this frame's neighbourhood against ghosts, the
+// vehicle stencil IDs. What it cannot trust gets the wide blur of this frame in its place. The
+// camera of the trigger's own frame is not known when it fires (the anchor draw comes later), so
+// the motion into the last frame is either the frame's own view inverse read from the vertex
+// constants of its draws (c12-c15: trusted only once it matched the anchor's camera in a frame the
+// camera moved in) or the last step repeated (the constant velocity guess); FrameMotion. The
+// history starts again after a cut (the temporal system's own rule on the camera), a gap of frames,
+// the pause/map view switching, a new image size, and the debug view that overwrites it. One
+// history serves both views: switching is a reset (the pause view's first frame has no occlusion
+// anyway).
+//
 // The census (mcla_gpu_ao_census, off by default) is step 0 of the design: it logs the trigger, the
 // light constants, the lens and, at its frames, a statistic of the linear depth read back from the
 // GPU, so that a run can settle the design's CHECK items.
@@ -53,8 +73,8 @@
 // visibility's exponent) and direct (how much the sun-lit part is darkened too). Off the menu,
 // mcla_gpu_ao_strength, _radius, _power and _direct replace that one number of the chosen
 // intensity when they are set to 0 or more (they default to -1: not set), so a test can move
-// one of them and keep the rest; also _fade_end, _view, _sun_flip. The push block stays 128 bytes:
-// power rides in shape.x, direct in the free lane extra.z.
+// one of them and keep the rest; also _history (the frames averaged), _fade_end, _view, _sun_flip.
+// The push block stays 128 bytes: power rides in shape.x, direct in the free lane extra.z.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
 // made ahead on the host builder thread (host_precache.h).
@@ -152,8 +172,9 @@ class AmbientOcclusion {
   // view; its z says which end of the range is far).
   void OnDepthClear(const EdramKey& key, float z);
   // A resolve, after ResolveCache::Execute made its copy, with `list` the frame's open list
-  // outside any render pass. `upscaler_running`: a temporal upscaler works on this frame (the
-  // noise then rotates). True when passes were recorded: the caller's list state is gone.
+  // outside any render pass. `upscaler_running`: a temporal upscaler works on this frame (only
+  // the log says it: the noise changes every frame whatever runs). True when passes were
+  // recorded: the caller's list state is gone.
   bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
                  plume::RenderCommandList* list, bool upscaler_running);
   // The scene is composed: the UI starts.
@@ -187,6 +208,8 @@ class AmbientOcclusion {
     kPassDenoise,
     kPassApply,
     kPassApplyMs,
+    kPassTemporal,
+    kPassTemporalMs,
     kPassCount,
   };
 
@@ -198,6 +221,8 @@ class AmbientOcclusion {
     kVMip = 2,
     kVMain = 3,
     kVDenoise = 4,
+    kVTemporal = 5,
+    kVTemporalMs = 6,
     kVApplyBase = 8,  // + 4 * debug + log2(samples)
     kVariantCount = kVApplyBase + 8,
   };
@@ -294,6 +319,39 @@ class AmbientOcclusion {
     float direct = 0.375f;
   };
   void UpdateLook();
+
+  // --- the history (hlsl/ao_temporal_ps.hlsl) ---
+  // Why a frame's occlusion had no history to lean on (ChooseHistory), or kUsed.
+  enum class HistoryWhy : uint8_t {
+    kUsed,
+    kFirst,  // none yet, or given back with the images, or dropped by a debug view
+    kGap,    // not the frame after the one that made it
+    kView,   // the other kind of view (play against pause/map)
+    kSize,   // another image size
+    kCut,    // the camera jumped or turned (the temporal system's cut rule)
+    kCap,    // mcla_gpu_ao_history is 1
+    kCount,
+  };
+  // Where the camera's motion into the last frame came from.
+  enum class Pose : uint8_t { kStill, kPredicted, kVertexBank };
+  struct HistoryUse {
+    bool on = false;
+    HistoryWhy why = HistoryWhy::kFirst;
+    Pose pose = Pose::kStill;
+    uint32_t age = 0;        // pictures already averaged into the history, less the first
+    uint32_t cap = 12;       // the frames the average spans at most
+    temporal::Mat4 motion;   // this frame's game view space into the last frame's (row vectors)
+  };
+  static const char* HistoryWhyName(HistoryWhy why);
+  static const char* PoseName(Pose pose);
+  // Decides the frame's history: its use, and the matrix that moves this frame's view space into
+  // the history's.
+  HistoryUse ChooseHistory(const Plan& plan) const;
+  // The motion of the trigger's frame's camera into the previous frame's (true unless the
+  // matrix is not finite); *cut says that the frame's own camera jumped (vertex bank only).
+  bool FrameMotion(temporal::Mat4* motion, Pose* source, bool* cut) const;
+  // Counts what ChooseHistory decided (the census says it) and logs the first use.
+  void NoteHistory(const HistoryUse& use);
   // The census's depth statistic: a copy of the coarsest level into a readback buffer, and its
   // processing when the GPU has run the copy.
   void RecordProbe(plume::RenderCommandList* list, const Plan& plan);
@@ -406,6 +464,38 @@ class AmbientOcclusion {
   HostImage depth_[3];  // the linear depth chain: the AO's size, then 1/2 and 1/4 of it
   HostImage raw_;       // the main pass's visibility
   HostImage denoised_;  // the denoise's
+  // The history: (visibility, linear depth) of the last frame that ran the passes, R16G16_FLOAT,
+  // two images that take turns (a pass does not read the image it writes); history_[history_index_]
+  // is the one written last.
+  HostImage history_[2];
+  uint32_t history_index_ = 0;
+  bool history_valid_ = false;    // it holds a picture the next frame may lean on
+  bool history_cut_ = false;      // ... and was dropped by a cut (for the census)
+  uint64_t history_frame_ = 0;    // the frame that wrote it
+  bool history_pause_ = false;    // ... which kind of view it was
+  uint32_t history_size_[2] = {}; // ... at which image size
+  float history_tan_[2] = {};     // ... with which lens (tan of the half field of view, x and y)
+  uint32_t history_age_ = 0;      // pictures averaged into it, less the first
+  // The camera's motion from the frame before the previous to the previous one, measured at the
+  // previous frame's anchor draw (game view space to game view space, row vectors): the guess of
+  // the step the next frame takes (FrameMotion), and the position change of that step for the
+  // cut rule.
+  temporal::Mat4 last_motion_;
+  bool last_motion_valid_ = false;
+  uint64_t last_motion_frame_ = 0;
+  double last_step_[3] = {};
+  bool have_last_step_ = false;
+  // The vertex constants c12-c15 held this frame's view inverse in the last frame the camera moved
+  // in (OnAnchor compares them with the anchor's): the trigger may then use them as the frame's own
+  // camera.
+  bool vs_pose_trusted_ = false;
+  // The census: what the last frame's trigger did with the history, and the totals.
+  HistoryWhy history_why_ = HistoryWhy::kFirst;
+  Pose history_pose_ = Pose::kStill;
+  uint64_t history_used_ = 0;
+  uint64_t history_resets_[size_t(HistoryWhy::kCount)] = {};
+  uint64_t pose_frames_[3] = {};
+  bool history_logged_ = false;
   uint32_t images_made_for_[2] = {};
   bool images_failed_logged_ = false;
   // The census probe's readback.

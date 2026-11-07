@@ -88,8 +88,18 @@ REXCVAR_DEFINE_INT32(
     "Diagnostic: shows a stage of the ambient occlusion as a grey picture instead of applying it "
     "(only while it is on): 1 the factor the picture is multiplied by (white: none), 2 the "
     "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
-    "(a log scale). 0: off. Live.")
-    .range(0, 5)
+    "(a log scale), 6 how much of the last frames each pixel kept (white: all it can, black: none, "
+    "so it is new or a vehicle; the history starts again after each frame of this view). 0: off. "
+    "Live.")
+    .range(0, 6)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ao_history, 12, "MCLA/GPU",
+    "Diagnostic: how many frames ambient occlusion averages to take its sampling noise out, 1 to "
+    "64. Each frame's occlusion is found again in the next by the camera's motion and kept only "
+    "where it is the same surface; more frames is smoother and slower to follow a moving shadow "
+    "(a car's), fewer is noisier. 1: no averaging (two blur passes on every frame instead). Live.")
+    .range(1, 64)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_ao_sun_flip, false, "MCLA/GPU",
@@ -137,6 +147,13 @@ constexpr float kMinVisibility = 0.1f;
 constexpr uint32_t kReleaseAfterFrames = 60;
 // Sizes below this (host pixels, either way) are not worth the passes.
 constexpr uint32_t kMinRenderSize = 64;
+// The history's flag in the push block's flags (hlsl/ao_temporal_ps.hlsl AoHistoryOn).
+constexpr uint32_t kHistoryFlag = 1u << 20;
+// The vertex constants' view inverse is taken as the frame's own camera once it matched the
+// anchor's within kVsMatch in a frame whose camera moved by at least kVsMoved (an entry of the
+// view inverse: a step of that size shows in it; a stale copy of the last frame's would not match).
+constexpr double kVsMatch = 5e-4;
+constexpr double kVsMoved = 5e-3;
 // The sky and anything the linearisation could not place (hlsl/ao_common.hlsli kAoSky).
 constexpr float kSkyDistance = 60000.0f;
 
@@ -180,6 +197,25 @@ float Overridden(double value, double lo, double hi, float fallback, bool* any) 
   }
   *any = true;
   return float(std::clamp(value, lo, hi));
+}
+
+// A matrix that can be a camera's view inverse: finite, the last column (0, 0, 0, 1), unit axes.
+bool PoseSane(const temporal::Mat4& w) {
+  if (!temporal::Finite(w)) {
+    return false;
+  }
+  if (std::fabs(w.m[0][3]) > 1e-3 || std::fabs(w.m[1][3]) > 1e-3 || std::fabs(w.m[2][3]) > 1e-3 ||
+      std::fabs(w.m[3][3] - 1.0) > 1e-3) {
+    return false;
+  }
+  for (int r = 0; r < 3; ++r) {
+    const double length = std::sqrt(w.m[r][0] * w.m[r][0] + w.m[r][1] * w.m[r][1] +
+                                    w.m[r][2] * w.m[r][2]);
+    if (!(length > 0.98 && length < 1.02)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
@@ -308,6 +344,8 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVMip: return "ao depth level";
     case kVMain: return "ao visibility";
     case kVDenoise: return "ao denoise";
+    case kVTemporal: return "ao temporal";
+    case kVTemporalMs: return "ao temporal (multisampled)";
     default: break;
   }
   const uint32_t index = variant - kVApplyBase;
@@ -368,6 +406,10 @@ void AmbientOcclusion::Shutdown() {
   }
   raw_ = HostImage{};
   denoised_ = HostImage{};
+  for (HostImage& image : history_) {
+    image = HostImage{};
+  }
+  history_valid_ = false;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
   }
@@ -389,8 +431,9 @@ void AmbientOcclusion::ListPrecache() {
   // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
   // that opening the pause menu with the occlusion on waits for no pipeline.
   const uint32_t listed[] = {kVDepth,           kVDepthMs,          kVMip,
-                             kVMain,            kVDenoise,          ApplyVariant(false, 1),
-                             ApplyVariant(false, 2), ApplyVariant(false, 4)};
+                             kVMain,            kVDenoise,          kVTemporal,
+                             kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
+                             ApplyVariant(false, 4)};
   for (const uint32_t variant : listed) {
     precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
                  VariantName(variant), [this, variant] { return MakePipeline(variant); });
@@ -410,6 +453,8 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVMip: return make(kPassMip, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVMain: return make(kPassMain, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVDenoise: return make(kPassDenoise, plume::RenderFormat::R16_FLOAT, copy, 1);
+    case kVTemporal: return make(kPassTemporal, plume::RenderFormat::R16G16_FLOAT, copy, 1);
+    case kVTemporalMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     default: break;
   }
   // The apply pass: into the scene colour (float16 RGBA) with the target's sample count. The
@@ -478,6 +523,9 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   }
   add(raw_);
   add(denoised_);
+  for (const HostImage& image : history_) {
+    add(image);
+  }
   return bytes;
 }
 
@@ -490,6 +538,11 @@ void AmbientOcclusion::ReleaseImages() {
   }
   passes_->ReleaseImage(raw_);
   passes_->ReleaseImage(denoised_);
+  for (HostImage& image : history_) {
+    passes_->ReleaseImage(image);
+  }
+  history_valid_ = false;
+  history_cut_ = false;
   ++generation_;
 }
 
@@ -596,6 +649,8 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   // neither (the anchor without a main view) gives no camera; the frame after it has none to use.
   if (play_view_ == pause_view_) {
     have_previous_ = false;
+    have_last_step_ = false;
+    vs_pose_trusted_ = false;
     return;
   }
   const bool pause = pause_view_;
@@ -608,6 +663,8 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   if (!(width >= 16.0f && width <= 16384.0f && height >= 16.0f && height <= 16384.0f)) {
     reject_ = temporal::Reject::kFrameSize;
     have_previous_ = false;
+    have_last_step_ = false;
+    vs_pose_trusted_ = false;
     return;
   }
   temporal::Camera camera;
@@ -615,6 +672,8 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
                                     &camera);
   if (reject_ != temporal::Reject::kNone) {
     have_previous_ = false;
+    have_last_step_ = false;
+    vs_pose_trusted_ = false;
     if (rejects_logged_ < 8) {
       ++rejects_logged_;
       REXLOG_INFO("[gpu] ao: the anchor's constants gave no camera: {} (frame {}, logged {} of 8)",
@@ -646,6 +705,49 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
     // guess of how far it is from that frame's own (a pause/map view only: see OnResolve).
     lens_step_ = std::max({lens_delta_[0], lens_delta_[1], lens_delta_[2], lens_delta_[3]});
     lens_step_valid_ = std::isfinite(lens_step_);
+  }
+  // The camera's motion from the frame before to this one, for the occlusion's history in the next
+  // frame (FrameMotion): that frame is guessed to move the same way. A cut starts the history
+  // again, and the step of a cut is not a motion to repeat.
+  if (lens_delta_valid_) {
+    const temporal::Cut cut =
+        temporal::TestCut(camera, previous_, have_last_step_ ? last_step_ : nullptr);
+    if (cut.fires) {
+      history_valid_ = false;
+      history_cut_ = true;
+      have_last_step_ = false;
+      last_motion_valid_ = false;
+    } else {
+      last_motion_ = temporal::Mul(previous_.view_inverse, camera.view);
+      last_motion_valid_ = temporal::Finite(last_motion_);
+      last_motion_frame_ = frame_;
+      for (int i = 0; i < 3; ++i) {
+        last_step_[i] = cut.step[i];
+      }
+      have_last_step_ = true;
+    }
+    // Whether the vertex constants of this frame's draws held this frame's view inverse (what the
+    // census compares below): trusted once they did in a frame the camera moved in, dropped as
+    // soon as they differ.
+    if (vs_view_inverse_draws_ != 0) {
+      temporal::Mat4 vertex;
+      for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+          vertex.m[r][c] = double(vs_view_inverse_[r * 4 + c]);
+        }
+      }
+      const double differs = temporal::MaxAbsDiff(vertex, camera.view_inverse);
+      const double moved = temporal::MaxAbsDiff(camera.view_inverse, previous_.view_inverse);
+      if (!(differs <= kVsMatch)) {
+        vs_pose_trusted_ = false;
+      } else if (moved >= kVsMoved) {
+        vs_pose_trusted_ = true;
+      }
+    }
+  } else {
+    have_last_step_ = false;
+    last_motion_valid_ = false;
+    vs_pose_trusted_ = false;
   }
   camera_ = camera;
   have_camera_ = true;
@@ -835,7 +937,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
-  plan.view = mode_ == Mode::kOff ? 0u : uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 5));
+  plan.view = mode_ == Mode::kOff ? 0u : uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 6));
   // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
   // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
   // turning it on, the first frame of a pause spell: the play view's lens is not the pause
@@ -925,13 +1027,17 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
     ok = passes_->EnsureImage(raw_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
                               "ao visibility") &&
          passes_->EnsureImage(denoised_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
-                              "ao denoised visibility");
+                              "ao denoised visibility") &&
+         passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
+                              plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
+         passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
+                              plume::RenderFormat::R16G16_FLOAT, "ao history 1");
   }
   if (ok && (images_made_for_[0] != plan.ao[0] || images_made_for_[1] != plan.ao[1])) {
     images_made_for_[0] = plan.ao[0];
     images_made_for_[1] = plan.ao[1];
     REXLOG_INFO("[gpu] ao: images at {}x{} for a {}x{} picture ({}): linear depth R32_FLOAT with "
-                "two coarser levels, visibility R16_FLOAT x2, {:.1f} MiB",
+                "two coarser levels, visibility R16_FLOAT x2, history R16G16_FLOAT x2, {:.1f} MiB",
                 plan.ao[0], plan.ao[1], plan.render[0], plan.render[1],
                 plan.apply ? ModeName(plan.mode) : "census probe only",
                 double(HeldBytes()) / (1024.0 * 1024.0));
@@ -1068,6 +1174,121 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   }
 }
 
+const char* AmbientOcclusion::HistoryWhyName(HistoryWhy why) {
+  switch (why) {
+    case HistoryWhy::kUsed: return "used";
+    case HistoryWhy::kFirst:
+      return "none yet (the first frame, the occlusion just turned on, a debug view before)";
+    case HistoryWhy::kGap: return "not the frame after the one that made it";
+    case HistoryWhy::kView: return "the other kind of view (play against pause/map)";
+    case HistoryWhy::kSize: return "another image size";
+    case HistoryWhy::kCut: return "a cut of the camera";
+    case HistoryWhy::kCap: return "mcla_gpu_ao_history is 1";
+    case HistoryWhy::kCount: break;
+  }
+  return "?";
+}
+
+const char* AmbientOcclusion::PoseName(Pose pose) {
+  switch (pose) {
+    case Pose::kStill: return "standing still (no step measured)";
+    case Pose::kPredicted: return "the last step repeated";
+    case Pose::kVertexBank: return "the frame's own view inverse from the vertex constants";
+  }
+  return "?";
+}
+
+bool AmbientOcclusion::FrameMotion(temporal::Mat4* motion, Pose* source, bool* cut) const {
+  *cut = false;
+  // The frame's own camera, from the vertex constants of the draws before the trigger, once it is
+  // known that they hold it (OnAnchor): the motion is exact then, as in any renderer with a
+  // camera of its own. v_history = v_world * V_history, v_world = v_now * W_now.
+  if (vs_pose_trusted_ && vs_view_inverse_draws_ != 0) {
+    temporal::Mat4 world;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        world.m[r][c] = double(vs_view_inverse_[r * 4 + c]);
+      }
+    }
+    if (PoseSane(world)) {
+      *motion = temporal::Mul(world, previous_.view);
+      *source = Pose::kVertexBank;
+      temporal::Camera now;
+      for (int i = 0; i < 3; ++i) {
+        now.position[i] = world.m[3][i];
+        now.forward[i] = -world.m[2][i];
+      }
+      now.fov_y = previous_.fov_y;
+      *cut = temporal::TestCut(now, previous_, have_last_step_ ? last_step_ : nullptr).fires;
+      return temporal::Finite(*motion);
+    }
+  }
+  // The last step repeated: T took the view space of the frame before the previous one to the
+  // previous one's, and the frame now is guessed to take the previous one's to its own, so what
+  // moves a point of this frame's view space back into the previous one's is the inverse of T.
+  if (last_motion_valid_ && last_motion_frame_ == previous_frame_) {
+    temporal::Mat4 inverse;
+    if (temporal::Inverse(last_motion_, &inverse)) {
+      *motion = inverse;
+      *source = Pose::kPredicted;
+      return true;
+    }
+  }
+  *motion = temporal::Identity();
+  *source = Pose::kStill;
+  return true;
+}
+
+AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
+  HistoryUse use;
+  use.cap = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_history), 1, 64));
+  use.motion = temporal::Identity();
+  if (use.cap < 2) {
+    use.why = HistoryWhy::kCap;
+  } else if (!history_valid_) {
+    use.why = history_cut_ ? HistoryWhy::kCut : HistoryWhy::kFirst;
+  } else if (history_frame_ + 1 != frame_) {
+    use.why = HistoryWhy::kGap;
+  } else if (history_pause_ != trigger_pause_) {
+    use.why = HistoryWhy::kView;
+  } else if (history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]) {
+    use.why = HistoryWhy::kSize;
+  } else {
+    bool cut = false;
+    if (!FrameMotion(&use.motion, &use.pose, &cut)) {
+      use.why = HistoryWhy::kFirst;
+      use.pose = Pose::kStill;
+      use.motion = temporal::Identity();
+    } else if (cut) {
+      use.why = HistoryWhy::kCut;
+    } else {
+      use.on = true;
+      use.why = HistoryWhy::kUsed;
+      use.age = history_age_;
+    }
+  }
+  return use;
+}
+
+void AmbientOcclusion::NoteHistory(const HistoryUse& use) {
+  history_why_ = use.why;
+  history_pose_ = use.pose;
+  if (use.on) {
+    ++history_used_;
+    ++pose_frames_[size_t(use.pose)];
+    if (!history_logged_) {
+      history_logged_ = true;
+      REXLOG_INFO("[gpu] ao: the first frame that averages over a history: {} frames at most "
+                  "(mcla_gpu_ao_history), the camera's motion into the last frame from {}; one "
+                  "denoise pass instead of two, the wide blur only where the history does not "
+                  "hold (reported once)",
+                  use.cap, PoseName(use.pose));
+    }
+  } else {
+    ++history_resets_[size_t(use.why)];
+  }
+}
+
 bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            const Plan& plan) {
   EdramTargets::Target& depth_target = *summary.source;
@@ -1077,11 +1298,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   plume::RenderPipeline* mip_pipeline = Pipeline(kVMip);
   plume::RenderPipeline* main_pipeline = nullptr;
   plume::RenderPipeline* denoise_pipeline = nullptr;
+  plume::RenderPipeline* temporal_pipeline = nullptr;
   if (plan.apply) {
     main_pipeline = Pipeline(kVMain);
     denoise_pipeline = Pipeline(kVDenoise);
+    temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
   }
-  if (!depth_pipeline || !mip_pipeline || (plan.apply && (!main_pipeline || !denoise_pipeline))) {
+  if (!depth_pipeline || !mip_pipeline ||
+      (plan.apply && (!main_pipeline || !denoise_pipeline || !temporal_pipeline))) {
     return false;
   }
   if (!EnsureImages(plan)) {
@@ -1135,17 +1359,75 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
     push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
     DrawPass(list, raw_, main_pipeline, push);
-    // The denoise, twice (the second pass back into the first one's input image): no pass of the
-    // occlusion is ever left out, whatever the quality or the upscaler.
+    // The history this frame can lean on, and the camera's motion into it.
+    const HistoryUse use = ChooseHistory(plan);
+    NoteHistory(use);
+    // The denoise: once with a history to average into, twice (the second pass back into the first
+    // one's input image) without. It is never left out, whatever the quality or the upscaler.
     pass_timing_->Mark(list, "ao denoise");
     push.slots[2] = raw_.slot;
     push.slots[3] = depth_[0].slot;
     DrawPass(list, denoised_, denoise_pipeline, push);
-    push.slots[2] = denoised_.slot;
-    DrawPass(list, raw_, denoise_pipeline, push);
+    HostImage* visibility = &denoised_;
+    if (!use.on) {
+      push.slots[2] = denoised_.slot;
+      DrawPass(list, raw_, denoise_pipeline, push);
+      visibility = &raw_;
+    }
+    // The accumulation over frames: this frame's visibility with the history's into the other
+    // history image, which is the next frame's history and what the apply reads.
+    // CHECK (AO6, no run yet): (1) the two R16G16_FLOAT history images as render targets and
+    // shader resources in turn (DrawPass's barriers, the first use clear, the D3D12 debug layer and
+    // Vulkan validation), the stencil plane view of the depth target read by the temporal pass
+    // (Texture2D<uint4> / Texture2DMS<uint4>) in the depth target's SHADER_READ layout; (2) the
+    // census line "history:": frames that used a history against the resets, the motion's source
+    // (the vertex constants once trusted: the exact one; "the last step repeated" all the time
+    // would mean they never matched the anchor's camera in a moving frame); (3) in the picture:
+    // noise (none when parked, none while driving), ghosts behind moving cars (mcla_gpu_ao_view 6
+    // shows what the history kept), halos at depth edges (more with an upscaler: its sub-pixel
+    // jitter is not in the camera), a trail of darkness where a car's shadow was.
+    pass_timing_->Mark(list, "ao temporal");
+    const uint32_t out_index = 1 - history_index_;
+    HostImage& history_in = history_[history_index_];
+    HostImage& history_out = history_[out_index];
+    push = base;
+    push.slots[2] = visibility->slot;
+    push.slots[3] = depth_[0].slot;
+    // Without a history the slot is any readable image: the shader does not read it.
+    push.slots2[0] = use.on ? history_in.slot : depth_[0].slot;
+    push.slots2[2] |= use.on ? kHistoryFlag : 0u;
+    push.slots2[3] = summary.stencil_slot;
+    push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
+    push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
+    // The motion in this renderer's view space (x right, y up, z forward): the game's looks along
+    // -z, so the matrix is S G S with S = diag(1, 1, -1, 1). The shader takes the columns as rows.
+    const auto motion = [&use](int i, int j) {
+      const double sign = ((i == 2) != (j == 2)) ? -1.0 : 1.0;
+      return float(sign * use.motion.m[i][j]);
+    };
+    for (int k = 0; k < 4; ++k) {
+      push.lin[k] = motion(k, 0);
+      push.shape[k] = motion(k, 1);
+      push.light[k] = motion(k, 2);
+    }
+    push.extra[0] = history_tan_[0];
+    push.extra[2] = history_tan_[1];
+    push.extra[3] = use.on ? float(1.0 - 1.0 / double(std::min(use.age + 2, use.cap))) : 0.0f;
+    DrawPass(list, history_out, temporal_pipeline, push);
+    history_index_ = out_index;
+    // The debug view of the weights overwrites the visibility: nothing to average into after it.
+    history_valid_ = plan.view != 6u;
+    history_cut_ = false;
+    history_frame_ = frame_;
+    history_pause_ = trigger_pause_;
+    history_size_[0] = plan.ao[0];
+    history_size_[1] = plan.ao[1];
+    history_tan_[0] = base.lens[0];
+    history_tan_[1] = base.lens[1];
+    history_age_ = use.on ? std::min(use.age + 1, use.cap) : 0u;
     // The apply into the scene colour.
     push = base;
-    push.slots[2] = raw_.slot;
+    push.slots[2] = history_out.slot;
     push.slots[3] = depth_[0].slot;
     push.sizes[0] = float(plan.render[0]);
     push.sizes[1] = float(plan.render[1]);
@@ -1588,6 +1870,20 @@ void AmbientOcclusion::Census() {
                 vs_equal_[1], vs_compared_[1]);
   }
   REXLOG_INFO("{}   trigger: {}", kPrefix, TriggerText());
+  REXLOG_INFO("{}   history: this frame's trigger {}{}; frames that used a history {}, did not: first {}, "
+              "gap {}, view {}, size {}, cut {}, cap {}; motion from the vertex constants {}, the "
+              "last step {}, standing still {}; the vertex constants {} as the frame's camera",
+              kPrefix,
+              history_why_ == HistoryWhy::kUsed
+                  ? std::format("used the history, camera motion from {}", PoseName(history_pose_))
+                  : std::format("had no history: {}", HistoryWhyName(history_why_)),
+              ran_this_frame_ ? "" : " (no passes recorded this frame)", history_used_,
+              history_resets_[size_t(HistoryWhy::kFirst)], history_resets_[size_t(HistoryWhy::kGap)],
+              history_resets_[size_t(HistoryWhy::kView)], history_resets_[size_t(HistoryWhy::kSize)],
+              history_resets_[size_t(HistoryWhy::kCut)], history_resets_[size_t(HistoryWhy::kCap)],
+              pose_frames_[size_t(Pose::kVertexBank)], pose_frames_[size_t(Pose::kPredicted)],
+              pose_frames_[size_t(Pose::kStill)],
+              vs_pose_trusted_ ? "are trusted" : "are not trusted yet");
   REXLOG_INFO("{}   occlusion: {} (mcla_gpu_ao), passes {} this frame, {} runs in all, {} frames "
               "without a previous frame's camera; pause/map view: {} runs, {} triggers without "
               "a pause/map camera, {} held back for the lens (second frame or a sweep); the depth "

@@ -24,6 +24,8 @@
 #include "ao_depth_ps.hlsl.dxil.h"
 #include "ao_main_ps.hlsl.dxil.h"
 #include "ao_mip_ps.hlsl.dxil.h"
+#include "ao_temporal_ms_ps.hlsl.dxil.h"
+#include "ao_temporal_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
@@ -67,6 +69,8 @@
 #include "ao_depth_ps.hlsl.spirv.h"
 #include "ao_main_ps.hlsl.spirv.h"
 #include "ao_mip_ps.hlsl.spirv.h"
+#include "ao_temporal_ms_ps.hlsl.spirv.h"
+#include "ao_temporal_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
@@ -251,7 +255,8 @@ inline HostShaderBlob TemporalCopyPixelShader() {
 
 // The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0
 // the linear depth, 1 the same from a multisampled depth plane, 2 a coarser level, 3 the
-// visibility, 4 the denoise, 5 the apply, 6 the apply over a multisampled depth plane.
+// visibility, 4 the denoise, 5 the apply, 6 the apply over a multisampled depth plane, 7 the
+// accumulation over frames, 8 the same over a multisampled depth target.
 inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
@@ -260,7 +265,9 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
     case 4: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_ps);
     case 5: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
-    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
+    case 6: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
+    case 7: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ms_ps);
   }
 }
 

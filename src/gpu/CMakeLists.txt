@@ -296,13 +296,16 @@ larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3
 larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
 larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
-# GTAO visibility, the denoise, and the apply into the scene colour; the depth and the apply read
-# the EDRAM depth plane, multisampled or not.
+# GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
+# depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's
+# planes, multisampled or not.
 larecomp_gpu_host_shader(ao_depth_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_depth_ms_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_mip_ps ps_6_0)
 larecomp_gpu_host_shader(ao_main_ps ps_6_0)
 larecomp_gpu_host_shader(ao_denoise_ps ps_6_0)
+larecomp_gpu_host_shader(ao_temporal_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
+larecomp_gpu_host_shader(ao_temporal_ms_ps ps_6_0 SOURCE ao_temporal_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_apply_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_apply_ms_ps ps_6_0 SOURCE ao_apply_ps DEFINES AO_DEPTH_MS=1)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the

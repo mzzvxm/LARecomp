@@ -19,33 +19,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint visibility_slot = g_push.slots.z;
   const uint depth_slot = g_push.slots.w;
   const float tc = AoLoadLinear(depth_slot, pixel);
-  const float centre_value = g_textures[visibility_slot].Load(int3(pixel, 0)).x;
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
   const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
-  const int radius = AoDenoiseRadius();
-  // How far from the plane a neighbour may be and still be this surface: a share of the distance.
-  const float plane_sigma = 0.012f * tc + 0.02f;
-  const float spatial_sigma = radius >= 2 ? 1.4f : 0.9f;
-
-  float sum = 0.0f;
-  float weights = 0.0f;
-  for (int dy = -radius; dy <= radius; ++dy) {
-    for (int dx = -radius; dx <= radius; ++dx) {
-      const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
-      const float tq = AoLoadLinear(depth_slot, q);
-      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
-      const float off_plane = dot(normal, pq - pc) / plane_sigma;
-      const float w_depth = exp(-0.5f * off_plane * off_plane);
-      const float w_space = exp(-0.5f * float(dx * dx + dy * dy) / (spatial_sigma * spatial_sigma));
-      const float w = w_depth * w_space;
-      sum += g_textures[visibility_slot].Load(int3(q, 0)).x * w;
-      weights += w;
-    }
-  }
-  // The centre is always in the sum with weight 1: no division by zero, and a pixel with no
-  // neighbour on its plane keeps its own value.
-  return float4(weights > 0.0f ? sum / weights : centre_value, 0.0f, 0.0f, 0.0f);
+  const float result =
+      AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoDenoiseRadius());
+  return float4(result, 0.0f, 0.0f, 0.0f);
 }

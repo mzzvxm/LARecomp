@@ -38,15 +38,20 @@ struct AoPush {
   float4 lens;
   // t = (P32 - ndc * P33) / (P22 - ndc * P23), ndc = 1 - stored depth: the projection's z rows
   float4 lin;
-  // x: the final power of the visibility (mcla_gpu_ao_power); y: its floor; z: strength; w: the
+  // x: the final power of the visibility (the intensity's); y: its floor; z: strength; w: the
   // distance fade's start
   float4 shape;
   // xyz: the direction to the sun in view space (unit length; zero when unknown); w: the ambient
   // light's luma
   float4 light;
   // x: the sun light's luma; y: the distance fade's end; z: how far the ambient share moves towards
-  // 1 (mcla_gpu_ao_direct: the occlusion also darkens the sun-lit part); w: reserved
+  // 1 (the intensity's direct share: the occlusion also darkens the sun-lit part); w: reserved
   float4 extra;
+  // The temporal pass (ao_temporal_ps) has no use for the light, the shape or the depth rows: it
+  // takes lin, shape and light as the three rows of the 3x4 matrix that moves a point of this
+  // frame's view space into the history's, extra.x and extra.z as the tan of the half field of view
+  // (x, y) the history was made with, extra.w as the weight the history keeps, slots2.w as the
+  // depth target's stencil plane slot (vehicle IDs) and flags bit 20 as "there is a history".
 };
 
 #ifdef __spirv__
@@ -124,6 +129,38 @@ float3 AoNormalFromImage(uint slot, int2 p, int2 size, float tc, float3 pc) {
 // Interleaved gradient noise (Jimenez 2014) of a pixel position.
 float AoNoise(float2 p) {
   return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
+
+// The bilateral blur of the visibility image `vis_slot` at `pixel` (radius 1: 3x3, radius 2: 5x5),
+// for a pixel of linear depth `tc`, view position `pc` and normal `normal`. A neighbour counts by
+// its distance in pixels and by how far it is from the surface plane the pixel is on (its position
+// against the pixel's tangent plane), so the blur does not run across a depth edge or round a
+// corner, and a surface seen at a grazing angle, whose neighbours differ a lot in depth but lie in
+// one plane, is blurred like any other. The pixel itself is always in the sum with weight 1: no
+// division by zero, and a pixel with no neighbour on its plane keeps its own value. Used by the
+// denoise pass and by the temporal pass for the pixels that have no history.
+float AoBilateral(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
+                  float3 normal, int radius) {
+  const float2 size = float2(isize);
+  // How far from the plane a neighbour may be and still be this surface: a share of the distance.
+  const float plane_sigma = 0.012f * tc + 0.02f;
+  const float spatial_sigma = radius >= 2 ? 1.4f : 0.9f;
+  float sum = 0.0f;
+  float weights = 0.0f;
+  for (int dy = -radius; dy <= radius; ++dy) {
+    for (int dx = -radius; dx <= radius; ++dx) {
+      const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
+      const float tq = AoLoadLinear(depth_slot, q);
+      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
+      const float off_plane = dot(normal, pq - pc) / plane_sigma;
+      const float w_depth = exp(-0.5f * off_plane * off_plane);
+      const float w_space = exp(-0.5f * float(dx * dx + dy * dy) / (spatial_sigma * spatial_sigma));
+      const float w = w_depth * w_space;
+      sum += g_textures[vis_slot].Load(int3(q, 0)).x * w;
+      weights += w;
+    }
+  }
+  return sum / max(weights, 1e-8f);
 }
 
 #endif  // MCLA_GPU_AO_COMMON_HLSLI
