@@ -30,7 +30,18 @@
 //            share towards 1 (the occlusion then darkens the sun-lit part too)
 // The lens (the projection) is the previous frame's: the camera exists only at the game's motion blur
 // draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
-// frame's camera has no occlusion. The pause menu's and the map's world (4x samples) has none.
+// frame's camera has no occlusion.
+//
+// The pause menu's, the race pause's and the map's world (the same main view identities at 4x
+// samples, drawn once a frame like the play view, resolved in three tiles) is handled the same way,
+// with its own camera: its motion blur draw runs in every one of those frames with a valid camera
+// (the census: 918 of 918), so the camera kept is the previous frame's of a pause/map view, never
+// the play view's (the pause camera has another field of view, 53.75 degrees against 25). The first
+// two frames of a pause spell have none (the second has no rate of change of the lens yet), and
+// neither has a frame after a sweep of the lens (the camera's swing when the pause opens, the
+// map): a change of the setting in the pause menu shows two frames later, without closing it. The
+// trigger there is the same resolve (into 078B0000, the first of the frame); the host draws the 4x
+// target once, so it is whole at the first tile.
 //
 // The census (mcla_gpu_ao_census, off by default) is step 0 of the design: it logs the trigger, the
 // light constants, the lens and, at its frames, a statistic of the linear depth read back from the
@@ -95,6 +106,19 @@ class AmbientOcclusion {
     kRefusedClearsDepth = 1u << 6,    // the same call clears the depth after the copy
     kRefusedRectangle = 1u << 7,      // the rectangle does not start at the origin or leaves the picture
     kRefusedLaterTile = 1u << 8,      // another tile of the picture the trigger already covered whole
+    kRefusedNotWholePicture = 1u << 9,  // a 4x view's destination is smaller than the main target
+  };
+
+  // What became of the frame's trigger (the census says it).
+  enum class Outcome : uint8_t {
+    kNoTrigger,      // no resolve of the frame was the trigger
+    kIdle,           // the trigger, with the occlusion off and no depth statistic due
+    kNoCamera,       // no previous frame's camera of this kind of view
+    kLensUnknown,    // a pause/map view's second frame: the lens' rate of change is not known yet
+    kLensChanging,   // a pause/map view whose lens was still sweeping
+    kTooSmall,       // the picture is smaller than the passes are worth
+    kNotRecorded,    // a pipeline or an image could not be made
+    kRecorded,       // the passes were recorded
   };
 
   AmbientOcclusion() = default;
@@ -114,10 +138,11 @@ class AmbientOcclusion {
   // True while the draw hooks have anything to do (the occlusion is on, or the census).
   bool wants_draws() const { return mode_ != Mode::kOff || census_every_ != 0; }
 
-  // A prepared draw into the main view's identities (not the pause view's), with the draw's own
-  // banks, before the draw is recorded.
+  // A prepared draw into the main view's identities (the play view's or the pause/map view's), with
+  // the draw's own banks, before the draw is recorded.
   void OnMainDraw(const MainDraw& draw, const ConstantBanks::Banks& banks);
-  // The game's motion blur draw: the camera of this frame, which the next frame's trigger uses.
+  // The game's motion blur draw (in the play view and in the pause/map view alike): the camera of
+  // this frame, which the next frame's trigger of the same kind of view uses.
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A depth clear of the identity `key` (the main view's depth is cleared at the start of the main
   // view; its z says which end of the range is far).
@@ -208,7 +233,9 @@ class AmbientOcclusion {
     bool anchor_before = false;
   };
 
-  // The trigger test of AO-DESIGN.md 2.2: 0 = this resolve is the trigger.
+  // The trigger test of AO-DESIGN.md 2.2: 0 = this resolve is the trigger. A 4x main depth (the
+  // pause/map view) is judged by the same rules, except that its first tile may start anywhere
+  // (the tile order is not known) and its destination must be the whole picture.
   uint32_t Judge(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   // The whole picture the resolve belongs to, in the source's guest pixels: the destination
   // texture's size, within the source target (the target's height is rounded up to rows of 32:
@@ -221,6 +248,10 @@ class AmbientOcclusion {
   bool PickLight(LightRaw* out, uint32_t* draws_with_it) const;
   static void DecodeLight(const LightRaw& raw, float ambient[3], float sun[3], float dir[3]);
   void Census();
+  // The frame's view for the census: play, pause/map, both, or none.
+  const char* ViewName() const;
+  // Where the trigger's camera came from, and what became of the trigger, for the census.
+  std::string TriggerText() const;
 
   // --- the passes (ao.cpp) ---
   struct Plan {
@@ -266,6 +297,8 @@ class AmbientOcclusion {
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
   bool play_view_ = false;            // the frame had main view draws at the play samples
+  bool pause_view_ = false;           // ... at the pause/map samples (4x)
+  uint32_t pause_spell_ = 0;          // consecutive pause/map frames up to this one
   uint32_t qualifying_resolves_ = 0;  // resolves that passed every test but "the first"
   // The picture the frame's first qualifying resolve covered, and how many resolves of its other
   // tiles followed (they are not triggers, and not counted as qualifying).
@@ -280,7 +313,7 @@ class AmbientOcclusion {
   uint32_t draws_after_ = 0;          // ... after it, before the anchor
   uint32_t depth_writes_after_ = 0;   // ... of them, drawing into the main depth with depth writes
   uint32_t draws_at_anchor_ = 0;      // ... after the anchor (the UI's depth-only draw, 1x)
-  uint32_t view4x_draws_ = 0;
+  uint32_t view4x_draws_ = 0;         // main view draws at the pause/map samples, whenever
   std::array<LightSeen, kLightSlots> lights_{};
   uint32_t light_count_ = 0;
   uint32_t light_overflow_ = 0;       // draws with a value past the table's room
@@ -293,13 +326,30 @@ class AmbientOcclusion {
   uint32_t other_resolves_ = 0;
   bool frame_had_main_view_ = false;
   bool ran_this_frame_ = false;
+  bool applied_this_frame_ = false;   // ... and the apply pass drew into the colour target
 
-  // The camera: this frame's (read at the anchor) and the frame before's.
+  // The camera: this frame's (read at the anchor) and the frame before's, with the kind of view
+  // each came from (a pause/map frame's camera is never used for a play frame or the other way).
   temporal::Camera camera_;
   bool have_camera_ = false;
   temporal::Camera previous_;
   bool have_previous_ = false;
+  bool previous_pause_ = false;
   uint64_t previous_frame_ = 0;
+  // The trigger's own lens (the camera of the frame before it), kept for the census: previous_
+  // is replaced by this frame's camera at the anchor.
+  temporal::Camera trigger_camera_;
+  bool trigger_camera_valid_ = false;
+  bool trigger_pause_ = false;        // the frame's trigger was a pause/map view's
+  Outcome outcome_ = Outcome::kNoTrigger;
+  // How much the lens changed from the camera before the previous to the previous one (the same
+  // kind of view, consecutive frames): the largest relative change of fov, aspect, near and far.
+  // A pause/map view whose lens is sweeping (the pause camera's swing, the map), or whose rate of
+  // change is not known yet (its second frame), has no occlusion: the previous frame's lens may
+  // then be too far from this frame's.
+  bool lens_step_valid_ = false;
+  double lens_step_ = 0.0;
+  double trigger_lens_step_ = 0.0;    // lens_step_ as the frame's trigger saw it
   temporal::Reject reject_ = temporal::Reject::kNone;
   uint32_t rejects_logged_ = 0;
   // The previous frame's lens against this frame's (CHECK 7): relative change of the vertical field
@@ -307,10 +357,20 @@ class AmbientOcclusion {
   // the two forward vectors.
   bool lens_delta_valid_ = false;
   double lens_delta_[6] = {};
+  // CHECK 7, log only: whether the main view's vertex bank holds the camera, so that a frame's own
+  // lens could be had before the anchor. VS c12-c15 of the last colour draw before the trigger
+  // against the view inverse the anchor reads (PS c12-c15), per kind of view.
+  float vs_view_inverse_[16] = {};
+  uint32_t vs_view_inverse_draws_ = 0;
+  bool vs_compare_valid_ = false;
+  double vs_compare_diff_ = 0.0;
+  uint32_t vs_compared_[2] = {};      // frames compared (play, pause/map)
+  uint32_t vs_equal_[2] = {};         // ... of them equal
 
   // The census.
   uint32_t census_frames_logged_ = 0;
   uint32_t census_anomalies_logged_ = 0;
+  uint32_t census_pause_logged_ = 0;
   uint32_t probes_done_ = 0;
   uint32_t probe_frames_ = 0;
 
@@ -339,10 +399,16 @@ class AmbientOcclusion {
 
   // What the log has said once.
   bool no_lens_logged_ = false;
+  bool no_lens_pause_logged_ = false;
+  bool lens_step_logged_ = false;
+  bool pause_destination_logged_ = false;
   bool refused_target_logged_ = false;
   uint32_t last_mode_logged_ = ~0u;
   uint64_t runs_ = 0;
   uint64_t skipped_no_lens_ = 0;
+  uint64_t pause_runs_ = 0;                // occlusion passes recorded in pause/map frames
+  uint64_t pause_skipped_no_lens_ = 0;     // pause/map triggers without a camera of their kind
+  uint64_t pause_skipped_lens_ = 0;        // ... held back for the lens (unknown or sweeping)
 };
 
 }  // namespace mcla::gpu

@@ -25,8 +25,8 @@ REXCVAR_DEFINE_STRING(
     "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
     "constants say how much of a surface's light is which). off, low (half resolution, 2 slices) "
-    "or high (full resolution, 3 slices). Costs graphics card time, high more than low. Not drawn "
-    "in the pause menu's picture. Live.")
+    "or high (full resolution, 3 slices). Costs graphics card time, high more than low. Also drawn "
+    "behind the pause menu and on the map, so a change made there shows at once. Live.")
     .allowed({"off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
@@ -145,9 +145,10 @@ std::string RefusalNames(uint32_t refused) {
       "not into 078B0000",
       "the same call clears the depth",
       "the rectangle does not start at the origin or leaves the picture",
-      "another tile of the picture the trigger covered whole"};
+      "another tile of the picture the trigger covered whole",
+      "the destination is smaller than the main target (a 4x view's tile texture)"};
   std::string out;
-  for (uint32_t i = 0; i < 9; ++i) {
+  for (uint32_t i = 0; i < 10; ++i) {
     if (refused & (1u << i)) {
       out += std::format("{}{}", out.empty() ? "" : ", ", kNames[i]);
     }
@@ -326,8 +327,11 @@ void AmbientOcclusion::Shutdown() {
 
 void AmbientOcclusion::ListPrecache() {
   HostPrecache& precache = passes_->precache();
-  const uint32_t listed[] = {kVDepth, kVDepthMs, kVMip, kVMain, kVDenoise,
-                             ApplyVariant(false, 1), ApplyVariant(false, 2)};
+  // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
+  // that opening the pause menu with the occlusion on waits for no pipeline.
+  const uint32_t listed[] = {kVDepth,           kVDepthMs,          kVMip,
+                             kVMain,            kVDenoise,          ApplyVariant(false, 1),
+                             ApplyVariant(false, 2), ApplyVariant(false, 4)};
   for (const uint32_t variant : listed) {
     precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
                  VariantName(variant), [this, variant] { return MakePipeline(variant); });
@@ -437,10 +441,11 @@ void AmbientOcclusion::ReleaseImages() {
 void AmbientOcclusion::OnMainDraw(const MainDraw& draw, const ConstantBanks::Banks& banks) {
   frame_had_main_view_ = true;
   if (draw.match.samples == temporal::kPauseSamples) {
-    ++view4x_draws_;  // the pause menu's and the map's world: no occlusion there
-    return;
+    ++view4x_draws_;  // the pause menu's, the race pause's and the map's world
+    pause_view_ = true;
+  } else {
+    play_view_ = true;
   }
-  play_view_ = true;
   if (anchor_seen_ || composite_seen_) {
     ++draws_at_anchor_;
     return;
@@ -467,6 +472,12 @@ void AmbientOcclusion::OnMainDraw(const MainDraw& draw, const ConstantBanks::Ban
     light.dwords[3 + i] = LoadBe32(ps + kPsSunColor * 16 + i * 4);
     light.dwords[6 + i] = LoadBe32(vs + kVsSunDirection * 16 + i * 4);
   }
+  for (uint32_t r = 0; r < 4; ++r) {
+    for (uint32_t c = 0; c < 4; ++c) {
+      vs_view_inverse_[r * 4 + c] = BankFloat(vs, 12 + r, c);
+    }
+  }
+  ++vs_view_inverse_draws_;
   if (light_draws_ == 0) {
     first_light_ = light;
   }
@@ -508,8 +519,7 @@ bool AmbientOcclusion::PickLight(LightRaw* out, uint32_t* draws_with_it) const {
 }
 
 void AmbientOcclusion::OnDepthClear(const EdramKey& key, float z) {
-  const uint32_t samples = temporal::MainDepthSamples(key);
-  if (samples == 0 || samples == temporal::kPauseSamples) {
+  if (temporal::MainDepthSamples(key) == 0) {
     return;
   }
   ++depth_clears_;
@@ -519,12 +529,17 @@ void AmbientOcclusion::OnDepthClear(const EdramKey& key, float z) {
 void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
   have_camera_ = false;
-  if (!play_view_) {
-    // The pause menu's and the map's world has its own lens (FOV 25 to 54 degrees in the census):
-    // the frame after it has no previous camera to use, and no occlusion for that one frame.
+  lens_step_valid_ = false;
+  vs_compare_valid_ = false;
+  // The play view's camera and the pause/map world's (4x samples) are kept apart: the lens differs
+  // (a field of view of 25 to 54 degrees in the census), and the anchor draw runs in the 4x frames
+  // too with a valid camera (918 of 918 in cen-pause). A frame with draws of both kinds or of
+  // neither (the anchor without a main view) gives no camera; the frame after it has none to use.
+  if (play_view_ == pause_view_) {
     have_previous_ = false;
     return;
   }
+  const bool pause = pause_view_;
   const uint8_t* ps = banks.ps.data();
   // The fetch size the camera test compares c62 against is c62 itself here: only the temporal
   // system knows the anchor's fetches, and a frame size that is not the main view's is caught by
@@ -550,7 +565,7 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   }
   // The lens the previous frame's camera gave the trigger, against this frame's own (CHECK 7: the
   // previous frame's lens is this frame's outside cuts).
-  lens_delta_valid_ = have_previous_ && previous_frame_ + 1 == frame_;
+  lens_delta_valid_ = have_previous_ && previous_frame_ + 1 == frame_ && previous_pause_ == pause;
   if (lens_delta_valid_) {
     const auto rel = [](double a, double b) {
       return std::fabs(a - b) / std::max(1e-30, std::fabs(b));
@@ -568,12 +583,36 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
     }
     lens_delta_[4] = std::sqrt(dx);
     lens_delta_[5] = dot;
+    // The next frame's trigger uses this camera's lens: how fast the lens was moving is the best
+    // guess of how far it is from that frame's own (a pause/map view only: see OnResolve).
+    lens_step_ = std::max({lens_delta_[0], lens_delta_[1], lens_delta_[2], lens_delta_[3]});
+    lens_step_valid_ = std::isfinite(lens_step_);
   }
   camera_ = camera;
   have_camera_ = true;
   previous_ = camera;
+  previous_pause_ = pause;
   have_previous_ = true;
   previous_frame_ = frame_;
+
+  // CHECK 7, log only: the main view's vertex bank against the camera just read. If c12-c15 of a
+  // vertex bank are the view inverse, the frame's own lens exists before the anchor.
+  if (vs_view_inverse_draws_ != 0) {
+    double worst = 0.0;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        const double d =
+            std::fabs(double(vs_view_inverse_[r * 4 + c]) - camera.view_inverse.m[r][c]);
+        worst = std::isfinite(d) ? std::max(worst, d) : HUGE_VAL;
+      }
+    }
+    vs_compare_valid_ = true;
+    vs_compare_diff_ = worst;
+    ++vs_compared_[pause ? 1 : 0];
+    if (worst <= 1e-4) {
+      ++vs_equal_[pause ? 1 : 0];
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -587,9 +626,10 @@ uint32_t AmbientOcclusion::Judge(const ResolveRecord& record,
   }
   uint32_t refused = 0;
   const uint32_t samples = temporal::MainDepthSamples(summary.source_key);
-  if (samples == 0 || samples == temporal::kPauseSamples) {
+  if (samples == 0) {
     refused |= kRefusedNotMainDepth;
   }
+  const bool pause = samples == temporal::kPauseSamples;
   if (record.flags & kEventInsideEndTiling) {
     refused |= kRefusedEndTiling;
   }
@@ -615,9 +655,22 @@ uint32_t AmbientOcclusion::Judge(const ResolveRecord& record,
     uint32_t width = 0;
     uint32_t height = 0;
     PictureSize(summary, &width, &height);
-    if (summary.x0 != 0 || summary.y0 != 0 || summary.x1 <= 0 || summary.y1 <= 0 ||
-        uint32_t(summary.x1) > width || uint32_t(summary.y1) > height) {
+    // The play view's first tile starts at the origin (the rows 0-512 of two). The pause/map
+    // view's three tiles come in an order nobody has looked at: any rectangle inside the picture
+    // will do for it, the occlusion covers the whole picture whichever tile triggers.
+    const bool origin = summary.x0 == 0 && summary.y0 == 0;
+    if ((!pause && !origin) || summary.x0 < 0 || summary.y0 < 0 || summary.x1 <= summary.x0 ||
+        summary.y1 <= summary.y0 || uint32_t(summary.x1) > width || uint32_t(summary.y1) > height) {
       refused |= kRefusedRectangle;
+    }
+    // The pause/map view's destination must be the whole picture (1280x720 within the 1280x736
+    // target), not a tile's own texture: the passes cover what the destination's size says.
+    // CHECK: the destination of the pause/map view's mid-scene depth copy and its size (the
+    // census prints every copy).
+    if (pause && summary.source &&
+        (width != summary.source->width ||
+         height + EdramTargets::kHeightAlignment <= summary.source->height)) {
+      refused |= kRefusedNotWholePicture;
     }
   }
   return refused;
@@ -651,6 +704,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   }
   const uint32_t refused = Judge(record, summary);
   const bool qualifies = (refused & ~uint32_t(kRefusedNotFirst)) == 0;
+  const bool pause = temporal::MainDepthSamples(summary.source_key) == temporal::kPauseSamples;
   if (census_every_ != 0 && depth_resolves_.size() < 16) {
     DepthResolveNote note;
     note.caller = record.caller;
@@ -672,6 +726,19 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     note.draws_before = draws_before_ + draws_after_;
     note.anchor_before = anchor_seen_;
     depth_resolves_.push_back(note);
+  }
+  // A pause/map view's copy of the main depth that fails only on its destination: the pinned
+  // address may not be the one this view uses (the play view's was read from the census, this
+  // one's was not).
+  if (pause && qualifying_resolves_ == 0 && refused == kRefusedDestination &&
+      !pause_destination_logged_) {
+    pause_destination_logged_ = true;
+    REXLOG_INFO("[gpu] ao: a pause/map frame copies its main depth into {:08x} (format {}, {}x{}), "
+                "not into {:08x} where the play view's mid-scene copy goes: no occlusion in that "
+                "view until the address is known (reported once; mcla_gpu_ao_census prints every "
+                "copy)",
+                summary.dest_address, summary.dest_format, summary.dest_width, summary.dest_height,
+                kTriggerDestination);
   }
   if (qualifies) {
     if (qualifying_resolves_ == 0) {
@@ -695,6 +762,9 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
 
   // The trigger. The depth chain also runs, with the occlusion off, at the census's frames: its
   // statistic is the check of the depth convention.
+  trigger_pause_ = pause;
+  trigger_camera_valid_ = false;
+  outcome_ = Outcome::kIdle;
   Plan plan;
   plan.mode = mode_;
   plan.probe = census_every_ != 0 && (probes_done_ < 3 || frame_ % census_every_ == 0);
@@ -707,11 +777,22 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   }
   plan.upscaler = upscaler_running;
   plan.view = mode_ == Mode::kOff ? 0u : uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 5));
-  // The lens is the previous frame's (the camera exists at the anchor, after this): none, no
-  // occlusion this frame (a cut's first frame, the first frame after turning it on).
-  if (!have_previous_ || previous_frame_ + 1 != frame_) {
+  // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
+  // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
+  // turning it on, the first frame of a pause spell: the play view's lens is not the pause
+  // camera's).
+  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != pause) {
     ++skipped_no_lens_;
-    if (!no_lens_logged_) {
+    outcome_ = Outcome::kNoCamera;
+    if (pause) {
+      ++pause_skipped_no_lens_;
+      if (!no_lens_pause_logged_) {
+        no_lens_pause_logged_ = true;
+        REXLOG_INFO("[gpu] ao: no occlusion in a pause/map frame that has no previous pause/map "
+                    "frame's camera (the first frame of a pause spell, a frame after one whose "
+                    "anchor draw gave no camera); counted, logged once");
+      }
+    } else if (!no_lens_logged_) {
       no_lens_logged_ = true;
       REXLOG_INFO("[gpu] ao: no occlusion in a frame that has no previous frame's camera (the "
                   "first frame, a cut, a frame whose anchor draw gave no camera); counted, "
@@ -719,6 +800,31 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     }
     return false;
   }
+  // A pause/map view whose lens was changing fast between the last two frames (the pause camera's
+  // swing when the menu opens, the map's zoom), or whose rate of change is not known yet (the
+  // second frame of a spell, the second after the setting was turned on): this frame's lens may be
+  // as far from the previous one's, and a wrong lens is worse than none for a frame, so no
+  // occlusion until it is known to be steady. The play view keeps its rule: the census saw its
+  // lens move by 1e-4 a frame.
+  trigger_lens_step_ = lens_step_valid_ ? lens_step_ : 0.0;
+  if (pause && (!lens_step_valid_ || lens_step_ > temporal::kCutFov)) {
+    ++pause_skipped_lens_;
+    outcome_ = lens_step_valid_ ? Outcome::kLensChanging : Outcome::kLensUnknown;
+    if (!lens_step_logged_) {
+      lens_step_logged_ = true;
+      REXLOG_INFO("[gpu] ao: no occlusion in a pause/map frame whose lens is not known to be "
+                  "steady (the second frame of a spell, or a change of more than {:.0f}% between "
+                  "the last two frames: the pause camera's swing, the map); counted, logged once",
+                  100.0 * temporal::kCutFov);
+    }
+    return false;
+  }
+  // CHECK (AO5, no run yet): the 4x view's trigger (destination, tile order, whole picture), the
+  // pause camera's steadiness (the census line of the lens against the previous frame's, in pause
+  // frames), the swing at the menu's opening, and the apply on the 4-sample colour target under
+  // the D3D12 debug layer and Vulkan validation.
+  trigger_camera_ = previous_;
+  trigger_camera_valid_ = true;
   // The whole picture, not the tile this resolve copies (the game resolves it in two: the rows
   // 0-512 and 512-720), at the source's own host scale (the render scale, an upscaler's render
   // size): the target is complete now, so the occlusion covers all of it and the lens's field of
@@ -730,6 +836,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   plan.render[0] = scale.Edge(picture_width);
   plan.render[1] = scale.Edge(picture_height);
   if (plan.render[0] < kMinRenderSize || plan.render[1] < kMinRenderSize) {
+    outcome_ = Outcome::kTooSmall;
     return false;
   }
   const bool low = plan.mode == Mode::kLow;
@@ -738,7 +845,9 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.level[0][axis] = (plan.ao[axis] + 1) / 2;
     plan.level[1][axis] = (plan.ao[axis] + 3) / 4;
   }
-  return Run(summary, list, plan);
+  const bool recorded = Run(summary, list, plan);
+  outcome_ = recorded ? Outcome::kRecorded : Outcome::kNotRecorded;
+  return recorded;
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +1068,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[2] = float(plan.ao[0]);
     push.sizes[3] = float(plan.ao[1]);
     applied = RecordApply(list, summary, plan, push);
+    applied_this_frame_ = applied;
   }
   if (plan.probe) {
     RecordProbe(list, plan);
@@ -974,6 +1084,19 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   plan.view ? ", debug view" : "");
     }
     ++runs_;
+    if (trigger_pause_) {
+      if (pause_runs_ == 0) {
+        const temporal::Camera& c = previous_;
+        REXLOG_INFO("[gpu] ao: the first occlusion pass in a pause/map view: {} at {}x{} "
+                    "(visibility {}x{}), {} host samples of the depth (guest sample 0 = host "
+                    "sample {}), the lens of the previous pause/map frame's anchor draw: vertical "
+                    "field of view {:.3f} deg, aspect {:.4f}, near {:.4f}, far {:.1f}",
+                    ModeName(plan.mode), plan.render[0], plan.render[1], plan.ao[0], plan.ao[1],
+                    depth_target.host_samples, summary.host_sample,
+                    c.fov_y * 180.0 / 3.14159265358979323846, c.aspect, c.near_plane, c.far_plane);
+      }
+      ++pause_runs_;
+    }
   }
   return true;
 }
@@ -1163,6 +1286,7 @@ void AmbientOcclusion::ProcessProbe(uint64_t frame, uint64_t generation, uint32_
 // ---------------------------------------------------------------------------
 
 void AmbientOcclusion::OnPresent() {
+  pause_spell_ = pause_view_ && !play_view_ ? pause_spell_ + 1 : 0;
   if (census_every_ != 0 && frame_had_main_view_) {
     Census();
   }
@@ -1179,6 +1303,7 @@ void AmbientOcclusion::OnPresent() {
   anchor_seen_ = false;
   composite_seen_ = false;
   play_view_ = false;
+  pause_view_ = false;
   frame_had_main_view_ = false;
   qualifying_resolves_ = 0;
   later_tiles_ = 0;
@@ -1195,30 +1320,99 @@ void AmbientOcclusion::OnPresent() {
   depth_resolves_.clear();
   other_resolves_ = 0;
   lens_delta_valid_ = false;
+  vs_view_inverse_draws_ = 0;
+  vs_compare_valid_ = false;
   have_camera_ = false;
+  trigger_camera_valid_ = false;
+  trigger_pause_ = false;
+  outcome_ = Outcome::kNoTrigger;
   ran_this_frame_ = false;
+  applied_this_frame_ = false;
   ++frame_;
 }
 
+const char* AmbientOcclusion::ViewName() const {
+  if (play_view_ && pause_view_) {
+    return "play + pause/map (mixed)";
+  }
+  return pause_view_ ? "pause/map (4x)" : play_view_ ? "play" : "no main";
+}
+
+std::string AmbientOcclusion::TriggerText() const {
+  const char* kind = trigger_pause_ ? "pause/map" : "play";
+  switch (outcome_) {
+    case Outcome::kNoTrigger:
+      return "no resolve of the frame was the trigger: no occlusion";
+    case Outcome::kIdle:
+      return "a trigger, with the occlusion off and no depth statistic due: nothing recorded";
+    case Outcome::kNoCamera:
+      return std::format("a {} trigger, but no previous frame's camera of a {} view (the frame "
+                         "before was not a consecutive {} frame with a camera): no occlusion",
+                         kind, kind, kind);
+    case Outcome::kLensUnknown:
+      return "a pause/map trigger in the second frame of a spell (or of the setting being on): the "
+             "lens' rate of change is not known yet, no occlusion for this frame";
+    case Outcome::kLensChanging:
+      return std::format("a pause/map trigger, but the lens changed by {:.1f}% between the last "
+                         "two frames (limit {:.0f}%): no occlusion until it settles",
+                         100.0 * trigger_lens_step_, 100.0 * temporal::kCutFov);
+    case Outcome::kTooSmall:
+      return std::format("a {} trigger, but the picture is smaller than {} pixels: no occlusion",
+                         kind, kMinRenderSize);
+    case Outcome::kNotRecorded:
+      return std::format("a {} trigger, but a pipeline or an image could not be made (see the "
+                         "errors above): no occlusion", kind);
+    case Outcome::kRecorded:
+      break;
+  }
+  const char* done = applied_this_frame_ ? "passes recorded and applied to the main view's colour"
+                     : mode_ == Mode::kOff   ? "the depth passes only (the census probe), nothing "
+                                               "applied"
+                                             : "passes recorded but the apply pass could not be "
+                                               "drawn (see the errors above)";
+  if (!trigger_camera_valid_) {
+    return std::format("a {} trigger, {}", kind, done);
+  }
+  const temporal::Camera& c = trigger_camera_;
+  return std::format("a {} trigger, {} with the lens of the PREVIOUS frame's motion blur draw "
+                     "(frame {}, a {} view, the step from the frame before {:.2e}): vertical field "
+                     "of view {:.3f} deg, aspect {:.4f}, near {:.4f}, far {:.1f}, camera at "
+                     "({:.1f}, {:.1f}, {:.1f}); the sun direction uses that frame's view rotation",
+                     kind, done, c.frame, kind, trigger_lens_step_,
+                     c.fov_y * 180.0 / 3.14159265358979323846, c.aspect, c.near_plane, c.far_plane,
+                     c.position[0], c.position[1], c.position[2]);
+}
+
 void AmbientOcclusion::Census() {
-  const bool anomaly = play_view_ && qualifying_resolves_ != 1 && census_anomalies_logged_ < 40;
+  const bool main_view = play_view_ || pause_view_;
+  const bool anomaly = main_view && qualifying_resolves_ != 1 && census_anomalies_logged_ < 40;
+  // The first four frames of every pause/map spell are logged whatever the interval: a spell is
+  // short, and its first frames are where its camera comes from.
+  const bool pause_entry =
+      pause_view_ && !play_view_ && pause_spell_ <= 4 && census_pause_logged_ < 40;
   const bool periodic = census_frames_logged_ < 3 || frame_ % census_every_ == 0;
-  if (!anomaly && !periodic) {
+  if (!anomaly && !periodic && !pause_entry) {
     return;
   }
   if (anomaly) {
     ++census_anomalies_logged_;
   }
+  if (pause_entry) {
+    ++census_pause_logged_;
+  }
   ++census_frames_logged_;
-  REXLOG_INFO("{} frame {}{}: {} view, main view draws {} before the first qualifying depth "
+  const std::string spell = pause_view_ && !play_view_
+                                ? std::format(" (frame {} of a pause/map spell)", pause_spell_)
+                                : std::string();
+  REXLOG_INFO("{} frame {}{}{}: {} view, main view draws {} before the first qualifying depth "
               "resolve ({} with colour), {} after it before the anchor ({} of them write the main "
               "depth), {} after the anchor, 4x (pause/map) draws {}; qualifying resolves {} "
               "(expect exactly 1), later tiles of its picture {}; anchor draw {}; clears of the "
               "main depth {} (last z {}); resolves of other kinds {}",
-              kPrefix, frame_, anomaly ? " (UNEXPECTED trigger count)" : "",
-              play_view_ ? "play" : "pause/map", draws_before_, color_draws_before_, draws_after_,
-              depth_writes_after_, draws_at_anchor_, view4x_draws_, qualifying_resolves_,
-              later_tiles_, anchor_seen_ ? "seen" : "NOT seen", depth_clears_,
+              kPrefix, frame_, anomaly ? " (UNEXPECTED trigger count)" : "", spell, ViewName(),
+              draws_before_, color_draws_before_, draws_after_, depth_writes_after_,
+              draws_at_anchor_, view4x_draws_, qualifying_resolves_, later_tiles_,
+              anchor_seen_ ? "seen" : "NOT seen", depth_clears_,
               depth_clears_ ? std::format("{}", depth_clear_z_) : std::string("none"),
               other_resolves_);
   uint32_t index = 0;
@@ -1289,18 +1483,32 @@ void AmbientOcclusion::Census() {
                   kPrefix, lens_delta_[0], lens_delta_[1], lens_delta_[2], lens_delta_[3],
                   lens_delta_[4], lens_delta_[5]);
     } else {
-      REXLOG_INFO("{}   no previous frame's camera: the trigger gives no occlusion this frame",
-                  kPrefix);
+      REXLOG_INFO("{}   no previous frame's camera of this kind of view (the frame before was "
+                  "not a consecutive {} frame with a camera): the trigger gives no occlusion this "
+                  "frame",
+                  kPrefix, pause_view_ ? "pause/map" : "play");
     }
   } else {
     REXLOG_INFO("{}   no camera this frame ({})", kPrefix,
                 anchor_seen_ ? temporal::RejectName(reject_) : "no anchor draw");
   }
+  if (vs_compare_valid_) {
+    REXLOG_INFO("{}   CHECK (log only): VS c12-c15 of the last colour draw before the trigger "
+                "against the view inverse the anchor reads from PS c12-c15: largest entry "
+                "difference {:.3e} ({}); frames compared so far: play {} of {} equal, pause/map {} "
+                "of {} equal (if all agree, the frame's own camera exists in the vertex bank "
+                "before the anchor)",
+                kPrefix, vs_compare_diff_,
+                vs_compare_diff_ <= 1e-4 ? "equal" : "DIFFERENT", vs_equal_[0], vs_compared_[0],
+                vs_equal_[1], vs_compared_[1]);
+  }
+  REXLOG_INFO("{}   trigger: {}", kPrefix, TriggerText());
   REXLOG_INFO("{}   occlusion: {} (mcla_gpu_ao), passes {} this frame, {} runs in all, {} frames "
-              "without a previous frame's camera; the depth statistic follows when the GPU has "
-              "run its copy",
+              "without a previous frame's camera; pause/map view: {} runs, {} triggers without "
+              "a pause/map camera, {} held back for the lens (second frame or a sweep); the depth "
+              "statistic follows when the GPU has run its copy",
               kPrefix, ModeName(mode_), ran_this_frame_ ? "recorded" : "not recorded", runs_,
-              skipped_no_lens_);
+              skipped_no_lens_, pause_runs_, pause_skipped_no_lens_, pause_skipped_lens_);
 }
 
 }  // namespace mcla::gpu
