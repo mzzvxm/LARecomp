@@ -504,7 +504,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
   if (temporal_) {
-    temporal_->BeginFrame(slot);
+    // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
+    // scene's scale (and the path) here.
+    temporal_->BeginFrame(slot, list);
   }
   ResetListState();
   marked_framebuffer_ = nullptr;

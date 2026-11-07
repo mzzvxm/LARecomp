@@ -15,6 +15,7 @@
 //   mcla_gpu_upscaler            off | fsr31 | fsr4 | dlss   "Upscaling"
 //   mcla_gpu_fsr31_mode          native_aa | quality | balanced | performance | ultra_performance
 //                                                            "FSR 3.1 Mode": 100%, 67%, 59%, 50%, 33%
+//                                                            (live: the scene follows at a frame boundary)
 //   mcla_gpu_fsr4_mode           the same                    "FSR 4 Mode"
 //   mcla_gpu_dlss_mode           dlaa | quality | balanced | performance | ultra_performance
 //                                                            "DLSS Mode": 100%, 67%, 58%, 50%, 33%
@@ -63,10 +64,12 @@ bool ParseUpscaleMode(std::string_view text, UpscaleMode* out);
 // Whether `mode` can run with `upscaler` (FSR 3.1, FSR 4 and DLSS: all five).
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode);
 
-// True when the saved settings could draw the 3D scene smaller than the output at this start (an
-// upscaler chosen, in a mode below 100%). The pipelines a smaller scene needs are listed for it
-// before the start's own decision exists (resolve.cpp ListPrecache); an upscaler this PC cannot
-// run only makes that list longer than it had to be.
+// True when the 3D scene may be drawn smaller than the output during this run: an upscaler runtime
+// is built in, and the player can pick a mode below 100% at any time (the scene follows it live,
+// temporal.h). The pipelines a smaller scene needs (the reduced copies and the fractional depth
+// resolve, a handful) are listed for it before the start's own decision exists (resolve.cpp
+// ListPrecache), so that a live change finds them made; a PC that cannot run an upscaler only makes
+// that list longer than it had to be.
 bool MayDrawSceneSmaller();
 
 // What the settings say now (cvars read; a mode that cannot run is Native AA).
@@ -219,5 +222,7 @@ std::unique_ptr<TemporalBackend> MakeDlssBackend();
 void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4);  // FidelityFX
 void PublishDlssAvailability(bool probed, bool dlss, bool needs_setup, bool after_restart);
 void PublishRunningUpscaler(Upscaler running);
+// The settings ask for another path than the one running and its context is being made.
+void PublishUpscalerSwitching(bool switching);
 
 }  // namespace mcla::gpu

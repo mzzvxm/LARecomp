@@ -282,6 +282,9 @@ struct UpscalerAvailability {
   bool dlss_needs_setup = false;    // an NVIDIA RTX card, files missing: listed greyed
   bool dlss_after_restart = false;  // listed; runs from the next start
   Upscaler running = Upscaler::kOff;  // the one doing the work this moment
+  // The settings ask for another upscaler or mode than the one running and its context is being made
+  // (a live change, temporal.h): the old one goes on until it is ready.
+  bool switching = false;
 };
 UpscalerAvailability GetUpscalerAvailability();
 
@@ -306,12 +309,13 @@ bool GuestMsaaOff();
 GuestMsaa GetGuestMsaa();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
-// The scene is drawn smaller than the output only while an upscaler can make it whole again, and
-// its size is fixed when its targets are made (restart only, like RES SCALE). So the choice is read
-// once: the upscaler and mode chosen at the start, and whether this PC can run that upscaler (known
-// when the upscaler probe has ended). `ratio` is the mode's output over render, per axis (1 when no
-// upscaler runs); the renderer turns it into the scene's scale (render_scale.h ChooseSceneScale).
-// A change of upscaler or mode afterwards is only noted: it applies at the next start.
+// The scene is drawn smaller than the output only while an upscaler can make it whole again. The
+// scene's first targets are made for the choice read once at the start: the upscaler and mode
+// chosen, and whether this PC can run that upscaler (known when the upscaler probe has ended).
+// `ratio` is the mode's output over render, per axis (1 when no upscaler runs); the renderer turns
+// it into the scene's scale (render_scale.h ChooseSceneScale). The game's MSAA is decided from it
+// too. A change of upscaler or mode afterwards is made live by the temporal system at a frame
+// boundary (temporal.h, "Changing the path"), with the MSAA staying as the start decided it.
 struct StartUpscale {
   bool decided = false;
   bool probed = false;  // the upscaler probe had ended when it was decided

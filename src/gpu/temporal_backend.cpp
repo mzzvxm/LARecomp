@@ -24,32 +24,37 @@ REXCVAR_DEFINE_STRING(
     "held off, and a game started with one on runs without MSAA (your MSAA choice, "
     "mcla_gpu_msaa, is kept and applies again at a start with no upscaler: the game's MSAA is a "
     "start-up switch). A choice this PC cannot run is treated as off. Live, except that MSAA "
-    "follows at the next start.")
+    "follows at the next start: turning an upscaler on, off or to another one is made at a frame "
+    "boundary once the new one is ready, while the old one keeps working (FSR in about half a "
+    "second, DLSS in several seconds).")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_fsr31_mode, "native_aa", "MCLA/GPU",
     "FSR 3.1's mode, AMD's names and the share of the output the scene is drawn at: native_aa "
     "(100%, only smoothed), quality (67%), balanced (59%), performance (50%) or ultra_performance "
-    "(33%), per direction, of the render scale (mcla_gpu_resolution_scale). The scene's size is "
-    "fixed when the game starts: a mode changed later applies at the next start.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "(33%), per direction, of the render scale (mcla_gpu_resolution_scale). Live: the scene is "
+    "drawn at the new size from a frame boundary once the upscaler is ready for it, and the old "
+    "mode works until then.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_fsr4_mode, "native_aa", "MCLA/GPU",
     "FSR 4's mode, AMD's names and the share of the output the scene is drawn at: native_aa "
     "(100%, only smoothed), quality (67%), balanced (59%), performance (50%) or ultra_performance "
-    "(33%), per direction, of the render scale (mcla_gpu_resolution_scale). The scene's size is "
-    "fixed when the game starts: a mode changed later applies at the next start.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "(33%), per direction, of the render scale (mcla_gpu_resolution_scale). Live: the scene is "
+    "drawn at the new size from a frame boundary once the upscaler is ready for it, and the old "
+    "mode works until then.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_dlss_mode, "dlaa", "MCLA/GPU",
     "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
-    "per direction, of the render scale (mcla_gpu_resolution_scale). The scene's size is fixed "
-    "when the game starts: a mode changed later applies at the next start.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "per direction, of the render scale (mcla_gpu_resolution_scale). Live: the scene is drawn at "
+    "the new size from a frame boundary once the upscaler is ready for it (several seconds for "
+    "DLSS), and the old mode works until then.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_upscaler_sharpness, 0.2, "MCLA/GPU",
@@ -95,6 +100,7 @@ std::atomic<uint32_t> g_availability{0};
 // DLSS: bit 0 probed, 1 dlss, 2 needs setup, 3 after restart.
 std::atomic<uint32_t> g_dlss_availability{0};
 std::atomic<uint32_t> g_running{0};
+std::atomic<bool> g_switching{false};
 std::atomic<uint8_t> g_guest_msaa{uint8_t(GuestMsaa::kUndecided)};
 
 }  // namespace
@@ -175,8 +181,13 @@ UpscalerSettings ReadUpscalerSettings() {
 }
 
 bool MayDrawSceneSmaller() {
-  const UpscalerSettings s = ReadUpscalerSettings();
-  return s.upscaler != Upscaler::kOff && ModeInfoOf(s.upscaler, s.mode).ratio > 1.0;
+  // The player can pick a mode below 100% at any time, so every build with an upscaler runtime lists
+  // what a smaller scene needs, whatever the saved settings say.
+#if defined(LARECOMP_HAS_FFX) || defined(LARECOMP_HAS_DLSS)
+  return true;
+#else
+  return false;
+#endif
 }
 
 void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4) {
@@ -194,6 +205,10 @@ void PublishRunningUpscaler(Upscaler running) {
   g_running.store(uint32_t(running), std::memory_order_relaxed);
 }
 
+void PublishUpscalerSwitching(bool switching) {
+  g_switching.store(switching, std::memory_order_relaxed);
+}
+
 UpscalerAvailability GetUpscalerAvailability() {
   const uint32_t v = g_availability.load(std::memory_order_relaxed);
   UpscalerAvailability a;
@@ -206,6 +221,7 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.dlss_needs_setup = (d & 4u) != 0;
   a.dlss_after_restart = (d & 8u) != 0;
   a.running = Upscaler(g_running.load(std::memory_order_relaxed) & 3u);
+  a.switching = g_switching.load(std::memory_order_relaxed);
   return a;
 }
 
@@ -268,8 +284,9 @@ void DecideStartUpscale() {
   if (chosen != Upscaler::kOff) {
     if (runs) {
       REXLOG_INFO("[gpu] upscaler at start: {} {} ({}% of the output per direction, ratio {:.2f}): the "
-                  "3D scene is drawn at that share of the render scale from this start on (the "
-                  "mode and the render scale apply at a start, not live)",
+                  "3D scene starts at that share of the render scale (the upscaler and its mode "
+                  "can be changed while the game runs, at a frame boundary; the render scale "
+                  "applies at a start)",
                   UpscalerName(chosen), ModeInfoOf(chosen, mode).name,
                   ModeInfoOf(chosen, mode).percent, ModeInfoOf(chosen, mode).ratio);
     } else {

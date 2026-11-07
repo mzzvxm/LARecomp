@@ -72,11 +72,36 @@
 // reads name a product it does not cover.
 //
 // Step 3 (F4-DESIGN.md 4, stage U3) draws the scene smaller than the output: with an upscaler in a
-// mode below 100% at the start (gpu.h GetStartUpscale) the main view's colour and depth are made
-// at a scale of their own (edram.h SceneScale: the images of the screen's over the mode's ratio,
-// render_scale.h ChooseSceneScale), fixed until the next start. The render size is that scale
-// over the guest's size, the output size the anchor's (an image of the screen), the jitter
-// sequence follows the ratio and the scene's textures are sampled sharper (scene.cpp SceneBias).
+// mode below 100% the main view's colour and depth are made at a scale of their own (edram.h
+// SceneScale: the images of the screen's over the mode's ratio, render_scale.h ChooseSceneScale).
+// The render size is that scale over the guest's size, the output size the anchor's (an image of
+// the screen), the jitter sequence follows the ratio and the scene's textures are sampled sharper
+// (scene.cpp SceneBias).
+//
+// Changing the path (live). The path is the upscaler (off, FSR 3.1, FSR 4, DLSS) and its mode; the
+// scene's scale, the upscaler's context, the jitter's phase count, the history and the hold on
+// FXAA and SMAA all belong to it. The game starts on the path the start decided (gpu.h
+// GetStartUpscale, which made the scene's first targets); after that the settings are read every
+// frame, and when they ask for another path:
+//   - Off is taken at the next frame boundary: the scene's targets are made again at the images of
+//     the screen's scale (EdramTargets::SetSceneScale), the temporal system turns itself off, the
+//     context goes after 10 s (a quick switch back finds it).
+//   - A path with a context is made first, and the old path runs meanwhile (make before break):
+//     the backend is asked for a second context at the sizes the new path will have (the guest's
+//     size at the new scene scale and at the output's; Prepare), and when it says it is ready
+//     (PreparedReady: FSR 0.3 to 0.6 s, DLSS about 8 s) the switch is made at the next frame
+//     boundary, before the frame's first draw: the scene's targets at the new scale, the context
+//     taken over (Commit; the old one retires behind the frames that may use it), the jitter, the
+//     history (it restarts: the scale changed and the new context's first dispatch resets) and the
+//     AA hold follow the new path from that frame on, whole. A frame is never half on the old path.
+//   - A switch with the system already on goes on with the run (the camera, the cut rules) and
+//     draws its first frame armed, upscaled by the new context. One from off has its first frame
+//     plain, like the first frame after a pause (the anchor of a frame is accepted before one is
+//     armed).
+//   - If the scene's textures cannot be made at the new scale (a 3x scene on a card with little
+//     memory) nothing changes, it is logged and asked again after a few seconds.
+// Each switch is logged: from, to, and how long the new path took to run its first frame. The
+// MSAA of the game is not part of the path: it stays what the start decided (gpu.h GuestMsaa).
 //
 // With no upscaler chosen (or one this PC cannot run) no hook of the Scene does anything beyond one
 // branch, no constant changes, no draw is added. With one on, the system jitters, reads the camera
@@ -244,14 +269,18 @@ class TemporalSystem {
 
   // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
   // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
-  // Probes the upscaler backend (a worker thread; nothing on this one).
+  // Probes the upscaler backend (a worker thread; nothing on this one). `edram`: the scene's
+  // targets, whose scale a change of path moves.
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
-                  PassTiming& pass_timing, TextureCache& textures, ResolveCache& resolve);
+                  PassTiming& pass_timing, TextureCache& textures, ResolveCache& resolve,
+                  EdramTargets& edram);
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
-  // The Renderer opened the frame's first list (frame slot `slot`). Reads the upscaler's settings.
-  void BeginFrame(uint32_t slot);
+  // The Renderer opened the frame's first list (frame slot `slot`, `list` the open list, nothing
+  // recorded in it yet and outside a render pass). Reads the upscaler's settings, and at a frame
+  // boundary changes the path they ask for once it is ready (see above).
+  void BeginFrame(uint32_t slot, plume::RenderCommandList* list);
   // A draw of the frame about to have its textures bound (before FillTextureTables): the anchor
   // draw ends the stand-in the post chain was given, so that its own colour fetch is bound plain
   // (the anchor's stand-in, with this frame's picture, is set after the upscale; a frame whose
@@ -364,10 +393,24 @@ class TemporalSystem {
   TemporalMotion::Frame pending_;
   bool pending_ready_ = false;
 
-  // Step 2: the upscaler. `effective_` is what the settings and this PC's answer make of the
-  // player's choice, read at BeginFrame.
+  // Step 2: the upscaler. `wanted_` is what the settings and this PC's answer make of the player's
+  // choice, read at BeginFrame; `effective_` and `mode_in_use_` are the path the frames follow.
   void ReadUpscalerChoice();
   void NoteMsaa();
+  // The live change of path (above). UpdatePath runs at a frame boundary: it takes the start's path
+  // the first time, then compares the path with what the settings want and prepares, switches or
+  // waits. SwitchPath makes the switch (false: the scene's targets could not be made, nothing
+  // changed). The stage is the new path while its context is being made.
+  void UpdatePath(plume::RenderCommandList* list);
+  void AdoptStartPath();
+  bool SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
+                  const BackendRequest* request);
+  void CancelStage(const char* why);
+  // The guest's frame size: the last accepted anchor's, else the game's screen; false until known.
+  bool GuestFrameSize(uint32_t out[2]) const;
+  // The context the path (`upscaler`, `mode`) needs for a guest frame of `guest` pixels: the render
+  // size at the scene's scale for that mode and the output size at the images of the screen's.
+  BackendRequest RequestFor(Upscaler upscaler, UpscaleMode mode, const uint32_t guest[2]) const;
   // The jitter sequence's length for `ratio` (output over render): `from_runtime` is what the
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
@@ -405,18 +448,42 @@ class TemporalSystem {
            : (upscaler == Upscaler::kFsr31 || upscaler == Upscaler::kFsr4) ? ffx_.get()
                                                                            : nullptr;
   }
+  EdramTargets* edram_ = nullptr;
   UpscalerSettings settings_;
+  // The path the frames follow: the upscaler (off when none runs) and the mode the scene was drawn
+  // for. Changed only at a frame boundary (SwitchPath).
   Upscaler effective_ = Upscaler::kOff;
+  // What the settings ask for, with this PC's answer applied (an upscaler it cannot run is off).
+  Upscaler wanted_ = Upscaler::kOff;
+  UpscaleMode wanted_mode_ = UpscaleMode::kNativeAa;
+  bool path_adopted_ = false;  // the start's path was taken (AdoptStartPath)
+  // The new path whose context is being made while the old one runs.
+  struct Stage {
+    bool active = false;
+    Upscaler upscaler = Upscaler::kOff;
+    UpscaleMode mode = UpscaleMode::kNativeAa;
+    BackendRequest request;
+  };
+  Stage stage_;
+  // A change is on: the settings ask for another path than the one running. When it was first seen,
+  // for the log; where the scene's targets could not be made, when to try again.
+  bool change_pending_ = false;
+  Clock::time_point change_seen_{};
+  Clock::time_point retry_after_{};
+  bool switch_failure_logged_ = false;
+  // The line that says when the new path first ran, once: set by a switch to a path with an
+  // upscaler, written by its first upscaled frame (`switch_asked_`: when the setting changed).
+  bool switch_log_pending_ = false;
+  Clock::time_point switch_asked_{};
   uint32_t choice_key_ = 0;
   bool choice_reported_ = false;
   bool ready_reported_ = false;
   HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, output size
   uint32_t last_render_size_[2] = {};  // of the last accepted frame
   uint32_t last_output_size_[2] = {};  // ... and what the upscaler made of it
-  // The mode the scene was drawn for: the start's (gpu.h GetStartUpscale), whatever the setting says
-  // now. Native AA when no upscaler ran at the start (the scene is at the output's size).
+  // The mode the scene is drawn for (the path's), whatever the setting says now. Native AA when no
+  // upscaler runs (the scene is at the output's size).
   UpscaleMode mode_in_use_ = UpscaleMode::kNativeAa;
-  uint32_t mode_note_key_ = ~0u;     // what ReadUpscalerChoice last said of the mode
   bool request_made_ = false;        // a context was asked for and not released
   BackendRequest request_;
   Clock::time_point off_since_{};
