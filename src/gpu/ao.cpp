@@ -374,10 +374,19 @@ void AmbientOcclusion::ListPrecache() {
   HostPrecache& precache = passes_->precache();
   // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
   // that opening the pause menu with the occlusion on waits for no pipeline.
-  const uint32_t listed[] = {kVDepth,           kVDepthMs,          kVMip,
-                             kVMain,            kVDenoise,          kVTemporal,
-                             kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
-                             ApplyVariant(false, 4)};
+  std::vector<uint32_t> listed = {kVDepth,           kVDepthMs,          kVMip,
+                                  kVMain,            kVDenoise,          kVTemporal,
+                                  kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
+                                  ApplyVariant(false, 4)};
+  // The host's MSAA level changes while the game runs (msaa_level.h) and gives the main view's
+  // colour target the new level's samples: the apply pass for 8 samples is listed whatever the
+  // level is at the start, so a switch to 8x finds it made instead of making it on the render
+  // thread in the first frame at that level (the guest's own pipelines are made ahead for the new
+  // level by Pipelines::PrebuildForLevel; this pass is not one of them). 2x and 4x are listed above
+  // (the pause and map view's colour target has 4 or 8). A level the device cannot do is not listed.
+  if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
+    listed.push_back(ApplyVariant(false, 8));
+  }
   for (const uint32_t variant : listed) {
     precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
                  VariantName(variant), [this, variant] { return MakePipeline(variant); });
