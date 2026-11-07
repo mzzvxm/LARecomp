@@ -29,7 +29,9 @@ REXCVAR_DEFINE_STRING(
     "second, DLSS in several seconds). The exception is DLSS on Vulkan: that graphics device is "
     "made through NVIDIA's Streamline only when dlss is the saved choice at the start (it adds "
     "several seconds to every start), so choosing dlss in a Vulkan game started with something "
-    "else is saved and applies at the next start, and the menu offers a restart.")
+    "else is saved and applies at the next start, and the menu offers a restart. Until then the "
+    "game keeps what it runs (the upscaler and its mode as they were, or none), it is not turned "
+    "off.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
@@ -103,6 +105,7 @@ std::atomic<uint32_t> g_availability{0};
 // DLSS: bit 0 probed, 1 dlss, 2 needs setup, 3 after restart.
 std::atomic<uint32_t> g_dlss_availability{0};
 std::atomic<uint32_t> g_running{0};
+std::atomic<uint32_t> g_kept{0};
 std::atomic<bool> g_switching{false};
 std::atomic<uint8_t> g_guest_msaa{uint8_t(GuestMsaa::kUndecided)};
 
@@ -214,6 +217,10 @@ void PublishRunningUpscaler(Upscaler running) {
   g_running.store(uint32_t(running), std::memory_order_relaxed);
 }
 
+void PublishKeptUpscaler(Upscaler kept) {
+  g_kept.store(uint32_t(kept), std::memory_order_relaxed);
+}
+
 void PublishUpscalerSwitching(bool switching) {
   g_switching.store(switching, std::memory_order_relaxed);
 }
@@ -230,6 +237,7 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.dlss_needs_setup = (d & 4u) != 0;
   a.dlss_after_restart = (d & 8u) != 0;
   a.running = Upscaler(g_running.load(std::memory_order_relaxed) & 3u);
+  a.kept = Upscaler(g_kept.load(std::memory_order_relaxed) & 3u);
   a.switching = g_switching.load(std::memory_order_relaxed);
   return a;
 }

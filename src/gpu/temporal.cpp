@@ -204,6 +204,7 @@ void TemporalSystem::Shutdown() {
     dlss_.reset();
   }
   PublishRunningUpscaler(Upscaler::kOff);
+  PublishKeptUpscaler(Upscaler::kOff);
   PublishUpscalerSwitching(false);
   motion_.Shutdown();
   pending_ready_ = false;
@@ -346,20 +347,30 @@ bool TemporalSystem::HoldsAaOff(bool aa_asked) {
 // the upscaler
 // ---------------------------------------------------------------------------
 
+bool TemporalSystem::CanRun(Upscaler upscaler, const UpscalerAvailability& available) const {
+  return BackendFor(upscaler) &&
+         ((upscaler == Upscaler::kFsr31 && available.fsr31) ||
+          (upscaler == Upscaler::kFsr4 && available.fsr4) ||
+          (upscaler == Upscaler::kDlss && available.dlss));
+}
+
 void TemporalSystem::ReadUpscalerChoice() {
   settings_ = ReadUpscalerSettings();
   const UpscalerAvailability available = GetUpscalerAvailability();
   Upscaler effective = Upscaler::kOff;
   const TemporalBackend* chosen_backend = BackendFor(settings_.upscaler);
-  if (chosen_backend && ((settings_.upscaler == Upscaler::kFsr31 && available.fsr31) ||
-                         (settings_.upscaler == Upscaler::kFsr4 && available.fsr4) ||
-                         (settings_.upscaler == Upscaler::kDlss && available.dlss))) {
+  if (CanRun(settings_.upscaler, available)) {
     effective = settings_.upscaler;
   }
   const bool chosen_probed =
       settings_.upscaler == Upscaler::kDlss ? available.dlss_probed : available.probed;
+  // DLSS chosen in a Vulkan game that was started without it: it runs from the next start. The
+  // renderer keeps the path it runs until then (UpdatePath), it does not turn it off.
+  restart_pending_ = effective == Upscaler::kOff && settings_.upscaler == Upscaler::kDlss &&
+                     chosen_backend && chosen_probed && available.dlss_after_restart;
   // A line when what the choice comes to changes. A choice this PC cannot run is off (the saved
-  // choice stays as it is, and comes back where it can run).
+  // choice stays as it is, and comes back where it can run), except the one that waits for a
+  // start, which leaves the running path alone.
   const uint32_t key = uint32_t(settings_.upscaler) | uint32_t(effective) << 2 |
                        uint32_t(chosen_probed) << 4 | uint32_t(chosen_backend != nullptr) << 5;
   if (!choice_reported_ || key != choice_key_) {
@@ -375,15 +386,11 @@ void TemporalSystem::ReadUpscalerChoice() {
         REXLOG_INFO("{} {} is chosen but this build has no runtime for it: treated as off", kPrefix,
                     UpscalerName(settings_.upscaler));
       } else if (chosen_probed) {
-        if (settings_.upscaler == Upscaler::kDlss && available.dlss_after_restart) {
+        if (restart_pending_) {
           // A Vulkan game started without DLSS: its device was not made through Streamline (that
           // costs seconds at every start, so it is done only when DLSS is chosen at the start). The
-          // choice is saved; the pause menu says RESTART and offers it.
-          REXLOG_INFO("{} DLSS is chosen, but this Vulkan game was started without it (its device "
-                      "is made through Streamline only when DLSS is the saved choice at the start): "
-                      "treated as off until the game is started again; the choice is saved and "
-                      "applies then",
-                      kPrefix);
+          // choice is saved; the pause menu says RESTART and offers it. What the game runs goes on:
+          // UpdatePath says which path (the line "keeps ... until the restart").
         } else {
           REXLOG_INFO("{} {} is chosen but this PC cannot run it{}: treated as off (the choice is "
                       "kept)",
@@ -498,10 +505,32 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
     path_adopted_ = true;
     AdoptStartPath();
   }
-  const Upscaler to = wanted_;
-  const UpscaleMode to_mode = to == Upscaler::kOff ? UpscaleMode::kNativeAa : wanted_mode_;
+  Upscaler to = wanted_;
+  UpscaleMode to_mode = to == Upscaler::kOff ? UpscaleMode::kNativeAa : wanted_mode_;
+  // The chosen upscaler runs only from the next start (restart_pending_): the path that runs stays,
+  // upscaler and mode as the scene is drawn for them now, which is what the player saw when picking
+  // it (the settings' own mode is the new upscaler's, not this path's). A path whose upscaler
+  // cannot run any more (its backend failed) is not kept: that is the ordinary turn-off below.
+  const bool keep_running = restart_pending_ && (effective_ == Upscaler::kOff ||
+                                                 CanRun(effective_, GetUpscalerAvailability()));
+  PublishKeptUpscaler(keep_running ? effective_ : Upscaler::kOff);
+  if (keep_running) {
+    to = effective_;
+    to_mode = mode_in_use_;
+    if (!hold_reported_) {
+      hold_reported_ = true;
+      REXLOG_INFO("{} DLSS is chosen, but this Vulkan game was started without it (its device is "
+                  "made through Streamline only when DLSS is the saved choice at the start): the "
+                  "choice is saved and applies at the next start; the game keeps {} until the "
+                  "restart",
+                  kPrefix, PathText(effective_, mode_in_use_));
+    }
+  } else {
+    hold_reported_ = false;
+  }
   if (to == effective_ && to_mode == mode_in_use_) {
-    CancelStage("the setting is back on the path that runs");
+    CancelStage(keep_running ? "DLSS is chosen and waits for the restart; the running path stays"
+                             : "the setting is back on the path that runs");
     change_pending_ = false;
     PublishUpscalerSwitching(false);
     return;

@@ -30,34 +30,53 @@ Upscaler Chosen() {
     return Upscaler::kOff;
 }
 
+// DLSS is the saved choice but this game can run it only from the next start (a Vulkan game started
+// without Streamline). The renderer keeps what it runs until then (gpu.h UpscalerAvailability::kept).
+bool DlssWaitsForRestart() {
+    if (Chosen() != Upscaler::kDlss) return false;
+    const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    return a.dlss_after_restart && !a.dlss;
+}
+
+// The upscaler that does the work: the choice when this PC can run it; while DLSS waits for a
+// restart, the one the renderer keeps (FSR 3.1 or 4 as it was running, or off), which is what holds
+// FXAA and SMAA off and what the sharpness row and the greyed mode row belong to.
 Upscaler Active() {
     const Upscaler chosen = Chosen();
     const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
     if ((chosen == Upscaler::kFsr31 && a.fsr31) || (chosen == Upscaler::kFsr4 && a.fsr4) ||
         (chosen == Upscaler::kDlss && a.dlss))
         return chosen;
+    if (chosen == Upscaler::kDlss && a.dlss_after_restart) return a.kept;
     return Upscaler::kOff;
 }
 
-bool Fsr31Chosen() { return Active() == Upscaler::kFsr31; }
-bool Fsr4Chosen() { return Active() == Upscaler::kFsr4; }
+// The mode rows are live only for an upscaler that is the choice itself: with DLSS waiting for a
+// restart, the running upscaler's mode row shows what it runs and is greyed (the renderer keeps
+// that mode until the restart, whatever the row would be set to).
+bool Fsr31Chosen() { return Active() == Upscaler::kFsr31 && !DlssWaitsForRestart(); }
+bool Fsr4Chosen() { return Active() == Upscaler::kFsr4 && !DlssWaitsForRestart(); }
 bool DlssChosen() { return Active() == Upscaler::kDlss; }
+// FSR's sharpness is not a mode: it applies to the FSR that runs, so it stays live there.
 bool FsrChosen() { return Active() == Upscaler::kFsr31 || Active() == Upscaler::kFsr4; }
 
 // The mode rows: grey while their upscaler is not the one in use; while it is, a mode picked now
 // is live: the scene is drawn at the new size from a frame boundary, once the upscaler has made
-// what it needs for it (the old mode works until then; the UPSCALING row says "(WAIT)").
+// what it needs for it (the old mode works until then; the UPSCALING row says "(WAIT)"). The one
+// exception: DLSS chosen in a game that must restart for it. The upscaler that runs keeps its mode
+// (its row shows it, grey, "(UNTIL DLSS)": not "RESTART", which the "Restart now?" prompt reads as
+// "this setting needs a start") and the DLSS rows are grey with "(RESTART)".
 const char* Fsr31ModeSuffix() {
     switch (Active()) {
     case Upscaler::kOff:   return " (UPSCALING OFF)";
-    case Upscaler::kFsr31: return "";
+    case Upscaler::kFsr31: return DlssWaitsForRestart() ? " (UNTIL DLSS)" : "";
     default:               return " (NOT IN USE)";
     }
 }
 const char* Fsr4ModeSuffix() {
     switch (Active()) {
     case Upscaler::kOff:   return " (UPSCALING OFF)";
-    case Upscaler::kFsr4:  return "";
+    case Upscaler::kFsr4:  return DlssWaitsForRestart() ? " (UNTIL DLSS)" : "";
     default:               return " (NOT IN USE)";
     }
 }
@@ -135,16 +154,16 @@ constexpr double kSharpVals[] = {0.0, 0.2, 0.4, 0.6, 0.8, 1.0};
 // The UPSCALING row: " (RESTART)" while DLSS is the saved choice but this game cannot run it until
 // it is started again (a Vulkan game started without DLSS: the device is made through Streamline
 // only when DLSS is chosen at the start). The choice is saved and applies at the next start, the
-// renderer goes on without DLSS meanwhile, and leaving the menu offers "Restart now?" (the prompt
-// reads this suffix). Otherwise " (WAIT)" while the settings ask for another upscaler or mode than
-// the one running and its context is still being made (DLSS takes several seconds; the old one
-// goes on).
+// renderer goes on with what it runs meanwhile (the upscaler and its mode as they were, or none),
+// and leaving the menu offers "Restart now?" (the prompt reads this suffix). Otherwise " (WAIT)"
+// while the settings ask for another upscaler or mode than the one running and its context is
+// still being made (DLSS takes several seconds; the old one goes on).
 // CHECK: the prompt finds this row through the suffix (pause_menu.cpp RowSaysRestart): in a Vulkan
 // game started with FSR or no upscaler on an RTX PC, picking DLSS, then leaving the menu, logs
 // "[pause-menu] a setting that needs a restart changed: offered RESTART NOW".
 const char* UpscalerRowSuffix() {
     const mcla::gpu::UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
-    if (Chosen() == Upscaler::kDlss && a.dlss_after_restart && !a.dlss) return " (RESTART)";
+    if (DlssWaitsForRestart()) return " (RESTART)";
     return a.switching ? " (WAIT)" : "";
 }
 

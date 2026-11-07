@@ -29,10 +29,14 @@
 // is the saved choice at the start (it costs seconds at every start, used or not), so a Vulkan game
 // started with FSR or no upscaler cannot switch to it: choosing DLSS saves the choice for the next
 // start, the UPSCALING row's label says "(RESTART)" ("UPSCALING (RESTART)" and the value "DLSS"),
-// its mode row is grey with "DLSS (RESTART)", the renderer goes on without DLSS (an upscaler that
-// was running is turned off: a choice this game cannot run is treated as off), and leaving the menu
-// offers "Restart now?" (pause_menu.cpp reads the "RESTART" in the row's label). The one upscaler
-// choice that waits for a start.
+// its mode row is grey with "DLSS (RESTART)", and leaving the menu offers "Restart now?"
+// (pause_menu.cpp reads the "RESTART" in the row's label). The renderer keeps what it runs until
+// the start: the upscaler that was running, with the mode it had when DLSS was picked (or no
+// upscaler), so nothing changes on screen. The rows follow that running upscaler (gpu.h
+// UpscalerAvailability::kept): its mode row keeps showing its own mode, grey, "(UNTIL DLSS)",
+// the sharpness row stays live for FSR, and FXAA/SMAA stay held off while it runs. Picking
+// something that can run (back to FSR, or off) is live again as usual and drops the waiting DLSS.
+// The one upscaler choice that waits for a start.
 //
 // Each technology keeps its own mode; the value is the vendor's name and the share of the output
 // the 3D scene is drawn at, per direction. NATIVE AA and DLAA draw it at the full size and only

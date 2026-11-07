@@ -103,6 +103,12 @@
 //   - One case cannot keep the old path upscaled: from one DLSS mode to another. Streamline's API is
 //     serialised and the new feature's creation holds it for seconds (TemporalBackend::Busy), so
 //     those frames are plain and not jittered, at the old scene scale, until the feature exists.
+//   - A choice that cannot run until the game is started again (DLSS in a Vulkan game started
+//     without Streamline: gpu.h UpscalerAvailability::dlss_after_restart) changes nothing: the
+//     choice is saved, the pause menu says RESTART, and the renderer keeps the path that runs, the
+//     upscaler and the mode the scene is drawn for, as they were when it was picked, until the
+//     restart. (Not the setting's own mode: the mode row on screen is the chosen upscaler's now.)
+//     Picking something that can run drops it, and the switch is made as above.
 // Each switch is logged: from, to, and how long the new path took to run its first frame. The
 // MSAA of the game is not part of the path: it stays what the start decided (gpu.h GuestMsaa).
 //
@@ -399,6 +405,8 @@ class TemporalSystem {
   // Step 2: the upscaler. `wanted_` is what the settings and this PC's answer make of the player's
   // choice, read at BeginFrame; `effective_` and `mode_in_use_` are the path the frames follow.
   void ReadUpscalerChoice();
+  // Whether `upscaler` has a backend here and the PC's answer says it can run now.
+  bool CanRun(Upscaler upscaler, const UpscalerAvailability& available) const;
   void NoteMsaa();
   // The live change of path (above). UpdatePath runs at a frame boundary: it takes the start's path
   // the first time, then compares the path with what the settings want and prepares, switches or
@@ -462,9 +470,16 @@ class TemporalSystem {
   // The path the frames follow: the upscaler (off when none runs) and the mode the scene was drawn
   // for. Changed only at a frame boundary (SwitchPath).
   Upscaler effective_ = Upscaler::kOff;
-  // What the settings ask for, with this PC's answer applied (an upscaler it cannot run is off).
+  // What the settings ask for, with this PC's answer applied (an upscaler it cannot run is off;
+  // see restart_pending_ for the one that can run from the next start).
   Upscaler wanted_ = Upscaler::kOff;
   UpscaleMode wanted_mode_ = UpscaleMode::kNativeAa;
+  // The chosen upscaler can only run from the next start (DLSS in a Vulkan game started without it):
+  // set by ReadUpscalerChoice, acted on by UpdatePath, which then wants the path that runs
+  // (effective_ and mode_in_use_, the mode it was drawn for when DLSS was picked: they only change
+  // in SwitchPath) instead of `wanted_`. `hold_reported_`: the log line for it was written.
+  bool restart_pending_ = false;
+  bool hold_reported_ = false;
   bool path_adopted_ = false;  // the start's path was taken (AdoptStartPath)
   Clock::time_point prewarm_wait_since_{};  // the guest's size was first known with a pre-warm armed
   static constexpr std::chrono::seconds kPrewarmDelay{5};

@@ -21,7 +21,8 @@
 //                                                            "DLSS Mode": 100%, 67%, 58%, 50%, 33%
 //   mcla_gpu_upscaler_sharpness  0 .. 1                      FSR's sharpening (RCAS); 0 is none
 //                                                            (DLSS has none)
-// A choice this PC cannot run is treated as Off and kept as it was saved (the menu does not list it).
+// A choice this PC cannot run is treated as Off and kept as it was saved (the menu does not list it);
+// DLSS in a Vulkan game started without it is not turned off: the running path stays until a start.
 //
 // Rules of every backend (6.2):
 //   When it runs.   Upscale() at the anchor, on the render thread, inside the frame's list and outside
@@ -255,6 +256,9 @@ std::unique_ptr<TemporalBackend> MakeDlssBackend();
 void PublishUpscalerAvailability(bool probed, bool fsr31, bool fsr4);  // FidelityFX
 void PublishDlssAvailability(bool probed, bool dlss, bool needs_setup, bool after_restart);
 void PublishRunningUpscaler(Upscaler running);
+// DLSS is chosen but runs only from the next start: the upscaler the renderer keeps until then
+// (what the path runs, not what the setting says; kOff when none runs or nothing is waiting).
+void PublishKeptUpscaler(Upscaler kept);
 // The settings ask for another path than the one running and its context is being made.
 void PublishUpscalerSwitching(bool switching);
 

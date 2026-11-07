@@ -247,7 +247,8 @@ bool AutoBackendIsVulkan(const std::string& preferred_adapter);
 
 // --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
 // What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
-// mcla_gpu_upscaler is off | fsr31 | fsr4 | dlss; a choice this PC cannot run is treated as off and
+// mcla_gpu_upscaler is off | fsr31 | fsr4 | dlss; a choice this PC cannot run is treated as off (DLSS
+// that can run only from the next start leaves the running path alone: `kept` below) and
 // the menu does not list it (DLSS without its files is listed, greyed, as "needs setup").
 enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4, kDlss };  // stored in 2 bits in places
 const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4, DLSS
@@ -282,6 +283,10 @@ struct UpscalerAvailability {
   bool dlss_needs_setup = false;    // an NVIDIA RTX card, files missing: listed greyed
   bool dlss_after_restart = false;  // listed; runs from the next start
   Upscaler running = Upscaler::kOff;  // the one doing the work this moment
+  // DLSS is chosen but this game can run it only from the next start (dlss_after_restart): the
+  // upscaler the renderer keeps until then, with the mode it had (kOff: none runs, or nothing is
+  // waiting). The pause menu shows that one as the active one, greyed, instead of the choice.
+  Upscaler kept = Upscaler::kOff;
   // The settings ask for another upscaler or mode than the one running and its context is being made
   // (a live change, temporal.h): the old one goes on until it is ready.
   bool switching = false;
