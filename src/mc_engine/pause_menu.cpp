@@ -1480,7 +1480,9 @@ const ItemDef kRecompItems[] = {
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
     // Live. A DualSense only: a spring on R2 and a brake on L2 while a car is driven.
-    Bool("PM_RxTriggers",    "adaptive_triggers",        "DUALSENSE TRIGGERS: "),
+    Bool("PM_RxTrigResist",  "trigger_resistance",       "DUALSENSE RESISTANCE: "),
+    // Live. A DualSense only: R2 vibrates while the wheels spin, L2 while the brakes lock them.
+    Bool("PM_RxTrigVibrate", "trigger_vibration",        "DUALSENSE VIBRATION: "),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
     // Live: the game's rumble stops reaching the controller, and one that runs stops.

@@ -3,6 +3,7 @@
 // writer (Windows HID). Plume is the renderer here.
 
 #include <rex/cvar.h>
+#include <rex/ppc.h>
 
 #include "mc_engine/adaptive_triggers.h"
 #include "native_gfx/native_gfx.h"
@@ -56,4 +57,4 @@ void Tick() {}
 void Shutdown() {}
 }  // namespace larecomp::triggers
 
-void Hook_TriggersHud() {}
+void Hook_TriggersHud(PPCRegister&) {}
