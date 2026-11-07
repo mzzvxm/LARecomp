@@ -1325,9 +1325,8 @@ constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0}
 //
 // What these rows show is what the renderer does now (it follows them at a frame boundary): they
 // ask it what it chooses (gpu.h PreviewRenderScale) from the settings and the window as it is now.
-// Row width: the widest line of the pause menu is 26 characters ("RENDER RES: SCREEN (1080P)"), so
-// RENDER RES carries no suffix while it is live, and a scale the video memory cannot hold says so
-// in the value ("TOO BIG (2.0X)" beside the one that runs: 12 + 14 = 26).
+// Width (see "Page width"): RENDER RES carries no suffix while it is live, and a scale the video
+// memory cannot hold says so in the value ("TOO BIG (2.0X)", narrower than DISPLAY's widest value).
 
 bool FsrOn() { return CvarGetBool("mcla_gpu_fsr"); }
 
@@ -1410,8 +1409,8 @@ constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
 // stands for now (Windows' report for the display the window is on), and without HDR output they are
 // grey.
 
-// CHECK: the longest row is "PEAK BRIGHTNESS: AUTO (1000 NITS)", 33 characters against RENDER RES's
-// "RENDER RES: SCREEN (1080P)" at 26: look that it fits the row's width, shorten the prefix if not.
+// Width: the page's widest pair is "PEAK BRIGHTNESS (HDR OFF)" + "AUTO (1000 NITS)", about 690 units
+// (see "Page width").
 constexpr const char* kHdrModeVals[]  = {"off", "auto", "on"};
 constexpr const char* kHdrModeNames[] = {"OFF", "AUTO", "ON"};
 // Windows' SDR content brightness slider covers 80 to 480 nits.
@@ -2384,6 +2383,18 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
     }
 }
 
+// Page width. The pause movie sizes a page to its widest label (suffix
+// included) plus its widest value, over every row of the page and every value
+// a row can step to (the rows below the ones in view too), not row by row; past
+// about 750 of the movie's units the page is cut at a straight edge on the
+// right, the button prompts and the scroll bar first, at any screen size. A
+// page comes to about 245 units plus 11 a character of that label and value
+// (capitals of the menu's font: I and digits narrower, M and W wider).
+// DISPLAY's widest pair is "RENDER RES (SET BY FSR1)" + "PERFORMANCE (50%)",
+// 41 characters, about 700 units. A label or a value that is longer than its
+// page's widest needs counting against that before it goes in, in each state a
+// suffix can be in.
+//
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
 std::string ItemRowLabel(const ItemDef& it) {

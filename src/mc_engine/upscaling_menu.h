@@ -16,12 +16,12 @@
 //   FSR 4            the same                       mcla_gpu_fsr4_mode   (grey unless FSR 4 is on)
 //   DLSS             DLAA (100%) / QUALITY (67%) / BALANCED (58%) / PERFORMANCE (50%) /
 //                    ULTRA PERF. (33%)              mcla_gpu_dlss_mode   (grey unless DLSS is on)
-//   SHARPNESS        OFF / 0.2 .. 1                 mcla_gpu_upscaler_sharpness (FSR's; grey while
-//                                                   off, and DLSS has none)
+//   SHARPNESS        OFF / 0.2 .. 1                 mcla_gpu_upscaler_sharpness (FSR's; grey with
+//                                                   "(FSR ONLY)" while off and for DLSS)
 //
 // The mode rows are labelled with the technology alone and their values shortened to fit the menu's
-// width (26 characters of label and value: "FSR 3.1: PERFORMANCE (50%)", so no suffix fits them
-// either; they have none while they are live); the cvars keep the full values (ultra_performance).
+// width (pause_menu.cpp, "Page width"; they have no suffix while they are live); the cvars keep the
+// full values (ultra_performance).
 //
 // DLSS on an RTX card whose files are missing (or fail their signature check) is listed too, as
 // "DLSS (SETUP)", with its mode row grey ("DLSS (SETUP)"); the game runs without it. On D3D12
@@ -50,11 +50,12 @@
 // does not change under an open menu.
 //
 // The AA rows of the NATIVE renderer follow the upscaler too: NATIVE AA (FXAA, SMAA) and MSAA are
-// grey and say "(HANDLED BY FSR 3.1)" (or FSR 4, DLSS) while one is active. MSAA on against off is a
+// grey and say "(FSR 3.1 ON)" (or FSR 4, DLSS) while one is active. MSAA on against off is a
 // start-up switch of the game: when the upscaler was turned on after a start with MSAA the row says
-// "(FSR 3.1 AFTER RESTART)" instead. With the upscaler off the row is the player's own: 2X, 4X and 8X
-// change live ("(WAIT)" while the pipelines for a new level are made), and "(RESTART)" shows only when
-// the saved choice and the running game differ in on against off.
+// "(RESTART)" instead (the upscaler takes over at the next start). With the upscaler off the row is
+// the player's own: 2X, 4X and 8X change live ("(WAIT)" while the pipelines for a new level are
+// made), and "(RESTART)" shows only when the saved choice and the running game differ in on against
+// off.
 
 #include "menu_items.h"
 
@@ -64,7 +65,7 @@ const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
 
 namespace mcla_menu {
 
-// The NATIVE AA row's dynamics: grey, "(HANDLED BY FSR 3.1)" (or FSR 4, DLSS), while an upscaler is
+// The NATIVE AA row's dynamics: grey, "(FSR 3.1 ON)" (or FSR 4, DLSS), while an upscaler is
 // chosen and can run (FXAA and SMAA are held off then).
 extern const RowDynamics kNativeAaDynamics;
 // The MSAA row's: grey while an upscaler is chosen and can run; the suffix says whether the game

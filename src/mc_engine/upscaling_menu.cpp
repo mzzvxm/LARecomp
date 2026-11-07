@@ -91,33 +91,33 @@ const char* DlssModeSuffix() {
     if (a.dlss_after_restart && !a.dlss) return " (RESTART)";
     return active == Upscaler::kOff ? " (UPSCALING OFF)" : " (NOT IN USE)";
 }
-// FSR's sharpening (RCAS) only; DLSS has none.
+// FSR's sharpening (RCAS) only; DLSS has none. One suffix for both reasons the row is grey (no
+// upscaler, or DLSS): "(UPSCALING OFF)" made it the widest label of DISPLAY (pause_menu.cpp,
+// "Page width").
 const char* SharpnessSuffix() {
-    switch (Active()) {
-    case Upscaler::kOff:  return " (UPSCALING OFF)";
-    case Upscaler::kDlss: return " (NOT FOR DLSS)";
-    default:              return "";
-    }
+    return FsrChosen() ? "" : " (FSR ONLY)";
 }
 
+// NATIVE AA and MSAA while an upscaler runs: grey, and the suffix names the upscaler that does the
+// anti-aliasing instead ("MSAA (FSR 3.1 ON)").
 const char* HandledSuffix() {
     switch (Active()) {
-    case Upscaler::kFsr31: return " (HANDLED BY FSR 3.1)";
-    case Upscaler::kFsr4:  return " (HANDLED BY FSR 4)";
-    case Upscaler::kDlss:  return " (HANDLED BY DLSS)";
+    case Upscaler::kFsr31: return " (FSR 3.1 ON)";
+    case Upscaler::kFsr4:  return " (FSR 4 ON)";
+    case Upscaler::kDlss:  return " (DLSS ON)";
     default:               return "";
     }
 }
 bool AaFree() { return Active() == Upscaler::kOff; }
 
 // The MSAA row. MSAA on against off is a start-up switch of the game (gpu.h GuestMsaa): a game
-// started with the upscaler on runs without it ("handled by"), one started with MSAA keeps it until
-// the next start, which runs without it. With no upscaler the row is the player's own choice: 2X,
-// 4X and 8X among themselves are live in a game that runs with MSAA (the renderer changes the host's
-// samples between two frames once the pipelines for them are made, msaa_level.h: the row says
-// "(WAIT)" meanwhile); OFF against one of them applies at the next start, so the row says
-// "(RESTART)" when the saved choice and the running game disagree about on and off (which is what
-// the "Restart now?" prompt reads), and nothing otherwise.
+// started with the upscaler on runs without it (the row names the upscaler), one started with MSAA
+// keeps it until the next start, which runs without it (the row says "(RESTART)"). With no upscaler
+// the row is the player's own choice: 2X, 4X and 8X among themselves are live in a game that runs
+// with MSAA (the renderer changes the host's samples between two frames once the pipelines for them
+// are made, msaa_level.h: the row says "(WAIT)" meanwhile); OFF against one of them applies at the
+// next start, so the row says "(RESTART)" when the saved choice and the running game disagree about
+// on and off (which is what the "Restart now?" prompt reads), and nothing otherwise.
 // CHECK: in a game started with MSAA 2X, the values 2X, 4X and 8X carry no suffix (and "(WAIT)" for
 // the seconds a change is being prepared) and "Restart now?" is not offered when the menu is left;
 // OFF says "(RESTART)" and offers it, and going back to any of the three drops the suffix; in a game
@@ -125,12 +125,7 @@ bool AaFree() { return Active() == Upscaler::kOff; }
 const char* MsaaSuffix() {
     const mcla::gpu::GuestMsaa state = mcla::gpu::GetGuestMsaa();
     const bool running = state == mcla::gpu::GuestMsaa::kOn;
-    switch (Active()) {
-    case Upscaler::kFsr31: return running ? " (FSR 3.1 AFTER RESTART)" : " (HANDLED BY FSR 3.1)";
-    case Upscaler::kFsr4:  return running ? " (FSR 4 AFTER RESTART)"   : " (HANDLED BY FSR 4)";
-    case Upscaler::kDlss:  return running ? " (DLSS AFTER RESTART)"    : " (HANDLED BY DLSS)";
-    default: break;
-    }
+    if (Active() != Upscaler::kOff) return running ? " (RESTART)" : HandledSuffix();
     const bool saved_off = rex::cvar::GetFlagByName("mcla_gpu_msaa") == "off";
     const bool running_off = state == mcla::gpu::GuestMsaa::kOffChosen ||
                              state == mcla::gpu::GuestMsaa::kOffForUpscaler;
@@ -142,17 +137,14 @@ const char* MsaaSuffix() {
 // ModeInfo): AMD's for FSR 3.1 and FSR 4, NVIDIA's for DLSS. A mode picked while the game runs is
 // made live at a frame boundary (temporal.h, "Changing the path").
 //
-// Row width: a row's label and its value share one line of the menu, and the widest line of the
-// rest of the pause menu is 26 characters ("RENDER RES: SCREEN (1080P)"). The mode rows' labels
-// are the technology alone ("FSR 3.1: ", "FSR 4: ", "DLSS: ": several can be listed on one PC, so
-// the label still has to name it) and the longest value is 17 characters ("PERFORMANCE (50%)",
-// "ULTRA PERF. (33%)"): 9 + 17 = 26 at most, so those rows carry no suffix while they are live. The
-// UPSCALING row's longest value is 12 ("DLSS (SETUP)"): 11 + 12 = 23; while a change is being made
-// it says " (WAIT)" (7 characters), which only the shorter values (the longest of them "FSR 3.1", 7)
-// can show: 11 + 7 + 7 = 25. DLSS chosen in a Vulkan game that was started without it cannot run
-// until the next start: the label says " (RESTART)" (10 characters, like the other rows that wait
-// for a start, and what the "Restart now?" prompt looks for) beside the value "DLSS": 9 + 10 + 4 =
-// 23. The cvars store the full names (ultra_performance).
+// Width: these rows are on DISPLAY, whose widest value is "PERFORMANCE (50%)", so each of their
+// labels, in every state, stays within "RENDER RES (SET BY FSR1)" (pause_menu.cpp, "Page width"):
+// the mode rows carry no suffix while they are live, and the UPSCALING row's are short ("(WAIT)"
+// while a change is being made; "(RESTART)", like the other rows that wait for a start and what the
+// "Restart now?" prompt looks for, while DLSS is chosen in a Vulkan game started without it). The
+// mode rows are labelled with the technology alone ("FSR 3.1: ", "FSR 4: ", "DLSS: ": several can be
+// listed on one PC, so the label still names it), and ULTRA PERFORMANCE is "ULTRA PERF.". The cvars
+// store the full names (ultra_performance).
 const char* const kModeVals[]  = {"native_aa", "quality", "balanced", "performance",
                                   "ultra_performance"};
 const char* const kModeNames[] = {"NATIVE AA (100%)", "QUALITY (67%)", "BALANCED (59%)",
