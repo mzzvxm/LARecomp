@@ -235,11 +235,10 @@ class Renderer final : public RenderThread::Executor {
   // The last HDR10 metadata given to the swap chain (UpdateHdr).
   bool hdr_metadata_sent_ = false;
   plume::RenderHdrMetadata hdr_metadata_;
-  // The internal resolution scale chosen at Initialize from the swap chain's
-  // size; render thread: the last scale a later window size was reported to
-  // give (NoteRenderScaleWindow).
+  // The internal resolution scale chosen at Initialize from the swap chain's size. It is the start's:
+  // the temporal system follows the settings and the window from there (temporal.cpp
+  // ReadRenderScale; edram.h SetScales).
   RenderScaleChoice render_scale_;
-  Scale render_scale_noted_;
 
   // Render thread only.
   // The sequence of the guest's present while it is executed and the guest is still waiting

@@ -33,8 +33,10 @@ constexpr const char* kPrefix = "[gpu] temporal:";
 constexpr uint32_t kMaxResetLines = 16;
 constexpr uint32_t kMaxLensLines = 24;
 constexpr double kPi = 3.14159265358979323846;
-// When the scene's targets could not be made at a new scale, the change is asked again this often.
+// When the targets could not be made at a new scale, the change is asked again after this long, then
+// after twice as long, up to kSwitchRetryMax (temporal.h retry_delay_).
 constexpr std::chrono::seconds kSwitchRetry{3};
+constexpr std::chrono::seconds kSwitchRetryMax{30};
 
 double MillisSince(std::chrono::steady_clock::time_point from) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count();
@@ -445,9 +447,8 @@ bool TemporalSystem::GuestFrameSize(uint32_t out[2], bool quiet) const {
 }
 
 BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
-                                          const uint32_t guest[2]) const {
+                                          const uint32_t guest[2], Scale output) const {
   const double ratio = upscaler != Upscaler::kOff ? ModeInfoOf(upscaler, mode).ratio : 1.0;
-  const Scale output = edram_->resolution_scale();
   const Scale scene = ChooseSceneScale(output, ratio).scale;
   BackendRequest request;
   request.upscaler = upscaler;
@@ -475,6 +476,27 @@ void TemporalSystem::AdoptStartPath() {
     effective_ = start.upscaler;
     mode_in_use_ = start.mode;
     SetEnabled(true);
+  }
+}
+
+void TemporalSystem::ReadRenderScale() {
+  // The cvars and the window as they are now. The window's size is the swap chain's last one: while
+  // none has been published (or a minimised window left none) there is nothing to measure the screen's
+  // scale or a preset against, and what is wanted stays what it was.
+  const RenderScaleChoice choice = WantedRenderScale();
+  if (choice.from_window() && (choice.window_width == 0 || choice.window_height == 0)) {
+    return;
+  }
+  if (choice.invalid && !render_invalid_logged_) {
+    render_invalid_logged_ = true;
+    REXLOG_ERROR("{} {}", kPrefix, DescribeRenderScale(choice));
+  } else if (!choice.invalid) {
+    render_invalid_logged_ = false;
+  }
+  render_choice_ = choice;
+  if (choice.scale != render_wanted_) {
+    render_wanted_ = choice.scale;
+    render_wanted_since_ = Clock::now();
   }
 }
 
@@ -528,27 +550,51 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   } else {
     hold_reported_ = false;
   }
-  if (to == effective_ && to_mode == mode_in_use_) {
+  const Clock::time_point now = Clock::now();
+  // The images of the screen: the render scale the settings ask for, once it has stood for a moment
+  // (kScaleSettle). Until then the scale that runs stays the one the path is made for, so no target
+  // and no upscaler context is made for the steps of a window drag or of a row stepped through.
+  const Scale output_now = edram_->resolution_scale();
+  Scale to_output = output_now;
+  if (!render_wanted_.none() && render_wanted_ != output_now &&
+      now - render_wanted_since_ >= kScaleSettle) {
+    to_output = render_wanted_;
+  }
+  if (to_output == output_now) {
+    PublishRenderScaleStatus(output_now, Scale::None());  // nothing is asked that could not be made
+  }
+  // The wait after a change that could not be made belongs to that change: another one (a smaller
+  // scale picked after "too big", another mode) is tried at once.
+  const uint64_t change_key = (uint64_t(1) << 63) | uint64_t(to) | uint64_t(to_mode) << 8 |
+                              uint64_t(to_output.n) << 16;
+  if (change_key != retry_key_) {
+    retry_key_ = change_key;
+    retry_after_ = Clock::time_point{};
+    retry_delay_ = kSwitchRetry;
+    switch_failure_logged_ = false;
+  }
+  if (to == effective_ && to_mode == mode_in_use_ && to_output == output_now) {
     CancelStage(keep_running ? "DLSS is chosen and waits for the restart; the running path stays"
                              : "the setting is back on the path that runs");
     change_pending_ = false;
     PublishUpscalerSwitching(false);
     return;
   }
-  const Clock::time_point now = Clock::now();
   if (!change_pending_) {
     change_pending_ = true;
     change_seen_ = now;
   }
-  PublishUpscalerSwitching(true);
+  // A change whose targets could not be made waits quietly for its next try: the menu's (WAIT) is for
+  // a context that is being made.
+  PublishUpscalerSwitching(now >= retry_after_);
   if (now < retry_after_) {
     return;
   }
   if (to == Upscaler::kOff) {
     // No context to wait for: the scene goes back to the images of the screen's scale now.
     CancelStage(nullptr);
-    SwitchPath(list, Upscaler::kOff, UpscaleMode::kNativeAa, nullptr);
-    PublishUpscalerSwitching(change_pending_);
+    SwitchPath(list, Upscaler::kOff, UpscaleMode::kNativeAa, nullptr, to_output);
+    PublishUpscalerSwitching(change_pending_ && Clock::now() >= retry_after_);
     return;
   }
   TemporalBackend* backend = BackendFor(to);
@@ -556,17 +602,21 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   if (!backend || !GuestFrameSize(guest)) {
     return;  // the game has not set its screen size yet
   }
-  const BackendRequest request = RequestFor(to, to_mode, guest);
+  const BackendRequest request = RequestFor(to, to_mode, guest, to_output);
   if (!stage_.active || stage_.upscaler != to || stage_.mode != to_mode ||
-      !(stage_.request == request)) {
+      stage_.output != to_output || !(stage_.request == request)) {
     CancelStage(nullptr);
     stage_.active = true;
     stage_.upscaler = to;
     stage_.mode = to_mode;
+    stage_.output = to_output;
     stage_.request = request;
-    REXLOG_INFO("{} live change: {} -> {}: making the new context ({}x{} to {}x{}) while {} goes "
+    REXLOG_INFO("{} live change: {} -> {}{}: making the new context ({}x{} to {}x{}) while {} goes "
                 "on; the switch is made at the first frame boundary after it is ready",
                 kPrefix, PathText(effective_, mode_in_use_), PathText(to, to_mode),
+                to_output != output_now
+                    ? std::format(", render scale {}x -> {}x", output_now, to_output)
+                    : std::string(),
                 request.render_size[0], request.render_size[1], request.output_size[0],
                 request.output_size[1],
                 effective_ == Upscaler::kOff ? "the plain scene" : "the old path");
@@ -575,8 +625,8 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   // Streamline here, a step at a time).
   backend->Prepare(request);
   if (backend->PreparedReady(request)) {
-    SwitchPath(list, to, to_mode, &request);
-    PublishUpscalerSwitching(change_pending_);
+    SwitchPath(list, to, to_mode, &request, to_output);
+    PublishUpscalerSwitching(change_pending_ && Clock::now() >= retry_after_);
   }
 }
 
@@ -608,37 +658,54 @@ void TemporalSystem::PrewarmDlss() {
   if (dlss_->PrewarmNext(&mode)) {
     // The context a live change to this mode would ask for (the same sizes), so that what the
     // pre-warm made is what the switch needs.
-    dlss_->Prewarm(RequestFor(Upscaler::kDlss, mode, guest));
+    dlss_->Prewarm(RequestFor(Upscaler::kDlss, mode, guest, edram_->resolution_scale()));
   }
 }
 
 bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
-                                const BackendRequest* request) {
+                                const BackendRequest* request, Scale output) {
   const Clock::time_point began = Clock::now();
   const Upscaler from = effective_;
   const UpscaleMode from_mode = mode_in_use_;
+  const Scale output_before = edram_->resolution_scale();
   const double ratio = to != Upscaler::kOff ? ModeInfoOf(to, mode).ratio : 1.0;
-  const SceneScaleChoice choice = ChooseSceneScale(edram_->resolution_scale(), ratio);
+  const SceneScaleChoice choice = ChooseSceneScale(output, ratio);
   const Scale scene_before = edram_->SceneScale();
-  // The scene's targets first: the one step that can fail (video memory), and then nothing has
-  // changed and the old path runs on.
+  // The targets first (the scene's, and with a new render scale every image of the screen): the one
+  // step that can fail (video memory), and then nothing has changed and the old path runs on.
   // CHECK: the switch frame under the D3D12 debug layer and Vulkan validation (the new targets'
   // first clear at the frame's start, their layouts, the retired textures behind the frames, the
   // resolve products made again at the new scale), and that no frame between two paths shows a
   // hitch beyond the one that makes the textures.
-  if (!edram_->SetSceneScale(choice.scale, list)) {
-    retry_after_ = began + kSwitchRetry;
+  // CHECK: a render scale change with the upscaler running: the context was made for the new sizes
+  // (the log line "live change ... making the new context (WxH to WxH)"), and the first frame after
+  // the switch asks for the same ones (no "context is not ready" plain frames).
+  if (!edram_->SetScales(output, choice.scale, list)) {
+    // Asked again after a while, less often each time: a size the card cannot hold keeps failing.
+    retry_delay_ = switch_failure_logged_ ? std::min(retry_delay_ * 2, kSwitchRetryMax)
+                                          : kSwitchRetry;
+    retry_after_ = began + retry_delay_;
+    if (output != output_before) {
+      PublishRenderScaleStatus(output_before, output);  // the menu says the scale is too big
+    }
     if (!switch_failure_logged_) {
       switch_failure_logged_ = true;
-      REXLOG_WARN("{} live change to {} not made: the 3D scene's targets could not be made at {}x "
-                  "(the scene stays at {}x); {} goes on, and the change is asked again every {} "
-                  "seconds",
-                  kPrefix, PathText(to, mode), choice.scale, scene_before, PathText(from, from_mode),
-                  kSwitchRetry.count());
+      REXLOG_WARN("{} live change to {}{} not made: the targets could not be made at the new size "
+                  "(images of the screen {}x -> {}x, 3D scene {}x -> {}x; video memory is most "
+                  "likely short): the game stays at {}x and {}, and the change is asked again "
+                  "after {} seconds, then less often",
+                  kPrefix, PathText(to, mode),
+                  output != output_before ? std::format(", render scale {}x", output)
+                                          : std::string(),
+                  output_before, output, scene_before, choice.scale, output_before,
+                  PathText(from, from_mode), retry_delay_.count());
     }
     return false;
   }
   switch_failure_logged_ = false;
+  retry_delay_ = kSwitchRetry;
+  retry_after_ = Clock::time_point{};
+  PublishRenderScaleStatus(output, Scale::None());
   const double targets_ms = MillisSince(began);
 
   TemporalBackend* backend = BackendFor(to);
@@ -688,10 +755,25 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
   const double waited_ms =
       std::chrono::duration<double, std::milli>(began - change_seen_).count();
   const double total_ms = MillisSince(began);
-  REXLOG_INFO("{} live change: {} -> {}: {}; the setting changed {:.0f} ms before the switch, the "
-              "3D scene {}, switched in {:.2f} ms ({:.2f} ms of it the scene's targets) at the "
-              "boundary before frame {}{}",
-              kPrefix, PathText(from, from_mode), PathText(to, mode),
+  const bool path_changed = from != to || from_mode != mode;
+  std::string render_text;
+  if (output != output_before) {
+    // The render scale moved: from, to, and what the settings said (the screen's scale follows the
+    // window, so the reason is the window's size).
+    render_text = std::format(
+        "; render scale {}x ({}x{}) -> {}x ({}x{}), {}", output_before,
+        output_before.Edge(kAssumedScreenWidth), output_before.Edge(kAssumedScreenHeight), output,
+        output.Edge(kAssumedScreenWidth), output.Edge(kAssumedScreenHeight),
+        render_choice_.scale == output ? DescribeRenderScale(render_choice_)
+                                       : std::string("by the settings"));
+  }
+  REXLOG_INFO("{} live change: {}{}: {}; the setting changed {:.0f} ms before the switch, the 3D "
+              "scene {}, switched in {:.2f} ms ({:.2f} ms of it the targets) at the boundary "
+              "before frame {}{}",
+              kPrefix,
+              path_changed ? std::format("{} -> {}", PathText(from, from_mode), PathText(to, mode))
+                           : PathText(to, mode),
+              render_text,
               committed ? "its context was ready" : "its context was missing",
               std::max(waited_ms, 0.0),
               scene_before == choice.scale
@@ -1037,6 +1119,7 @@ void TemporalSystem::ResetRun() {
 
 void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   ReadUpscalerChoice();
+  ReadRenderScale();
   if (!frame_open_) {
     // A frame is jittered whole or not at all, and drawn at one scale: the path changes only
     // between frames, here, before the frame's first draw.

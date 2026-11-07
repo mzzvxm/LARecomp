@@ -213,7 +213,6 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
       }
     }
     render_scale_ = ChooseStartRenderScale(width, height);
-    render_scale_noted_ = render_scale_.scale;
     PublishWindowSize(width, height);
     edram_.Initialize(device_, frames_, heap_, render_scale_);
     // mcla_gpu_edram_capture: the detector asks for a RenderDoc capture.
@@ -691,9 +690,8 @@ bool Renderer::RebuildSwapChain() {
   if (!swap_chain_.Rebuild()) {
     return false;
   }
-  // The render scale stays the one the start's size gave.
-  NoteRenderScaleWindow(render_scale_, swap_chain_.width(), swap_chain_.height(),
-                        &render_scale_noted_);
+  // The new size is what the render scale is measured against from the next frame boundary on
+  // (temporal.cpp ReadRenderScale: with the screen's scale or an FSR1 preset the images follow).
   PublishWindowSize(swap_chain_.width(), swap_chain_.height());
   return true;
 }
@@ -1359,6 +1357,11 @@ void RequestTextureReload() {
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
   const uint64_t size = g_window_size.load(std::memory_order_relaxed);
   return ChooseRenderScale(asked, fsr, preset, uint32_t(size >> 32), uint32_t(size));
+}
+
+RenderScaleChoice WantedRenderScale() {
+  const uint64_t size = g_window_size.load(std::memory_order_relaxed);
+  return ChooseWantedRenderScale(uint32_t(size >> 32), uint32_t(size));
 }
 
 void SetShaderPackFolder(const std::filesystem::path& folder) {

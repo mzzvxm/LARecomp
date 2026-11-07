@@ -220,11 +220,19 @@ void RequestResize();
 void RequestTextureDumpAll();
 void RequestTextureReload();
 
-// Any thread: the internal resolution scale a start would choose from these
-// settings (render_scale.h) for the window as it is now -- the swap chain's
+// Any thread: the internal resolution scale these settings choose
+// (render_scale.h) for the window as it is now -- the swap chain's
 // last size; before the renderer is up, a window measured as the game's
 // screen. The pause menu labels its RENDER RES and FSR1 rows with it.
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset);
+// Render thread (the temporal system, at every frame boundary): the scale the settings ask for now,
+// the cvars read and the window as it is (the swap chain's last size; 0x0 in the choice's window
+// fields until the renderer has published one). The renderer follows it while the game runs.
+RenderScaleChoice WantedRenderScale();
+// Any thread: the scale the renderer's images of the screen are made at now, and the one the settings
+// ask for that could not be made for want of video memory (render_scale.h RenderScaleStatus). The
+// pause menu's RENDER RES row says so beside the value.
+RenderScaleStatus GetRenderScaleStatus();
 
 // Any thread: the window's swap chain is HDR10 (hdr.h). False before the renderer is up and when
 // HDR is off or could not be had; the pause menu greys its HDR level rows then.

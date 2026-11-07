@@ -1,11 +1,14 @@
 #pragma once
 
-// MCLA GPU renderer -- the internal resolution scale a start renders at
+// MCLA GPU renderer -- the internal resolution scale the renderer works at
 // (M6e.3): the one asked for (mcla_gpu_resolution_scale), the screen's (0),
 // or the one an FSR1 quality preset derives from the screen
 // (mcla_gpu_fsr_preset, with mcla_gpu_fsr on). The choice is pure and lives
-// here; render_scale.cpp reads the cvars and logs it. The window is measured
-// at start: a later size (fullscreen, a resize) is noticed, not followed.
+// here; render_scale.cpp reads the cvars and logs it. It is made at start and
+// again at every frame boundary (temporal.cpp ReadRenderScale): the scale, the
+// preset and the window's size (fullscreen, a resize) are followed while the
+// game runs, and the images of the screen move to the new scale between two
+// frames (edram.h SetScales, temporal.h "Changing the path").
 //
 // "The screen" is the window's 16:9 area, the game's screen letterboxed in it
 // the way the present fits it; its scale is that area over the game's screen.
@@ -102,7 +105,7 @@ struct RenderScaleChoice {
   // What the images of the screen are made at.
   Scale scale;
   Source source = Source::kAsked;
-  // The inputs, kept so a later window size can be weighed the same way.
+  // The inputs, kept for the logs (a window of another size is weighed with ChooseRenderScale again).
   double asked = 1.0;
   bool fsr = false;
   FsrPreset preset = FsrPreset::kCustom;
@@ -209,10 +212,23 @@ inline SceneScaleChoice ChooseSceneScale(Scale output, double ratio) {
 // render_scale.cpp. The start's choice from mcla_gpu_resolution_scale,
 // mcla_gpu_fsr and mcla_gpu_fsr_preset for a window of that size, logged.
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height);
-// The window has another size than at the start: with the screen's scale or a
-// preset, a line when it would now give a scale other than the start's and
-// than `*noted` (the last one reported; starts as the start's).
-void NoteRenderScaleWindow(const RenderScaleChoice& start, uint32_t window_width,
-                           uint32_t window_height, Scale* noted);
+// The same choice for the settings as they are now, not logged (a live change reads it at every frame
+// boundary): an mcla_gpu_fsr_preset that is not a preset is reported once, and custom is used.
+RenderScaleChoice ChooseWantedRenderScale(uint32_t window_width, uint32_t window_height);
+// What a choice came from and where it landed, for the log of a live change: "mcla_gpu_resolution_scale
+// = 2", "the screen's (mcla_gpu_resolution_scale = 0), the window 2560x1440 (2x)", "FSR1 quality, the
+// window 1920x1080 (1.5x) / 1.5 = 1x". Ends with ", nearest step 1.35x" or ", limited to 0.5x" when the
+// grid or the limits moved it.
+std::string DescribeRenderScale(const RenderScaleChoice& choice);
+
+// What the renderer's images of the screen are at now, for the pause menu (gpu.h GetRenderScaleStatus).
+struct RenderScaleStatus {
+  Scale running = Scale::None();  // the scale the images of the screen are made at; none before the renderer is up
+  // The scale the settings ask for but that could not be made (video memory is short): the renderer
+  // keeps `running` and tries again; none while nothing is waiting for that.
+  Scale blocked = Scale::None();
+};
+// Written by the temporal system (render thread).
+void PublishRenderScaleStatus(Scale running, Scale blocked);
 
 }  // namespace mcla::gpu

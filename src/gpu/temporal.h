@@ -78,13 +78,14 @@
 // the screen), the jitter sequence follows the ratio and the scene's textures are sampled sharper
 // (scene.cpp SceneBias).
 //
-// Changing the path (live). The path is the upscaler (off, FSR 3.1, FSR 4, DLSS) and its mode; the
-// scene's scale, the upscaler's context, the jitter's phase count, the history and the hold on
-// FXAA and SMAA all belong to it. The game starts on the path the start decided (gpu.h
-// GetStartUpscale, which made the scene's first targets); after that the settings are read every
-// frame, and when they ask for another path:
+// Changing the path (live). The path is the upscaler (off, FSR 3.1, FSR 4, DLSS), its mode and the
+// render scale (the scale of the images of the screen, the upscaler's output); the scene's scale,
+// the upscaler's context, the jitter's phase count, the history and the hold on FXAA and SMAA all
+// belong to it. The game starts on the path the start decided (gpu.h GetStartUpscale, which made
+// the scene's first targets, and the start's render scale, render_scale.h); after that the settings
+// are read every frame, and when they ask for another path:
 //   - Off is taken at the next frame boundary: the scene's targets are made again at the images of
-//     the screen's scale (EdramTargets::SetSceneScale), the temporal system turns itself off, the
+//     the screen's scale (EdramTargets::SetScales), the temporal system turns itself off, the
 //     context goes after 10 s (a quick switch back finds it).
 //   - A path with a context is made first, and the old path runs meanwhile (make before break):
 //     the backend is asked for a second context at the sizes the new path will have (the guest's
@@ -94,12 +95,25 @@
 //     taken over (Commit; the old one retires behind the frames that may use it), the jitter, the
 //     history (it restarts: the scale changed and the new context's first dispatch resets) and the
 //     AA hold follow the new path from that frame on, whole. A frame is never half on the old path.
+//   - The render scale (mcla_gpu_resolution_scale, 0 = the screen's, the FSR1 preset) is part of the
+//     path. ReadRenderScale reads it with the window's size at every frame boundary, so a fullscreen
+//     toggle or a resized window moves the screen's scale and a preset's. A scale is taken once it
+//     has stood for kScaleSettle (a window dragged through many sizes, a row stepped through many
+//     values, make no targets and no contexts for the steps in between), then like any other change:
+//     with no upscaler at the next boundary, with one after its new context (the output is another
+//     size) is ready. EdramTargets::SetScales moves the scene's targets and every image of the
+//     screen together, so that one switch covers a mode and a render scale changed at once.
+//   - What is made per use rather than as a target follows in the first frame: the upscaler's output
+//     image, the depth and the vectors, the frame layers, the HDR images and the post passes' images
+//     are asked for at their sizes by the draws and the passes.
 //   - A switch with the system already on goes on with the run (the camera, the cut rules) and
 //     draws its first frame armed, upscaled by the new context. One from off has its first frame
 //     plain, like the first frame after a pause (the anchor of a frame is accepted before one is
 //     armed).
-//   - If the scene's textures cannot be made at the new scale (a 3x scene on a card with little
-//     memory) nothing changes, it is logged and asked again after a few seconds.
+//   - If the targets cannot be made at the new scale (a 3x render scale is 4K: it can fail on a card
+//     with little memory) nothing changes, it is logged, the pause menu's RENDER RES row says "TOO
+//     BIG" (gpu.h GetRenderScaleStatus) and the change is asked again after a few seconds, then
+//     less often (a failed creation also asks the video memory budget to release what is idle).
 //   - One case cannot keep the old path upscaled: from one DLSS mode to another. Streamline's API is
 //     serialised and the new feature's creation holds it for seconds (TemporalBackend::Busy), so
 //     those frames are plain and not jittered, at the old scene scale, until the feature exists.
@@ -130,6 +144,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "edram.h"
+#include "render_scale.h"
 #include "scale.h"
 #include "shaders.h"
 #include "temporal_backend.h"
@@ -413,6 +428,9 @@ class TemporalSystem {
   // waits. SwitchPath makes the switch (false: the scene's targets could not be made, nothing
   // changed). The stage is the new path while its context is being made.
   void UpdatePath(plume::RenderCommandList* list);
+  // The render scale the settings ask for now (the cvars and the window's size, gpu.h
+  // WantedRenderScale), read at every frame boundary; UpdatePath takes it once it has stood.
+  void ReadRenderScale();
   // DLSS's first-time work done in the background while the game runs some other way (temporal_backend.h
   // Prewarm): called at every frame boundary, one atomic read when there is nothing to do. It waits
   // for the guest's frame size and kPrewarmDelay after it was first known, so that the first seconds
@@ -420,14 +438,16 @@ class TemporalSystem {
   void PrewarmDlss();
   void AdoptStartPath();
   bool SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
-                  const BackendRequest* request);
+                  const BackendRequest* request, Scale output);
   void CancelStage(const char* why);
   // The guest's frame size: the last accepted anchor's, else the game's screen; false until known.
   // `quiet`: a poll (PrewarmDlss) that must not log the game's unset screen size as an error.
   bool GuestFrameSize(uint32_t out[2], bool quiet = false) const;
-  // The context the path (`upscaler`, `mode`) needs for a guest frame of `guest` pixels: the render
-  // size at the scene's scale for that mode and the output size at the images of the screen's.
-  BackendRequest RequestFor(Upscaler upscaler, UpscaleMode mode, const uint32_t guest[2]) const;
+  // The context the path (`upscaler`, `mode`, images of the screen at `output`) needs for a guest
+  // frame of `guest` pixels: the render size at the scene's scale for that mode and the output size
+  // at the images of the screen's.
+  BackendRequest RequestFor(Upscaler upscaler, UpscaleMode mode, const uint32_t guest[2],
+                            Scale output) const;
   // The jitter sequence's length for `ratio` (output over render): `from_runtime` is what the
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
@@ -488,6 +508,7 @@ class TemporalSystem {
     bool active = false;
     Upscaler upscaler = Upscaler::kOff;
     UpscaleMode mode = UpscaleMode::kNativeAa;
+    Scale output;  // the images of the screen it was made for
     BackendRequest request;
   };
   Stage stage_;
@@ -496,7 +517,18 @@ class TemporalSystem {
   bool change_pending_ = false;
   Clock::time_point change_seen_{};
   Clock::time_point retry_after_{};
+  // How long a change whose targets could not be made waits before it is tried again: it doubles
+  // with each failure, up to kSwitchRetryMax, and starts again after a switch is made.
+  std::chrono::seconds retry_delay_{3};
+  uint64_t retry_key_ = 0;  // the change (path and render scale) retry_after_ and retry_delay_ are for
   bool switch_failure_logged_ = false;
+  // The render scale the settings ask for (ReadRenderScale): the scale, what it came from (for the
+  // log), and when it last changed. A change is taken once it has stood for kScaleSettle.
+  Scale render_wanted_ = Scale::None();
+  RenderScaleChoice render_choice_;
+  Clock::time_point render_wanted_since_{};
+  bool render_invalid_logged_ = false;
+  static constexpr std::chrono::milliseconds kScaleSettle{400};
   // The line that says when the new path first ran, once: set by a switch to a path with an
   // upscaler, written by its first upscaled frame (`switch_asked_`: when the setting changed).
   bool switch_log_pending_ = false;

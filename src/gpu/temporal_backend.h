@@ -65,14 +65,6 @@ bool ParseUpscaleMode(std::string_view text, UpscaleMode* out);
 // Whether `mode` can run with `upscaler` (FSR 3.1, FSR 4 and DLSS: all five).
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode);
 
-// True when the 3D scene may be drawn smaller than the output during this run: an upscaler runtime
-// is built in, and the player can pick a mode below 100% at any time (the scene follows it live,
-// temporal.h). The pipelines a smaller scene needs (the reduced copies and the fractional depth
-// resolve, a handful) are listed for it before the start's own decision exists (resolve.cpp
-// ListPrecache), so that a live change finds them made; a PC that cannot run an upscaler only makes
-// that list longer than it had to be.
-bool MayDrawSceneSmaller();
-
 // What the settings say now (cvars read; a mode that cannot run is Native AA).
 struct UpscalerSettings {
   Upscaler upscaler = Upscaler::kOff;  // as saved, before the PC's availability is applied

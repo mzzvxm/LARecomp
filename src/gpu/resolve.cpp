@@ -379,20 +379,18 @@ void ResolveCache::ListPrecache() {
   }
   // The reduction runs only for a reader at another scale than its product:
   // with every target at 1x there is none (0 through a reduced copy in the
-  // measured drives). The 3D scene drawn smaller than the output is another scale
-  // (MayDrawSceneSmaller: its scale is decided at the first draw, after this list).
-  const bool scene_smaller = MayDrawSceneSmaller();
-  if (!edram_->resolution_scale().unit() || scene_smaller) {
-    for (plume::RenderFormat format : kListedReduces) {
-      precache.Add(HostPrecache::Key(HostPrecache::kResolveReduce, uint32_t(format)),
-                   ReducePipelineName(format),
-                   [this, format] { return MakeReducePipeline(format); });
-    }
+  // measured drives). The render scale and the scale of the 3D scene change while the game runs
+  // (the player's RENDER RES, the window's size, an upscaler mode), so the pipelines of a scale
+  // other than 1x are listed whatever the scale is at the start: a live change finds them made.
+  // CHECK: the start cost of the extra pipelines (resolve reduces, fractional fused depth resolve)
+  // for a player at 1x with no upscaler: they build on the host precache's threads and are cached.
+  for (plume::RenderFormat format : kListedReduces) {
+    precache.Add(HostPrecache::Key(HostPrecache::kResolveReduce, uint32_t(format)),
+                 ReducePipelineName(format),
+                 [this, format] { return MakeReducePipeline(format); });
   }
   // The fused depth resolve of a fractional scale runs only at one.
-  if (!edram_->resolution_scale().whole() || scene_smaller) {
-    resolve_memory_->ListFractionalPrecache();
-  }
+  resolve_memory_->ListFractionalPrecache();
 }
 
 void ResolveCache::Shutdown() {

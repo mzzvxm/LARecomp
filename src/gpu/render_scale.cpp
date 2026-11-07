@@ -3,7 +3,9 @@
 
 #include "render_scale.h"
 
+#include <atomic>
 #include <format>
+#include <mutex>
 #include <string>
 
 #include <rex/cvar.h>
@@ -15,18 +17,22 @@ REXCVAR_DEFINE_DOUBLE(
     "the UI, the post-processing sized from the screen) is this many times the guest's in each "
     "direction, from 0.5 to 3 in steps of 0.05 (0.75 = 960x540, 1.5 = 1920x1080, 2 = 2560x1440, "
     "3 = 3840x2160 from 720p; other values go to the nearest step, and outside 0.5 to 3 to the "
-    "nearer end). 0: the screen's -- the window's 16:9 area at start over the game's 1280x720. "
-    "Not used while mcla_gpu_fsr is on with a preset (mcla_gpu_fsr_preset). The guest keeps "
-    "seeing its own sizes.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "nearer end). 0: the screen's -- the window's 16:9 area over the game's 1280x720, followed "
+    "while the game runs (fullscreen, a resized window). Not used while mcla_gpu_fsr is on with a "
+    "preset (mcla_gpu_fsr_preset). Live: the images are made again at the new scale at a frame "
+    "boundary, once the value has stood for a moment (and, while an upscaler runs, once its "
+    "context for the new sizes is ready); a scale the video memory cannot hold is not made: the "
+    "old one is kept and the log says so. The guest keeps seeing its own sizes.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_fsr_preset, "custom", "MCLA/GPU",
     "With mcla_gpu_fsr on: the internal resolution scale is the screen's (the window's 16:9 "
-    "area at start over the game's 1280x720) divided by an FSR1 quality ratio -- ultra_quality "
-    "1.3, quality 1.5, balanced 1.7, performance 2, ultra_performance 3 -- on the 0.05 grid and "
-    "at least 0.5, and FSR1 upscales it to the window. custom: mcla_gpu_resolution_scale. With "
-    "mcla_gpu_fsr off it is not used.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "area over the game's 1280x720, followed while the game runs) divided by an FSR1 quality "
+    "ratio -- ultra_quality 1.3, quality 1.5, balanced 1.7, performance 2, ultra_performance 3 -- "
+    "on the 0.05 grid and at least 0.5, and FSR1 upscales it to the window. custom: "
+    "mcla_gpu_resolution_scale. With mcla_gpu_fsr off it is not used. Live, like "
+    "mcla_gpu_resolution_scale.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(bool, mcla_gpu_fsr);  // present.cpp
 
@@ -61,20 +67,79 @@ std::string Adjusted(const RenderScaleChoice& c) {
   return std::string();
 }
 
+// What the renderer's images of the screen are at, and what waits (GetRenderScaleStatus): two scales
+// of twentieths packed in one word, running in the high half.
+std::atomic<uint64_t> g_status{0};
+
+// The preset text that was reported as not one (the live choice reads it at every frame boundary).
+std::mutex g_reported_mutex;
+std::string g_reported_preset;
+
+// The preset the cvar names; custom, with an error line for a text that is none (`once`: only the
+// first time the same text is seen).
+FsrPreset ReadPreset(bool once) {
+  const std::string preset_text = REXCVAR_GET(mcla_gpu_fsr_preset);
+  FsrPreset preset = FsrPreset::kCustom;
+  if (ParseFsrPreset(preset_text, &preset)) {
+    return preset;
+  }
+  if (once) {
+    std::lock_guard lock(g_reported_mutex);
+    if (g_reported_preset == preset_text) {
+      return FsrPreset::kCustom;
+    }
+    g_reported_preset = preset_text;
+  }
+  REXLOG_ERROR("[gpu] mcla_gpu_fsr_preset = '{}' is not custom, ultra_quality, quality, "
+               "balanced, performance or ultra_performance; custom is used",
+               preset_text);
+  return FsrPreset::kCustom;
+}
+
 }  // namespace
+
+RenderScaleChoice ChooseWantedRenderScale(uint32_t window_width, uint32_t window_height) {
+  return ChooseRenderScale(REXCVAR_GET(mcla_gpu_resolution_scale), REXCVAR_GET(mcla_gpu_fsr),
+                           ReadPreset(/*once=*/true), window_width, window_height);
+}
+
+std::string DescribeRenderScale(const RenderScaleChoice& c) {
+  switch (c.source) {
+    case RenderScaleChoice::Source::kAsked:
+      if (c.invalid) {
+        return std::format("mcla_gpu_resolution_scale = {} is not a scale: 1x", c.asked);
+      }
+      return std::format("mcla_gpu_resolution_scale = {}{}", c.asked, Adjusted(c));
+    case RenderScaleChoice::Source::kScreen:
+      return std::format("the screen's (mcla_gpu_resolution_scale = 0), {}{}", Window(c),
+                         Adjusted(c));
+    case RenderScaleChoice::Source::kPreset:
+      return std::format("FSR1 {} (mcla_gpu_fsr_preset), {} / {} = {:.3g}x{}",
+                         FsrPresetName(c.preset), Window(c), FsrPresetRatio(c.preset), c.wanted,
+                         Adjusted(c));
+  }
+  return std::string();
+}
+
+void PublishRenderScaleStatus(Scale running, Scale blocked) {
+  g_status.store(uint64_t(running.n) << 32 | blocked.n, std::memory_order_relaxed);
+}
+
+RenderScaleStatus GetRenderScaleStatus() {
+  const uint64_t status = g_status.load(std::memory_order_relaxed);
+  RenderScaleStatus out;
+  out.running = Scale{uint32_t(status >> 32)};
+  out.blocked = Scale{uint32_t(status)};
+  return out;
+}
 
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height) {
   const double asked = REXCVAR_GET(mcla_gpu_resolution_scale);
   const bool fsr = REXCVAR_GET(mcla_gpu_fsr);
-  const std::string preset_text = REXCVAR_GET(mcla_gpu_fsr_preset);
-  FsrPreset preset = FsrPreset::kCustom;
-  if (!ParseFsrPreset(preset_text, &preset)) {
-    REXLOG_ERROR("[gpu] mcla_gpu_fsr_preset = '{}' is not custom, ultra_quality, quality, "
-                 "balanced, performance or ultra_performance; custom is used",
-                 preset_text);
-  }
+  const FsrPreset preset = ReadPreset(/*once=*/false);
   const RenderScaleChoice c =
       ChooseRenderScale(asked, fsr, preset, window_width, window_height);
+  PublishRenderScaleStatus(c.scale, Scale::None());
   switch (c.source) {
     case RenderScaleChoice::Source::kAsked:
       if (c.invalid) {
@@ -102,29 +167,6 @@ RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_
                 FsrPresetName(preset));
   }
   return c;
-}
-
-void NoteRenderScaleWindow(const RenderScaleChoice& start, uint32_t window_width,
-                           uint32_t window_height, Scale* noted) {
-  if (!start.from_window() || window_width == 0 || window_height == 0) {
-    return;
-  }
-  const RenderScaleChoice now =
-      ChooseRenderScale(start.asked, start.fsr, start.preset, window_width, window_height);
-  // Back at the start's scale, or the one already reported (a resize drags
-  // through many sizes of the same step).
-  const Scale previous = *noted;
-  *noted = now.scale;
-  if (now.scale == start.scale || now.scale == previous) {
-    return;
-  }
-  REXLOG_INFO("[gpu] render scale: {} would give {} for {}; the render stays at {}x until the "
-              "next start",
-              Window(now), Rendered(now.scale),
-              start.source == RenderScaleChoice::Source::kScreen
-                  ? std::string("the screen's")
-                  : std::format("FSR1 {}", FsrPresetName(start.preset)),
-              start.scale);
 }
 
 }  // namespace mcla::gpu
