@@ -164,14 +164,14 @@ Scale EdramTargets::ScaleForDeclared(uint32_t size_bits) {
 }
 
 bool EdramTargets::IsSceneKey(const EdramKey& key) {
-  // The main view in play (temporal_identities.h): colour, or depth in the scene's layer. The 4x
-  // identities of the pause menu and the map are not the scene's.
+  // The main view (temporal_identities.h): colour, or depth in the scene's layer, in play (1x, 2x
+  // samples) and behind the pause menu and on the map (4x). The upscaler works on both views, so both
+  // are drawn at the scene's scale. The pause view's UI pass draws with the same 4x depth key when it
+  // uses one: DepthLayer puts that one in layer 1.
   if (key.depth == 0) {
-    const uint32_t samples = temporal::MainColorSamples(key);
-    return samples != 0 && temporal::IsPlaySamples(samples);
+    return temporal::MainColorSamples(key) != 0;
   }
-  const uint32_t samples = temporal::MainDepthSamples(key);
-  return samples != 0 && temporal::IsPlaySamples(samples) && key.reserved == 0;
+  return temporal::MainDepthSamples(key) != 0 && key.reserved == 0;
 }
 
 Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
@@ -182,9 +182,13 @@ Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
 }
 
 uint8_t EdramTargets::DepthLayer(const EdramKey& depth, const EdramKey* color0) {
-  // Only the 1x main depth shares its key with another phase of the frame (a 2x one is the
-  // scene's alone, a 4x one the pause menu's and the map's).
-  if (temporal::MainDepthSamples(depth) != 1 || !SceneApart()) {
+  // Only the main depth at the samples a UI pass also draws with shares its key with another phase of
+  // the frame: 1x (a game made without MSAA: the UI's own 1x depth is the same key) and 4x (the pause
+  // view's UI pass, which draws into a 4x k_8_8_8_8 colour target and may use the world's 4x depth).
+  // The 2x one is the scene's alone.
+  const uint32_t samples = temporal::MainDepthSamples(depth);
+  if ((samples != temporal::kPlaySamplesNoMsaa && samples != temporal::kPauseSamples) ||
+      !SceneApart()) {
     return 0;
   }
   if (color0) {
@@ -226,10 +230,11 @@ void EdramTargets::DecideScene() {
                 ModeInfoOf(start.upscaler, start.mode).name);
     return;
   }
-  REXLOG_INFO("[gpu] edram: the 3D scene (the main view's colour and depth in play) is made at "
+  REXLOG_INFO("[gpu] edram: the 3D scene (the main view's colour and depth, in play and behind the "
+              "pause menu and on the map) is made at "
               "{}x, {}x{} of the guest's 1280x720, for the output at {}x, {}x{}: {} {} ({}%, "
-              "ratio {:.2f}; the nearest step of the scale grid gives {:.3f}{}). The pause menu's "
-              "and the map's views, the post chain, the tone map and the UI stay at {}x, and the "
+              "ratio {:.2f}; the nearest step of the scale grid gives {:.3f}{}). The post chain, "
+              "the tone map and the UI stay at {}x, and the "
               "upscaler makes the output from the scene. A change of upscaler or mode moves it "
               "between two frames",
               scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
