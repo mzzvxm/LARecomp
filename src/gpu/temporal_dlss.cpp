@@ -38,8 +38,19 @@
 #include <sl_dlss.h>
 #if defined(LARECOMP_HAS_DLSS_G)
 // DLSS frame generation, and Reflex with the PC latency markers, which it requires.
-// Streamline's sl_pcl.h and sl_reflex.h call std::to_underlying without including <utility>.
+// Streamline's sl_pcl.h and sl_reflex.h call std::to_underlying (C++23). The MSVC standard library
+// the Windows build uses offers it only in its own C++23 mode, which clang's -std=gnu++23 does not
+// turn on there: a stand-in with the same meaning when the library has none.
+#include <type_traits>
 #include <utility>
+#if !defined(__cpp_lib_to_underlying)
+namespace std {
+template <class Enum>
+constexpr underlying_type_t<Enum> to_underlying(Enum value) noexcept {
+  return static_cast<underlying_type_t<Enum>>(value);
+}
+}  // namespace std
+#endif
 #include <sl_dlss_g.h>
 #include <sl_pcl.h>
 #include <sl_reflex.h>
