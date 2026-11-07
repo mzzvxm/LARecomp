@@ -84,6 +84,10 @@ PostAa::Mode PostAa::FrameMode() {
   return mode;
 }
 
+PostAa::Mode PostAa::CurrentMode() const {
+  return ReadMode();
+}
+
 bool PostAa::Initialize(Device& device, BindlessHeap& heap, UploadRing& upload, HostPasses& passes,
                         EdramTargets& edram, PassTiming& pass_timing) {
   device_ = &device;

@@ -145,6 +145,29 @@ struct PipelineKeyHash {
   size_t operator()(const PipelineKey& k) const;
 };
 
+// The blend words of a key (PipelineKey::blend), 4 bits per field: enable, src, dst, op, srcA, dstA,
+// opA, write mask. The UI layer split (frame_layers.h) reads them to tell a draw it can separate and
+// changes the alpha part.
+inline uint32_t PackBlend(const plume::RenderBlendDesc& b) {
+  return uint32_t(b.blendEnabled) | (uint32_t(b.srcBlend) << 4) | (uint32_t(b.dstBlend) << 8) |
+         (uint32_t(b.blendOp) << 12) | (uint32_t(b.srcBlendAlpha) << 16) |
+         (uint32_t(b.dstBlendAlpha) << 20) | (uint32_t(b.blendOpAlpha) << 24) |
+         (uint32_t(b.renderTargetWriteMask) << 28);
+}
+
+inline plume::RenderBlendDesc UnpackBlend(uint32_t v) {
+  plume::RenderBlendDesc b;
+  b.blendEnabled = (v & 0xF) != 0;
+  b.srcBlend = plume::RenderBlend((v >> 4) & 0xF);
+  b.dstBlend = plume::RenderBlend((v >> 8) & 0xF);
+  b.blendOp = plume::RenderBlendOperation((v >> 12) & 0xF);
+  b.srcBlendAlpha = plume::RenderBlend((v >> 16) & 0xF);
+  b.dstBlendAlpha = plume::RenderBlend((v >> 20) & 0xF);
+  b.blendOpAlpha = plume::RenderBlendOperation((v >> 24) & 0xF);
+  b.renderTargetWriteMask = uint8_t((v >> 28) & 0xF);
+  return b;
+}
+
 // What a draw needs besides the key to create its pipeline.
 struct PipelineInputs {
   const ShaderStore::Entry* vs = nullptr;

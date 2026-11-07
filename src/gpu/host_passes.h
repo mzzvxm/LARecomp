@@ -5,7 +5,7 @@
 // The resolve conversions (resolve.h)
 // and the present pass (present.h) draw one triangle over a viewport with a
 // pixel shader that reads bindless textures by slot and takes its parameters
-// from 32 bytes of push constants. One pipeline layout serves them all
+// from up to 48 bytes of push constants. One pipeline layout serves them all
 // (hlsl/host_pass_common.hlsli): the BindlessHeap's texture set bound at
 // spaces 0-3 -- Texture2D<float4>[], Texture2DMS<float4>[], Texture2D<uint4>[],
 // Texture2DMS<uint4>[]: a descriptor carries its own dimension and format, so
@@ -54,7 +54,11 @@ struct HostImage {
 
 class HostPasses {
  public:
-  static constexpr uint32_t kPushConstantBytes = 32;
+  // 32 bytes held every pass's constants until the HDR10 output (hdr.h) added the four values
+  // its last passes take; the passes that push less push less.
+  // CHECK: Plume turns the range into 12 root constants on D3D12 (the signature stays well under 64
+  // dwords) and a 48-byte push range on Vulkan; the passes' shaders declare less and that is fine on both.
+  static constexpr uint32_t kPushConstantBytes = 48;
 
   HostPasses() = default;
   ~HostPasses();
@@ -84,6 +88,12 @@ class HostPasses {
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
                                                         plume::RenderFormat format,
                                                         uint8_t write_mask, const char* name);
+  // The same with the target's blend as given (the UI layer split's put-back draws the scene
+  // under the UI with INV_DEST_ALPHA / ONE, frame_layers.h).
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
+                                                        plume::RenderFormat format,
+                                                        const plume::RenderBlendDesc& blend,
+                                                        const char* name);
   // The same with another pipeline layout, for a pass with resources of its
   // own (resolve_memory.h's decode). The full-screen vertex shader reads none.
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,

@@ -8,13 +8,23 @@
 // (2^-stops). Taps outside the input are clamped to its edge, so the border
 // pixels sharpen against themselves rather than against zeros.
 
+// RCAS_HDR (fsr_rcas_hdr_ps): the target is an HDR10 swap chain; the sharpened SDR code values
+// end with hdr_output.hlsli's HdrFromSdr, with the levels in the push constants.
+
 #include "host_pass_common.hlsli"
+#if RCAS_HDR
+#include "hdr_output.hlsli"
+#endif
 
 struct RcasPush {
   uint source;         // the input image, a bindless 2D slot, the output's size
   float sharpness;     // 2^-stops
   int2 output_offset;  // target pixel of the input's (0, 0)
   int2 input_max;      // input size - 1
+  float hdr_white;     // RCAS_HDR only (hdr.h HdrLevels): SDR white in nits
+  float hdr_peak;
+  float hdr_knee;
+  uint hdr_flags;
 };
 
 #ifdef __spirv__
@@ -42,5 +52,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint4 con = uint4(asuint(g_push.sharpness), 0u, 0u, 0u);
   AF3 color;
   FsrRcasF(color.r, color.g, color.b, pixel, con);
+#if RCAS_HDR
+  HdrLevels levels;
+  levels.white = g_push.hdr_white;
+  levels.peak = g_push.hdr_peak;
+  levels.knee = g_push.hdr_knee;
+  levels.flags = g_push.hdr_flags;
+  return float4(HdrFromSdr(color, levels), 1.0f);
+#else
   return float4(color, 1.0f);
+#endif
 }

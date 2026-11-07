@@ -16,6 +16,10 @@
 // Exactly one swap chain may exist on a window (DXGI flip model), which is why
 // mcla_gpu mode never creates the SDK's D3D12Presenter.
 //
+// The format is B8G8R8A8_UNORM, or R10G10B10A2_UNORM in the HDR10 colour space when
+// Options::hdr10 asks and the output takes it (hdr.h). It is chosen once, in Initialize: what
+// draws into the back buffer (the present pass, the overlay) builds its pipelines for format().
+//
 // Threading: Initialize on the lifecycle thread before the render thread
 // starts; everything else on the render thread.
 // ===========================================================================
@@ -40,6 +44,9 @@ class SwapChain {
     // interval 0 whenever present wait is on (plume_d3d12.cpp
     // D3D12SwapChain::present), so vsync then comes from the wait alone.
     bool present_wait = false;
+    // Try an HDR10 swap chain first (hdr.h Wanted). When Plume cannot make one for this window
+    // the SDR one is made, with a log line.
+    bool hdr10 = false;
   };
 
   SwapChain() = default;
@@ -69,6 +76,9 @@ class SwapChain {
 
   void SetVsync(bool vsync);
   void WaitForPresentSlot();  // no-op unless present wait is active
+  // HDR10 chains: what the display is told about the content (the peak). False otherwise, or when
+  // the backend cannot pass it on.
+  bool SetHdrMetadata(const plume::RenderHdrMetadata& metadata);
 
   plume::RenderTexture* texture(uint32_t image) const;
   // Plume's chain, for the vendor's latency reducer to name (latency_vulkan.cpp).
@@ -82,14 +92,18 @@ class SwapChain {
   uint32_t image_count() const { return static_cast<uint32_t>(framebuffers_.size()); }
   uint32_t width() const;
   uint32_t height() const;
-  plume::RenderFormat format() const { return kFormat; }
+  plume::RenderFormat format() const { return format_; }
+  // The chain is HDR10 (R10G10B10A2 in ST 2084): what is drawn into it must be PQ code values.
+  bool hdr() const { return hdr_; }
 
  private:
-  static constexpr plume::RenderFormat kFormat = plume::RenderFormat::B8G8R8A8_UNORM;
+  static constexpr plume::RenderFormat kSdrFormat = plume::RenderFormat::B8G8R8A8_UNORM;
 
   bool BuildPerImageObjects();
 
   Device* device_ = nullptr;
+  plume::RenderFormat format_ = kSdrFormat;
+  bool hdr_ = false;
   std::unique_ptr<plume::RenderSwapChain> swap_chain_;
   std::vector<std::unique_ptr<plume::RenderFramebuffer>> framebuffers_;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> render_semaphores_;

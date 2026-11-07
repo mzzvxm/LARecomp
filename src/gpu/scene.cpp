@@ -508,6 +508,12 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ResetListState();
   marked_framebuffer_ = nullptr;
+  if (layers_) {
+    layers_->BeginFrame();
+  }
+  if (hdr_tone_) {
+    hdr_tone_->BeginFrame();
+  }
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
@@ -518,6 +524,10 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   // The render pass closes before the geometry's copies and the present pass.
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
+  }
+  if (layers_) {
+    // A frame that ended with the UI layer started puts its target back first.
+    layers_->EndFrame(list);
   }
   // The colour encodes of the frame into the resolve memory, as one batch.
   pass_timing_->Mark(list, "resolve memory encode (batch)");
@@ -554,6 +564,117 @@ void Scene::BindFramebuffer(plume::RenderCommandList* list,
   }
   list->setFramebuffer(framebuffer);
   bound_.framebuffer = framebuffer;
+}
+
+void Scene::UiLayersBeforeDraw(FrameLayers::DrawAction action, plume::RenderCommandList* list) {
+  if (bound_.framebuffer) {
+    list->setFramebuffer(nullptr);
+    bound_.framebuffer = nullptr;
+  }
+  if (action == FrameLayers::DrawAction::kStart) {
+    layers_->Start(list);
+  } else {
+    layers_->End(list);
+  }
+  // It bound its own layout, pipeline, viewport and scissor, and drew into the UI target.
+  ResetListState();
+  marked_framebuffer_ = nullptr;
+}
+
+void Scene::PrepareHdrDraw(PreparedDraw& d, const PipelineInputs& inputs,
+                           const ConstantBanks::Banks& banks, uint32_t host_samples) {
+  HdrToneMap::DrawFacts facts;
+  facts.vs = d.vs;
+  facts.ps = d.ps;
+  facts.key = &d.key;
+  facts.color0 = ColorEdramKey(d.state, 0);
+  facts.host_samples = host_samples;
+  facts.scale = d.scale;
+  facts.state = &d.state;
+  facts.viewport = &d.viewport.viewport;
+  facts.ps_bank = banks.ps.data();
+  // FXAA and SMAA do not run at the marker while an upscaler is on (OnComposite): not a reason to
+  // keep the float scene off. CHECK: HDR on + FSR + mcla_gpu_aa=fxaa gives the float scene.
+  facts.aa_held_off = temporal_ && temporal_->HoldsAaOff(false);
+  const HdrToneMap::Action action = hdr_tone_->Classify(facts);
+  if (action == HdrToneMap::Action::kNone) {
+    return;
+  }
+  PipelineKey variant;
+  hdr_tone_->VariantKey(action, d.key, &variant);
+  // A pipeline nobody made yet is built in the background: the second draw (and with it the frame's
+  // float scene) waits for it, the game's own draw does not.
+  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr};
+  bool pending = false;
+  plume::RenderPipeline* pipeline = pipelines_->Get(variant, inputs, &deferral, &pending);
+  if (!pipeline) {
+    hdr_tone_->Failed(action, HdrToneMap::Cause::kPipeline, pending,
+                      HdrToneMap::AddsLight(d.key.blend[0]));
+    return;
+  }
+  d.hdr_action = action;
+  d.hdr_pipeline = pipeline;
+}
+
+void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* list) {
+  HostImage* image = hdr_tone_->Image(d.hdr_action);
+  if (!image) {
+    return;  // the frame has no float scene (the tone map's image failure is logged by Image)
+  }
+  pass_timing_->Mark(list, "hdr scene");
+  // The layout change and a new image's first clear happen outside the game's render pass.
+  const bool first_use = image->layout == plume::RenderTextureLayout::UNKNOWN;
+  if (image->layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->setFramebuffer(nullptr);
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image->texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image->layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image->framebuffer.get());
+  if (first_use) {
+    // A new colour target is initialised before it is drawn into, as the EDRAM targets and
+    // HostPasses::DrawInto do (D3D12 debug layer id 1422).
+    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  }
+  // Everything the game's draw bound, set again: the list's own state is not trusted across the
+  // framebuffer switch, and the list state is forgotten afterwards (ResetListState below).
+  list->setGraphicsPipelineLayout(layout_->layout());
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 1);
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 2);
+  list->setGraphicsDescriptorSet(heap_->sampler_set(), 3);
+  list->setPipeline(d.hdr_pipeline);
+  const UploadSpan& shared = d.hdr_shared ? d.hdr_shared : d.shared_constants;
+  if (ActiveBackend() == Backend::kD3D12) {
+    list->setGraphicsRootDescriptor(d.vs_constants.reference(), GuestLayout::kVertexConstants);
+    list->setGraphicsRootDescriptor(d.ps_constants.reference(), GuestLayout::kPixelConstants);
+    list->setGraphicsRootDescriptor(shared.reference(), GuestLayout::kSharedConstants);
+  } else {
+    const uint64_t addresses[3] = {d.vs_constants.device_address, d.ps_constants.device_address,
+                                   shared.device_address};
+    list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+  }
+  list->setViewports(&d.viewport.viewport, 1);
+  list->setScissors(&d.scissor, 1);
+  if (pipelines_->dynamic_depth_bias()) {
+    list->setDepthBias(0.0f, 0.0f, 0.0f);  // no depth target: the guest's bias does not apply
+  }
+  const DrawGeometry& g = d.geometry;
+  if (g.slot_count) {
+    list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
+  }
+  if (g.indexed) {
+    list->setIndexBuffer(&g.index_view);
+    list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
+  } else {
+    list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  // The pass ends here: the next draw of the game opens its own, and the marker needs none open.
+  list->setFramebuffer(nullptr);
+  ResetListState();
+  marked_framebuffer_ = nullptr;
+  hdr_tone_->Duplicated(d.hdr_action);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,6 +731,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
+      if (d.ui_layer != FrameLayers::DrawAction::kNone) {
+        UiLayersBeforeDraw(d.ui_layer, list);
+      }
       bool empty = false;
       const Skip recorded = Record(d, r, list, &empty, &detail);
       if (empty) {
@@ -619,6 +743,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       } else {
         ++window_.recorded;
         ++draws_since_flush_;
+        if (d.hdr_action != HdrToneMap::Action::kNone) {
+          RecordHdrDuplicate(d, list);
+        }
       }
     }
   }
@@ -871,6 +998,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   d.scene = scene_draw;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
+  // The UI layer split (frame_layers.h): a draw into the UI target after the composite marker
+  // gets the alpha blend that collects coverage, in the key only (the memo above keeps the game's).
+  if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
+    d.ui_layer = layers_->ClassifyDraw(ColorEdramKey(s, 0), host_samples, r.ps_identity, d.key);
+  }
   if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= scale.value();
     if (!pipelines_->dynamic_depth_bias()) {
@@ -942,6 +1074,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     }
   }
   Lap(Stage::kConstants);
+  // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
+  // again into the float scene image (hdr_tonemap.h).
+  if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && hdr_tone_->Wants(d.ps)) {
+    PrepareHdrDraw(d, inputs, banks, host_samples);
+  }
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
   FillTextureTables(view, fetch_mask, scale, shared, d.scene ? SceneBias() : 0);
   Lap(Stage::kTextures);
@@ -950,6 +1087,21 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
+  }
+  if (d.hdr_action == HdrToneMap::Action::kToneMap) {
+    // The tone map's second draw reads 16 bytes after the shared constants: its own copy of them.
+    const UploadSpan span = upload_->Allocate(
+        slot_, kHdrSceneConstantsOffset + sizeof(HdrSceneConstants), kConstantAlignment);
+    if (span) {
+      std::memcpy(span.cpu, &shared, sizeof(shared));
+      std::memcpy(span.cpu + kHdrSceneConstantsOffset, &hdr_tone_->constants(),
+                  sizeof(HdrSceneConstants));
+      d.hdr_shared = span;
+    } else {
+      hdr_tone_->Failed(d.hdr_action, HdrToneMap::Cause::kUpload, false, false);
+      d.hdr_action = HdrToneMap::Action::kNone;
+      d.hdr_pipeline = nullptr;
+    }
   }
   Lap(Stage::kUpload);
 
@@ -1668,6 +1820,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.viewport_bound = true;
   }
   const plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
+  d.scissor = scissor;
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
     list->setScissors(&scissor, 1);
     bound_.scissor = scissor;
@@ -1907,6 +2060,15 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
       list->setFramebuffer(nullptr);
       bound_.framebuffer = nullptr;
     }
+    if (hdr_tone_ && hdr_tone_->active()) {
+      // A clear of the float scene's target before the marker: the float scene no longer matches.
+      hdr_tone_->OnColorClear(key);
+    }
+    if (layers_ && layers_->ui_phase() && layers_->OnColorClear(list, key)) {
+      // The UI layer started: the UI target was put back before this clear (it drew into it).
+      ResetListState();
+      marked_framebuffer_ = nullptr;
+    }
     bool unset = false;
     EdramTargets::Target* target =
         edram_->Get(key, uint32_t(y1), clear_scale, declared_size, list, &unset);
@@ -1998,6 +2160,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     list->setFramebuffer(nullptr);
     bound_.framebuffer = nullptr;
   }
+  if (list && layers_ && layers_->ui_phase()) {
+    // The first resolve of the UI target: its UI goes to the layer and the target is put back
+    // for this resolve (frame_layers.h).
+    layers_->OnResolve(record, list);
+  }
   resolve_->Execute(record, list);
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
@@ -2047,16 +2214,38 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   if (temporal_ && temporal_->HoldsAaOff(mode != PostAa::Mode::kOff)) {
     mode = PostAa::Mode::kOff;
   }
-  if (!last_color0_ || !list || mode == PostAa::Mode::kOff) {
+  // The UI layer split (and the HDR scene) works at the composite even with no anti-aliasing.
+  const bool layers = layers_ && layers_->active();
+  if (!last_color0_ || !list || (mode == PostAa::Mode::kOff && !layers)) {
     return;
   }
-  // The anti-aliasing reads and writes that target (M6c.2/M6c.3): the scene's
-  // render pass ends first.
+  // The anti-aliasing reads and writes that target (M6c.2/M6c.3), and the UI layer split starts
+  // at it: the scene's render pass ends first.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
     bound_.framebuffer = nullptr;
   }
-  if (post_->Apply(list, slot_, mode, *last_color0_, last_color0_width_, last_color0_height_)) {
+  bool recorded = false;
+  if (mode != PostAa::Mode::kOff) {
+    recorded = post_->Apply(list, slot_, mode, *last_color0_, last_color0_width_,
+                            last_color0_height_);
+  }
+  if (layers) {
+    // After the anti-aliasing: what it left in the target is the scene the layers keep. A second
+    // marker in a frame with the layer started puts the target back here.
+    layers_->OnComposite(list, last_color0_, last_color0_width_, last_color0_height_);
+    recorded = true;
+    if (hdr_tone_ && hdr_tone_->active()) {
+      // HDR stage 3: the float scene is ready if it was made at this marker's target and size (the
+      // render pass is closed above; the image goes to shader read).
+      EdramKey key;
+      uint32_t width = 0, height = 0;
+      if (layers_->Region(&key, &width, &height)) {
+        hdr_tone_->OnComposite(list, key, width, height);
+      }
+    }
+  }
+  if (recorded) {
     // It bound its own layout, pipelines, viewport and scissor: the next draw
     // binds everything again (the M6a caches skip nothing).
     ResetListState();
@@ -2122,6 +2311,12 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  if (layers_) {
+    layers_->OnGuestPresent();
+  }
+  if (hdr_tone_) {
+    hdr_tone_->OnGuestPresent();
+  }
   edram_->SetScenePhase(true);  // the next frame's scene
   if (temporal_) {
     temporal_->EndFrame();
