@@ -752,8 +752,14 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
     }
   }
 
-  const double waited_ms =
-      std::chrono::duration<double, std::milli>(began - change_seen_).count();
+  // When the setting changed: a render scale was taken only after it had stood for kScaleSettle, so
+  // its own clock is the earlier one.
+  Clock::time_point asked = change_seen_;
+  if (output != output_before && render_wanted_since_ != Clock::time_point{} &&
+      render_wanted_since_ < asked) {
+    asked = render_wanted_since_;
+  }
+  const double waited_ms = std::chrono::duration<double, std::milli>(began - asked).count();
   const double total_ms = MillisSince(began);
   const bool path_changed = from != to || from_mode != mode;
   std::string render_text;
@@ -783,7 +789,7 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
               total_ms, targets_ms, frame_number_,
               enable ? "; the first upscaled frame is logged when it has run"
                      : "; nothing to wait for");
-  switch_asked_ = change_seen_;
+  switch_asked_ = asked;
   switch_log_pending_ = enable;
   return true;
 }

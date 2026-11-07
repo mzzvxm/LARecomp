@@ -617,6 +617,11 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) 
   // The rule ScaleForUse and ScaleForDeclared apply to a new target, for the scales given: the scene's
   // identities at the scene's, an image of the screen at the output's (1x is the guest's size, as
   // ScaleForDeclared says), anything else at the guest's size.
+  // CHECK: that the classification by the first use's declared size (creation_size_bits) is the one
+  // every target was made at: after 1x -> 2x -> 1x -> 2x there must be no "was made at ... and is now
+  // bound through a surface declared ..., which classifies at ..." line, and no target left at a scale
+  // other than its kind's (the "[gpu] edram: ... made at" census lines of a fresh start at 2x and the
+  // targets after a live change to 2x list the same scales).
   if (IsSceneKey(target.key)) {
     return scene;
   }
@@ -624,6 +629,14 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) 
 }
 
 bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
+  // CHECK: the frame that remakes every image of the screen under the D3D12 debug layer and Vulkan
+  // validation (new textures cleared before use, the retired ones behind the frames in flight, no
+  // framebuffer or view of an old texture used), the hitch of that frame at 2x and 3x ("switched in N
+  // ms"), the peak video memory (old and new textures live together for the frames in flight), and that
+  // the picture N frames after the change equals a fresh start at the new scale. The game keeps
+  // nothing in the EDRAM from one frame to the next that the host's targets must hold (the targets
+  // are cleared here); photo mode reads what an earlier frame left (memory project_native_gfx_photo_
+  // capture): a render scale change just before it shows a cleared target until a frame is drawn.
   DecideScene();  // the start's decision first: a change before the first use must not be undone by it
   if (output == resolution_scale_ && scene == scene_scale_) {
     return true;
