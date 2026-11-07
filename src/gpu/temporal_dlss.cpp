@@ -55,6 +55,7 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "latency.h"
 #include "texture_bytes.h"
 #include "vram_budget.h"
 
@@ -2453,6 +2454,14 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   }
   sl::FrameToken* token = nullptr;
   uint32_t frame_index = ++frame_counter;
+  if (!wait && g_chain_proxied.load(std::memory_order_acquire)) {
+    // DLSS frame generation is on: Streamline's tokens are one ring and the same index gives the same
+    // token, so the frame's Super Resolution, its constants, tags and Reflex markers share the
+    // frame's one index, the latency id (a frame's dispatch only: the render thread reads it).
+    if (const uint64_t id = latency::RenderFrameId(); id != 0) {
+      frame_index = uint32_t(id);
+    }
+  }
   sl::Result result = rt.api.new_frame_token(token, &frame_index);
   if (result != sl::Result::eOk || !token) {
     return "slGetNewFrameToken failed: " + ResultText(result);
