@@ -50,9 +50,11 @@
 // does not change under an open menu.
 //
 // The AA rows of the NATIVE renderer follow the upscaler too: NATIVE AA (FXAA, SMAA) and MSAA are
-// grey and say "(HANDLED BY FSR 3.1)" (or FSR 4, DLSS) while one is active. MSAA is a start-up switch of the game
-// (not part of the live change): when the upscaler was turned on after a start with MSAA the row
-// says "(FSR 3.1 AFTER RESTART)" instead, and with the upscaler off it keeps its own "(RESTART)".
+// grey and say "(HANDLED BY FSR 3.1)" (or FSR 4, DLSS) while one is active. MSAA on against off is a
+// start-up switch of the game: when the upscaler was turned on after a start with MSAA the row says
+// "(FSR 3.1 AFTER RESTART)" instead. With the upscaler off the row is the player's own: 2X, 4X and 8X
+// change live ("(WAIT)" while the pipelines for a new level are made), and "(RESTART)" shows only when
+// the saved choice and the running game differ in on against off.
 
 #include "menu_items.h"
 
@@ -66,7 +68,8 @@ namespace mcla_menu {
 // chosen and can run (FXAA and SMAA are held off then).
 extern const RowDynamics kNativeAaDynamics;
 // The MSAA row's: grey while an upscaler is chosen and can run; the suffix says whether the game
-// already runs without MSAA for it or does from the next start.
+// already runs without MSAA for it or does from the next start, and with no upscaler whether the
+// choice needs a restart (on against off) or is being made live.
 extern const RowDynamics kMsaaDynamics;
 
 }  // namespace mcla_menu

@@ -110,18 +110,32 @@ const char* HandledSuffix() {
 }
 bool AaFree() { return Active() == Upscaler::kOff; }
 
-// The MSAA row. MSAA is a start-up switch of the game (gpu.h GuestMsaa): a game started with the
-// upscaler on runs without it ("handled by"), one started with MSAA keeps it until the next start,
-// which runs without it. With no upscaler the row is the player's own choice, which applies at the
-// next start (as it always did).
+// The MSAA row. MSAA on against off is a start-up switch of the game (gpu.h GuestMsaa): a game
+// started with the upscaler on runs without it ("handled by"), one started with MSAA keeps it until
+// the next start, which runs without it. With no upscaler the row is the player's own choice: 2X,
+// 4X and 8X among themselves are live in a game that runs with MSAA (the renderer changes the host's
+// samples between two frames once the pipelines for them are made, msaa_level.h: the row says
+// "(WAIT)" meanwhile); OFF against one of them applies at the next start, so the row says
+// "(RESTART)" when the saved choice and the running game disagree about on and off (which is what
+// the "Restart now?" prompt reads), and nothing otherwise.
+// CHECK: in a game started with MSAA 2X, the values 2X, 4X and 8X carry no suffix (and "(WAIT)" for
+// the seconds a change is being prepared) and "Restart now?" is not offered when the menu is left;
+// OFF says "(RESTART)" and offers it, and going back to any of the three drops the suffix; in a game
+// started with MSAA OFF, 2X, 4X and 8X say "(RESTART)" and OFF says nothing.
 const char* MsaaSuffix() {
-    const bool running = mcla::gpu::GetGuestMsaa() == mcla::gpu::GuestMsaa::kOn;
+    const mcla::gpu::GuestMsaa state = mcla::gpu::GetGuestMsaa();
+    const bool running = state == mcla::gpu::GuestMsaa::kOn;
     switch (Active()) {
     case Upscaler::kFsr31: return running ? " (FSR 3.1 AFTER RESTART)" : " (HANDLED BY FSR 3.1)";
     case Upscaler::kFsr4:  return running ? " (FSR 4 AFTER RESTART)"   : " (HANDLED BY FSR 4)";
     case Upscaler::kDlss:  return running ? " (DLSS AFTER RESTART)"    : " (HANDLED BY DLSS)";
-    default:               return " (RESTART)";
+    default: break;
     }
+    const bool saved_off = rex::cvar::GetFlagByName("mcla_gpu_msaa") == "off";
+    const bool running_off = state == mcla::gpu::GuestMsaa::kOffChosen ||
+                             state == mcla::gpu::GuestMsaa::kOffForUpscaler;
+    if ((running && saved_off) || (running_off && !saved_off)) return " (RESTART)";
+    return mcla::gpu::MsaaSwitching() ? " (WAIT)" : "";
 }
 
 // The vendors' modes and the share of the output the scene is drawn at, per direction (gpu.h

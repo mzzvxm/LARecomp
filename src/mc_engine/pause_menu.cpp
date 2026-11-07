@@ -1487,8 +1487,11 @@ const ItemDef kVideoItems[] = {
 #endif
 #if defined(LARECOMP_HAS_GPU)
     XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
-    // NATIVE: OFF is the game's own switch, 2X the console's, 4X more samples on
-    // the host for the images of the screen the game multisamples (M6d.2).
+    // NATIVE: OFF is the game's own switch, 2X the console's, 4X and 8X more samples on
+    // the host for the images of the screen the game multisamples (M6d.2). OFF against on is
+    // the game's own start-up switch: the suffix says RESTART only when the choice crosses it
+    // (upscaling_menu.cpp MsaaSuffix, which replaces the one given here); 2X, 4X and 8X among
+    // themselves change while the game runs (gpu/msaa_level.h).
     NativeOnly(WithDynamics(Str("PM_RxGpuMsaa", "mcla_gpu_msaa", "MSAA: ",
                                 kGpuMsaaVals, kGpuMsaaNames, 4, " (RESTART)"),
                             &mcla_menu::kMsaaDynamics)),
