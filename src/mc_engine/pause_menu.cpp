@@ -44,6 +44,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/latency.h"
 #endif
 
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
@@ -1654,6 +1655,66 @@ const ItemDef kGpuHdrItems[] = {
 };
 #endif
 
+// PERFORMANCE > RENDERING > NVIDIA REFLEX / AMD ANTI-LAG 2 (mcla_gpu_low_latency, live): the GPU vendor's
+// latency reducer. The row comes from the renderer's own answer (gpu/latency.h): it names the vendor's
+// feature, and there is none where the GPU, the driver or the graphics API has no reducer, which is
+// how a PC that cannot run it never sees it. AUTO says what it comes to on this GPU. Anti-Lag 2 has no
+// boost, so its row stops at ON.
+#if defined(LARECOMP_HAS_GPU)
+const char* const kLowLatencyVals[]  = {"auto", "off", "on", "boost"};
+const char* const kLowLatencyNames[] = {"AUTO", "OFF", "ON", "ON + BOOST"};
+
+std::string LowLatencyLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::latency::AutoIsOn() ? "AUTO (ON)" : "AUTO (OFF)";
+    case 1:  return "OFF";
+    case 2:  return "ON";
+    default: return "ON + BOOST";
+    }
+}
+
+// Says why a reducer that is asked for is not working right now.
+const char* LowLatencySuffix() {
+    switch (mcla::gpu::latency::CurrentHealth()) {
+    case mcla::gpu::latency::Health::kPaused: return " (PAUSED)";
+    case mcla::gpu::latency::Health::kFailed: return " (NOT WORKING)";
+    default:                                  return "";
+    }
+}
+
+constexpr RowDynamics kLowLatencyDynamics = {.str_label = LowLatencyLabel,
+                                             .suffix = LowLatencySuffix};
+
+const ItemDef kReflexRows[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
+                                kLowLatencyVals, kLowLatencyNames, 4),
+                            &kLowLatencyDynamics)),
+};
+const ItemDef kAntiLagRows[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
+                                kLowLatencyVals, kLowLatencyNames, 3),
+                            &kLowLatencyDynamics)),
+};
+#endif
+
+// The rows RENDERING takes from the renderer (MenuDef::extra): the vendor's latency reducer, or none.
+const ItemDef* LowLatencyMenuRows(int& count) {
+#if defined(LARECOMP_HAS_GPU)
+    switch (mcla::gpu::latency::AvailableKind()) {
+    case mcla::gpu::latency::Kind::kReflex:
+        count = int(sizeof(kReflexRows) / sizeof(kReflexRows[0]));
+        return kReflexRows;
+    case mcla::gpu::latency::Kind::kAntiLag:
+        count = int(sizeof(kAntiLagRows) / sizeof(kAntiLagRows[0]));
+        return kAntiLagRows;
+    default:
+        break;
+    }
+#endif
+    count = 0;
+    return nullptr;
+}
+
 // Where the rear view mirror sits (rearview_position, rear_view.cpp).
 constexpr const char* kRearViewPosVals[]  = {"stock", "left_top", "middle_top",
                                              "left_down", "middle_footer", "right_down"};
@@ -1953,7 +2014,8 @@ const MenuDef kMenus[] = {
      kPerfShadItems, int(sizeof(kPerfShadItems) / sizeof(kPerfShadItems[0]))},
     {"PM_RxTabPerfRend", "RENDERING", "Screen effects and frame pacing.",
      "RxPerfRendMenu",
-     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0]))},
+     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0])),
+     LowLatencyMenuRows},
     {"PM_RxTabPerfWorld", "WORLD DENSITY", "Traffic, pedestrians and props.",
      "RxPerfWorldMenu",
      kPerfWorldItems, int(sizeof(kPerfWorldItems) / sizeof(kPerfWorldItems[0]))},

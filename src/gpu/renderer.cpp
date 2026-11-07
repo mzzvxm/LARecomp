@@ -24,6 +24,7 @@
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
 #include "thread_load.h"
+#include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -284,9 +285,12 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
     profile_records_ = REXCVAR_GET(mcla_gpu_scene_profile);
     release_early_ = REXCVAR_GET(mcla_gpu_present_release);
+    // The swap chain exists and the render thread, which marks the frames, has not started.
+    latency::Initialize(device_, swap_chain_);
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
+    latency::Shutdown();
     capture_.Shutdown();
     occlusion_.Shutdown();
     pass_timing_.Shutdown();
@@ -409,6 +413,7 @@ void Renderer::Shutdown() {
   // 3. Reverse creation order; the GPU is idle, so components destroy their
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
+  latency::Shutdown();  // the vendor's calls name the swap chain
   capture_.Shutdown();
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
@@ -598,6 +603,8 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   }
   const uint32_t slot = frames_.slot();
   device_.BeginFrame();
+  // A guest frame starts here for the latency reducer (not an idle present's list).
+  latency::OnRenderFrameOpen();
   // Outside any render pass: timestamp pool reset, one-time heap transitions.
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);
@@ -641,6 +648,7 @@ void Renderer::SubmitFrameWithoutPresent() {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
+    latency::OnRenderSubmitted();
   }
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
@@ -677,6 +685,8 @@ bool Renderer::RebuildSwapChain() {
   // The back buffers are about to be released (and on D3D12 Release()d by
   // Plume's resize): nothing in flight may still write them.
   frames_.WaitIdle();
+  // Vulkan's swap chain handle changes inside: the latency reducer's calls wait for it.
+  latency::SwapChainChange latency_change;
   if (!swap_chain_.Rebuild()) {
     return false;
   }
@@ -718,6 +728,7 @@ void Renderer::UpdateHdr() {
 
 void Renderer::ExecutePresent(PresentSource source) {
   tail_open_ = false;
+  const latency::IdlePresentScope idle_scope(source == PresentSource::kIdle);
   if (device_.IsLost()) {
     // Nothing recorded will run: drop the guest frame being recorded.
     if (frames_.is_open()) {
@@ -788,8 +799,12 @@ void Renderer::ExecutePresent(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  latency::OnRenderSubmitted();
 
-  if (!swap_chain_.Present(image)) {
+  latency::OnPresentBegin();
+  const bool present_ok = swap_chain_.Present(image);
+  latency::OnPresentEnd();
+  if (!present_ok) {
     // DXGI and Vulkan both report a chain that no longer matches the window
     // here; anything else that fails here is the device.
     if (!device_.CheckLost("swap chain present")) {
