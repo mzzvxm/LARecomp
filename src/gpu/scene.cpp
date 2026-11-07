@@ -518,8 +518,10 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     temporal_->BeginFrame(slot, list);
   }
   // The host MSAA level (msaa_level.h): the same boundary, after the path's own change, which may
-  // have remade the targets this frame, and not while an upscaler runs.
-  msaa_.BeginFrame(list, temporal_ && temporal_->PathBusy(),
+  // have remade the targets this frame. It is 1 while an upscaler runs and changes once the path has
+  // settled (without a temporal system, always).
+  msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
+                   !temporal_ || temporal_->PathSettled(),
                    edram_->change_serial() != targets_before);
   if (ao_) {
     ao_->BeginFrame();

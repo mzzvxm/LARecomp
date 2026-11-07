@@ -10,8 +10,9 @@
 //   Jitter.   A Halton(2,3) sub-pixel offset is added to SharedConstants::pos_offset, on the copy
 //             of the shared constants a draw is about to upload (the memo keeps the unjittered
 //             block), of the draws that go to the main view: the scene's colour and depth, found by
-//             their exact EDRAM identity at 2x samples, or 1x when the game runs without MSAA
-//             (temporal_identities.h), only before the
+//             their exact EDRAM identity at 2x samples (the game's own layout, always; the host's
+//             samples are fewer under an upscaler: msaa_level.h; 1x only for a game made without
+//             MSAA, temporal_identities.h), only before the
 //             anchor and the composite marker, and only world draws (clipping and the viewport
 //             transform on, not a rectangle list, a viewport as wide as the target). Everything
 //             else keeps its position: the shadow maps, the reflections, the post chain, the UI.
@@ -43,9 +44,8 @@
 //                that could not be, or one failed dispatch or context, and the backend is off for the
 //                session (one log line), the jitter stops, FXAA and SMAA come back.
 //   AA           FXAA and SMAA are held off while an upscaler is chosen and can run. MSAA is held off
-//                too, but it is a start-up switch of the game: a game started with the upscaler on
-//                runs without it (gpu.h GuestMsaa, decided when the game makes its renderer; the
-//                player's choice is kept); one that started with MSAA keeps it until the next start.
+//                too: the host's level is 1 while an upscaler runs and the player's level comes back
+//                when it stops (msaa_level.h; the game itself always draws its 2 sample layout).
 //
 // The post chain before the anchor. The game's first reads of the scene colour (the guest's post
 // function makes a half-size downsample of it, then a quarter-size one, the log-luminance chain of
@@ -142,7 +142,7 @@
 //     restart. (Not the setting's own mode: the mode row on screen is the chosen upscaler's now.)
 //     Picking something that can run drops it, and the switch is made as above.
 // Each switch is logged: from, to, and how long the new path took to run its first frame. The
-// MSAA of the game is not part of the path: it stays what the start decided (gpu.h GuestMsaa).
+// host MSAA level follows the path once it has settled (UpscalerNext, PathSettled; msaa_level.h).
 //
 // With no upscaler chosen (or one this PC cannot run) no hook of the Scene does anything beyond one
 // branch, no constant changes, no draw is added. With one on, the system jitters, reads the camera
@@ -267,9 +267,9 @@ class TemporalSystem {
     float jitter[2] = {};
     double ratio = 1.0;  // output size over render size, per axis: 1 until the scene is drawn smaller
 
-    // The main view (2x samples, 1x without MSAA, before the anchor).
+    // The main view (2x samples, before the anchor).
     Scale scale = Scale::None();  // of the first main view draw's targets
-    uint32_t samples = 0;         // guest samples of the first one: 2, or 1 without MSAA
+    uint32_t samples = 0;         // guest samples of the first one: 2 (1 for a game made without MSAA)
     std::array<uint32_t, kKinds> main_draws{};
     std::array<uint32_t, kKinds> jittered{};
     uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
@@ -353,13 +353,15 @@ class TemporalSystem {
   // The anchor draw's own constants after RecordAnchorPasses: its colour fetch reads the upscaler's
   // output when there is one this frame.
   void PatchAnchor(SharedConstants& shared) const;
-  // The path is not settled: an upscaler runs, or the settings ask for one (it is being switched to,
-  // its context is being made), or another path or render scale change is waiting. The host MSAA
-  // level is not changed meanwhile (msaa_level.h). Render thread.
-  bool PathBusy() const {
-    return effective_ != Upscaler::kOff || wanted_ != Upscaler::kOff || change_pending_ ||
-           stage_.active;
-  }
+  // The host MSAA level follows the path (msaa_level.h): 1 while an upscaler runs, the player's
+  // otherwise. UpscalerNext: the path UpdatePath is steering the frames to (`next_`: what the
+  // settings ask for once DLSS's size rules and a choice that waits for a restart are applied) is
+  // an upscaler. It is true before the path has changed and false before it is taken off, so the
+  // level's pipelines are made meanwhile. PathSettled: the start's path was taken and no path or
+  // render scale change is waiting or being made (UpdatePath has said so this frame), so the targets
+  // may be remade for the level without meeting the path's own remake. Render thread.
+  bool UpscalerNext() const { return next_ != Upscaler::kOff; }
+  bool PathSettled() const { return path_adopted_ && !change_pending_ && !stage_.active; }
   // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
   // once per change when `aa_asked` (mcla_gpu_aa is not off).
   bool HoldsAaOff(bool aa_asked);
@@ -461,7 +463,6 @@ class TemporalSystem {
   void ReadUpscalerChoice();
   // Whether `upscaler` has a backend here and the PC's answer says it can run now.
   bool CanRun(Upscaler upscaler, const UpscalerAvailability& available) const;
-  void NoteMsaa();
   // The live change of path (above). UpdatePath runs at a frame boundary: it takes the start's path
   // the first time, then compares the path with what the settings want and prepares, switches or
   // waits. SwitchPath makes the switch (false: the scene's targets could not be made, nothing
@@ -547,6 +548,10 @@ class TemporalSystem {
   // The path the frames follow: the upscaler (off when none runs) and the mode the scene was drawn
   // for. Changed only at a frame boundary (SwitchPath).
   Upscaler effective_ = Upscaler::kOff;
+  // The path UpdatePath steers to: `wanted_` after DLSS's size rules, or `effective_` while a choice
+  // waits for a restart. Equal to `effective_` once the path has settled; kOff until UpdatePath has
+  // taken the start's path (UpscalerNext).
+  Upscaler next_ = Upscaler::kOff;
   // What the settings ask for, with this PC's answer applied (an upscaler it cannot run is off;
   // see restart_pending_ for the one that can run from the next start).
   Upscaler wanted_ = Upscaler::kOff;
@@ -631,7 +636,6 @@ class TemporalSystem {
   bool post_unserved_reported_ = false;
   uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
   bool aa_hold_reported_ = false;
-  uint32_t msaa_key_ = ~0u;          // the game's MSAA and the upscaler, as last said (NoteMsaa)
   std::array<bool, 4> plain_logged_{};
 
   // The log.

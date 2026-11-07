@@ -75,11 +75,8 @@
 //
 // The AA rows of the NATIVE renderer follow a temporal upscaler: NATIVE AA (FXAA, SMAA) and MSAA
 // are grey and say "(FSR 3.1 ON)" (or FSR 4, DLSS) while one runs. FSR 1 is not temporal and
-// leaves them alone. MSAA on against off is a start-up switch of the game: when the upscaler was
-// turned on after a start with MSAA the row says "(RESTART)" instead (the upscaler takes over at the
-// next start). With no upscaler the row is the player's own: 2X, 4X and 8X change live ("(WAIT)"
-// while the pipelines for a new level are made), and "(RESTART)" shows only when the saved choice
-// and the running game differ in on against off.
+// leaves them alone. With no upscaler the MSAA row is the player's own: OFF, 2X, 4X and 8X all
+// change live ("(WAIT)" while the pipelines for a new level are made), none says RESTART.
 
 #include "menu_items.h"
 
@@ -98,9 +95,8 @@ namespace mcla_menu {
 // The NATIVE AA row's dynamics: grey, "(FSR 3.1 ON)" (or FSR 4, DLSS), while a temporal upscaler
 // runs (FXAA and SMAA are held off then).
 extern const RowDynamics kNativeAaDynamics;
-// The MSAA row's: grey while a temporal upscaler runs; the suffix says whether the game already
-// runs without MSAA for it or does from the next start, and with no upscaler whether the choice
-// needs a restart (on against off) or is being made live.
+// The MSAA row's: grey while a temporal upscaler runs, with the upscaler named in the suffix; with
+// no upscaler the suffix says "(WAIT)" while a new level is being prepared and is empty otherwise.
 extern const RowDynamics kMsaaDynamics;
 
 }  // namespace mcla_menu

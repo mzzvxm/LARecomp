@@ -10,8 +10,9 @@
 //
 // A different game build or a changed shader pack gives other values: nothing here fails loudly,
 // the frame is simply not temporal (temporal.h says how each case shows in the log). The game's
-// MSAA mode is read from the keys (below): 2x, the console's, or 1x when it runs without MSAA
-// (mcla_gpu_msaa off, or an upscaler holding it off: gpu.h GuestMsaa).
+// MSAA mode is read from the keys (below): 2x, the console's, which the native renderer always runs
+// (OFF and the upscalers are fewer host samples, msaa_level.h), or 1x for a game made without MSAA,
+// which the native renderer no longer does: the 1x identities stay recognised but are not exercised.
 // ===========================================================================
 
 #include <cstdint>
@@ -33,7 +34,8 @@ inline constexpr uint64_t kToneMapPs = 0xBC5F0EED0A746DEAull;
 
 // The main view, the 3D scene: colour k_2_10_10_10_FLOAT at EDRAM tile 1024 and D24FS8 depth at
 // tile 0, both at the pitch of the screen, 2x samples in play, 1x when the game runs without MSAA
-// (census round 2, cen2-drive-msaaoff: the same shaders, fetches, target and viewport). The pause
+// (census round 2, cen2-drive-msaaoff: the same shaders, fetches, target and viewport; the native
+// renderer does not start a game that way any more, msaa_level.h). The pause
 // menu and the map draw the world into the same keys at 4x samples, also without MSAA (round 2:
 // "scene 4x: 18"): the samples tell the play view from the pause view. Other D24FS8 and
 // float-colour targets (the reflections, the cascades) have other pitches or bases. The UI phase

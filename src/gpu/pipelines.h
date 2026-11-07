@@ -257,10 +257,10 @@ class Pipelines {
   plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs,
                              const Deferral* deferral = nullptr, bool* pending = nullptr);
 
-  // The host MSAA level is about to become `level` (2, 4 or 8): hands the builder threads one copy,
+  // The host MSAA level is about to become `level` (1, 2, 4 or 8): hands the builder threads one copy,
   // at the sample count `level` gives it, of every pipeline Get was asked for with
-  // PipelineInputs::msaa_guest_samples set (the sample count is `level`, also where the guest's
-  // is higher). A pipeline that is already there, queued or being made for another reason is not
+  // PipelineInputs::msaa_guest_samples set (the sample count is `level`, also where it is more or
+  // fewer than the guest's: 1 is OFF and an upscaler, over the game's 2 sample layout). A pipeline that is already there, queued or being made for another reason is not
   // made again. Render thread. Calling it again for the same or another level starts a new count.
   struct LevelPrebuild {
     uint32_t known = 0;    // pipelines remembered (draws into targets that take the level)

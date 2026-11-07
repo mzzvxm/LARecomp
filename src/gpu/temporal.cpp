@@ -425,30 +425,6 @@ void TemporalSystem::ReadUpscalerChoice() {
   // What the frames follow changes only at a frame boundary, once the new path is ready (UpdatePath).
   wanted_ = effective;
   wanted_mode_ = effective != Upscaler::kOff ? settings_.mode : UpscaleMode::kNativeAa;
-  NoteMsaa();
-}
-
-void TemporalSystem::NoteMsaa() {
-  // What the upscaler comes to for the game's MSAA (gpu.h GuestMsaa). The game's start decided it
-  // and logged it ("[gpu] msaa:"); what is said here is when the upscaler's state has since
-  // changed: the cases where the game's MSAA and the upscaler do not agree until the next start.
-  const GuestMsaa msaa = GetGuestMsaa();
-  const bool upscaling = effective_ != Upscaler::kOff;
-  const uint32_t key = uint32_t(msaa) | uint32_t(upscaling) << 4;
-  if (key == msaa_key_) {
-    return;
-  }
-  msaa_key_ = key;
-  if (upscaling && msaa == GuestMsaa::kOn) {
-    REXLOG_INFO("{} the game's MSAA is running under {}: the game was started with MSAA, before "
-                "the upscaler was on. It works with it; a start with the upscaler on runs without "
-                "MSAA (mcla_gpu_msaa is kept)",
-                kPrefix, UpscalerName(effective_));
-  } else if (!upscaling && msaa == GuestMsaa::kOffForUpscaler) {
-    REXLOG_INFO("{} the upscaler is off, but the game was started without MSAA for it: no MSAA "
-                "until the next start (mcla_gpu_msaa applies then)",
-                kPrefix);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +703,9 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
       }
     }
   }
+  // What the frames are steered to, for the host MSAA level (UpscalerNext): its pipelines are made
+  // while the path's context is, and the level changes once the path has settled (msaa_level.h).
+  next_ = to;
   // The wait after a change that could not be made belongs to that change: another one (a smaller
   // scale picked after "too big", another mode) is tried at once.
   const uint64_t change_key = (uint64_t(1) << 63) | uint64_t(to) | uint64_t(to_mode) << 8 |
