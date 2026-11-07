@@ -283,13 +283,23 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
     // fetch bound at the render scale, which is the product's own.
     // CHECK: only a scene scale under 1x (Radeon at 1x, any mode; Ultra Performance at 2x) gets an
     // enlarged copy; above it the two bindings are the same slot.
-    // CHECK: the colour and stencil fetches are no longer bound at the render scale here (only the
-    // depth is read by the passes); the anchor draw binds all three itself.
+    // CHECK: the colour fetch is no longer bound at the render scale here (the passes do not read
+    // it); the anchor draw binds all three itself.
     const TextureFetch fetch = ReadTextureFetch(frame_.anchor_textures.fetch[2]);
     if (fetch.is_texture) {
       const TextureCache::Binding bound = textures_->Bind2D(fetch, frame_.scale, list);
       if (bound.from_product) {
         pending_.depth_slot = bound.slot;
+      }
+    }
+    // The vector pass reads the vehicles' IDs from the stencil view the same way (fetch 1).
+    // CHECK: Bind2D of the stencil view at the render scale gives the view with its own swizzle, as
+    // for the depth: only a scene scale under 1x.
+    const TextureFetch stencil = ReadTextureFetch(frame_.anchor_textures.fetch[1]);
+    if (stencil.is_texture) {
+      const TextureCache::Binding bound = textures_->Bind2D(stencil, frame_.scale, list);
+      if (bound.from_product) {
+        pending_.stencil_slot = bound.slot;
       }
     }
   }
@@ -1204,6 +1214,11 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
               kept.depth->flags};
   in.motion = {kept.motion->texture.get(), kept.motion->width, kept.motion->height,
                kept.motion->format, kept.motion->flags};
+  // The cars' shadow decals' mask, in a frame that drew one at this render size (vehicle_motion_mask.h).
+  if (kept.mask && kept.mask->texture && kept.mask->width == width && kept.mask->height == height) {
+    in.mask = {kept.mask->texture.get(), kept.mask->width, kept.mask->height, kept.mask->format,
+               kept.mask->flags};
+  }
   in.output = {output_.texture.get(), out_width, out_height, kOutputFormat, kOutputFlags};
   in.jitter[0] = fr.jitter[0];
   in.jitter[1] = fr.jitter[1];
@@ -1265,6 +1280,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
       plume::RenderTextureBarrier(kept.motion->texture.get(),
                                   plume::RenderTextureLayout::SHADER_READ)};
   list->barriers(Stage::COMPUTE, to_read, 3);
+  if (in.mask.texture) {
+    list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(kept.mask->texture.get(),
+                                                                plume::RenderTextureLayout::SHADER_READ));
+  }
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(output_.texture.get(),
                                                               plume::RenderTextureLayout::GENERAL));
   const bool ok = backend->Upscale(list, in);
@@ -1277,6 +1296,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
       plume::RenderTextureBarrier(kept.motion->texture.get(),
                                   plume::RenderTextureLayout::SHADER_READ)};
   list->barriers(Stage::GRAPHICS, back, 2);
+  if (in.mask.texture) {
+    list->barriers(Stage::GRAPHICS, plume::RenderTextureBarrier(kept.mask->texture.get(),
+                                                                 plume::RenderTextureLayout::SHADER_READ));
+  }
   list->barriers(graphics_and_compute,
                  plume::RenderTextureBarrier(output_.texture.get(),
                                              plume::RenderTextureLayout::SHADER_READ));
@@ -1546,6 +1569,10 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
   }
   ++fr.main_draws[kind];
   ++window_.view_draws[size_t(view)];
+  // The vehicle IDs the draw writes into the stencil (the vehicles' bodies and the player's wheel
+  // proxies), for the vehicles' vectors (vehicle_motion.h). Every main view draw before the anchor,
+  // gated or not, drawn with colour or only into the depth.
+  fr.stencil_ids |= temporal::StencilIdsWritten(*f.state);
   if (kind != kDepthOnly) {
     // The first draw that draws colour into the main view: this frame has a 3D scene, and the post
     // chain that reads its colour comes later.
@@ -1776,6 +1803,8 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_ = TemporalMotion::Frame{};
   pending_.frame = fr.frame;
   pending_.depth_slot = fr.anchor_textures.table[2];
+  pending_.stencil_slot = fr.anchor_textures.table[1];
+  std::memcpy(pending_.stencil_fetch, fr.anchor_textures.fetch[1], sizeof(pending_.stencil_fetch));
   for (int i = 0; i < 2; ++i) {
     pending_.render_size[i] = fr.render_size[i];
     pending_.guest_size[i] = fr.guest_size[i];
@@ -1784,6 +1813,12 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.camera = &fr.camera;
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
+  if (pending_.previous) {
+    // The vehicles' own motion from the game's slots, on top of the camera's from this renderer's
+    // own history (vehicle_motion.h); the anchor's constants are only at hand here.
+    pending_.vehicle_stats = temporal::BuildVehicleTable(f.banks->ps.data(), fr.stencil_ids, camera,
+                                                         *pending_.previous, &pending_.vehicles);
+  }
   pending_ready_ = motion_.available();
   if (!pending_ready_) {
     DropPostStandIn();  // no passes: RecordAnchorPasses is not called
@@ -2029,6 +2064,9 @@ void TemporalSystem::Report() {
               w.view_resets[kPauseView], w.view_cuts[kPauseView], w.view_draws[kPauseView],
               w.view_moved[kPauseView], refused.empty() ? "none" : refused, w.resets,
               resets.empty() ? "none" : resets, camera);
+  if (const std::string vehicles = motion_.Summary(); !vehicles.empty()) {
+    REXLOG_INFO("{} {}", kPrefix, vehicles);
+  }
   if (effective_ != Upscaler::kOff || w.upscaled != 0) {
     const TemporalBackend* running_backend = BackendFor(effective_);
     const BackendStatus status = running_backend ? running_backend->Status() : BackendStatus{};

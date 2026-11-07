@@ -75,6 +75,8 @@ add_library(larecomp_gpu OBJECT
     topology.cpp
     upload.cpp
     validation.cpp
+    vehicle_motion.cpp
+    vehicle_motion_mask.cpp
     viewport.cpp
     vram_budget.cpp
     watch.cpp
@@ -325,6 +327,10 @@ larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3
 # (temporal_mv.h).
 larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
 larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
+# The vehicles' motion (vehicle_motion.h): a row of the table the vector pass reads, and the mask of the
+# cars' shadow decals for the upscalers (vehicle_motion_mask.h).
+larecomp_gpu_host_shader(temporal_vehicle_table_ps ps_6_0)
+larecomp_gpu_host_shader(vehicle_motion_mask_ps ps_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

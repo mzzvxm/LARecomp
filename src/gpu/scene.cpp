@@ -38,6 +38,7 @@
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
+#include "vehicle_motion_mask.h"
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -516,6 +517,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
     // scene's scale (and the path) here.
     temporal_->BeginFrame(slot, list);
+    temporal_->shadow_mask().BeginFrame();  // no shadow decal is drawn into its mask yet
   }
   // The host MSAA level (msaa_level.h): the same boundary, after the path's own change, which may
   // have remade the targets this frame. It is 1 while an upscaler runs and changes once the path has
@@ -697,6 +699,102 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
   hdr_tone_->Duplicated(d.hdr_action);
 }
 
+void Scene::PrepareShadowMask(PreparedDraw& d, const PipelineInputs& inputs) {
+  // Only in a frame an upscaler works on (nothing else reads the mask), before its anchor: the decals
+  // are drawn before the motion blur draw.
+  const TemporalSystem::FrameState& fr = temporal_->frame();
+  if (!UpscalerRunning() || fr.anchor_seen || fr.composite_seen) {
+    return;
+  }
+  // The play view of the main view, a draw that covers it whole as the world's draws do (the gate of
+  // temporal.cpp EvaluateGate): the decal's image is the render size, whatever size its draw's viewport
+  // is, so a draw that does not cover the view is left out.
+  const EdramKey color = ColorEdramKey(d.state, 0);
+  EdramKey depth;
+  const EdramKey* depth0 = nullptr;
+  if (d.key.depth_format != 0) {
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+    depth0 = &depth;
+  }
+  const temporal::MainMatch match = temporal::MatchMainView(&color, depth0);
+  if (!match || !temporal::IsPlaySamples(match.samples) ||
+      d.viewport.viewport.width + 0.5f < float(d.scale.Edge(temporal::kMainPitch))) {
+    return;
+  }
+  PipelineKey variant;
+  ShadowMask::VariantKey(d.key, &variant);
+  // Not a pipeline of the host MSAA level's (a level change does not remake it): one sample, no depth.
+  PipelineInputs variant_inputs = inputs;
+  variant_inputs.msaa_guest_samples = 0;
+  // A pipeline nobody made yet is built in the background: the second draw waits for it (the frame has
+  // no mask), the game's own draw does not.
+  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr};
+  bool pending = false;
+  d.shadow_pipeline = pipelines_->Get(variant, variant_inputs, &deferral, &pending);
+}
+
+void Scene::RecordShadowMask(const PreparedDraw& d, plume::RenderCommandList* list) {
+  ShadowMask& mask = temporal_->shadow_mask();
+  bool clear = false;
+  HostImage* image = mask.Target(uint32_t(std::lround(d.viewport.viewport.width)),
+                                 uint32_t(std::lround(d.viewport.viewport.height)), &clear);
+  if (!image) {
+    return;
+  }
+  // The layout change happens outside the game's render pass (the first draw of a frame: the image was
+  // left readable by the last frame's pass).
+  if (image->layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->setFramebuffer(nullptr);
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image->texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image->layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image->framebuffer.get());
+  if (clear) {
+    // Zero opacity everywhere: the frame's first decal, or a new image (a new colour target is also
+    // initialised before it is drawn into, D3D12 debug layer id 1422).
+    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  }
+  // Everything the game's draw bound, set again: the list's own state is not trusted across the
+  // framebuffer switch, and the list state is forgotten afterwards (ResetListState below).
+  list->setGraphicsPipelineLayout(layout_->layout());
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 1);
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 2);
+  list->setGraphicsDescriptorSet(heap_->sampler_set(), 3);
+  list->setPipeline(d.shadow_pipeline);
+  if (ActiveBackend() == Backend::kD3D12) {
+    list->setGraphicsRootDescriptor(d.vs_constants.reference(), GuestLayout::kVertexConstants);
+    list->setGraphicsRootDescriptor(d.ps_constants.reference(), GuestLayout::kPixelConstants);
+    list->setGraphicsRootDescriptor(d.shared_constants.reference(), GuestLayout::kSharedConstants);
+  } else {
+    const uint64_t addresses[3] = {d.vs_constants.device_address, d.ps_constants.device_address,
+                                   d.shared_constants.device_address};
+    list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+  }
+  list->setViewports(&d.viewport.viewport, 1);
+  list->setScissors(&d.scissor, 1);
+  if (pipelines_->dynamic_depth_bias()) {
+    list->setDepthBias(0.0f, 0.0f, 0.0f);  // no depth target: the guest's bias does not apply
+  }
+  const DrawGeometry& g = d.geometry;
+  if (g.slot_count) {
+    list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
+  }
+  if (g.indexed) {
+    list->setIndexBuffer(&g.index_view);
+    list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
+  } else {
+    list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  // The pass ends here: the next draw of the game opens its own.
+  list->setFramebuffer(nullptr);
+  ResetListState();
+  marked_framebuffer_ = nullptr;
+  mask.Drawn();
+}
+
 // ---------------------------------------------------------------------------
 // draws
 // ---------------------------------------------------------------------------
@@ -771,6 +869,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
         ++draws_since_flush_;
         if (d.hdr_action != HdrToneMap::Action::kNone) {
           RecordHdrDuplicate(d, list);
+        }
+        if (d.shadow_pipeline) {
+          RecordShadowMask(d, list);
         }
       }
     }
@@ -1112,6 +1213,12 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // again into the float scene image (hdr_tonemap.h).
   if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && hdr_tone_->Wants(d.ps)) {
     PrepareHdrDraw(d, inputs, banks, host_samples);
+  }
+  // A car's shadow decal is drawn again into the mask the upscaler takes as its reactive input
+  // (vehicle_motion_mask.h).
+  if (d.key.color_count == 1 && temporal_ && temporal_->active() &&
+      ShadowMask::IsDecal(r.vs_identity, r.ps_identity)) {
+    PrepareShadowMask(d, inputs);
   }
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
   FillTextureTables(view, fetch_mask, scale, shared, d.scene ? SceneBias() : 0);
