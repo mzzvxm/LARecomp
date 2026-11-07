@@ -1007,7 +1007,11 @@ void Renderer::ExecutePresent(PresentSource source) {
     return;
   }
 
-  swap_chain_.WaitForPresentSlot();
+  if (!dlssg_.active()) {
+    // Streamline's pacer owns the chain's frame latency while DLSS frame generation runs (the
+    // game's Reflex sleep paces the frames instead); the waitable object is not waited on.
+    swap_chain_.WaitForPresentSlot();
+  }
   uint32_t image = 0;
   if (!swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
     // Out of date (Vulkan) or a lost chain: rebuild once and retry. A failed

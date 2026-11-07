@@ -3,13 +3,21 @@
 // The pause menu's FRAME GENERATION rows (DISPLAY tab), next to nothing but themselves: the rows,
 // what greys them, and what the FPS LIMIT and the latency reducer rows say while it runs.
 //
-// The renderer says what this PC can run (gpu.h GetFrameGenerationAvailability): no row at all where
-// frame generation cannot run (no FidelityFX files, an unsupported card or driver, a build without
-// it); once chosen and failed in this session the row stays and says so.
+// The renderer says what this PC can run (gpu.h GetFrameGenerationAvailability for AMD's FSR 3.1,
+// GetDlssFrameGenerationAvailability for NVIDIA's DLSS): no row at all where neither can run (no
+// FidelityFX files, no RTX 40 or 50 series card with the DLSS files, an unsupported card or driver, a
+// build without them); once chosen and failed in this session the row stays and says so.
 //
-//   FRAME GENERATION        OFF / FSR 3.1              mcla_gpu_frame_generation  (live)
-//                           ("(WAIT)" while the swap chain is made again and the generation context
-//                           is made; "(FAILED)" after a failure: off until the next start)
+//   FRAME GENERATION        OFF / FSR 3.1 / DLSS       mcla_gpu_frame_generation  (live)
+//                           (each value only where it can run here; "(WAIT)" while the swap chain is
+//                           made again and the generation context is made, or Streamline has not
+//                           started; "(FAILED)" after a failure: off until the next start; DLSS says
+//                           "(N/A)" where Streamline said it cannot run here, and on Vulkan the row
+//                           reads "FRAME GEN (RESTART)": the device is made through Streamline only
+//                           when DLSS frame generation is saved at the start)
+//   FRAME GEN MULTIPLIER    2X / 3X / 4X               mcla_gpu_frame_generation_multiplier  (live;
+//                           only on an RTX 50 series card, grey unless DLSS is chosen: the 4X and 3X
+//                           are what the plugin says the card takes)
 //   FRAME GEN FPS LIMIT     HALF DISPLAY 116 / 30 (60 SHOWN) .. 120 (240 SHOWN) / UNCAPPED
 //                                                      mcla_gpu_frame_generation_fps_limit  (grey
 //                           unless frame generation is on). The number is the frames the game
@@ -24,9 +32,12 @@
 // their state from here (kFpsLimitDynamics, LatencyRowLocked).
 //
 // Width (pause_menu.cpp "Page width"): these rows are on DISPLAY, whose widest label is
-// "RENDER RES (SET BY FSR1)" (24 characters) and widest value "PERFORMANCE (50%)" (17): the longest
-// label here is "FPS LIMIT (FRAME GEN)" (21) and the longest values "FSR 3.1 (FAILED)" and "HALF
-// DISPLAY 116" (16 each).
+// "SHARPNESS (FSR ONLY)" (20) and widest value "PERFORMANCE (50%)" (17). The labels here: "FRAME
+// GENERATION" (16), "FRAME GEN (RESTART)" (19), "FRAME GEN MULTIPLIER" (20), "FRAME GEN FPS LIMIT" (19)
+// and "FPS LIMIT (FRAME GEN)" (21). The values: "OFF", "FSR 3.1 (FAILED)" (16), "FSR 3.1 (WAIT)" (14),
+// "DLSS (FAILED)" (13), "DLSS (WAIT)" (11), "DLSS (N/A)" (10), "2X" to "4X", "HALF DISPLAY 116" (16),
+// "1/4 DISPLAY 58" (14), "120 (480 SHOWN)" (15) and "UNCAPPED" (8). The widest label (21) and the widest
+// value (17) of the page are the existing ones, so the page stays inside its 41 characters.
 
 #include "menu_items.h"
 

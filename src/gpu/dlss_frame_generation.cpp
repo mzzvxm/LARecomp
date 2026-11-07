@@ -243,6 +243,13 @@ bool DlssFrameGeneration::SettingIsDlss() const {
 }
 
 bool DlssFrameGeneration::Candidate() const {
+#if !defined(LARECOMP_PLUME_STREAMLINE)
+  // Vulkan needs Plume's creation hooks for Streamline (the instance and the device are made through
+  // its interposer): without them there is no DLSS frame generation there, and the row is hidden.
+  if (vulkan_) {
+    return false;
+  }
+#endif
   return initialized_ && vendor_ == kVendorNvidia && files_ok_ &&
          dlss::NameLooksLikeFrameGeneration(gpu_name_);
 }
@@ -293,7 +300,9 @@ void DlssFrameGeneration::Publish() {
     why = !initialized_ ? std::string()
           : (vendor_ != kVendorNvidia || !dlss::NameLooksLikeFrameGeneration(gpu_name_))
               ? std::string("DLSS frame generation needs an NVIDIA RTX 40 or 50 series card")
-              : "these files are not next to the game's exe: " + files_missing_;
+          : !files_ok_ ? "these files are not next to the game's exe: " + files_missing_
+                       : std::string("this build's Plume has no creation hooks for Streamline on "
+                                     "Vulkan, which DLSS frame generation needs there");
   } else {
     // Vulkan: the device is made through Streamline only when frame generation or DLSS is the saved
     // choice at the start (temporal_dlss.h), and the plugins are asked for only with frame
