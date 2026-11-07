@@ -63,6 +63,7 @@
 
 #include <plume_render_interface.h>
 
+#include "edram.h"
 #include "guest_memory.h"
 #include "host_passes.h"
 #include "records.h"
