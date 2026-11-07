@@ -9,6 +9,7 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "latency.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -27,9 +28,33 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
     REXLOG_WARN("[gpu] present wait requested but {} does not support it; vsync paces presents",
                 device.backend_info());
   }
-  const plume::RenderSwapChainDesc desc(window, kFormat, kFramesInFlight + 1, present_wait_,
-                                        kFramesInFlight);
-  swap_chain_ = device.queue()->createSwapChain(desc);
+  format_ = kSdrFormat;
+  hdr_ = false;
+  if (options.hdr10) {
+    // The output has to take the HDR10 colour space (D3D12 CheckColorSpaceSupport, Vulkan's
+    // surface formats); Plume says no by returning null, with the reason on stderr. The SDR chain
+    // is the answer then, made after this one is gone (a window has one flip-model chain).
+    // CHECK: with the renderer on one GPU and the display on another, whether D3D12 accepts the HDR10
+    // colour space is not verified; a refusal lands in the SDR chain below with the log line.
+    const plume::RenderSwapChainDesc hdr_desc(
+        window, plume::RenderFormat::R10G10B10A2_UNORM, kFramesInFlight + 1, present_wait_,
+        kFramesInFlight, plume::RenderSwapChainColorSpace::HDR10_ST2084);
+    swap_chain_ = device.queue()->createSwapChain(hdr_desc);
+    if (swap_chain_) {
+      format_ = plume::RenderFormat::R10G10B10A2_UNORM;
+      hdr_ = true;
+    } else {
+      REXLOG_WARN("[gpu] hdr: {} would not make an HDR10 swap chain for this window (the output "
+                  "does not present the HDR10 colour space, or the surface does not list it; "
+                  "Plume's message is on stderr); the SDR swap chain is used",
+                  device.backend_info());
+    }
+  }
+  if (!swap_chain_) {
+    const plume::RenderSwapChainDesc desc(window, kSdrFormat, kFramesInFlight + 1, present_wait_,
+                                          kFramesInFlight);
+    swap_chain_ = device.queue()->createSwapChain(desc);
+  }
   if (!swap_chain_) {
     REXLOG_ERROR("[gpu] Plume could not create the swap chain");
     device_ = nullptr;
@@ -56,9 +81,9 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
     device_ = nullptr;
     return false;
   }
-  REXLOG_INFO("[gpu] swap chain {}x{}, {} buffers, latency {}, vsync {}, present wait {}",
+  REXLOG_INFO("[gpu] swap chain {}x{}, {} buffers, latency {}, vsync {}, present wait {}, {}",
               width(), height(), image_count(), kFramesInFlight, options.vsync ? "on" : "off",
-              present_wait_ ? "on" : "off");
+              present_wait_ ? "on" : "off", hdr_ ? "HDR10" : "SDR");
   return true;
 }
 
@@ -107,12 +132,18 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
     return false;
   }
   const ScopedGpuWait wait;  // may block for a free image
+  // Vulkan: the acquire needs the chain to itself, so the latency reducer's calls on the update
+  // thread that name it wait (latency.h).
+  const latency::SwapChainUse use;
   return swap_chain_->acquireTexture(signal, image);
 }
 
 bool SwapChain::Present(uint32_t image) {
   plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
   const ScopedGpuWait wait;  // may block on the queue of presents
+  // Vulkan: the present needs the chain to itself, so the latency reducer's calls on the update
+  // thread that name it wait (latency.h).
+  const latency::SwapChainUse use;
   return swap_chain_->present(image, waits, 1);
 }
 
@@ -120,6 +151,15 @@ void SwapChain::SetVsync(bool vsync) {
   if (swap_chain_ && swap_chain_->isVsyncEnabled() != vsync) {
     swap_chain_->setVsyncEnabled(vsync);
   }
+}
+
+bool SwapChain::SetHdrMetadata(const plume::RenderHdrMetadata& metadata) {
+  if (!hdr_ || !swap_chain_) {
+    return false;
+  }
+  // Vulkan: vkSetHdrMetadataEXT needs the chain to itself too (as Present and Acquire).
+  const latency::SwapChainUse use;
+  return swap_chain_->setHdrMetadata(metadata);
 }
 
 void SwapChain::WaitForPresentSlot() {

@@ -24957,6 +24957,14 @@ address = 0x82426B98
 name = "Hook_DisplayGammaType"
 registers = ["r1"]
 
+# 0x821BDA90: the engine timer's first instruction, before it reads the clock. Where a frame starts
+# for the GPU vendor's latency reducer (NVIDIA Reflex, AMD Anti-Lag 2): its wait comes here, so the
+# time step the timer then measures is the one after the wait (hooks/frame_timing.cpp,
+# MCLAFrameStart; src/gpu/latency.h).
+[[midasm_hook]]
+name = "MCLAFrameStart"
+address = 0x821BDA90
+
 # BadassBaboon's Recomp Adjustments: Core 60 FPS Engine Timing Pipeline
 # 0x821BDAB0: subf r8,r10,r11 in sub_821BDA90 (elapsed frame ticks clamp & limiter)
 [[midasm_hook]]
@@ -27282,3 +27290,173 @@ jump_address_on_true = 0x821449D0
 [[midasm_hook]]
 address = 0x823EC978
 name = "Hook_PumpWakeMixerDone"
+
+# The parts-bought table of the player profile (LocalOptions +246640, 77 records of 84 bytes,
+# one per roster vehicle) moved to a block sized to the roster: vehicle_records.cpp. Each hook
+# follows the instruction that forms the table's address - `ori rX,rY,0xC3xx` after `lis rY,3`
+# or `addi rX,rX,-0x3C90` after `addis rX,rP,4` - and moves that register to the new block.
+[[midasm_hook]]
+address = 0x8238ACB8
+name = "VehicleRecords_8238ACB8"
+registers = ["r6"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238B40C
+name = "VehicleRecords_8238B40C"
+registers = ["r28"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C2C0
+name = "VehicleRecords_8238C2C0"
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C5D4
+name = "VehicleRecords_8238C5D4"
+registers = ["r21"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C5D8
+name = "VehicleRecords_8238C5D8"
+registers = ["r23"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C5FC
+name = "VehicleRecords_8238C5FC"
+registers = ["r25"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8238C7B4
+name = "VehicleRecords_8238C7B4"
+registers = ["r24"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269A2FC
+name = "VehicleRecords_8269A2FC"
+registers = ["r23"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269B724
+name = "VehicleRecords_8269B724"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269B810
+name = "VehicleRecords_8269B810"
+registers = ["r26"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269BE7C
+name = "VehicleRecords_8269BE7C"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269DC84
+name = "VehicleRecords_8269DC84"
+registers = ["r27"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8269E438
+name = "VehicleRecords_8269E438"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A7328
+name = "VehicleRecords_826A7328"
+registers = ["r22"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A96A8
+name = "VehicleRecords_826A96A8"
+registers = ["r27"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9964
+name = "VehicleRecords_826A9964"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9A30
+name = "VehicleRecords_826A9A30"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9B0C
+name = "VehicleRecords_826A9B0C"
+registers = ["r7"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826A9B84
+name = "VehicleRecords_826A9B84"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AA490
+name = "VehicleRecords_826AA490"
+registers = ["r28"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AEE00
+name = "VehicleRecords_826AEE00"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AEF3C
+name = "VehicleRecords_826AEF3C"
+registers = ["r29"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826AF6F8
+name = "VehicleRecords_826AF6F8"
+registers = ["r5"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x826B01B0
+name = "VehicleRecords_826B01B0"
+registers = ["r8"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x8279ABF0
+name = "VehicleRecords_8279ABF0"
+registers = ["r8"]
+after_instruction = true
+
+# The garage's showroom past 70 rows: showroom.cpp. 0x8269381C is where the statechart loader
+# (sub_82692440) goes on after sscanf'ing an <include>'s count into r1+0x54; the hook raises the
+# count of the showroom's template to the roster.
+[[midasm_hook]]
+address = 0x8269381C
+name = "ShowroomRows_8269381C"
+registers = ["r1"]
+
+# `addi r15,r14,0x6C` in mcGarage::ListShowroomVehicles: the pointer into the garage's name pool
+# that the loop walks, moved to a block sized to the roster.
+[[midasm_hook]]
+address = 0x826A9EA8
+name = "ShowroomNames_826A9EA8"
+registers = ["r15"]
+after_instruction = true

@@ -31,8 +31,17 @@
 // 2^-mcla_gpu_fsr_sharpness. When the passes stop short of the letterbox, RCAS
 // goes into an intermediate and the present's bilinear stretch (without the
 // table) finishes. Otherwise -- no upscale on an axis -- the bilinear present.
-// The intermediates are R16G16B16A16_FLOAT (the table's 10 bits survive; Plume
-// has no 10:10:10:2), made at the sizes asked for and retired when they change.
+// The intermediates are R16G16B16A16_FLOAT (the table's 10 bits survive), made at the sizes
+// asked for and retired when they change.
+//
+// HDR10 (hdr.h): with an HDR10 back buffer the passes that write it -- the present, the stretch and
+// RCAS's last pass -- are the variants whose last step is hlsl/hdr_output.hlsli (the SDR code
+// values decoded, placed at paper white, rolled off, PQ encoded). The table, EASU and the
+// intermediates stay SDR code values, so the picture is mixed and sharpened as it is in SDR and
+// DISPLAY GAMMA means the same. A guest frame that kept its UI as a layer (frame_layers.h) is read
+// from the float image HdrScene composed (hdr_scene.h) instead of the front buffer: its code values
+// may exceed 1, so the table is read as before up to 1 and goes on above 1 by the slope of its last
+// step (kHdrFlagExtendedCodes); FSR1's passes read that image in float16.
 //
 // Threading: render thread only, after Initialize.
 // ===========================================================================
@@ -45,6 +54,7 @@
 #include <plume_render_interface.h>
 
 #include "guest_device.h"
+#include "hdr.h"
 #include "host_passes.h"
 #include "records.h"
 
@@ -53,6 +63,7 @@ namespace mcla::gpu {
 class BindlessHeap;
 class Device;
 class FrameRing;
+class HdrScene;
 class PassTiming;
 class TextureCache;
 class UploadRing;
@@ -66,14 +77,26 @@ class PresentPass {
   PresentPass(const PresentPass&) = delete;
   PresentPass& operator=(const PresentPass&) = delete;
 
+  // `hdr`: the back buffer is HDR10 (SwapChain::hdr()), `target_format` its format.
   bool Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, UploadRing& upload,
                   HostPasses& passes, TextureCache& textures, PassTiming& pass_timing,
-                  plume::RenderFormat target_format);
+                  plume::RenderFormat target_format, bool hdr);
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
   // A guest present: the front buffer and the table it shows from now on.
   void OnGuestPresent(const PresentRecord& record);
+
+  // HDR10 only: the levels Draw puts in its constants, each frame before it.
+  void SetHdrLevels(const HdrLevels& levels) { hdr_levels_ = levels; }
+  // The game's display gamma table as the last guest present left it, the green channel as the
+  // table value over 1023 per code (HDR stage 3 inverts the viewing transfer through it, hdr_tonemap.h).
+  // False while the table was not built yet (all zero): the identity applies.
+  bool GreenGammaTable(float out[256]) const;
+  // HDR10 only: where Prepare takes the frame from when the guest frame kept its UI as a layer
+  // (hdr_scene.h) -- the float image of the scene and the UI composed -- instead of the front
+  // buffer. Not owned; null: the front buffer always.
+  void SetHdrScene(HdrScene* scene) { hdr_scene_ = scene; }
 
   // Outside any render pass: binds the front buffer (its upload, if it comes
   // from memory) and writes the table when it changed, into `list`; with FSR1
@@ -123,8 +146,13 @@ class PresentPass {
     float origin_y;
     float scale_x;
     float scale_y;
+    // The HDR10 variants only (hlsl/hdr_output.hlsli HdrLevels); the others read the 32 bytes above.
+    float hdr_white;
+    float hdr_peak;
+    float hdr_knee;
+    uint32_t hdr_flags;
   };
-  static_assert(sizeof(Push) == 32);
+  static_assert(sizeof(Push) == 48 && sizeof(Push) <= HostPasses::kPushConstantBytes);
 
   // FSR1 (M6c.1).
   struct EasuPush {  // hlsl/fsr_easu_ps.hlsl
@@ -142,8 +170,16 @@ class PresentPass {
     int32_t output_y;
     int32_t input_max_x;
     int32_t input_max_y;
+    // The HDR10 variant only (hlsl/hdr_output.hlsli HdrLevels).
+    // CHECK: these land at byte 24, 28, 32 and 36, as in the HLSL cbuffer (and with -fvk-use-dx-layout
+    // on Vulkan); the SDK's dxc here has no SPIR-V back end, so only the DXIL builds were compiled.
+    float hdr_white;
+    float hdr_peak;
+    float hdr_knee;
+    uint32_t hdr_flags;
   };
-  static_assert(sizeof(EasuPush) <= 32 && sizeof(RcasPush) <= 32);
+  static_assert(sizeof(EasuPush) <= HostPasses::kPushConstantBytes &&
+                sizeof(RcasPush) <= HostPasses::kPushConstantBytes);
   // chain_[0] the table's output at the source size, [1..n] the EASU passes',
   // [n + 1] RCAS's when the stretch follows.
   // kRamped: the table applied 1:1 into ramped_ first, then the bilinear
@@ -167,11 +203,16 @@ class PresentPass {
   TextureCache* textures_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   std::unique_ptr<plume::RenderShader> shader_;
-  std::unique_ptr<plume::RenderPipeline> pipeline_;
+  std::unique_ptr<plume::RenderPipeline> pipeline_;  // into the back buffer (the HDR10 variant when hdr_)
   // FSR1.
   std::unique_ptr<plume::RenderShader> easu_shader_;
   std::unique_ptr<plume::RenderShader> rcas_shader_;
   std::unique_ptr<plume::RenderShader> stretch_shader_;
+  // HDR10: the shaders of the passes that write the back buffer (shader_, rcas_shader_ and
+  // stretch_shader_ stay for the intermediates).
+  std::unique_ptr<plume::RenderShader> hdr_shader_;
+  std::unique_ptr<plume::RenderShader> rcas_hdr_shader_;
+  std::unique_ptr<plume::RenderShader> stretch_hdr_shader_;
   std::unique_ptr<plume::RenderPipeline> ramp_pipeline_;          // present_ps into an intermediate
   std::unique_ptr<plume::RenderPipeline> easu_pipeline_;
   std::unique_ptr<plume::RenderPipeline> rcas_pipeline_;          // into the back buffer
@@ -182,6 +223,18 @@ class PresentPass {
   // table's values exactly, so the stretch mixes the same numbers as before).
   std::unique_ptr<plume::RenderPipeline> ramped_pipeline_;
   HostImage ramped_;
+  bool hdr_ = false;    // the back buffer is HDR10
+  HdrLevels hdr_levels_;
+  HdrScene* hdr_scene_ = nullptr;
+  // Prepare bound the HdrScene's image: its codes may exceed 1 (kHdrFlagExtendedCodes).
+  bool extended_ = false;
+  // ... and it is the float scene (HDR stage 3): the table is read between its entries.
+  bool interpolated_ = false;
+  // hdr.h kHdrFlagExtendedCodes / kHdrFlagInterpolatedCodes for the image Prepare bound.
+  uint32_t CodeFlags() const {
+    return extended_ ? (kHdrFlagExtendedCodes | (interpolated_ ? kHdrFlagInterpolatedCodes : 0u))
+                     : 0u;
+  }
   Route route_ = Route::kBilinear;
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;

@@ -73,6 +73,20 @@ static_assert(offsetof(SharedConstants, pos_scale) == 560);
 static_assert(offsetof(SharedConstants, pos_offset) == 576);
 static_assert(offsetof(SharedConstants, inv_resolution_scale) == 592);
 
+// The HDR scene variant of the game's tone map (hdr_tonemap.h, shaders.h kHdrVariant) reads 16 bytes
+// after the SharedConstants block: the pack builder (tools/build_hdr_variants.py) declares them in
+// the variant's HLSL as `float4 g_HdrScene` at byte 608 (c38 of the block). Only the draw that
+// uses the variant uploads them (SharedConstants followed by this); every other draw, and the
+// main pack's contract (v7 and v8, 608 bytes), is as it was. Contract 1 of the HDR pack.
+struct HdrSceneConstants {
+  float knee;        // where the HDR curve leaves the game's, in the game's linear units (1 = its white)
+  float highlights;  // the slope above the knee, times the game curve's (mcla_gpu_hdr_highlights)
+  float peak;        // the display's peak in the game's linear units (the viewing transfer inverted)
+  float reserved;
+};
+static_assert(sizeof(HdrSceneConstants) == 16);
+inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {

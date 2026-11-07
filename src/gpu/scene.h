@@ -63,7 +63,9 @@
 #include "constants.h"
 #include "draw_census.h"
 #include "edram.h"
+#include "frame_layers.h"
 #include "geometry.h"
+#include "hdr_tonemap.h"
 #include "input_layout.h"
 #include "pipelines.h"
 #include "thread_load.h"
@@ -97,6 +99,11 @@ class Scene {
                   GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                   ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap,
                   PassTiming& pass_timing, PostAa& post);
+  // The UI layer split (frame_layers.h); not owned. Null or inactive: no draw is touched.
+  void SetFrameLayers(FrameLayers* layers) { layers_ = layers; }
+  // HDR stage 3 (hdr_tonemap.h): the tone map and what the game draws after it are drawn again into
+  // a float image; not owned. Null or inactive: no draw is touched.
+  void SetHdrToneMap(HdrToneMap* tone_map) { hdr_tone_ = tone_map; }
 
   // The guest's occlusion queries: while one is open, the draws are counted
   // (occlusion.h). Null: none are.
@@ -178,6 +185,17 @@ class Scene {
     UploadSpan ps_constants;
     UploadSpan shared_constants;
     Scale scale;  // the resolution scale its targets are (or are made) at
+    // The UI layer split: what OnDraw does before recording the draw (the key's alpha blend was
+    // already changed in Prepare when the draw joins the layer).
+    FrameLayers::DrawAction ui_layer = FrameLayers::DrawAction::kNone;
+    // HDR stage 3: the draw is drawn again into the float scene image once it is recorded
+    // (RecordHdrDuplicate), with this pipeline; the tone map's second draw also has its own shared
+    // constants (the 608 bytes and the 16 of the HDR variant).
+    HdrToneMap::Action hdr_action = HdrToneMap::Action::kNone;
+    plume::RenderPipeline* hdr_pipeline = nullptr;
+    UploadSpan hdr_shared;
+    // Set by Record, for the second draw.
+    plume::RenderRect scissor;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
   };
 
@@ -242,6 +260,18 @@ class Scene {
   EdramNoteKey last_edram_note_;
   // Binds `framebuffer` (closing the open render pass first) unless bound.
   void BindFramebuffer(plume::RenderCommandList* list, plume::RenderFramebuffer* framebuffer);
+  // The UI layer split starts or ends with a draw (FrameLayers::Start/End): copies, clears and
+  // draws into the UI target, outside a render pass; the draw binds everything again after.
+  void UiLayersBeforeDraw(FrameLayers::DrawAction action, plume::RenderCommandList* list);
+  // HDR stage 3: asks the HdrToneMap about the draw (the tone map, or a draw into its target before
+  // the marker) and, for one it wants drawn again, looks the second pipeline up (a build still
+  // under way leaves the second draw out: the frame has no float scene).
+  void PrepareHdrDraw(PreparedDraw& d, const PipelineInputs& inputs,
+                      const ConstantBanks::Banks& banks, uint32_t host_samples);
+  // The draw `d` was just recorded: records it again into the float scene image (its own
+  // framebuffer, pipeline, and shared constants for the tone map; everything else the draw's).
+  void RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* list);
+  static bool AlwaysMaySkip(const void*) { return true; }
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
@@ -407,6 +437,8 @@ class Scene {
   uint32_t last_color0_width_ = 0;
   uint32_t last_color0_height_ = 0;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
+  FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
+  HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)
 
   // The last draw's lookups: consecutive draws mostly name
   // the same targets, shaders and pipeline. Each memo holds only while what it

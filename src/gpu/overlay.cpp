@@ -41,8 +41,13 @@ struct OverlayPushConstants {
   float translate[2];
   uint32_t texture;
   uint32_t sampler_index;
+  // overlay_hdr_ps only (hdr.h HdrLevels): the UI's level on an HDR10 back buffer.
+  float hdr_white;
+  float hdr_peak;
+  float hdr_knee;
+  uint32_t hdr_flags;
 };
-static_assert(sizeof(OverlayPushConstants) == 24);
+static_assert(sizeof(OverlayPushConstants) == 40);
 static_assert(sizeof(rex::ui::ImmediateVertex) == 20);
 
 // Frames kept for reuse by the channel; enough for one being recorded, one
@@ -363,10 +368,11 @@ OverlayRenderer::~OverlayRenderer() {
 
 bool OverlayRenderer::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                                  UploadRing& upload, std::shared_ptr<OverlayChannel> channel,
-                                 plume::RenderFormat target_format) {
+                                 plume::RenderFormat target_format, bool hdr) {
   if (device_) {
     return true;
   }
+  hdr_ = hdr;
   if (!channel) {
     REXLOG_ERROR("[gpu] overlay renderer: no channel from the overlay drawer");
     return false;
@@ -422,7 +428,7 @@ bool OverlayRenderer::CreatePipelines(plume::RenderFormat target_format) {
   layout_ = device_->CreatePipelineLayout(builder, "overlay layout");
 
   const HostShaderBlob vs = OverlayVertexShader();
-  const HostShaderBlob ps = OverlayPixelShader();
+  const HostShaderBlob ps = hdr_ ? OverlayHdrPixelShader() : OverlayPixelShader();
   vertex_shader_ = device_->CreateShader(vs.data, vs.size, "main", vs.name);
   pixel_shader_ = device_->CreateShader(ps.data, ps.size, "main", ps.name);
   if (!layout_ || !vertex_shader_ || !pixel_shader_) {
@@ -658,6 +664,10 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
   push.scale[1] = -2.0f / frame.height;
   push.translate[0] = -1.0f;
   push.translate[1] = 1.0f;
+  push.hdr_white = hdr_levels_.white;
+  push.hdr_peak = hdr_levels_.peak;
+  push.hdr_knee = hdr_levels_.knee;
+  push.hdr_flags = hdr_levels_.flags;
 
   const plume::RenderPipeline* bound = nullptr;
   uint32_t recorded = 0;

@@ -42,6 +42,8 @@
 #include <plume_render_interface.h>
 #include <rex/ui/immediate_drawer.h>
 
+#include "hdr.h"
+
 namespace rex::ui {
 class ImGuiDrawer;
 class Window;
@@ -222,8 +224,12 @@ class OverlayRenderer {
   OverlayRenderer(const OverlayRenderer&) = delete;
   OverlayRenderer& operator=(const OverlayRenderer&) = delete;
 
+  // `hdr`: the target is an HDR10 back buffer (SwapChain::hdr()), `target_format` its format. The
+  // SDK's colours are then placed at paper white and PQ encoded by the pixel shader, and blended
+  // in those code values.
   bool Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, UploadRing& upload,
-                  std::shared_ptr<OverlayChannel> channel, plume::RenderFormat target_format);
+                  std::shared_ptr<OverlayChannel> channel, plume::RenderFormat target_format,
+                  bool hdr);
   // The GPU must be idle and the FrameRing drained. Closes the channel.
   void Shutdown();
 
@@ -239,6 +245,9 @@ class OverlayRenderer {
   // Inside the back buffer's framebuffer. Returns the draws recorded.
   uint32_t Draw(plume::RenderCommandList* list, uint32_t slot, uint32_t target_width,
                 uint32_t target_height);
+
+  // HDR10 only: the levels Draw puts in its constants, each frame before it.
+  void SetHdrLevels(const HdrLevels& levels) { hdr_levels_ = levels; }
 
   size_t texture_count() const { return textures_.size(); }
 
@@ -267,6 +276,8 @@ class OverlayRenderer {
   std::unique_ptr<plume::RenderShader> pixel_shader_;
   std::unique_ptr<plume::RenderPipeline> triangle_pipeline_;
   std::unique_ptr<plume::RenderPipeline> line_pipeline_;
+  bool hdr_ = false;  // the target is HDR10: the pixel shader is overlay_hdr_ps
+  HdrLevels hdr_levels_;
 
   std::unordered_map<uint32_t, GpuTexture> textures_;
   std::unordered_set<uint32_t> failed_textures_;    // creation failed; logged once

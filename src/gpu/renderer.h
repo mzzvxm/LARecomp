@@ -56,9 +56,12 @@
 #include "edram.h"
 #include "flicker_probe.h"
 #include "frame.h"
+#include "frame_layers.h"
 #include "frame_trace.h"
 #include "geometry.h"
 #include "guest_memory.h"
+#include "hdr_scene.h"
+#include "hdr_tonemap.h"
 #include "host_passes.h"
 #include "layout.h"
 #include "memory_census.h"
@@ -175,6 +178,9 @@ class Renderer final : public RenderThread::Executor {
   void SubmitFrameWithoutPresent();
   void ExecutePresent(PresentSource source);
   bool RebuildSwapChain();
+  // HDR10 only, once per present: this frame's levels to the present pass and the overlay, and the
+  // display's metadata when the peak moved.
+  void UpdateHdr();
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
@@ -207,6 +213,9 @@ class Renderer final : public RenderThread::Executor {
   SwapChain swap_chain_;
   PresentPass present_;     // the guest's front buffer on the window
   PostAa post_;             // the scene's anti-aliasing before the UI
+  FrameLayers layers_;      // the frame's scene and UI as two layers (HDR output, frame generation)
+  HdrScene hdr_scene_;      // HDR10: the two layers composed at the present
+  HdrToneMap hdr_tone_;     // HDR10: the tone map drawn again, the scene above paper white
   FlickerProbe flicker_probe_;  // diagnostic, mcla_gpu_flicker_probe
   OverlayRenderer overlay_;
   GpuTiming timing_;
@@ -223,6 +232,9 @@ class Renderer final : public RenderThread::Executor {
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
   bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
+  // The last HDR10 metadata given to the swap chain (UpdateHdr).
+  bool hdr_metadata_sent_ = false;
+  plume::RenderHdrMetadata hdr_metadata_;
   // The internal resolution scale chosen at Initialize from the swap chain's
   // size; render thread: the last scale a later window size was reported to
   // give (NoteRenderScaleWindow).

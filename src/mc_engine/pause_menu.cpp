@@ -44,6 +44,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/latency.h"
 #endif
 
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
@@ -764,11 +765,21 @@ double CvarGetDouble(const char* name) {
     return std::strtod(CvarGet(name).c_str(), nullptr);
 }
 
+// DISPLAY > HDR > TEST PATTERN is a preview, not a setting: the bars replace the whole picture, this
+// menu included (the game draws the pause menu into the same frame: a pause frame has no UI layer
+// the present could keep above the bars, frame_layers.h), so they show only while their row is the
+// highlighted row of the open HDR menu (HdrTestPatternTick), and they are never written to
+// larecomp.toml (config_save.h NoteSessionOnlyCvar). True while the menu's row has them on.
+constexpr const char* kHdrTestPatternCvar = "mcla_gpu_hdr_test_pattern";
+std::atomic<bool> g_hdr_pattern_by_menu{false};
+
 void CvarSet(const char* name, const char* value) {
     if (std::string_view(name) == kRendererCvar) {
         RendererSet(value);
         return;
     }
+    if (std::string_view(name) == kHdrTestPatternCvar)
+        g_hdr_pattern_by_menu.store(std::string_view(value) == "true", std::memory_order_relaxed);
     if (IsDeferredCvar(name)) {
         MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
         SetDeferred(name, value);
@@ -1381,6 +1392,64 @@ constexpr RowDynamics kRenderResDynamics = {
 constexpr RowDynamics kFsrToggleDynamics = {.suffix = FsrToggleSuffix};
 constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
 constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
+
+// ── HDR ────────────────────────────────────────────────────────────────
+//
+// HDR (mcla_gpu_hdr) is read at start. The level rows work while HDR output is on: AUTO shows
+// what it stands for now (Windows' report for the display the window is on), and without HDR
+// output they are grey.
+
+// CHECK: the longest row is "PEAK BRIGHTNESS: AUTO (1000 NITS)", 33 characters against RENDER RES's
+// "RENDER RES: SCREEN (1080P)" at 26: look that it fits the row's width, shorten the prefix if not.
+constexpr const char* kHdrModeVals[]  = {"off", "auto", "on"};
+constexpr const char* kHdrModeNames[] = {"OFF", "AUTO", "ON"};
+// Windows' SDR content brightness slider covers 80 to 480 nits.
+constexpr double kHdrPaperWhiteVals[] = {0.0, 80.0, 100.0, 120.0, 160.0, 200.0,
+                                         240.0, 280.0, 320.0, 400.0, 480.0};
+constexpr double kHdrPeakVals[] = {0.0, 200.0, 400.0, 600.0, 800.0, 1000.0,
+                                   1200.0, 1500.0, 2000.0, 3000.0, 4000.0};
+// How far the scene's lights go above paper white (mcla_gpu_hdr_highlights, the HDR curve's slope):
+// NORMAL, BRIGHT, BRIGHTER (the default), BRIGHTEST.
+constexpr double kHdrHighlightVals[] = {1.0, 1.5, 2.0, 3.0};
+
+bool HdrActive() { return mcla::gpu::HdrOutputActive(); }
+
+// "240 NITS", and for 0 "AUTO (240 NITS)": what AUTO is on this display.
+std::string HdrNitsLabel(double value, float automatic) {
+    char buf[32];
+    if (value <= 0.0) {
+        std::snprintf(buf, sizeof(buf), "AUTO (%.0f NITS)", double(automatic));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.0f NITS", value);
+    }
+    return buf;
+}
+std::string HdrPaperWhiteLabel(double value) {
+    return HdrNitsLabel(value, mcla::gpu::HdrAutoPaperWhiteNits());
+}
+std::string HdrPeakLabel(double value) {
+    return HdrNitsLabel(value, mcla::gpu::HdrAutoPeakNits());
+}
+
+const char* HdrLevelSuffix() { return HdrActive() ? "" : " (HDR OFF)"; }
+
+std::string HdrHighlightLabel(double value) {
+    if (value == 1.0) return "NORMAL";
+    if (value == 1.5) return "BRIGHT";
+    if (value == 2.0) return "BRIGHTER";
+    if (value == 3.0) return "BRIGHTEST";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%g", value);  // set by hand between the steps
+    return buf;
+}
+
+constexpr RowDynamics kHdrPaperWhiteDynamics = {
+    .value_label = HdrPaperWhiteLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrPeakDynamics = {
+    .value_label = HdrPeakLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrTestDynamics = {.enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrHighlightDynamics = {
+    .value_label = HdrHighlightLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
 #endif
 
 // ── Menu contents ──────────────────────────────────────────────────────
@@ -1405,6 +1474,7 @@ const ItemDef kVideoItems[] = {
                                 "RENDER RES: ", kRenderResVals, 7, "%g", " (RESTART)"),
                             &kRenderResDynamics)),
     NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
+    NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
 #endif
 #if defined(LARECOMP_HAS_GPU)
     XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
@@ -1576,7 +1646,85 @@ const ItemDef kGpuFsrItems[] = {
                      kFsrSharpVals, 5, "%g"),
                  &kFsrSharpDynamics),
 };
+
+// DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
+const ItemDef kGpuHdrItems[] = {
+    Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
+        kHdrModeVals, kHdrModeNames, 3, " (RESTART)"),
+    WithDynamics(Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
+                     kHdrPaperWhiteVals, 11, "%.0f"),
+                 &kHdrPaperWhiteDynamics),
+    WithDynamics(Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
+                     kHdrPeakVals, 11, "%.0f"),
+                 &kHdrPeakDynamics),
+    // How far lights, the sun, the dusk sky and the headlights go above paper white.
+    WithDynamics(Dbl("PM_RxGpuHdrHighlights", "mcla_gpu_hdr_highlights", "HIGHLIGHTS: ",
+                     kHdrHighlightVals, 4, "%g"),
+                 &kHdrHighlightDynamics),
+    WithDynamics(Bool("PM_RxGpuHdrTest", "mcla_gpu_hdr_test_pattern", "TEST PATTERN: "),
+                 &kHdrTestDynamics),
+};
 #endif
+
+// PERFORMANCE > RENDERING > NVIDIA REFLEX / AMD ANTI-LAG 2 (mcla_gpu_low_latency, live): the GPU vendor's
+// latency reducer. The row comes from the renderer's own answer (gpu/latency.h): it names the vendor's
+// feature, and there is none where the GPU, the driver or the graphics API has no reducer, which is
+// how a PC that cannot run it never sees it. AUTO says what it comes to on this GPU. Anti-Lag 2 has no
+// boost, so its row stops at ON.
+#if defined(LARECOMP_HAS_GPU)
+const char* const kLowLatencyVals[]  = {"auto", "off", "on", "boost"};
+const char* const kLowLatencyNames[] = {"AUTO", "OFF", "ON", "ON + BOOST"};
+
+std::string LowLatencyLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::latency::AutoIsOn() ? "AUTO (ON)" : "AUTO (OFF)";
+    case 1:  return "OFF";
+    case 2:  return "ON";
+    default: return "ON + BOOST";
+    }
+}
+
+// Says why a reducer that is asked for is not working right now.
+const char* LowLatencySuffix() {
+    switch (mcla::gpu::latency::CurrentHealth()) {
+    case mcla::gpu::latency::Health::kPaused: return " (PAUSED)";
+    case mcla::gpu::latency::Health::kFailed: return " (NOT WORKING)";
+    default:                                  return "";
+    }
+}
+
+constexpr RowDynamics kLowLatencyDynamics = {.str_label = LowLatencyLabel,
+                                             .suffix = LowLatencySuffix};
+
+const ItemDef kReflexRows[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
+                                kLowLatencyVals, kLowLatencyNames, 4),
+                            &kLowLatencyDynamics)),
+};
+const ItemDef kAntiLagRows[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
+                                kLowLatencyVals, kLowLatencyNames, 3),
+                            &kLowLatencyDynamics)),
+};
+#endif
+
+// The rows RENDERING takes from the renderer (MenuDef::extra): the vendor's latency reducer, or none.
+const ItemDef* LowLatencyMenuRows(int& count) {
+#if defined(LARECOMP_HAS_GPU)
+    switch (mcla::gpu::latency::AvailableKind()) {
+    case mcla::gpu::latency::Kind::kReflex:
+        count = int(sizeof(kReflexRows) / sizeof(kReflexRows[0]));
+        return kReflexRows;
+    case mcla::gpu::latency::Kind::kAntiLag:
+        count = int(sizeof(kAntiLagRows) / sizeof(kAntiLagRows[0]));
+        return kAntiLagRows;
+    default:
+        break;
+    }
+#endif
+    count = 0;
+    return nullptr;
+}
 
 // Where the rear view mirror sits (rearview_position, rear_view.cpp).
 constexpr const char* kRearViewPosVals[]  = {"stock", "left_top", "middle_top",
@@ -1877,7 +2025,8 @@ const MenuDef kMenus[] = {
      kPerfShadItems, int(sizeof(kPerfShadItems) / sizeof(kPerfShadItems[0]))},
     {"PM_RxTabPerfRend", "RENDERING", "Screen effects and frame pacing.",
      "RxPerfRendMenu",
-     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0]))},
+     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0])),
+     LowLatencyMenuRows},
     {"PM_RxTabPerfWorld", "WORLD DENSITY", "Traffic, pedestrians and props.",
      "RxPerfWorldMenu",
      kPerfWorldItems, int(sizeof(kPerfWorldItems) / sizeof(kPerfWorldItems[0]))},
@@ -1899,6 +2048,12 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
      "RxGpuFsrMenu",
      kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
+    // The paused world is not made brighter than its white (the HIGHLIGHTS row's change shows once
+    // the game is resumed), which this line says: it is the only help text a menu has.
+    // CHECK: the 38 characters fit under the list.
+    {"PM_RxTabGpuHdr", "HDR", "HDR levels. Highlights show on resume.",
+     "RxGpuHdrMenu",
+     kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif
     {"PM_RxTabCam", "CAMERA", "Chase camera, free camera and rear view.",
      "RxCamMenu",
@@ -2941,6 +3096,15 @@ void InitPauseMenuHooks() {
     // Runs from FinishSetupAfterBootBuild, before ReXApp::LaunchModule starts
     // the guest -- the only point where the online cvar is still the player's.
     InitOnlineSettings();
+    // The test pattern lives for the run: a save never writes it, and one an older save left in the
+    // file is switched off now (it would cover the menu that could switch it off).
+    larecomp::NoteSessionOnlyCvar(kHdrTestPatternCvar);
+    if (const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(kHdrTestPatternCvar);
+        info && info->source == rex::cvar::Source::kConfig && info->getter() == "true") {
+        MC_INFO("[pause-menu] {} = true in larecomp.toml is ignored: the test pattern is never kept",
+                kHdrTestPatternCvar);
+        rex::cvar::SetFlagByName(kHdrTestPatternCvar, "false");
+    }
     MC_INFO("[pause-menu] hooks registered");
 }
 
@@ -4403,7 +4567,36 @@ void PauseMenuLeaveSubmenu() {
 // the open-form stack holding the pad. The color strip closes as soon as its
 // form is not the top one.
 
+// Whether the highlighted row of the menu on top is DISPLAY > HDR > TEST PATTERN.
+bool HdrTestPatternRowFocused() {
+    const int m = MenuByKey("RxGpuHdrMenu");
+    if (m < 0) return false;
+    const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed);
+    if (!form || larecomp::ui::TopForm() != form) return false;
+    const int row = larecomp::ui::FormSelectedRow(form);
+    if (row < 0 || row >= MenuItemCount(kMenus[m])) return false;
+    const char* cvar = MenuItemAt(kMenus[m], row).cvar;
+    return cvar && std::strcmp(cvar, kHdrTestPatternCvar) == 0;
+}
+
+// The test pattern the menu's row switched on goes off as soon as that row is not the highlighted
+// row of the open HDR menu: the cursor moved, the HDR menu was left or the pause menu closed.
+// Its box follows the cvar (PollNativeRows). A pattern set on the command line (or from the F4
+// panel or the console) is not the menu's and stays as it is.
+// CHECK: the box clears when the cursor leaves the row; FormSelectedRow is the row the cursor is on
+// at the tick, not one frame behind.
+void HdrTestPatternTick() {
+    if (!g_hdr_pattern_by_menu.load(std::memory_order_relaxed)) return;
+    if (CvarGetBool(kHdrTestPatternCvar) && HdrTestPatternRowFocused()) return;
+    if (CvarGetBool(kHdrTestPatternCvar)) {
+        MC_INFO("[pause-menu] the HDR test pattern is off: its row is not highlighted any more");
+        CvarSet(kHdrTestPatternCvar, "false");  // clears g_hdr_pattern_by_menu
+    }
+    g_hdr_pattern_by_menu.store(false, std::memory_order_relaxed);
+}
+
 void PauseMenuFormsTick() {
+    HdrTestPatternTick();
     if (g_color_open >= 0 && larecomp::ui::TopForm() != g_color_form) ColorStripClose(false);
     if (!larecomp::ui::TopmostOurForm()) return;
     if (larecomp::ui::FormIsOpen(larecomp::ui::PauseForm())) return;

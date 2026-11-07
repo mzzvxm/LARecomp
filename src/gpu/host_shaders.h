@@ -20,11 +20,17 @@
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
+#include "fsr_rcas_hdr_ps.hlsl.dxil.h"
 #include "fullscreen_vs.hlsl.dxil.h"
+#include "hdr_compose_ps.hlsl.dxil.h"
+#include "layers_restore_ps.hlsl.dxil.h"
+#include "overlay_hdr_ps.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
 #include "post_luma_ps.hlsl.dxil.h"
+#include "present_hdr_ps.hlsl.dxil.h"
 #include "present_ps.hlsl.dxil.h"
+#include "present_stretch_hdr_ps.hlsl.dxil.h"
 #include "present_stretch_ps.hlsl.dxil.h"
 #include "reduce_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
@@ -50,11 +56,17 @@
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
+#include "fsr_rcas_hdr_ps.hlsl.spirv.h"
 #include "fullscreen_vs.hlsl.spirv.h"
+#include "hdr_compose_ps.hlsl.spirv.h"
+#include "layers_restore_ps.hlsl.spirv.h"
+#include "overlay_hdr_ps.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
 #include "post_luma_ps.hlsl.spirv.h"
+#include "present_hdr_ps.hlsl.spirv.h"
 #include "present_ps.hlsl.spirv.h"
+#include "present_stretch_hdr_ps.hlsl.spirv.h"
 #include "present_stretch_ps.hlsl.spirv.h"
 #include "reduce_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
@@ -106,6 +118,34 @@ inline HostShaderBlob OverlayVertexShader() {
 
 inline HostShaderBlob OverlayPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(overlay_ps);
+}
+
+// HDR10 output (hdr.h): the overlay, the present, its stretch and FSR1's RCAS as they are with
+// hlsl/hdr_output.hlsli's encoding as their last step, for an HDR10 back buffer.
+inline HostShaderBlob OverlayHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(overlay_hdr_ps);
+}
+
+inline HostShaderBlob PresentHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(present_hdr_ps);
+}
+
+inline HostShaderBlob PresentStretchHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(present_stretch_hdr_ps);
+}
+
+inline HostShaderBlob FsrRcasHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fsr_rcas_hdr_ps);
+}
+
+// The UI layer split (frame_layers.h, hdr_scene.h): the underlay drawn back under the UI into the
+// guest's target, and the HDR present's compose of the underlay and the UI layer.
+inline HostShaderBlob LayersRestorePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(layers_restore_ps);
+}
+
+inline HostShaderBlob HdrComposePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(hdr_compose_ps);
 }
 
 inline HostShaderBlob FullscreenVertexShader() {

@@ -17,12 +17,14 @@
 
 #include "gpu.h"
 #include "guest_capture.h"
+#include "hdr.h"
 #include "native_gfx/guest/guest_fence.h"
 #include "native_gfx/guest/occlusion.h"
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
 #include "thread_load.h"
+#include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -158,6 +160,11 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     return false;
   }
   overlay_host_ = std::move(overlay_host);
+  // mcla_gpu_hdr: reads the setting and the display the window is on; the swap chain asks whether
+  // to try HDR10 (hdr.h).
+  hdr::Start(render_window);
+  SwapChain::Options swap_options = options.swap_chain;
+  swap_options.hdr10 = hdr::Wanted();
   // Each step needs the ones before it; on a failure everything already made
   // is torn down in reverse (each Shutdown is a no-op on a component that was
   // never initialized).
@@ -187,9 +194,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     ok = upload_.Initialize(device_) &&
          geometry_.Initialize(device_, frames_, upload_, guest_memory_) &&
          // Before the EDRAM: the window's size can pick the render scale.
-         swap_chain_.Initialize(device_, render_window, options.swap_chain);
+         swap_chain_.Initialize(device_, render_window, swap_options);
   }
   if (ok) {
+    hdr::SetActive(swap_chain_.hdr());
     // The window's size: the swap chain's; a window with no area yet has none,
     // then what the window reports; with neither it measures as the game's
     // screen (1x).
@@ -236,9 +244,32 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetTemporal(&temporal_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
-                             swap_chain_.format()) &&
+                             swap_chain_.format(), swap_chain_.hdr()) &&
          overlay_.Initialize(device_, frames_, heap_, upload_, std::move(overlay_channel),
-                             swap_chain_.format());
+                             swap_chain_.format(), swap_chain_.hdr());
+  }
+  if (ok) {
+    // The frame's scene and UI as two layers: HDR10 output keeps the UI at paper white with them
+    // (frame_layers.h). Not wanted, they make nothing and touch no draw; a failure to make them
+    // leaves the HDR output on the front buffer (stage 1), which is not a reason to stop.
+    layers_.Request(FrameLayers::kRequesterHdr, swap_chain_.hdr());
+    const bool layers_ok = layers_.Initialize(passes_, edram_, pass_timing_);
+    scene_.SetFrameLayers(&layers_);  // a draw is touched only while the layers are active
+    if (swap_chain_.hdr()) {
+      if (layers_ok && hdr_scene_.Initialize(passes_, layers_, pass_timing_)) {
+        present_.SetHdrScene(&hdr_scene_);
+        // Stage 3, the scene above paper white. Without the variants the scene stays at paper white.
+        if (hdr_tone_.Initialize(passes_, shaders_, layers_, post_, pass_timing_)) {
+          layers_.SetSceneSource(&hdr_tone_);
+          hdr_scene_.SetSceneSource(&hdr_tone_);
+          scene_.SetHdrToneMap(&hdr_tone_);
+        }
+      } else {
+        REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
+                     "the front buffer as it is (the scene and the UI together)");
+        layers_.Request(FrameLayers::kRequesterHdr, false);
+      }
+    }
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
@@ -254,15 +285,21 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
     profile_records_ = REXCVAR_GET(mcla_gpu_scene_profile);
     release_early_ = REXCVAR_GET(mcla_gpu_present_release);
+    // The swap chain exists and the render thread, which marks the frames, has not started.
+    latency::Initialize(device_, swap_chain_);
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
+    latency::Shutdown();
     capture_.Shutdown();
     occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
     temporal_.Shutdown();
     flicker_probe_.Shutdown();
+    hdr_tone_.Shutdown();
+    hdr_scene_.Shutdown();
+    layers_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
     post_.Shutdown();
@@ -273,6 +310,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     passes_.Shutdown();
     edram_.Shutdown();
     swap_chain_.Shutdown();
+    hdr::Stop();
     geometry_.Shutdown();
     upload_.Shutdown();
     pipelines_.Shutdown();
@@ -296,12 +334,19 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
 }
 
 void Renderer::OnShaderPackAttached() {
-  // HOOK(hdr): with feat/hdr-scene merged, the optional HDR variant pack is attached here, when
-  // HDR output is on (hdr::Wanted()): shaders_.LoadHdrVariants(&why) with the folder the main
-  // pack came from (shaders_.folder(), larecomp::shaderpack::kHdrPackFileName), logging "the HDR
-  // variants are not available" as that branch does. It changes entries (hdr_variant) and must
-  // run before StartPersistence: a record that names a variant is dropped while the variants are
-  // not loaded.
+  // The HDR scene variants of the game's shaders (stage 3, hdr_tonemap.h), from the folder the
+  // main pack came from, when HDR output is on. Before the pipeline records are read: a record
+  // that names a variant is dropped while the variants are not loaded. They change the entries
+  // (hdr_variant), so this is the one place they are loaded, for a pack attached at startup and for
+  // one attached later; HdrToneMap::active() waits for them.
+  if (hdr::Wanted()) {
+    std::string why;
+    if (!shaders_.LoadHdrVariants(&why)) {
+      REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
+                  "the HDR output keeps the scene at paper white (stage 2)",
+                  why);
+    }
+  }
   pipelines_.StartPersistence(shaders_);
 }
 
@@ -368,12 +413,16 @@ void Renderer::Shutdown() {
   // 3. Reverse creation order; the GPU is idle, so components destroy their
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
+  latency::Shutdown();  // the vendor's calls name the swap chain
   capture_.Shutdown();
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
   temporal_.Shutdown();
   flicker_probe_.Shutdown();
+  hdr_tone_.Shutdown();
+  hdr_scene_.Shutdown();
+  layers_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
   post_.Shutdown();
@@ -384,6 +433,7 @@ void Renderer::Shutdown() {
   passes_.Shutdown();
   edram_.Shutdown();
   swap_chain_.Shutdown();
+  hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
@@ -553,6 +603,8 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   }
   const uint32_t slot = frames_.slot();
   device_.BeginFrame();
+  // A guest frame starts here for the latency reducer (not an idle present's list).
+  latency::OnRenderFrameOpen();
   // Outside any render pass: timestamp pool reset, one-time heap transitions.
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);
@@ -596,6 +648,7 @@ void Renderer::SubmitFrameWithoutPresent() {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
+    latency::OnRenderSubmitted();
   }
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
@@ -632,6 +685,8 @@ bool Renderer::RebuildSwapChain() {
   // The back buffers are about to be released (and on D3D12 Release()d by
   // Plume's resize): nothing in flight may still write them.
   frames_.WaitIdle();
+  // Vulkan's swap chain handle changes inside: the latency reducer's calls wait for it.
+  latency::SwapChainChange latency_change;
   if (!swap_chain_.Rebuild()) {
     return false;
   }
@@ -642,8 +697,38 @@ bool Renderer::RebuildSwapChain() {
   return true;
 }
 
+void Renderer::UpdateHdr() {
+  if (!swap_chain_.hdr()) {
+    return;
+  }
+  const HdrLevels levels = hdr::Levels();
+  present_.SetHdrLevels(levels);
+  overlay_.SetHdrLevels(levels);
+  // The scene's curve is bent towards the display's peak (stage 3): the levels, and the game's display
+  // gamma table the peak is inverted through.
+  float gamma_table[256];
+  hdr_tone_.SetDisplay(levels, present_.GreenGammaTable(gamma_table) ? gamma_table : nullptr);
+  // The display tone maps towards what it is told the content reaches: the peak setting.
+  const plume::RenderHdrMetadata metadata = hdr::Metadata();
+  if (!hdr_metadata_sent_ || metadata.maxMasteringLuminance != hdr_metadata_.maxMasteringLuminance ||
+      metadata.minMasteringLuminance != hdr_metadata_.minMasteringLuminance ||
+      metadata.maxContentLightLevel != hdr_metadata_.maxContentLightLevel ||
+      metadata.maxFrameAverageLightLevel != hdr_metadata_.maxFrameAverageLightLevel) {
+    hdr_metadata_ = metadata;
+    hdr_metadata_sent_ = true;
+    if (!swap_chain_.SetHdrMetadata(metadata)) {
+      // Once per change: Vulkan without VK_EXT_hdr_metadata lands here, the display then uses its
+      // own defaults.
+      REXLOG_WARN("[gpu] hdr: the display could not be told the content's levels (peak {:.0f} "
+                  "nits); it uses its own",
+                  metadata.maxContentLightLevel);
+    }
+  }
+}
+
 void Renderer::ExecutePresent(PresentSource source) {
   tail_open_ = false;
+  const latency::IdlePresentScope idle_scope(source == PresentSource::kIdle);
   if (device_.IsLost()) {
     // Nothing recorded will run: drop the guest frame being recorded.
     if (frames_.is_open()) {
@@ -658,6 +743,7 @@ void Renderer::ExecutePresent(PresentSource source) {
     last_guest_present_ = std::chrono::steady_clock::now();
   }
   swap_chain_.SetVsync(REXCVAR_GET(mcla_gpu_vsync));
+  UpdateHdr();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
       swap_chain_.NeedsRebuild()) {
@@ -713,8 +799,12 @@ void Renderer::ExecutePresent(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  latency::OnRenderSubmitted();
 
-  if (!swap_chain_.Present(image)) {
+  latency::OnPresentBegin();
+  const bool present_ok = swap_chain_.Present(image);
+  latency::OnPresentEnd();
+  if (!present_ok) {
     // DXGI and Vulkan both report a chain that no longer matches the window
     // here; anything else that fails here is the device.
     if (!device_.CheckLost("swap chain present")) {
@@ -798,12 +888,17 @@ void Renderer::ReportFrameStats() {
     return;
   }
   const auto vram = device_.QueryVideoMemory();
-  // What the renderer itself holds, by kind: where the VRAM goes (the budget trim releases these
-  // same four when memory runs short, vram_budget.cpp).
+  // What the renderer itself holds, by kind: where the VRAM goes (the budget trim releases the first
+  // four when memory runs short, vram_budget.cpp; the frame layers give theirs back after
+  // FrameLayers::kReleaseAfterFrames guest frames without layers).
   const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
   const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
                            mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
                            ", resolve memory " + mib(resolve_memory_.HeldBytes()) +
+                           (layers_.active() ? ", frame layers " + mib(layers_.HeldBytes() +
+                                                                      hdr_scene_.HeldBytes() +
+                                                                      hdr_tone_.HeldBytes())
+                                             : std::string()) +
                            ", upscaler (output, depth, vectors, its own context) " +
                            mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
@@ -836,6 +931,13 @@ void Renderer::ReportFrameStats() {
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
   REXLOG_INFO("[gpu] {}", post_.TakeSummary());
+  if (layers_.active()) {
+    REXLOG_INFO("[gpu] {}", layers_.TakeSummary());
+    REXLOG_INFO("[gpu] {}", hdr_scene_.TakeSummary());
+    if (hdr_tone_.active()) {
+      REXLOG_INFO("[gpu] {}", hdr_tone_.TakeSummary());
+    }
+  }
   if (flicker_probe_.enabled()) {
     REXLOG_INFO("[gpu] {}", flicker_probe_.TakeSummary());
   }

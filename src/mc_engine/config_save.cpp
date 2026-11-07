@@ -8,6 +8,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -165,6 +166,17 @@ std::unordered_map<std::string, std::string>& StartupValues() {
   return values;
 }
 
+// The cvars a save never writes (NoteSessionOnlyCvar).
+std::unordered_set<std::string>& SessionOnly() {
+  static std::unordered_set<std::string> names;
+  return names;
+}
+
+bool IsSessionOnly(const std::string& name) {
+  std::lock_guard<std::mutex> lock(g_startup_mutex);
+  return SessionOnly().count(name) != 0;
+}
+
 bool AtStartupValue(const std::string& name, const std::string& value) {
   std::lock_guard<std::mutex> lock(g_startup_mutex);
   const auto it = StartupValues().find(name);
@@ -207,6 +219,11 @@ bool Write(const std::filesystem::path& path, const Edits& edits) {
 
 }  // namespace
 
+void NoteSessionOnlyCvar(std::string_view name) {
+  std::lock_guard<std::mutex> lock(g_startup_mutex);
+  SessionOnly().insert(std::string(name));
+}
+
 void NoteStartupCvar(std::string_view name) {
   std::string value = rex::cvar::GetFlagByName(name);
   std::lock_guard<std::mutex> lock(g_startup_mutex);
@@ -224,8 +241,15 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
   // put back is not left at the changed value.
   for (const std::string& name : rex::cvar::ListFlags()) {
     const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-    if (!info || info->type == rex::cvar::FlagType::Command ||
-        info->source != rex::cvar::Source::kRuntime) {
+    if (!info || info->type == rex::cvar::FlagType::Command) {
+      continue;
+    }
+    if (IsSessionOnly(name)) {
+      // Not the live value, whatever set it: only a line the file has is put back to the default.
+      Put(edits, name, CvarTomlValue(name, info->default_value), true);
+      continue;
+    }
+    if (info->source != rex::cvar::Source::kRuntime) {
       continue;
     }
     const std::string value = info->getter();
