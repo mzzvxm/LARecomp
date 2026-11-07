@@ -68,6 +68,12 @@ struct RowDynamics {
     int (*value_count)() = nullptr;
     int (*value_index)() = nullptr;
     void (*set_value)(int i, CvarWriter write) = nullptr;
+    // kBool, kStrCycle, kDblCycle: the setting the row is about, instead of `cvar`: a row that is one
+    // setting on one renderer and another on the other (VSYNC, MSAA, RENDER SCALE: mcla_gpu_vsync or
+    // vsync, ...), one row with one name in one place. A checkbox reads and writes it; the "restart now?"
+    // prompt looks it up (a row whose suffix says RESTART). May return null: a row that writes several
+    // settings through `set_value` has none to give.
+    const char* (*cvar)() = nullptr;
 };
 
 struct ItemDef {
@@ -92,6 +98,10 @@ struct ItemDef {
     // row is what the fields above say.
     const RowDynamics* dynamics = nullptr;
 };
+
+// True when this launch runs the NATIVE (Plume) renderer, false for the emulated one (XENIA). The renderer
+// is a restart-only choice, so the answer never changes while the game runs.
+bool NativeRendererRuns();
 
 // A row of one renderer only, e.g. XeniaOnly(Dbl(...)).
 constexpr ItemDef XeniaOnly(ItemDef it)  { it.renderers = kRendXenia;  return it; }

@@ -12,6 +12,8 @@
 
 #include <rex/cvar.h>
 
+#include "display_mode.h"
+
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
@@ -273,8 +275,39 @@ List Fsr1List() {
     return list;
 }
 
+// XENIA: RENDER SCALE is the SDK's draw resolution scale (resolution_scale): whole multiples of the
+// game's 1280x720 screen, made when the game starts ("(RESTART)"). It says what a step is as a share
+// of the output (the window), as the NATIVE row does: 1080p lists 67%, 133% and 200%; 1440p 50%, 100%
+// and 150%; 4K 33%, 67% and 100% (a window the size of the game's screen: 100%, 200%, 300%). The
+// scale the settings hold when it is none of the three (4X, which the old row listed, up to 8X) is
+// an entry of its own, in its place, while it is the setting.
+List XeniaList() {
+    constexpr const char* kCvar = "resolution_scale";
+    constexpr double kGameScreenWidth = 1280.0;
+    constexpr double kGameScreenHeight = 720.0;
+    List list;
+    list.cvar = kCvar;
+    const mcla::display::Size output = mcla::display::OutputSize();
+    const double screen =
+        output.empty() ? 1.0
+                       : std::min(double(output.width) / kGameScreenWidth,
+                                  double(output.height) / kGameScreenHeight);
+    const int saved = std::clamp(int(std::lround(CvarNumber(kCvar))), 1, 8);
+    std::vector<int> steps = {1, 2, 3};
+    if (std::find(steps.begin(), steps.end(), saved) == steps.end()) {
+        steps.insert(std::upper_bound(steps.begin(), steps.end(), saved), saved);
+    }
+    for (const int step : steps) {
+        if (step == saved) list.current = int(list.entries.size());
+        list.entries.push_back(
+            {Percent(int(std::lround(100.0 * double(step) / screen))), std::to_string(step)});
+    }
+    return list;
+}
+
 // The mode row's list for what UPSCALING is on.
 List ModeList() {
+    if (!mcla_menu::NativeRendererRuns()) return XeniaList();
     switch (Shown()) {
     case Pick::kFsr1:  return Fsr1List();
     case Pick::kFsr31: return TemporalList(Upscaler::kFsr31);
@@ -405,6 +438,7 @@ const char* UpscalerRowSuffix() {
 
 // Named for what UPSCALING is on, so a technology that is not the choice has no row of its own.
 const char* ModeRowLabel() {
+    if (!mcla_menu::NativeRendererRuns()) return "RENDER SCALE";
     switch (Shown()) {
     case Pick::kFsr1:  return "FSR 1 MODE";
     case Pick::kFsr31: return "FSR 3.1 MODE";
@@ -419,9 +453,14 @@ const char* ModeRowLabel() {
 // keeps meanwhile is not shown. Width (pause_menu.cpp "Page width", counted for DISPLAY's rows in every
 // state): "DLSS MODE (RESTART)" is 19, "DLSS MODE (SETUP)" 17, and every other label of the row stays
 // bare.
-bool ModeRowEnabled() { return Shown() != Pick::kDlss || Active() == Upscaler::kDlss; }
+bool ModeRowEnabled() {
+    return !mcla_menu::NativeRendererRuns() || Shown() != Pick::kDlss || Active() == Upscaler::kDlss;
+}
 
+// XENIA: the draw scale is read when the game starts, so a step says "(RESTART)" (the prompt reads the
+// word) and "RENDER SCALE (RESTART)" is 22 characters.
 const char* ModeRowSuffix() {
+    if (!mcla_menu::NativeRendererRuns()) return " (RESTART)";
     if (Shown() != Pick::kDlss) return "";
     const UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
     if (a.dlss) return "";
@@ -444,6 +483,10 @@ void ModeSet(int i, CvarWriter write) {
     if (i >= 0 && i < int(list.entries.size()))
         write(list.cvar, list.entries[size_t(i)].text.c_str());
 }
+
+// What the "restart now?" prompt looks up: XENIA's draw scale. NATIVE's row writes whichever setting
+// the choice above it is about, none of which needs a restart.
+const char* ModeRowCvar() { return mcla_menu::NativeRendererRuns() ? nullptr : "resolution_scale"; }
 
 // ── SHARPNESS ──────────────────────────────────────────────────────────────────────────────────
 
@@ -476,7 +519,8 @@ void SharpnessSet(int i, CvarWriter write) {
 //   UPSCALING   label "UPSCALING" 9, with " (WAIT)" 16, with " (RESTART)" 19. Values "OFF", "FSR 1",
 //               "FSR 3.1", "FSR 4", "DLSS" and "DLSS (SETUP)" 12.
 //   mode row    labels "RENDER SCALE" 12, "FSR 1 MODE" 10, "FSR 3.1 MODE" 12, "FSR 4 MODE" 10, "DLSS MODE"
-//               9, "DLSS MODE (SETUP)" 17, "DLSS MODE (RESTART)" 19. Values: "NATIVE AA (100%)" 16,
+//               9, "DLSS MODE (SETUP)" 17, "DLSS MODE (RESTART)" 19, and on XENIA "RENDER SCALE
+//               (RESTART)" 22 with the values "33%" to "267%" (an own entry up to "800%": 4). Values: "NATIVE AA (100%)" 16,
 //               "DLAA (100%)" 11, "QUALITY (67%)" 13, "BALANCED (59%)" 14, "PERFORMANCE (50%)" 17,
 //               "ULTRA PERF. (33%)" 17, "ULTRA QUAL. (77%)" 17; DLSS's (N/A) forms have the same length
 //               as their share ("PERFORMANCE (N/A)" 17, "ULTRA PERF. (N/A)" 17); RENDER SCALE: "100%"
@@ -484,7 +528,8 @@ void SharpnessSet(int i, CvarWriter write) {
 //               (300%)" 14.
 //   SHARPNESS   label 9, with " (FSR ONLY)" 20. Values "OFF", "0.2" to "1", an entry of its own such as
 //               "0.85" 4.
-// DISPLAY's widest label comes to 20 (SHARPNESS (FSR ONLY)) and its widest value to 17.
+// These rows' widest label comes to 22 (RENDER SCALE (RESTART), XENIA) and the widest value to 17. DISPLAY's
+// is 23, "RESOLUTION (10240X4320)" (display_menu.h), with 17: 40 of the page's 41.
 // CHECK: open DISPLAY at 1280x720 with a temporal upscaler on, the mode row on PERFORMANCE and MSAA
 // held ("MSAA (FSR 3.1 ON)"), and look at the right edge (nothing cut); then the same with FSR 1
 // on ULTRA QUAL.
@@ -507,7 +552,8 @@ constexpr RowDynamics kModeDynamics = {.str_label = ModeValueLabel,
                                        .label = ModeRowLabel,
                                        .value_count = ModeCount,
                                        .value_index = ModeIndex,
-                                       .set_value = ModeSet};
+                                       .set_value = ModeSet,
+                                       .cvar = ModeRowCvar};
 constexpr RowDynamics kSharpnessDynamics = {.str_label = SharpnessValueLabel,
                                             .enabled = SharpnessEnabled,
                                             .suffix = SharpnessSuffix,
@@ -518,13 +564,14 @@ constexpr RowDynamics kSharpnessDynamics = {.str_label = SharpnessValueLabel,
 // The rows never change; their lists and labels follow the PC and the settings every time a row is
 // drawn. The mode row and SHARPNESS write several cvars, depending on the choice, so they name none
 // of their own; UPSCALING names mcla_gpu_upscaler, which the "Restart now?" prompt looks for.
-// NativeOnly: the upscalers and the render scale are the Plume renderer's.
+// NativeOnly: the upscalers are the Plume renderer's. The mode row is listed on both renderers (it is
+// RENDER SCALE on XENIA, whose own mechanism it writes).
 constexpr ItemDef kRows[] = {
     NativeOnly(WithDynamics(
         Str("PM_RxGpuUpsc", "mcla_gpu_upscaler", "UPSCALING: ", nullptr, nullptr, 0),
         &kUpscalerDynamics)),
-    NativeOnly(WithDynamics(
-        Str("PM_RxGpuUpscMode", nullptr, "RENDER SCALE: ", nullptr, nullptr, 0), &kModeDynamics)),
+    WithDynamics(Str("PM_RxGpuUpscMode", nullptr, "RENDER SCALE: ", nullptr, nullptr, 0),
+                 &kModeDynamics),
     NativeOnly(WithDynamics(
         Str("PM_RxGpuUpscSharp", nullptr, "SHARPNESS: ", nullptr, nullptr, 0),
         &kSharpnessDynamics)),

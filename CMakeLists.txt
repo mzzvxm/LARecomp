@@ -108,6 +108,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/display_menu.cpp
     src/mc_engine/display_mode.cpp
     src/mc_engine/frame_generation_menu.cpp
     src/mc_engine/upscaling_menu.cpp
