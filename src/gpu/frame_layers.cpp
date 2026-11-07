@@ -486,6 +486,15 @@ FrameLayers::Frame FrameLayers::presentable() const {
   return presented_;
 }
 
+const HostImage* FrameLayers::FloatSceneOf(const Frame& frame, uint32_t width,
+                                           uint32_t height) const {
+  if (!frame.scene || !scene_source_ || frame.scene_epoch != scene_source_->SceneEpoch() ||
+      !frame.scene->texture || frame.scene->width < width || frame.scene->height < height) {
+    return nullptr;
+  }
+  return frame.scene;
+}
+
 void FrameLayers::NoteUnusable(bool wrong_picture) {
   if (wrong_picture) {
     ++stats_.unusable_picture;

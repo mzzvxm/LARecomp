@@ -108,6 +108,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/frame_generation_menu.cpp
     src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
@@ -436,6 +437,16 @@ else()
                                 "Kits/FidelityFX/api/include/ffx_api.h: building without FSR")
             else()
                 message(STATUS "larecomp: FidelityFX upscalers from ${LARECOMP_FFX_KIT}")
+                # Frame generation (src/gpu/frame_generation_ffx.h) needs the same SDK's frame generation
+                # header: a local checkout without it builds without frame generation.
+                if(EXISTS "${LARECOMP_FFX_KIT}/framegeneration/include/ffx_framegeneration.h")
+                    set(LARECOMP_FFX_HAS_FRAMEGENERATION ON)
+                    message(STATUS "larecomp: FidelityFX frame generation from ${LARECOMP_FFX_KIT}")
+                else()
+                    set(LARECOMP_FFX_HAS_FRAMEGENERATION OFF)
+                    message(STATUS "larecomp: no FidelityFX frame generation header in ${LARECOMP_FFX_KIT}: "
+                                    "building without frame generation")
+                endif()
             endif()
         endif()
         # NVIDIA's Streamline SDK (2.14.16, the folder that holds include/ and bin/x64/): the headers
@@ -629,6 +640,15 @@ else()
         endif()
         if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
             list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll)
+        endif()
+        # The frame generation effect DLLs (the loader opens them by name from this folder).
+        if(LARECOMP_FFX_HAS_FRAMEGENERATION)
+            if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+                list(APPEND _larecomp_ffx_dlls amd_fidelityfx_framegeneration_dx12.dll)
+            endif()
+            if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+                list(APPEND _larecomp_ffx_dlls amd_fidelityfx_framegeneration_vk.dll)
+            endif()
         endif()
         foreach(_larecomp_ffx_dll IN LISTS _larecomp_ffx_dlls)
             if(NOT EXISTS "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}")

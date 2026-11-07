@@ -23,6 +23,7 @@ add_library(larecomp_gpu OBJECT
     edram.cpp
     flicker_probe.cpp
     format.cpp
+    frame_generation.cpp
     frame_layers.cpp
     frame_trace.cpp
     frame.cpp
@@ -108,6 +109,13 @@ if(LARECOMP_FFX_KIT)
         "${LARECOMP_FFX_KIT}/api/include"
         "${LARECOMP_FFX_KIT}/upscalers/include")
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX=1)
+    # Frame generation (frame_generation.h): the same runtime's frame generation effect. Its
+    # headers include each other and the api folder by relative path, so only its folder is added.
+    if(LARECOMP_FFX_HAS_FRAMEGENERATION)
+        target_sources(larecomp_gpu PRIVATE frame_generation_ffx.cpp)
+        target_include_directories(larecomp_gpu PRIVATE "${LARECOMP_FFX_KIT}/framegeneration/include")
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX_FG=1)
+    endif()
 endif()
 
 # The temporal upscaler's DLSS backend (temporal_dlss.h): only when the top-level CMake found
@@ -281,6 +289,12 @@ larecomp_gpu_host_shader(present_stretch_hdr_ps ps_6_0 SOURCE present_ps
 larecomp_gpu_host_shader(fsr_rcas_hdr_ps ps_6_0 SOURCE fsr_rcas_ps HLSL_VERSION 2018
                          DEFINES RCAS_HDR=1)
 larecomp_gpu_host_shader(overlay_hdr_ps ps_6_0 SOURCE overlay_ps DEFINES OVERLAY_HDR=1)
+# Frame generation (frame_generation.h): the scene and the generated frame prepared for the
+# interpolation, the generated frame composed with the UI layer, and the pacer's copy of a finished
+# present image into the swap chain's back buffer.
+larecomp_gpu_host_shader(fg_prepare_ps ps_6_0)
+larecomp_gpu_host_shader(fg_compose_ps ps_6_0)
+larecomp_gpu_host_shader(fg_copy_ps ps_6_0)
 # The UI layer split (frame_layers.h, hdr_scene.h): the scene put back under the UI in the guest's
 # target, and the HDR present's compose of the two layers.
 larecomp_gpu_host_shader(layers_restore_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=0)

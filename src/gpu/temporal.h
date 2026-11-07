@@ -305,9 +305,17 @@ class TemporalSystem {
     uint64_t post_binds_at_set = 0;      // TextureCache::override_binds() when it was set
   };
 
-  // True while an upscaler was chosen and able to run at the start of the frame being recorded: the
-  // Scene's hooks do nothing otherwise.
+  // True while an upscaler was chosen and able to run at the start of the frame being recorded (or
+  // frame generation asked for the vectors, below): the Scene's hooks do nothing otherwise.
   bool active() const { return enabled_; }
+
+  // Frame generation (frame_generation.h) wants each frame's depth and motion vectors, camera and cut
+  // state with or without an upscaler. While true and no upscaler runs, the system is on for them
+  // only ("vectors only"): it finds the anchor, reads the camera and keeps the depth and the vectors,
+  // and moves nothing: no jitter, no stand-in, no hold on FXAA, SMAA or MSAA, no context. With an
+  // upscaler running it changes nothing (the upscaler keeps the system on). Taken at the next frame
+  // boundary (BeginFrame). Render thread.
+  void RequestVectors(bool wanted) { vectors_wanted_ = wanted; }
 
   // The passes of step 1b (temporal_mv.h) need the device; nothing is made until the first anchor.
   // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
@@ -406,6 +414,10 @@ class TemporalSystem {
   };
 
   void SetEnabled(bool enabled);
+  // At a frame boundary: the system goes on or off for RequestVectors.
+  void SyncVectors();
+  // On for the vectors alone: nothing is jittered or replaced.
+  bool VectorsOnly() const { return vectors_on_ && effective_ == Upscaler::kOff; }
   void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
   bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
   static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
@@ -420,6 +432,8 @@ class TemporalSystem {
   void ResetRun();
 
   bool enabled_ = false;
+  bool vectors_wanted_ = false;  // RequestVectors
+  bool vectors_on_ = false;      // SyncVectors acted on it
   bool frame_open_ = false;  // BeginFrame ran and no present has ended the frame yet
   uint64_t frame_number_ = 0;
   FrameState frame_;

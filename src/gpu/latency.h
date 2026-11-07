@@ -56,6 +56,10 @@
 //    wait, the present stage before the present; D3D12: the end of the frame's
 //    main rendering at the start of the present).
 //
+// Frame generation forces the reducer on while it runs, whatever mcla_gpu_low_latency says (the
+// frames would queue in front of the paced presents otherwise); boost stays where the setting asks
+// for it. The pause menu's row says so (pause_menu.cpp).
+//
 // The frame rate limit stays with LARecomp's own limiter (hooks/frame_timing.cpp),
 // which waits after the frame's input; the vendors' own limits are left at none.
 // Reflex can hold the cap instead, its wait before the input (the minimum interval
@@ -125,6 +129,15 @@ void OnRenderSubmitted();
 // Just before and after the swap chain's present call of a guest frame.
 void OnPresentBegin();
 void OnPresentEnd();
+
+// With frame generation the presents are the pacer thread's (frame_generation.h): the render thread
+// takes the id of the frame it just submitted out of its own state (0: the frame is not marked) and
+// hands it over with the pair, and the pacer's calls name it around the present of the frame's real
+// image (the generated image's present is not a frame of the game's). Both thread-safe against the
+// render thread's own markers.
+uint64_t DetachRenderFrame();
+void OnPresentBegin(uint64_t frame_id);
+void OnPresentEnd(uint64_t frame_id);
 
 // The presents the renderer makes by itself while the guest is not swapping (the
 // overlays) are not guest frames; a list opened inside one is not a frame to mark.

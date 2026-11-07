@@ -26,6 +26,9 @@
 #include "ao_mip_ps.hlsl.dxil.h"
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
+#include "fg_compose_ps.hlsl.dxil.h"
+#include "fg_copy_ps.hlsl.dxil.h"
+#include "fg_prepare_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
@@ -71,6 +74,9 @@
 #include "ao_mip_ps.hlsl.spirv.h"
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
+#include "fg_compose_ps.hlsl.spirv.h"
+#include "fg_copy_ps.hlsl.spirv.h"
+#include "fg_prepare_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
@@ -251,6 +257,20 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
+}
+
+// Frame generation (frame_generation.h): the scene prepared for the interpolation, the generated
+// frame composed with the UI layer, and the pacer's copy of a present image into the back buffer.
+inline HostShaderBlob FrameGenerationPreparePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_prepare_ps);
+}
+
+inline HostShaderBlob FrameGenerationComposePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_compose_ps);
+}
+
+inline HostShaderBlob FrameGenerationCopyPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_copy_ps);
 }
 
 // The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0

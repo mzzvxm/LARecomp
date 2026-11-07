@@ -151,7 +151,12 @@ void TemporalSystem::SetEnabled(bool enabled) {
   post_unserved_run_ = 0;
   post_unserved_reported_ = false;
   plain_logged_.fill(false);
-  if (enabled) {
+  if (enabled && effective_ == Upscaler::kOff && vectors_on_) {
+    REXLOG_INFO("{} ON for frame generation: the camera is read from the game's motion blur draw "
+                "and each frame's depth and motion vectors are kept; nothing is moved or replaced. "
+                "A summary is logged when the game exits",
+                kPrefix);
+  } else if (enabled) {
     REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
                 "scene is moved by a sub-pixel amount every frame once the upscaler is ready. A "
                 "summary is logged when the game exits",
@@ -160,6 +165,18 @@ void TemporalSystem::SetEnabled(bool enabled) {
     ClearStandIn();
     motion_.Release();
     REXLOG_INFO("{} off", kPrefix);
+  }
+}
+
+void TemporalSystem::SyncVectors() {
+  if (vectors_wanted_ == vectors_on_) {
+    return;
+  }
+  vectors_on_ = vectors_wanted_;
+  if (vectors_on_ && !enabled_) {
+    SetEnabled(true);
+  } else if (!vectors_on_ && enabled_ && effective_ == Upscaler::kOff) {
+    SetEnabled(false);
   }
 }
 
@@ -874,7 +891,7 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
   mode_in_use_ = mode;
   stage_ = Stage{};
   change_pending_ = false;
-  const bool enable = to != Upscaler::kOff;
+  const bool enable = to != Upscaler::kOff || vectors_on_;
   if (enable != enabled_) {
     SetEnabled(enable);  // starts or ends the run (and says so)
   } else if (enable) {
@@ -1289,6 +1306,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     // between frames, here, before the frame's first draw.
     UpdatePath(list);
     PrewarmDlss();
+    SyncVectors();
   }
   // The context and the output image of an upscaler that has been off for a while go (10 s); not
   // while another one is being made (the stage).
@@ -1362,7 +1380,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   }
   // Armed only after a frame in which the anchor was accepted: a frame without one never shakes
   // (F4-DESIGN.md 2.5); with an upscaler chosen, only while its context is ready.
-  frame_.armed = ran_last_ && !disarmed_ && (effective_ == Upscaler::kOff || ready);
+  frame_.armed = ran_last_ && !disarmed_ && !VectorsOnly() && (effective_ == Upscaler::kOff || ready);
   if (frame_.armed) {
     // The sequence's length follows the ratio of the last accepted frame (8 at 1, 18 at 1.5, 32 at
     // 2, 72 at 3): the upscaler's own count for its context when it has one.
