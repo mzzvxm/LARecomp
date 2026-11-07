@@ -257,7 +257,18 @@ void Shutdown();
 // graphics_backend = "auto" as the Plume renderer decides it (ChooseAutoBackend in backend.h):
 // true when that is Vulkan. For the emulated GPU's backend (larecomp_app.h), which follows the same
 // setting; backend.h itself needs Plume's headers, this one doesn't.
-bool AutoBackendIsVulkan(const std::string& preferred_adapter);
+// With `adapter` given, and Vulkan chosen, it receives the name of the GPU that choice was made for.
+bool AutoBackendIsVulkan(const std::string& preferred_adapter, std::string* adapter = nullptr);
+
+// The emulated GPU (Xenia) path, which has no say in which GPU it runs on: the SDK takes Direct3D 12's
+// first adapter that is not software and Vulkan's first device, and on a PC with two GPUs that is often
+// the weaker one, the one that drives the screen. This is the number to give the SDK's d3d12_adapter
+// (`vulkan` false: the adapter in IDXGIFactory1's order) or vulkan_device (the device in the loader's
+// order) so that it runs on the GPU the Plume renderer would use: `preferred_adapter` (mcla_gpu_adapter,
+// or the GPU graphics_backend = auto chose Vulkan for) by name; else on D3D12 the adapter Windows'
+// graphics setting for this exe names, else the high-performance GPU; else on Vulkan a discrete GPU
+// before an integrated one. -1: no opinion, the SDK chooses (also on Linux for D3D12, which has none).
+int XeniaAdapterIndex(bool vulkan, const std::string& preferred_adapter);
 
 // --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
 // What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).

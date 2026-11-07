@@ -463,6 +463,7 @@ RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter) 
       out.found = true;
       out.name = utf8;
       out.vendor_id = desc.VendorId;
+      out.index = static_cast<int>(i);
       if (named) {
         break;
       }
