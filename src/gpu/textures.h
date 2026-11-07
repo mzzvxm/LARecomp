@@ -246,15 +246,24 @@ class TextureCache {
 
   // The image that stands for a scene colour product for the rest of a frame (the temporal
   // upscaler's output, temporal.h): every fetch whose resolve product (ResolveCache::Find) is
-  // `product` binds `texture` instead, through its own swizzle's view, as a per-frame binding. The
-  // fetches memoized with the product are bound again (the pages' product generation moves at the
-  // set and at the clear). `texture` stays alive and in SHADER_READ while it is set. Render thread.
+  // `product` (or `other_product`) binds `texture` instead, through its own swizzle's view, as a
+  // per-frame binding. The fetches memoized with the products are bound again (the pages' product
+  // generation moves at each set and at the clear). `texture` stays alive and in SHADER_READ while
+  // it is set. Render thread.
   struct Override {
     const void* product = nullptr;  // the ResolveCache::Product replaced (compared, never read)
     uint32_t page = 0;              // its base page, where the memoized fetches are bumped
+    // A second product the same image stands in for (null: none). The game draws the scene into
+    // one of a pair of products and alternates them every frame; the reads before the anchor are
+    // given the stand-in whichever of the pair the frame uses (temporal.h, StandInForPostChain).
+    const void* other_product = nullptr;
+    uint32_t other_page = 0;
     const plume::RenderTexture* texture = nullptr;
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
     Scale scale;  // host texels per guest texel of `texture`
+    bool Replaces(const void* candidate) const {
+      return candidate && (candidate == product || candidate == other_product);
+    }
   };
   void SetOverride(const Override& override);
   void ClearOverride();
@@ -264,6 +273,10 @@ class TextureCache {
   void ReleaseOverrideViews();
   // At shutdown (GPU idle, the heap going): the views go at once, their slots are not handed back.
   void DropOverrideViews() { override_views_.Drop(); }
+  // How many fetches the override has bound so far (counted in Bind2D: a fetch the Scene memoizes
+  // after its first bind in a frame counts once, not per draw). The difference between two moments
+  // of a frame is what the override served between them.
+  uint64_t override_binds() const { return override_binds_; }
 
   // Takes the write notifications of textures and resolve products.
   void Sync();
@@ -402,6 +415,17 @@ class TextureCache {
   uint64_t frame_ = 1;
   std::vector<TextureKey> evict_scan_;
   size_t evict_cursor_ = 0;
+
+  uint64_t override_binds_ = 0;
+  // The memoized fetches of the products an override replaces are bound again.
+  void BumpOverridePages(const Override& override) {
+    if (override.product) {
+      BumpProductGeneration(override.page);
+    }
+    if (override.other_product) {
+      BumpProductGeneration(override.other_page);
+    }
+  }
 
   Override override_;
   bool override_active_ = false;

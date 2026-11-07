@@ -941,6 +941,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
                    "(reported once)");
     }
   }
+  if (temporal_ && temporal_->active()) {
+    temporal_->BeforeTextures(r);  // the anchor draw's textures are bound without the stand-in
+  }
   Lap(Stage::kConstants);
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
   FillTextureTables(view, fetch_mask, scale, shared, d.scene ? SceneBias() : 0);

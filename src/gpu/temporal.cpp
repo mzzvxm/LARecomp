@@ -128,8 +128,11 @@ void TemporalSystem::SetEnabled(bool enabled) {
   frame_number_ = 0;
   upscale_misses_ = 0;
   last_dispatch_frame_ = ~uint64_t(0);
-  last_stand_in_product_ = nullptr;
+  scene_colors_ = {};
+  scene_color_scale_ = Scale::None();
   post_stand_in_reported_ = false;
+  post_unserved_run_ = 0;
+  post_unserved_reported_ = false;
   probe_lines_ = 0;
   plain_logged_.fill(false);
   if (enabled) {
@@ -236,11 +239,59 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
 }
 
 void TemporalSystem::DropPostStandIn() {
+  // The reads before the anchor are over (the anchor draw is being prepared, BeforeTextures).
+  CountPostStandIn();
   // An upscaled frame has the anchor's own stand-in by now (the same image, this frame's picture).
   if (frame_.post_on_previous && !frame_.upscaled) {
     ClearStandIn();
   }
   frame_.post_on_previous = false;
+}
+
+void TemporalSystem::CountPostStandIn() {
+  FrameState& fr = frame_;
+  if (!fr.post_on_previous || fr.post_counted || !textures_) {
+    return;
+  }
+  fr.post_counted = true;
+  const uint64_t served = textures_->override_binds() - fr.post_binds_at_set;
+  window_.post_reads_served += served;
+  if (served != 0) {
+    ++window_.post_on_previous;
+    post_unserved_run_ = 0;
+    if (!post_stand_in_reported_) {
+      post_stand_in_reported_ = true;
+      REXLOG_INFO("{} the game's post chain before the anchor (the half-size downsample the bloom, "
+                  "the exposure and the motion blur's half-size layer are made from) reads the "
+                  "previous frame's upscaled picture, so the jitter cannot reach them; they are one "
+                  "frame late. The scene is drawn at {}x{} for an output of {}x{}; the game "
+                  "alternates {} scene colour products and the stand-in covers {} of them",
+                  kPrefix, last_render_size_[0], last_render_size_[1], last_output_size_[0],
+                  last_output_size_[1], kSceneColorProducts, fr.post_products);
+    }
+  } else if (++post_unserved_run_ >= kPostUnservedWarn && !post_unserved_reported_) {
+    post_unserved_reported_ = true;
+    REXLOG_WARN("{} the stand-in for the game's post chain was set in {} frames in a row and no "
+                "read before the anchor was given it: the bloom still reads the jittered scene (the "
+                "scene colour products it covers are not the ones that read)",
+                kPrefix, post_unserved_run_);
+  }
+}
+
+void TemporalSystem::NoteSceneColor(const void* product, uint32_t page, uint64_t frame) {
+  // Newest first; a product that is in the list moves to the front, a new one pushes the oldest
+  // out.
+  size_t at = scene_colors_.size() - 1;
+  for (size_t i = 0; i < scene_colors_.size(); ++i) {
+    if (scene_colors_[i].product == product) {
+      at = i;
+      break;
+    }
+  }
+  for (size_t i = at; i > 0; --i) {
+    scene_colors_[i] = scene_colors_[i - 1];
+  }
+  scene_colors_[0] = SceneColor{product, page, frame};
 }
 
 uint64_t TemporalSystem::HeldBytes() const {
@@ -423,6 +474,12 @@ void TemporalSystem::StandInForPostChain() {
   // still holds it, and the stand-in the anchor sets later is the same image with this frame's
   // picture in it. Nothing before the anchor writes the image, so the draws recorded before and
   // after it see the frame before's and this frame's picture each.
+  // Which product is this frame's is not known yet either (the anchor's fetch comes later), and
+  // it is not the last frame's: the game draws the scene into one of a pair of products and
+  // alternates them (the log showed the downsample reading base 07fe0000 and 07c48000 in turn,
+  // 194 reads a second, none on the stand-in while it covered the other one). The stand-in covers
+  // the last two products the anchor read, scene_colors_: this frame's is the one of two frames
+  // ago.
   // CHECK: that the half-size downsample (sub_8260DA68's first sub_8260D678 call, dofObj+92 into
   // dofObj+12, read in the recompiled guest code, not seen in a draw log) is the only reader of
   // the scene colour product before the anchor; any other one is redirected the same way and
@@ -435,7 +492,6 @@ void TemporalSystem::StandInForPostChain() {
   // accepts. A camera cut cannot be known yet: the cut frame's bloom and exposure show the view
   // before it, for that one frame.
   if (last_dispatch_frame_ == ~uint64_t(0) || last_dispatch_frame_ + 1 != fr.frame ||
-      !last_stand_in_product_ ||
       std::chrono::duration<double, std::milli>(Clock::now() - last_anchor_time_).count() >
           kMaxGapMs) {
     return;
@@ -450,25 +506,36 @@ void TemporalSystem::StandInForPostChain() {
       output_.width != last_output_size_[0] || output_.height != last_output_size_[1]) {
     return;
   }
+  // The products the anchor read in the frames just before (the newest is the frame before's).
+  // An older one is not trusted: a frame in between that was not upscaled, or a size change.
+  static_assert(kSceneColorProducts == 2, "TextureCache::Override holds a pair of products");
   TextureCache::Override stand_in;
-  stand_in.product = last_stand_in_product_;
-  stand_in.page = last_stand_in_page_;
+  uint32_t products = 0;
+  for (const SceneColor& c : scene_colors_) {
+    if (!c.product || c.frame + kSceneColorMaxAge < fr.frame) {
+      continue;
+    }
+    if (products == 0) {
+      stand_in.product = c.product;
+      stand_in.page = c.page;
+    } else {
+      stand_in.other_product = c.product;
+      stand_in.other_page = c.page;
+    }
+    ++products;
+  }
+  if (products == 0) {
+    return;
+  }
   stand_in.texture = output_.texture.get();
   stand_in.format = output_.format;
-  stand_in.scale = last_stand_in_scale_;
+  stand_in.scale = scene_color_scale_;
   textures_->SetOverride(stand_in);
   stand_in_set_ = true;
   fr.post_on_previous = true;
-  ++window_.post_on_previous;
-  if (!post_stand_in_reported_) {
-    post_stand_in_reported_ = true;
-    REXLOG_INFO("{} the game's post chain before the anchor (the half-size downsample the bloom, "
-                "the exposure and the motion blur's half-size layer are made from) reads the "
-                "previous frame's upscaled picture, so the jitter cannot reach them; they are one "
-                "frame late. The scene is drawn at {}x{} for an output of {}x{}",
-                kPrefix, last_render_size_[0], last_render_size_[1], last_output_size_[0],
-                last_output_size_[1]);
-  }
+  fr.post_products = products;
+  fr.post_binds_at_set = textures_->override_binds();
+  ++window_.post_stand_in_set;
 }
 
 void TemporalSystem::RunProbe() {
@@ -763,10 +830,9 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   textures_->SetOverride(stand_in);
   stand_in_set_ = true;
   fr.upscaled = true;
-  // What the next frame's post chain is given before its anchor (StandInForPostChain).
-  last_stand_in_product_ = stand_in.product;
-  last_stand_in_page_ = stand_in.page;
-  last_stand_in_scale_ = stand_in.scale;
+  // What the next frames' post chains are given before their anchors (StandInForPostChain).
+  NoteSceneColor(stand_in.product, stand_in.page, fr.frame);
+  scene_color_scale_ = stand_in.scale;
   // The anchor's own colour fetch: the binding the stand-in gives this fetch's swizzle (the anchor
   // draws at the output's scale).
   fr.anchor_color_slot = textures_->Bind2D(fetch, fr.output_scale, list).slot;
@@ -1193,6 +1259,7 @@ void TemporalSystem::EndFrame() {
   // The scene colour product is the product again for the next frame's first draws.
   const bool upscaled = frame_.upscaled;
   const Upscaler running = frame_.upscaler;
+  CountPostStandIn();  // a frame whose anchor draw never came
   ClearStandIn();
   PublishRunningUpscaler(upscaled ? running : Upscaler::kOff);
   if (!enabled_) {
@@ -1380,12 +1447,16 @@ void TemporalSystem::Report() {
     const TemporalBackend* running_backend = BackendFor(effective_);
     const BackendStatus status = running_backend ? running_backend->Status() : BackendStatus{};
     REXLOG_INFO("[gpu] temporal upscaler: {} ({}{}) in {} frames: upscaled {} ({} of them with "
-                "the history started again; the post chain read the previous frame's picture in "
-                "{}), plain: context not ready {}, no vectors {}, colour not an input {}{}",
+                "the history started again); the game's post chain before the anchor was offered "
+                "the previous frame's picture in {} frames and read it in {} of them ({} reads "
+                "served by the stand-in before the anchor; about one a frame when it works, none "
+                "when the reads name a product it does not cover), plain: context not ready {}, "
+                "no vectors {}, colour not an input {}{}",
                 UpscalerName(effective_), ModeInfoOf(effective_, settings_.mode).name,
                 status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
-                w.upscaled, w.upscale_resets, w.post_on_previous, w.upscale_plain_not_ready,
-                w.upscale_plain_no_vectors, w.upscale_plain_no_color,
+                w.upscaled, w.upscale_resets, w.post_stand_in_set, w.post_on_previous,
+                w.post_reads_served, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
+                w.upscale_plain_no_color,
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }
 }
