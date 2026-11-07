@@ -771,6 +771,9 @@ uint32_t FfxBackend::JitterPhaseCount() const {
   return i.ctx && !i.status.failed ? i.ctx->phases : 0u;
 }
 
+// CHECK: ffxCreateContext on the worker for the prepared slot while the render thread dispatches the
+// current context (the same loader and provider, two contexts): D3D12 and Vulkan, debug layer and
+// validation, and that a dispatch is not slowed while the worker makes the next one.
 void FfxBackend::Prepare(const BackendRequest& request) {
   Impl& i = *impl_;
   std::vector<std::shared_ptr<Context>> retire;

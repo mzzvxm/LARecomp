@@ -1370,6 +1370,10 @@ bool DlssBackend::Busy() const {
   return i.building.load() || i.WantNextLocked();
 }
 
+// CHECK: the prepared slot on both APIs: a second viewport alive beside the first (options, feature,
+// slFreeResources of the old one after Commit), the second feature's build time ("made in the
+// background in N ms": if it is far under the first's 8 s the plain interval of a DLSS to DLSS change
+// is short), and that Busy() frames (plain, not jittered) show no shake.
 // Make before break. The feature of a context takes seconds (NGX builds its network: 8 s on an RTX
 // 5080), so a live change of mode makes the new context in the prepared slot, on the worker, with
 // its own viewport, while the current one keeps dispatching; Commit swaps them between two frames.

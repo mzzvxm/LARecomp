@@ -183,6 +183,8 @@ UpscalerSettings ReadUpscalerSettings() {
 bool MayDrawSceneSmaller() {
   // The player can pick a mode below 100% at any time, so every build with an upscaler runtime lists
   // what a smaller scene needs, whatever the saved settings say.
+  // CHECK: the start cost of the five extra pipelines (resolve reduces, fractional fused depth
+  // resolve) for a player with no upscaler: they build on the host precache's threads and are cached.
 #if defined(LARECOMP_HAS_FFX) || defined(LARECOMP_HAS_DLSS)
   return true;
 #else

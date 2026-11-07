@@ -439,6 +439,9 @@ BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
   // The same two edges the anchor reports for a frame (OnAnchor: the main view at the scene's
   // scale, the anchor's own target at the images of the screen's), so that the context made before
   // the switch is the one the first frame asks for.
+  // CHECK: that the sizes of the first frame after a switch are these ("live change ... ran its
+  // first upscaled frame (frame N, WxH to WxH)" in the log): a different size makes BeginFrame ask
+  // for another context, which is plain frames until it is made (the old behaviour of a size change).
   for (int axis = 0; axis < 2; ++axis) {
     request.render_size[axis] = scene.Edge(guest[axis]);
     request.output_size[axis] = output.Edge(guest[axis]);
@@ -549,6 +552,10 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
   const Scale scene_before = edram_->SceneScale();
   // The scene's targets first: the one step that can fail (video memory), and then nothing has
   // changed and the old path runs on.
+  // CHECK: the switch frame under the D3D12 debug layer and Vulkan validation (the new targets'
+  // first clear at the frame's start, their layouts, the retired textures behind the frames, the
+  // resolve products made again at the new scale), and that no frame between two paths shows a
+  // hitch beyond the one that makes the textures.
   if (!edram_->SetSceneScale(choice.scale, list)) {
     retry_after_ = began + kSwitchRetry;
     if (!switch_failure_logged_) {
