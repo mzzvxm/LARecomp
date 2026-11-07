@@ -131,7 +131,9 @@ class CommandStream {
     bool begun_ = false;
   };
 
-  // Blocks until the record `sequence` was executed, or the stream stopped.
+  // Blocks until the record `sequence` was executed, or the stream stopped. Polls for about 100 us
+  // before it sleeps, except with 5 or fewer logical processors (stream.cpp). The present is the
+  // record it waits for, once a frame, and its release point is a few tens of microseconds away.
   void WaitExecuted(uint64_t sequence);
 
   // --- render thread ---
