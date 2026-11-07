@@ -79,6 +79,7 @@ class HostPrecache {
     kResolveReduce = 2,  // ResolveCache::ReducePipeline: format
     kResolveDecode = 3,  // ResolveMemory::DecodePipeline: format
     kResolveFused = 4,   // ResolveMemory::FusedPipeline: fractional << 9 | msaa << 8 | format
+    kAmbientOcclusion = 5,  // AmbientOcclusion: its pass and variant (ao.cpp PipelineKeyOf)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;
