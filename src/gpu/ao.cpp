@@ -383,7 +383,8 @@ void AmbientOcclusion::ListPrecache() {
   // level is at the start, so a switch to 8x finds it made instead of making it on the render
   // thread in the first frame at that level (the guest's own pipelines are made ahead for the new
   // level by Pipelines::PrebuildForLevel; this pass is not one of them). 2x and 4x are listed above
-  // (the pause and map view's colour target has 4 or 8). A level the device cannot do is not listed.
+  // (the pause and map view's colour target has the game view's samples, or 1 without MSAA). A level
+  // the device cannot do is not listed.
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     listed.push_back(ApplyVariant(false, 8));
   }
