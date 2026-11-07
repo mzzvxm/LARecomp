@@ -18,6 +18,8 @@
 //                  FULLSCREEN   the modes the display lists, one per size (the display's own refresh
 //                               rate where the size has it, else the highest it lists); the mode
 //                               nearest to a saved size the display does not list. Live.
+//                  Sizes are PHYSICAL pixels (the client area of the window; display_mode.h): at 150%
+//                  scaling 1600X900 is a window of 1600 by 900 pixels plus its frame.
 //                  It is written into `resolution` as "WxH" (the SDK's text, which reads "720p",
 //                  "1080p", "1440p", "4k" and "WxH"); an old value ("4k") is matched by its size.
 //                  The SDK also takes it as the game's video mode at the next start.
