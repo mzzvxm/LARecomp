@@ -60,9 +60,16 @@
 //     between are plain, as for FSR's context. A live change of mode or upscaler is made before the
 //     old one is broken: Prepare() asks for the new context in a second slot (the same worker, one
 //     build at a time, a viewport of its own), the old context goes on dispatching, and Commit()
-//     swaps them between two frames once PreparedReady() says the feature exists. A request that
-//     changes while the worker is inside Streamline is not cancelled (nothing can interrupt it): the
-//     context it makes is freed when it is done, and the new one is made next. Freeing a context (slFreeResources) is also the
+//     swaps them between two frames once PreparedReady() says the feature exists. Streamline's
+//     API is serialised by that one mutex (slEvaluateFeature is not thread safe), and the worker
+//     holds it for the whole of the feature's first evaluation, so the old DLSS context cannot be
+//     dispatched meanwhile: Busy() says so, the frames are plain and not jittered at the old scale
+//     until the feature exists (a switch from FSR, from no upscaler, or to FSR or off never meets
+//     this: only DLSS to DLSS does), and the render thread never waits for the mutex while a
+//     feature is being made (Upscale tries it first; a short hold, a context's options or the
+//     freeing of an old one, is waited for). A request that changes while the worker is inside
+//     Streamline is not cancelled (nothing can interrupt it): the context it makes is freed when it
+//     is done, and the new one is made next. Freeing a context (slFreeResources) is also the
 //     worker's, after the frames that may use it (FrameRing::RetireAction). Shutdown() waits for
 //     the worker, so a game closed in the first seconds of a creation waits for the rest of it.
 //   - without a side kit or warm-up images (or if the warm-up fails) the context is published
@@ -110,6 +117,7 @@ class DlssBackend final : public TemporalBackend {
   void Request(const BackendRequest& request) override;
   bool Ready(const BackendRequest& request) const override;
   uint32_t JitterPhaseCount() const override { return 0; }  // 8 x ratio^2, as NVIDIA recommends
+  bool Busy() const override;
   void Prepare(const BackendRequest& next) override;
   bool PreparedReady(const BackendRequest& next) const override;
   bool Commit(const BackendRequest& next) override;

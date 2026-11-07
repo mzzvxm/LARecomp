@@ -654,7 +654,10 @@ struct DlssBackend::Impl {
   std::shared_ptr<Context> Build(const BackendRequest& request, WarmImages* images, SideKit* side,
                                  std::string* why);
   bool Warmup(Context& context, WarmImages& images, SideKit& side, std::string* error);
-  std::string Evaluate(void* native_list, Context& context, const TemporalInputs& in);
+  // `wait` false (a frame's dispatch on the render thread): Streamline's mutex is tried first, and
+  // when the worker holds it to make a feature (`building`) `*busy` is set and nothing is recorded.
+  std::string Evaluate(void* native_list, Context& context, const TemporalInputs& in, bool wait,
+                       bool* busy);
   void FreeContext(const Context& context);
   // Render thread: the contexts go to the worker once the frames that may use them have finished.
   void RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire);
@@ -1231,7 +1234,8 @@ bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& si
   list->barriers(Stage::COMPUTE, to_read, 3);
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(images.output.get(),
                                                               plume::RenderTextureLayout::GENERAL));
-  *error = Evaluate(native_list, context, in);
+  bool busy = false;
+  *error = Evaluate(native_list, context, in, /*wait=*/true, &busy);
   backend::InvalidateAfterExternalWork(list);
   list->end();
   if (!error->empty()) {
@@ -1356,6 +1360,14 @@ bool DlssBackend::Ready(const BackendRequest& request) const {
   const Impl& i = *impl_;
   std::lock_guard lock(i.mu);
   return i.ctx && i.ctx->request == request && !i.status.failed;
+}
+
+bool DlssBackend::Busy() const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  // The worker is making a context, or is about to (the wanted one is set before it wakes): either
+  // way Streamline's mutex is, or is about to be, held for the seconds its first evaluation takes.
+  return i.building.load() || i.WantNextLocked();
 }
 
 // Make before break. The feature of a context takes seconds (NGX builds its network: 8 s on an RTX
@@ -1487,7 +1499,7 @@ void DlssBackend::Fail(const std::string& why) {
 // four images as local tags. Streamline's lock is taken here. Empty when it was recorded, otherwise
 // why not.
 std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
-                                        const TemporalInputs& in) {
+                                        const TemporalInputs& in, bool wait, bool* busy) {
   const backend::NativeImage color_native =
       backend::NativeImageOf(in.color.texture, backend::ImageUse::kComputeRead);
   const backend::NativeImage depth_native =
@@ -1546,7 +1558,19 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   consts.reset = reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
   Runtime& rt = Rt();
-  std::lock_guard sl_lock(rt.mu);
+  std::unique_lock sl_lock(rt.mu, std::defer_lock);
+  if (wait) {
+    sl_lock.lock();
+  } else if (!sl_lock.try_lock()) {
+    if (building.load()) {
+      // The worker is inside Streamline making a feature (the first evaluation of another viewport:
+      // seconds): this frame goes without rather than waiting for it.
+      *busy = true;
+      return "Streamline is busy";
+    }
+    // A short hold (the options of a context, freeing an old one): waited for.
+    sl_lock.lock();
+  }
   if (!rt.initialized || rt.shut_down) {
     return "Streamline is not running";
   }
@@ -1595,15 +1619,19 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   if (!native_list) {
     return fail("the command list has no native object");
   }
-  if (!context->created && !context->dispatched) {
-    REXLOG_INFO("{} the feature was not made in the background: this first dispatch makes it, which "
-                "pauses the game for several seconds",
-                kPrefix);
-  }
   const bool reset = in.reset || !context->dispatched;
-  const std::string error = i.Evaluate(native_list, *context, in);
+  bool busy = false;
+  const std::string error = i.Evaluate(native_list, *context, in, /*wait=*/false, &busy);
+  if (busy) {
+    return false;  // nothing was recorded and nothing failed: this frame is plain (Busy())
+  }
   if (!error.empty()) {
     return fail(error);
+  }
+  if (!context->created && !context->dispatched) {
+    REXLOG_INFO("{} the feature was not made in the background: this first dispatch made it, which "
+                "paused the game for several seconds",
+                kPrefix);
   }
   if (!context->dispatched) {
     context->dispatched = true;

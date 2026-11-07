@@ -100,6 +100,9 @@
 //     armed).
 //   - If the scene's textures cannot be made at the new scale (a 3x scene on a card with little
 //     memory) nothing changes, it is logged and asked again after a few seconds.
+//   - One case cannot keep the old path upscaled: from one DLSS mode to another. Streamline's API is
+//     serialised and the new feature's creation holds it for seconds (TemporalBackend::Busy), so
+//     those frames are plain and not jittered, at the old scene scale, until the feature exists.
 // Each switch is logged: from, to, and how long the new path took to run its first frame. The
 // MSAA of the game is not part of the path: it stays what the start decided (gpu.h GuestMsaa).
 //
@@ -478,6 +481,7 @@ class TemporalSystem {
   uint32_t choice_key_ = 0;
   bool choice_reported_ = false;
   bool ready_reported_ = false;
+  bool busy_reported_ = false;       // the backend's runtime is occupied (Busy), as last said
   HostImage output_;                 // the upscaler's output: R16G16B16A16_FLOAT, output size
   uint32_t last_render_size_[2] = {};  // of the last accepted frame
   uint32_t last_output_size_[2] = {};  // ... and what the upscaler made of it

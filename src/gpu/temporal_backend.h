@@ -202,9 +202,18 @@ class TemporalBackend {
   // dispatch. Render thread.
   virtual void Fail(const std::string& reason) = 0;
 
-  // Records the upscale into `list`. False on a failure (logged, and Status().failed is set: the
-  // caller makes the frame plain and stops asking). Render thread.
+  // Records the upscale into `list`. False when nothing was recorded: a failure (logged, and
+  // Status().failed is set: the caller makes the frame plain and stops asking), or a runtime that
+  // was busy (Busy: Status().failed stays clear, the frame is plain and the caller goes on).
+  // Render thread.
   virtual bool Upscale(plume::RenderCommandList* list, const TemporalInputs& inputs) = 0;
+  // A dispatch now would have to wait for the runtime, which is occupied making a context: DLSS's
+  // Streamline serialises its API (slEvaluateFeature and slGetNewFrameToken are not thread safe) and
+  // the first evaluation of a viewport, which makes the feature, holds it for the seconds NGX takes.
+  // The frame is then plain and not jittered, and Upscale does not wait (it returns false at once if
+  // the runtime got busy after this was asked). Only a context made while another one works can make
+  // this true: a live change from one DLSS mode to another. FidelityFX never is. Any thread.
+  virtual bool Busy() const { return false; }
 
   // GPU idle: the worker stops and every context goes.
   virtual void Shutdown() = 0;

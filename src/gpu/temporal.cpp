@@ -910,7 +910,12 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
                                              plume::RenderTextureLayout::SHADER_READ));
   output_.layout = plume::RenderTextureLayout::SHADER_READ;
   if (!ok) {
-    return false;  // the backend logged it and is off for the session; this frame is plain
+    // A failure was logged by the backend, which is off for the session; one that was busy (it got
+    // occupied after the frame began, TemporalBackend::Busy) only skipped this frame.
+    if (!backend->Status().failed) {
+      ++window_.upscale_plain_not_ready;
+    }
+    return false;  // this frame is plain
   }
 
   // Every fetch of the scene colour from here on reads the output.
@@ -990,6 +995,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   // run; the jitter waits for it, so a frame it cannot take never shakes.
   frame_.upscaler = effective_;
   bool ready = false;
+  bool context_ready = false;
   TemporalBackend* backend = BackendFor(effective_);
   if (effective_ != Upscaler::kOff && backend && ran_last_ && last_render_size_[0] != 0 &&
       last_output_size_[0] != 0) {
@@ -998,12 +1004,27 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     backend->Request(request);
     request_ = request;
     request_made_ = true;
-    ready = backend->Ready(request);
+    context_ready = backend->Ready(request);
+    // A runtime occupied making another context (DLSS to DLSS) cannot take this frame: plain and not
+    // jittered, as before a context is ready.
+    const bool busy = context_ready && backend->Busy();
+    if (busy != busy_reported_) {
+      busy_reported_ = busy;
+      if (busy) {
+        REXLOG_INFO("{} {}'s runtime is occupied making the next context: frames are plain (not "
+                    "jittered) at the old scale until it is done",
+                    kPrefix, UpscalerName(effective_));
+      } else {
+        REXLOG_INFO("{} {}'s runtime is free again: upscaling goes on", kPrefix,
+                    UpscalerName(effective_));
+      }
+    }
+    ready = context_ready && !busy;
   }
   frame_.backend_ready = ready;
-  if (ready != ready_reported_) {
-    ready_reported_ = ready;
-    if (ready) {
+  if (context_ready != ready_reported_) {
+    ready_reported_ = context_ready;
+    if (context_ready) {
       REXLOG_INFO("{} {} is ready for {}x{} to {}x{} ({} {}%): the jitter starts and the scene "
                   "colour is replaced by its output",
                   kPrefix, UpscalerName(effective_), request_.render_size[0],
