@@ -484,6 +484,10 @@ void Renderer::Shutdown() {
   samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
+  // 4. A component shut down above can still retire a release, such as a bindless slot its
+  //    images held (DLSS frame generation's, while it was generating). The release writes the
+  //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
+  frames_.WaitIdle();
   heap_.Shutdown();
   frames_.Shutdown();
   device_.Shutdown();
