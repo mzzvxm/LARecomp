@@ -108,6 +108,13 @@ if(LARECOMP_FFX_KIT)
         "${LARECOMP_FFX_KIT}/api/include"
         "${LARECOMP_FFX_KIT}/upscalers/include")
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX=1)
+    # Frame generation (frame_generation.h): the same runtime's frame generation effect. Its
+    # headers include each other and the api folder by relative path, so only its folder is added.
+    if(LARECOMP_FFX_HAS_FRAMEGENERATION)
+        target_sources(larecomp_gpu PRIVATE frame_generation_ffx.cpp)
+        target_include_directories(larecomp_gpu PRIVATE "${LARECOMP_FFX_KIT}/framegeneration/include")
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX_FG=1)
+    endif()
 endif()
 
 # The temporal upscaler's DLSS backend (temporal_dlss.h): only when the top-level CMake found
