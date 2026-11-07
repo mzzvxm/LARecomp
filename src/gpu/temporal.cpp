@@ -66,7 +66,7 @@ const char* StatusName(TemporalSystem::AnchorStatus status) {
     case S::kNotSeen: return "no anchor draw";
     case S::kAccepted: return "accepted";
     case S::kNoMainView: return "no main view draw before it";
-    case S::kView4x: return "the main view is at 4x samples";
+    case S::kMixedView: return "main view draws of both the game and the pause/map kind";
     case S::kFetches: return "its fetches are not the scene colour, stencil view and depth";
     case S::kTarget: return "its target is not the half-size float image";
     case S::kFrameSize: return temporal::RejectName(temporal::Reject::kFrameSize);
@@ -94,7 +94,7 @@ TemporalSystem::AnchorStatus StatusOf(temporal::Reject reject) {
 const char* ResetName(uint32_t index) {
   static const char* const kNames[TemporalSystem::kResetReasons] = {
       "no anchor in the frame before", "camera cut", "size changed", "gap over 100 ms",
-      "no previous matrix"};
+      "no previous matrix", "the view changed"};
   return index < TemporalSystem::kResetReasons ? kNames[index] : "?";
 }
 
@@ -140,16 +140,18 @@ void TemporalSystem::SetEnabled(bool enabled) {
   pending_frames_ = 0;
   status_logged_.fill(false);
   reset_lines_ = 0;
-  logged_lens_[0] = logged_lens_[1] = logged_lens_[2] = 0.0;
+  for (auto& lens : logged_lens_) {
+    lens[0] = lens[1] = lens[2] = 0.0;
+  }
   lens_lines_ = 0;
   frame_number_ = 0;
   upscale_misses_ = 0;
   last_dispatch_frame_ = ~uint64_t(0);
   scene_colors_ = {};
   scene_color_scale_ = Scale::None();
-  post_stand_in_reported_ = false;
+  post_stand_in_reported_.fill(false);
   post_unserved_run_ = 0;
-  post_unserved_reported_ = false;
+  post_unserved_reported_.fill(false);
   plain_logged_.fill(false);
   if (enabled && effective_ == Upscaler::kOff && vectors_on_) {
     REXLOG_INFO("{} ON for frame generation: the camera is read from the game's motion blur draw "
@@ -294,22 +296,24 @@ void TemporalSystem::CountPostStandIn() {
   if (served != 0) {
     ++window_.post_on_previous;
     post_unserved_run_ = 0;
-    if (!post_stand_in_reported_) {
-      post_stand_in_reported_ = true;
+    if (!post_stand_in_reported_[size_t(fr.view)]) {
+      post_stand_in_reported_[size_t(fr.view)] = true;
       REXLOG_INFO("{} the game's post chain before the anchor (the half-size downsample the bloom, "
                   "the exposure and the motion blur's half-size layer are made from) reads the "
-                  "previous frame's upscaled picture, so the jitter cannot reach them; they are one "
-                  "frame late. The scene is drawn at {}x{} for an output of {}x{}; the game "
-                  "alternates {} scene colour products and the stand-in covers {} of them",
-                  kPrefix, last_render_size_[0], last_render_size_[1], last_output_size_[0],
-                  last_output_size_[1], kSceneColorProducts, fr.post_products);
+                  "previous frame's upscaled picture in the {}, so the jitter cannot reach them; "
+                  "they are one frame late. The scene is drawn at {}x{} for an output of {}x{}; "
+                  "the game alternates {} scene colour products and the stand-in covers {} of them",
+                  kPrefix, temporal::ViewName(fr.view), last_render_size_[0], last_render_size_[1],
+                  last_output_size_[0], last_output_size_[1], kSceneColorProducts,
+                  fr.post_products);
     }
-  } else if (++post_unserved_run_ >= kPostUnservedWarn && !post_unserved_reported_) {
-    post_unserved_reported_ = true;
-    REXLOG_WARN("{} the stand-in for the game's post chain was set in {} frames in a row and no "
-                "read before the anchor was given it: the bloom still reads the jittered scene (the "
-                "scene colour products it covers are not the ones that read)",
-                kPrefix, post_unserved_run_);
+  } else if (++post_unserved_run_ >= kPostUnservedWarn &&
+             !post_unserved_reported_[size_t(fr.view)]) {
+    post_unserved_reported_[size_t(fr.view)] = true;
+    REXLOG_WARN("{} the stand-in for the game's post chain was set in {} frames in a row in the {} "
+                "and no read before the anchor was given it: the bloom still reads the jittered "
+                "scene (the scene colour products it covers are not the ones that read)",
+                kPrefix, post_unserved_run_, temporal::ViewName(fr.view));
   }
 }
 
@@ -875,10 +879,13 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
     SetEnabled(enable);  // starts or ends the run (and says so)
   } else if (enable) {
     // One upscaler path to another with the system on: the run goes on (the camera, the cut rules)
-    // and the new context starts its own history with its first dispatch.
+    // and the new context starts its own history with its first dispatch. A pause view that was
+    // turned plain gets another try with the new path.
     misses_ = 0;
     upscale_misses_ = 0;
     disarmed_ = false;
+    pause_misses_ = 0;
+    pause_disarmed_ = false;
   }
   if (enable && request) {
     // The frame that follows asks for the same context (BeginFrame's Request) and is armed at once
@@ -1094,6 +1101,13 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     return false;
   };
   if (!fr.backend_ready || !backend->Ready(request_)) {
+    if (fr.reset & (kResetFirst | kResetView)) {
+      // The first frame of a run (a pause opening or closing, after a menu): no history, so no
+      // jitter and no upscale; the next frame is the first of the history.
+      return plain(window_.upscale_plain_first, 3,
+                   std::format("the first frame of the {}: the history starts with the next frame",
+                               temporal::ViewName(fr.view)));
+    }
     return plain(window_.upscale_plain_not_ready, 0, "the upscaler's context is not ready");
   }
   // The scene at the render size (the vectors, the depth and the colour the anchor reads are made
@@ -1165,6 +1179,14 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   in.frame_time_ms = fr.frame_time_ms;
   in.reset = fr.reset != 0 || last_dispatch_frame_ == ~uint64_t(0) ||
              last_dispatch_frame_ + 1 != fr.frame;
+  // The lens is the frame's own, so the pause view's differs from play's: 25 to 54 degrees, and on
+  // the map a near plane of about 8,000 and a far plane 3,000 units behind it (from the camera 9,000
+  // units up). Both are given as they are: the projection is the game's ordinary one with a narrow
+  // depth range, and the motion vectors do not use near and far at all (they work on the stored
+  // depth as normalised device depth).
+  // CHECK: the map with DLSS and FSR 3.1 (the "lens in frame N (pause/map view)" line shows the near
+  // and far that are passed on): no disocclusion flicker on the ground, and nothing in the depth-
+  // based rejection of either that assumes a near plane of a few units.
   in.camera_near = float(fr.camera.near_plane);
   in.camera_far = float(fr.camera.far_plane);
   in.camera_fov_y = float(fr.camera.fov_y);
@@ -1255,6 +1277,7 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   fr.anchor_color_slot = textures_->Bind2D(fetch, fr.output_scale, list).slot;
   last_dispatch_frame_ = fr.frame;
   ++window_.upscaled;
+  ++window_.view_upscaled[size_t(fr.view)];
   window_.upscale_resets += in.reset;
   if (switch_log_pending_) {
     switch_log_pending_ = false;
@@ -1273,6 +1296,9 @@ void TemporalSystem::ResetRun() {
   jitter_index_ = 0;
   misses_ = 0;
   disarmed_ = false;
+  run_view_ = temporal::View::kPlay;
+  pause_misses_ = 0;
+  pause_disarmed_ = false;
   frame_open_ = false;
   frame_ = FrameState{};
 }
@@ -1359,7 +1385,10 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   }
   // Armed only after a frame in which the anchor was accepted: a frame without one never shakes
   // (F4-DESIGN.md 2.5); with an upscaler chosen, only while its context is ready.
-  frame_.armed = ran_last_ && !disarmed_ && !VectorsOnly() && (effective_ == Upscaler::kOff || ready);
+  // The run's view kind is the last frame's; a frame of the other kind is made plain when its first
+  // main view draw says so (StartRun).
+  frame_.armed = ran_last_ && !ViewDisarmed(run_view_) && !VectorsOnly() &&
+                 (effective_ == Upscaler::kOff || ready);
   if (frame_.armed) {
     // The sequence's length follows the ratio of the last accepted frame (8 at 1, 18 at 1.5, 32 at
     // 2, 72 at 3): the upscaler's own count for its context when it has one.
@@ -1420,21 +1449,55 @@ uint32_t TemporalSystem::EvaluateGate(const XenosState& s, const DrawRecord& r,
   return failed;
 }
 
+void TemporalSystem::StartRun(temporal::View view) {
+  // The frame before was of the other kind, or had no 3D scene: what the run holds (the camera, its
+  // step, the history the upscaler's context kept, the post chain's stand-in) belongs to something
+  // else and is not used. The cut rule and the vectors never compare the two views' cameras, and the
+  // upscaler's first frame of the new view starts its history again.
+  // CHECK: the first frames after a pause opens and closes (D3D12 and Vulkan, DLSS and FSR 3.1): the
+  // log shows "history starts again ... the view changed" once for each change, one plain frame
+  // ("frame N is not upscaled: the first frame of the ...", once; the summary counts them), then
+  // upscaled frames with no flash or soft frame beyond that one, and "[gpu] temporal: ... is ready
+  // for" is not repeated at each pause (the pause view asks for the same context sizes as play).
+  run_view_ = view;
+  ran_last_ = false;
+  last_step_known_ = false;
+  last_dispatch_frame_ = ~uint64_t(0);
+  scene_colors_ = {};
+  post_unserved_run_ = 0;
+  FrameState& fr = frame_;
+  fr.view_changed = true;
+  // BeginFrame armed the frame for the old kind (it could not know): this one is plain, as the first
+  // frame of a run is.
+  fr.armed = false;
+  fr.backend_ready = false;
+  fr.jitter[0] = fr.jitter[1] = 0.0f;
+  fr.jitter_index = 0;
+  fr.phase_count = kPhasesAtRatio1;
+  fr.ratio = 1.0;
+}
+
 void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& match,
                                 SharedConstants& shared) {
   FrameState& fr = frame_;
-  if (!temporal::IsPlaySamples(match.samples)) {
-    ++fr.view4x_draws;  // the pause menu, the map: known, never moved
-    return;
-  }
   if (fr.anchor_seen || fr.composite_seen) {
     // The UI phase draws into a depth key that equals the main view's when the game runs without
     // MSAA (one depth-only draw a frame, census round 2); the anchor and the marker are what
     // separate them (census 3.4).
     return;
   }
+  const temporal::View view = temporal::ViewOfSamples(match.samples);
   if (fr.samples == 0) {
     fr.samples = match.samples;
+    fr.view = view;
+    if (view != run_view_) {
+      StartRun(view);
+    }
+  } else if (view != fr.view) {
+    // Draws of both kinds in one frame (never seen: a pause frame has the 4x identities only): the
+    // anchor is not taken (CheckAnchor), the other kind's draws are left where they are.
+    ++fr.other_view_draws;
+    return;
   }
   // CHECK: without MSAA the UI's depth-only draw, in the first frame with no 3D scene after one with
   // it (the frame is armed, there is no anchor), is moved by the jitter like a main view draw: a
@@ -1451,6 +1514,7 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     fr.scale = f.scale;
   }
   ++fr.main_draws[kind];
+  ++window_.view_draws[size_t(view)];
   if (kind != kDepthOnly) {
     // The first draw that draws colour into the main view: this frame has a 3D scene, and the post
     // chain that reads its colour comes later.
@@ -1460,6 +1524,10 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
     }
   }
 
+  // CHECK: that the pause view's world draws pass this gate as play's do (a viewport as wide as the
+  // target, clipping and the viewport transform on, no rectangle list): in the summary, "main view
+  // draws ... of which moved by the jitter" for the pause/map view should be nearly all of them,
+  // like the game view's. A world draw left still would sit apart from the jittered rest.
   if (EvaluateGate(*f.state, f.view->record(), *f.viewport, f.scale) != 0) {
     return;  // not a world draw: kept still
   }
@@ -1472,14 +1540,15 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
   shared.pos_offset[0] += 2.0f * fr.jitter[0] / f.viewport->viewport.width;
   shared.pos_offset[1] -= 2.0f * fr.jitter[1] / f.viewport->viewport.height;
   ++fr.jittered[kind];
+  ++window_.view_moved[size_t(view)];
 }
 
 TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uint32_t* width,
                                                          uint32_t* height,
                                                          std::string* why) const {
   const FrameState& fr = frame_;
-  if (fr.view4x_draws != 0) {
-    return AnchorStatus::kView4x;
+  if (fr.other_view_draws != 0) {
+    return AnchorStatus::kMixedView;
   }
   if (Colored(fr.main_draws) == 0) {
     return AnchorStatus::kNoMainView;
@@ -1518,6 +1587,9 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
   *height = sizes[0][1];
   // Its target: the half-size float image. The target is allocated a little taller than the
   // picture (640x384 for 640x360, census 1.1), so the viewport, not the allocation, is compared.
+  // CHECK: that the pause view's anchor passes these structural checks (three resolved products of
+  // one size, the half-size float target at the output's scale): the first refusal says why, with
+  // the view, in "the anchor draw of frame N (pause/map view) is not taken".
   const uint32_t half_w = f.scale.Edge(*width / 2);
   const uint32_t half_h = f.scale.Edge(*height / 2);
   if (!f.color0 ||
@@ -1554,11 +1626,12 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   }
   fr.anchor_status = status;
   if (status != AnchorStatus::kAccepted) {
-    if (status != AnchorStatus::kView4x && !status_logged_[size_t(status)]) {
+    if (!status_logged_[size_t(status)]) {
       status_logged_[size_t(status)] = true;
-      REXLOG_INFO("{} the anchor draw of frame {} is not taken: {}{}{} (the first of its kind; "
+      REXLOG_INFO("{} the anchor draw of frame {} ({}) is not taken: {}{}{} (the first of its kind; "
                   "the summaries count them)",
-                  kPrefix, fr.frame, StatusName(status), why.empty() ? "" : ": ", why);
+                  kPrefix, fr.frame, fr.samples != 0 ? temporal::ViewName(fr.view) : "no main view",
+                  StatusName(status), why.empty() ? "" : ": ", why);
     }
     DropPostStandIn();  // the post chain was given the previous picture: the rest reads this frame's
     return false;
@@ -1587,7 +1660,9 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   uint32_t reset = 0;
   temporal::Cut cut;
   if (!ran_last_) {
-    reset |= kResetFirst;
+    // The first frame of a run: the first of the session, one after a menu or a loading screen, or
+    // the first of a view whose kind the frame before did not have (a pause opening or closing).
+    reset |= fr.view_changed ? kResetView : kResetFirst;
   } else {
     const double gap_ms = std::chrono::duration<double, std::milli>(now - last_anchor_time_).count();
     fr.frame_time_ms = float(std::clamp(gap_ms, 1.0, kMaxGapMs));
@@ -1599,6 +1674,10 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
         last_output_size_[1] != fr.output_size[1]) {
       reset |= kResetSize;
     }
+    // CHECK: how often this fires on the map's zoom and pan and on the pause camera's swing (the
+    // summary's "camera cuts" for the pause/map view, and the cut lines of "history starts again"):
+    // the rule's 25 units are about 8 pixels at the map's height, so a quick pan may restart the
+    // history more than it needs to (the vectors are exact for a camera move over a still world).
     cut = temporal::TestCut(camera, last_camera_, last_step_known_ ? last_step_ : nullptr);
     fr.cut = cut;
     if (cut.fires) {
@@ -1613,27 +1692,30 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
 
   // The lens (field of view, near, far): a line when it changes, not only in the summaries (the
   // census logged it in its first two frames only and saw 25 degrees in play, 53.75 in the pause).
+  // Each view compares with its own last line, so a pause menu opening is not a change of lens.
   const auto changed = [](double a, double b) { return std::fabs(a - b) > 0.01 * std::fabs(b); };
+  double(&logged)[3] = logged_lens_[size_t(fr.view)];
   if (lens_lines_ < kMaxLensLines &&
-      (changed(camera.fov_y, logged_lens_[0]) || changed(camera.near_plane, logged_lens_[1]) ||
-       changed(camera.far_plane, logged_lens_[2]))) {
+      (changed(camera.fov_y, logged[0]) || changed(camera.near_plane, logged[1]) ||
+       changed(camera.far_plane, logged[2]))) {
     ++lens_lines_;
-    logged_lens_[0] = camera.fov_y;
-    logged_lens_[1] = camera.near_plane;
-    logged_lens_[2] = camera.far_plane;
-    REXLOG_INFO("{} lens in frame {}: field of view {:.3f} deg, aspect {:.4f}, near {:.3f}, far "
-                "{:.1f}, camera at {:.2f}, {:.2f}, {:.2f}, looking along {:.3f}, {:.3f}, {:.3f}{}",
-                kPrefix, fr.frame, camera.fov_y * 180.0 / kPi, camera.aspect, camera.near_plane,
-                camera.far_plane, camera.position[0], camera.position[1], camera.position[2],
-                camera.forward[0], camera.forward[1], camera.forward[2],
-                lens_lines_ == kMaxLensLines ? " (the last of these lines)" : "");
+    logged[0] = camera.fov_y;
+    logged[1] = camera.near_plane;
+    logged[2] = camera.far_plane;
+    REXLOG_INFO("{} lens in frame {} ({}): field of view {:.3f} deg, aspect {:.4f}, near {:.3f}, "
+                "far {:.1f}, camera at {:.2f}, {:.2f}, {:.2f}, looking along {:.3f}, {:.3f}, "
+                "{:.3f}{}",
+                kPrefix, fr.frame, temporal::ViewName(fr.view), camera.fov_y * 180.0 / kPi,
+                camera.aspect, camera.near_plane, camera.far_plane, camera.position[0],
+                camera.position[1], camera.position[2], camera.forward[0], camera.forward[1],
+                camera.forward[2], lens_lines_ == kMaxLensLines ? " (the last of these lines)" : "");
   }
 
   if (reset != 0 && reset_lines_ < kMaxResetLines) {
     ++reset_lines_;
-    REXLOG_INFO("{} history starts again in frame {}: {}{} (camera at {:.1f}, {:.1f}, {:.1f}, field "
-                "of view {:.2f} deg){}",
-                kPrefix, fr.frame, ResetText(reset),
+    REXLOG_INFO("{} history starts again in frame {} ({}): {}{} (camera at {:.1f}, {:.1f}, {:.1f}, "
+                "field of view {:.2f} deg){}",
+                kPrefix, fr.frame, temporal::ViewName(fr.view), ResetText(reset),
                 (reset & kResetCut)
                     ? std::format(" ({}{}{}: moved {:.1f}, {:.1f} away from the {:.1f} the step "
                                   "before predicts (allowed {:.1f}); turn cosine {:.4f}; field of "
@@ -1683,16 +1765,14 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
 // ---------------------------------------------------------------------------
 
 TemporalSystem::Mode TemporalSystem::ModeOf(const FrameState& fr) {
-  if (Colored(fr.main_draws) == 0 && fr.view4x_draws == 0) {
+  if (Colored(fr.main_draws) == 0) {
     return Mode::kNoScene;
   }
+  const bool pause = fr.view == temporal::View::kPause;
   if (fr.anchor_ok) {
-    return Mode::kRunning;
+    return pause ? Mode::kRunningPause : Mode::kRunning;
   }
-  if (fr.view4x_draws != 0) {
-    return Mode::kView4x;
-  }
-  return Mode::kNoAnchor;
+  return pause ? Mode::kNoAnchorPause : Mode::kNoAnchor;
 }
 
 void TemporalSystem::EndFrame() {
@@ -1712,32 +1792,55 @@ void TemporalSystem::EndFrame() {
   }
   const FrameState& fr = frame_;
   const bool ran = fr.anchor_ok;
+  const bool pause_frame = fr.samples != 0 && fr.view == temporal::View::kPause;
 
-  // The safety net: a frame that was jittered, had the main view and no accepted anchor.
-  if (fr.armed && Colored(fr.jittered) != 0) {
-    if (ran) {
-      misses_ = 0;
-    } else {
-      if (++misses_ >= kDisarmAfterMisses && !disarmed_) {
-        disarmed_ = true;
-        REXLOG_WARN("{} {} frames in a row were jittered and had no usable anchor ({}): the "
-                    "jitter is off until the upscaler is turned off and on",
-                    kPrefix, misses_, StatusName(fr.anchor_status));
-      }
-    }
-  }
-
-  // The upscaler: a frame that was jittered and not upscaled is a wrong frame (the raw jittered
-  // scene); a few in a row and it is over for the session. Frames that were not jittered, or whose
-  // 3D scene was not the main view (the pause menu's 4x), are plain and right.
-  if (fr.upscaler != Upscaler::kOff && fr.armed && Colored(fr.jittered) != 0 && !upscaled) {
-    if (++upscale_misses_ >= kDisarmAfterMisses) {
-      upscale_misses_ = 0;
-      FailUpscaler(std::format("{} jittered frames in a row could not be upscaled ({})",
-                               kDisarmAfterMisses, StatusName(fr.anchor_status)));
+  if (pause_frame) {
+    // The pause/map view has its own safety net, so that what only it meets cannot end the upscaler
+    // for the game view: a frame that was jittered and then had no accepted anchor, or was not
+    // upscaled with an upscaler running, is a wrong frame (the raw jittered world); a few in a row
+    // and the pause view is plain (not jittered) until the path changes. The game view's counters
+    // are left as they were.
+    // CHECK: that this never trips in a normal pause (no "frames in a row in the pause/map view"
+    // warning); if it does, the reason it names is what the pause view still lacks.
+    const bool wrong = fr.armed && Colored(fr.jittered) != 0 &&
+                       (!ran || (fr.upscaler != Upscaler::kOff && !upscaled));
+    if (!wrong) {
+      pause_misses_ = 0;
+    } else if (++pause_misses_ >= kDisarmAfterMisses && !pause_disarmed_) {
+      pause_disarmed_ = true;
+      REXLOG_WARN("{} {} frames in a row in the pause/map view were jittered and {} ({}): the pause "
+                  "menu and the map are drawn plain (not jittered, not upscaled) until the upscaler "
+                  "or its mode changes; the game view is not affected",
+                  kPrefix, pause_misses_, ran ? "not upscaled" : "had no usable anchor",
+                  StatusName(fr.anchor_status));
     }
   } else {
-    upscale_misses_ = 0;
+    // The safety net: a frame that was jittered, had the main view and no accepted anchor.
+    if (fr.armed && Colored(fr.jittered) != 0) {
+      if (ran) {
+        misses_ = 0;
+      } else {
+        if (++misses_ >= kDisarmAfterMisses && !disarmed_) {
+          disarmed_ = true;
+          REXLOG_WARN("{} {} frames in a row were jittered and had no usable anchor ({}): the "
+                      "jitter is off until the upscaler is turned off and on",
+                      kPrefix, misses_, StatusName(fr.anchor_status));
+        }
+      }
+    }
+
+    // The upscaler: a frame that was jittered and not upscaled is a wrong frame (the raw jittered
+    // scene); a few in a row and it is over for the session. Frames that were not jittered, or whose
+    // 3D scene was not the main view, are plain and right.
+    if (fr.upscaler != Upscaler::kOff && fr.armed && Colored(fr.jittered) != 0 && !upscaled) {
+      if (++upscale_misses_ >= kDisarmAfterMisses) {
+        upscale_misses_ = 0;
+        FailUpscaler(std::format("{} jittered frames in a row could not be upscaled ({})",
+                                 kDisarmAfterMisses, StatusName(fr.anchor_status)));
+      }
+    } else {
+      upscale_misses_ = 0;
+    }
   }
 
   // The run for the next frame. The camera's step first: it needs the camera of the frame before.
@@ -1767,6 +1870,16 @@ void TemporalSystem::EndFrame() {
   const Mode mode = ModeOf(fr);
   ++w.modes[size_t(mode)];
   ++w.anchor_status[size_t(fr.anchor_status)];
+  if (Colored(fr.main_draws) != 0) {
+    const size_t view = size_t(fr.view);
+    ++w.view_frames[view];
+    w.view_armed[view] += fr.armed;
+    if (ran) {
+      ++w.view_anchors[view];
+      w.view_resets[view] += fr.reset != 0;
+      w.view_cuts[view] += (fr.reset & kResetCut) != 0;
+    }
+  }
   if (ran) {
     if (fr.reset != 0) {
       ++w.resets;
@@ -1812,23 +1925,22 @@ void TemporalSystem::NoteMode(Mode mode, const FrameState& fr) {
       REXLOG_INFO("{} frame {}: no 3D scene (a menu, loading, a movie): nothing is moved, no camera",
                   kPrefix, fr.frame);
       break;
-    case Mode::kView4x:
-      REXLOG_INFO("{} frame {}: the 3D scene is at 4x samples (the pause menu, the map): nothing is "
-                  "moved, no camera", kPrefix, fr.frame);
-      break;
     case Mode::kNoAnchor:
-      REXLOG_INFO("{} frame {}: the 3D scene is there but its anchor draw is not taken ({}): the "
-                  "frames are not temporal",
-                  kPrefix, fr.frame, StatusName(fr.anchor_status));
+    case Mode::kNoAnchorPause:
+      REXLOG_INFO("{} frame {}: the 3D scene is there ({}) but its anchor draw is not taken ({}): "
+                  "the frames are not temporal",
+                  kPrefix, fr.frame, temporal::ViewName(fr.view), StatusName(fr.anchor_status));
       break;
     case Mode::kRunning:
-      REXLOG_INFO("{} frame {}: running: the 3D scene at {}x samples, the anchor taken (camera at "
-                  "{:.1f}, {:.1f}, {:.1f}, field of view {:.2f} deg, near {:.2f}, far {:.0f}, "
-                  "frame {}x{}, render {}x{}), jitter {}",
-                  kPrefix, fr.frame, fr.samples, fr.camera.position[0], fr.camera.position[1],
-                  fr.camera.position[2], fr.camera.fov_y * 180.0 / kPi,
-                  fr.camera.near_plane, fr.camera.far_plane, fr.guest_size[0], fr.guest_size[1],
-                  fr.render_size[0], fr.render_size[1],
+    case Mode::kRunningPause:
+      REXLOG_INFO("{} frame {}: running in the {}{}: the 3D scene at {}x samples, the anchor taken "
+                  "(camera at {:.1f}, {:.1f}, {:.1f}, field of view {:.2f} deg, near {:.2f}, far "
+                  "{:.0f}, frame {}x{}, render {}x{}), jitter {}",
+                  kPrefix, fr.frame, temporal::ViewName(fr.view),
+                  fr.view == temporal::View::kPause ? " (behind the pause menu and on the map)" : "",
+                  fr.samples, fr.camera.position[0], fr.camera.position[1], fr.camera.position[2],
+                  fr.camera.fov_y * 180.0 / kPi, fr.camera.near_plane, fr.camera.far_plane,
+                  fr.guest_size[0], fr.guest_size[1], fr.render_size[0], fr.render_size[1],
                   fr.armed ? std::format("{:+.3f}, {:+.3f} px (phase {} of {})", fr.jitter[0],
                                          fr.jitter[1], fr.jitter_index, fr.phase_count)
                            : std::string("starts with the next frame"));
@@ -1841,12 +1953,15 @@ void TemporalSystem::NoteMode(Mode mode, const FrameState& fr) {
 void TemporalSystem::Report() {
   const Window& w = window_;
   const double seconds = std::chrono::duration<double>(Clock::now() - window_start_).count();
-  const uint64_t running = w.modes[size_t(Mode::kRunning)];
-  const uint64_t scene = running + w.modes[size_t(Mode::kNoAnchor)];
+  const uint64_t running = w.modes[size_t(Mode::kRunning)] + w.modes[size_t(Mode::kRunningPause)];
+  const uint64_t scene =
+      running + w.modes[size_t(Mode::kNoAnchor)] + w.modes[size_t(Mode::kNoAnchorPause)];
+  constexpr size_t kPlayView = size_t(temporal::View::kPlay);
+  constexpr size_t kPauseView = size_t(temporal::View::kPause);
 
   std::string refused;
   for (size_t i = size_t(AnchorStatus::kNoMainView); i < size_t(AnchorStatus::kCount); ++i) {
-    if (w.anchor_status[i] != 0 && i != size_t(AnchorStatus::kView4x)) {
+    if (w.anchor_status[i] != 0) {
       refused += std::format("{}{} x{}", refused.empty() ? "" : "; ", StatusName(AnchorStatus(i)),
                              w.anchor_status[i]);
     }
@@ -1869,12 +1984,20 @@ void TemporalSystem::Report() {
                          w.camera.fov_y * 180.0 / kPi, w.camera.near_plane, w.camera.far_plane,
                          w.camera.width, w.camera.height, w.render_size[0], w.render_size[1]);
   }
-  REXLOG_INFO("{} summary: {} frames in {:.1f} s: 3D scene {} (anchor taken {}, at 4x samples {}), "
-              "no scene {}, jitter armed {} | refused anchors: {} | history restarts: {} ({}) | "
-              "camera {}",
-              kPrefix, w.frames, seconds, scene, running, w.modes[size_t(Mode::kView4x)],
-              w.modes[size_t(Mode::kNoScene)], w.armed, refused.empty() ? "none" : refused,
-              w.resets, resets.empty() ? "none" : resets, camera);
+  REXLOG_INFO("{} summary: {} frames in {:.1f} s: 3D scene {} (anchor taken {}), no scene {}, jitter "
+              "armed {} | game view: {} frames, anchor taken {}, jittered {}, upscaled {}, history "
+              "restarts {} (camera cuts {}), main view draws {} of which moved by the jitter {} | "
+              "pause/map view: {} frames, anchor taken {}, jittered {}, upscaled {}, history "
+              "restarts {} (camera cuts {}), main view draws {} of which moved by the jitter {} | "
+              "refused anchors: {} | history restarts: {} ({}) | camera {}",
+              kPrefix, w.frames, seconds, scene, running, w.modes[size_t(Mode::kNoScene)], w.armed,
+              w.view_frames[kPlayView], w.view_anchors[kPlayView], w.view_armed[kPlayView],
+              w.view_upscaled[kPlayView], w.view_resets[kPlayView], w.view_cuts[kPlayView],
+              w.view_draws[kPlayView], w.view_moved[kPlayView], w.view_frames[kPauseView],
+              w.view_anchors[kPauseView], w.view_armed[kPauseView], w.view_upscaled[kPauseView],
+              w.view_resets[kPauseView], w.view_cuts[kPauseView], w.view_draws[kPauseView],
+              w.view_moved[kPauseView], refused.empty() ? "none" : refused, w.resets,
+              resets.empty() ? "none" : resets, camera);
   if (effective_ != Upscaler::kOff || w.upscaled != 0) {
     const TemporalBackend* running_backend = BackendFor(effective_);
     const BackendStatus status = running_backend ? running_backend->Status() : BackendStatus{};
@@ -1882,12 +2005,14 @@ void TemporalSystem::Report() {
                 "the history started again); the game's post chain before the anchor was offered "
                 "the previous frame's picture in {} frames and read it in {} of them ({} reads "
                 "served by the stand-in before the anchor; about one a frame when it works, none "
-                "when the reads name a product it does not cover), plain: context not ready {}, "
-                "no vectors {}, colour not an input {}{}",
+                "when the reads name a product it does not cover), upscaled in the game view {} "
+                "and in the pause/map view {}, plain: context not ready {}, first frame of a view "
+                "{}, no vectors {}, colour not an input {}{}",
                 UpscalerName(effective_), ModeInfoOf(effective_, mode_in_use_).name,
                 status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
                 w.upscaled, w.upscale_resets, w.post_stand_in_set, w.post_on_previous,
-                w.post_reads_served, w.upscale_plain_not_ready, w.upscale_plain_no_vectors,
+                w.post_reads_served, w.view_upscaled[kPlayView], w.view_upscaled[kPauseView],
+                w.upscale_plain_not_ready, w.upscale_plain_first, w.upscale_plain_no_vectors,
                 w.upscale_plain_no_color,
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }

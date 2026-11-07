@@ -12,7 +12,8 @@
 //             block), of the draws that go to the main view: the scene's colour and depth, found by
 //             their exact EDRAM identity at 2x samples (the game's own layout, always; the host's
 //             samples are fewer under an upscaler: msaa_level.h; 1x only for a game made without
-//             MSAA, temporal_identities.h), only before the
+//             MSAA, temporal_identities.h) and, behind the pause menu and on the map, at 4x (the
+//             pause view, below), only before the
 //             anchor and the composite marker, and only world draws (clipping and the viewport
 //             transform on, not a rectangle list, a viewport as wide as the target). Everything
 //             else keeps its position: the shadow maps, the reflections, the post chain, the UI.
@@ -24,6 +25,27 @@
 //   State.    Per guest frame: whether the jitter is armed (the anchor was accepted in the frame
 //             before), the jitter and its phase, the sizes, the camera, the anchor's bound
 //             textures, the counts of draws; and the states of the run in the log.
+//
+// Views. The game draws the world twice over: the 3D scene in play (2 samples) and the world behind
+// the pause menu, the race pause and the GPS map (the same identities at 4 samples:
+// temporal_identities.h View). Both are the main view for everything above: the anchor draw runs
+// in both with a camera of its own (a field of view of 25 degrees in play, 53.75 behind the pause
+// menu, 25 on the map from a camera 9,000 units up with its near plane at about 8,000), the jitter
+// moves the world's draws of both, and the scene's identities of both are drawn at the scene's
+// scale (edram.h IsSceneKey). The run (the camera, the cut rule's step, the jitter's phase, the
+// upscaler's history and the post chain's stand-in) belongs to one view kind at a time: the view of
+// a frame is that of its first main view draw, and when it is not the kind of the frame before the
+// run starts again (StartRun). The first frame of a view is plain (the anchor is accepted and its
+// camera kept, no jitter, no upscale) and the next one is the history's first: after a pause
+// opens, after it closes, and between a menu and the world. The camera of one kind is never
+// compared with the other's, so a pause menu opening is one history restart, not a cut every
+// time. Inside one kind the cut rule goes on as in play: the map's zoom and pan, and the pause
+// camera's swing when the menu opens, are camera steps like any other and restart the history
+// when the rule fires. Moving things in a paused world (water, foliage, anything animated) ghost
+// as they do in play. A frame whose draws are of both kinds is not taken (kMixedView). The pause
+// view's failures are its own: three of its jittered frames in a row that could not be taken or
+// upscaled turn the pause view plain until the path changes (pause_disarmed_), and the game view
+// and the upscaler are left alone.
 //
 // Step 1b (temporal_mv.h) adds to it, at the anchor, the passes that keep the scene's depth and make
 // the motion vectors from this system's own camera history; the backend steps read `frame()`, `previous_camera()` and `motion().kept()` below.
@@ -114,8 +136,8 @@
 //     are asked for at their sizes by the draws and the passes.
 //   - A switch with the system already on goes on with the run (the camera, the cut rules) and
 //     draws its first frame armed, upscaled by the new context. One from off has its first frame
-//     plain, like the first frame after a pause (the anchor of a frame is accepted before one is
-//     armed).
+//     plain, like the first frame of any run (see "Views": the anchor of a frame is accepted before
+//     one is armed).
 //   - If the targets cannot be made at the new scale (a 3x render scale is 4K: it can fail on a card
 //     with little memory; so can an upscaler's output in a large window) nothing changes, it is
 //     logged, the pause menu's RENDER SCALE row says "TOO BIG" (gpu.h GetRenderScaleStatus) and the
@@ -147,7 +169,8 @@
 // With no upscaler chosen (or one this PC cannot run) no hook of the Scene does anything beyond one
 // branch, no constant changes, no draw is added. With one on, the system jitters, reads the camera
 // and logs: "[gpu] temporal: ..." lines, one for each change of what the frames are (no 3D scene,
-// 3D scene at 4x samples, anchor missing or refused, running) and a summary when the game exits.
+// 3D scene, anchor missing or refused, running; the game view and the pause/map view apart) and a
+// summary when the game exits.
 //
 // Threading: render thread only.
 // ===========================================================================
@@ -206,19 +229,20 @@ class TemporalSystem {
   };
   // Why the history starts again (a bit each).
   enum ResetBit : uint32_t {
-    kResetFirst = 1u << 0,       // no accepted anchor in the frame before (first, a menu, a pause)
+    kResetFirst = 1u << 0,       // no accepted anchor in the frame before (first, a menu, loading)
     kResetCut = 1u << 1,         // the camera cut rule fired
     kResetSize = 1u << 2,        // the frame's size or the scene's scale changed
     kResetTime = 1u << 3,        // more than kMaxGapMs since the previous anchor
     kResetNoPrevious = 1u << 4,  // the world's previous matrix (c69) is not usable
+    kResetView = 1u << 5,        // the view changed: the frame before was of the other kind (or none)
   };
-  static constexpr uint32_t kResetReasons = 5;
+  static constexpr uint32_t kResetReasons = 6;
   // What the anchor test said of the frame.
   enum class AnchorStatus : uint8_t {
     kNotSeen,         // the frame has no anchor draw (or the system did not see it prepared)
     kAccepted,
     kNoMainView,      // an anchor draw but no main view draw before it
-    kView4x,          // the main view is at 4x samples: the pause menu, the map
+    kMixedView,       // main view draws of both kinds (game and pause/map samples) in one frame
     kFetches,         // fetches 0 to 2 are not the colour, stencil and depth textures at one size
     kTarget,          // its colour target is not the half-size float image
     kFrameSize,       // temporal_camera.h Reject
@@ -267,12 +291,17 @@ class TemporalSystem {
     float jitter[2] = {};
     double ratio = 1.0;  // output size over render size, per axis: 1 until the scene is drawn smaller
 
-    // The main view (2x samples, before the anchor).
+    // The main view (before the anchor): the game view's 2 samples (1 for a game made without MSAA)
+    // or the pause/map view's 4.
     Scale scale = Scale::None();  // of the first main view draw's targets
-    uint32_t samples = 0;         // guest samples of the first one: 2 (1 for a game made without MSAA)
+    uint32_t samples = 0;         // guest samples of the first one: 2, 1 or 4
+    temporal::View view = temporal::View::kPlay;  // the kind of the first one: the frame's view
+    // The run started with this frame's view: the frame before was of the other kind or had no 3D
+    // scene (StartRun), so the frame is plain and its history starts again.
+    bool view_changed = false;
+    uint32_t other_view_draws = 0;  // draws of the other kind in the same frame (kMixedView)
     std::array<uint32_t, kKinds> main_draws{};
     std::array<uint32_t, kKinds> jittered{};
-    uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
     bool composite_seen = false;
 
     // The anchor.
@@ -388,7 +417,8 @@ class TemporalSystem {
   using Clock = std::chrono::steady_clock;
 
   // What the frames are, for the log.
-  enum class Mode : uint8_t { kNoScene, kView4x, kNoAnchor, kRunning, kCount };
+  // The pause/map view's modes are its own, so a change between the two views is a change of mode.
+  enum class Mode : uint8_t { kNoScene, kNoAnchor, kRunning, kNoAnchorPause, kRunningPause, kCount };
 
   struct Window {
     uint64_t frames = 0;
@@ -400,9 +430,19 @@ class TemporalSystem {
     uint64_t cut_distance = 0;  // camera cuts by clause (a cut may have several)
     uint64_t cut_turn = 0;
     uint64_t cut_fov = 0;
+    // What each view did (a 3D scene frame is counted in the view of its first main view draw).
+    uint64_t view_frames[temporal::kViewCount] = {};      // 3D scene frames
+    uint64_t view_anchors[temporal::kViewCount] = {};     // ... whose anchor was taken
+    uint64_t view_armed[temporal::kViewCount] = {};       // ... that were jittered
+    uint64_t view_upscaled[temporal::kViewCount] = {};    // ... that were upscaled
+    uint64_t view_resets[temporal::kViewCount] = {};      // ... whose history started again
+    uint64_t view_cuts[temporal::kViewCount] = {};        // ... of them, by the camera cut rule
+    uint64_t view_draws[temporal::kViewCount] = {};       // main view draws before the anchor
+    uint64_t view_moved[temporal::kViewCount] = {};       // ... of them moved by the jitter
     // The upscaler: frames it ran in, and the frames with an upscaler chosen that it did not run in.
     uint64_t upscaled = 0;
     uint64_t upscale_plain_not_ready = 0;  // no context yet (or the sizes changed): plain, no jitter
+    uint64_t upscale_plain_first = 0;      // the first frame of a view (no history): plain
     uint64_t upscale_plain_no_vectors = 0;
     uint64_t upscale_plain_no_color = 0;   // the colour product could not be had as an input
     uint64_t upscale_resets = 0;           // upscaled frames the history started again in
@@ -421,6 +461,13 @@ class TemporalSystem {
   // On for the vectors alone: nothing is jittered or replaced.
   bool VectorsOnly() const { return vectors_on_ && effective_ == Upscaler::kOff; }
   void OnMainView(const DrawFacts& facts, const temporal::MainMatch& match, SharedConstants& shared);
+  // The first main view draw of a frame is of `view`, which is not the kind the run belongs to: the
+  // run starts again (see "Views" above) and the frame BeginFrame armed for the old kind is plain.
+  void StartRun(temporal::View view);
+  // The jitter is off for `view`: the game view's safety net tripped (disarmed_) or the pause view's.
+  bool ViewDisarmed(temporal::View view) const {
+    return view == temporal::View::kPause ? pause_disarmed_ : disarmed_;
+  }
   bool OnAnchor(const DrawFacts& facts, const SharedConstants& shared);
   static uint32_t EvaluateGate(const XenosState& state, const DrawRecord& record,
                                const ViewportInfo& viewport, Scale scale);
@@ -452,6 +499,14 @@ class TemporalSystem {
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
   uint32_t misses_ = 0;
   bool disarmed_ = false;
+  // The kind of view the run belongs to (the camera, the step, the history): the last frame with a
+  // main view's. A frame of the other kind starts the run again (StartRun).
+  temporal::View run_view_ = temporal::View::kPlay;
+  // The pause/map view's own safety net: kDisarmAfterMisses of its frames in a row that were jittered
+  // and not taken or not upscaled turn its jitter off until the path changes. The game view and the
+  // upscaler are left alone.
+  uint32_t pause_misses_ = 0;
+  bool pause_disarmed_ = false;
 
   // Step 1b: the passes and what they keep (temporal_mv.h), and what the anchor told them.
   TemporalMotion motion_;
@@ -631,9 +686,11 @@ class TemporalSystem {
   static constexpr uint64_t kSceneColorMaxAge = 2;
   std::array<SceneColor, kSceneColorProducts> scene_colors_{};
   Scale scene_color_scale_ = Scale::None();
-  bool post_stand_in_reported_ = false;
-  uint32_t post_unserved_run_ = 0;  // frames in a row the stand-in was set and nothing read it
-  bool post_unserved_reported_ = false;
+  // Per view: the stand-in's first served read was logged; frames in a row the stand-in was set and
+  // nothing read it, and whether that was reported.
+  std::array<bool, temporal::kViewCount> post_stand_in_reported_{};
+  uint32_t post_unserved_run_ = 0;
+  std::array<bool, temporal::kViewCount> post_unserved_reported_{};
   uint32_t upscale_misses_ = 0;      // armed frames in a row the upscaler did not take
   bool aa_hold_reported_ = false;
   std::array<bool, 4> plain_logged_{};
@@ -646,7 +703,8 @@ class TemporalSystem {
   uint32_t pending_frames_ = 0;
   std::array<bool, size_t(AnchorStatus::kCount)> status_logged_{};
   uint32_t reset_lines_ = 0;
-  double logged_lens_[3] = {};                 // field of view (rad), near, far of the last line
+  // Per view: field of view (rad), near, far of the last line.
+  double logged_lens_[temporal::kViewCount][3] = {};
   uint32_t lens_lines_ = 0;
 };
 
