@@ -234,4 +234,6 @@ Fixes made directly in LARecomp:
 
 **NVIDIA DLSS** and **NVIDIA Reflex**. LARecomp uses NVIDIA DLSS Super Resolution through NVIDIA Streamline, and NVIDIA Reflex, on NVIDIA RTX graphics cards. NVIDIA, NVIDIA RTX, DLSS and Reflex are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries. NVIDIA's files stay under NVIDIA's licences, which are copied next to the exe with them (`nvngx_dlss_license.txt`, `reflex_license.txt`, `streamline_license.txt`, `streamline_third_party_licenses.md`).
 
+**AMD FidelityFX** and **AMD Anti-Lag 2**. LARecomp uses FidelityFX Super Resolution (FSR 1, FSR 3.1, FSR 4) and CAS for upscaling and sharpening, and AMD Anti-Lag 2. The FidelityFX SDK is under the MIT licence, copied next to the exe with its files (`amd_fidelityfx_license.md`). AMD FidelityFX, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.
+
 **Rockstar San Diego**, who made the game.
