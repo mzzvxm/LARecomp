@@ -121,7 +121,7 @@ class SwapChain {
   bool hdr() const { return hdr_; }
 
  private:
-  static constexpr plume::RenderFormat kSdrFormat = FormatFor(false);
+  static constexpr plume::RenderFormat kSdrFormat = plume::RenderFormat::B8G8R8A8_UNORM;
 
   // Makes swap_chain_ (HDR10 first when `hdr10`, else, or when that is refused, SDR), its per-image
   // objects and logs it; false (logged) when no chain could be made, with swap_chain_ empty.
