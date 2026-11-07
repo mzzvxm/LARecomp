@@ -100,33 +100,6 @@ Cut TestCut(const Camera& now, const Camera& before, const double* previous_step
 // vectors, x_pix = w/2 x + w/2 clip_w, y_pix = h/2 clip_w - h/2 y, depth and w columns kept.
 Mat4 ClipToPixels(double width, double height);
 
-// A draw's vertex shader constants read as the game's per-object set the fork's frame capture
-// described (launcher/dev/frame-structure-2026-10-16.md, section 4: c0-c3 World, c4-c7 WorldView,
-// c8-c11 WorldViewProjection, c12-c15 ViewInverse with the camera position shared): one register
-// per row, 16 floats each, row-major as the registers lie. Nothing measured this layout in
-// LARecomp; CompareVsMatrices says, per sample, whether it holds against the anchor's camera. That
-// decides whether the camera exists before the post chain, where the upscale could then run
-// (TemporalSystem::StandInForPostChain says why it does not yet).
-struct VsMatrices {
-  float world[16] = {};
-  float world_view[16] = {};
-  float world_view_projection[16] = {};
-  float view_inverse[16] = {};
-};
-void ReadVsMatrices(const uint8_t* vs_bank, VsMatrices* out);
-
-// How far a sample is from the anchor's camera: `view_inverse` is the largest entry difference
-// from the anchor's view inverse in units of max(1, its translation); `projection` is the largest
-// entry difference between WorldView * projection and WorldViewProjection in units of that
-// matrix's largest entry. Infinite when a matrix is not finite.
-struct VsProbe {
-  double view_inverse = 0.0;
-  double projection = 0.0;
-  bool ViewInverseMatches() const { return view_inverse < 1e-5; }
-  bool ProjectionMatches() const { return projection < 1e-3; }
-};
-VsProbe CompareVsMatrices(const VsMatrices& vs, const Camera& cam);
-
 // This frame's clip space to the previous frame's guest pixels through the camera alone: this
 // frame's view-projection inverse, the previous frame's own view-projection (the history this
 // renderer kept, not c69) and ClipToPixels of the frame's size. Row vectors: prev = clip * M, divide
