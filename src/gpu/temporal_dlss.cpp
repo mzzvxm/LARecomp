@@ -38,6 +38,8 @@
 #include <sl_dlss.h>
 #if defined(LARECOMP_HAS_DLSS_G)
 // DLSS frame generation, and Reflex with the PC latency markers, which it requires.
+// Streamline's sl_pcl.h and sl_reflex.h call std::to_underlying without including <utility>.
+#include <utility>
 #include <sl_dlss_g.h>
 #include <sl_pcl.h>
 #include <sl_reflex.h>
