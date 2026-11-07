@@ -11,18 +11,22 @@
 // kept as it was saved.
 //
 //   UPSCALING        OFF / FSR 3.1 / FSR 4 / DLSS   mcla_gpu_upscaler
-//   FSR 3.1 MODE     NATIVE AA (100%) / QUALITY (67%) / BALANCED (59%) / PERFORMANCE (50%) /
-//                    ULTRA PERFORMANCE (33%)        mcla_gpu_fsr31_mode  (grey unless FSR 3.1 is on)
-//   FSR 4 MODE       the same                       mcla_gpu_fsr4_mode   (grey unless FSR 4 is on)
-//   DLSS MODE        DLAA (100%) / QUALITY (67%) / BALANCED (58%) / PERFORMANCE (50%) /
-//                    ULTRA PERFORMANCE (33%)        mcla_gpu_dlss_mode   (grey unless DLSS is on)
+//   FSR 3.1          NATIVE AA (100%) / QUALITY (67%) / BALANCED (59%) / PERFORMANCE (50%) /
+//                    ULTRA PERF. (33%)              mcla_gpu_fsr31_mode  (grey unless FSR 3.1 is on)
+//   FSR 4            the same                       mcla_gpu_fsr4_mode   (grey unless FSR 4 is on)
+//   DLSS             DLAA (100%) / QUALITY (67%) / BALANCED (58%) / PERFORMANCE (50%) /
+//                    ULTRA PERF. (33%)              mcla_gpu_dlss_mode   (grey unless DLSS is on)
 //   SHARPNESS        OFF / 0.2 .. 1                 mcla_gpu_upscaler_sharpness (FSR's; grey while
 //                                                   off, and DLSS has none)
 //
+// The mode rows are labelled with the technology alone and their values shortened to fit the menu's
+// width (26 characters of label and value: "FSR 3.1: PERFORMANCE (50%)"); the cvars keep the full
+// values (ultra_performance).
+//
 // DLSS on an RTX card whose files are missing (or fail their signature check) is listed too, as
-// "DLSS (NEEDS SETUP)", with its mode row grey; the game runs without it. On Vulkan DLSS is listed
-// as "DLSS (AFTER RESTART)" until the game was started with it chosen (the device is made with
-// NVIDIA Streamline's help).
+// "DLSS (SETUP)", with its mode row grey ("DLSS (NEEDS SETUP)"); the game runs without it. On
+// Vulkan DLSS is listed as "DLSS (RESTART)" until the game was started with it chosen (the device
+// is made with NVIDIA Streamline's help); its mode row says "DLSS (AFTER RESTART)" meanwhile.
 //
 // Each technology keeps its own mode; the value is the vendor's name and the share of the output
 // the 3D scene is drawn at, per direction. NATIVE AA and DLAA draw it at the full size and only

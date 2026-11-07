@@ -74,7 +74,7 @@ const char* DlssModeSuffix() {
 const char* SharpnessSuffix() {
     switch (Active()) {
     case Upscaler::kOff:  return " (UPSCALING OFF)";
-    case Upscaler::kDlss: return " (NOT USED BY DLSS)";
+    case Upscaler::kDlss: return " (NOT FOR DLSS)";
     default:              return "";
     }
 }
@@ -106,14 +106,22 @@ const char* MsaaSuffix() {
 // The vendors' modes and the share of the output the scene is drawn at, per direction (gpu.h
 // ModeInfo): AMD's for FSR 3.1 and FSR 4, NVIDIA's for DLSS. The mode is the start's: the scene's
 // size is fixed when the game starts (restart only, like RENDER SCALE).
+//
+// Row width: a row's label and its value share one line of the menu, and the widest line of the
+// rest of the pause menu is 26 characters ("RENDER RES: SCREEN (1080P)"). The mode rows' labels
+// are the technology alone ("FSR 3.1: ", "FSR 4: ", "DLSS: ": several can be listed on one PC, so
+// the label still has to name it) and the longest value is 17 characters ("PERFORMANCE (50%)",
+// "ULTRA PERF. (33%)"): 9 + 17 = 26 at most. The UPSCALING row's longest value is 14
+// ("DLSS (RESTART)"; "DLSS (SETUP)" is 12): 11 + 14 = 25. The cvars store the full names
+// (ultra_performance).
 const char* const kModeVals[]  = {"native_aa", "quality", "balanced", "performance",
                                   "ultra_performance"};
 const char* const kModeNames[] = {"NATIVE AA (100%)", "QUALITY (67%)", "BALANCED (59%)",
-                                  "PERFORMANCE (50%)", "ULTRA PERFORMANCE (33%)"};
+                                  "PERFORMANCE (50%)", "ULTRA PERF. (33%)"};
 const char* const kDlssModeVals[]  = {"dlaa", "quality", "balanced", "performance",
                                       "ultra_performance"};
 const char* const kDlssModeNames[] = {"DLAA (100%)", "QUALITY (67%)", "BALANCED (58%)",
-                                      "PERFORMANCE (50%)", "ULTRA PERFORMANCE (33%)"};
+                                      "PERFORMANCE (50%)", "ULTRA PERF. (33%)"};
 constexpr int kModeCount = 5;
 // FSR's sharpening (RCAS), 0 to 1.
 constexpr double kSharpVals[] = {0.0, 0.2, 0.4, 0.6, 0.8, 1.0};
@@ -158,8 +166,8 @@ const RowSet& RowSetFor(bool fsr31, bool fsr4, int dlss_state) {
     if (dlss_state != 0) {
         set.upscaler_vals[n] = "dlss";
         set.upscaler_names[n++] = dlss_state == 1 ? "DLSS"
-                                  : dlss_state == 2 ? "DLSS (NEEDS SETUP)"
-                                                    : "DLSS (AFTER RESTART)";
+                                  : dlss_state == 2 ? "DLSS (SETUP)"
+                                                    : "DLSS (RESTART)";
     }
     set.upscaler_count = n;
     if (n == 1) {
@@ -171,19 +179,19 @@ const RowSet& RowSetFor(bool fsr31, bool fsr4, int dlss_state) {
             set.upscaler_names, set.upscaler_count));
     if (fsr31) {
         set.rows[r++] = mcla_menu::NativeOnly(
-            WithDynamics(Str("PM_RxGpuFsr31M", "mcla_gpu_fsr31_mode", "FSR 3.1 MODE: ", kModeVals,
+            WithDynamics(Str("PM_RxGpuFsr31M", "mcla_gpu_fsr31_mode", "FSR 3.1: ", kModeVals,
                              kModeNames, kModeCount),
                          &kFsr31ModeDynamics));
     }
     if (fsr4) {
         set.rows[r++] = mcla_menu::NativeOnly(
-            WithDynamics(Str("PM_RxGpuFsr4M", "mcla_gpu_fsr4_mode", "FSR 4 MODE: ", kModeVals,
+            WithDynamics(Str("PM_RxGpuFsr4M", "mcla_gpu_fsr4_mode", "FSR 4: ", kModeVals,
                              kModeNames, kModeCount),
                          &kFsr4ModeDynamics));
     }
     if (dlss_state != 0) {
         set.rows[r++] = mcla_menu::NativeOnly(
-            WithDynamics(Str("PM_RxGpuDlssM", "mcla_gpu_dlss_mode", "DLSS MODE: ", kDlssModeVals,
+            WithDynamics(Str("PM_RxGpuDlssM", "mcla_gpu_dlss_mode", "DLSS: ", kDlssModeVals,
                              kDlssModeNames, kModeCount),
                          &kDlssModeDynamics));
     }
