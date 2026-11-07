@@ -15,17 +15,10 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include "backend.h"
 #include "descriptors.h"
 #include "device.h"
+#include "display_refresh.h"
 #include "frame.h"
 #include "frame_layers.h"
 #include "gpu.h"
@@ -87,19 +80,7 @@ uint32_t HalfDisplayCap(uint32_t hz, uint32_t multiplier) {
 
 // The refresh rate of the display the window is on, from its current mode (0 when it cannot be told).
 uint32_t ReadRefresh(plume::RenderWindow window) {
-  const HWND hwnd = window;
-  const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-  MONITORINFOEXW info{};
-  info.cbSize = sizeof(info);
-  if (!monitor || !GetMonitorInfoW(monitor, &info)) {
-    return 0;
-  }
-  DEVMODEW mode{};
-  mode.dmSize = sizeof(mode);
-  if (!EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
-    return 0;
-  }
-  return mode.dmDisplayFrequency > 1 ? mode.dmDisplayFrequency : 0u;
+  return ReadDisplayRefreshHz(window);  // display_refresh.h: Windows' monitor, or SDL's display
 }
 
 struct UiPush {  // hlsl/dlssg_ui_ps.hlsl
