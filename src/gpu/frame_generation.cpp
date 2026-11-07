@@ -256,6 +256,9 @@ void FrameGeneration::StopPacer() {
     thread = std::move(thread_);
   }
   thread.join();
+  // The presents the thread made are still queued on the present queue: the swap chain may go (or be
+  // made again) only after they were handed to the driver.
+  DrainPresentQueue();
 }
 
 void FrameGeneration::Shutdown() {
