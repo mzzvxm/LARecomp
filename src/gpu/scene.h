@@ -67,6 +67,7 @@
 #include "geometry.h"
 #include "hdr_tonemap.h"
 #include "input_layout.h"
+#include "msaa_level.h"
 #include "pipelines.h"
 #include "thread_load.h"
 #include "records.h"
@@ -296,6 +297,8 @@ class Scene {
   PassTiming* pass_timing_ = nullptr;
   GuestOcclusion* occlusion_ = nullptr;
   TemporalSystem* temporal_ = nullptr;
+  // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
+  MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.
@@ -491,6 +494,7 @@ class Scene {
     uint32_t draw_scale_depth_format = 0;
     Scale draw_scale;
     uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
+    uint32_t draw_msaa_guest = 0;  // the guest's, when they take the host's MSAA level (else 0)
     bool draw_scene = false;    // the first target is the scene's, drawn at a scale of its own
     bool constants_valid = false;
     bool ps_writes_depth = false;

@@ -294,10 +294,13 @@ const char* ConversionName(uint32_t conversion) {
 // target agrees. `*host_samples`: that identity's samples on the host
 // (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take. `*scene`: that
 // identity is the scene's and the scene is drawn at a scale of its own (EdramTargets::SceneApart):
-// its textures are sampled with the scene's mip bias (Scene::SceneBias).
+// its textures are sampled with the scene's mip bias (Scene::SceneBias). `*msaa_guest`: that
+// identity takes the host's MSAA level (EdramTargets::HostSamplesFollowLevel), and the guest's
+// samples then; else 0.
 Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                uint32_t size_bits, uint32_t* host_samples, bool* scene) {
+                uint32_t size_bits, uint32_t* host_samples, bool* scene, uint32_t* msaa_guest) {
   *scene = false;
+  *msaa_guest = 0;
   EdramKey first;
   first.pitch = uint16_t(s.surface_pitch);
   first.samples = uint8_t(MsaaSampleCount(s.msaa));
@@ -315,6 +318,9 @@ Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key
     return Scale{};
   }
   *host_samples = edram.HostSamplesOf(first, size_bits);
+  if (edram.HostSamplesFollowLevel(first, size_bits)) {
+    *msaa_guest = first.samples;
+  }
   *scene = EdramTargets::IsSceneKey(first) && edram.SceneApart();
   return edram.ScaleOf(first, size_bits);
 }
@@ -394,6 +400,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   samplers_ = &samplers;
   geometry_ = &geometry;
   edram_ = &edram;
+  msaa_.Initialize(edram, pipelines);
   textures_ = &textures;
   resolve_ = &resolve;
   layout_ = &layout;
@@ -503,11 +510,16 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
+  const uint64_t targets_before = edram_->change_serial();
   if (temporal_) {
     // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
     // scene's scale (and the path) here.
     temporal_->BeginFrame(slot, list);
   }
+  // The host MSAA level (msaa_level.h): the same boundary, after the path's own change, which may
+  // have remade the targets this frame, and not while an upscaler runs.
+  msaa_.BeginFrame(list, temporal_ && temporal_->PathBusy(),
+                   edram_->change_serial() != targets_before);
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -936,7 +948,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
 
   // Pipeline. The key is the last draw's for the same state, shaders, layout
   // and topology (M6a.7); BuildKey reads nothing else.
-  const PipelineInputs inputs{d.vs, d.ps, d.input_layout};
+  PipelineInputs inputs{d.vs, d.ps, d.input_layout};
   const bool polygonal = IsPolygonal(r.primitive);
   KeyResult key_result;
   if (state_same && memo.key_valid && memo.key_vs == d.vs && memo.key_ps == d.ps &&
@@ -980,14 +992,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Scale scale;
   uint32_t host_samples;
   bool scene_draw;
+  uint32_t msaa_guest;
   if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
       memo.draw_scale_colors == d.key.color_count &&
       memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
     scale = memo.draw_scale;
     host_samples = memo.draw_samples;
     scene_draw = memo.draw_scene;
+    msaa_guest = memo.draw_msaa_guest;
   } else {
-    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw);
+    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw,
+                      &msaa_guest);
     memo.draw_scale_valid = true;
     memo.draw_scale_serial = edram_->change_serial();
     memo.draw_scale_colors = d.key.color_count;
@@ -995,7 +1010,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     memo.draw_scale = scale;
     memo.draw_samples = host_samples;
     memo.draw_scene = scene_draw;
+    memo.draw_msaa_guest = msaa_guest;
   }
+  inputs.msaa_guest_samples = msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
   d.scale = scale;
   d.scene = scene_draw;
   // The pipeline rasterizes at the targets' host samples (M6d.2).

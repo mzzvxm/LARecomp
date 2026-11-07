@@ -321,6 +321,10 @@ enum class GuestMsaa : uint8_t {
 bool GuestMsaaOff();
 // Any thread.
 GuestMsaa GetGuestMsaa();
+// The host MSAA level (2, 4 or 8 among themselves) changes while the game runs (msaa_level.h): true
+// from when a new level has stood still until its pipelines are made and the targets are made
+// again. The pause menu's MSAA row says (WAIT). Any thread.
+bool MsaaSwitching();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The

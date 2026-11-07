@@ -37,6 +37,7 @@ add_library(larecomp_gpu OBJECT
     latency.cpp
     layout.cpp
     memory_census.cpp
+    msaa_level.cpp
     native_window.cpp
     occlusion.cpp
     overlay.cpp

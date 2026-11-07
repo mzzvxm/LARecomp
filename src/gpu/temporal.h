@@ -327,6 +327,13 @@ class TemporalSystem {
   // The anchor draw's own constants after RecordAnchorPasses: its colour fetch reads the upscaler's
   // output when there is one this frame.
   void PatchAnchor(SharedConstants& shared) const;
+  // The path is not settled: an upscaler runs, or the settings ask for one (it is being switched to,
+  // its context is being made), or another path or render scale change is waiting. The host MSAA
+  // level is not changed meanwhile (msaa_level.h). Render thread.
+  bool PathBusy() const {
+    return effective_ != Upscaler::kOff || wanted_ != Upscaler::kOff || change_pending_ ||
+           stage_.active;
+  }
   // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
   // once per change when `aa_asked` (mcla_gpu_aa is not off).
   bool HoldsAaOff(bool aa_asked);
