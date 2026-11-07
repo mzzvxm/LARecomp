@@ -31,9 +31,10 @@
 //
 // The percentage is the share of the output the 3D scene is drawn at, per direction (the vendors'
 // own names and ratios). RENDER SCALE is a share of the output too: 100% is the screen's scale (the
-// window's 16:9 area, mcla_gpu_resolution_scale = 0, which follows the window), and 150%, 200% and
-// 300% are that many times it, written as the cvar's own number for the window as it is when the row
-// is stepped (the cvar counts from the game's 1280x720: the scale the renderer makes is the same).
+// window's 16:9 area, mcla_gpu_resolution_scale = 0, the default, which follows the window), and 150%,
+// 200% and 300% are that many times it, written as the cvar's own number for the window as it is when
+// the row is stepped (the cvar counts from the game's 1280x720: the scale the renderer makes is the
+// same).
 // The window caps the scale at 3x of 720p (2160p): a share the renderer cannot reach is not listed
 // (at 1440p the list is 100% and 150%, at 4K it is 100% only). Values of the cvars that the lists do
 // not offer (0.5X, a larecomp.toml number, FSR 1's "custom" and "ultra_performance") stay as they are
@@ -61,12 +62,16 @@
 // UpscalerAvailability::kept): the AA rows and SHARPNESS follow that upscaler. A running FSR 1 is
 // turned off by the pick (the saved choice is DLSS alone), since the settings never hold both.
 //
-// CHECK: the temporal upscalers' shares are of the render scale the renderer works at, which is
-// mcla_gpu_resolution_scale (1 by default: 1280x720), not of the window: in a 1080p window DLSS
-// QUALITY draws 480p and the result is stretched from 720p. The mode rows read as shares of the
-// output (and RENDER SCALE is only listed for OFF), so while an upscaler is chosen the renderer has
-// to take the screen's scale (the cvar's 0) as its output (temporal.cpp ReadRenderScale); it does
-// not yet.
+// The temporal upscalers' shares are of the output, which the renderer takes as the screen's while one
+// of them is the choice (the window's 16:9 area, whatever mcla_gpu_resolution_scale says: temporal.cpp
+// ReadRenderScale, render_scale.h ChooseUpscalerOutputScale): in a 1080p window DLSS QUALITY draws
+// 1280x720 and makes 1920x1080 of it. RENDER SCALE is therefore listed for OFF only, and its 100% (the
+// cvar's 0, its default) is the same output.
+// CHECK: in 720p, 1080p and 1440p windows with each upscaler on, against OFF at 100%: the picture
+// the upscaler makes is the window's size (the log's "upscaling to the window's WxH") and the share in
+// the mode row is of that; turning the upscaler on and off from the row keeps the picture's size at
+// 100% and moves it to the RENDER SCALE row's choice when that is another (with a saved scale other
+// than 100%).
 //
 // The AA rows of the NATIVE renderer follow a temporal upscaler: NATIVE AA (FXAA, SMAA) and MSAA
 // are grey and say "(FSR 3.1 ON)" (or FSR 4, DLSS) while one runs. FSR 1 is not temporal and

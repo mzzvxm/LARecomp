@@ -1,14 +1,22 @@
 #pragma once
 
 // MCLA GPU renderer -- the internal resolution scale the renderer works at
-// (M6e.3): the one asked for (mcla_gpu_resolution_scale), the screen's (0),
-// or the one an FSR1 quality preset derives from the screen
-// (mcla_gpu_fsr_preset, with mcla_gpu_fsr on). The choice is pure and lives
-// here; render_scale.cpp reads the cvars and logs it. It is made at start and
-// again at every frame boundary (temporal.cpp ReadRenderScale): the scale, the
-// preset and the window's size (fullscreen, a resize) are followed while the
-// game runs, and the images of the screen move to the new scale between two
-// frames (edram.h SetScales, temporal.h "Changing the path").
+// (M6e.3), which is also the scale of the output: the images of the screen are
+// made at it and the upscalers' output is one of them. It is
+//   - while a temporal upscaler (FSR 3.1, FSR 4, DLSS) is the active choice: the
+//     screen's, whatever mcla_gpu_resolution_scale and an FSR1 preset say; the
+//     upscaler's output is the window's, and the scene is drawn at the vendor's
+//     ratio of it (ChooseSceneScale below);
+//   - otherwise the one an FSR1 quality preset derives from the screen
+//     (mcla_gpu_fsr_preset, with mcla_gpu_fsr on),
+//   - else the one asked for (mcla_gpu_resolution_scale; 0 is the screen's, which
+//     is also the default: "Render Scale 100%").
+// The choice is pure and lives here; render_scale.cpp reads the cvars and logs
+// it. It is made at start and again at every frame boundary (temporal.cpp
+// ReadRenderScale): the scale, the preset, the upscaler that is on and the
+// window's size (fullscreen, a resize) are followed while the game runs, and the
+// images of the screen move to the new scale between two frames (edram.h
+// SetScales, temporal.h "Changing the path").
 //
 // "The screen" is the window's 16:9 area, the game's screen letterboxed in it
 // the way the present fits it; its scale is that area over the game's screen.
@@ -97,16 +105,18 @@ inline bool ParseFsrPreset(std::string_view text, FsrPreset* out) {
 
 struct RenderScaleChoice {
   enum class Source : uint8_t {
-    kAsked,   // mcla_gpu_resolution_scale
-    kScreen,  // mcla_gpu_resolution_scale = 0
-    kPreset,  // mcla_gpu_fsr on with a preset
+    kAsked,     // mcla_gpu_resolution_scale
+    kScreen,    // mcla_gpu_resolution_scale = 0
+    kPreset,    // mcla_gpu_fsr on with a preset
+    kUpscaler,  // a temporal upscaler is the active choice: its output is the screen's
   };
 
   // What the images of the screen are made at.
   Scale scale;
   Source source = Source::kAsked;
   // The inputs, kept for the logs (a window of another size is weighed with ChooseRenderScale again).
-  double asked = 1.0;
+  // They are the settings' own: a choice that is `kUpscaler` did not use them.
+  double asked = 0.0;
   bool fsr = false;
   FsrPreset preset = FsrPreset::kCustom;
   uint32_t window_width = 0;
@@ -173,6 +183,21 @@ inline RenderScaleChoice ChooseRenderScale(double asked, bool fsr, FsrPreset pre
   return c;
 }
 
+// The choice while a temporal upscaler is the active choice: the screen's scale, for the window of
+// that size, whatever `asked` and an FSR1 preset say (the settings' own values are kept in the result
+// for the logs, and the two are not used). The upscaler's output is then the window's 16:9 area
+// (on the grid of Scale, limited to kMaxRenderScale: a window above 4K is upscaled to 4K and stretched
+// by the present), and ChooseSceneScale takes the scene's scale from it.
+inline RenderScaleChoice ChooseUpscalerOutputScale(double asked, bool fsr, FsrPreset preset,
+                                                   uint32_t window_width, uint32_t window_height) {
+  RenderScaleChoice c = ChooseRenderScale(0.0, false, FsrPreset::kCustom, window_width, window_height);
+  c.source = RenderScaleChoice::Source::kUpscaler;
+  c.asked = asked;
+  c.fsr = fsr;
+  c.preset = preset;
+  return c;
+}
+
 // The scale the 3D scene itself is drawn at while a temporal upscaler works on it (F4-DESIGN.md 4,
 // stage U3): the output's scale (`output`, the render scale above) divided by the vendor's ratio
 // of output to render, per axis (FSR 3.1 and 4: 1, 1.5, 1.7, 2, 3). The grid is Scale's twentieths,
@@ -210,16 +235,25 @@ inline SceneScaleChoice ChooseSceneScale(Scale output, double ratio) {
 }
 
 // render_scale.cpp. The start's choice from mcla_gpu_resolution_scale,
-// mcla_gpu_fsr and mcla_gpu_fsr_preset for a window of that size, logged.
+// mcla_gpu_fsr and mcla_gpu_fsr_preset for a window of that size, logged. A temporal upscaler chosen
+// in mcla_gpu_upscaler counts as the active choice here: whether this PC can run it is known only
+// later (its probe has not ended when the renderer starts), and the temporal system takes the render
+// scale back to the settings' own (ReadRenderScale) once it finds that it cannot.
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height);
 // The same choice for the settings as they are now, not logged (a live change reads it at every frame
-// boundary): an mcla_gpu_fsr_preset that is not a preset is reported once, and custom is used.
+// boundary): an mcla_gpu_fsr_preset that is not a preset is reported once, and custom is used. It does
+// not know whether a temporal upscaler is on (the temporal system does): while one is, the caller takes
+// ChooseUpscalerOutputScale of the window this choice carries instead.
 RenderScaleChoice ChooseWantedRenderScale(uint32_t window_width, uint32_t window_height);
 // What a choice came from and where it landed, for the log of a live change: "mcla_gpu_resolution_scale
 // = 2", "the screen's (mcla_gpu_resolution_scale = 0), the window 2560x1440 (2x)", "FSR1 quality, the
-// window 1920x1080 (1.5x) / 1.5 = 1x". Ends with ", nearest step 1.35x" or ", limited to 0.5x" when the
-// grid or the limits moved it.
+// window 1920x1080 (1.5x) / 1.5 = 1x", "the output of the upscaler: the screen's, the window 1920x1080
+// (1.5x)". Ends with ", nearest step 1.35x" or ", limited to 0.5x" when the grid or the limits moved it.
 std::string DescribeRenderScale(const RenderScaleChoice& choice);
+// Where a temporal upscaler's output goes, for the log: "the window's 1920x1080" when the output is
+// the window's size, else the output's size and how it comes from the window ("2560x1440, the 16:9
+// area of the 2560x1600 window"). `window_*` 0: the output's size alone.
+std::string DescribeUpscalerTarget(Scale output, uint32_t window_width, uint32_t window_height);
 
 // What the renderer's images of the screen are at now, for the pause menu (gpu.h GetRenderScaleStatus).
 struct RenderScaleStatus {

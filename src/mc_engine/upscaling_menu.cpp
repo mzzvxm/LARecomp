@@ -177,8 +177,8 @@ int ShareOf(const RenderScaleChoice& c) {
 // own number for the window as it is now (the cvar counts from the game's 1280x720). The renderer
 // makes 3x of 720p at most, so a share it cannot reach is the nearest it can: shares that come to the
 // same scale are one entry (1080p: 100%, 150%, 200%; 1440p: 100%, 150%; 4K: 100%). The saved scale
-// when it is none of them (0.5X, a number set in larecomp.toml, the default 1 in a window that is not
-// 720p) is an entry of its own in its place, as long as it is the setting. A scale the video memory
+// when it is none of them (0.5X, a number set in larecomp.toml: 1 is 67% in a 1080p window) is an
+// entry of its own in its place, as long as it is the setting. A scale the video memory
 // could not hold says "TOO BIG (NN%)" with the share that does run.
 List OffList() {
     constexpr const char* kCvar = "mcla_gpu_resolution_scale";
@@ -492,7 +492,7 @@ void SharpnessSet(int i, CvarWriter write) {
 // relabelled at once (RENDER SCALE, FSR 1 MODE, FSR 3.1 MODE, FSR 4 MODE, DLSS MODE) with its own
 // saved mode on the middle value and no text of another row or state left in it; left and right wrap
 // at both ends of the lists of 4 and 5 entries, and of RENDER SCALE with an entry of its own ("67%" in
-// a 1080p window at the default scale 1) that goes when the row steps off it; the page is not built
+// a 1080p window with a saved scale of 1) that goes when the row steps off it; the page is not built
 // again ("[pause-menu] 'DISPLAY' native rows built" once); the render scale and the FSR 1 preset
 // change the picture at a frame boundary (log "[gpu] temporal: live change").
 

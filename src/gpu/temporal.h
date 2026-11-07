@@ -96,13 +96,19 @@
 //     history (it restarts: the scale changed and the new context's first dispatch resets) and the
 //     AA hold follow the new path from that frame on, whole. A frame is never half on the old path.
 //   - The render scale (mcla_gpu_resolution_scale, 0 = the screen's, the FSR1 preset) is part of the
-//     path. ReadRenderScale reads it with the window's size at every frame boundary, so a fullscreen
-//     toggle or a resized window moves the screen's scale and a preset's. A scale is taken once it
-//     has stood for kScaleSettle (a window dragged through many sizes, a row stepped through many
-//     values, make no targets and no contexts for the steps in between), then like any other change:
-//     with no upscaler at the next boundary, with one after its new context (the output is another
-//     size) is ready. EdramTargets::SetScales moves the scene's targets and every image of the
-//     screen together, so that one switch covers a mode and a render scale changed at once.
+//     path, and so is the output of an upscaler: while a temporal upscaler is the active choice the
+//     scale is the screen's whatever the settings say (render_scale.h ChooseUpscalerOutputScale: the
+//     window's 16:9 area, which is what the upscaler targets), and the scene is drawn at the mode's
+//     share of it. ReadRenderScale reads it with the window's size at every frame boundary, so a
+//     fullscreen toggle or a resized window moves the screen's scale and a preset's, and turning an
+//     upscaler on or off moves the output between the settings' scale and the screen's. A scale is
+//     taken once it has stood for kScaleSettle (a window dragged through many sizes, a row stepped
+//     through many values, make no targets and no contexts for the steps in between), except that a
+//     scale that moves because an upscaler went on or off is taken at once (the context is then made
+//     for the output it will have, not for the old one first), then like any other change: with no
+//     upscaler at the next boundary, with one after its new context (the output is another size) is
+//     ready. EdramTargets::SetScales moves the scene's targets and every image of the screen
+//     together, so that one switch covers a mode and a render scale changed at once.
 //   - What is made per use rather than as a target follows in the first frame: the upscaler's output
 //     image, the depth and the vectors, the frame layers, the HDR images and the post passes' images
 //     are asked for at their sizes by the draws and the passes.
@@ -111,9 +117,10 @@
 //     plain, like the first frame after a pause (the anchor of a frame is accepted before one is
 //     armed).
 //   - If the targets cannot be made at the new scale (a 3x render scale is 4K: it can fail on a card
-//     with little memory) nothing changes, it is logged, the pause menu's RENDER RES row says "TOO
-//     BIG" (gpu.h GetRenderScaleStatus) and the change is asked again after a few seconds, then
-//     less often (a failed creation also asks the video memory budget to release what is idle).
+//     with little memory; so can an upscaler's output in a large window) nothing changes, it is
+//     logged, the pause menu's RENDER SCALE row says "TOO BIG" (gpu.h GetRenderScaleStatus) and the
+//     change is asked again after a few seconds, then less often (a failed creation also asks the
+//     video memory budget to release what is idle).
 //   - DLSS takes one render size per mode for an output size, and the scene is drawn on the scale grid
 //     (render_scale.h ChooseSceneScale: multiples of 1/20 of the guest's 1280x720, 0.5x at the least),
 //     so a mode can be unable to run at an output: Ultra Performance at 1280x720 or 2560x1440. That
@@ -447,8 +454,17 @@ class TemporalSystem {
   // changed). The stage is the new path while its context is being made.
   void UpdatePath(plume::RenderCommandList* list);
   // The render scale the settings ask for now (the cvars and the window's size, gpu.h
-  // WantedRenderScale), read at every frame boundary; UpdatePath takes it once it has stood.
+  // WantedRenderScale; the screen's while a temporal upscaler is the active choice, UpscalerOwnsOutput),
+  // read at every frame boundary; UpdatePath takes it once it has stood.
   void ReadRenderScale();
+  // A temporal upscaler is the active choice, so its output (the screen's, the window's 16:9 area) is
+  // the render scale: the upscaler the settings and this PC's answer make of the player's choice
+  // (`wanted_`), except while DLSS waits for a restart (`restart_pending_`), when the path that runs
+  // stays and so does its output.
+  bool UpscalerOwnsOutput() const;
+  // The output an upscaler has in this window: the screen's scale now (the pre-warm makes the contexts
+  // a switch will ask for), `fallback` while no window size is known.
+  Scale UpscalerOutputScale(Scale fallback) const;
   // DLSS's first-time work done in the background while the game runs some other way (temporal_backend.h
   // Prewarm): called at every frame boundary, one atomic read when there is nothing to do. It waits
   // for the guest's frame size and kPrewarmDelay after it was first known, so that the first seconds
@@ -558,6 +574,10 @@ class TemporalSystem {
   RenderScaleChoice render_choice_;
   Clock::time_point render_wanted_since_{};
   bool render_invalid_logged_ = false;
+  // ReadRenderScale's last answer to UpscalerOwnsOutput: a scale that moves with it is not a drag.
+  bool render_upscaling_ = false;
+  // `render_wanted_` moved with an upscaler going on or off: taken without kScaleSettle.
+  bool render_wanted_at_once_ = false;
   static constexpr std::chrono::milliseconds kScaleSettle{400};
   // The line that says when the new path first ran, once: set by a switch to a path with an
   // upscaler, written by its first upscaled frame (`switch_asked_`: when the setting changed).

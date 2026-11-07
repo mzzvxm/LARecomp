@@ -20,7 +20,9 @@ REXCVAR_DEFINE_STRING(
     "graphics card and driver run it) or dlss (NVIDIA DLSS, only on an NVIDIA RTX card, with "
     "NVIDIA's files next to the game). The scene is moved by a different sub-pixel amount every "
     "frame and the upscaler rebuilds a sharper, steadier picture from the frames; the menus, the "
-    "HUD and the bloom, glow and tone map stay at full size. While one is on, FXAA and SMAA are "
+    "HUD and the bloom, glow and tone map stay at full size. The picture it makes is the size of "
+    "the window (its 16:9 area), whatever mcla_gpu_resolution_scale says, and the scene is drawn "
+    "at the mode's share of that. While one is on, FXAA and SMAA are "
     "held off, and a game started with one on runs without MSAA (your MSAA choice, "
     "mcla_gpu_msaa, is kept and applies again at a start with no upscaler: the game's MSAA is a "
     "start-up switch). A choice this PC cannot run is treated as off. Live, except that MSAA "
@@ -38,27 +40,27 @@ REXCVAR_DEFINE_STRING(
     mcla_gpu_fsr31_mode, "native_aa", "MCLA/GPU",
     "FSR 3.1's mode, AMD's names and the share of the output the scene is drawn at: native_aa "
     "(100%, only smoothed), quality (67%), balanced (59%), performance (50%) or ultra_performance "
-    "(33%), per direction, of the render scale (mcla_gpu_resolution_scale). Live: the scene is "
-    "drawn at the new size from a frame boundary once the upscaler is ready for it, and the old "
-    "mode works until then.")
+    "(33%), per direction, of the output (the window's 16:9 area, whatever "
+    "mcla_gpu_resolution_scale says). Live: the scene is drawn at the new size from a frame "
+    "boundary once the upscaler is ready for it, and the old mode works until then.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_fsr4_mode, "native_aa", "MCLA/GPU",
     "FSR 4's mode, AMD's names and the share of the output the scene is drawn at: native_aa "
     "(100%, only smoothed), quality (67%), balanced (59%), performance (50%) or ultra_performance "
-    "(33%), per direction, of the render scale (mcla_gpu_resolution_scale). Live: the scene is "
-    "drawn at the new size from a frame boundary once the upscaler is ready for it, and the old "
-    "mode works until then.")
+    "(33%), per direction, of the output (the window's 16:9 area, whatever "
+    "mcla_gpu_resolution_scale says). Live: the scene is drawn at the new size from a frame "
+    "boundary once the upscaler is ready for it, and the old mode works until then.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_dlss_mode, "dlaa", "MCLA/GPU",
     "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
-    "per direction, of the render scale (mcla_gpu_resolution_scale). Live: the scene is drawn at "
-    "the new size from a frame boundary once the upscaler is ready for it (several seconds for "
-    "DLSS), and the old mode works until then.")
+    "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
+    "says). Live: the scene is drawn at the new size from a frame boundary once the upscaler is "
+    "ready for it (several seconds for DLSS), and the old mode works until then.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(
@@ -297,9 +299,9 @@ void DecideStartUpscale() {
   if (chosen != Upscaler::kOff) {
     if (runs) {
       REXLOG_INFO("[gpu] upscaler at start: {} {} ({}% of the output per direction, ratio {:.2f}): the "
-                  "3D scene starts at that share of the render scale (the upscaler and its mode "
-                  "can be changed while the game runs, at a frame boundary; the render scale "
-                  "applies at a start)",
+                  "3D scene starts at that share of the output (the window's, the screen's scale: "
+                  "see the \"render scale\" line; the upscaler and its mode can be changed while "
+                  "the game runs, at a frame boundary)",
                   UpscalerName(chosen), ModeInfoOf(chosen, mode).name,
                   ModeInfoOf(chosen, mode).percent, ModeInfoOf(chosen, mode).ratio);
     } else {

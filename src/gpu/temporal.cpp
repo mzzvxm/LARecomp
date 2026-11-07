@@ -490,7 +490,7 @@ ModeSizes TemporalSystem::DlssModeSizes(const uint32_t guest[2], Scale output) c
 // live from DLAA logs "... DLAA (100%) keeps running" and nothing switches; the same at 2560x1440
 // (Performance there is 1280x720 to 2560x1440, so the scene targets do move at a start); 1920x1080 and
 // 3840x2160 run ULTRA PERFORMANCE itself. A render scale change that leaves the running mode unable to
-// run (ULTRA PERFORMANCE at 4K, then RENDER RES 1x) moves to PERFORMANCE at the new scale.
+// run (ULTRA PERFORMANCE at 4K, then a window of another size) moves to PERFORMANCE at the new output.
 UpscaleMode TemporalSystem::ResolveDlssMode(UpscaleMode wanted, const ModeSizes& sizes, bool* any) {
   *any = true;
   const ModeVerdicts verdicts = dlss_->Modes(sizes);
@@ -502,7 +502,7 @@ UpscaleMode TemporalSystem::ResolveDlssMode(UpscaleMode wanted, const ModeSizes&
     return wanted;
   }
   // The mode the settings ask for cannot run at this output. The DLSS mode that runs goes on if it
-  // still can (a pick in the menu of a mode that cannot run changes nothing, as RENDER RES keeps the
+  // still can (a pick in the menu of a mode that cannot run changes nothing, as RENDER SCALE keeps the
   // scale that runs when a larger one is too big); a start or an output change that left nothing
   // running takes the nearest mode that can, toward higher quality first.
   UpscaleMode use = wanted;
@@ -559,13 +559,40 @@ void TemporalSystem::AdoptStartPath() {
   }
 }
 
+bool TemporalSystem::UpscalerOwnsOutput() const {
+  // DLSS chosen in a Vulkan game that was started without it waits for a restart: the path that runs
+  // (FSR 3.1 or 4 as it was, or none) goes on, with the output it has.
+  return restart_pending_ ? effective_ != Upscaler::kOff : wanted_ != Upscaler::kOff;
+}
+
+Scale TemporalSystem::UpscalerOutputScale(Scale fallback) const {
+  // The window's size comes with any choice WantedRenderScale gives; the output is the screen's for it.
+  const RenderScaleChoice window = WantedRenderScale();
+  if (window.window_width == 0 || window.window_height == 0) {
+    return fallback;
+  }
+  return ChooseUpscalerOutputScale(window.asked, window.fsr, window.preset, window.window_width,
+                                   window.window_height)
+      .scale;
+}
+
 void TemporalSystem::ReadRenderScale() {
   // The cvars and the window as they are now. The window's size is the swap chain's last one: while
   // none has been published (or a minimised window left none) there is nothing to measure the screen's
   // scale or a preset against, and what is wanted stays what it was.
-  const RenderScaleChoice choice = WantedRenderScale();
+  RenderScaleChoice choice = WantedRenderScale();
   if (choice.from_window() && (choice.window_width == 0 || choice.window_height == 0)) {
     return;
+  }
+  // While a temporal upscaler is the active choice its output is the screen's, the window's 16:9 area,
+  // whatever mcla_gpu_resolution_scale and an FSR1 preset say; the scene is then drawn at the vendor's
+  // ratio of it (SwitchPath, ChooseSceneScale). The settings' own scale comes back when it is off.
+  // Without a window size (checked above only for a choice made from the window) the settings' scale
+  // stays what is wanted.
+  const bool upscaling = UpscalerOwnsOutput() && choice.window_width != 0 && choice.window_height != 0;
+  if (upscaling) {
+    choice = ChooseUpscalerOutputScale(choice.asked, choice.fsr, choice.preset, choice.window_width,
+                                       choice.window_height);
   }
   if (choice.invalid && !render_invalid_logged_) {
     render_invalid_logged_ = true;
@@ -574,9 +601,15 @@ void TemporalSystem::ReadRenderScale() {
     render_invalid_logged_ = false;
   }
   render_choice_ = choice;
+  const bool flipped = upscaling != render_upscaling_;
+  render_upscaling_ = upscaling;
   if (choice.scale != render_wanted_) {
     render_wanted_ = choice.scale;
     render_wanted_since_ = Clock::now();
+    // A scale that moves because an upscaler went on or off is one change with it, not a drag through
+    // sizes: UpdatePath takes it without the wait, so that the upscaler's context (or the plain scene)
+    // is made once, for the output it will have.
+    render_wanted_at_once_ = flipped;
   }
 }
 
@@ -631,13 +664,15 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
     hold_reported_ = false;
   }
   const Clock::time_point now = Clock::now();
-  // The images of the screen: the render scale the settings ask for, once it has stood for a moment
-  // (kScaleSettle). Until then the scale that runs stays the one the path is made for, so no target
-  // and no upscaler context is made for the steps of a window drag or of a row stepped through.
+  // The images of the screen: the render scale the settings ask for (the screen's while an upscaler is
+  // the active choice), once it has stood for a moment (kScaleSettle; not for a scale that moved with
+  // the upscaler going on or off). Until then the scale that runs stays the one the path is made for,
+  // so no target and no upscaler context is made for the steps of a window drag or of a row stepped
+  // through.
   const Scale output_now = edram_->resolution_scale();
   Scale to_output = output_now;
   if (!render_wanted_.none() && render_wanted_ != output_now &&
-      now - render_wanted_since_ >= kScaleSettle) {
+      (render_wanted_at_once_ || now - render_wanted_since_ >= kScaleSettle)) {
     to_output = render_wanted_;
   }
   if (to_output == output_now) {
@@ -760,8 +795,11 @@ void TemporalSystem::PrewarmDlss() {
   UpscaleMode mode = UpscaleMode::kNativeAa;
   if (dlss_->PrewarmNext(&mode)) {
     // The context a live change to this mode would ask for (the same sizes), so that what the
-    // pre-warm made is what the switch needs.
-    dlss_->Prewarm(RequestFor(Upscaler::kDlss, mode, guest, edram_->resolution_scale()));
+    // pre-warm made is what the switch needs: at the output DLSS would have in this window (the
+    // screen's), which the render scale is not unless the settings leave it there while no upscaler
+    // is on.
+    dlss_->Prewarm(
+        RequestFor(Upscaler::kDlss, mode, guest, UpscalerOutputScale(edram_->resolution_scale())));
   }
 }
 
@@ -875,6 +913,13 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
         output.Edge(kAssumedScreenWidth), output.Edge(kAssumedScreenHeight),
         render_choice_.scale == output ? DescribeRenderScale(render_choice_)
                                        : std::string("by the settings"));
+  }
+  if (enable) {
+    // What the upscaler makes its picture for: said at every switch that has one, which is once per
+    // change of the upscaler, its mode or the output (a window of another size).
+    render_text += std::format("; upscaling to {}",
+                               DescribeUpscalerTarget(output, render_choice_.window_width,
+                                                      render_choice_.window_height));
   }
   REXLOG_INFO("{} live change: {}{}: {}; the setting changed {:.0f} ms before the switch, the 3D "
               "scene {}, switched in {:.2f} ms ({:.2f} ms of it the targets) at the boundary "
