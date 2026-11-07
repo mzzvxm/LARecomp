@@ -221,16 +221,17 @@ class TemporalBackend {
   // Pre-warming (DLSS only; the defaults are for a runtime with no first-time work worth doing
   // early). The first feature of a kind that NGX makes in a process takes seconds (1.2 s to 8.4 s on
   // an RTX 5080), the later ones about 30 ms, even after every earlier one was freed. When this PC
-  // can run the runtime and it was not the start's choice, the backend makes one context per mode
-  // at the real sizes in the background, a few seconds after the game first draws, and frees each at
-  // once (nothing is kept in video memory), so that the first live switch to it takes tens of
-  // milliseconds, not seconds. The caller (temporal.cpp PrewarmDlss) drives it from the render
-  // thread:
+  // can run the runtime, can switch to it while the game runs (DLSS: D3D12 only; a Vulkan game has
+  // it only when it was the start's choice) and it was not the start's choice, the backend makes
+  // one context per mode at the real sizes in the background, a few seconds after the game first
+  // draws, and frees each at once (nothing is kept in video memory), so that the first live switch
+  // to it takes tens of milliseconds, not seconds. The caller (temporal.cpp PrewarmDlss) drives it
+  // from the render thread:
   //   PrewarmPending  a pre-warm is armed and not finished or dropped (one atomic read, any thread).
   //   PrewarmNext     the next step can be issued now: true with its mode in `*mode`. False when
   //                   none can (the runtime is still starting, a step is with the worker, or it is
   //                   over). The first call also starts the runtime's own start-up on the worker
-  //                   when that was waiting for it (D3D12; Vulkan's runs since the probe).
+  //                   when that was waiting for it (D3D12).
   //   Prewarm         the step, with the request the caller made for that mode (RequestFor). A
   //                   Request or Prepare for the runtime ends the pre-warm (the context asked for
   //                   is the worker's next job; the step in hand finishes first).

@@ -23,25 +23,26 @@
 //           gives the interposer the native device. slInit with eUseManualHooking runs after the
 //           device exists, on the probe's worker thread: at once when DLSS is the saved choice,
 //           else in the background a few seconds after the game first draws (the pre-warm below)
-//           or at its first use, whichever comes first. The swap chain does get
+//           or at its first use, whichever comes first, so DLSS can be switched on while the game
+//           runs. The swap chain does get
 //           Streamline's wrapper (slUpgradeInterface), which is how its common plugin sees the
 //           presents (presentCommon: its garbage collection and the clearing of its caches at a
 //           resize); it goes in at the first present after Streamline has finished starting, not at
 //           the swap chain's creation (UpgradeSwapChain below).
 //   Vulkan  The instance and the device have to be made with the extensions, features and queues
 //           Streamline asks for, so on Vulkan it starts BEFORE the device (Device::Open ->
-//           dlss::BeforeDevice), whenever this PC can run DLSS, whatever upscaler is chosen: an
-//           NVIDIA RTX card (by its name; any NVIDIA card when DLSS is the saved choice), the files
-//           in place and signed. Plume loads every Vulkan function through the interposer's
-//           vkGetInstanceProcAddr (Plume's VulkanInterfaceHooks): its vkCreateInstance and
-//           vkCreateDevice proxies add what DLSS needs, so slSetVulkanInfo is not used. That is
-//           what lets a Vulkan game started with FSR or no upscaler switch to DLSS while it runs;
-//           it costs several seconds at every start (measured with DLSS chosen on an RTX 5080: the
-//           device up 9.6 s after the process started, not 0.7 s: slInit 1.6 s and NGX 7.7 s inside
-//           the hooked device creation, on the game's thread). A device made without it (the GPU
-//           Plume took is not the one looked at) lists DLSS as "after restart". If the hooked
-//           instance or device cannot be made, the game starts again without it (Device): DLSS is
-//           off for the session.
+//           dlss::BeforeDevice), and only when DLSS is the saved choice at the start (an NVIDIA
+//           GPU, the files in place and signed). Plume loads every Vulkan function through the
+//           interposer's vkGetInstanceProcAddr (Plume's VulkanInterfaceHooks): its vkCreateInstance
+//           and vkCreateDevice proxies add what DLSS needs, so slSetVulkanInfo is not used. That
+//           costs several seconds at every start whether DLSS is used or not (measured on an RTX
+//           5080: the device up 9.7 s after the process started, not 0.5 s: slInit 1.6 s and NGX
+//           7.7 s inside the hooked device creation, on the game's thread), so a Vulkan game
+//           started with FSR or no upscaler does not pay it, and choosing DLSS from its pause menu
+//           applies from the next start: the row lists DLSS as "after restart" (UPSCALING says
+//           RESTART and the "Restart now?" prompt offers it), the renderer goes on without it, and
+//           there is no pre-warm. If the hooked instance or device cannot be made, the game starts
+//           again without it (Device): DLSS is off for the session.
 //
 // Per frame (Upscale, on the render thread, inside the frame's list and outside a render pass):
 // slGetNewFrameToken, slSetConstants (matrices, jitter, vector scale, reset), then slEvaluateFeature
@@ -81,8 +82,9 @@
 //     the worker, so a game closed in the first seconds of a creation waits for the rest of it.
 //   - without a side kit or warm-up images (or if the warm-up fails) the context is published
 //     anyway and the first dispatch makes the feature on the render thread, with the pause.
-//   - the pre-warm (temporal_backend.h Prewarm): on a PC that can run DLSS whose game was not started
-//     with it, the worker makes one context per mode (the saved mode first) at the real sizes a few
+//   - the pre-warm (temporal_backend.h Prewarm): on D3D12, on a PC that can run DLSS whose game was
+//     not started with it (a Vulkan game has no live switch to DLSS, so no pre-warm), the worker
+//     makes one context per mode (the saved mode first) at the real sizes a few
 //     seconds after the game first draws, each with the same first evaluation, and frees it at once:
 //     nothing is kept in video memory. On D3D12 it begins with Streamline's own start (slInit and
 //     NGX, about 10 s, on the worker). What the runs measured (RTX 5080): the first feature of a
@@ -154,11 +156,12 @@ class DlssBackend final : public TemporalBackend {
   std::unique_ptr<Impl> impl_;
 };
 
-// Before the graphics interface exists (Device::Open). Vulkan only: when this PC can run DLSS (an
-// NVIDIA RTX card, the files in place and signed; any NVIDIA GPU when DLSS is the saved choice)
-// and this build can, starts Streamline now so that the interface is made through its
-// vkGetInstanceProcAddr, whatever upscaler is chosen. A no-op for D3D12 (Streamline starts after the
-// device there) and for a build without DLSS.
+// Before the graphics interface exists (Device::Open). Vulkan only: when DLSS is the saved choice,
+// this build can run it and the GPU is an NVIDIA one (the files in place and signed), starts
+// Streamline now so that the interface is made through its vkGetInstanceProcAddr. With another
+// upscaler or none chosen it does nothing (the start would take seconds longer for DLSS that is not
+// used; DLSS chosen later applies from the next start). A no-op for D3D12 (Streamline starts after
+// the device there, and DLSS switches on live) and for a build without DLSS.
 #if defined(LARECOMP_HAS_DLSS)
 namespace dlss {
 void BeforeDevice(Backend backend, const std::string& preferred_adapter);

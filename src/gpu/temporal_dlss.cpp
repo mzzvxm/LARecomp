@@ -787,14 +787,17 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
 
   if (i.api == Backend::kVulkan) {
     if (!vulkan_hooked) {
-      // The Vulkan device is made with Streamline's help, and BeforeDevice does that for an RTX card
-      // whatever is chosen (the files in place and signed); a device that was not (a GPU Plume
-      // took that is not the one BeforeDevice looked at, or a build without Plume's hooks) gets DLSS
-      // from the next start at the earliest.
+      // The Vulkan device is made with Streamline's help only when DLSS is the saved choice at the
+      // start (BeforeDevice: the start takes seconds longer for it), so a game started with
+      // anything else cannot switch to DLSS while it runs: an RTX card lists it for the next start
+      // ("after restart": the pause menu's UPSCALING row says RESTART and offers it), and nothing is
+      // warmed up (there is no live switch to be quick). The same when the GPU Plume took is not the
+      // one BeforeDevice looked at, or a build without Plume's hooks.
 #if defined(LARECOMP_PLUME_STREAMLINE)
       if (rtx_name) {
-        REXLOG_INFO("{} listed for Vulkan, but this game's device was made without Streamline: "
-                    "choosing DLSS applies from the next start",
+        REXLOG_INFO("{} listed for Vulkan, but this game's device was made without Streamline (it "
+                    "is made through it only when DLSS is the saved choice at the start: that "
+                    "costs seconds at every start): choosing DLSS applies from the next start",
                     kPrefix);
         settle(BackendState::kUnavailable, "on Vulkan DLSS starts with the game", false, false, true);
       } else {
@@ -812,16 +815,13 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
 #endif
       return;
     }
-    // Started before the device: the worker finishes it (the support query). The files are known
-    // good, so an RTX card is published as able to run it as soon as the worker has looked at them
-    // (PublishEarlyVerdict); the query is not waited for by the start decision. DLSS is not the
-    // start's choice when the hook was made for another upscaler's game: its first-time work is
-    // warmed up in the background (Prewarm), so that switching to it from the menu is quick.
+    // Started before the device, which only happens when DLSS is the saved choice: the worker
+    // finishes it (the support query). The files are known good, so an RTX card is published as
+    // able to run it as soon as the worker has looked at them (PublishEarlyVerdict); the query is
+    // not waited for by the start decision. No pre-warm: the context made at the start pays for
+    // its kind of feature.
     std::lock_guard lock(i.mu);
     i.status.state = BackendState::kProbing;
-    if (!chosen) {
-      i.ArmPrewarmLocked();
-    }
     i.StartWorkerLocked();
     return;
   }
@@ -1133,7 +1133,9 @@ void DlssBackend::Impl::EnsureKit() {
 // property of one live context; paying it once in the background, with a feature that is freed at
 // once (no video memory is kept), leaves every later creation at its 30 ms. Which sizes and modes
 // make a kind is not known (the runs cannot tell a mode's network from the size's class), so one
-// step makes each of the five modes at the real sizes, the saved mode first.
+// step makes each of the five modes at the real sizes, the saved mode first. Only where DLSS can be
+// switched on while the game runs, i.e. D3D12 (a Vulkan game has it only when it was the start's
+// choice, whose context at the start paid for its kind).
 
 void DlssBackend::Impl::ArmPrewarmLocked() {
   if (prewarm_armed) {
@@ -1744,8 +1746,8 @@ bool DlssBackend::PrewarmNext(UpscaleMode* mode) {
     }
     if (!i.init_done) {
       // D3D12: Streamline's own start (slInit, then slSetD3DDevice with NGX: about 10 s) is the
-      // pre-warm's first step, on the worker. On Vulkan the worker has run since the probe (the
-      // start before the device) and this only waits for it to be done.
+      // pre-warm's first step, on the worker. (Only D3D12 arms a pre-warm: a Vulkan game gets DLSS
+      // only when it is the start's choice, so it has no live switch to be quick.)
       if (!i.worker.joinable()) {
         i.StartWorkerLocked();
         started_streamline = true;
@@ -2075,56 +2077,36 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
     (void)preferred_adapter;
     return;
   }
-  const bool chosen = ReadUpscalerSettings().upscaler == Upscaler::kDlss;
-#if !defined(LARECOMP_PLUME_STREAMLINE)
-  if (chosen) {
-    REXLOG_INFO("{} DLSS is chosen, but this build's Plume has no creation hooks for Streamline: "
-                "it is not available on Vulkan in this build",
-                kPrefix);
-  }
-  (void)preferred_adapter;
-#else
-  // The Vulkan instance and device have to be made through Streamline's interposer for DLSS to run
-  // at all (its vkCreateInstance and vkCreateDevice proxies add the extensions, features and queues
-  // DLSS needs; Plume works with its individual feature structs, 2026-11-06), so this is where the
-  // choice is made, and it cannot be taken back once the device exists. It is made whenever this PC
-  // can run DLSS, not only when DLSS is the saved choice: a game started with FSR or no upscaler
-  // can then switch to DLSS while it runs (the pause menu's UPSCALING row). "Can run" is what the
-  // fast start checks say (the same as D3D12's early verdict): an NVIDIA GPU that is an RTX card by
-  // its name (a card whose name lacks RTX is only taken when DLSS is the saved choice, as before),
-  // the four files next to the exe and the three Streamline ones signed by NVIDIA. If the instance
-  // or the device cannot be made through it the game makes them again without it (Device::Initialize,
-  // AbandonVulkanHook): DLSS is off for that session and says so.
-  // The cost, measured with DLSS chosen (runs 2026-11-06, RTX 5080): the renderer's device is up
-  // about 9.6 s after the process starts instead of about 0.7 s: slInit about 1.6 s, then NGX
-  // starting inside the hooked vkCreateInstance/vkCreateDevice about 7.7 s, all on the game's own
-  // thread. That is now paid at every Vulkan start on an RTX card.
-  // CHECK: the start-up time, and the frame time with DLSS off, with and without the hook (log: the
-  // "[gpu] Vulkan ... on" line's time since the first line; frame.csv).
-  static std::atomic<bool> said{false};
-  const auto say_once = [](auto&& line) {
-    if (!said.exchange(true)) {
-      line();
-    }
-  };
-  const uint32_t vendor = backend::RenderingAdapterVendor(preferred_adapter);
-  if (vendor != kVendorNvidia) {
-    if (chosen) {
-      say_once([&] {
-        REXLOG_INFO("{} DLSS is chosen, but the Vulkan device will not be an NVIDIA one (vendor "
-                    "{:#06x}): Streamline is not started",
-                    kPrefix, vendor);
-      });
-    }
+  // Only when DLSS is the saved choice at this start. The instance and the device have to be made
+  // through Streamline's interposer for DLSS to run at all, and that costs several seconds at every
+  // start (measured on an RTX 5080, 2026-11-07: the renderer's device up 9.7 s after the process
+  // started instead of 0.5 s: slInit about 1.6 s, then NGX starting inside the hooked
+  // vkCreateInstance/vkCreateDevice about 7.7 s, on the game's own thread, whether DLSS is used or
+  // not). So a Vulkan game started with FSR or no upscaler pays none of it, and choosing DLSS from
+  // its menu applies from the next start (Probe: "after restart"; the pause menu says RESTART and
+  // offers it); D3D12 starts Streamline in the background and switches live.
+  // CHECK: on an RTX PC, a Vulkan start with FSR or no upscaler has its device up about half a second
+  // after the process starts and logs nothing here (the Probe's "listed for Vulkan" line follows);
+  // a start with DLSS saved logs the "DLSS is the saved choice: Streamline started for Vulkan" line
+  // below, with the device about 9.7 s in (LIVE2.txt).
+  if (ReadUpscalerSettings().upscaler != Upscaler::kDlss) {
     return;
   }
-  const std::string gpu_name = backend::RenderingAdapterName(preferred_adapter);
-  if (!chosen && !NameLooksLikeRtx(gpu_name)) {
-    say_once([&] {
-      REXLOG_INFO("{} Vulkan: the device is made without Streamline: '{}' is not recognised as an "
-                  "RTX card and DLSS is not the choice",
-                  kPrefix, gpu_name);
-    });
+#if !defined(LARECOMP_PLUME_STREAMLINE)
+  REXLOG_INFO("{} DLSS is chosen, but this build's Plume has no creation hooks for Streamline: "
+              "it is not available on Vulkan in this build",
+              kPrefix);
+  (void)preferred_adapter;
+#else
+  // Streamline's vkCreateInstance and vkCreateDevice proxies add the extensions, features and
+  // queues DLSS needs (Plume works with its individual feature structs, 2026-11-06). If the
+  // instance or the device cannot be made through them, the game makes them again without it
+  // (Device::Initialize, AbandonVulkanHook): DLSS is off for that session and says so.
+  const uint32_t vendor = backend::RenderingAdapterVendor(preferred_adapter);
+  if (vendor != kVendorNvidia) {
+    REXLOG_INFO("{} DLSS is chosen, but the Vulkan device will not be an NVIDIA one (vendor "
+                "{:#06x}): Streamline is not started",
+                kPrefix, vendor);
     return;
   }
   Runtime& rt = Rt();
@@ -2136,34 +2118,25 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   if (!LoadRuntimeLocked(rt, &why) || !InitLocked(rt, sl::RenderAPI::eVulkan, &why)) {
     // The probe reports it (greyed as "needs setup" when the files are the problem).
     rt.failure = why;
-    say_once([&] {
-      REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
-                  kPrefix, why);
-    });
+    REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
+                kPrefix, why);
     return;
   }
   void* get_instance_proc_addr =
       reinterpret_cast<void*>(GetProcAddress(rt.interposer, "vkGetInstanceProcAddr"));
   if (!get_instance_proc_addr) {
     rt.failure = "sl.interposer.dll does not export vkGetInstanceProcAddr";
-    say_once([&] {
-      REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
-                  kPrefix, rt.failure);
-    });
+    REXLOG_INFO("{} Streamline is not started for Vulkan, so the device is made without it: {}",
+                kPrefix, rt.failure);
     return;
   }
   rt.vk_get_instance_proc_addr = get_instance_proc_addr;
   rt.vk_hook = true;
-  say_once([&] {
-    REXLOG_INFO("{} Streamline started for Vulkan before the device ({}): Plume loads Vulkan through "
-                "its vkGetInstanceProcAddr, whose vkCreateInstance and vkCreateDevice add what DLSS "
-                "needs. The device is made this way whichever upscaler is chosen, so that DLSS can be "
-                "switched on while the game runs; the start takes several seconds longer for it "
-                "(Streamline's start and NGX's, on this thread)",
-                kPrefix,
-                chosen ? "DLSS is the saved choice"
-                       : "'" + gpu_name + "' is an RTX card and the DLSS files are in place and signed");
-  });
+  REXLOG_INFO("{} DLSS is the saved choice: Streamline started for Vulkan before the device. Plume "
+              "loads Vulkan through its vkGetInstanceProcAddr, whose vkCreateInstance and "
+              "vkCreateDevice add what DLSS needs (the start takes several seconds longer for "
+              "it: Streamline's start and NGX's, on this thread)",
+              kPrefix);
 #endif
 }
 

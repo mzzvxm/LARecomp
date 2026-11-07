@@ -375,14 +375,23 @@ void TemporalSystem::ReadUpscalerChoice() {
         REXLOG_INFO("{} {} is chosen but this build has no runtime for it: treated as off", kPrefix,
                     UpscalerName(settings_.upscaler));
       } else if (chosen_probed) {
-        REXLOG_INFO("{} {} is chosen but this PC cannot run it{}: treated as off (the choice is "
-                    "kept)",
-                    kPrefix, UpscalerName(settings_.upscaler),
-                    settings_.upscaler == Upscaler::kDlss && available.dlss_needs_setup
-                        ? " (its files are missing: it needs setup)"
-                        : settings_.upscaler == Upscaler::kDlss && available.dlss_after_restart
-                              ? " until the game is started again"
-                              : "");
+        if (settings_.upscaler == Upscaler::kDlss && available.dlss_after_restart) {
+          // A Vulkan game started without DLSS: its device was not made through Streamline (that
+          // costs seconds at every start, so it is done only when DLSS is chosen at the start). The
+          // choice is saved; the pause menu says RESTART and offers it.
+          REXLOG_INFO("{} DLSS is chosen, but this Vulkan game was started without it (its device "
+                      "is made through Streamline only when DLSS is the saved choice at the start): "
+                      "treated as off until the game is started again; the choice is saved and "
+                      "applies then",
+                      kPrefix);
+        } else {
+          REXLOG_INFO("{} {} is chosen but this PC cannot run it{}: treated as off (the choice is "
+                      "kept)",
+                      kPrefix, UpscalerName(settings_.upscaler),
+                      settings_.upscaler == Upscaler::kDlss && available.dlss_needs_setup
+                          ? " (its files are missing: it needs setup)"
+                          : "");
+        }
       }
     }
   }

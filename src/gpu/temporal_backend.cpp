@@ -26,7 +26,10 @@ REXCVAR_DEFINE_STRING(
     "start-up switch). A choice this PC cannot run is treated as off. Live, except that MSAA "
     "follows at the next start: turning an upscaler on, off or to another one is made at a frame "
     "boundary once the new one is ready, while the old one keeps working (FSR in about half a "
-    "second, DLSS in several seconds).")
+    "second, DLSS in several seconds). The exception is DLSS on Vulkan: that graphics device is "
+    "made through NVIDIA's Streamline only when dlss is the saved choice at the start (it adds "
+    "several seconds to every start), so choosing dlss in a Vulkan game started with something "
+    "else is saved and applies at the next start, and the menu offers a restart.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(
