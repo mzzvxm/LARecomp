@@ -18,11 +18,20 @@
 #include "gpu/gpu.h"
 #endif
 
+// Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
+// every pass through them (nothing keeps a copy), and the pause menu's MOTION BLUR row flips it
+// without a restart. It was tagged kRequiresRestart, which made the F4 panel and the launcher show
+// it as a restart setting.
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// Live: Patch_DisableImposterShadows reads this on every pass through its site in the imposter
+// shadow submission (sub_8230C860) and nothing keeps a copy; the same hook is a plain, switchable
+// toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during
+// play). It was tagged kRequiresRestart, and its pause row said "(RESTART)".
+// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.
 REXCVAR_DEFINE_BOOL(disable_imposter_shadows, true, "MCLA/Patches", "Performance Mode: Foliage won't cast shadows.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing (MSAA).")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
