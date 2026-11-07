@@ -564,7 +564,10 @@ bool ResolveMemory::EnsureChunk(plume::RenderCommandList* list, uint32_t chunk) 
 }
 
 bool ResolveMemory::GrowPool(plume::RenderCommandList* list) {
-  const uint32_t chunks = std::min(pool_chunks_ * 2, kChunkCount);
+  // A quarter more (not double): the pool is video memory, and the first
+  // doubling of a 512-chunk pool left 26 MiB of 64 unused in every logged run.
+  const uint32_t step = std::max(kMinPoolGrowthChunks, pool_chunks_ / 4);
+  const uint32_t chunks = std::min(pool_chunks_ + step, kChunkCount);
   if (chunks == pool_chunks_) {
     Fail("the pool holds every chunk already", "");
     return false;

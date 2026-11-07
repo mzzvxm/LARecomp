@@ -17,6 +17,7 @@
 
 #include <rex/cvar.h>
 #include <rex/ppc.h>
+#include <rex/ppc/function.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/xmemory.h>
@@ -145,6 +146,24 @@ REXCVAR_DEFINE_STRING(keycaps_dir, "", "MCLA/Input",
     "set embedded in the executable (src/keycaps/). Built by tools/keycaps/pack_keycaps.py.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// The extra buttons of a pad (back paddles: L4, L5, R4, R5). A pad that has them sends nothing
+// of its own for them -- the maker's software makes each one press some other button or key --
+// so the host key the pad is set to send is named here and the game gets a button of its own.
+// Bind it in Options > Controller > Customize like any other button. Empty = not used.
+REXCVAR_DEFINE_STRING(extra_button_l4, "", "MCLA/Input/Extra buttons",
+    "Host key(s) that the pad's L4 button sends (e.g. \"Numpad4\"; several: \"Numpad4,F13\"). "
+    "The key stops acting as a keyboard key and becomes the game button L4. Empty = unused.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(extra_button_l5, "", "MCLA/Input/Extra buttons",
+    "Host key(s) that the pad's L5 button sends. See extra_button_l4.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(extra_button_r4, "", "MCLA/Input/Extra buttons",
+    "Host key(s) that the pad's R4 button sends. See extra_button_l4.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(extra_button_r5, "", "MCLA/Input/Extra buttons",
+    "Host key(s) that the pad's R5 button sends. See extra_button_l4.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // button_prompts is owned by hooks/ui.cpp (platform flag); this only reads it.
 REXCVAR_DECLARE(std::string, button_prompts);
 
@@ -165,6 +184,15 @@ constexpr uint32_t kNavOriginalCount = 24;
 // A scancode no real key produces (byte_82825050 has none): written by hand to press the
 // camera button, which is bound to it as well as to the real key.
 constexpr uint8_t kVirtualCamKey = 0x7F;
+
+// Scancodes of the four extra pad buttons: none of them is in byte_82825050, so no real key
+// produces them (checked at run time too). They travel the same way a key does -- the pending
+// table, a type-0 mapper source -- which is how Custom Controls can capture and bind them.
+constexpr int kNumExtras = 4;
+constexpr uint8_t kExtraScancode[kNumExtras] = {0x7B, 0x7C, 0x7D, 0x7E};
+constexpr const char* kExtraName[kNumExtras] = {"L4", "L5", "R4", "R5"};
+
+bool ExtrasEnabled();  // defined with the extra-button feed below
 
 // ioMapper entry types used here.
 constexpr uint32_t kTypeKey     = 0;
@@ -398,7 +426,8 @@ void AppendDriveEntries(uint8_t* b, DriveStruct& d) {
 // Hook at the return of sub_822A4DE8. The game has just cleared and rebuilt the
 // mapper from the control map; the keyboard entries go on the end.
 void Hook_ControlMapRebuilt(PPCRegister& r30) {
-    if (!REXCVAR_GET(keyboard_native)) return;
+    const bool keyboard = REXCVAR_GET(keyboard_native);
+    if (!keyboard && !ExtrasEnabled()) return;
     uint8_t* b = GuestBase();
     const uint32_t ea = static_cast<uint32_t>(r30.u64);
     if (!b || !HeapPtr(ea)) return;
@@ -406,6 +435,21 @@ void Hook_ControlMapRebuilt(PPCRegister& r30) {
     const uint32_t mapper = ReadGuestU32(b, ea + 8);
     const uint32_t outs = ReadGuestU32(b, ea + 12);
     if (!HeapPtr(mapper) || !HeapPtr(outs)) return;
+    if (!keyboard) {
+        // Extra pad buttons only: the game's own rebuild made the mapper; just report which
+        // of its sources are keys, to see whether a bound extra button reached it.
+        const uint32_t n = ReadGuestU32(b, mapper);
+        MC_INFO("[kbnative] control map rebuilt: mapper @0x{:08X}, {} entries", mapper, n);
+        for (uint32_t i = 0; i < n && i < 64; ++i) {
+            const uint32_t type = ReadGuestU32(b, mapper + 4 * (2 + i));
+            if (type != kTypeKey && type != kTypeKeyAxis) continue;
+            const uint32_t value = ReadGuestU32(b, mapper + 4 * (66 + i)) & 0xFFFFFF;
+            const uint32_t out = ReadGuestU32(b, mapper + 4 * (130 + i));
+            MC_INFO("[kbnative]   entry {}: type {} value 0x{:X} -> output @0x{:08X} (action {})",
+                    i, type, value, out, out >= outs ? (out - outs) / 12 : 0xFFFFu);
+        }
+        return;
+    }
 
     DriveStruct* slot = nullptr;
     for (auto& d : g_drive) if (d.ea == ea) { slot = &d; break; }
@@ -623,11 +667,56 @@ void UpdateSteering(uint8_t* b) {
     }
 }
 
+// ── extra pad buttons ───────────────────────────────────────────────────
+std::string ExtraCvar(int i) {
+    switch (i) {
+        case 0: return REXCVAR_GET(extra_button_l4);
+        case 1: return REXCVAR_GET(extra_button_l5);
+        case 2: return REXCVAR_GET(extra_button_r4);
+        default: return REXCVAR_GET(extra_button_r5);
+    }
+}
+
+std::vector<uint8_t> g_extra_vks[kNumExtras];  // host keys of each extra button
+bool g_extra_swallow[256] = {};                // host keys taken from the keyboard feed
+std::string g_extra_sig;
+uint8_t g_extra_prev[kNumExtras] = {};
+
+void RefreshExtras() {
+    std::string sig;
+    for (int i = 0; i < kNumExtras; ++i) sig += ExtraCvar(i) + "|";
+    if (sig == g_extra_sig) return;
+    g_extra_sig = sig;
+    std::memset(g_extra_swallow, 0, sizeof(g_extra_swallow));
+    for (int i = 0; i < kNumExtras; ++i) {
+        g_extra_vks[i].clear();
+        for (const KeyRef& k : ParseKeyList(ExtraCvar(i))) {
+            g_extra_vks[i].push_back(k.vk);
+            g_extra_swallow[k.vk] = true;
+        }
+    }
+}
+
+bool ExtrasEnabled() {
+    RefreshExtras();
+    for (const auto& v : g_extra_vks)
+        if (!v.empty()) return true;
+    return false;
+}
+
+// -1 when the scancode is not one of the extra buttons'.
+int ExtraIndexOfScancode(uint32_t sc) {
+    for (int i = 0; i < kNumExtras; ++i)
+        if (kExtraScancode[i] == sc) return i;
+    return -1;
+}
+
 // ── key state feed ──────────────────────────────────────────────────────
 uint8_t g_prev_state[256] = {};
 uint8_t g_just_pressed[256] = {};  // scancodes that went down this frame
 
 void FeedKeys(uint8_t* b) {
+    RefreshExtras();
     // Nothing while the server browser has the keyboard.
     const bool focused = WindowFocused() && !larecomp::ServerBrowserCapturesInput();
     uint8_t state[256] = {};
@@ -636,12 +725,31 @@ void FeedKeys(uint8_t* b) {
         const uint8_t sc = b[kVkToScancode + vk];
         if (!sc) continue;
         mapped[sc] = 1;
-        if (focused && HostKeyDown(vk)) state[sc] = 0x80;
+        // A key that an extra pad button sends is that button, not a keyboard key.
+        if (focused && !g_extra_swallow[vk] && HostKeyDown(vk)) state[sc] = 0x80;
     }
     for (int sc = 1; sc < 256; ++sc) {
         if (mapped[sc]) b[kKeysPending + sc] = state[sc];
         g_just_pressed[sc] = (state[sc] && !g_prev_state[sc]) ? 1 : 0;
         g_prev_state[sc] = state[sc];
+    }
+}
+
+// The extra pad buttons, each as the key state of its own scancode. Runs after FeedKeys
+// (which zeroes g_just_pressed for every scancode) and also with the keyboard switched off.
+void FeedExtras(uint8_t* b) {
+    RefreshExtras();
+    const bool focused = WindowFocused() && !larecomp::ServerBrowserCapturesInput();
+    for (int i = 0; i < kNumExtras; ++i) {
+        bool down = false;
+        if (focused)
+            for (uint8_t vk : g_extra_vks[i]) down = down || HostKeyDown(vk);
+        const uint8_t sc = kExtraScancode[i];
+        if (down != (g_extra_prev[i] != 0))
+            MC_INFO("[kbnative] extra button {} {}", kExtraName[i], down ? "down" : "up");
+        b[kKeysPending + sc] = down ? 0x80 : 0;
+        g_just_pressed[sc] = (down && !g_extra_prev[i]) ? 1 : 0;
+        g_extra_prev[i] = down ? 1 : 0;
     }
 }
 
@@ -1034,17 +1142,24 @@ std::string GlyphKeyFor(const GlyphTarget& g) {
 }
 
 void TickGlyphs(uint8_t* b) {
-    const bool want = REXCVAR_GET(button_prompts) == "keyboard";
-    if (!want && g_glyph_tex.empty()) return;  // never painted, nothing to restore
+    const std::string prompts = REXCVAR_GET(button_prompts);
+    const bool want = prompts == "keyboard";
+    const bool playstation = prompts == "playstation";  // the spare glyphs are real buttons then
+    // The extra pad buttons need the dictionary scanned even with the keyboard art off.
+    if (!want && !ExtrasEnabled() && g_glyph_tex.empty()) return;  // never painted, nothing to restore
     if (!ScanDictionary(b)) return;
     if (!g_sidekick_ok && ScanSidekick(b)) g_glyph_sig_applied.clear();
 
     std::string sig = want ? "keyboard|" : "off|";
+    if (playstation) sig += "ps|";
     if (want) sig += UiSignature() + REXCVAR_GET(keycaps_dir);
     if (sig == g_glyph_sig_applied) return;
 
     for (const GlyphTarget& g : kGlyphs) {
-        const std::string key = want ? GlyphKeyFor(g) : std::string();
+        // A spare glyph keeps the cap of the key (or extra button) a Custom Controls row
+        // gave it in every layout but PlayStation; the menu glyphs only in the keyboard one.
+        const std::string key = g.slot >= 0 ? (playstation ? std::string() : GlyphKeyFor(g))
+                                            : (want ? GlyphKeyFor(g) : std::string());
         for (const char* tex_name : g.textures) PaintGlyph(b, tex_name, key);
     }
     g_glyph_sig_applied = sig;
@@ -1122,12 +1237,16 @@ void Hook_PadBitsFinalize(PPCRegister& r31) {
 // Placed after the prologue of sub_82727010 (0x82727044: r28 = out type, r24 = out value
 // pointer), and finishing through its own "store r11 to *r24, return 1" tail at 0x8272737C.
 bool Hook_ControlCaptureKey(PPCRegister& r11, PPCRegister& r28) {
-    if (!REXCVAR_GET(keyboard_native)) return false;
+    // With the keyboard off only the extra pad buttons are answered; a real pad button is
+    // left to the game's own read.
+    const bool keyboard = REXCVAR_GET(keyboard_native);
+    if (!keyboard && !ExtrasEnabled()) return false;
     uint8_t* b = GuestBase();
     const uint32_t out_type = static_cast<uint32_t>(r28.u64);
     if (!b || !HeapPtr(out_type)) return false;
     for (int sc = 1; sc < 256; ++sc) {
         if (!g_just_pressed[sc]) continue;
+        if (!keyboard && ExtraIndexOfScancode(sc) < 0) continue;
         WriteGuestU32(b, out_type, 0);  // type 0 = keyboard key
         r11.u64 = static_cast<uint64_t>(sc);
         MC_INFO("[kbnative] custom controls: captured scancode 0x{:02X}", sc);
@@ -1165,6 +1284,7 @@ uint32_t LabelBlock(uint8_t* b) {
 
 // The name of the key a scancode belongs to ("" when none).
 std::string KeyNameOfScancode(const uint8_t* b, uint8_t sc) {
+    if (const int e = ExtraIndexOfScancode(sc); e >= 0) return kExtraName[e];
     for (int vk = 1; vk < 255; ++vk) {
         if (b[kVkToScancode + vk] != sc) continue;
         const std::string n = rex::ui::VirtualKeyToString(static_cast<rex::ui::VirtualKey>(vk));
@@ -1174,6 +1294,8 @@ std::string KeyNameOfScancode(const uint8_t* b, uint8_t sc) {
 }
 
 uint8_t ScancodeOfName(const uint8_t* b, const std::string& name) {
+    for (int i = 0; i < kNumExtras; ++i)
+        if (Lower(name) == Lower(kExtraName[i])) return kExtraScancode[i];
     for (const KeyRef& k : ParseKeyList(name)) {
         const uint8_t sc = ScancodeOf(b, k.vk);
         if (sc) return sc;
@@ -1182,16 +1304,20 @@ uint8_t ScancodeOfName(const uint8_t* b, const std::string& name) {
 }
 
 bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    if (!REXCVAR_GET(keyboard_native)) return false;
     if (static_cast<uint32_t>(r3.u64) != 0) return false;  // pad / axis: the own labels of the game
     const uint32_t key = static_cast<uint32_t>(r4.u64);
+    const bool extra = ExtraIndexOfScancode(key) >= 0;
+    if (!extra && !REXCVAR_GET(keyboard_native)) return false;
     uint8_t* b = GuestBase();
     if (!b || key == 0 || key > 255) return false;
     const uint32_t block = LabelBlock(b);
     if (!block) return false;
     const uint32_t flag = static_cast<uint32_t>(r5.u64);
 
-    if (REXCVAR_GET(button_prompts) == "keyboard") {
+    const std::string prompts = REXCVAR_GET(button_prompts);
+    // An extra button is drawn with its own art on a spare glyph in any layout but PlayStation
+    // (there the spare glyphs are real PlayStation buttons), else as the text "L4".
+    if (prompts == "keyboard" || (extra && prompts != "playstation")) {
         // 1. A menu-button glyph already showing this key.
         for (const GlyphTarget& g : kGlyphs) {
             if (g.slot >= 0 || !g.icon) continue;
@@ -1210,6 +1336,12 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
             if (!g_slot_key[i].empty()) continue;
             const std::string name = KeyNameOfScancode(b, static_cast<uint8_t>(key));
             if (name.empty()) break;
+            // Not scanned yet (or the dictionary has no such texture): drawing the slot
+            // would show the PlayStation button, so the text name below it is.
+            bool ready = false;
+            for (const GlyphTarget& g : kGlyphs)
+                if (g.slot == i) ready = g_glyph_tex.count(g.textures[0]) != 0;
+            if (!ready) break;
             g_slot_key[i] = name;
             for (const GlyphTarget& g : kGlyphs)
                 if (g.slot == i)
@@ -1239,13 +1371,18 @@ void Hook_KeyboardFeed() {
     // key caps), so they tick on their own, a few times a second.
     if ((++g_glyph_tick & 0x1F) == 0) TickGlyphs(b);
 
-    if (!REXCVAR_GET(keyboard_native)) return;
-    if (!g_warned_mnk && REXCVAR_QUERY(bool, mnk_mode)) {
-        g_warned_mnk = true;
-        MC_WARN("[kbnative] mnk_mode is ON: its keys are also pad buttons, so Enter will be "
-                "Start as well as accept. Turn mnk_mode off for the native keyboard alone.");
+    const bool keyboard = REXCVAR_GET(keyboard_native);
+    if (keyboard) {
+        if (!g_warned_mnk && REXCVAR_QUERY(bool, mnk_mode)) {
+            g_warned_mnk = true;
+            MC_WARN("[kbnative] mnk_mode is ON: its keys are also pad buttons, so Enter will be "
+                    "Start as well as accept. Turn mnk_mode off for the native keyboard alone.");
+        }
+        FeedKeys(b);
     }
-    FeedKeys(b);
+    // The pad's extra buttons work with or without the native keyboard.
+    FeedExtras(b);
+    if (!keyboard) return;
     EnsureNavKeys(b);
     UpdateNavEntries(b);
     UpdateSteering(b);
@@ -1254,6 +1391,22 @@ void Hook_KeyboardFeed() {
         g_drive_sig_applied = DriveSignature();  // before: the rebuild below refreshes it again
         ReapplyDrive(b);
     }
+}
+
+// sub_822A4B80(controller): "SHIFT_UP and SHIFT_DOWN are both bound", read from the control map
+// of the controller's pad as entries 4 and 5 of {u32 type, u32 key}. The game tests only the TYPE
+// word, because a type of 0 never occurred on a bound action in its own maps; a keyboard (or
+// extra pad button) source is type 0 with the scancode in the key word, so a shift bound to one
+// read as "no shift controls" and the manual shift never fired. An entry counts as bound when
+// either word is set. Maps the game ships have a non-zero type wherever something is bound, so
+// they answer exactly as before.
+extern "C" REX_FUNC(rex_sub_822A4B80) {
+    const uint32_t pad = ReadGuestU32(base, ctx.r3.u32 + 4);
+    const uint32_t map = pad < 4 ? ReadGuestU32(base, 0x8287438C + 4 * pad) : 0;
+    bool both = map >= 0x10000;
+    for (uint32_t entry = 4; both && entry <= 5; ++entry)
+        both = ReadGuestU32(base, map + 8 * entry) != 0 || ReadGuestU32(base, map + 8 * entry + 4) != 0;
+    ctx.r3.u64 = both ? 1 : 0;
 }
 
 #else  // REXGLUE_HAS_XEO3_TARGET

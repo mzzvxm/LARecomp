@@ -89,10 +89,13 @@ struct EdramKey {
   uint8_t depth = 0;      // 1: depth/stencil target
   uint8_t format = 0;     // xenos Color/DepthRenderTargetFormat, _AS_ folded
   uint8_t samples = 1;
+  // The layer: 0 for every identity but one case (EdramTargets::DepthLayer): the main view's depth
+  // at 1x samples, which the game's UI phase draws with too, is two host targets (the scene's,
+  // layer 0, and the UI's, layer 1) while the scene is drawn at another scale than the UI.
   uint8_t reserved = 0;
   bool operator==(const EdramKey& o) const {
     return base_tiles == o.base_tiles && pitch == o.pitch && depth == o.depth &&
-           format == o.format && samples == o.samples;
+           format == o.format && samples == o.samples && reserved == o.reserved;
   }
 };
 
@@ -269,10 +272,54 @@ class EdramTargets {
     return it != targets_.end() ? it->second->host_samples : HostSamplesFor(key, size_bits);
   }
   // The scale of `key`'s target: its own when it exists, otherwise the one
-  // ScaleForDeclared gives `size_bits`.
+  // ScaleForUse gives `key` and `size_bits`.
   Scale ScaleOf(const EdramKey& key, uint32_t size_bits) {
     const auto it = targets_.find(key);
-    return it != targets_.end() ? it->second->scale : ScaleForDeclared(size_bits);
+    return it != targets_.end() ? it->second->scale : ScaleForUse(key, size_bits);
+  }
+  // The scale a new target of `key` bound through a surface declared with `size_bits` gets:
+  // ScaleForDeclared's, except that the scene's identities (IsSceneKey) take the scene's scale
+  // when it is not the images of the screen's.
+  Scale ScaleForUse(const EdramKey& key, uint32_t size_bits);
+
+  // --- the scene at its own scale (F4-DESIGN.md 4, render_scale.h ChooseSceneScale) ---
+  // While a temporal upscaler works on the 3D scene (the start's choice, gpu.h GetStartUpscale) the
+  // scene's identities -- the main view's colour and depth in play, 1x or 2x samples
+  // (temporal_identities.h) -- are made at SceneScale(): the images of the screen's scale over the
+  // mode's ratio. Everything else keeps its scale, so the post chain, the tone map and the UI stay
+  // at the output's size. The pause menu's and the map's 4x identities are the scene's too, but
+  // not in play: they stay at the images of the screen's. Decided on first use, never changed.
+  Scale SceneScale() {
+    DecideScene();
+    return scene_scale_;
+  }
+  // The scene is drawn at another scale than the images of the screen.
+  bool SceneApart() {
+    DecideScene();
+    return scene_scale_ != resolution_scale_;
+  }
+  // The scene's colour at play samples, or its depth at play samples in layer 0.
+  static bool IsSceneKey(const EdramKey& key);
+  // The layer of the depth key `depth` as a use names it. The main view's depth at 1x samples (the
+  // game started without MSAA, which is what an upscaler does) has the very key the UI phase draws
+  // with (a 1x depth at the same tile and pitch, with colour k_8_8_8_8 or on its own for its
+  // stencil masks), so while the scene is drawn at another scale the two are told apart: a use
+  // with a colour target is the scene's when that colour is the main view's; a use with none (a
+  // depth-only draw or clear, a depth resolve) is the scene's until the frame's anchor draw or
+  // composite marker (SetScenePhase). 0 (the scene's, and always while the scene is not apart) or
+  // 1 (the UI's, an image of the screen: made at its scale). `color0`: the use's colour 0 or null.
+  uint8_t DepthLayer(const EdramKey& depth, const EdramKey* color0);
+  // The frame's scene phase: open from a guest frame's start, closed by the anchor draw and by the
+  // composite marker (Scene), reopened by the guest's present. Moving it changes what a depth-only
+  // use means, so what was memoized from the targets is dropped.
+  void SetScenePhase(bool open) {
+    if (scene_phase_ == open) {
+      return;
+    }
+    scene_phase_ = open;
+    if (scene_decided_ && scene_scale_ != resolution_scale_) {
+      ++change_serial_;
+    }
   }
   // A use of `target` through a surface declared with `size_bits`: when that
   // size classifies at another scale than the target was made at, counted and
@@ -610,6 +657,13 @@ class EdramTargets {
   // query checks; the capacity of the pools and what a frame wanted.
   bool aliasing_ = false;
   Scale resolution_scale_;
+  // The scene's scale (SceneScale): the images of the screen's until DecideScene has run. It
+  // reads the upscaler as the start found it, which can wait for the upscaler's probe, so it runs
+  // on the first use of a scene identity, long after the game's own thread asked the same question.
+  void DecideScene();
+  Scale scene_scale_;
+  bool scene_decided_ = false;
+  bool scene_phase_ = true;  // SetScenePhase
   // The scale was measured from the window against kAssumedScreenWidth/Height
   // (the screen's, or an FSR1 preset): ScreenSize checks that assumption.
   bool scale_from_window_ = false;

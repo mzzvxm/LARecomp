@@ -19,8 +19,10 @@
 #include "device.h"
 #include "format.h"
 #include "frame.h"
+#include "gpu.h"
 #include "records.h"
 #include "render_scale.h"
+#include "temporal_identities.h"
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_edram_aliasing, false, "MCLA/GPU",
@@ -57,7 +59,9 @@ REXCVAR_DEFINE_STRING(
     "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
     "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
     "own). Targets the game does not multisample, or that are not images of the screen, keep "
-    "the game's samples.")
+    "the game's samples. A game started with an upscaler (mcla_gpu_upscaler) that runs on this PC "
+    "starts without MSAA whatever this says; the choice is kept and applies again at a start "
+    "with no upscaler.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
@@ -156,6 +160,71 @@ Scale EdramTargets::ScaleForDeclared(uint32_t size_bits) {
   return IsScreenImage(size_bits) ? resolution_scale_ : Scale{};
 }
 
+bool EdramTargets::IsSceneKey(const EdramKey& key) {
+  // The main view in play (temporal_identities.h): colour, or depth in the scene's layer. The 4x
+  // identities of the pause menu and the map are not the scene's.
+  if (key.depth == 0) {
+    const uint32_t samples = temporal::MainColorSamples(key);
+    return samples != 0 && temporal::IsPlaySamples(samples);
+  }
+  const uint32_t samples = temporal::MainDepthSamples(key);
+  return samples != 0 && temporal::IsPlaySamples(samples) && key.reserved == 0;
+}
+
+Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
+  if (IsSceneKey(key) && SceneApart() && IsScreenImage(size_bits)) {
+    return scene_scale_;
+  }
+  return ScaleForDeclared(size_bits);
+}
+
+uint8_t EdramTargets::DepthLayer(const EdramKey& depth, const EdramKey* color0) {
+  // Only the 1x main depth shares its key with another phase of the frame (a 2x one is the
+  // scene's alone, a 4x one the pause menu's and the map's).
+  if (temporal::MainDepthSamples(depth) != 1 || !SceneApart()) {
+    return 0;
+  }
+  if (color0) {
+    return temporal::MainColorSamples(*color0) != 0 ? 0 : 1;
+  }
+  return scene_phase_ ? 0 : 1;
+}
+
+void EdramTargets::DecideScene() {
+  if (scene_decided_) {
+    return;
+  }
+  scene_decided_ = true;
+  scene_scale_ = resolution_scale_;
+  // The upscaler as the start found it: this waits for its probe, if that has not ended (the
+  // game's own thread asked the same question when it made its renderer, so it has).
+  const StartUpscale start = GetStartUpscale();
+  const SceneScaleChoice choice = ChooseSceneScale(resolution_scale_, start.ratio);
+  scene_scale_ = choice.scale;
+  if (!start.runs) {
+    return;
+  }
+  if (scene_scale_ == resolution_scale_) {
+    REXLOG_INFO("[gpu] edram: the 3D scene is made at the output's {}x ({} {}: not smaller than "
+                "the output)",
+                resolution_scale_, UpscalerName(start.upscaler), ModeInfoOf(start.mode).name);
+    return;
+  }
+  REXLOG_INFO("[gpu] edram: the 3D scene (the main view's colour and depth in play) is made at "
+              "{}x, {}x{} of the guest's 1280x720, for the output at {}x, {}x{}: {} {} ({}%, "
+              "ratio {:.2f}; the nearest step of the scale grid gives {:.3f}{}). The pause menu's "
+              "and the map's views, the post chain, the tone map and the UI stay at {}x, and the "
+              "upscaler makes the output from the scene. Fixed until the game is started again",
+              scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
+              scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_,
+              resolution_scale_.Edge(kAssumedScreenWidth),
+              resolution_scale_.Edge(kAssumedScreenHeight), UpscalerName(start.upscaler),
+              ModeInfoOf(start.mode).name, ModeInfoOf(start.mode).percent, start.ratio,
+              choice.actual_ratio(resolution_scale_),
+              choice.limited ? "; limited, 0.5x is the smallest scale tried" : "",
+              resolution_scale_);
+}
+
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
   if (key.samples <= 1 || msaa_level_ <= key.samples) {
     return key.samples;
@@ -164,7 +233,7 @@ uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
 }
 
 void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
-  const Scale scale = ScaleForDeclared(size_bits);
+  const Scale scale = ScaleForUse(target.key, size_bits);
   if (scale == target.scale) {
     target.declared_size_bits = size_bits;
     return;
@@ -186,8 +255,8 @@ void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
 std::string DescribeEdramKey(const EdramKey& k) {
   const format::Mapping m = k.depth ? format::DepthTargetFormat(k.format)
                                     : format::ColorTargetFormat(k.format);
-  return std::format("{} {}@{} pitch {} {}x", k.depth ? "depth" : "colour", m.guest_name,
-                     k.base_tiles, k.pitch, k.samples);
+  return std::format("{} {}@{} pitch {} {}x{}", k.depth ? "depth" : "colour", m.guest_name,
+                     k.base_tiles, k.pitch, k.samples, k.reserved ? " (the UI's layer)" : "");
 }
 
 void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color[4],
@@ -207,7 +276,7 @@ void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color
 size_t EdramTargets::KeyHash::operator()(const EdramKey& k) const {
   const uint64_t v = uint64_t(k.base_tiles) | (uint64_t(k.pitch) << 16) |
                      (uint64_t(k.depth) << 32) | (uint64_t(k.format) << 40) |
-                     (uint64_t(k.samples) << 48);
+                     (uint64_t(k.samples) << 48) | (uint64_t(k.reserved) << 56);
   return size_t(v * 0x9E3779B97F4A7C15ull);
 }
 
@@ -238,6 +307,10 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   heap_ = &heap;
   resolution_scale_ = scale.scale;
   scale_from_window_ = scale.from_window();
+  // The scene's scale is decided on the first use of one of its identities (DecideScene).
+  scene_scale_ = resolution_scale_;
+  scene_decided_ = false;
+  scene_phase_ = true;
   if (!resolution_scale_.unit()) {
     REXLOG_INFO("[gpu] edram: the images of the screen at {}x the guest's size ({}x{} from "
                 "1280x720)",
@@ -545,9 +618,12 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     }
     auto target = std::make_unique<Target>();
     target->key = key;
-    // An image of the screen at the internal scale; anything else at the
+    // An image of the screen at the internal scale, the scene at its own (when the scene is drawn
+    // smaller: the scale of a use is ScaleOf's, which gave no other); anything else at the
     // guest's size.
-    target->scale = scale == resolution_scale_ ? scale : Scale{};
+    target->scale = (scale == resolution_scale_ || (scene_decided_ && scale == scene_scale_))
+                        ? scale
+                        : Scale{};
     target->host_samples = HostSamplesFor(key, size_bits);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
@@ -569,11 +645,14 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
                   "first use {} rows)",
                   DescribeEdramKey(key), target->host_samples, height);
     }
-    if (!resolution_scale_.unit()) {
+    if (!resolution_scale_.unit() || (scene_decided_ && !scene_scale_.unit())) {
       // The census of the rule: what each identity became, once.
       REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
                   DescribeEdramKey(key), target->scale,
-                  !target->scale.unit() ? "an image of the screen" : "the guest's size",
+                  scene_decided_ && scene_scale_ != resolution_scale_ && IsSceneKey(key)
+                      ? "the 3D scene"
+                  : !target->scale.unit() ? "an image of the screen"
+                                          : "the guest's size",
                   size_bits ? (size_bits >> 18) + 1 : 0u,
                   size_bits ? ((size_bits >> 3) & 0x7FFFu) + 1 : 0u, height);
     }
@@ -1364,8 +1443,8 @@ std::string EdramTargets::TakeSummary() {
       stats_.grown, double(stats_.grown_bytes) / 1048576.0, stats_.cleared,
       stats_.framebuffers_created, stats_.barriers);
   if (stats_.trimmed || stats_.remade) {
-    text += std::format(" | released for want of video memory {}, made again {}", stats_.trimmed,
-                        stats_.remade);
+    text += std::format(" | released (video memory short, or idle for a minute) {}, made again {}",
+                        stats_.trimmed, stats_.remade);
   }
   if (!resolution_scale_.unit()) {
     size_t scaled = 0;
@@ -1377,6 +1456,11 @@ std::string EdramTargets::TakeSummary() {
                         "at a scale other than their target's",
                         resolution_scale_, scaled, targets_.size(), stats_.made_scaled,
                         stats_.made_unscaled, stats_.declared_unknown, stats_.scale_conflicts);
+  }
+  if (scene_decided_ && scene_scale_ != resolution_scale_) {
+    text += std::format(" | the 3D scene at {}x ({}x{}) under images of the screen at {}x",
+                        scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
+                        scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_);
   }
   if (msaa_level_ > 2) {
     text += std::format(" | host MSAA {}x: {} targets made with it", msaa_level_,

@@ -43,6 +43,8 @@
 #include "smaa_blend_ps.hlsl.dxil.h"
 #include "smaa_edges_ps.hlsl.dxil.h"
 #include "smaa_weights_ps.hlsl.dxil.h"
+#include "temporal_copy_ps.hlsl.dxil.h"
+#include "temporal_mv_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "fsr_easu_ps.hlsl.spirv.h"
@@ -71,6 +73,8 @@
 #include "smaa_blend_ps.hlsl.spirv.h"
 #include "smaa_edges_ps.hlsl.spirv.h"
 #include "smaa_weights_ps.hlsl.spirv.h"
+#include "temporal_copy_ps.hlsl.spirv.h"
+#include "temporal_mv_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -180,6 +184,15 @@ inline HostShaderBlob ResolveMemoryEncodeShader(bool depth, bool msaa) {
                 : MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_depth_cs);
   }
   return MCLA_GPU_HOST_SHADER_BLOB(resolve_memory_color_cs);
+}
+
+// The temporal system's passes (temporal_mv.h): the motion vectors and the copy of the depth it keeps.
+inline HostShaderBlob TemporalMotionPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(temporal_mv_ps);
+}
+
+inline HostShaderBlob TemporalCopyPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).

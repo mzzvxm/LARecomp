@@ -14,6 +14,9 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gpu.h"
+#endif
 
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -197,10 +200,16 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
 // The game's MSAA switch. Under the NATIVE renderer its MSAA row
 // (mcla_gpu_msaa, OFF/2X/4X/8X) owns it and disable_msaa -- the XENIA row,
 // hidden there -- is not read; both cvars are read by name or flag here, the
-// renderer's lives with the renderer.
+// renderer's lives with the renderer. The renderer also holds MSAA off for a
+// game started with an upscaler that runs (gpu.h GuestMsaaOff): this hook runs
+// once, when the game makes its renderer, so that is decided at the start.
 static bool MsaaOff() {
     if (rex::cvar::GetFlagByName("mcla_gpu") == "true") {
+#if defined(LARECOMP_HAS_GPU)
+        return mcla::gpu::GuestMsaaOff();
+#else
         return rex::cvar::GetFlagByName("mcla_gpu_msaa") == "off";
+#endif
     }
     return REXCVAR_GET(disable_msaa);
 }

@@ -217,6 +217,26 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DeviceRemovedReason(device));
 }
 
+NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(NativeDeviceOf(device));
+}
+
+void* NativeListHandle(plume::RenderCommandList* list) {
+  return MCLA_GPU_ACTIVE(NativeListHandle(list));
+}
+
+void* NativeTextureHandle(const plume::RenderTexture* texture) {
+  return MCLA_GPU_ACTIVE(NativeTextureHandle(texture));
+}
+
+void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
+  MCLA_GPU_ACTIVE(InvalidateAfterExternalWork(list));
+}
+
+UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(QueryUpscalerSupport(device));
+}
+
 }  // namespace backend
 
 }  // namespace mcla::gpu

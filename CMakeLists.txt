@@ -18,6 +18,26 @@ endif()
 
 include(generated/rexglue.cmake)
 
+if(MINGW)
+    # llvm-mingw (Clang with lld, libc++ and mingw-w64 on the UCRT): the build for a PC
+    # without Visual Studio. The SDK has to be built with the same toolchain (libc++ and the
+    # Microsoft STL do not mix). __try/__except (mc_engine/camera_look.cpp) needs
+    # -fms-extensions, and mingw-w64 assumes Windows 7 (_WIN32_WINNT 0x601) where the
+    # Windows SDK assumes the current Windows. Both as the SDK sets them for itself.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fms-extensions>)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+    # No -fasync-exceptions for the generated code: for a MinGW target the Clang driver drops
+    # it ("argument unused", on every file), and passed to the compiler itself it has crashed
+    # Clang in SimplifyCFG. A fault inside a guest __try scope is therefore not caught with
+    # this toolchain; the generated code of this game has no such scope. The sources carry
+    # the list as it was when the file was included, so it is set again.
+    list(REMOVE_ITEM REXGLUE_RECOMP_OPTIONS -fasync-exceptions)
+    if(REXGLUE_ENTRYPOINT_GENERATED_SOURCES)
+        set_source_files_properties(${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "${REXGLUE_RECOMP_OPTIONS}")
+    endif()
+endif()
+
 # Sources
 # Monocypher (nick keys and tickets, thirdparty/monocypher) is C99 that also
 # compiles as C++; the project only enables CXX.
@@ -46,12 +66,15 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/frame_timing.cpp
+    src/mc_engine/hooks/timer_precision.cpp
     src/mc_engine/hooks/timing_log.cpp
     src/mc_engine/hooks/graphics.cpp
     src/mc_engine/hooks/dev_options.cpp
     src/mc_engine/hooks/display_gamma.cpp
     src/mc_engine/hooks/camera.cpp
     src/mc_engine/hooks/vehicle.cpp
+    src/mc_engine/hooks/vehicle_records.cpp
+    src/mc_engine/hooks/showroom.cpp
     src/mc_engine/hooks/rubberband.cpp
     src/mc_engine/hooks/vinyl.cpp
     src/mc_engine/hooks/vinyl_shapes.cpp
@@ -85,6 +108,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
     src/mc_engine/map_warp.cpp
@@ -232,6 +256,7 @@ set(LARECOMP_SOURCES
     src/profile/larecomp_profile_store.cpp
     src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
+    src/bootprogress/larecomp_shader_build.cpp
     src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
     src/mc_engine/ui/imgui_theme.cpp
     src/mc_engine/ui/debug_overlay.cpp
@@ -293,7 +318,10 @@ else()
         # understands them, so prefer it when it sits beside the clang in use.
         # Must be set before enable_language(RC), and it is cached - delete the
         # build directory if switching toolchains.
-        if(NOT CMAKE_RC_COMPILER)
+        # Not with MinGW: there CMake drives windres (llvm-windres in llvm-mingw, which
+        # preprocesses with Clang and calls llvm-rc itself), and llvm-rc alone does not
+        # take windres' command line (-O coff).
+        if(NOT CMAKE_RC_COMPILER AND NOT MINGW)
             get_filename_component(_larecomp_llvm_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
             find_program(LLVM_RC_EXECUTABLE NAMES llvm-rc HINTS "${_larecomp_llvm_bin}")
             if(LLVM_RC_EXECUTABLE)
@@ -373,6 +401,35 @@ else()
         if(NOT TARGET Microsoft::DirectXShaderCompiler)
             add_subdirectory(thirdparty/dxc-bin EXCLUDE_FROM_ALL)
         endif()
+        # AMD's FidelityFX SDK (2.4.0 or later, the folder that holds Kits/): the headers the temporal
+        # upscaler's backend (src/gpu/temporal_ffx.h) is compiled with, and the signed DLLs and the
+        # licence copied next to the exe below. By default the pinned 2.4.0 files are fetched into the
+        # build folder and checked (cmake/FetchFidelityFX.cmake); LARECOMP_FFX_SDK_DIR names a local
+        # SDK instead, LARECOMP_FFX_FETCH=OFF with it unset builds without FSR. Read-only: nothing
+        # from the SDK is built or run here.
+        set(LARECOMP_FFX_SDK_DIR "" CACHE PATH
+            "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR")
+        option(LARECOMP_FFX_FETCH "Fetch the pinned FidelityFX SDK 2.4.0 files when LARECOMP_FFX_SDK_DIR is unset" ON)
+        if(NOT LARECOMP_FFX_SDK_DIR AND LARECOMP_FFX_FETCH AND WIN32)
+            include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchFidelityFX.cmake")
+        endif()
+        set(LARECOMP_FFX_KIT "")
+        if(LARECOMP_FFX_SDK_DIR AND WIN32)
+            foreach(_larecomp_ffx_candidate "${LARECOMP_FFX_SDK_DIR}/Kits/FidelityFX"
+                                            "${LARECOMP_FFX_SDK_DIR}")
+                if(EXISTS "${_larecomp_ffx_candidate}/api/include/ffx_api.h" AND
+                   EXISTS "${_larecomp_ffx_candidate}/upscalers/include/ffx_upscale.h")
+                    set(LARECOMP_FFX_KIT "${_larecomp_ffx_candidate}")
+                    break()
+                endif()
+            endforeach()
+            if(NOT LARECOMP_FFX_KIT)
+                message(WARNING "LARECOMP_FFX_SDK_DIR=${LARECOMP_FFX_SDK_DIR} holds no "
+                                "Kits/FidelityFX/api/include/ffx_api.h: building without FSR")
+            else()
+                message(STATUS "larecomp: FidelityFX upscalers from ${LARECOMP_FFX_KIT}")
+            endif()
+        endif()
         add_subdirectory(src/gpu)
         # The renderer's objects, and plume's archive without plume's include
         # directories in larecomp's own translation units (CMP0131 is NEW with
@@ -381,6 +438,14 @@ else()
         target_compile_definitions(larecomp PRIVATE LARECOMP_HAS_GPU=1)
         message(STATUS "larecomp: Plume renderer (src/gpu) built for ${LARECOMP_GPU_BACKENDS}")
     endif()
+
+    # The shader pack builder (src/shaderpack): builds the packs the renderer reads from the
+    # player's own game files. The shader translator is LAR-XenosRecomp, thirdparty/LAR-XenosRecomp
+    # or the checkout LARECOMP_XENOSRECOMP_DIR names. tools/shaderpack_tool is its command line,
+    # built on request:  cmake --build <dir> --target larecomp_shaderpack_tool
+    add_subdirectory(src/shaderpack)
+    add_subdirectory(tools/shaderpack_tool EXCLUDE_FROM_ALL)
+    target_link_libraries(larecomp PRIVATE larecomp_shaderpack)
 
     # rexglue 0.7.4
     if(WIN32)
@@ -412,6 +477,43 @@ else()
             # Rate My Ride client sockets (mc_engine/online/rate_my_ride)
             ws2_32
         )
+        if(MINGW)
+            # What the sources ask for with #pragma comment(lib, ...) (crash_handler.cpp,
+            # guest_profiler.cpp, adaptive_triggers.cpp, identity_store.cpp, identity_ui.cpp),
+            # which Clang for MinGW does not turn into a link request, and what MSVC's
+            # default libraries cover (the ones llvm-mingw's driver does not: winmm for
+            # timeBeginPeriod, dxguid for the DirectInput GUID_* of the wheel code, ntdll).
+            # advapi32, shell32, user32 and kernel32 are the driver's own defaults.
+            target_link_libraries(larecomp
+                PRIVATE
+                dbghelp
+                setupapi
+                hid
+                shlwapi
+                crypt32
+                comdlg32
+                winmm
+                dxguid
+                ntdll
+                uuid
+            )
+            # The line tables of the generated code (-gline-tables-only, from
+            # generated/rexglue.cmake) are 37 MB of the executable: split into
+            # larecomp.exe.debug beside it, as the MCLA fork does for mcla.exe.
+            # Nothing reads them at run time; llvm-symbolizer does, with the exe's address.
+            get_filename_component(_larecomp_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+            find_program(LARECOMP_OBJCOPY NAMES llvm-objcopy objcopy HINTS "${_larecomp_compiler_dir}")
+            if(LARECOMP_OBJCOPY)
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND "${LARECOMP_OBJCOPY}" --only-keep-debug "$<TARGET_FILE:larecomp>" "$<TARGET_FILE:larecomp>.debug"
+                    COMMAND "${LARECOMP_OBJCOPY}" --strip-all "$<TARGET_FILE:larecomp>"
+                    COMMAND "${LARECOMP_OBJCOPY}" "--add-gnu-debuglink=$<TARGET_FILE:larecomp>.debug" "$<TARGET_FILE:larecomp>"
+                    COMMENT "Splitting the debug information off larecomp.exe"
+                    VERBATIM)
+            else()
+                message(WARNING "llvm-objcopy was not found: larecomp.exe keeps its debug information")
+            endif()
+        endif()
     endif()
 
     # The shared Rate My Ride server players reach on TCP 31002. Standalone: the
@@ -473,6 +575,38 @@ else()
                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/mcla_pipelines.bin"
                     "$<TARGET_FILE_DIR:larecomp>/assets/mcla_pipelines.bin"
             COMMENT "Copying the starter pipeline list next to the shader pack")
+    endif()
+
+    # The FidelityFX runtime (when LARECOMP_FFX_SDK_DIR is set): the loader and the upscaler DLL of each
+    # API the build has, AMD-signed and unchanged, and the licence that must travel with them (its
+    # redistribution terms: binary form only, the notice reproduced). The renderer opens them by full
+    # path from this folder and nowhere else.
+    if(LARECOMP_FFX_KIT)
+        set(_larecomp_ffx_dlls "")
+        if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll)
+        endif()
+        if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+            list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll)
+        endif()
+        foreach(_larecomp_ffx_dll IN LISTS _larecomp_ffx_dlls)
+            if(NOT EXISTS "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}")
+                message(WARNING "FidelityFX: ${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll} is missing")
+                continue()
+            endif()
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}"
+                        "$<TARGET_FILE_DIR:larecomp>/${_larecomp_ffx_dll}"
+                COMMENT "Copying ${_larecomp_ffx_dll} next to larecomp.exe")
+        endforeach()
+        if(EXISTS "${LARECOMP_FFX_KIT}/docs/license.md")
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_FFX_KIT}/docs/license.md"
+                        "$<TARGET_FILE_DIR:larecomp>/amd_fidelityfx_license.md"
+                COMMENT "Copying the FidelityFX licence next to larecomp.exe")
+        endif()
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")

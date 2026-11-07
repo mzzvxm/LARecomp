@@ -301,8 +301,36 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   mods_.Initialize();
 }
 
+void TextureCache::SetOverride(const Override& override) {
+  if (override_.texture != override.texture) {
+    ReleaseOverrideViews();
+  }
+  override_ = override;
+  override_active_ = override.texture != nullptr;
+  BumpProductGeneration(override.page);
+}
+
+void TextureCache::ClearOverride() {
+  if (!override_active_) {
+    return;
+  }
+  override_active_ = false;
+  BumpProductGeneration(override_.page);
+}
+
+void TextureCache::ReleaseOverrideViews() {
+  if (frames_ && heap_) {
+    override_views_.Release(*frames_, *heap_);
+  } else {
+    override_views_.Drop();
+  }
+}
+
 void TextureCache::Shutdown() {
   // The GPU is idle and the heap goes next: nothing is handed back to it.
+  override_views_.Drop();
+  override_active_ = false;
+  override_ = Override{};
   for (auto& [key, entry] : entries_) {
     entry->views.Drop();
   }
@@ -456,11 +484,32 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
   }
   const uint16_t host_swizzle = GuestToHostSwizzle(fetch.swizzle, host.host_swizzle);
 
+  const bool watched = watch::Active() && watch::TouchesKey(key);
   // A resolve product of this image: what the guest rendered there (all its
   // levels, or the first ones when the fetch names fewer; a fetch whose mip
   // range starts above level 0 by the base the SDK dropped, resolve.h).
-  const bool watched = watch::Active() && watch::TouchesKey(key);
-  if (ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page)) {
+  ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page);
+  // The temporal upscaler's output stands for the scene colour product after the anchor: bound
+  // through this fetch's swizzle, good for this frame only.
+  if (override_active_ && override_.texture && product && product == override_.product) {
+    const uint32_t slot = override_views_.Slot(*device_, *heap_, *override_.texture,
+                                               override_.format, 1, host_swizzle,
+                                               "temporal upscaler output view");
+    if (slot != kInvalidBindlessSlot) {
+      ++stats_.product_hits;
+      if (watched) {
+        watch::Log(std::format("  bind {}: the temporal upscaler's output replaces the product",
+                               key.Describe()));
+      }
+      Binding binding = bound(slot, true);
+      binding.from_product = true;
+      binding.scale = override_.scale;
+      binding.product_scale = override_.scale;
+      return binding;
+    }
+    // No view or slot: the product itself is read, as without the override.
+  }
+  if (product) {
     ++stats_.product_hits;
     if (watched) {
       watch::Log(std::format("  bind {}: product {} at {}x, read at {}x", key.Describe(),

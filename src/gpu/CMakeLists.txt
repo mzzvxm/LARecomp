@@ -34,12 +34,14 @@ add_library(larecomp_gpu OBJECT
     layout.cpp
     memory_census.cpp
     native_window.cpp
+    occlusion.cpp
     overlay.cpp
     pass_timing.cpp
     perf_markers.cpp
     pipelines.cpp
     post.cpp
     present.cpp
+    process_memory.cpp
     region_index.cpp
     render_scale.cpp
     render_thread.cpp
@@ -51,6 +53,10 @@ add_library(larecomp_gpu OBJECT
     shaders.cpp
     stream.cpp
     swap_chain.cpp
+    temporal.cpp
+    temporal_backend.cpp
+    temporal_camera.cpp
+    temporal_mv.cpp
     texture_decode.cpp
     texture_mods.cpp
     texture_names.cpp
@@ -78,6 +84,24 @@ if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
 endif()
 if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
     target_sources(larecomp_gpu PRIVATE latency_vulkan.cpp)
+endif()
+
+# The temporal upscaler's FidelityFX backend (temporal_ffx.h): only when the top-level CMake found
+# the SDK (LARECOMP_FFX_SDK_DIR); LARECOMP_FFX_KIT is its Kits/FidelityFX folder. Without it
+# temporal_backend.cpp makes no backend and none of this is compiled. The D3D12 and Vulkan headers
+# of AMD's API cannot share a translation unit, so each API has its own small file.
+if(LARECOMP_FFX_KIT)
+    target_sources(larecomp_gpu PRIVATE temporal_ffx.cpp)
+    if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+        target_sources(larecomp_gpu PRIVATE temporal_ffx_dx12.cpp)
+    endif()
+    if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+        target_sources(larecomp_gpu PRIVATE temporal_ffx_vk.cpp)
+    endif()
+    target_include_directories(larecomp_gpu PRIVATE
+        "${LARECOMP_FFX_KIT}/api/include"
+        "${LARECOMP_FFX_KIT}/upscalers/include")
+    target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX=1)
 endif()
 
 set(LARECOMP_GPU_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
@@ -217,6 +241,10 @@ larecomp_gpu_host_shader(fxaa_ps ps_6_0)
 larecomp_gpu_host_shader(smaa_edges_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=1)
 larecomp_gpu_host_shader(smaa_weights_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=2)
 larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3)
+# F4 step 1b: the temporal system's passes -- the motion vectors and the copy of the depth it keeps
+# (temporal_mv.h).
+larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
+larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

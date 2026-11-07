@@ -77,10 +77,12 @@ namespace mcla::gpu {
 
 class BindlessHeap;
 class GuestLayout;
+class GuestOcclusion;
 class PassTiming;
 class PostAa;
 class ResolveCache;
 class Samplers;
+class TemporalSystem;
 class TextureCache;
 
 class Scene {
@@ -95,6 +97,13 @@ class Scene {
                   GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
                   ResolveCache& resolve, const GuestLayout& layout, const BindlessHeap& heap,
                   PassTiming& pass_timing, PostAa& post);
+
+  // The guest's occlusion queries: while one is open, the draws are counted
+  // (occlusion.h). Null: none are.
+  void SetOcclusion(GuestOcclusion* occlusion) { occlusion_ = occlusion; }
+  // The temporal groundwork (temporal.h): called at the frame's start, for every prepared draw,
+  // at the composite marker and at the present. Null: none.
+  void SetTemporal(TemporalSystem* temporal) { temporal_ = temporal; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -169,6 +178,7 @@ class Scene {
     UploadSpan ps_constants;
     UploadSpan shared_constants;
     Scale scale;  // the resolution scale its targets are (or are made) at
+    bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -191,9 +201,15 @@ class Scene {
   // or a frame that skipped all of a target's draws would end its run.
   void NoteTargetsDrawn(const PreparedDraw& d);
   // `scale`: the draw's targets' resolution scale; a resolve product made at a
-  // larger one is read through its reduced copy (TextureCache::Bind2D).
+  // larger one is read through its reduced copy (TextureCache::Bind2D). `bias`: the extra mip
+  // bias of the draw's samplers, in 1/32 levels (SceneBias for a draw into the scene's identity
+  // while it is drawn smaller than the output, else 0).
   void FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale scale,
-                         SharedConstants& sc);
+                         SharedConstants& sc, int32_t bias);
+  // The mip bias of the scene's draws while the scene is drawn at a scale below the images of the
+  // screen's, in 1/32 levels: log2(render scale / output scale), the levels the output size would
+  // have picked, plus one more (FSR's guide). Once a frame.
+  int32_t SceneBias();
   // Records a prepared draw. kCount when recorded; kTarget/kFramebuffer when
   // not; *no_effect for an empty scissor.
   Skip Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
@@ -230,6 +246,9 @@ class Scene {
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
+  // The temporal system: a prepared draw, before its constants are uploaded; may move it.
+  void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
+                    const PreparedDraw& d, SharedConstants& shared);
   void Report(const char* why);
 
   ShaderStore& shaders_;
@@ -245,6 +264,8 @@ class Scene {
   const GuestLayout* layout_ = nullptr;
   const BindlessHeap* heap_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  GuestOcclusion* occlusion_ = nullptr;
+  TemporalSystem* temporal_ = nullptr;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.
@@ -304,6 +325,7 @@ class Scene {
     uint32_t page = 0;        // physical page whose product generation it saw
     uint32_t generation = 0;
     Scale scale = Scale::None();  // the reading draw's targets' scale (a product may bind reduced)
+    int32_t bias = 0;       // the draw's extra mip bias (SceneBias), in 1/32 levels
     uint64_t used = 0;      // replacement: the least recently used way goes
   };
   // 4-way set associative: ~2000 distinct fetch constants a frame thrash a
@@ -317,6 +339,9 @@ class Scene {
   // the set search; the entry is checked as the search checks a way.
   std::array<FetchMemo*, guest::kFetchGroupCount> last_fetch_{};
   uint64_t frame_serial_ = 0;
+  // SceneBias's value for the frame it was worked out in.
+  uint64_t scene_bias_serial_ = 0;
+  int32_t scene_bias_ = 0;
   // Writes one fetch constant's table entries from `memo`.
   static void ApplyFetch(const FetchMemo& memo, uint32_t slot, SharedConstants& sc);
 
@@ -434,6 +459,7 @@ class Scene {
     uint32_t draw_scale_depth_format = 0;
     Scale draw_scale;
     uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
+    bool draw_scene = false;    // the first target is the scene's, drawn at a scale of its own
     bool constants_valid = false;
     bool ps_writes_depth = false;
     Scale scale;  // the targets' resolution scale the viewport was made for (24.45)

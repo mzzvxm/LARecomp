@@ -4,6 +4,7 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -126,6 +127,11 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
   g_window_size.store(uint64_t(width) << 32 | height, std::memory_order_relaxed);
 }
 
+// The folder the app wants the shader packs in (gpu.h SetShaderPackFolder); empty: the default.
+std::filesystem::path g_shader_pack_folder;
+// The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
+std::function<bool()> g_shader_pack_gate;
+
 }  // namespace
 
 namespace mcla::gpu {
@@ -160,8 +166,25 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
             heap_.Initialize(device_, frames_) && guest_layout_.Initialize(device_, heap_) &&
             shaders_.Initialize(device_);
   if (ok) {
+    // A pack that is in place is attached now, as before the store could start without one;
+    // with none the store stays pending until AttachShaderPacks (the packs are built from the
+    // player's game files after the renderer, which draws the ISO wizard, is up). Until then a
+    // guest draw is skipped (Scene: kVsNotInPack, counted by the store too).
+    // Scene::CountSkip logs the first four draws skipped for want of a pack as errors, then counts
+    // them; the app attaches the packs before the guest starts, so none are skipped in its flow.
+    // The app may hold the attach back: packs whose stamp is stale are rebuilt first, and a pack
+    // that is mapped here could not be replaced.
+    if (!g_shader_pack_gate || g_shader_pack_gate()) {
+      shaders_.AttachFirst(ShaderStore::SearchFolders(g_shader_pack_folder));
+    } else {
+      REXLOG_INFO("[gpu] shader pack: not attached at startup; the app checks and, where needed, "
+                  "rebuilds it first");
+    }
     samplers_.Initialize(device_, heap_);
     pipelines_.Initialize(device_, guest_layout_, shaders_);
+    if (shaders_.attached()) {
+      OnShaderPackAttached();
+    }
     ok = upload_.Initialize(device_) &&
          geometry_.Initialize(device_, frames_, upload_, guest_memory_) &&
          // Before the EDRAM: the window's size can pick the render scale.
@@ -208,6 +231,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     vram_.Initialize(device_, textures_, resolve_, resolve_memory_, edram_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_, pass_timing_, post_);
+    // The guest's occlusion queries (the sun's glare): never fails the renderer.
+    occlusion_.Initialize(device_);
+    scene_.SetOcclusion(&occlusion_);
+    scene_.SetTemporal(&temporal_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format()) &&
@@ -216,6 +243,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
+    // The temporal groundwork's passes: made on first use, never fail the renderer.
+    // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
+    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_);
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
@@ -232,8 +262,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   if (!ok) {
     latency::Shutdown();
     capture_.Shutdown();
+    occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
+    temporal_.Shutdown();
     flicker_probe_.Shutdown();
     overlay_.Shutdown();
     present_.Shutdown();
@@ -267,6 +299,31 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   return true;
 }
 
+void Renderer::OnShaderPackAttached() {
+  // HOOK(hdr): with feat/hdr-scene merged, the optional HDR variant pack is attached here, when
+  // HDR output is on (hdr::Wanted()): shaders_.LoadHdrVariants(&why) with the folder the main
+  // pack came from (shaders_.folder(), larecomp::shaderpack::kHdrPackFileName), logging "the HDR
+  // variants are not available" as that branch does. It changes entries (hdr_variant) and must
+  // run before StartPersistence: a record that names a variant is dropped while the variants are
+  // not loaded.
+  pipelines_.StartPersistence(shaders_);
+}
+
+bool Renderer::AttachShaderPacks(const std::filesystem::path& folder) {
+  if (shaders_.attached()) {
+    return true;
+  }
+  if (!initialized_) {
+    REXLOG_ERROR("[gpu] shader pack: cannot attach, the renderer is not running");
+    return false;
+  }
+  if (!shaders_.Attach(ShaderStore::BuildFolder(folder))) {
+    return false;
+  }
+  OnShaderPackAttached();
+  return true;
+}
+
 void Renderer::BeginShutdown() {
   shutting_down_.store(true, std::memory_order_release);
 }
@@ -294,6 +351,7 @@ void Renderer::Shutdown() {
     validator_.Finish();
   }
   scene_.Finish();
+  temporal_.Finish();
   census_.Finish();
   trace_.Finish();
   // Nothing reads or watches guest memory any more.
@@ -316,8 +374,10 @@ void Renderer::Shutdown() {
   //    every Plume object here has a single owner destroyed before the device.
   latency::Shutdown();  // the vendor's calls name the swap chain
   capture_.Shutdown();
+  occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
+  temporal_.Shutdown();
   flicker_probe_.Shutdown();
   overlay_.Shutdown();
   present_.Shutdown();
@@ -459,6 +519,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), list);
       return;
     }
+    case RecordType::kOcclusion:
+      occlusion_.OnRecord(*reinterpret_cast<const OcclusionRecord*>(payload));
+      return;
     case RecordType::kPad:
     case RecordType::kCount:
       break;
@@ -501,6 +564,7 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);
   heap_.RecordPendingBarriers(list);
+  occlusion_.BeginFrame(list, slot);
   scene_.BeginFrame(list, slot);
   // After the caches' own frame start, before any record of the frame: what
   // the budget releases is retired behind this frame's submission.
@@ -538,11 +602,13 @@ void Renderer::SubmitFrameWithoutPresent() {
   if (frames_.Submit(nullptr, 0, nullptr, 0)) {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
+    occlusion_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
+  occlusion_.OnSlotReady(frames_.slot());
 }
 
 void Renderer::OnIdle() {
@@ -657,6 +723,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   }
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
+  occlusion_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
 
   latency::OnPresentBegin();
@@ -673,6 +740,8 @@ void Renderer::ExecutePresent(PresentSource source) {
   frames_.Advance();
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
+  // What its previous round counted for the guest's occlusion queries is readable now.
+  occlusion_.OnSlotReady(frames_.slot());
   ++presented_;
   if (source == PresentSource::kGuest) {
     ++guest_presents_;
@@ -749,7 +818,9 @@ void Renderer::ReportFrameStats() {
   const auto mib = [](uint64_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
   const std::string held = " (held: textures " + mib(textures_.HeldBytes()) + ", resolve products " +
                            mib(resolve_.HeldBytes()) + ", EDRAM targets " + mib(edram_.HeldBytes()) +
-                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) + " MiB)";
+                           ", resolve memory " + mib(resolve_memory_.HeldBytes()) +
+                           ", upscaler (output, depth, vectors, its own context) " +
+                           mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
       (vram.budget ? std::to_string(vram.used >> 20) + " of " + std::to_string(vram.budget >> 20) +
                          " MiB"
@@ -1125,6 +1196,18 @@ void OnGuestSceneComposited(uint32_t bucket) {
   }
 }
 
+void OnGuestOcclusionEvent(const uint8_t* base, uint32_t query, bool is_begin) {
+  if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
+    c->OcclusionEvent(base, query, is_begin);
+  }
+}
+
+void OnGuestQueryGetData(const uint8_t* base, uint32_t query) {
+  if (g_capture_active.load(std::memory_order_acquire) != nullptr) {
+    occlusion::OnGuestGetData(const_cast<uint8_t*>(base), query);
+  }
+}
+
 bool RetiresGuestFences() {
   return g_holds_retired_fence.load(std::memory_order_acquire) &&
          g_capture_active.load(std::memory_order_acquire) != nullptr;
@@ -1188,6 +1271,32 @@ void RequestTextureReload() {
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
   const uint64_t size = g_window_size.load(std::memory_order_relaxed);
   return ChooseRenderScale(asked, fsr, preset, uint32_t(size >> 32), uint32_t(size));
+}
+
+void SetShaderPackFolder(const std::filesystem::path& folder) {
+  g_shader_pack_folder = folder;
+}
+
+void SetShaderPackGate(std::function<bool()> gate) {
+  g_shader_pack_gate = std::move(gate);
+}
+
+std::filesystem::path ShaderPackFolder() {
+  return ShaderStore::BuildFolder(g_shader_pack_folder);
+}
+
+bool ShaderPacksAttached() {
+  Renderer* r = g_active.load(std::memory_order_acquire);
+  return r && r->shader_packs_attached();
+}
+
+bool AttachShaderPacks(const std::filesystem::path& folder) {
+  Renderer* r = g_active.load(std::memory_order_acquire);
+  if (!r) {
+    REXLOG_ERROR("[gpu] shader pack: cannot attach, the Plume renderer is not running");
+    return false;
+  }
+  return r->AttachShaderPacks(folder.empty() ? g_shader_pack_folder : folder);
 }
 
 void Shutdown() {

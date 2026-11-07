@@ -32,6 +32,18 @@
 // to or a bindless slot of valid until the GPU is done with it (FrameRing
 // serials, the TextureCache's epoch).
 //
+// One kind of resource has no lifetime of its own: an EDRAM target stays for
+// good. Some screens draw the world at 4x MSAA (the fork's census ties it to the
+// pause menu and the GPS map; the logs show three targets made once, at the
+// start of a session), which is 72 MiB at 1x, 287 MiB at 2x and 646 MiB at 3x
+// that nothing uses outside them, and that the shortage response above would
+// release only once video memory ran short. So a target that nothing used for
+// about a minute (kLazyIdleSeconds, and at least kLazyMinIdleFrames frames) is
+// released with no shortage at all; the next use makes it again, cleared, as
+// after a release under shortage (one creation, a few milliseconds, when the
+// screen opens). The products, textures and decoded textures have their own
+// idle limits (kEvictFrames, 600 frames).
+//
 // This costs nothing while the budget is not near: a check is one DXGI call
 // every half second. Where the OS budget is the size of system memory (an
 // integrated GPU: 15 GB on a 485 MiB one) the response does not trigger. A
@@ -40,6 +52,7 @@
 // Threading: render thread only.
 // ===========================================================================
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -72,6 +85,12 @@ class VideoMemoryBudget {
   static constexpr uint32_t kMaxItems = 64;
   // Frames between two log lines about what was released.
   static constexpr uint64_t kLogFrames = 600;
+  // An EDRAM target that nothing used for kLazyIdleSeconds (measured in frames from
+  // the frame rate of the last checks, never fewer than kLazyMinIdleFrames) is released
+  // even with no shortage, looked for every kLazyEveryChecks checks.
+  static constexpr double kLazyIdleSeconds = 60.0;
+  static constexpr uint64_t kLazyMinIdleFrames = 3600;
+  static constexpr uint32_t kLazyEveryChecks = 10;
 
   void Initialize(Device& device, TextureCache& textures, ResolveCache& resolve,
                   ResolveMemory& resolve_memory, EdramTargets& edram);
@@ -90,6 +109,11 @@ class VideoMemoryBudget {
   uint64_t Trim(uint64_t need);
   // One line about what was released since the last, and the use at the check.
   void LogReleased(const backend::VideoMemory& memory);
+  // With no shortage: releases the EDRAM targets that nothing used for about a
+  // minute (see the top of this file). Every kLazyEveryChecks-th check.
+  void ReleaseIdleTargets();
+  // The frame rate between this check and the last, smoothed.
+  void NoteFrameRate(uint64_t frame);
 
   struct Window {
     TrimResult products;
@@ -116,6 +140,12 @@ class VideoMemoryBudget {
   uint64_t last_onset_ = 0;  // the frame a shortage was last announced in; 0: never
   bool short_ = false;
   Window window_;
+  // The frame rate of the last checks, from the clock, for the idle limit of the
+  // targets released without a shortage.
+  std::chrono::steady_clock::time_point last_check_time_{};
+  uint64_t last_check_frame_ = 0;
+  double frames_per_second_ = 0.0;  // 0: not measured yet
+  uint32_t lazy_checks_ = 0;
 };
 
 }  // namespace mcla::gpu
