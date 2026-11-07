@@ -23,6 +23,7 @@
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
+#include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
 #include "watch.h"
@@ -255,19 +256,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     const bool layers_ok = layers_.Initialize(passes_, edram_, pass_timing_);
     scene_.SetFrameLayers(&layers_);  // a draw is touched only while the layers are active
     if (swap_chain_.hdr()) {
-      if (layers_ok && hdr_scene_.Initialize(passes_, layers_, pass_timing_)) {
-        present_.SetHdrScene(&hdr_scene_);
-        // Stage 3, the scene above paper white. Without the variants the scene stays at paper white.
-        if (hdr_tone_.Initialize(passes_, shaders_, layers_, post_, pass_timing_)) {
-          layers_.SetSceneSource(&hdr_tone_);
-          hdr_scene_.SetSceneSource(&hdr_tone_);
-          scene_.SetHdrToneMap(&hdr_tone_);
-        }
-      } else {
-        REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
-                     "the front buffer as it is (the scene and the UI together)");
-        layers_.Request(FrameLayers::kRequesterHdr, false);
-      }
+      SetUpHdrScene(layers_ok);
     }
   }
   if (ok) {
@@ -333,19 +322,46 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   return true;
 }
 
+bool Renderer::SetUpHdrScene(bool layers_ok) {
+  if (layers_ok &&
+      (hdr_scene_.ready() || hdr_scene_.Initialize(passes_, layers_, pass_timing_))) {
+    present_.SetHdrScene(&hdr_scene_);
+    // Stage 3, the scene above paper white. Without the variants the scene stays at paper white.
+    if (hdr_tone_.ready() ||
+        hdr_tone_.Initialize(passes_, shaders_, layers_, post_, pass_timing_)) {
+      layers_.SetSceneSource(&hdr_tone_);
+      hdr_scene_.SetSceneSource(&hdr_tone_);
+      scene_.SetHdrToneMap(&hdr_tone_);
+    }
+    return true;
+  }
+  REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
+               "the front buffer as it is (the scene and the UI together)");
+  layers_.Request(FrameLayers::kRequesterHdr, false);
+  return false;
+}
+
+void Renderer::LoadHdrVariants() {
+  if (!shaders_.attached() || shaders_.has_hdr_variants()) {
+    return;
+  }
+  std::string why;
+  if (!shaders_.LoadHdrVariants(&why)) {
+    REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
+                "the HDR output keeps the scene at paper white (stage 2)",
+                why);
+  }
+}
+
 void Renderer::OnShaderPackAttached() {
   // The HDR scene variants of the game's shaders (stage 3, hdr_tonemap.h), from the folder the
   // main pack came from, when HDR output is on. Before the pipeline records are read: a record
   // that names a variant is dropped while the variants are not loaded. They change the entries
   // (hdr_variant), so this is the one place they are loaded, for a pack attached at startup and for
   // one attached later; HdrToneMap::active() waits for them.
+  // With HDR output off they are loaded when it is turned on (SwitchHdr).
   if (hdr::Wanted()) {
-    std::string why;
-    if (!shaders_.LoadHdrVariants(&why)) {
-      REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
-                  "the HDR output keeps the scene at paper white (stage 2)",
-                  why);
-    }
+    LoadHdrVariants();
   }
   pipelines_.StartPersistence(shaders_);
 }
@@ -597,6 +613,15 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   if (frames_.is_open()) {
     return frames_.list();
   }
+  if (!presenting_) {
+    // A guest frame starts: nothing of it is recorded, so the HDR setting can change the output now
+    // (from a present the back buffer is already acquired: ExecutePresent does it before that).
+    // The order of the live changes at a frame boundary: this one first (GPU idle, the swap chain
+    // made again, the window's size published again), then Scene::BeginFrame: the render scale and
+    // the upscaler path (TemporalSystem::BeginFrame, which reads the size published here), then the
+    // MSAA level (MsaaLevel::BeginFrame, after the path's own change).
+    ApplyHdrSetting();
+  }
   plume::RenderCommandList* list = frames_.Begin();
   if (!list) {
     return nullptr;
@@ -672,11 +697,13 @@ void Renderer::OnIdle() {
     return;
   }
   // The guest is quiet (not started yet, or stalled): keep the UI passes coming
-  // and present when there is something new to show.
+  // and present when there is something new to show. No frame is open, so this is a boundary where
+  // the HDR setting is applied (and what it changed is shown).
+  const bool hdr_changed = ApplyHdrSetting();
   overlay_host_->RequestPass();
   const bool first_frame = presented_ == 0;
   const bool resize = resize_requested_.load(std::memory_order_acquire);
-  if (first_frame || resize || overlay_.HasNewContent()) {
+  if (first_frame || resize || hdr_changed || overlay_.HasNewContent()) {
     ExecutePresent(PresentSource::kIdle);
   }
 }
@@ -693,6 +720,163 @@ bool Renderer::RebuildSwapChain() {
   // The new size is what the render scale is measured against from the next frame boundary on
   // (temporal.cpp ReadRenderScale: with the screen's scale or an FSR1 preset the images follow).
   PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  return true;
+}
+
+bool Renderer::ApplyHdrSetting() {
+  if (swap_chain_.lost()) {
+    // A switch left the window without a chain (nothing could be made, not even the old format):
+    // try again each second, in the format the passes use.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - swap_chain_retry_ < std::chrono::seconds(1)) {
+      return false;
+    }
+    swap_chain_retry_ = now;
+    frames_.WaitIdle();
+    SwapChain::Recreated result;
+    {
+      latency::SwapChainChange latency_change;
+      result = swap_chain_.Recreate(present_.hdr_output());
+      latency_change.Replaced(swap_chain_);
+    }
+    dlss::SwapChainRecreated();
+    if (result == SwapChain::Recreated::kLost) {
+      if (!swap_chain_lost_logged_) {
+        swap_chain_lost_logged_ = true;
+        REXLOG_ERROR("[gpu] the window has no swap chain and a new one could not be made; trying "
+                     "again each second (nothing is presented meanwhile)");
+      }
+      return false;
+    }
+    swap_chain_lost_logged_ = false;
+    AdoptSwapChain();
+    hdr::SwitchDone(swap_chain_.hdr(), swap_chain_.hdr());
+    REXLOG_INFO("[gpu] the swap chain was made again after it was lost: {}x{}, {}", swap_chain_.width(),
+                swap_chain_.height(), swap_chain_.hdr() ? "HDR10" : "SDR");
+    return true;
+  }
+  bool to_hdr = false;
+  std::string why;
+  if (!hdr::SwitchWanted(swap_chain_.hdr(), &to_hdr, &why)) {
+    return false;
+  }
+  return SwitchHdr(to_hdr, why);
+}
+
+void Renderer::AdoptSwapChain() {
+  // What draws into the back buffer takes the set made for its format. The set of the format the
+  // chain has was built (a switch builds the one it asks for first and the chain keeps the other
+  // one's only after it was in use); a chain that came back in a format neither was built for is
+  // not expected, and is logged.
+  const bool hdr = swap_chain_.hdr();
+  if (!present_.has_output(hdr)) {
+    present_.BuildOutput(SwapChain::FormatFor(hdr), hdr);
+  }
+  if (!overlay_.has_target(hdr)) {
+    overlay_.BuildTarget(SwapChain::FormatFor(hdr), hdr);
+  }
+  if (!present_.has_output(hdr) || !overlay_.has_target(hdr)) {
+    REXLOG_ERROR("[gpu] hdr: the passes for the {} back buffer could not be made; the present and "
+                 "the overlay keep the {} ones, which do not match the swap chain",
+                 hdr ? "HDR10" : "SDR", present_.hdr_output() ? "HDR10" : "SDR");
+  } else {
+    present_.UseOutput(hdr);
+    overlay_.UseTarget(hdr);
+  }
+  // The scene half of HDR output follows the chain: layers, float scene and tone map up, or down
+  // (their images released at once; the idle wait frees them). Their failures leave an HDR10 output
+  // at stage 1 (the front buffer at paper white), as at a start.
+  if (hdr && !layers_.active()) {
+    layers_.Request(FrameLayers::kRequesterHdr, true);
+    SetUpHdrScene(layers_.active());
+  } else if (!hdr && (layers_.active() || hdr_scene_.ready())) {
+    layers_.Request(FrameLayers::kRequesterHdr, false);
+    hdr_scene_.Release();
+    hdr_tone_.Release();
+  }
+  // A new chain has no metadata; UpdateHdr sends it before the next present. The sizes are the
+  // window's, published again as after any rebuild (RebuildSwapChain): the render scale is measured
+  // against them at the next frame boundary (temporal.cpp ReadRenderScale), as after a resize.
+  hdr_metadata_sent_ = false;
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+}
+
+// CHECK: not run (written without a build). Look for, in the log of a switch: "hdr: switching A -> B
+// (why)" then "hdr: switched A -> B in N ms (passes, swap chain, layers)"; a refusal says "could not
+// switch" with the reason above it; the first frames after a switch to HDR may show the scene at
+// paper white (stage 2) until the HDR variants' pipelines are made in the background (they are not
+// in the pipeline cache when the session started without HDR: the records naming them are dropped
+// at load, pipelines.cpp); the picture should flicker at most once.
+bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
+  using Clock = std::chrono::steady_clock;
+  const auto millis = [](Clock::time_point from, Clock::time_point to) {
+    return std::chrono::duration<double, std::milli>(to - from).count();
+  };
+  const char* const from_name = swap_chain_.hdr() ? "HDR10" : "SDR";
+  const char* const to_name = to_hdr ? "HDR10" : "SDR";
+  const bool from_hdr = swap_chain_.hdr();
+  const auto begin = Clock::now();
+  REXLOG_INFO("[gpu] hdr: switching {} -> {} ({})", from_name, to_name, why);
+
+  // 1. What can fail without leaving a trace comes first, while the old chain still runs: the
+  //    passes that draw into the new back buffer's format. A set that could not be made leaves
+  //    everything as it was.
+  if (!present_.BuildOutput(SwapChain::FormatFor(to_hdr), to_hdr) ||
+      !overlay_.BuildTarget(SwapChain::FormatFor(to_hdr), to_hdr)) {
+    REXLOG_ERROR("[gpu] hdr: could not switch {} -> {}: the present or overlay passes for the {} "
+                 "back buffer could not be made (reason above); the output stays {}",
+                 from_name, to_name, to_name, from_name);
+    hdr::SwitchDone(to_hdr, from_hdr);
+    return false;
+  }
+  if (to_hdr) {
+    // The scene variants of the game's tone map; without them the HDR output keeps the scene at
+    // paper white (logged).
+    LoadHdrVariants();
+  }
+  const auto built = Clock::now();
+
+  // 2. The swap chain, in the other format: nothing in flight may name the back buffers, and the
+  //    latency reducer's calls that name the chain wait until the new one is in.
+  frames_.WaitIdle();
+  SwapChain::Recreated result;
+  {
+    latency::SwapChainChange latency_change;
+    result = swap_chain_.Recreate(to_hdr);
+    latency_change.Replaced(swap_chain_);
+  }
+  dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
+  const auto remade = Clock::now();
+
+  if (result == SwapChain::Recreated::kLost) {
+    // Not even the old format could be made. The passes stay as they were; ApplyHdrSetting makes
+    // the chain again each second.
+    REXLOG_ERROR("[gpu] hdr: switching {} -> {} left the window without a swap chain: neither the "
+                 "new format nor the old one could be made; trying again each second",
+                 from_name, to_name);
+    swap_chain_lost_logged_ = true;
+    swap_chain_retry_ = Clock::now();
+    hdr::SwitchDone(to_hdr, from_hdr);
+    return false;
+  }
+  // 3. What draws into the back buffer takes the new format's set, and the scene half of HDR output
+  //    (layers, float scene, tone map) comes up or goes down with it.
+  AdoptSwapChain();
+  const bool now_hdr = swap_chain_.hdr();
+  hdr::SwitchDone(to_hdr, now_hdr);
+  const auto done = Clock::now();
+  if (now_hdr == to_hdr) {
+    REXLOG_INFO("[gpu] hdr: switched {} -> {} in {:.0f} ms (passes {:.0f} ms, swap chain {:.0f} ms, "
+                "layers {:.0f} ms): swap chain {}x{}, {}",
+                from_name, to_name, millis(begin, done), millis(begin, built),
+                millis(built, remade), millis(remade, done), swap_chain_.width(),
+                swap_chain_.height(), to_name);
+    return true;
+  }
+  REXLOG_WARN("[gpu] hdr: could not switch {} -> {} (the output does not present the HDR10 colour "
+              "space; the reason is above): the {} swap chain was made again and stays, {:.0f} ms; "
+              "not tried again until mcla_gpu_hdr or Windows' HDR state changes",
+              from_name, to_name, from_name, millis(begin, done));
   return true;
 }
 
@@ -741,6 +925,16 @@ void Renderer::ExecutePresent(PresentSource source) {
     guest_has_presented_ = true;
     last_guest_present_ = std::chrono::steady_clock::now();
   }
+  if (!frames_.is_open()) {
+    // A present with no frame recorded before it: a boundary too (a frame that has scene records
+    // applied the setting when it opened).
+    ApplyHdrSetting();
+  }
+  struct PresentingScope {
+    explicit PresentingScope(bool& flag) : flag_(flag) { flag_ = true; }
+    ~PresentingScope() { flag_ = false; }
+    bool& flag_;
+  } presenting(presenting_);
   swap_chain_.SetVsync(REXCVAR_GET(mcla_gpu_vsync));
   UpdateHdr();
 
@@ -853,8 +1047,9 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   pass_timing_.Mark(list, "present");
   markers_.Push(list, "Present", PerfMarkers::kPhase);
   present_.Prepare(list, slot, swap_chain_.width(), swap_chain_.height());
-  if (source == PresentSource::kGuest) {
-    // An idle present shows the same front buffer again: not a new frame.
+  if (source == PresentSource::kGuest && !swap_chain_.hdr()) {
+    // An idle present shows the same front buffer again: not a new frame. (Not with an HDR10 back
+    // buffer: the probe records 8-bit SDR, and a live HDR switch can turn the chain HDR10 under it.)
     flicker_probe_.Record(list, present_, guest_presents_ + 1);
   }
   ReleaseGuest();

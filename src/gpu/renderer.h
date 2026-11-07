@@ -49,6 +49,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "capture.h"
 #include "descriptors.h"
@@ -181,6 +182,24 @@ class Renderer final : public RenderThread::Executor {
   // HDR10 only, once per present: this frame's levels to the present pass and the overlay, and the
   // display's metadata when the peak moved.
   void UpdateHdr();
+
+  // mcla_gpu_hdr is live. At a frame boundary (no list open; not inside a present) the output the
+  // setting and the display ask for (hdr.h SwitchWanted) is compared with the swap chain's, and a
+  // difference is switched at once: SwitchHdr. A swap chain that was lost is made again here too.
+  // True when the swap chain was changed. Render thread.
+  bool ApplyHdrSetting();
+  bool SwitchHdr(bool to_hdr, const std::string& why);
+  // After the swap chain was made again (a switch, or recovering a lost chain): the passes use the
+  // set for its format, the HDR scene (layers, float scene, tone map) comes up or goes down with it,
+  // the sizes are published, the metadata is sent again.
+  void AdoptSwapChain();
+  // The scene half of the HDR output on the frame layers: makes the HdrScene and the HdrToneMap the
+  // first time and wires them in. `layers_ok`: the frame layers run. False (logged) when they
+  // cannot, with the layers off: the HDR output then shows the front buffer (stage 1).
+  bool SetUpHdrScene(bool layers_ok);
+  // Loads the HDR variant pack beside the main pack when it is not loaded yet (a no-op without a
+  // main pack or once loaded; logs when there is none).
+  void LoadHdrVariants();
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
@@ -235,6 +254,12 @@ class Renderer final : public RenderThread::Executor {
   // The last HDR10 metadata given to the swap chain (UpdateHdr).
   bool hdr_metadata_sent_ = false;
   plume::RenderHdrMetadata hdr_metadata_;
+  // Inside ExecutePresent: OpenFrameList then must not switch the output (the back buffer is
+  // acquired).
+  bool presenting_ = false;
+  // When a lost swap chain was last tried again (ApplyHdrSetting), once a second at most.
+  std::chrono::steady_clock::time_point swap_chain_retry_{};
+  bool swap_chain_lost_logged_ = false;
   // The internal resolution scale chosen at Initialize from the swap chain's size. It is the start's:
   // the temporal system follows the settings and the window from there (temporal.cpp
   // ReadRenderScale; edram.h SetScales).

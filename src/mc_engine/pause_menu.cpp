@@ -1404,9 +1404,11 @@ constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
 
 // ── HDR ────────────────────────────────────────────────────────────────
 //
-// HDR (mcla_gpu_hdr) is read at start. The level rows work while HDR output is on: AUTO shows
-// what it stands for now (Windows' report for the display the window is on), and without HDR
-// output they are grey.
+// HDR (mcla_gpu_hdr) is live: the renderer applies it at the end of a frame, making the window's
+// swap chain again in the other format (the picture may flicker once), and AUTO follows Windows'
+// HDR switch while the game runs. The level rows work while HDR output is on: AUTO shows what it
+// stands for now (Windows' report for the display the window is on), and without HDR output they are
+// grey.
 
 // CHECK: the longest row is "PEAK BRIGHTNESS: AUTO (1000 NITS)", 33 characters against RENDER RES's
 // "RENDER RES: SCREEN (1080P)" at 26: look that it fits the row's width, shorten the prefix if not.
@@ -1676,7 +1678,7 @@ const ItemDef kGpuFsrItems[] = {
 // DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
 const ItemDef kGpuHdrItems[] = {
     Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
-        kHdrModeVals, kHdrModeNames, 3, " (RESTART)"),
+        kHdrModeVals, kHdrModeNames, 3),
     WithDynamics(Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
                      kHdrPaperWhiteVals, 11, "%.0f"),
                  &kHdrPaperWhiteDynamics),

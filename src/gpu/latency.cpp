@@ -479,6 +479,12 @@ SwapChainChange::SwapChainChange() {
   }
 }
 
+void SwapChainChange::Replaced(SwapChain& swap_chain) {
+  if (reducer_) {
+    static_cast<Reducer*>(reducer_.get())->SwapChainReplaced(swap_chain.native());
+  }
+}
+
 SwapChainChange::~SwapChainChange() {
   if (reducer_) {
     static_cast<Reducer*>(reducer_.get())->EndSwapChainChange();

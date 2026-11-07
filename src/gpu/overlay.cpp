@@ -372,7 +372,6 @@ bool OverlayRenderer::Initialize(Device& device, FrameRing& frames, BindlessHeap
   if (device_) {
     return true;
   }
-  hdr_ = hdr;
   if (!channel) {
     REXLOG_ERROR("[gpu] overlay renderer: no channel from the overlay drawer");
     return false;
@@ -382,10 +381,11 @@ bool OverlayRenderer::Initialize(Device& device, FrameRing& frames, BindlessHeap
   heap_ = &heap;
   upload_ = &upload;
   channel_ = std::move(channel);
-  if (!CreatePipelines(target_format)) {
+  if (!CreateShared() || !BuildTarget(target_format, hdr)) {
     Shutdown();
     return false;
   }
+  UseTarget(hdr);
   return true;
 }
 
@@ -404,10 +404,12 @@ void OverlayRenderer::Shutdown() {
   pending_deaths_.clear();
   intake_ = OverlayIntake{};
   retained_.reset();
-  triangle_pipeline_.reset();
-  line_pipeline_.reset();
+  triangle_pipeline_ = nullptr;
+  line_pipeline_ = nullptr;
+  for (Target& target : targets_) {
+    target = Target{};
+  }
   vertex_shader_.reset();
-  pixel_shader_.reset();
   layout_.reset();
   channel_.reset();
   device_ = nullptr;
@@ -416,7 +418,7 @@ void OverlayRenderer::Shutdown() {
   upload_ = nullptr;
 }
 
-bool OverlayRenderer::CreatePipelines(plume::RenderFormat target_format) {
+bool OverlayRenderer::CreateShared() {
   plume::RenderPipelineLayoutBuilder builder;
   builder.begin(false, true);
   builder.addDescriptorSet(heap_->texture_set_builder());  // set 0: t0, space0
@@ -428,10 +430,22 @@ bool OverlayRenderer::CreatePipelines(plume::RenderFormat target_format) {
   layout_ = device_->CreatePipelineLayout(builder, "overlay layout");
 
   const HostShaderBlob vs = OverlayVertexShader();
-  const HostShaderBlob ps = hdr_ ? OverlayHdrPixelShader() : OverlayPixelShader();
   vertex_shader_ = device_->CreateShader(vs.data, vs.size, "main", vs.name);
-  pixel_shader_ = device_->CreateShader(ps.data, ps.size, "main", ps.name);
-  if (!layout_ || !vertex_shader_ || !pixel_shader_) {
+  return layout_ && vertex_shader_;
+}
+
+bool OverlayRenderer::BuildTarget(plume::RenderFormat target_format, bool hdr) {
+  Target& slot = targets_[hdr ? 1 : 0];
+  if (slot.built) {
+    return true;
+  }
+  if (!device_ || !layout_ || !vertex_shader_) {
+    return false;
+  }
+  Target made;
+  const HostShaderBlob ps = hdr ? OverlayHdrPixelShader() : OverlayPixelShader();
+  made.pixel_shader = device_->CreateShader(ps.data, ps.size, "main", ps.name);
+  if (!made.pixel_shader) {
     return false;
   }
 
@@ -457,7 +471,7 @@ bool OverlayRenderer::CreatePipelines(plume::RenderFormat target_format) {
   plume::RenderGraphicsPipelineDesc desc;
   desc.pipelineLayout = layout_.get();
   desc.vertexShader = vertex_shader_.get();
-  desc.pixelShader = pixel_shader_.get();
+  desc.pixelShader = made.pixel_shader.get();
   desc.depthClipEnabled = true;
   desc.cullMode = plume::RenderCullMode::NONE;
   desc.fillMode = plume::RenderFillMode::SOLID;
@@ -471,10 +485,25 @@ bool OverlayRenderer::CreatePipelines(plume::RenderFormat target_format) {
   desc.inputElementsCount = static_cast<uint32_t>(std::size(input_elements));
 
   desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
-  triangle_pipeline_ = device_->CreateGraphicsPipeline(desc, "overlay triangles");
+  made.triangle_pipeline = device_->CreateGraphicsPipeline(desc, "overlay triangles");
   desc.primitiveTopology = plume::RenderPrimitiveTopology::LINE_LIST;
-  line_pipeline_ = device_->CreateGraphicsPipeline(desc, "overlay lines");
-  return triangle_pipeline_ && line_pipeline_;
+  made.line_pipeline = device_->CreateGraphicsPipeline(desc, "overlay lines");
+  if (!made.triangle_pipeline || !made.line_pipeline) {
+    return false;
+  }
+  made.built = true;
+  slot = std::move(made);
+  return true;
+}
+
+void OverlayRenderer::UseTarget(bool hdr) {
+  Target& target = targets_[hdr ? 1 : 0];
+  if (!target.built) {
+    return;
+  }
+  hdr_ = hdr;
+  triangle_pipeline_ = target.triangle_pipeline.get();
+  line_pipeline_ = target.line_pipeline.get();
 }
 
 bool OverlayRenderer::HasNewContent() {
@@ -697,7 +726,7 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
       push.sampler_index = it->second.sampler;
     }
     const plume::RenderPipeline* pipeline =
-        draw.lines ? line_pipeline_.get() : triangle_pipeline_.get();
+        draw.lines ? line_pipeline_ : triangle_pipeline_;
     if (pipeline != bound) {
       list->setPipeline(pipeline);
       bound = pipeline;

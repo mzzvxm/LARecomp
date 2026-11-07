@@ -63,6 +63,11 @@
 // without layers; per separated frame two copies of the region, one clear and one blended
 // full-region draw (the put-back) -- about 0.4 ms at 3x on a desktop GPU.
 //
+// Live (mcla_gpu_hdr): Request may also come from the render thread, at a frame boundary (no frame
+// open, so no phase is under way). Taking the last requester away drops the frame kept for the
+// present, releases the images and makes the hooks no-ops again; wanting them again makes the
+// pipeline (kept once made) and the images come back with the first separable frame.
+//
 // Threading: the lifecycle thread for Initialize/Request before the render thread starts; the
 // render thread for everything else.
 // ===========================================================================
@@ -168,7 +173,9 @@ class FrameLayers {
   // The float scene's source (not owned), asked at each capture. Null: frames have none.
   void SetSceneSource(SceneImageSource* source) { scene_source_ = source; }
   // `requester` (Requester bits) wants the layers, or no longer does. A requester set before
-  // Initialize counts from it.
+  // Initialize counts from it. After it, at a frame boundary on the render thread: the last one
+  // going releases the images at once (the caller waits the GPU idle afterwards to free them), a
+  // new one makes the pipeline if there is none yet; active() says whether that worked.
   void Request(uint32_t requester, bool wanted);
   // The layers are wanted and can be made: what the Scene's hooks check.
   bool active() const { return active_; }

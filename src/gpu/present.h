@@ -84,6 +84,18 @@ class PresentPass {
   // GPU idle, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
+  // The passes that write the back buffer come in two sets, for an SDR and for an HDR10 back buffer
+  // (mcla_gpu_hdr is live: Renderer::SwitchHdr). Initialize made the one it was given and uses it.
+  // BuildOutput makes the other, once and without using it; false (logged) when a shader or a
+  // pipeline could not be made, with nothing changed. UseOutput then points the passes at it, for
+  // the back buffer the swap chain has made in `target_format` from now on; it needs no idle GPU
+  // (nothing is destroyed), only a frame boundary. Both are render thread.
+  bool BuildOutput(plume::RenderFormat target_format, bool hdr);
+  void UseOutput(bool hdr);
+  bool has_output(bool hdr) const { return outputs_[hdr ? 1 : 0].built; }
+  // The set the passes use now.
+  bool hdr_output() const { return hdr_; }
+
   // A guest present: the front buffer and the table it shows from now on.
   void OnGuestPresent(const PresentRecord& record);
 
@@ -203,27 +215,36 @@ class PresentPass {
   TextureCache* textures_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   std::unique_ptr<plume::RenderShader> shader_;
-  std::unique_ptr<plume::RenderPipeline> pipeline_;  // into the back buffer (the HDR10 variant when hdr_)
   // FSR1.
   std::unique_ptr<plume::RenderShader> easu_shader_;
   std::unique_ptr<plume::RenderShader> rcas_shader_;
   std::unique_ptr<plume::RenderShader> stretch_shader_;
-  // HDR10: the shaders of the passes that write the back buffer (shader_, rcas_shader_ and
-  // stretch_shader_ stay for the intermediates).
-  std::unique_ptr<plume::RenderShader> hdr_shader_;
-  std::unique_ptr<plume::RenderShader> rcas_hdr_shader_;
-  std::unique_ptr<plume::RenderShader> stretch_hdr_shader_;
   std::unique_ptr<plume::RenderPipeline> ramp_pipeline_;          // present_ps into an intermediate
   std::unique_ptr<plume::RenderPipeline> easu_pipeline_;
-  std::unique_ptr<plume::RenderPipeline> rcas_pipeline_;          // into the back buffer
   std::unique_ptr<plume::RenderPipeline> rcas_offscreen_pipeline_;  // into an intermediate
-  std::unique_ptr<plume::RenderPipeline> stretch_pipeline_;       // into the back buffer
+  // The passes that write the back buffer, for an SDR ([0]) and an HDR10 ([1]) one. The HDR10 set
+  // has shaders of its own (shader_, rcas_shader_ and stretch_shader_ stay for the intermediates).
+  struct Output {
+    bool built = false;
+    plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+    std::unique_ptr<plume::RenderShader> hdr_shader;
+    std::unique_ptr<plume::RenderShader> rcas_hdr_shader;
+    std::unique_ptr<plume::RenderShader> stretch_hdr_shader;
+    std::unique_ptr<plume::RenderPipeline> pipeline;
+    std::unique_ptr<plume::RenderPipeline> rcas_pipeline;
+    std::unique_ptr<plume::RenderPipeline> stretch_pipeline;
+  };
+  Output outputs_[2];
+  // The set in use (set by UseOutput; owned by outputs_).
+  plume::RenderPipeline* pipeline_ = nullptr;          // present into the back buffer
+  plume::RenderPipeline* rcas_pipeline_ = nullptr;     // RCAS into the back buffer
+  plume::RenderPipeline* stretch_pipeline_ = nullptr;  // the bilinear stretch into the back buffer
   std::array<HostImage, kMaxFsrPasses + 2> chain_;
   // kRamped: present_ps 1:1 into ramped_ (R32G32B32A32_FLOAT, which holds the
   // table's values exactly, so the stretch mixes the same numbers as before).
   std::unique_ptr<plume::RenderPipeline> ramped_pipeline_;
   HostImage ramped_;
-  bool hdr_ = false;    // the back buffer is HDR10
+  bool hdr_ = false;    // the back buffer is HDR10 (the set in use)
   HdrLevels hdr_levels_;
   HdrScene* hdr_scene_ = nullptr;
   // Prepare bound the HdrScene's image: its codes may exceed 1 (kHdrFlagExtendedCodes).

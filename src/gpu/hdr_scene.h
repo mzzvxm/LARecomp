@@ -55,6 +55,11 @@ class HdrScene {
   bool Initialize(HostPasses& passes, FrameLayers& layers, PassTiming& pass_timing);
   // GPU idle, before HostPasses shuts down.
   void Shutdown();
+  // Initialize made the shader and the pipeline.
+  bool ready() const { return pipeline_ != nullptr; }
+  // HDR output went off (render thread, at a frame boundary): the composed image is released and
+  // the next composition starts afresh. The pipeline stays for the next time.
+  void Release();
 
   // Outside a render pass, once per present: when the guest frame last presented has layers and
   // `front` (the front buffer's texture key) is their picture at `width` x `height` host pixels,

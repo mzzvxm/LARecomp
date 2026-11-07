@@ -182,6 +182,10 @@ void AbandonVulkanHook(const std::string& why);
 // (logged), and always after the first time it took it or refused.
 bool SwapChainUpgradePending();
 bool UpgradeSwapChain(void** swap_chain);
+// Render thread, after the swap chain was made again (the HDR switch: SwapChain::Recreate destroys
+// the chain, wrapper included, and makes a plain one). Once Streamline has been offered a chain
+// the new one is offered at the next present as the first was; before that nothing is needed.
+void SwapChainRecreated();
 }  // namespace dlss
 #else
 namespace dlss {
@@ -190,6 +194,7 @@ inline void* VulkanInstanceProcAddr() { return nullptr; }
 inline void AbandonVulkanHook(const std::string&) {}
 inline bool SwapChainUpgradePending() { return false; }
 inline bool UpgradeSwapChain(void**) { return false; }
+inline void SwapChainRecreated() {}
 }  // namespace dlss
 #endif
 

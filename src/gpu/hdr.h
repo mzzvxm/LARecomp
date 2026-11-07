@@ -12,13 +12,14 @@
 // the SDR one placed at paper white: stage 2 (frame_layers.h) keeps the UI as a layer of its own and
 // stage 3 (hdr_tonemap.h) puts the scene's lights above paper white (HDR-PLAN.md).
 //
-// The setting (mcla_gpu_hdr: off / auto / on) is read once, at start: the swap
-// chain's format cannot change without making the pipelines that draw into it
-// again, so it needs a restart. auto follows Windows' HDR switch for the
-// display the window is on; on tries even when Windows says it is off. If the
-// swap chain cannot be made HDR10 (no HDR10 colour space on the output, or a
-// Vulkan surface without HDR10_ST2084) the SDR one is made, with one log line
-// saying why.
+// The setting (mcla_gpu_hdr: off / auto / on) is live: the renderer asks at the end of every guest
+// frame (SwitchWanted) and, when the output the setting and the display ask for is not the one the
+// swap chain has, makes the swap chain again in the other format at that frame boundary
+// (Renderer::SwitchHdr; HDR-PLAN.md). auto follows Windows' HDR switch for the display the window is
+// on, also while the game runs and when the window moves to another display; on tries even when
+// Windows says it is off. If the swap chain cannot be made HDR10 (no HDR10 colour space on the
+// output, or a Vulkan surface without HDR10_ST2084) the SDR one stays, with one log line saying why,
+// and nothing is asked again until the setting or what Windows says changes.
 //
 // The levels (paper white, peak) come from the settings or, at 0, from what
 // Windows reports for the display the window is on: DXGI's IDXGIOutput6
@@ -26,13 +27,17 @@
 // brightness). The display is found from the window's HMONITOR over every
 // adapter's outputs, not from the swap chain, so it is right when the GPU that
 // renders is not the one the display hangs off (an iGPU rendering, the RTX
-// driving the monitor). A thread reads it once a second while HDR is wanted.
+// driving the monitor). A thread reads it once a second while the setting is not off
+// (or the output is HDR); a change of what it says (readable or not, HDR on or off) is believed
+// when two reads in a row agree, so a display that flickers through a mode change does not rebuild
+// the swap chain twice. A setting that leaves off reads it at once.
 //
 // Threading: Start/Stop on the lifecycle thread; Wanted/SetActive in between on
-// it; Levels/Metadata on the render thread; Active and Auto on any thread.
+// it; Levels/Metadata, SwitchWanted and SwitchDone on the render thread; Active and Auto on any thread.
 // ===========================================================================
 
 #include <cstdint>
+#include <string>
 
 #include <plume_render_interface.h>
 
@@ -59,9 +64,9 @@ inline constexpr uint32_t kHdrFlagInterpolatedCodes = 1u << 3;
 
 namespace hdr {
 
-// Lifecycle thread, before the swap chain: reads the settings and, when HDR is wanted, reads the
-// display once and starts the thread that reads it again each second. `window` is the HWND
-// (Windows); anywhere else no display is known.
+// Lifecycle thread, before the swap chain: reads the settings and, when it is not off, reads the
+// display once; starts the thread that reads it again each second while it matters. `window` is
+// the HWND (Windows); anywhere else no display is known.
 void Start(plume::RenderWindow window);
 // Lifecycle thread: stops the thread. Safe to call more than once.
 void Stop();
@@ -69,8 +74,21 @@ void Stop();
 // Lifecycle thread, after Start and before the swap chain: whether to try an HDR10 swap chain.
 // Logs the reason when not.
 bool Wanted();
-// After the swap chain: whether it is HDR10. Fixes the levels' behaviour from now on.
+// After the swap chain: whether it is HDR10. An HDR10 chain that was asked for and refused is not
+// asked for again for this state of the setting and the display (SwitchWanted).
 void SetActive(bool active);
+
+// Render thread, at a frame boundary (no list open, nothing in flight is needed again): reads the
+// setting (a change of it is taken here) and says whether the output the setting and the display
+// ask for differs from `current_hdr`, the swap chain's. True with `*to_hdr` the format to switch to
+// and `*why` (when given) what asked for it, in plain words for the log. False while the output is
+// right, or while an earlier attempt to reach it was refused and neither the setting nor the
+// display's state has changed since. One cvar read and a few atomic loads.
+bool SwitchWanted(bool current_hdr, bool* to_hdr, std::string* why = nullptr);
+// Render thread: how the attempt SwitchWanted proposed ended. `now_hdr` is what the swap chain is
+// now (the old format when the attempt failed). Publishes Active() and, for a refusal
+// (`wanted_hdr` != `now_hdr`), remembers it.
+void SwitchDone(bool wanted_hdr, bool now_hdr);
 
 // Any thread: the swap chain is HDR10.
 bool Active();
