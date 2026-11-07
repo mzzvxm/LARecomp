@@ -37,7 +37,8 @@
 //                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
 //   RequestTexture*       the pause menu's TEXTURE MODS rows (any thread)
-//   PreviewRenderScale    the pause menu's RENDER RES and FSR1 rows (any thread)
+//   PreviewRenderScale, GetRenderScaleStatus
+//                         the pause menu's RENDER RES and FSR1 rows (any thread)
 //   HdrOutputActive, HdrAuto*   the pause menu's HDR rows (any thread)
 //   Shutdown              LarecompApp::FinishWindowClose (the window's close) and OnShutdown
 // ===========================================================================

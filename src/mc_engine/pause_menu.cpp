@@ -638,12 +638,9 @@ const char* const kDeferredCvars[] = {
     // The SDK's API switch, read at startup by the emulated GPU's plugin and by
     // the Plume renderer alike.
     "graphics_backend",
-    // The Plume renderer sizes its targets once, when the EDRAM is created;
-    // an FSR1 preset picks that size too.
-    "mcla_gpu_resolution_scale",
-    "mcla_gpu_fsr_preset",
-    // The upscaler modes (mcla_gpu_fsr31_mode, _fsr4_mode, _dlss_mode) are not here: the
-    // renderer switches the scene's size at a frame boundary (TemporalSystem::UpdatePath).
+    // The render scale (mcla_gpu_resolution_scale, mcla_gpu_fsr_preset) and the upscaler modes
+    // (mcla_gpu_fsr31_mode, _fsr4_mode, _dlss_mode) are not here: the renderer makes its targets
+    // again at the new size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
 };
 
 std::mutex g_deferred_mutex;
@@ -1204,9 +1201,9 @@ constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
 constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
 #if defined(LARECOMP_HAS_GPU)
-// RENDER RES (mcla_gpu_resolution_scale): 0 is the screen's scale -- the one
-// that renders at the size of the window's 16:9 area, measured at start --
-// and the rest go in steps of 0.5. larecomp.toml takes any step of 0.05.
+// RENDER RES (mcla_gpu_resolution_scale), live: 0 is the screen's scale -- the one
+// that renders at the size of the window's 16:9 area and follows the window while the
+// game runs -- and the rest go in steps of 0.5. larecomp.toml takes any step of 0.05.
 constexpr double kRenderResVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0};
 // FSR1's quality presets (mcla_gpu_fsr_preset), in the order of
 // mcla::gpu::FsrPreset. With FSR1 on, a preset picks the render scale from the
@@ -1326,13 +1323,15 @@ constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0}
 #if defined(LARECOMP_HAS_GPU)
 // ── RENDER RES and FSR1 ────────────────────────────────────────────────
 //
-// What these rows show is what the next start does: they ask the renderer
-// what it would choose (gpu.h PreviewRenderScale) from the held settings and
-// the window as it is now.
+// What these rows show is what the renderer does now (it follows them at a frame boundary): they
+// ask it what it chooses (gpu.h PreviewRenderScale) from the settings and the window as it is now.
+// Row width: the widest line of the pause menu is 26 characters ("RENDER RES: SCREEN (1080P)"), so
+// RENDER RES carries no suffix while it is live, and a scale the video memory cannot hold says so
+// in the value ("TOO BIG (2.0X)" beside the one that runs: 12 + 14 = 26).
 
 bool FsrOn() { return CvarGetBool("mcla_gpu_fsr"); }
 
-// The preset held for the next start.
+// The preset chosen.
 mcla::gpu::FsrPreset FsrPresetChosen() {
     mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
     mcla::gpu::ParseFsrPreset(CvarGet("mcla_gpu_fsr_preset"), &preset);
@@ -1360,8 +1359,20 @@ std::string RenderScaleText(mcla::gpu::Scale scale) {
 std::string RenderResValueLabel(double value) {
     const mcla::gpu::RenderScaleChoice c =
         mcla::gpu::PreviewRenderScale(value, false, mcla::gpu::FsrPreset::kCustom);
-    if (c.source == mcla::gpu::RenderScaleChoice::Source::kScreen)
-        return "SCREEN (" + std::to_string(RenderHeight(c.scale)) + "P)";
+    // A scale the renderer could not make for want of video memory (a 3X scale is 4K) says so, and
+    // which one it keeps: only the value that asks for that scale is relabelled, so the other values
+    // stay what they are. The screen's scale has its own wording (the one it keeps is not shown).
+    const mcla::gpu::RenderScaleStatus status = mcla::gpu::GetRenderScaleStatus();
+    const bool screen = c.source == mcla::gpu::RenderScaleChoice::Source::kScreen;
+    if (!status.blocked.none() && !status.running.none() && c.scale == status.blocked) {
+        if (screen) return "SCREEN TOO BIG";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf),
+                      status.running.n % 2 == 0 ? "TOO BIG (%.1fX)" : "TOO BIG (%.2fX)",
+                      double(status.running.n) / mcla::gpu::Scale::kDenominator);
+        return buf;
+    }
+    if (screen) return "SCREEN (" + std::to_string(RenderHeight(c.scale)) + "P)";
     return RenderScaleText(c.scale);
 }
 
@@ -1370,13 +1381,7 @@ bool RenderResEnabled() { return !FsrPresetDecides(); }
 // Grey, the row shows no value: the suffix says what decides instead. The
 // resolution the preset gives is on the preset's own row.
 const char* RenderResSuffix() {
-    return FsrPresetDecides() ? " (SET BY FSR1)" : " (RESTART)";
-}
-
-// With a preset chosen, FSR1 on or off also moves the render scale, which
-// waits for the next start (the filter itself changes at once).
-const char* FsrToggleSuffix() {
-    return FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom ? " (RESTART)" : "";
+    return FsrPresetDecides() ? " (SET BY FSR1)" : "";
 }
 
 // "QUALITY (720P)": the preset and the height it renders at in this window.
@@ -1394,7 +1399,6 @@ constexpr RowDynamics kRenderResDynamics = {
     .enabled = RenderResEnabled,
     .suffix = RenderResSuffix,
 };
-constexpr RowDynamics kFsrToggleDynamics = {.suffix = FsrToggleSuffix};
 constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
 constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
 
@@ -1476,7 +1480,7 @@ const ItemDef kVideoItems[] = {
     // The render scale, 0.5X to 3.0X or the screen's, each with the height it
     // renders at; grey while an FSR1 preset picks it. FSR1 opens below it.
     NativeOnly(WithDynamics(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale",
-                                "RENDER RES: ", kRenderResVals, 7, "%g", " (RESTART)"),
+                                "RENDER RES: ", kRenderResVals, 7, "%g"),
                             &kRenderResDynamics)),
     NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
@@ -1657,9 +1661,9 @@ const ItemDef kNativeItems[] = {
 // DISPLAY > FSR1: the renderer's FSR1 on the present, its quality preset and
 // RCAS. The preset and the sharpness are grey while FSR1 is off.
 const ItemDef kGpuFsrItems[] = {
-    WithDynamics(Bool("PM_RxGpuFsr", "mcla_gpu_fsr", "FSR1: "), &kFsrToggleDynamics),
+    Bool("PM_RxGpuFsr", "mcla_gpu_fsr", "FSR1: "),
     WithDynamics(Str("PM_RxGpuFsrPreset", "mcla_gpu_fsr_preset", "QUALITY: ",
-                     kFsrPresetVals, kFsrPresetNames, kNumFsrPresets, " (RESTART)"),
+                     kFsrPresetVals, kFsrPresetNames, kNumFsrPresets),
                  &kFsrPresetDynamics),
     WithDynamics(Dbl("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "SHARP REDUCE: ",
                      kFsrSharpVals, 5, "%g"),
@@ -2897,8 +2901,8 @@ bool OpenMenu(int m, uint32_t from) {
 //
 // Which settings count: those the menu wrote (NoteMenuWrite, called by CvarSet, remembers each
 // one's value from before) whose row says it needs a restart now (RowSaysRestart: the suffix is
-// read as drawn, so a row that is live in this state, like the FSR1 toggle without a preset,
-// does not count), and that are not back at the value they had. One prompt per menu exit: what
+// read as drawn, so a row that is live in this state, like an upscaler mode row, does not
+// count), and that are not back at the value they had. One prompt per menu exit: what
 // was offered is remembered per setting (`asked`), so leaving the next menu does not ask again
 // until another setting changed. Guest thread only, like the menu.
 struct RestartWatch {
