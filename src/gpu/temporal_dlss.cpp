@@ -1067,22 +1067,15 @@ std::shared_ptr<Context> DlssBackend::Impl::MakeContext(const BackendRequest& re
     *why = "Streamline is not running";
     return {};
   }
-  // NVIDIA's default presets (no preset row). The colour is the tone mapped scene
-  // (temporal_tonemap.h: c / (1 + max channel), in [0, 1)): not HDR. No exposure image is tagged
-  // (the game's exposure is not known here), which puts DLSS in automatic exposure whatever the
-  // flag says; it stays on, and pre-exposure and the scale stay 1: the input is already a bounded
-  // signal and what DLSS returns is in its domain.
-  // CHECK: how DLSS looks with colorBuffersHDR false on this input (NVIDIA's guide asks for the
-  // flag to match the input; whether it also expects the display's gamma on an LDR input is not
-  // stated in the guide excerpts read). If it looks wrong, the same input with the flag true is the
-  // thing to try.
+  // NVIDIA's default presets (no preset row), the scene colour is linear HDR with no exposure of
+  // its own (automatic exposure).
   sl::DLSSOptions options;
   options.mode = SlMode(request.mode);
   options.outputWidth = request.output_size[0];
   options.outputHeight = request.output_size[1];
   options.preExposure = 1.0f;
   options.exposureScale = 1.0f;
-  options.colorBuffersHDR = sl::Boolean::eFalse;
+  options.colorBuffersHDR = sl::Boolean::eTrue;
   options.useAutoExposure = sl::Boolean::eTrue;
   options.alphaUpscalingEnabled = sl::Boolean::eFalse;
 

@@ -105,11 +105,9 @@ struct TemporalInputs {
   uint64_t frame = 0;
   uint32_t render_size[2] = {};
   uint32_t output_size[2] = {};
-  // R16G16B16A16_FLOAT, jittered, tone mapped (temporal_tonemap.h: c / (1 + max channel), in
-  // [0, 1), NOT HDR: the backends tell their runtime so); the depth: R32_FLOAT, 1 near / 0 far;
+  // R16G16B16A16_FLOAT, linear, scene referred, jittered; the depth: R32_FLOAT, 1 near / 0 far;
   // the vectors: RG16_FLOAT, render pixels, previous minus current, +y down, jitter removed. All
-  // in SHADER_READ at the COMPUTE stage. The output: R16G16B16A16_FLOAT, the colour's domain,
-  // GENERAL (unordered access).
+  // in SHADER_READ at the COMPUTE stage. The output: R16G16B16A16_FLOAT, GENERAL (unordered access).
   TemporalImage color;
   TemporalImage depth;
   TemporalImage motion;

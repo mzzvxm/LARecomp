@@ -41,8 +41,7 @@
 // with the viewport and four local resource tags (depth, vectors, colour in, colour out) with
 // Plume's native image states; the caller then forgets the list's cached state
 // (backend.h InvalidateAfterExternalWork). The DLSS options (mode, output size, NVIDIA's default
-// presets, colour that is not HDR (the scene arrives tone mapped, temporal_tonemap.h), automatic
-// exposure) are set when a context is made.
+// presets, HDR colour, automatic exposure) are set when a context is made.
 //
 // Threads: see temporal_backend.h. Every Streamline call is serialised by one mutex (its API is
 // not thread safe). The worker makes everything that can take seconds, and the render thread never

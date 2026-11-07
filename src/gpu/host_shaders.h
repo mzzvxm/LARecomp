@@ -43,9 +43,7 @@
 #include "smaa_blend_ps.hlsl.dxil.h"
 #include "smaa_edges_ps.hlsl.dxil.h"
 #include "smaa_weights_ps.hlsl.dxil.h"
-#include "temporal_compress_ps.hlsl.dxil.h"
 #include "temporal_copy_ps.hlsl.dxil.h"
-#include "temporal_expand_ps.hlsl.dxil.h"
 #include "temporal_mv_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
@@ -75,9 +73,7 @@
 #include "smaa_blend_ps.hlsl.spirv.h"
 #include "smaa_edges_ps.hlsl.spirv.h"
 #include "smaa_weights_ps.hlsl.spirv.h"
-#include "temporal_compress_ps.hlsl.spirv.h"
 #include "temporal_copy_ps.hlsl.spirv.h"
-#include "temporal_expand_ps.hlsl.spirv.h"
 #include "temporal_mv_ps.hlsl.spirv.h"
 #endif
 
@@ -197,16 +193,6 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
-}
-
-// The reversible tone map around the temporal upscalers (temporal_tonemap.h): the scene colour
-// compressed before the upscaler, its output expanded after it.
-inline HostShaderBlob TemporalCompressPixelShader() {
-  return MCLA_GPU_HOST_SHADER_BLOB(temporal_compress_ps);
-}
-
-inline HostShaderBlob TemporalExpandPixelShader() {
-  return MCLA_GPU_HOST_SHADER_BLOB(temporal_expand_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).

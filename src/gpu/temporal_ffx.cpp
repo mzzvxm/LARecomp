@@ -500,14 +500,8 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
     *why = "the device's native objects are not available";
     return {};
   }
-  // The colour is the tone mapped scene (temporal_tonemap.h: c / (1 + max channel), in [0, 1)), so
-  // no HIGH_DYNAMIC_RANGE. Automatic exposure stays: AMD recommends it unless the application has
-  // an exposure of its own, and the game's is not known here; the runtime puts its result back in
-  // the input's domain, so what is exposed and what is returned still agree.
-  // CHECK: the picture and the highlight flicker against FFX_UPSCALE_ENABLE_AUTO_EXPOSURE left out
-  // (the guide lists the exposure image as optional only with that flag, so an exposure image of 1.0
-  // would have to be given: not tried).
-  const uint32_t flags = FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+  const uint32_t flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
+                         FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
   context->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
   context->upscale.flags = flags;
   context->upscale.maxRenderSize = {request.render_size[0], request.render_size[1]};
@@ -791,8 +785,7 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
       !MakeResource(in.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, &d.output)) {
     return fail("an input image has no native object or a format the runtime does not know");
   }
-  // exposure, reactive and transparencyAndComposition stay empty: automatic exposure, no masks. The
-  // colour image is the tone mapped one (the flags above).
+  // exposure, reactive and transparencyAndComposition stay empty: automatic exposure, no masks.
   d.jitterOffset = {in.jitter[0], in.jitter[1]};
   // The vectors are previous minus current, in render pixels (measured in game against the world
   // point seen at sample pixels), which is what FSR reads with a scale of 1: pixelSpaceMV = vector *
