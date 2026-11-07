@@ -58,8 +58,10 @@ REXCVAR_DEFINE_STRING(
     mcla_gpu_msaa, "2", "MCLA/GPU",
     "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
     "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
-    "own). Targets the game does not multisample, or that are not images of the screen, keep "
-    "the game's samples. 2, 4 and 8 among themselves change while the game runs, between two "
+    "own). The pause menu's and the map's world view, which the game draws with 4 samples, gets "
+    "the same samples as the game view (1 when the game runs without MSAA). Targets the game "
+    "does not multisample, or that are not images of the screen, keep the game's samples. "
+    "2, 4 and 8 among themselves change while the game runs, between two "
     "frames (the pipelines for the new sample count are made first; not while an upscaler "
     "runs, which holds the change until it is off). Off against on is the game's own start-up "
     "switch and applies at the next start. A game started with an upscaler (mcla_gpu_upscaler) "
@@ -231,8 +233,26 @@ void EdramTargets::DecideScene() {
               resolution_scale_);
 }
 
+uint32_t EdramTargets::HostLevelFor(uint32_t level) {
+  const GuestMsaa guest = GetGuestMsaa();
+  return guest == GuestMsaa::kOffChosen || guest == GuestMsaa::kOffForUpscaler ? 1u : level;
+}
+
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
   return HostSamplesAt(key, FollowsMsaaLevel(key, size_bits), msaa_level_);
+}
+
+void EdramTargets::NotePauseView(const Target& target) {
+  if (temporal::MainColorSamples(target.key) != temporal::kPauseSamples ||
+      target.host_samples == pause_view_samples_) {
+    return;
+  }
+  const uint32_t before = pause_view_samples_;
+  pause_view_samples_ = target.host_samples;
+  REXLOG_INFO("[gpu] edram: the pause view (the pause menu's and the map's world, which the game "
+              "draws with {} samples) is drawn with {} sample{} on the host{}",
+              target.key.samples, target.host_samples, target.host_samples == 1 ? "" : "s",
+              before != 0 ? std::format(" (was {})", before) : std::string());
 }
 
 EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
@@ -754,6 +774,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
     // Also a target released for want of memory: Get makes it at this scale and these samples.
     target->scale = ScaleAfter(*target, output, scene);
     target->host_samples = HostSamplesAt(key, target->msaa_follows, level);
+    NotePauseView(*target);
   }
   if (old_bytes != 0) {
     device_->NoteReleased(old_bytes);
@@ -858,6 +879,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
                   "first use {} rows)",
                   DescribeEdramKey(key), target->host_samples, height);
     }
+    NotePauseView(*target);
     if (!resolution_scale_.unit() || (scene_decided_ && !scene_scale_.unit())) {
       // The census of the rule: what each identity became, once.
       REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
@@ -1680,14 +1702,19 @@ std::string EdramTargets::TakeSummary() {
                         "or the upscaler) {}",
                         stats_.rescaled);
   }
-  if (msaa_level_ > 2) {
-    // The targets that have it now (a live change of the level made some again).
-    size_t multisampled = 0;
+  {
+    // The targets that have other samples than the guest's now (a live change of the level made
+    // some again): more at 4x and 8x, and fewer on the pause menu's and the map's world view,
+    // which the game draws with 4.
+    size_t other = 0;
     for (const auto& [key, target] : targets_) {
-      multisampled += target->host_samples != key.samples;
+      other += target->host_samples != key.samples;
     }
-    text += std::format(" | host MSAA {}x: {} of {} targets have it (made with it {})", msaa_level_,
-                        multisampled, targets_.size(), stats_.made_host_msaa);
+    if (msaa_level_ > 2 || other != 0) {
+      text += std::format(" | host MSAA {}x: {} of {} targets have other samples than the guest's "
+                          "(made with them {})",
+                          HostLevelFor(msaa_level_), other, targets_.size(), stats_.made_host_msaa);
+    }
   }
   if (aliasing_) {
     text += std::format(

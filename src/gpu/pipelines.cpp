@@ -1474,6 +1474,9 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
   // left out for a few frames), that the build of 4 and 8 sample pipelines works on both backends
   // (an 8 sample pipeline against an 8 sample framebuffer under the D3D12 debug layer and Vulkan
   // validation), and how long the set takes at the first switch of a session (the 20 s limit).
+  // Also that the pause menu's and the map's world draws, whose targets now have the level's samples
+  // (or 1 without MSAA), mostly find the game view's pipelines (the first pause open compiles few or
+  // none on the render thread), and that a level change leaves them a copy too.
   LevelPrebuild result;
   prebuild_requests_.clear();
   prebuild_precached_.clear();
@@ -1484,8 +1487,9 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
   std::vector<Urgent> items;
   for (const LevelDependent& d : level_dependent_) {
     PipelineKey key = d.key;
-    // EdramTargets::HostSamplesAt: the level, never fewer than the guest's.
-    key.sample_count = std::max(d.key.sample_count, level);
+    // EdramTargets::HostSamplesAt: the level, which may be fewer than the guest's samples (the
+    // pause menu's and the map's world view, which the game draws with 4).
+    key.sample_count = level;
     if (pipelines_.count(key) != 0 || aliases_.count(key) != 0) {
       ++result.present;
       continue;
