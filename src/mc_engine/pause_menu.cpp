@@ -2290,12 +2290,25 @@ std::vector<double> DblValues(const ItemDef& it) {
     return values;
 }
 
+// A kStrCycle row with a list of its own (RowDynamics::value_count): how many values it has, which
+// one it is on and what stepping to one writes all come from the row, and the list can change between
+// two draws. The game's row never sees the count: it is given a three-value window (kRowWindow).
+bool ItemOwnsList(const ItemDef& it) {
+    return it.kind == ItemKind::kStrCycle && it.dynamics && it.dynamics->value_count &&
+           it.dynamics->value_index && it.dynamics->set_value;
+}
+
+// Rows whose entry the cvar sits on can differ from the one stepped to, because the list changes
+// under the step (an entry for a value the row does not list is dropped once the row leaves it).
+bool ItemListMoves(const ItemDef& it) { return ItemLabelsValues(it) || ItemOwnsList(it); }
+
 int ItemValueCount(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kDblCycle:  return ItemLabelsValues(it) ? int(DblValues(it).size()) : it.nvals;
-    case ItemKind::kStrCycle:
+    case ItemKind::kStrCycle:  return ItemOwnsList(it) ? std::max(it.dynamics->value_count(), 0)
+                                                       : it.nvals;
     case ItemKind::kColor:     return it.nvals;
     case ItemKind::kAction:
     case ItemKind::kSubmenu:   return 0;
@@ -2339,6 +2352,11 @@ int ItemValueIndex(const ItemDef& it) {
     case ItemKind::kCarbonBit:
         return (CarbonHaveCar() && CarbonHasGroup(uint8_t(it.nvals))) ? 1 : 0;
     case ItemKind::kStrCycle:
+        if (ItemOwnsList(it)) {
+            const int n = ItemValueCount(it);
+            return n > 0 ? std::clamp(it.dynamics->value_index(), 0, n - 1) : 0;
+        }
+        return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle: {
@@ -2370,6 +2388,14 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
         break;
     }
     case ItemKind::kStrCycle:
+        if (ItemOwnsList(it)) {
+            it.dynamics->set_value(i, CvarSet);
+            g_settings_saved.store(false, std::memory_order_relaxed);
+            break;
+        }
+        CvarSet(it.cvar, it.svals[i]);
+        g_settings_saved.store(false, std::memory_order_relaxed);
+        break;
     case ItemKind::kColor:
         CvarSet(it.cvar, it.svals[i]);
         g_settings_saved.store(false, std::memory_order_relaxed);
@@ -2423,7 +2449,8 @@ std::string ItemRowLabel(const ItemDef& it) {
         return "";
     }
 
-    std::string label = it.prefix;
+    // A row named for what it sets now ("DLSS MODE", "RENDER SCALE") says so in RowDynamics::label.
+    std::string label = it.dynamics && it.dynamics->label ? it.dynamics->label() : it.prefix;
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
 
@@ -2443,9 +2470,9 @@ void ApplyItem(const ItemDef& it, int dir) {
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kStrCycle: {
-        int i = FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
-        CvarSet(it.cvar, it.svals[(i + dir + it.nvals) % it.nvals]);
-        g_settings_saved.store(false, std::memory_order_relaxed);
+        // Through the row's own list, which for a row with one (ItemOwnsList) is not the cvar's.
+        const int n = ItemValueCount(it);
+        if (n > 0) ItemSetValueIndex(it, ((ItemValueIndex(it) + dir) % n + n) % n);
         break;
     }
     case ItemKind::kDblCycle: {
@@ -2777,8 +2804,9 @@ void PollNativeRows(int m) {
             const int idx = ((nr.last_index[i] + dir) % n + n) % n;
             ItemSetValueIndex(it, idx);
             // A row that lists the cvar's own value drops that entry once the
-            // value leaves it, so where it now is is read again.
-            CentreRowWindow(nr, i, it, ItemLabelsValues(it) ? ItemValueIndex(it) : idx);
+            // value leaves it, and a row with a list of its own can have another one now
+            // (the choice above its mode row), so where it now is is read again.
+            CentreRowWindow(nr, i, it, ItemListMoves(it) ? ItemValueIndex(it) : idx);
             continue;
         }
 
