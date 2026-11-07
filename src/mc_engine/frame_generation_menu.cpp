@@ -36,11 +36,14 @@ bool On() {
 }
 
 // The FRAME GENERATION row's value 1. "(WAIT)" from the choice until the swap chain has been made
-// again for it (a frame boundary away) and while it is being set up; "(FAILED)" once it failed.
+// again for it (a frame boundary away) and while it is being set up; "(FAILED)" once it failed;
+// "(NO ROOM)" while the card has no free video memory for it (it is off, and switches on by itself
+// when there is room again; the reason is in the log and in a.why).
 std::string FrameGenerationLabel(int i) {
     if (i == 0) return "OFF";
     const mcla::gpu::FrameGenerationAvailability a = mcla::gpu::GetFrameGenerationAvailability();
     if (a.failed) return "FSR 3.1 (FAILED)";
+    if (Chosen() && a.no_room) return "FSR 3.1 (NO ROOM)";
     if (Chosen() && a.available && !a.running) return "FSR 3.1 (WAIT)";
     return "FSR 3.1";
 }
