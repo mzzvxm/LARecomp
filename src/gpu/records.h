@@ -111,6 +111,8 @@ struct PresentRecord {
   uint32_t front_buffer = 0;  // D3DDevice_Swap r4: the D3DTexture EndFrame resolved RT0 into
   uint32_t flags = 0;
   uint32_t swap_control = 0;  // dev+13608, host order (guest_device.h kDevSwapControl)
+  // gpu.h SetNextPresentTarget: the QPC time the frame is due on screen, 0 = when ready.
+  int64_t target_qpc = 0;
   GuestFrameStats stats;
   uint8_t front_buffer_header[guest::kTextureHeaderBytes] = {};
   uint8_t gamma_ramp[guest::kGammaRampBytes] = {};  // dev+15004, raw big-endian

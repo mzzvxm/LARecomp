@@ -198,6 +198,20 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 // answers 0 there; the device also latches loss it sees on its own paths.
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 
+// What the window's presentation reports about its own presents (gpu.h
+// PresentObservation). D3D12: GetLastPresentCount, and GetFrameStatistics when
+// that succeeds (it fails until a present has reached the screen). Vulkan has
+// no such report: false, `out` untouched.
+struct PresentStatistics {
+  uint32_t present_count = 0;
+  bool statistics = false;
+  uint32_t on_screen_present = 0;
+  uint32_t present_refresh = 0;
+  uint32_t sync_refresh = 0;
+  int64_t sync_qpc = 0;
+};
+bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
+
 // --- a runtime that records its own work next to Plume's (FidelityFX, temporal_ffx.h) ---------
 // Plume's lists are live recordings; a runtime writes into the same native list, with native
 // resources, so these four give it the handles, and the last one tells Plume that the list's cached

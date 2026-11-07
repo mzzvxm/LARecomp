@@ -49,6 +49,12 @@ class RenderThread {
     // One record; the payload follows the header (records.h). Never kPad.
     virtual void Execute(const RecordHeader& header, const uint8_t* payload) = 0;
     virtual void OnIdle() = 0;
+    // A present the executor has submitted and holds to a later time (QPC
+    // ticks, present_schedule.h; 0 = none). The loop calls RunDeferred once
+    // that time has come: it reads the clock after every record while one is
+    // held, and wakes from an idle wait for it.
+    virtual int64_t DeferredDue() const { return 0; }
+    virtual void RunDeferred() {}
   };
 
   RenderThread() = default;

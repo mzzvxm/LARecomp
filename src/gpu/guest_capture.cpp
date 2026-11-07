@@ -1190,7 +1190,8 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
 // present
 // ---------------------------------------------------------------------------
 
-void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
+void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_buffer,
+                           int64_t target_qpc) {
   if (!enabled()) {
     return;
   }
@@ -1206,6 +1207,7 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
       auto* r = new (payload) PresentRecord();
       r->device = device;
       r->front_buffer = front_buffer;
+      r->target_qpc = target_qpc;
       if (front_buffer != 0 &&
           !CopyGuest(base, front_buffer, r->front_buffer_header, sizeof(r->front_buffer_header))) {
         r->flags |= kPresentFrontBufferUnreadable;

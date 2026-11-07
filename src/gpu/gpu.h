@@ -164,6 +164,52 @@ void OnGuestFrameEnd(uint8_t* base);
 // Startup succeeded and Shutdown has not begun.
 void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer);
 
+// --- when frames reach the screen (diagnostics) ----------------------------
+// After every present of a guest frame, on the render thread: the guest frame's
+// ordinal among the guest presents (1 = the first) and what the presentation
+// reports about its presents -- D3D12: DXGI's GetLastPresentCount after the
+// present, and its frame statistics (the newest present on screen and the QPC
+// time of the refresh it went out on); zeros on Vulkan. For mc_engine's
+// cam_trace. nullptr, the default, is off: a present then costs one load.
+struct PresentObservation {
+  uint64_t guest_present = 0;
+  uint32_t present_count = 0;      // GetLastPresentCount
+  bool statistics = false;         // the four below are valid
+  uint32_t on_screen_present = 0;  // DXGI_FRAME_STATISTICS::PresentCount
+  uint32_t present_refresh = 0;    // ::PresentRefreshCount
+  uint32_t sync_refresh = 0;       // ::SyncRefreshCount
+  int64_t sync_qpc = 0;            // ::SyncQPCTime
+  int64_t target_qpc = 0;          // SetNextPresentTarget's time for this frame, 0 = none
+  int64_t due_qpc = 0;             // the time it was held to (its target plus carried lateness), 0 = none
+  int64_t ready_qpc = 0;           // when it was submitted, before the hold
+};
+using PresentObserver = void (*)(const PresentObservation& observation);
+// Any thread.
+void SetPresentObserver(PresentObserver observer);
+
+// --- scheduled presents (present_schedule.h) ---------------------------------
+// The frame pacer (mc_engine/hooks/frame_pacing.cpp) has each guest frame reach
+// the screen at a time it chose: QPC ticks. Guest render thread, inside
+// D3DDevice_Swap before OnGuestSwap: the present OnGuestSwap queues carries
+// `qpc`, and the render thread holds the swap chain's present until then (after
+// the frame's GPU work is submitted and the guest released). 0 = when ready.
+void SetNextPresentTarget(int64_t qpc);
+// Whether presents are held to their targets: the renderer runs (Startup
+// succeeded) without mcla_gpu_vsync, on Windows. Any thread.
+bool SchedulesPresents();
+// What scheduled frames came to, oldest first, since the last call: per frame,
+// its target and how its readiness compared with it (ready minus target, QPC
+// ticks; negative when it was held), and -- with `on_screen`, D3D12 frame
+// statistics -- how much later than the target it reached the screen beyond
+// the learned flip delay. At most `capacity`; the rest waits for the next call.
+// One consumer thread.
+struct PresentReport {
+  int64_t target = 0;
+  int64_t late = 0;
+  bool on_screen = false;
+};
+uint32_t TakePresentReports(PresentReport* out, uint32_t capacity);
+
 // --- guest GPU fences ------------------------------------------
 // The render thread plays the guest's GPU: it holds the write of the guest's
 // retired fence from Startup to Shutdown and publishes each fence when it has

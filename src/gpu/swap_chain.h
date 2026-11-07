@@ -30,6 +30,9 @@ namespace mcla::gpu {
 
 class Device;
 class FrameRing;
+namespace backend {
+struct PresentStatistics;
+}
 
 class SwapChain {
  public:
@@ -69,6 +72,10 @@ class SwapChain {
 
   void SetVsync(bool vsync);
   void WaitForPresentSlot();  // no-op unless present wait is active
+
+  // The presentation's own report on its presents (backend.h); false without a
+  // chain or on a backend that has none.
+  bool QueryPresentStatistics(backend::PresentStatistics& out) const;
 
   plume::RenderTexture* texture(uint32_t image) const;
   plume::RenderFramebuffer* framebuffer(uint32_t image) const {

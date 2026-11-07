@@ -281,6 +281,27 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device) {
   return FAILED(reason) ? static_cast<int64_t>(static_cast<uint32_t>(reason)) : 0;
 }
 
+bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {
+  auto* chain = static_cast<plume::D3D12SwapChain*>(swap_chain);
+  if (!chain || !chain->d3d) {
+    return false;
+  }
+  UINT count = 0;
+  if (FAILED(chain->d3d->GetLastPresentCount(&count))) {
+    return false;
+  }
+  out.present_count = count;
+  DXGI_FRAME_STATISTICS stats = {};
+  out.statistics = SUCCEEDED(chain->d3d->GetFrameStatistics(&stats));
+  if (out.statistics) {
+    out.on_screen_present = stats.PresentCount;
+    out.present_refresh = stats.PresentRefreshCount;
+    out.sync_refresh = stats.SyncRefreshCount;
+    out.sync_qpc = stats.SyncQPCTime.QuadPart;
+  }
+  return true;
+}
+
 namespace {
 
 // The entry of Windows' graphics settings for this exe: the value named by the exe's full path in

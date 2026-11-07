@@ -129,6 +129,10 @@ void SwapChain::WaitForPresentSlot() {
   }
 }
 
+bool SwapChain::QueryPresentStatistics(backend::PresentStatistics& out) const {
+  return swap_chain_ && backend::QueryPresentStatistics(swap_chain_.get(), out);
+}
+
 plume::RenderTexture* SwapChain::texture(uint32_t image) const {
   return swap_chain_->getTexture(image);
 }

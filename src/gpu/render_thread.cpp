@@ -10,6 +10,7 @@
 #include <rex/thread.h>
 
 #include "cycles.h"
+#include "present_schedule.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -70,6 +71,12 @@ void RenderThread::Main() {
   uint32_t records_since_clock = 0;
   ThreadLoad& load = CurrentThreadLoad();
   while (!stream_.stopped()) {
+    // A held present goes out within a record's time of when it is due.
+    const int64_t due = executor_->DeferredDue();
+    if (due != 0 && QpcNow() >= due) {
+      executor_->RunDeferred();
+      continue;
+    }
     const RecordHeader* record = stream_.Next();
     if (record) {
       executor_->Execute(*record, reinterpret_cast<const uint8_t*>(record + 1));
@@ -79,10 +86,23 @@ void RenderThread::Main() {
       if (sync) {
         stream_.MarkExecuted(sequence);
       }
-      if (++records_since_clock < kRecordsPerClockRead) {
+      if (due == 0 && ++records_since_clock < kRecordsPerClockRead) {
         continue;
       }
       records_since_clock = 0;
+    } else if (due != 0) {
+      // Nothing to execute but the held present: sleep to a millisecond before
+      // it (a record arriving wakes the wait), then yield the rest away.
+      const int64_t per_ms = QpcFrequency() / 1000;
+      const int64_t remaining = due - QpcNow();
+      if (remaining > 2 * per_ms) {
+        const uint64_t idle_start = cycles::Now();
+        stream_.WaitForWork(std::chrono::milliseconds((remaining - per_ms) / per_ms));
+        load.AddIdle(cycles::Now() - idle_start);
+      } else {
+        std::this_thread::yield();
+      }
+      continue;
     } else {
       const auto now = Clock::now();
       if (now < next_idle) {

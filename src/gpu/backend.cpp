@@ -217,6 +217,10 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DeviceRemovedReason(device));
 }
 
+bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {
+  return MCLA_GPU_ACTIVE(QueryPresentStatistics(swap_chain, out));
+}
+
 NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(NativeDeviceOf(device));
 }

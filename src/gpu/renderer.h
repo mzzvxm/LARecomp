@@ -69,6 +69,7 @@
 #include "pipelines.h"
 #include "post.h"
 #include "present.h"
+#include "present_schedule.h"
 #include "render_scale.h"
 #include "render_thread.h"
 #include "resolve.h"
@@ -162,6 +163,15 @@ class Renderer final : public RenderThread::Executor {
   void Execute(const RecordHeader& header, const uint8_t* payload) override;
   void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);
   void OnIdle() override;
+  int64_t DeferredDue() const override { return deferred_.pending ? deferred_.due : 0; }
+  void RunDeferred() override { FlushDeferredPresent(/*wait=*/false); }
+  // The swap chain's present of a submitted frame, and what follows it for a guest frame:
+  // the presentation's statistics for the scheduled presents and the present observer.
+  // `target` the frame's plan (0 = none), `due` the time it was held to (0 = none).
+  void PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
+                  int64_t ready, uint64_t guest_present);
+  // A held present (deferred_) goes out: at once, or with `wait` not before its time.
+  void FlushDeferredPresent(bool wait);
   void ExecuteFence(const FenceRecord& record);
   // The guest frame's open list, opening it (and starting the frame's
   // timestamps and the scene's frame) on the first scene record. Null when the
@@ -238,6 +248,22 @@ class Renderer final : public RenderThread::Executor {
   bool tail_short_ = false;
   bool tail_open_ = false;
   std::chrono::steady_clock::time_point tail_start_{};
+  // Scheduled presents (gpu.h SetNextPresentTarget): the due time of the guest
+  // present being executed (0 = none), and a guest frame that is submitted and
+  // waits for its time. The render thread loop presents it then (RunDeferred),
+  // executing the next frame's records meanwhile; the next present, a rebuild or
+  // the shutdown present it first.
+  int64_t present_target_ = 0;
+  struct DeferredPresent {
+    bool pending = false;
+    uint32_t image = 0;
+    int64_t target = 0;  // the frame's plan
+    int64_t due = 0;     // when it goes out (present_schedule.h Due)
+    int64_t ready = 0;
+    uint64_t guest_present = 0;
+  };
+  DeferredPresent deferred_;
+  PresentSchedule schedule_;
   uint64_t early_releases_ = 0;
   uint64_t presented_ = 0;
   uint64_t guest_presents_ = 0;

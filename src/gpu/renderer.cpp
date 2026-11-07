@@ -15,6 +15,7 @@
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 
+#include "backend.h"
 #include "gpu.h"
 #include "guest_capture.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -121,6 +122,11 @@ std::atomic<uint64_t> g_guest_locks_on_destinations{0};
 // The swap chain's size (width << 32 | height), set at Initialize and after
 // each rebuild, for gpu.h PreviewRenderScale; 0 before.
 std::atomic<uint64_t> g_window_size{0};
+
+// gpu.h SetPresentObserver.
+std::atomic<mcla::gpu::PresentObserver> g_present_observer{nullptr};
+// gpu.h SetNextPresentTarget: the due time OnGuestSwap hands the next present.
+std::atomic<int64_t> g_next_present_target{0};
 
 void PublishWindowSize(uint32_t width, uint32_t height) {
   g_window_size.store(uint64_t(width) << 32 | height, std::memory_order_relaxed);
@@ -352,6 +358,9 @@ void Renderer::Shutdown() {
   trace_.Finish();
   // Nothing reads or watches guest memory any more.
   guest_memory_.Shutdown();
+  // A frame held to its time is not presented any more: presenting from here
+  // could wait on the window this thread is closing.
+  deferred_ = {};
   // A guest frame the render thread was recording when it stopped: its list is
   // closed without executing, now -- closing it after the components below
   // destroyed what it names is a use after free (a D3D12 Close reads every
@@ -435,7 +444,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       present_.OnGuestPresent(*reinterpret_cast<const PresentRecord*>(payload));
       // The guest waits for this record (kRecordSync); ReleaseGuest may let it go sooner.
       release_sequence_ = (header.flags & kRecordSync) != 0 ? header.sequence : 0;
+      present_target_ = reinterpret_cast<const PresentRecord*>(payload)->target_qpc;
       ExecutePresent(PresentSource::kGuest);
+      present_target_ = 0;
       release_sequence_ = 0;
       return;
     case RecordType::kDraw:
@@ -642,7 +653,67 @@ bool Renderer::RebuildSwapChain() {
   return true;
 }
 
+void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
+                          int64_t ready, uint64_t guest_present) {
+  if (!swap_chain_.Present(image)) {
+    // DXGI and Vulkan both report a chain that no longer matches the window
+    // here; anything else that fails here is the device.
+    if (!device_.CheckLost("swap chain present")) {
+      resize_requested_.store(true, std::memory_order_release);
+    }
+  }
+  if (source != PresentSource::kGuest) {
+    return;
+  }
+  const PresentObserver observer = g_present_observer.load(std::memory_order_acquire);
+  if (target == 0 && !observer) {
+    return;
+  }
+  backend::PresentStatistics stats;
+  const bool have_stats = swap_chain_.QueryPresentStatistics(stats);
+  if (target != 0) {
+    schedule_.NotePresented(have_stats ? stats.present_count : 0, target, due, ready);
+  }
+  if (have_stats && stats.statistics) {
+    schedule_.NoteOnScreen(stats.on_screen_present, stats.sync_qpc);
+  }
+  if (observer) {
+    PresentObservation observation;
+    observation.guest_present = guest_present;
+    if (have_stats) {
+      observation.present_count = stats.present_count;
+      observation.statistics = stats.statistics;
+      observation.on_screen_present = stats.on_screen_present;
+      observation.present_refresh = stats.present_refresh;
+      observation.sync_refresh = stats.sync_refresh;
+      observation.sync_qpc = stats.sync_qpc;
+    }
+    observation.target_qpc = target;
+    observation.due_qpc = due;
+    observation.ready_qpc = ready;
+    observer(observation);
+  }
+}
+
+void Renderer::FlushDeferredPresent(bool wait) {
+  if (!deferred_.pending) {
+    return;
+  }
+  const DeferredPresent d = deferred_;
+  deferred_ = {};
+  if (device_.IsLost()) {
+    return;
+  }
+  if (wait) {
+    WaitUntilQpc(d.due);
+  }
+  PresentNow(d.image, PresentSource::kGuest, d.target, d.due, d.ready, d.guest_present);
+}
+
 void Renderer::ExecutePresent(PresentSource source) {
+  // A held present goes first: its back buffer is the one ahead of this
+  // frame's in the chain, and nothing else may touch the chain before it.
+  FlushDeferredPresent(/*wait=*/true);
   tail_open_ = false;
   if (device_.IsLost()) {
     // Nothing recorded will run: drop the guest frame being recorded.
@@ -714,12 +785,20 @@ void Renderer::ExecutePresent(PresentSource source) {
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
 
-  if (!swap_chain_.Present(image)) {
-    // DXGI and Vulkan both report a chain that no longer matches the window
-    // here; anything else that fails here is the device.
-    if (!device_.CheckLost("swap chain present")) {
-      resize_requested_.store(true, std::memory_order_release);
-    }
+  // A scheduled guest frame (gpu.h SetNextPresentTarget) goes to the screen at
+  // its time: submitted now, presented by the render thread loop when the time
+  // comes (RunDeferred), so this thread executes the next frame's records
+  // meanwhile and neither the guest nor the GPU waits on the hold.
+  const int64_t ready_qpc = QpcNow();
+  // When to present it (present_schedule.h): its time plus the lateness carried
+  // from late frames before it; 0 = at once.
+  const int64_t due = source == PresentSource::kGuest && present_target_ != 0
+                          ? schedule_.Due(present_target_, ready_qpc)
+                          : 0;
+  if (due != 0) {
+    deferred_ = {true, image, present_target_, due, ready_qpc, guest_presents_ + 1};
+  } else {
+    PresentNow(image, source, present_target_, 0, ready_qpc, guest_presents_ + 1);
   }
   capture_.OnPresented();
   frames_.Advance();
@@ -835,6 +914,9 @@ void Renderer::ReportFrameStats() {
       locks_on_destinations, fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
+  if (const std::string schedule = schedule_.TakeSummary(); !schedule.empty()) {
+    REXLOG_INFO("[gpu] {}", schedule);
+  }
   REXLOG_INFO("[gpu] {}", post_.TakeSummary());
   if (flicker_probe_.enabled()) {
     REXLOG_INFO("[gpu] {}", flicker_probe_.TakeSummary());
@@ -1155,9 +1237,27 @@ void OnGuestFrameEnd(uint8_t* base) {
 }
 
 void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
+  const int64_t target = g_next_present_target.exchange(0, std::memory_order_relaxed);
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
-    c->Present(base, device, front_buffer);
+    c->Present(base, device, front_buffer, target);
   }
+}
+
+void SetPresentObserver(PresentObserver observer) {
+  g_present_observer.store(observer, std::memory_order_release);
+}
+
+void SetNextPresentTarget(int64_t qpc) {
+  g_next_present_target.store(qpc, std::memory_order_relaxed);
+}
+
+bool SchedulesPresents() {
+#if defined(_WIN32)
+  return g_capture_active.load(std::memory_order_acquire) != nullptr &&
+         !REXCVAR_GET(mcla_gpu_vsync);
+#else
+  return false;
+#endif
 }
 
 void OnGuestFenceInserted(uint32_t device, uint32_t value) {
