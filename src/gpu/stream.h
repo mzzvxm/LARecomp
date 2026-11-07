@@ -57,6 +57,9 @@ class CommandStream {
   static constexpr uint32_t kDefaultCapacity = 64u << 20;
   static constexpr uint32_t kPublishRecords = 32;
   static constexpr uint32_t kPublishBytes = 256u << 10;
+  // While a sleeping consumer has been woken and has not run yet, the records that follow are
+  // published this many at a time (it reads whatever is published when it runs).
+  static constexpr uint32_t kWakingPublishRecords = 8;
   // The consumer gives space back once this much went by (Release).
   static constexpr uint32_t kReleaseBytes = 64u << 10;
 
@@ -171,6 +174,9 @@ class CommandStream {
   uint64_t next_sequence_ = 1;
   uint32_t unpublished_records_ = 0;
   uint64_t unpublished_bytes_ = 0;
+  // A Publish found the consumer asleep and woke it, and no later look found it awake. While set,
+  // the next records do not wake it again (Commit).
+  bool consumer_woken_ = false;
   std::atomic<uint64_t> bytes_written_{0};  // stored under producer_lock_ only
   std::atomic<uint64_t> producer_waits_{0};
 

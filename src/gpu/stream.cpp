@@ -103,6 +103,7 @@ bool CommandStream::Initialize(uint32_t capacity) {
   next_sequence_ = 1;
   unpublished_records_ = 0;
   unpublished_bytes_ = 0;
+  consumer_woken_ = false;
   published_tail_.store(0, std::memory_order_relaxed);
   head_.store(0, std::memory_order_relaxed);
   executed_sequence_.store(0, std::memory_order_relaxed);
@@ -183,9 +184,21 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   s.bytes_written_.store(s.bytes_written_.load(std::memory_order_relaxed) + record_size_,
                          std::memory_order_relaxed);
   if (publication != Publication::kBatched || s.unpublished_records_ >= kPublishRecords ||
-      s.unpublished_bytes_ >= kPublishBytes ||
-      s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
+      s.unpublished_bytes_ >= kPublishBytes) {
     s.Publish(s.tail_);
+  } else if (s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
+    // CHECK: not built or run; the effect is read from the guest thread's frame time with 4 logical
+    // processors, and from "consumer wakes" per frame (the stats line), which must not change.
+    // The consumer is asleep: the first record it can read wakes it. It needs 50 to 100 us to
+    // run (longer with every core busy) and the guest commits a record about every 1.4 us, so
+    // publishing each of those records too was a locked store, the wake mutex and a notify per
+    // record for a consumer that was already on its way. They join one batch; a thread that
+    // keeps sleeping is woken again after a few records.
+    if (!s.consumer_woken_ || s.unpublished_records_ >= kWakingPublishRecords) {
+      s.Publish(s.tail_);
+    }
+  } else {
+    s.consumer_woken_ = false;
   }
   return sequence;
 }
@@ -220,6 +233,9 @@ void CommandStream::Publish(uint64_t tail) {
       std::lock_guard lock(wake_mutex_);
     }
     work_cv_.notify_one();
+    consumer_woken_ = true;
+  } else {
+    consumer_woken_ = false;
   }
 }
 
