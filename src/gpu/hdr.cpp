@@ -228,6 +228,10 @@ bool WantsHdr(Mode mode, bool display_known, bool display_hdr) {
   return mode == Mode::kOn || (mode == Mode::kAuto && display_known && display_hdr);
 }
 
+// CHECK: not run. The debounce makes Windows' HDR switch take two polls (1 to 2 s) to reach
+// SwitchWanted: the log line "the window's display reports HDR on|off ..." appears when the
+// state is believed, then "hdr: switching" within a frame. An output that reports nothing for a
+// moment while Windows changes its mode (known false) is treated the same way.
 // Reads the display and publishes it; logs what changed. `immediate`: what it says is published at
 // once (the first answer, or a setting that has just left off); otherwise a change of its state
 // waits for the next poll to say the same, a second later.

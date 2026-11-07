@@ -259,6 +259,9 @@ class VulkanReducer final : public Reducer {
   void BeginSwapChainChange() override { mutex_.lock(); }
 
   // Under the exclusive hold BeginSwapChainChange took: nothing else reads swap_chain_.
+  // CHECK: not run. After an HDR switch on Vulkan with Reflex on, "vkSetLatencySleepModeNV failed on
+  // the rebuilt swap chain" must not appear and the markers must go on (no validation error naming
+  // the old swapchain).
   void SwapChainReplaced(plume::RenderSwapChain* chain) override {
     swap_chain_ = static_cast<plume::VulkanSwapChain*>(chain);
   }

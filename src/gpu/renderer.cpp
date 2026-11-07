@@ -799,6 +799,12 @@ void Renderer::AdoptSwapChain() {
   PublishWindowSize(swap_chain_.width(), swap_chain_.height());
 }
 
+// CHECK: not run (written without a build). Look for, in the log of a switch: "hdr: switching A -> B
+// (why)" then "hdr: switched A -> B in N ms (passes, swap chain, layers)"; a refusal says "could not
+// switch" with the reason above it; the first frames after a switch to HDR may show the scene at
+// paper white (stage 2) until the HDR variants' pipelines are made in the background (they are not
+// in the pipeline cache when the session started without HDR: the records naming them are dropped
+// at load, pipelines.cpp); the picture should flicker at most once.
 bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
   using Clock = std::chrono::steady_clock;
   const auto millis = [](Clock::time_point from, Clock::time_point to) {

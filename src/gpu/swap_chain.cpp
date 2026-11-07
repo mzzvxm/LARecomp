@@ -94,6 +94,12 @@ bool SwapChain::MakeChain(bool hdr10) {
   return true;
 }
 
+// CHECK: not run (written without a build). D3D12: DXGI makes the chain for the window only once the
+// old one is fully released (the framebuffers, the back buffer references, Streamline's wrapper);
+// CreateSwapChainForHwnd failing here shows as "CreateSwapChainForHwnd failed" on stderr and the
+// old format coming back (kKept) or "the swap chain" errors (kLost). Vulkan: the old chain and its
+// surface are destroyed straight after FrameRing::WaitIdle, as Rebuild does before it resizes; the
+// validation layer is the judge (VUID-vkDestroySwapchainKHR, binary semaphores of a present).
 SwapChain::Recreated SwapChain::Recreate(bool hdr10) {
   if (!device_) {
     return Recreated::kLost;

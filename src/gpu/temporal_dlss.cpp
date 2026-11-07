@@ -1654,6 +1654,10 @@ bool SwapChainUpgradePending() {
          g_swap_chain_again.load(std::memory_order_acquire);
 }
 
+// CHECK: not run. After an HDR switch on D3D12 with Streamline: sl.log says "Upgrading IDXGISwapChain
+// to use SL proxy" again and the game log "Streamline's swap chain wrapper is in" a second time,
+// no "presentCommon() was not observed", and no refcount warning at exit (the old wrapper was
+// released with its chain).
 void SwapChainRecreated() {
   // Before the first offer the pending flag does it all (Streamline is still starting, or the
   // first present will offer the chain that exists then).
