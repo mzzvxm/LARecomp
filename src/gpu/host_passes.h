@@ -110,6 +110,10 @@ class HostPasses {
                                                         const plume::RenderBlendDesc& blend,
                                                         uint32_t sample_count, const char* name);
 
+  // The pass layout (bindless texture sets, samplers, push constants), for a pipeline made with the
+  // overload that takes a layout and a sample count. After Initialize.
+  const plume::RenderPipelineLayout& layout() const { return *layout_; }
+
   // Binds the layout, the four texture sets and the sampler set on `list`.
   void Bind(plume::RenderCommandList* list) const;
 

@@ -2070,10 +2070,13 @@ const MenuDef kMenus[] = {
      "RxNativeMenu",
      kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    // The paused world is not made brighter than its white (the HIGHLIGHTS row's change shows once
-    // the game is resumed), which this line says: it is the only help text a menu has.
-    // CHECK: the 38 characters fit under the list.
-    {"PM_RxTabGpuHdr", "HDR", "HDR levels. Highlights show on resume.",
+    // The paused world behind the menu shows the highlights too (the UI is a layer in the pause
+    // view as well, gpu/frame_layers.h), so the HIGHLIGHTS row's change is seen at once. This line
+    // says so: it is the only help text a menu has.
+    // CHECK: the 40 characters fit under the list (the CAMERA line is as long), and the pause menu
+    // shows the highlights on every screen (a screen whose UI cannot be separated shows the SDR
+    // picture; the frame layers' log says which).
+    {"PM_RxTabGpuHdr", "HDR", "HDR levels. The paused world shows them.",
      "RxGpuHdrMenu",
      kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif

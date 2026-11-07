@@ -15,9 +15,39 @@
 //   underlay when the frame has one; the UI stays under it). With a debug view
 //   (mcla_gpu_hdr_layers_view) the pass shows one layer instead.
 //
-// Both draw 1:1 from the image's origin: the pixel the shader sees is the texel it reads.
+// LAYERS_RESOLVE = 1 (layers_resolve_ps): a multisampled target of the game (the pause menu's and the
+//   map's UI target, drawn at the host's MSAA level) averaged into a single-sampled image: every
+//   sample of the pixel read and the mean written, which for the premultiplied UI layer is the
+//   pixel's colour and coverage and for the opaque underlay the picture itself.
+//
+// All of them draw 1:1 from the image's origin: the pixel the shader sees is the texel it reads.
 
 #include "host_pass_common.hlsli"
+
+#if defined(LAYERS_RESOLVE) && LAYERS_RESOLVE
+
+struct ResolvePush {
+  uint source;   // the multisampled target's bindless slot (Texture2DMS, space 1)
+  uint samples;  // its sample count: 2, 4 or 8
+  uint2 reserved;
+};
+
+#ifdef __spirv__
+[[vk::push_constant]] ConstantBuffer<ResolvePush> g_push;
+#else
+ConstantBuffer<ResolvePush> g_push : register(b0, space4);
+#endif
+
+float4 main(float4 position : SV_Position) : SV_Target {
+  const int2 at = int2(position.xy);
+  float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+  for (uint i = 0u; i < g_push.samples; ++i) {
+    sum += g_textures_ms[g_push.source].Load(at, i);
+  }
+  return sum / float(max(g_push.samples, 1u));
+}
+
+#else
 
 struct LayersPush {
   uint underlay;  // the scene: R8G8B8A8_UNORM underlay, or (compose) the float scene; a bindless 2D slot
@@ -71,3 +101,5 @@ float4 main(float4 position : SV_Position) : SV_Target {
   return underlay;
 #endif
 }
+
+#endif  // LAYERS_RESOLVE

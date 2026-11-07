@@ -37,6 +37,7 @@
 #include "fsr_rcas_hdr_ps.hlsl.dxil.h"
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
+#include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
 #include "overlay_hdr_ps.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
@@ -87,6 +88,7 @@
 #include "fsr_rcas_hdr_ps.hlsl.spirv.h"
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
+#include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
 #include "overlay_hdr_ps.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
@@ -170,6 +172,11 @@ inline HostShaderBlob FsrRcasHdrPixelShader() {
 // guest's target, and the HDR present's compose of the underlay and the UI layer.
 inline HostShaderBlob LayersRestorePixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(layers_restore_ps);
+}
+
+// The same layers' copy out of a multisampled target: the mean of its samples.
+inline HostShaderBlob LayersResolvePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(layers_resolve_ps);
 }
 
 inline HostShaderBlob HdrComposePixelShader() {

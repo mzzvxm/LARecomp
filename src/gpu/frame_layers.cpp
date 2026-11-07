@@ -22,7 +22,7 @@ constexpr plume::RenderFormat kLayerFormat = plume::RenderFormat::R8G8B8A8_UNORM
 
 const char* CauseName(FrameLayers::Cause cause) {
   switch (cause) {
-    case FrameLayers::Cause::kFormat: return "the UI target is not a single-sampled R8G8B8A8 target";
+    case FrameLayers::Cause::kFormat: return "the marker's target is not a single-sampled R8G8B8A8 target";
     case FrameLayers::Cause::kBlend: return "a draw into the UI target with a blend that is not \"over\"";
     case FrameLayers::Cause::kOpaque: return "a draw into the UI target with blending off after the layer started";
     case FrameLayers::Cause::kClear: return "a clear of the UI target after the layer started";
@@ -31,6 +31,8 @@ const char* CauseName(FrameLayers::Cause cause) {
     case FrameLayers::Cause::kImage: return "an image could not be made";
     case FrameLayers::Cause::kResolve: return "the UI target's resolve was not a copy, had no destination or moved the pixels";
     case FrameLayers::Cause::kCopy: return "a copy, clear or draw could not be recorded";
+    case FrameLayers::Cause::kPauseTarget: return "the pause view's UI target cannot be separated";
+    case FrameLayers::Cause::kPipeline: return "a pipeline for a multisampled UI target could not be made";
     case FrameLayers::Cause::kCount: break;
   }
   return "?";
@@ -78,6 +80,20 @@ BlendKind KindOf(const plume::RenderBlendDesc& b) {
   return BlendKind::kOther;
 }
 
+// The scene under the UI: colour and alpha both result = underlay x (1 - target alpha) + target.
+plume::RenderBlendDesc RestoreBlend() {
+  plume::RenderBlendDesc blend;
+  blend.blendEnabled = true;
+  blend.srcBlend = plume::RenderBlend::INV_DEST_ALPHA;
+  blend.dstBlend = plume::RenderBlend::ONE;
+  blend.blendOp = plume::RenderBlendOperation::ADD;
+  blend.srcBlendAlpha = plume::RenderBlend::INV_DEST_ALPHA;
+  blend.dstBlendAlpha = plume::RenderBlend::ONE;
+  blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
+  blend.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
+  return blend;
+}
+
 }  // namespace
 
 FrameLayers::~FrameLayers() {
@@ -101,10 +117,16 @@ void FrameLayers::Shutdown() {
   ui_ = HostImage{};
   restore_pipeline_.reset();
   restore_shader_.reset();
+  for (std::unique_ptr<plume::RenderPipeline>& pipeline : restore_ms_) {
+    pipeline.reset();
+  }
+  resolve_pipeline_.reset();
+  resolve_shader_.reset();
   presented_ = Frame{};
   captured_ = Frame{};
   phase_ = Phase::kIdle;
   target_ = nullptr;
+  pause_view_ = false;
   active_ = false;
   initialized_ = false;
   passes_ = nullptr;
@@ -127,6 +149,7 @@ void FrameLayers::Request(uint32_t requester, bool wanted) {
     active_ = false;
     phase_ = Phase::kIdle;
     target_ = nullptr;
+    pause_view_ = false;
     captured_ = Frame{};
     presented_ = Frame{};
     idle_frames_ = 0;
@@ -155,23 +178,27 @@ bool FrameLayers::MakePipelines() {
   if (!restore_shader_) {
     return false;
   }
-  // The scene under the UI: colour and alpha both result = underlay x (1 - target alpha) + target.
-  plume::RenderBlendDesc blend;
-  blend.blendEnabled = true;
-  blend.srcBlend = plume::RenderBlend::INV_DEST_ALPHA;
-  blend.dstBlend = plume::RenderBlend::ONE;
-  blend.blendOp = plume::RenderBlendOperation::ADD;
-  blend.srcBlendAlpha = plume::RenderBlend::INV_DEST_ALPHA;
-  blend.dstBlendAlpha = plume::RenderBlend::ONE;
-  blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
-  blend.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
-  restore_pipeline_ = passes_->CreatePipeline(*restore_shader_, kLayerFormat, blend,
+  restore_pipeline_ = passes_->CreatePipeline(*restore_shader_, kLayerFormat, RestoreBlend(),
                                               "frame layers restore");
   if (!restore_pipeline_) {
     restore_shader_.reset();
     REXLOG_ERROR("[gpu] frame layers: the pipeline that puts the scene back under the UI could "
                  "not be made; the HDR output shows the front buffer as it is (stage 1)");
     return false;
+  }
+  // The pass that averages a multisampled target's samples into an image (the pause view's UI
+  // target when MSAA is on). Its failure leaves that view without layers and nothing else.
+  const HostShaderBlob resolve = LayersResolvePixelShader();
+  resolve_shader_ = passes_->CreateShader(resolve.data, resolve.size, resolve.name);
+  if (resolve_shader_) {
+    resolve_pipeline_ =
+        passes_->CreatePipeline(*resolve_shader_, kLayerFormat, "frame layers resolve");
+  }
+  if (!resolve_pipeline_) {
+    resolve_shader_.reset();
+    REXLOG_ERROR("[gpu] frame layers: the pass that averages a multisampled UI target could not be "
+                 "made; the pause menu and the map keep the front buffer as it is while MSAA is on "
+                 "(HDR stage 1)");
   }
   REXLOG_INFO("[gpu] frame layers: on (requested by {}{})",
               (requesters_ & kRequesterHdr) ? "HDR output" : "",
@@ -182,6 +209,9 @@ bool FrameLayers::MakePipelines() {
 void FrameLayers::BeginFrame() {
   phase_ = Phase::kIdle;
   target_ = nullptr;
+  target_samples_ = 1;
+  pause_view_ = false;
+  pause_opaque_draws_ = 0;
   captured_ = Frame{};
 }
 
@@ -229,6 +259,9 @@ bool FrameLayers::CopyFromTarget(plume::RenderCommandList* list, HostImage& imag
   if (!t.texture || !image.texture || image.width != host_width_ || image.height != host_height_) {
     return false;
   }
+  if (t.host_samples > 1) {
+    return ResolveTargetInto(list, image);  // a texture copy cannot take samples to one sample
+  }
   // The copy covers the whole image, which also initialises a new one (D3D12 debug layer id
   // 1422: a render target made without zeroing is cleared, discarded or wholly copied first).
   const plume::RenderTextureBarrier before[] = {
@@ -247,9 +280,55 @@ bool FrameLayers::CopyFromTarget(plume::RenderCommandList* list, HostImage& imag
   return true;
 }
 
+bool FrameLayers::ResolveTargetInto(plume::RenderCommandList* list, HostImage& image) {
+  EdramTargets::Target& t = *target_;
+  uint32_t slot = 0xFFFFFFFFu;
+  uint32_t stencil_slot = 0xFFFFFFFFu;
+  if (!resolve_pipeline_ || !t.texture || !image.texture || image.width != host_width_ ||
+      image.height != host_height_ || !edram_->SampleSlots(t, &slot, &stencil_slot)) {
+    return false;
+  }
+  // The pass reads the samples as a texture; the image is drawn whole (host_width_ x host_height_ is
+  // its size) and ends in SHADER_READ, like the copy's.
+  edram_->Transition(list, t, plume::RenderTextureLayout::SHADER_READ);
+  const ResolvePush push{slot, t.host_samples, {0, 0}};
+  passes_->DrawInto(list, image, resolve_pipeline_.get(), &push, sizeof(push));
+  return true;
+}
+
+plume::RenderPipeline* FrameLayers::RestorePipelineFor(uint32_t samples) const {
+  switch (samples) {
+    case 1: return restore_pipeline_.get();
+    case 2: return restore_ms_[0].get();
+    case 4: return restore_ms_[1].get();
+    case 8: return restore_ms_[2].get();
+    default: return nullptr;
+  }
+}
+
+bool FrameLayers::EnsureSamplePipelines(uint32_t samples) {
+  if (samples <= 1) {
+    return true;
+  }
+  if (!resolve_pipeline_ || !restore_shader_ || (samples != 2 && samples != 4 && samples != 8)) {
+    return false;
+  }
+  std::unique_ptr<plume::RenderPipeline>& pipeline =
+      restore_ms_[samples == 2 ? 0 : samples == 4 ? 1 : 2];
+  if (!pipeline) {
+    // The same pass as the 1x put-back, into a target of this many samples: it runs once per pixel
+    // and writes every sample the triangle covers, each blended with its own coverage.
+    pipeline = passes_->CreatePipeline(passes_->layout(), *restore_shader_, kLayerFormat,
+                                       RestoreBlend(), samples,
+                                       "frame layers restore (multisampled)");
+  }
+  return pipeline != nullptr;
+}
+
 bool FrameLayers::DrawRestore(plume::RenderCommandList* list) {
   EdramTargets::Target& t = *target_;
-  if (!restore_pipeline_ || !underlay_.texture) {
+  plume::RenderPipeline* pipeline = RestorePipelineFor(t.host_samples);
+  if (!pipeline || !underlay_.texture) {
     return false;
   }
   edram_->Transition(list, t, plume::RenderTextureLayout::COLOR_WRITE);
@@ -264,7 +343,7 @@ bool FrameLayers::DrawRestore(plume::RenderCommandList* list) {
   const plume::RenderRect scissor(0, 0, int32_t(host_width_), int32_t(host_height_));
   list->setScissors(&scissor, 1);
   passes_->Bind(list);
-  list->setPipeline(restore_pipeline_.get());
+  list->setPipeline(pipeline);
   const Push push{underlay_.slot, 0, 0, 0};
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
@@ -281,11 +360,18 @@ void FrameLayers::OnComposite(plume::RenderCommandList* list, EdramTargets::Targ
   if (!active_) {
     return;
   }
+  if (pause_view_) {
+    // This frame's pause view is armed or running: the menus' UI phase repeats the marker (once per
+    // tile), so this is that repeat, not a second marker. Nothing changes.
+    ++stats_.markers_ignored;
+    return;
+  }
   if (phase_ == Phase::kStarted && list) {
     PutBack(list, Cause::kMarker);
   }
   phase_ = Phase::kIdle;
   target_ = nullptr;
+  target_samples_ = 1;
   if (!target || !list || width == 0 || height == 0) {
     return;
   }
@@ -302,11 +388,15 @@ void FrameLayers::OnComposite(plume::RenderCommandList* list, EdramTargets::Targ
   guest_height_ = std::min(height, target->height);
   host_width_ = target->scale.Edge(guest_width_);
   host_height_ = target->scale.Edge(guest_height_);
+  // What a pause view's UI target will be made from if this target is resolved with no UI in it.
+  marker_key_ = target->key;
+  marker_guest_width_ = guest_width_;
+  marker_guest_height_ = guest_height_;
   phase_ = Phase::kUi;
 }
 
 bool FrameLayers::Region(EdramKey* target, uint32_t* width, uint32_t* height) const {
-  if (phase_ != Phase::kUi || !target_) {
+  if (phase_ != Phase::kUi || !target_ || pause_view_) {
     return false;
   }
   *target = ui_key_;
@@ -315,9 +405,65 @@ bool FrameLayers::Region(EdramKey* target, uint32_t* width, uint32_t* height) co
   return true;
 }
 
+bool FrameLayers::IsPauseUiKey(const EdramKey& key) const {
+  // The pause view's UI target: colour of the marker's format and pitch that the guest multisamples
+  // (k_8_8_8_8 at the marker's pitch, 4 samples, in every pause menu, race pause and map measured).
+  return key.depth == 0 && key.samples > 1 && key.pitch == marker_key_.pitch &&
+         key.format == marker_key_.format;
+}
+
+bool FrameLayers::AdoptPauseTarget(const EdramKey& key, uint32_t host_samples) {
+  const EdramTargets::Target* found = edram_->Find(key);
+  if (!found || !found->texture) {
+    // Not made yet (the first draw of the first pause view makes it) or released: this draw goes on
+    // as it is and the next one looks again.
+    return false;
+  }
+  // Find hands the target out read-only so that nobody creates one; this is the frame's UI target
+  // to write into, as the marker's was.
+  EdramTargets::Target* target = const_cast<EdramTargets::Target*>(found);
+  const uint32_t samples = target->host_samples;
+  const uint32_t guest_width = std::min(marker_guest_width_, target->width);
+  const uint32_t guest_height = std::min(marker_guest_height_, target->height);
+  if (target->format != kLayerFormat || samples != host_samples ||
+      (samples != 1 && samples != 2 && samples != 4 && samples != 8) || guest_width == 0 ||
+      guest_height == 0) {
+    phase_ = Phase::kFailed;
+    Fail(Cause::kPauseTarget,
+         std::format("{}, {} host samples, {}x{} guest pixels", DescribeEdramKey(key), samples,
+                     guest_width, guest_height));
+    return false;
+  }
+  target_ = target;
+  ui_key_ = key;
+  target_samples_ = samples;
+  guest_width_ = guest_width;
+  guest_height_ = guest_height;
+  host_width_ = target->scale.Edge(guest_width_);
+  host_height_ = target->scale.Edge(guest_height_);
+  pause_opaque_draws_ = 0;
+  phase_ = Phase::kUi;
+  ++stats_.pause_adopted;
+  if (!pause_logged_) {
+    pause_logged_ = true;
+    REXLOG_INFO("[gpu] frame layers: the pause view's UI target {} ({} host samples, {}x{} host "
+                "pixels) is separated like the game's UI target in play, so the pause menu and "
+                "the map can show the scene above paper white",
+                DescribeEdramKey(key), samples, host_width_, host_height_);
+  }
+  return true;
+}
+
 FrameLayers::DrawAction FrameLayers::ClassifyDraw(const EdramKey& color0, uint32_t host_samples,
                                                   uint64_t ps_identity, PipelineKey& key) {
-  if (!(color0 == ui_key_) || host_samples != 1) {
+  if (phase_ == Phase::kPause) {
+    // The marker's target was resolved with no UI in it: the UI is drawn in the pause view's own
+    // target. Its first draw makes it this frame's UI target; any other draw is not ours.
+    if (!IsPauseUiKey(color0) || !AdoptPauseTarget(color0, host_samples)) {
+      return DrawAction::kNone;
+    }
+  }
+  if (!(color0 == ui_key_) || host_samples != target_samples_) {
     return DrawAction::kNone;
   }
   const plume::RenderBlendDesc blend = UnpackBlend(key.blend[0]);
@@ -327,7 +473,10 @@ FrameLayers::DrawAction FrameLayers::ClassifyDraw(const EdramKey& color0, uint32
   }
   if (phase_ == Phase::kUi) {
     if (kind == BlendKind::kOpaque) {
-      return DrawAction::kNone;  // part of the scene so far: the underlay will have it
+      // Part of the scene so far: the underlay will have it. In the pause view this is the copy of
+      // the tone-mapped picture that the layers' float scene stands for.
+      pause_opaque_draws_ += pause_view_ ? 1u : 0u;
+      return DrawAction::kNone;
     }
     if (kind != BlendKind::kOver) {
       phase_ = Phase::kFailed;
@@ -339,6 +488,11 @@ FrameLayers::DrawAction FrameLayers::ClassifyDraw(const EdramKey& color0, uint32
     if (!EnsureImages()) {
       phase_ = Phase::kFailed;
       Fail(Cause::kImage, std::format("{}x{}", host_width_, host_height_));
+      return DrawAction::kNone;
+    }
+    if (!EnsureSamplePipelines(target_samples_)) {
+      phase_ = Phase::kFailed;
+      Fail(Cause::kPipeline, std::format("{} host samples", target_samples_));
       return DrawAction::kNone;
     }
   } else if (kind != BlendKind::kOver) {
@@ -406,7 +560,8 @@ void FrameLayers::PutBack(plume::RenderCommandList* list, Cause cause) {
 }
 
 void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
-  if (!ui_phase()) {
+  if (!ui_phase() || phase_ == Phase::kPause) {
+    // (In kPause the pause view's UI target is not drawn into yet: a resolve now is not its picture.)
     return;
   }
   EdramKey source;
@@ -415,9 +570,18 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
   }
   if (phase_ == Phase::kUi) {
     // The target was resolved before any UI went into it: the scene alone (or a copy for a pause
-    // blur). Nothing was separated; draws after this are not touched.
-    phase_ = Phase::kDone;
+    // blur). Nothing was separated.
     ++stats_.resolved_unstarted;
+    if (pause_view_) {
+      phase_ = Phase::kDone;  // the pause view's own target: nothing more to wait for
+    } else {
+      // The marker's target in a pause menu, a race pause or a map: the UI is drawn in another
+      // target. The frame waits for it (the header comment); the draws into this one that follow are
+      // not touched.
+      pause_view_ = true;
+      phase_ = Phase::kPause;
+      ++stats_.pause_armed;
+    }
     return;
   }
   TextureKey destination;
@@ -438,10 +602,23 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
   captured_.hudless = &underlay_;
   captured_.ui = &ui_;
   // HDR stage 3: the float scene of this frame, when its tone map and the draws after it were
-  // made again at this region's size (hdr_tonemap.h).
-  captured_.scene = scene_source_ ? scene_source_->FinishedScene(host_width_, host_height_,
-                                                                  &captured_.scene_epoch)
-                                  : nullptr;
+  // made again at this region's size (hdr_tonemap.h). A pause view's UI target that had no opaque
+  // draw before its UI did not start from a copy of the tone-mapped picture, so the scene is not
+  // what the game shows under that UI: the 8-bit underlay stays.
+  const bool picture = !pause_view_ || pause_opaque_draws_ != 0;
+  if (!picture) {
+    ++stats_.pause_no_picture;
+    if (!pause_picture_logged_) {
+      pause_picture_logged_ = true;
+      REXLOG_INFO("[gpu] frame layers: the pause view's UI target had no draw with blending off "
+                  "before its UI, so it did not start from the tone-mapped picture; the frame keeps "
+                  "its 8-bit scene (counted, logged once)");
+    }
+  }
+  captured_.scene = (scene_source_ && picture)
+                        ? scene_source_->FinishedScene(host_width_, host_height_,
+                                                       &captured_.scene_epoch)
+                        : nullptr;
   captured_.generation = ++generation_;
   captured_.destination = destination;
   phase_ = Phase::kDone;
@@ -449,8 +626,8 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
 }
 
 bool FrameLayers::OnColorClear(plume::RenderCommandList* list, const EdramKey& key) {
-  if (!ui_phase() || !(key == ui_key_)) {
-    return false;
+  if (!ui_phase() || phase_ == Phase::kPause || !(key == ui_key_)) {
+    return false;  // (in kPause no layer has started: a clear is the scene's)
   }
   if (phase_ == Phase::kUi) {
     return false;  // the underlay is taken later: this clear is part of the scene's
@@ -465,6 +642,7 @@ void FrameLayers::EndFrame(plume::RenderCommandList* list) {
   }
   phase_ = Phase::kIdle;
   target_ = nullptr;
+  pause_view_ = false;
 }
 
 void FrameLayers::OnGuestPresent() {
@@ -606,10 +784,12 @@ std::string FrameLayers::TakeSummary() {
   }
   std::string text = std::format(
       "frame layers: {} markers, {} started, {} captured, {} resolved with no UI to separate, {} "
-      "draws separated | {} guest presents, {} with layers ({} not the front buffer, {} not "
-      "covering it) | no layers: {} | {:.1f} MiB",
+      "draws separated | pause view: {} frames waited for its UI target, {} found it, {} of "
+      "those had no picture copy under the UI, {} repeated markers ignored | {} guest presents, "
+      "{} with layers ({} not the front buffer, {} not covering it) | no layers: {} | {:.1f} MiB",
       stats_.markers, stats_.started, stats_.captured, stats_.resolved_unstarted,
-      stats_.separated_draws, stats_.presents, stats_.presents_valid, stats_.unusable_picture,
+      stats_.separated_draws, stats_.pause_armed, stats_.pause_adopted, stats_.pause_no_picture,
+      stats_.markers_ignored, stats_.presents, stats_.presents_valid, stats_.unusable_picture,
       stats_.unusable_size, failures.empty() ? "none" : failures,
       double(HeldBytes()) / double(1u << 20));
   stats_ = Stats{};

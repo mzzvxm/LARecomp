@@ -38,16 +38,37 @@
 //             of stage 1 (the same picture, the scene and the UI together).
 // Why a frame has no layers (Cause, counted per frame, logged once per cause; a blend is logged
 // once per distinct kind with the pixel shader that drew it, which is the census the stage asks
-// for): the target is not a single-sampled R8G8B8A8 target (the pause menu draws the world at 4x
-// MSAA in three tiles; its UI is in another target); a draw into it with a blend that is not
-// "over" (additive glows, multiplies, masked writes) or with blending off after the layer
-// started (its alpha is whatever the pixel shader writes, not coverage); a clear of the target
-// after the layer started; a second marker; a frame that ended with the layer started; an image
-// that could not be made; a resolve of the target that is not a copy, has no destination or moves
-// the pixels; and at the present, a front buffer that is not the picture the target was resolved
-// into (the first resolve of the target was a thumbnail or the pause blur, not the screen) or
-// reaches past what the layers cover.
+// for): the marker's target is not a single-sampled R8G8B8A8 target; a draw into it with a blend
+// that is not "over" (additive glows, multiplies, masked writes) or with blending off after the
+// layer started (its alpha is whatever the pixel shader writes, not coverage); a clear of the
+// target after the layer started; a second marker; a frame that ended with the layer started; an
+// image or a pipeline that could not be made; a resolve of the target that is not a copy, has no
+// destination or moves the pixels; and at the present, a front buffer that is not the picture the
+// target was resolved into (the first resolve of the target was a thumbnail or the pause blur, not
+// the screen) or reaches past what the layers cover.
 // A frame with no marker (loading, movies, menus with no 3D) has none either.
+//
+// The pause menu, the race pause and the map. The game draws the world and the post chain as in
+// play, so the marker is on the tone map's 1x target as always, but it resolves that target to a
+// texture before any UI goes into it and draws the UI phase in another target: colour k_8_8_8_8 at
+// the same pitch, multisampled by the guest (4 samples, in three tiles), whose first draw copies the
+// tone-mapped texture in without blending, and which the game then resolves to the front buffer.
+//   kPause    the marker's target was resolved with no UI in it. The frame waits for that UI target:
+//             the first draw into a colour target of its kind (R8G8B8A8, the marker's pitch,
+//             multisampled by the guest) adopts it as the frame's UI target, and the phases above
+//             follow on it unchanged: kUi over the copy (blending off goes on as it is), kStarted at
+//             the first "over" draw, kDone at its first resolve (the first of the three tiles: the
+//             host draws the section once at full size, so the whole target is there).
+// The adopted target has the host's MSAA level's samples (edram.h: 1 with MSAA off or an upscaler,
+// else 2, 4 or 8). At 1 it is copied as in play. Above 1 each image is the mean of the target's
+// samples (hlsl LAYERS_RESOLVE: for the premultiplied UI layer that is the pixel's colour and
+// coverage), and the put-back draws the underlay into every sample with a pipeline of the target's
+// sample count, so each sample keeps its own coverage and the guest's frame stays what it was.
+// The frame's float scene (below) was made at the marker and is the picture the game copied into
+// the UI target, so it goes under the UI there as well; a UI target with no opaque draw before its
+// UI is not that picture and keeps the 8-bit underlay. The menus' UI phase may repeat the marker
+// (once per tile in the fork's notes): a marker in a frame whose pause view is armed or running is
+// that repeat and is ignored (counted), never a second marker.
 //
 // The present reads the layers (hdr_scene.h): it composes them into a float image at the front
 // buffer's size and shows that where it shows the front buffer, with the gamma table extended
@@ -61,7 +82,10 @@
 // Cost (RGBA8, the target's region): the underlay and the ui images 3.7 MB each at 1x and 33 MB
 // at 3x, made on the first separated frame and released after kReleaseAfterFrames guest frames
 // without layers; per separated frame two copies of the region, one clear and one blended
-// full-region draw (the put-back) -- about 0.4 ms at 3x on a desktop GPU.
+// full-region draw (the put-back) -- about 0.4 ms at 3x on a desktop GPU. A multisampled pause
+// view replaces each copy by a pass over the samples and draws the put-back at the target's
+// sample count.
+// CHECK: that cost at 3x with 8 samples (pass timing labels "frame layers ...").
 //
 // Live (mcla_gpu_hdr): Request may also come from the render thread, at a frame boundary (no frame
 // open, so no phase is under way). Taking the last requester away drops the frame kept for the
@@ -130,6 +154,8 @@ class FrameLayers {
     kImage,       // an image could not be made
     kResolve,     // the target's resolve was not a copy, had no destination or moved the pixels
     kCopy,        // a copy, a clear or the put-back could not be recorded
+    kPauseTarget,  // the pause view's UI target cannot be separated (its format or host samples)
+    kPipeline,    // a pipeline for a multisampled target could not be made
     kCount,
   };
 
@@ -188,18 +214,22 @@ class FrameLayers {
   void BeginFrame();
   // A UI phase is under way: the Scene asks ClassifyDraw for each draw and OnResolve for each
   // resolve. One load and a compare when it is not.
-  bool ui_phase() const { return phase_ == Phase::kUi || phase_ == Phase::kStarted; }
+  bool ui_phase() const {
+    return phase_ == Phase::kUi || phase_ == Phase::kStarted || phase_ == Phase::kPause;
+  }
   // Right after OnComposite: the region the layers will cover in host pixels. False when the marker
-  // found the frame cannot be separated.
+  // found the frame cannot be separated, and for a marker a pause view's frame repeated.
   bool Region(EdramKey* target, uint32_t* width, uint32_t* height) const;
   // The composite record, outside a render pass, after the scene's anti-aliasing: `target` is the
-  // frame's last colour target, `width` x `height` the guest rectangle its draws covered.
+  // frame's last colour target, `width` x `height` the guest rectangle its draws covered. A repeat
+  // of the marker in a frame whose pause view is armed or running changes nothing.
   void OnComposite(plume::RenderCommandList* list, EdramTargets::Target* target, uint32_t width,
                    uint32_t height);
   // A draw about to be prepared (its key built, its pipeline not looked up): into the UI target
   // (`color0` its identity, `host_samples` its pipeline's), it changes `key.blend[0]`'s alpha part
   // when the draw is separable and the layer runs; kStart and kEnd ask the Scene to call Start or
-  // End before the draw is recorded.
+  // End before the draw is recorded. In a frame waiting for the pause view's UI target (kPause) the
+  // first draw into a target of its kind adopts it, once the target exists.
   DrawAction ClassifyDraw(const EdramKey& color0, uint32_t host_samples, uint64_t ps_identity,
                           PipelineKey& key);
   // kStart: outside a render pass, copies the target's region to the underlay and clears it. A
@@ -236,7 +266,9 @@ class FrameLayers {
   std::string TakeSummary();
 
  private:
-  enum class Phase : uint8_t { kIdle, kUi, kStarted, kDone, kFailed };
+  // kPause: the marker's target was resolved with no UI in it, and the frame waits for the pause
+  // view's UI target (the header comment).
+  enum class Phase : uint8_t { kIdle, kUi, kStarted, kDone, kFailed, kPause };
 
   bool MakePipelines();
   // Puts the target back (when the layer started) and ends the frame's layers with `cause`.
@@ -244,10 +276,22 @@ class FrameLayers {
   // The underlay and ui images at the region's size; false (logged) when one could not be made.
   bool EnsureImages();
   void ReleaseImages();
-  // The target's region to `image`, which ends in SHADER_READ; the target is left in COPY_SOURCE.
+  // The target's region to `image`, which ends in SHADER_READ; the target is left in COPY_SOURCE
+  // (in SHADER_READ when it is multisampled).
   bool CopyFromTarget(plume::RenderCommandList* list, HostImage& image);
-  // The underlay under the UI into the target: UI + underlay x (1 - coverage).
+  // A multisampled target's region to `image` as the mean of its samples (hlsl LAYERS_RESOLVE).
+  bool ResolveTargetInto(plume::RenderCommandList* list, HostImage& image);
+  // The underlay under the UI into the target: UI + underlay x (1 - coverage), at every sample.
   bool DrawRestore(plume::RenderCommandList* list);
+  // The put-back pipeline for a target of `samples` samples (1, 2, 4 or 8), or null.
+  plume::RenderPipeline* RestorePipelineFor(uint32_t samples) const;
+  // The put-back pipeline a multisampled target needs, made when a pause view of that level first
+  // asks (the averaging pass is made with the rest). False when it could not be made.
+  bool EnsureSamplePipelines(uint32_t samples);
+  // In kPause: whether `key` is the kind of target the pause view draws its UI in, and the step that
+  // makes it the frame's UI target (false: not yet, or not this one; the draw goes on as it is).
+  bool IsPauseUiKey(const EdramKey& key) const;
+  bool AdoptPauseTarget(const EdramKey& key, uint32_t host_samples);
   // `cause`'s first occurrence is logged; a frame counts it once.
   void Fail(Cause cause, const std::string& detail);
   // A blend that cannot be separated, logged once per kind.
@@ -266,6 +310,12 @@ class FrameLayers {
     uint32_t reserved;
   };
   static_assert(sizeof(Push) <= HostPasses::kPushConstantBytes);
+  struct ResolvePush {  // hlsl/frame_layers_ps.hlsl, LAYERS_RESOLVE
+    uint32_t source;
+    uint32_t samples;
+    uint32_t reserved[2];
+  };
+  static_assert(sizeof(ResolvePush) <= HostPasses::kPushConstantBytes);
 
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
@@ -276,6 +326,12 @@ class FrameLayers {
   bool active_ = false;
   std::unique_ptr<plume::RenderShader> restore_shader_;
   std::unique_ptr<plume::RenderPipeline> restore_pipeline_;
+  // The put-back at 2, 4 and 8 samples (made when a pause view of that level first needs it) and the
+  // pass that averages a multisampled target's samples (made with the rest; without it the pause
+  // view has no layers).
+  std::array<std::unique_ptr<plume::RenderPipeline>, 3> restore_ms_;
+  std::unique_ptr<plume::RenderShader> resolve_shader_;
+  std::unique_ptr<plume::RenderPipeline> resolve_pipeline_;
   HostImage underlay_;
   HostImage ui_;
 
@@ -287,6 +343,16 @@ class FrameLayers {
   uint32_t guest_height_ = 0;
   uint32_t host_width_ = 0;    // and in the target's host pixels
   uint32_t host_height_ = 0;
+  uint32_t target_samples_ = 1;  // the UI target's host samples (1 for the marker's target)
+  // The pause view, from the frame's kPause to its end. `marker_*` is what the marker's target was
+  // (the pause target takes its pitch, format and guest region); `pause_opaque_draws_` counts the
+  // draws with blending off into the pause target before its layer started (the copy of the
+  // tone-mapped picture).
+  bool pause_view_ = false;
+  EdramKey marker_key_;
+  uint32_t marker_guest_width_ = 0;
+  uint32_t marker_guest_height_ = 0;
+  uint32_t pause_opaque_draws_ = 0;
   Cause pending_cause_ = Cause::kBlend;  // what ClassifyDraw's kEnd was for
   Frame captured_;                       // the frame's, once its target was resolved
   Frame presented_;                      // the last guest present's
@@ -295,6 +361,8 @@ class FrameLayers {
 
   std::array<bool, size_t(Cause::kCount)> cause_logged_{};
   std::unordered_set<uint64_t> blends_logged_;
+  bool pause_logged_ = false;
+  bool pause_picture_logged_ = false;
 
   struct Stats {
     uint64_t markers = 0;
@@ -306,6 +374,10 @@ class FrameLayers {
     uint64_t presents_valid = 0;    // ... with layers
     uint64_t unusable_picture = 0;  // ... layers whose destination was not the front buffer
     uint64_t unusable_size = 0;     // ... or that did not cover it
+    uint64_t pause_armed = 0;       // frames that waited for the pause view's UI target
+    uint64_t pause_adopted = 0;     // ... and found it
+    uint64_t pause_no_picture = 0;  // ... whose UI target had no opaque draw before its UI
+    uint64_t markers_ignored = 0;   // repeats of the marker in a pause view's frame
     std::array<uint64_t, size_t(Cause::kCount)> failed{};
   };
   Stats stats_;
