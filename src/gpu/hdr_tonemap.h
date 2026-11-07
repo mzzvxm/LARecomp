@@ -58,7 +58,8 @@
 // tone map and released after kReleaseAfterFrames guest frames without an HDR scene.
 //
 // Threading: Initialize/Shutdown on the lifecycle thread (before the render thread starts and
-// after it stops); the rest on the render thread.
+// after it stops), Initialize also on the render thread at a frame boundary when HDR output is
+// turned on after the start (Renderer::SetUpHdrScene); the rest on the render thread.
 // ===========================================================================
 
 #include <array>
