@@ -66,6 +66,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/frame_timing.cpp
+    src/mc_engine/hooks/frame_pacing.cpp
     src/mc_engine/hooks/timer_precision.cpp
     src/mc_engine/hooks/timing_log.cpp
     src/mc_engine/hooks/graphics.cpp
@@ -108,6 +109,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/camera_trace.cpp
     src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp

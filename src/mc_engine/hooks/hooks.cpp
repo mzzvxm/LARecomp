@@ -14,6 +14,7 @@
 #include "discord_rpc/discord_rpc.h"
 #include "../adaptive_triggers.h"
 #include "../camera_look.h"
+#include "../camera_trace.h"
 #include "../cursor_hide.h"
 #include "../cutscene_gallery.h"
 #include "../hud_units.h"
@@ -144,6 +145,9 @@ void InitHooks() {
     ApplyPerfDebugOptions();
 
     StartFreezeWatchdog();
+
+    // cam_trace: the renderer reports each present to it.
+    mc::camtrace::Install();
 }
 
 // Fires at 0x822C22EC, right after the clock update (sub_821BDA90). The delta

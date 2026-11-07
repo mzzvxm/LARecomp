@@ -28,6 +28,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "../camera_trace.h"
 #include "../guest_profiler.h"
 
 // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
@@ -188,7 +189,10 @@ static void HoldUntimedSwap(bool timed) {
 static void EnforceFrameLimit();
 bool Patch_60FPS_Byte(PPCRegister& r11) {
     const bool timed = g_timer_since_swap.exchange(false, std::memory_order_relaxed);
-    if (timed && REXCVAR_GET(pace_at_swap)) {
+    // frame_pacing: the renderer holds the frame to its planned time instead,
+    // which keeps the FPS limit too.
+    const bool paced = mc::pacing::Active();
+    if (timed && REXCVAR_GET(pace_at_swap) && !paced) {
         // A game frame: held to the FPS limit here instead of before its update.
         // Bound to the first thread that presents one, the render thread.
         static const std::thread::id owner = std::this_thread::get_id();
@@ -197,6 +201,8 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
         }
     }
     HoldUntimedSwap(timed);
+    mc::pacing::OnGuestSwap(timed);
+    mc::camtrace::OnGuestSwap(timed);
     if (REXCVAR_GET(real_frame_delta)) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
@@ -339,6 +345,13 @@ static void TickGuestProfiler() {
 }
 
 void MCLAFrameDelta(PPCRegister& r8) {
+    // frame_pacing: the game clock steps by the interval its frame will be on
+    // screen for (frame_pacing.cpp), not by the time since the last read.
+    uint64_t planned = 0;
+    if (mc::pacing::TakePlannedTicks(planned)) {
+        r8.u64 = planned;
+    }
+
     // The hitch clamp runs UNCONDITIONALLY, before any cvar check.
     //
     // It is the last line of defence against an unbounded delta reaching the
@@ -363,7 +376,8 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // sub_821BDA90 has callers on more than one thread: the limiter is bound to
     // the first, the game loop.
     static const std::thread::id owner = std::this_thread::get_id();
-    if (!REXCVAR_GET(pace_at_swap) && std::this_thread::get_id() == owner) {
+    if (!REXCVAR_GET(pace_at_swap) && !mc::pacing::Active() &&
+        std::this_thread::get_id() == owner) {
         EnforceFrameLimit();
     }
     g_timer_since_swap.store(true, std::memory_order_relaxed);  // see HoldUntimedSwap

@@ -137,6 +137,21 @@ extern std::atomic<uint64_t> g_fence_switch_us;
 extern std::atomic<uint64_t> g_limiter_spin_us;
 extern std::atomic<uint64_t> g_limiter_spins;
 
+// frame_pacing.cpp
+namespace mc::pacing {
+// MCLAFrameDelta, inside the game clock's update: the planned step, in guest
+// timebase ticks, replaces the measured one. False outside the game clock's
+// call or when frame_pacing is not planning.
+bool TakePlannedTicks(uint64_t& ticks);
+// Frames are being planned: the renderer holds them to their times, which also
+// keeps the FPS LIMIT, so the frame limiter stands down.
+bool Active();
+// Patch_60FPS_Byte, at every guest swap: gives the renderer the frame's time.
+void OnGuestSwap(bool timed);
+// cam_trace: the plan of the update in progress (QPC) and the latency L (ms).
+void TraceState(int64_t& target, double& latency_ms);
+}  // namespace mc::pacing
+
 // timing_log.cpp
 bool TimingLogEnabled();
 void RecordFrameTime();
