@@ -132,6 +132,17 @@ void HdrToneMap::Shutdown() {
   pass_timing_ = nullptr;
 }
 
+void HdrToneMap::Release() {
+  if (passes_) {
+    passes_->ReleaseImage(scene_);
+  }
+  phase_ = Phase::kIdle;
+  ready_this_frame_ = false;
+  candidate_valid_ = false;
+  idle_frames_ = 0;
+  ++epoch_;
+}
+
 void HdrToneMap::SetDisplay(const HdrLevels& levels, const float* ramp) {
   levels_ = levels;
   have_ramp_ = ramp != nullptr;

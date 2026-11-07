@@ -119,13 +119,31 @@ void FrameLayers::Request(uint32_t requester, bool wanted) {
     return;
   }
   if (requesters_ == 0) {
-    // Nobody wants them: a frame in progress is left as it is (its target was put back by the
-    // frame's end), the images go with the next idle release.
+    // Nobody wants them: called at a frame boundary, so no frame is in progress (its target was put
+    // back by the frame's end). The frames kept for the present and the images go now: the present
+    // must not compose a stale frame in an SDR output, and a player who turned HDR off should not
+    // keep its memory.
+    const bool was_active = active_;
     active_ = false;
     phase_ = Phase::kIdle;
+    target_ = nullptr;
+    captured_ = Frame{};
+    presented_ = Frame{};
+    idle_frames_ = 0;
+    ReleaseImages();
+    if (was_active) {
+      REXLOG_INFO("[gpu] frame layers: off (no requester left), images released");
+    }
     return;
   }
+  const bool was_active = active_;
+  const bool made_before = restore_pipeline_ != nullptr;
   active_ = MakePipelines();
+  if (active_ && !was_active && made_before) {
+    REXLOG_INFO("[gpu] frame layers: on again (requested by {}{})",
+                (requesters_ & kRequesterHdr) ? "HDR output" : "",
+                (requesters_ & kRequesterFrameGeneration) ? " frame generation" : "");
+  }
 }
 
 bool FrameLayers::MakePipelines() {
