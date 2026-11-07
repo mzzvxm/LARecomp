@@ -299,14 +299,44 @@ void Pipelines::LoadPersistent() {
 }
 
 uint64_t Pipelines::HashRecords() const {
-  // The persistent keys in list order: the same files in the same state give the same hash.
+  // The persistent keys in list order, the level copies after them: the same files in the same
+  // state give the same hash.
   std::vector<uint8_t> bytes;
-  bytes.reserve(records_.size() * sizeof(PipelineKey));
-  for (const Record& r : records_) {
-    const uint8_t* key = reinterpret_cast<const uint8_t*>(&r.key);
-    bytes.insert(bytes.end(), key, key + sizeof(PipelineKey));
+  bytes.reserve((records_.size() + setup_copies_.size()) * sizeof(PipelineKey));
+  for (const std::vector<Record>* list : {&records_, &setup_copies_}) {
+    for (const Record& r : *list) {
+      const uint8_t* key = reinterpret_cast<const uint8_t*>(&r.key);
+      bytes.insert(bytes.end(), key, key + sizeof(PipelineKey));
+    }
   }
   return uint64_t(XXH3_64bits(bytes.data(), bytes.size()));
+}
+
+void Pipelines::MakeLevelCopies(const std::vector<uint32_t>& samples) {
+  // A pipeline whose key has more than one sample is one of a draw into a target the guest
+  // multisamples: the main view's (2 samples) and the pause menu's and the map's (4). Those
+  // targets are images of the screen and take the host's MSAA level (EdramTargets::HostSamplesAt),
+  // which is what the start draws with: the copy at the level's count is the pipeline the first
+  // draws ask for when it is not the count they were recorded at. (A multisampled target that is
+  // not an image of the screen would get a copy nobody asks for: it costs a compile, nothing else.)
+  setup_copies_.clear();
+  std::unordered_set<PipelineKey, PipelineKeyHash> seen;
+  for (const Record& r : records_) {
+    if (r.key.sample_count <= 1) {
+      continue;
+    }
+    for (const uint32_t count : samples) {
+      if (count == 0 || count == r.key.sample_count) {
+        continue;
+      }
+      Record copy = r;
+      copy.key.sample_count = count;
+      if (recorded_.count(copy.key) != 0 || !seen.insert(copy.key).second) {
+        continue;  // a record has it, or another record's copy is the same pipeline
+      }
+      setup_copies_.push_back(copy);
+    }
+  }
 }
 
 Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
@@ -323,7 +353,9 @@ Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
     return result;
   }
   LoadPersistent();
+  MakeLevelCopies(options.level_samples);
   result.list.records = records_.size();
+  result.list.copies = setup_copies_.size();
   result.list.hash = HashRecords();
   if (records_.empty()) {
     result.outcome = SetupOutcome::kEmpty;
@@ -521,13 +553,22 @@ uint32_t Pipelines::UsableProcessors() {
 }
 
 void Pipelines::StartPrecache(uint32_t setup_threads) {
-  precached_.reserve(records_.size());
+  precached_.reserve(records_.size() + setup_copies_.size());
   for (const Record& r : records_) {
     auto p = std::make_unique<Precached>();
     p->key = r.key;
     p->layout = stored_layouts_[r.layout].get();  // owned by a unique_ptr: stable
     p->index = uint32_t(precached_.size());
     precached_by_key_.emplace(r.key, p.get());
+    precached_.push_back(std::move(p));
+  }
+  // The command line prebuild's level copies (MakeLevelCopies) follow the list: made by the same
+  // workers, found by no draw (precached_by_key_ does not have them).
+  for (const Record& r : setup_copies_) {
+    auto p = std::make_unique<Precached>();
+    p->key = r.key;
+    p->layout = stored_layouts_[r.layout].get();
+    p->index = uint32_t(precached_.size());
     precached_.push_back(std::move(p));
   }
   // Half the processors, below normal priority: the guest boots meanwhile, and
@@ -558,9 +599,9 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
     workers_.emplace_back([this, i] { PrecacheWorker(i); });
   }
   if (setup_threads != 0) {
-    REXLOG_INFO("[gpu] pipelines: command line prebuild: precaching {} pipelines on {} threads at "
-                "normal priority ({} usable processors)",
-                precached_.size(), count, usable);
+    REXLOG_INFO("[gpu] pipelines: command line prebuild: precaching {} pipelines ({} of them copies "
+                "at other sample counts) on {} threads at normal priority ({} usable processors)",
+                precached_.size(), setup_copies_.size(), count, usable);
   } else if (precached_.empty()) {
     REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
   } else if (boot) {

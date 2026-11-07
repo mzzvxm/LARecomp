@@ -21,17 +21,31 @@
 // is). At the end the record file the game reads at its next start is written, as the game does at
 // its exit.
 //
+// Sample counts. The list holds each pipeline at the count its draw's targets had when it was
+// recorded (the main view's 2 samples, the pause menu's and the map's 4, everything else 1). The
+// images of the screen the game multisamples take the host's MSAA level instead
+// (EdramTargets::HostSamplesAt: the setting's level, 1 while an upscaler runs), so a start at
+// another level than the list's draws with pipelines no record has, and the first start would
+// compile them while it plays. The prebuild therefore also makes, for every multisampled record,
+// a copy at the count the saved settings give (StartSampleCounts: the MSAA level within what the
+// device does, and 1 when an upscaler is the saved choice). Those copies are made and dropped like
+// the rest; they are not written to the cache file (a level the player never uses would then be
+// precached at every start). A level chosen later is made by the game while it runs
+// (Pipelines::PrebuildForLevel).
+//
 // Skipping. A stamp next to the cache file (cache/mcla_gpu_pipelines_<api>.stamp) says what the
 // last prebuild was made for: this exe, the graphics API, the adapter and its driver version, the
-// shader packs, and the list of pipelines. A start whose stamp is that same text does nothing but
-// open the device and read the list (about a second). A new driver, a new pack, a new exe or a
-// list that grew (the game recorded pipelines of its own) builds again; the driver answers the old
-// ones from its cache, so it is quick. The stamp cannot know that the player cleared the driver's
-// shader cache (Windows' Disk Cleanup does); precache_pipelines_force builds regardless.
+// shader packs, the sample counts, and the list of pipelines. A start whose stamp is that same
+// text does nothing but open the device and read the list (about a second). A new driver, a new
+// pack, a new exe, another MSAA level or upscaler choice, or a list that grew (the game recorded
+// pipelines of its own) builds again; the driver answers the old ones from its cache, so it is
+// quick. The stamp cannot know that the player cleared the driver's shader cache (Windows' Disk
+// Cleanup does); precache_pipelines_force builds regardless.
 //
-// Not covered: the renderer's own pipelines (resolve conversions, decode, host_precache.h): they
-// need the resolve and texture components, which need guest memory. One builder thread makes them
-// at the game's start (a few dozen).
+// Not covered: the renderer's own pipelines (resolve conversions, decode, host_precache.h; about
+// 40 of them, 2 s on a warm driver cache): they need the resolve and texture components, which need
+// guest memory. One builder thread makes them at the game's start. Nor the HDR scene variants of a
+// pipeline no record names one for (the game picks them while HDR is on).
 // ===========================================================================
 
 #include <cstdint>
@@ -89,6 +103,7 @@ struct PrebuildResult {
   std::string backend;       // "D3D12" / "Vulkan", empty before the device existed
   std::string adapter;
   uint32_t pipelines = 0;    // the list's size
+  uint32_t copies = 0;       // copies at the start's MSAA level and 1 sample, on top of the list
   uint32_t failed = 0;       // of them, not made (their shader is missing or the driver refused)
   double seconds = 0;        // the build, not the skip
 };

@@ -21,11 +21,13 @@
 #include "backend.h"
 #include "descriptors.h"
 #include "device.h"
+#include "edram.h"
 #include "frame.h"
 #include "gpu.h"
 #include "layout.h"
 #include "pipelines.h"
 #include "shaders.h"
+#include "temporal_backend.h"
 
 REXCVAR_DECLARE(bool, mcla_gpu_pipeline_cache);
 
@@ -75,9 +77,35 @@ std::string OneLine(std::string text) {
   return text;
 }
 
+// The sample counts a start draws the images of the screen the game multisamples with, other than
+// what the records were made at: the MSAA setting's level (within what the device can do, as the
+// start's EdramTargets::Initialize finds it) and 1 when an upscaler is the saved choice (the start
+// gives up MSAA for one that runs, EdramTargets::DecideScene; whether this PC can run it is the
+// game's probe's to say, so both are made). Records of other levels need no copy: the game
+// remakes them when the player changes the level (Pipelines::PrebuildForLevel).
+std::vector<uint32_t> StartSampleCounts(Device& device) {
+  std::vector<uint32_t> counts;
+  const EdramTargets::MsaaSetting setting = EdramTargets::ReadMsaaSetting();
+  const uint32_t supported = EdramTargets::SupportedScreenSamples(device.device());
+  counts.push_back(EdramTargets::LevelWithin(supported, setting.level));
+  if (ReadUpscalerSettings().upscaler != Upscaler::kOff && counts.front() != 1) {
+    counts.push_back(1);
+  }
+  return counts;
+}
+
+std::string JoinCounts(const std::vector<uint32_t>& counts) {
+  std::string text;
+  for (const uint32_t count : counts) {
+    text += (text.empty() ? "" : ",") + std::to_string(count);
+  }
+  return text;
+}
+
 // What a prebuild is made for. Every line is part of the key; the stamp file is this text plus
 // comment lines (starting with '#') that nobody compares.
-std::string StampText(Parts& parts, const Pipelines::SetupList& list) {
+std::string StampText(Parts& parts, const Pipelines::SetupList& list,
+                      const std::vector<uint32_t>& samples) {
   const plume::RenderDeviceDescription& d = parts.device.description();
   std::string text;
   const auto line = [&text](const std::string& s) { text += s + "\n"; };
@@ -91,7 +119,8 @@ std::string StampText(Parts& parts, const Pipelines::SetupList& list) {
   line("hdr_pack=" + (parts.shaders.has_hdr_variants() ? FileIdentity(parts.shaders.hdr_path())
                                                        : std::string("none")));
   line(std::format("key_size={}", sizeof(PipelineKey)));
-  line(std::format("list={}:{:016x}", list.records, list.hash));
+  line("samples=" + JoinCounts(samples));
+  line(std::format("list={}+{}:{:016x}", list.records, list.copies, list.hash));
   return text;
 }
 
@@ -174,8 +203,9 @@ const char* PrebuildStatusName(PrebuildStatus status) {
   return "?";
 }
 
-// CHECK: written without a build of larecomp or a run. To verify, in order:
-//  - it compiles (Pipelines::PrecacheForSetup, this file, larecomp_pipeline_build.cpp);
+// CHECK: written without a build of larecomp or a run (clang -fsyntax-only is clean on this file,
+// pipelines.cpp, edram.cpp, renderer.cpp and the app side). To verify, in order:
+//  - it links and runs (Pipelines::PrecacheForSetup, this file, larecomp_pipeline_build.cpp);
 //  - a device with no window on both APIs (D3D12 and `--precache_pipelines_backend=vulkan`): the
 //    log shows the device line, "guest shader layout created" and "command line prebuild:
 //    precaching N pipelines on T threads", then "precache done in ..." and "N records ... written";
@@ -190,7 +220,13 @@ const char* PrebuildStatusName(PrebuildStatus status) {
 //  - a Vulkan run with DLSS saved as the upscaler goes through Streamline's device hook
 //    (Device::Open, dlss::BeforeDevice): untried without a swap chain or a window;
 //  - the second run says "up to date" within about a second, and a driver update (or --precache_
-//    pipelines_force) builds again.
+//    pipelines_force) builds again;
+//  - the sample counts: the log line "the start draws the multisampled images at N sample(s)" says 2
+//    on the defaults (mcla_gpu_msaa 2, no upscaler), the stamp's samples= line the same; with
+//    mcla_gpu_msaa = 4 or 8, "off", or mcla_gpu_upscaler = fsr31 the copies follow (4 / 8 / 1 / 2,1);
+//    the game's first start at that level then logs few pending draws (no "skipped [pipeline
+//    pending" burst in the first minute) against a start of the same game without this step (a
+//    cold driver cache, mcla_gpu_msaa 4: the main view's pipelines were recorded at 2).
 PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildEvents& events) {
   PrebuildResult result;
   const auto log = [&events](int level, const std::string& text) {
@@ -278,8 +314,11 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
   std::filesystem::path stamp_path;
   Pipelines::SetupOptions setup;
   setup.threads = options.threads;
+  setup.level_samples = StartSampleCounts(parts.device);
+  log(0, "the start draws the multisampled images at " + JoinCounts(setup.level_samples) +
+             " sample(s): copies of the listed pipelines are made for those counts too");
   setup.wanted = [&](const Pipelines::SetupList& list) {
-    expected = StampText(parts, list);
+    expected = StampText(parts, list, setup.level_samples);
     stamp_path = parts.pipelines.cache_path();
     stamp_path.replace_extension(".stamp");
     if (options.force) {
@@ -312,6 +351,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
 
   const Pipelines::SetupResult run = parts.pipelines.PrecacheForSetup(parts.shaders, setup);
   result.pipelines = uint32_t(run.list.records);
+  result.copies = uint32_t(run.list.copies);
   result.failed = run.failed;
   result.seconds = run.seconds;
   switch (run.outcome) {
@@ -326,8 +366,8 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
                   "recorded any), so there is nothing to prepare.");
     case Pipelines::SetupOutcome::kNotWanted:
       return Fail(result, PrebuildStatus::kUpToDate,
-                  std::format("The {} pipelines are already prepared for {} ({}).", run.list.records,
-                              result.adapter, result.backend));
+                  std::format("The {} pipelines are already prepared for {} ({}).",
+                              run.list.records + run.list.copies, result.adapter, result.backend));
     case Pipelines::SetupOutcome::kStalled:
       // The driver never answered: its worker threads are still inside it. Nothing is destroyed
       // (the caller ends the process).
@@ -341,13 +381,17 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
   if (run.ready == 0) {
     return Fail(result, PrebuildStatus::kFailed,
                 std::format("None of the {} pipelines could be made (the log has the reasons).",
-                            run.list.records));
+                            run.list.records + run.list.copies));
   }
   // Last, like the shader packs' stamp: what the stamp vouches for is in place.
   WriteStamp(stamp_path, expected + std::format("# ready={} failed={} seconds={:.1f}\n", run.ready,
                                                  run.failed, run.seconds));
   std::string text = std::format("Prepared {} pipelines for {} ({}) in {:.0f} s.", run.ready,
                                  result.adapter, result.backend, run.seconds);
+  if (run.list.copies != 0) {
+    text += std::format(" {} of them are copies at the MSAA level the game starts with.",
+                        run.list.copies);
+  }
   if (run.failed != 0) {
     text += std::format(" {} could not be made; the game logs them too.", run.failed);
   }

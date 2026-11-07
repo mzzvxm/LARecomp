@@ -297,12 +297,22 @@ EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
   return setting;
 }
 
-uint32_t EdramTargets::SupportedMsaaLevel(uint32_t wanted) const {
+uint32_t EdramTargets::LevelWithin(uint32_t supported_samples, uint32_t wanted) {
   uint32_t level = wanted;
-  while (level > 2 && (msaa_supported_ & level) == 0) {
+  while (level > 2 && (supported_samples & level) == 0) {
     level >>= 1;
   }
   return level;
+}
+
+uint32_t EdramTargets::SupportedScreenSamples(plume::RenderDevice* device) {
+  uint32_t supported = 0xFFu;
+  for (plume::RenderFormat format :
+       {plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R16G16B16A16_FLOAT,
+        plume::RenderFormat::D32_FLOAT_S8_UINT}) {
+    supported &= uint32_t(device->getSampleCountsSupported(format));
+  }
+  return supported;
 }
 
 void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
@@ -402,13 +412,7 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                    "is used",
                    setting.text);
     }
-    plume::RenderDevice* rd = device.device();
-    msaa_supported_ = 0xFFu;
-    for (plume::RenderFormat format :
-         {plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R16G16B16A16_FLOAT,
-          plume::RenderFormat::D32_FLOAT_S8_UINT}) {
-      msaa_supported_ &= uint32_t(rd->getSampleCountsSupported(format));
-    }
+    msaa_supported_ = SupportedScreenSamples(device.device());
     const uint32_t level = SupportedMsaaLevel(setting.level);
     if (level != setting.level) {
       REXLOG_ERROR("[gpu] edram: MSAA {}x asked, {}x used (device sample counts {:#x} for the "

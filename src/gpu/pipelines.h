@@ -98,6 +98,9 @@
 // (PrecacheForSetup): the same files are read, the same workers make the same pipelines, only more
 // of them, at normal priority, each dropped as soon as it is made (the driver keeps its compiled
 // form in its own cache on disk, which is the point), and the records are written back at the end.
+// It also makes a copy of every multisampled record at the sample counts the start's MSAA level
+// asks for (SetupOptions::level_samples: the setting's level, 1 under an upscaler), which is what
+// PrebuildForLevel would hand the builders at runtime; the copies are made, not recorded.
 //
 // Threading: the render thread; the builder threads (the precache workers)
 // touch only the entries and requests they were handed, the ShaderStore
@@ -322,11 +325,18 @@ class Pipelines {
   // list that the pack has the shaders for, and a hash of their keys (what a stamp binds).
   struct SetupList {
     size_t records = 0;
-    uint64_t hash = 0;
+    size_t copies = 0;   // the level copies on top of them (SetupOptions::level_samples)
+    uint64_t hash = 0;   // of the records' keys, then the copies'
   };
   struct SetupOptions {
     // Worker threads; 0 = every usable processor but one, at most kSetupMaxThreads.
     uint32_t threads = 0;
+    // The sample counts of the images of the screen the game multisamples that the next start
+    // draws with (EdramTargets::HostSamplesAt: the MSAA setting's level, and 1 when an upscaler
+    // is the saved choice). For every record whose key has more than one sample, a copy at each
+    // of these counts that no record has is made too (what PrebuildForLevel makes at runtime when
+    // the level changes); the cache file does not get them. Empty: the records as they are.
+    std::vector<uint32_t> level_samples;
     // Called once with the list, before any pipeline is made; false: nothing to do (the cache is
     // complete for this driver and pack). May be empty (always build).
     std::function<bool(const SetupList&)> wanted;
@@ -347,7 +357,7 @@ class Pipelines {
     SetupOutcome outcome = SetupOutcome::kNotReady;
     SetupList list;
     uint32_t threads = 0;
-    uint32_t ready = 0;   // made
+    uint32_t ready = 0;   // made (the copies included)
     uint32_t failed = 0;  // not made (shader missing or refused, logged; the game fails the same)
     double seconds = 0;
   };
@@ -420,6 +430,8 @@ class Pipelines {
   // and PrecacheForSetup).
   void LoadPersistent();
   uint64_t HashRecords() const;
+  // PrecacheForSetup: fills setup_copies_ (see SetupOptions::level_samples).
+  void MakeLevelCopies(const std::vector<uint32_t>& samples);
   void PrecacheWorker(uint32_t index);
 
   // How a lookup that gave no pipeline ended: nothing is known of the key
@@ -531,6 +543,9 @@ class Pipelines {
   // The command line prebuild: set before the workers start, not changed while they run. Its
   // workers run at normal priority and drop each pipeline once it is made.
   bool setup_mode_ = false;
+  // The command line prebuild's copies of records at other sample counts (MakeLevelCopies): made
+  // after the list, never looked up by a draw and never recorded.
+  std::vector<Record> setup_copies_;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
   std::chrono::steady_clock::time_point boot_deadline_;
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
