@@ -63,6 +63,8 @@
 #include "smaa_weights_ps.hlsl.dxil.h"
 #include "temporal_copy_ps.hlsl.dxil.h"
 #include "temporal_mv_ps.hlsl.dxil.h"
+#include "temporal_vehicle_table_ps.hlsl.dxil.h"
+#include "vehicle_motion_mask_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "ao_apply_ms_ps.hlsl.spirv.h"
@@ -111,6 +113,8 @@
 #include "smaa_weights_ps.hlsl.spirv.h"
 #include "temporal_copy_ps.hlsl.spirv.h"
 #include "temporal_mv_ps.hlsl.spirv.h"
+#include "temporal_vehicle_table_ps.hlsl.spirv.h"
+#include "vehicle_motion_mask_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -257,6 +261,16 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
+}
+
+// One row of the vehicle table the motion vector pass reads (temporal_mv.h, vehicle_motion.h), and the
+// R8 mask of the cars' shadow decals the upscalers take as their reactive input (vehicle_motion_mask.h).
+inline HostShaderBlob TemporalVehicleTablePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(temporal_vehicle_table_ps);
+}
+
+inline HostShaderBlob VehicleMotionMaskPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(vehicle_motion_mask_ps);
 }
 
 // Frame generation (frame_generation.h): the scene prepared for the interpolation, the generated

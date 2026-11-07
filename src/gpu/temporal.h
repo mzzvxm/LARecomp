@@ -274,6 +274,9 @@ class TemporalSystem {
     std::array<uint32_t, kKinds> jittered{};
     uint32_t view4x_draws = 0;    // draws into the main view's 4x identity
     bool composite_seen = false;
+    // The stencil IDs (bit k, 0 to 23) the main view's draws wrote before the anchor: the vehicles
+    // whose matrices the vector pass may use (vehicle_motion.h).
+    uint32_t stencil_ids = 0;
 
     // The anchor.
     uint32_t anchors = 0;         // anchor draws seen (a second one is ignored)
@@ -379,6 +382,9 @@ class TemporalSystem {
   const temporal::Camera* previous_camera() const { return ran_last_ ? &last_camera_ : nullptr; }
   // The depth and motion vector images kept for the last frame (temporal_mv.h Kept: sizes, formats).
   const TemporalMotion& motion() const { return motion_; }
+  // The cars' shadow decals' mask (vehicle_motion_mask.h): the Scene draws the decals again into it
+  // while an upscaler runs (scene.cpp PrepareShadowMask, RecordShadowMask).
+  ShadowMask& shadow_mask() { return motion_.shadow_mask(); }
   // The video memory the temporal path holds now: the upscaler's output image, the depth and the
   // vectors at the render size, and the runtime's own context as it reports it (about 500 MB at
   // 4K for FSR). Render thread (the backend's status is read under its lock).

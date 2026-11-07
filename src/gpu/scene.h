@@ -199,6 +199,9 @@ class Scene {
     HdrToneMap::Action hdr_action = HdrToneMap::Action::kNone;
     plume::RenderPipeline* hdr_pipeline = nullptr;
     UploadSpan hdr_shared;
+    // A car's shadow decal, while an upscaler runs: the draw is drawn again into the decals' mask image
+    // once it is recorded (RecordShadowMask, vehicle_motion_mask.h), with this pipeline.
+    plume::RenderPipeline* shadow_pipeline = nullptr;
     // Set by Record, for the second draw.
     plume::RenderRect scissor;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
@@ -276,6 +279,13 @@ class Scene {
   // The draw `d` was just recorded: records it again into the float scene image (its own
   // framebuffer, pipeline, and shared constants for the tone map; everything else the draw's).
   void RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* list);
+  // A car's shadow decal (vehicle_motion_mask.h) in the main view, in a frame an upscaler works on and
+  // before its anchor: looks up the pipeline that draws it again into the decals' mask (a build still
+  // under way leaves the second draw out: the frame has no mask).
+  void PrepareShadowMask(PreparedDraw& d, const PipelineInputs& inputs);
+  // The decal `d` was just recorded: records it again into the mask image (its own framebuffer and
+  // pipeline; everything else the draw's), the way RecordHdrDuplicate does.
+  void RecordShadowMask(const PreparedDraw& d, plume::RenderCommandList* list);
   static bool AlwaysMaySkip(const void*) { return true; }
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
