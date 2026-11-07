@@ -13,6 +13,7 @@
 #include "hooks_internal.h"
 #include "discord_rpc/discord_rpc.h"
 #include "../adaptive_triggers.h"
+#include "../impulse_triggers.h"
 #include "../camera_look.h"
 #include "../cursor_hide.h"
 #include "../cutscene_gallery.h"
@@ -162,7 +163,8 @@ void Patch_DeltaTimePre() {
     TickMapMouse();             // full map: notices the screen closed, frees the cursor
     TickCursorHide();           // mouse pointer: hidden on pad use or after 3 s still, live
     TickMapWarp();              // warp console command / F9: a mod's warp point <-> back
-    larecomp::triggers::Tick(); // DualSense triggers: spring and brake while a car is driven
+    larecomp::triggers::Tick(); // DualSense triggers: spring, brake and slip vibration while a car is driven
+    larecomp::impulse::Tick();  // Xbox triggers: starts the worker that shakes them on wheelspin and lock-up
     larecomp::browser::TickServerBrowserJoin();  // server browser: drive the picked join
     TickModGlows();             // guest scratch for the mods' light glows
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit

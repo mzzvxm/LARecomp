@@ -118,6 +118,9 @@ void ApplyStickDeadzones(uint8_t* base, uint32_t state);
 
 // vibration.cpp
 void TickVibration();
+// The two motor speeds the game last asked for `user` (left in the high half; 0 with the option
+// off). Any thread.
+uint32_t VibrationDriven(uint32_t user);
 
 // world_tuning.cpp
 void ApplyAmbientDensityTuning();

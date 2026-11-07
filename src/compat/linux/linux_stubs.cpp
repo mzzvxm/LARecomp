@@ -1,10 +1,13 @@
 // Symbols the Windows-only code defines, for the build where those files are
-// not compiled: the D3D12 native graphics runtime and the DualSense trigger
-// writer (Windows HID). Plume is the renderer here.
+// not compiled: the D3D12 native graphics runtime, the DualSense trigger
+// writer (Windows HID) and the Xbox trigger rumble (GameInput). Plume is the
+// renderer here.
 
 #include <rex/cvar.h>
+#include <rex/ppc.h>
 
 #include "mc_engine/adaptive_triggers.h"
+#include "mc_engine/impulse_triggers.h"
 #include "native_gfx/native_gfx.h"
 
 // The cvars native_gfx.cpp defines and the guest-side files Plume shares read.
@@ -56,4 +59,10 @@ void Tick() {}
 void Shutdown() {}
 }  // namespace larecomp::triggers
 
-void Hook_TriggersHud() {}
+namespace larecomp::impulse {
+void EarlyInit() {}
+void Tick() {}
+void Shutdown() {}
+}  // namespace larecomp::impulse
+
+void Hook_TriggersHud(PPCRegister&) {}

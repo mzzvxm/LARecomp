@@ -120,6 +120,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/tire_offset.cpp
     src/mc_engine/hud_units.cpp
     src/mc_engine/adaptive_triggers.cpp
+    src/mc_engine/impulse_triggers.cpp
+    src/mc_engine/wheel_slip.cpp
     src/mc_engine/cutscene_gallery.cpp
     src/mc_engine/texture_dump.cpp
     src/mc_engine/boot_progress.cpp
@@ -282,7 +284,8 @@ if(NOT WIN32)
         src/native_gfx/geometry.cpp
         src/native_gfx/telemetry.cpp
         src/native_gfx/guest/sampler_state.cpp
-        src/mc_engine/adaptive_triggers.cpp)
+        src/mc_engine/adaptive_triggers.cpp
+        src/mc_engine/impulse_triggers.cpp)
     foreach(_f IN LISTS LARECOMP_SOURCES)
         if(_f MATCHES "^src/native_gfx/d3d12/")
             list(APPEND _larecomp_win_only "${_f}")

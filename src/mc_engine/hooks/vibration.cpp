@@ -55,6 +55,14 @@ void Hook_VibrationSet(PPCRegister& r3, PPCRegister& r5) {
     }
 }
 
+// What the game last asked the drivers to run for `user`: the two motor speeds in one word, left
+// in the high half (0 when the option is off, since the hook zeroes them first). The Xbox trigger
+// rumble (impulse_triggers.cpp) sets the whole pad's state in one call and passes these along so
+// the motors the game asked for keep running. Any thread.
+uint32_t VibrationDriven(uint32_t user) {
+    return user < kUsers ? g_driven[user].load(std::memory_order_relaxed) : 0;
+}
+
 // Per frame, on the game's thread (Patch_DeltaTimePre): the option was turned off while a
 // motor was running.
 void TickVibration() {
