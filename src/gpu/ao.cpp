@@ -25,8 +25,8 @@ REXCVAR_DEFINE_STRING(
     "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
     "constants say how much of a surface's light is which). off, low (half resolution, 2 slices) "
-    "or high (full resolution, 3 slices). Costs graphics card time: about 0.5 ms (low) or 1 ms "
-    "(high) at 4K on a fast card. Not drawn in the pause menu's picture. Live.")
+    "or high (full resolution, 3 slices). Costs graphics card time, high more than low. Not drawn "
+    "in the pause menu's picture. Live.")
     .allowed({"off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
