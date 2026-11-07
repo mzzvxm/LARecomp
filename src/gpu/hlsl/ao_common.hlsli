@@ -28,7 +28,7 @@ struct AoPush {
   // y: the host sample that is the guest's sample 0
   // z, w: the images this pass reads (slot of src0, src1)
   uint4 slots;
-  // x: slot of src2; y: the noise frame (0: a fixed pattern); z: flags (below); w: reserved
+  // x: slot of src2; y: the frame number the noise is shifted by; z: flags (below); w: reserved
   uint4 slots2;
   // xy: this pass's target size; zw: the size of the image it reads (the depth plane's for the
   // depth pass, the previous level's for a mip pass, the AO images' for the others)

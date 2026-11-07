@@ -15,9 +15,11 @@
 //   the arc integral of the two horizons around the projected normal, times the length of the
 //   projected normal; the mean over the slices, to a power, never below a floor.
 //
-// The pixel's own noise is interleaved gradient noise, shifted per frame only while a temporal
-// upscaler accumulates the frames (g_push.slots2.y = 0 otherwise: a fixed pattern the denoise
-// takes out).
+// The pixel's own noise is interleaved gradient noise (a fixed spatial pattern) plus a shift that
+// changes every frame by the additive recurrence of the R2 sequence, so the two noise values of one
+// pixel over successive frames cover the square evenly, whatever the camera does: what the
+// occlusion's own accumulation over frames (ao_temporal_ps) integrates, and what the denoise
+// takes out of any one frame (g_push.slots2.y = the frame number).
 
 #include "ao_common.hlsli"
 
@@ -73,8 +75,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   const uint slices = max(AoSlices(), 1u);
   const uint steps = max(AoSteps(), 1u);
-  const float2 noise_at = float2(pixel) + 5.588238f * float(g_push.slots2.y & 63u);
-  const float2 noise = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  const float2 noise_at = float2(pixel);
+  const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  // R2 (Roberts): the increments are 1/g and 1/g^2 of the plastic number g; the frame number wraps
+  // at 1024, small enough for the product to keep its fraction in a float.
+  const float frame = float(g_push.slots2.y & 1023u);
+  const float2 noise = frac(spatial + frame * float2(0.75487766624669f, 0.56984029099806f));
   const float min_offset = kMinOffsetPixels / radius_px;
 
   float visibility = 0.0f;

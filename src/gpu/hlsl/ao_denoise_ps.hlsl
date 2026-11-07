@@ -5,9 +5,10 @@
 // centre pixel is on (its position against the centre's tangent plane, from the depth-derived
 // normal), so a blur does not run across a depth edge or round a corner, and a surface seen at a
 // grazing angle, whose neighbours differ a lot in depth but lie in one plane, is blurred like any
-// other. The noise of the main pass is a per-pixel pattern (rotated per frame only while a temporal
-// upscaler accumulates them): this pass is what takes it out of the picture for every other
-// anti-aliasing choice.
+// other. The noise of the main pass is a per-pixel pattern that changes every frame: this pass takes
+// most of it out of any one frame, and the accumulation over frames (ao_temporal_ps) the rest. It
+// runs once while there is a history to accumulate into, twice (the second reading the first's
+// output) when there is none, and never not at all.
 
 #include "ao_common.hlsli"
 

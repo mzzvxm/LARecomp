@@ -1014,9 +1014,9 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   const bool low = plan.mode == Mode::kLow;
   const uint32_t slices = low ? 2 : 3;
   const uint32_t steps = low ? 2 : 3;
-  const uint32_t denoise_radius = low && !plan.upscaler ? 2 : 1;
-  // The noise moves from frame to frame only while a temporal upscaler averages the frames.
-  push->slots2[1] = plan.upscaler ? uint32_t(frame_ & 63) : 0u;
+  // The noise changes every frame (hlsl/ao_main_ps.hlsl); the denoise is a 3x3 each time.
+  const uint32_t denoise_radius = 1;
+  push->slots2[1] = uint32_t(frame_ & 1023);
   push->slots2[2] = plan.view | (slices << 8) | (steps << 12) | ((low ? 1u : 0u) << 16) |
                     (denoise_radius << 17);
 
@@ -1135,18 +1135,17 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
     push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
     DrawPass(list, raw_, main_pipeline, push);
-    // The denoise; a half resolution picture under a temporal upscaler goes without it (the
-    // upscaler averages the frames).
-    const bool denoise = !(plan.mode == Mode::kLow && plan.upscaler);
-    if (denoise) {
-      pass_timing_->Mark(list, "ao denoise");
-      push.slots[2] = raw_.slot;
-      push.slots[3] = depth_[0].slot;
-      DrawPass(list, denoised_, denoise_pipeline, push);
-    }
+    // The denoise, twice (the second pass back into the first one's input image): no pass of the
+    // occlusion is ever left out, whatever the quality or the upscaler.
+    pass_timing_->Mark(list, "ao denoise");
+    push.slots[2] = raw_.slot;
+    push.slots[3] = depth_[0].slot;
+    DrawPass(list, denoised_, denoise_pipeline, push);
+    push.slots[2] = denoised_.slot;
+    DrawPass(list, raw_, denoise_pipeline, push);
     // The apply into the scene colour.
     push = base;
-    push.slots[2] = denoise ? denoised_.slot : raw_.slot;
+    push.slots[2] = raw_.slot;
     push.slots[3] = depth_[0].slot;
     push.sizes[0] = float(plan.render[0]);
     push.sizes[1] = float(plan.render[1]);
@@ -1165,7 +1164,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   "{}{}",
                   ModeName(plan.mode), plan.render[0], plan.render[1], plan.ao[0], plan.ao[1],
                   ms ? "multisampled" : "single-sampled",
-                  plan.upscaler ? "noise rotating with the temporal upscaler" : "fixed noise",
+                  plan.upscaler ? "noise rotating every frame, a temporal upscaler running too"
+                                : "noise rotating every frame",
                   plan.view ? ", debug view" : "");
     }
     ++runs_;
