@@ -625,9 +625,13 @@ bool EdramTargets::SetSceneScale(Scale scale, plume::RenderCommandList* list) {
                                     target->height);
     }
     if (!r.texture) {
-      REXLOG_ERROR("[gpu] edram: the 3D scene could not be moved from {}x to {}x: {} could not be "
-                   "made at the new size (the scene stays at {}x)",
-                   scene_scale_, scale, DescribeEdramKey(key), scene_scale_);
+      // Asked again every few seconds by the caller: the first few are logged.
+      if (scale_move_failures_logged_ < 4) {
+        ++scale_move_failures_logged_;
+        REXLOG_ERROR("[gpu] edram: the 3D scene could not be moved from {}x to {}x: {} could not "
+                     "be made at the new size (the scene stays at {}x)",
+                     scene_scale_, scale, DescribeEdramKey(key), scene_scale_);
+      }
       return false;
     }
     remade.push_back(std::move(r));

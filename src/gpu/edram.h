@@ -646,6 +646,7 @@ class EdramTargets {
       framebuffers_;
   std::vector<EdramKey> failed_;  // identities reported as impossible
   uint32_t grow_failures_logged_ = 0;
+  uint32_t scale_move_failures_logged_ = 0;  // SetSceneScale
   uint64_t frame_ = 0;
   uint64_t change_serial_ = 1;
 
