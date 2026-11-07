@@ -2047,7 +2047,10 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
      "RxGpuFsrMenu",
      kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
-    {"PM_RxTabGpuHdr", "HDR", "HDR10 output and its brightness levels.",
+    // The paused world is not made brighter than its white (the HIGHLIGHTS row's change shows once
+    // the game is resumed), which this line says: it is the only help text a menu has.
+    // CHECK: the 38 characters fit under the list.
+    {"PM_RxTabGpuHdr", "HDR", "HDR levels. Highlights show on resume.",
      "RxGpuHdrMenu",
      kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif
