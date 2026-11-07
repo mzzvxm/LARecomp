@@ -80,6 +80,19 @@
 // that failed here. A finished build nobody asks for again is taken at the end
 // of the frame (EndFrame), so it is recorded and persists like any other.
 //
+// Live MSAA level (PrebuildForLevel): a pipeline's sample count is its draw's targets' host
+// samples, which the MSAA level sets for an image of the screen the guest multisamples
+// (EdramTargets::HostSamplesAt). A draw whose targets take the level says so (PipelineInputs::
+// msaa_guest_samples), and the first time its pipeline is had it is remembered apart from its
+// sample count. When the level is about to change, one copy per remembered pipeline at the new
+// level's sample count is handed to the builder threads at a lower priority than anything a draw
+// is waiting for (the queue after urgent_, before the precache list); the caller waits for them
+// (PrebuildWaiting) and only then changes the targets, so no frame draws with a pipeline that is
+// not there. A copy a draw asks for before it is ready is moved up to urgent_ like any other
+// pending build. A copy is taken (and recorded for the next start) by the first draw that asks for
+// it, not at the end of the frame like other background builds: copies for a level the player went
+// back from leave nothing in the cache file.
+//
 // Threading: the render thread; the builder threads (the precache workers)
 // touch only the entries and requests they were handed, the ShaderStore
 // (GetShader locks) and the device; the autosave thread only the bytes it was
@@ -173,6 +186,10 @@ struct PipelineInputs {
   const ShaderStore::Entry* vs = nullptr;
   const ShaderStore::Entry* ps = nullptr;
   const InputLayout* input_layout = nullptr;
+  // The draw's targets take the host's MSAA level (EdramTargets::HostSamplesFollowLevel): their
+  // guest sample count, 2 or 4; 0 for any other draw. Only for Pipelines::Get, which remembers the
+  // pipeline of such a draw for PrebuildForLevel.
+  uint32_t msaa_guest_samples = 0;
 };
 
 // The polygon offset of a draw in host units.
@@ -239,6 +256,23 @@ class Pipelines {
   // never returns pending.
   plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs,
                              const Deferral* deferral = nullptr, bool* pending = nullptr);
+
+  // The host MSAA level is about to become `level` (2, 4 or 8): hands the builder threads one copy,
+  // at the sample count `level` gives it, of every pipeline Get was asked for with
+  // PipelineInputs::msaa_guest_samples set (the sample count is max(guest samples, level)). A
+  // pipeline that is already there, queued or being made for another reason is not made again.
+  // Render thread. Calling it again for the same or another level starts a new count.
+  struct LevelPrebuild {
+    uint32_t known = 0;    // pipelines remembered (draws into targets that take the level)
+    uint32_t present = 0;  // ... whose copy at `level` was there already or needs nothing made
+    uint32_t queued = 0;   // copies handed to the builders by this call
+    uint32_t waiting = 0;  // copies, this call's or earlier ones, not finished yet
+  };
+  LevelPrebuild PrebuildForLevel(uint32_t level);
+  // Copies of the last PrebuildForLevel not finished yet (being made or waiting for a thread).
+  // 0: the targets may change. A copy that failed counts as finished: its draws are made (and the
+  // failure reported) the usual way.
+  uint32_t PrebuildWaiting() const;
 
   // Once a frame (a guest present), on the render thread: counts the frame,
   // takes the background builds that finished, and Autosave.
@@ -345,6 +379,11 @@ class Pipelines {
   // to make, or failed (`miss.take` says which).
   plume::RenderPipeline* TakePrecached(const PipelineKey& key, Miss& miss,
                                        const PipelineInputs& inputs);
+  // Get's slow path: the key is in neither map.
+  plume::RenderPipeline* Resolve(const PipelineKey& key, const PipelineInputs& inputs,
+                                 const Deferral* deferral, bool* pending);
+  // Remembers a pipeline just had for a draw whose targets take the MSAA level (PrebuildForLevel).
+  void NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs);
 
   Device* device_ = nullptr;
   const GuestLayout* layout_ = nullptr;
@@ -457,6 +496,10 @@ class Pipelines {
     const StoredLayout* layout = nullptr;    // owned by stored_layouts_
     uint32_t stored = 0;                     // its index there
     uint64_t asked_frame = 0;
+    // A copy for a coming MSAA level (PrebuildForLevel), in low_ until a draw asks for it (then
+    // `promoted`: it was moved up to urgent_). Render thread only.
+    bool low = false;
+    bool promoted = false;
     std::atomic<uint8_t> state{kQueued};
     std::unique_ptr<plume::RenderPipeline> pipeline;
     ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
@@ -470,6 +513,19 @@ class Pipelines {
   };
   std::unordered_map<PipelineKey, std::shared_ptr<Request>, PipelineKeyHash> requests_;
   std::deque<Urgent> urgent_;  // work_mutex_
+  // After urgent_, before the precache list: the copies for a coming MSAA level (work_mutex_).
+  std::deque<Urgent> low_;
+  // The pipelines drawn into targets that take the MSAA level, apart from their sample count: the
+  // session key with sample_count = the draw's guest samples (2 or 4), and the stored layout.
+  struct LevelDependent {
+    PipelineKey key;
+    uint32_t stored = 0;
+  };
+  std::vector<LevelDependent> level_dependent_;
+  std::unordered_set<PipelineKey, PipelineKeyHash> level_dependent_index_;
+  // The copies PrebuildForLevel waits for.
+  std::vector<std::shared_ptr<Request>> prebuild_requests_;
+  std::vector<Precached*> prebuild_precached_;
   std::mutex work_mutex_;
   std::condition_variable work_cv_;
   uint64_t frame_ = 0;  // EndFrame's count, for the waits

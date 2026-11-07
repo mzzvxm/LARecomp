@@ -301,6 +301,10 @@ void Pipelines::Shutdown() {
     SaveRecords();
   }
   pipelines_.clear();
+  level_dependent_.clear();
+  level_dependent_index_.clear();
+  prebuild_requests_.clear();
+  prebuild_precached_.clear();
   records_.clear();
   recorded_.clear();
   stored_layouts_.clear();
@@ -490,6 +494,9 @@ void Pipelines::StopPrecache() {
   TakeFinishedRequests();
   requests_.clear();
   urgent_.clear();
+  low_.clear();
+  prebuild_requests_.clear();
+  prebuild_precached_.clear();
   list_skipped_.clear();
   precached_by_key_.clear();
   precached_.clear();  // the GPU is idle: unclaimed pipelines die here
@@ -512,13 +519,14 @@ void Pipelines::PrecacheWorker(uint32_t index) {
       std::unique_lock<std::mutex> lock(work_mutex_);
       const auto leaves = [&] { return index >= steady_workers_ && !boot_mode_.load(); };
       work_cv_.wait(lock, [&] {
-        return stop_precache_.load() || leaves() || !urgent_.empty() || HasListWork();
+        return stop_precache_.load() || leaves() || !urgent_.empty() || !low_.empty() ||
+               HasListWork();
       });
       if (stop_precache_.load()) {
         return;
       }
       if (leaves()) {
-        if (!urgent_.empty() || HasListWork()) {
+        if (!urgent_.empty() || !low_.empty() || HasListWork()) {
           work_cv_.notify_one();  // what woke this one goes to a worker that stays
         }
         return;
@@ -526,6 +534,10 @@ void Pipelines::PrecacheWorker(uint32_t index) {
       if (!urgent_.empty()) {
         urgent = std::move(urgent_.front());
         urgent_.pop_front();
+      } else if (!low_.empty()) {
+        // The copies for a coming MSAA level: nothing a draw waits for, and not the boot list.
+        urgent = std::move(low_.front());
+        low_.pop_front();
       } else {
         from_list = NextListEntry(entry);
       }
@@ -811,6 +823,16 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
   uint8_t state = r.state.load();
   if (state == kQueued || state == kBuilding) {
     if (MaySkip(miss.deferral)) {
+      if (r.low && !r.promoted) {
+        // A copy for the coming MSAA level that a draw already needs: a thread takes it next.
+        r.promoted = true;
+        ++stats_.pending_keys;
+        if (state == kQueued) {
+          Urgent urgent;
+          urgent.request = found->second;
+          PushUrgent(std::move(urgent));
+        }
+      }
       ++stats_.pending_draws;
       miss.take = Take::kPending;
       return nullptr;
@@ -854,7 +876,9 @@ plume::RenderPipeline* Pipelines::AdoptRequest(const PipelineKey& key, Request& 
   }
   if (pipeline) {
     ++stats_.background_taken;
-    NotePendingTaken(r.asked_frame);
+    if (!r.low || r.promoted) {
+      NotePendingTaken(r.asked_frame);  // a draw was waiting for it
+    }
     if (persist_) {
       RecordStored(key, r.stored);
     }
@@ -869,6 +893,13 @@ plume::RenderPipeline* Pipelines::AdoptRequest(const PipelineKey& key, Request& 
 void Pipelines::TakeFinishedRequests() {
   for (auto it = requests_.begin(); it != requests_.end();) {
     const uint8_t state = it->second->state.load();
+    if (it->second->low && !it->second->promoted) {
+      // A copy for a coming MSAA level that no draw has asked for: it is taken (and recorded for
+      // the next start) by the first draw that does, so a level the player went back from leaves
+      // nothing in the cache file.
+      ++it;
+      continue;
+    }
     if (state == kReady || state == kFailed) {
       AdoptRequest(it->first, *it->second);
       it = requests_.erase(it);
@@ -1416,6 +1447,125 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   if (const auto alias = aliases_.find(key); alias != aliases_.end()) {
     return alias->second;
   }
+  plume::RenderPipeline* got = Resolve(key, inputs, deferral, pending);
+  if (got && inputs.msaa_guest_samples != 0) {
+    NoteLevelDependent(key, inputs);  // once: the next lookups hit the maps above
+  }
+  return got;
+}
+
+void Pipelines::NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs) {
+  PipelineKey canonical = key;
+  canonical.sample_count = inputs.msaa_guest_samples;
+  if (!level_dependent_index_.insert(canonical).second || !inputs.input_layout) {
+    return;
+  }
+  const uint32_t stored = StoreLayout(*inputs.input_layout);
+  if (stored == kNoLayout) {
+    return;  // neither recorded nor built in the background: made at the draw when needed
+  }
+  level_dependent_.push_back(LevelDependent{canonical, stored});
+}
+
+Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
+  // CHECK: that the copies are the pipelines the first draws after the switch ask for (the same key
+  // but the sample count: the log's pipeline statistics for the minute after a switch should show
+  // few or no pending draws and nothing made on the render thread; a missing one shows as a draw
+  // left out for a few frames), that the build of 4 and 8 sample pipelines works on both backends
+  // (an 8 sample pipeline against an 8 sample framebuffer under the D3D12 debug layer and Vulkan
+  // validation), and how long the set takes at the first switch of a session (the 20 s limit).
+  LevelPrebuild result;
+  prebuild_requests_.clear();
+  prebuild_precached_.clear();
+  result.known = uint32_t(level_dependent_.size());
+  if (level_dependent_.empty() || workers_.empty() || stop_precache_.load() || !shaders_) {
+    return result;
+  }
+  std::vector<Urgent> items;
+  for (const LevelDependent& d : level_dependent_) {
+    PipelineKey key = d.key;
+    // EdramTargets::HostSamplesAt: the level, never fewer than the guest's.
+    key.sample_count = std::max(d.key.sample_count, level);
+    if (pipelines_.count(key) != 0 || aliases_.count(key) != 0) {
+      ++result.present;
+      continue;
+    }
+    if (const auto asked = requests_.find(key); asked != requests_.end()) {
+      const uint8_t state = asked->second->state.load();
+      if (state == kQueued || state == kBuilding) {
+        prebuild_requests_.push_back(asked->second);
+      } else {
+        ++result.present;  // finished: the end of the frame, or the first draw, takes it
+      }
+      continue;
+    }
+    if (const auto listed = precached_by_key_.find(PersistentKey(key, d.stored));
+        listed != precached_by_key_.end()) {
+      // A record of the cache file or the starter list has it: that entry is made, the first draw
+      // takes it (TakePrecached).
+      Precached& p = *listed->second;
+      const uint8_t state = p.state.load();
+      if (p.taken || state == kReady || state == kFailed || state == kClaimed) {
+        ++result.present;
+        continue;
+      }
+      prebuild_precached_.push_back(&p);
+      if (state == kQueued) {
+        Urgent item;
+        item.precached = &p;
+        items.push_back(std::move(item));
+        ++result.queued;
+      }
+      continue;
+    }
+    const ShaderStore::Entry* vs = shaders_->Find(key.vs);
+    const ShaderStore::Entry* ps = key.ps != 0 ? shaders_->Find(key.ps) : nullptr;
+    if (!vs || (key.ps != 0 && !ps)) {
+      continue;  // not in the pack (a pack that changed): its draws are skipped as they were
+    }
+    auto request = std::make_shared<Request>();
+    request->key = key;
+    request->vs = vs;
+    request->ps = ps;
+    request->layout = stored_layouts_[d.stored].get();
+    request->stored = d.stored;
+    request->asked_frame = frame_;
+    request->low = true;
+    requests_.emplace(key, request);
+    prebuild_requests_.push_back(request);
+    Urgent item;
+    item.request = std::move(request);
+    items.push_back(std::move(item));
+    ++result.queued;
+  }
+  if (!items.empty()) {
+    {
+      std::lock_guard<std::mutex> lock(work_mutex_);
+      for (Urgent& item : items) {
+        low_.push_back(std::move(item));
+      }
+    }
+    work_cv_.notify_all();
+  }
+  result.waiting = PrebuildWaiting();
+  return result;
+}
+
+uint32_t Pipelines::PrebuildWaiting() const {
+  uint32_t waiting = 0;
+  for (const std::shared_ptr<Request>& r : prebuild_requests_) {
+    const uint8_t state = r->state.load();
+    waiting += state == kQueued || state == kBuilding;
+  }
+  for (const Precached* p : prebuild_precached_) {
+    const uint8_t state = p->state.load();
+    waiting += state == kQueued || state == kBuilding;
+  }
+  return waiting;
+}
+
+plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const PipelineInputs& inputs,
+                                          const Deferral* deferral, bool* pending) {
   Miss miss;
   miss.deferral = deferral;
   // A background build asked for earlier, then the precache list's entry.
