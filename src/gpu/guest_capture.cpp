@@ -686,6 +686,7 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
   }
 
   DeviceState& state = StateFor(device);
+  c.state = &state;
   CollectDeltas(DeviceBytes(base, device, guest::kDevVsConstantBank), state.vs_shadow.data(),
                 state.shadows_valid, token.vs_dirty, verify_constants_, c.vs_blocks,
                 c.vs_block_count, frame_.constant_blocks_masked, frame_.constant_blocks_unmasked);
@@ -735,8 +736,11 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
   r->viz_query_index = *DeviceBytes(base, device, guest::kDevVizQueryIndex);
   r->viz_query_id = *DeviceBytes(base, device, guest::kDevVizQueryTable + r->viz_query_index);
   r->device_flags = DeviceU32(base, device, guest::kDevFlags);
+  // One translation of the table's address serves its words (GuestPtr compares and adds the
+  // 0xE0 heap's offset at every call; the table lies inside the device object).
+  const uint8_t* colors = DeviceBytes(base, device, guest::kDevColorSurfaces);
   for (uint32_t i = 0; i < 4; ++i) {
-    r->surfaces[i] = DeviceU32(base, device, guest::kDevColorSurfaces + 4 * i);
+    r->surfaces[i] = LoadBe32(colors + 4 * i);
   }
   r->surfaces[4] = DeviceU32(base, device, guest::kDevDepthSurface);
   {
@@ -759,7 +763,7 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
       r->target_size_bits = SizeBitsOf(DeviceU32(base, device, guest::kDevTilingExtent),
                                        DeviceU32(base, device, guest::kDevTilingExtent + 4));
     } else {
-      DeviceState& sized = StateFor(device);
+      DeviceState& sized = *c.state;
       const uint32_t surface = r->surfaces[0] ? r->surfaces[0] : r->surfaces[4];
       if (surface != sized.sized_surface) {
         sized.sized_surface = surface;
@@ -773,8 +777,9 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
       r->target_size_bits = sized.sized_surface_bits;
     }
   }
+  const uint8_t* samplers = DeviceBytes(base, device, guest::kDevSamplerTextures);
   for (uint32_t i = 0; i < guest::kSamplerCount; ++i) {
-    r->sampler_textures[i] = DeviceU32(base, device, guest::kDevSamplerTextures + 4 * i);
+    r->sampler_textures[i] = LoadBe32(samplers + 4 * i);
   }
   std::memcpy(r->stream_strides, DeviceBytes(base, device, guest::kDevStreamStrides),
               sizeof(r->stream_strides));
@@ -787,7 +792,7 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
                 c.decl_count * guest::kDeclElementBytes);
   }
 
-  DeviceState& state = StateFor(device);
+  DeviceState& state = *c.state;
   const uint8_t* vs_bank = DeviceBytes(base, device, guest::kDevVsConstantBank);
   const uint8_t* ps_bank = DeviceBytes(base, device, guest::kDevPsConstantBank);
   std::memcpy(payload + layout.vs_indices, c.vs_blocks.data(), c.vs_block_count);

@@ -200,6 +200,7 @@ class GuestCapture {
     uint32_t vs_block_count = 0;
     uint32_t ps_block_count = 0;
     bool bank_check = false;
+    DeviceState* state = nullptr;  // the draw's device, found once by GatherDraw
   };
 
   // The inline draw between BeginVertices and EndVertices.
