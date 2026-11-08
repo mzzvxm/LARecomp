@@ -230,9 +230,10 @@ void ApplyInterpolatedAlpha(const uint8_t* block, uint32_t texels[16]) {
 //
 // CHECK: written without a compiler or a run (the main session builds). The algorithm was checked
 // against the per-block decoder in a Python model over 4000 random levels (all block sizes and
-// endians, tiled and linear, offsets, pitches, unreadable tails: 0 differences, ports/scratchpad
-// model.py logic = this file's), and the address decomposition against the SDK's formula for every
-// block size and several pitches. The C++ equality is what mcla_gpu_texture_decode_selftest and
+// endians, tiled and linear, offsets, pitches, unreadable tails: 0 differences; the model is
+// C:/mcv/larecomp/ports/wt-texdec-model/untile_model.py, the same steps as this file), and the
+// address decomposition against the SDK's formula for every block size and several pitches
+// (tile_check.py there). The C++ equality is what mcla_gpu_texture_decode_selftest and
 // _verify are for. The speed-up (expected 5-10x on the decode itself, from about 0.65 GB/s to a few
 // GB/s per core) is an estimate from the instruction count per 16 bytes, not a measurement.
 // CHECK: SSSE3 is assumed from -msse4.1 (rexglue_apply_target_settings(larecomp_gpu)); if
