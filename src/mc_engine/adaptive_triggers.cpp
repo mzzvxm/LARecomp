@@ -12,7 +12,7 @@
 // Nothing here reads the car except through those slip amounts: the HUD update (sub_822112A8)
 // only runs while a car is driven, and the game's own paused flag says when the menu holds it.
 //
-// How it reaches the pad. Not through the SDK's input driver, and not through SDL: the
+// How it reaches the pad, on Windows. Not through the SDK's input driver, and not through SDL: the
 // executable and rexruntime.dll each carry their own SDL, and the executable's has the HID
 // joystick drivers off (wheel_input.cpp and ui/gamepad.cpp set the hints), so SDL_SendGamepadEffect
 // has nothing to talk to there. The output report is written to the pad's HID interface with the
@@ -22,6 +22,19 @@
 // CRC-32 over Bluetooth, 47 bytes of effect state in both. A trigger block is 11 bytes: a mode
 // (0x05 off, 0x21 resistance per zone, 0x26 vibration per zone) and its parameters. A zone is a
 // tenth of the travel and gets three bits of strength; a vibration also has a frequency in Hz.
+//
+// On Linux (and any other non-Windows build) there is one SDL in the process, the SDK's, with its
+// HIDAPI drivers on (input_backend is "sdl" there), so the same 47 bytes of effect state go through
+// SDL_SendGamepadEffect: SDL's PS5 driver adds the report id, the Bluetooth header and the CRC
+// itself and queues the write on its own thread. The state keeps its two enable bits, and SDL's
+// own rumble and LED reports never carry those, so neither side undoes the other. The pad is
+// opened like any other (an SDL_Gamepad is reference counted, so the SDK's driver and this share
+// it) and only a Sony DualSense or DualSense Edge is used. SDL reaches a DualSense for effects only
+// through its HIDAPI driver, which opens /dev/hidraw*: a player without Steam's udev rules (or any
+// rule that lets the logged-in user use the hidraw node) gets the pad through the kernel's evdev
+// driver instead, where SDL has no effects. The same goes for a PlayStation pad that Steam Input
+// has taken over (SDL shows Steam's virtual pad with the real pad's ids). A refused write says so
+// in the log and the triggers stay as they are. The Steam Deck's own controls are not a DualSense.
 //
 // No thread of its own and nothing registered with Windows: the work is done by a per-frame
 // tick on the game's thread, every 50 ms, and writes only when something changed (a vibration
@@ -64,6 +77,11 @@
 #include <hidpi.h>
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "hid.lib")
+#else
+#include <SDL3/SDL.h>
+#include <rex/input/input_system.h>
+#include <rex/ui/window.h>
+#include "trigger_sdl.h"
 #endif
 
 #include "hooks/hooks_internal.h"
@@ -145,7 +163,16 @@ bool WindowInFront() {
     if (front) GetWindowThreadProcessId(front, &pid);
     return pid == GetCurrentProcessId();
 #else
-    return true;
+    // The SDK's window keeps its focus flag from SDL's focus events (the same flag the cursor hiding
+    // reads). A compositor that is showing something over the game (Steam's overlay or its Quick
+    // Access menu under gamescope, another window) takes the keyboard focus, so the triggers go
+    // slack then. No window yet (or none to ask) counts as in front: nothing is driven without one.
+    // CHECK: that the flag follows a click on another window under X11 and Wayland, and the Steam
+    // overlay on a Steam Deck; a flag that stays false would keep the triggers slack for good.
+    rex::Runtime* rt = rex::Runtime::instance();
+    auto* input = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+    rex::ui::Window* window = input ? input->window() : nullptr;
+    return window ? window->HasFocus() : true;
 #endif
 }
 
@@ -234,6 +261,17 @@ int VibrationStrength(VibrationState& v, float amount, int64_t now) {
     return 0;
 }
 
+// The 47 bytes of effect state that set both trigger blocks and nothing else (the enable bits of
+// every other field stay 0). SDL's DS5EffectsState_t has the same layout: the enable bits first,
+// the right trigger block at byte 10 and the left at byte 21.
+void BuildState(const Effect& r2, const Effect& l2, uint8_t (&state)[47]) {
+    std::memset(state, 0, sizeof(state));
+    state[0] = 0x04 | 0x08;  // enable: right trigger, left trigger
+    std::memcpy(state + 10, r2.b, sizeof(r2.b));
+    std::memcpy(state + 21, l2.b, sizeof(l2.b));
+}
+
+#if defined(_WIN32)
 uint32_t Crc32(uint32_t crc, const uint8_t* data, size_t size) {
     for (size_t i = 0; i < size; ++i) {
         crc ^= data[i];
@@ -244,10 +282,8 @@ uint32_t Crc32(uint32_t crc, const uint8_t* data, size_t size) {
 
 // The output report that sets both trigger blocks and nothing else; returns its size.
 size_t BuildReport(bool bluetooth, const Effect& r2, const Effect& l2, uint8_t (&out)[78]) {
-    uint8_t state[47] = {};
-    state[0] = 0x04 | 0x08;  // enable: right trigger, left trigger
-    std::memcpy(state + 10, r2.b, sizeof(r2.b));
-    std::memcpy(state + 21, l2.b, sizeof(l2.b));
+    uint8_t state[47];
+    BuildState(r2, l2, state);
     std::memset(out, 0, sizeof(out));
     if (!bluetooth) {
         out[0] = 0x02;
@@ -263,14 +299,20 @@ size_t BuildReport(bool bluetooth, const Effect& r2, const Effect& l2, uint8_t (
     for (int i = 0; i < 4; ++i) out[74 + i] = uint8_t(crc >> (8 * i));
     return 78;
 }
+#endif  // _WIN32
 
 // --- The pads --------------------------------------------------------------------------------
 
 struct Pad {
+#if defined(_WIN32)
     std::wstring path;
     HANDLE handle = INVALID_HANDLE_VALUE;
     bool bluetooth = false;
     size_t report_size = 0;  // what Windows wants written: the report padded to this
+#else
+    SDL_JoystickID id = 0;
+    SDL_Gamepad* gamepad = nullptr;  // a reference of its own to the pad the SDK's driver also has open
+#endif
     bool sent = false;       // anything written yet
     Effect r2;               // what the triggers were last set to
     Effect l2;
@@ -288,6 +330,7 @@ bool g_migrated = false;
 VibrationState g_r2_vibration;
 VibrationState g_l2_vibration;
 
+#if defined(_WIN32)
 // Paths of the connected DualSenses: the HID interfaces whose path names Sony's vendor id and the
 // DualSense or DualSense Edge product id. Nothing is opened here.
 std::vector<std::wstring> FindPads() {
@@ -322,8 +365,8 @@ void ClosePad(Pad& pad) {
     pad.handle = INVALID_HANDLE_VALUE;
 }
 
-// Writes the report for the given state to the pad; false if Windows refused it.
-bool Write(Pad& pad, const Effect& r2, const Effect& l2) {
+// Sends the report for the given state to the pad; false if Windows refused it.
+bool Send(Pad& pad, const Effect& r2, const Effect& l2) {
     uint8_t report[78];
     const size_t size = BuildReport(pad.bluetooth, r2, l2, report);
     std::vector<uint8_t> buffer(std::max(pad.report_size, size), 0);
@@ -342,7 +385,44 @@ bool Write(Pad& pad, const Effect& r2, const Effect& l2) {
         }
     }
     CloseHandle(overlapped.hEvent);
-    if (!ok) return false;
+    return ok;
+}
+#else
+// A Sony DualSense or DualSense Edge, by its ids, that SDL did not make up itself. Under Steam Input
+// SDL reports the real pad's ids for Steam's virtual pad as well; that pad refuses effects (see Send).
+bool IsDualSense(SDL_JoystickID id) {
+    if (SDL_IsJoystickVirtual(id)) return false;
+    const Uint16 product = SDL_GetGamepadProductForID(id);
+    return SDL_GetGamepadVendorForID(id) == 0x054C && (product == 0x0CE6 || product == 0x0DF2);
+}
+
+void ClosePad(Pad& pad) {
+    if (pad.gamepad) SDL_CloseGamepad(pad.gamepad);
+    pad.gamepad = nullptr;
+}
+
+// Sends the effect state for the given triggers to the pad through SDL; false if SDL refused it.
+bool Send(Pad& pad, const Effect& r2, const Effect& l2) {
+    uint8_t state[47];
+    BuildState(r2, l2, state);
+    if (SDL_SendGamepadEffect(pad.gamepad, state, int(sizeof(state)))) return true;
+    // CHECK: never run against a DualSense on Linux. "not supported" here means SDL has the pad
+    // through the kernel's evdev driver (no access to /dev/hidraw*) or as Steam Input's virtual pad,
+    // not through its HIDAPI driver. The caller drops the pad, and the scan finds it again; after 5
+    // refusals the effects give up.
+    if (g_logged++ < 8) {
+        LARECOMP_APP_WARN("[Triggers] SDL would not send the effect to the DualSense: {}. SDL can only do "
+                          "that with the pad open through its HIDAPI driver (/dev/hidraw*, which the "
+                          "player needs access to; Steam's udev rules give it), not through the kernel's "
+                          "evdev device or Steam Input's virtual pad", SDL_GetError());
+    }
+    return false;
+}
+#endif
+
+// Writes the state for the given triggers to the pad; false if it was refused.
+bool Write(Pad& pad, const Effect& r2, const Effect& l2) {
+    if (!Send(pad, r2, l2)) return false;
     g_failures = 0;
     if ((pad.r2.b[0] != r2.b[0] || pad.l2.b[0] != l2.b[0]) && g_logged++ < 12) {
         LARECOMP_APP_INFO("[Triggers] R2 {}, L2 {}", Describe(r2), Describe(l2));
@@ -375,6 +455,48 @@ void ReadOldSetting() {
     rex::cvar::SetFlagByName("adaptive_triggers", "true");
 }
 
+#if !defined(_WIN32)
+// Opens the DualSenses that appeared and closes the ones that went. SDL's own list of pads is
+// current without any call here: the SDK's driver pumps SDL's events, which updates the joysticks.
+void Scan() {
+    if (g_failures >= 5) return;
+    if (!larecomp::trigger_sdl::GamepadLayerUp()) return;
+    std::vector<SDL_JoystickID> present;
+    int count = 0;
+    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+        for (int i = 0; i < count; ++i) {
+            if (IsDualSense(ids[i])) present.push_back(ids[i]);
+        }
+        SDL_free(ids);
+    }
+    for (SDL_JoystickID id : present) {
+        if (std::any_of(g_pads.begin(), g_pads.end(), [&](const Pad& p) { return p.id == id; })) continue;
+        SDL_Gamepad* gamepad = SDL_OpenGamepad(id);
+        if (!gamepad) {
+            if (g_logged++ < 8) LARECOMP_APP_WARN("[Triggers] could not open the DualSense: {}", SDL_GetError());
+            continue;
+        }
+        Pad pad;
+        pad.id = id;
+        pad.gamepad = gamepad;
+        const SDL_JoystickConnectionState link = SDL_GetGamepadConnectionState(gamepad);
+        LARECOMP_APP_INFO("[Triggers] DualSense found ({})",
+                          link == SDL_JOYSTICK_CONNECTION_WIRELESS ? "Bluetooth"
+                          : link == SDL_JOYSTICK_CONNECTION_WIRED  ? "USB"
+                                                                   : "link unknown");
+        g_pads.push_back(std::move(pad));
+    }
+    for (size_t i = 0; i < g_pads.size();) {
+        if (std::find(present.begin(), present.end(), g_pads[i].id) == present.end() ||
+            !SDL_GamepadConnected(g_pads[i].gamepad)) {
+            ClosePad(g_pads[i]);
+            g_pads.erase(g_pads.begin() + long(i));
+        } else {
+            ++i;
+        }
+    }
+}
+#else
 // Opens the pads that appeared and closes the ones that went.
 void Scan() {
     if (g_failures >= 5) return;
@@ -411,6 +533,7 @@ void Scan() {
         }
     }
 }
+#endif
 
 }  // namespace
 

@@ -21,7 +21,8 @@ void Shutdown();
 // counter, hooks/audio_mixer.cpp; the Xbox trigger rumble, impulse_triggers.cpp). Safe from any
 // thread.
 // IsGamePaused: the game's own paused flag is set (the pause menu holds the game).
-// IsWindowInFront: the foreground window belongs to this process.
+// IsWindowInFront: the foreground window belongs to this process (off Windows: the game window has
+// the focus).
 // IsDriving: the race HUD updated in the last 300 ms and the game is not paused.
 bool IsGamePaused();
 bool IsWindowInFront();

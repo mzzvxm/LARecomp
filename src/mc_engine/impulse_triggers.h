@@ -9,7 +9,8 @@ namespace larecomp::impulse {
 
 // Once, at start-up, before anything starts this executable's SDL joystick layer (the wheel
 // thread, the menu pad layer): asks it for the GameInput driver, the only one of its Windows
-// drivers that reaches the trigger motors.
+// drivers that reaches the trigger motors. Off Windows it sets nothing (the SDK's SDL is this
+// one and its HIDAPI drivers are on).
 void EarlyInit();
 
 // Every frame, on the game's thread (Patch_DeltaTimePre). Starts the worker thread the first time
