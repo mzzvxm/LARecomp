@@ -142,6 +142,14 @@ class CommandStream {
   const RecordHeader* Next();
   // Gives the space of the record returned by Next back to the producers.
   void Release(const RecordHeader* record);
+  // Looking ahead without consuming (the renderer decodes the textures of the draws queued behind
+  // the one it executes): the ring position of the record Next last returned (until Release moves
+  // it on); and the published record at `*position`, which then moves past it. Null at the end of
+  // the published records. Pads are skipped. A record Peek returned stays readable until the
+  // consumer releases it, which only the render thread does, so the pointer is good for the rest
+  // of the record being executed. Render thread only.
+  uint64_t consumer_position() const { return read_; }
+  const RecordHeader* Peek(uint64_t* position) const;
   // Spins briefly, then sleeps until a record is published, the stream stops,
   // or `timeout` passes. True when there is work (or stop), false on timeout.
   bool WaitForWork(std::chrono::milliseconds timeout);

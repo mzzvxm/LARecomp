@@ -21,10 +21,17 @@
 // bytes from the origin: a block that would is zero-filled and reported, so a
 // bad fetch constant cannot fault the process.
 //
-// Threading: pure functions.
+// Decode() is the fast one (texture_decode.cpp, "The fast decoder": tile origins from the SDK, the
+// offset inside a tile from tables, runs of neighbouring blocks moved and byte swapped 8 or 16
+// bytes at a time); DecodeReference() is the per-block decoder it replaced, kept to check it
+// against and to decode what the fast one does not take. Their output is byte for byte the same.
+//
+// Threading: pure functions, safe from any number of threads at once (the tables are built once,
+// a function-local static; the temporary buffers are per thread).
 // ===========================================================================
 
 #include <cstdint>
+#include <string>
 
 #include "format.h"
 
@@ -70,8 +77,35 @@ uint32_t HostRowBytes(const Request& request);
 // Rows of the output: height_blocks, or height when decompressing.
 uint32_t HostRows(const Request& request);
 
-// Writes the level into `out`, rows `out_pitch` bytes apart. False when a
-// block lay beyond `readable` (it was written as zeros).
+// Writes the level into `out`, rows `out_pitch` bytes apart (the bytes between a row's end and the
+// next row are not written). False when a block lay beyond `readable` (it was written as zeros).
 bool Decode(const Request& request, uint8_t* out, uint32_t out_pitch);
+
+// The decoder Decode replaced: one SDK address call, one read with its swap and one switch per
+// block. Same arguments and result.
+bool DecodeReference(const Request& request, uint8_t* out, uint32_t out_pitch);
+
+// Decode, then DecodeReference over the same source into a buffer of its own and a comparison of
+// the rows: *mismatch is set when the result or a byte differs (it can also differ when the guest
+// writes the source between the two reads). For the in-game check (mcla_gpu_texture_decode_verify).
+bool DecodeVerified(const Request& request, uint8_t* out, uint32_t out_pitch, bool* mismatch);
+
+struct SelfTestResult {
+  uint32_t cases = 0;       // random requests built
+  uint32_t runs = 0;        // decodes compared (each case with the vector and the scalar loops)
+  uint32_t mismatches = 0;  // of those, the ones that differ from DecodeReference
+  uint32_t fast = 0;        // of the runs, the ones the fast path decoded
+  uint32_t fallback = 0;    // ... and the ones it handed to DecodeReference (unreadable tails)
+  bool tables_ok = true;    // the tile tables reproduce the SDK's address function (else all fall back)
+  std::string first;        // the first mismatch, described
+};
+// Builds `cases` random levels (block sizes 1-16, all four endians, tiled and linear, offsets of a
+// packed tail, extents from 1 to 100 blocks, pitches aligned or not, texels cut at the edge,
+// the 1:5:5:5 / depth loads, DXT decompression, and unreadable tails that make the reference zero
+// fill) over random bytes and compares Decode with DecodeReference. mismatches == 0 with
+// tables_ok and most runs on the fast path is the pass.
+// Takes about a second for 1500 cases; not for use while another thread decodes (it flips the
+// vector path off for the scalar pass).
+SelfTestResult SelfTest(uint32_t cases);
 
 }  // namespace mcla::gpu::texture_decode

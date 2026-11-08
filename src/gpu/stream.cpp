@@ -318,6 +318,27 @@ const RecordHeader* CommandStream::Next() {
   }
 }
 
+const RecordHeader* CommandStream::Peek(uint64_t* position) const {
+  const uint64_t published = published_tail_.load(std::memory_order_acquire);
+  for (;;) {
+    const uint64_t at = *position;
+    if (at >= published) {
+      return nullptr;
+    }
+    const auto* header = reinterpret_cast<const RecordHeader*>(At(at));
+    const uint64_t offset = at % capacity_;
+    if (header->size < sizeof(RecordHeader) || header->size % kRecordAlignment != 0 ||
+        offset + header->size > capacity_ || at + header->size > published) {
+      return nullptr;  // Next reports it, and stops, when the consumer gets there
+    }
+    *position = at + header->size;
+    if (header->type == RecordType::kPad) {
+      continue;
+    }
+    return header;
+  }
+}
+
 void CommandStream::Release(const RecordHeader* record) {
   read_ += record->size;
   // Next checked that the record lies inside the buffer, so the offset reaches the capacity at
