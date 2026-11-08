@@ -41,19 +41,6 @@ REXCVAR_DEFINE_INT32(
     .range(2, 4)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// TEST ONLY (drop this cvar and keep every part on before merging): which parts of the switch off from
-// DLSS frame generation are in effect, to tell which one clears the pace that outlasts it (the game
-// held at half the display's rate). 1: the plugin is told off for good without retaining its
-// resources, and the swap chain waits for the driver's pacing to be the one from before; 2: the
-// device's own Reflex takes over again from its neutral mode. 0 is the switch as it was.
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_test_dlssg_off_fix, 3, "MCLA/GPU",
-    "Test only: the parts of DLSS frame generation's switch off that are in effect (1 = the plugin "
-    "releases its resources while it winds down and the swap chain waits for the driver's pacing, "
-    "2 = Reflex restarts from its neutral mode, 3 = both, 0 = neither).")
-    .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 REXCVAR_DECLARE(std::string, mcla_gpu_frame_generation);  // frame_generation.cpp
 REXCVAR_DECLARE(int32_t, mcla_gpu_frame_generation_fps_limit);  // frame_generation.cpp
 REXCVAR_DECLARE(bool, mcla_gpu_vsync);                    // renderer.cpp
@@ -67,11 +54,6 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint32_t kVendorNvidia = 0x10DE;
 constexpr const char* kPrefix = "[gpu] dlss frame generation:";
-
-// mcla_gpu_test_dlssg_off_fix: whether a part of the switch off is in effect.
-bool OffFix(int32_t part) {
-  return (REXCVAR_GET(mcla_gpu_test_dlssg_off_fix) & part) != 0;
-}
 
 // What the pause menu, the frame limiter and the latency reducer read, from any thread.
 constexpr uint32_t kBitProbed = 1u << 0;
@@ -439,7 +421,7 @@ bool DlssFrameGeneration::WoundDown() {
   // The presents are in. The plugin takes its pacing apart over more of them than that, on a thread
   // of its own: the chain stays until a minimum of time has gone and the driver's own account of the
   // pacing is the one it had before frame generation (or cannot be asked: the time alone then).
-  if (OffFix(1) && (waited < kWindDownMin || DriverStillPaces())) {
+  if (waited < kWindDownMin || DriverStillPaces()) {
     return false;
   }
   LogPacing(std::format("after {} presents and {} ms with generation off", wind_frames_,
@@ -590,9 +572,7 @@ void DlssFrameGeneration::CompleteSwitch(Change change, bool ok, bool resize) {
   winding_down_ = false;
   // The device's own reducer takes Reflex over again from the neutral mode (latency.h RearmDriver); what
   // the driver says about the pacing is read right after, and its waits are counted from here.
-  if (OffFix(2)) {
-    latency::RearmDriver();
-  }
+  latency::RearmDriver();
   latency::UseStreamline(false);
   latency::TakeSleepStats();
   LogPacing("right after the plain swap chain is made");
@@ -668,7 +648,7 @@ bool DlssFrameGeneration::ApplyOptions(bool on, const FrameArgs& args, uint32_t 
                                        uint32_t render_h) {
   // The setting went off: once, the plugin is told off for good, with its resources to be released (a
   // pause for a menu or a loading screen keeps them); that goes to a plugin that is paused as well.
-  const bool release = !on && winding_down_ && !release_told_ && OffFix(1);
+  const bool release = !on && winding_down_ && !release_told_;
   if (!on && (!options_known_ || !applied_.on) && !(release && options_known_)) {
     return true;  // nothing was told on: nothing to take back
   }
