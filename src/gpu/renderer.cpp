@@ -543,8 +543,14 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       census_.OnDraw(payload);
       scene_.OnDraw(payload, OpenFrameList());
       MaybeFlushBatch();
+      textures_.DrawExecuted();
       if (textures_.prefetching()) {
         PrefetchTextures(header);
+      } else if (prefetch_live_) {
+        // The burst is over: the next one starts from the record it is on then.
+        prefetch_live_ = false;
+        prefetch_position_ = 0;
+        prefetch_ahead_ = 0;
       }
       return;
     case RecordType::kClear: {
@@ -651,6 +657,7 @@ void Renderer::PrefetchTextures(const RecordHeader& executing) {
   if (!frames_.is_open()) {
     return;
   }
+  prefetch_live_ = true;
   CommandStream& stream = thread_.stream();
   // Never behind the record that just ran (it is still the stream's current one: Release comes
   // after Execute). A draw that ran was one that had been offered, if the position was ahead of it.

@@ -170,8 +170,9 @@ class Renderer final : public RenderThread::Executor {
   void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);
   void OnIdle() override;
   void ExecuteFence(const FenceRecord& record);
-  // After a draw ran: looks at the draw records already published behind it, up to the frame's
-  // present and kPrefetchAheadDraws of them, and offers their textures to the decode pool
+  // After a draw ran, while a burst of new textures is on (TextureCache::prefetching): looks at
+  // the draw records already published behind it, up to the frame's present and
+  // kPrefetchAheadDraws of them, and offers their textures to the decode pool
   // (TextureCache::Prefetch). Each record is looked at once.
   void PrefetchTextures(const RecordHeader& executing);
   // The guest frame's open list, opening it (and starting the frame's
@@ -329,6 +330,10 @@ class Renderer final : public RenderThread::Executor {
   static constexpr uint32_t kPrefetchScanRecords = 64;
   uint64_t prefetch_position_ = 0;
   uint32_t prefetch_ahead_ = 0;
+  // PrefetchTextures ran for the last draw: when the burst ends the position and the count are
+  // dropped, so the next burst starts from the record it is on (a count kept across the gap would
+  // claim draws the look never reached).
+  bool prefetch_live_ = false;
   bool guest_has_presented_ = false;
   // Written by the render thread, read by any thread (fence_progress).
   std::atomic<uint64_t> records_executed_{0};

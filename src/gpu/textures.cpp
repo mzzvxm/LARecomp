@@ -972,6 +972,7 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
   if (e.decompressed) {
     ++stats_.decompressed;
   }
+  NoteCreated();
   Entry* raw = entry.get();
   entries_.emplace(key, std::move(entry));
   return raw;
@@ -988,6 +989,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   if (!pool_.running()) {
     return;
   }
+  ++stats_.prefetch_looked;
   // A fetch repeats in many draws: one that was decided on in this epoch (a write notification, an
   // eviction or a trim starts a new one) is not decided on again.
   uint64_t h = 0;
@@ -1570,10 +1572,12 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
     // for a worker or on a job none had started; ran on workers: jobs the workers finished.
     text += std::format(
         " | decode threads {}: prefetched {} ({:.2f} MiB/frame), used {}, dropped {}, render "
-        "thread waited {:.3f} ms/frame, workers ran {}, {:.1f} MiB held",
+        "thread waited {:.3f} ms/frame, workers ran {}, {:.1f} MiB held, lookahead on for {:.1f} "
+        "draws/frame and handed {:.1f} fetches/frame",
         pool_.threads(), stats_.prefetched, double(stats_.prefetch_bytes) / f / 1048576.0,
         stats_.prefetch_used, stats_.prefetch_dropped, double(stats_.prefetch_wait_ns) / f / 1e6,
-        pool_.TakeRanOnWorkers(), double(pool_.held_bytes()) / 1048576.0);
+        pool_.TakeRanOnWorkers(), double(pool_.held_bytes()) / 1048576.0,
+        double(stats_.prefetch_draws) / f, double(stats_.prefetch_looked) / f);
   }
   if (stats_.verified) {
     text += std::format(" | decode check: {} levels compared, {} differ", stats_.verified,

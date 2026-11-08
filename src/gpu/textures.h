@@ -66,6 +66,14 @@
 // decode in place again, as for any write). The guest may reuse memory once the render thread
 // publishes a fence, so jobs of earlier records are settled before one is (QuiesceDecodes).
 //
+// The look is 50 ns or so a draw (the shaders' fetch masks, the fetch constants out of the record,
+// a hash and a probe each) and finds nothing new in almost every frame: with it always on the
+// render thread spent 0.1-0.25 ms more per frame at 3800 draws (frame log: pool on against off).
+// So it only runs in a burst: when NoteCreated sees kBurstCreations new textures at most
+// kBurstGapDraws executed draws apart, and until kPrefetchHotDraws draws after the last of them
+// (prefetching()). One or two new textures a frame, the usual trickle, decode in place as before:
+// tens of microseconds each.
+//
 // Threading: render thread only, after Initialize. (The pool's workers only decode: they read the
 // guest bytes and the plan a job carries, and write the job's own buffer.)
 // ===========================================================================
@@ -347,8 +355,17 @@ class TextureCache {
   // else (known, a resolve product, a 1D/3D/cube/stacked fetch, texture mods on) is left to
   // Bind2D. Cheap for a fetch seen before.
   void Prefetch(const uint32_t dwords[6], uint64_t sequence);
-  // True when workers decode ahead (mcla_gpu_texture_decode_threads).
-  bool prefetching() const { return pool_.running(); }
+  // True while the lookahead is on: workers decode ahead (mcla_gpu_texture_decode_threads) and a
+  // burst of new textures is on (see above). Off, a draw costs the renderer nothing for it.
+  bool prefetching() const { return prefetch_hot_ != 0; }
+  // After each draw the renderer executes: the clock the burst test and the countdown run on.
+  void DrawExecuted() {
+    ++draw_clock_;
+    if (prefetch_hot_ != 0) {
+      --prefetch_hot_;
+      ++stats_.prefetch_draws;
+    }
+  }
   // Before the render thread publishes the fence with stream sequence `fence`: the decodes of
   // earlier records that have not started are cancelled, those running are waited for, so no
   // worker reads memory the guest may reuse.
@@ -469,6 +486,32 @@ class TextureCache {
   std::array<SeenFetch, kSeenFetches> prefetch_seen_{};
   // Frames a decoded-ahead texture waits for its first draw before it is dropped.
   static constexpr uint64_t kPrefetchHoldFrames = 120;
+  // The lookahead's gate. A burst: this many new textures in a row, each within kBurstGapDraws
+  // executed draws of the one before; the lookahead then stays on for kPrefetchHotDraws draws
+  // after the last. CHECK: the three numbers are guesses from the frame log's creations per frame
+  // (one to four in about 10 % of the frames, 10 or more in 0.7 %, 20 or more, the frames that take
+  // 7-25 ms, in 0.3 %), not from where in a frame the creations fall; with the creations spread
+  // evenly over each frame's draws they keep the lookahead on for 0.6-0.7 % of the draws and let
+  // 3-4 % of a big burst's textures be decoded in place before it starts (the textures line prints
+  // the draws it was on for).
+  static constexpr uint32_t kBurstCreations = 4;
+  static constexpr uint64_t kBurstGapDraws = 512;
+  static constexpr uint32_t kPrefetchHotDraws = 1024;
+  // A new entry was made (Create, by a draw or by the lookahead): the gate's streak.
+  void NoteCreated() {
+    if (!pool_.running()) {
+      return;
+    }
+    create_streak_ = draw_clock_ - last_create_clock_ <= kBurstGapDraws ? create_streak_ + 1 : 1;
+    last_create_clock_ = draw_clock_;
+    if (create_streak_ >= kBurstCreations) {
+      prefetch_hot_ = kPrefetchHotDraws;
+    }
+  }
+  uint64_t draw_clock_ = 0;         // draws executed (DrawExecuted)
+  uint64_t last_create_clock_ = 0;  // ... when the last entry was made
+  uint32_t create_streak_ = 0;
+  uint32_t prefetch_hot_ = 0;       // draws left of the lookahead; 0: off
   uint64_t epoch_ = 1;
   std::array<uint32_t, kGenerationBuckets> product_generations_{};
   uint32_t slot_ = 0;
@@ -531,6 +574,8 @@ class TextureCache {
     uint64_t prefetch_used = 0;        // uploads that took the pool's levels
     uint64_t prefetch_dropped = 0;     // ... that found them stale or incomplete (decoded again)
     uint64_t prefetch_wait_ns = 0;     // the render thread waiting in Upload for a worker / decoding a job no worker had started
+    uint64_t prefetch_draws = 0;       // draws executed with the lookahead on
+    uint64_t prefetch_looked = 0;      // fetch constants the lookahead was handed
   };
   Stats stats_;
 };
