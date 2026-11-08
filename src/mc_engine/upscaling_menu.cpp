@@ -579,9 +579,9 @@ constexpr ItemDef kRows[] = {
 
 // ── The AA rows (the page width is counted above) ──────────────────────────────────────────────
 
-// NATIVE AA and MSAA while a temporal upscaler runs: grey, and the suffix names the upscaler that
-// does the anti-aliasing instead ("MSAA (FSR 3.1 ON)"). Width: "MSAA (FSR 3.1 ON)" is 17 on DISPLAY,
-// "NATIVE AA (FSR 3.1 ON)" 22 on RENDERER.
+// POST AA and MSAA while a temporal upscaler runs: grey, and the suffix names the upscaler that
+// does the anti-aliasing instead ("MSAA (FSR 3.1 ON)"). Width: both rows are on DISPLAY, "MSAA (FSR 3.1
+// ON)" is 17 and "POST AA (FSR 3.1 ON)" 20 (the page's widest label is 23, "RESOLUTION (10240X4320)").
 const char* HandledSuffix() {
     switch (Active()) {
     case Upscaler::kFsr31: return " (FSR 3.1 ON)";
@@ -629,10 +629,10 @@ const mcla_menu::ItemDef* UpscalingMenuRows(int& count) {
 namespace mcla_menu {
 
 #if defined(LARECOMP_HAS_GPU)
-extern const RowDynamics kNativeAaDynamics = {.enabled = AaFree, .suffix = HandledSuffix};
+extern const RowDynamics kPostAaDynamics = {.enabled = AaFree, .suffix = HandledSuffix};
 extern const RowDynamics kMsaaDynamics = {.enabled = AaFree, .suffix = MsaaSuffix};
 #else
-extern const RowDynamics kNativeAaDynamics = {};
+extern const RowDynamics kPostAaDynamics = {};
 extern const RowDynamics kMsaaDynamics = {};
 #endif
 

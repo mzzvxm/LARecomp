@@ -43,10 +43,13 @@
 
 #include "menu_items.h"
 
-// The rows the DISPLAY tab appends after its own (MenuDef::extra): the upscaler's (upscaling_menu.h)
-// and then frame generation's. The combined table is made once per combination of the two and kept:
-// the menu holds pointers into it.
-const mcla_menu::ItemDef* DisplayMenuRows(int& count);
+// The rows the DISPLAY tab appends after its own (MenuDef::extra), in this order: the upscaler's
+// (upscaling_menu.h), `picture` (the page's own MSAA, POST AA, ANISOTROPIC and ambient occlusion rows,
+// pause_menu.cpp kPictureItems), and then frame generation's. The combined table is made once per
+// combination of the three and kept: the menu holds pointers into it. Without the Plume renderer in
+// the build `picture` is returned as it is.
+const mcla_menu::ItemDef* DisplayMenuRows(const mcla_menu::ItemDef* picture, int picture_count,
+                                          int& count);
 
 namespace mcla_menu {
 

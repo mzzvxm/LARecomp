@@ -1385,11 +1385,13 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
 // comes back when the renderer is switched back.
 // CHECK: on XENIA (RENDERER set to XENIA, restarted) the DISPLAY page lists DISPLAY MODE, VSYNC,
-// RESOLUTION, MSAA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI and RENDER SCALE (last), VSYNC writes
-// vsync, MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
-// 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of the
-// last two offers "Restart now?". On NATIVE the page is as before with the new first rows, and VSYNC
-// writes mcla_gpu_vsync.
+// RESOLUTION, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, RENDER SCALE, MSAA and ANISOTROPIC (9 rows,
+// in that order), VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER
+// SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu
+// after changing either of those two offers "Restart now?". ANISOTROPIC is live and writes
+// anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, FPS LIMIT, PACE AT
+// PRESENTATION, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA, ANISOTROPIC, AMBIENT
+// OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes mcla_gpu_vsync.
 
 // VSYNC: the Plume renderer's mcla_gpu_vsync (live, at the next present), or the SDK's vsync.
 const char* VsyncCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_vsync" : "vsync"; }
@@ -1434,10 +1436,23 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 #endif
 
 // DISPLAY: every row is one row for both renderers. DISPLAY MODE, RESOLUTION and VSYNC are live on
-// both; MSAA, RENDER SCALE (upscaling_menu.cpp, appended after this table) and the rest map to the
-// running renderer's own setting. What only one renderer has (UPSCALING, SHARPNESS, HDR, frame
-// generation) is tagged XeniaOnly / NativeOnly and listed only when that renderer is the one this
-// launch runs (MenuItemCount).
+// both; MSAA, RENDER SCALE (upscaling_menu.cpp) and the rest map to the running renderer's own
+// setting. What only one renderer has (UPSCALING, SHARPNESS, HDR, frame generation) is tagged
+// XeniaOnly / NativeOnly and listed only when that renderer is the one this launch runs
+// (MenuItemCount).
+//
+// The page is three runs of rows, in this order (the last two come from VideoExtraRows):
+//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, FPS LIMIT,
+//      PACE AT PRESENTATION, SMOOTH UI);
+//   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
+//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering
+//      and occlusion that used to sit on the RENDERER page);
+//   3. frame generation's rows (frame_generation_menu.cpp).
+// At most 18 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
+// kMaxRowsPerMenu (24) is refused whole.
+// CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
+// cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
+// drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
     // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
     // (display_menu.h, display_mode.h). Both are live where the window can do it (Windows).
@@ -1455,13 +1470,9 @@ const ItemDef kVideoItems[] = {
 #endif
 #if defined(LARECOMP_HAS_GPU)
     // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
-    // appended after this table, from upscaling_menu.cpp (MenuDef::extra); its mode row is RENDER
-    // SCALE on both renderers.
+    // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
+    // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
-    WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
-                 &kMsaaRowDynamics),
-#else
-    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
     // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
     // (frame_generation_menu.h) and counts rendered frames.
@@ -1600,23 +1611,38 @@ const ItemDef kFfxItems[] = {
          "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g", " (RESTART)")),
 };
 
-// Renderer. RENDERER picks the emulated path (Xenia's command processor) or the
-// Plume renderer (NATIVE), and brings the no-CP mode and continuous rendering
-// along (kRendererChoices), so neither has a row of its own. GRAPHICS API is the
-// SDK's graphics_backend, which both read. NATIVE AA and the upscaling rows
-// (DISPLAY) are the Plume renderer's own and only listed while it runs; the
-// legacy runtime is no longer offered here.
+// Renderer. The RENDERER page is the renderer and nothing else: RENDERER picks the emulated path
+// (Xenia's command processor) or the Plume renderer (NATIVE), and brings the no-CP mode and continuous
+// rendering along (kRendererChoices), so neither has a row of its own; GRAPHICS API is the SDK's
+// graphics_backend, which both read. Both are restart-only. The picture settings that used to be here
+// (POST AA, ambient occlusion, anisotropic filtering) are on DISPLAY now, next to the upscaler and
+// MSAA (kPictureItems). The legacy runtime is no longer offered here.
+// Width: "GRAPHICS API (RESTART)" is 22 characters and "NATIVE" / "VULKAN" 6.
 const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
 const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
 #if defined(LARECOMP_HAS_GPU)
 const char* const kRendererVals[]  = {"xenia", "plume"};
 const char* const kRendererNames[] = {"XENIA", "NATIVE"};
 constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
-// The NATIVE (Plume) renderer's post (M6c), live: the scene's anti-aliasing
-// before the UI. NATIVE AA is grey and says what does the job while a temporal
-// upscaler runs (upscaling_menu.cpp).
-const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
-const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
+#endif
+
+const ItemDef kNativeItems[] = {
+#if defined(LARECOMP_HAS_GPU)
+    Str ("PM_RxRenderer",    kRendererCvar,           "RENDERER: ",
+         kRendererVals, kRendererNames, kNumRenderers, " (RESTART)"),
+#endif
+    Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
+         kApiVals, kApiNames, 3, " (RESTART)"),
+};
+
+#if defined(LARECOMP_HAS_GPU)
+// POST AA (mcla_gpu_aa, the NATIVE renderer's post pass, M6c, live): FXAA or SMAA on the finished
+// scene before the UI. It is named for what it is (a pass on the picture, after it is drawn) so that it
+// does not read like FSR's and DLSS's "NATIVE AA" mode, a render at the output's own size. The row is
+// grey and says what does the job while a temporal upscaler runs (upscaling_menu.cpp, "POST AA (FSR 3.1
+// ON)", 20 characters).
+const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
+const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
 // Ambient occlusion (gpu/ao.h, live): off, half resolution, full resolution. The row is at most 23
 // characters with its longest value.
 const char* const kNativeAoVals[]  = {"off", "low", "high"};
@@ -1640,30 +1666,42 @@ const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"}
 const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
 const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
 
-const ItemDef kNativeItems[] = {
+// DISPLAY, after the upscaler's rows (VideoExtraRows): how the picture is smoothed, filtered and
+// shaded, in the order the owner asked for (2026-11-07): MSAA, POST AA, ANISOTROPIC, AMBIENT
+// OCCLUSION, AO INTENSITY. One ANISOTROPIC row per renderer (the same name and place), MSAA on both
+// (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
+// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "DEFAULT" (7), both
+// under the page's widest ("Page width").
+const ItemDef kPictureItems[] = {
 #if defined(LARECOMP_HAS_GPU)
-    Str ("PM_RxRenderer",    kRendererCvar,           "RENDERER: ",
-         kRendererVals, kRendererNames, kNumRenderers, " (RESTART)"),
-#endif
-    Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
-         kApiVals, kApiNames, 3, " (RESTART)"),
-#if defined(LARECOMP_HAS_GPU)
-    NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
-                                 kNativeAaVals, kNativeAaNames, 3),
-                            &mcla_menu::kNativeAaDynamics)),
-    NativeOnly(Str ("PM_RxGpuAo",       "mcla_gpu_ao",           "AMBIENT OCCLUSION: ",
-                    kNativeAoVals, kNativeAoNames, 3)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
-                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
-                            &kAoIntensityDynamics)),
+    WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
+                 &kMsaaRowDynamics),
+    NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "POST AA: ",
+                                 kPostAaVals, kPostAaNames, 3),
+                            &mcla_menu::kPostAaDynamics)),
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
+#else
+    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
     // CHECK: live on the emulated GPU (the SDK says kHotReload): a texture seen before the change
     // takes the new level when its sampler is made again.
     XeniaOnly(Str ("PM_RxXeAniso",      "anisotropic_override",  "ANISOTROPIC: ",
                    kXeniaAnisoVals, kXeniaAnisoNames, 7)),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Str ("PM_RxGpuAo",       "mcla_gpu_ao",           "AMBIENT OCCLUSION: ",
+                    kNativeAoVals, kNativeAoNames, 3)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
+                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
+                            &kAoIntensityDynamics)),
+#endif
 };
+
+// The rows DISPLAY has after its own table (MenuDef::extra): the upscaler's, kPictureItems, then
+// frame generation's (frame_generation_menu.cpp puts them together and keeps the table).
+const ItemDef* VideoExtraRows(int& count) {
+    return DisplayMenuRows(kPictureItems, int(sizeof(kPictureItems) / sizeof(kPictureItems[0])), count);
+}
 
 #if defined(LARECOMP_HAS_GPU)
 // DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
@@ -2057,10 +2095,10 @@ const MenuDef kMenus[] = {
      "RxExtrasMenu",
      kExtrasHubItems, int(sizeof(kExtrasHubItems) / sizeof(kExtrasHubItems[0]))},
     // Reached through a hub.
-    {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
+    {"PM_RxTabVideo", "DISPLAY", "Window, picture quality and frame rate.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     DisplayMenuRows, false, UpscalingMenuRelayout},
+     VideoExtraRows, false, UpscalingMenuRelayout},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
@@ -2421,6 +2459,9 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // value that is longer than its page's widest needs counting against that before
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
+// DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
+// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT"). The
+// RENDERER page has two rows: "GRAPHICS API (RESTART)" 22 and "RENDERER (RESTART)" 18, values at most 6.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
@@ -2555,7 +2596,10 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // the other route entirely and stops using states as rows: real row objects
 // of the game's own value class, handed to the list through its widget array.
 
-constexpr int kMaxRowsPerMenu = 18;  // BuildNativeRows refuses a longer menu
+// Sizes the tables below, nothing else: the form's own row list is made with the page's row count
+// (ui_forms.cpp CreateListForm), and a long page scrolls. DISPLAY reaches 18 on a card with the frame
+// generation multiplier row; a page over the cap is refused whole (BuildNativeRows), so there is room.
+constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {
     uint32_t row[kMaxRowsPerMenu] = {};     // guest row objects
