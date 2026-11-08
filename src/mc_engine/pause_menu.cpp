@@ -1504,19 +1504,20 @@ const ItemDef kRecompItems[] = {
 };
 
 // CONTROLLER: everything about the pad, in three runs: the game's vibration, the trigger effects
-// (DualSense, then Xbox), then the sticks. The page is listed
+// (DualSense, then Xbox), then the sticks, and last the prompts' button set. The page is listed
 // whether or not a pad is connected (nothing here asks): a keyboard player can set it up before
 // plugging one in, and every row is read live by the code it belongs to, so it takes hold when a pad
 // appears. A row for a pad that is not the one in use does nothing to the others (DUALSENSE rows
 // touch a DualSense only, XBOX rows an Xbox One or Series pad only).
 // Width ("Page width" above ItemRowLabel): the widest labels are "XBOX TRIGGER STRENGTH" and
-// "RIGHT STICK DEAD ZONE" (21), the widest value "100%" / "OFF" (4): 25 together, under the 41 a page
-// can take; no row has a suffix.
+// "RIGHT STICK DEAD ZONE" (21), the widest value "PLAYSTATION" (11, BUTTON LAYOUT): 32 together, under
+// the 41 a page can take; no row has a suffix.
 // CHECK: on the SETTINGS tab, CONTROLLER is a new button between GAMEPLAY and INTERFACE (7 buttons
 // with QUIT now, one more than before): the cursor reaches every button including QUIT, nothing is cut
-// off the bottom of the tab's panel, and A opens a page of 7 rows in the order above with the line
-// "Vibration, triggers and sticks." under it. RECOMP SETTINGS has
-// four rows (REAL FRAME DELTA, HIDE MOUSE POINTER, ORIGINAL INTRO SPEED, SUSPENSION FIX).
+// off the bottom of the tab's panel, and A opens a page of 8 rows in the order above with the line
+// "Vibration, triggers, sticks and buttons." under it (not cut at the right edge). RECOMP SETTINGS has
+// four rows (REAL FRAME DELTA, HIDE MOUSE POINTER, ORIGINAL INTRO SPEED, SUSPENSION FIX); INTERFACE >
+// UI has the three colour rows and SPEED UNITS, the colour swatches still lined up with their rows.
 // Every row keeps the cvar it had (a value set on RECOMP SETTINGS before this change reads the same
 // here, and the page's rows write larecomp.toml as before), and with no pad connected the page lists
 // and steps as usual.
@@ -1536,6 +1537,10 @@ const ItemDef kControllerItems[] = {
          kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
     Dbl ("PM_RxDeadzoneR",   "right_stick_deadzone",     "RIGHT STICK DEAD ZONE: ",
          kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
+    // Which buttons the prompts show (hooks/ui.cpp): AUTO follows the pad in use. It moved here from
+    // the UI page; the keyboard glyph set is for players with no pad, so the row is not pad-only.
+    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
+         kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
 // Everything that trades image quality for framerate, in one place.
@@ -1927,8 +1932,7 @@ const ItemDef kUiItems[] = {
     Color("PM_RxUiFrame",  "ui_theme_frame",  "FRAME GRAY", g_theme_vals, kNumThemeColors),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
-    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
-         kButtonLayoutVals, kButtonLayoutNames, 4),
+    // (BUTTON LAYOUT is on the CONTROLLER page now, kControllerItems.)
 };
 
 // The SETTINGS tab holds a few pages of rows (RECOMP SETTINGS, CONTROLLER) and a handful of hubs,
@@ -2113,7 +2117,8 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
      "RxGameMenu",
      kGameHubItems, int(sizeof(kGameHubItems) / sizeof(kGameHubItems[0]))},
-    {"PM_RxTabCtrl", "CONTROLLER", "Vibration, triggers and sticks.",
+    // The line is 40 characters, as long as the longest the form takes (the QUIT line is 41).
+    {"PM_RxTabCtrl", "CONTROLLER", "Vibration, triggers, sticks and buttons.",
      "RxCtrlMenu",
      kControllerItems, int(sizeof(kControllerItems) / sizeof(kControllerItems[0]))},
     {"PM_RxTabIface", "INTERFACE", "Menu colors and language.",
@@ -2492,9 +2497,9 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT"). The
 // RENDERER page has two rows: "GRAPHICS API (RESTART)" 22 and "RENDERER (RESTART)" 18, values at most 6.
-// The CONTROLLER page (kControllerItems, 7 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
-// STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 4 ("100%"): 25. RECOMP SETTINGS has four rows
-// now: 20 ("ORIGINAL INTRO SPEED") and 3.
+// The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
+// STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has four
+// rows now: 20 ("ORIGINAL INTRO SPEED") and 3.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
