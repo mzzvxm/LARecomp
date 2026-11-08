@@ -1399,11 +1399,11 @@ constexpr RowDynamics kVsyncDynamics = {.cvar = VsyncCvar};
 
 int FindStringIndex(const std::string& value, const char* const* vals, int count);
 
-// MSAA. NATIVE: OFF, 2X, 4X, 8X in mcla_gpu_msaa, all live (gpu/msaa_level.h; the row says "(WAIT)"
+// MSAA. NATIVE: OFF, 2X, 4X, 8X in mcla_gpu_msaa, all live (gpu/msaa_level.h; the row says "(APPLYING)"
 // while the pipelines for a new level are made, and is grey while a temporal upscaler does the
 // anti-aliasing: upscaling_menu.cpp). XENIA: only the game's own switch, which the game reads at
 // start: OFF or 2X in disable_msaa, "(RESTART)". A saved 4X or 8X shows as 2X on XENIA.
-// Width: "MSAA (FSR 3.1 ON)" 17 at most, values 3.
+// Width: "MSAA (FSR 3.1 ON)" 17 at most ("MSAA (APPLYING)" 15), values 3.
 const char* MsaaCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_msaa" : "disable_msaa"; }
 int MsaaCount() { return mcla_menu::NativeRendererRuns() ? 4 : 2; }
 std::string MsaaLabel(int i) { return i >= 0 && i < MsaaCount() ? kGpuMsaaNames[i] : ""; }
@@ -2451,11 +2451,13 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // about 700 units, in every state of every row (the Windows and the other
 // platforms' suffixes, both renderers, sizes such as "2560X1440"). Its widest
 // label is "RESOLUTION (7680X4320)" (22; 23 at five digits across), then "RENDER
-// SCALE (RESTART)" (XENIA, 22) and "SHARPNESS (FSR ONLY)" (20); its widest value
-// 17 ("PERFORMANCE (50%)" and the mode row's other longest: "ULTRA PERF. (33%)",
-// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)"; the DISPLAY MODE and RESOLUTION values
-// are 10 and 9): 40 together, so a row that joins the page may bring a label of
-// up to 24 characters with a value of up to 17, or one of 23 with 18. A label or a
+// SCALE (RESTART)" (XENIA, 22), "UPSCALING (APPLYING)" and "SHARPNESS (FSR ONLY)"
+// (20); its widest value 18 ("FSR 3.1 (APPLYING)", the frame generation row while
+// it is being made), then 17 ("PERFORMANCE (50%)" and the mode row's other longest:
+// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)";
+// the DISPLAY MODE and RESOLUTION values are 10 and 9): 40 together (41 at five
+// digits across), so a row that joins the page may bring a label of up to 23
+// characters with a value of up to 18, and nothing wider than either. A label or a
 // value that is longer than its page's widest needs counting against that before
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.

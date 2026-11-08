@@ -70,7 +70,7 @@ int Entries(Entry (&out)[3]) {
     return n;
 }
 
-// The FRAME GENERATION row's value i. "(WAIT)" from the choice until the swap chain has been made
+// The FRAME GENERATION row's value i. "(APPLYING)" from the choice until the swap chain has been made
 // again for it (a frame boundary away, or until Streamline has started) and while it is being set up;
 // "(FAILED)" once it failed; DLSS says "(N/A)" where Streamline said it cannot run here and it is
 // chosen.
@@ -83,13 +83,13 @@ std::string FrameGenerationLabel(int i) {
         if (a.failed) return "FSR 3.1 (FAILED)";
         // No free video memory for it: off, and on by itself when there is room (the reason is in the log).
         if (FsrChosen() && a.no_room) return "FSR 3.1 (NO ROOM)";
-        if (FsrChosen() && a.available && !a.running) return "FSR 3.1 (WAIT)";
+        if (FsrChosen() && a.available && !a.running) return "FSR 3.1 (APPLYING)";
         return "FSR 3.1";
     }
     const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();
     if (d.failed) return "DLSS (FAILED)";
     if (DlssChosen() && d.probed && !d.supported && !d.after_restart) return "DLSS (N/A)";
-    if (DlssChosen() && !d.after_restart && !d.running) return "DLSS (WAIT)";
+    if (DlssChosen() && !d.after_restart && !d.running) return "DLSS (APPLYING)";
     return "DLSS";
 }
 int FrameGenerationCount() {
@@ -112,7 +112,7 @@ void FrameGenerationSet(int i, mcla_menu::CvarWriter write) {
 }
 // DLSS on Vulkan applies from the next start (the device is made through Streamline only when it is
 // saved at the start): the row says RESTART, in a label short enough for the page (pause_menu.cpp
-// "Page width": "FRAME GEN (RESTART)" is 19 characters, "FRAME GENERATION (WAIT)" 23).
+// "Page width": "FRAME GEN (RESTART)" is 19 characters; the label is bare otherwise, "FRAME GENERATION" 16).
 bool RestartRow() {
     if (!DlssChosen()) return false;
     const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();

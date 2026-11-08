@@ -9,7 +9,7 @@
 // build without them); once chosen and failed in this session the row stays and says so.
 //
 //   FRAME GENERATION        OFF / FSR 3.1 / DLSS       mcla_gpu_frame_generation  (live)
-//                           (each value only where it can run here; "(WAIT)" while the swap chain is
+//                           (each value only where it can run here; "(APPLYING)" while the swap chain is
 //                           made again and the generation context is made, or Streamline has not
 //                           started; "(FAILED)" after a failure: off until the next start; "(NO ROOM)"
 //                           while the card has no free video memory for FSR 3.1's (it is off and
@@ -34,12 +34,13 @@
 // their state from here (kFpsLimitDynamics, LatencyRowLocked).
 //
 // Width (pause_menu.cpp "Page width"): these rows are on DISPLAY, whose widest label is
-// "SHARPNESS (FSR ONLY)" (20) and widest value "PERFORMANCE (50%)" (17). The labels here: "FRAME
-// GENERATION" (16), "FRAME GEN (RESTART)" (19), "FRAME GEN MULTIPLIER" (20), "FRAME GEN FPS LIMIT" (19)
-// and "FPS LIMIT (FRAME GEN)" (21). The values: "OFF", "FSR 3.1 (NO ROOM)" (17), "FSR 3.1 (FAILED)" (16), "FSR 3.1 (WAIT)" (14),
-// "DLSS (FAILED)" (13), "DLSS (WAIT)" (11), "DLSS (N/A)" (10), "2X" to "4X", "HALF DISPLAY 116" (16),
-// "1/4 DISPLAY 58" (14), "120 (480 SHOWN)" (15) and "UNCAPPED" (8). The widest label (21) and the widest
-// value (17) of the page are the existing ones, so the page stays inside its 41 characters.
+// "RESOLUTION (7680X4320)" (22; 23 at five digits across) and whose other values go to 17 ("PERFORMANCE
+// (50%)"). The labels here: "FRAME GENERATION" (16), "FRAME GEN (RESTART)" (19), "FRAME GEN MULTIPLIER"
+// (20), "FRAME GEN FPS LIMIT" (19) and "FPS LIMIT (FRAME GEN)" (21), all under the page's widest. The values:
+// "OFF", "FSR 3.1 (APPLYING)" (18), "FSR 3.1 (NO ROOM)" (17), "FSR 3.1 (FAILED)" (16), "DLSS (APPLYING)"
+// (15), "DLSS (FAILED)" (13), "DLSS (N/A)" (10), "2X" to "4X", "HALF DISPLAY 116" (16), "1/4 DISPLAY 58" (14),
+// "120 (480 SHOWN)" (15) and "UNCAPPED" (8). "FSR 3.1 (APPLYING)" is the page's widest value now, 18: with
+// the widest label that is 40 characters at 7680 across and 41 at five digits across, the page's 41.
 
 #include "menu_items.h"
 

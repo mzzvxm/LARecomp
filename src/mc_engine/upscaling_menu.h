@@ -49,7 +49,7 @@
 //
 // A mode picked while the game runs is live: the scene is drawn at the new size from a frame
 // boundary, once the upscaler has made what it needs for it (the old one works until then: about
-// half a second for FSR, several seconds for DLSS, during which the UPSCALING row says "(WAIT)").
+// half a second for FSR, several seconds for DLSS, during which the UPSCALING row says "(APPLYING)").
 // DLSS modes the card cannot take at the output size say "(N/A)" in place of their share (gpu.h
 // UpscalerAvailability::dlss_modes_refused): picking one saves the choice and the mode that runs
 // goes on.
@@ -83,7 +83,7 @@
 // does not read like the "NATIVE AA" mode of FSR and DLAA) and MSAA are grey and say "(FSR 3.1 ON)"
 // (or FSR 4, DLSS) while one runs. FSR 1 is not temporal and
 // leaves them alone. With no upscaler the MSAA row is the player's own: OFF, 2X, 4X and 8X all
-// change live ("(WAIT)" while the pipelines for a new level are made), none says RESTART.
+// change live ("(APPLYING)" while the pipelines for a new level are made), none says RESTART.
 
 #include "menu_items.h"
 
@@ -103,7 +103,7 @@ namespace mcla_menu {
 // runs (FXAA and SMAA are held off then).
 extern const RowDynamics kPostAaDynamics;
 // The MSAA row's: grey while a temporal upscaler runs, with the upscaler named in the suffix; with
-// no upscaler the suffix says "(WAIT)" while a new level is being prepared and is empty otherwise.
+// no upscaler the suffix says "(APPLYING)" while a new level is being prepared and is empty otherwise.
 extern const RowDynamics kMsaaDynamics;
 
 }  // namespace mcla_menu

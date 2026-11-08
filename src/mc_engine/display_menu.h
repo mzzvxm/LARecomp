@@ -29,8 +29,8 @@
 // Width (pause_menu.cpp, "Page width"), in characters: DISPLAY MODE 12; RESOLUTION 10, 22 with its
 // suffix " (7680X4320)" (a display of 10240 pixels across: 23), 20 with " (RESTART)" or " (DISPLAY)" (where
 // the display's size cannot be asked). Values: "BORDERLESS" and "FULLSCREEN" 10; sizes 9 at most
-// ("3840X2160"), 10 at five digits across. The page's widest label is 23 and its widest value 17: 40
-// of 41.
+// ("3840X2160"), 10 at five digits across. The page's widest label is 23 and its widest value 18
+// ("FSR 3.1 (APPLYING)", frame_generation_menu.h): 41 of 41 (22 and 18, 40, at 7680 across).
 // CHECK: DISPLAY open on a 4K display in BORDERLESS ("RESOLUTION (3840X2160)" grey, the longest label
 // on the page with a native upscaler at "PERFORMANCE (50%)"), in FULLSCREEN and in WINDOWED, on NATIVE
 // and on XENIA ("RENDER SCALE (RESTART)"): the right edge, the button prompts and the scroll bar are not

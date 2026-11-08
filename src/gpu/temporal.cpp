@@ -773,7 +773,7 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
     change_pending_ = true;
     change_seen_ = now;
   }
-  // A change whose targets could not be made waits quietly for its next try: the menu's (WAIT) is for
+  // A change whose targets could not be made waits quietly for its next try: the menu's (APPLYING) is for
   // a context that is being made.
   PublishUpscalerSwitching(now >= retry_after_);
   if (now < retry_after_) {

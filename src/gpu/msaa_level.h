@@ -9,7 +9,7 @@
 // 1, 2X, 4X and 8X are levels 2, 4 and 8, and an upscaler that runs sets the level to 1 whatever
 // the setting says (it smooths the picture itself, MSAA under it only costs time); the player's
 // level comes back when the upscaler stops. Every change among the four is made while the game
-// runs, at a frame boundary, and the pause menu's MSAA row says (WAIT) while one is prepared.
+// runs, at a frame boundary, and the pause menu's MSAA row says (APPLYING) while one is prepared.
 //
 // The steps, each frame at the boundary before the first draw (Scene::BeginFrame, after the
 // temporal system's own path change):

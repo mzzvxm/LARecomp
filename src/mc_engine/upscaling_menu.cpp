@@ -421,7 +421,7 @@ void UpscalerSet(int i, CvarWriter write) {
 // (a Vulkan game started without DLSS: the device is made through Streamline only when DLSS is chosen
 // at the start). The choice is saved and applies at the next start, the renderer goes on with what it
 // runs meanwhile (the upscaler and its mode as they were, or none), and leaving the menu offers
-// "Restart now?" (the prompt reads this suffix). Otherwise " (WAIT)" while the settings ask for
+// "Restart now?" (the prompt reads this suffix). Otherwise " (APPLYING)" while the settings ask for
 // another upscaler or mode than the one running and its context is still being made (DLSS takes
 // several seconds; the old one goes on).
 // CHECK: the prompt finds this row through the suffix (pause_menu.cpp RowSaysRestart): in a Vulkan
@@ -431,7 +431,7 @@ void UpscalerSet(int i, CvarWriter write) {
 const char* UpscalerRowSuffix() {
     const UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
     if (DlssWaitsForRestart()) return " (RESTART)";
-    return a.switching ? " (WAIT)" : "";
+    return a.switching ? " (APPLYING)" : "";
 }
 
 // ── The mode row ───────────────────────────────────────────────────────────────────────────────
@@ -516,7 +516,7 @@ void SharpnessSet(int i, CvarWriter write) {
 //
 // Width: these rows are on DISPLAY, which stays within 41 characters of its widest label plus its
 // widest value (pause_menu.cpp, "Page width"). Every state of each row, in characters:
-//   UPSCALING   label "UPSCALING" 9, with " (WAIT)" 16, with " (RESTART)" 19. Values "OFF", "FSR 1",
+//   UPSCALING   label "UPSCALING" 9, with " (APPLYING)" 20, with " (RESTART)" 19. Values "OFF", "FSR 1",
 //               "FSR 3.1", "FSR 4", "DLSS" and "DLSS (SETUP)" 12.
 //   mode row    labels "RENDER SCALE" 12, "FSR 1 MODE" 10, "FSR 3.1 MODE" 12, "FSR 4 MODE" 10, "DLSS MODE"
 //               9, "DLSS MODE (SETUP)" 17, "DLSS MODE (RESTART)" 19, and on XENIA "RENDER SCALE
@@ -529,7 +529,8 @@ void SharpnessSet(int i, CvarWriter write) {
 //   SHARPNESS   label 9, with " (FSR ONLY)" 20. Values "OFF", "0.2" to "1", an entry of its own such as
 //               "0.85" 4.
 // These rows' widest label comes to 22 (RENDER SCALE (RESTART), XENIA) and the widest value to 17. DISPLAY's
-// is 23, "RESOLUTION (10240X4320)" (display_menu.h), with 17: 40 of the page's 41.
+// is 23, "RESOLUTION (10240X4320)" (display_menu.h), with 18 ("FSR 3.1 (APPLYING)", frame_generation_menu.h):
+// 41 of the page's 41 (40 at the widest real display, 7680 across).
 // CHECK: open DISPLAY at 1280x720 with a temporal upscaler on, the mode row on PERFORMANCE and MSAA
 // held ("MSAA (FSR 3.1 ON)"), and look at the right edge (nothing cut); then the same with FSR 1
 // on ULTRA QUAL.
@@ -595,16 +596,16 @@ bool AaFree() { return Active() == Upscaler::kOff; }
 // The MSAA row. The game always draws its own 2 sample layout and the renderer gives the host's
 // targets the samples of the row, so OFF, 2X, 4X and 8X are all live: the renderer changes them
 // between two frames once the pipelines for the new sample count are made (msaa_level.h; the row
-// says "(WAIT)" meanwhile) and no value says RESTART. While a temporal upscaler runs the row is grey
+// says "(APPLYING)" meanwhile) and no value says RESTART. While a temporal upscaler runs the row is grey
 // and names the upscaler, which does the anti-aliasing: MSAA is 1 sample then, the choice is kept
 // and comes back when the upscaler is off.
-// CHECK: OFF, 2X, 4X and 8X carry no suffix (and "(WAIT)" for the seconds a change is being
+// CHECK: OFF, 2X, 4X and 8X carry no suffix (and "(APPLYING)" for the seconds a change is being
 // prepared), "Restart now?" is not offered when the menu is left after changing the row, at start
 // with MSAA OFF as well as with 2X; with an upscaler on the row says "(FSR 3.1 ON)" (or the
 // upscaler's own name) and is grey, and plain again once it is off.
 const char* MsaaSuffix() {
     if (Active() != Upscaler::kOff) return HandledSuffix();
-    return mcla::gpu::MsaaSwitching() ? " (WAIT)" : "";
+    return mcla::gpu::MsaaSwitching() ? " (APPLYING)" : "";
 }
 
 #endif  // LARECOMP_HAS_GPU
