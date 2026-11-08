@@ -658,6 +658,22 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
     // A new colour target is initialised before it is drawn into, as the EDRAM targets and
     // HostPasses::DrawInto do (D3D12 debug layer id 1422).
     list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  } else if (d.hdr_action == HdrToneMap::Action::kToneMap) {
+    // The image is drawn again every frame and the tone map's quad leaves its first host column and
+    // row out at a render scale (Scale::HalfPixelGap: the D3D pixel centre starts it half a guest
+    // pixel in). A light drawn again after it adds to what is there, so without this the border
+    // adds up from frame to frame and keeps an earlier view's. Cleared with each new float scene it
+    // holds at most one frame's light; the consumers read it from the next column and row anyway
+    // (FrameLayers::Frame::gap), so this only spares one that does not a huge value.
+    // CHECK: clearColor with two rectangles on this image's framebuffer on D3D12 (debug layer) and
+    // Vulkan (validation), the same call EdramTargets::ClearColor makes with one.
+    const uint32_t gap = d.scale.HalfPixelGap();
+    if (gap != 0) {
+      const plume::RenderRect strips[2] = {
+          plume::RenderRect(0, 0, int32_t(gap), int32_t(image->height)),
+          plume::RenderRect(0, 0, int32_t(image->width), int32_t(gap))};
+      list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f), strips, 2);
+    }
   }
   // Everything the game's draw bound, set again: the list's own state is not trusted across the
   // framebuffer switch, and the list state is forgotten afterwards (ResetListState below).
