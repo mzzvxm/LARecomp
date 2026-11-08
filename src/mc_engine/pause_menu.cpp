@@ -1490,31 +1490,57 @@ const ItemDef kVideoItems[] = {
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
 
-// (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems.)
+// (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems; the controller rows are on the CONTROLLER
+// page, kControllerItems.)
+// Width: the longest label is "ORIGINAL INTRO SPEED" (20) and the values are ON / OFF (3), far under
+// the 41 characters a page can take ("Page width" above ItemRowLabel).
 const ItemDef kRecompItems[] = {
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
     // Live, but the intro has played by the time this menu opens: the next start.
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
+    // BadassBaboon's Recomp Adjustments: in-game pause menu options
+    Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
+};
+
+// CONTROLLER: everything about the pad, in three runs: the game's vibration, the trigger effects
+// (DualSense, then Xbox), then the sticks, and last the prompts' button set. The page is listed
+// whether or not a pad is connected (nothing here asks): a keyboard player can set it up before
+// plugging one in, and every row is read live by the code it belongs to, so it takes hold when a pad
+// appears. A row for a pad that is not the one in use does nothing to the others (DUALSENSE rows
+// touch a DualSense only, XBOX rows an Xbox One or Series pad only).
+// Width ("Page width" above ItemRowLabel): the widest labels are "XBOX TRIGGER STRENGTH" and
+// "RIGHT STICK DEAD ZONE" (21), the widest value "PLAYSTATION" (11, BUTTON LAYOUT): 32 together, under
+// the 41 a page can take; no row has a suffix.
+// CHECK: on the SETTINGS tab, CONTROLLER is a new button between GAMEPLAY and INTERFACE (7 buttons
+// with QUIT now, one more than before): the cursor reaches every button including QUIT, nothing is cut
+// off the bottom of the tab's panel, and A opens a page of 8 rows in the order above with the line
+// "Vibration, triggers, sticks and buttons." under it (not cut at the right edge). RECOMP SETTINGS has
+// four rows (REAL FRAME DELTA, HIDE MOUSE POINTER, ORIGINAL INTRO SPEED, SUSPENSION FIX); INTERFACE >
+// UI has the three colour rows and SPEED UNITS, the colour swatches still lined up with their rows.
+// Every row keeps the cvar it had (a value set on RECOMP SETTINGS before this change reads the same
+// here, and the page's rows write larecomp.toml as before), and with no pad connected the page lists
+// and steps as usual.
+const ItemDef kControllerItems[] = {
+    // Live: the game's rumble stops reaching the controller, and one that runs stops.
+    Bool("PM_RxVibration",   "controller_vibration",     "VIBRATION: "),
     // Live. A DualSense only: a spring on R2 and a brake on L2 while a car is driven.
     Bool("PM_RxTrigResist",  "trigger_resistance",       "DUALSENSE RESISTANCE: "),
     // Live. A DualSense only: R2 vibrates while the wheels spin, L2 while the brakes lock them.
     Bool("PM_RxTrigVibrate", "trigger_vibration",        "DUALSENSE VIBRATION: "),
-    // Live. Xbox One and Series pads: the same slip, in the trigger motors. (Page width: the
-    // longest label here is 21 characters and the longest value 7, "CONSOLE", under the 41 a page
-    // can take, "Page width" above ItemRowLabel.)
+    // Live. Xbox One and Series pads: the same slip, in the trigger motors.
     Bool("PM_RxImpulse",     "impulse_triggers",         "XBOX TRIGGER RUMBLE: "),
     Dbl ("PM_RxImpulseStr",  "impulse_trigger_strength", "XBOX TRIGGER STRENGTH: ",
          kImpulseStrengthVals, 4, "%.0f%%"),
-    // BadassBaboon's Recomp Adjustments: in-game pause menu options
-    Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
-    // Live: the game's rumble stops reaching the controller, and one that runs stops.
-    Bool("PM_RxVibration",   "controller_vibration",     "VIBRATION: "),
     // Live: for a stick that rests off centre (hooks/stick_deadzone.cpp).
     Dbl ("PM_RxDeadzoneL",   "left_stick_deadzone",      "LEFT STICK DEAD ZONE: ",
          kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
     Dbl ("PM_RxDeadzoneR",   "right_stick_deadzone",     "RIGHT STICK DEAD ZONE: ",
          kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
+    // Which buttons the prompts show (hooks/ui.cpp): AUTO follows the pad in use. It moved here from
+    // the UI page; the keyboard glyph set is for players with no pad, so the row is not pad-only.
+    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
+         kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
 // Everything that trades image quality for framerate, in one place.
@@ -1906,13 +1932,12 @@ const ItemDef kUiItems[] = {
     Color("PM_RxUiFrame",  "ui_theme_frame",  "FRAME GRAY", g_theme_vals, kNumThemeColors),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
-    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
-         kButtonLayoutVals, kButtonLayoutNames, 4),
+    // (BUTTON LAYOUT is on the CONTROLLER page now, kControllerItems.)
 };
 
-// The SETTINGS tab holds a handful of hubs, each a list of Submenu rows. Their
-// children are ordinary menus below; a menu some row opens gets no button of
-// its own (MenuIsNested).
+// The SETTINGS tab holds a few pages of rows (RECOMP SETTINGS, CONTROLLER) and a handful of hubs,
+// each a list of Submenu rows. The hubs' children are ordinary menus below; a menu some row opens gets
+// no button of its own (MenuIsNested).
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
     Submenu("PM_RxSubNative", "RENDERER",    "RxNativeMenu"),
@@ -2082,7 +2107,7 @@ const ItemDef& MenuItemAt(const MenuDef& md, int i) {
 
 const MenuDef kMenus[] = {
     // The buttons of the SETTINGS tab: the recomp's own fixes first, then the
-    // hubs.
+    // hubs, with the controller page after GAMEPLAY.
     {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
      "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
@@ -2092,6 +2117,10 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
      "RxGameMenu",
      kGameHubItems, int(sizeof(kGameHubItems) / sizeof(kGameHubItems[0]))},
+    // The line is 40 characters, as long as the longest the form takes (the QUIT line is 41).
+    {"PM_RxTabCtrl", "CONTROLLER", "Vibration, triggers, sticks and buttons.",
+     "RxCtrlMenu",
+     kControllerItems, int(sizeof(kControllerItems) / sizeof(kControllerItems[0]))},
     {"PM_RxTabIface", "INTERFACE", "Menu colors and language.",
      "RxIfaceMenu",
      kIfaceHubItems, int(sizeof(kIfaceHubItems) / sizeof(kIfaceHubItems[0]))},
@@ -2468,6 +2497,9 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT"). The
 // RENDERER page has two rows: "GRAPHICS API (RESTART)" 22 and "RENDERER (RESTART)" 18, values at most 6.
+// The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
+// STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has four
+// rows now: 20 ("ORIGINAL INTRO SPEED") and 3.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
