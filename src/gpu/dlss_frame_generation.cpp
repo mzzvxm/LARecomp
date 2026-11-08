@@ -365,9 +365,85 @@ DlssFrameGeneration::Change DlssFrameGeneration::Poll() {
     return Change::kOn;
   }
   if (active_ && (!setting || !can_run)) {
-    return Change::kOff;
+    // The plugin is taken off generation first and given presents to act on it (WoundDown): an
+    // unload with it still generating leaves what it does for the pacing of the frames (in this
+    // process, after the swap chain is plain again) as it was.
+    return WoundDown() ? Change::kOff : Change::kNone;
   }
+  winding_down_ = false;  // the setting came back (or it never left): generation goes on
+  ProbeAfterOff();
   return Change::kNone;
+}
+
+// The plugin does its tidying (the refresh pacing and flip metering it sets up for generated frames)
+// when it sees, in a present, that its options say off: the options call only records them
+// ("DLSS-G interpolation state changed from enabled to disabled" is logged by its present). The
+// setting's change used to unload the plugin straight away, with its last options still on: its own
+// log shows the unload ("Feature 'kFeatureDLSS_G' unloaded") with no such line before it, and no
+// plugin shutdown until the game exits. The owner's play session then ran at exactly 119.8 presents a
+// second for minutes with every cap of ours cleared (fps_limit 0), the half-display rate it had set.
+// CHECK: after switching DLSS frame generation off in the pause menu, sl.log has "DLSS-G interpolation
+// state changed from enabled to disabled" before "Feature 'kFeatureDLSS_G' unloaded", and the frame
+// rate goes back to what the game does without frame generation (the "5 s after switching off" line
+// of this module says it). If it still sits at half the display's rate, the pace is not this plugin's
+// leftover state: the line names which caps of ours are in effect.
+bool DlssFrameGeneration::WoundDown() {
+  if (failed_ || !options_known_) {
+    // A plugin that failed has nothing worth tidying, and one that was never told anything has not
+    // generated.
+    return true;
+  }
+  const Clock::time_point now = Clock::now();
+  if (!winding_down_) {
+    winding_down_ = true;
+    wind_began_ = now;
+    wind_frames_ = 0;
+    wind_timeout_logged_ = false;
+  }
+  if (wind_frames_ >= kWindDownFrames) {
+    return true;
+  }
+  if (now - wind_began_ > kWindDownMax) {
+    // No presents reached it (a minimised window, a stalled guest): the switch goes on without them.
+    if (!wind_timeout_logged_) {
+      wind_timeout_logged_ = true;
+      REXLOG_INFO("{} the plugin did not get its presents with generation off within {} ms; it is "
+                  "switched off without",
+                  kPrefix, kWindDownMax.count());
+    }
+    return true;
+  }
+  return false;
+}
+
+bool DlssFrameGeneration::WindDownFrame(const FrameArgs& args) {
+  // Told off (when it was on), then every present counts: the plugin sees the off options in the
+  // present of the frame they were given in.
+  if (ApplyOptions(false, args, 0, 0) && (!options_known_ || !applied_.on)) {
+    ++wind_frames_;
+  }
+  return NotGenerated(stats_.not_winding, args);
+}
+
+void DlssFrameGeneration::ProbeAfterOff() {
+  if (!probe_pending_) {
+    return;
+  }
+  ++off_polls_;
+  const double seconds = std::chrono::duration<double>(Clock::now() - off_at_).count();
+  if (seconds < 5.0) {
+    return;
+  }
+  probe_pending_ = false;
+  // A frame boundary is one guest frame (and now and then an idle present): the rate is the game's,
+  // as it is after the plugin is gone. Every cap this module or FSR's can put on the frame limiter
+  // reads the "running" bits it clears at the switch, so none is in effect here.
+  REXLOG_INFO("{} 5 s after switching off the game runs about {:.0f} frames a second; the caps of "
+              "frame generation in the frame limiter: DLSS {}, FSR {} (both off = the player's own "
+              "frame limit alone); anything that holds the rate to half the display's now is not "
+              "ours",
+              kPrefix, double(off_polls_) / seconds, DlssFrameGenerationRunning() ? "ON" : "off",
+              FrameGenerationRunning() ? "ON" : "off");
 }
 
 DlssFrameGeneration::Prepared DlssFrameGeneration::PrepareSwitchOn() {
@@ -411,6 +487,8 @@ void DlssFrameGeneration::BeforePlainChain() {
 }
 
 void DlssFrameGeneration::CompleteSwitch(Change change, bool ok, bool resize) {
+  winding_down_ = false;
+  probe_pending_ = false;
   options_known_ = false;
   applied_ = Options{};
   frames_on_ = 0;
@@ -443,6 +521,7 @@ void DlssFrameGeneration::CompleteSwitch(Change change, bool ok, bool resize) {
   }
   // Off: the swap chain is plain again (or could not be made at all).
   active_ = false;
+  winding_down_ = false;
   latency::UseStreamline(false);
   if (swap_chain_) {
     // The device's own reducer is current again: it is told the chain it now has.
@@ -454,6 +533,9 @@ void DlssFrameGeneration::CompleteSwitch(Change change, bool ok, bool resize) {
     settle_until_ = Clock::now() + kSettle;
   }
   Publish();
+  off_at_ = Clock::now();
+  off_polls_ = 0;
+  probe_pending_ = !resize;  // a window change is not the player's switch: no verdict wanted
   REXLOG_INFO("{} off{}; the swap chain is plain again", kPrefix,
               ok ? (resize ? " for a change of the window (back on once it has been still)" : "")
                  : " (the switch had trouble: see above)");
@@ -552,7 +634,12 @@ bool DlssFrameGeneration::ApplyOptions(bool on, const FrameArgs& args, uint32_t 
     REXLOG_INFO("{} generating: {}x, back buffer {}x{}, depth and vectors {}x{}", kPrefix,
                 want.frames + 1, want.back[0], want.back[1], want.render[0], want.render[1]);
   } else if (!on && applied_.on) {
-    REXLOG_INFO("{} paused (not a game scene): the plugin keeps its memory", kPrefix);
+    if (winding_down_) {
+      REXLOG_INFO("{} the setting went off: the plugin is told to stop generating, then switched off",
+                  kPrefix);
+    } else {
+      REXLOG_INFO("{} paused (not a game scene): the plugin keeps its memory", kPrefix);
+    }
   }
   applied_ = want;
   options_known_ = true;
@@ -572,6 +659,9 @@ bool DlssFrameGeneration::NotGenerated(uint64_t& counter, const FrameArgs& args)
 
 bool DlssFrameGeneration::Record(plume::RenderCommandList* list, const FrameArgs& args) {
   ++stats_.presents;
+  if (winding_down_) {
+    return WindDownFrame(args);  // the setting went off: the plugin is told off, then switched off
+  }
   if (!args.guest_frame) {
     return NotGenerated(stats_.not_idle, args);  // an idle present repeats the last frame
   }
@@ -793,9 +883,11 @@ std::string DlssFrameGeneration::TakeSummary() {
   return std::format(
       "dlss frame generation: {} presents, {} generated ({}x), not generated: {} idle, {} reflex "
       "not running, {} with no latency frame id, {} not a game scene, {} layers unusable, {} "
-      "streamline busy, {} too small, {} failed; {} option changes; the display runs at {} Hz",
+      "streamline busy, {} too small, {} failed, {} winding down; {} option changes; the display runs "
+      "at {} Hz",
       s.presents, s.generated, Multiplier(), s.not_idle, s.not_reflex, s.not_unmarked, s.not_scene,
-      s.not_layers, s.not_busy, s.not_small, s.not_failed, s.option_changes, refresh_hz_);
+      s.not_layers, s.not_busy, s.not_small, s.not_failed, s.not_winding, s.option_changes,
+      refresh_hz_);
 }
 
 }  // namespace mcla::gpu
