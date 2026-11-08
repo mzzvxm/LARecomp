@@ -26,6 +26,12 @@
 #ifndef DXC_API_IMPORT
 #define DXC_API_IMPORT
 #endif
+// Off Windows, dxcapi.h includes WinAdapter.h, which emulates __uuidof only for GCC: with Clang it
+// expects __declspec(uuid(...)), which needs -fms-extensions. The emulation works with Clang too,
+// so ask for it.
+#if !defined(_WIN32) && !defined(__EMULATE_UUID)
+#define __EMULATE_UUID 1
+#endif
 // dxcapi.h (IDxcCompiler3, IDxcResult, IDxcVersionInfo3) comes from LAR-XenosRecomp's
 // thirdparty/dxc-bin/inc, on the shaderpack target's include path (CMakeLists.txt).
 #include <dxcapi.h>
