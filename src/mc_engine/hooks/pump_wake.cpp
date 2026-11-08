@@ -66,14 +66,16 @@ REXCVAR_DEFINE_BOOL(pump_wake_on_demand, true, "MCLA/Performance",
     "The game's frame-pacing thread (it frees the draw command ring's slots and sleeps out "
     "7 ms a round) comes round at once when the main thread is waiting for a slot, instead of "
     "after its Sleep. Lifts the frame rate an uncapped game was held to when a frame takes "
-    "less than 7 ms; changes nothing under a frame rate cap below that. Needs 6 or more "
+    "less than 7 ms; changes nothing under a frame rate cap below that. Needs 4 or more "
     "logical processors, and a watchdog on the audio mixer turns it off if the audio runs "
     "dry. Off is the game's own Sleep.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
-constexpr unsigned kMinProcessors = 6;
+// 4 since 2026-11-07: on 4 logical processors the uncapped drive went from 138 to 173 game frames a second with no
+// audio gap (Xenia renderer: 3 gaps without it, none with it); on 2 the audio ran dry (4 gaps), so 2 stays off.
+constexpr unsigned kMinProcessors = 4;
 constexpr int64_t kMixerGapNs = 40'000'000;       // the SDK's queue: 8 frames of 5.3 ms
 constexpr int64_t kRecentNs = 2'000'000'000;      // a round that came early this recently is blamed
 constexpr int64_t kPauseNs = 60'000'000'000;      // the first trip pauses the wake this long
