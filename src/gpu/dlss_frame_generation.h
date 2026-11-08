@@ -31,7 +31,9 @@
 //    (or HDR stage 3's float scene), so it has the back buffer's own colour space and post-processing
 //    (the game's gamma table, FSR1, the HDR10 output step); the UI buffer is the frame layers' UI
 //    fitted the same way (dlssg_ui_ps.hlsl: premultiplied colour and coverage, nothing where there is
-//    no UI). The ImGui overlay is drawn into the back buffer only, so it is interpolated with the
+//    no UI). At a render scale above 1 both read the layers' first host column and row (FrameLayers::
+//    Frame::gap) from the next ones, as the HDR compose and frame generation do: the game never wrote
+//    them. The ImGui overlay is drawn into the back buffer only, so it is interpolated with the
 //    picture: occasional, accepted.
 //  - It is off (slDLSSGSetOptions mode off, nothing tagged, the plugin keeps its memory) in every frame
 //    that is not a rendered game scene: the pause menu, the map, menus, loading and movies (no anchor,

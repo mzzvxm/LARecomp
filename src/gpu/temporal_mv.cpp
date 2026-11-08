@@ -181,7 +181,7 @@ bool TemporalMotion::Prepare() {
     ok = motion_pipeline_ && depth_pipeline_;
   }
   if (ok) {
-    // The vehicle table's rows are drawn with the host pass layout as it is (48 bytes of push
+    // The vehicle table's rows are drawn with the host pass layout as it is (up to 64 bytes of push
     // constants). Without it the vectors are the camera's for every pixel, as before the vehicles.
     if (table_shader_) {
       table_pipeline_ =

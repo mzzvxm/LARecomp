@@ -278,6 +278,7 @@ bool PresentPass::GreenGammaTable(float out[256]) const {
 void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_t width,
                           uint32_t height) {
   source_ready_ = false;
+  source_gap_ = 0;  // the front buffer is a resolve product: no gap
   front_key_valid_ = false;
   quiet_route_ = false;
   route_ = Route::kBilinear;
@@ -376,7 +377,7 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
 }
 
 void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
-                               const HostImage& image, bool interpolated) {
+                               const HostImage& image, bool interpolated, uint32_t gap) {
   source_ready_ = false;
   front_key_valid_ = false;
   route_ = Route::kBilinear;
@@ -386,6 +387,7 @@ void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, u
   source_slot_ = image.slot;
   source_width_ = image.width;
   source_height_ = image.height;
+  source_gap_ = gap;
   source_ready_ = true;
   extended_ = true;
   interpolated_ = interpolated;
@@ -434,6 +436,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   push.scale_x = 1.0f;
   push.scale_y = 1.0f;
   push.hdr_flags = CodeFlags();
+  push.gap = source_gap_;
   passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
   route_ = Route::kRamped;
   ++stats_.ramped;
@@ -448,7 +451,8 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
   }
   if (route_ == Route::kRamped) {
     // The same bilinear stretch, of texels the table was already applied to.
-    RecordFitted(list, stretch_pipeline_, ramped_.slot, ramped_.width, ramped_.height, fit_);
+    // (the gap was dealt with by the table pass)
+    RecordFitted(list, stretch_pipeline_, ramped_.slot, ramped_.width, ramped_.height, fit_, 0);
     ++stats_.drawn;
     return;
   }
@@ -457,7 +461,7 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
     return;
   }
   if (route_ == Route::kFsrStretch) {
-    RecordFitted(list, stretch_pipeline_, image.slot, image.width, image.height, fit_);
+    RecordFitted(list, stretch_pipeline_, image.slot, image.width, image.height, fit_, 0);
   } else {
     // RCAS 1:1 from the last EASU pass into the letterbox.
     pass_timing_->Mark(list, "fsr1 rcas");
@@ -514,13 +518,13 @@ bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uin
     return false;
   }
   RecordFitted(list, pipeline_, source_slot_, source_width_, source_height_,
-               FitOf(source_width_, source_height_, width, height));
+               FitOf(source_width_, source_height_, width, height), source_gap_);
   return true;
 }
 
 void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
                                uint32_t source, uint32_t source_width, uint32_t source_height,
-                               const Fit& fit) {
+                               const Fit& fit, uint32_t gap) {
   const plume::RenderViewport viewport{float(fit.x), float(fit.y), float(fit.w), float(fit.h)};
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(int32_t(fit.x), int32_t(fit.y), int32_t(fit.x + fit.w),
@@ -541,6 +545,7 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_peak = hdr_levels_.peak;
   push.hdr_knee = hdr_levels_.knee;
   push.hdr_flags = hdr_levels_.flags | CodeFlags();
+  push.gap = gap;
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
@@ -607,6 +612,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     push.scale_x = 1.0f;
     push.scale_y = 1.0f;
     push.hdr_flags = CodeFlags();
+    push.gap = source_gap_;
     passes_->DrawInto(list, chain_[0], ramp_pipeline_.get(), &push, sizeof(push));
   }
   for (uint32_t i = 1; i <= passes; ++i) {

@@ -9,6 +9,12 @@
 // scaler, as on the display -- into the letterboxed viewport the renderer set.
 // A 1:1 present reads exactly one texel per pixel.
 //
+// `gap` (push constant): an image of the frame layers (frame_layers.h) has no picture in its first
+// host column and row at a render scale above 1, as the guest's full-screen draws never write them;
+// the pass reads every texel at or before the gap at the gap, as the guest's resolve does for the
+// front buffer (DLSS frame generation's picture without the UI, PresentPass::PrepareImage). 0 for the
+// front buffer and for every image that is whole: then nothing is clamped.
+//
 // PRESENT_NO_RAMP (present_stretch_ps): the same bilinear stretch
 // of an image the table was already applied to (FSR1's output, when its passes
 // stopped short of the letterbox).
@@ -35,6 +41,7 @@ struct PresentPush {
   float hdr_peak;
   float hdr_knee;
   uint hdr_flags;
+  uint gap;            // the source's first columns and rows that hold no picture: read at `gap`
 };
 
 #ifdef __spirv__
@@ -88,7 +95,8 @@ float3 Ramp(float3 color) {
 
 float3 Texel(int2 at) {
   const int2 limit = int2(g_push.source_width, g_push.source_height) - 1;
-  const float3 texel = g_textures[g_push.source].Load(int3(clamp(at, int2(0, 0), limit), 0)).rgb;
+  const int2 first = int2(int(g_push.gap), int(g_push.gap));
+  const float3 texel = g_textures[g_push.source].Load(int3(clamp(at, first, limit), 0)).rgb;
 #if PRESENT_NO_RAMP
   return texel;
 #else
