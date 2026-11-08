@@ -235,6 +235,10 @@ namespace {
 
 // The self-test sets it to false to run the scalar loops as well.
 std::atomic<bool> g_simd{true};
+// Decodes the fast path made, and the ones it handed to DecodeReference (the self-test reports
+// both: a pass that was all fallbacks would prove nothing).
+std::atomic<uint64_t> g_fast_decodes{0};
+std::atomic<uint64_t> g_fallback_decodes{0};
 
 enum SwapMode : uint32_t { kSwapNone = 0, kSwap8in16 = 1, kSwap8in32 = 2, kSwap16in32 = 3 };
 
@@ -758,11 +762,20 @@ bool DecodeReference(const Request& r, uint8_t* out, uint32_t out_pitch) {
   return complete;
 }
 
+namespace {
+
+bool Fallback(const Request& r, uint8_t* out, uint32_t out_pitch) {
+  g_fallback_decodes.fetch_add(1, std::memory_order_relaxed);
+  return DecodeReference(r, out, out_pitch);
+}
+
+}  // namespace
+
 bool Decode(const Request& r, uint8_t* out, uint32_t out_pitch) {
   const Source& s = r.source;
   const uint32_t bpb = s.bytes_per_block;
   if (r.width_blocks == 0 || r.height_blocks == 0 || bpb == 0) {
-    return DecodeReference(r, out, out_pitch);
+    return Fallback(r, out, out_pitch);
   }
   if (r.decompress == format::TextureDecompress::kNone) {
     // A load other than the copy reads the first bytes of a block as a 16 or 32 bit value: the
@@ -771,25 +784,26 @@ bool Decode(const Request& r, uint8_t* out, uint32_t out_pitch) {
         ((r.load == format::TextureLoad::kDepthUnorm24 ||
           r.load == format::TextureLoad::kDepthFloat20e4) &&
          bpb != 4)) {
-      return DecodeReference(r, out, out_pitch);
+      return Fallback(r, out, out_pitch);
     }
     if (!CopyBlocks(s, r.width_blocks, r.height_blocks, out, out_pitch)) {
-      return DecodeReference(r, out, out_pitch);
+      return Fallback(r, out, out_pitch);
     }
     ConvertLoad(r, out, out_pitch);
+    g_fast_decodes.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
   // Decompression: the guest blocks go to a row buffer first (untiled, swapped), then each is
   // expanded as the reference does.
   const bool dxt1 = r.decompress == format::TextureDecompress::kDXT1;
   if ((dxt1 && bpb != 8) || (!dxt1 && bpb != 16)) {
-    return DecodeReference(r, out, out_pitch);
+    return Fallback(r, out, out_pitch);
   }
   thread_local std::vector<uint8_t> raw;
   const uint32_t raw_pitch = r.width_blocks * bpb;
   raw.resize(size_t(raw_pitch) * r.height_blocks);
   if (!CopyBlocks(s, r.width_blocks, r.height_blocks, raw.data(), raw_pitch)) {
-    return DecodeReference(r, out, out_pitch);
+    return Fallback(r, out, out_pitch);
   }
   uint32_t texels[16];
   for (uint32_t by = 0; by < r.height_blocks; ++by) {
@@ -826,6 +840,7 @@ bool Decode(const Request& r, uint8_t* out, uint32_t out_pitch) {
       }
     }
   }
+  g_fast_decodes.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
 
@@ -881,6 +896,9 @@ SelfTestResult SelfTest(uint32_t case_count) {
   static constexpr uint32_t kOffsets[] = {1, 2, 3, 5, 8, 16, 31};
   std::vector<uint8_t> guest, fast, slow;
   const bool simd_was = g_simd.load();
+  const uint64_t fast_before = g_fast_decodes.load();
+  const uint64_t fallback_before = g_fallback_decodes.load();
+  result.tables_ok = Tables().ok;
   for (uint32_t c = 0; c < case_count; ++c) {
     Request r;
     Source& s = r.source;
@@ -962,6 +980,8 @@ SelfTestResult SelfTest(uint32_t case_count) {
   }
   g_simd.store(simd_was, std::memory_order_relaxed);
   result.cases = case_count;
+  result.fast = uint32_t(g_fast_decodes.load() - fast_before);
+  result.fallback = uint32_t(g_fallback_decodes.load() - fallback_before);
   return result;
 }
 

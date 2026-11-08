@@ -543,6 +543,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       census_.OnDraw(payload);
       scene_.OnDraw(payload, OpenFrameList());
       MaybeFlushBatch();
+      if (textures_.prefetching()) {
+        PrefetchTextures(header);
+      }
       return;
     case RecordType::kClear: {
       const auto& record = *reinterpret_cast<const ClearRecord*>(payload);
@@ -581,6 +584,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       return;
     }
     case RecordType::kFence:
+      // The guest may reuse what the records before this fence named once it is published: no
+      // decode of theirs may still be reading it.
+      textures_.QuiesceDecodes(header.sequence);
       ExecuteFence(*reinterpret_cast<const FenceRecord*>(payload));
       return;
     case RecordType::kLock: {
@@ -638,6 +644,39 @@ void Renderer::ExecuteFence(const FenceRecord& record) {
     REXLOG_WARN("[gpu] render thread: fence {} of device {:#010x} arrived while the retired "
                 "fence is not held by this renderer; not published",
                 record.value, record.device);
+  }
+}
+
+void Renderer::PrefetchTextures(const RecordHeader& executing) {
+  if (!frames_.is_open()) {
+    return;
+  }
+  CommandStream& stream = thread_.stream();
+  // Never behind the record that just ran (it is still the stream's current one: Release comes
+  // after Execute). A draw that ran was one that had been offered, if the position was ahead of it.
+  const uint64_t here = stream.consumer_position() + executing.size;
+  if (prefetch_position_ < here) {
+    prefetch_position_ = here;
+    prefetch_ahead_ = 0;
+  } else if (prefetch_ahead_ > 0) {
+    --prefetch_ahead_;
+  }
+  for (uint32_t budget = kPrefetchScanRecords;
+       budget != 0 && prefetch_ahead_ < kPrefetchAheadDraws; --budget) {
+    const uint64_t before = prefetch_position_;
+    const RecordHeader* next = stream.Peek(&prefetch_position_);
+    if (!next) {
+      break;
+    }
+    if (next->type == RecordType::kPresent) {
+      // The frame ends there: the next one's draws are looked at once it has started.
+      prefetch_position_ = before;
+      break;
+    }
+    if (next->type == RecordType::kDraw) {
+      scene_.PrefetchTextures(next->sequence, reinterpret_cast<const uint8_t*>(next + 1));
+      ++prefetch_ahead_;
+    }
   }
 }
 

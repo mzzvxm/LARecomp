@@ -52,7 +52,22 @@
 // 1D/3D/cube/stacked textures, a signed sign on a UNORM host format, the
 // biased sign, a non-zero exponent adjust (TODO M5 for each).
 //
-// Threading: render thread only, after Initialize.
+// Decode ahead: the CPU half of an upload (untile, swap, load) is most of what a burst of new
+// textures costs the render thread (the game streaming in the next stretch of road: 66-280
+// textures, 2.5-7 MB in one frame). The Renderer looks at the draws already queued behind the
+// one it executes (Renderer::PrefetchTextures); Prefetch makes the entry of a texture such a draw
+// reads for the first time, arms its pages and hands the decode of all its levels to the
+// DecodePool (texture_decode_pool.h). The draw's own Bind2D then finds the entry and Upload takes
+// the decoded levels (waiting for a worker that is on them, or decoding itself when none started):
+// the render thread only copies them into the upload ring and records the copies. The decode is
+// the same function on the same guest bytes, and the watch keeps it exact the same way: the pages
+// are armed before the first byte is read, the entry's version is noted, and Upload uses the
+// result only while the version is still that one (a write notification since then makes it
+// decode in place again, as for any write). The guest may reuse memory once the render thread
+// publishes a fence, so jobs of earlier records are settled before one is (QuiesceDecodes).
+//
+// Threading: render thread only, after Initialize. (The pool's workers only decode: they read the
+// guest bytes and the plan a job carries, and write the job's own buffer.)
 // ===========================================================================
 
 #include <array>
@@ -73,6 +88,7 @@
 #include "scale.h"
 #include "texture_bytes.h"
 #include "texture_decode.h"
+#include "texture_decode_pool.h"
 #include "texture_mods.h"
 
 namespace mcla::gpu {
@@ -82,6 +98,19 @@ class FrameRing;
 class ResolveCache;
 class ResolveMemory;
 class UploadRing;
+class PrefetchedTexture;  // textures.cpp: a texture's levels decoded ahead by the pool
+
+// One level of a texture upload: where its blocks are read from (a decode request whose source
+// points into guest memory) and how the decoded rows lie in the upload memory.
+struct TextureLevelPlan {
+  uint32_t level = 0;
+  uint32_t address = 0;              // the level's storage origin in guest memory (for messages)
+  texture_decode::Request request;   // source.data / readable set
+  uint32_t pitch = 0;                // host row pitch in the upload memory (aligned)
+  uint32_t rows = 0;
+  uint64_t size = 0;                 // pitch * rows
+  uint64_t offset = 0;               // in a prefetch's buffer
+};
 
 // The identity of a guest texture's contents.
 struct TextureKey {
@@ -312,6 +341,23 @@ class TextureCache {
   // (the pause menu).
   void RequestReload() { reload_requested_.store(true, std::memory_order_relaxed); }
 
+  // Decode ahead (see above). For a draw that has not executed yet, with the stream sequence of
+  // its record: the fetch constant (six host-order dwords) it reads. A texture that is new to
+  // the cache and read from guest memory gets its entry now and its decode on a worker; anything
+  // else (known, a resolve product, a 1D/3D/cube/stacked fetch, texture mods on) is left to
+  // Bind2D. Cheap for a fetch seen before.
+  void Prefetch(const uint32_t dwords[6], uint64_t sequence);
+  // True when workers decode ahead (mcla_gpu_texture_decode_threads).
+  bool prefetching() const { return pool_.running(); }
+  // Before the render thread publishes the fence with stream sequence `fence`: the decodes of
+  // earlier records that have not started are cancelled, those running are waited for, so no
+  // worker reads memory the guest may reuse.
+  void QuiesceDecodes(uint64_t fence) {
+    if (pool_.running()) {
+      pool_.Quiesce(fence);
+    }
+  }
+
   // One line of statistics since the last call.
   std::string TakeSummary(uint64_t frames);
 
@@ -368,6 +414,9 @@ class TextureCache {
     // when none: the guest's decode is what the entry holds then.
     uint64_t base_hash = 0;
     Replacement* replacement = nullptr;
+    // The levels a worker decodes (or decoded) ahead of the first draw that needs them; taken by
+    // the Upload that follows, dropped with the entry or when stale (textures.cpp).
+    std::shared_ptr<PrefetchedTexture> prefetch;
   };
   Entry* Create(const TextureKey& key, const TextureFetch& fetch, std::string* why);
   // Decodes every level into the frame's ring and records the copies. False:
@@ -409,6 +458,17 @@ class TextureCache {
   std::unordered_set<TextureKey, TextureKeyHash> reported_;  // warnings, reported once
   std::vector<GuestMemory::Range> drained_;
   std::vector<uint8_t> scratch_;
+  DecodePool pool_;
+  // Fetches Prefetch has looked at in the current epoch (by a hash of the six dwords): a fetch
+  // repeats in many draws, and one that was decided on is not decided on again.
+  struct SeenFetch {
+    uint64_t hash = 0;
+    uint64_t epoch = 0;
+  };
+  static constexpr size_t kSeenFetches = 4096;
+  std::array<SeenFetch, kSeenFetches> prefetch_seen_{};
+  // Frames a decoded-ahead texture waits for its first draw before it is dropped.
+  static constexpr uint64_t kPrefetchHoldFrames = 120;
   uint64_t epoch_ = 1;
   std::array<uint32_t, kGenerationBuckets> product_generations_{};
   uint32_t slot_ = 0;
@@ -466,6 +526,11 @@ class TextureCache {
     uint64_t dumped = 0;               // textures written to the dump folder
     uint64_t verified = 0;             // levels decoded twice (mcla_gpu_texture_decode_verify)
     uint64_t verify_mismatches = 0;    // ... whose two decodes differed
+    uint64_t prefetched = 0;           // textures handed to the pool
+    uint64_t prefetch_bytes = 0;       // ... their decoded bytes
+    uint64_t prefetch_used = 0;        // uploads that took the pool's levels
+    uint64_t prefetch_dropped = 0;     // ... that found them stale or incomplete (decoded again)
+    uint64_t prefetch_wait_ns = 0;     // the render thread waiting in Upload for a worker / decoding a job no worker had started
   };
   Stats stats_;
 };

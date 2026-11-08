@@ -131,6 +131,10 @@ class Scene {
   // `list`: the frame's open list, null when the device is lost (the banks are
   // still applied: the deltas are incremental).
   void OnDraw(const uint8_t* payload, plume::RenderCommandList* list);
+  // A draw record queued behind the one being executed (stream sequence `sequence`): the textures
+  // its shaders read, as its fetch constants name them, are offered to TextureCache::Prefetch
+  // (decode ahead on the pool). Changes nothing the draw itself will do.
+  void PrefetchTextures(uint64_t sequence, const uint8_t* payload);
   void OnClear(const ClearRecord& record, plume::RenderCommandList* list);
   void OnResolve(const ResolveRecord& record, plume::RenderCommandList* list);
   void OnTilingBegin(const TilingBeginRecord& record, plume::RenderCommandList* list);
@@ -530,6 +534,12 @@ class Scene {
   const ShaderStore::Entry* vs_memo_ = nullptr;
   uint64_t ps_memo_identity_ = 0;
   const ShaderStore::Entry* ps_memo_ = nullptr;
+  // PrefetchTextures' own last shaders (the draws behind the executing one are not the ones the
+  // memos above follow).
+  uint64_t prefetch_vs_identity_ = 0;
+  const ShaderStore::Entry* prefetch_vs_ = nullptr;
+  uint64_t prefetch_ps_identity_ = 0;
+  const ShaderStore::Entry* prefetch_ps_ = nullptr;
 
   // mcla_gpu_scene_profile (M6a): the TSC cycles each stage of a
   // draw took, summed over the window (cycles.h turns them into time). Off

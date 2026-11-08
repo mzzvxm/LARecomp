@@ -94,12 +94,16 @@ struct SelfTestResult {
   uint32_t cases = 0;       // random requests built
   uint32_t runs = 0;        // decodes compared (each case with the vector and the scalar loops)
   uint32_t mismatches = 0;  // of those, the ones that differ from DecodeReference
+  uint32_t fast = 0;        // of the runs, the ones the fast path decoded
+  uint32_t fallback = 0;    // ... and the ones it handed to DecodeReference (unreadable tails)
+  bool tables_ok = true;    // the tile tables reproduce the SDK's address function (else all fall back)
   std::string first;        // the first mismatch, described
 };
 // Builds `cases` random levels (block sizes 1-16, all four endians, tiled and linear, offsets of a
 // packed tail, extents from 1 to 100 blocks, pitches aligned or not, texels cut at the edge,
 // the 1:5:5:5 / depth loads, DXT decompression, and unreadable tails that make the reference zero
-// fill) over random bytes and compares Decode with DecodeReference. mismatches == 0 is the pass.
+// fill) over random bytes and compares Decode with DecodeReference. mismatches == 0 with
+// tables_ok and most runs on the fast path is the pass.
 // Takes about a second for 1500 cases; not for use while another thread decodes (it flips the
 // vector path off for the scalar pass).
 SelfTestResult SelfTest(uint32_t cases);

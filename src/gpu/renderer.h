@@ -170,6 +170,10 @@ class Renderer final : public RenderThread::Executor {
   void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);
   void OnIdle() override;
   void ExecuteFence(const FenceRecord& record);
+  // After a draw ran: looks at the draw records already published behind it, up to the frame's
+  // present and kPrefetchAheadDraws of them, and offers their textures to the decode pool
+  // (TextureCache::Prefetch). Each record is looked at once.
+  void PrefetchTextures(const RecordHeader& executing);
   // The guest frame's open list, opening it (and starting the frame's
   // timestamps and the scene's frame) on the first scene record. Null when the
   // device is lost.
@@ -317,6 +321,12 @@ class Renderer final : public RenderThread::Executor {
   // Fence records that arrived while the retired fence was not held (logged
   // once): nothing was published for them.
   uint64_t fences_not_held_ = 0;
+  // PrefetchTextures: the ring position it has looked up to, and how many draws between the
+  // executing one and that position it has offered.
+  static constexpr uint32_t kPrefetchAheadDraws = 384;
+  static constexpr uint32_t kPrefetchScanRecords = 64;
+  uint64_t prefetch_position_ = 0;
+  uint32_t prefetch_ahead_ = 0;
   bool guest_has_presented_ = false;
   // Written by the render thread, read by any thread (fence_progress).
   std::atomic<uint64_t> records_executed_{0};

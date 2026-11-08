@@ -815,6 +815,36 @@ void Scene::RecordShadowMask(const PreparedDraw& d, plume::RenderCommandList* li
 // draws
 // ---------------------------------------------------------------------------
 
+void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
+  if (!textures_ || !shaders_.attached()) {
+    return;
+  }
+  const DrawView view(payload);
+  const DrawRecord& r = view.record();
+  if (!prefetch_vs_ || prefetch_vs_identity_ != r.vs_identity) {
+    prefetch_vs_ = shaders_.Find(r.vs_identity);
+    prefetch_vs_identity_ = r.vs_identity;
+  }
+  if (!prefetch_vs_) {
+    return;
+  }
+  uint32_t fetch_mask = prefetch_vs_->texture_fetch_mask;
+  if ((r.flags & kDrawNoPixelShader) == 0) {
+    if (!prefetch_ps_ || prefetch_ps_identity_ != r.ps_identity) {
+      prefetch_ps_ = shaders_.Find(r.ps_identity);
+      prefetch_ps_identity_ = r.ps_identity;
+    }
+    if (prefetch_ps_) {
+      fetch_mask |= prefetch_ps_->texture_fetch_mask;
+    }
+  }
+  for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
+    uint32_t dwords[6];
+    view.FetchGroup(uint32_t(std::countr_zero(mask)), dwords);
+    textures_->Prefetch(dwords, sequence);
+  }
+}
+
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   const uint64_t c0 = cycles::Now();
   LapStart();
