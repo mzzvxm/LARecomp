@@ -1,11 +1,9 @@
 // Symbols the Windows-only code defines, for the build where those files are
-// not compiled: the D3D12 native graphics runtime and the Xbox trigger rumble
-// (GameInput). Plume is the renderer here. (The DualSense trigger effects build
-// everywhere, through SDL off Windows.)
+// not compiled: the D3D12 native graphics runtime. Plume is the renderer here.
+// (The DualSense and Xbox trigger effects build everywhere, through SDL off Windows.)
 
 #include <rex/cvar.h>
 
-#include "mc_engine/impulse_triggers.h"
 #include "native_gfx/native_gfx.h"
 
 // The cvars native_gfx.cpp defines and the guest-side files Plume shares read.
@@ -50,9 +48,3 @@ void TelemetryOnFrameEnd() {}
 void TelemetryRecordGeometry(const uint8_t*, uint32_t, uint32_t, uint32_t, uint32_t, int32_t, bool,
                              uint64_t, uint64_t) {}
 }  // namespace mcla::native_gfx
-
-namespace larecomp::impulse {
-void EarlyInit() {}
-void Tick() {}
-void Shutdown() {}
-}  // namespace larecomp::impulse

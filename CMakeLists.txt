@@ -283,8 +283,7 @@ if(NOT WIN32)
         src/native_gfx/native_gfx.cpp
         src/native_gfx/geometry.cpp
         src/native_gfx/telemetry.cpp
-        src/native_gfx/guest/sampler_state.cpp
-        src/mc_engine/impulse_triggers.cpp)
+        src/native_gfx/guest/sampler_state.cpp)
     foreach(_f IN LISTS LARECOMP_SOURCES)
         if(_f MATCHES "^src/native_gfx/d3d12/")
             list(APPEND _larecomp_win_only "${_f}")

@@ -5,8 +5,8 @@
 // slip. Nothing else moves them: no engine texture, no gear tops, no nitro. The amounts are the
 // game's own tyre slip (wheel_slip.h), the same ones the DualSense's trigger vibration uses.
 //
-// How it reaches the pad. The executable and rexruntime.dll each carry their own SDL. The game's
-// input is the SDK's (in rexruntime.dll), which on Windows opens an Xbox pad through SDL's
+// How it reaches the pad, on Windows. The executable and rexruntime.dll each carry their own SDL.
+// The game's input is the SDK's (in rexruntime.dll), which on Windows opens an Xbox pad through SDL's
 // XInput driver (the log of a launch says `SDL OnControllerDeviceAdded: "XInput Controller"`),
 // and the XInput driver cannot drive the trigger motors: SDL_RumbleGamepadTriggers answers
 // "unsupported" and the pad's SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN is false. Of SDL's other
@@ -29,6 +29,31 @@
 // the game last asked for (VibrationDriven, the vibration hook's record): the motors keep their
 // value and the triggers add theirs. A pad is not touched at all while no trigger rumbles.
 //
+// On Linux (any non-Windows build) the process has ONE SDL, the SDK's, and the SDK's input driver
+// (input_backend = "sdl") opens the same pads, so SDL_RumbleGamepadTriggers goes to the pad the game
+// is already using. None of the Windows workarounds apply: SDL keeps the two motors and the two
+// triggers as separate values and every driver that can rumble triggers sends all four from them,
+// so the game's motors are left alone, nothing is mirrored and no update has to be made to differ.
+// Which SDL drivers reach trigger motors there, with SDL 3.5 (the SDK's):
+//   - Xbox One and Series pads over Bluetooth: SDL's Xbox One HIDAPI driver, through /dev/hidraw*
+//     (every Microsoft pad counts as having trigger motors). The player's user must be allowed to use
+//     the hidraw node: Steam's udev rules cover one Xbox pad (045e:0b22) only, so most players need
+//     a rule of their own, e.g.  KERNEL=="hidraw*", KERNELS=="*045E:*", MODE="0660", TAG+="uaccess"
+//   - Xbox One and Series pads over USB: SDL's GIP HIDAPI driver, which needs libusb. SDL keeps
+//     libusb off for everything but a few Nintendo devices on Linux (SDL_HINT_HIDAPI_LIBUSB_WHITELIST,
+//     on by default where a hidraw backend exists), because libusb takes the pad from the kernel's xpad
+//     driver, and that driver is the game's input path for a wired Xbox pad today. LARecomp leaves
+//     that alone: a wired pad stays on xpad (SDL reports no trigger motors for it, and the log says
+//     so), unless the player starts the game with SDL_HIDAPI_LIBUSB_WHITELIST=0 in the environment
+//     (SDL reads it as a hint) and /dev/bus/usb allows their user (a udev rule for 045e, uaccess).
+//   - SDL's Linux evdev driver (the kernel's xpad or xpadneo/hid-microsoft device) and the Xbox 360
+//     driver have no trigger rumble. Steam Input's virtual pad is an evdev device too; SDL types it
+//     as the real pad behind it, so an Xbox One pad behind Steam Input is opened here, reports no
+//     trigger motors and is closed again. The Steam Deck's own controls are not typed as an Xbox One
+//     pad and are never opened.
+// Only pads that SDL types as Xbox One are opened here (an Xbox 360 type pad has no trigger motors);
+// every other pad is left to the SDK's driver.
+//
 // One worker thread does all of it, every 25 ms while a car is driven: the game's thread is only
 // asked to start it. The thread reads the same "driving" answer the DualSense uses (the race HUD
 // updated in the last 300 ms, the game not paused, the window in front), so a game thread that
@@ -49,9 +74,16 @@
 // CHECK: that the game's own rumble (a crash, a skid) keeps running while a trigger shakes, and
 // that the triggers go still the moment the slip ends, the pause menu opens or the window loses
 // focus.
+// CHECK (Linux): never run against a pad. With an Xbox One or Series pad over Bluetooth and
+// access to its hidraw node the log should say `trigger motors yes` and a burnout should shake the
+// right trigger (trigger_slip_log shows the amounts); with the pad over USB it says `no` and gives
+// the reason, and `yes` with SDL_HIDAPI_LIBUSB_WHITELIST=0 and libusb in the SDL build (HAVE_LIBUSB;
+// the build needs libusb-1.0 headers, the run needs libusb-1.0.so.0 and access to the pad's
+// /dev/bus/usb node). Also that the game's rumble keeps running while a trigger shakes (the shared
+// SDL keeps the motors and the triggers apart, read from SDL's drivers, not run), that the SDK's
+// pad input is unchanged, and that a Steam Deck's own controls are never opened (no [Impulse] line).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#if defined(_WIN32)
 #include "impulse_triggers.h"
 
 #include <SDL3/SDL.h>
@@ -70,6 +102,7 @@
 #include "adaptive_triggers.h"
 #include "hooks/hooks_internal.h"
 #include "larecomp_log.h"
+#include "trigger_sdl.h"
 #include "wheel_slip.h"
 
 REXCVAR_DEFINE_BOOL(impulse_triggers, true, "MCLA/Input",
@@ -128,7 +161,9 @@ bool g_shut_down = false;
 bool g_sdl_up = false;
 int64_t g_next_scan_ms = 0;
 float g_level[2] = {0.0f, 0.0f};  // the motors' smoothed power, 0 to 1: left, right
+#if defined(_WIN32)
 bool g_flip = false;              // see Apply()
+#endif
 
 // The motor power for a slip amount.
 float Motor(float amount) {
@@ -147,10 +182,14 @@ Uint16 ToMotor(float level) {
 }
 
 // Sets the pad's own two motors to what the game last asked for, so that an update of the
-// triggers (which sets all four) leaves them as they are.
-void MirrorMotors(Pad& pad) {
+// triggers (which sets all four) leaves them as they are. Windows only: there the game's motors
+// are set through another SDL. Where the SDK's SDL is this one, SDL itself keeps the motors, and
+// setting them here (with no duration) would end the SDK's timed rumble and its re-sends.
+void MirrorMotors([[maybe_unused]] Pad& pad) {
+#if defined(_WIN32)
     const uint32_t speeds = VibrationDriven(0);
     SDL_RumbleGamepad(pad.gamepad, Uint16(speeds >> 16), Uint16(speeds & 0xFFFF), 0);
+#endif
 }
 
 // Lets both triggers of a pad go.
@@ -180,12 +219,17 @@ void Apply(Pad& pad, Uint16 left, Uint16 right) {
     }
     // The game's own motors go along: one update sets all four (see the top of the file).
     MirrorMotors(pad);
+#if defined(_WIN32)
     // SDL does not send an update that repeats the last values, and the SDK's driver may have
     // set the triggers back to 0 behind its back when the game changed a motor. The last bit
     // alternates, so every update goes out (and carries the duration along).
     g_flip = !g_flip;
     if (left != 0) left = Uint16(std::min<int>(65535, left + (g_flip ? 1 : 0)));
     if (right != 0) right = Uint16(std::min<int>(65535, right + (g_flip ? 1 : 0)));
+#endif
+    // Off Windows an update that repeats the last values only extends the duration, which is what
+    // is wanted: SDL re-sends a held trigger rumble by itself every 2 s, and ends it kRumbleMs after
+    // the last update, so a stuck worker lets the triggers go.
     if (SDL_RumbleGamepadTriggers(pad.gamepad, left, right, kRumbleMs)) {
         pad.shaking = true;
     }
@@ -193,7 +237,11 @@ void Apply(Pad& pad, Uint16 left, Uint16 right) {
 
 // Opens the pads that appeared (the ones with trigger motors) and closes the ones that went.
 void Scan() {
+#if defined(_WIN32)
+    // Nothing else pumps this SDL (the SDK's driver pumps its own). Where the SDK's SDL is this
+    // one, its driver's pump keeps the list of pads current and this stays out of it.
     SDL_UpdateJoysticks();
+#endif
     int count = 0;
     SDL_JoystickID* found = SDL_GetGamepads(&count);
     std::vector<SDL_JoystickID> present;
@@ -230,6 +278,14 @@ void Scan() {
             g_skipped.push_back(id);
             continue;
         }
+#if !defined(_WIN32)
+        // The SDK's driver has every pad open here, so only a pad that can have impulse triggers is
+        // opened a second time: an Xbox One or Series pad. The Xbox 360 type has no trigger motors.
+        if (type != SDL_GAMEPAD_TYPE_XBOXONE) {
+            g_skipped.push_back(id);
+            continue;
+        }
+#endif
         SDL_Gamepad* gamepad = SDL_OpenGamepad(id);
         if (!gamepad) {
             g_skipped.push_back(id);
@@ -248,6 +304,12 @@ void Scan() {
                                                                    : "link unknown",
                           motors ? "yes" : "no");
         if (!motors) {
+#if !defined(_WIN32)
+            LARECOMP_APP_INFO("[Impulse] {} has no trigger motors through SDL. Over USB that is the case "
+                              "while the kernel's xpad driver has the pad (SDL_HIDAPI_LIBUSB_WHITELIST=0 "
+                              "hands it to SDL); over Bluetooth, without access to /dev/hidraw*",
+                              name ? name : "?");
+#endif
             SDL_CloseGamepad(gamepad);
             g_skipped.push_back(id);
             continue;
@@ -268,12 +330,19 @@ int Step(int64_t now) {
         return kIdleMs;
     }
     if (!g_sdl_up) {
+#if defined(_WIN32)
         // Not before here: the joystick layer comes up with the first pad scan.
         g_sdl_up = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
         if (!g_sdl_up) {
             LARECOMP_APP_WARN("[Impulse] SDL's gamepad layer would not start: {}", SDL_GetError());
             return 5000;
         }
+#else
+        // This is the SDK's SDL: its input driver starts the gamepad layer, and this waits for it
+        // (see trigger_sdl.h).
+        if (!larecomp::trigger_sdl::GamepadLayerUp()) return 1000;
+        g_sdl_up = true;
+#endif
     }
     if (now >= g_next_scan_ms) {
         g_next_scan_ms = now + kScanMs;
@@ -317,8 +386,14 @@ void Run() {
 namespace larecomp::impulse {
 
 void EarlyInit() {
+#if defined(_WIN32)
     // This executable's SDL, not the SDK's (see the top of the file). Before its joystick layer starts.
     SDL_SetHint(SDL_HINT_JOYSTICK_GAMEINPUT, "1");
+#endif
+    // Off Windows no hint is needed: SDL's HIDAPI drivers are on by default there, the one SDL is
+    // the SDK's, and the one hint that would reach wired Xbox pads (SDL_HINT_HIDAPI_LIBUSB_WHITELIST)
+    // changes how the game itself gets those pads, so it is left to the player's environment (see
+    // the top of the file).
 }
 
 void Tick() {
@@ -359,5 +434,4 @@ void Shutdown() {
 }
 
 }  // namespace larecomp::impulse
-#endif  // _WIN32
 #endif  // REXGLUE_HAS_XEO3_TARGET
