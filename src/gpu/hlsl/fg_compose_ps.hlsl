@@ -25,6 +25,7 @@ struct ComposePush {
   uint src_height;
   uint out_width;   // the generation size
   uint out_height;
+  uint gap;         // the UI layer's first columns and rows that hold no picture (Frame::gap): read at `gap`
 };
 
 #ifdef __spirv__
@@ -37,7 +38,8 @@ static const uint kFlagFloatScene = 1u;
 
 float4 UiTexel(int2 at) {
   const int2 limit = int2(g_push.src_width, g_push.src_height) - 1;
-  return g_textures[g_push.ui].Load(int3(clamp(at, int2(0, 0), limit), 0));
+  const int2 first = int2(int(g_push.gap), int(g_push.gap));  // as fg_prepare_ps.hlsl reads the scene
+  return g_textures[g_push.ui].Load(int3(clamp(at, first, limit), 0));
 }
 
 float Expand(float v) {

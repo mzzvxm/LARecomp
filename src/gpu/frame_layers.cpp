@@ -667,6 +667,12 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
   captured_.valid = true;
   captured_.width = host_width_;
   captured_.height = host_height_;
+  // The first host column and row the game's full-screen draws never wrote at this scale (the
+  // header's section on them): the consumers read them from the next ones.
+  // CHECK: that the game's draws all have the D3D pixel centre, as the resolve's first log line
+  // says ("pixel centre D3D"); with another one the picture would start at pixel 0 and this would
+  // repeat pixel `gap` over it.
+  captured_.gap = target_->scale.HalfPixelGap();
   captured_.hudless = &underlay_;
   captured_.ui = &ui_;
   // HDR stage 3: the float scene of this frame, when its tone map and the draws after it were
