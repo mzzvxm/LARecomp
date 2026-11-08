@@ -328,6 +328,9 @@ const RecordHeader* CommandStream::Peek(uint64_t* position) const {
     // The buffer offset comes from the consumer's (read_offset_ is read_ % capacity_, kept beside
     // it), not from a division: the published records lie less than a capacity ahead of read_ (the
     // producers write only into space the consumer released, and head_ never passes read_).
+    // CHECK: written without a compiler or a run (the At() this replaces no longer exists); a
+    // record whose offset came out wrong would be read as garbage, which the size checks below
+    // refuse (null), so the look would stop and Next would read the record as before.
     const uint64_t ahead = at - read_;
     if (ahead >= capacity_) {
       return nullptr;

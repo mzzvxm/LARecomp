@@ -73,6 +73,11 @@
 // kBurstGapDraws executed draws apart, and until kPrefetchHotDraws draws after the last of them
 // (prefetching()). One or two new textures a frame, the usual trickle, decode in place as before:
 // tens of microseconds each.
+// CHECK: the 50 ns and the 0.1-0.25 ms are read from the frame logs (render thread cpu_ms of runs
+// with the pool on and off, the faster decode taken off), not from a profile of the look itself;
+// the textures line's "lookahead on for ... draws/frame" is the figure to read after a run: the
+// burst test should keep it to a few tens, and cpu_ms with the pool on should be the pool-off
+// one's again.
 //
 // Threading: render thread only, after Initialize. (The pool's workers only decode: they read the
 // guest bytes and the plan a job carries, and write the job's own buffer.)
