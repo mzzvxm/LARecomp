@@ -131,6 +131,36 @@
 //    (temporal_dlss.cpp LoadFrameGeneration): in the owner's play session (2026-11-07, 19:35:47) the
 //    plugin was unloaded still generating, and the game then held exactly 119.8 presents a second
 //    for minutes with every cap of ours cleared. The log says 5 s after the switch what the rate is.
+//  - The pace that outlasts frame generation (runs next10-* and next11-*, D3D12, RTX 5080, 240 Hz, the
+//    NVIDIA app's Max Frame Rate 240; DG5): 120.0 presents a second from the first frame after the
+//    switch to the end of the run, where the control (frame generation never on) runs 147 to 203 and FSR
+//    frame generation on and off goes back to 135 to 168. It is not the present: PresentMon has the same
+//    present mode as the control ("Hardware Composed: Independent Flip", tearing, SyncInterval 0), no
+//    flip delay, and Present returns in 0.14 ms. It is not a cap of ours (the log line says so). The
+//    render thread idles 5.1 ms of every 8.33 ms (the control 2.4 to 3.5) with the same 3 ms of its own
+//    work: the guest's update thread is held back before the frame, and the only other thing that waits
+//    there is the driver's Reflex wait (NvAPI_D3D_Sleep, latency.cpp OnFrameStart), which is where the
+//    NVIDIA app's global cap lives (the fork logged "interval 4166 us" at 240 FPS). The driver's sleep
+//    status has a frame generation multiplier beside the interval; 240 over 2 is 120. The switch off
+//    keeps Streamline's side as the guide's section 18 has it (chain gone, plugin unloaded, plain chain
+//    through the native factory: sl.log shows no proxy factory, and "Destroyed DXGISwapChain proxy" for
+//    the chain), so what outlasts it is state the plugin or the driver keeps for the process.
+//    What the switch does about it, in order: the plugin is told off for good WITHOUT retaining its
+//    resources (it releases them in its present, with its chain still there), the chain stays at
+//    least kWindDownMin and until the driver's own account of the pacing is the one from before frame
+//    generation first ran (DriverStillPaces, up to kWindDownMax), and the device's own Reflex takes
+//    over again from a few frames in its neutral mode (latency.h RearmDriver). The log says the driver's
+//    pacing before frame generation, at the switch off, after the wind-down, right after the plain chain
+//    and 5 s later, with how long the driver's wait takes of a frame.
+//    CHECK: which of the three (if any) cleared it: next11-dlssg-offagain should show "5 s after switching
+//    off the game runs about 1xx frames" at the control's rate and a Reflex wait of tenths of a ms; if
+//    it still says 120 and a wait of milliseconds, the pacing lines say what the driver still holds
+//    (its interval, its multiplier), and nothing of ours resets it: the next step is then to keep
+//    Streamline's Reflex as the reducer for the session, or Reflex off after frame generation.
+//    CHECK: the multiplier and dynamic-control fields of the driver's sleep status are read from the
+//    fork's layout of NV_GET_SLEEP_STATUS_PARAMS_V1, of which it logged only the interval and the
+//    game-sleep flag: a multiplier that reads 0 with frame generation running means the layout is off
+//    (the interval check then decides alone).
 // ===========================================================================
 
 #include <atomic>
@@ -142,6 +172,7 @@
 #include <plume_render_interface.h>
 
 #include "host_passes.h"
+#include "latency.h"
 #include "textures.h"
 
 namespace mcla::gpu {
@@ -172,6 +203,11 @@ class DlssFrameGeneration {
   // switching off" line is not logged for it); if so the wind-down needs to run before the rebuild.
   static constexpr uint32_t kWindDownFrames = 3;
   static constexpr std::chrono::milliseconds kWindDownMax{1500};
+  // Told off, the plugin takes apart its pacing and flip metering over more than three presents (it
+  // set them up over about 0.4 s, on a thread of its own, when it was switched on): the switch waits
+  // at least this long, and until the driver's account of the pacing (latency.h DriverPacing) no longer
+  // shows frame generation's, up to kWindDownMax.
+  static constexpr std::chrono::milliseconds kWindDownMin{600};
 
   DlssFrameGeneration();
   ~DlssFrameGeneration();
@@ -278,8 +314,14 @@ class DlssFrameGeneration {
   // Record, while winding down: the plugin is told off and the presents after that are counted.
   bool WindDownFrame(const FrameArgs& args);
   // Poll, after a switch off: says once what the game's frame rate is five seconds later and which
-  // frame caps are in effect, so a pace that outlasts frame generation is told from a cap of ours.
+  // frame caps are in effect, so a pace that outlasts frame generation is told from a cap of ours; and
+  // how long the driver's Reflex wait takes of a frame and what the driver says its pacing is.
   void ProbeAfterOff();
+  // The driver's account of the pacing, in the log (`when`: where in the switch it is read), and
+  // whether it still shows frame generation's (a multiplier above 1, or an interval over the one the
+  // driver had before frame generation first ran).
+  void LogPacing(const std::string& when);
+  bool DriverStillPaces() const;
   void Fail(const std::string& why);
   void NoteState();
 
@@ -307,12 +349,16 @@ class DlssFrameGeneration {
   bool plugin_loaded_ = false;    // PrepareSwitchOn loaded it and BeforePlainChain has not unloaded it
   bool unload_pending_ = false;   // the plugin could not be unloaded at the switch off: tried again
   bool winding_down_ = false;     // the setting went off: the plugin is told off before the switch
+  bool release_told_ = false;     // ... and told to release everything it holds (once)
   std::chrono::steady_clock::time_point wind_began_{};
   uint32_t wind_frames_ = 0;      // presents since the plugin was told off, while winding down
   bool wind_timeout_logged_ = false;
   std::chrono::steady_clock::time_point off_at_{};  // when the last switch off completed
   uint64_t off_polls_ = 0;        // frame boundaries since then (about one a guest frame)
   bool probe_pending_ = false;
+  // The driver's pacing as it was before frame generation first ran, to compare with afterwards.
+  latency::DriverPacing pacing_before_{};
+  bool pacing_before_ok_ = false;
   bool logged_unavailable_ = false;
   std::chrono::steady_clock::time_point settle_until_{};
   uint32_t refresh_hz_ = 0;
