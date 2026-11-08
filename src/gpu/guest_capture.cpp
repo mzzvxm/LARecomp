@@ -183,6 +183,30 @@ uint64_t ElapsedCycles(uint64_t since) {
   return now > since ? now - since : 0;
 }
 
+// A draw is timed one time in kDrawTimingEvery and its cycles are counted that many times. The
+// two TSC reads of a draw cost an estimated 10 to 15 ns together (RDTSC is a slow instruction
+// on AMD), about a tenth of a draw's whole capture, and they only feed the capture figure of the
+// validation window and of the frame trace. The phase is per guest thread (the guest render
+// thread makes nearly every draw), so it takes no lock and shares no cache line. Clears,
+// resolves and tiling calls happen about fifty times a frame and are timed every time.
+// CHECK: not built or run. That figure is now an estimate from 1 draw in 16 (about 275 timed
+// draws a frame at 4,400); its mean over a window should match the old one within a few
+// percent. The gain (about 0.04 ms a frame) is read from the profile, not measured.
+constexpr uint32_t kDrawTimingEvery = 16;
+static_assert((kDrawTimingEvery & (kDrawTimingEvery - 1)) == 0, "the phase test is a mask");
+thread_local uint32_t t_draw_timing_phase = 0;
+
+inline bool TimeThisDraw() {
+  return (++t_draw_timing_phase & (kDrawTimingEvery - 1)) == 0;
+}
+
+// The memo slot of a shader object: the top 10 bits of a multiplicative hash of its address
+// (kMemoSlots entries a kind). A vertex shader drawn with no pixel shader can select its second
+// variant, so the same object has two entries and the second one's slot flips the lowest bit.
+inline uint32_t MemoSlot(uint32_t object, bool vertex, bool ps_null) {
+  return ((object * 2654435761u) >> 22) ^ ((vertex && ps_null) ? 1u : 0u);
+}
+
 // memcmp(a, b, kConstantBlockBytes) == 0 without a call into vcruntime140: the
 // compiler does not expand it, and a draw compares a few blocks (0.03 ms a frame in the
 // profile, mostly the call).
@@ -461,13 +485,36 @@ GuestCapture::ShaderRead GuestCapture::ReadVertexShader(const uint8_t* base, uin
   return r;
 }
 
-void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex) {
+bool GuestCapture::ShaderFromMemo(uint32_t object, bool vertex, bool ps_null, ShaderRead& shader,
+                                  uint32_t* variant) {
+  const IdentityMemo& memo = (vertex ? vs_memo_ : ps_memo_)[MemoSlot(object, vertex, ps_null)];
+  if (memo.object != object || memo.generation != frame_pages_.generation ||
+      memo.ps_null != (vertex && ps_null)) {
+    return false;
+  }
+  memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  shader.object = object;
+  shader.address = memo.address;
+  shader.size = memo.size;
+  shader.identity = memo.identity;
+  shader.computed_fetch_index = memo.computed_fetch_index;
+  shader.kills_pixels = memo.kills_pixels;
+  shader.readable = true;  // the first resolve of this frame read the microcode
+  if (variant != nullptr) {
+    *variant = memo.variant;
+  }
+  return true;
+}
+
+void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex,
+                                   bool ps_null, uint32_t variant) {
   IdentityMemo& memo =
-      (vertex ? vs_memo_ : ps_memo_)[(shader.object * 2654435761u) >> 22];
+      (vertex ? vs_memo_ : ps_memo_)[MemoSlot(shader.object, vertex, ps_null)];
   static_assert(kMemoSlots == (1u << 10), "the slot is the top 10 bits of the product");
   const uint32_t generation = frame_pages_.generation;
   if (memo.object == shader.object && memo.generation == generation &&
-      memo.address == shader.address && memo.size == shader.size) {
+      memo.address == shader.address && memo.size == shader.size &&
+      memo.ps_null == (vertex && ps_null)) {
     memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     shader.identity = memo.identity;
     shader.computed_fetch_index = memo.computed_fetch_index;
@@ -483,6 +530,8 @@ void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool
   memo.identity = shader.identity;
   memo.computed_fetch_index = shader.computed_fetch_index;
   memo.kills_pixels = shader.kills_pixels;
+  memo.ps_null = vertex && ps_null;
+  memo.variant = uint8_t(vertex ? variant : 0);
 }
 
 void GuestCapture::ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex) {
@@ -567,13 +616,22 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
     VerifiedPages& pages;
     ~Deactivate() { pages.active = false; }
   } deactivate{verified_};
+  // A shader the guest frame's memo already has (nearly every draw: 97% of the lookups in the
+  // profiled roam and drive) is taken from it without reading the shader object, its sub-object
+  // or the microcode, and without asking the heap about any of them; the rest read the guest's
+  // objects and resolve the identity, which stores the memo entry.
   const uint32_t ps_object = DeviceU32(base, device, guest::kDevPixelShader);
-  if (ps_object == 0) {
+  const bool ps_null = ps_object == 0;
+  if (ps_null) {
     c.flags |= kDrawNoPixelShader;
   } else {
-    c.ps = ReadPixelShader(base, ps_object);
+    if (!ShaderFromMemo(ps_object, false, false, c.ps, nullptr)) {
+      c.ps = ReadPixelShader(base, ps_object);
+      if (c.ps.readable) {
+        ResolveIdentity(base, c.ps, false, false, 0);
+      }
+    }
     if (c.ps.readable) {
-      ResolveIdentity(base, c.ps, false);
       if (c.ps.kills_pixels) {
         c.flags |= kDrawPsKills;
       }
@@ -581,9 +639,14 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
       c.flags |= kDrawPsUnreadable;
     }
   }
-  c.vs = ReadVertexShader(base, device, ps_object, &c.vs_variant);
+  const uint32_t vs_object = DeviceU32(base, device, guest::kDevVertexShader);
+  if (vs_object == 0 || !ShaderFromMemo(vs_object, true, ps_null, c.vs, &c.vs_variant)) {
+    c.vs = ReadVertexShader(base, device, ps_object, &c.vs_variant);
+    if (c.vs.readable) {
+      ResolveIdentity(base, c.vs, true, ps_null, c.vs_variant);
+    }
+  }
   if (c.vs.readable) {
-    ResolveIdentity(base, c.vs, true);
     if (c.vs.computed_fetch_index) {
       c.flags |= kDrawVsComputedFetchIndex;
     }
@@ -623,13 +686,15 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
   }
 
   DeviceState& state = StateFor(device);
+  c.state = &state;
   CollectDeltas(DeviceBytes(base, device, guest::kDevVsConstantBank), state.vs_shadow.data(),
                 state.shadows_valid, token.vs_dirty, verify_constants_, c.vs_blocks,
                 c.vs_block_count, frame_.constant_blocks_masked, frame_.constant_blocks_unmasked);
   CollectDeltas(DeviceBytes(base, device, guest::kDevPsConstantBank), state.ps_shadow.data(),
                 state.shadows_valid, token.ps_dirty, verify_constants_, c.ps_blocks,
                 c.ps_block_count, frame_.constant_blocks_masked, frame_.constant_blocks_unmasked);
-  if (state.check_next || ++state.draws_since_check >= kBankCheckInterval) {
+  const uint32_t check_every = verify_constants_ ? kBankCheckInterval : kBankCheckIntervalQuiet;
+  if (state.check_next || ++state.draws_since_check >= check_every) {
     c.bank_check = true;
     state.check_next = false;
     state.draws_since_check = 0;
@@ -671,8 +736,11 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
   r->viz_query_index = *DeviceBytes(base, device, guest::kDevVizQueryIndex);
   r->viz_query_id = *DeviceBytes(base, device, guest::kDevVizQueryTable + r->viz_query_index);
   r->device_flags = DeviceU32(base, device, guest::kDevFlags);
+  // One translation of the table's address serves its words (GuestPtr compares and adds the
+  // 0xE0 heap's offset at every call; the table lies inside the device object).
+  const uint8_t* colors = DeviceBytes(base, device, guest::kDevColorSurfaces);
   for (uint32_t i = 0; i < 4; ++i) {
-    r->surfaces[i] = DeviceU32(base, device, guest::kDevColorSurfaces + 4 * i);
+    r->surfaces[i] = LoadBe32(colors + 4 * i);
   }
   r->surfaces[4] = DeviceU32(base, device, guest::kDevDepthSurface);
   {
@@ -695,7 +763,7 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
       r->target_size_bits = SizeBitsOf(DeviceU32(base, device, guest::kDevTilingExtent),
                                        DeviceU32(base, device, guest::kDevTilingExtent + 4));
     } else {
-      DeviceState& sized = StateFor(device);
+      DeviceState& sized = *c.state;
       const uint32_t surface = r->surfaces[0] ? r->surfaces[0] : r->surfaces[4];
       if (surface != sized.sized_surface) {
         sized.sized_surface = surface;
@@ -709,8 +777,9 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
       r->target_size_bits = sized.sized_surface_bits;
     }
   }
+  const uint8_t* samplers = DeviceBytes(base, device, guest::kDevSamplerTextures);
   for (uint32_t i = 0; i < guest::kSamplerCount; ++i) {
-    r->sampler_textures[i] = DeviceU32(base, device, guest::kDevSamplerTextures + 4 * i);
+    r->sampler_textures[i] = LoadBe32(samplers + 4 * i);
   }
   std::memcpy(r->stream_strides, DeviceBytes(base, device, guest::kDevStreamStrides),
               sizeof(r->stream_strides));
@@ -723,7 +792,7 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
                 c.decl_count * guest::kDeclElementBytes);
   }
 
-  DeviceState& state = StateFor(device);
+  DeviceState& state = *c.state;
   const uint8_t* vs_bank = DeviceBytes(base, device, guest::kDevVsConstantBank);
   const uint8_t* ps_bank = DeviceBytes(base, device, guest::kDevPsConstantBank);
   std::memcpy(payload + layout.vs_indices, c.vs_blocks.data(), c.vs_block_count);
@@ -759,7 +828,8 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   if (!token.active || !enabled()) {
     return;
   }
-  const uint64_t t0 = cycles::Now();
+  const bool timed = TimeThisDraw();
+  const uint64_t t0 = timed ? cycles::Now() : 0;
   CommandStream::Writer writer(stream_);  // the producer lock: the capture's one lock
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(writer, base, /*terminated=*/false);
@@ -780,7 +850,9 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
     CountRecord(layout.payload_bytes);
     ++frame_.draws;
   }
-  frame_.capture_cycles += ElapsedCycles(t0);
+  if (timed) {
+    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+  }
 }
 
 void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t* base,
@@ -789,7 +861,8 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   if (!token.active || !enabled()) {
     return;
   }
-  const uint64_t t0 = cycles::Now();
+  const bool timed = TimeThisDraw();
+  const uint64_t t0 = timed ? cycles::Now() : 0;
   CommandStream::Writer writer(stream_);  // the lock; no record is begun through it here
   if (pending_.active) {
     // A second Begin before End on the same device is a guest bug; on another
@@ -810,7 +883,9 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
     REXLOG_ERROR("[gpu] capture: inline draw of {} vertices x {} bytes exceeds the stream's "
                  "record limit; not captured",
                  count, stride);
-    frame_.capture_cycles += ElapsedCycles(t0);
+    if (timed) {
+      frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+    }
     return;
   }
   DrawCapture c;
@@ -827,19 +902,24 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   pending_.active = true;
   pending_.device = device;
   pending_.buffer = buffer;
-  frame_.capture_cycles += ElapsedCycles(t0);
+  if (timed) {
+    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+  }
 }
 
 void GuestCapture::AfterEndVertices(const uint8_t* base, uint32_t device) {
   if (!enabled()) {
     return;
   }
-  const uint64_t t0 = cycles::Now();
+  const bool timed = TimeThisDraw();
+  const uint64_t t0 = timed ? cycles::Now() : 0;
   CommandStream::Writer writer(stream_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(writer, base, /*terminated=*/true);
   }
-  frame_.capture_cycles += ElapsedCycles(t0);
+  if (timed) {
+    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+  }
 }
 
 void GuestCapture::FlushPendingInline(CommandStream::Writer& writer, const uint8_t* base,
