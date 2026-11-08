@@ -183,6 +183,23 @@ uint64_t ElapsedCycles(uint64_t since) {
   return now > since ? now - since : 0;
 }
 
+// A draw is timed one time in kDrawTimingEvery and its cycles are counted that many times. The
+// two TSC reads of a draw cost an estimated 10 to 15 ns together (RDTSC is a slow instruction
+// on AMD), about a tenth of a draw's whole capture, and they only feed the capture figure of the
+// validation window and of the frame trace. The phase is per guest thread (the guest render
+// thread makes nearly every draw), so it takes no lock and shares no cache line. Clears,
+// resolves and tiling calls happen about fifty times a frame and are timed every time.
+// CHECK: not built or run. That figure is now an estimate from 1 draw in 16 (about 275 timed
+// draws a frame at 4,400); its mean over a window should match the old one within a few
+// percent. The gain (about 0.04 ms a frame) is read from the profile, not measured.
+constexpr uint32_t kDrawTimingEvery = 16;
+static_assert((kDrawTimingEvery & (kDrawTimingEvery - 1)) == 0, "the phase test is a mask");
+thread_local uint32_t t_draw_timing_phase = 0;
+
+inline bool TimeThisDraw() {
+  return (++t_draw_timing_phase & (kDrawTimingEvery - 1)) == 0;
+}
+
 // memcmp(a, b, kConstantBlockBytes) == 0 without a call into vcruntime140: the
 // compiler does not expand it, and a draw compares a few blocks (0.03 ms a frame in the
 // profile, mostly the call).
@@ -759,7 +776,8 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   if (!token.active || !enabled()) {
     return;
   }
-  const uint64_t t0 = cycles::Now();
+  const bool timed = TimeThisDraw();
+  const uint64_t t0 = timed ? cycles::Now() : 0;
   CommandStream::Writer writer(stream_);  // the producer lock: the capture's one lock
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(writer, base, /*terminated=*/false);
@@ -780,7 +798,9 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
     CountRecord(layout.payload_bytes);
     ++frame_.draws;
   }
-  frame_.capture_cycles += ElapsedCycles(t0);
+  if (timed) {
+    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+  }
 }
 
 void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t* base,
@@ -789,7 +809,8 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   if (!token.active || !enabled()) {
     return;
   }
-  const uint64_t t0 = cycles::Now();
+  const bool timed = TimeThisDraw();
+  const uint64_t t0 = timed ? cycles::Now() : 0;
   CommandStream::Writer writer(stream_);  // the lock; no record is begun through it here
   if (pending_.active) {
     // A second Begin before End on the same device is a guest bug; on another
@@ -810,7 +831,9 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
     REXLOG_ERROR("[gpu] capture: inline draw of {} vertices x {} bytes exceeds the stream's "
                  "record limit; not captured",
                  count, stride);
-    frame_.capture_cycles += ElapsedCycles(t0);
+    if (timed) {
+      frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+    }
     return;
   }
   DrawCapture c;
@@ -827,19 +850,24 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   pending_.active = true;
   pending_.device = device;
   pending_.buffer = buffer;
-  frame_.capture_cycles += ElapsedCycles(t0);
+  if (timed) {
+    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+  }
 }
 
 void GuestCapture::AfterEndVertices(const uint8_t* base, uint32_t device) {
   if (!enabled()) {
     return;
   }
-  const uint64_t t0 = cycles::Now();
+  const bool timed = TimeThisDraw();
+  const uint64_t t0 = timed ? cycles::Now() : 0;
   CommandStream::Writer writer(stream_);
   if (pending_.active && pending_.device == device) {
     FlushPendingInline(writer, base, /*terminated=*/true);
   }
-  frame_.capture_cycles += ElapsedCycles(t0);
+  if (timed) {
+    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+  }
 }
 
 void GuestCapture::FlushPendingInline(CommandStream::Writer& writer, const uint8_t* base,
