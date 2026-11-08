@@ -327,6 +327,7 @@ struct FrameGenerationInputs {
 
 struct FrameGenerationOptions {
   bool on = false;                    // generate: else the plugin passes the frames through (and keeps its memory)
+  bool release_when_off = false;      // off for good: the plugin releases everything it holds (DLSS-G guide 6.4)
   uint32_t frames_to_generate = 1;    // 1 is 2x, 2 is 3x, 3 is 4x
   uint32_t color_size[2] = {};        // the back buffer
   uint32_t mvec_depth_size[2] = {};   // the depth and the vectors

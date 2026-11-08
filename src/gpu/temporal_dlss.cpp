@@ -3035,7 +3035,11 @@ bool SetFrameGenerationOptions(const FrameGenerationOptions& o, std::string* why
   options.numFramesToGenerate = std::max<uint32_t>(o.frames_to_generate, 1u);
   // The plugin keeps its memory while off (the pause menu, a loading screen), so that switching back
   // is not a stutter; the whole plugin is unloaded by LoadFrameGeneration when the setting goes off.
-  options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+  // Told off for good (the setting went off) it is asked to release everything it holds in the present
+  // that sees the options, with its swap chain still there (the guide's 6.4: "by default, this releases
+  // all internal resources allocated by the feature"), which is where its pacing and flip state belong
+  // to it and can be taken apart; it used to be told to retain them, then freed after its chain was gone.
+  options.flags = (!o.on && o.release_when_off) ? sl::DLSSGFlags{} : sl::DLSSGFlags::eRetainResourcesWhenOff;
   options.numBackBuffers = o.back_buffers;
   options.colorWidth = o.color_size[0];
   options.colorHeight = o.color_size[1];
