@@ -59,6 +59,16 @@ void HdrScene::Shutdown() {
   pass_timing_ = nullptr;
 }
 
+void HdrScene::Release() {
+  if (passes_) {
+    passes_->ReleaseImage(image_);
+  }
+  composed_generation_ = 0;
+  composed_view_ = 0;
+  float_scene_ = false;
+  idle_presents_ = 0;
+}
+
 bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, uint32_t width,
                        uint32_t height) {
   if (!pipeline_ || !layers_) {
@@ -109,7 +119,7 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, 
     }
   }
   pass_timing_->Mark(list, "hdr compose");
-  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot};
+  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot, frame.gap};
   passes_->DrawInto(list, image_, pipeline_.get(), &push, sizeof(push));
   composed_generation_ = frame.generation;
   composed_view_ = view;

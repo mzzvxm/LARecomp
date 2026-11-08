@@ -1,10 +1,9 @@
 // Symbols the Windows-only code defines, for the build where those files are
-// not compiled: the D3D12 native graphics runtime and the DualSense trigger
-// writer (Windows HID). Plume is the renderer here.
+// not compiled: the D3D12 native graphics runtime. Plume is the renderer here.
+// (The DualSense and Xbox trigger effects build everywhere, through SDL off Windows.)
 
 #include <rex/cvar.h>
 
-#include "mc_engine/adaptive_triggers.h"
 #include "native_gfx/native_gfx.h"
 
 // The cvars native_gfx.cpp defines and the guest-side files Plume shares read.
@@ -49,11 +48,3 @@ void TelemetryOnFrameEnd() {}
 void TelemetryRecordGeometry(const uint8_t*, uint32_t, uint32_t, uint32_t, uint32_t, int32_t, bool,
                              uint64_t, uint64_t) {}
 }  // namespace mcla::native_gfx
-
-// DualSense adaptive triggers write through the Windows HID API.
-namespace larecomp::triggers {
-void Tick() {}
-void Shutdown() {}
-}  // namespace larecomp::triggers
-
-void Hook_TriggersHud() {}

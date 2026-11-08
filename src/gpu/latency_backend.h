@@ -11,6 +11,7 @@
 #include <string>
 
 #include "backend.h"
+#include "latency.h"
 
 namespace plume {
 struct RenderDevice;
@@ -32,9 +33,9 @@ enum class Marker : uint8_t {
 
 // This is the one place the vendors' calls (sleep mode, sleep, markers) sit behind: latency.cpp and
 // the call sites in renderer.cpp / hooks/frame_timing.cpp only use Reducer and latency.h's free
-// functions. DLSS frame generation will need Reflex to run through NVIDIA Streamline (sl.reflex)
-// instead of NvAPI directly; that is a third Reducer made in the same factories (a Streamline
-// one would replace NvapiReflex and VulkanReducer's NVIDIA half), with nothing else changing.
+// functions. DLSS frame generation needs Reflex to run through NVIDIA Streamline (sl.reflex, sl.pcl)
+// instead of NvAPI directly: that is a third Reducer (latency_streamline.cpp), taken over from the
+// device's own while frame generation runs (latency.h UseStreamline).
 //
 // Calls may come from several threads at once (the update thread sleeps and marks, the guest
 // render thread and the host render thread mark); an implementation takes no lock across a
@@ -53,15 +54,30 @@ class Reducer {
   // The mode: on or off, and boost. False when the driver refused it. The vendor's own frame
   // limit is left at none (latency.h: the frame rate limit). Called by the update thread only.
   virtual bool SetMode(bool on, bool boost) = 0;
+  // The last SetMode that returned false did not reach the vendor's API because something else held
+  // it for seconds (NVIDIA Streamline making a DLSS feature): not a refusal, the caller asks again
+  // soon without counting it. Update thread, right after SetMode.
+  virtual bool Busy() const { return false; }
   // The driver's wait at the start of a frame. True when it was made; false where it could not
   // be: no swap chain yet, a call that failed.
   virtual bool Sleep(uint64_t frame_id) = 0;
   virtual void SetMarker(Marker marker, uint64_t frame_id) = 0;
 
+  // NvAPI Reflex: what the driver says its pacing is now (latency.h DriverPacing). False where this
+  // reducer's driver cannot say. Any thread.
+  virtual bool ReadPacing(DriverPacing* /*out*/) const { return false; }
+  // The driver keeps a state of its own across frames that a cycle in the neutral mode (latency.h
+  // RearmDriver) starts again: true for NvAPI's Reflex.
+  virtual bool SupportsRearm() const { return false; }
+
   // Vulkan: the swap chain's handle is about to change / has changed (render thread). Calls that
   // need the handle wait in between.
   virtual void BeginSwapChainChange() {}
   virtual void EndSwapChainChange() {}
+  // Vulkan: between the two, when the chain is another Plume object, not the same one with a new
+  // handle (the HDR switch makes it again: SwapChain::Recreate). `chain` may be null when no chain
+  // could be made; the calls that name it then do nothing until a later change brings one.
+  virtual void SwapChainReplaced(plume::RenderSwapChain* /*chain*/) {}
   // Vulkan: the render thread's present and acquire use the swap chain "externally synchronized"
   // (the spec), so the calls that take the chain (the sleep mode, the sleep, the markers) must not
   // overlap them; they wait in between. Nothing on D3D12.
@@ -70,6 +86,10 @@ class Reducer {
   // Releases what the vendor's API holds; after it every call does nothing.
   virtual void Shutdown() {}
 };
+
+// Reflex through Streamline's plugins (temporal_dlss.h dlss::reflex); null, with why, where they are
+// not running. Built in every build: without DLSS it never finds Streamline.
+std::shared_ptr<Reducer> CreateStreamlineReducer(std::string& why);
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
 // Null where the device has no reducer, with why in plain words.

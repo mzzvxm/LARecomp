@@ -58,7 +58,8 @@
 // tone map and released after kReleaseAfterFrames guest frames without an HDR scene.
 //
 // Threading: Initialize/Shutdown on the lifecycle thread (before the render thread starts and
-// after it stops); the rest on the render thread.
+// after it stops), Initialize also on the render thread at a frame boundary when HDR output is
+// turned on after the start (Renderer::SetUpHdrScene); the rest on the render thread.
 // ===========================================================================
 
 #include <array>
@@ -145,6 +146,13 @@ class HdrToneMap : public SceneImageSource {
                   PassTiming& pass_timing);
   // GPU idle, before HostPasses shuts down.
   void Shutdown();
+  // Initialize ran (and Shutdown did not).
+  bool ready() const { return initialized_; }
+  // HDR output went off (render thread, at a frame boundary): the float image is released and a
+  // scene under way is dropped; the frames that carried it lose it (the epoch moves). Nothing runs
+  // while the layers are inactive (active()), so this is only for the memory and a clean start the
+  // next time.
+  void Release();
 
   // HDR output is on, its UI layers are active and the variants are loaded: what the Scene checks
   // for each draw.

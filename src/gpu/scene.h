@@ -67,6 +67,7 @@
 #include "geometry.h"
 #include "hdr_tonemap.h"
 #include "input_layout.h"
+#include "msaa_level.h"
 #include "pipelines.h"
 #include "thread_load.h"
 #include "records.h"
@@ -130,6 +131,10 @@ class Scene {
   // `list`: the frame's open list, null when the device is lost (the banks are
   // still applied: the deltas are incremental).
   void OnDraw(const uint8_t* payload, plume::RenderCommandList* list);
+  // A draw record queued behind the one being executed (stream sequence `sequence`): the textures
+  // its shaders read, as its fetch constants name them, are offered to TextureCache::Prefetch
+  // (decode ahead on the pool). Changes nothing the draw itself will do.
+  void PrefetchTextures(uint64_t sequence, const uint8_t* payload);
   void OnClear(const ClearRecord& record, plume::RenderCommandList* list);
   void OnResolve(const ResolveRecord& record, plume::RenderCommandList* list);
   void OnTilingBegin(const TilingBeginRecord& record, plume::RenderCommandList* list);
@@ -198,6 +203,9 @@ class Scene {
     HdrToneMap::Action hdr_action = HdrToneMap::Action::kNone;
     plume::RenderPipeline* hdr_pipeline = nullptr;
     UploadSpan hdr_shared;
+    // A car's shadow decal, while an upscaler runs: the draw is drawn again into the decals' mask image
+    // once it is recorded (RecordShadowMask, vehicle_motion_mask.h), with this pipeline.
+    plume::RenderPipeline* shadow_pipeline = nullptr;
     // Set by Record, for the second draw.
     plume::RenderRect scissor;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
@@ -275,6 +283,13 @@ class Scene {
   // The draw `d` was just recorded: records it again into the float scene image (its own
   // framebuffer, pipeline, and shared constants for the tone map; everything else the draw's).
   void RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* list);
+  // A car's shadow decal (vehicle_motion_mask.h) in the main view, in a frame an upscaler works on and
+  // before its anchor: looks up the pipeline that draws it again into the decals' mask (a build still
+  // under way leaves the second draw out: the frame has no mask).
+  void PrepareShadowMask(PreparedDraw& d, const PipelineInputs& inputs);
+  // The decal `d` was just recorded: records it again into the mask image (its own framebuffer and
+  // pipeline; everything else the draw's), the way RecordHdrDuplicate does.
+  void RecordShadowMask(const PreparedDraw& d, plume::RenderCommandList* list);
   static bool AlwaysMaySkip(const void*) { return true; }
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
@@ -306,6 +321,8 @@ class Scene {
   GuestOcclusion* occlusion_ = nullptr;
   TemporalSystem* temporal_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
+  // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
+  MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
   // between leaves the same framebuffer bound, and the draws after it are a new
   // stretch of that pass.
@@ -501,6 +518,7 @@ class Scene {
     uint32_t draw_scale_depth_format = 0;
     Scale draw_scale;
     uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
+    uint32_t draw_msaa_guest = 0;  // the guest's, when they take the host's MSAA level (else 0)
     bool draw_scene = false;    // the first target is the scene's, drawn at a scale of its own
     bool constants_valid = false;
     bool ps_writes_depth = false;
@@ -516,6 +534,12 @@ class Scene {
   const ShaderStore::Entry* vs_memo_ = nullptr;
   uint64_t ps_memo_identity_ = 0;
   const ShaderStore::Entry* ps_memo_ = nullptr;
+  // PrefetchTextures' own last shaders (the draws behind the executing one are not the ones the
+  // memos above follow).
+  uint64_t prefetch_vs_identity_ = 0;
+  const ShaderStore::Entry* prefetch_vs_ = nullptr;
+  uint64_t prefetch_ps_identity_ = 0;
+  const ShaderStore::Entry* prefetch_ps_ = nullptr;
 
   // mcla_gpu_scene_profile (M6a): the TSC cycles each stage of a
   // draw took, summed over the window (cycles.h turns them into time). Off
@@ -566,7 +590,7 @@ class Scene {
   uint32_t mismatches_logged_ = 0;
   // The game's alpha-to-mask offsets already reported as replaced, one bit
   // per value.
-  std::array<uint64_t, 4> alpha_to_mask_replaced_logged_{};
+  std::array<uint64_t, 8> alpha_to_mask_replaced_logged_{};  // [solid taken: +4]
 };
 
 }  // namespace mcla::gpu

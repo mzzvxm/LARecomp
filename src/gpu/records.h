@@ -93,7 +93,9 @@ enum PresentFlags : uint32_t {
 // The guest capture's own measurements for the frame this present ends, so the
 // render thread reports guest and render costs side by side.
 struct GuestFrameStats {
-  uint64_t capture_cycles = 0;      // TSC cycles (cycles.h) spent inside the capture functions
+  // TSC cycles (cycles.h) spent inside the capture functions. Draws are timed one in sixteen and
+  // counted sixteen times, so for them this is an estimate.
+  uint64_t capture_cycles = 0;
   uint64_t bytes = 0;               // stream bytes the frame wrote
   uint32_t draws = 0;
   uint32_t records = 0;

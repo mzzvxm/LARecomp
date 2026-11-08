@@ -21,9 +21,8 @@ REXCVAR_DEFINE_DOUBLE(
     "HDR output: how far the game's lights, the sun, the sky at dusk and the headlights go above "
     "the game's white: 1 normal, 1.5 bright, 2 brighter, 3 brightest. It is the steepness of the "
     "HDR curve above where it leaves the game's, so the brightest light stays under the display's "
-    "peak whatever it is. Changes at once; nothing happens while HDR output is off. The pause "
-    "menu's picture is the game's paused world, which is not made brighter than its white, so a "
-    "change made there shows once the game is resumed.")
+    "peak whatever it is. Changes at once, also in the world behind the pause menu and the map; "
+    "nothing happens while HDR output is off.")
     .range(1.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -130,6 +129,17 @@ void HdrToneMap::Shutdown() {
   layers_ = nullptr;
   post_ = nullptr;
   pass_timing_ = nullptr;
+}
+
+void HdrToneMap::Release() {
+  if (passes_) {
+    passes_->ReleaseImage(scene_);
+  }
+  phase_ = Phase::kIdle;
+  ready_this_frame_ = false;
+  candidate_valid_ = false;
+  idle_frames_ = 0;
+  ++epoch_;
 }
 
 void HdrToneMap::SetDisplay(const HdrLevels& levels, const float* ramp) {

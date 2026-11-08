@@ -21,12 +21,13 @@
 #include "texture_bytes.h"
 
 REXCVAR_DEFINE_STRING(
-    mcla_gpu_ao, "off", "MCLA/GPU",
+    mcla_gpu_ao, "high", "MCLA/GPU",
     "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
     "constants say how much of a surface's light is which). off, low (half resolution, 2 slices) "
-    "or high (full resolution, 3 slices). Costs graphics card time, high more than low. Also drawn "
-    "behind the pause menu and on the map, so a change made there shows at once. Live.")
+    "or high (full resolution, 3 slices; the default). Costs graphics card time, high more than "
+    "low. Also drawn behind the pause menu and on the map, so a change made there shows at once. "
+    "Live.")
     .allowed({"off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
@@ -374,10 +375,20 @@ void AmbientOcclusion::ListPrecache() {
   HostPrecache& precache = passes_->precache();
   // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
   // that opening the pause menu with the occlusion on waits for no pipeline.
-  const uint32_t listed[] = {kVDepth,           kVDepthMs,          kVMip,
-                             kVMain,            kVDenoise,          kVTemporal,
-                             kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
-                             ApplyVariant(false, 4)};
+  std::vector<uint32_t> listed = {kVDepth,           kVDepthMs,          kVMip,
+                                  kVMain,            kVDenoise,          kVTemporal,
+                                  kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
+                                  ApplyVariant(false, 4)};
+  // The host's MSAA level changes while the game runs (msaa_level.h) and gives the main view's
+  // colour target the new level's samples: the apply pass for 8 samples is listed whatever the
+  // level is at the start, so a switch to 8x finds it made instead of making it on the render
+  // thread in the first frame at that level (the guest's own pipelines are made ahead for the new
+  // level by Pipelines::PrebuildForLevel; this pass is not one of them). 2x and 4x are listed above
+  // (the pause and map view's colour target has the game view's samples, or 1 without MSAA). A level
+  // the device cannot do is not listed.
+  if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
+    listed.push_back(ApplyVariant(false, 8));
+  }
   for (const uint32_t variant : listed) {
     precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
                  VariantName(variant), [this, variant] { return MakePipeline(variant); });

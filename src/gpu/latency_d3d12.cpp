@@ -82,10 +82,27 @@ struct NvLatencyMarkerParams {
   NvU64 rsvd0;
   NvU8 rsvd[56];
 };
+
+// NV_GET_SLEEP_STATUS_PARAMS_V1 as the MCLA fork reads it (written by the same author): the driver's
+// account of the sleep, with the frame generation fields after the interval.
+struct NvGetSleepStatusParams {
+  NvU32 version;
+  NvBool bLowLatencyMode;
+  NvBool bFsVrr;
+  NvBool bCplVsyncOn;
+  NvU32 sleepIntervalUs;
+  NvBool bUseGameSleep;
+  NvBool bFullscreenIFlip;
+  NvU8 fgMultiplier;
+  NvBool bDfgControl;
+  NvU32 dfgFrameTimeTargetUs;
+  NvU8 rsvd[114];
+};
 #pragma pack(pop)
 
 static_assert(sizeof(NvSetSleepModeParams) == 44, "NV_SET_SLEEP_MODE_PARAMS_V1");
 static_assert(sizeof(NvLatencyMarkerParams) == 88, "NV_LATENCY_MARKER_PARAMS_V1");
+static_assert(sizeof(NvGetSleepStatusParams) == 136, "NV_GET_SLEEP_STATUS_PARAMS_V1");
 
 // MAKE_NVAPI_VERSION(type, 1).
 template <typename T>
@@ -97,6 +114,7 @@ constexpr uint32_t kIdInitialize = 0x0150e828;
 constexpr uint32_t kIdSetSleepMode = 0xac1ca9e0;
 constexpr uint32_t kIdSleep = 0x852cd1d2;
 constexpr uint32_t kIdSetLatencyMarker = 0xd9984c05;
+constexpr uint32_t kIdGetSleepStatus = 0xaef96ca1;
 
 // Reflex's NvAPI_D3D_* take the device as an IUnknown.
 using PfnQueryInterface = void*(__cdecl*)(uint32_t id);
@@ -104,6 +122,7 @@ using PfnInitialize = NvAPI_Status(__cdecl*)();
 using PfnSetSleepMode = NvAPI_Status(__cdecl*)(IUnknown*, NvSetSleepModeParams*);
 using PfnSleep = NvAPI_Status(__cdecl*)(IUnknown*);
 using PfnSetLatencyMarker = NvAPI_Status(__cdecl*)(IUnknown*, NvLatencyMarkerParams*);
+using PfnGetSleepStatus = NvAPI_Status(__cdecl*)(IUnknown*, NvGetSleepStatusParams*);
 
 class NvapiReflex final : public Reducer {
  public:
@@ -130,6 +149,8 @@ class NvapiReflex final : public Reducer {
     reflex->sleep_ = reinterpret_cast<PfnSleep>(query(kIdSleep));
     reflex->set_latency_marker_ =
         reinterpret_cast<PfnSetLatencyMarker>(query(kIdSetLatencyMarker));
+    // Only for the log and the switch off from DLSS frame generation: a driver without it still has Reflex.
+    reflex->get_sleep_status_ = reinterpret_cast<PfnGetSleepStatus>(query(kIdGetSleepStatus));
     if (!reflex->set_sleep_mode_ || !reflex->sleep_ || !reflex->set_latency_marker_) {
       why = "the driver's NVAPI lacks the Reflex calls (a newer driver has them)";
       return nullptr;
@@ -162,8 +183,38 @@ class NvapiReflex final : public Reducer {
       REXLOG_WARN("[gpu] low latency: NvAPI_D3D_SetSleepMode failed ({})", status);
       return false;
     }
+    // What the driver made of it (a mode is set a few times a session, so one line each): its
+    // interval is where the driver's own frame cap shows (the NVIDIA app's Max Frame Rate).
+    DriverPacing pacing;
+    if (ReadPacing(&pacing)) {
+      REXLOG_INFO("[gpu] low latency: the driver's pacing after Reflex was set {}: {}",
+                  on ? (boost ? "on with boost" : "on") : "off", DescribePacing(pacing));
+    }
     return true;
   }
+
+  bool ReadPacing(DriverPacing* out) const override {
+    if (!get_sleep_status_ || !out) {
+      return false;
+    }
+    NvGetSleepStatusParams status = {};
+    status.version = NvVersion1<NvGetSleepStatusParams>();
+    if (get_sleep_status_(device_.Get(), &status) != kNvApiOk) {
+      return false;
+    }
+    out->low_latency = status.bLowLatencyMode != 0;
+    out->game_sleep = status.bUseGameSleep != 0;
+    out->fullscreen_vrr = status.bFsVrr != 0;
+    out->control_panel_vsync = status.bCplVsyncOn != 0;
+    out->fullscreen_iflip = status.bFullscreenIFlip != 0;
+    out->sleep_interval_us = status.sleepIntervalUs;
+    out->fg_multiplier = status.fgMultiplier;
+    out->dynamic_control = status.bDfgControl != 0;
+    out->dynamic_target_us = status.dfgFrameTimeTargetUs;
+    return true;
+  }
+
+  bool SupportsRearm() const override { return true; }
 
   // NvAPI_D3D_Sleep waits for the moment the driver picks and
   // cannot be cancelled, so unlike Vulkan's wait it has no bound: latency.cpp times it when it
@@ -222,6 +273,7 @@ class NvapiReflex final : public Reducer {
   PfnSetSleepMode set_sleep_mode_ = nullptr;
   PfnSleep sleep_ = nullptr;
   PfnSetLatencyMarker set_latency_marker_ = nullptr;
+  PfnGetSleepStatus get_sleep_status_ = nullptr;
 };
 
 // --- AMD Anti-Lag 2 ---------------------------------------------------------------------

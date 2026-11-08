@@ -72,7 +72,6 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
                              UploadRing& upload, HostPasses& passes, TextureCache& textures,
                              PassTiming& pass_timing, plume::RenderFormat target_format,
                              bool hdr) {
-  hdr_ = hdr;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -85,20 +84,11 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   if (!shader_) {
     return false;
   }
-  if (hdr_) {
-    const HostShaderBlob hdr_blob = PresentHdrPixelShader();
-    hdr_shader_ = passes.CreateShader(hdr_blob.data, hdr_blob.size, hdr_blob.name);
-    if (!hdr_shader_) {
-      return false;
-    }
-  }
   // The SDR shader stays for the intermediates (FSR1's table pass, the scaled present's).
-  pipeline_ = passes.CreatePipeline(hdr_ ? *hdr_shader_ : *shader_, target_format,
-                                    "present front buffer");
   ramp_texture_ = device.CreateTexture(
       plume::RenderTextureDesc::Texture2D(256, 1, 1, plume::RenderFormat::R32G32B32A32_FLOAT),
       "display gamma table");
-  if (!pipeline_ || !ramp_texture_) {
+  if (!ramp_texture_) {
     return false;
   }
   plume::RenderTextureViewDesc view =
@@ -123,29 +113,18 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   if (!easu_shader_ || !rcas_shader_ || !stretch_shader_) {
     return false;
   }
-  if (hdr_) {
-    const HostShaderBlob rcas_hdr = FsrRcasHdrPixelShader();
-    const HostShaderBlob stretch_hdr = PresentStretchHdrPixelShader();
-    rcas_hdr_shader_ = passes.CreateShader(rcas_hdr.data, rcas_hdr.size, rcas_hdr.name);
-    stretch_hdr_shader_ = passes.CreateShader(stretch_hdr.data, stretch_hdr.size, stretch_hdr.name);
-    if (!rcas_hdr_shader_ || !stretch_hdr_shader_) {
-      return false;
-    }
-  }
   ramp_pipeline_ = passes.CreatePipeline(*shader_, kIntermediateFormat, "fsr1 gamma table");
   easu_pipeline_ = passes.CreatePipeline(*easu_shader_, kIntermediateFormat, "fsr1 easu");
-  // The two that write the back buffer are the HDR10 variants when it is HDR10; RCAS into an
-  // intermediate stays SDR.
-  rcas_pipeline_ = passes.CreatePipeline(hdr_ ? *rcas_hdr_shader_ : *rcas_shader_, target_format,
-                                         "fsr1 rcas");
   rcas_offscreen_pipeline_ =
       passes.CreatePipeline(*rcas_shader_, kIntermediateFormat, "fsr1 rcas (intermediate)");
-  stretch_pipeline_ = passes.CreatePipeline(hdr_ ? *stretch_hdr_shader_ : *stretch_shader_,
-                                            target_format, "fsr1 stretch");
-  if (!ramp_pipeline_ || !easu_pipeline_ || !rcas_pipeline_ || !rcas_offscreen_pipeline_ ||
-      !stretch_pipeline_) {
+  if (!ramp_pipeline_ || !easu_pipeline_ || !rcas_offscreen_pipeline_) {
     return false;
   }
+  // The passes that write the back buffer: the HDR10 variants when it is HDR10.
+  if (!BuildOutput(target_format, hdr)) {
+    return false;
+  }
+  UseOutput(hdr);
   // The scaled bilinear present's table pass (kRamped). Without it the
   // present applies the table per texel read, as before.
   ramped_pipeline_ = passes.CreatePipeline(*shader_, kRampedFormat, "present gamma table");
@@ -161,6 +140,56 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   return true;
 }
 
+bool PresentPass::BuildOutput(plume::RenderFormat target_format, bool hdr) {
+  Output& out = outputs_[hdr ? 1 : 0];
+  if (out.built) {
+    return true;
+  }
+  if (!passes_ || !shader_ || !rcas_shader_ || !stretch_shader_) {
+    return false;
+  }
+  HostPasses& passes = *passes_;
+  Output made;
+  if (hdr) {
+    const HostShaderBlob hdr_blob = PresentHdrPixelShader();
+    const HostShaderBlob rcas_hdr = FsrRcasHdrPixelShader();
+    const HostShaderBlob stretch_hdr = PresentStretchHdrPixelShader();
+    made.hdr_shader = passes.CreateShader(hdr_blob.data, hdr_blob.size, hdr_blob.name);
+    made.rcas_hdr_shader = passes.CreateShader(rcas_hdr.data, rcas_hdr.size, rcas_hdr.name);
+    made.stretch_hdr_shader =
+        passes.CreateShader(stretch_hdr.data, stretch_hdr.size, stretch_hdr.name);
+    if (!made.hdr_shader || !made.rcas_hdr_shader || !made.stretch_hdr_shader) {
+      return false;
+    }
+  }
+  made.pipeline = passes.CreatePipeline(hdr ? *made.hdr_shader : *shader_, target_format,
+                                        "present front buffer");
+  // The two that write the back buffer besides the present are the HDR10 variants when it is
+  // HDR10; RCAS into an intermediate stays SDR.
+  made.rcas_pipeline = passes.CreatePipeline(hdr ? *made.rcas_hdr_shader : *rcas_shader_,
+                                             target_format, "fsr1 rcas");
+  made.stretch_pipeline = passes.CreatePipeline(
+      hdr ? *made.stretch_hdr_shader : *stretch_shader_, target_format, "fsr1 stretch");
+  if (!made.pipeline || !made.rcas_pipeline || !made.stretch_pipeline) {
+    return false;
+  }
+  made.format = target_format;
+  made.built = true;
+  out = std::move(made);
+  return true;
+}
+
+void PresentPass::UseOutput(bool hdr) {
+  Output& out = outputs_[hdr ? 1 : 0];
+  if (!out.built) {
+    return;
+  }
+  hdr_ = hdr;
+  pipeline_ = out.pipeline.get();
+  rcas_pipeline_ = out.rcas_pipeline.get();
+  stretch_pipeline_ = out.stretch_pipeline.get();
+}
+
 void PresentPass::Shutdown() {
   // The GPU is idle and the heap goes later: the slots are not handed back.
   for (HostImage& image : chain_) {
@@ -168,18 +197,18 @@ void PresentPass::Shutdown() {
   }
   ramped_ = HostImage{};
   ramped_pipeline_.reset();
-  stretch_pipeline_.reset();
+  pipeline_ = nullptr;
+  rcas_pipeline_ = nullptr;
+  stretch_pipeline_ = nullptr;
+  for (Output& out : outputs_) {
+    out = Output{};
+  }
   rcas_offscreen_pipeline_.reset();
-  rcas_pipeline_.reset();
   easu_pipeline_.reset();
   ramp_pipeline_.reset();
-  stretch_hdr_shader_.reset();
-  rcas_hdr_shader_.reset();
-  hdr_shader_.reset();
   stretch_shader_.reset();
   rcas_shader_.reset();
   easu_shader_.reset();
-  pipeline_.reset();
   shader_.reset();
   ramp_view_.reset();
   ramp_texture_.reset();
@@ -249,6 +278,9 @@ bool PresentPass::GreenGammaTable(float out[256]) const {
 void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_t width,
                           uint32_t height) {
   source_ready_ = false;
+  source_gap_ = 0;  // the front buffer is a resolve product: no gap
+  front_key_valid_ = false;
+  quiet_route_ = false;
   route_ = Route::kBilinear;
   if (ramp_dirty_ || !ramp_written_) {
     bool zero = true;
@@ -328,6 +360,8 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
   source_width_ = bound.scale.Edge(fetch.key.width);
   source_height_ = bound.scale.Edge(fetch.key.height);
   source_ready_ = true;
+  front_key_ = fetch.key;
+  front_key_valid_ = true;
   // A frame that kept its UI as a layer (HDR10): the scene and the UI composed in the game's
   // code values, in float, where the front buffer would be read.
   extended_ = false;
@@ -339,10 +373,34 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
     // The float scene (HDR stage 3) reads the table between its entries.
     interpolated_ = hdr_scene_->scene_is_float();
   }
+  PrepareRoute(list, width, height);
+}
+
+void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
+                               const HostImage& image, bool interpolated, uint32_t gap) {
+  source_ready_ = false;
+  front_key_valid_ = false;
+  route_ = Route::kBilinear;
+  if (!ramp_written_ || !image.texture || image.slot == kInvalidBindlessSlot) {
+    return;
+  }
+  source_slot_ = image.slot;
+  source_width_ = image.width;
+  source_height_ = image.height;
+  source_gap_ = gap;
+  source_ready_ = true;
+  extended_ = true;
+  interpolated_ = interpolated;
+  quiet_route_ = true;
+  PrepareRoute(list, width, height);
+  quiet_route_ = false;
+}
+
+void PresentPass::PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   fit_ = FitOf(source_width_, source_height_, width, height);
   if (REXCVAR_GET(mcla_gpu_fsr)) {
     PrepareFsr(list, fit_);
-  } else if (!reported_route_.empty()) {
+  } else if (!quiet_route_ && !reported_route_.empty()) {
     reported_route_.clear();
     REXLOG_INFO("[gpu] present: FSR1 off (mcla_gpu_fsr); bilinear present");
   }
@@ -378,6 +436,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   push.scale_x = 1.0f;
   push.scale_y = 1.0f;
   push.hdr_flags = CodeFlags();
+  push.gap = source_gap_;
   passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
   route_ = Route::kRamped;
   ++stats_.ramped;
@@ -392,7 +451,8 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
   }
   if (route_ == Route::kRamped) {
     // The same bilinear stretch, of texels the table was already applied to.
-    RecordFitted(list, stretch_pipeline_.get(), ramped_.slot, ramped_.width, ramped_.height, fit_);
+    // (the gap was dealt with by the table pass)
+    RecordFitted(list, stretch_pipeline_, ramped_.slot, ramped_.width, ramped_.height, fit_, 0);
     ++stats_.drawn;
     return;
   }
@@ -401,7 +461,7 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
     return;
   }
   if (route_ == Route::kFsrStretch) {
-    RecordFitted(list, stretch_pipeline_.get(), image.slot, image.width, image.height, fit_);
+    RecordFitted(list, stretch_pipeline_, image.slot, image.width, image.height, fit_, 0);
   } else {
     // RCAS 1:1 from the last EASU pass into the letterbox.
     pass_timing_->Mark(list, "fsr1 rcas");
@@ -412,7 +472,7 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
                                     int32_t(fit_.y + fit_.h));
     list->setScissors(&scissor, 1);
     passes_->Bind(list);
-    list->setPipeline(rcas_pipeline_.get());
+    list->setPipeline(rcas_pipeline_);
     RcasPush push{};
     push.source = image.slot;
     push.sharpness = sharpness_;
@@ -457,14 +517,14 @@ bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uin
   if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
     return false;
   }
-  RecordFitted(list, pipeline_.get(), source_slot_, source_width_, source_height_,
-               FitOf(source_width_, source_height_, width, height));
+  RecordFitted(list, pipeline_, source_slot_, source_width_, source_height_,
+               FitOf(source_width_, source_height_, width, height), source_gap_);
   return true;
 }
 
 void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
                                uint32_t source, uint32_t source_width, uint32_t source_height,
-                               const Fit& fit) {
+                               const Fit& fit, uint32_t gap) {
   const plume::RenderViewport viewport{float(fit.x), float(fit.y), float(fit.w), float(fit.h)};
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(int32_t(fit.x), int32_t(fit.y), int32_t(fit.x + fit.w),
@@ -485,6 +545,7 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_peak = hdr_levels_.peak;
   push.hdr_knee = hdr_levels_.knee;
   push.hdr_flags = hdr_levels_.flags | CodeFlags();
+  push.gap = gap;
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
@@ -499,7 +560,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
   if (fit.w <= source_width_ || fit.h <= source_height_) {
     const std::string route = std::format("bilinear {}x{} -> {}x{}", source_width_,
                                           source_height_, fit.w, fit.h);
-    if (route != reported_route_) {
+    if (!quiet_route_ && route != reported_route_) {
       reported_route_ = route;
       REXLOG_INFO("[gpu] present: FSR1 on, not used: the letterbox {}x{} is not larger than the "
                   "front buffer {}x{} on both axes; bilinear present",
@@ -536,7 +597,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
       std::format("fsr1 {}x{} -> {}x{}, {} EASU pass{}{}", source_width_, source_height_, fit.w,
                   fit.h, passes, passes == 1 ? "" : "es",
                   stretch ? std::format(" to {}x{} then bilinear", w, h) : std::string());
-  if (route != reported_route_) {
+  if (!quiet_route_ && route != reported_route_) {
     reported_route_ = route;
     REXLOG_INFO("[gpu] present: {}, RCAS sharpness {:.3f}", route, sharpness_);
   }
@@ -551,6 +612,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     push.scale_x = 1.0f;
     push.scale_y = 1.0f;
     push.hdr_flags = CodeFlags();
+    push.gap = source_gap_;
     passes_->DrawInto(list, chain_[0], ramp_pipeline_.get(), &push, sizeof(push));
   }
   for (uint32_t i = 1; i <= passes; ++i) {

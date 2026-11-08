@@ -10,6 +10,8 @@
 
 #include <cstring>
 #include <format>
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include <rex/logging.h>
@@ -59,6 +61,14 @@ std::unique_ptr<plume::RenderInterface> CreateInterface() {
 #endif
   return plume::CreateVulkanInterface();
 }
+
+// Vulkan has no factory: with the interposer's functions loaded (backend_vulkan.cpp CreateInterface)
+// a swap chain made while the frame generation plugin is loaded is Streamline's own.
+bool BeginSwapChainFactory(plume::RenderDevice*, bool (*)(void**), void**, void**) {
+  return false;
+}
+
+void EndSwapChainFactory(plume::RenderDevice*, void*, void*) {}
 
 bool IsNullBacked(const plume::RenderTexture* texture) {
   return !texture || static_cast<const plume::VulkanTexture*>(texture)->vk == VK_NULL_HANDLE;
@@ -258,6 +268,14 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
   return out;
 }
 
+void ForgetImageContents(plume::RenderTexture* texture) {
+  auto* t = static_cast<plume::VulkanTexture*>(texture);
+  if (t) {
+    // Plume's next barrier on it takes this as the old layout: UNDEFINED, whatever it was left in.
+    t->textureLayout = plume::RenderTextureLayout::UNKNOWN;
+  }
+}
+
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {
   auto* l = static_cast<plume::VulkanCommandList*>(list);
   if (!l) {
@@ -363,6 +381,67 @@ UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
   out.reason = ComputeCapsProblem(dev->capabilities, has_float16, has_subgroup_control);
   out.ok = out.reason.empty();
   return out;
+}
+
+int DeviceIndexFor(const std::string& name) {
+  // Plume is not started on this path (the SDK's emulated GPU runs), so this makes the loader and a
+  // throwaway instance of its own, through volk like Plume, and keeps none of it: the instance goes
+  // again, and every function is taken from it by name instead of through volk's global table.
+  // CHECK: not run (a PC with two GPUs on the emulated GPU's Vulkan; one GPU; no Vulkan loader).
+  if (volkInitialize() != VK_SUCCESS || !vkGetInstanceProcAddr) {
+    return -1;
+  }
+  const auto create_instance =
+      reinterpret_cast<PFN_vkCreateInstance>(vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance"));
+  if (!create_instance) {
+    return -1;
+  }
+  VkApplicationInfo application = {};
+  application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+  application.apiVersion = VK_API_VERSION_1_0;
+  VkInstanceCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  info.pApplicationInfo = &application;
+  VkInstance instance = VK_NULL_HANDLE;
+  if (create_instance(&info, nullptr, &instance) != VK_SUCCESS || !instance) {
+    return -1;
+  }
+  const auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+      vkGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices"));
+  const auto get_properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+      vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties"));
+  const auto destroy_instance = reinterpret_cast<PFN_vkDestroyInstance>(
+      vkGetInstanceProcAddr(instance, "vkDestroyInstance"));
+
+  // Plume's own order (plume_vulkan.cpp, VulkanDevice): the first device of the best type; the one
+  // the user named wins at once. Indexed by VkPhysicalDeviceType: other, integrated, discrete,
+  // virtual, CPU.
+  constexpr int kTypeScore[] = {0, 3, 4, 2, 1};
+  int chosen = -1;
+  int chosen_score = 0;
+  uint32_t count = 0;
+  if (enumerate && get_properties && enumerate(instance, &count, nullptr) == VK_SUCCESS && count) {
+    std::vector<VkPhysicalDevice> devices(count);
+    if (enumerate(instance, &count, devices.data()) >= VK_SUCCESS) {
+      for (uint32_t i = 0; i < count; ++i) {
+        VkPhysicalDeviceProperties properties = {};
+        get_properties(devices[i], &properties);
+        if (!name.empty() && name == properties.deviceName) {
+          chosen = static_cast<int>(i);
+          break;
+        }
+        const uint32_t type = properties.deviceType;
+        if (type < std::size(kTypeScore) && kTypeScore[type] > chosen_score) {
+          chosen = static_cast<int>(i);
+          chosen_score = kTypeScore[type];
+        }
+      }
+    }
+  }
+  if (destroy_instance) {
+    destroy_instance(instance, nullptr);
+  }
+  return chosen;
 }
 
 }  // namespace mcla::gpu::backend::vulkan

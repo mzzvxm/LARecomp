@@ -206,19 +206,22 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
     return false;
 }
 
-// The game's MSAA switch. Under the NATIVE renderer its MSAA row
-// (mcla_gpu_msaa, OFF/2X/4X/8X) owns it and disable_msaa -- the XENIA row,
-// hidden there -- is not read; both cvars are read by name or flag here, the
-// renderer's lives with the renderer. The renderer also holds MSAA off for a
-// game started with an upscaler that runs (gpu.h GuestMsaaOff): this hook runs
-// once, when the game makes its renderer, so that is decided at the start.
+// The game's MSAA switch. The NATIVE renderer never turns it off: the game
+// always draws its own 2 sample layout, and the renderer's MSAA row
+// (mcla_gpu_msaa, OFF/2X/4X/8X) and an upscaler that runs set how many samples
+// the host gives the game's targets, 1 for OFF, live (gpu/msaa_level.h). So
+// OFF and an upscaler start are the same game as 2X and none of them restart
+// it. disable_msaa -- the XENIA row, hidden under the native renderer -- is
+// read only for the Xenia renderer, which keeps the game's own switch. The
+// call also decides the upscaler's start (gpu.h GetStartUpscale, which waits
+// a moment for the upscaler probe): this hook runs once, when the game makes
+// its renderer, so that wait is the game thread's and not the renderer's.
 static bool MsaaOff() {
     if (rex::cvar::GetFlagByName("mcla_gpu") == "true") {
 #if defined(LARECOMP_HAS_GPU)
-        return mcla::gpu::GuestMsaaOff();
-#else
-        return rex::cvar::GetFlagByName("mcla_gpu_msaa") == "off";
+        (void)mcla::gpu::GetStartUpscale();
 #endif
+        return false;
     }
     return REXCVAR_GET(disable_msaa);
 }

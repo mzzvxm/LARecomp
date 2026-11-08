@@ -233,6 +233,15 @@ class OverlayRenderer {
   // The GPU must be idle and the FrameRing drained. Closes the channel.
   void Shutdown();
 
+  // The pixel shader and the pipelines come in two sets, for an SDR and for an HDR10 back buffer
+  // (mcla_gpu_hdr is live: Renderer::SwitchHdr). Initialize made the one it was given and uses it.
+  // BuildTarget makes the other, once and without using it; false (logged) when it could not be
+  // made, with nothing changed. UseTarget then draws with it, for the back buffer the swap chain
+  // has made from now on; nothing is destroyed. Render thread, at a frame boundary.
+  bool BuildTarget(plume::RenderFormat target_format, bool hdr);
+  void UseTarget(bool hdr);
+  bool has_target(bool hdr) const { return targets_[hdr ? 1 : 0].built; }
+
   // Whether a present would show something the window does not show yet: a
   // newer frame with content, or one that empties a retained frame with
   // content. Used to decide idle presents.
@@ -259,7 +268,8 @@ class OverlayRenderer {
     uint32_t sampler = 0;
   };
 
-  bool CreatePipelines(plume::RenderFormat target_format);
+  // The layout and the vertex shader, shared by both sets.
+  bool CreateShared();
   void CreateTexture(plume::RenderCommandList* list, uint32_t slot,
                      const OverlayTextureUpload& upload);
   void ReleaseTexture(GpuTexture& texture);
@@ -273,9 +283,17 @@ class OverlayRenderer {
 
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> vertex_shader_;
-  std::unique_ptr<plume::RenderShader> pixel_shader_;
-  std::unique_ptr<plume::RenderPipeline> triangle_pipeline_;
-  std::unique_ptr<plume::RenderPipeline> line_pipeline_;
+  // The pixel shader and the pipelines for an SDR ([0]) and an HDR10 ([1]) back buffer.
+  struct Target {
+    bool built = false;
+    std::unique_ptr<plume::RenderShader> pixel_shader;
+    std::unique_ptr<plume::RenderPipeline> triangle_pipeline;
+    std::unique_ptr<plume::RenderPipeline> line_pipeline;
+  };
+  Target targets_[2];
+  // The set in use (owned by targets_).
+  plume::RenderPipeline* triangle_pipeline_ = nullptr;
+  plume::RenderPipeline* line_pipeline_ = nullptr;
   bool hdr_ = false;  // the target is HDR10: the pixel shader is overlay_hdr_ps
   HdrLevels hdr_levels_;
 

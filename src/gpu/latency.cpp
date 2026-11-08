@@ -15,6 +15,7 @@
 #include <bit>
 #include <chrono>
 #include <cstdint>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,6 +25,7 @@
 
 #include "backend.h"
 #include "device.h"
+#include "gpu.h"
 #include "latency_backend.h"
 #include "swap_chain.h"
 
@@ -35,7 +37,8 @@ REXCVAR_DEFINE_STRING(
     "it is. auto (Reflex on; Anti-Lag 2 off until it has been tried on a Radeon), off, on, or "
     "boost (Reflex's On + Boost: the GPU clocks stay high; Anti-Lag 2 has no boost and takes it "
     "as on). Where the GPU, the driver or the graphics API has no reducer the pause menu has no "
-    "row for it and it stays off whatever this says (the log says why at start). Live.")
+    "row for it and it stays off whatever this says (the log says why at start). While frame "
+    "generation runs (mcla_gpu_frame_generation) it is on whatever this says. Live.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu::latency {
@@ -68,6 +71,9 @@ constexpr uint32_t kWarmupPasses = 2;
 // not working.
 constexpr uint32_t kMaxRefusals = 3;
 constexpr uint64_t kRetryUs = 1'000'000;
+// A mode the reducer could not even ask for because its API was held for seconds by something else
+// (Streamline making a DLSS feature) is no refusal: asked again this soon, as often as it takes.
+constexpr uint64_t kBusyRetryUs = 100'000;
 // A wait before the frame over this is long. Three long waits among the last eight give the
 // reducer up for a while: the driver is told to leave the mode. It is tried
 // again after 5 s, then 10, 20, 40 and at most 60 s while it keeps failing; 30 s without a long
@@ -77,6 +83,11 @@ constexpr uint32_t kLongWaitsToGiveUp = 3;
 constexpr uint64_t kFirstBackoffUs = 5'000'000;
 constexpr uint64_t kMaxBackoffUs = 60'000'000;
 constexpr uint64_t kHealthyUs = 30'000'000;
+// After DLSS frame generation (RearmDriver) the device's own reducer stays in the neutral mode for at
+// least this many frames and this long, calling the driver's wait all the while, before it is turned on
+// again.
+constexpr uint32_t kRearmPasses = 8;
+constexpr uint64_t kRearmMinUs = 250'000;
 
 struct Want {
   bool on = false;
@@ -84,8 +95,15 @@ struct Want {
 };
 
 // What mcla_gpu_low_latency asks for, for this reducer.
+// DLSS frame generation runs and the reducer is Streamline's (UseStreamline).
+std::atomic<bool> g_streamline_on{false};
+
 Want ReadWant(const Reducer& reducer) {
   const std::string mode = REXCVAR_GET(mcla_gpu_low_latency);
+  if (FrameGenerationRunning() || g_streamline_on.load(std::memory_order_relaxed)) {
+    // Forced on while frame generation runs; Reflex's boost where it is asked for.
+    return {true, mode == "boost" && reducer.SupportsBoost()};
+  }
   if (mode == "off") {
     return {};
   }
@@ -109,12 +127,17 @@ struct UpdateState {
   uint32_t refusals = 0;
   uint64_t retry_at_us = 0;
   bool failed = false;  // refused kMaxRefusals times: off until the next start
+  bool busy_logged = false;  // the first mode that had to wait for the vendor's API was said
   // The watchdog.
   uint8_t long_history = 0;  // bit 0 is the latest wait
   uint64_t paused_until_us = 0;
   uint64_t backoff_us = kFirstBackoffUs;
   uint64_t on_since_us = 0;
   bool sleep_failure_logged = false;
+  // RearmDriver: frames and time left in the neutral mode, and whether the reducer was told it.
+  uint32_t neutral_passes = 0;
+  uint64_t neutral_until_us = 0;
+  bool neutral_told = false;
 };
 
 struct Module {
@@ -140,7 +163,21 @@ struct Module {
   std::atomic<uint64_t> guest_cursor{0};
   std::atomic<uint64_t> host_cursor{0};
 
+  // The device's own reducer, kept while Streamline's is the one in use (UseStreamline); `epoch`
+  // counts the changes of `reducer`, which the update thread sees to forget what it applied to the
+  // old one. `mode_applied` and `sleeps` mirror the update thread's state for the other threads.
+  std::shared_ptr<Reducer> base;
+  std::atomic<uint32_t> epoch{0};
+  std::atomic<bool> mode_applied{false};
+  std::atomic<uint32_t> sleeps{0};
+  // RearmDriver's request, taken by the update thread at its next frame start; and the driver's waits
+  // it has made since TakeSleepStats (the number of calls and the microseconds they took).
+  std::atomic<bool> rearm_request{false};
+  std::atomic<uint64_t> sleep_calls{0};
+  std::atomic<uint64_t> sleep_us{0};
+
   UpdateState update;  // the update thread
+  uint32_t update_epoch = 0;
   // The host render thread: the marked frame it is recording (0: none), and whether the present
   // in progress is an idle one.
   uint64_t render_id = 0;
@@ -190,6 +227,7 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint64_t n
     const bool was_on = u.applied_on;
     u.applied_on = on;
     u.applied_boost = on && boost;
+    M().mode_applied.store(on, std::memory_order_relaxed);
     u.refusals = 0;
     if (on && !was_on) {
       u.warmup_passes = kWarmupPasses;
@@ -198,6 +236,19 @@ void ApplyMode(UpdateState& u, Reducer& reducer, bool on, bool boost, uint64_t n
       REXLOG_INFO("[gpu] low latency: {} on{}", reducer.Name(), boost ? " with boost" : "");
     } else if (!on && was_on) {
       REXLOG_INFO("[gpu] low latency: {} off", reducer.Name());
+    }
+    return;
+  }
+  if (reducer.Busy()) {
+    // Not a refusal: the call did not get to the vendor (Streamline's lock is held for a DLSS
+    // feature's creation, 8 s on an RTX 5080). The mode is asked for again soon, with nothing counted
+    // against the reducer; until it is taken the frames carry no markers.
+    u.retry_at_us = now + kBusyRetryUs;
+    if (!u.busy_logged) {
+      u.busy_logged = true;
+      REXLOG_INFO("[gpu] low latency: {} is busy with something that takes seconds (a DLSS feature "
+                  "being made); its mode is taken as soon as it is free",
+                  reducer.Name());
     }
     return;
   }
@@ -274,14 +325,53 @@ void OnFrameStart() {
     return;
   }
   UpdateState& u = m.update;
+  if (const uint32_t epoch = m.epoch.load(std::memory_order_acquire); epoch != m.update_epoch) {
+    // The reducer changed (UseStreamline): what the old one was told and what it refused do not
+    // carry over; the new one takes the mode at once and makes no wait for the first passes.
+    m.update_epoch = epoch;
+    u.applied_on = false;
+    u.applied_boost = false;
+    u.warmup_passes = 0;
+    u.refusals = 0;
+    u.retry_at_us = 0;
+    u.failed = false;
+    u.busy_logged = false;
+    u.long_history = 0;
+    u.paused_until_us = 0;
+    u.backoff_us = kFirstBackoffUs;
+    u.sleep_failure_logged = false;
+    u.neutral_passes = 0;  // (RearmDriver's request is taken below, after this)
+    u.neutral_until_us = 0;
+    u.neutral_told = false;
+    m.mode_applied.store(false, std::memory_order_relaxed);
+    m.sleeps.store(0, std::memory_order_relaxed);
+  }
+  // RearmDriver: the device's own reducer (not Streamline's) goes through the neutral mode first.
+  if (m.rearm_request.load(std::memory_order_relaxed) &&
+      !g_streamline_on.load(std::memory_order_relaxed) &&
+      m.rearm_request.exchange(false, std::memory_order_acq_rel) && reducer->SupportsRearm()) {
+    u.neutral_passes = kRearmPasses;
+    u.neutral_until_us = NowUs() + kRearmMinUs;
+    u.neutral_told = false;
+    REXLOG_INFO("[gpu] low latency: {} stays in its neutral mode for {} frames and {} ms, the driver's "
+                "wait still called, before it is turned on again (DLSS frame generation ended)",
+                reducer->Name(), kRearmPasses, kRearmMinUs / 1000);
+  }
   const uint64_t id = u.started + 1;
   uint64_t now = NowUs();
 
   // The mode: what the setting asks for, less what the watchdog and the driver's refusals say.
   const Want want = ReadWant(*reducer);
   const bool paused = now < u.paused_until_us;
-  const bool on = want.on && !u.failed && !paused;
+  const bool neutral = u.neutral_passes > 0 || now < u.neutral_until_us;
+  const bool on = want.on && !u.failed && !paused && !neutral;
   const bool boost = on && want.boost;
+  if (neutral && !u.neutral_told) {
+    // This reducer is the last to write the driver's sleep mode, and writes the neutral one (what
+    // Streamline's Reflex left in it is the mode off already, but not from this reducer's call).
+    u.neutral_told = true;
+    reducer->SetMode(false, false);
+  }
   if (on != u.applied_on || (on && boost != u.applied_boost)) {
     if (now >= u.retry_at_us) {
       ApplyMode(u, *reducer, on, boost, now);
@@ -291,13 +381,28 @@ void OnFrameStart() {
                  std::memory_order_relaxed);
 
   // The driver's wait, before the game reads its input (none in the warm-up passes).
-  if (u.applied_on) {
+  if (neutral && !u.applied_on) {
+    // Reflex's own checklist: the wait is called whatever the mode, so the driver sees the game's
+    // frames the way it does with Reflex off (the call returns at once).
+    const uint64_t before = NowUs();
+    const bool slept = reducer->Sleep(id);
+    now = NowUs();
+    if (slept) {
+      m.sleep_calls.fetch_add(1, std::memory_order_relaxed);
+      m.sleep_us.fetch_add(now - before, std::memory_order_relaxed);
+    }
+  } else if (u.applied_on) {
     if (u.warmup_passes > 0) {
       --u.warmup_passes;
     } else {
       const uint64_t before = NowUs();
       const bool slept = reducer->Sleep(id);
       now = NowUs();
+      if (slept) {
+        m.sleeps.fetch_add(1, std::memory_order_relaxed);
+        m.sleep_calls.fetch_add(1, std::memory_order_relaxed);
+        m.sleep_us.fetch_add(now - before, std::memory_order_relaxed);
+      }
       if (!slept && !u.sleep_failure_logged) {
         u.sleep_failure_logged = true;
         REXLOG_WARN("[gpu] low latency: {}'s wait before the frame did not run (no swap chain "
@@ -306,6 +411,9 @@ void OnFrameStart() {
       }
       WatchWait(u, *reducer, now - before, now);
     }
+  }
+  if (neutral && u.neutral_passes > 0) {
+    --u.neutral_passes;
   }
 
   // The frame starts now: published for the swaps (guest side and host side) to pair with, then
@@ -370,6 +478,7 @@ void Initialize(Device& device, SwapChain& swap_chain) {
   m.auto_on.store(reducer->OnByDefault(), std::memory_order_relaxed);
   m.health.store(Health::kOk, std::memory_order_relaxed);
   m.update = UpdateState{};
+  m.update_epoch = m.epoch.load(std::memory_order_relaxed);
   m.published.store(0, std::memory_order_relaxed);
   m.guest_cursor.store(0, std::memory_order_relaxed);
   m.host_cursor.store(0, std::memory_order_relaxed);
@@ -404,6 +513,17 @@ void Shutdown() {
     reducer->SetMode(false, false);
   }
   reducer->Shutdown();
+  std::shared_ptr<Reducer> base;
+  {
+    std::lock_guard lock(m.mutex);
+    base.swap(m.base);
+  }
+  if (base) {
+    base->Shutdown();  // the device's own, put aside while Streamline's was in use
+  }
+  g_streamline_on.store(false, std::memory_order_relaxed);
+  m.rearm_request.store(false, std::memory_order_relaxed);
+  m.mode_applied.store(false, std::memory_order_relaxed);
   m.update = UpdateState{};
 }
 
@@ -456,6 +576,143 @@ void OnPresentEnd() {
   }
 }
 
+bool UseStreamline(bool on) {
+  Module& m = M();
+  std::shared_ptr<Reducer> old;
+  std::shared_ptr<Reducer> next;
+  {
+    std::lock_guard lock(m.mutex);
+    if (on == g_streamline_on.load(std::memory_order_relaxed)) {
+      return true;
+    }
+    old = m.reducer;
+  }
+  if (on) {
+    // A switch back that was asked for and not taken yet is not for Streamline's reducer.
+    m.rearm_request.store(false, std::memory_order_release);
+    // (A device with no reducer of its own, `old` null, is fine: Streamline's Reflex is its own.)
+    std::string why;
+    next = CreateStreamlineReducer(why);
+    if (!next) {
+      REXLOG_WARN("[gpu] low latency: Reflex through Streamline cannot be used for frame generation: {}",
+                  why);
+      return false;
+    }
+  }
+  // The old reducer is left (it was told its mode; the driver takes the mode away), the new one is
+  // taken at the update thread's next frame start.
+  if (old && m.mode_applied.load(std::memory_order_relaxed)) {
+    old->SetMode(false, false);
+  }
+  {
+    std::lock_guard lock(m.mutex);
+    if (on) {
+      m.base = m.reducer;
+      m.reducer = next;
+    } else {
+      m.reducer = m.base;
+      m.base.reset();
+    }
+    g_streamline_on.store(on, std::memory_order_relaxed);
+    if (on) {
+      // The frames are numbered whether a reducer is on or not (Initialize arms the counting only
+      // when the device has one): with Streamline's the counting has to run too.
+      m.kind.store(Kind::kReflex, std::memory_order_relaxed);
+      m.auto_on.store(true, std::memory_order_relaxed);
+      m.counting.store(true, std::memory_order_release);
+    } else if (!m.reducer) {
+      m.counting.store(false, std::memory_order_release);
+      m.kind.store(Kind::kNone, std::memory_order_relaxed);
+    } else {
+      m.kind.store(m.reducer->IsReflex() ? Kind::kReflex : Kind::kAntiLag, std::memory_order_relaxed);
+      m.auto_on.store(m.reducer->OnByDefault(), std::memory_order_relaxed);
+    }
+    m.epoch.fetch_add(1, std::memory_order_release);
+  }
+  REXLOG_INFO("[gpu] low latency: the reducer is {} now",
+              on ? "NVIDIA Reflex through Streamline (DLSS frame generation requires it)"
+                 : "the device's own");
+  return true;
+}
+
+void RearmDriver() {
+  Module& m = M();
+  std::shared_ptr<Reducer> own;
+  {
+    std::lock_guard lock(m.mutex);
+    // The device's own reducer: the one put aside while Streamline's is in use, else the current one.
+    own = g_streamline_on.load(std::memory_order_relaxed) ? m.base : m.reducer;
+  }
+  if (own && own->SupportsRearm()) {
+    m.rearm_request.store(true, std::memory_order_release);
+  }
+}
+
+bool ReadDriverPacing(DriverPacing* out) {
+  Module& m = M();
+  std::shared_ptr<Reducer> own;
+  {
+    std::lock_guard lock(m.mutex);
+    own = g_streamline_on.load(std::memory_order_relaxed) ? m.base : m.reducer;
+  }
+  return own && out && own->ReadPacing(out);
+}
+
+std::string DescribePacing(const DriverPacing& p) {
+  return std::format(
+      "Reflex {}, the driver's wait interval {} us, the game's own wait {}, frame generation "
+      "multiplier {}, driver-controlled generation {} (target {} us), fullscreen VRR {}, vsync in the "
+      "control panel {}, fullscreen independent flip {}",
+      p.low_latency ? "on" : "off", p.sleep_interval_us, p.game_sleep ? "seen" : "not seen",
+      p.fg_multiplier, p.dynamic_control ? "yes" : "no", p.dynamic_target_us,
+      p.fullscreen_vrr ? "yes" : "no", p.control_panel_vsync ? "on" : "off",
+      p.fullscreen_iflip ? "yes" : "no");
+}
+
+SleepStats TakeSleepStats() {
+  Module& m = M();
+  SleepStats stats;
+  stats.calls = m.sleep_calls.exchange(0, std::memory_order_relaxed);
+  stats.total_us = m.sleep_us.exchange(0, std::memory_order_relaxed);
+  return stats;
+}
+
+uint64_t RenderFrameId() {
+  return M().render_id;
+}
+
+bool StreamlineRunning() {
+  Module& m = M();
+  return g_streamline_on.load(std::memory_order_relaxed) &&
+         m.mode_applied.load(std::memory_order_relaxed) &&
+         m.sleeps.load(std::memory_order_relaxed) >= 3;
+}
+
+uint64_t DetachRenderFrame() {
+  Module& m = M();
+  const uint64_t id = m.render_id;
+  m.render_id = 0;
+  return id;
+}
+
+void OnPresentBegin(uint64_t frame_id) {
+  if (!frame_id) {
+    return;
+  }
+  if (const std::shared_ptr<Reducer> reducer = M().Get()) {
+    reducer->SetMarker(Marker::kPresentStart, frame_id);
+  }
+}
+
+void OnPresentEnd(uint64_t frame_id) {
+  if (!frame_id) {
+    return;
+  }
+  if (const std::shared_ptr<Reducer> reducer = M().Get()) {
+    reducer->SetMarker(Marker::kPresentEnd, frame_id);
+  }
+}
+
 IdlePresentScope::IdlePresentScope(bool idle) : idle_(idle) {
   if (idle_) {
     M().idle_present = true;
@@ -476,6 +733,12 @@ SwapChainChange::SwapChainChange() {
   if (std::shared_ptr<Reducer> reducer = m.Get()) {
     reducer->BeginSwapChainChange();
     reducer_ = std::move(reducer);
+  }
+}
+
+void SwapChainChange::Replaced(SwapChain& swap_chain) {
+  if (reducer_) {
+    static_cast<Reducer*>(reducer_.get())->SwapChainReplaced(swap_chain.native());
   }
 }
 

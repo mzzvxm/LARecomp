@@ -49,12 +49,22 @@
 // integrated GPU: 15 GB on a 485 MiB one) the response does not trigger. A
 // failed creation (Device::kBackoffFrames) triggers it on any adapter.
 //
+// What the response cannot release. Frame generation (frame_generation.h) holds images and a
+// FidelityFX context that the caches cannot make again from what they keep, and the OS counts them
+// in the use it reports, so they weigh on every check above. They are not trimmed. Instead what asks
+// for them first asks HasRoomFor: when they would take the use past kHighPercent, they are not made,
+// so that taking them never makes the response release the caches' resources (the textures, the
+// products, the EDRAM targets) to fit them. AddHolder lists such memory, so that the lines that say
+// why memory is short and what was released say how much of it the response had no hand in.
+//
 // Threading: render thread only.
 // ===========================================================================
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "backend.h"
 #include "texture_bytes.h"
@@ -92,9 +102,21 @@ class VideoMemoryBudget {
   static constexpr uint64_t kLazyMinIdleFrames = 3600;
   static constexpr uint32_t kLazyEveryChecks = 10;
 
+  // Whether `extra` bytes of new video memory keep the use under the line the response starts at
+  // (kHighPercent of the budget, the use counted as the OS reports it now). True when the adapter
+  // reports no budget: there is nothing to compare with, and a creation that fails is that adapter's
+  // only sign. Any thread.
+  static bool HasRoomFor(const backend::VideoMemory& memory, uint64_t extra) {
+    return memory.budget == 0 || (memory.used + extra) * 100 < memory.budget * kHighPercent;
+  }
+
   void Initialize(Device& device, TextureCache& textures, ResolveCache& resolve,
                   ResolveMemory& resolve_memory, EdramTargets& edram);
   void Shutdown();
+
+  // Lists memory the response cannot release (see above): `bytes` is asked for the lines it writes
+  // and is called on the render thread. The name is plain text for the log ("frame generation").
+  void AddHolder(const char* name, std::function<uint64_t()> bytes);
 
   // At the start of a frame, before any record of it (Renderer::OpenFrameList),
   // after the caches' own BeginFrame.
@@ -114,6 +136,9 @@ class VideoMemoryBudget {
   void ReleaseIdleTargets();
   // The frame rate between this check and the last, smoothed.
   void NoteFrameRate(uint64_t frame);
+  // " | held here, not released by this: frame generation 1180 MiB", or nothing while the holders
+  // hold nothing.
+  std::string HoldersText() const;
 
   struct Window {
     TrimResult products;
@@ -130,6 +155,11 @@ class VideoMemoryBudget {
     }
   };
 
+  struct Holder {
+    const char* name = "";
+    std::function<uint64_t()> bytes;
+  };
+  std::vector<Holder> holders_;
   Device* device_ = nullptr;
   TextureCache* textures_ = nullptr;
   ResolveCache* resolve_ = nullptr;

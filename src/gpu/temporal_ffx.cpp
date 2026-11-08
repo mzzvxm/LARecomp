@@ -31,6 +31,7 @@
 
 #include "backend.h"
 #include "device.h"
+#include "ffx_common.h"
 #include "frame.h"
 #include "temporal_ffx_glue.h"
 
@@ -44,32 +45,17 @@ constexpr uint32_t kMaxMessageLines = 24;
 constexpr uint32_t kTrialWidth = 1280;
 constexpr uint32_t kTrialHeight = 720;
 
-const char* ReturnName(uint32_t code) {
-  switch (code) {
-    case FFX_API_RETURN_OK: return "ok";
-    case FFX_API_RETURN_ERROR: return "error";
-    case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE: return "unknown description type";
-    case FFX_API_RETURN_ERROR_RUNTIME_ERROR: return "runtime error";
-    case FFX_API_RETURN_NO_PROVIDER: return "no provider";
-    case FFX_API_RETURN_ERROR_MEMORY: return "out of memory";
-    case FFX_API_RETURN_ERROR_PARAMETER: return "bad parameter";
-    case FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE: return "provider too old for this description";
-    default: return "unknown";
-  }
-}
-
-std::string Utf8(const wchar_t* text) {
-  if (!text) {
-    return {};
-  }
-  const int bytes = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
-  if (bytes <= 1) {
-    return {};
-  }
-  std::string out(size_t(bytes) - 1, '\0');
-  WideCharToMultiByte(CP_UTF8, 0, text, -1, out.data(), bytes, nullptr, nullptr);
-  return out;
-}
+// The helpers the frame generation backend uses too (ffx_common.h).
+using ffx_common::ExeDirectory;
+using ffx_common::FileExists;
+using ffx_common::FillBackend;
+using ffx_common::LoadByFullPath;
+using ffx_common::MakeResource;
+using ffx_common::NewerThan;
+using ffx_common::ParseVersion;
+using ffx_common::ReturnName;
+using ffx_common::Utf8;
+using ffx_common::Version;
 
 // The runtime's messages, from whatever thread it is on.
 void FfxMessage(uint32_t type, const wchar_t* message) {
@@ -82,132 +68,6 @@ void FfxMessage(uint32_t type, const wchar_t* message) {
   } else {
     REXLOG_WARN("{} runtime: {}", kPrefix, Utf8(message));
   }
-}
-
-// The folder of the running exe, with a trailing separator; empty when it cannot be had.
-std::wstring ExeDirectory() {
-  wchar_t path[MAX_PATH * 2];
-  const DWORD length = GetModuleFileNameW(nullptr, path, DWORD(std::size(path)));
-  if (length == 0 || length >= std::size(path)) {
-    return {};
-  }
-  std::wstring dir(path, length);
-  const size_t slash = dir.find_last_of(L"\\/");
-  return slash == std::wstring::npos ? std::wstring() : dir.substr(0, slash + 1);
-}
-
-bool FileExists(const std::wstring& path) {
-  const DWORD attributes = GetFileAttributesW(path.c_str());
-  return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-// A DLL by its full path: its dependencies are looked for in its own folder and in the system
-// folder, never in the working directory or on PATH.
-HMODULE LoadByFullPath(const std::wstring& path, DWORD* error) {
-  HMODULE module = LoadLibraryExW(
-      path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-  *error = module ? 0 : GetLastError();
-  return module;
-}
-
-struct Version {
-  uint64_t id = 0;
-  std::string name;
-  int major = 0;
-  int minor = 0;
-  int patch = 0;
-  bool parsed = false;
-};
-
-// The first "N.M" or "N.M.P" in a version's name.
-void ParseVersion(Version* v) {
-  const char* p = v->name.c_str();
-  while (*p && !(*p >= '0' && *p <= '9')) {
-    ++p;
-  }
-  int parts[3] = {0, 0, 0};
-  int count = 0;
-  while (*p && count < 3) {
-    if (!(*p >= '0' && *p <= '9')) {
-      break;
-    }
-    int n = 0;
-    while (*p >= '0' && *p <= '9') {
-      n = n * 10 + (*p - '0');
-      ++p;
-    }
-    parts[count++] = n;
-    if (*p != '.') {
-      break;
-    }
-    ++p;
-  }
-  v->major = parts[0];
-  v->minor = parts[1];
-  v->patch = parts[2];
-  v->parsed = count >= 2;
-}
-
-bool NewerThan(const Version& a, const Version& b) {
-  if (a.major != b.major) return a.major > b.major;
-  if (a.minor != b.minor) return a.minor > b.minor;
-  return a.patch > b.patch;
-}
-
-uint32_t SurfaceFormat(plume::RenderFormat format) {
-  switch (format) {
-    case plume::RenderFormat::R16G16B16A16_FLOAT: return FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
-    case plume::RenderFormat::R32_FLOAT: return FFX_API_SURFACE_FORMAT_R32_FLOAT;
-    case plume::RenderFormat::R16G16_FLOAT: return FFX_API_SURFACE_FORMAT_R16G16_FLOAT;
-    default: return FFX_API_SURFACE_FORMAT_UNKNOWN;
-  }
-}
-
-// One image as the runtime describes it. Nothing is read back from the native object: the
-// description is the one Plume made the texture with (2D, one level, one layer).
-bool MakeResource(const TemporalImage& image, uint32_t state, FfxApiResource* out) {
-  *out = FfxApiResource{};
-  if (!image.texture) {
-    return false;
-  }
-  void* handle = backend::NativeTextureHandle(image.texture);
-  const uint32_t format = SurfaceFormat(image.format);
-  if (!handle || format == FFX_API_SURFACE_FORMAT_UNKNOWN) {
-    return false;
-  }
-  out->resource = handle;
-  out->state = state;
-  out->description.type = FFX_API_RESOURCE_TYPE_TEXTURE2D;
-  out->description.format = format;
-  out->description.width = image.width;
-  out->description.height = image.height;
-  out->description.depth = 1;
-  out->description.mipCount = 1;
-  out->description.flags = FFX_API_RESOURCE_FLAGS_NONE;
-  out->description.usage =
-      (image.flags & (plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS))
-          ? FFX_API_RESOURCE_USAGE_UAV
-          : FFX_API_RESOURCE_USAGE_READ_ONLY;
-  return true;
-}
-
-// The backend description of the API this process runs (a translation unit per API: see
-// temporal_ffx_glue.h, and only the ones the build has).
-bool FillBackend(Backend api, const backend::NativeDevice& native, ffx_glue::BackendDesc* out) {
-#if defined(LARECOMP_GPU_HAS_D3D12)
-  if (api == Backend::kD3D12) {
-    return ffx_glue::dx12::FillBackendDesc(native, out);
-  }
-#endif
-#if defined(LARECOMP_GPU_HAS_VULKAN)
-  if (api == Backend::kVulkan) {
-    return ffx_glue::vulkan::FillBackendDesc(native, out);
-  }
-#endif
-  (void)api;
-  (void)native;
-  (void)out;
-  return false;
 }
 
 // One context and the descriptions it was made with (the runtime reads them until it is destroyed).
@@ -258,6 +118,11 @@ struct FfxBackend::Impl {
   bool want = false;
   BackendRequest want_request;
   std::shared_ptr<Context> ctx;  // the ready context
+  // The prepared context (make before break, Prepare/Commit): made in a slot of its own while `ctx`
+  // goes on working, and taken over by `ctx` at Commit.
+  bool next_want = false;
+  BackendRequest next_request;
+  std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;
   bool failed[3] = {};           // by Upscaler: a creation of that kind failed
 
@@ -275,6 +140,18 @@ struct FfxBackend::Impl {
                   const std::string& why);
   // Under `mu`: the ready context goes after the frames that may use it.
   void RetireCurrentLocked(std::vector<std::shared_ptr<Context>>* retire);
+  // Under `mu`: the prepared one is not wanted any more (a context being made for it is freed by the
+  // worker when it is done).
+  void RetireNextLocked(std::vector<std::shared_ptr<Context>>* retire);
+  // Under `mu`: a context is wanted and not there yet, for the current slot and for the prepared one.
+  bool WantCurrentLocked() const {
+    return want && !ctx && status.state == BackendState::kAvailable &&
+           KindUsableLocked(want_request.upscaler);
+  }
+  bool WantNextLocked() const {
+    return next_want && !next_ctx && status.state == BackendState::kAvailable &&
+           KindUsableLocked(next_request.upscaler);
+  }
   void RetireOutsideLock(std::vector<std::shared_ptr<Context>>& retire);
   bool KindUsableLocked(Upscaler kind) const {
     return kind == Upscaler::kFsr31 ? status.fsr31 && !failed[1]
@@ -584,9 +461,7 @@ void FfxBackend::Impl::WorkerMain() {
   std::unique_lock lock(mu);
   for (;;) {
     cv.wait(lock, [this] {
-      return stop || !doomed.empty() ||
-             (want && !ctx && status.state == BackendState::kAvailable &&
-              KindUsableLocked(want_request.upscaler));
+      return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked();
     });
     if (stop) {
       break;
@@ -601,19 +476,22 @@ void FfxBackend::Impl::WorkerMain() {
       list.clear();
       lock.lock();
     }
-    if (want && !ctx && status.state == BackendState::kAvailable &&
-        KindUsableLocked(want_request.upscaler)) {
-      const BackendRequest request = want_request;
+    // The current slot first (the frames wait for it), then the prepared one: one context at a time.
+    const bool for_current = WantCurrentLocked();
+    if (for_current || WantNextLocked()) {
+      const BackendRequest request = for_current ? want_request : next_request;
       lock.unlock();
       std::string why;
       std::shared_ptr<Context> made = CreateContext(request, &why);
       lock.lock();
       if (!made) {
         FailLocked(lock, request.upscaler, false, std::format("its context could not be made: {}", why));
-      } else if (want && want_request == request && !ctx && !stop) {
+      } else if (for_current && want && want_request == request && !ctx && !stop) {
         status.provider = made->provider;
         status.context_bytes = made->bytes;
         ctx = std::move(made);
+      } else if (!for_current && next_want && next_request == request && !next_ctx && !stop) {
+        next_ctx = std::move(made);
       } else {
         // The request moved on while it was made.
         doomed.push_back(std::move(made));
@@ -626,6 +504,10 @@ void FfxBackend::Impl::WorkerMain() {
   if (ctx) {
     list.push_back(std::move(ctx));
     ctx.reset();
+  }
+  if (next_ctx) {
+    list.push_back(std::move(next_ctx));
+    next_ctx.reset();
   }
   lock.unlock();
   for (const auto& c : list) {
@@ -648,7 +530,14 @@ void FfxBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, Upscaler k
     status.fsr4 = false;
   }
   status.reason = why;
-  want = false;
+  // The slot that asked for this kind stops asking; a slot for another kind (the prepared context of
+  // a live change, or the current one) goes on.
+  if (whole || want_request.upscaler == kind) {
+    want = false;
+  }
+  if (whole || next_request.upscaler == kind) {
+    next_want = false;
+  }
   if (!status.fsr31 && !status.fsr4) {
     status.state = BackendState::kUnavailable;
   }
@@ -677,6 +566,14 @@ void FfxBackend::Impl::RetireCurrentLocked(std::vector<std::shared_ptr<Context>>
   if (ctx) {
     retire->push_back(std::move(ctx));
     ctx.reset();
+  }
+}
+
+void FfxBackend::Impl::RetireNextLocked(std::vector<std::shared_ptr<Context>>* retire) {
+  next_want = false;
+  if (next_ctx) {
+    retire->push_back(std::move(next_ctx));
+    next_ctx.reset();
   }
 }
 
@@ -734,6 +631,82 @@ uint32_t FfxBackend::JitterPhaseCount() const {
   return i.ctx && !i.status.failed ? i.ctx->phases : 0u;
 }
 
+// CHECK: ffxCreateContext on the worker for the prepared slot while the render thread dispatches the
+// current context (the same loader and provider, two contexts): D3D12 and Vulkan, debug layer and
+// validation, and that a dispatch is not slowed while the worker makes the next one.
+void FfxBackend::Prepare(const BackendRequest& request) {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.state != BackendState::kAvailable || !i.KindUsableLocked(request.upscaler)) {
+      return;
+    }
+    if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
+      // The current context is, or is being made as, the one asked for: nothing to prepare beside it.
+      i.RetireNextLocked(&retire);
+    } else if (i.next_want && i.next_request == request) {
+      return;
+    } else {
+      i.RetireNextLocked(&retire);  // a different prepared one goes
+      i.next_want = true;
+      i.next_request = request;
+    }
+  }
+  i.cv.notify_all();
+  i.RetireOutsideLock(retire);
+}
+
+bool FfxBackend::PreparedReady(const BackendRequest& request) const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  if (i.status.failed) {
+    return false;
+  }
+  return (i.ctx && i.ctx->request == request) || (i.next_ctx && i.next_ctx->request == request);
+}
+
+bool FfxBackend::Commit(const BackendRequest& request) {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed) {
+      return false;
+    }
+    if (i.ctx && i.ctx->request == request) {
+      i.want = true;  // the current context already is it
+      i.want_request = request;
+      i.RetireNextLocked(&retire);
+    } else if (i.next_ctx && i.next_ctx->request == request) {
+      if (i.ctx) {
+        retire.push_back(std::move(i.ctx));
+      }
+      i.ctx = std::move(i.next_ctx);
+      i.next_ctx.reset();
+      i.next_want = false;
+      i.want = true;
+      i.want_request = request;
+      i.status.provider = i.ctx->provider;
+      i.status.context_bytes = i.ctx->bytes;
+    } else {
+      return false;
+    }
+  }
+  i.RetireOutsideLock(retire);
+  return true;
+}
+
+void FfxBackend::CancelPrepared() {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    i.RetireNextLocked(&retire);
+  }
+  i.RetireOutsideLock(retire);
+}
+
 void FfxBackend::Release() {
   Impl& i = *impl_;
   std::vector<std::shared_ptr<Context>> retire;
@@ -741,6 +714,7 @@ void FfxBackend::Release() {
     std::lock_guard lock(i.mu);
     i.want = false;
     i.RetireCurrentLocked(&retire);
+    i.RetireNextLocked(&retire);
   }
   i.RetireOutsideLock(retire);
 }
@@ -754,6 +728,7 @@ void FfxBackend::Fail(const std::string& why) {
     std::unique_lock lock(i.mu);
     i.FailLocked(lock, Upscaler::kOff, true, why);
     i.RetireCurrentLocked(&retire);
+    i.RetireNextLocked(&retire);
   }
   i.RetireOutsideLock(retire);
 }
@@ -785,7 +760,15 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
       !MakeResource(in.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, &d.output)) {
     return fail("an input image has no native object or a format the runtime does not know");
   }
-  // exposure, reactive and transparencyAndComposition stay empty: automatic exposure, no masks.
+  // exposure and transparencyAndComposition stay empty: automatic exposure. The reactive mask is the
+  // cars' shadow decals' (vehicle_motion_mask.h), in the frames that have one: the dark patch under a
+  // car moves with the car and the road under it with the camera, so no vector is right for its
+  // pixels and their history is trusted less in proportion to the patch's opacity.
+  // CHECK: FSR 4 (the ML provider) may ignore the reactive mask; FSR 3.1 reads it.
+  if (in.mask.texture &&
+      !MakeResource(in.mask, FFX_API_RESOURCE_STATE_COMPUTE_READ, &d.reactive)) {
+    return fail("the shadow mask has no native object or a format the runtime does not know");
+  }
   d.jitterOffset = {in.jitter[0], in.jitter[1]};
   // The vectors are previous minus current, in render pixels (measured in game against the world
   // point seen at sample pixels), which is what FSR reads with a scale of 1: pixelSpaceMV = vector *
@@ -825,6 +808,7 @@ void FfxBackend::Shutdown() {
     std::lock_guard lock(i.mu);
     i.stop = true;
     i.want = false;
+    i.next_want = false;
   }
   i.cv.notify_all();
   if (i.worker.joinable()) {
@@ -835,6 +819,7 @@ void FfxBackend::Shutdown() {
   {
     std::lock_guard lock(i.mu);
     i.ctx.reset();
+    i.next_ctx.reset();
   }
   if (i.upscaler) {
     // The modules stay loaded to the end of the process: the loader may hold the upscaler.

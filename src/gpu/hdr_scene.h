@@ -23,6 +23,10 @@
 // A frame without layers (the front buffer is not their picture, reaches past them, none made: the
 // pause menus, movies, loading) is shown from the front buffer as stage 1 does.
 //
+// The first host column and row at a render scale (FrameLayers::Frame::gap) are not in the picture
+// the layers keep: the compose reads them from the next ones, as the guest's resolve does for the
+// front buffer, so the two ways of showing a frame agree along the edges of the screen.
+//
 // Memory: the float image (R16G16B16A16_FLOAT) at the front buffer's size: 7.4 MB at 1x and
 // 66 MB at 3x, made on the first composed frame and released after as many presents without
 // layers as FrameLayers waits.
@@ -55,6 +59,11 @@ class HdrScene {
   bool Initialize(HostPasses& passes, FrameLayers& layers, PassTiming& pass_timing);
   // GPU idle, before HostPasses shuts down.
   void Shutdown();
+  // Initialize made the shader and the pipeline.
+  bool ready() const { return pipeline_ != nullptr; }
+  // HDR output went off (render thread, at a frame boundary): the composed image is released and
+  // the next composition starts afresh. The pipeline stays for the next time.
+  void Release();
 
   // Outside a render pass, once per present: when the guest frame last presented has layers and
   // `front` (the front buffer's texture key) is their picture at `width` x `height` host pixels,
@@ -81,6 +90,7 @@ class HdrScene {
     uint32_t ui;
     uint32_t view;
     uint32_t reference;  // the 8-bit underlay (the debug views that compare)
+    uint32_t gap;        // FrameLayers::Frame::gap: the first columns and rows are read from the next
   };
   static_assert(sizeof(Push) <= HostPasses::kPushConstantBytes);
 

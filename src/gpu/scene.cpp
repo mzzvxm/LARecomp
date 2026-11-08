@@ -38,6 +38,7 @@
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
+#include "vehicle_motion_mask.h"
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -295,10 +296,13 @@ const char* ConversionName(uint32_t conversion) {
 // target agrees. `*host_samples`: that identity's samples on the host
 // (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take. `*scene`: that
 // identity is the scene's and the scene is drawn at a scale of its own (EdramTargets::SceneApart):
-// its textures are sampled with the scene's mip bias (Scene::SceneBias).
+// its textures are sampled with the scene's mip bias (Scene::SceneBias). `*msaa_guest`: that
+// identity takes the host's MSAA level (EdramTargets::HostSamplesFollowLevel), and the guest's
+// samples then; else 0.
 Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                uint32_t size_bits, uint32_t* host_samples, bool* scene) {
+                uint32_t size_bits, uint32_t* host_samples, bool* scene, uint32_t* msaa_guest) {
   *scene = false;
+  *msaa_guest = 0;
   EdramKey first;
   first.pitch = uint16_t(s.surface_pitch);
   first.samples = uint8_t(MsaaSampleCount(s.msaa));
@@ -316,6 +320,9 @@ Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key
     return Scale{};
   }
   *host_samples = edram.HostSamplesOf(first, size_bits);
+  if (edram.HostSamplesFollowLevel(first, size_bits)) {
+    *msaa_guest = first.samples;
+  }
   *scene = EdramTargets::IsSceneKey(first) && edram.SceneApart();
   return edram.ScaleOf(first, size_bits);
 }
@@ -395,6 +402,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   samplers_ = &samplers;
   geometry_ = &geometry;
   edram_ = &edram;
+  msaa_.Initialize(edram, pipelines);
   textures_ = &textures;
   resolve_ = &resolve;
   layout_ = &layout;
@@ -504,9 +512,19 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
+  const uint64_t targets_before = edram_->change_serial();
   if (temporal_) {
-    temporal_->BeginFrame(slot);
+    // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
+    // scene's scale (and the path) here.
+    temporal_->BeginFrame(slot, list);
+    temporal_->shadow_mask().BeginFrame();  // no shadow decal is drawn into its mask yet
   }
+  // The host MSAA level (msaa_level.h): the same boundary, after the path's own change, which may
+  // have remade the targets this frame. It is 1 while an upscaler runs and changes once the path has
+  // settled (without a temporal system, always).
+  msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
+                   !temporal_ || temporal_->PathSettled(),
+                   edram_->change_serial() != targets_before);
   if (ao_) {
     ao_->BeginFrame();
   }
@@ -640,6 +658,22 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
     // A new colour target is initialised before it is drawn into, as the EDRAM targets and
     // HostPasses::DrawInto do (D3D12 debug layer id 1422).
     list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  } else if (d.hdr_action == HdrToneMap::Action::kToneMap) {
+    // The image is drawn again every frame and the tone map's quad leaves its first host column and
+    // row out at a render scale (Scale::HalfPixelGap: the D3D pixel centre starts it half a guest
+    // pixel in). A light drawn again after it adds to what is there, so without this the border
+    // adds up from frame to frame and keeps an earlier view's. Cleared with each new float scene it
+    // holds at most one frame's light; the consumers read it from the next column and row anyway
+    // (FrameLayers::Frame::gap), so this only spares one that does not a huge value.
+    // CHECK: clearColor with two rectangles on this image's framebuffer on D3D12 (debug layer) and
+    // Vulkan (validation), the same call EdramTargets::ClearColor makes with one.
+    const uint32_t gap = d.scale.HalfPixelGap();
+    if (gap != 0) {
+      const plume::RenderRect strips[2] = {
+          plume::RenderRect(0, 0, int32_t(gap), int32_t(image->height)),
+          plume::RenderRect(0, 0, int32_t(image->width), int32_t(gap))};
+      list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f), strips, 2);
+    }
   }
   // Everything the game's draw bound, set again: the list's own state is not trusted across the
   // framebuffer switch, and the list state is forgotten afterwards (ResetListState below).
@@ -681,9 +715,135 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
   hdr_tone_->Duplicated(d.hdr_action);
 }
 
+void Scene::PrepareShadowMask(PreparedDraw& d, const PipelineInputs& inputs) {
+  // Only in a frame an upscaler works on (nothing else reads the mask), before its anchor: the decals
+  // are drawn before the motion blur draw.
+  const TemporalSystem::FrameState& fr = temporal_->frame();
+  if (!UpscalerRunning() || fr.anchor_seen || fr.composite_seen) {
+    return;
+  }
+  // The play view of the main view, a draw that covers it whole as the world's draws do (the gate of
+  // temporal.cpp EvaluateGate): the decal's image is the render size, whatever size its draw's viewport
+  // is, so a draw that does not cover the view is left out.
+  const EdramKey color = ColorEdramKey(d.state, 0);
+  EdramKey depth;
+  const EdramKey* depth0 = nullptr;
+  if (d.key.depth_format != 0) {
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+    depth0 = &depth;
+  }
+  const temporal::MainMatch match = temporal::MatchMainView(&color, depth0);
+  if (!match || !temporal::IsPlaySamples(match.samples) ||
+      d.viewport.viewport.width + 0.5f < float(d.scale.Edge(temporal::kMainPitch))) {
+    return;
+  }
+  PipelineKey variant;
+  ShadowMask::VariantKey(d.key, &variant);
+  // Not a pipeline of the host MSAA level's (a level change does not remake it): one sample, no depth.
+  PipelineInputs variant_inputs = inputs;
+  variant_inputs.msaa_guest_samples = 0;
+  // A pipeline nobody made yet is built in the background: the second draw waits for it (the frame has
+  // no mask), the game's own draw does not.
+  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr};
+  bool pending = false;
+  d.shadow_pipeline = pipelines_->Get(variant, variant_inputs, &deferral, &pending);
+}
+
+void Scene::RecordShadowMask(const PreparedDraw& d, plume::RenderCommandList* list) {
+  ShadowMask& mask = temporal_->shadow_mask();
+  bool clear = false;
+  HostImage* image = mask.Target(uint32_t(std::lround(d.viewport.viewport.width)),
+                                 uint32_t(std::lround(d.viewport.viewport.height)), &clear);
+  if (!image) {
+    return;
+  }
+  // The layout change happens outside the game's render pass (the first draw of a frame: the image was
+  // left readable by the last frame's pass).
+  if (image->layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->setFramebuffer(nullptr);
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image->texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image->layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image->framebuffer.get());
+  if (clear) {
+    // Zero opacity everywhere: the frame's first decal, or a new image (a new colour target is also
+    // initialised before it is drawn into, D3D12 debug layer id 1422).
+    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  }
+  // Everything the game's draw bound, set again: the list's own state is not trusted across the
+  // framebuffer switch, and the list state is forgotten afterwards (ResetListState below).
+  list->setGraphicsPipelineLayout(layout_->layout());
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 1);
+  list->setGraphicsDescriptorSet(heap_->texture_set(), 2);
+  list->setGraphicsDescriptorSet(heap_->sampler_set(), 3);
+  list->setPipeline(d.shadow_pipeline);
+  if (ActiveBackend() == Backend::kD3D12) {
+    list->setGraphicsRootDescriptor(d.vs_constants.reference(), GuestLayout::kVertexConstants);
+    list->setGraphicsRootDescriptor(d.ps_constants.reference(), GuestLayout::kPixelConstants);
+    list->setGraphicsRootDescriptor(d.shared_constants.reference(), GuestLayout::kSharedConstants);
+  } else {
+    const uint64_t addresses[3] = {d.vs_constants.device_address, d.ps_constants.device_address,
+                                   d.shared_constants.device_address};
+    list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+  }
+  list->setViewports(&d.viewport.viewport, 1);
+  list->setScissors(&d.scissor, 1);
+  if (pipelines_->dynamic_depth_bias()) {
+    list->setDepthBias(0.0f, 0.0f, 0.0f);  // no depth target: the guest's bias does not apply
+  }
+  const DrawGeometry& g = d.geometry;
+  if (g.slot_count) {
+    list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
+  }
+  if (g.indexed) {
+    list->setIndexBuffer(&g.index_view);
+    list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
+  } else {
+    list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  // The pass ends here: the next draw of the game opens its own.
+  list->setFramebuffer(nullptr);
+  ResetListState();
+  marked_framebuffer_ = nullptr;
+  mask.Drawn();
+}
+
 // ---------------------------------------------------------------------------
 // draws
 // ---------------------------------------------------------------------------
+
+void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
+  if (!textures_ || !shaders_.attached()) {
+    return;
+  }
+  const DrawView view(payload);
+  const DrawRecord& r = view.record();
+  if (!prefetch_vs_ || prefetch_vs_identity_ != r.vs_identity) {
+    prefetch_vs_ = shaders_.Find(r.vs_identity);
+    prefetch_vs_identity_ = r.vs_identity;
+  }
+  if (!prefetch_vs_) {
+    return;
+  }
+  uint32_t fetch_mask = prefetch_vs_->texture_fetch_mask;
+  if ((r.flags & kDrawNoPixelShader) == 0) {
+    if (!prefetch_ps_ || prefetch_ps_identity_ != r.ps_identity) {
+      prefetch_ps_ = shaders_.Find(r.ps_identity);
+      prefetch_ps_identity_ = r.ps_identity;
+    }
+    if (prefetch_ps_) {
+      fetch_mask |= prefetch_ps_->texture_fetch_mask;
+    }
+  }
+  for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
+    uint32_t dwords[6];
+    view.FetchGroup(uint32_t(std::countr_zero(mask)), dwords);
+    textures_->Prefetch(dwords, sequence);
+  }
+}
 
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   const uint64_t c0 = cycles::Now();
@@ -755,6 +915,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
         ++draws_since_flush_;
         if (d.hdr_action != HdrToneMap::Action::kNone) {
           RecordHdrDuplicate(d, list);
+        }
+        if (d.shadow_pipeline) {
+          RecordShadowMask(d, list);
         }
       }
     }
@@ -944,7 +1107,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
 
   // Pipeline. The key is the last draw's for the same state, shaders, layout
   // and topology (M6a.7); BuildKey reads nothing else.
-  const PipelineInputs inputs{d.vs, d.ps, d.input_layout};
+  PipelineInputs inputs{d.vs, d.ps, d.input_layout};
   const bool polygonal = IsPolygonal(r.primitive);
   KeyResult key_result;
   if (state_same && memo.key_valid && memo.key_vs == d.vs && memo.key_ps == d.ps &&
@@ -988,14 +1151,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Scale scale;
   uint32_t host_samples;
   bool scene_draw;
+  uint32_t msaa_guest;
   if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
       memo.draw_scale_colors == d.key.color_count &&
       memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
     scale = memo.draw_scale;
     host_samples = memo.draw_samples;
     scene_draw = memo.draw_scene;
+    msaa_guest = memo.draw_msaa_guest;
   } else {
-    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw);
+    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw,
+                      &msaa_guest);
     memo.draw_scale_valid = true;
     memo.draw_scale_serial = edram_->change_serial();
     memo.draw_scale_colors = d.key.color_count;
@@ -1003,7 +1169,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     memo.draw_scale = scale;
     memo.draw_samples = host_samples;
     memo.draw_scene = scene_draw;
+    memo.draw_msaa_guest = msaa_guest;
   }
+  inputs.msaa_guest_samples = msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
   d.scale = scale;
   d.scene = scene_draw;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
@@ -1092,6 +1260,12 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && hdr_tone_->Wants(d.ps)) {
     PrepareHdrDraw(d, inputs, banks, host_samples);
   }
+  // A car's shadow decal is drawn again into the mask the upscaler takes as its reactive input
+  // (vehicle_motion_mask.h).
+  if (d.key.color_count == 1 && temporal_ && temporal_->active() &&
+      ShadowMask::IsDecal(r.vs_identity, r.ps_identity)) {
+    PrepareShadowMask(d, inputs);
+  }
   const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
   FillTextureTables(view, fetch_mask, scale, shared, d.scene ? SceneBias() : 0);
   Lap(Stage::kTextures);
@@ -1130,15 +1304,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     ++window_.alpha_to_mask_draws;
     if (d.key.sample_count == 1) ++window_.alpha_to_mask_1x;
     if (s.color[0].exp_bias != 0) ++window_.alpha_to_mask_biased;
-    if (AlphaToMaskOffsetsReplaced(s)) {
+    if (AlphaToMaskOffsetsReplaced(s, d.key.sample_count)) {
       ++window_.alpha_to_mask_replaced;
       const uint32_t offsets = s.color_control.value >> 24;
-      uint64_t& logged = alpha_to_mask_replaced_logged_[offsets >> 6];
+      const bool solid = d.key.sample_count <= 1;
+      uint64_t& logged = alpha_to_mask_replaced_logged_[(offsets >> 6) + (solid ? 4 : 0)];
       if (!(logged & (uint64_t(1) << (offsets & 63)))) {
         logged |= uint64_t(1) << (offsets & 63);
         REXLOG_INFO("[gpu] alpha to mask: the game's offsets {:#04x} ({}, {}, {}, {}) take the "
-                    "dithered 3, 1, 0, 2 (mcla_gpu_a2c_dither_all)",
-                    offsets, offsets & 3, (offsets >> 2) & 3, (offsets >> 4) & 3, offsets >> 6);
+                    "{} (mcla_gpu_a2c_dither_all, {} sample(s))",
+                    offsets, offsets & 3, (offsets >> 2) & 3, (offsets >> 4) & 3, offsets >> 6,
+                    solid ? "solid 2, 2, 2, 2" : "dithered 3, 1, 0, 2", d.key.sample_count);
       }
     }
   }

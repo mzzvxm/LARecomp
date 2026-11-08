@@ -57,6 +57,9 @@ class CommandStream {
   static constexpr uint32_t kDefaultCapacity = 64u << 20;
   static constexpr uint32_t kPublishRecords = 32;
   static constexpr uint32_t kPublishBytes = 256u << 10;
+  // While a sleeping consumer has been woken and has not run yet, the records that follow are
+  // published this many at a time (it reads whatever is published when it runs).
+  static constexpr uint32_t kWakingPublishRecords = 8;
   // The consumer gives space back once this much went by (Release).
   static constexpr uint32_t kReleaseBytes = 64u << 10;
 
@@ -123,12 +126,15 @@ class CommandStream {
     CommandStream& stream_;
     std::unique_lock<ProducerLock> lock_;
     uint64_t record_at_ = 0;  // ring position of the header
+    uint64_t record_offset_ = 0;  // the same position within the buffer (record_at_ % capacity)
     uint32_t record_size_ = 0;
     RecordType type_ = RecordType::kPad;
     bool begun_ = false;
   };
 
-  // Blocks until the record `sequence` was executed, or the stream stopped.
+  // Blocks until the record `sequence` was executed, or the stream stopped. Polls for about 100 us
+  // before it sleeps, except with 5 or fewer logical processors (stream.cpp). The present is the
+  // record it waits for, once a frame, and its release point is a few tens of microseconds away.
   void WaitExecuted(uint64_t sequence);
 
   // --- render thread ---
@@ -136,6 +142,14 @@ class CommandStream {
   const RecordHeader* Next();
   // Gives the space of the record returned by Next back to the producers.
   void Release(const RecordHeader* record);
+  // Looking ahead without consuming (the renderer decodes the textures of the draws queued behind
+  // the one it executes): the ring position of the record Next last returned (until Release moves
+  // it on); and the published record at `*position`, which then moves past it. Null at the end of
+  // the published records. Pads are skipped. A record Peek returned stays readable until the
+  // consumer releases it, which only the render thread does, so the pointer is good for the rest
+  // of the record being executed. Render thread only.
+  uint64_t consumer_position() const { return read_; }
+  const RecordHeader* Peek(uint64_t* position) const;
   // Spins briefly, then sleeps until a record is published, the stream stops,
   // or `timeout` passes. True when there is work (or stop), false on timeout.
   bool WaitForWork(std::chrono::milliseconds timeout);
@@ -148,7 +162,6 @@ class CommandStream {
   uint64_t bytes_written() const { return bytes_written_.load(std::memory_order_relaxed); }
 
  private:
-  uint8_t* At(uint64_t position) const { return buffer_.get() + (position % capacity_); }
   bool WaitForSpace(std::unique_lock<ProducerLock>& producer_lock, uint64_t end);
   void Publish(uint64_t tail);
   // Stores head_ = read_ and wakes a producer waiting for space.
@@ -168,9 +181,15 @@ class CommandStream {
   // Producer state, guarded by producer_lock_.
   alignas(kCacheLine) ProducerLock producer_lock_;
   uint64_t tail_ = 0;  // next free byte
+  // tail_ % capacity_, kept beside it: the producer needs the offset at every record, and the
+  // remainder of a 64-bit division by a value only known at run time was three divisions a draw.
+  uint64_t tail_offset_ = 0;
   uint64_t next_sequence_ = 1;
   uint32_t unpublished_records_ = 0;
   uint64_t unpublished_bytes_ = 0;
+  // A Publish found the consumer asleep and woke it, and no later look found it awake. While set,
+  // the next records do not wake it again (Commit).
+  bool consumer_woken_ = false;
   std::atomic<uint64_t> bytes_written_{0};  // stored under producer_lock_ only
   std::atomic<uint64_t> producer_waits_{0};
 
@@ -187,6 +206,7 @@ class CommandStream {
   // Consumer-side cursor (render thread only), and where head_ was last
   // stored (Release).
   alignas(kCacheLine) uint64_t read_ = 0;
+  uint64_t read_offset_ = 0;  // read_ % capacity_, kept beside it (Next and Release)
   uint64_t released_ = 0;
   std::atomic<uint64_t> consumer_wakes_{0};
   // Presents waiting for execution: stored by the consumer, read by the waiter.

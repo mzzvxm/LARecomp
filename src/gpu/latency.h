@@ -56,6 +56,12 @@
 //    wait, the present stage before the present; D3D12: the end of the frame's
 //    main rendering at the start of the present).
 //
+// Frame generation forces the reducer on while it runs, whatever mcla_gpu_low_latency says (the
+// frames would queue in front of the paced presents otherwise); boost stays where the setting asks
+// for it. The pause menu's row says so (pause_menu.cpp). DLSS frame generation also takes the
+// reducer over: Streamline requires its own Reflex and PC latency plugins to make every call,
+// with the frame index its constants and tags carry (UseStreamline, latency_streamline.cpp).
+//
 // The frame rate limit stays with LARecomp's own limiter (hooks/frame_timing.cpp),
 // which waits after the frame's input; the vendors' own limits are left at none.
 // Reflex can hold the cap instead, its wait before the input (the minimum interval
@@ -75,6 +81,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace mcla::gpu {
 
@@ -82,6 +89,39 @@ class Device;
 class SwapChain;
 
 namespace latency {
+
+// --- what the driver says about the pacing of this process's frames ------------------------
+
+// NVIDIA's NvAPI_D3D_GetSleepStatus (the driver's own account of the Reflex sleep: what its wait is
+// made of, its frame cap and the frame generation multiplier it believes in). Read only for the log
+// and for DLSS frame generation's switch off, which has to tell whether the driver still paces the
+// game for generated frames afterwards (dlss_frame_generation.h). Not every field is verified: the
+// interval and the game-sleep flag are what the MCLA fork has logged on an RTX 5080; the multiplier
+// and the dynamic-control fields are read from the same structure's layout there.
+struct DriverPacing {
+  bool low_latency = false;           // the driver's Reflex mode is on
+  bool game_sleep = false;            // the driver sees the game call the sleep
+  bool fullscreen_vrr = false;
+  bool control_panel_vsync = false;
+  bool fullscreen_iflip = false;
+  uint32_t sleep_interval_us = 0;     // the effective minimum frame interval (its global cap included)
+  uint32_t fg_multiplier = 0;         // frames shown per frame rendered, as the driver counts them
+  bool dynamic_control = false;       // the driver decides how many frames are generated
+  uint32_t dynamic_target_us = 0;
+};
+// The device's own reducer's (the one put aside while Streamline's is in use is asked too). False where
+// there is none, or the driver cannot say. Any thread.
+bool ReadDriverPacing(DriverPacing* out);
+// The structure in one line of plain words, for the log.
+std::string DescribePacing(const DriverPacing& pacing);
+
+// The driver's wait at the start of frames (the reducer's Sleep, update thread), since the last call:
+// how many there were and how long they took in all. Any thread; takes the numbers and starts again.
+struct SleepStats {
+  uint64_t calls = 0;
+  uint64_t total_us = 0;
+};
+SleepStats TakeSleepStats();
 
 // --- the pause menu --------------------------------------------------------
 
@@ -126,6 +166,34 @@ void OnRenderSubmitted();
 void OnPresentBegin();
 void OnPresentEnd();
 
+// With frame generation the presents are the pacer thread's (frame_generation.h): the render thread
+// takes the id of the frame it just submitted out of its own state (0: the frame is not marked) and
+// hands it over with the pair, and the pacer's calls name it around the present of the frame's real
+// image (the generated image's present is not a frame of the game's). Both thread-safe against the
+// render thread's own markers.
+uint64_t DetachRenderFrame();
+void OnPresentBegin(uint64_t frame_id);
+void OnPresentEnd(uint64_t frame_id);
+
+// DLSS frame generation (dlss_frame_generation.h), render thread at a frame boundary: the reducer
+// becomes NVIDIA Reflex through Streamline (`on`), or the device's own again. The mode the old one
+// had is left and the new one is told at the next frame's start (the update thread notices the
+// change). While `on` the reducer is forced on, like for FSR's frame generation. False (and nothing
+// changes) when `on` and Streamline's plugins are not running.
+bool UseStreamline(bool on);
+// Just before UseStreamline(false): once the device's own reducer is current again it is left in its
+// neutral mode (Reflex off, the driver's wait still called) for a few frames before it is turned on
+// again, so the driver's Reflex state starts from the game's own frames and not from the ones
+// Streamline's Reflex and DLSS frame generation paced. A reducer whose driver has nothing to start
+// again (not NVIDIA's NvAPI) ignores it.
+void RearmDriver();
+// The id of the frame the host render thread is recording and presenting (0: the frame is not
+// marked), what the constants and the tags of DLSS frame generation are indexed by. Render thread.
+uint64_t RenderFrameId();
+// The reducer is on and has made a few sleeps since the last UseStreamline: Streamline's check that
+// Reflex runs (DLSS-G's status) will find it. Any thread.
+bool StreamlineRunning();
+
 // The presents the renderer makes by itself while the guest is not swapping (the
 // overlays) are not guest frames; a list opened inside one is not a frame to mark.
 class IdlePresentScope {
@@ -142,12 +210,19 @@ class IdlePresentScope {
 // Around SwapChain::Rebuild: Vulkan's swap chain handle changes there while the
 // update thread may be calling the driver with it, and the sleep mode belongs to
 // the chain, so it is told again to the new one. Nothing on D3D12.
+// Around SwapChain::Recreate (the HDR switch) the chain is another object: Replaced hands the
+// reducer the new one before the scope ends (and so before the sleep mode is told to it); the old
+// one is gone by then, so the calls that name the chain wait on this lock the whole time.
 class SwapChainChange {
  public:
   SwapChainChange();
   ~SwapChainChange();
   SwapChainChange(const SwapChainChange&) = delete;
   SwapChainChange& operator=(const SwapChainChange&) = delete;
+
+  // The swap chain was made again: the reducer names `swap_chain.native()` from now on. Nothing on
+  // D3D12.
+  void Replaced(SwapChain& swap_chain);
 
  private:
   std::shared_ptr<void> reducer_;  // the Reducer, type-erased (latency_backend.h)

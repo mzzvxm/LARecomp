@@ -56,13 +56,16 @@ REXCVAR_DEFINE_UINT32(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_msaa, "2", "MCLA/GPU",
-    "MSAA of the images of the screen the game multisamples (M6d.2): off (the game's own switch, "
-    "disable_msaa), 2 (the console's), 4 or 8 (more samples on the host; the guest keeps its "
-    "own). Targets the game does not multisample, or that are not images of the screen, keep "
-    "the game's samples. A game started with an upscaler (mcla_gpu_upscaler) that runs on this PC "
-    "starts without MSAA whatever this says; the choice is kept and applies again at a start "
-    "with no upscaler.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
+    "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
+    "layout; the host gives its images of the screen the samples chosen here, so its pause menu "
+    "and map world view, which the game draws with 4 samples, get the same as the game view. "
+    "Targets the game does not multisample, or that are not images of the screen, keep the "
+    "game's samples. Live: a change is made between two frames, after the pipelines for the new "
+    "sample count are made. While an upscaler (mcla_gpu_upscaler) runs, MSAA is 1 sample "
+    "whatever this says (the upscaler smooths the picture, and MSAA under it only costs time); "
+    "the choice is kept and comes back when the upscaler is off.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -101,7 +104,7 @@ uint32_t FoldColorFormat(uint32_t color_format) {
   }
 }
 
-bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height) {
+bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height, bool quiet) {
   if (screen_width_ == 0) {
     const rex::Runtime* runtime = rex::Runtime::instance();
     const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
@@ -112,7 +115,7 @@ bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height) {
     const uint32_t h = LoadBe32(base + kGuestScreenHeightAddress);
     // Static 1x1 until the game sets it at start.
     if (w < 64 || h < 64 || w > kMaxExtent || h > kMaxExtent) {
-      if (!screen_unset_logged_) {
+      if (!quiet && !screen_unset_logged_) {
         screen_unset_logged_ = true;
         REXLOG_ERROR("[gpu] edram: the game's screen size reads {}x{}, not set yet: targets made "
                      "now get the guest's size (counted as unknown); read again on the next one",
@@ -161,14 +164,14 @@ Scale EdramTargets::ScaleForDeclared(uint32_t size_bits) {
 }
 
 bool EdramTargets::IsSceneKey(const EdramKey& key) {
-  // The main view in play (temporal_identities.h): colour, or depth in the scene's layer. The 4x
-  // identities of the pause menu and the map are not the scene's.
+  // The main view (temporal_identities.h): colour, or depth in the scene's layer, in play (1x, 2x
+  // samples) and behind the pause menu and on the map (4x). The upscaler works on both views, so both
+  // are drawn at the scene's scale. The pause view's UI pass draws with the same 4x depth key when it
+  // uses one: DepthLayer puts that one in layer 1.
   if (key.depth == 0) {
-    const uint32_t samples = temporal::MainColorSamples(key);
-    return samples != 0 && temporal::IsPlaySamples(samples);
+    return temporal::MainColorSamples(key) != 0;
   }
-  const uint32_t samples = temporal::MainDepthSamples(key);
-  return samples != 0 && temporal::IsPlaySamples(samples) && key.reserved == 0;
+  return temporal::MainDepthSamples(key) != 0 && key.reserved == 0;
 }
 
 Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
@@ -179,9 +182,13 @@ Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
 }
 
 uint8_t EdramTargets::DepthLayer(const EdramKey& depth, const EdramKey* color0) {
-  // Only the 1x main depth shares its key with another phase of the frame (a 2x one is the
-  // scene's alone, a 4x one the pause menu's and the map's).
-  if (temporal::MainDepthSamples(depth) != 1 || !SceneApart()) {
+  // Only the main depth at the samples a UI pass also draws with shares its key with another phase of
+  // the frame: 1x (a game made without MSAA: the UI's own 1x depth is the same key) and 4x (the pause
+  // view's UI pass, which draws into a 4x k_8_8_8_8 colour target and may use the world's 4x depth).
+  // The 2x one is the scene's alone.
+  const uint32_t samples = temporal::MainDepthSamples(depth);
+  if ((samples != temporal::kPlaySamplesNoMsaa && samples != temporal::kPauseSamples) ||
+      !SceneApart()) {
     return 0;
   }
   if (color0) {
@@ -201,6 +208,18 @@ void EdramTargets::DecideScene() {
   const StartUpscale start = GetStartUpscale();
   const SceneScaleChoice choice = ChooseSceneScale(resolution_scale_, start.ratio);
   scene_scale_ = choice.scale;
+  if (start.runs && msaa_level_ != 1) {
+    // An upscaler that runs from the start smooths the picture itself, and MSAA under it only
+    // costs time: the game still draws its own 2 sample layout and the host gives it 1 sample
+    // (msaa_level.h; the temporal system adopts the same start path, so MsaaLevel finds the level
+    // already where it wants it). The player's level is kept in the setting and comes back when
+    // the upscaler stops.
+    REXLOG_INFO("[gpu] msaa: {} runs from the start: the images of the screen the game multisamples "
+                "get 1 sample on the host, not the {} of mcla_gpu_msaa = '{}', which is kept and "
+                "applies again when the upscaler is off",
+                UpscalerName(start.upscaler), msaa_level_, ReadMsaaSetting().text);
+    msaa_level_ = 1;
+  }
   if (!start.runs) {
     return;
   }
@@ -211,11 +230,13 @@ void EdramTargets::DecideScene() {
                 ModeInfoOf(start.upscaler, start.mode).name);
     return;
   }
-  REXLOG_INFO("[gpu] edram: the 3D scene (the main view's colour and depth in play) is made at "
+  REXLOG_INFO("[gpu] edram: the 3D scene (the main view's colour and depth, in play and behind the "
+              "pause menu and on the map) is made at "
               "{}x, {}x{} of the guest's 1280x720, for the output at {}x, {}x{}: {} {} ({}%, "
-              "ratio {:.2f}; the nearest step of the scale grid gives {:.3f}{}). The pause menu's "
-              "and the map's views, the post chain, the tone map and the UI stay at {}x, and the "
-              "upscaler makes the output from the scene. Fixed until the game is started again",
+              "ratio {:.2f}; the nearest step of the scale grid gives {:.3f}{}). The post chain, "
+              "the tone map and the UI stay at {}x, and the "
+              "upscaler makes the output from the scene. A change of upscaler or mode moves it "
+              "between two frames",
               scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
               scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_,
               resolution_scale_.Edge(kAssumedScreenWidth),
@@ -228,10 +249,70 @@ void EdramTargets::DecideScene() {
 }
 
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
-  if (key.samples <= 1 || msaa_level_ <= key.samples) {
-    return key.samples;
+  DecideScene();  // an upscaler that runs from the start gives the level up before any target takes it
+  return HostSamplesAt(key, FollowsMsaaLevel(key, size_bits), msaa_level_);
+}
+
+void EdramTargets::NoteMainViews(const Target& target) {
+  const uint32_t guest = temporal::MainColorSamples(target.key);
+  if (guest == 0) {
+    return;
   }
-  return IsScreenImage(size_bits) ? msaa_level_ : key.samples;
+  // The game view is drawn by the game with 2 samples (1 only where a game was made without
+  // MSAA, which the native renderer no longer does), the pause menu's and the map's world with 4.
+  const bool pause = guest == temporal::kPauseSamples;
+  uint32_t& logged = pause ? pause_view_samples_ : game_view_samples_;
+  if (target.host_samples == logged) {
+    return;
+  }
+  const uint32_t before = logged;
+  logged = target.host_samples;
+  REXLOG_INFO("[gpu] edram: the {} ({}, which the game draws with {} samples) is drawn with {} "
+              "sample{} on the host{}",
+              pause ? "pause view" : "game view",
+              pause ? "the pause menu's and the map's world" : "the 3D scene in play",
+              target.key.samples, target.host_samples, target.host_samples == 1 ? "" : "s",
+              before != 0 ? std::format(" (was {})", before) : std::string());
+}
+
+EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
+  MsaaSetting setting;
+  setting.text = REXCVAR_GET(mcla_gpu_msaa);
+  std::string v;
+  for (unsigned char c : setting.text) {
+    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
+  }
+  if (!v.empty() && v.back() == 'x') v.pop_back();
+  if (v == "4") {
+    setting.level = 4;
+  } else if (v == "8") {
+    setting.level = 8;
+  } else if (v == "off" || v == "1") {
+    // One host sample over the game's own 2 sample layout.
+    setting.level = 1;
+    setting.off = true;
+  } else if (v != "2") {
+    setting.invalid = true;
+  }
+  return setting;
+}
+
+uint32_t EdramTargets::LevelWithin(uint32_t supported_samples, uint32_t wanted) {
+  uint32_t level = wanted;
+  while (level > 2 && (supported_samples & level) == 0) {
+    level >>= 1;
+  }
+  return level;
+}
+
+uint32_t EdramTargets::SupportedScreenSamples(plume::RenderDevice* device) {
+  uint32_t supported = 0xFFu;
+  for (plume::RenderFormat format :
+       {plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R16G16B16A16_FLOAT,
+        plume::RenderFormat::D32_FLOAT_S8_UINT}) {
+    supported &= uint32_t(device->getSampleCountsSupported(format));
+  }
+  return supported;
 }
 
 void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
@@ -310,6 +391,7 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   resolution_scale_ = scale.scale;
   scale_from_window_ = scale.from_window();
   // The scene's scale is decided on the first use of one of its identities (DecideScene).
+  // SetScales moves both while the game runs.
   scene_scale_ = resolution_scale_;
   scene_decided_ = false;
   scene_phase_ = true;
@@ -319,46 +401,29 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                 resolution_scale_, resolution_scale_.Edge(1280), resolution_scale_.Edge(720));
   }
   // The host MSAA level, chosen at start, within what the device can do for
-  // every format an image of the screen is stored as.
+  // every format an image of the screen is stored as. A change while the game runs reads the
+  // same two things (ReadMsaaSetting, SupportedMsaaLevel). The game always runs its own 2 sample
+  // layout (hooks/graphics.cpp), so off is a host level of 1 here, not a game without MSAA. An
+  // upscaler that runs from the start takes the level down to 1 in DecideScene.
   {
-    std::string value = REXCVAR_GET(mcla_gpu_msaa);
-    std::string v;
-    for (unsigned char c : value) {
-      if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
-    }
-    if (!v.empty() && v.back() == 'x') v.pop_back();
-    uint32_t wanted = 2;
-    if (v == "4") {
-      wanted = 4;
-    } else if (v == "8") {
-      wanted = 8;
-    } else if (v != "2" && v != "off" && v != "1") {
+    const MsaaSetting setting = ReadMsaaSetting();
+    if (setting.invalid) {
       REXLOG_ERROR("[gpu] edram: mcla_gpu_msaa = '{}' is not off, 2, 4 or 8; the console's 2x "
-                   "is kept",
-                   value);
+                   "is used",
+                   setting.text);
     }
-    // off is the game's own switch (Patch_DisableMSAA): its targets come 1x.
-    plume::RenderDevice* rd = device.device();
-    uint32_t supported = 0xFFu;
-    for (plume::RenderFormat f :
-         {plume::RenderFormat::R8G8B8A8_UNORM, plume::RenderFormat::R16G16B16A16_FLOAT,
-          plume::RenderFormat::D32_FLOAT_S8_UINT}) {
-      supported &= uint32_t(rd->getSampleCountsSupported(f));
-    }
-    uint32_t level = wanted;
-    while (level > 2 && (supported & level) == 0) {
-      level >>= 1;
-    }
-    if (level != wanted) {
+    msaa_supported_ = SupportedScreenSamples(device.device());
+    const uint32_t level = SupportedMsaaLevel(setting.level);
+    if (level != setting.level) {
       REXLOG_ERROR("[gpu] edram: MSAA {}x asked, {}x used (device sample counts {:#x} for the "
                    "screen formats)",
-                   wanted, level, supported);
+                   setting.level, level, msaa_supported_);
     }
     msaa_level_ = level;
-    if (msaa_level_ > 2) {
-      REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples get {} samples on "
-                  "the host (mcla_gpu_msaa)",
-                  msaa_level_);
+    if (msaa_level_ != 2) {
+      REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples get {} sample{} on "
+                  "the host (mcla_gpu_msaa); the game draws its own 2 sample layout",
+                  msaa_level_, msaa_level_ == 1 ? "" : "s");
     }
   }
   // The detector and its checks are chosen at start.
@@ -554,6 +619,25 @@ plume::RenderFramebuffer* EdramTargets::ClearDepthStencil(plume::RenderCommandLi
   return framebuffer;
 }
 
+namespace {
+
+// The host texture of an identity: the guest's size at `scale`, `host_samples` samples. Null when
+// the device cannot make it (logged by the device).
+std::unique_ptr<plume::RenderTexture> MakeTargetTexture(Device& device, const EdramKey& k,
+                                                        const format::Mapping& m, Scale scale,
+                                                        uint32_t host_samples, uint32_t height) {
+  plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
+      scale.Edge(k.pitch), scale.Edge(height), 1, m.format,
+      k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
+  desc.multisampling.sampleCount = plume::RenderSampleCounts(host_samples);
+  const std::string name =
+      std::format("edram {} {}@{} pitch {} {}x scale {} host {}x", k.depth ? "depth" : "colour",
+                  m.guest_name, k.base_tiles, k.pitch, k.samples, scale, host_samples);
+  return device.CreateTexture(desc, name.c_str());
+}
+
+}  // namespace
+
 bool EdramTargets::Create(Target& target, uint32_t height) {
   const EdramKey& k = target.key;
   const format::Mapping m = k.depth ? format::DepthTargetFormat(k.format)
@@ -562,15 +646,8 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
     return false;
   }
   // The host texture: the guest's size at the target's scale.
-  plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(
-      target.scale.Edge(k.pitch), target.scale.Edge(height), 1, m.format,
-      k.depth ? plume::RenderTextureFlag::DEPTH_TARGET : plume::RenderTextureFlag::RENDER_TARGET);
-  desc.multisampling.sampleCount = plume::RenderSampleCounts(target.host_samples);
-  const std::string name =
-      std::format("edram {} {}@{} pitch {} {}x scale {} host {}x", k.depth ? "depth" : "colour",
-                  m.guest_name, k.base_tiles, k.pitch, k.samples, target.scale,
-                  target.host_samples);
-  std::unique_ptr<plume::RenderTexture> texture = device_->CreateTexture(desc, name.c_str());
+  std::unique_ptr<plume::RenderTexture> texture =
+      MakeTargetTexture(*device_, k, m, target.scale, target.host_samples, height);
   if (!texture) {
     return false;
   }
@@ -581,6 +658,191 @@ bool EdramTargets::Create(Target& target, uint32_t height) {
   target.layout = plume::RenderTextureLayout::UNKNOWN;
   ++target.generation;
   ++change_serial_;
+  return true;
+}
+
+bool EdramTargets::ClassifiesAsScreenImage(uint32_t size_bits) {
+  uint32_t screen_width = 0, screen_height = 0;
+  if (size_bits == 0 || !ScreenSize(&screen_width, &screen_height, /*quiet=*/true)) {
+    return false;
+  }
+  const uint32_t width = (size_bits >> 18) + 1;
+  const uint32_t height = ((size_bits >> 3) & 0x7FFFu) + 1;
+  for (uint32_t k = 0; k <= kMaxScreenShift; ++k) {
+    if (width == (screen_width >> k) && height == (screen_height >> k)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) {
+  // The rule ScaleForUse and ScaleForDeclared apply to a new target, for the scales given: the scene's
+  // identities at the scene's, an image of the screen at the output's (1x is the guest's size, as
+  // ScaleForDeclared says), anything else at the guest's size.
+  // CHECK: that the classification by the first use's declared size (creation_size_bits) is the one
+  // every target was made at: after 1x -> 2x -> 1x -> 2x there must be no "was made at ... and is now
+  // bound through a surface declared ..., which classifies at ..." line, and no target left at a scale
+  // other than its kind's (the "[gpu] edram: ... made at" census lines of a fresh start at 2x and the
+  // targets after a live change to 2x list the same scales).
+  if (IsSceneKey(target.key)) {
+    return scene;
+  }
+  return !output.unit() && ClassifiesAsScreenImage(target.creation_size_bits) ? output : Scale{};
+}
+
+bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
+  DecideScene();  // may give the host MSAA level up for an upscaler that runs from the start
+  return Retarget(output, scene, msaa_level_, list);
+}
+
+bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) {
+  // CHECK: the frame that remakes the MSAA targets under the D3D12 debug layer and Vulkan validation
+  // (the same list as SetScales: new textures cleared at the frame's start, the retired ones behind
+  // the frames in flight, no framebuffer or view of an old texture used; the multisampled depth's
+  // views for the resolves), the picture in the frames after the change against a start at the new
+  // level (the resolves read the target's own sample count: resolve.cpp host_samples), the peak
+  // video memory (old and new targets live together for the frames in flight: 8x at a render scale
+  // of 2 is large) and the hitch of the switch frame ("switched in N ms" in the log). For a level of
+  // 1 over the game's 2 sample layout, and back: the scene colour and depth products of the guest's
+  // resolves (one host sample read for all of the guest's, resolve.cpp), the sun's glare (the
+  // occlusion count is scaled by guest over host samples), alpha-to-mask (solid offsets at 1, dithered
+  // above) and the pause view, in the frame of the switch and after it.
+  DecideScene();  // the scene's scale is the start's decision: kept as it is
+  return Retarget(resolution_scale_, scene_scale_, level, list);
+}
+
+bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
+                            plume::RenderCommandList* list) {
+  // CHECK: the frame that remakes every image of the screen under the D3D12 debug layer and Vulkan
+  // validation (new textures cleared before use, the retired ones behind the frames in flight, no
+  // framebuffer or view of an old texture used), the hitch of that frame at 2x and 3x ("switched in N
+  // ms"), the peak video memory (old and new textures live together for the frames in flight), and that
+  // the picture N frames after the change equals a fresh start at the new scale. The game keeps
+  // nothing in the EDRAM from one frame to the next that the host's targets must hold (the targets
+  // are cleared here); photo mode reads what an earlier frame left (memory project_native_gfx_photo_
+  // capture): a render scale change just before it shows a cleared target until a frame is drawn.
+  DecideScene();  // the start's decision first: a change before the first use must not be undone by it
+  if (output == resolution_scale_ && scene == scene_scale_ && level == msaa_level_) {
+    return true;
+  }
+  if (!device_ || !frames_ || !list || output.none() || scene.none() || level < 1) {
+    return false;
+  }
+  // The new textures first, all of them: nothing is changed unless every one can be made.
+  struct Remade {
+    Target* target = nullptr;
+    Scale scale;
+    uint32_t samples = 1;
+    format::Mapping mapping;
+    std::unique_ptr<plume::RenderTexture> texture;
+  };
+  std::vector<Remade> remade;
+  uint32_t samples_changed = 0;  // of them, those whose sample count changes
+  for (const auto& [key, target] : targets_) {
+    const Scale wanted = ScaleAfter(*target, output, scene);
+    const uint32_t wanted_samples = HostSamplesAt(key, target->msaa_follows, level);
+    if (!target->texture ||
+        (target->scale == wanted && target->host_samples == wanted_samples)) {
+      continue;
+    }
+    Remade r;
+    r.target = target.get();
+    r.scale = wanted;
+    r.samples = wanted_samples;
+    r.mapping = key.depth ? format::DepthTargetFormat(key.format)
+                          : format::ColorTargetFormat(key.format);
+    if (r.mapping.status == format::Status::kOk) {
+      r.texture = MakeTargetTexture(*device_, key, r.mapping, wanted, wanted_samples,
+                                    target->height);
+    }
+    if (!r.texture) {
+      // Asked again every few seconds by the caller: the first few are logged.
+      if (scale_move_failures_logged_ < 4) {
+        ++scale_move_failures_logged_;
+        REXLOG_ERROR("[gpu] edram: the images of the screen could not be moved from {}x to {}x (the "
+                     "3D scene from {}x to {}x, host MSAA from {}x to {}x): {} could not be made "
+                     "at the new size and samples, most likely for want of video memory; {} "
+                     "target(s) made before it were freed again and everything stays as it was",
+                     resolution_scale_, output, scene_scale_, scene, msaa_level_, level,
+                     DescribeEdramKey(key), remade.size());
+      }
+      return false;
+    }
+    samples_changed += wanted_samples != target->host_samples;
+    remade.push_back(std::move(r));
+  }
+
+  const Scale output_before = resolution_scale_;
+  const Scale scene_before = scene_scale_;
+  const uint32_t level_before = msaa_level_;
+  uint64_t old_bytes = 0;
+  uint64_t new_bytes = 0;
+  for (Remade& r : remade) {
+    Target& t = *r.target;
+    old_bytes += TextureBytes(t.scale.Edge(t.width), t.scale.Edge(t.height), 1, t.format,
+                              t.host_samples);
+    // The framebuffers that name it, the shader views and their slots, then the texture, each after
+    // the lists that still use them (FrameRing serials); the same as a growth, with a new scale.
+    RetireFramebuffersOf(&t);
+    ReleaseViews(t);
+    std::unique_ptr<plume::RenderTexture> old = std::move(t.texture);
+    t.texture = std::move(r.texture);
+    t.format = r.mapping.format;
+    t.scale = r.scale;
+    t.host_samples = r.samples;
+    t.layout = plume::RenderTextureLayout::UNKNOWN;
+    ++t.generation;
+    t.views_generation = t.generation;
+    new_bytes += TextureBytes(r.scale.Edge(t.width), r.scale.Edge(t.height), 1, t.format,
+                              t.host_samples);
+    frames_->Retire(std::move(old));
+    // A new colour target or depth buffer is cleared whole before anything else touches it
+    // (D3D12 debug layer id 1422), as every new target is.
+    Clear(t, list);
+    ++stats_.rescaled;
+  }
+  for (const auto& [key, target] : targets_) {
+    // Also a target released for want of memory: Get makes it at this scale and these samples.
+    target->scale = ScaleAfter(*target, output, scene);
+    target->host_samples = HostSamplesAt(key, target->msaa_follows, level);
+    NoteMainViews(*target);
+  }
+  if (old_bytes != 0) {
+    device_->NoteReleased(old_bytes);
+  }
+  resolution_scale_ = output;
+  scene_scale_ = scene;
+  msaa_level_ = level;
+  scene_decided_ = true;
+  // What was memoized from the targets (a draw's scale and framebuffers, the depth's layer, which
+  // follows whether the scene is apart from the images of the screen) is stale.
+  ++change_serial_;
+  if (output == output_before && scene == scene_before) {
+    // Only the host MSAA level moved (SetMsaaLevel).
+    REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples now get {} sample{} on "
+                "the host (were {}): {} target(s) remade ({} with other samples), {:.1f} MiB (was "
+                "{:.1f} MiB)",
+                level, level == 1 ? "" : "s", level_before, remade.size(), samples_changed,
+                double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+    return true;
+  }
+  if (output == output_before) {
+    REXLOG_INFO("[gpu] edram: the 3D scene is now made at {}x, {}x{} of the guest's 1280x720 (was {}x): "
+                "{} target(s) remade, {:.1f} MiB (was {:.1f} MiB){}",
+                scene, scene.Edge(kAssumedScreenWidth), scene.Edge(kAssumedScreenHeight),
+                scene_before, remade.size(), double(new_bytes) / 1048576.0,
+                double(old_bytes) / 1048576.0,
+                scene == resolution_scale_ ? "; the images of the screen's scale again" : "");
+  } else {
+    REXLOG_INFO("[gpu] edram: the images of the screen are now made at {}x, {}x{} of the guest's "
+                "1280x720 (was {}x), the 3D scene at {}x, {}x{} (was {}x): {} target(s) remade, "
+                "{:.1f} MiB (was {:.1f} MiB)",
+                output, output.Edge(kAssumedScreenWidth), output.Edge(kAssumedScreenHeight),
+                output_before, scene, scene.Edge(kAssumedScreenWidth),
+                scene.Edge(kAssumedScreenHeight), scene_before, remade.size(),
+                double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+  }
   return true;
 }
 
@@ -618,15 +880,18 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     if (std::find(failed_.begin(), failed_.end(), key) != failed_.end()) {
       return nullptr;
     }
+    DecideScene();  // the start's upscaler first: it sets the host MSAA level this target takes
     auto target = std::make_unique<Target>();
     target->key = key;
+    target->creation_size_bits = size_bits;
     // An image of the screen at the internal scale, the scene at its own (when the scene is drawn
     // smaller: the scale of a use is ScaleOf's, which gave no other); anything else at the
     // guest's size.
     target->scale = (scale == resolution_scale_ || (scene_decided_ && scale == scene_scale_))
                         ? scale
                         : Scale{};
-    target->host_samples = HostSamplesFor(key, size_bits);
+    target->msaa_follows = FollowsMsaaLevel(key, size_bits);
+    target->host_samples = HostSamplesAt(key, target->msaa_follows, msaa_level_);
     if (!Create(*target, wanted)) {
       failed_.push_back(key);
       REXLOG_ERROR("[gpu] edram: no host target for {} format {} at tile {} pitch {} {}x "
@@ -647,6 +912,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
                   "first use {} rows)",
                   DescribeEdramKey(key), target->host_samples, height);
     }
+    NoteMainViews(*target);
     if (!resolution_scale_.unit() || (scene_decided_ && !scene_scale_.unit())) {
       // The census of the rule: what each identity became, once.
       REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
@@ -1464,9 +1730,24 @@ std::string EdramTargets::TakeSummary() {
                         scene_scale_, scene_scale_.Edge(kAssumedScreenWidth),
                         scene_scale_.Edge(kAssumedScreenHeight), resolution_scale_);
   }
-  if (msaa_level_ > 2) {
-    text += std::format(" | host MSAA {}x: {} targets made with it", msaa_level_,
-                        stats_.made_host_msaa);
+  if (stats_.rescaled != 0) {
+    text += std::format(" | targets made again at another scale (a live change of the render scale "
+                        "or the upscaler) {}",
+                        stats_.rescaled);
+  }
+  {
+    // The targets that have other samples than the guest's now (a live change of the level made
+    // some again): more at 4x and 8x, fewer at 1x, and fewer on the pause menu's and the map's
+    // world view, which the game draws with 4.
+    size_t other = 0;
+    for (const auto& [key, target] : targets_) {
+      other += target->host_samples != key.samples;
+    }
+    if (msaa_level_ != 2 || other != 0) {
+      text += std::format(" | host MSAA {}x: {} of {} targets have other samples than the guest's "
+                          "(made with them {})",
+                          msaa_level_, other, targets_.size(), stats_.made_host_msaa);
+    }
   }
   if (aliasing_) {
     text += std::format(

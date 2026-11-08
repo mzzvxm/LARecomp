@@ -10,10 +10,12 @@
 //
 // A different game build or a changed shader pack gives other values: nothing here fails loudly,
 // the frame is simply not temporal (temporal.h says how each case shows in the log). The game's
-// MSAA mode is read from the keys (below): 2x, the console's, or 1x when it runs without MSAA
-// (mcla_gpu_msaa off, or an upscaler holding it off: gpu.h GuestMsaa).
+// MSAA mode is read from the keys (below): 2x, the console's, which the native renderer always runs
+// (OFF and the upscalers are fewer host samples, msaa_level.h), or 1x for a game made without MSAA,
+// which the native renderer no longer does: the 1x identities stay recognised but are not exercised.
 // ===========================================================================
 
+#include <cstddef>
 #include <cstdint>
 
 #include "draw_state.h"
@@ -33,9 +35,15 @@ inline constexpr uint64_t kToneMapPs = 0xBC5F0EED0A746DEAull;
 
 // The main view, the 3D scene: colour k_2_10_10_10_FLOAT at EDRAM tile 1024 and D24FS8 depth at
 // tile 0, both at the pitch of the screen, 2x samples in play, 1x when the game runs without MSAA
-// (census round 2, cen2-drive-msaaoff: the same shaders, fetches, target and viewport). The pause
-// menu and the map draw the world into the same keys at 4x samples, also without MSAA (round 2:
-// "scene 4x: 18"): the samples tell the play view from the pause view. Other D24FS8 and
+// (census round 2, cen2-drive-msaaoff: the same shaders, fetches, target and viewport; the native
+// renderer does not start a game that way any more, msaa_level.h). The pause
+// menu, the race pause and the map draw the world into the same keys at 4x samples, also without
+// MSAA (round 2: "scene 4x: 18"): the samples tell the play view from the pause view (View, below).
+// Both are the main view for the temporal system and the scene's scale (EdramTargets::IsSceneKey), but
+// each has a run of its own: the camera, the cut state and the history of one never meet the other's.
+// The pause view's UI pass draws into a 4x k_8_8_8_8 colour target, which is no float colour, so none
+// of its draws is the main view's; it may draw with the same 4x depth key, which is then told from the
+// world's by EdramTargets::DepthLayer as the 1x one is. Other D24FS8 and
 // float-colour targets (the reflections, the cascades) have other pitches or bases. The UI phase
 // draws into k_8_8_8_8@720 and a 1x depth at the same base and pitch (census 3.4): the colour is
 // no float, so its draws are not the main view's; but the UI's depth-only draw (one a frame, the
@@ -47,6 +55,8 @@ inline constexpr uint64_t kToneMapPs = 0xBC5F0EED0A746DEAull;
 // after the start press, not a pause menu), and that no other pass draws float colour at tile 1024
 // or D24FS8 at tile 0 and pitch 1280 at 1x before the anchor (round 2's counts say only the UI's
 // depth-only draw does, after it).
+// CHECK: that the pause view's UI pass draws with the 4x depth key or none (the log line "[gpu]
+// edram: ... made at" for D24FS8@0 pitch 1280 4x with layer 1 says it shares it).
 inline constexpr uint16_t kMainPitch = 1280;
 inline constexpr uint16_t kMainColorBase = 1024;
 inline constexpr uint16_t kMainDepthBase = 0;
@@ -60,6 +70,19 @@ inline bool IsPlaySamples(uint32_t samples) {
 }
 inline bool IsMainSamples(uint32_t samples) {
   return IsPlaySamples(samples) || samples == kPauseSamples;
+}
+
+// The two kinds of main view: the 3D scene in play, and the world drawn behind the pause menu, the
+// race pause and the GPS map. The temporal system keeps one run (camera, cut state, history) at a
+// time and starts it again when the kind changes (temporal.h, "Views").
+enum class View : uint8_t { kPlay, kPause, kCount };
+inline constexpr size_t kViewCount = size_t(View::kCount);
+// The view a main view draw of `samples` guest samples (1, 2 or 4) belongs to.
+inline View ViewOfSamples(uint32_t samples) {
+  return samples == kPauseSamples ? View::kPause : View::kPlay;
+}
+inline const char* ViewName(View view) {
+  return view == View::kPause ? "pause/map view" : "game view";
 }
 
 // Guest samples (1, 2 or 4) when `key` is the main view's colour, else 0.

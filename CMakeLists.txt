@@ -108,6 +108,9 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/camera_look.cpp
+    src/mc_engine/display_menu.cpp
+    src/mc_engine/display_mode.cpp
+    src/mc_engine/frame_generation_menu.cpp
     src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
@@ -117,6 +120,9 @@ set(LARECOMP_SOURCES
     src/mc_engine/tire_offset.cpp
     src/mc_engine/hud_units.cpp
     src/mc_engine/adaptive_triggers.cpp
+    src/mc_engine/impulse_triggers.cpp
+    src/mc_engine/impulse_wgi.cpp
+    src/mc_engine/wheel_slip.cpp
     src/mc_engine/cutscene_gallery.cpp
     src/mc_engine/texture_dump.cpp
     src/mc_engine/boot_progress.cpp
@@ -257,6 +263,7 @@ set(LARECOMP_SOURCES
     src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
     src/bootprogress/larecomp_shader_build.cpp
+    src/bootprogress/larecomp_pipeline_build.cpp
     src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
     src/mc_engine/ui/imgui_theme.cpp
     src/mc_engine/ui/debug_overlay.cpp
@@ -277,8 +284,7 @@ if(NOT WIN32)
         src/native_gfx/native_gfx.cpp
         src/native_gfx/geometry.cpp
         src/native_gfx/telemetry.cpp
-        src/native_gfx/guest/sampler_state.cpp
-        src/mc_engine/adaptive_triggers.cpp)
+        src/native_gfx/guest/sampler_state.cpp)
     foreach(_f IN LISTS LARECOMP_SOURCES)
         if(_f MATCHES "^src/native_gfx/d3d12/")
             list(APPEND _larecomp_win_only "${_f}")
@@ -436,6 +442,16 @@ else()
                                 "Kits/FidelityFX/api/include/ffx_api.h: building without FSR")
             else()
                 message(STATUS "larecomp: FidelityFX upscalers from ${LARECOMP_FFX_KIT}")
+                # Frame generation (src/gpu/frame_generation_ffx.h) needs the same SDK's frame generation
+                # header: a local checkout without it builds without frame generation.
+                if(EXISTS "${LARECOMP_FFX_KIT}/framegeneration/include/ffx_framegeneration.h")
+                    set(LARECOMP_FFX_HAS_FRAMEGENERATION ON)
+                    message(STATUS "larecomp: FidelityFX frame generation from ${LARECOMP_FFX_KIT}")
+                else()
+                    set(LARECOMP_FFX_HAS_FRAMEGENERATION OFF)
+                    message(STATUS "larecomp: no FidelityFX frame generation header in ${LARECOMP_FFX_KIT}: "
+                                    "building without frame generation")
+                endif()
             endif()
         endif()
         # NVIDIA's Streamline SDK (2.14.16, the folder that holds include/ and bin/x64/): the headers
@@ -470,6 +486,27 @@ else()
                 message(WARNING "LARECOMP_STREAMLINE_DIR=${LARECOMP_STREAMLINE_DIR} holds no include/sl.h, "
                                 "include/sl_dlss.h and bin/x64/sl.interposer.dll: building without DLSS")
             endif()
+        endif()
+        # DLSS Frame Generation (src/gpu/dlss_frame_generation.h) needs the headers of the frame generation,
+        # Reflex and PC latency plugins and their DLLs: an unpacked SDK folder without them builds DLSS Super
+        # Resolution only (the fetched files above always carry them).
+        set(LARECOMP_STREAMLINE_HAS_FRAMEGEN OFF)
+        if(LARECOMP_STREAMLINE_KIT)
+            set(_larecomp_sl_fg_ok ON)
+            foreach(_larecomp_sl_fg_file include/sl_dlss_g.h include/sl_reflex.h include/sl_pcl.h
+                    bin/x64/sl.dlss_g.dll bin/x64/nvngx_dlssg.dll bin/x64/sl.reflex.dll bin/x64/sl.pcl.dll)
+                if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/${_larecomp_sl_fg_file}")
+                    set(_larecomp_sl_fg_ok OFF)
+                endif()
+            endforeach()
+            if(_larecomp_sl_fg_ok)
+                set(LARECOMP_STREAMLINE_HAS_FRAMEGEN ON)
+                message(STATUS "larecomp: DLSS frame generation (Streamline sl.dlss_g, sl.reflex, sl.pcl)")
+            else()
+                message(STATUS "larecomp: the Streamline folder lacks the frame generation, Reflex or PC latency "
+                                "files: building DLSS without frame generation")
+            endif()
+            unset(_larecomp_sl_fg_ok)
         endif()
         add_subdirectory(src/gpu)
         # The renderer's objects, and plume's archive without plume's include
@@ -630,6 +667,15 @@ else()
         if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
             list(APPEND _larecomp_ffx_dlls amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll)
         endif()
+        # The frame generation effect DLLs (the loader opens them by name from this folder).
+        if(LARECOMP_FFX_HAS_FRAMEGENERATION)
+            if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
+                list(APPEND _larecomp_ffx_dlls amd_fidelityfx_framegeneration_dx12.dll)
+            endif()
+            if("VULKAN" IN_LIST LARECOMP_GPU_BACKENDS)
+                list(APPEND _larecomp_ffx_dlls amd_fidelityfx_framegeneration_vk.dll)
+            endif()
+        endif()
         foreach(_larecomp_ffx_dll IN LISTS _larecomp_ffx_dlls)
             if(NOT EXISTS "${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll}")
                 message(WARNING "FidelityFX: ${LARECOMP_FFX_KIT}/signedbin/${_larecomp_ffx_dll} is missing")
@@ -655,8 +701,12 @@ else()
     # opens them by full path from this folder after checking their signature, and nowhere else.
     # NvLowLatencyVk.dll is the Vulkan Reflex runtime that sl.common.dll loads by itself on Vulkan.
     if(LARECOMP_STREAMLINE_KIT)
-        foreach(_larecomp_sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
-                NvLowLatencyVk.dll)
+        set(_larecomp_sl_dlls sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll NvLowLatencyVk.dll)
+        if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
+            # Frame generation and the two plugins it requires (Reflex and PC latency through Streamline).
+            list(APPEND _larecomp_sl_dlls sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
+        endif()
+        foreach(_larecomp_sl_dll IN LISTS _larecomp_sl_dlls)
             if(NOT EXISTS "${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll}")
                 message(WARNING "Streamline: ${LARECOMP_STREAMLINE_KIT}/bin/x64/${_larecomp_sl_dll} is missing")
                 continue()
@@ -685,11 +735,57 @@ else()
         endforeach()
     endif()
 
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
+    if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12")
         add_custom_command(TARGET larecomp POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12"
                     "$<TARGET_FILE_DIR:larecomp>/D3D12"
             COMMENT "Copying Agility SDK runtime binaries next to larecomp.exe")
+    endif()
+
+    if(NOT WIN32 AND NOT APPLE)
+        # Linux. What a Windows executable carries inside it or in assets/D3D12 sits next to the
+        # executable instead.
+        #
+        # The shader compiler the shader pack builder loads, from <exe folder>/D3D12/ as on Windows
+        # (bootprogress/larecomp_shader_build.cpp): libdxcompiler.so, fetched and checked by
+        # cmake/FetchDxcLinux.cmake, with the licences that travel with it (the Windows DLLs of
+        # assets/D3D12 are not copied here).
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDxcLinux.cmake")
+        if(LARECOMP_DXC_LINUX_LIB)
+            add_custom_command(TARGET larecomp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/D3D12"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LARECOMP_DXC_LINUX_LIB}"
+                        "$<TARGET_FILE_DIR:larecomp>/D3D12/libdxcompiler.so"
+                COMMENT "Copying libdxcompiler.so next to larecomp")
+            if(LARECOMP_DXC_LINUX_LICENCE)
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${LARECOMP_DXC_LINUX_LICENCE}"
+                            "$<TARGET_FILE_DIR:larecomp>/D3D12/LICENSE-LLVM.txt"
+                    COMMENT "Copying the DXC licence next to libdxcompiler.so")
+            endif()
+            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt")
+                add_custom_command(TARGET larecomp POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${CMAKE_CURRENT_SOURCE_DIR}/assets/D3D12/LICENCE-MIT.txt"
+                            "$<TARGET_FILE_DIR:larecomp>/D3D12/LICENCE-MIT.txt"
+                    COMMENT "Copying the DXC MIT licence next to libdxcompiler.so")
+            endif()
+        endif()
+
+        # Key caps (src/keycaps: RCDATA in the Windows executable) and the achievements' labels
+        # (src/achievements.toml: ACHIEVEMENTS_TOML in larecomp.rc), read from files here
+        # (mc_engine/keyboard_native.cpp ReadCapBytes, larecomp_app.h OnPostLoadXexImage).
+        add_custom_command(TARGET larecomp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:larecomp>/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/src/achievements.toml"
+                    "$<TARGET_FILE_DIR:larecomp>/assets/achievements.toml"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/src/keycaps"
+                    "$<TARGET_FILE_DIR:larecomp>/keycaps"
+            COMMENT "Copying the key caps and the achievements file next to larecomp")
     endif()
 endif()

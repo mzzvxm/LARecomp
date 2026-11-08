@@ -26,12 +26,18 @@
 #include "ao_mip_ps.hlsl.dxil.h"
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
+#include "fg_compose_ps.hlsl.dxil.h"
+#include "dlssg_ui_hdr_ps.hlsl.dxil.h"
+#include "dlssg_ui_ps.hlsl.dxil.h"
+#include "fg_copy_ps.hlsl.dxil.h"
+#include "fg_prepare_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
 #include "fsr_rcas_hdr_ps.hlsl.dxil.h"
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
+#include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
 #include "overlay_hdr_ps.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
@@ -60,6 +66,8 @@
 #include "smaa_weights_ps.hlsl.dxil.h"
 #include "temporal_copy_ps.hlsl.dxil.h"
 #include "temporal_mv_ps.hlsl.dxil.h"
+#include "temporal_vehicle_table_ps.hlsl.dxil.h"
+#include "vehicle_motion_mask_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "ao_apply_ms_ps.hlsl.spirv.h"
@@ -71,12 +79,18 @@
 #include "ao_mip_ps.hlsl.spirv.h"
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
+#include "fg_compose_ps.hlsl.spirv.h"
+#include "dlssg_ui_hdr_ps.hlsl.spirv.h"
+#include "dlssg_ui_ps.hlsl.spirv.h"
+#include "fg_copy_ps.hlsl.spirv.h"
+#include "fg_prepare_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
 #include "fsr_rcas_hdr_ps.hlsl.spirv.h"
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
+#include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
 #include "overlay_hdr_ps.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
@@ -105,6 +119,8 @@
 #include "smaa_weights_ps.hlsl.spirv.h"
 #include "temporal_copy_ps.hlsl.spirv.h"
 #include "temporal_mv_ps.hlsl.spirv.h"
+#include "temporal_vehicle_table_ps.hlsl.spirv.h"
+#include "vehicle_motion_mask_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -160,6 +176,11 @@ inline HostShaderBlob FsrRcasHdrPixelShader() {
 // guest's target, and the HDR present's compose of the underlay and the UI layer.
 inline HostShaderBlob LayersRestorePixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(layers_restore_ps);
+}
+
+// The same layers' copy out of a multisampled target: the mean of its samples.
+inline HostShaderBlob LayersResolvePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(layers_resolve_ps);
 }
 
 inline HostShaderBlob HdrComposePixelShader() {
@@ -251,6 +272,36 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
+}
+
+// One row of the vehicle table the motion vector pass reads (temporal_mv.h, vehicle_motion.h), and the
+// R8 mask of the cars' shadow decals the upscalers take as their reactive input (vehicle_motion_mask.h).
+inline HostShaderBlob TemporalVehicleTablePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(temporal_vehicle_table_ps);
+}
+
+inline HostShaderBlob VehicleMotionMaskPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(vehicle_motion_mask_ps);
+}
+
+// Frame generation (frame_generation.h): the scene prepared for the interpolation, the generated
+// frame composed with the UI layer, and the pacer's copy of a present image into the back buffer.
+inline HostShaderBlob FrameGenerationPreparePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_prepare_ps);
+}
+
+inline HostShaderBlob FrameGenerationComposePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_compose_ps);
+}
+
+inline HostShaderBlob FrameGenerationCopyPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_copy_ps);
+}
+
+// DLSS frame generation (dlss_frame_generation.h): the UI layer in the back buffer's terms, for an SDR
+// and for an HDR10 back buffer.
+inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
+  return hdr ? MCLA_GPU_HOST_SHADER_BLOB(dlssg_ui_hdr_ps) : MCLA_GPU_HOST_SHADER_BLOB(dlssg_ui_ps);
 }
 
 // The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0

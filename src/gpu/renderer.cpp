@@ -15,6 +15,7 @@
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 
+#include "backend.h"
 #include "gpu.h"
 #include "guest_capture.h"
 #include "hdr.h"
@@ -23,6 +24,7 @@
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
+#include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
 #include "watch.h"
@@ -61,7 +63,9 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
                       "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
                       "graphics setting for this app names, else the high-performance GPU; on "
-                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for.")
+                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for. The "
+                      "emulated GPU (RENDERER: XENIA) runs on the same one unless d3d12_adapter or "
+                      "vulkan_device is set.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -213,7 +217,6 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
       }
     }
     render_scale_ = ChooseStartRenderScale(width, height);
-    render_scale_noted_ = render_scale_.scale;
     PublishWindowSize(width, height);
     edram_.Initialize(device_, frames_, heap_, render_scale_);
     // mcla_gpu_edram_capture: the detector asks for a RenderDoc capture.
@@ -259,26 +262,25 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     const bool layers_ok = layers_.Initialize(passes_, edram_, pass_timing_);
     scene_.SetFrameLayers(&layers_);  // a draw is touched only while the layers are active
     if (swap_chain_.hdr()) {
-      if (layers_ok && hdr_scene_.Initialize(passes_, layers_, pass_timing_)) {
-        present_.SetHdrScene(&hdr_scene_);
-        // Stage 3, the scene above paper white. Without the variants the scene stays at paper white.
-        if (hdr_tone_.Initialize(passes_, shaders_, layers_, post_, pass_timing_)) {
-          layers_.SetSceneSource(&hdr_tone_);
-          hdr_scene_.SetSceneSource(&hdr_tone_);
-          scene_.SetHdrToneMap(&hdr_tone_);
-        }
-      } else {
-        REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
-                     "the front buffer as it is (the scene and the UI together)");
-        layers_.Request(FrameLayers::kRequesterHdr, false);
-      }
+      SetUpHdrScene(layers_ok);
     }
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
     // The temporal groundwork's passes: made on first use, never fail the renderer.
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
-    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_);
+    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
+                         edram_);
+    // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
+    fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
+                   &resize_requested_);
+    // Its images and AMD's context are not something the budget's response can release; its lines
+    // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
+    vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
+    // frame boundary.
+    dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
+                      swap_chain_);
     timing_.Initialize(device_);
     pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
     markers_.Initialize(device_);
@@ -298,6 +300,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     occlusion_.Shutdown();
     pass_timing_.Shutdown();
     timing_.Shutdown();
+    fg_.Shutdown();
+    dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ao_.Shutdown();
     flicker_probe_.Shutdown();
@@ -314,6 +318,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     passes_.Shutdown();
     edram_.Shutdown();
     swap_chain_.Shutdown();
+    fg_.ReleaseQueue();
     hdr::Stop();
     geometry_.Shutdown();
     upload_.Shutdown();
@@ -337,19 +342,46 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   return true;
 }
 
+bool Renderer::SetUpHdrScene(bool layers_ok) {
+  if (layers_ok &&
+      (hdr_scene_.ready() || hdr_scene_.Initialize(passes_, layers_, pass_timing_))) {
+    present_.SetHdrScene(&hdr_scene_);
+    // Stage 3, the scene above paper white. Without the variants the scene stays at paper white.
+    if (hdr_tone_.ready() ||
+        hdr_tone_.Initialize(passes_, shaders_, layers_, post_, pass_timing_)) {
+      layers_.SetSceneSource(&hdr_tone_);
+      hdr_scene_.SetSceneSource(&hdr_tone_);
+      scene_.SetHdrToneMap(&hdr_tone_);
+    }
+    return true;
+  }
+  REXLOG_ERROR("[gpu] hdr: the UI layer split could not be set up; the HDR output shows "
+               "the front buffer as it is (the scene and the UI together)");
+  layers_.Request(FrameLayers::kRequesterHdr, false);
+  return false;
+}
+
+void Renderer::LoadHdrVariants() {
+  if (!shaders_.attached() || shaders_.has_hdr_variants()) {
+    return;
+  }
+  std::string why;
+  if (!shaders_.LoadHdrVariants(&why)) {
+    REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
+                "the HDR output keeps the scene at paper white (stage 2)",
+                why);
+  }
+}
+
 void Renderer::OnShaderPackAttached() {
   // The HDR scene variants of the game's shaders (stage 3, hdr_tonemap.h), from the folder the
   // main pack came from, when HDR output is on. Before the pipeline records are read: a record
   // that names a variant is dropped while the variants are not loaded. They change the entries
   // (hdr_variant), so this is the one place they are loaded, for a pack attached at startup and for
   // one attached later; HdrToneMap::active() waits for them.
+  // With HDR output off they are loaded when it is turned on (SwitchHdr).
   if (hdr::Wanted()) {
-    std::string why;
-    if (!shaders_.LoadHdrVariants(&why)) {
-      REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
-                  "the HDR output keeps the scene at paper white (stage 2)",
-                  why);
-    }
+    LoadHdrVariants();
   }
   pipelines_.StartPersistence(shaders_);
 }
@@ -387,6 +419,8 @@ void Renderer::Shutdown() {
                  presented_);
     return;
   }
+  // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
+  fg_.StopPacer();
   if (release_early_) {
     REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early",
                 early_releases_, guest_presents_);
@@ -422,6 +456,10 @@ void Renderer::Shutdown() {
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();
+  fg_.Shutdown();
+  // DLSS frame generation: the proxy swap chain is destroyed and the plugin unloaded before
+  // Streamline itself is shut down (temporal_.Shutdown below).
+  dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ao_.Shutdown();
   flicker_probe_.Shutdown();
@@ -438,6 +476,7 @@ void Renderer::Shutdown() {
   passes_.Shutdown();
   edram_.Shutdown();
   swap_chain_.Shutdown();
+  fg_.ReleaseQueue();  // the swap chain made on it is gone
   hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
@@ -445,6 +484,10 @@ void Renderer::Shutdown() {
   samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
+  // 4. A component shut down above can still retire a release, such as a bindless slot its
+  //    images held (DLSS frame generation's, while it was generating). The release writes the
+  //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
+  frames_.WaitIdle();
   heap_.Shutdown();
   frames_.Shutdown();
   device_.Shutdown();
@@ -500,6 +543,15 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       census_.OnDraw(payload);
       scene_.OnDraw(payload, OpenFrameList());
       MaybeFlushBatch();
+      textures_.DrawExecuted();
+      if (textures_.prefetching()) {
+        PrefetchTextures(header);
+      } else if (prefetch_live_) {
+        // The burst is over: the next one starts from the record it is on then.
+        prefetch_live_ = false;
+        prefetch_position_ = 0;
+        prefetch_ahead_ = 0;
+      }
       return;
     case RecordType::kClear: {
       const auto& record = *reinterpret_cast<const ClearRecord*>(payload);
@@ -538,6 +590,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       return;
     }
     case RecordType::kFence:
+      // The guest may reuse what the records before this fence named once it is published: no
+      // decode of theirs may still be reading it.
+      textures_.QuiesceDecodes(header.sequence);
       ExecuteFence(*reinterpret_cast<const FenceRecord*>(payload));
       return;
     case RecordType::kLock: {
@@ -598,9 +653,54 @@ void Renderer::ExecuteFence(const FenceRecord& record) {
   }
 }
 
+void Renderer::PrefetchTextures(const RecordHeader& executing) {
+  if (!frames_.is_open()) {
+    return;
+  }
+  prefetch_live_ = true;
+  CommandStream& stream = thread_.stream();
+  // Never behind the record that just ran (it is still the stream's current one: Release comes
+  // after Execute). A draw that ran was one that had been offered, if the position was ahead of it.
+  const uint64_t here = stream.consumer_position() + executing.size;
+  if (prefetch_position_ < here) {
+    prefetch_position_ = here;
+    prefetch_ahead_ = 0;
+  } else if (prefetch_ahead_ > 0) {
+    --prefetch_ahead_;
+  }
+  for (uint32_t budget = kPrefetchScanRecords;
+       budget != 0 && prefetch_ahead_ < kPrefetchAheadDraws; --budget) {
+    const uint64_t before = prefetch_position_;
+    const RecordHeader* next = stream.Peek(&prefetch_position_);
+    if (!next) {
+      break;
+    }
+    if (next->type == RecordType::kPresent) {
+      // The frame ends there: the next one's draws are looked at once it has started.
+      prefetch_position_ = before;
+      break;
+    }
+    if (next->type == RecordType::kDraw) {
+      scene_.PrefetchTextures(next->sequence, reinterpret_cast<const uint8_t*>(next + 1));
+      ++prefetch_ahead_;
+    }
+  }
+}
+
 plume::RenderCommandList* Renderer::OpenFrameList() {
   if (frames_.is_open()) {
     return frames_.list();
+  }
+  if (!presenting_) {
+    // A guest frame starts: nothing of it is recorded, so the HDR setting can change the output now
+    // (from a present the back buffer is already acquired: ExecutePresent does it before that).
+    // The order of the live changes at a frame boundary: this one first (GPU idle, the swap chain
+    // made again, the window's size published again), then Scene::BeginFrame: the render scale and
+    // the upscaler path (TemporalSystem::BeginFrame, which reads the size published here), then the
+    // MSAA level (MsaaLevel::BeginFrame, after the path's own change). Frame generation's swap chain
+    // switch comes right after the HDR one (both make the swap chain again).
+    ApplyHdrSetting();
+    ApplyFrameGenerationSetting();
   }
   plume::RenderCommandList* list = frames_.Begin();
   if (!list) {
@@ -677,16 +777,29 @@ void Renderer::OnIdle() {
     return;
   }
   // The guest is quiet (not started yet, or stalled): keep the UI passes coming
-  // and present when there is something new to show.
+  // and present when there is something new to show. No frame is open, so this is a boundary where
+  // the HDR setting is applied (and what it changed is shown).
+  const bool hdr_changed = ApplyHdrSetting() | ApplyFrameGenerationSetting();
   overlay_host_->RequestPass();
   const bool first_frame = presented_ == 0;
   const bool resize = resize_requested_.load(std::memory_order_acquire);
-  if (first_frame || resize || overlay_.HasNewContent()) {
+  if (first_frame || resize || hdr_changed || overlay_.HasNewContent()) {
     ExecutePresent(PresentSource::kIdle);
   }
 }
 
 bool Renderer::RebuildSwapChain() {
+  if (dlssg_.active()) {
+    // DLSS frame generation must be off before any change of the window, and the proxy chain is not
+    // resized: it is switched off, which makes the chain again, plain, at the window's size; frame
+    // generation comes back by itself once the window has been still (DlssFrameGeneration::kSettle).
+    if (SwitchDlssFrameGeneration(DlssFrameGeneration::Change::kOff, /*resize=*/true)) {
+      return !swap_chain_.empty();
+    }
+  }
+  // With frame generation the pacer presents: it stops first, and the present queue's work (every
+  // image it copied or presented) is waited for.
+  const FrameGeneration::PauseScope pause(fg_);
   // The back buffers are about to be released (and on D3D12 Release()d by
   // Plume's resize): nothing in flight may still write them.
   frames_.WaitIdle();
@@ -695,10 +808,179 @@ bool Renderer::RebuildSwapChain() {
   if (!swap_chain_.Rebuild()) {
     return false;
   }
-  // The render scale stays the one the start's size gave.
-  NoteRenderScaleWindow(render_scale_, swap_chain_.width(), swap_chain_.height(),
-                        &render_scale_noted_);
+  // The new size is what the render scale is measured against from the next frame boundary on
+  // (temporal.cpp ReadRenderScale: with the screen's scale or an FSR1 preset the images follow).
   PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  return true;
+}
+
+bool Renderer::ApplyHdrSetting() {
+  if (swap_chain_.lost()) {
+    // A switch left the window without a chain (nothing could be made, not even the old format):
+    // try again each second, in the format the passes use.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - swap_chain_retry_ < std::chrono::seconds(1)) {
+      return false;
+    }
+    swap_chain_retry_ = now;
+    const FrameGeneration::PauseScope pause(fg_);
+    frames_.WaitIdle();
+    SwapChain::Recreated result;
+    {
+      latency::SwapChainChange latency_change;
+      result = swap_chain_.Recreate(present_.hdr_output());
+      latency_change.Replaced(swap_chain_);
+    }
+    dlss::SwapChainRecreated();
+    if (result != SwapChain::Recreated::kLost) {
+      fg_.OnSwapChainChanged();
+      dlssg_.OnSwapChainChanged();
+    }
+    if (result == SwapChain::Recreated::kLost) {
+      if (!swap_chain_lost_logged_) {
+        swap_chain_lost_logged_ = true;
+        REXLOG_ERROR("[gpu] the window has no swap chain and a new one could not be made; trying "
+                     "again each second (nothing is presented meanwhile)");
+      }
+      return false;
+    }
+    swap_chain_lost_logged_ = false;
+    AdoptSwapChain();
+    hdr::SwitchDone(swap_chain_.hdr(), swap_chain_.hdr());
+    REXLOG_INFO("[gpu] the swap chain was made again after it was lost: {}x{}, {}", swap_chain_.width(),
+                swap_chain_.height(), swap_chain_.hdr() ? "HDR10" : "SDR");
+    return true;
+  }
+  bool to_hdr = false;
+  std::string why;
+  if (!hdr::SwitchWanted(swap_chain_.hdr(), &to_hdr, &why)) {
+    return false;
+  }
+  return SwitchHdr(to_hdr, why);
+}
+
+void Renderer::AdoptSwapChain() {
+  // What draws into the back buffer takes the set made for its format. The set of the format the
+  // chain has was built (a switch builds the one it asks for first and the chain keeps the other
+  // one's only after it was in use); a chain that came back in a format neither was built for is
+  // not expected, and is logged.
+  const bool hdr = swap_chain_.hdr();
+  if (!present_.has_output(hdr)) {
+    present_.BuildOutput(SwapChain::FormatFor(hdr), hdr);
+  }
+  if (!overlay_.has_target(hdr)) {
+    overlay_.BuildTarget(SwapChain::FormatFor(hdr), hdr);
+  }
+  if (!present_.has_output(hdr) || !overlay_.has_target(hdr)) {
+    REXLOG_ERROR("[gpu] hdr: the passes for the {} back buffer could not be made; the present and "
+                 "the overlay keep the {} ones, which do not match the swap chain",
+                 hdr ? "HDR10" : "SDR", present_.hdr_output() ? "HDR10" : "SDR");
+  } else {
+    present_.UseOutput(hdr);
+    overlay_.UseTarget(hdr);
+  }
+  // The scene half of HDR output follows the chain: layers, float scene and tone map up, or down
+  // (their images released at once; the idle wait frees them). Their failures leave an HDR10 output
+  // at stage 1 (the front buffer at paper white), as at a start.
+  if (hdr) {
+    // Also when frame generation already holds the layers up (frame_generation.h): the HDR scene
+    // and the tone map are set up (and are no-ops when they are) whenever the output goes HDR10.
+    layers_.Request(FrameLayers::kRequesterHdr, true);
+    SetUpHdrScene(layers_.active());
+  } else if (!hdr && (layers_.active() || hdr_scene_.ready())) {
+    layers_.Request(FrameLayers::kRequesterHdr, false);
+    hdr_scene_.Release();
+    hdr_tone_.Release();
+  }
+  // A new chain has no metadata; UpdateHdr sends it before the next present. The sizes are the
+  // window's, published again as after any rebuild (RebuildSwapChain): the render scale is measured
+  // against them at the next frame boundary (temporal.cpp ReadRenderScale), as after a resize.
+  hdr_metadata_sent_ = false;
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+}
+
+// CHECK: not run (written without a build). Look for, in the log of a switch: "hdr: switching A -> B
+// (why)" then "hdr: switched A -> B in N ms (passes, swap chain, layers)"; a refusal says "could not
+// switch" with the reason above it; the first frames after a switch to HDR may show the scene at
+// paper white (stage 2) until the HDR variants' pipelines are made in the background (they are not
+// in the pipeline cache when the session started without HDR: the records naming them are dropped
+// at load, pipelines.cpp); the picture should flicker at most once.
+bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
+  using Clock = std::chrono::steady_clock;
+  const auto millis = [](Clock::time_point from, Clock::time_point to) {
+    return std::chrono::duration<double, std::milli>(to - from).count();
+  };
+  const char* const from_name = swap_chain_.hdr() ? "HDR10" : "SDR";
+  const char* const to_name = to_hdr ? "HDR10" : "SDR";
+  const bool from_hdr = swap_chain_.hdr();
+  const auto begin = Clock::now();
+  REXLOG_INFO("[gpu] hdr: switching {} -> {} ({})", from_name, to_name, why);
+
+  // 1. What can fail without leaving a trace comes first, while the old chain still runs: the
+  //    passes that draw into the new back buffer's format. A set that could not be made leaves
+  //    everything as it was.
+  if (!present_.BuildOutput(SwapChain::FormatFor(to_hdr), to_hdr) ||
+      !overlay_.BuildTarget(SwapChain::FormatFor(to_hdr), to_hdr)) {
+    REXLOG_ERROR("[gpu] hdr: could not switch {} -> {}: the present or overlay passes for the {} "
+                 "back buffer could not be made (reason above); the output stays {}",
+                 from_name, to_name, to_name, from_name);
+    hdr::SwitchDone(to_hdr, from_hdr);
+    return false;
+  }
+  if (to_hdr) {
+    // The scene variants of the game's tone map; without them the HDR output keeps the scene at
+    // paper white (logged).
+    LoadHdrVariants();
+  }
+  const auto built = Clock::now();
+
+  // 2. The swap chain, in the other format: nothing in flight may name the back buffers, and the
+  //    latency reducer's calls that name the chain wait until the new one is in. With frame
+  //    generation the pacer is paused for it (the new chain stays on the present queue).
+  const FrameGeneration::PauseScope fg_pause(fg_);
+  frames_.WaitIdle();
+  SwapChain::Recreated result;
+  {
+    latency::SwapChainChange latency_change;
+    result = swap_chain_.Recreate(to_hdr);
+    latency_change.Replaced(swap_chain_);
+  }
+  dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
+  if (result != SwapChain::Recreated::kLost) {
+    fg_.OnSwapChainChanged();  // the pacer's copy pass is for the chain's format
+    dlssg_.OnSwapChainChanged();  // and DLSS frame generation's images and UI pass
+  }
+  const auto remade = Clock::now();
+
+  if (result == SwapChain::Recreated::kLost) {
+    // Not even the old format could be made. The passes stay as they were; ApplyHdrSetting makes
+    // the chain again each second.
+    REXLOG_ERROR("[gpu] hdr: switching {} -> {} left the window without a swap chain: neither the "
+                 "new format nor the old one could be made; trying again each second",
+                 from_name, to_name);
+    swap_chain_lost_logged_ = true;
+    swap_chain_retry_ = Clock::now();
+    hdr::SwitchDone(to_hdr, from_hdr);
+    return false;
+  }
+  // 3. What draws into the back buffer takes the new format's set, and the scene half of HDR output
+  //    (layers, float scene, tone map) comes up or goes down with it.
+  AdoptSwapChain();
+  const bool now_hdr = swap_chain_.hdr();
+  hdr::SwitchDone(to_hdr, now_hdr);
+  const auto done = Clock::now();
+  if (now_hdr == to_hdr) {
+    REXLOG_INFO("[gpu] hdr: switched {} -> {} in {:.0f} ms (passes {:.0f} ms, swap chain {:.0f} ms, "
+                "layers {:.0f} ms): swap chain {}x{}, {}",
+                from_name, to_name, millis(begin, done), millis(begin, built),
+                millis(built, remade), millis(remade, done), swap_chain_.width(),
+                swap_chain_.height(), to_name);
+    return true;
+  }
+  REXLOG_WARN("[gpu] hdr: could not switch {} -> {} (the output does not present the HDR10 colour "
+              "space; the reason is above): the {} swap chain was made again and stays, {:.0f} ms; "
+              "not tried again until mcla_gpu_hdr or Windows' HDR state changes",
+              from_name, to_name, from_name, millis(begin, done));
   return true;
 }
 
@@ -747,7 +1029,21 @@ void Renderer::ExecutePresent(PresentSource source) {
     guest_has_presented_ = true;
     last_guest_present_ = std::chrono::steady_clock::now();
   }
-  swap_chain_.SetVsync(REXCVAR_GET(mcla_gpu_vsync));
+  if (!frames_.is_open()) {
+    // A present with no frame recorded before it: a boundary too (a frame that has scene records
+    // applied the setting when it opened).
+    ApplyHdrSetting();
+    ApplyFrameGenerationSetting();
+  }
+  struct PresentingScope {
+    explicit PresentingScope(bool& flag) : flag_(flag) { flag_ = true; }
+    ~PresentingScope() { flag_ = false; }
+    bool& flag_;
+  } presenting(presenting_);
+  // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
+  swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync()
+                                    : (dlssg_.active() ? dlssg_.WantsVsync()
+                                                       : REXCVAR_GET(mcla_gpu_vsync)));
   UpdateHdr();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
@@ -762,8 +1058,16 @@ void Renderer::ExecutePresent(PresentSource source) {
     ++skipped_;
     return;
   }
+  if (fg_.active()) {
+    ExecutePresentGenerated(source);
+    return;
+  }
 
-  swap_chain_.WaitForPresentSlot();
+  if (!dlssg_.active()) {
+    // Streamline's pacer owns the chain's frame latency while DLSS frame generation runs (the
+    // game's Reflex sleep paces the frames instead); the waitable object is not waited on.
+    swap_chain_.WaitForPresentSlot();
+  }
   uint32_t image = 0;
   if (!swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
     // Out of date (Vulkan) or a lost chain: rebuild once and retry. A failed
@@ -774,6 +1078,11 @@ void Renderer::ExecutePresent(PresentSource source) {
       ++skipped_;
       return;
     }
+  }
+  if (dlssg_.active()) {
+    // Streamline's fake swap chain image, which its frame generation may have left in GENERAL: the
+    // present pass overwrites all of it, so the first barrier on it starts from UNDEFINED (Vulkan).
+    backend::ForgetImageContents(swap_chain_.texture(image));
   }
 
   // Already open when the guest frame had scene records.
@@ -809,6 +1118,9 @@ void Renderer::ExecutePresent(PresentSource source) {
   latency::OnPresentBegin();
   const bool present_ok = swap_chain_.Present(image);
   latency::OnPresentEnd();
+  if (dlssg_.active()) {
+    dlssg_.AfterPresent();  // Streamline's status now and then
+  }
   if (!present_ok) {
     // DXGI and Vulkan both report a chain that no longer matches the window
     // here; anything else that fails here is the device.
@@ -821,6 +1133,266 @@ void Renderer::ExecutePresent(PresentSource source) {
   // The slot about to be recorded had its fence waited by Advance.
   upload_.ResetSlot(frames_.slot());
   // What its previous round counted for the guest's occlusion queries is readable now.
+  occlusion_.OnSlotReady(frames_.slot());
+  ++presented_;
+  if (source == PresentSource::kGuest) {
+    ++guest_presents_;
+  } else {
+    ++idle_presents_;
+  }
+  ReportFrameStats();
+  overlay_host_->RequestPass();
+  if (tail_open_ && source == PresentSource::kGuest) {
+    tail_short_ = std::chrono::steady_clock::now() - tail_start_ <= kEarlyReleaseMaxTail;
+  }
+  tail_open_ = false;
+}
+
+bool Renderer::ApplyFrameGenerationSetting() {
+  const FrameGeneration::Change change = fg_.Poll();
+  if (change != FrameGeneration::Change::kNone) {
+    return SwitchFrameGeneration(change);
+  }
+  // The two never run together: the setting names one of them (FSR's Poll ignores "dlss").
+  const DlssFrameGeneration::Change dlss_change = dlssg_.Poll();
+  if (dlss_change != DlssFrameGeneration::Change::kNone) {
+    return SwitchDlssFrameGeneration(dlss_change, /*resize=*/false);
+  }
+  return false;
+}
+
+// CHECK: not run (written without a build). The log of a switch on: "[gpu] dlss frame generation:
+// switching on", then Streamline's own sl.log lines for the plugin loading and the proxy factory,
+// "on (Nx: ...)", and once Reflex has made a few sleeps "generating: Nx". The swap chain is made
+// again twice around a resize (off, then on after the window has been still): the picture may flicker.
+bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, bool resize) {
+  using Clock = std::chrono::steady_clock;
+  const bool on = change == DlssFrameGeneration::Change::kOn;
+  const auto begin = Clock::now();
+  if (on) {
+    // The plugin is loaded before the chain is made through its proxy of the DXGI factory.
+    switch (dlssg_.PrepareSwitchOn()) {
+      case DlssFrameGeneration::Prepared::kWait:
+        return false;  // Streamline is making a feature: asked again at the next frame boundary
+      case DlssFrameGeneration::Prepared::kFailed:
+        return false;  // logged; off for the session
+      case DlssFrameGeneration::Prepared::kReady:
+        break;
+    }
+  }
+  REXLOG_INFO("[gpu] dlss frame generation: switching {}{} (the swap chain is made again{})",
+              on ? "on" : "off", resize ? " for a change of the window" : "",
+              on ? " as Streamline's own" : ", plain");
+  const bool hdr = swap_chain_.hdr();
+  bool ok = true;
+  frames_.WaitIdle();
+  SwapChain::Recreated result;
+  {
+    // The latency reducer's calls that name the chain wait until the new one is in.
+    latency::SwapChainChange latency_change;
+    swap_chain_.SetFactoryWrapper(on ? &dlss::UpgradeFactory : nullptr);
+    result = swap_chain_.RecreateOn(nullptr, hdr,
+                                    on ? dlssg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync),
+                                    on ? std::function<void()>{}
+                                       : std::function<void()>([this] { dlssg_.BeforePlainChain(); }));
+    latency_change.Replaced(swap_chain_);
+  }
+  if (result == SwapChain::Recreated::kLost && on) {
+    // Streamline's proxy chain could not be made: the plain chain is made again, and frame
+    // generation is off for the session.
+    ok = false;
+    latency::SwapChainChange latency_change;
+    swap_chain_.SetFactoryWrapper(nullptr);
+    result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync),
+                                    [this] { dlssg_.BeforePlainChain(); });
+    latency_change.Replaced(swap_chain_);
+  }
+  if (!on || !ok) {
+    dlss::SwapChainRecreated();  // the plain new chain is offered to Streamline's wrapper again
+  }
+  if (result == SwapChain::Recreated::kLost) {
+    REXLOG_ERROR("[gpu] dlss frame generation: switching {} left the window without a swap chain; "
+                 "trying again each second (nothing is presented meanwhile)",
+                 on ? "on" : "off");
+    swap_chain_lost_logged_ = true;
+    swap_chain_retry_ = Clock::now();
+    ok = false;
+  }
+  // A new chain has no metadata (UpdateHdr sends it before the next present), and its size is what the
+  // render scale is measured against.
+  hdr_metadata_sent_ = false;
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  dlssg_.CompleteSwitch(change, ok, resize);
+  REXLOG_INFO("[gpu] dlss frame generation: switched {} in {:.0f} ms", on ? "on" : "off",
+              std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
+  return true;
+}
+
+// CHECK: not run (written without a build). Look for, in the log of a switch: "frame generation:
+// switching on/off", then "frame generation: on (FSR 3.1; ...)" or "off"; the first frames after it
+// are real frames only until the context is made ("[gpu] frame generation (ffx): context for ... made
+// in N ms"), then "first generation recorded". The swap chain is made again on the other queue, as an
+// HDR switch does: the picture may flicker once. D3D12: the debug layer on the present queue's lists
+// and the cross-queue use of the present images (the render queue wrote them, the present queue read
+// them after a CPU wait on a fence); Vulkan: validation on the second queue (the swap chain's images
+// are used on a queue other than the one that made the frame, the family is the same) and, on a GPU
+// whose DIRECT family has one queue (AMD, Intel), that the shared VkQueue's lock does not hold the
+// render thread's submissions behind a blocked present.
+bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
+  using Clock = std::chrono::steady_clock;
+  const bool on = change == FrameGeneration::Change::kOn;
+  const auto begin = Clock::now();
+  REXLOG_INFO("[gpu] frame generation: switching {} (the swap chain is made again on the {} queue)",
+              on ? "on" : "off", on ? "present" : "render");
+  if (on && !fg_.PrepareSwitchOn(swap_chain_.format())) {
+    return false;  // logged; frame generation stays off for the session
+  }
+  // The swap chain on the other queue: nothing in flight may name the back buffers (on the render
+  // queue by WaitIdle, on the present queue by the pacer's pause), and the latency reducer's calls
+  // that name the chain wait until the new one is in.
+  const bool hdr = swap_chain_.hdr();
+  bool ok = true;
+  {
+    const FrameGeneration::PauseScope pause(fg_);
+    frames_.WaitIdle();
+    SwapChain::Recreated result;
+    {
+      latency::SwapChainChange latency_change;
+      result = swap_chain_.RecreateOn(on ? fg_.present_queue() : nullptr, hdr,
+                                      on ? fg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync));
+      latency_change.Replaced(swap_chain_);
+    }
+    dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
+    if (result == SwapChain::Recreated::kLost && on) {
+      // The present queue could not have it: the render queue's chain is made again, and frame
+      // generation is off for the session.
+      ok = false;
+      latency::SwapChainChange latency_change;
+      result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync));
+      latency_change.Replaced(swap_chain_);
+      dlss::SwapChainRecreated();
+    }
+    if (result == SwapChain::Recreated::kLost) {
+      REXLOG_ERROR("[gpu] frame generation: switching {} left the window without a swap chain; "
+                   "trying again each second (nothing is presented meanwhile)",
+                   on ? "on" : "off");
+      swap_chain_lost_logged_ = true;
+      swap_chain_retry_ = Clock::now();
+      ok = false;
+    }
+  }
+  // A new chain has no metadata (UpdateHdr sends it before the next present), and its size is what the
+  // render scale is measured against.
+  hdr_metadata_sent_ = false;
+  PublishWindowSize(swap_chain_.width(), swap_chain_.height());
+  fg_.CompleteSwitch(change, ok);
+  REXLOG_INFO("[gpu] frame generation: switched {} in {:.0f} ms", on ? "on" : "off",
+              std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
+  return true;
+}
+
+void Renderer::DrawPresentInto(plume::RenderCommandList* list, uint32_t slot, HostImage& target,
+                               uint32_t width, uint32_t height) {
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(target.texture.get(),
+                                             plume::RenderTextureLayout::COLOR_WRITE));
+  list->setFramebuffer(target.framebuffer.get());
+  // Black around the letterboxed picture (and a first use of the image is initialised).
+  list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
+  present_.Draw(list, width, height);
+  overlay_draws_ += overlay_.Draw(list, slot, width, height);
+  list->setFramebuffer(nullptr);
+  // The pacer's copy pass reads it next (on the present queue, after a CPU wait for the frame).
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(target.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  target.layout = plume::RenderTextureLayout::SHADER_READ;
+}
+
+bool Renderer::RecordGeneratedPresent(plume::RenderCommandList* list, uint32_t slot,
+                                      const FrameGeneration::Pair& pair, PresentSource source) {
+  const uint32_t width = swap_chain_.width();
+  const uint32_t height = swap_chain_.height();
+  pass_timing_.Mark(list, "present");
+  markers_.Push(list, "Present", PerfMarkers::kPhase);
+  // The real frame, as ever, into the pair's real image: the front buffer through the display's
+  // table, FSR1, the overlay.
+  present_.Prepare(list, slot, width, height);
+  if (source == PresentSource::kGuest && !swap_chain_.hdr()) {
+    flicker_probe_.Record(list, present_, guest_presents_ + 1);
+  }
+  ReleaseGuest();
+  FrameGeneration::GenerateArgs args;
+  const bool have_front = present_.front_key(&args.front) && present_.source_ready();
+  args.guest_frame = source == PresentSource::kGuest && have_front;
+  args.front_width = present_.source_width();
+  args.front_height = present_.source_height();
+  args.window_width = width;
+  args.window_height = height;
+  timing_.Mark(list, slot, GpuTiming::kOverlayBegin);
+  DrawPresentInto(list, slot, *pair.real, width, height);
+  timing_.Mark(list, slot, GpuTiming::kOverlayEnd);
+  // The generated frame, when this frame can be generated: the same present path over the generated
+  // scene with this frame's UI on it, into the pair's other image.
+  bool has_generated = false;
+  const FrameGeneration::Generated generated = fg_.Generate(list, args);
+  if (generated.image) {
+    present_.PrepareImage(list, width, height, *generated.image, generated.float_scene);
+    if (present_.source_ready()) {
+      DrawPresentInto(list, slot, *pair.generated, width, height);
+      has_generated = true;
+    }
+  }
+  markers_.Pop(list, PerfMarkers::kPhase);  // Present
+  markers_.PopAll(list);                    // Frame
+  timing_.Mark(list, slot, GpuTiming::kFrameEnd);
+  pass_timing_.CompleteFrame(list, slot);
+  return has_generated;
+}
+
+void Renderer::ExecutePresentGenerated(PresentSource source) {
+  // ExecutePresent's second half with frame generation running: the swap chain is the pacer's, so
+  // nothing is acquired or presented here; a slot of present images is taken (waiting for the pacer
+  // when it is a frame behind), the frame is painted into it and the pair is handed over.
+  FrameGeneration::Pair pair;
+  if (!fg_.AcquireSlot(swap_chain_.width(), swap_chain_.height(), swap_chain_.format(), &pair)) {
+    // No free slot in time (the pacer is stalled), or no image: this frame is not shown.
+    SubmitFrameWithoutPresent();
+    ++skipped_;
+    return;
+  }
+  // Already open when the guest frame had scene records.
+  plume::RenderCommandList* list = OpenFrameList();
+  if (!list) {
+    fg_.ReturnSlot(pair);
+    ++skipped_;
+    return;
+  }
+  const uint32_t slot = frames_.slot();
+  markers_.Pop(list, PerfMarkers::kPhase);  // Scene
+  markers_.Push(list, "EndOfFrame", PerfMarkers::kPhase);
+  scene_.EndFrame(list);
+  markers_.Pop(list, PerfMarkers::kPhase);
+  overlay_.Prepare(list, slot);
+  const bool has_generated = RecordGeneratedPresent(list, slot, pair, source);
+
+  if (!frames_.Submit(nullptr, 0, nullptr, 0)) {
+    fg_.ReturnSlot(pair);
+    frames_.Advance();
+    ++skipped_;
+    return;
+  }
+  timing_.OnSubmitted(slot);
+  pass_timing_.OnSubmitted(slot);
+  occlusion_.OnSubmitted(slot);
+  latency::OnRenderSubmitted();
+  // The present markers are the pacer's: it names the frame around the real image's present.
+  const uint64_t latency_frame = latency::DetachRenderFrame();
+  fg_.Submit(pair, has_generated, latency_frame, source == PresentSource::kGuest);
+  capture_.OnPresented();
+  frames_.Advance();
+  // The slot about to be recorded had its fence waited by Advance.
+  upload_.ResetSlot(frames_.slot());
   occlusion_.OnSlotReady(frames_.slot());
   ++presented_;
   if (source == PresentSource::kGuest) {
@@ -859,8 +1431,9 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   pass_timing_.Mark(list, "present");
   markers_.Push(list, "Present", PerfMarkers::kPhase);
   present_.Prepare(list, slot, swap_chain_.width(), swap_chain_.height());
-  if (source == PresentSource::kGuest) {
-    // An idle present shows the same front buffer again: not a new frame.
+  if (source == PresentSource::kGuest && !swap_chain_.hdr()) {
+    // An idle present shows the same front buffer again: not a new frame. (Not with an HDR10 back
+    // buffer: the probe records 8-bit SDR, and a live HDR switch can turn the chain HDR10 under it.)
     flicker_probe_.Record(list, present_, guest_presents_ + 1);
   }
   ReleaseGuest();
@@ -881,6 +1454,21 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   list->setFramebuffer(nullptr);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
+  if (dlssg_.active()) {
+    // DLSS frame generation: what the plugin is given with the back buffer (the picture without the
+    // UI, the UI, the depth and the vectors) and its options for this frame; the present pass's own
+    // state (the front buffer it bound) is read first, the passes below overwrite it.
+    DlssFrameGeneration::FrameArgs args;
+    const bool have_front = present_.front_key(&args.front) && present_.source_ready();
+    args.guest_frame = source == PresentSource::kGuest && have_front;
+    args.front_width = present_.source_width();
+    args.front_height = present_.source_height();
+    args.window_width = swap_chain_.width();
+    args.window_height = swap_chain_.height();
+    args.back_buffers = swap_chain_.image_count();
+    args.hdr = swap_chain_.hdr();
+    dlssg_.Record(list, args);
+  }
   markers_.PopAll(list);  // Frame
   timing_.Mark(list, slot, GpuTiming::kFrameEnd);
   pass_timing_.CompleteFrame(list, slot);
@@ -905,6 +1493,10 @@ void Renderer::ReportFrameStats() {
                                                                       hdr_tone_.HeldBytes())
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
+                           (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
+                                         : std::string()) +
+                           (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
+                                            : std::string()) +
                            ", upscaler (output, depth, vectors, its own context) " +
                            mib(temporal_.HeldBytes()) + " MiB)";
   const std::string vram_text =
@@ -936,6 +1528,12 @@ void Renderer::ReportFrameStats() {
       locks_on_destinations, fence_waits, double(fence_wait_ns) / 1e6,
       stream.bytes_written() >> 20, stream.consumer_wakes(), stream.producer_waits());
   REXLOG_INFO("[gpu] {}", present_.TakeSummary());
+  if (fg_.active()) {
+    REXLOG_INFO("[gpu] {}", fg_.TakeSummary());
+  }
+  if (dlssg_.active()) {
+    REXLOG_INFO("[gpu] {}", dlssg_.TakeSummary());
+  }
   REXLOG_INFO("[gpu] {}", post_.TakeSummary());
   if (layers_.active()) {
     REXLOG_INFO("[gpu] {}", layers_.TakeSummary());
@@ -1041,6 +1639,22 @@ bool Enabled() {
   return enabled;
 }
 
+Device::Options PlannedDeviceOptions(const Backend* forced) {
+  Device::Options options;
+  options.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
+  if (options.preferred_adapter.empty() && (!forced || *forced == g_requested_backend)) {
+    // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
+    options.preferred_adapter = g_auto_adapter;
+  }
+  options.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
+  options.backend = forced ? *forced : g_requested_backend;
+  return options;
+}
+
+std::vector<std::filesystem::path> ShaderPackSearchFolders() {
+  return ShaderStore::SearchFolders(g_shader_pack_folder);
+}
+
 std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
   if (!Enabled()) {
     return nullptr;
@@ -1072,15 +1686,9 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
       std::make_shared<OverlayHost>(app_context, *window, *imgui_drawer, *g_overlay_drawer);
 
   Renderer::Options options;
-  options.device.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
-  if (options.device.preferred_adapter.empty()) {
-    // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
-    options.device.preferred_adapter = g_auto_adapter;
-  }
-  options.device.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
+  options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
   options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
   options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
-  options.device.backend = g_requested_backend;
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");
@@ -1364,6 +1972,11 @@ void RequestTextureReload() {
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
   const uint64_t size = g_window_size.load(std::memory_order_relaxed);
   return ChooseRenderScale(asked, fsr, preset, uint32_t(size >> 32), uint32_t(size));
+}
+
+RenderScaleChoice WantedRenderScale() {
+  const uint64_t size = g_window_size.load(std::memory_order_relaxed);
+  return ChooseWantedRenderScale(uint32_t(size >> 32), uint32_t(size));
 }
 
 void SetShaderPackFolder(const std::filesystem::path& folder) {

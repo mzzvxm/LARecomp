@@ -20,9 +20,11 @@ add_library(larecomp_gpu OBJECT
     device.cpp
     draw_census.cpp
     draw_state.cpp
+    dlss_frame_generation.cpp
     edram.cpp
     flicker_probe.cpp
     format.cpp
+    frame_generation.cpp
     frame_layers.cpp
     frame_trace.cpp
     frame.cpp
@@ -36,13 +38,16 @@ add_library(larecomp_gpu OBJECT
     hdr_tonemap.cpp
     input_layout.cpp
     latency.cpp
+    latency_streamline.cpp
     layout.cpp
     memory_census.cpp
+    msaa_level.cpp
     native_window.cpp
     occlusion.cpp
     overlay.cpp
     pass_timing.cpp
     perf_markers.cpp
+    pipeline_prebuild.cpp
     pipelines.cpp
     post.cpp
     present.cpp
@@ -63,6 +68,7 @@ add_library(larecomp_gpu OBJECT
     temporal_camera.cpp
     temporal_mv.cpp
     texture_decode.cpp
+    texture_decode_pool.cpp
     texture_mods.cpp
     texture_names.cpp
     textures.cpp
@@ -71,6 +77,8 @@ add_library(larecomp_gpu OBJECT
     topology.cpp
     upload.cpp
     validation.cpp
+    vehicle_motion.cpp
+    vehicle_motion_mask.cpp
     viewport.cpp
     vram_budget.cpp
     watch.cpp
@@ -107,6 +115,13 @@ if(LARECOMP_FFX_KIT)
         "${LARECOMP_FFX_KIT}/api/include"
         "${LARECOMP_FFX_KIT}/upscalers/include")
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX=1)
+    # Frame generation (frame_generation.h): the same runtime's frame generation effect. Its
+    # headers include each other and the api folder by relative path, so only its folder is added.
+    if(LARECOMP_FFX_HAS_FRAMEGENERATION)
+        target_sources(larecomp_gpu PRIVATE frame_generation_ffx.cpp)
+        target_include_directories(larecomp_gpu PRIVATE "${LARECOMP_FFX_KIT}/framegeneration/include")
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_FFX_FG=1)
+    endif()
 endif()
 
 # The temporal upscaler's DLSS backend (temporal_dlss.h): only when the top-level CMake found
@@ -118,6 +133,11 @@ if(LARECOMP_STREAMLINE_KIT)
     target_sources(larecomp_gpu PRIVATE temporal_dlss.cpp)
     target_include_directories(larecomp_gpu SYSTEM PRIVATE "${LARECOMP_STREAMLINE_KIT}/include")
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS=1)
+    # DLSS Frame Generation and Reflex through Streamline (the Streamline-typed half is in
+    # temporal_dlss.cpp; dlss_frame_generation.cpp below is Streamline-free and always built).
+    if(LARECOMP_STREAMLINE_HAS_FRAMEGEN)
+        target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_HAS_DLSS_G=1)
+    endif()
 endif()
 # Plume's creation hooks for Streamline on Vulkan and the usage flags it keeps of an image
 # (Plume's larecomp branch: PR #10 and PR #8, both in the pin): a Plume without them leaves DLSS out
@@ -280,10 +300,24 @@ larecomp_gpu_host_shader(present_stretch_hdr_ps ps_6_0 SOURCE present_ps
 larecomp_gpu_host_shader(fsr_rcas_hdr_ps ps_6_0 SOURCE fsr_rcas_ps HLSL_VERSION 2018
                          DEFINES RCAS_HDR=1)
 larecomp_gpu_host_shader(overlay_hdr_ps ps_6_0 SOURCE overlay_ps DEFINES OVERLAY_HDR=1)
+# Frame generation (frame_generation.h): the scene and the generated frame prepared for the
+# interpolation, the generated frame composed with the UI layer, and the pacer's copy of a finished
+# present image into the swap chain's back buffer.
+larecomp_gpu_host_shader(fg_prepare_ps ps_6_0)
+larecomp_gpu_host_shader(fg_compose_ps ps_6_0)
+larecomp_gpu_host_shader(fg_copy_ps ps_6_0)
+# DLSS frame generation (dlss_frame_generation.h): the UI layer fitted to the window as the present
+# pass fits the picture, with the display's table (and, for an HDR10 back buffer, the HDR output step).
+larecomp_gpu_host_shader(dlssg_ui_ps ps_6_0)
+larecomp_gpu_host_shader(dlssg_ui_hdr_ps ps_6_0 SOURCE dlssg_ui_ps DEFINES PRESENT_HDR=1)
 # The UI layer split (frame_layers.h, hdr_scene.h): the scene put back under the UI in the guest's
 # target, and the HDR present's compose of the two layers.
 larecomp_gpu_host_shader(layers_restore_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=0)
 larecomp_gpu_host_shader(hdr_compose_ps ps_6_0 SOURCE frame_layers_ps DEFINES LAYERS_COMPOSE=1)
+# The same layers from a multisampled target (the pause menu's and the map's UI target): the samples of
+# each pixel averaged into a single-sampled image.
+larecomp_gpu_host_shader(layers_resolve_ps ps_6_0 SOURCE frame_layers_ps
+                         DEFINES LAYERS_COMPOSE=0 LAYERS_RESOLVE=1)
 # M6c.2/M6c.3: the scene's anti-aliasing before the UI -- the copy
 # (luma in alpha), FXAA 3.11, SMAA 1x's three passes.
 larecomp_gpu_host_shader(post_luma_ps ps_6_0)
@@ -295,6 +329,10 @@ larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3
 # (temporal_mv.h).
 larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
 larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
+# The vehicles' motion (vehicle_motion.h): a row of the table the vector pass reads, and the mask of the
+# cars' shadow decals for the upscalers (vehicle_motion_mask.h).
+larecomp_gpu_host_shader(temporal_vehicle_table_ps ps_6_0)
+larecomp_gpu_host_shader(vehicle_motion_mask_ps ps_6_0)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

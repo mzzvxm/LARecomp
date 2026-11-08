@@ -246,6 +246,28 @@ struct NativeImage {
 };
 NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 
+// D3D12: swap chains are made by the DXGI factory of Plume's interface. NVIDIA Streamline's DLSS frame
+// generation needs the chain made through its own proxy of that factory (a manual hooking
+// integration "recreates the swap chain" through the proxy when frame generation goes on). For the
+// life of the scope `wrap` (dlss::UpgradeFactory) has turned the factory into its wrapper, and the
+// chain made in it is the wrapper's; the destructor puts Plume's own back and releases the wrapper.
+// Does nothing (wrapped() false) on Vulkan, whose chains are made through Streamline's functions when
+// the interposer is loaded, and when `wrap` is null or says no. Render thread, with no swap chain
+// call in flight.
+class SwapChainFactoryScope {
+ public:
+  SwapChainFactoryScope(plume::RenderDevice* device, bool (*wrap)(void** factory));
+  ~SwapChainFactoryScope();
+  SwapChainFactoryScope(const SwapChainFactoryScope&) = delete;
+  SwapChainFactoryScope& operator=(const SwapChainFactoryScope&) = delete;
+  bool wrapped() const { return wrapper_ != nullptr; }
+
+ private:
+  plume::RenderDevice* device_ = nullptr;
+  void* original_ = nullptr;
+  void* wrapper_ = nullptr;
+};
+
 // After a runtime recorded work into `list` (outside any render pass, no framebuffer bound): what
 // Plume remembers of the list's state is forgotten, so the next call sets it again. D3D12: the
 // descriptor heaps, the pipeline layouts, the active pipeline and the topology (a runtime sets its
@@ -255,6 +277,17 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 // positions, the viewport and scissor are not touched by a compute dispatch); the debug layer and
 // Vulkan validation over the first frames with it settle it.
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
+
+// Vulkan: a swap chain image the renderer just acquired is taken as holding nothing to keep, so
+// Plume's first barrier on it starts from UNDEFINED, not from the PRESENT_SRC_KHR it left it in.
+// NVIDIA Streamline's frame generation hands the app its own fake swap chain images and leaves them
+// in GENERAL after its use, and a barrier that says PRESENT_SRC_KHR over that is a validation error
+// (VUID-vkCmdDraw-None-09600 "expects PRESENT_SRC_KHR, current GENERAL" in run next6-vk-dlssg). Only
+// for a frame that draws the whole image (the present pass clears and covers all of it). Nothing on
+// D3D12, whose back buffers Streamline gives back in the present state.
+// CHECK: no such message in the validation layer's output over a DLSS frame generation run on
+// Vulkan (the ones about Streamline's own images, "nv.sl.dlss_g.*", are its own).
+void ForgetImageContents(plume::RenderTexture* texture);
 
 // Whether this device can run a compute temporal upscaler (FidelityFX), checked without loading it.
 // `reason` is one plain sentence when not; `detail` is what was read, for the log.

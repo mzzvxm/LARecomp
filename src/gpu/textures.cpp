@@ -54,6 +54,30 @@ REXCVAR_DEFINE_BOOL(
     "next frame, the same as RELOAD TEXTURE MODS in the pause menu. It clears itself afterwards.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_texture_decode_threads, -1, "MCLA/GPU",
+    "Threads that decode the textures of the draws queued behind the one the renderer is on "
+    "(untile, byte swap), so a burst of new textures as the game streams in the next stretch of "
+    "road does not stall the render thread. -1: one thread per 4 logical processors, up to 3, none "
+    "below 4 processors. 0: the render thread decodes every texture itself, when its draw needs "
+    "it. The threads run below the game's.")
+    .range(-1, 8)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_texture_decode_selftest, false, "MCLA/GPU",
+    "Test only: at start-up, decodes a few thousand random texture levels (every block size, "
+    "endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and "
+    "with the plain per-block one, and logs whether every byte matched.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_texture_decode_verify, false, "MCLA/GPU",
+    "Test only: every texture level the game uploads is decoded a second time with the plain "
+    "per-block decoder and compared byte for byte with the fast one's; a difference is logged "
+    "once per texture. Slow: it brings the old cost back.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace xe = rex::graphics::xenos;
@@ -88,7 +112,124 @@ const char* FormatName(uint32_t format) {
   return info ? info->name : "?";
 }
 
+enum class PlanResult { kOk, kSkip, kFail };
+
+// Where level `level` of `key` is read from and how its decoded rows lie in the upload memory
+// (TextureLevelPlan). kSkip: the level has no storage (no base: the sampler's range starts at a
+// mip; no mips). kFail: its memory cannot be read (`why` says); the draw's own Upload reports it.
+// What Upload and Prefetch both start from.
+PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const FormatInfo& info,
+                     const format::TextureHostFormat& host, bool decompressed,
+                     const tu::TextureGuestLayout& layout, uint32_t level, TextureLevelPlan* plan,
+                     std::string* why) {
+  // Where the level is stored (util.h): the base under base_address with the
+  // fetch's pitch, the mips under mip_address at mip_offsets_bytes, levels
+  // from the packed one on inside a tail at GetPackedMipOffset.
+  const tu::TextureGuestLayout::Level* stored;
+  uint32_t address;
+  if (level == 0) {
+    if (!key.base_page) {
+      return PlanResult::kSkip;
+    }
+    stored = &layout.base;
+    address = key.base_page << 12;
+  } else {
+    if (!key.mip_page) {
+      return PlanResult::kSkip;
+    }
+    const uint32_t stored_level = std::min(level, layout.packed_level);
+    stored = &layout.mips[stored_level];
+    address = (key.mip_page << 12) + layout.mip_offsets_bytes[stored_level];
+  }
+  const uint32_t bw = info.block_width, bh = info.block_height;
+  texture_decode::Request& r = plan->request;
+  r = texture_decode::Request{};
+  r.source.row_pitch_bytes = stored->row_pitch_bytes;
+  r.source.bytes_per_block = info.bytes_per_block();
+  r.source.tiled = key.tiled != 0;
+  r.source.endian = key.endian;
+  if (key.packed_mips && level >= layout.packed_level) {
+    uint32_t ox = 0, oy = 0, oz = 0;
+    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
+                           oz);
+    r.source.offset_x = ox;
+    r.source.offset_y = oy;
+  }
+  r.width = std::max(uint32_t(key.width) >> level, 1u);
+  r.height = std::max(uint32_t(key.height) >> level, 1u);
+  r.width_blocks = (r.width + bw - 1) / bw;
+  r.height_blocks = (r.height + bh - 1) / bh;
+  r.load = host.load;
+  r.decompress = decompressed ? host.decompress : format::TextureDecompress::kNone;
+
+  uint64_t readable = stored->level_data_extent_bytes;
+  const uint8_t* src = memory.Read(address, uint32_t(readable));
+  if (!src) {
+    // The layout's tile padding may run into memory the guest never
+    // committed: the swizzle's exact reach is what is read then.
+    readable = texture_decode::Reach(r.source, r.width_blocks, r.height_blocks);
+    src = memory.Read(address, uint32_t(readable));
+    if (!src) {
+      *why = std::format("level {} at {:08x}: {} bytes (exact reach) not readable", level, address,
+                         readable);
+      return PlanResult::kFail;
+    }
+  }
+  r.source.data = src;
+  r.source.readable = readable;
+
+  const uint32_t row_bytes = texture_decode::HostRowBytes(r);
+  plan->level = level;
+  plan->address = address;
+  plan->rows = texture_decode::HostRows(r);
+  plan->pitch = uint32_t(AlignUp(row_bytes, kTextureCopyPitchAlignment));
+  plan->size = uint64_t(plan->pitch) * plan->rows;
+  plan->offset = 0;
+  return PlanResult::kOk;
+}
+
 }  // namespace
+
+// A texture's levels decoded by the pool ahead of the draw that needs them (see textures.h). One
+// buffer holds every level's rows at the pitch the upload ring takes; the plan names each
+// level's place in it.
+class PrefetchedTexture final : public DecodeJob {
+ public:
+  std::vector<TextureLevelPlan> levels;
+  std::unique_ptr<uint8_t[]> data;
+  uint64_t version = 0;  // the entry's version when the pages were armed and the plan read
+  uint64_t frame = 0;    // the render thread's frame it was made in
+  bool verify = false;   // decode with DecodeVerified (mcla_gpu_texture_decode_verify)
+  // Written by Run, read after the job is done.
+  bool complete = false;
+  bool mismatch = false;
+
+  void Hold(DecodePool& pool, uint64_t bytes) { HoldBytes(pool, bytes); }
+  const TextureLevelPlan* Find(uint32_t level) const {
+    for (const TextureLevelPlan& l : levels) {
+      if (l.level == level) {
+        return &l;
+      }
+    }
+    return nullptr;
+  }
+
+ protected:
+  void Run() override {
+    bool ok = true;
+    for (const TextureLevelPlan& l : levels) {
+      uint8_t* out = data.get() + l.offset;
+      if (verify) {
+        bool bad = false;
+        ok &= texture_decode::DecodeVerified(l.request, out, l.pitch, &bad);
+        mismatch |= bad;
+      } else {
+        ok &= texture_decode::Decode(l.request, out, l.pitch);
+      }
+    }
+    complete = ok;
+  }
+};
 
 // ---------------------------------------------------------------------------
 // keys and fetch constants
@@ -299,6 +440,31 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   resolve_ = &resolve;
   subscriber_ = memory.Subscribe("textures");
   mods_.Initialize();
+  if (REXCVAR_GET(mcla_gpu_texture_decode_selftest)) {
+    const auto t0 = Clock::now();
+    const texture_decode::SelfTestResult test = texture_decode::SelfTest(1500);
+    const double ms = double(NsSince(t0)) / 1e6;
+    if (test.mismatches == 0 && test.tables_ok && test.fast > test.runs / 2) {
+      REXLOG_INFO("[gpu] textures: decode self-test passed: {} random levels, {} decodes ({} on the "
+                  "fast path, {} on the per-block decoder: unreadable tails), all bytes equal to "
+                  "the per-block decoder's ({:.0f} ms)",
+                  test.cases, test.runs, test.fast, test.fallback, ms);
+    } else if (test.mismatches == 0) {
+      REXLOG_ERROR("[gpu] textures: decode self-test INCONCLUSIVE: no byte differs but only {} of "
+                   "{} decodes ran the fast path (tile tables {})",
+                   test.fast, test.runs, test.tables_ok ? "ok" : "do NOT match the SDK");
+    } else {
+      REXLOG_ERROR("[gpu] textures: decode self-test FAILED: {} of {} decodes differ from the "
+                   "per-block decoder; first: {}",
+                   test.mismatches, test.runs, test.first);
+    }
+  }
+  const int32_t threads_setting = REXCVAR_GET(mcla_gpu_texture_decode_threads);
+  const uint32_t threads =
+      threads_setting < 0 ? DecodePool::AutoThreads() : uint32_t(threads_setting);
+  pool_.Start(threads);
+  REXLOG_INFO("[gpu] textures: {} decode thread(s) for the draws queued behind the current one{}",
+              pool_.threads(), pool_.running() ? "" : " (the render thread decodes every texture)");
 }
 
 void TextureCache::SetOverride(const Override& override) {
@@ -335,6 +501,8 @@ void TextureCache::ReleaseOverrideViews() {
 }
 
 void TextureCache::Shutdown() {
+  // No worker reads guest memory or an entry's plan from here on.
+  pool_.Stop();
   // The GPU is idle and the heap goes next: nothing is handed back to it.
   override_views_.Drop();
   override_active_ = false;
@@ -804,12 +972,138 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
   if (e.decompressed) {
     ++stats_.decompressed;
   }
+  NoteCreated();
   Entry* raw = entry.get();
   entries_.emplace(key, std::move(entry));
   return raw;
 }
 
+void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
+  // CHECK: not built or run. How much of a burst it takes off the render thread depends on how far
+  // behind the guest the render thread is when the burst starts (the lookahead sees only the
+  // records already published) and is read from the "decode threads" part of the textures line:
+  // used / prefetched, and "render thread waited".
+  // CHECK: the entry is made (CreateTexture, the regions) at the lookahead, a few draws before
+  // Bind2D would; a draw that never binds the texture (skipped, or served by a product that
+  // appeared in between) leaves an entry that is evicted after kEvictFrames like any other.
+  if (!pool_.running()) {
+    return;
+  }
+  ++stats_.prefetch_looked;
+  // A fetch repeats in many draws: one that was decided on in this epoch (a write notification, an
+  // eviction or a trim starts a new one) is not decided on again.
+  uint64_t h = 0;
+  for (uint32_t i = 0; i < 6; ++i) {
+    h = (h ^ dwords[i]) * 0x9E3779B97F4A7C15ull;
+  }
+  h ^= h >> 32;
+  SeenFetch& seen = prefetch_seen_[size_t(h) & (kSeenFetches - 1)];
+  if (seen.hash == h && seen.epoch == epoch_) {
+    return;
+  }
+  seen.hash = h;
+  seen.epoch = epoch_;
+
+  const TextureFetch fetch = ReadTextureFetch(dwords);
+  if (!fetch.is_texture) {
+    return;
+  }
+  const TextureKey& key = fetch.key;
+  // What Bind2D would refuse, serve from a product, or serve from the resolve memory is not decoded
+  // from guest memory.
+  if (key.dimension != uint8_t(xe::DataDimension::k2DOrStacked) || key.stacked ||
+      format::TextureHost(key.format).status != format::Status::kOk) {
+    return;
+  }
+  // Mods look at the guest's bytes first (a replacement needs no decode) and a texture dump
+  // wants them as they are at the upload: left to the draw.
+  if (!mods_.empty() || REXCVAR_GET(mcla_gpu_texture_dump)) {
+    return;
+  }
+  if (entries_.find(key) != entries_.end() || failed_.find(key) != failed_.end()) {
+    return;
+  }
+  // (ResolveCache::Find would say the same for the key's own product, but it marks the product
+  // used: the overlap test reads only.)
+  if (resolve_memory_->Holds(key)) {
+    return;
+  }
+  uint32_t ranges[2][2];
+  TextureGuestRanges(key, ranges);
+  for (const auto& r : ranges) {
+    if (r[1] && resolve_->FindOverlap(r[0], r[1])) {
+      return;
+    }
+  }
+  if (!pool_.Fits(1ull << 20)) {
+    return;  // the decoded textures already waiting hold enough memory
+  }
+
+  // The notifications queued so far are taken first (as Sync does before every draw): the entry
+  // is then made, and its pages armed, after the writes already seen, and a job is not made stale
+  // by one that was only waiting in the queue.
+  DrainInvalidations();
+  std::string why;
+  Entry* e = Create(key, fetch, &why);
+  if (!e) {
+    return;  // the draw's own Bind2D tries again and reports it
+  }
+  // As good as bound in this frame: neither the eviction nor the budget's trim may take it before
+  // its first draw.
+  e->last_frame = frame_;
+  if (!e->watchable) {
+    return;  // hashed: decoded when it is bound, as before
+  }
+  // Arm BEFORE the workers read, as Bind2D does before its own read: a write after it makes a
+  // notification, which moves the entry's version and makes the draw decode again.
+  if (!e->armed) {
+    for (const auto& r : e->ranges) {
+      if (r[1]) memory_->Arm(r[0], r[1]);
+    }
+    e->armed = true;
+  }
+
+  const FormatInfo* info = FormatInfo::Get(key.format);
+  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
+      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
+      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
+  auto job = std::make_shared<PrefetchedTexture>();
+  uint64_t total = 0;
+  for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
+    TextureLevelPlan plan;
+    const PlanResult planned =
+        PlanLevel(*memory_, key, *info, e->host, e->decompressed, layout, level, &plan, &why);
+    if (planned == PlanResult::kSkip) {
+      continue;
+    }
+    if (planned == PlanResult::kFail) {
+      return;  // the draw's Upload reports it
+    }
+    plan.offset = total;
+    total += plan.size;
+    job->levels.push_back(plan);
+  }
+  if (job->levels.empty() || !pool_.Fits(total)) {
+    return;
+  }
+  // Uninitialized: the worker writes every row it is asked for.
+  job->data.reset(new uint8_t[size_t(total)]);
+  job->version = e->version;
+  job->frame = frame_;
+  job->sequence = sequence;
+  job->verify = REXCVAR_GET(mcla_gpu_texture_decode_verify);
+  job->Hold(pool_, total);
+  e->prefetch = job;
+  pool_.Submit(job);
+  ++stats_.prefetched;
+  stats_.prefetch_bytes += total;
+}
+
 bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string* why) {
+  // What the pool decoded ahead of this draw, if anything: taken out of the entry whichever way
+  // the upload goes.
+  std::shared_ptr<PrefetchedTexture> ahead = std::move(e.prefetch);
+  e.prefetch.reset();
   // New guest contents: the replacement they hash to, if a mod has one,
   // holds the texture instead of a decode.
   if (SelectReplacement(e, list)) {
@@ -818,13 +1112,42 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
   const auto t0 = Clock::now();
   const TextureKey& key = e.key;
   const FormatInfo* info = FormatInfo::Get(key.format);
-  const uint32_t bpb = info->bytes_per_block();
-  const uint32_t bw = info->block_width, bh = info->block_height;
   const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
       xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
       xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
   const uint32_t host_block_bytes = plume::RenderFormatSize(e.host_format);
   const uint32_t host_block_width = plume::RenderFormatBlockWidth(e.host_format);
+
+  // The pool's levels are the guest's bytes while the watch has not been notified since the pages
+  // were armed (the entry's version is the one it was made under) and every level decoded. A
+  // worker that is on them is waited for; one that has not started is taken over here.
+  if (ahead) {
+    if (ahead->version == e.version) {
+      const auto wait_start = Clock::now();
+      const bool finished = pool_.Finish(*ahead);
+      stats_.prefetch_wait_ns += NsSince(wait_start);
+      if (finished && ahead->complete) {
+        ++stats_.prefetch_used;
+        if (ahead->verify) {
+          stats_.verified += ahead->levels.size();
+          if (ahead->mismatch) {
+            ++stats_.verify_mismatches;
+            if (reported_.insert(key).second) {
+              REXLOG_ERROR("[gpu] textures: {} decoded ahead: the fast decoder's bytes differ from "
+                           "the per-block decoder's (reported once per texture)",
+                           key.Describe());
+            }
+          }
+        }
+      } else {
+        ++stats_.prefetch_dropped;
+        ahead.reset();
+      }
+    } else {
+      ++stats_.prefetch_dropped;
+      ahead.reset();
+    }
+  }
 
   if (e.layout != plume::RenderTextureLayout::COPY_DEST) {
     list->barriers(plume::RenderBarrierStage::COPY,
@@ -833,71 +1156,51 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
   }
   bool ok = true;
   for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
-    // Where the level is stored (util.h): the base under base_address with the
-    // fetch's pitch, the mips under mip_address at mip_offsets_bytes, levels
-    // from the packed one on inside a tail at GetPackedMipOffset.
-    const tu::TextureGuestLayout::Level* stored;
-    uint32_t address;
-    if (level == 0) {
-      if (!key.base_page) {
-        continue;  // no base: the sampler's range starts at a mip
-      }
-      stored = &layout.base;
-      address = key.base_page << 12;
-    } else {
-      if (!key.mip_page) {
-        continue;
-      }
-      const uint32_t stored_level = std::min(level, layout.packed_level);
-      stored = &layout.mips[stored_level];
-      address = (key.mip_page << 12) + layout.mip_offsets_bytes[stored_level];
+    TextureLevelPlan plan;
+    const PlanResult planned =
+        PlanLevel(*memory_, key, *info, e.host, e.decompressed, layout, level, &plan, why);
+    if (planned == PlanResult::kSkip) {
+      continue;
     }
-    texture_decode::Request r;
-    r.source.row_pitch_bytes = stored->row_pitch_bytes;
-    r.source.bytes_per_block = bpb;
-    r.source.tiled = key.tiled != 0;
-    r.source.endian = key.endian;
-    if (key.packed_mips && level >= layout.packed_level) {
-      uint32_t ox = 0, oy = 0, oz = 0;
-      tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox,
-                             oy, oz);
-      r.source.offset_x = ox;
-      r.source.offset_y = oy;
+    if (planned == PlanResult::kFail) {
+      ok = false;
+      break;
     }
-    r.width = std::max(uint32_t(key.width) >> level, 1u);
-    r.height = std::max(uint32_t(key.height) >> level, 1u);
-    r.width_blocks = (r.width + bw - 1) / bw;
-    r.height_blocks = (r.height + bh - 1) / bh;
-    r.load = e.host.load;
-    r.decompress = e.decompressed ? e.host.decompress : format::TextureDecompress::kNone;
-
-    uint64_t readable = stored->level_data_extent_bytes;
-    const uint8_t* src = memory_->Read(address, uint32_t(readable));
-    if (!src) {
-      // The layout's tile padding may run into memory the guest never
-      // committed: the swizzle's exact reach is what is read then.
-      readable = texture_decode::Reach(r.source, r.width_blocks, r.height_blocks);
-      src = memory_->Read(address, uint32_t(readable));
-      if (!src) {
-        *why = std::format("level {} at {:08x}: {} bytes (exact reach) not readable", level,
-                           address, readable);
+    const texture_decode::Request& r = plan.request;
+    const uint64_t pitch = plan.pitch;
+    const uint64_t size = plan.size;
+    const uint8_t* decoded = nullptr;
+    if (ahead) {
+      const TextureLevelPlan* done = ahead->Find(level);
+      if (done && done->size == size) {
+        decoded = ahead->data.get() + done->offset;
+      }
+    }
+    if (!decoded) {
+      scratch_.resize(size_t(size));
+      bool decode_ok;
+      if (REXCVAR_GET(mcla_gpu_texture_decode_verify)) {
+        bool mismatch = false;
+        decode_ok = texture_decode::DecodeVerified(r, scratch_.data(), uint32_t(pitch), &mismatch);
+        ++stats_.verified;
+        if (mismatch) {
+          ++stats_.verify_mismatches;
+          if (reported_.insert(key).second) {
+            REXLOG_ERROR("[gpu] textures: {} level {} at {:08x}: the fast decoder's bytes differ "
+                         "from the per-block decoder's (reported once per texture)",
+                         key.Describe(), level, plan.address);
+          }
+        }
+      } else {
+        decode_ok = texture_decode::Decode(r, scratch_.data(), uint32_t(pitch));
+      }
+      if (!decode_ok) {
+        *why = std::format("level {} at {:08x}: a block beyond the {} readable bytes", level,
+                           plan.address, r.source.readable);
         ok = false;
         break;
       }
-    }
-    r.source.data = src;
-    r.source.readable = readable;
-
-    const uint32_t row_bytes = texture_decode::HostRowBytes(r);
-    const uint32_t rows = texture_decode::HostRows(r);
-    const uint64_t pitch = AlignUp(row_bytes, kTextureCopyPitchAlignment);
-    const uint64_t size = pitch * rows;
-    scratch_.resize(size_t(size));
-    if (!texture_decode::Decode(r, scratch_.data(), uint32_t(pitch))) {
-      *why = std::format("level {} at {:08x}: a block beyond the {} readable bytes", level, address,
-                         readable);
-      ok = false;
-      break;
+      decoded = scratch_.data();
     }
     const UploadSpan span = upload_->Allocate(slot_, size, kTextureCopyOffsetAlignment);
     if (!span) {
@@ -905,7 +1208,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
       ok = false;
       break;
     }
-    std::memcpy(span.cpu, scratch_.data(), size_t(size));
+    std::memcpy(span.cpu, decoded, size_t(size));
     const uint32_t row_width = uint32_t(pitch / host_block_bytes) * host_block_width;
     list->copyTextureRegion(
         plume::RenderTextureCopyLocation::Subresource(e.texture.get(), level, 0),
@@ -1103,6 +1406,7 @@ uint64_t TextureCache::HashGuest(const Entry& e) {
 }
 
 void TextureCache::Destroy(Entry& e, bool for_shutdown) {
+  e.prefetch.reset();  // a worker may still hold it: the job keeps its own copy of the plan
   for (RegionIndex::Id& id : e.region_ids) {
     if (id == RegionIndex::kNone) {
       continue;
@@ -1129,6 +1433,11 @@ void TextureCache::EvictSome() {
   bool any = false;
   for (auto it = entries_.begin(); it != entries_.end();) {
     Entry& e = *it->second;
+    // Decoded ahead and never taken (the draw was skipped, or read a product): the bytes go.
+    if (e.prefetch && e.prefetch->frame + kPrefetchHoldFrames < frame_ &&
+        e.prefetch->state() >= DecodeJob::kDone) {
+      e.prefetch.reset();
+    }
     if (e.last_frame + kEvictFrames < frame_) {
       Destroy(e, false);
       ++stats_.evicted;
@@ -1256,6 +1565,23 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
                         "dumped {}",
                         mods_.size(), live, stats_.replacements_loaded, stats_.replaced_binds,
                         stats_.dumped);
+  }
+  if (pool_.running()) {
+    // prefetched: textures handed to the workers; used: uploads that took their levels; dropped:
+    // stale (written since) or incomplete, decoded again; waited: the render thread in Upload
+    // for a worker or on a job none had started; ran on workers: jobs the workers finished.
+    text += std::format(
+        " | decode threads {}: prefetched {} ({:.2f} MiB/frame), used {}, dropped {}, render "
+        "thread waited {:.3f} ms/frame, workers ran {}, {:.1f} MiB held, lookahead on for {:.1f} "
+        "draws/frame and handed {:.1f} fetches/frame",
+        pool_.threads(), stats_.prefetched, double(stats_.prefetch_bytes) / f / 1048576.0,
+        stats_.prefetch_used, stats_.prefetch_dropped, double(stats_.prefetch_wait_ns) / f / 1e6,
+        pool_.TakeRanOnWorkers(), double(pool_.held_bytes()) / 1048576.0,
+        double(stats_.prefetch_draws) / f, double(stats_.prefetch_looked) / f);
+  }
+  if (stats_.verified) {
+    text += std::format(" | decode check: {} levels compared, {} differ", stats_.verified,
+                        stats_.verify_mismatches);
   }
   stats_ = Stats{};
   return text;

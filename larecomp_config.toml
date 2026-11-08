@@ -25276,6 +25276,35 @@ address = 0x822340F4
 name = "Patch_RearViewFrameSkip"
 jump_address_on_true = 0x82234108
 
+# 0x82233C58 and 0x82233CE8: the instructions right after the two visibility questions
+# (vtbl+60, flags+16 & 0x20, answer in r3) in mcRearView::update (sub_82233C18). Visible =
+# alpha ramps up and the 0x1000000 mirror phase is requested; the second answer becomes the
+# consumer's active byte. While `rearview` is off the hooks answer "hidden" (r3 = 0), so a
+# visible bit set by the HUD form's refresh (sub_82652860) between frame ticks can never show
+# the mirror. The first one also logs how often it found the bit set. rear_view.cpp.
+[[midasm_hook]]
+address = 0x82233C58
+name = "Patch_RearViewUpdateVisible"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82233CE8
+name = "Patch_RearViewUpdateActive"
+registers = ["r3"]
+after_instruction = false
+
+# 0x82234148: the `fcmpu cr6, f13, f0` in sub_82234128, the wrapper the HUD draw
+# (sub_82227428) calls for the mirror's frame. It draws when the option is on and the
+# widget's alpha (f13, [widget+1216]) is above 0, and never looks at the visible bit. While
+# `rearview` is off the hook reads alpha as 0 so the wrapper returns before any mesh.
+# rear_view.cpp.
+[[midasm_hook]]
+address = 0x82234148
+name = "Patch_RearViewDrawAlpha"
+registers = ["f13"]
+after_instruction = false
+
 # 0x8236051C: the `bl __savegprlr_14` of mcCarModel's draw (sub_82360518), r4 = the
 # phase (the entry itself, 0x82360518, already carries Hook_SquashSelectVehicle and the
 # recompiler takes one hook per address). It knows the colour pass 0x10000 but not the
@@ -25390,12 +25419,24 @@ name = "Hook_WheelHudGear"
 registers = ["r4", "r5"]
 after_instruction = false
 
-# DualSense adaptive triggers (mc_engine/adaptive_triggers.cpp). Start of the block of the HUD update
-# (sub_822112A8) that writes the speedometer, the tachometer and the gear display. The HUD updates
-# once a frame while a car is driven, so a recent call means "driving".
+# DualSense and Xbox trigger effects (mc_engine/adaptive_triggers.cpp, impulse_triggers.cpp). Start of
+# the block of the HUD update (sub_822112A8) that writes the speedometer, the tachometer and the gear
+# display. The HUD updates once a frame while a car is driven, so a recent call means "driving".
+# r30 = the HUD's player object; [r30+8] is the car it shows, which wheel_slip.cpp matches the wheels
+# against.
 [[midasm_hook]]
 address = 0x822117C0
 name = "Hook_TriggersHud"
+registers = ["r30"]
+
+# Wheelspin and brake lock-up of the player's car for the trigger effects (mc_engine/wheel_slip.cpp).
+# 0x82567154 is the epilogue of sub_825666A0, the wheel update (one call per wheel and physics step,
+# one exit): `addi r1,r1,432`. r31 = the wheel, whose ground speed (+296), slip speed (+304) and
+# ground contact (+529) the step has just set.
+[[midasm_hook]]
+address = 0x82567154
+name = "Hook_WheelSlip"
+registers = ["r31"]
 
 # Online Tournament: short-circuit the mcOnlineTournament state machine
 # (sub_82740958) at entry. r3 = the state object. The real read hits a dead

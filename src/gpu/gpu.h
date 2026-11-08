@@ -37,7 +37,8 @@
 //                         guest threads, from src/native_gfx/hooks.cpp
 //   RequestResize         window pixel-size changes
 //   RequestTexture*       the pause menu's TEXTURE MODS rows (any thread)
-//   PreviewRenderScale    the pause menu's RENDER RES and FSR1 rows (any thread)
+//   PreviewRenderScale, GetRenderScaleStatus
+//                         the pause menu's RENDER RES and FSR1 rows (any thread)
 //   HdrOutputActive, HdrAuto*   the pause menu's HDR rows (any thread)
 //   Shutdown              LarecompApp::FinishWindowClose (the window's close) and OnShutdown
 // ===========================================================================
@@ -47,6 +48,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "render_scale.h"
 
@@ -96,6 +98,10 @@ void SetShaderPackGate(std::function<bool()> gate);
 // Where a build of the packs should write: shader_pack_dir, else the folder from
 // SetShaderPackFolder, else the default (made, and tried with a real file). Any thread.
 std::filesystem::path ShaderPackFolder();
+// The folders the renderer looks for a pack in when it starts, in order (ShaderStore::SearchFolders
+// of the folder SetShaderPackFolder gave). The first with a valid pack is the one the game uses.
+// Any thread; needs no renderer (the pipeline prebuild, pipeline_prebuild.h, reads it).
+std::vector<std::filesystem::path> ShaderPackSearchFolders();
 // True once the main pack is attached (at Startup or by AttachShaderPacks); false with no
 // renderer. Any thread. A build is needed when this is false after Startup.
 bool ShaderPacksAttached();
@@ -220,11 +226,19 @@ void RequestResize();
 void RequestTextureDumpAll();
 void RequestTextureReload();
 
-// Any thread: the internal resolution scale a start would choose from these
-// settings (render_scale.h) for the window as it is now -- the swap chain's
+// Any thread: the internal resolution scale these settings choose
+// (render_scale.h) for the window as it is now -- the swap chain's
 // last size; before the renderer is up, a window measured as the game's
 // screen. The pause menu labels its RENDER RES and FSR1 rows with it.
 RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset);
+// Render thread (the temporal system, at every frame boundary): the scale the settings ask for now,
+// the cvars read and the window as it is (the swap chain's last size; 0x0 in the choice's window
+// fields until the renderer has published one). The renderer follows it while the game runs.
+RenderScaleChoice WantedRenderScale();
+// Any thread: the scale the renderer's images of the screen are made at now, and the one the settings
+// ask for that could not be made for want of video memory (render_scale.h RenderScaleStatus). The
+// pause menu's RENDER RES row says so beside the value.
+RenderScaleStatus GetRenderScaleStatus();
 
 // Any thread: the window's swap chain is HDR10 (hdr.h). False before the renderer is up and when
 // HDR is off or could not be had; the pause menu greys its HDR level rows then.
@@ -243,11 +257,23 @@ void Shutdown();
 // graphics_backend = "auto" as the Plume renderer decides it (ChooseAutoBackend in backend.h):
 // true when that is Vulkan. For the emulated GPU's backend (larecomp_app.h), which follows the same
 // setting; backend.h itself needs Plume's headers, this one doesn't.
-bool AutoBackendIsVulkan(const std::string& preferred_adapter);
+// With `adapter` given, and Vulkan chosen, it receives the name of the GPU that choice was made for.
+bool AutoBackendIsVulkan(const std::string& preferred_adapter, std::string* adapter = nullptr);
+
+// The emulated GPU (Xenia) path, which has no say in which GPU it runs on: the SDK takes Direct3D 12's
+// first adapter that is not software and Vulkan's first device, and on a PC with two GPUs that is often
+// the weaker one, the one that drives the screen. This is the number to give the SDK's d3d12_adapter
+// (`vulkan` false: the adapter in IDXGIFactory1's order) or vulkan_device (the device in the loader's
+// order) so that it runs on the GPU the Plume renderer would use: `preferred_adapter` (mcla_gpu_adapter,
+// or the GPU graphics_backend = auto chose Vulkan for) by name; else on D3D12 the adapter Windows'
+// graphics setting for this exe names, else the high-performance GPU; else on Vulkan a discrete GPU
+// before an integrated one. -1: no opinion, the SDK chooses (also on Linux for D3D12, which has none).
+int XeniaAdapterIndex(bool vulkan, const std::string& preferred_adapter);
 
 // --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
 // What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
-// mcla_gpu_upscaler is off | fsr31 | fsr4 | dlss; a choice this PC cannot run is treated as off and
+// mcla_gpu_upscaler is off | fsr31 | fsr4 | dlss; a choice this PC cannot run is treated as off (DLSS
+// that can run only from the next start leaves the running path alone: `kept` below) and
 // the menu does not list it (DLSS without its files is listed, greyed, as "needs setup").
 enum class Upscaler : uint8_t { kOff, kFsr31, kFsr4, kDlss };  // stored in 2 bits in places
 const char* UpscalerName(Upscaler upscaler);  // OFF, FSR 3.1, FSR 4, DLSS
@@ -281,37 +307,49 @@ struct UpscalerAvailability {
   bool dlss = false;                // can run on this PC now: listed under Upscaling
   bool dlss_needs_setup = false;    // an NVIDIA RTX card, files missing: listed greyed
   bool dlss_after_restart = false;  // listed; runs from the next start
+  // DLSS takes a render size of its own for each mode at an output size (Ultra Performance's is exact,
+  // the others lie in a range), so a mode can be unable to run at the output the renderer works at:
+  // Ultra Performance needs a scene of a third of the output, which is under the 0.5x the scene is
+  // drawn at as its smallest for an output under 1.5x, and off the scale grid at 2560x1440. Bit i
+  // set: UpscaleMode i cannot run there, as the DLSS runtime said (temporal_backend.h ModeVerdicts).
+  // No bit while that is not known yet (the runtime has not started) or DLSS cannot run at all. The
+  // pause menu's DLSS mode row says "(N/A)" for these, and a pick of one keeps the mode that runs.
+  uint32_t dlss_modes_refused = 0;
+  bool DlssModeRefused(UpscaleMode mode) const {
+    return uint32_t(mode) < uint32_t(UpscaleMode::kCount) &&
+           ((dlss_modes_refused >> uint32_t(mode)) & 1u) != 0;
+  }
   Upscaler running = Upscaler::kOff;  // the one doing the work this moment
+  // DLSS is chosen but this game can run it only from the next start (dlss_after_restart): the
+  // upscaler the renderer keeps until then, with the mode it had (kOff: none runs, or nothing is
+  // waiting). The pause menu shows that one as the active one, greyed, instead of the choice.
+  Upscaler kept = Upscaler::kOff;
+  // The settings ask for another upscaler or mode than the one running and its context is being made
+  // (a live change, temporal.h): the old one goes on until it is ready.
+  bool switching = false;
 };
 UpscalerAvailability GetUpscalerAvailability();
 
-// --- MSAA while an upscaler runs ---------------------------------------------------------------
-// FSR smooths the picture itself, and MSAA under it only costs time. The game's MSAA is a start-up
-// switch (its renderer is made once, with 2 samples or without: hooks/graphics.cpp
-// Patch_DisableMSAA), so the hold is decided once, when the game makes its renderer: a game started
-// with an upscaler chosen and able to run is started without MSAA, and the player's MSAA choice
-// (mcla_gpu_msaa) is kept and applies again at a start with no upscaler. An upscaler turned on
-// later finds the game's MSAA running (it works with it) until the next start.
-enum class GuestMsaa : uint8_t {
-  kUndecided,       // the game has not made its renderer yet
-  kOn,              // as the player chose: the console's 2 samples (host samples 4 or 8 on top)
-  kOffChosen,       // mcla_gpu_msaa is off
-  kOffForUpscaler,  // started without MSAA because an upscaler runs; the choice is kept
-};
-// Called once by the game's own thread when its renderer is made; later calls give the same answer.
-// True: the game starts without MSAA. Waits up to a few seconds for the upscaler probe when an
-// upscaler is chosen (it ends within a second of the renderer starting).
-bool GuestMsaaOff();
-// Any thread.
-GuestMsaa GetGuestMsaa();
+// --- MSAA --------------------------------------------------------------------------------------
+// The native renderer never turns the game's own MSAA switch off (hooks/graphics.cpp MsaaOff): the
+// game always draws its 2 sample layout, and the host's MSAA level (EdramTargets::msaa_level: 1, 2,
+// 4 or 8 samples on the images of the screen) is the player's choice, 1 for OFF and while an upscaler
+// runs (an upscaler smooths the picture itself, and MSAA under it only costs time). The level
+// changes while the game runs (msaa_level.h).
+// The host MSAA level changes while the game runs (msaa_level.h): true from when a new level has
+// stood still until its pipelines are made and the targets are made again. The pause menu's MSAA
+// row says (APPLYING). Any thread.
+bool MsaaSwitching();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
-// The scene is drawn smaller than the output only while an upscaler can make it whole again, and
-// its size is fixed when its targets are made (restart only, like RES SCALE). So the choice is read
-// once: the upscaler and mode chosen at the start, and whether this PC can run that upscaler (known
-// when the upscaler probe has ended). `ratio` is the mode's output over render, per axis (1 when no
-// upscaler runs); the renderer turns it into the scene's scale (render_scale.h ChooseSceneScale).
-// A change of upscaler or mode afterwards is only noted: it applies at the next start.
+// The scene is drawn smaller than the output only while an upscaler can make it whole again. The
+// scene's first targets are made for the choice read once at the start: the upscaler and mode
+// chosen, and whether this PC can run that upscaler (known when the upscaler probe has ended).
+// `ratio` is the mode's output over render, per axis (1 when no upscaler runs); the renderer turns
+// it into the scene's scale (render_scale.h ChooseSceneScale). The host's MSAA level is decided from
+// it too (EdramTargets::DecideScene: 1 when `runs`). A change of upscaler or mode afterwards is made
+// live by the temporal system at a frame boundary (temporal.h, "Changing the path"), and the MSAA
+// level follows it (msaa_level.h).
 struct StartUpscale {
   bool decided = false;
   bool probed = false;  // the upscaler probe had ended when it was decided
@@ -322,9 +360,60 @@ struct StartUpscale {
 };
 // Decides on the first call (any thread; waits a few seconds for the probe when an upscaler is
 // chosen), the same answer ever after. The game's own thread calls it first, when it makes its
-// renderer (GuestMsaaOff).
+// renderer (hooks/graphics.cpp MsaaOff), so the wait for the probe is not the renderer's.
 StartUpscale GetStartUpscale();
 // What has been decided so far, never waiting: `decided` is false before.
 StartUpscale PeekStartUpscale();
+
+// --- frame generation (frame_generation.h) -----------------------------------------------------------
+// AMD's FSR 3.1 frame generation, mcla_gpu_frame_generation = off | fsr31 (live). Any thread.
+struct FrameGenerationAvailability {
+  bool probed = false;     // the runtime's answer is final
+  bool available = false;  // FSR 3.1 frame generation can run on this PC: the pause menu lists the row
+  bool failed = false;     // it was turned off for the rest of the session after a failure
+  // The card has no room for it now: frame generation (its images and AMD's context, hundreds of MB
+  // at 4K) would take video memory past the line where the budget starts releasing the caches, or
+  // AMD's runtime ran out of it making the context. It is off meanwhile, looked at again every few
+  // seconds, and `why` says how much it needs and how much is in use. Not a failure: the row stays.
+  bool no_room = false;
+  bool running = false;    // on: the swap chain is on the pacer's queue (the cap and the reducer follow)
+  uint32_t refresh_hz = 0; // the display the window is on (its highest mode), 0 until read
+  // HALF DISPLAY's cap in rendered frames a second (the floor of 97% of half the refresh rate), 0 where
+  // it is not offered (a display under 100 Hz, or an unknown one): the player's own cap applies there.
+  uint32_t half_display = 0;
+  std::string why;         // not available, failed or no room: one plain sentence for the log and the launcher
+};
+FrameGenerationAvailability GetFrameGenerationAvailability();
+// Whether frame generation runs now (the swap chain is on the pacer's queue).
+bool FrameGenerationRunning();
+// The frame limiter's cap now: `player_limit` (fps_limit) normally, the frame generation cap
+// (mcla_gpu_frame_generation_fps_limit) while it runs. 0 is uncapped. Counts rendered frames.
+int32_t FrameGenerationFpsLimit(int32_t player_limit);
+
+// --- DLSS frame generation (dlss_frame_generation.h) -------------------------------------------------
+// NVIDIA's DLSS frame generation through Streamline, mcla_gpu_frame_generation = dlss (live), with
+// mcla_gpu_frame_generation_multiplier beside it. Any thread.
+struct DlssFrameGenerationAvailability {
+  bool probed = false;         // the answer is final (Streamline has started and been asked)
+  bool listed = false;         // the FRAME GENERATION row lists DLSS: an RTX 40 or 50 series card with the files
+  bool supported = false;      // Streamline said it can run here now
+  bool after_restart = false;  // listed, but runs from the next start (Vulkan: the device is made through
+                               // Streamline only when it is saved at the start)
+  bool failed = false;         // it was turned off for the rest of the session after a failure
+  bool running = false;        // on: the swap chain is Streamline's proxy chain
+  uint32_t max_multiplier = 2; // 2 to 4: the most the card takes (2 until the plugin has said)
+  bool multiplier_choice = false;  // more than 2x is possible: the pause menu has the multiplier row
+  uint32_t refresh_hz = 0;
+  std::string why;             // not supported, or failed: one plain sentence for the log and the launcher
+};
+DlssFrameGenerationAvailability GetDlssFrameGenerationAvailability();
+// Whether DLSS frame generation runs now (the frame cap and the latency reducer follow).
+bool DlssFrameGenerationRunning();
+// The multiplier the setting comes to on this card: 2, 3 or 4.
+uint32_t DlssFrameGenerationMultiplier();
+// The frame limiter's cap now: `player_limit` normally, the frame generation cap
+// (mcla_gpu_frame_generation_fps_limit; HALF DISPLAY is the display's rate over the multiplier) while it
+// runs. 0 is uncapped. Counts rendered frames.
+int32_t DlssFrameGenerationFpsLimit(int32_t player_limit);
 
 }  // namespace mcla::gpu

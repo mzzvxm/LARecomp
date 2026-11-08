@@ -36,14 +36,16 @@
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_hdr, "off", "MCLA/GPU",
-    "HDR output for an HDR10 display. off: the usual picture. auto: HDR when Windows has HDR "
-    "turned on for the display the game is on. on: HDR even if Windows does not say its HDR is "
-    "on; where the display or the driver cannot show it the usual picture is used and the log "
-    "says why. The HUD and the menus are shown at your paper white setting; the game's lights, "
-    "the sun, the sky at dusk and the headlights go above it (how far: mcla_gpu_hdr_highlights). "
-    "Takes effect at the next start.")
+    "HDR output for an HDR10 display. off: the usual picture. auto: HDR while Windows has HDR "
+    "turned on for the display the game is on, following Windows' HDR switch and the display the "
+    "window is moved to. on: HDR even if Windows does not say its HDR is on; where the display or "
+    "the driver cannot show it the usual picture is used and the log says why. The HUD and the "
+    "menus are shown at your paper white setting; the game's lights, the sun, the sky at dusk and "
+    "the headlights go above it (how far: mcla_gpu_hdr_highlights). Takes effect within a moment, "
+    "at the end of a frame; the picture may flicker once while the window's swap chain is made "
+    "again.")
     .allowed({"off", "auto", "on"})
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_hdr_paper_white_nits, 0.0, "MCLA/GPU",
     "How bright the game's white is in HDR, in nits (Windows' own slider covers 80 to 480). 0: "
@@ -100,7 +102,10 @@ constexpr float kFallbackPaperWhiteNits = 200.0f;
 DisplayState g_display;
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_decided{false};  // SetActive ran
-Mode g_mode = Mode::kOff;            // lifecycle thread; the poll thread starts after it is set
+// The setting, read by the render thread at each frame boundary (SyncMode) and by Start; the poll
+// thread only asks whether it is off. `g_mode_text` is the cvar text it was parsed from.
+std::atomic<Mode> g_mode{Mode::kOff};
+std::string g_mode_text;
 #if defined(_WIN32)
 HWND g_window = nullptr;
 #endif
@@ -108,8 +113,19 @@ std::thread g_thread;
 std::mutex g_mutex;
 std::condition_variable g_cv;
 bool g_stop = false;  // g_mutex
-// The display's HDR state the poll last reported after the swap chain was made (poll thread).
-bool g_reported_hdr_after_start = false;
+// Poll() runs on the poll thread each second and on the render thread when the setting leaves off;
+// this guards the debounce below.
+std::mutex g_poll_mutex;
+// A change of what the display says (readable or not, HDR on or off) is published once two polls in
+// a row agree (g_poll_mutex): a display that flickers through a mode change does not rebuild the
+// swap chain twice.
+bool g_candidate_seen = false;
+bool g_candidate_known = false;
+bool g_candidate_hdr = false;
+// An attempt to change the output that the swap chain refused: not asked again until the setting or
+// the display's state is another (render thread). The key is SwitchKey().
+bool g_refused = false;
+uint32_t g_refused_key = 0;
 
 Mode ParseMode(const std::string& value) {
   if (value == "on") {
@@ -207,20 +223,44 @@ bool ReadDisplay(HWND window, DisplayInfo* out) {
 
 #endif  // _WIN32
 
-// Reads the display and publishes it; logs what changed.
-void Poll() {
+// Whether the setting stands for HDR when the display says `display_hdr`.
+bool WantsHdr(Mode mode, bool display_known, bool display_hdr) {
+  return mode == Mode::kOn || (mode == Mode::kAuto && display_known && display_hdr);
+}
+
+// CHECK: not run. The debounce makes Windows' HDR switch take two polls (1 to 2 s) to reach
+// SwitchWanted: the log line "the window's display reports HDR on|off ..." appears when the
+// state is believed, then "hdr: switching" within a frame. An output that reports nothing for a
+// moment while Windows changes its mode (known false) is treated the same way.
+// Reads the display and publishes it; logs what changed. `immediate`: what it says is published at
+// once (the first answer, or a setting that has just left off); otherwise a change of its state
+// waits for the next poll to say the same, a second later.
+void Poll(bool immediate) {
   DisplayInfo info;
 #if defined(_WIN32)
   if (g_window) {
     ReadDisplay(g_window, &info);
   }
 #endif
-  const bool changed = info.known != g_display.known.load() ||
-                       info.hdr_enabled != g_display.hdr_enabled.load() ||
+  std::lock_guard<std::mutex> lock(g_poll_mutex);
+  const bool known_before = g_display.known.load();
+  const bool hdr_before = g_display.hdr_enabled.load();
+  const bool hdr_enabled = info.hdr_enabled;
+  if (!immediate && known_before && (!info.known || hdr_enabled != hdr_before)) {
+    // A display that was readable now says another thing: believed at the second read in a row.
+    if (!(g_candidate_seen && g_candidate_known == info.known && g_candidate_hdr == hdr_enabled)) {
+      g_candidate_seen = true;
+      g_candidate_known = info.known;
+      g_candidate_hdr = hdr_enabled;
+      return;
+    }
+  }
+  g_candidate_seen = false;
+  const bool changed = info.known != known_before || hdr_enabled != hdr_before ||
                        info.peak_nits != g_display.peak_nits.load() ||
                        info.sdr_white_nits != g_display.sdr_white_nits.load();
   g_display.known.store(info.known);
-  g_display.hdr_enabled.store(info.hdr_enabled);
+  g_display.hdr_enabled.store(hdr_enabled);
   g_display.peak_nits.store(info.peak_nits);
   g_display.full_frame_nits.store(info.full_frame_nits);
   g_display.min_nits.store(info.min_nits);
@@ -231,25 +271,19 @@ void Poll() {
   if (info.known) {
     REXLOG_INFO("[gpu] hdr: the window's display reports HDR {}, peak {:.0f} nits, full frame "
                 "{:.0f} nits, black {:.4f} nits, SDR white {:.0f} nits",
-                info.hdr_enabled ? "on" : "off", info.peak_nits, info.full_frame_nits,
-                info.min_nits, info.sdr_white_nits);
+                hdr_enabled ? "on" : "off", info.peak_nits, info.full_frame_nits, info.min_nits,
+                info.sdr_white_nits);
   } else {
     REXLOG_INFO("[gpu] hdr: the window's display could not be read; AUTO levels use {:.0f} nits "
                 "paper white and {:.0f} nits peak",
                 kFallbackPaperWhiteNits, kFallbackPeakNits);
   }
-  // Windows' HDR switch moved after the swap chain was made: the chain keeps its format until
-  // the next start.
-  if (g_decided.load() && info.known && info.hdr_enabled != g_reported_hdr_after_start) {
-    g_reported_hdr_after_start = info.hdr_enabled;
-    const bool active = g_active.load();
-    if (active && !info.hdr_enabled) {
-      REXLOG_WARN("[gpu] hdr: Windows HDR was turned off for this display while the game shows "
-                  "HDR10; the picture looks wrong until the game is restarted");
-    } else if (!active && info.hdr_enabled && g_mode == Mode::kAuto) {
-      REXLOG_INFO("[gpu] hdr: Windows HDR was turned on for this display; the game shows HDR "
-                  "from the next start (mcla_gpu_hdr = auto)");
-    }
+  // Windows' HDR switch moved after the swap chain was made. With auto the renderer follows it at
+  // its next frame boundary (SwitchWanted); on keeps what it was asked for.
+  if (g_decided.load() && info.known && hdr_enabled != hdr_before &&
+      g_mode.load() == Mode::kOn && g_active.load() && !hdr_enabled) {
+    REXLOG_INFO("[gpu] hdr: Windows HDR was turned off for this display; mcla_gpu_hdr = on keeps "
+                "the HDR10 output (auto follows Windows)");
   }
 }
 
@@ -257,11 +291,35 @@ void PollLoop() {
   std::unique_lock<std::mutex> lock(g_mutex);
   while (!g_stop) {
     lock.unlock();
-    Poll();
+    // Nothing to follow while the setting is off and the output is SDR.
+    if (g_mode.load() != Mode::kOff || g_active.load()) {
+      Poll(false);
+    }
     lock.lock();
     // Windows does not reliably announce a change of the SDR content brightness: ask each second.
     g_cv.wait_for(lock, std::chrono::seconds(1), [] { return g_stop; });
   }
+}
+
+// The setting the render thread sees now, and the display read the moment it leaves off.
+void SyncMode() {
+  const std::string& text = REXCVAR_GET(mcla_gpu_hdr);
+  if (text == g_mode_text) {
+    return;
+  }
+  g_mode_text = text;
+  const Mode before = g_mode.load();
+  const Mode after = ParseMode(text);
+  g_mode.store(after);
+  if (before == Mode::kOff && after != Mode::kOff) {
+    Poll(true);  // the display's state is wanted now, not at the poll's next second
+  }
+}
+
+// What a refusal is remembered under: the setting, what Windows says and what was asked for.
+uint32_t SwitchKey(Mode mode, bool to_hdr) {
+  return uint32_t(mode) | (g_display.known.load() ? 4u : 0u) |
+         (g_display.hdr_enabled.load() ? 8u : 0u) | (to_hdr ? 16u : 0u);
 }
 
 }  // namespace
@@ -272,23 +330,27 @@ void Start(plume::RenderWindow window) {
   Stop();
   g_active.store(false);
   g_decided.store(false);
-  g_mode = ParseMode(REXCVAR_GET(mcla_gpu_hdr));
-  if (g_mode == Mode::kOff) {
-    return;
-  }
+  g_refused = false;
+  g_mode_text = REXCVAR_GET(mcla_gpu_hdr);
+  g_mode.store(ParseMode(g_mode_text));
 #if defined(_WIN32)
   g_window = window;
 #else
   (void)window;
-  REXLOG_INFO("[gpu] hdr: the display's levels are only read on Windows; AUTO levels use the "
-              "fallbacks");
+  if (g_mode.load() != Mode::kOff) {
+    REXLOG_INFO("[gpu] hdr: the display's levels are only read on Windows; AUTO levels use the "
+                "fallbacks");
+  }
 #endif
-  Poll();  // the first answer is there before the swap chain asks
-  g_reported_hdr_after_start = g_display.hdr_enabled.load();
+  if (g_mode.load() != Mode::kOff) {
+    Poll(true);  // the first answer is there before the swap chain asks
+  }
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_stop = false;
   }
+  // Started whatever the setting is: it can be turned on later, and the thread does nothing while
+  // it is off.
   g_thread = std::thread(PollLoop);
 }
 
@@ -305,10 +367,11 @@ void Stop() {
 }
 
 bool Wanted() {
-  if (g_mode == Mode::kOff) {
+  const Mode mode = g_mode.load();
+  if (mode == Mode::kOff) {
     return false;
   }
-  if (g_mode == Mode::kOn) {
+  if (mode == Mode::kOn) {
     return true;
   }
   if (!g_display.known.load()) {
@@ -325,13 +388,53 @@ bool Wanted() {
 void SetActive(bool active) {
   g_active.store(active);
   g_decided.store(true);
-  if (g_mode == Mode::kOff) {
+  const Mode mode = g_mode.load();
+  if (mode == Mode::kOff) {
     return;
+  }
+  // The swap chain was asked for HDR10 and would not: not asked again for this state of the
+  // setting and the display.
+  if (!active && WantsHdr(mode, g_display.known.load(), g_display.hdr_enabled.load())) {
+    g_refused = true;
+    g_refused_key = SwitchKey(mode, true);
   }
   const HdrLevels levels = Levels();
   REXLOG_INFO("[gpu] hdr: {} (mcla_gpu_hdr = {}), paper white {:.0f} nits, peak {:.0f} nits",
-              active ? "HDR10 output on" : "SDR output", ModeName(g_mode), levels.white,
+              active ? "HDR10 output on" : "SDR output", ModeName(mode), levels.white,
               levels.peak);
+}
+
+bool SwitchWanted(bool current_hdr, bool* to_hdr, std::string* why) {
+  SyncMode();
+  const Mode mode = g_mode.load();
+  const bool known = g_display.known.load();
+  const bool display_hdr = g_display.hdr_enabled.load();
+  const bool want = WantsHdr(mode, known, display_hdr);
+  if (want == current_hdr) {
+    return false;
+  }
+  if (g_refused && g_refused_key == SwitchKey(mode, want)) {
+    return false;
+  }
+  *to_hdr = want;
+  if (why) {
+    *why = std::string("mcla_gpu_hdr = ") + ModeName(mode);
+    if (mode == Mode::kAuto) {
+      *why += want ? ", Windows HDR is on for the display" : ", Windows HDR is off for the display";
+    }
+  }
+  return true;
+}
+
+void SwitchDone(bool wanted_hdr, bool now_hdr) {
+  g_active.store(now_hdr, std::memory_order_release);
+  g_decided.store(true);
+  if (wanted_hdr != now_hdr) {
+    g_refused = true;
+    g_refused_key = SwitchKey(g_mode.load(), wanted_hdr);
+  } else {
+    g_refused = false;
+  }
 }
 
 bool Active() {
