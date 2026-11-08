@@ -13,7 +13,10 @@
 //   R16G16B16A16_FLOAT image: the scene and the UI in the game's code values with nothing clamped
 //   (the scene may be above 1 here: HDR stage 3's float scene, hdr_tonemap.h, is read in place of the
 //   underlay when the frame has one; the UI stays under it). With a debug view
-//   (mcla_gpu_hdr_layers_view) the pass shows one layer instead.
+//   (mcla_gpu_hdr_layers_view) the pass shows one layer instead. The first `gap` columns and rows
+//   (frame_layers.h, Frame::gap) hold no picture at a render scale: the game's full-screen draws
+//   never write them, and its own resolve reads them from the first column and row they do write.
+//   The compose does the same for all three images: the texel at or before `gap` is read at `gap`.
 //
 // LAYERS_RESOLVE = 1 (layers_resolve_ps): a multisampled target of the game (the pause menu's and the
 //   map's UI target, drawn at the host's MSAA level) averaged into a single-sampled image: every
@@ -55,6 +58,7 @@ struct LayersPush {
   uint view;      // LAYERS_COMPOSE only: 0 the frame, 1 the UI layer, 2 the scene, 3 coverage,
                   // 4 where the float scene is above 1, 5 its difference from the 8-bit scene
   uint reference; // LAYERS_COMPOSE only: the 8-bit underlay's slot (views 4 and 5)
+  uint gap;       // LAYERS_COMPOSE only: host columns and rows at the origin that hold no picture
 };
 
 #ifdef __spirv__
@@ -64,7 +68,12 @@ ConstantBuffer<LayersPush> g_push : register(b0, space4);
 #endif
 
 float4 main(float4 position : SV_Position) : SV_Target {
+#if LAYERS_COMPOSE
+  // The pixels before `gap` are read at `gap`, as the guest's resolve does for the front buffer.
+  const int3 at = int3(max(int2(position.xy), int2(int(g_push.gap), int(g_push.gap))), 0);
+#else
   const int3 at = int3(int2(position.xy), 0);
+#endif
   const float4 underlay = g_textures[g_push.underlay].Load(at);
 #if LAYERS_COMPOSE
   const float4 ui = g_textures[g_push.ui].Load(at);

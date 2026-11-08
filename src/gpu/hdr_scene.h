@@ -23,6 +23,10 @@
 // A frame without layers (the front buffer is not their picture, reaches past them, none made: the
 // pause menus, movies, loading) is shown from the front buffer as stage 1 does.
 //
+// The first host column and row at a render scale (FrameLayers::Frame::gap) are not in the picture
+// the layers keep: the compose reads them from the next ones, as the guest's resolve does for the
+// front buffer, so the two ways of showing a frame agree along the edges of the screen.
+//
 // Memory: the float image (R16G16B16A16_FLOAT) at the front buffer's size: 7.4 MB at 1x and
 // 66 MB at 3x, made on the first composed frame and released after as many presents without
 // layers as FrameLayers waits.
@@ -86,6 +90,7 @@ class HdrScene {
     uint32_t ui;
     uint32_t view;
     uint32_t reference;  // the 8-bit underlay (the debug views that compare)
+    uint32_t gap;        // FrameLayers::Frame::gap: the first columns and rows are read from the next
   };
   static_assert(sizeof(Push) <= HostPasses::kPushConstantBytes);
 

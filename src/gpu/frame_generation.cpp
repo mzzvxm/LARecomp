@@ -125,6 +125,7 @@ struct PreparePush {  // hlsl/fg_prepare_ps.hlsl
   uint32_t src_height;
   uint32_t out_width;
   uint32_t out_height;
+  uint32_t gap;  // FrameLayers::Frame::gap: the first source columns and rows are read from the next
 };
 struct ComposePush {  // hlsl/fg_compose_ps.hlsl
   uint32_t generated;
@@ -134,6 +135,7 @@ struct ComposePush {  // hlsl/fg_compose_ps.hlsl
   uint32_t src_height;
   uint32_t out_width;
   uint32_t out_height;
+  uint32_t gap;  // the same, for the UI layer
 };
 struct CopyPush {  // hlsl/fg_copy_ps.hlsl
   uint32_t source;
@@ -902,6 +904,7 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
     push.src_height = src_h;
     push.out_width = gen_w;
     push.out_height = gen_h;
+    push.gap = layer.gap;
     passes_->DrawInto(list, color_, prepare_pipeline_.get(), &push, sizeof(push));
   }
 
@@ -978,6 +981,7 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
     push.src_height = src_h;
     push.out_width = gen_w;
     push.out_height = gen_h;
+    push.gap = layer.gap;
     passes_->DrawInto(list, composed_, compose_pipeline_.get(), &push, sizeof(push));
   }
   ++stats_.generated;

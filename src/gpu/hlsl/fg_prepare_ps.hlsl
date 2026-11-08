@@ -24,6 +24,7 @@ struct PreparePush {
   uint src_height;
   uint out_width;   // the generation size
   uint out_height;
+  uint gap;         // the scene's first columns and rows that hold no picture (Frame::gap): read at `gap`
 };
 
 #ifdef __spirv__
@@ -36,7 +37,10 @@ static const uint kFlagFloatScene = 1u;
 
 float3 Texel(int2 at) {
   const int2 limit = int2(g_push.src_width, g_push.src_height) - 1;
-  const float3 c = g_textures[g_push.scene].Load(int3(clamp(at, int2(0, 0), limit), 0)).rgb;
+  // The first `gap` columns and rows are read from the next ones, as the guest's resolve does for the
+  // front buffer (frame_layers.h, Frame::gap): the scene holds no picture there.
+  const int2 first = int2(int(g_push.gap), int(g_push.gap));
+  const float3 c = g_textures[g_push.scene].Load(int3(clamp(at, first, limit), 0)).rgb;
   // Finite and not negative: a NaN a float16 draw left in the scene is none.
   const uint3 bits = asuint(c) & 0x7FFFFFFFu;
   return float3((bits.x <= 0x7F800000u) ? max(c.x, 0.0f) : 0.0f,

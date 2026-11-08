@@ -119,7 +119,7 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, 
     }
   }
   pass_timing_->Mark(list, "hdr compose");
-  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot};
+  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot, frame.gap};
   passes_->DrawInto(list, image_, pipeline_.get(), &push, sizeof(push));
   composed_generation_ = frame.generation;
   composed_view_ = view;

@@ -86,6 +86,17 @@
 // buffer's size and shows that where it shows the front buffer, with the gamma table extended
 // above 1. An idle present repeats the last guest frame's layers.
 //
+// The first host column and row at a render scale (Frame::gap). The layers are images of the
+// guest's target, whose first column and row at a scale no full-screen draw writes (the D3D pixel
+// centre puts the geometry half a guest pixel in); the guest never sees them, its resolves read
+// them from the next column and row. The layers cannot be trusted there, and a float scene drawn
+// again into the same image every frame is not rewritten there either, so every consumer reads the
+// pixel at `gap` for those before it. Without that the edge of the screen shows what those pixels
+// hold: black in a clean image (the 3x test pictures of the HDR runs have a black first column and
+// row), and after a pause menu or the garage a one pixel line, whitish and reddish, along the left
+// and the top of the picture that stayed until the images were made again (owner's report,
+// 2026-11-07, 4K at 3x, DLSS and HDR on).
+//
 // HDR stage 3 (hdr_tonemap.h) makes a float image of the scene as well, with the tone map's light
 // above white and the glows drawn after it, up to the marker. It is not made here: the frame's
 // capture asks the SceneImageSource (the HdrToneMap) for it, and a frame that has one carries it
@@ -188,6 +199,16 @@ class FrameLayers {
     // Counts up with each capture: a consumer that kept something made from this frame knows it
     // is still this frame's.
     uint64_t generation = 0;
+    // Host pixels at the left and at the top of the three images (the hudless, the ui and the float
+    // scene) that hold no picture: at a render scale above 1 a full-screen draw with the D3D pixel
+    // centre starts half a guest pixel in and leaves the first host column and row uncovered
+    // (Scale::HalfPixelGap of the UI target's scale: 1 at 2x and 3x). They hold whatever the image
+    // happened to keep there: an earlier view's picture, or a light drawn again into the float scene
+    // every frame, which adds up where the tone map's own draw never rewrites it. The guest's own
+    // resolve reads them from the first covered column and row (resolve.cpp, push.fill); a consumer
+    // of the layers does the same, the texel at or before `gap` read at `gap` (hlsl
+    // LAYERS_COMPOSE, fg_prepare, fg_compose).
+    uint32_t gap = 0;
     // The texture the UI target was resolved into. IsPictureOf tells whether a front buffer is it.
     TextureKey destination;
 
@@ -358,11 +379,12 @@ class FrameLayers {
   // The resolve puts the target's pixels where they are in the destination (no offset).
   static bool ResolveIsUnmoved(const ResolveRecord& record);
 
-  struct Push {  // hlsl/frame_layers_ps.hlsl
+  struct Push {  // hlsl/frame_layers_ps.hlsl (the put-back uses the first only; HdrScene::Push is the compose's)
     uint32_t underlay;
     uint32_t ui;
     uint32_t view;
     uint32_t reserved;
+    uint32_t gap;
   };
   static_assert(sizeof(Push) <= HostPasses::kPushConstantBytes);
   struct ResolvePush {  // hlsl/frame_layers_ps.hlsl, LAYERS_RESOLVE
@@ -418,6 +440,7 @@ class FrameLayers {
   std::unordered_set<uint64_t> blends_logged_;
   bool pause_logged_ = false;
   bool pause_picture_logged_ = false;
+  bool gap_logged_ = false;
 
   // The frame's records after the marker (Trace) and what the frame did, for the one-time reports.
   std::array<TraceEvent, kTraceEvents> trace_;
