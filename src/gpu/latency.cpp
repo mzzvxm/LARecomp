@@ -340,6 +340,9 @@ void OnFrameStart() {
     u.paused_until_us = 0;
     u.backoff_us = kFirstBackoffUs;
     u.sleep_failure_logged = false;
+    u.neutral_passes = 0;  // (RearmDriver's request is taken below, after this)
+    u.neutral_until_us = 0;
+    u.neutral_told = false;
     m.mode_applied.store(false, std::memory_order_relaxed);
     m.sleeps.store(0, std::memory_order_relaxed);
   }
