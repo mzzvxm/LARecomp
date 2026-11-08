@@ -116,8 +116,14 @@
 //    about "nv.sl.dlss_g.*" command buffers and images are Streamline's own, and so is the repeated
 //    present-semaphore one;
 //  - Vulkan: the 5 s watchdog stall at the first scene (the render thread waited for the end of the
-//    DLSS feature's creation; also in a run with Streamline's PCL plugin but no frame generation) is not
-//    explained: latency_streamline.cpp names a latency call that took over 300 ms, if one was in it.
+//    DLSS feature's creation) was dlss::VulkanInstanceProcAddr(), which Publish and Poll call at every
+//    frame boundary on Vulkan only and which took Streamline's lock (Runtime::mu) that the worker holds
+//    for the 8 s of the creation: it is a plain atomic read now. Run next7-vk-dlssg: no idle, no GPU
+//    wait, 8.36 s of unmeasured thread time in the frame, the guest's present waiting 8.35 s, the
+//    render thread's next record 41 ms after "the feature was made"; D3D12 never calls it, and the
+//    Vulkan runs before the frame generation code had no stall. CHECK: a Vulkan start with DLSS
+//    (frame generation or not) has no "[Watchdog] frame stalled" at the first scene and frames at the
+//    scene's pace while "the feature ... was made in the background" is still to come.
 // ===========================================================================
 
 #include <atomic>

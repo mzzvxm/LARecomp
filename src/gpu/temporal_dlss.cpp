@@ -504,6 +504,13 @@ dlss::FrameGenerationFacts g_fg_facts;
 // The worker is making a feature (or Streamline's start): the render thread's Streamline calls that
 // would wait for the lock say busy instead (Impl::building is this).
 std::atomic<bool> g_building{false};
+// Vulkan: the interposer's vkGetInstanceProcAddr while Plume loads Vulkan through it (BeforeDevice
+// stored it, AbandonVulkanHook cleared it), null otherwise. Read by the render thread at every frame
+// boundary (DlssFrameGeneration::Poll and Publish), so never behind Runtime::mu: the worker holds that
+// for the whole 8 s a DLSS feature takes to make, and a read that waited for it stopped the game
+// there on Vulkan (run next7-vk-dlssg: the guest's present waited 8.35 s, the watchdog's "frame
+// stalled 5s", the render thread running again 41 ms after the feature was made).
+std::atomic<void*> g_vk_instance_proc_addr{nullptr};
 // The swap chain Plume presents on is Streamline's own proxy (frame generation made it through the
 // proxy factory): no wrapper of ours goes over it, and a chain made again is plain until frame
 // generation is on again.
@@ -2732,6 +2739,7 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   }
   rt.vk_get_instance_proc_addr = get_instance_proc_addr;
   rt.vk_hook = true;
+  g_vk_instance_proc_addr.store(get_instance_proc_addr, std::memory_order_release);
   REXLOG_INFO("{} {} is the saved choice: Streamline started for Vulkan before the device. Plume "
               "loads Vulkan through its vkGetInstanceProcAddr, whose vkCreateInstance and "
               "vkCreateDevice add what DLSS needs (the start takes several seconds longer for "
@@ -2743,9 +2751,8 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
 }
 
 void* VulkanInstanceProcAddr() {
-  Runtime& rt = Rt();
-  std::lock_guard lock(rt.mu);
-  return rt.vk_hook ? rt.vk_get_instance_proc_addr : nullptr;
+  // No lock (see g_vk_instance_proc_addr): the render thread asks at every frame boundary.
+  return g_vk_instance_proc_addr.load(std::memory_order_acquire);
 }
 
 void AbandonVulkanHook(const std::string& why) {
@@ -2755,6 +2762,7 @@ void AbandonVulkanHook(const std::string& why) {
     return;
   }
   rt.vk_hook = false;
+  g_vk_instance_proc_addr.store(nullptr, std::memory_order_release);
   rt.failure = why;
   if (rt.initialized && !rt.shut_down) {
     rt.api.shutdown();
