@@ -5,29 +5,34 @@
 // slip. Nothing else moves them: no engine texture, no gear tops, no nitro. The amounts are the
 // game's own tyre slip (wheel_slip.h), the same ones the DualSense's trigger vibration uses.
 //
-// How it reaches the pad, on Windows. The executable and rexruntime.dll each carry their own SDL.
-// The game's input is the SDK's (in rexruntime.dll), which on Windows opens an Xbox pad through SDL's
-// XInput driver (the log of a launch says `SDL OnControllerDeviceAdded: "XInput Controller"`),
-// and the XInput driver cannot drive the trigger motors: SDL_RumbleGamepadTriggers answers
-// "unsupported" and the pad's SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN is false. Of SDL's other
-// Windows drivers (SDL 3.5), HIDAPI does not take an Xbox pad here, RawInput and Windows.Gaming.
-// Input are off by default and WGI leaves any pad that XInput handles to XInput, and only GameInput
-// (SDL_HINT_JOYSTICK_GAMEINPUT, off by default outside the GDK) sets the trigger motors, over USB
-// and Bluetooth alike. So this file uses the executable's own SDL, a different instance from the
-// SDK's, and asks it for GameInput in EarlyInit(): the hint is read when the joystick layer
-// starts, and LARecomp starts that layer itself (SetupEnvironment calls EarlyInit before the
-// wheel thread and the menu pad layer do). GameInput handles gamepads only: wheels stay with
-// DirectInput, and a DualSense with HIDAPI. The SDK's SDL is left alone: the game's input
-// does not change.
-// What the SDK would need to do the same itself: SDL_HINT_JOYSTICK_GAMEINPUT set for its SDL
-// (the environment variable of that name reaches both instances, so it would change the game's
-// input path for every Xbox pad) and an InputSystem call that ends in SDL_RumbleGamepadTriggers.
+// How it reaches the pad, on Windows: Windows.Gaming.Input (WGI), from impulse_wgi.cpp. Not through
+// SDL. The game's input is the SDK's (in rexruntime.dll), which opens an Xbox pad through SDL's
+// XInput driver (the log of a launch says `SDL OnControllerDeviceAdded: "XInput Controller"`), and
+// the XInput driver cannot drive the trigger motors. Of SDL's other Windows drivers (SDL 3.5),
+// HIDAPI does not take an Xbox pad here, RawInput is off, SDL's own WGI driver leaves any pad that
+// XInput handles to XInput, and the one that does set the trigger motors, GameInput
+// (SDL_HINT_JOYSTICK_GAMEINPUT), cannot start in this build: SDL is compiled against the Windows
+// SDK's gameinput.h, which is GameInput API version 0, and for that version SDL_InitGameInput
+// answers E_NOINTERFACE on desktop Windows ("We require GameInput v1.1 or newer"), hint or no hint.
+// An earlier version of this file set that hint in the executable's SDL; the play test's log
+// shows the pad stayed on XInput (`trigger motors no`). Getting SDL's driver to work would need the
+// Microsoft.GameInput headers (API v1 or later) in the SDK's SDL build (the game's own input
+// shares it) and the GameInput redistributable on every player's PC (the GameInput.dll that
+// Windows 11 ships in System32 is file version 0.2309). WGI is in every Windows 10 and 11, reaches Xbox
+// 360, One and Series pads over USB and Bluetooth, and sets the two trigger motors together with
+// the two main ones (GamepadVibration); it works while this process is the foreground application,
+// which is when the worker rumbles. The game's input does not change: the SDK keeps setting the
+// main motors through XInput, and the pad has two writers that the worker keeps in step, below.
 //
-// A pad's rumble is set as a whole by GameInput (SetRumbleState takes the two motors and the two
+// A pad's rumble is set as a whole by WGI (GamepadVibration takes the two motors and the two
 // triggers), while the game sets its motors through the SDK's driver (XInputSetState). Setting
 // the triggers alone would zero the game's motors, so every update also sends the motor speeds
 // the game last asked for (VibrationDriven, the vibration hook's record): the motors keep their
-// value and the triggers add theirs. A pad is not touched at all while no trigger rumbles.
+// value and the triggers add theirs. A pad is not touched at all while no trigger rumbles. When
+// the game changes a motor, XInput may set the triggers back to 0 behind the worker's back; the
+// next update (25 ms) sets them again. Unlike SDL's, a WGI vibration has no duration: the triggers
+// keep shaking until the next update, so the worker lets them go the moment the slip ends, the
+// game stops driving or the window loses focus, and from Shutdown().
 //
 // On Linux (any non-Windows build) the process has ONE SDL, the SDK's, and the SDK's input driver
 // (input_backend = "sdl") opens the same pads, so SDL_RumbleGamepadTriggers goes to the pad the game
@@ -58,22 +63,21 @@
 // asked to start it. The thread reads the same "driving" answer the DualSense uses (the race HUD
 // updated in the last 300 ms, the game not paused, the window in front), so a game thread that
 // stalls (a load) lets the triggers go within a third of a second, and it lets them go when the
-// option goes off, when the pad goes away and from Shutdown(). Each update also carries a short
-// duration, so SDL stops a rumble by itself if the worker were ever stuck.
+// option goes off, when the pad goes away and from Shutdown(). On Linux each update also carries
+// a short duration, so SDL stops a rumble by itself if the worker were ever stuck.
 //
-// CHECK: never run against a pad. Test with an Xbox One or Series pad, over USB and over
-// Bluetooth: the log says what was found (`[Impulse] ...: trigger motors yes/no`). `no` for
-// a pad named "XInput Controller" means GameInput did not take it: the hint did not reach the
-// executable's SDL before its joystick layer started, GameInput is not in this SDL build, or
-// gameinput.dll is missing on the machine (GameInput's runtime ships with Windows 11 and as a
-// redistributable for Windows 10). With trigger_slip_log on, a burnout should shake the right
-// trigger and a locked-wheel stop the left.
-// CHECK: with GameInput on, the wheel thread and the menu pad layer (the same SDL) must still find
-// their devices: GameInput takes gamepads only and leaves wheels to DirectInput, so a wheel
-// should still be found, and the pad should still move the menus.
-// CHECK: that the game's own rumble (a crash, a skid) keeps running while a trigger shakes, and
-// that the triggers go still the moment the slip ends, the pause menu opens or the window loses
-// focus.
+// CHECK (Windows): never run against a pad. Test with an Xbox One or Series pad, over USB and over
+// Bluetooth: the log says what was found (`[Impulse] Windows.Gaming.Input lists N gamepads`, then
+// one line per pad with `trigger motors yes, driven through Windows.Gaming.Input`). With
+// trigger_slip_log on, a burnout should shake the right trigger and a locked-wheel stop the left.
+// A line saying WGI lists no gamepad, with an Xbox pad plugged in and the game in front, would mean
+// WGI does not see the pad (then look at what else holds it) and a `would not set the vibration`
+// line carries the HRESULT.
+// CHECK (Windows): that the game's own rumble (a crash, a skid) keeps running while a trigger
+// shakes, and that the triggers go still the moment the slip ends, the pause menu opens or the
+// window loses focus. Also what a crash or a task kill does to a trigger that is shaking: a WGI
+// vibration has no duration and only Shutdown() (a normal close) lets it go; if the pad keeps
+// shaking after the process is gone, the worker needs a way to be told from the crash handler.
 // CHECK (Linux): never run against a pad. With an Xbox One or Series pad over Bluetooth and
 // access to its hidraw node the log should say `trigger motors yes` and a burnout should shake the
 // right trigger (trigger_slip_log shows the amounts); with the pad over USB it says `no` and gives
@@ -86,7 +90,9 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "impulse_triggers.h"
 
+#if !defined(_WIN32)
 #include <SDL3/SDL.h>
+#endif
 #include <rex/cvar.h>
 #include <algorithm>
 #include <atomic>
@@ -102,7 +108,11 @@
 #include "adaptive_triggers.h"
 #include "hooks/hooks_internal.h"
 #include "larecomp_log.h"
+#if defined(_WIN32)
+#include "impulse_wgi.h"
+#else
 #include "trigger_sdl.h"
+#endif
 #include "wheel_slip.h"
 
 REXCVAR_DEFINE_BOOL(impulse_triggers, true, "MCLA/Input",
@@ -127,8 +137,10 @@ using Clock = std::chrono::steady_clock;
 constexpr int kStepMs = 25;       // between two updates while a car is driven
 constexpr int kIdleMs = 250;      // otherwise
 constexpr int64_t kScanMs = 2000;
+#if !defined(_WIN32)
 // A trigger update's own duration: SDL ends it by itself if no newer one comes.
 constexpr Uint32 kRumbleMs = 300;
+#endif
 // Below this slip amount a trigger is still. Above it the motor runs at kFloor of the strength
 // setting, and at all of it for a full slip.
 constexpr float kFrom = 0.05f;
@@ -142,28 +154,32 @@ int64_t NowMs() {
                Clock::now().time_since_epoch()).count();
 }
 
+#if !defined(_WIN32)
+// Off Windows the pads are SDL's (on Windows impulse_wgi.cpp keeps them).
 struct Pad {
     SDL_JoystickID id = 0;
     SDL_Gamepad* gamepad = nullptr;  // a reference of this SDL's own
     std::string name;
     bool shaking = false;  // the triggers were last set to something other than 0
 };
+#endif
 
 std::mutex g_mutex;  // everything below, against Shutdown() on the window's thread
 std::condition_variable g_cv;
+#if !defined(_WIN32)
 std::vector<Pad> g_pads;
 std::vector<SDL_JoystickID> g_skipped;  // pads that cannot (or must not) be driven
+#endif
 std::thread* g_thread = nullptr;        // never destroyed: the process ends with _Exit
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_done{false};
 bool g_stop = false;
 bool g_shut_down = false;
+#if !defined(_WIN32)
 bool g_sdl_up = false;
+#endif
 int64_t g_next_scan_ms = 0;
 float g_level[2] = {0.0f, 0.0f};  // the motors' smoothed power, 0 to 1: left, right
-#if defined(_WIN32)
-bool g_flip = false;              // see Apply()
-#endif
 
 // The motor power for a slip amount.
 float Motor(float amount) {
@@ -177,26 +193,22 @@ void Smooth(float& level, float target) {
     if (target == 0.0f && level < 0.02f) level = 0.0f;
 }
 
-Uint16 ToMotor(float level) {
-    return Uint16(std::clamp(std::lround(level * 65535.0f), 0L, 65535L));
+uint16_t ToMotor(float level) {
+    return uint16_t(std::clamp(std::lround(level * 65535.0f), 0L, 65535L));
 }
 
-// Sets the pad's own two motors to what the game last asked for, so that an update of the
-// triggers (which sets all four) leaves them as they are. Windows only: there the game's motors
-// are set through another SDL. Where the SDK's SDL is this one, SDL itself keeps the motors, and
-// setting them here (with no duration) would end the SDK's timed rumble and its re-sends.
-void MirrorMotors([[maybe_unused]] Pad& pad) {
 #if defined(_WIN32)
-    const uint32_t speeds = VibrationDriven(0);
-    SDL_RumbleGamepad(pad.gamepad, Uint16(speeds >> 16), Uint16(speeds & 0xFFFF), 0);
-#endif
+// Lets both triggers of every pad go, and forgets the pads.
+void CloseAll() {
+    larecomp::impulse::wgi::CloseAll(VibrationDriven(0));
+    g_level[0] = g_level[1] = 0.0f;
+    g_next_scan_ms = 0;
 }
-
+#else
 // Lets both triggers of a pad go.
 void Release(Pad& pad) {
     if (!pad.shaking) return;
     pad.shaking = false;
-    MirrorMotors(pad);
     SDL_RumbleGamepadTriggers(pad.gamepad, 0, 0, 0);
 }
 
@@ -217,31 +229,22 @@ void Apply(Pad& pad, Uint16 left, Uint16 right) {
         Release(pad);
         return;
     }
-    // The game's own motors go along: one update sets all four (see the top of the file).
-    MirrorMotors(pad);
-#if defined(_WIN32)
-    // SDL does not send an update that repeats the last values, and the SDK's driver may have
-    // set the triggers back to 0 behind its back when the game changed a motor. The last bit
-    // alternates, so every update goes out (and carries the duration along).
-    g_flip = !g_flip;
-    if (left != 0) left = Uint16(std::min<int>(65535, left + (g_flip ? 1 : 0)));
-    if (right != 0) right = Uint16(std::min<int>(65535, right + (g_flip ? 1 : 0)));
-#endif
-    // Off Windows an update that repeats the last values only extends the duration, which is what
-    // is wanted: SDL re-sends a held trigger rumble by itself every 2 s, and ends it kRumbleMs after
-    // the last update, so a stuck worker lets the triggers go.
+    // An update that repeats the last values only extends the duration, which is what is wanted:
+    // SDL re-sends a held trigger rumble by itself every 2 s, and ends it kRumbleMs after the last
+    // update, so a stuck worker lets the triggers go.
     if (SDL_RumbleGamepadTriggers(pad.gamepad, left, right, kRumbleMs)) {
         pad.shaking = true;
     }
 }
-
-// Opens the pads that appeared (the ones with trigger motors) and closes the ones that went.
-void Scan() {
-#if defined(_WIN32)
-    // Nothing else pumps this SDL (the SDK's driver pumps its own). Where the SDK's SDL is this
-    // one, its driver's pump keeps the list of pads current and this stays out of it.
-    SDL_UpdateJoysticks();
 #endif
+
+#if defined(_WIN32)
+// Finds the pads that appeared (the ones with trigger motors) and forgets the ones that went.
+void Scan() { larecomp::impulse::wgi::Scan(); }
+#else
+// Opens the pads that appeared (the ones with trigger motors) and closes the ones that went.
+// The SDK's driver pumps SDL and keeps the list of pads current; this stays out of it.
+void Scan() {
     int count = 0;
     SDL_JoystickID* found = SDL_GetGamepads(&count);
     std::vector<SDL_JoystickID> present;
@@ -278,14 +281,12 @@ void Scan() {
             g_skipped.push_back(id);
             continue;
         }
-#if !defined(_WIN32)
         // The SDK's driver has every pad open here, so only a pad that can have impulse triggers is
         // opened a second time: an Xbox One or Series pad. The Xbox 360 type has no trigger motors.
         if (type != SDL_GAMEPAD_TYPE_XBOXONE) {
             g_skipped.push_back(id);
             continue;
         }
-#endif
         SDL_Gamepad* gamepad = SDL_OpenGamepad(id);
         if (!gamepad) {
             g_skipped.push_back(id);
@@ -302,14 +303,12 @@ void Scan() {
                           link == SDL_JOYSTICK_CONNECTION_WIRELESS ? "wireless"
                           : link == SDL_JOYSTICK_CONNECTION_WIRED  ? "wired"
                                                                    : "link unknown",
-                          motors ? "yes" : "no");
+                          motors ? "yes, driven through SDL" : "no");
         if (!motors) {
-#if !defined(_WIN32)
             LARECOMP_APP_INFO("[Impulse] {} has no trigger motors through SDL. Over USB that is the case "
                               "while the kernel's xpad driver has the pad (SDL_HIDAPI_LIBUSB_WHITELIST=0 "
                               "hands it to SDL); over Bluetooth, without access to /dev/hidraw*",
                               name ? name : "?");
-#endif
             SDL_CloseGamepad(gamepad);
             g_skipped.push_back(id);
             continue;
@@ -321,6 +320,7 @@ void Scan() {
         g_pads.push_back(std::move(pad));
     }
 }
+#endif
 
 // One pass of the worker, with g_mutex held; returns how long to wait before the next.
 int Step(int64_t now) {
@@ -329,26 +329,24 @@ int Step(int64_t now) {
         CloseAll();
         return kIdleMs;
     }
+#if !defined(_WIN32)
     if (!g_sdl_up) {
-#if defined(_WIN32)
-        // Not before here: the joystick layer comes up with the first pad scan.
-        g_sdl_up = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
-        if (!g_sdl_up) {
-            LARECOMP_APP_WARN("[Impulse] SDL's gamepad layer would not start: {}", SDL_GetError());
-            return 5000;
-        }
-#else
         // This is the SDK's SDL: its input driver starts the gamepad layer, and this waits for it
         // (see trigger_sdl.h).
         if (!larecomp::trigger_sdl::GamepadLayerUp()) return 1000;
         g_sdl_up = true;
-#endif
     }
+#endif
     if (now >= g_next_scan_ms) {
         g_next_scan_ms = now + kScanMs;
         Scan();
     }
-    if (g_pads.empty()) {
+#if defined(_WIN32)
+    const bool no_pads = !larecomp::impulse::wgi::HasPads();
+#else
+    const bool no_pads = g_pads.empty();
+#endif
+    if (no_pads) {
         // The slip log (trigger_slip_log, a test aid) also runs with no pad, e.g. on a scripted drive.
         if (REXCVAR_GET(trigger_slip_log) && larecomp::triggers::IsDriving()) {
             larecomp::slip::Current();
@@ -364,9 +362,13 @@ int Step(int64_t now) {
     } else {
         g_level[0] = g_level[1] = 0.0f;
     }
-    const Uint16 left = ToMotor(g_level[0]);
-    const Uint16 right = ToMotor(g_level[1]);
+    const uint16_t left = ToMotor(g_level[0]);
+    const uint16_t right = ToMotor(g_level[1]);
+#if defined(_WIN32)
+    larecomp::impulse::wgi::Apply(left, right, VibrationDriven(0));
+#else
     for (Pad& pad : g_pads) Apply(pad, left, right);
+#endif
     return driving ? kStepMs : kIdleMs;
 }
 
@@ -386,14 +388,13 @@ void Run() {
 namespace larecomp::impulse {
 
 void EarlyInit() {
-#if defined(_WIN32)
-    // This executable's SDL, not the SDK's (see the top of the file). Before its joystick layer starts.
-    SDL_SetHint(SDL_HINT_JOYSTICK_GAMEINPUT, "1");
-#endif
-    // Off Windows no hint is needed: SDL's HIDAPI drivers are on by default there, the one SDL is
-    // the SDK's, and the one hint that would reach wired Xbox pads (SDL_HINT_HIDAPI_LIBUSB_WHITELIST)
-    // changes how the game itself gets those pads, so it is left to the player's environment (see
-    // the top of the file).
+    // Nothing to set any more. On Windows the trigger motors are reached through Windows.Gaming.Input,
+    // which needs no SDL hint (the GameInput hint this used to set never took effect: see the top of
+    // the file). Off Windows no hint is needed either: SDL's HIDAPI drivers are on by default there,
+    // the one SDL is the SDK's, and the one hint that would reach wired Xbox pads
+    // (SDL_HINT_HIDAPI_LIBUSB_WHITELIST) changes how the game itself gets those pads, so it is left
+    // to the player's environment (see the top of the file). The call stays so that the start-up
+    // code need not change.
 }
 
 void Tick() {

@@ -121,6 +121,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hud_units.cpp
     src/mc_engine/adaptive_triggers.cpp
     src/mc_engine/impulse_triggers.cpp
+    src/mc_engine/impulse_wgi.cpp
     src/mc_engine/wheel_slip.cpp
     src/mc_engine/cutscene_gallery.cpp
     src/mc_engine/texture_dump.cpp

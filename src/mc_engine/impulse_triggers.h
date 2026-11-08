@@ -2,15 +2,15 @@
 //
 // Xbox One and Xbox Series trigger rumble (the impulse triggers): the right trigger shakes while
 // the driven wheels spin under power, the left while the brakes lock the wheels, harder the more
-// they slip. The DualSense has its own effects (adaptive_triggers.h). See impulse_triggers.cpp.
+// they slip. The DualSense has its own effects (adaptive_triggers.h). See impulse_triggers.cpp
+// (and impulse_wgi.cpp, which reaches the pad on Windows).
 //
 
 namespace larecomp::impulse {
 
-// Once, at start-up, before anything starts this executable's SDL joystick layer (the wheel
-// thread, the menu pad layer): asks it for the GameInput driver, the only one of its Windows
-// drivers that reaches the trigger motors. Off Windows it sets nothing (the SDK's SDL is this
-// one and its HIDAPI drivers are on).
+// Once, at start-up. Does nothing now: on Windows the trigger motors are reached through
+// Windows.Gaming.Input (impulse_wgi.cpp), which needs no SDL hint, and off Windows the SDK's SDL
+// is the one SDL and its HIDAPI drivers are on. Kept so the start-up code need not change.
 void EarlyInit();
 
 // Every frame, on the game's thread (Patch_DeltaTimePre). Starts the worker thread the first time
