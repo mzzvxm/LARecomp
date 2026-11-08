@@ -5,7 +5,7 @@
 // The resolve conversions (resolve.h)
 // and the present pass (present.h) draw one triangle over a viewport with a
 // pixel shader that reads bindless textures by slot and takes its parameters
-// from up to 48 bytes of push constants. One pipeline layout serves them all
+// from up to 64 bytes of push constants. One pipeline layout serves them all
 // (hlsl/host_pass_common.hlsli): the BindlessHeap's texture set bound at
 // spaces 0-3 -- Texture2D<float4>[], Texture2DMS<float4>[], Texture2D<uint4>[],
 // Texture2DMS<uint4>[]: a descriptor carries its own dimension and format, so
@@ -55,10 +55,14 @@ struct HostImage {
 class HostPasses {
  public:
   // 32 bytes held every pass's constants until the HDR10 output (hdr.h) added the four values
-  // its last passes take; the passes that push less push less.
-  // CHECK: Plume turns the range into 12 root constants on D3D12 (the signature stays well under 64
-  // dwords) and a 48-byte push range on Vulkan; the passes' shaders declare less and that is fine on both.
-  static constexpr uint32_t kPushConstantBytes = 48;
+  // its last passes take (48), and the present's and the DLSS frame generation's UI pass then
+  // each took one more (the frame layers' gap, frame_layers.h Frame::gap); the passes that push
+  // less push less.
+  // CHECK: Plume turns the range into 16 root constants on D3D12 (the signature stays well under 64
+  // dwords: with the five descriptor tables about 21) and a 64-byte push range on Vulkan (the
+  // guaranteed maxPushConstantsSize is 128); the passes' shaders declare less and that is fine on
+  // both. Not run on a device here.
+  static constexpr uint32_t kPushConstantBytes = 64;
 
   HostPasses() = default;
   ~HostPasses();

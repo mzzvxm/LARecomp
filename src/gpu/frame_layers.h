@@ -207,7 +207,8 @@ class FrameLayers {
     // every frame, which adds up where the tone map's own draw never rewrites it. The guest's own
     // resolve reads them from the first covered column and row (resolve.cpp, push.fill); a consumer
     // of the layers does the same, the texel at or before `gap` read at `gap` (hlsl
-    // LAYERS_COMPOSE, fg_prepare, fg_compose).
+    // LAYERS_COMPOSE, fg_prepare, fg_compose, present_ps for DLSS frame generation's picture without
+    // the UI, dlssg_ui_ps).
     uint32_t gap = 0;
     // The texture the UI target was resolved into. IsPictureOf tells whether a front buffer is it.
     TextureKey destination;

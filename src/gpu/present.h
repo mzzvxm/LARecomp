@@ -130,8 +130,11 @@ class PresentPass {
   // `height` where the front buffer would be. Frame generation's generated frame is shown this way
   // (frame_generation.h). Needs the table written (a Prepare ran before). Outside a render pass; Draw
   // then draws it. The route's log lines stay quiet: they describe the real frame.
+  // `gap`: the first columns and rows of `image` that hold no picture (FrameLayers::Frame::gap, an
+  // image of the frame layers); the table pass reads the texels at or before it at `gap`, as the
+  // guest's resolve does for the front buffer. 0 for an image that is whole (a generated frame).
   void PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
-                    const HostImage& image, bool interpolated);
+                    const HostImage& image, bool interpolated, uint32_t gap = 0);
 
   // The letterbox of the last Prepare or PrepareImage: where the picture lies in the `width` x `height`
   // target it was prepared for, in pixels. The display's table texture (a bindless slot, the 256x1 float
@@ -180,9 +183,10 @@ class PresentPass {
   bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // The bilinear present of `source` (`width` x `height` texels) into `fit`,
   // with `pipeline` (the table applied, or not); inside a render pass.
+  // `gap`: Push::gap, for a source that is an image of the frame layers.
   void RecordFitted(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
                     uint32_t source, uint32_t source_width, uint32_t source_height,
-                    const Fit& fit);
+                    const Fit& fit, uint32_t gap);
 
   struct Push {
     uint32_t source;
@@ -193,13 +197,17 @@ class PresentPass {
     float origin_y;
     float scale_x;
     float scale_y;
-    // The HDR10 variants only (hlsl/hdr_output.hlsli HdrLevels); the others read the 32 bytes above.
+    // The HDR10 variants only (hlsl/hdr_output.hlsli HdrLevels); the others read the 32 bytes above
+    // (and `gap` below).
     float hdr_white;
     float hdr_peak;
     float hdr_knee;
     uint32_t hdr_flags;
+    // The source texels before this column and row are read at it (PrepareImage's gap); 0 for the
+    // front buffer, a resolve product, and for an image the table was already applied to.
+    uint32_t gap;
   };
-  static_assert(sizeof(Push) == 48 && sizeof(Push) <= HostPasses::kPushConstantBytes);
+  static_assert(sizeof(Push) == 52 && sizeof(Push) <= HostPasses::kPushConstantBytes);
 
   // FSR1 (M6c.1).
   struct EasuPush {  // hlsl/fsr_easu_ps.hlsl
@@ -312,6 +320,7 @@ class PresentPass {
   uint32_t source_slot_ = 0;
   uint32_t source_width_ = 0;
   uint32_t source_height_ = 0;
+  uint32_t source_gap_ = 0;  // PrepareImage's gap; 0 after a Prepare
   bool source_ready_ = false;
 
   // The front buffer Prepare bound last (the frame layers' picture test, frame generation).

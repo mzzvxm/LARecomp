@@ -96,6 +96,7 @@ struct UiPush {  // hlsl/dlssg_ui_ps.hlsl
   float hdr_peak;
   float hdr_knee;
   uint32_t hdr_flags;
+  uint32_t gap;  // FrameLayers::Frame::gap: the layer's first columns and rows are read from the next
 };
 static_assert(sizeof(UiPush) <= HostPasses::kPushConstantBytes);
 
@@ -720,7 +721,12 @@ bool DlssFrameGeneration::Record(plume::RenderCommandList* list, const FrameArgs
   // frame layers' hudless image (or the float scene), into the image of the swap chain's format.
   namespace Stage = plume::RenderBarrierStage;
   pass_timing_->Mark(list, "dlss frame generation");
-  present_->PrepareImage(list, window_w, window_h, *scene, float_scene != nullptr);
+  // The scene's first `gap` columns and rows hold no picture at a render scale (frame_layers.h): the
+  // present's table pass reads them from the next ones, as the compose and the generation do.
+  // CHECK: not run on a device: the first column and row of a 3x picture with DLSS frame generation
+  // and HDR on (edge_check.py) should now hold the neighbours' colour, not black, in the hudless
+  // image, the UI buffer and the back buffer; the FSR1 route's table pass takes the same gap.
+  present_->PrepareImage(list, window_w, window_h, *scene, float_scene != nullptr, layer.gap);
   if (!present_->source_ready()) {
     return NotGenerated(stats_.not_failed, args);
   }
@@ -741,6 +747,7 @@ bool DlssFrameGeneration::Record(plume::RenderCommandList* list, const FrameArgs
     push.ramp = present_->ramp_slot();
     push.src_width = src_w;
     push.src_height = src_h;
+    push.gap = layer.gap;  // the UI layer's, as the scene's above
     push.origin_x = float(fit_x);
     push.origin_y = float(fit_y);
     push.scale_x = fit_w ? float(src_w) / float(fit_w) : 1.0f;

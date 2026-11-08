@@ -33,6 +33,7 @@ struct UiPush {
   float hdr_peak;
   float hdr_knee;
   uint hdr_flags;
+  uint gap;            // the layer's first columns and rows that hold no picture (Frame::gap): read at `gap`
 };
 
 #ifdef __spirv__
@@ -51,7 +52,9 @@ float3 RampAt(uint3 index) {
 // step), coverage as it is.
 float4 UiTexel(int2 at) {
   const int2 limit = int2(g_push.src_width, g_push.src_height) - 1;
-  const float4 texel = g_textures[g_push.ui].Load(int3(clamp(at, int2(0, 0), limit), 0));
+  // As the compose and the frame generation passes read the layers (frame_layers.h, Frame::gap).
+  const int2 first = int2(int(g_push.gap), int(g_push.gap));
+  const float4 texel = g_textures[g_push.ui].Load(int3(clamp(at, first, limit), 0));
   if (texel.a <= 0.0f) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }

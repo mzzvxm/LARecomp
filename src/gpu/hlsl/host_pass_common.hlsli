@@ -9,7 +9,7 @@
 //   set 2  t0, space2  Texture2D<uint4>[]      stencil plane
 //   set 3  t0, space3  Texture2DMS<uint4>[]    multisampled stencil plane
 //   set 4  s0, space4  SamplerState[]          the heap's samplers (host_pass_samplers.hlsli)
-//   push   b0, space4  32 bytes, the pass's own constants
+//   push   b0, space4  up to 64 bytes, the pass's own constants
 // On D3D12 Plume turns the push range into root constants at (b0, space4); on
 // Vulkan it is the one push-constant block, picked with __spirv__.
 
