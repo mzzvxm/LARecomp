@@ -11,6 +11,7 @@
 #include <string>
 
 #include "backend.h"
+#include "latency.h"
 
 namespace plume {
 struct RenderDevice;
@@ -61,6 +62,13 @@ class Reducer {
   // be: no swap chain yet, a call that failed.
   virtual bool Sleep(uint64_t frame_id) = 0;
   virtual void SetMarker(Marker marker, uint64_t frame_id) = 0;
+
+  // NvAPI Reflex: what the driver says its pacing is now (latency.h DriverPacing). False where this
+  // reducer's driver cannot say. Any thread.
+  virtual bool ReadPacing(DriverPacing* /*out*/) const { return false; }
+  // The driver keeps a state of its own across frames that a cycle in the neutral mode (latency.h
+  // RearmDriver) starts again: true for NvAPI's Reflex.
+  virtual bool SupportsRearm() const { return false; }
 
   // Vulkan: the swap chain's handle is about to change / has changed (render thread). Calls that
   // need the handle wait in between.

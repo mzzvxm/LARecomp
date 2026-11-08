@@ -81,6 +81,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace mcla::gpu {
 
@@ -88,6 +89,39 @@ class Device;
 class SwapChain;
 
 namespace latency {
+
+// --- what the driver says about the pacing of this process's frames ------------------------
+
+// NVIDIA's NvAPI_D3D_GetSleepStatus (the driver's own account of the Reflex sleep: what its wait is
+// made of, its frame cap and the frame generation multiplier it believes in). Read only for the log
+// and for DLSS frame generation's switch off, which has to tell whether the driver still paces the
+// game for generated frames afterwards (dlss_frame_generation.h). Not every field is verified: the
+// interval and the game-sleep flag are what the MCLA fork has logged on an RTX 5080; the multiplier
+// and the dynamic-control fields are read from the same structure's layout there.
+struct DriverPacing {
+  bool low_latency = false;           // the driver's Reflex mode is on
+  bool game_sleep = false;            // the driver sees the game call the sleep
+  bool fullscreen_vrr = false;
+  bool control_panel_vsync = false;
+  bool fullscreen_iflip = false;
+  uint32_t sleep_interval_us = 0;     // the effective minimum frame interval (its global cap included)
+  uint32_t fg_multiplier = 0;         // frames shown per frame rendered, as the driver counts them
+  bool dynamic_control = false;       // the driver decides how many frames are generated
+  uint32_t dynamic_target_us = 0;
+};
+// The device's own reducer's (the one put aside while Streamline's is in use is asked too). False where
+// there is none, or the driver cannot say. Any thread.
+bool ReadDriverPacing(DriverPacing* out);
+// The structure in one line of plain words, for the log.
+std::string DescribePacing(const DriverPacing& pacing);
+
+// The driver's wait at the start of frames (the reducer's Sleep, update thread), since the last call:
+// how many there were and how long they took in all. Any thread; takes the numbers and starts again.
+struct SleepStats {
+  uint64_t calls = 0;
+  uint64_t total_us = 0;
+};
+SleepStats TakeSleepStats();
 
 // --- the pause menu --------------------------------------------------------
 
@@ -147,6 +181,12 @@ void OnPresentEnd(uint64_t frame_id);
 // change). While `on` the reducer is forced on, like for FSR's frame generation. False (and nothing
 // changes) when `on` and Streamline's plugins are not running.
 bool UseStreamline(bool on);
+// Just before UseStreamline(false): once the device's own reducer is current again it is left in its
+// neutral mode (Reflex off, the driver's wait still called) for a few frames before it is turned on
+// again, so the driver's Reflex state starts from the game's own frames and not from the ones
+// Streamline's Reflex and DLSS frame generation paced. A reducer whose driver has nothing to start
+// again (not NVIDIA's NvAPI) ignores it.
+void RearmDriver();
 // The id of the frame the host render thread is recording and presenting (0: the frame is not
 // marked), what the constants and the tags of DLSS frame generation are indexed by. Render thread.
 uint64_t RenderFrameId();
