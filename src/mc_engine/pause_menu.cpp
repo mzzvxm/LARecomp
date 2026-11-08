@@ -1385,13 +1385,15 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
 // comes back when the renderer is switched back.
 // CHECK: on XENIA (RENDERER set to XENIA, restarted) the DISPLAY page lists DISPLAY MODE, VSYNC,
-// RESOLUTION, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, RENDER SCALE, MSAA and ANISOTROPIC (9 rows,
-// in that order), VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER
-// SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu
-// after changing either of those two offers "Restart now?". ANISOTROPIC is live and writes
-// anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, FPS LIMIT, PACE AT
-// PRESENTATION, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA, ANISOTROPIC, AMBIENT
-// OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes mcla_gpu_vsync.
+// RESOLUTION, DISPLAY GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, RENDER SCALE, MSAA and
+// ANISOTROPIC (10 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
+// disable_msaa, RENDER SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale;
+// leaving the menu after changing either of those two offers "Restart now?". ANISOTROPIC is live and
+// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
+// GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
+// ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes
+// mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
+// SETTINGS.
 
 // VSYNC: the Plume renderer's mcla_gpu_vsync (live, at the next present), or the SDK's vsync.
 const char* VsyncCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_vsync" : "vsync"; }
@@ -1442,15 +1444,15 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 // (MenuItemCount).
 //
 // The page is three runs of rows, in this order (the last two come from VideoExtraRows):
-//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, FPS LIMIT,
-//      PACE AT PRESENTATION, SMOOTH UI);
+//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
+//      GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
 //      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering
 //      and occlusion that used to sit on the RENDERER page);
 //   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 18 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
+// At most 19 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
 // kMaxRowsPerMenu (24) is refused whole.
-// CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
+// CHECK: that a page of 18 or 19 rows scrolls in the pause menu like the 12 and 14 row ones do (the
 // cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
 // drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
@@ -1474,6 +1476,10 @@ const ItemDef kVideoItems[] = {
     // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
 #endif
+    // Live, both renderers: the game's gamma ramp is set again at the next frame
+    // (hooks/display_gamma.cpp). CONSOLE is the console's TV ramp, PC an sRGB one. Width: 13, values 7.
+    Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
+         kDisplayGammaVals, kDisplayGammaNames, 2),
     // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
     // (frame_generation_menu.h) and counts rendered frames.
     WithDynamics(Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
@@ -1484,10 +1490,8 @@ const ItemDef kVideoItems[] = {
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
 
+// (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems.)
 const ItemDef kRecompItems[] = {
-    // Live: the game's gamma ramp is set again at the next frame (hooks/display_gamma.cpp).
-    Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
-         kDisplayGammaVals, kDisplayGammaNames, 2),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
     // Live, but the intro has played by the time this menu opens: the next start.
@@ -2599,7 +2603,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. DISPLAY reaches 18 on a card with the frame
+// (ui_forms.cpp CreateListForm), and a long page scrolls. DISPLAY reaches 19 on a card with the frame
 // generation multiplier row; a page over the cap is refused whole (BuildNativeRows), so there is room.
 constexpr int kMaxRowsPerMenu = 24;
 
