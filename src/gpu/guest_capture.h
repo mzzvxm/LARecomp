@@ -65,7 +65,14 @@ namespace mcla::gpu {
 class GuestCapture {
  public:
   static constexpr uint32_t kMaxRawVariants = 8;
+  // A draw carries an XXH3 of both constant banks every this many draws on a device (and on a
+  // device's first draw after a present), for the render thread's comparison with the banks it
+  // rebuilt. 32 while mcla_gpu_verify_constants is on, kBankCheckIntervalQuiet otherwise: the
+  // comparison only counts and logs (the scene keeps drawing with the rebuilt banks), so a sparser
+  // check slows the detection of a fault and changes no picture; at 4,400 draws a frame it is still
+  // about 17 checks a frame. At every 32nd draw the hashing was 0.03 ms a frame on the guest thread.
   static constexpr uint32_t kBankCheckInterval = 32;
+  static constexpr uint32_t kBankCheckIntervalQuiet = 256;
   // The game ships ~2000 shaders; the bound only matters if microcode keeps
   // arriving at new addresses for a whole session.
   static constexpr size_t kMaxIdentityEntries = 16384;

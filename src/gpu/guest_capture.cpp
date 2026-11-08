@@ -646,7 +646,8 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
   CollectDeltas(DeviceBytes(base, device, guest::kDevPsConstantBank), state.ps_shadow.data(),
                 state.shadows_valid, token.ps_dirty, verify_constants_, c.ps_blocks,
                 c.ps_block_count, frame_.constant_blocks_masked, frame_.constant_blocks_unmasked);
-  if (state.check_next || ++state.draws_since_check >= kBankCheckInterval) {
+  const uint32_t check_every = verify_constants_ ? kBankCheckInterval : kBankCheckIntervalQuiet;
+  if (state.check_next || ++state.draws_since_check >= check_every) {
     c.bank_check = true;
     state.check_next = false;
     state.draws_since_check = 0;
