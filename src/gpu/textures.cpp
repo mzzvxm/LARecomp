@@ -54,6 +54,20 @@ REXCVAR_DEFINE_BOOL(
     "next frame, the same as RELOAD TEXTURE MODS in the pause menu. It clears itself afterwards.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_texture_decode_selftest, false, "MCLA/GPU",
+    "Test only: at start-up, decodes a few thousand random texture levels (every block size, "
+    "endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and "
+    "with the plain per-block one, and logs whether every byte matched.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_texture_decode_verify, false, "MCLA/GPU",
+    "Test only: every texture level the game uploads is decoded a second time with the plain "
+    "per-block decoder and compared byte for byte with the fast one's; a difference is logged "
+    "once per texture. Slow: it brings the old cost back.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace xe = rex::graphics::xenos;
@@ -299,6 +313,20 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   resolve_ = &resolve;
   subscriber_ = memory.Subscribe("textures");
   mods_.Initialize();
+  if (REXCVAR_GET(mcla_gpu_texture_decode_selftest)) {
+    const auto t0 = Clock::now();
+    const texture_decode::SelfTestResult test = texture_decode::SelfTest(1500);
+    const double ms = double(NsSince(t0)) / 1e6;
+    if (test.mismatches == 0) {
+      REXLOG_INFO("[gpu] textures: decode self-test passed: {} random levels, {} decodes, all "
+                  "bytes equal to the per-block decoder's ({:.0f} ms)",
+                  test.cases, test.runs, ms);
+    } else {
+      REXLOG_ERROR("[gpu] textures: decode self-test FAILED: {} of {} decodes differ from the "
+                   "per-block decoder; first: {}",
+                   test.mismatches, test.runs, test.first);
+    }
+  }
 }
 
 void TextureCache::SetOverride(const Override& override) {
@@ -893,7 +921,23 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
     const uint64_t pitch = AlignUp(row_bytes, kTextureCopyPitchAlignment);
     const uint64_t size = pitch * rows;
     scratch_.resize(size_t(size));
-    if (!texture_decode::Decode(r, scratch_.data(), uint32_t(pitch))) {
+    bool decoded;
+    if (REXCVAR_GET(mcla_gpu_texture_decode_verify)) {
+      bool mismatch = false;
+      decoded = texture_decode::DecodeVerified(r, scratch_.data(), uint32_t(pitch), &mismatch);
+      ++stats_.verified;
+      if (mismatch) {
+        ++stats_.verify_mismatches;
+        if (reported_.insert(key).second) {
+          REXLOG_ERROR("[gpu] textures: {} level {} at {:08x}: the fast decoder's bytes differ "
+                       "from the per-block decoder's (reported once per texture)",
+                       key.Describe(), level, address);
+        }
+      }
+    } else {
+      decoded = texture_decode::Decode(r, scratch_.data(), uint32_t(pitch));
+    }
+    if (!decoded) {
       *why = std::format("level {} at {:08x}: a block beyond the {} readable bytes", level, address,
                          readable);
       ok = false;
@@ -1256,6 +1300,10 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
                         "dumped {}",
                         mods_.size(), live, stats_.replacements_loaded, stats_.replaced_binds,
                         stats_.dumped);
+  }
+  if (stats_.verified) {
+    text += std::format(" | decode check: {} levels compared, {} differ", stats_.verified,
+                        stats_.verify_mismatches);
   }
   stats_ = Stats{};
   return text;

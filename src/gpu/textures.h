@@ -464,6 +464,8 @@ class TextureCache {
     uint64_t replaced_binds = 0;       // bindings of a mod's replacement
     uint64_t replacements_loaded = 0;  // replacement files uploaded
     uint64_t dumped = 0;               // textures written to the dump folder
+    uint64_t verified = 0;             // levels decoded twice (mcla_gpu_texture_decode_verify)
+    uint64_t verify_mismatches = 0;    // ... whose two decodes differed
   };
   Stats stats_;
 };
