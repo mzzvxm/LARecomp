@@ -17,7 +17,9 @@
 //                  BORDERLESS   grey: the display's own size, in the label ("RESOLUTION (3840X2160)").
 //                  FULLSCREEN   the modes the display lists, one per size (the display's own refresh
 //                               rate where the size has it, else the highest it lists); the mode
-//                               nearest to a saved size the display does not list. Live.
+//                               nearest to a saved size the display does not list. Live. The list is
+//                               the display's own, however low the size it is switched to (the
+//                               display's own size stays on it: display_mode.h ExclusiveSizes).
 //                  Sizes are PHYSICAL pixels (the client area of the window; display_mode.h): at 150%
 //                  scaling 1600X900 is a window of 1600 by 900 pixels plus its frame.
 //                  It is written into `resolution` as "WxH" (the SDK's text, which reads "720p",
