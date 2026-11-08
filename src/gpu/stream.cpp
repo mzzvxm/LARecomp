@@ -117,6 +117,7 @@ bool CommandStream::Initialize(uint32_t capacity) {
   }
   capacity_ = capacity;
   tail_ = 0;
+  tail_offset_ = 0;
   next_sequence_ = 1;
   unpublished_records_ = 0;
   unpublished_bytes_ = 0;
@@ -125,6 +126,7 @@ bool CommandStream::Initialize(uint32_t capacity) {
   head_.store(0, std::memory_order_relaxed);
   executed_sequence_.store(0, std::memory_order_relaxed);
   read_ = 0;
+  read_offset_ = 0;
   released_ = 0;
   stop_.store(false, std::memory_order_release);
   return true;
@@ -158,25 +160,28 @@ uint8_t* CommandStream::Writer::Begin(RecordType type, uint32_t payload_bytes) {
   }
   const uint32_t size = AlignRecord(uint32_t(sizeof(RecordHeader)) + payload_bytes);
   uint64_t at = s.tail_;
-  const uint64_t offset = at % s.capacity_;
+  uint64_t offset = s.tail_offset_;  // at % capacity_
   const uint64_t pad = offset + size > s.capacity_ ? s.capacity_ - offset : 0;
   if (!s.WaitForSpace(lock_, at + pad + size)) {
     return nullptr;
   }
   if (pad != 0) {
-    auto* filler = reinterpret_cast<RecordHeader*>(s.At(at));
+    auto* filler = reinterpret_cast<RecordHeader*>(s.buffer_.get() + offset);
     *filler = RecordHeader{};
     filler->size = uint32_t(pad);
     filler->type = RecordType::kPad;
     at += pad;
+    offset = 0;  // the filler runs to the end of the buffer
     s.tail_ = at;
+    s.tail_offset_ = 0;
     s.unpublished_bytes_ += pad;
   }
-  auto* header = reinterpret_cast<RecordHeader*>(s.At(at));
+  auto* header = reinterpret_cast<RecordHeader*>(s.buffer_.get() + offset);
   *header = RecordHeader{};
   header->size = size;
   header->type = type;
   record_at_ = at;
+  record_offset_ = offset;
   record_size_ = size;
   type_ = type;
   begun_ = true;
@@ -189,11 +194,15 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   }
   begun_ = false;
   CommandStream& s = stream_;
-  auto* header = reinterpret_cast<RecordHeader*>(s.At(record_at_));
+  auto* header = reinterpret_cast<RecordHeader*>(s.buffer_.get() + record_offset_);
   const uint64_t sequence = s.next_sequence_++;
   header->sequence = sequence;
   header->flags = publication == Publication::kWaited ? kRecordSync : 0;
   s.tail_ = record_at_ + record_size_;
+  // A record never crosses the end of the buffer (Begin pads first), so the offset after it is
+  // at most the capacity, and exactly the capacity means the start.
+  const uint64_t next_offset = record_offset_ + record_size_;
+  s.tail_offset_ = next_offset == s.capacity_ ? 0 : next_offset;
   ++s.unpublished_records_;
   s.unpublished_bytes_ += record_size_;
   // One writer at a time (this writer holds producer_lock_): a plain load and
@@ -290,8 +299,8 @@ const RecordHeader* CommandStream::Next() {
     if (read_ == published) {
       return nullptr;
     }
-    const auto* header = reinterpret_cast<const RecordHeader*>(At(read_));
-    const uint64_t offset = read_ % capacity_;
+    const uint64_t offset = read_offset_;  // read_ % capacity_
+    const auto* header = reinterpret_cast<const RecordHeader*>(buffer_.get() + offset);
     if (header->size < sizeof(RecordHeader) || header->size % kRecordAlignment != 0 ||
         offset + header->size > capacity_ || read_ + header->size > published) {
       // Only a bug in this file can get here. Stopping is the only safe answer:
@@ -311,6 +320,12 @@ const RecordHeader* CommandStream::Next() {
 
 void CommandStream::Release(const RecordHeader* record) {
   read_ += record->size;
+  // Next checked that the record lies inside the buffer, so the offset reaches the capacity at
+  // most, and exactly the capacity is the start.
+  read_offset_ += record->size;
+  if (read_offset_ >= capacity_) {
+    read_offset_ -= capacity_;
+  }
   // head_ bounds the producers' free space and they read it at every record:
   // stored at every record, its cache line moved between the two cores twice
   // a record. It is stored once kReleaseBytes went by,
