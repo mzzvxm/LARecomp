@@ -2958,6 +2958,17 @@ LoadResult LoadFrameGeneration(bool loaded, std::string* why) {
     *why = "Streamline said frame generation is not supported here";
     return LoadResult::kFailed;
   }
+  if (!loaded && rt.api.free_resources) {
+    // The plugin's resources go by its own release before the plugin is taken out (as at the end of
+    // the run, ShutdownFrameGeneration): taking it out is only a switch of its hooks, and its
+    // plugin-level state (its refresh pacing and flip metering, which it shuts down only when the
+    // game does) was left as it was when the chain went. Called with the plugin told off already
+    // and its chain gone (DlssFrameGeneration::BeforePlainChain).
+    // CHECK: no stall or error from slFreeResources(DLSS-G) in the middle of the run (sl.log has
+    // "slFreeResources" lines for it), and the plugin loads again with its feature made anew at the
+    // next switch on.
+    rt.api.free_resources(sl::kFeatureDLSS_G, sl::ViewportHandle(kViewport));
+  }
   const sl::Result result = rt.api.set_feature_loaded(sl::kFeatureDLSS_G, loaded);
   if (result != sl::Result::eOk) {
     *why = std::format("slSetFeatureLoaded({}) failed: {}", loaded ? "true" : "false",

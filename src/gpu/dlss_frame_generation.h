@@ -124,6 +124,11 @@
 //    Vulkan runs before the frame generation code had no stall. CHECK: a Vulkan start with DLSS
 //    (frame generation or not) has no "[Watchdog] frame stalled" at the first scene and frames at the
 //    scene's pace while "the feature ... was made in the background" is still to come.
+//  - Switching off (the setting) tells the plugin off and gives it kWindDownFrames presents before the
+//    swap chain is made plain and the plugin unloaded (Poll, WoundDown), then frees its resources
+//    (temporal_dlss.cpp LoadFrameGeneration): in the owner's play session (2026-11-07, 19:35:47) the
+//    plugin was unloaded still generating, and the game then held exactly 119.8 presents a second
+//    for minutes with every cap of ours cleared. The log says 5 s after the switch what the rate is.
 // ===========================================================================
 
 #include <atomic>
@@ -156,6 +161,15 @@ class DlssFrameGeneration {
   // After a resize or any other remake of the swap chain, frame generation waits this long for the
   // window to settle before it is switched on again.
   static constexpr std::chrono::milliseconds kSettle{600};
+  // Switching off from the setting: the plugin is first told to stop generating and given this many
+  // presents to act on it (it tidies its pacing and flip state in its present, not in the options
+  // call), at most kWindDownMax, before the swap chain is made plain and the plugin unloaded.
+  // A switch off for a window change (Renderer::RebuildSwapChain) is not wound down: the chain has to
+  // change at once.
+  // CHECK: whether a pace that outlasts the plugin shows after such a switch too (the "5 s after
+  // switching off" line is not logged for it); if so the wind-down needs to run before the rebuild.
+  static constexpr uint32_t kWindDownFrames = 3;
+  static constexpr std::chrono::milliseconds kWindDownMax{1500};
 
   DlssFrameGeneration();
   ~DlssFrameGeneration();
@@ -195,6 +209,8 @@ class DlssFrameGeneration {
   // The swap chain was made again for another reason (an HDR switch): the window-size images follow
   // the new format and size (made again at the next frame).
   void OnSwapChainChanged();
+  // True while the plugin is being taken off generation before the switch off (Poll).
+  bool winding_down() const { return winding_down_; }
   // Vertical sync: the player's own where the plugin supports it, else off.
   bool WantsVsync() const;
 
@@ -254,6 +270,14 @@ class DlssFrameGeneration {
   // (Streamline busy making a feature: the frame goes without it).
   bool ApplyOptions(bool on, const FrameArgs& args, uint32_t render_w, uint32_t render_h);
   bool NotGenerated(uint64_t& counter, const FrameArgs& args);
+  // Poll, with frame generation running and the setting off (or the plugin unable to run): true when
+  // the plugin has been told off and has presented since, so the swap chain can be made plain.
+  bool WoundDown();
+  // Record, while winding down: the plugin is told off and the presents after that are counted.
+  bool WindDownFrame(const FrameArgs& args);
+  // Poll, after a switch off: says once what the game's frame rate is five seconds later and which
+  // frame caps are in effect, so a pace that outlasts frame generation is told from a cap of ours.
+  void ProbeAfterOff();
   void Fail(const std::string& why);
   void NoteState();
 
@@ -280,6 +304,13 @@ class DlssFrameGeneration {
   bool wanted_ = false;           // the last read: chosen, supported, nothing in the way
   bool plugin_loaded_ = false;    // PrepareSwitchOn loaded it and BeforePlainChain has not unloaded it
   bool unload_pending_ = false;   // the plugin could not be unloaded at the switch off: tried again
+  bool winding_down_ = false;     // the setting went off: the plugin is told off before the switch
+  std::chrono::steady_clock::time_point wind_began_{};
+  uint32_t wind_frames_ = 0;      // presents since the plugin was told off, while winding down
+  bool wind_timeout_logged_ = false;
+  std::chrono::steady_clock::time_point off_at_{};  // when the last switch off completed
+  uint64_t off_polls_ = 0;        // frame boundaries since then (about one a guest frame)
+  bool probe_pending_ = false;
   bool logged_unavailable_ = false;
   std::chrono::steady_clock::time_point settle_until_{};
   uint32_t refresh_hz_ = 0;
@@ -313,6 +344,7 @@ class DlssFrameGeneration {
     uint64_t not_busy = 0;          // Streamline was making a feature
     uint64_t not_small = 0;         // the back buffer is under the plugin's smallest size
     uint64_t not_failed = 0;        // a call failed
+    uint64_t not_winding = 0;       // the setting went off: being taken off generation
     uint64_t option_changes = 0;
   };
   Stats stats_;
