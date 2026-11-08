@@ -228,6 +228,16 @@ void ApplyInterpolatedAlpha(const uint8_t* block, uint32_t texels[16]) {
 // - The loads that change the texels (1:5:5:5, depth, DXT decompression) run over the rows the
 //   copy made, in place or from a temporary buffer.
 //
+// CHECK: written without a compiler or a run (the main session builds). The algorithm was checked
+// against the per-block decoder in a Python model over 4000 random levels (all block sizes and
+// endians, tiled and linear, offsets, pitches, unreadable tails: 0 differences, ports/scratchpad
+// model.py logic = this file's), and the address decomposition against the SDK's formula for every
+// block size and several pitches. The C++ equality is what mcla_gpu_texture_decode_selftest and
+// _verify are for. The speed-up (expected 5-10x on the decode itself, from about 0.65 GB/s to a few
+// GB/s per core) is an estimate from the instruction count per 16 bytes, not a measurement.
+// CHECK: SSSE3 is assumed from -msse4.1 (rexglue_apply_target_settings(larecomp_gpu)); if
+// __SSSE3__ is not defined at build time the 64-bit scalar loops are used (same bytes, slower).
+//
 // Threading: pure functions; the tables are built once (a function-local static); the temporary
 // row buffer is per thread.
 

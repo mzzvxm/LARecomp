@@ -323,6 +323,8 @@ class Renderer final : public RenderThread::Executor {
   uint64_t fences_not_held_ = 0;
   // PrefetchTextures: the ring position it has looked up to, and how many draws between the
   // executing one and that position it has offered.
+  // CHECK: both are guesses (a burst is 66-280 textures over a few hundred draws), and the cost
+  // of the scan (a hash and a table probe per fetch of each draw, once per draw) is not measured.
   static constexpr uint32_t kPrefetchAheadDraws = 384;
   static constexpr uint32_t kPrefetchScanRecords = 64;
   uint64_t prefetch_position_ = 0;

@@ -978,6 +978,13 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
 }
 
 void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
+  // CHECK: not built or run. How much of a burst it takes off the render thread depends on how far
+  // behind the guest the render thread is when the burst starts (the lookahead sees only the
+  // records already published) and is read from the "decode threads" part of the textures line:
+  // used / prefetched, and "render thread waited".
+  // CHECK: the entry is made (CreateTexture, the regions) at the lookahead, a few draws before
+  // Bind2D would; a draw that never binds the texture (skipped, or served by a product that
+  // appeared in between) leaves an entry that is evicted after kEvictFrames like any other.
   if (!pool_.running()) {
     return;
   }

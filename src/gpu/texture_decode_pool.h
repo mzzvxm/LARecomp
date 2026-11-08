@@ -21,6 +21,14 @@
 // sequence) cancels the jobs of earlier records that have not started and waits for those running
 // before the fence is published.
 //
+// CHECK: written without a compiler or a run. A worker at below-normal priority that is preempted
+// in the middle of a job makes the render thread wait in Finish or Quiesce for it (a job that no
+// worker has started is taken over, a running one cannot be); on a CPU saturated by normal
+// priority threads that wait can be long. The pipeline workers (pipelines.cpp) are raised to
+// normal priority while the render thread waits for them; this pool is not. If the frame log
+// shows long prefetch waits ("render thread waited" in the textures line) on a loaded or small
+// CPU, raise the workers while Finish waits.
+//
 // Threading: Start, Stop, Submit, Finish and Quiesce from the render thread only; Run on workers.
 // ===========================================================================
 
