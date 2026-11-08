@@ -32,8 +32,9 @@
 // vfetches per declaration), the normalized bytes, the identity. Raw bytes that
 // match a known variant are a memcmp; new raw bytes are normalized and compared
 // with the normalized copy; only genuinely new microcode is hashed. A shader
-// object that was resolved once in the guest frame at the same (address, size)
-// is not looked up again that frame (the identity memo, below).
+// object that was resolved once in the guest frame is not read or looked up
+// again that frame: its address, size and identity come from the identity memo
+// (below).
 //
 // Every guest pointer is checked with IsGuestRangeReadable before it is read.
 // What cannot be read becomes a zero field and a flag, never a crash.
@@ -214,9 +215,18 @@ class GuestCapture {
                               uint32_t* variant);
   ShaderRead ReadPixelShader(const uint8_t* base, uint32_t ps_object);
   // The shader's identity, from the frame's memo when this object was resolved at
-  // this (address, size) earlier in the guest frame, else ResolveIdentityFull.
-  void ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex);
+  // this (address, size) earlier in the guest frame, else ResolveIdentityFull. `ps_null` and
+  // `variant` (vertex shaders only: no pixel shader was bound, and the vertex shader variant
+  // that selected) are stored with the entry for ShaderFromMemo.
+  void ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex, bool ps_null,
+                       uint32_t variant);
   void ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex);
+  // The shader of a draw straight from the frame's memo, without reading the guest's shader
+  // object, its sub-object or the microcode: true (shader and *variant filled, readable) when
+  // this object was fully resolved earlier in the guest frame (for a vertex shader, with the
+  // same `ps_null`), false (nothing touched) otherwise. Under the producer lock.
+  bool ShaderFromMemo(uint32_t object, bool vertex, bool ps_null, ShaderRead& shader,
+                      uint32_t* variant);
   void GatherDraw(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                   DrawCapture& capture);
   // Fills a draw payload of capture's exact layout and updates the shadows.
@@ -284,6 +294,14 @@ class GuestCapture {
   // (the raw-variant list below does the same), and a shader that is freed and
   // another created at its address and size mid-frame is the one case it would
   // get wrong, for the rest of that frame.
+  // The entry is also what a draw's shader is taken from without looking at the guest's objects
+  // again (ShaderFromMemo): it is keyed by the object (a vertex shader also by whether a pixel
+  // shader was bound, which can select the second variant) and holds the address, size and
+  // variant that the first resolve of the frame read. That adds one assumption to the one above:
+  // a shader object does not change its microcode address, size or variant table within a
+  // guest frame (its microcode is placed when the game creates the shader, and the draw only
+  // patches the bytes in place). The same mid-frame free-and-recreate is again the one case
+  // that would get it wrong, for the rest of that frame.
   struct IdentityMemo {
     uint32_t object = 0;  // 0 = empty
     uint32_t generation = 0;
@@ -292,7 +310,10 @@ class GuestCapture {
     uint64_t identity = 0;
     bool computed_fetch_index = false;
     bool kills_pixels = false;
+    bool ps_null = false;   // vertex shaders: no pixel shader was bound for this entry
+    uint8_t variant = 0;    // vertex shaders: the variant that read selected (0 or 1)
   };
+  static_assert(sizeof(IdentityMemo) == 32, "an entry is meant to fill half a cache line");
   static constexpr uint32_t kMemoSlots = 1024;  // per kind, direct mapped on the object
   std::array<IdentityMemo, kMemoSlots> vs_memo_{};
   std::array<IdentityMemo, kMemoSlots> ps_memo_{};

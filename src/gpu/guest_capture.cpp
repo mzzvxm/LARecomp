@@ -200,6 +200,13 @@ inline bool TimeThisDraw() {
   return (++t_draw_timing_phase & (kDrawTimingEvery - 1)) == 0;
 }
 
+// The memo slot of a shader object: the top 10 bits of a multiplicative hash of its address
+// (kMemoSlots entries a kind). A vertex shader drawn with no pixel shader can select its second
+// variant, so the same object has two entries and the second one's slot flips the lowest bit.
+inline uint32_t MemoSlot(uint32_t object, bool vertex, bool ps_null) {
+  return ((object * 2654435761u) >> 22) ^ ((vertex && ps_null) ? 1u : 0u);
+}
+
 // memcmp(a, b, kConstantBlockBytes) == 0 without a call into vcruntime140: the
 // compiler does not expand it, and a draw compares a few blocks (0.03 ms a frame in the
 // profile, mostly the call).
@@ -478,13 +485,36 @@ GuestCapture::ShaderRead GuestCapture::ReadVertexShader(const uint8_t* base, uin
   return r;
 }
 
-void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex) {
+bool GuestCapture::ShaderFromMemo(uint32_t object, bool vertex, bool ps_null, ShaderRead& shader,
+                                  uint32_t* variant) {
+  const IdentityMemo& memo = (vertex ? vs_memo_ : ps_memo_)[MemoSlot(object, vertex, ps_null)];
+  if (memo.object != object || memo.generation != frame_pages_.generation ||
+      memo.ps_null != (vertex && ps_null)) {
+    return false;
+  }
+  memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  shader.object = object;
+  shader.address = memo.address;
+  shader.size = memo.size;
+  shader.identity = memo.identity;
+  shader.computed_fetch_index = memo.computed_fetch_index;
+  shader.kills_pixels = memo.kills_pixels;
+  shader.readable = true;  // the first resolve of this frame read the microcode
+  if (variant != nullptr) {
+    *variant = memo.variant;
+  }
+  return true;
+}
+
+void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool vertex,
+                                   bool ps_null, uint32_t variant) {
   IdentityMemo& memo =
-      (vertex ? vs_memo_ : ps_memo_)[(shader.object * 2654435761u) >> 22];
+      (vertex ? vs_memo_ : ps_memo_)[MemoSlot(shader.object, vertex, ps_null)];
   static_assert(kMemoSlots == (1u << 10), "the slot is the top 10 bits of the product");
   const uint32_t generation = frame_pages_.generation;
   if (memo.object == shader.object && memo.generation == generation &&
-      memo.address == shader.address && memo.size == shader.size) {
+      memo.address == shader.address && memo.size == shader.size &&
+      memo.ps_null == (vertex && ps_null)) {
     memo_hits_.store(memo_hits_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     shader.identity = memo.identity;
     shader.computed_fetch_index = memo.computed_fetch_index;
@@ -500,6 +530,8 @@ void GuestCapture::ResolveIdentity(const uint8_t* base, ShaderRead& shader, bool
   memo.identity = shader.identity;
   memo.computed_fetch_index = shader.computed_fetch_index;
   memo.kills_pixels = shader.kills_pixels;
+  memo.ps_null = vertex && ps_null;
+  memo.variant = uint8_t(vertex ? variant : 0);
 }
 
 void GuestCapture::ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, bool vertex) {
@@ -584,13 +616,22 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
     VerifiedPages& pages;
     ~Deactivate() { pages.active = false; }
   } deactivate{verified_};
+  // A shader the guest frame's memo already has (nearly every draw: 97% of the lookups in the
+  // profiled roam and drive) is taken from it without reading the shader object, its sub-object
+  // or the microcode, and without asking the heap about any of them; the rest read the guest's
+  // objects and resolve the identity, which stores the memo entry.
   const uint32_t ps_object = DeviceU32(base, device, guest::kDevPixelShader);
-  if (ps_object == 0) {
+  const bool ps_null = ps_object == 0;
+  if (ps_null) {
     c.flags |= kDrawNoPixelShader;
   } else {
-    c.ps = ReadPixelShader(base, ps_object);
+    if (!ShaderFromMemo(ps_object, false, false, c.ps, nullptr)) {
+      c.ps = ReadPixelShader(base, ps_object);
+      if (c.ps.readable) {
+        ResolveIdentity(base, c.ps, false, false, 0);
+      }
+    }
     if (c.ps.readable) {
-      ResolveIdentity(base, c.ps, false);
       if (c.ps.kills_pixels) {
         c.flags |= kDrawPsKills;
       }
@@ -598,9 +639,14 @@ void GuestCapture::GatherDraw(const GuestCallToken& token, const uint8_t* base, 
       c.flags |= kDrawPsUnreadable;
     }
   }
-  c.vs = ReadVertexShader(base, device, ps_object, &c.vs_variant);
+  const uint32_t vs_object = DeviceU32(base, device, guest::kDevVertexShader);
+  if (vs_object == 0 || !ShaderFromMemo(vs_object, true, ps_null, c.vs, &c.vs_variant)) {
+    c.vs = ReadVertexShader(base, device, ps_object, &c.vs_variant);
+    if (c.vs.readable) {
+      ResolveIdentity(base, c.vs, true, ps_null, c.vs_variant);
+    }
+  }
   if (c.vs.readable) {
-    ResolveIdentity(base, c.vs, true);
     if (c.vs.computed_fetch_index) {
       c.flags |= kDrawVsComputedFetchIndex;
     }
