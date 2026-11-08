@@ -439,15 +439,14 @@ void DlssFrameGeneration::LogPacing(const std::string& when) {
 
 bool DlssFrameGeneration::DriverStillPaces() const {
   latency::DriverPacing pacing;
-  if (!latency::ReadDriverPacing(&pacing)) {
-    return false;
+  if (!pacing_before_ok_ || !latency::ReadDriverPacing(&pacing)) {
+    return false;  // nothing to compare with, or the driver cannot say: the time alone decides
   }
-  if (pacing.fg_multiplier > 1) {
-    return true;
-  }
-  // The driver's interval is its own frame cap (the NVIDIA app's Max Frame Rate) and the game's: what
-  // it was before frame generation is what it should be again.
-  return pacing_before_ok_ && pacing.sleep_interval_us > pacing_before_.sleep_interval_us + 500;
+  // What the driver said before frame generation first ran is what it should say again: no more frames
+  // shown per frame rendered, and its interval (its own frame cap, the NVIDIA app's Max Frame Rate, and
+  // the game's) no longer.
+  return pacing.fg_multiplier > std::max<uint32_t>(1u, pacing_before_.fg_multiplier) ||
+         pacing.sleep_interval_us > pacing_before_.sleep_interval_us + 500;
 }
 
 bool DlssFrameGeneration::WindDownFrame(const FrameArgs& args) {

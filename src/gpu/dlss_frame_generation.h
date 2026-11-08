@@ -148,7 +148,8 @@
 //    What the switch does about it, in order: the plugin is told off for good WITHOUT retaining its
 //    resources (it releases them in its present, with its chain still there), the chain stays at
 //    least kWindDownMin and until the driver's own account of the pacing is the one from before frame
-//    generation first ran (DriverStillPaces, up to kWindDownMax), and the device's own Reflex takes
+//    generation first ran (DriverStillPaces, up to kWindDownMax; the plugin may hold its flip
+//    metering configuration for longer than the three presents it used to get), and the device's own Reflex takes
 //    over again from a few frames in its neutral mode (latency.h RearmDriver). The log says the driver's
 //    pacing before frame generation, at the switch off, after the wind-down, right after the plain chain
 //    and 5 s later, with how long the driver's wait takes of a frame.
@@ -202,12 +203,12 @@ class DlssFrameGeneration {
   // CHECK: whether a pace that outlasts the plugin shows after such a switch too (the "5 s after
   // switching off" line is not logged for it); if so the wind-down needs to run before the rebuild.
   static constexpr uint32_t kWindDownFrames = 3;
-  static constexpr std::chrono::milliseconds kWindDownMax{1500};
+  static constexpr std::chrono::milliseconds kWindDownMax{3000};
   // Told off, the plugin takes apart its pacing and flip metering over more than three presents (it
   // set them up over about 0.4 s, on a thread of its own, when it was switched on): the switch waits
   // at least this long, and until the driver's account of the pacing (latency.h DriverPacing) no longer
   // shows frame generation's, up to kWindDownMax.
-  static constexpr std::chrono::milliseconds kWindDownMin{600};
+  static constexpr std::chrono::milliseconds kWindDownMin{800};
 
   DlssFrameGeneration();
   ~DlssFrameGeneration();
