@@ -440,6 +440,7 @@ class FrameLayers {
   std::unordered_set<uint64_t> blends_logged_;
   bool pause_logged_ = false;
   bool pause_picture_logged_ = false;
+  bool gap_logged_ = false;
 
   // The frame's records after the marker (Trace) and what the frame did, for the one-time reports.
   std::array<TraceEvent, kTraceEvents> trace_;

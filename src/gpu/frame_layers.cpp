@@ -673,6 +673,13 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
   // says ("pixel centre D3D"); with another one the picture would start at pixel 0 and this would
   // repeat pixel `gap` over it.
   captured_.gap = target_->scale.HalfPixelGap();
+  if (captured_.gap != 0 && !gap_logged_) {
+    gap_logged_ = true;
+    REXLOG_INFO("[gpu] frame layers: at {}x the first {} host column(s) and row(s) of the layers hold "
+                "no picture (no full-screen draw of the game writes them); the compose reads them "
+                "from the next ones, as the guest's resolve does for the front buffer",
+                target_->scale, captured_.gap);
+  }
   captured_.hudless = &underlay_;
   captured_.ui = &ui_;
   // HDR stage 3: the float scene of this frame, when its tone map and the draws after it were
