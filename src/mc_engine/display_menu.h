@@ -17,7 +17,9 @@
 //                  BORDERLESS   grey: the display's own size, in the label ("RESOLUTION (3840X2160)").
 //                  FULLSCREEN   the modes the display lists, one per size (the display's own refresh
 //                               rate where the size has it, else the highest it lists); the mode
-//                               nearest to a saved size the display does not list. Live.
+//                               nearest to a saved size the display does not list. Live. The list is
+//                               the display's own, however low the size it is switched to (the
+//                               display's own size stays on it: display_mode.h ExclusiveSizes).
 //                  Sizes are PHYSICAL pixels (the client area of the window; display_mode.h): at 150%
 //                  scaling 1600X900 is a window of 1600 by 900 pixels plus its frame.
 //                  It is written into `resolution` as "WxH" (the SDK's text, which reads "720p",
@@ -27,8 +29,8 @@
 // Width (pause_menu.cpp, "Page width"), in characters: DISPLAY MODE 12; RESOLUTION 10, 22 with its
 // suffix " (7680X4320)" (a display of 10240 pixels across: 23), 20 with " (RESTART)" or " (DISPLAY)" (where
 // the display's size cannot be asked). Values: "BORDERLESS" and "FULLSCREEN" 10; sizes 9 at most
-// ("3840X2160"), 10 at five digits across. The page's widest label is 23 and its widest value 17: 40
-// of 41.
+// ("3840X2160"), 10 at five digits across. The page's widest label is 23 and its widest value 18
+// ("FSR 3.1 (APPLYING)", frame_generation_menu.h): 41 of 41 (22 and 18, 40, at 7680 across).
 // CHECK: DISPLAY open on a 4K display in BORDERLESS ("RESOLUTION (3840X2160)" grey, the longest label
 // on the page with a native upscaler at "PERFORMANCE (50%)"), in FULLSCREEN and in WINDOWED, on NATIVE
 // and on XENIA ("RENDER SCALE (RESTART)"): the right edge, the button prompts and the scroll bar are not

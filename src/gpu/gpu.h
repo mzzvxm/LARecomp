@@ -338,7 +338,7 @@ UpscalerAvailability GetUpscalerAvailability();
 // changes while the game runs (msaa_level.h).
 // The host MSAA level changes while the game runs (msaa_level.h): true from when a new level has
 // stood still until its pipelines are made and the targets are made again. The pause menu's MSAA
-// row says (WAIT). Any thread.
+// row says (APPLYING). Any thread.
 bool MsaaSwitching();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------

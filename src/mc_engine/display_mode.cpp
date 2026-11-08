@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -173,8 +174,8 @@ Size WantedExclusiveSize() {
 
 namespace {
 
-// What the display lists, for the display the window is on. The list is asked of the driver (a few
-// milliseconds), and the menu asks every frame it is open, so it is kept for a few seconds.
+// What the display lists. The list is asked of the driver (a few milliseconds), and the menu asks every
+// frame it is open, so it is kept for a few seconds, per display (ListedModes).
 struct ModeRecord {
   Size size;
   uint32_t hz = 0;
@@ -185,12 +186,18 @@ struct DisplayInfo {
   uint32_t desktop_hz = 0;
   std::vector<ModeRecord> modes;
   std::vector<Size> sizes;
+  // The size of the display's work area (its own size less the taskbar), as the monitor said it while
+  // the display was in its own mode. Empty when that was not asked.
+  Size work;
   ULONGLONG when = 0;
 };
 constexpr ULONGLONG kInfoLifetimeMs = 5000;
 
 std::mutex g_info_mutex;
-DisplayInfo g_info;
+// The lists kept, by display, and the display this game has switched to another mode (empty: none).
+// Both under g_info_mutex: the menu reads them from any thread, the UI thread changes the mode.
+std::map<std::wstring, DisplayInfo> g_infos;
+std::wstring g_switched_device;
 
 // The display's own mode: what the player set in Windows, not one this game switched to.
 bool DesktopMode(const wchar_t* device, DEVMODEW* dm) {
@@ -221,6 +228,15 @@ DisplayInfo ReadDisplay(const std::wstring& device) {
     if (dm.dmPelsWidth < kMinWidth || dm.dmPelsHeight < kMinHeight) continue;
     info.modes.push_back({{dm.dmPelsWidth, dm.dmPelsHeight}, dm.dmDisplayFrequency});
   }
+  // The display's own mode is always one of its modes. The driver's list depends on the mode the display
+  // is in (asked while this game had switched it to 1280x720, the list of a 3840x2160 display left its
+  // own size out: the RESOLUTION row lost the size the player started at), so it is put in when the
+  // list lacks it.
+  if (info.desktop.width >= kMinWidth && info.desktop.height >= kMinHeight) {
+    const bool listed = std::any_of(info.modes.begin(), info.modes.end(),
+                                    [&](const ModeRecord& m) { return m.size == info.desktop; });
+    if (!listed) info.modes.push_back({info.desktop, info.desktop_hz});
+  }
   for (const ModeRecord& m : info.modes) {
     if (std::find(info.sizes.begin(), info.sizes.end(), m.size) == info.sizes.end()) {
       info.sizes.push_back(m.size);
@@ -246,15 +262,53 @@ bool MonitorOf(HWND hwnd, MONITORINFOEXW* info) {
   return GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(info)) != 0;
 }
 
-// The display the window is on, as ReadDisplay saw it not long ago.
+// What a display lists, as ReadDisplay saw it not long ago. The list is the display's own: it is asked
+// of the driver only while the display is in its own mode. While this game has the display switched to
+// another mode (FULLSCREEN at a lower size) the list from before the switch is kept and used, whatever
+// its age: Windows answers for the mode the display is in, and a list asked then loses the sizes above
+// it, among them the display's own (the owner's log of 2026-11-07: the RESOLUTION row listed 3840x2160
+// for the 5 seconds the list from before the switch lived, and not after). SetSwitchedDevice drops it
+// when the display's own mode is back, so the next ask is made in that mode again. `monitor`, when it
+// is the display's, also gives the work area.
+// CHECK: that the list in FULLSCREEN at 1280x720 stays what it was in BORDERLESS (the same sizes,
+// 3840x2160 and every other one, however long the menu stays on the row), and comes back after the
+// display's own mode is back; the log's "the display lists no ..." must not appear for a size the row
+// offered.
+DisplayInfo ListedModes(const std::wstring& device, const MONITORINFOEXW* monitor) {
+  std::lock_guard lock(g_info_mutex);
+  const auto kept = g_infos.find(device);
+  const bool have = kept != g_infos.end();
+  const bool switched = !g_switched_device.empty() && g_switched_device == device;
+  const bool fresh = have && GetTickCount64() - kept->second.when <= kInfoLifetimeMs;
+  if (!fresh && !(have && switched)) {
+    DisplayInfo info = ReadDisplay(device);
+    if (monitor && device == monitor->szDevice) {
+      info.work = {uint32_t(monitor->rcWork.right - monitor->rcWork.left),
+                   uint32_t(monitor->rcWork.bottom - monitor->rcWork.top)};
+    } else if (have) {
+      info.work = kept->second.work;
+    }
+    g_infos[device] = info;
+    return info;
+  }
+  return kept->second;
+}
+
+// The display the window is on.
 DisplayInfo CurrentDisplay() {
   MONITORINFOEXW monitor;
   if (!MonitorOf(NativeWindow(), &monitor)) return {};
+  return ListedModes(monitor.szDevice, &monitor);
+}
+
+// This game has switched `device` to another mode, or (empty) has put the display's own mode back.
+void SetSwitchedDevice(const std::wstring& device) {
   std::lock_guard lock(g_info_mutex);
-  if (g_info.device != monitor.szDevice || GetTickCount64() - g_info.when > kInfoLifetimeMs) {
-    g_info = ReadDisplay(monitor.szDevice);
+  g_switched_device = device;
+  if (device.empty()) {
+    // The display is in its own mode: what it lists now is asked again at the next ask.
+    for (auto& entry : g_infos) entry.second.when = 0;
   }
-  return g_info;
 }
 
 template <typename Fn>
@@ -347,6 +401,9 @@ bool RestoreDesktopMode(const char* why, bool fit_window) {
   if (!g_mode_changed) return false;
   g_mode_changed = false;
   const LONG result = ChangeDisplaySettingsExW(g_changed_device.c_str(), nullptr, nullptr, 0, nullptr);
+  // The list is asked of the driver again from now on, whether or not the display went back (a list
+  // that is kept for good would be stale after any change the player makes in Windows).
+  SetSwitchedDevice({});
   if (result != DISP_CHANGE_SUCCESSFUL) {
     MC_WARN("[display] the display's own mode could not be put back ({}): code {}", why, result);
     return true;
@@ -367,7 +424,7 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
   if (!MonitorOf(hwnd, &monitor)) return false;
   // The display this game already switched stays the one, wherever the window is now.
   const std::wstring device = g_mode_changed ? g_changed_device : std::wstring(monitor.szDevice);
-  const DisplayInfo info = ReadDisplay(device);
+  const DisplayInfo info = ListedModes(device, &monitor);
   if (want.empty()) want = info.desktop;
   if (want == info.desktop) {
     return RestoreDesktopMode("the display's own size is the choice", true);
@@ -407,6 +464,7 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
   g_mode_changed = true;
   g_changed_device = device;
   g_changed_to = want;
+  SetSwitchedDevice(device);
   MC_INFO("[display] FULLSCREEN: the display is now {} at {} Hz (its own mode is {} at {} Hz)",
           SizeText(want), hz, SizeText(info.desktop), info.desktop_hz);
   FitFullscreenWindow(hwnd);
@@ -513,9 +571,13 @@ std::vector<Size> WindowedSizes() {
   MONITORINFOEXW monitor;
   if (!MonitorOf(hwnd, &monitor)) return sizes;
   const Size frame = FrameOf(hwnd);
+  // The display's work area as it is in its own mode: while this game has the display switched to
+  // another mode (the menu is on WINDOWED for a moment before the display is put back) the monitor
+  // reports the smaller one, and the steps of a window would be cut to it.
+  const Size own_work = ListedModes(monitor.szDevice, &monitor).work;
   const RECT& work = monitor.rcWork;
-  const uint32_t work_width = uint32_t(work.right - work.left);
-  const uint32_t work_height = uint32_t(work.bottom - work.top);
+  const uint32_t work_width = own_work.empty() ? uint32_t(work.right - work.left) : own_work.width;
+  const uint32_t work_height = own_work.empty() ? uint32_t(work.bottom - work.top) : own_work.height;
   constexpr Size kSteps[] = {{1280, 720},  {1600, 900},  {1920, 1080}, {2560, 1440},
                              {3200, 1800}, {3840, 2160}, {5120, 2880}, {7680, 4320}};
   for (const Size& s : kSteps) {

@@ -1,8 +1,8 @@
 #pragma once
 //
 // The pause menu's upscaling rows (DISPLAY tab), next to nothing but themselves: the rows, what
-// greys them, and what the NATIVE AA / MSAA rows (the game's own anti-aliasing) say while an
-// upscaler does its job.
+// greys them, and what the POST AA / MSAA rows (the NATIVE renderer's own anti-aliasing, the rows
+// after SHARPNESS on the same page) say while an upscaler does its job.
 //
 // Three rows, always the same three (what changes is each one's list, live):
 //
@@ -49,7 +49,7 @@
 //
 // A mode picked while the game runs is live: the scene is drawn at the new size from a frame
 // boundary, once the upscaler has made what it needs for it (the old one works until then: about
-// half a second for FSR, several seconds for DLSS, during which the UPSCALING row says "(WAIT)").
+// half a second for FSR, several seconds for DLSS, during which the UPSCALING row says "(APPLYING)").
 // DLSS modes the card cannot take at the output size say "(N/A)" in place of their share (gpu.h
 // UpscalerAvailability::dlss_modes_refused): picking one saves the choice and the mode that runs
 // goes on.
@@ -79,10 +79,11 @@
 // 100% and moves it to the RENDER SCALE row's choice when that is another (with a saved scale other
 // than 100%).
 //
-// The AA rows of the NATIVE renderer follow a temporal upscaler: NATIVE AA (FXAA, SMAA) and MSAA
-// are grey and say "(FSR 3.1 ON)" (or FSR 4, DLSS) while one runs. FSR 1 is not temporal and
+// The AA rows of the NATIVE renderer follow a temporal upscaler: POST AA (FXAA, SMAA; named so that it
+// does not read like the "NATIVE AA" mode of FSR and DLAA) and MSAA are grey and say "(FSR 3.1 ON)"
+// (or FSR 4, DLSS) while one runs. FSR 1 is not temporal and
 // leaves them alone. With no upscaler the MSAA row is the player's own: OFF, 2X, 4X and 8X all
-// change live ("(WAIT)" while the pipelines for a new level are made), none says RESTART.
+// change live ("(APPLYING)" while the pipelines for a new level are made), none says RESTART.
 
 #include "menu_items.h"
 
@@ -98,11 +99,11 @@ bool UpscalingMenuRelayout(bool apply);
 
 namespace mcla_menu {
 
-// The NATIVE AA row's dynamics: grey, "(FSR 3.1 ON)" (or FSR 4, DLSS), while a temporal upscaler
+// The POST AA row's dynamics: grey, "(FSR 3.1 ON)" (or FSR 4, DLSS), while a temporal upscaler
 // runs (FXAA and SMAA are held off then).
-extern const RowDynamics kNativeAaDynamics;
+extern const RowDynamics kPostAaDynamics;
 // The MSAA row's: grey while a temporal upscaler runs, with the upscaler named in the suffix; with
-// no upscaler the suffix says "(WAIT)" while a new level is being prepared and is empty otherwise.
+// no upscaler the suffix says "(APPLYING)" while a new level is being prepared and is empty otherwise.
 extern const RowDynamics kMsaaDynamics;
 
 }  // namespace mcla_menu

@@ -70,7 +70,7 @@ int Entries(Entry (&out)[3]) {
     return n;
 }
 
-// The FRAME GENERATION row's value i. "(WAIT)" from the choice until the swap chain has been made
+// The FRAME GENERATION row's value i. "(APPLYING)" from the choice until the swap chain has been made
 // again for it (a frame boundary away, or until Streamline has started) and while it is being set up;
 // "(FAILED)" once it failed; DLSS says "(N/A)" where Streamline said it cannot run here and it is
 // chosen.
@@ -83,13 +83,13 @@ std::string FrameGenerationLabel(int i) {
         if (a.failed) return "FSR 3.1 (FAILED)";
         // No free video memory for it: off, and on by itself when there is room (the reason is in the log).
         if (FsrChosen() && a.no_room) return "FSR 3.1 (NO ROOM)";
-        if (FsrChosen() && a.available && !a.running) return "FSR 3.1 (WAIT)";
+        if (FsrChosen() && a.available && !a.running) return "FSR 3.1 (APPLYING)";
         return "FSR 3.1";
     }
     const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();
     if (d.failed) return "DLSS (FAILED)";
     if (DlssChosen() && d.probed && !d.supported && !d.after_restart) return "DLSS (N/A)";
-    if (DlssChosen() && !d.after_restart && !d.running) return "DLSS (WAIT)";
+    if (DlssChosen() && !d.after_restart && !d.running) return "DLSS (APPLYING)";
     return "DLSS";
 }
 int FrameGenerationCount() {
@@ -112,7 +112,7 @@ void FrameGenerationSet(int i, mcla_menu::CvarWriter write) {
 }
 // DLSS on Vulkan applies from the next start (the device is made through Streamline only when it is
 // saved at the start): the row says RESTART, in a label short enough for the page (pause_menu.cpp
-// "Page width": "FRAME GEN (RESTART)" is 19 characters, "FRAME GENERATION (WAIT)" 23).
+// "Page width": "FRAME GEN (RESTART)" is 19 characters; the label is bare otherwise, "FRAME GENERATION" 16).
 bool RestartRow() {
     if (!DlssChosen()) return false;
     const mcla::gpu::DlssFrameGenerationAvailability d = mcla::gpu::GetDlssFrameGenerationAvailability();
@@ -222,47 +222,64 @@ bool Listed() {
 
 }  // namespace
 
-const mcla_menu::ItemDef* DisplayMenuRows(int& count) {
+const mcla_menu::ItemDef* DisplayMenuRows(const mcla_menu::ItemDef* picture, int picture_count,
+                                          int& count) {
     int upscaling_count = 0;
     const mcla_menu::ItemDef* upscaling = UpscalingMenuRows(upscaling_count);
+    bool frame_generation = false;
+    bool multiplier = false;
 #if defined(LARECOMP_HAS_GPU)
-    if (Listed()) {
-        // One table per upscaler row set (a pointer the upscaling menu keeps) and per set of frame
-        // generation rows (the multiplier row only for a card that has a choice), made on first use
-        // and never changed after.
-        const bool multiplier = MultiplierListed();
-        struct Combined {
-            const mcla_menu::ItemDef* upscaling = nullptr;
-            int upscaling_count = 0;
-            bool multiplier = false;
-            std::vector<mcla_menu::ItemDef> rows;
-        };
-        static std::mutex mutex;
-        static std::vector<std::unique_ptr<Combined>> tables;
-        std::lock_guard lock(mutex);
-        for (const std::unique_ptr<Combined>& t : tables) {
-            if (t->upscaling == upscaling && t->upscaling_count == upscaling_count &&
-                t->multiplier == multiplier) {
-                count = int(t->rows.size());
-                return t->rows.data();
-            }
+    frame_generation = Listed();
+    multiplier = frame_generation && MultiplierListed();
+#endif
+    if (upscaling_count == 0 && !frame_generation) {
+        // No Plume renderer in this build: the page's rows are the picture's alone.
+        count = picture_count;
+        return picture;
+    }
+    // One table per combination of the upscaler's row set (a pointer the upscaling menu keeps), the
+    // picture rows and the frame generation rows (the multiplier row only for a card that has a
+    // choice), made on first use and never changed after: the menu holds pointers into it.
+    struct Combined {
+        const mcla_menu::ItemDef* upscaling = nullptr;
+        int upscaling_count = 0;
+        const mcla_menu::ItemDef* picture = nullptr;
+        int picture_count = 0;
+        bool frame_generation = false;
+        bool multiplier = false;
+        std::vector<mcla_menu::ItemDef> rows;
+    };
+    static std::mutex mutex;
+    static std::vector<std::unique_ptr<Combined>> tables;
+    std::lock_guard lock(mutex);
+    for (const std::unique_ptr<Combined>& t : tables) {
+        if (t->upscaling == upscaling && t->upscaling_count == upscaling_count &&
+            t->picture == picture && t->picture_count == picture_count &&
+            t->frame_generation == frame_generation && t->multiplier == multiplier) {
+            count = int(t->rows.size());
+            return t->rows.data();
         }
-        auto made = std::make_unique<Combined>();
-        made->upscaling = upscaling;
-        made->upscaling_count = upscaling_count;
-        made->multiplier = multiplier;
-        for (int i = 0; i < upscaling_count; ++i) made->rows.push_back(upscaling[i]);
+    }
+    auto made = std::make_unique<Combined>();
+    made->upscaling = upscaling;
+    made->upscaling_count = upscaling_count;
+    made->picture = picture;
+    made->picture_count = picture_count;
+    made->frame_generation = frame_generation;
+    made->multiplier = multiplier;
+    for (int i = 0; i < upscaling_count; ++i) made->rows.push_back(upscaling[i]);
+    for (int i = 0; i < picture_count; ++i) made->rows.push_back(picture[i]);
+#if defined(LARECOMP_HAS_GPU)
+    if (frame_generation) {
         made->rows.push_back(kFrameGenerationRow);
         if (multiplier) made->rows.push_back(kMultiplierRow);
         made->rows.push_back(kFpsLimitRow);
-        count = int(made->rows.size());
-        const mcla_menu::ItemDef* rows = made->rows.data();
-        tables.push_back(std::move(made));
-        return rows;
     }
 #endif
-    count = upscaling_count;
-    return upscaling;
+    count = int(made->rows.size());
+    const mcla_menu::ItemDef* rows = made->rows.data();
+    tables.push_back(std::move(made));
+    return rows;
 }
 
 namespace mcla_menu {
