@@ -4941,8 +4941,30 @@ void HdrTestPatternTick() {
     g_hdr_pattern_by_menu.store(false, std::memory_order_relaxed);
 }
 
+// The HDR menu's level rows (PAPER WHITE, PEAK BRIGHTNESS, HIGHLIGHTS, TEST PATTERN) are enabled while the swap chain IS HDR10
+// (HdrActive), not while the setting says HDR. A step on the HDR row changes the setting at once, but the render thread switches
+// the swap chain a few frames later, after the rows were drawn: they showed the state before the step ("(HDR OFF)" with HDR just
+// turned on, live values with it just turned off) until the next input (Mz, 2026-11-08). Watched here once per UI update: when the
+// output flips while the HDR menu is open, its rows are synced and the list drawn again, the way a row is after A.
+void HdrOutputWatchTick() {
+#if defined(LARECOMP_HAS_GPU)
+    static bool last = false;  // guest thread only
+    const bool now = HdrActive();
+    if (now == last) return;
+    last = now;
+    const int m = MenuByKey("RxGpuHdrMenu");
+    if (m < 0) return;
+    const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed);
+    if (!form || !larecomp::ui::FormIsOpen(form)) return;
+    SyncNativeRowsFromCvars(m);
+    larecomp::ui::RefreshFormList(form);
+    MC_INFO("[pause-menu] HDR output is {} now: the HDR menu's rows follow it", now ? "on" : "off");
+#endif
+}
+
 void PauseMenuFormsTick() {
     HdrTestPatternTick();
+    HdrOutputWatchTick();
     RestartPromptTick();
     if (g_color_open >= 0 && larecomp::ui::TopForm() != g_color_form) ColorStripClose(false);
     if (!larecomp::ui::TopmostOurForm()) return;
