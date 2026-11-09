@@ -5,13 +5,18 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
+#include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
+#include <string_view>
 #include <thread>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -40,6 +45,46 @@ REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
     "30 Hz timestep, and unlocks presentation from every-other-vblank. Required "
     "for correct physics, camera and traffic above 30 FPS. This is NOT a frame "
     "rate cap - see fps_limit for that.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// A number of milliseconds as written in frame_step_cap or MCLA_MAX_FRAME_MS: plain digits, a
+// positive finite number, blanks around it allowed. Not clamped here (see kStepCapMinFixedMs).
+static bool ParseStepCapMs(std::string_view text, double& ms) {
+    const std::string copy(text);
+    char* end = nullptr;
+    const double v = std::strtod(copy.c_str(), &end);
+    if (end == copy.c_str()) return false;
+    while (*end == ' ' || *end == '\t') ++end;
+    if (*end != '\0') return false;
+    if (!std::isfinite(v) || !(v > 0.0)) return false;
+    ms = v;
+    return true;
+}
+
+static bool IsAdaptiveStepCap(std::string_view text) {
+    constexpr std::string_view kWord = "adaptive";
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
+    if (text.size() != kWord.size()) return false;
+    for (size_t i = 0; i < kWord.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(text[i])) != kWord[i]) return false;
+    }
+    return true;
+}
+
+// How far one frame may advance the game's clock. See the step cap block below for the rule.
+REXCVAR_DEFINE_STRING(frame_step_cap, "adaptive", "MCLA/Patches",
+    "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
+    "long load): the step is cut to this and the game plays that instant in slow motion, as the "
+    "console did, instead of jumping ahead. adaptive (the default) is 1.5 times "
+    "the recent median frame time, never below 34 ms or above 125 ms: about 34 ms at 60 FPS, 50 ms "
+    "at a steady 30 FPS (so a slow PC never runs in slow motion). Or a number of milliseconds for a "
+    "fixed cap, 16 to 1000 (125 was the old fixed cap). The cap cannot be turned off, and the "
+    "MCLA_MAX_FRAME_MS environment variable, when set, wins (as a fixed number).")
+    .validator([](std::string_view v) {
+        double ms = 0.0;
+        return IsAdaptiveStepCap(v) || ParseStepCapMs(v, ms);
+    })
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Default to 60 FPS: with vsync=false for low input lag and fast pacing,
@@ -337,25 +382,151 @@ static void EnforceFrameLimit() {
 // BadassBaboon's Recomp Adjustments: Core 60 FPS Clock Delta Pipeline
 // 0x821BDAB0: runs after subf r8,r10,r11 in sub_821BDA90.
 // Clamps max ticks and runs precision limiter.
-// Upper bound on a single frame's delta, in guest timebase ticks.
 //
-// Tunable via MCLA_MAX_FRAME_MS, clamped to [16, 1000] ms. Previously hardcoded
-// to 125 ms while the env var was advertised in effective_config.txt but never
-// read.
-static uint64_t MaxFrameTicks() {
-    static const uint64_t ticks = [] {
-        double ms = 125.0;
-        if (const char* e = std::getenv("MCLA_MAX_FRAME_MS")) {
-            double v = std::atof(e);
-            if (v > 0.0) ms = v;
-        }
-        if (ms < 16.0) ms = 16.0;
-        if (ms > 1000.0) ms = 1000.0;
+// The step cap: the upper bound on a single frame's delta, in guest timebase ticks.
+//
+// A texture-streaming stall holds the game for 70 to 230 ms and the next frame's delta is then the
+// whole stall. The chase camera is tuned for the console's fixed 33 ms step and lags behind the car
+// when one step is that long, so with the old fixed cap of 125 ms the camera dipped for a frame or
+// two after a stall and came back (a 60 FPS capture, frame by frame, showed each dip right after a
+// stall, and capping the step near 34 ms removed them). A cap that low would make a slow PC (a
+// steady 30 FPS, a Steam Deck) run in slow motion, though, so the cap follows the frame rate:
+//
+//   adaptive (the default)   min(125 ms, max(34 ms, 1.5 x the median of the last 30 frames' deltas))
+//   a number of ms           that fixed cap (125 is what this used to be), clamped to 16..1000
+//
+// At 60 FPS the median is 16.7 ms and the cap its floor, 34 ms, the value the stall frames needed. At
+// a steady 30 FPS it is about 50 ms, so no frame is cut and nothing runs slow; at 12 FPS or less it
+// is the old 125 ms. An isolated stall is cut to the cap and played in slow motion, as on the
+// console. The median is over the UNCAPPED deltas, so the stalls themselves do not raise it (it takes
+// more than half the window being slow to move it), and it needs 8 deltas before it is trusted: until
+// then the cap is the 125 ms.
+//
+// The cap is set by frame_step_cap; MCLA_MAX_FRAME_MS (a number of ms) wins over it, as it did when it
+// was the only way. Either way the cap is unconditional (see MCLAFrameDelta).
+constexpr double kStepCapFloorMs = 34.0;
+constexpr double kStepCapCeilingMs = 125.0;
+constexpr double kStepCapMedianFactor = 1.5;
+constexpr size_t kStepCapWindow = 30;
+constexpr size_t kStepCapMinSamples = 8;
+// A fixed cap is held to this range, in ms.
+constexpr double kStepCapMinFixedMs = 16.0;
+constexpr double kStepCapMaxFixedMs = 1000.0;
+
+static double GuestTicksPerMs() {
+    static const double per_ms = [] {
         uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
         if (hz == 0) hz = 50000000;
-        return static_cast<uint64_t>(ms * 0.001 * static_cast<double>(hz));
+        return static_cast<double>(hz) * 0.001;
     }();
-    return ticks;
+    return per_ms;
+}
+
+// The cap in force after the last frame the game thread timed, in guest ticks; 0 before the first.
+// The other threads that pass through the engine timer take theirs from here.
+static std::atomic<uint64_t> g_step_cap_ticks{0};
+
+// Game thread only: takes this frame's uncapped delta (guest ticks) and returns the cap, in ticks,
+// to apply to it.
+static uint64_t StepCapForFrame(uint64_t measured) {
+    // The deltas of the last frames, in a ring.
+    static uint64_t ring[kStepCapWindow] = {};
+    static size_t ring_head = 0;
+    static size_t ring_count = 0;
+
+    // MCLA_MAX_FRAME_MS: a fixed cap in ms that wins over the cvar (0: not set). Read once;
+    // environment variables cannot change after the process starts.
+    static const double env_ms = [] {
+        double ms = 0.0;
+        if (const char* e = std::getenv("MCLA_MAX_FRAME_MS")) {
+            if (!ParseStepCapMs(e, ms)) ms = 0.0;
+        }
+        return ms;
+    }();
+
+    // The mode, worked out again whenever the cvar's text changes (and logged then).
+    static bool mode_known = false;
+    static std::string mode_text;
+    static bool adaptive = true;
+    static double fixed_ms = kStepCapCeilingMs;
+
+    const std::string& text = REXCVAR_GET(frame_step_cap);
+    if (!mode_known || text != mode_text) {
+        mode_known = true;
+        mode_text = text;
+        double requested_ms = 0.0;
+        if (env_ms > 0.0) {
+            adaptive = false;
+            requested_ms = env_ms;
+        } else if (IsAdaptiveStepCap(text)) {
+            adaptive = true;
+        } else if (ParseStepCapMs(text, requested_ms)) {
+            adaptive = false;
+        } else {
+            // The validator keeps this out of the cvar; a value that got in anyway is not a reason
+            // to run without a cap.
+            adaptive = true;
+            REXLOG_WARN("Frame step cap: '{}' is neither adaptive nor a number of ms, using adaptive",
+                        text);
+        }
+        const char* source = env_ms > 0.0 ? "MCLA_MAX_FRAME_MS" : "frame_step_cap";
+        if (adaptive) {
+            REXLOG_INFO("Frame step cap: adaptive (between {:.0f} and {:.0f} ms, {:.1f} x the recent "
+                        "median frame time)",
+                        kStepCapFloorMs, kStepCapCeilingMs, kStepCapMedianFactor);
+        } else {
+            fixed_ms = std::clamp(requested_ms, kStepCapMinFixedMs, kStepCapMaxFixedMs);
+            if (fixed_ms != requested_ms) {
+                REXLOG_INFO("Frame step cap: fixed {:.0f} ms (from {}; {} ms is outside {:.0f}..{:.0f})",
+                            fixed_ms, source, requested_ms, kStepCapMinFixedMs, kStepCapMaxFixedMs);
+            } else {
+                REXLOG_INFO("Frame step cap: fixed {:.0f} ms (from {})", fixed_ms, source);
+            }
+        }
+    }
+
+    // A zero delta is not a frame time (it would pull the median down for nothing).
+    if (measured > 0) {
+        ring[ring_head] = measured;
+        ring_head = (ring_head + 1) % kStepCapWindow;
+        if (ring_count < kStepCapWindow) ++ring_count;
+    }
+
+    double cap_ms = fixed_ms;
+    if (adaptive) {
+        cap_ms = kStepCapCeilingMs;
+        if (ring_count >= kStepCapMinSamples) {
+            uint64_t sorted[kStepCapWindow];
+            std::copy(ring, ring + ring_count, sorted);
+            uint64_t* middle = sorted + ring_count / 2;
+            std::nth_element(sorted, middle, sorted + ring_count);
+            const double median_ms = static_cast<double>(*middle) / GuestTicksPerMs();
+            cap_ms = std::clamp(kStepCapMedianFactor * median_ms, kStepCapFloorMs, kStepCapCeilingMs);
+        }
+    }
+    const uint64_t cap = static_cast<uint64_t>(cap_ms * GuestTicksPerMs());
+    g_step_cap_ticks.store(cap, std::memory_order_relaxed);
+    return cap;
+}
+
+// A stall that was cut, for the debug log: one line, then at most one more a second, saying how
+// many were cut in between. Game thread only.
+static void LogCappedStep(uint64_t measured, uint64_t cap) {
+    static uint64_t last_log_us = 0;
+    static uint32_t skipped = 0;
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (last_log_us != 0 && now - last_log_us < 1000000) {
+        ++skipped;
+        return;
+    }
+    REXLOG_DEBUG("Frame step capped: {:.1f} ms measured, {:.1f} ms applied ({} more cut since the last "
+                 "line)",
+                 static_cast<double>(measured) / GuestTicksPerMs(),
+                 static_cast<double>(cap) / GuestTicksPerMs(), skipped);
+    last_log_us = now;
+    skipped = 0;
 }
 
 // Feeds the sampling profiler the real wall-clock frame time. Called after the
@@ -409,9 +580,23 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // deliberately not switchable there. Gating it behind real_frame_delta
     // meant turning that option off also silently removed crash protection -
     // the clamp is correct at 30 Hz too, since the guest's own fixed timestep
-    // never exceeds it.
-    const uint64_t cap = MaxFrameTicks();
+    // never exceeds it. How high it is set is the step cap's business (above);
+    // frame_step_cap can move it between 16 ms and 1 s, never remove it.
+    //
+    // sub_821BDA90 has callers on more than one thread: the limiter and the
+    // step cap's history are bound to the first, the game loop. The others use
+    // the cap it last worked out.
+    static const std::thread::id owner = std::this_thread::get_id();
+    const bool game_thread = std::this_thread::get_id() == owner;
+    uint64_t cap;
+    if (game_thread) {
+        cap = StepCapForFrame(r8.u64);
+    } else {
+        cap = g_step_cap_ticks.load(std::memory_order_relaxed);
+        if (cap == 0) cap = static_cast<uint64_t>(kStepCapCeilingMs * GuestTicksPerMs());
+    }
     if (r8.u64 > cap) {
+        if (game_thread) LogCappedStep(r8.u64, cap);
         r8.u64 = cap;
     }
 
@@ -422,10 +607,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
     // With pace_at_swap the limiter waits at the swap instead (Patch_60FPS_Byte).
-    // sub_821BDA90 has callers on more than one thread: the limiter is bound to
-    // the first, the game loop.
-    static const std::thread::id owner = std::this_thread::get_id();
-    if (!REXCVAR_GET(pace_at_swap) && std::this_thread::get_id() == owner) {
+    if (!REXCVAR_GET(pace_at_swap) && game_thread) {
         EnforceFrameLimit();
     }
     g_timer_since_swap.store(true, std::memory_order_relaxed);  // see HoldUntimedSwap
