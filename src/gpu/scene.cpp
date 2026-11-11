@@ -394,6 +394,8 @@ void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fet
 // on the screen. The draw's NDC is x_ndc = oPos.x * scale + offset * w; the same map on NDC is
 // k * x_ndc + (1 - k) * u, u being where the screen's centre is in the draw's own NDC (the draw's
 // host viewport need not be the whole screen).
+// CHECK: that the epilogue's NDC is linear in the viewport's pixels as ComputeViewport makes it, for
+// the screen-space draws with clipping disabled too (the squeeze is checked on the HUD only).
 void SqueezeSharedX(SharedConstants& shared, const plume::RenderViewport& viewport,
                     uint32_t screen_width, float k) {
   if (!(viewport.width > 0.0f)) {

@@ -13,6 +13,10 @@
 // a flat background) is not squeezed or stretched at all: the present shows it 16:9 in the middle
 // of the window with black on both sides, as it always did (gpu/present.h, display aspect).
 //
+// CHECK: that the four camera hooks and the constant at 0x8201E7EC are every place the game takes its
+// 3D aspect ratio from (the rear-view mirror, garage, showroom, map and photo cameras especially); a
+// camera that keeps 16:9 shows its picture stretched.
+//
 // The aspect ratio is the window's: it follows the window as it is resized, goes fullscreen or
 // changes monitor, with nothing to set. It is never below 16:9 (a taller window keeps 16:9 and the
 // black bars above and below) and never above 32:9 (a wider window has black bars at the sides).
