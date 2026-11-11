@@ -48,6 +48,11 @@ REXCVAR_DEFINE_INT32(
     "leave. The SDK presenter's present_fsr_max_upsampling_passes. Live.")
     .range(1, 4)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_present_dither, true, "MCLA/GPU",
+    "Adds a faint noise, at most half of one colour step of the screen, to the finished picture "
+    "just before it is shown, so that smooth gradients (the sky at dusk) show fewer bands. Live.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -444,7 +449,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
 
 void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   if (route_ == Route::kBilinear) {
-    if (RecordDraw(list, width, height)) {
+    if (RecordDraw(list, width, height, DitherLsb())) {
       ++stats_.drawn;
     }
     return;
@@ -452,7 +457,8 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
   if (route_ == Route::kRamped) {
     // The same bilinear stretch, of texels the table was already applied to.
     // (the gap was dealt with by the table pass)
-    RecordFitted(list, stretch_pipeline_, ramped_.slot, ramped_.width, ramped_.height, fit_, 0);
+    RecordFitted(list, stretch_pipeline_, ramped_.slot, ramped_.width, ramped_.height, fit_, 0,
+                 DitherLsb());
     ++stats_.drawn;
     return;
   }
@@ -461,7 +467,8 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
     return;
   }
   if (route_ == Route::kFsrStretch) {
-    RecordFitted(list, stretch_pipeline_, image.slot, image.width, image.height, fit_, 0);
+    RecordFitted(list, stretch_pipeline_, image.slot, image.width, image.height, fit_, 0,
+                 DitherLsb());
   } else {
     // RCAS 1:1 from the last EASU pass into the letterbox.
     pass_timing_->Mark(list, "fsr1 rcas");
@@ -484,6 +491,7 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
     push.hdr_peak = hdr_levels_.peak;
     push.hdr_knee = hdr_levels_.knee;
     push.hdr_flags = hdr_levels_.flags;
+    push.dither_lsb = DitherLsb();
     list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
     list->drawInstanced(3, 1, 0, 0);
   }
@@ -496,7 +504,24 @@ void PresentPass::DrawUnscaled(plume::RenderCommandList* list) {
     // (and the probe stays off with an HDR10 chain, FlickerProbe::Initialize).
     return;
   }
-  RecordDraw(list, source_width_, source_height_);
+  // The probe compares the picture with the guest's frames: no dither.
+  RecordDraw(list, source_width_, source_height_, 0.0f);
+}
+
+float PresentPass::DitherLsb() const {
+  if (!REXCVAR_GET(mcla_gpu_present_dither)) {
+    return 0.0f;
+  }
+  // The format of the back buffer the set in use writes (BuildOutput made it for that swap chain).
+  switch (outputs_[hdr_ ? 1 : 0].format) {
+    case plume::RenderFormat::B8G8R8A8_UNORM:
+    case plume::RenderFormat::R8G8B8A8_UNORM:
+      return 1.0f / 255.0f;
+    case plume::RenderFormat::R10G10B10A2_UNORM:
+      return 1.0f / 1023.0f;
+    default:
+      return 0.0f;  // a float target keeps what it is given
+  }
 }
 
 PresentPass::Fit PresentPass::FitOf(uint32_t source_width, uint32_t source_height,
@@ -513,18 +538,19 @@ PresentPass::Fit PresentPass::FitOf(uint32_t source_width, uint32_t source_heigh
   return fit;
 }
 
-bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
+bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height,
+                             float dither_lsb) {
   if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
     return false;
   }
   RecordFitted(list, pipeline_, source_slot_, source_width_, source_height_,
-               FitOf(source_width_, source_height_, width, height), source_gap_);
+               FitOf(source_width_, source_height_, width, height), source_gap_, dither_lsb);
   return true;
 }
 
 void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
                                uint32_t source, uint32_t source_width, uint32_t source_height,
-                               const Fit& fit, uint32_t gap) {
+                               const Fit& fit, uint32_t gap, float dither_lsb) {
   const plume::RenderViewport viewport{float(fit.x), float(fit.y), float(fit.w), float(fit.h)};
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(int32_t(fit.x), int32_t(fit.y), int32_t(fit.x + fit.w),
@@ -546,6 +572,7 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_knee = hdr_levels_.knee;
   push.hdr_flags = hdr_levels_.flags | CodeFlags();
   push.gap = gap;
+  push.dither_lsb = dither_lsb;
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
