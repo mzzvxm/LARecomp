@@ -440,7 +440,10 @@ class TextureCache {
     // the Upload that follows, dropped with the entry or when stale (textures.cpp).
     std::shared_ptr<PrefetchedTexture> prefetch;
   };
-  Entry* Create(const TextureKey& key, const TextureFetch& fetch, std::string* why);
+  // `known_ranges`: the key's guest ranges when the caller has them (TextureGuestRanges' answer),
+  // so the layout is not computed again.
+  Entry* Create(const TextureKey& key, const TextureFetch& fetch, std::string* why,
+                const uint32_t (*known_ranges)[2] = nullptr);
   // Decodes every level into the frame's ring and records the copies. False:
   // a level could not be read (logged by the caller).
   bool Upload(Entry& entry, plume::RenderCommandList* list, std::string* why);
@@ -502,6 +505,16 @@ class TextureCache {
   static constexpr uint32_t kBurstCreations = 4;
   static constexpr uint64_t kBurstGapDraws = 512;
   static constexpr uint32_t kPrefetchHotDraws = 1024;
+  // A texture whose guest data (base and mips) is smaller than this is left to its draw. Handing a
+  // texture to the pool costs the render thread work its draw would not do (the checks, the plan
+  // and the job, the wake-up: 9-11 us measured per texture, stut2r-samp-pool against -nopool,
+  // unprobed render-thread time 4.6 against 4.0 ms in the 53-texture burst frames and 23.7 against
+  // 14.8 ms in the 990-texture frame; about 3-4 us estimated after the changes that cut it), and
+  // decoding takes about 0.3 us per KiB (9.6 ms for the 27.8 MB of that frame), so under about
+  // 10 KiB the decode a job takes off the render thread is worth less than the job costs.
+  // CHECK: the 8 KiB is that arithmetic, kept under the break-even, not a measurement; the
+  // textures line's "too small" count and the burst frames' cpu_ms with the pool on are what to read.
+  static constexpr uint64_t kPrefetchMinBytes = 8u << 10;
   // A new entry was made (Create, by a draw or by the lookahead): the gate's streak.
   void NoteCreated() {
     if (!pool_.running()) {
@@ -581,6 +594,7 @@ class TextureCache {
     uint64_t prefetch_wait_ns = 0;     // the render thread waiting in Upload for a worker / decoding a job no worker had started
     uint64_t prefetch_draws = 0;       // draws executed with the lookahead on
     uint64_t prefetch_looked = 0;      // fetch constants the lookahead was handed
+    uint64_t prefetch_small = 0;       // new textures left to their draws for being under kPrefetchMinBytes
   };
   Stats stats_;
 };
