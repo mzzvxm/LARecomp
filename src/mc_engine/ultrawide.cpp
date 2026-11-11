@@ -37,8 +37,11 @@ bool g_ask_known = false;  // Init ran
 
 // The SDK presenter (the Xenia renderer) fits the 1280x720 picture into the window with black bars
 // unless present_letterbox is off, when it stretches the picture over the whole window: what a
-// widened picture needs. The value given to it last; the Plume renderer has its own present.
-bool g_xenia_stretch = false;
+// widened picture needs. The value given to it last (-1: none yet, so the first window size sets it
+// whatever an old config file says); the Plume renderer has its own present.
+int g_xenia_stretch = -1;
+// The aspect ratio the log last printed: a window dragged to a new size changes it at every step.
+double g_logged_aspect = 0.0;
 
 // The fixed choices of the setting. 16:10 is below the game's own shape: the window then keeps the
 // 16:9 picture with black bars above and below, as 16:9 does.
@@ -75,9 +78,12 @@ void Recompute(std::string_view ask) {
   const double aspect = Choose(ask, window);
   const double before = g_aspect.exchange(aspect, std::memory_order_acq_rel);
   if (std::abs(aspect - before) > 1e-4) {
-    LARECOMP_APP_INFO("ultrawide: the aspect ratio is {:.4f}:1 (setting \"{}\", window {}x{}){}",
-                      aspect, ask, uint32_t(window >> 32), uint32_t(window & 0xFFFFFFFFu),
-                      aspect > kBaseAspect * 1.001 ? "" : ", the game's own 16:9");
+    if (std::abs(aspect - g_logged_aspect) > 0.02 || (aspect == kBaseAspect) != (g_logged_aspect == kBaseAspect)) {
+      g_logged_aspect = aspect;
+      LARECOMP_APP_INFO("ultrawide: the aspect ratio is {:.4f}:1 (setting \"{}\", window {}x{}){}",
+                        aspect, ask, uint32_t(window >> 32), uint32_t(window & 0xFFFFFFFFu),
+                        aspect > kBaseAspect * 1.001 ? "" : ", the game's own 16:9");
+    }
     ApplyAspectRatioPatch();
   }
 }
@@ -114,7 +120,7 @@ void SetWindowSize(uint32_t width, uint32_t height) {
   // CHECK: the Xenia renderer in a 21:9 window: the picture fills it (present_letterbox off) and
   // goes back to black bars when the window is made 16:9 again.
   if (!PlumeRenderer()) {
-    const bool stretch = Active();
+    const int stretch = Active() ? 1 : 0;
     if (stretch != g_xenia_stretch) {
       g_xenia_stretch = stretch;
       rex::cvar::SetFlagByName("present_letterbox", stretch ? "false" : "true");
