@@ -213,6 +213,9 @@ void RangesOfLayout(const TextureKey& key, const tu::TextureGuestLayout& layout,
 // allocation: when the two ranges touch or share a page the pages are armed with one call, which
 // names the same pages the two calls would (the SDK takes its global lock and protects the pages
 // once per call and per physical alias).
+// CHECK: not built or run. The saving (one call of two, about 2.5 us a texture) is read from the
+// sampled 5-6 us per prefetched texture in GuestMemory::Arm; how many textures have touching ranges
+// is not counted (the "lock write-back" log shows a 512x512 one that has).
 void ArmTextureRanges(GuestMemory& memory, const uint32_t ranges[2][2]) {
   if (ranges[0][1] && ranges[1][1]) {
     const uint64_t first0 = ranges[0][0] >> 12;
