@@ -146,6 +146,10 @@ class Scene {
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
+  // The last guest frame that presented had a 3D scene in it: the end of the post chain (the
+  // composite marker) came in it. False for a movie, a loading screen or a menu on a flat background,
+  // which draw no scene. The present shows such a frame as it is (mc_engine/ultrawide.h).
+  bool last_frame_had_scene() const { return last_frame_had_scene_; }
   // Final report (at renderer shutdown).
   void Finish();
 
@@ -463,6 +467,9 @@ class Scene {
   EdramTargets::Target* last_color0_ = nullptr;
   uint32_t last_color0_width_ = 0;
   uint32_t last_color0_height_ = 0;
+  // The composite marker came in the frame being recorded; OnPresent keeps it for the present.
+  bool scene_marker_seen_ = false;
+  bool last_frame_had_scene_ = false;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
   FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
   HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)

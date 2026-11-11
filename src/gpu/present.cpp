@@ -397,7 +397,7 @@ void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, u
 }
 
 void PresentPass::PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
-  fit_ = FitOf(source_width_, source_height_, width, height);
+  fit_ = FitOf(source_width_, source_height_, width, height, display_aspect_);
   if (REXCVAR_GET(mcla_gpu_fsr)) {
     PrepareFsr(list, fit_);
   } else if (!quiet_route_ && !reported_route_.empty()) {
@@ -444,7 +444,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
 
 void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   if (route_ == Route::kBilinear) {
-    if (RecordDraw(list, width, height)) {
+    if (RecordDraw(list, width, height, display_aspect_)) {
       ++stats_.drawn;
     }
     return;
@@ -496,29 +496,33 @@ void PresentPass::DrawUnscaled(plume::RenderCommandList* list) {
     // (and the probe stays off with an HDR10 chain, FlickerProbe::Initialize).
     return;
   }
-  RecordDraw(list, source_width_, source_height_);
+  RecordDraw(list, source_width_, source_height_, 0.0);
 }
 
 PresentPass::Fit PresentPass::FitOf(uint32_t source_width, uint32_t source_height,
-                                    uint32_t width, uint32_t height) {
+                                    uint32_t width, uint32_t height, double aspect) {
   Fit fit;
   if (source_width == 0 || source_height == 0 || width == 0 || height == 0) {
     return fit;
   }
-  const double scale = std::min(double(width) / source_width, double(height) / source_height);
-  fit.w = std::max(uint32_t(std::lround(source_width * scale)), 1u);
+  // The shape the picture is shown in: the source's own, or the one asked for (the source is then
+  // stretched sideways to it).
+  const double shown_width = aspect > 0.0 ? double(source_height) * aspect : double(source_width);
+  const double scale = std::min(double(width) / shown_width, double(height) / source_height);
+  fit.w = std::max(uint32_t(std::lround(shown_width * scale)), 1u);
   fit.h = std::max(uint32_t(std::lround(source_height * scale)), 1u);
   fit.x = (width - std::min(fit.w, width)) / 2;
   fit.y = (height - std::min(fit.h, height)) / 2;
   return fit;
 }
 
-bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
+bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height,
+                             double aspect) {
   if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
     return false;
   }
   RecordFitted(list, pipeline_, source_slot_, source_width_, source_height_,
-               FitOf(source_width_, source_height_, width, height), source_gap_);
+               FitOf(source_width_, source_height_, width, height, aspect), source_gap_);
   return true;
 }
 

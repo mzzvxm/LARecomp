@@ -27,6 +27,7 @@
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
+#include "mc_engine/ultrawide.h"
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -1013,6 +1014,12 @@ void Renderer::UpdateHdr() {
   }
 }
 
+void Renderer::UpdateDisplayAspect() {
+  // The guest frame's own 16:9 picture (a movie, a loading screen, a flat menu: no scene composed in
+  // it) is not stretched; one with a scene is, to the shape its cameras were built for.
+  present_.SetDisplayAspect(scene_.last_frame_had_scene() ? mc::ultrawide::DisplayAspect() : 0.0);
+}
+
 void Renderer::ExecutePresent(PresentSource source) {
   tail_open_ = false;
   const latency::IdlePresentScope idle_scope(source == PresentSource::kIdle);
@@ -1045,6 +1052,7 @@ void Renderer::ExecutePresent(PresentSource source) {
                                     : (dlssg_.active() ? dlssg_.WantsVsync()
                                                        : REXCVAR_GET(mcla_gpu_vsync)));
   UpdateHdr();
+  UpdateDisplayAspect();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
       swap_chain_.NeedsRebuild()) {

@@ -2430,6 +2430,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // Where the scene was composed -- the frame's last colour target -- counted
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
+  scene_marker_seen_ = true;
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
@@ -2539,6 +2540,8 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  last_frame_had_scene_ = scene_marker_seen_;
+  scene_marker_seen_ = false;
   if (layers_) {
     layers_->OnGuestPresent();
   }
