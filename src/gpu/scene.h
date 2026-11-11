@@ -212,6 +212,9 @@ class Scene {
     plume::RenderPipeline* shadow_pipeline = nullptr;
     // Set by Record, for the second draw.
     plume::RenderRect scissor;
+    // Ultrawide: the draw is UI and is drawn squeezed sideways around the centre of the screen by
+    // this factor (UiSqueezeOf); 1: as the game has it.
+    float ui_squeeze = 1.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
   };
 
@@ -304,6 +307,13 @@ class Scene {
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
+  // Ultrawide (mc_engine/ultrawide.h): the UI the game draws after the scene is composed is made for
+  // a 16:9 screen, and the present stretches the whole image over a wider window. The factor (below 1)
+  // a draw's screen-space x is squeezed by around the screen's centre so that the stretch brings it
+  // back to 16:9 in the middle of the window; 1 for a draw that keeps its place: before the marker,
+  // not into the screen's image, a copy that blends nothing (the scene copied into the pause view's
+  // target), or an aspect ratio of 16:9.
+  float UiSqueezeOf(const XenosState& state, const PipelineKey& key);
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
@@ -470,6 +480,9 @@ class Scene {
   // The composite marker came in the frame being recorded; OnPresent keeps it for the present.
   bool scene_marker_seen_ = false;
   bool last_frame_had_scene_ = false;
+  // From the composite marker to the guest's present: what the frame draws is screen-space, the HUD
+  // and the menus (UiSqueezeOf).
+  bool ui_phase_ = false;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
   FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
   HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)
