@@ -52,7 +52,7 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade 
 // "auto" is the window's own shape (mc_engine/ultrawide.h): wider than 16:9 widens the view and keeps
 // the HUD 16:9 in the middle. The others pick a shape whatever the window is (the picture then has
 // black bars where the window is not that shape); 16:10 is the same as 16:9.
-REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches",
+REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
     "Aspect ratio of the picture: auto follows the window (21:9, 32:9 and other wide windows get a "
     "wider view; the HUD stays 16:9 in the middle), or 16:9, 21:9, 32:9.")
     .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
