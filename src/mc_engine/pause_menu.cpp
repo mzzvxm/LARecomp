@@ -1492,13 +1492,18 @@ const ItemDef kVideoItems[] = {
 
 // (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems; the controller rows are on the CONTROLLER
 // page, kControllerItems.)
-// Width: the longest label is "ORIGINAL INTRO SPEED" (20) and the values are ON / OFF (3), far under
-// the 41 characters a page can take ("Page width" above ItemRowLabel).
+// Width: the longest label is "ORIGINAL INTRO SPEED (NEXT START)" (33) and the values are ON / OFF (3),
+// 36 together, under the 41 characters a page can take ("Page width" above ItemRowLabel).
 const ItemDef kRecompItems[] = {
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
-    // Live, but the intro has played by the time this menu opens: the next start.
-    Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
+    // The legal screens and logos it paces have played before this menu can be opened, so a change
+    // is seen at the next start. The word is NEXT START and not RESTART on purpose: nothing needs
+    // the game started again, so the "restart now?" prompt (RowSaysRestart) must not offer it.
+    // CHECK: RECOMP SETTINGS shows "ORIGINAL INTRO SPEED (NEXT START)" without a cut at the right
+    // edge, and flipping the row then leaving the page does not offer "restart now?".
+    Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: ", false,
+         " (NEXT START)"),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
 };
@@ -2499,7 +2504,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // RENDERER page has two rows: "GRAPHICS API (RESTART)" 22 and "RENDERER (RESTART)" 18, values at most 6.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has four
-// rows now: 20 ("ORIGINAL INTRO SPEED") and 3.
+// rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
