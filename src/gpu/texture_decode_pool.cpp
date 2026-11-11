@@ -100,11 +100,19 @@ void DecodePool::Submit(const std::shared_ptr<DecodeJob>& job) {
                      submitted_.end());
   }
   submitted_.push_back(job);
+  bool first;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    first = queue_.empty();
     queue_.push_back(job);
   }
-  work_cv_.notify_one();
+  // Only the job that finds the queue empty wakes a worker (a wake is a kernel call, about 3 us
+  // here, and a burst submits a texture every 20-40 us): the worker it wakes wakes the next one
+  // while the queue still holds work (WorkerMain), and a worker that is not asleep looks at the
+  // queue before it sleeps, so a job is never left behind with every worker asleep.
+  if (first) {
+    work_cv_.notify_one();
+  }
 }
 
 void DecodePool::NotifyDone() {
@@ -166,6 +174,7 @@ void DecodePool::WorkerMain(uint32_t index) {
 #endif
   for (;;) {
     std::shared_ptr<DecodeJob> job;
+    bool more;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       work_cv_.wait(lock, [this] { return stop_ || !queue_.empty(); });
@@ -174,6 +183,10 @@ void DecodePool::WorkerMain(uint32_t index) {
       }
       job = std::move(queue_.front());
       queue_.pop_front();
+      more = !queue_.empty();
+    }
+    if (more) {
+      work_cv_.notify_one();  // Submit woke one worker for the whole burst: this passes it on
     }
     uint32_t expected = DecodeJob::kQueued;
     if (!job->state_.compare_exchange_strong(expected, DecodeJob::kRunning,
