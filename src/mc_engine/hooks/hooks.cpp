@@ -26,8 +26,7 @@
 #include "../modloader/modloader.h"
 #include "../mp3custom/mp3custom.h"
 #include "../online/race_props.h"
-
-REXCVAR_DECLARE(std::string, aspect_ratio);  // graphics.cpp
+#include "../ultrawide.h"
 
 void InitHooks() {
     // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
@@ -38,13 +37,8 @@ void InitHooks() {
     // mcMusicManager later, from the ctor hook MCLA_CustomMusic_Install.
     InitCustomMusic();
 
-    ApplyAspectRatioPatch(REXCVAR_GET(aspect_ratio));
-
-    rex::cvar::RegisterChangeCallback("aspect_ratio",
-        [](std::string_view name, std::string_view new_value) {
-            ApplyAspectRatioPatch(new_value);
-        }
-    );
+    // The aspect ratio: the setting and the window's shape (mc_engine/ultrawide.h).
+    mc::ultrawide::Init();
 
     ApplyVinylLayerCaps();
 

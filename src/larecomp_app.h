@@ -11,6 +11,7 @@
 #include "mc_engine/logging.h"
 #include "mc_engine/graphics_button.h"
 #include "mc_engine/display_mode.h"
+#include "mc_engine/ultrawide.h"
 #include "spdlog_console.h"
 #include "larecomp_log.h"
 #include "crash_handler.h"
@@ -558,6 +559,12 @@ class LarecompApp : public rex::ReXApp {
     // good), is replaced there by ones that queue the change for the UI thread.
     mcla::display::Initialize(window());
 
+    // The picture's shape follows the window's (mc_engine/ultrawide.h).
+    if (window()) {
+      mc::ultrawide::SetWindowSize(window()->GetActualPhysicalWidth(),
+                                   window()->GetActualPhysicalHeight());
+    }
+
     if (imgui_drawer()) {
       mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
       // The SDK registered bind_debug_overlay first, and the first bind that
@@ -640,6 +647,7 @@ class LarecompApp : public rex::ReXApp {
 
   void OnWindowPixelSizeChanged(uint32_t pixel_width, uint32_t pixel_height) override {
     rex::ReXApp::OnWindowPixelSizeChanged(pixel_width, pixel_height);
+    mc::ultrawide::SetWindowSize(pixel_width, pixel_height);
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::RequestResize();
 #endif

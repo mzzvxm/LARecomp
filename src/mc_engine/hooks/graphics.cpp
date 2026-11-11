@@ -8,12 +8,14 @@
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "../ultrawide.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
@@ -47,8 +49,13 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade 
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches", "Screen Aspect Ratio")
-    .allowed({"16:9", "16:10", "21:9", "32:9"})
+// "auto" is the window's own shape (mc_engine/ultrawide.h): wider than 16:9 widens the view and keeps
+// the HUD 16:9 in the middle. The others pick a shape whatever the window is (the picture then has
+// black bars where the window is not that shape); 16:10 is the same as 16:9.
+REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "MCLA/Patches",
+    "Aspect ratio of the picture: auto follows the window (21:9, 32:9 and other wide windows get a "
+    "wider view; the HUD stays 16:9 in the middle), or 16:9, 21:9, 32:9.")
+    .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
@@ -77,8 +84,9 @@ REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
     "default) applies instead; not measured here, so it is left alone.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-// Function to apply/revert the Aspect Ratio patch in GPU memory
-void ApplyAspectRatioPatch(std::string_view ratio) {
+// The aspect ratio constant the game's cameras load (16:9, 0x3FE38E39) takes the aspect ratio in
+// force (mc_engine/ultrawide.h). Called at startup and whenever it changes.
+void ApplyAspectRatioPatch() {
     auto* rt = rex::Runtime::instance();
     if (!rt) return;
     auto* mem = rt->memory();
@@ -93,44 +101,25 @@ void ApplyAspectRatioPatch(std::string_view ratio) {
     auto* patch_ptr = mem->TranslateVirtual<uint8_t*>(addr);
     if (!patch_ptr) return;
 
-    LARECOMP_APP_INFO("ApplyAspectRatioPatch called! Ratio: {}, Memory Before: {:02X} {:02X} {:02X} {:02X}", 
-        ratio, patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
-
-    uint32_t val = 0x3FE38E39; // 16:9 Default (1.777777f)
-    if (ratio == "16:10") {
-        val = 0x3FCCCCCD; // 16:10 (1.600000f)
-    } else if (ratio == "21:9") {
-        val = 0x40155555; // 21:9 (2.333333f)
-    } else if (ratio == "32:9") {
-        val = 0x40638E39; // 32:9 (3.555555f)
-    }
+    const float aspect = float(mc::ultrawide::DisplayAspect());
+    uint32_t val;
+    std::memcpy(&val, &aspect, sizeof(val));
 
     // Write the 4 bytes in Big-Endian at the correct address
     patch_ptr[0] = (val >> 24) & 0xFF; // MSB
     patch_ptr[1] = (val >> 16) & 0xFF;
     patch_ptr[2] = (val >> 8)  & 0xFF;
     patch_ptr[3] = val         & 0xFF; // LSB
-
-    LARECOMP_APP_INFO("Memory After: {:02X} {:02X} {:02X} {:02X}", 
-        patch_ptr[0], patch_ptr[1], patch_ptr[2], patch_ptr[3]);
 }
 
+// The four camera sites below load the same constant straight into a register; they take the aspect
+// ratio in force instead (false: the game's own 16:9 stays).
 static bool GetAspectRatio(double& out_val) {
-    std::string ratio = REXCVAR_GET(aspect_ratio);
-    if (ratio == "4:3") {
-        out_val = 1.3333333;
-        return true;
-    } else if (ratio == "16:10") {
-        out_val = 1.6000000;
-        return true;
-    } else if (ratio == "21:9") {
-        out_val = 2.3333333;
-        return true;
-    } else if (ratio == "32:9") {
-        out_val = 3.5555556;
-        return true;
+    if (!mc::ultrawide::Active()) {
+        return false;
     }
-    return false;
+    out_val = double(float(mc::ultrawide::DisplayAspect()));
+    return true;
 }
 
 
