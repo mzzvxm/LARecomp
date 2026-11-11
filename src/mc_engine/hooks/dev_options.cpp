@@ -285,7 +285,9 @@ void ApplyLoadTimeDevOptions() {
             }
         }
         if (primed) {
-            LARECOMP_APP_INFO("[DbgOpt] {} -> {} (applies on next load of that system)",
+            // Not "applies on the next load": which load, or only the start, is up to the game
+            // for each switch (the comment above), and the pause menu's row says which.
+            LARECOMP_APP_INFO("[DbgOpt] {} -> {} (the game reads it when that system is made)",
                               p.option, want ? "on" : "off");
         }
     }

@@ -109,7 +109,8 @@ REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
 REXCVAR_DEFINE_BOOL(intro_original_speed, true, "MCLA/Patches",
     "Present the start-up legal screens and logos 30 times a second, as the console does. "
     "They are drawn by a loop that never runs the engine timer, so fps_limit never reached "
-    "them and they played as fast as the host could present.")
+    "them and they played as fast as the host could present. The screens play before the "
+    "pause menu can be opened, so a change made there is seen at the next start.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Where the frame limiter waits. The game updates on its main loop
