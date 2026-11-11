@@ -98,6 +98,11 @@ REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
 // during play. The tag and the pause row's "(RESTART)" stay.
 // CHECK: that a flip is not seen at a district load either (an earlier survey read the log's
 // "(applies on next load of that system)" as "applies at the next load").
+// Not a candidate for a live switch through the phase mask (ApplyRenderPhaseMask): the fork's
+// frame-structure survey puts the 0x2 phase on the 256x256 reflection view, and the blur passes
+// (motion blur, the bloom blurs) are inside the post phase (0x08000000) with the bright pass and the
+// luminance chain, so no phase bit drops a blur alone.
+// CHECK: which pass nofsblur skips (not found in the code; the survey is the fork's, not re-read).
 REXCVAR_DEFINE_BOOL(perf_no_fullscreen_blur, false, "MCLA/Performance",
     "Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of "
     "the game.")
