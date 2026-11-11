@@ -1111,10 +1111,6 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
   }
   const auto t0 = Clock::now();
   const TextureKey& key = e.key;
-  const FormatInfo* info = FormatInfo::Get(key.format);
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
-      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
   const uint32_t host_block_bytes = plume::RenderFormatSize(e.host_format);
   const uint32_t host_block_width = plume::RenderFormatBlockWidth(e.host_format);
 
@@ -1155,28 +1151,58 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
     e.layout = plume::RenderTextureLayout::COPY_DEST;
   }
   bool ok = true;
-  for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
-    TextureLevelPlan plan;
-    const PlanResult planned =
-        PlanLevel(*memory_, key, *info, e.host, e.decompressed, layout, level, &plan, why);
-    if (planned == PlanResult::kSkip) {
-      continue;
+  // Records the copy of one level: its decoded rows (`pitch` apart, `size` bytes) go to the upload
+  // ring and from there into the texture. False: no upload memory (`why` says).
+  const auto copy_level = [&](uint32_t level, uint32_t width, uint32_t height, uint64_t pitch,
+                              uint64_t size, const uint8_t* decoded) {
+    const UploadSpan span = upload_->Allocate(slot_, size, kTextureCopyOffsetAlignment);
+    if (!span) {
+      *why = std::format("no upload memory for {} bytes", size);
+      return false;
     }
-    if (planned == PlanResult::kFail) {
-      ok = false;
-      break;
-    }
-    const texture_decode::Request& r = plan.request;
-    const uint64_t pitch = plan.pitch;
-    const uint64_t size = plan.size;
-    const uint8_t* decoded = nullptr;
-    if (ahead) {
-      const TextureLevelPlan* done = ahead->Find(level);
-      if (done && done->size == size) {
-        decoded = ahead->data.get() + done->offset;
+    std::memcpy(span.cpu, decoded, size_t(size));
+    const uint32_t row_width = uint32_t(pitch / host_block_bytes) * host_block_width;
+    list->copyTextureRegion(
+        plume::RenderTextureCopyLocation::Subresource(e.texture.get(), level, 0),
+        plume::RenderTextureCopyLocation::PlacedFootprint(span.buffer, e.host_format, width,
+                                                          height, 1, row_width, span.offset));
+    stats_.upload_bytes += size;
+    return true;
+  };
+  if (ahead) {
+    // Every level the pool decoded brought the plan Prefetch made for it (the same key, format and
+    // guest memory, whose pages were readable then and have not been written since: the version
+    // is the one the plan was made under): it is not planned again, which would work out the
+    // layout and ask the guest's heap about every level once more.
+    // CHECK: a level whose memory stopped being readable between the lookahead and this draw
+    // uploads the bytes the worker read; planning again would have failed the upload.
+    for (const TextureLevelPlan& done : ahead->levels) {
+      if (!copy_level(done.level, done.request.width, done.request.height, done.pitch, done.size,
+                      ahead->data.get() + done.offset)) {
+        ok = false;
+        break;
       }
     }
-    if (!decoded) {
+  } else {
+    const FormatInfo* info = FormatInfo::Get(key.format);
+    const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
+        xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
+        xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0,
+        key.mip_max_level);
+    for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
+      TextureLevelPlan plan;
+      const PlanResult planned =
+          PlanLevel(*memory_, key, *info, e.host, e.decompressed, layout, level, &plan, why);
+      if (planned == PlanResult::kSkip) {
+        continue;
+      }
+      if (planned == PlanResult::kFail) {
+        ok = false;
+        break;
+      }
+      const texture_decode::Request& r = plan.request;
+      const uint64_t pitch = plan.pitch;
+      const uint64_t size = plan.size;
       scratch_.resize(size_t(size));
       bool decode_ok;
       if (REXCVAR_GET(mcla_gpu_texture_decode_verify)) {
@@ -1200,21 +1226,11 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
         ok = false;
         break;
       }
-      decoded = scratch_.data();
+      if (!copy_level(level, r.width, r.height, pitch, size, scratch_.data())) {
+        ok = false;
+        break;
+      }
     }
-    const UploadSpan span = upload_->Allocate(slot_, size, kTextureCopyOffsetAlignment);
-    if (!span) {
-      *why = std::format("no upload memory for {} bytes", size);
-      ok = false;
-      break;
-    }
-    std::memcpy(span.cpu, decoded, size_t(size));
-    const uint32_t row_width = uint32_t(pitch / host_block_bytes) * host_block_width;
-    list->copyTextureRegion(
-        plume::RenderTextureCopyLocation::Subresource(e.texture.get(), level, 0),
-        plume::RenderTextureCopyLocation::PlacedFootprint(span.buffer, e.host_format, r.width,
-                                                          r.height, 1, row_width, span.offset));
-    stats_.upload_bytes += size;
   }
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(e.texture.get(), plume::RenderTextureLayout::SHADER_READ));
