@@ -188,6 +188,30 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
   return PlanResult::kOk;
 }
 
+// Arms the pages of a texture's two ranges (base, mips). The mips usually follow the base in the
+// allocation: when the two ranges touch or share a page the pages are armed with one call, which
+// names the same pages the two calls would (the SDK takes its global lock and protects the pages
+// once per call and per physical alias).
+void ArmTextureRanges(GuestMemory& memory, const uint32_t ranges[2][2]) {
+  if (ranges[0][1] && ranges[1][1]) {
+    const uint64_t first0 = ranges[0][0] >> 12;
+    const uint64_t last0 = (uint64_t(ranges[0][0]) + ranges[0][1] - 1) >> 12;
+    const uint64_t first1 = ranges[1][0] >> 12;
+    const uint64_t last1 = (uint64_t(ranges[1][0]) + ranges[1][1] - 1) >> 12;
+    if (first1 <= last0 + 1 && first0 <= last1 + 1) {
+      const uint64_t first = std::min(first0, first1);
+      const uint64_t last = std::max(last0, last1);
+      memory.Arm(uint32_t(first << 12), uint32_t((last - first + 1) << 12));
+      return;
+    }
+  }
+  for (int i = 0; i < 2; ++i) {
+    if (ranges[i][1]) {
+      memory.Arm(ranges[i][0], ranges[i][1]);
+    }
+  }
+}
+
 }  // namespace
 
 // A texture's levels decoded by the pool ahead of the draw that needs them (see textures.h). One
@@ -831,9 +855,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
       } else {
         // Arm BEFORE reading: a write after it is then always seen.
         if (e->watchable && !e->armed) {
-          for (const auto& r : e->ranges) {
-            if (r[1]) memory_->Arm(r[0], r[1]);
-          }
+          ArmTextureRanges(*memory_, e->ranges);
           e->armed = true;
         }
         const uint64_t version = e->version;
@@ -861,9 +883,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
     if (e->watchable && e->stable_streak >= e->stable_required) {
       // Back to the watch: arm first, then compare once more, so a write
       // between the hash and the arm cannot be lost.
-      for (const auto& r : e->ranges) {
-        if (r[1]) memory_->Arm(r[0], r[1]);
-      }
+      ArmTextureRanges(*memory_, e->ranges);
       e->armed = true;
       const uint64_t again = HashGuest(*e);
       if (again != e->uploaded_hash) {
@@ -1057,9 +1077,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   // Arm BEFORE the workers read, as Bind2D does before its own read: a write after it makes a
   // notification, which moves the entry's version and makes the draw decode again.
   if (!e->armed) {
-    for (const auto& r : e->ranges) {
-      if (r[1]) memory_->Arm(r[0], r[1]);
-    }
+    ArmTextureRanges(*memory_, e->ranges);
     e->armed = true;
   }
 
