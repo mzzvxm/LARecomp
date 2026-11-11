@@ -1017,7 +1017,10 @@ void Renderer::UpdateHdr() {
 void Renderer::UpdateDisplayAspect() {
   // The guest frame's own 16:9 picture (a movie, a loading screen, a flat menu: no scene composed in
   // it) is not stretched; one with a scene is, to the shape its cameras were built for.
-  present_.SetDisplayAspect(scene_.last_frame_had_scene() ? mc::ultrawide::DisplayAspect() : 0.0);
+  // At 16:9 (or narrower) nothing is asked: the fit is the front buffer's own, to the pixel.
+  present_.SetDisplayAspect(scene_.last_frame_had_scene() && mc::ultrawide::Active()
+                                ? mc::ultrawide::DisplayAspect()
+                                : 0.0);
 }
 
 void Renderer::ExecutePresent(PresentSource source) {
