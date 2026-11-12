@@ -244,6 +244,11 @@ class ResolveMemory {
   // Whether a fetch of `key` (its base and mip ranges) reads bytes a resolve
   // wrote that guest memory does not hold.
   bool Holds(const TextureKey& key);
+  // TextureGuestRanges(key, ranges), remembered by key: the ranges are a pure
+  // function of the key, and the SDK's layout behind them costs about a
+  // microsecond, asked on every bind of a fetch (Holds) and again when the
+  // texture is made. Render thread, like the rest of this class.
+  void GuestRanges(const TextureKey& key, uint32_t ranges[2][2]);
 
   // Vertex streams over memory a resolve wrote: the console's
   // resolve-to-vertex-buffer. MCLA's rain renders its particle state with
@@ -554,6 +559,15 @@ class ResolveMemory {
   uint64_t sequence_ = 0;
   uint32_t newer_low_page_ = UINT32_MAX;  // bounds of the pages ever marked newer
   uint32_t newer_high_page_ = 0;
+
+  // GuestRanges' memory: direct-mapped by a hash of the key, made on first use.
+  struct RangesMemo {
+    TextureKey key;
+    uint32_t ranges[2][2] = {};
+    bool valid = false;
+  };
+  static constexpr uint32_t kRangesMemoEntries = 2048;  // about 90 KiB
+  std::vector<RangesMemo> ranges_memo_;
 
   std::unordered_map<TextureKey, std::unique_ptr<Decoded>, TextureKeyHash> decoded_;
   RegionIndex decoded_regions_;
