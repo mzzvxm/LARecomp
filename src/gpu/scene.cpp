@@ -424,6 +424,13 @@ float Scene::UiSqueezeOf(const XenosState& state, const PipelineKey& key) {
   if (!ui_phase_) {
     return 1.0f;
   }
+  // The world icons: the game's own 3D view put them where their points are on the widened picture,
+  // and their depth test needs the position unmoved (mc_engine/ultrawide.h).
+  // CHECK: the icons of a race (racers, checkpoints, places) are drawn inside the bracket the hooks
+  // make (ultrawide.cpp, Patch_UiWorldIcons_*); one drawn outside it is squeezed with the HUD.
+  if (ui_world_) {
+    return 1.0f;
+  }
   const double fraction = mc::ultrawide::UiWidthFraction();
   if (!(fraction < 0.999)) {
     return 1.0f;
@@ -2503,6 +2510,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   composite_census_.OnComposite(CompositeTarget(last_color0_));
   scene_marker_seen_ = true;
   ui_phase_ = true;
+  ui_world_ = false;
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
@@ -2615,6 +2623,7 @@ void Scene::OnPresent() {
   last_frame_had_scene_ = scene_marker_seen_;
   scene_marker_seen_ = false;
   ui_phase_ = false;
+  ui_world_ = false;
   if (layers_) {
     layers_->OnGuestPresent();
   }

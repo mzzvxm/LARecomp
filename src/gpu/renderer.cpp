@@ -620,6 +620,14 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       return;
     }
     case RecordType::kComposite: {
+      // Ultrawide: the guest's hooks around the draw of the world icons use the composite record
+      // as a one-way message to the render thread (mc_engine/ultrawide.h, kUiWorldBegin): not a
+      // composition, no list to open.
+      const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
+      if (bucket == mc::ultrawide::kUiWorldBegin || bucket == mc::ultrawide::kUiWorldEnd) {
+        scene_.SetUiWorld(bucket == mc::ultrawide::kUiWorldBegin);
+        return;
+      }
       plume::RenderCommandList* list = OpenFrameList();
       PerfScope label(markers_, list, "Composite", PerfMarkers::kEvent);
       scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), list);

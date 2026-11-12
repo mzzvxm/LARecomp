@@ -8,6 +8,12 @@ bool Patch_AspectRatio_82214BB8(PPCRegister& f10);
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12);
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 
+// Ultrawide markers (mc_engine/ultrawide.h). The floating gamertag's Flash x, after
+// `fmuls f7,f9,f13` in sub_82289530; the two ends of the queued world icons' draw, sub_82236558.
+void Patch_UiMarkerX_82289808(PPCRegister& f7);
+void Patch_UiWorldIcons_Begin();
+void Patch_UiWorldIcons_End();
+
 bool Patch_DisableDoF();
 void Patch_DofComposite(PPCRegister& r3);
 

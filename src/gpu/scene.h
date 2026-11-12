@@ -144,6 +144,11 @@ class Scene {
   // open list, for the passes that run at this point.
   void OnComposite(const CompositeRecord& record, plume::RenderCommandList* list);
 
+  // Ultrawide: the draws from here until SetUiWorld(false) are the UI pass's world icons, 3D movies
+  // drawn with the (widened) camera's own projection (mc_engine/ultrawide.h, NoteWorldIcons): they
+  // are not squeezed. Render thread, from the guest's bracket record.
+  void SetUiWorld(bool on) { ui_world_ = on; }
+
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
   // The last guest frame that presented had a 3D scene in it: the end of the post chain (the
@@ -483,6 +488,8 @@ class Scene {
   // From the composite marker to the guest's present: what the frame draws is screen-space, the HUD
   // and the menus (UiSqueezeOf).
   bool ui_phase_ = false;
+  // Inside the guest's draw of the world icons (SetUiWorld): drawn as the game has them.
+  bool ui_world_ = false;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
   FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
   HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)

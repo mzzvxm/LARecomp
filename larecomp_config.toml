@@ -25180,6 +25180,28 @@ name = "Patch_AspectRatio_8223E5E0"
 registers = ["f13"]
 jump_address_on_true = 0x8223E5E4
 
+# Ultrawide markers (mc_engine/ultrawide.h). sub_82289530 puts the floating gamertag of a car (a
+# Flash clip of the HUD movie) at the car's projected position: f9 = (ndc_x + 1) * 0.5, f13 = 1280,
+# `fmuls f7,f9,f13` at 0x82289808 is the clip's x on the 1280 stage, stored right after as
+# "gamertag_x". The hook moves it so the squeezed UI still lands it on the car in a wide picture.
+[[midasm_hook]]
+address = 0x82289808
+name = "Patch_UiMarkerX_82289808"
+registers = ["f7"]
+after_instruction = true
+
+# sub_82236558 draws the queue of world icons (96 bytes an entry, a 3D movie each with the camera's
+# own view and projection) in the UI pass. The renderer must not squeeze these draws: a hook at the
+# function's first instruction and one at its last (0x822365B0 `b 0x823d924c`, every path ends
+# there) bracket them for it.
+[[midasm_hook]]
+address = 0x82236558
+name = "Patch_UiWorldIcons_Begin"
+
+[[midasm_hook]]
+address = 0x822365B0
+name = "Patch_UiWorldIcons_End"
+
 # Depth of Field (DoF) Hooks
 #
 # DEAD ENDS (do not retry):

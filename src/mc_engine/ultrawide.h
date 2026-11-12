@@ -53,4 +53,40 @@ double UiWidthFraction();
 // memory). The camera hooks read DisplayAspect() themselves.
 void Init();
 
+// --- markers the game places on the picture itself ----------------------------------------------
+//
+// Two kinds of marker are placed from the game's own 3D view (the widened camera):
+//
+// 1. A Flash clip the game moves to a projected position (the floating gamertag above a car,
+//    sub_82289530): its x is a 1280-wide stage coordinate taken from the widened camera's NDC,
+//    x = 640 + 640 * ndc_x. The UI pass draws the stage squeezed around the middle by
+//    k = UiWidthFraction(), so x ends up at 640 + (x - 640) * k in the image and the present's
+//    stretch puts the clip nearer the middle than the car. The hook gives the game
+//    x' = 640 + (x - 640) / k, which the squeeze brings back to x. (MarkerStageX.)
+//
+// 2. A world icon the game draws as a 3D movie with the camera's own view and projection while it
+//    draws the UI (the queued icon list, sub_82236558: racer, checkpoint and place icons): its
+//    position is already the widened camera's, so the renderer must not squeeze those draws (and
+//    their depth test against the scene's depth needs the unmoved position). The two hooks around
+//    the list's draw tell the renderer which draws they are (NoteWorldIcons, gpu/scene.h SetUiWorld).
+//
+// CHECK: both are from reading the guest code only; see ULTRAWIDE-TEST.md items 6 and 8.
+
+// Half the width of the stage the game's Flash movies are laid out on (the game's screen is 1280).
+inline constexpr float kStageHalfWidth = 640.0f;
+
+// A Flash stage x the game worked out from the widened camera, as the game must be given it so
+// that the squeezed UI draws the clip where the 3D point is (the same x when the picture is 16:9).
+float MarkerStageX(float stage_x);
+
+// The values of a composite record's bucket that mean "the draws that follow, until the end value,
+// are world icons" to the renderer (Renderer::kComposite): a side channel on the guest-to-render
+// thread record stream that needs no new record type. Real buckets are single bits (0x10000000).
+inline constexpr uint32_t kUiWorldBegin = 0x7F000001u;
+inline constexpr uint32_t kUiWorldEnd = 0x7F000002u;
+
+// Around the guest's draw of the queued world icons (guest render thread). A no-op unless the
+// aspect ratio is wider than 16:9 and the Plume renderer is on.
+void NoteWorldIcons(bool begin);
+
 }  // namespace mc::ultrawide

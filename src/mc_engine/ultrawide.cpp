@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 
+#include "hooks/hooks.h"
 #include "hooks/hooks_internal.h"
 #include "larecomp_log.h"
 #if defined(LARECOMP_HAS_GPU)
@@ -135,6 +136,43 @@ double UiWidthFraction() {
   return aspect > kBaseAspect * 1.001 ? kBaseAspect / aspect : 1.0;
 }
 
+float MarkerStageX(float stage_x) {
+  if (!Active()) {
+    return stage_x;
+  }
+  // The UI is squeezed about the middle of the stage by k (gpu/scene.cpp, UiSqueezeOf): a clip at
+  // x lands at 640 + (x - 640) * k. The game worked x out from the widened camera
+  // (x = 640 + 640 * ndc_x), which is where the 3D point is once the picture is stretched, so the
+  // clip is placed at the x the squeeze maps back to it.
+  const float k = float(UiWidthFraction());
+  return kStageHalfWidth + (stage_x - kStageHalfWidth) / k;
+}
+
+namespace {
+// A world-icon bracket is open (begin sent, end not yet). The end is sent even if the picture has
+// stopped being wide in between (a window resized inside the draw), so the renderer's state closes.
+std::atomic<bool> g_world_icons_open{false};
+}  // namespace
+
+void NoteWorldIcons(bool begin) {
+#if defined(LARECOMP_HAS_GPU)
+  if (!PlumeRenderer()) {
+    return;
+  }
+  if (begin) {
+    if (!Active()) {
+      return;
+    }
+    g_world_icons_open.store(true, std::memory_order_relaxed);
+    mcla::gpu::OnGuestSceneComposited(kUiWorldBegin);
+  } else if (g_world_icons_open.exchange(false, std::memory_order_relaxed)) {
+    mcla::gpu::OnGuestSceneComposited(kUiWorldEnd);
+  }
+#else
+  (void)begin;
+#endif
+}
+
 // From InitHooks, once, before any guest code: the setting is read, and a change of it (the F4
 // panel, the launcher's config) is followed while the game runs.
 void Init() {
@@ -156,4 +194,29 @@ void Init() {
 }
 
 }  // namespace mc::ultrawide
+
+// --- guest hooks (larecomp_config.toml, [[midasm_hook]]) -------------------------------------------
+
+// sub_82289530 (the floating gamertag over a car, a Flash clip of the HUD movie): after
+// `fmuls f7,f9,f13` (0x82289808) f7 is the clip's x on the 1280 stage, (ndc_x + 1) * 0.5 * 1280 from
+// the player camera's projected position; the next instruction stores it as the movie's
+// "gamertag_x". The y needs nothing: the UI squeeze is horizontal.
+// CHECK: the stage is the game's 1280-wide screen with x from the left edge, so that the clip is
+// where the car is on the widened picture with the 3D view at 2560x1080 and 3840x1080 (a name tag
+// over a car at the edge of the picture, online or in a LAN lobby race).
+void Patch_UiMarkerX_82289808(PPCRegister& f7) {
+  if (mc::ultrawide::Active()) {
+    f7.f64 = double(mc::ultrawide::MarkerStageX(float(f7.f64)));
+  }
+}
+
+// sub_82236558 (draws the world icons queued this frame: for each of the entries of 96 bytes it
+// draws a 3D movie with the camera's view and projection, in the UI pass after the scene was
+// composed): the hook at its first instruction (0x82236558) and the one before its last
+// instruction (0x822365B0, the jump to the register restore), the only way out.
+// CHECK: that the racer, checkpoint, place and other world icons of a race all come through this
+// list; an icon drawn on the render thread straight away (the same icon functions, 0x8223B5D8 and
+// its neighbours, draw at once when the thread flag at [r13]+72 is set) is not inside the bracket.
+void Patch_UiWorldIcons_Begin() { mc::ultrawide::NoteWorldIcons(true); }
+void Patch_UiWorldIcons_End() { mc::ultrawide::NoteWorldIcons(false); }
 #endif  // REXGLUE_HAS_XEO3_TARGET
