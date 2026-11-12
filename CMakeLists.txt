@@ -18,6 +18,29 @@ endif()
 
 include(generated/rexglue.cmake)
 
+# CPU level of the generated code and of larecomp's own sources (applied at the end of this file).
+#   baseline   what the SDK builds for: x86-64 with SSE4.1, no -march flag from here. The default.
+#   x86-64-v3  adds -march=x86-64-v3: AVX2, FMA, BMI1/BMI2, MOVBE, LZCNT, F16C (Intel Haswell and
+#              later, AMD Excavator and Zen, the Steam Deck). The guest code gains from MOVBE (every
+#              guest load and store byte-swaps), BMI2 and LZCNT (rlwinm, cntlzw) and inline FMA
+#              (std::fma is a call into the C runtime at baseline). The executable then refuses to
+#              start on a CPU without these (src/cpu_level.cpp) and a build for another PC has to
+#              be made with the launcher's Repair.
+# The level is chosen when the build folder is configured; keep -march out of CMAKE_CXX_FLAGS.
+set(LARECOMP_CPU_LEVEL "baseline" CACHE STRING "CPU level to compile larecomp for: baseline or x86-64-v3")
+set_property(CACHE LARECOMP_CPU_LEVEL PROPERTY STRINGS baseline x86-64-v3)
+if(NOT LARECOMP_CPU_LEVEL STREQUAL "baseline" AND NOT LARECOMP_CPU_LEVEL STREQUAL "x86-64-v3")
+    message(FATAL_ERROR "LARECOMP_CPU_LEVEL is '${LARECOMP_CPU_LEVEL}': it has to be baseline or x86-64-v3")
+endif()
+if(LARECOMP_CPU_LEVEL STREQUAL "x86-64-v3")
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+        message(FATAL_ERROR "LARECOMP_CPU_LEVEL=x86-64-v3 is for x86-64 targets, not ${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR "LARECOMP_CPU_LEVEL=x86-64-v3 needs Clang (or GCC), not ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+endif()
+
 if(MINGW)
     # llvm-mingw (Clang with lld, libc++ and mingw-w64 on the UCRT): the build for a PC
     # without Visual Studio. The SDK has to be built with the same toolchain (libc++ and the
@@ -793,4 +816,48 @@ else()
                     "$<TARGET_FILE_DIR:larecomp>/keycaps"
             COMMENT "Copying the key caps and the achievements file next to larecomp")
     endif()
+
+    # Floating-point contraction and the CPU level, for the targets that hold the guest code and
+    # the host code it calls: larecomp (the executable's own sources and the SDK's entry point
+    # sources), larecomp_recomp (the generated code, an OBJECT library made by
+    # rexglue_setup_target) and larecomp_gpu (src/gpu, which the guest thread also runs). Not for
+    # the SDK libraries (prebuilt), Plume, the shader pack builder, the standalone servers and the
+    # start-up check: those have to run on any x86-64 CPU.
+    #  * -ffp-contract=off, at every level. With FMA available, Clang may fuse a separate multiply
+    #    and add into one instruction, which rounds once where the console's code rounds twice (an
+    #    fmul then an fadd) and so changes results, physics included. The console's own fused
+    #    multiply-adds are explicit std::fma calls in the generated code and stay fused. At baseline
+    #    there is no FMA to fuse into, so this changes no code there.
+    #  * -march=x86-64-v3 for that level. Nothing else: no -ffast-math.
+    # Order on the compile line: the SDK's -msse4.1 (rexglue_apply_target_settings) comes first, then
+    # these, which target_compile_options appends in the order the targets get them; a source's own
+    # COMPILE_OPTIONS (-fasync-exceptions, -gline-tables-only of the generated code) follow. Clang
+    # takes the last -march, and -msse4.1 only adds a feature that x86-64-v3 has, so the order does
+    # not matter (checked with -dM -E: both orders enable AVX2, FMA, BMI1/2, MOVBE, LZCNT, F16C).
+    # Only C++ sources get them (not the .rc). With clang-cl the flags go through /clang:.
+    set(_larecomp_cpu_flags -ffp-contract=off)
+    if(LARECOMP_CPU_LEVEL STREQUAL "x86-64-v3")
+        list(APPEND _larecomp_cpu_flags -march=x86-64-v3)
+    endif()
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        list(TRANSFORM _larecomp_cpu_flags PREPEND "/clang:")
+    endif()
+    foreach(_larecomp_cpu_target larecomp larecomp_recomp larecomp_gpu)
+        if(TARGET ${_larecomp_cpu_target})
+            target_compile_options(${_larecomp_cpu_target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:${_larecomp_cpu_flags}>")
+        endif()
+    endforeach()
+
+    # The CPU level the log reports, and for a build for x86-64-v3 the check that stops the
+    # executable on a CPU that lacks it, before any code compiled with -march runs (including the
+    # static initializers of those files). Its own OBJECT library so that it gets none of the
+    # flags above; its objects are linked into the executable directly (an archive would drop it:
+    # nothing references the start-up hook).
+    add_library(larecomp_cpuguard OBJECT src/cpu_level.cpp)
+    if(LARECOMP_CPU_LEVEL STREQUAL "x86-64-v3")
+        target_compile_definitions(larecomp_cpuguard PRIVATE LARECOMP_CPU_LEVEL_V3=1)
+    endif()
+    target_sources(larecomp PRIVATE $<TARGET_OBJECTS:larecomp_cpuguard>)
+    message(STATUS "larecomp: CPU level ${LARECOMP_CPU_LEVEL}")
 endif()
