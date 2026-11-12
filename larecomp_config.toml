@@ -27219,14 +27219,62 @@ address = 0x82615048
 name = "Hook_PadBitsFinalize"
 registers = ["r31"]
 
-# Start on the title screen and the attract video (hooks/script_input.cpp). The script thread that
-# watches it asks IS_PAD_BUTTON_DOWN (sub_822C8AF8) only every few updates, and the native answers
-# "pressed" for one update. At the `cntlzw r6,r8` that makes the answer: r8 = the press (nonzero =
-# pressed in this update; the hook may set it), r5 = the button, r3 = the pad's new button mask.
+# Buttons that scripts poll (hooks/script_input.cpp): Start on the title screen and the attract
+# video, and every other script that asks "was this pressed in this update". The four natives that
+# ask answer "pressed" for one update only, and a script thread looks only every 2nd to 4th update
+# above 30 FPS, so a press can fall between two looks. Each hook is where the native has the answer;
+# the script is told a press it missed once, at its next look.
+#
+# IS_PAD_BUTTON_DOWN (sub_822C8AF8), at the `cntlzw r6,r8` that makes the answer: r8 = the press
+# (nonzero = pressed in this update; the hook may set it), r5 = the button, r3 = the pad's new
+# button mask, r6 = the pad.
 [[midasm_hook]]
 address = 0x822C8B34
 name = "Hook_ScriptPadRead"
-registers = ["r8", "r5", "r3"]
+registers = ["r8", "r5", "r3", "r6"]
+
+# IS_BUTTON_DOWN (sub_822C8AB0) -> sub_822C7FC8, at the same `cntlzw r11,r3` after the check that
+# no modal scene blocks input: r3 = the press (the hook may set it), r30 = the button, r7 = the
+# pad's new button mask, r11 = the pad record (0x82905388 + 64 * pad).
+[[midasm_hook]]
+address = 0x822C8030
+name = "Hook_ScriptButtonRead"
+registers = ["r3", "r30", "r7", "r11"]
+
+# ... and the `li r3,0` of that check (0x822C7FF4): the script was refused, it is not polling now.
+[[midasm_hook]]
+address = 0x822C7FF4
+name = "Hook_ScriptButtonRefused"
+
+# UILogic_IsPressed(player, action) = sub_822077F0 and Player_FlashingHighbeams(player) = sub_822A7348
+# -> sub_822A6D48 (action 9: the high beams that challenge a racer) both answer with sub_822A4CE0,
+# the test of an action record of the player's controls. The first hook is on the `bl sub_822A4CE0`
+# (r3 = the controls object, r4 = the action; both are gone when it returns), the second on the
+# instruction after it (r3 = the answer; the hook may set it to 1).
+[[midasm_hook]]
+address = 0x8220782C
+name = "Hook_ScriptUiPressedAsk"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x82207830
+name = "Hook_ScriptUiPressedAnswer"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x822A6DC8
+name = "Hook_ScriptHighbeamsAsk"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x822A6DCC
+name = "Hook_ScriptHighbeamsAnswer"
+registers = ["r3"]
+
+# ... and the `li r3,0` of sub_822A6D48 (0x822A6DD4) that every refusal (no car, no racer) jumps to.
+[[midasm_hook]]
+address = 0x822A6DD4
+name = "Hook_ScriptHighbeamsRefused"
 
 # Options > Controller > Customize: the "press a button" capture (sub_82727010) only looks at
 # the raw pad, so with a keyboard it never finishes and swallows every key. After its
