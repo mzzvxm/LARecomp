@@ -76,11 +76,18 @@ REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
     "reopened (the pause menu itself too: the game resolves a row's label once when "
     "the row is built), and the few things the game reads only at start follow after "
     "a restart.\n"
+    "pt (Portuguese) works only with a mod that supplies the text: the disc's string "
+    "tables carry an empty Portuguese block, and on the disc it starts where the "
+    "Japanese block does, so it would show Japanese text. A mod can fill it with its "
+    "own ui/mc4stringtable*.strtbl files (modloader/<mod>/files/ui/): every string "
+    "table the game loads (mc4stringtable, _0001 to _0003, _tms, _downloaded) needs a "
+    "Portuguese block with text. Until then pt is used as auto, with a line in the "
+    "log, and the setting stays in larecomp.toml for when the mod is installed. pt "
+    "leaves user_language alone: only the text changes, the game's own language "
+    "code stays what auto gives.\n"
     "Not offered: Japanese (its UI movies, jp_*.xsf, are not on the disc, and asking "
-    "for them is a hard crash) and Portuguese (the disc's Portuguese block is empty "
-    "and starts where the Japanese one does, so it would show Japanese text). A saved "
-    "pt is read as auto.")
-    .allowed({"auto", "en", "es", "fr", "de", "it"})
+    "for them is a hard crash).")
+    .allowed({"auto", "en", "es", "fr", "de", "it", "pt"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
