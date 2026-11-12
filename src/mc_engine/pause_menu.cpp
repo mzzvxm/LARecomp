@@ -3537,9 +3537,14 @@ void InitLanguageSetting() {
     }
 
     const std::string choice = CvarGet("language");
-    int pos = 0;
+    int pos = -1;
     for (int i = 0; i < kNumLangs; ++i)
         if (choice == kLangVals[i]) pos = i;
+    if (pos < 0) {  // a value the cvar's list would have refused, but a path let through
+        MC_WARN("[language] '{}' is not offered; using auto", choice);
+        rex::cvar::SetFlagByName("language", "auto");
+        pos = 0;
+    }
     if (pos == 0) {
         MC_INFO("[language] auto: user_language {} stays as it is (string table {})",
                 g_auto_xlanguage, AutoLanguageIndex());
