@@ -38,6 +38,7 @@
 #include <cstdint>
 
 #include "../../logging.h"
+#include "larecomp_log.h"
 
 REXCVAR_DEFINE_BOOL(mod_bodykits, true, "MCLA/Garage",
     "Line N of a car's `body` part shows wide body kit N-1 (widebody, spoiler_wide, "
