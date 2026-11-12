@@ -1265,13 +1265,42 @@ void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, s
 // decode
 // ---------------------------------------------------------------------------
 
+void ResolveMemory::GuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
+  if (ranges_memo_.empty()) {
+    ranges_memo_.resize(kRangesMemoEntries);
+  }
+  uint32_t h = key.base_page * 0x9E3779B1u;
+  h ^= key.mip_page * 0x85EBCA6Bu;
+  h ^= (uint32_t(key.width) | uint32_t(key.height) << 16) * 0xC2B2AE35u;
+  h ^= (uint32_t(key.pitch) | uint32_t(key.format) << 16 | uint32_t(key.mip_max_level) << 24) *
+       0x27D4EB2Fu;
+  h ^= h >> 15;
+  RangesMemo& memo = ranges_memo_[h & (kRangesMemoEntries - 1)];
+  if (!memo.valid || !(memo.key == key)) {
+    memo.key = key;
+    TextureGuestRanges(key, memo.ranges);
+    memo.valid = true;
+  }
+  std::memcpy(ranges, memo.ranges, sizeof(memo.ranges));
+}
+
 bool ResolveMemory::Holds(const TextureKey& key) {
   ++stats_.holds_checks;
   if (newer_low_page_ > newer_high_page_) {
     return false;
   }
+  // A range that starts above the highest page ever marked newer reaches none, whatever its
+  // length: the layout is not needed. (The same ranges TextureGuestRanges names: the base when
+  // there is a base page, the mips when there is a mip page and a level above the base.)
+  const bool base_in_reach =
+      key.base_page != 0 && ((key.base_page << kPageShift) >> kPageShift) <= newer_high_page_;
+  const bool mips_in_reach = key.mip_page != 0 && key.mip_max_level > 0 &&
+                             ((key.mip_page << kPageShift) >> kPageShift) <= newer_high_page_;
+  if (!base_in_reach && !mips_in_reach) {
+    return false;
+  }
   uint32_t ranges[2][2];
-  TextureGuestRanges(key, ranges);
+  GuestRanges(key, ranges);
   for (const auto& r : ranges) {
     if (!r[1]) {
       continue;
@@ -1521,11 +1550,14 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
     fresh->key = key;
     fresh->format = format;
     fresh->kind = kind;
-    const std::string name = std::format("resolve memory texture {}", key.Describe());
+    // The name is built only where a tool can read it (Device::object_names).
+    const std::string name = device_->object_names()
+                                 ? std::format("resolve memory texture {}", key.Describe())
+                                 : std::string();
     fresh->texture = device_->CreateTexture(
         plume::RenderTextureDesc::Texture2D(key.width, key.height, key.levels(), format,
                                             plume::RenderTextureFlag::RENDER_TARGET),
-        name.c_str());
+        name.empty() ? nullptr : name.c_str());
     if (!fresh->texture) {
       *why = std::format("{} {}x{} with {} levels", format::PlumeFormatName(format), key.width,
                          key.height, key.levels());
@@ -1567,7 +1599,7 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
     }
     list->setFramebuffer(nullptr);
     *state_changed = true;
-    TextureGuestRanges(key, fresh->ranges);
+    GuestRanges(key, fresh->ranges);
     for (uint32_t i = 0; i < 2; ++i) {
       if (!fresh->ranges[i][1]) {
         continue;
