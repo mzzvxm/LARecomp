@@ -317,8 +317,10 @@ class Scene {
   // a draw's screen-space x is squeezed by around the screen's centre so that the stretch brings it
   // back to 16:9 in the middle of the window; 1 for a draw that keeps its place: before the marker,
   // not into the screen's image, a copy that blends nothing (the scene copied into the pause view's
-  // target), or an aspect ratio of 16:9.
-  float UiSqueezeOf(const XenosState& state, const PipelineKey& key);
+  // target), a blended rectangle over the whole screen (a fade: a draw of inline vertices that cover
+  // it), the world icons (SetUiWorld), or an aspect ratio of 16:9.
+  float UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
+                    const InputLayout* layout, PrimitiveConversion conversion);
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
@@ -490,6 +492,8 @@ class Scene {
   bool ui_phase_ = false;
   // Inside the guest's draw of the world icons (SetUiWorld): drawn as the game has them.
   bool ui_world_ = false;
+  // How many full-screen UI draws kept the whole screen have been logged (UiSqueezeOf).
+  uint32_t ultrawide_fills_logged_ = 0;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
   FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
   HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)

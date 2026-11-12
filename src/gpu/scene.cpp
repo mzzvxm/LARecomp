@@ -418,9 +418,68 @@ plume::RenderRect SqueezeScissorX(const plume::RenderRect& rect, uint32_t screen
   return out;
 }
 
+// Whether an inline draw of one rectangle -- three vertices of a rectangle list, or four to six of a
+// quad or two triangles -- covers the whole screen: what a fade, a tint or a dimmed backdrop is. The
+// positions are the first stream's POSITION as the guest wrote them, before the vertex shader: for
+// the rectangle list the game draws its full-screen passes with, in guest pixels or in the clip
+// space (-1..1) of a pass-through shader; for the others in guest pixels only (a unit quad that a
+// matrix scales to a panel has the other spaces' numbers too).
+// CHECK: that the game's fades are inline draws with positions in pixels (or a rectangle list), the
+// log line of Scene::UiSqueezeOf says which kind it found; one drawn from a vertex buffer is not
+// looked at and stays squeezed.
+bool InlineRectCoversScreen(const DrawView& view, const InputLayout& layout, bool rect_list,
+                            uint32_t screen_width, uint32_t screen_height, const char** space) {
+  const DrawRecord& r = view.record();
+  if (r.kind != DrawKind::kInline || layout.streams.empty() || r.inline_stride == 0 ||
+      r.count < 3 || r.count > 6 || r.inline_bytes < r.count * r.inline_stride) {
+    return false;
+  }
+  const int32_t offset = layout.streams[0].position_offset;
+  if (offset < 0 || uint32_t(offset) + 8 > r.inline_stride) {
+    return false;
+  }
+  float x[7], y[7];
+  uint32_t n = r.count;
+  const uint8_t* data = view.inline_data();
+  for (uint32_t v = 0; v < n; ++v) {
+    const uint8_t* at = data + size_t(v) * r.inline_stride + uint32_t(offset);
+    const uint32_t bx = LoadBe32(at);
+    const uint32_t by = LoadBe32(at + 4);
+    std::memcpy(&x[v], &bx, 4);
+    std::memcpy(&y[v], &by, 4);
+  }
+  if (rect_list && n == 3) {
+    // The fourth corner of a rectangle list is made from the first three.
+    x[3] = x[0] + x[2] - x[1];
+    y[3] = y[0] + y[2] - y[1];
+    n = 4;
+  }
+  float lo_x = x[0], hi_x = x[0], lo_y = y[0], hi_y = y[0];
+  for (uint32_t v = 0; v < n; ++v) {
+    if (!std::isfinite(x[v]) || !std::isfinite(y[v])) {
+      return false;
+    }
+    lo_x = std::min(lo_x, x[v]);
+    hi_x = std::max(hi_x, x[v]);
+    lo_y = std::min(lo_y, y[v]);
+    hi_y = std::max(hi_y, y[v]);
+  }
+  const float w = float(screen_width), h = float(screen_height);
+  if (lo_x <= 0.5f && hi_x >= w - 0.5f && lo_y <= 0.5f && hi_y >= h - 0.5f) {
+    *space = "pixels";
+    return true;
+  }
+  if (rect_list && lo_x <= -0.999f && hi_x >= 0.999f && lo_y <= -0.999f && hi_y >= 0.999f) {
+    *space = "clip";
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
-float Scene::UiSqueezeOf(const XenosState& state, const PipelineKey& key) {
+float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
+                         const InputLayout* layout, PrimitiveConversion conversion) {
   if (!ui_phase_) {
     return 1.0f;
   }
@@ -452,6 +511,22 @@ float Scene::UiSqueezeOf(const XenosState& state, const PipelineKey& key) {
     // screen; a UI element drawn with blending off would stay stretched.
     const plume::RenderBlendDesc blend = UnpackBlend(key.blend[0]);
     if (!blend.blendEnabled || blend.renderTargetWriteMask == 0) {
+      return 1.0f;
+    }
+    // A fade, a tint or a dimmed backdrop (a blended rectangle over the whole screen) is stretched
+    // with the picture, not squeezed with the HUD: squeezed, it would leave the sides unfaded.
+    const char* space = "";
+    if (layout &&
+        InlineRectCoversScreen(view, *layout, conversion == PrimitiveConversion::kRectList,
+                               screen_width, screen_height, &space)) {
+      if (ultrawide_fills_logged_ < 12) {
+        ++ultrawide_fills_logged_;
+        const DrawRecord& r = view.record();
+        REXLOG_INFO("[gpu] ultrawide: a full-screen UI draw is stretched, not squeezed ({}: VS {:016X} "
+                    "PS {:016X}, {} vertices, positions in {}) ({} of 12 logged)",
+                    conversion == PrimitiveConversion::kRectList ? "rectangle list" : "quad or triangles",
+                    r.vs_identity, r.ps_identity, r.count, space, ultrawide_fills_logged_);
+      }
       return 1.0f;
     }
   } else if (!state.depth_bound) {
@@ -1325,7 +1400,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // Ultrawide: the UI of a widened picture is drawn squeezed, in the middle (UiSqueezeOf). After the
   // memo above, which keeps the game's own position.
-  d.ui_squeeze = UiSqueezeOf(s, d.key);
+  d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion);
   if (d.ui_squeeze < 1.0f) {
     SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze);
   }
