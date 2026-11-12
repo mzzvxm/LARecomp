@@ -77,23 +77,6 @@ std::string OneLine(std::string text) {
   return text;
 }
 
-// The sample counts a start draws the images of the screen the game multisamples with, other than
-// what the records were made at: the MSAA setting's level (within what the device can do, as the
-// start's EdramTargets::Initialize finds it) and 1 when an upscaler is the saved choice (the start
-// gives up MSAA for one that runs, EdramTargets::DecideScene; whether this PC can run it is the
-// game's probe's to say, so both are made). Records of other levels need no copy: the game
-// remakes them when the player changes the level (Pipelines::PrebuildForLevel).
-std::vector<uint32_t> StartSampleCounts(Device& device) {
-  std::vector<uint32_t> counts;
-  const EdramTargets::MsaaSetting setting = EdramTargets::ReadMsaaSetting();
-  const uint32_t supported = EdramTargets::SupportedScreenSamples(device.device());
-  counts.push_back(EdramTargets::LevelWithin(supported, setting.level));
-  if (ReadUpscalerSettings().upscaler != Upscaler::kOff && counts.front() != 1) {
-    counts.push_back(1);
-  }
-  return counts;
-}
-
 std::string JoinCounts(const std::vector<uint32_t>& counts) {
   std::string text;
   for (const uint32_t count : counts) {
@@ -314,7 +297,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
   std::filesystem::path stamp_path;
   Pipelines::SetupOptions setup;
   setup.threads = options.threads;
-  setup.level_samples = StartSampleCounts(parts.device);
+  setup.level_samples = Pipelines::StartSampleCounts(parts.device);
   log(0, "the start draws the multisampled images at " + JoinCounts(setup.level_samples) +
              " sample(s): copies of the listed pipelines are made for those counts too");
   setup.wanted = [&](const Pipelines::SetupList& list) {

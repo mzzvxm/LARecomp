@@ -102,6 +102,13 @@
 // asks for (SetupOptions::level_samples: the setting's level, 1 under an upscaler), which is what
 // PrebuildForLevel would hand the builders at runtime; the copies are made, not recorded.
 //
+// Level copies at the game's own start: StartPersistence makes the same copies
+// (StartSampleCounts) and the precache workers make them in the list's order, each right after
+// the record it was made from. A draw takes one like any other entry; a copy that a draw took is
+// recorded then (RecordStored), so a level the player never draws with leaves nothing in the cache
+// file. Without them a first start at another level than the list's (MSAA 4 or off, an upscaler's
+// 1 sample) made hundreds of pipelines while it played.
+//
 // Threading: the render thread; the builder threads (the precache workers)
 // touch only the entries and requests they were handed, the ShaderStore
 // (GetShader locks) and the device; the autosave thread only the bytes it was
@@ -242,6 +249,12 @@ class Pipelines {
   // start, and from the main thread after the pack was built and attached otherwise; with the
   // guest not drawing yet. A second call does nothing.
   void StartPersistence(ShaderStore& shaders);
+  // The sample counts the next start draws the images of the screen the game multisamples with
+  // (EdramTargets::HostSamplesAt): the MSAA setting's level within what the device can do, and 1
+  // when an upscaler is the saved choice (whether this PC can run it is the game's probe's to say,
+  // so both are listed). StartPersistence and the command line prebuild make a copy of every
+  // multisampled record at these counts (MakeLevelCopies).
+  static std::vector<uint32_t> StartSampleCounts(Device& device);
   // The GPU must be idle.
   void Shutdown();
 
@@ -430,7 +443,7 @@ class Pipelines {
   // and PrecacheForSetup).
   void LoadPersistent();
   uint64_t HashRecords() const;
-  // PrecacheForSetup: fills setup_copies_ (see SetupOptions::level_samples).
+  // StartPersistence and PrecacheForSetup: fills setup_copies_ (see SetupOptions::level_samples).
   void MakeLevelCopies(const std::vector<uint32_t>& samples);
   void PrecacheWorker(uint32_t index);
 
@@ -501,7 +514,7 @@ class Pipelines {
     const StoredLayout* layout = nullptr;
     std::unique_ptr<plume::RenderPipeline> pipeline;
     std::atomic<uint8_t> state{kQueued};
-    uint32_t index = 0;               // its place in precached_ (and in records_)
+    uint32_t index = 0;               // its place in precached_
     PipelineKey taken_as;             // the session key it went to (claimed or taken)
     bool taken = false;
     // Render thread only: a draw that may be skipped asked for it, in this frame
@@ -543,9 +556,12 @@ class Pipelines {
   // The command line prebuild: set before the workers start, not changed while they run. Its
   // workers run at normal priority and drop each pipeline once it is made.
   bool setup_mode_ = false;
-  // The command line prebuild's copies of records at other sample counts (MakeLevelCopies): made
-  // after the list, never looked up by a draw and never recorded.
+  // The copies of records at other sample counts (MakeLevelCopies), in the order of the records
+  // they were made from; setup_copy_source_[i] is the index in records_ of setup_copies_[i]'s
+  // record. StartPrecache puts each right after its record; a draw takes one like a record, and
+  // it is recorded only then (TakePrecached). Both are set before the workers start.
   std::vector<Record> setup_copies_;
+  std::vector<uint32_t> setup_copy_source_;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
   std::chrono::steady_clock::time_point boot_deadline_;
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
