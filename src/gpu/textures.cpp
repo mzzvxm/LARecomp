@@ -188,6 +188,54 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
   return PlanResult::kOk;
 }
 
+// The guest layout of a 2D texture's key (what every range, plan and extent below comes from).
+tu::TextureGuestLayout LayoutOf(const TextureKey& key) {
+  return tu::GetGuestTextureLayout(xe::DataDimension::k2DOrStacked, key.pitch, key.width,
+                                   key.height, 1, key.tiled != 0, xe::TextureFormat(key.format),
+                                   key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
+}
+
+// TextureGuestRanges from a layout that is already at hand.
+void RangesOfLayout(const TextureKey& key, const tu::TextureGuestLayout& layout,
+                    uint32_t ranges[2][2]) {
+  ranges[0][0] = ranges[0][1] = ranges[1][0] = ranges[1][1] = 0;
+  if (key.base_page) {
+    ranges[0][0] = key.base_page << 12;
+    ranges[0][1] = layout.base.level_data_extent_bytes;
+  }
+  if (key.mip_page && key.mip_max_level > 0) {
+    ranges[1][0] = key.mip_page << 12;
+    ranges[1][1] = layout.mips_total_extent_bytes;
+  }
+}
+
+// Arms the pages of a texture's two ranges (base, mips). The mips usually follow the base in the
+// allocation: when the two ranges touch or share a page the pages are armed with one call, which
+// names the same pages the two calls would (the SDK takes its global lock and protects the pages
+// once per call and per physical alias).
+// CHECK: not built or run. The saving (one call of two, about 2.5 us a texture) is read from the
+// sampled 5-6 us per prefetched texture in GuestMemory::Arm; how many textures have touching ranges
+// is not counted (the "lock write-back" log shows a 512x512 one that has).
+void ArmTextureRanges(GuestMemory& memory, const uint32_t ranges[2][2]) {
+  if (ranges[0][1] && ranges[1][1]) {
+    const uint64_t first0 = ranges[0][0] >> 12;
+    const uint64_t last0 = (uint64_t(ranges[0][0]) + ranges[0][1] - 1) >> 12;
+    const uint64_t first1 = ranges[1][0] >> 12;
+    const uint64_t last1 = (uint64_t(ranges[1][0]) + ranges[1][1] - 1) >> 12;
+    if (first1 <= last0 + 1 && first0 <= last1 + 1) {
+      const uint64_t first = std::min(first0, first1);
+      const uint64_t last = std::max(last0, last1);
+      memory.Arm(uint32_t(first << 12), uint32_t((last - first + 1) << 12));
+      return;
+    }
+  }
+  for (int i = 0; i < 2; ++i) {
+    if (ranges[i][1]) {
+      memory.Arm(ranges[i][0], ranges[i][1]);
+    }
+  }
+}
+
 }  // namespace
 
 // A texture's levels decoded by the pool ahead of the draw that needs them (see textures.h). One
@@ -302,18 +350,7 @@ TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
 }
 
 void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
-  ranges[0][0] = ranges[0][1] = ranges[1][0] = ranges[1][1] = 0;
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
-      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
-  if (key.base_page) {
-    ranges[0][0] = key.base_page << 12;
-    ranges[0][1] = layout.base.level_data_extent_bytes;
-  }
-  if (key.mip_page && key.mip_max_level > 0) {
-    ranges[1][0] = key.mip_page << 12;
-    ranges[1][1] = layout.mips_total_extent_bytes;
-  }
+  RangesOfLayout(key, LayoutOf(key), ranges);
 }
 
 bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage* out) {
@@ -831,9 +868,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
       } else {
         // Arm BEFORE reading: a write after it is then always seen.
         if (e->watchable && !e->armed) {
-          for (const auto& r : e->ranges) {
-            if (r[1]) memory_->Arm(r[0], r[1]);
-          }
+          ArmTextureRanges(*memory_, e->ranges);
           e->armed = true;
         }
         const uint64_t version = e->version;
@@ -861,9 +896,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
     if (e->watchable && e->stable_streak >= e->stable_required) {
       // Back to the watch: arm first, then compare once more, so a write
       // between the hash and the arm cannot be lost.
-      for (const auto& r : e->ranges) {
-        if (r[1]) memory_->Arm(r[0], r[1]);
-      }
+      ArmTextureRanges(*memory_, e->ranges);
       e->armed = true;
       const uint64_t again = HashGuest(*e);
       if (again != e->uploaded_hash) {
@@ -908,7 +941,7 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
 }
 
 TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFetch& fetch,
-                                          std::string* why) {
+                                          std::string* why, const uint32_t (*known_ranges)[2]) {
   (void)fetch;
   const FormatInfo* info = FormatInfo::Get(key.format);
   if (!info || info->bytes_per_block() == 0) {
@@ -926,7 +959,11 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
                     (key.height & (info->block_height - 1)) != 0);
   e.host_format = e.decompressed ? plume::RenderFormat::R8G8B8A8_UNORM : e.host.format;
 
-  TextureGuestRanges(key, e.ranges);
+  if (known_ranges) {
+    std::memcpy(e.ranges, known_ranges, sizeof(e.ranges));
+  } else {
+    TextureGuestRanges(key, e.ranges);
+  }
   // The watch covers what the layout names; the exact reach only shortens a
   // level the layout's padding runs past committed memory (Upload).
   e.watchable = true;
@@ -1023,13 +1060,20 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   if (entries_.find(key) != entries_.end() || failed_.find(key) != failed_.end()) {
     return;
   }
+  // The key's layout is worked out once: the ranges, the entry's own and the plan below all come
+  // from it.
+  const tu::TextureGuestLayout layout = LayoutOf(key);
+  uint32_t ranges[2][2];
+  RangesOfLayout(key, layout, ranges);
+  if (uint64_t(ranges[0][1]) + ranges[1][1] < kPrefetchMinBytes) {
+    ++stats_.prefetch_small;
+    return;  // the draw decodes it: a job would cost more than its decode saves
+  }
   // (ResolveCache::Find would say the same for the key's own product, but it marks the product
   // used: the overlap test reads only.)
   if (resolve_memory_->Holds(key)) {
     return;
   }
-  uint32_t ranges[2][2];
-  TextureGuestRanges(key, ranges);
   for (const auto& r : ranges) {
     if (r[1] && resolve_->FindOverlap(r[0], r[1])) {
       return;
@@ -1044,7 +1088,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   // by one that was only waiting in the queue.
   DrainInvalidations();
   std::string why;
-  Entry* e = Create(key, fetch, &why);
+  Entry* e = Create(key, fetch, &why, ranges);
   if (!e) {
     return;  // the draw's own Bind2D tries again and reports it
   }
@@ -1057,17 +1101,13 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   // Arm BEFORE the workers read, as Bind2D does before its own read: a write after it makes a
   // notification, which moves the entry's version and makes the draw decode again.
   if (!e->armed) {
-    for (const auto& r : e->ranges) {
-      if (r[1]) memory_->Arm(r[0], r[1]);
-    }
+    ArmTextureRanges(*memory_, e->ranges);
     e->armed = true;
   }
 
   const FormatInfo* info = FormatInfo::Get(key.format);
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
-      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
   auto job = std::make_shared<PrefetchedTexture>();
+  job->levels.reserve(size_t(key.mip_max_level) + 1);
   uint64_t total = 0;
   for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
     TextureLevelPlan plan;
@@ -1111,10 +1151,6 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
   }
   const auto t0 = Clock::now();
   const TextureKey& key = e.key;
-  const FormatInfo* info = FormatInfo::Get(key.format);
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
-      xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
   const uint32_t host_block_bytes = plume::RenderFormatSize(e.host_format);
   const uint32_t host_block_width = plume::RenderFormatBlockWidth(e.host_format);
 
@@ -1155,28 +1191,55 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
     e.layout = plume::RenderTextureLayout::COPY_DEST;
   }
   bool ok = true;
-  for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
-    TextureLevelPlan plan;
-    const PlanResult planned =
-        PlanLevel(*memory_, key, *info, e.host, e.decompressed, layout, level, &plan, why);
-    if (planned == PlanResult::kSkip) {
-      continue;
+  // Records the copy of one level: its decoded rows (`pitch` apart, `size` bytes) go to the upload
+  // ring and from there into the texture. False: no upload memory (`why` says).
+  const auto copy_level = [&](uint32_t level, uint32_t width, uint32_t height, uint64_t pitch,
+                              uint64_t size, const uint8_t* decoded) {
+    const UploadSpan span = upload_->Allocate(slot_, size, kTextureCopyOffsetAlignment);
+    if (!span) {
+      *why = std::format("no upload memory for {} bytes", size);
+      return false;
     }
-    if (planned == PlanResult::kFail) {
-      ok = false;
-      break;
-    }
-    const texture_decode::Request& r = plan.request;
-    const uint64_t pitch = plan.pitch;
-    const uint64_t size = plan.size;
-    const uint8_t* decoded = nullptr;
-    if (ahead) {
-      const TextureLevelPlan* done = ahead->Find(level);
-      if (done && done->size == size) {
-        decoded = ahead->data.get() + done->offset;
+    std::memcpy(span.cpu, decoded, size_t(size));
+    const uint32_t row_width = uint32_t(pitch / host_block_bytes) * host_block_width;
+    list->copyTextureRegion(
+        plume::RenderTextureCopyLocation::Subresource(e.texture.get(), level, 0),
+        plume::RenderTextureCopyLocation::PlacedFootprint(span.buffer, e.host_format, width,
+                                                          height, 1, row_width, span.offset));
+    stats_.upload_bytes += size;
+    return true;
+  };
+  if (ahead) {
+    // Every level the pool decoded brought the plan Prefetch made for it (the same key, format and
+    // guest memory, whose pages were readable then and have not been written since: the version
+    // is the one the plan was made under): it is not planned again, which would work out the
+    // layout and ask the guest's heap about every level once more.
+    // CHECK: a level whose memory stopped being readable between the lookahead and this draw
+    // uploads the bytes the worker read; planning again would have failed the upload.
+    for (const TextureLevelPlan& done : ahead->levels) {
+      if (!copy_level(done.level, done.request.width, done.request.height, done.pitch, done.size,
+                      ahead->data.get() + done.offset)) {
+        ok = false;
+        break;
       }
     }
-    if (!decoded) {
+  } else {
+    const FormatInfo* info = FormatInfo::Get(key.format);
+    const tu::TextureGuestLayout layout = LayoutOf(key);
+    for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
+      TextureLevelPlan plan;
+      const PlanResult planned =
+          PlanLevel(*memory_, key, *info, e.host, e.decompressed, layout, level, &plan, why);
+      if (planned == PlanResult::kSkip) {
+        continue;
+      }
+      if (planned == PlanResult::kFail) {
+        ok = false;
+        break;
+      }
+      const texture_decode::Request& r = plan.request;
+      const uint64_t pitch = plan.pitch;
+      const uint64_t size = plan.size;
       scratch_.resize(size_t(size));
       bool decode_ok;
       if (REXCVAR_GET(mcla_gpu_texture_decode_verify)) {
@@ -1200,21 +1263,11 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
         ok = false;
         break;
       }
-      decoded = scratch_.data();
+      if (!copy_level(level, r.width, r.height, pitch, size, scratch_.data())) {
+        ok = false;
+        break;
+      }
     }
-    const UploadSpan span = upload_->Allocate(slot_, size, kTextureCopyOffsetAlignment);
-    if (!span) {
-      *why = std::format("no upload memory for {} bytes", size);
-      ok = false;
-      break;
-    }
-    std::memcpy(span.cpu, decoded, size_t(size));
-    const uint32_t row_width = uint32_t(pitch / host_block_bytes) * host_block_width;
-    list->copyTextureRegion(
-        plume::RenderTextureCopyLocation::Subresource(e.texture.get(), level, 0),
-        plume::RenderTextureCopyLocation::PlacedFootprint(span.buffer, e.host_format, r.width,
-                                                          r.height, 1, row_width, span.offset));
-    stats_.upload_bytes += size;
   }
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(e.texture.get(), plume::RenderTextureLayout::SHADER_READ));
@@ -1568,14 +1621,16 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
   }
   if (pool_.running()) {
     // prefetched: textures handed to the workers; used: uploads that took their levels; dropped:
-    // stale (written since) or incomplete, decoded again; waited: the render thread in Upload
-    // for a worker or on a job none had started; ran on workers: jobs the workers finished.
+    // stale (written since) or incomplete, decoded again; too small: new textures under
+    // kPrefetchMinBytes, left to their draws; waited: the render thread in Upload for a worker or
+    // on a job none had started; ran on workers: jobs the workers finished.
     text += std::format(
-        " | decode threads {}: prefetched {} ({:.2f} MiB/frame), used {}, dropped {}, render "
-        "thread waited {:.3f} ms/frame, workers ran {}, {:.1f} MiB held, lookahead on for {:.1f} "
-        "draws/frame and handed {:.1f} fetches/frame",
+        " | decode threads {}: prefetched {} ({:.2f} MiB/frame), used {}, dropped {}, too small {}, "
+        "render thread waited {:.3f} ms/frame, workers ran {}, {:.1f} MiB held, lookahead on for "
+        "{:.1f} draws/frame and handed {:.1f} fetches/frame",
         pool_.threads(), stats_.prefetched, double(stats_.prefetch_bytes) / f / 1048576.0,
-        stats_.prefetch_used, stats_.prefetch_dropped, double(stats_.prefetch_wait_ns) / f / 1e6,
+        stats_.prefetch_used, stats_.prefetch_dropped, stats_.prefetch_small,
+        double(stats_.prefetch_wait_ns) / f / 1e6,
         pool_.TakeRanOnWorkers(), double(pool_.held_bytes()) / 1048576.0,
         double(stats_.prefetch_draws) / f, double(stats_.prefetch_looked) / f);
   }

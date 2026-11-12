@@ -33,6 +33,7 @@
 // ===========================================================================
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -136,6 +137,11 @@ class DecodePool {
   std::deque<std::shared_ptr<DecodeJob>> queue_;
   bool stop_ = false;
   std::vector<std::thread> workers_;
+  // The size of queue_, changed under mutex_ and read without it by a worker that polls for the
+  // next job before it sleeps (WorkerMain); 0 spin = the workers sleep as soon as the queue is
+  // empty (Start decides).
+  std::atomic<uint32_t> queued_{0};
+  std::chrono::microseconds spin_{0};
 
   std::mutex done_mutex_;
   std::condition_variable done_cv_;

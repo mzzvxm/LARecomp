@@ -39,6 +39,18 @@ inline void CpuRelax() {
 // tens to a few hundred microseconds, a wake-up costs about as much.
 constexpr uint32_t kSpinsBeforeSleep = 2000;
 
+// How long a worker that has just finished a job polls for the next one before it sleeps. A burst
+// of new textures hands one over every 20-40 us (the render thread's own work between two
+// Submits): a worker that is polling takes it without being woken, and Submit's notify then finds
+// nobody asleep, which costs the render thread nothing; a sleeping worker costs it a kernel call
+// (about 3 us) per texture. Not on a PC with fewer than 8 usable logical processors, where the
+// worker (the only one, or one of two) would hold a core the game's own threads can use.
+// CHECK: not built or run; 100 us is the span a burst's Submits fall in (about 2-5 of them), not a
+// measurement. The textures line's "workers ran" with the pool on and the render thread's cpu_ms
+// in burst frames are what to read; a loss would show as game-thread time up on a 6-8 thread CPU.
+constexpr std::chrono::microseconds kWorkerSpin{100};
+constexpr unsigned kWorkerSpinMinProcessors = 8;
+
 }  // namespace
 
 void DecodeJob::HoldBytes(DecodePool& pool, uint64_t bytes) {
@@ -64,6 +76,11 @@ void DecodePool::Start(uint32_t threads) {
     std::lock_guard<std::mutex> lock(mutex_);
     stop_ = false;
   }
+  unsigned usable = ::mc::UsableLogicalProcessors();
+  if (usable == 0) {
+    usable = std::thread::hardware_concurrency();
+  }
+  spin_ = usable >= kWorkerSpinMinProcessors ? kWorkerSpin : std::chrono::microseconds{0};
   for (uint32_t i = 0; i < threads; ++i) {
     workers_.emplace_back([this, i] { WorkerMain(i); });
   }
@@ -83,6 +100,7 @@ void DecodePool::Stop() {
   workers_.clear();
   std::lock_guard<std::mutex> lock(mutex_);
   queue_.clear();
+  queued_.store(0, std::memory_order_relaxed);
   submitted_.clear();
 }
 
@@ -100,11 +118,20 @@ void DecodePool::Submit(const std::shared_ptr<DecodeJob>& job) {
                      submitted_.end());
   }
   submitted_.push_back(job);
+  bool first;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    first = queue_.empty();
     queue_.push_back(job);
+    queued_.fetch_add(1, std::memory_order_release);
   }
-  work_cv_.notify_one();
+  // Only the job that finds the queue empty wakes a worker (a wake is a kernel call, about 3 us
+  // here, and a burst submits a texture every 20-40 us): the worker it wakes wakes the next one
+  // while the queue still holds work (WorkerMain), and a worker that is not asleep looks at the
+  // queue before it sleeps, so a job is never left behind with every worker asleep.
+  if (first) {
+    work_cv_.notify_one();
+  }
 }
 
 void DecodePool::NotifyDone() {
@@ -166,6 +193,23 @@ void DecodePool::WorkerMain(uint32_t index) {
 #endif
   for (;;) {
     std::shared_ptr<DecodeJob> job;
+    bool more;
+    if (spin_.count() != 0 && queued_.load(std::memory_order_acquire) == 0) {
+      // The next texture of a burst is a few tens of microseconds away: wait for it here, not
+      // asleep (see kWorkerSpin).
+      const auto spin_until = std::chrono::steady_clock::now() + spin_;
+      for (bool found = false; !found;) {
+        for (int i = 0; i < 64 && !found; ++i) {
+          found = queued_.load(std::memory_order_acquire) != 0;
+          if (!found) {
+            CpuRelax();
+          }
+        }
+        if (!found && std::chrono::steady_clock::now() >= spin_until) {
+          break;
+        }
+      }
+    }
     {
       std::unique_lock<std::mutex> lock(mutex_);
       work_cv_.wait(lock, [this] { return stop_ || !queue_.empty(); });
@@ -174,6 +218,11 @@ void DecodePool::WorkerMain(uint32_t index) {
       }
       job = std::move(queue_.front());
       queue_.pop_front();
+      queued_.fetch_sub(1, std::memory_order_relaxed);
+      more = !queue_.empty();
+    }
+    if (more) {
+      work_cv_.notify_one();  // Submit woke one worker for the whole burst: this passes it on
     }
     uint32_t expected = DecodeJob::kQueued;
     if (!job->state_.compare_exchange_strong(expected, DecodeJob::kRunning,
