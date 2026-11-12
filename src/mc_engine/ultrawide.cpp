@@ -148,6 +148,23 @@ float MarkerStageX(float stage_x) {
   return kStageHalfWidth + (stage_x - kStageHalfWidth) / k;
 }
 
+double MapVisibleAspect() {
+  // The map's own 16:9 constant (0x8201FAC8) and the half of the 25 degree vertical field of view it
+  // goes with (0.218166 radians, 0x8208AC60: sub_826206B0 reads it as the same half angle).
+  // CHECK: both numbers against the constants in the guest image (1.7778 and 0.218166).
+  constexpr double kMapBaseAspect = 1.7778;
+  constexpr double kMapHalfFov = 0.218166;
+  const double aspect = DisplayAspect();
+  if (!(aspect > kBaseAspect * 1.001)) {
+    return kMapBaseAspect;
+  }
+  // The game's half width at 16:9 is tan(kMapBaseAspect * kMapHalfFov). The same share of a picture
+  // that is aspect / kBaseAspect times as wide is that times the ratio; the game's formula is
+  // inverted for the aspect ratio that gives it.
+  const double half_width_16x9 = std::tan(kMapBaseAspect * kMapHalfFov);
+  return std::atan(half_width_16x9 * (aspect / kBaseAspect)) / kMapHalfFov;
+}
+
 namespace {
 // A world-icon bracket is open (begin sent, end not yet). The end is sent even if the picture has
 // stopped being wide in between (a window resized inside the draw), so the renderer's state closes.
@@ -219,4 +236,18 @@ void Patch_UiMarkerX_82289808(PPCRegister& f7) {
 // its neighbours, draw at once when the thread flag at [r13]+72 is set) is not inside the bracket.
 void Patch_UiWorldIcons_Begin() { mc::ultrawide::NoteWorldIcons(true); }
 void Patch_UiWorldIcons_End() { mc::ultrawide::NoteWorldIcons(false); }
+
+// sub_826206B0 (the nav map: the ground the map camera sees, as a box in world x and z for the cursor
+// and the map's edges): 0x82620700 is `lfs f27,-1336(r11)`, the load of the map's 16:9 aspect ratio
+// (0x8201FAC8) on the widescreen branch; the 4:3 default at 0x826206E0 stays. f27 is the only place
+// the function uses the aspect ratio: half width = tan(f27 * 12.5 degrees) * distance * 0.85.
+// CHECK: that the nav map's cursor reaches the left and right edges of a 2560x1080 and a 3840x1080
+// picture, that the icons out there are placed (mouse and stick), and that nothing moves at 16:9.
+bool Patch_MapVisibleAspect_82620700(PPCRegister& f27) {
+  if (!mc::ultrawide::Active()) {
+    return false;
+  }
+  f27.f64 = double(float(mc::ultrawide::MapVisibleAspect()));
+  return true;
+}
 #endif  // REXGLUE_HAS_XEO3_TARGET

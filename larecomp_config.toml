@@ -25202,6 +25202,16 @@ name = "Patch_UiWorldIcons_Begin"
 address = 0x822365B0
 name = "Patch_UiWorldIcons_End"
 
+# The nav map (mc_engine/ultrawide.h). sub_826206B0 works out the ground the map camera sees (the
+# cursor's box and the map's edges) from the map's own aspect ratio: f27 is 1.33333 (0x8201FACC,
+# loaded at 0x826206E0) unless the console is in widescreen, when it is 1.7778 (0x8201FAC8, loaded
+# at 0x82620700). On a wide picture the hook gives the widescreen branch the matching aspect ratio.
+[[midasm_hook]]
+address = 0x82620700
+name = "Patch_MapVisibleAspect_82620700"
+registers = ["f27"]
+jump_address_on_true = 0x82620704
+
 # Depth of Field (DoF) Hooks
 #
 # DEAD ENDS (do not retry):

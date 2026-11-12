@@ -89,4 +89,40 @@ inline constexpr uint32_t kUiWorldEnd = 0x7F000002u;
 // aspect ratio is wider than 16:9 and the Plume renderer is on.
 void NoteWorldIcons(bool begin);
 
+// --- the nav map (the pause menu's full map) ---------------------------------------------------------
+//
+// The map is not a second camera to widen. Read from the guest code: the map screen (sub_82625AC0,
+// sub_82622FF0) flies the UI camera to the pose at screen+1056, the scene camera update (sub_822C0320,
+// through sub_8220AA68) takes the UI camera's pose and vertical field of view and sub_822E5E10 builds
+// the projection with the aspect ratio the camera hooks already widen. So the 3D picture of the map is
+// as wide as every other one, and what the game draws over it in Flash is squeezed into the middle
+// with the rest of the UI.
+//
+// The map keeps a pair of constants of its own (0x8201FAC8 = 1.7778, taken when the console is in
+// widescreen, and 0x8201FACC = 1.33333) that three functions read:
+//
+// - sub_82627738 (the placement of an icon: a local viewport with the map camera's 25 degree vertical
+//   field of view and the 16:9 aspect ratio projects the icon's world position, and the result is
+//   the stage x and y the icon's Flash movie is given). Left as it is on purpose: with the 3D
+//   picture drawn at aspect ratio A the 16:9 projection gives the stage x = 640 + 640 * ndc_A / k
+//   (k = 16:9 over A), which the UI squeeze maps to 640 + 640 * ndc_A, the point's own place on
+//   the wide picture. Widening this constant too would need MarkerStageX and give the same place.
+// - sub_8221BE98 (mcWarper::Update): turns the horizontal field of view of the camera flight's end pose
+//   (radians) into the vertical one in degrees by dividing by this aspect ratio. The vertical field of
+//   view is what stays the game's 16:9 one, so this stays 16:9 as well.
+// - sub_826206B0: the ground the map camera sees, as a box in world x and z (the cursor's box and the
+//   map's edges at screen+400, +416 and +572..+584, written by sub_82623BF8). This one has to follow
+//   the picture: with 16:9 in it the cursor could not leave the middle 16:9 of a wide picture and the
+//   icons outside it would not be placed. MapVisibleAspect().
+//
+// CHECK: all of it is read from the guest code, nothing was run: that the map camera's vertical field
+// of view is the 25 degrees sub_82627738 projects with, and the places in ULTRAWIDE-TEST.md item 4.
+
+// The aspect ratio to give sub_826206B0 where it loads 0x8201FAC8; the constant's own value while the
+// picture is 16:9. The game works the half width of the ground it sees as tan(aspect * the half
+// vertical field of view in radians) times the distance, which is 3.6 % wider than the exact
+// aspect * tan(half field of view) at 16:9 and drifts away from it as the aspect ratio grows (25 % at
+// 32:9). The value returned keeps the box as wide, against the picture, as the game has it at 16:9.
+double MapVisibleAspect();
+
 }  // namespace mc::ultrawide

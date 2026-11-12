@@ -14,6 +14,9 @@ void Patch_UiMarkerX_82289808(PPCRegister& f7);
 void Patch_UiWorldIcons_Begin();
 void Patch_UiWorldIcons_End();
 
+// The nav map's visible ground (sub_826206B0), the load of its 16:9 constant at 0x82620700.
+bool Patch_MapVisibleAspect_82620700(PPCRegister& f27);
+
 bool Patch_DisableDoF();
 void Patch_DofComposite(PPCRegister& r3);
 
