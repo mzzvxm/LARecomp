@@ -250,4 +250,22 @@ bool Patch_MapVisibleAspect_82620700(PPCRegister& f27) {
   f27.f64 = double(float(mc::ultrawide::MapVisibleAspect()));
   return true;
 }
+
+// sub_822C0320 (the scene camera update): 0x822C0918 is `lfs f0,-28432(r8)`, the load of 0x820390F0
+// (1.77778) on the branch that sets an ORTHOGRAPHIC projection (sub_8217CC80: left/right = -/+ half
+// height * 1.77778, bottom/top = -/+ half height, half height = the variable's value * 0.5) in place
+// of sub_822E5E10's perspective one. The branch is taken when the developer variable "orthoheight"
+// (the object at 0x828747E4, named by the string at 0x8203916C) is not -1, its default, so it is a
+// debug view and not reached in play. The wider half width keeps the vertical size and shows more at
+// the sides, as the perspective cameras do; the next instruction (0x822C091C) is not touched.
+// This is the only load of 0x820390F0 in the generated code. CHECK: that it is an aspect ratio (the
+// vertical extent is not rescaled anywhere else) and that nothing but a console command or a mod can
+// set "orthoheight", so this cannot be looked at in a normal run.
+bool Patch_AspectRatio_822C0918(PPCRegister& f0) {
+  if (!mc::ultrawide::Active()) {
+    return false;
+  }
+  f0.f64 = double(float(mc::ultrawide::DisplayAspect()));
+  return true;
+}
 #endif  // REXGLUE_HAS_XEO3_TARGET

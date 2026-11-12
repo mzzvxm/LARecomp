@@ -17,6 +17,9 @@ void Patch_UiWorldIcons_End();
 // The nav map's visible ground (sub_826206B0), the load of its 16:9 constant at 0x82620700.
 bool Patch_MapVisibleAspect_82620700(PPCRegister& f27);
 
+// The orthographic debug camera's width (sub_822C0320), the load of 1.77778 at 0x822C0918.
+bool Patch_AspectRatio_822C0918(PPCRegister& f0);
+
 bool Patch_DisableDoF();
 void Patch_DofComposite(PPCRegister& r3);
 

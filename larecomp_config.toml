@@ -25212,6 +25212,16 @@ name = "Patch_MapVisibleAspect_82620700"
 registers = ["f27"]
 jump_address_on_true = 0x82620704
 
+# sub_822C0320 (the scene camera update) builds an orthographic camera instead of the perspective one
+# when the developer variable "orthoheight" is set (default -1: never in play): half width = half
+# height * 1.77778, loaded at 0x822C0918 (`lfs f0,-28432(r8)`, 0x820390F0). The hook gives it the
+# picture's aspect ratio, like the four perspective camera hooks above.
+[[midasm_hook]]
+address = 0x822C0918
+name = "Patch_AspectRatio_822C0918"
+registers = ["f0"]
+jump_address_on_true = 0x822C091C
+
 # Depth of Field (DoF) Hooks
 #
 # DEAD ENDS (do not retry):
