@@ -155,8 +155,9 @@ double MapVisibleAspect();
 //   flagsDelivered, bomb, flag, lapmeter, laptime and totaltime. Those two lists are the pieces and their
 //   sides. `chat` (the text at the top left) has no offset in the script and is anchored left with the
 //   others. Left in the middle: screenSafe, camera_indicator, Splash0, Splash1, Splash1_wide,
-//   Splash1_overlap, Splash2 (the messages: each is a text box centred on the stage, as its origin and
-//   the 0.95 and 1.15 scales say) and countdownOffline: centred, or spanning the middle.
+//   Splash1_overlap, Splash2 (the messages of SplashManager_Splash*, the rep and cash gains among them
+//   (mcRewardManager_BuildRewardMoney): wide text boxes, and a background strip that is symmetric about
+//   the middle of the stage) and countdownOffline: centred, or spanning the middle.
 // - hudmap.swf: the minimap is the clips miniBG, ring, ringNorth and renderMe (a bitmap of the minimap's
 //   render target that the script places with `viewportWindow`: it has to move with the other three), on the
 //   left. The same movie holds the expanded map (mapBorder, title_bar and renderMe again), which is
@@ -173,12 +174,13 @@ double MapVisibleAspect();
 // that follow belong to (kUiPieceLeft or kUiPieceRight, then kUiPieceEnd) through the composite record's
 // bucket, and the renderer adds the shift to the squeeze of each of those draws (gpu/scene.cpp,
 // Scene::UiShiftOf). All of a piece is drawn between the two hooks (the instance, its children, the
-// masks and the text), so it moves as one unit, and it never goes through the guest's own transform: the
-// scissor, the viewport and the depth-only mask draws are moved by the same formula as the geometry.
-// Chosen over moving the piece's stage x in the guest (as Patch_UiMarkerX does the gamertag) because that
-// would have the squeeze cut a moved piece off at the scissor the guest draws it with (the stage-wide
-// scissor, squeezed with the rest), and the shift has to be recomputed from hud_width and the aspect ratio
-// on every frame anyway; and over a position rule in the renderer because it names whole pieces.
+// masks and the text), so it moves as one unit: the geometry, the scissor and the depth-only mask draws
+// are all moved by the same formula. Chosen over moving the piece's stage x in the guest (as
+// Patch_UiMarkerX does the gamertag) because the renderer squeezes the scissor too and a guest-side move
+// would need the renderer's help with that anyway, the amount depends on k and hud_width, which the
+// renderer has at hand, and the guest would have to put every piece back after its draw; and over a
+// position rule in the renderer (the draws left or right of the middle) because that acts on single draws
+// and cannot tell a left piece from a message that spans the middle.
 //
 // The shift is, in the image the guest draws (1280 wide), t * 640 * (1 - k) pixels for t = hud_width / 100
 // and k = UiWidthFraction(): to the left for a left piece (its left edge ends up t of the way to the screen
@@ -186,11 +188,13 @@ double MapVisibleAspect();
 // that is t * 640 * (1 - k) / k, as a guest-side move would need.
 //
 // CHECK: all of this is read from the data and the code: the piece names (the clips' own names are in the
-// movies, the sides are the game's own script's), the +184/+196 offsets and the exit at 0x825FB698
-// (every path of sub_825FB348 ends there), that the minimap's bitmap is renderMe, and that no piece of
+// movies, the sides are the game's own script's), the +184 / +196 offsets (sub_825FC5E0 stores the parent
+// when it places a child, sub_8260B250 the name from the command) and the exit at 0x825FB698 (every
+// path of sub_825FB348 ends there), that the minimap's bitmap is renderMe, and that no piece of
 // either movie is drawn outside sub_825FB348 (a draw by another path would stay in the middle and tear), that
 // `chat` is a left piece (a text box at the top left that the game's script does not offset), that the rep and
-// cash pop-ups are the Splash clips (messages, centred) and not a piece of the list, and that the renderer
+// cash pop-ups are the Splash clips (messages, centred: the natives are SplashManager_Splash*, not which clip
+// shows which) and not a piece of the list, and that the renderer
 // prepares each draw in record order on the render thread, as the world icons' bracket needs too.
 // Not moved: the GPS arrow in the HUD (a 3D arrow in a viewport of its own, not a clip's draw).
 // The log lists the pieces found (ULTRAWIDE-TEST.md, item 14).
