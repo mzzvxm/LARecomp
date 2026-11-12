@@ -30,7 +30,9 @@
 // a copy at the count the saved settings give (StartSampleCounts: the MSAA level within what the
 // device does, and 1 when an upscaler is the saved choice). Those copies are made and dropped like
 // the rest; they are not written to the cache file (a level the player never uses would then be
-// precached at every start). A level chosen later is made by the game while it runs
+// precached at every start). The game's own start makes the same copies for its precache
+// (Pipelines::StartPersistence), on the precache's worker threads while the game starts, so a
+// start without this step is covered too. A level chosen later is made by the game while it runs
 // (Pipelines::PrebuildForLevel).
 //
 // Skipping. A stamp next to the cache file (cache/mcla_gpu_pipelines_<api>.stamp) says what the

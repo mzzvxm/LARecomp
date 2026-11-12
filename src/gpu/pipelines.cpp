@@ -25,8 +25,10 @@
 #include "backend.h"
 #include "constants.h"
 #include "device.h"
+#include "edram.h"
 #include "format.h"
 #include "layout.h"
+#include "temporal_backend.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -263,6 +265,23 @@ void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStor
                                                     : "static (part of each pipeline)");
 }
 
+// The sample counts a start draws the images of the screen the game multisamples with, other than
+// what the records were made at: the MSAA setting's level (within what the device can do, as the
+// start's EdramTargets::Initialize finds it) and 1 when an upscaler is the saved choice (the start
+// gives up MSAA for one that runs, EdramTargets::DecideScene; whether this PC can run it is the
+// game's probe's to say, so both are made). Records of other levels need no copy: the game
+// remakes them when the player changes the level (PrebuildForLevel).
+std::vector<uint32_t> Pipelines::StartSampleCounts(Device& device) {
+  std::vector<uint32_t> counts;
+  const EdramTargets::MsaaSetting setting = EdramTargets::ReadMsaaSetting();
+  const uint32_t supported = EdramTargets::SupportedScreenSamples(device.device());
+  counts.push_back(EdramTargets::LevelWithin(supported, setting.level));
+  if (ReadUpscalerSettings().upscaler != Upscaler::kOff && counts.front() != 1) {
+    counts.push_back(1);
+  }
+  return counts;
+}
+
 void Pipelines::StartPersistence(ShaderStore& shaders) {
   if (!device_ || persistence_started_) {
     return;
@@ -274,6 +293,21 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
   const bool persist = REXCVAR_GET(mcla_gpu_pipeline_cache);
   if (persist) {
     LoadPersistent();
+    // The list holds each multisampled pipeline at the count it was recorded with; this start
+    // draws the images of the screen at its own (as the command line prebuild makes them).
+    // CHECK: written without a build or a run. Expected on a first start with --msaa 4 or off, or
+    // an upscaler: this line, the precache line after it with the copies counted, and far fewer
+    // "made at draw time" / pending pipelines than before; the copies nobody draws are held in
+    // memory like the unused part of the list (about 85 KB each on D3D12, more on Vulkan).
+    const std::vector<uint32_t> samples = StartSampleCounts(*device_);
+    MakeLevelCopies(samples);
+    std::string text;
+    for (const uint32_t count : samples) {
+      text += (text.empty() ? "" : ",") + std::to_string(count);
+    }
+    REXLOG_INFO("[gpu] pipelines: the start draws the multisampled images at {} sample(s): {} "
+                "copies of the {} listed pipelines at those counts are precached too",
+                text, setup_copies_.size(), records_.size());
   }
   // The workers run without a cache file too: they make what the render
   // thread hands them (background builds).
@@ -320,8 +354,10 @@ void Pipelines::MakeLevelCopies(const std::vector<uint32_t>& samples) {
   // draws ask for when it is not the count they were recorded at. (A multisampled target that is
   // not an image of the screen would get a copy nobody asks for: it costs a compile, nothing else.)
   setup_copies_.clear();
+  setup_copy_source_.clear();
   std::unordered_set<PipelineKey, PipelineKeyHash> seen;
-  for (const Record& r : records_) {
+  for (size_t source = 0; source < records_.size(); ++source) {
+    const Record& r = records_[source];
     if (r.key.sample_count <= 1) {
       continue;
     }
@@ -335,6 +371,7 @@ void Pipelines::MakeLevelCopies(const std::vector<uint32_t>& samples) {
         continue;  // a record has it, or another record's copy is the same pipeline
       }
       setup_copies_.push_back(copy);
+      setup_copy_source_.push_back(uint32_t(source));
     }
   }
 }
@@ -431,6 +468,8 @@ void Pipelines::Shutdown() {
   prebuild_requests_.clear();
   prebuild_precached_.clear();
   records_.clear();
+  setup_copies_.clear();
+  setup_copy_source_.clear();
   recorded_.clear();
   stored_layouts_.clear();
   stored_layout_index_.clear();
@@ -554,22 +593,23 @@ uint32_t Pipelines::UsableProcessors() {
 
 void Pipelines::StartPrecache(uint32_t setup_threads) {
   precached_.reserve(records_.size() + setup_copies_.size());
-  for (const Record& r : records_) {
+  const auto add = [this](const Record& r) {
     auto p = std::make_unique<Precached>();
     p->key = r.key;
     p->layout = stored_layouts_[r.layout].get();  // owned by a unique_ptr: stable
     p->index = uint32_t(precached_.size());
     precached_by_key_.emplace(r.key, p.get());
     precached_.push_back(std::move(p));
-  }
-  // The command line prebuild's level copies (MakeLevelCopies) follow the list: made by the same
-  // workers, found by no draw (precached_by_key_ does not have them).
-  for (const Record& r : setup_copies_) {
-    auto p = std::make_unique<Precached>();
-    p->key = r.key;
-    p->layout = stored_layouts_[r.layout].get();
-    p->index = uint32_t(precached_.size());
-    precached_.push_back(std::move(p));
+  };
+  // The level copies (MakeLevelCopies) each follow the record they were made from, so the list
+  // stays in the order it was first needed in (the render thread's claims follow it, boot mode).
+  // A draw takes a copy like a record; no record has the key of a copy (MakeLevelCopies).
+  size_t next_copy = 0;
+  for (size_t i = 0; i < records_.size(); ++i) {
+    add(records_[i]);
+    for (; next_copy < setup_copies_.size() && setup_copy_source_[next_copy] == i; ++next_copy) {
+      add(setup_copies_[next_copy]);
+    }
   }
   // Half the processors, below normal priority: the guest boots meanwhile, and
   // a pipeline made here is one the render thread does not stop for later.
@@ -605,13 +645,15 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   } else if (precached_.empty()) {
     REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
   } else if (boot) {
-    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads; boot mode on {} usable "
-                "processors: normal priority until the list is done or {} s have passed, then {} "
-                "threads at below normal",
-                precached_.size(), count, usable, kBootSeconds.count(), steady_workers_);
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies at other sample "
+                "counts) on {} threads; boot mode on {} usable processors: normal priority until "
+                "the list is done or {} s have passed, then {} threads at below normal",
+                precached_.size(), setup_copies_.size(), count, usable, kBootSeconds.count(),
+                steady_workers_);
   } else {
-    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines on {} threads",
-                precached_.size(), count);
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies at other sample "
+                "counts) on {} threads",
+                precached_.size(), setup_copies_.size(), count);
   }
 }
 
@@ -928,6 +970,12 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   plume::RenderPipeline* raw = p.pipeline.get();
   pipelines_.emplace(key, std::move(p.pipeline));
   ++stats_.precache_taken;
+  if (persist_) {
+    // A record is known already (nothing happens); a level copy is the pipeline of a draw now.
+    // CHECK: that the cache file then holds the copies the player drew with (the log's "records
+    // written" count) and the next start precaches them as records.
+    RecordStored(key, stored);
+  }
   return raw;
 }
 
