@@ -391,30 +391,37 @@ void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fet
 }
 
 // The squeeze of a UI draw (Scene::UiSqueezeOf): its position's x becomes centre + (x - centre) * k
-// on the screen. The draw's NDC is x_ndc = oPos.x * scale + offset * w; the same map on NDC is
-// k * x_ndc + (1 - k) * u, u being where the screen's centre is in the draw's own NDC (the draw's
-// host viewport need not be the whole screen).
+// on the screen, and then `shift` of the screen's width further (Scene::UiShiftOf: a HUD piece
+// that hud_width moves toward an edge; 0 for the rest of the UI). The draw's NDC is
+// x_ndc = oPos.x * scale + offset * w; the same map on NDC is k * x_ndc + (1 - k) * u + 2 * shift *
+// screen / viewport, u being where the screen's centre is in the draw's own NDC (the draw's host
+// viewport need not be the whole screen).
 // CHECK: that the epilogue's NDC is linear in the viewport's pixels as ComputeViewport makes it, for
 // the screen-space draws with clipping disabled too (the squeeze is checked on the HUD only).
 void SqueezeSharedX(SharedConstants& shared, const plume::RenderViewport& viewport,
-                    uint32_t screen_width, float k) {
+                    uint32_t screen_width, float k, float shift) {
   if (!(viewport.width > 0.0f)) {
     return;
   }
   const float centre = 0.5f * float(screen_width);
   const float u = 2.0f * (centre - (viewport.x + 0.5f * viewport.width)) / viewport.width;
+  const float move = 2.0f * shift * float(screen_width) / viewport.width;
   shared.pos_scale[0] *= k;
-  shared.pos_offset[0] = shared.pos_offset[0] * k + (1.0f - k) * u;
+  shared.pos_offset[0] = shared.pos_offset[0] * k + (1.0f - k) * u + move;
 }
 
 // The same map on the scissor, outwards to whole pixels: what the guest clips its UI to stays where
-// the squeezed UI is.
-plume::RenderRect SqueezeScissorX(const plume::RenderRect& rect, uint32_t screen_width, float k) {
+// the squeezed (and moved) UI is.
+plume::RenderRect SqueezeScissorX(const plume::RenderRect& rect, uint32_t screen_width, float k,
+                                  float shift) {
   const double centre = 0.5 * double(screen_width);
+  const double move = double(shift) * double(screen_width);
   const int32_t width = int32_t(screen_width);
   plume::RenderRect out = rect;
-  out.left = std::clamp(int32_t(std::floor(centre + (double(rect.left) - centre) * k)), 0, width);
-  out.right = std::clamp(int32_t(std::ceil(centre + (double(rect.right) - centre) * k)), 0, width);
+  out.left =
+      std::clamp(int32_t(std::floor(centre + (double(rect.left) - centre) * k + move)), 0, width);
+  out.right =
+      std::clamp(int32_t(std::ceil(centre + (double(rect.right) - centre) * k + move)), 0, width);
   return out;
 }
 
@@ -533,6 +540,39 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
     return 1.0f;
   }
   return float(fraction);
+}
+
+void Scene::OnUiMessage(uint32_t bucket) {
+  switch (bucket) {
+    case mc::ultrawide::kUiWorldBegin:
+      ui_world_ = true;
+      break;
+    case mc::ultrawide::kUiWorldEnd:
+      ui_world_ = false;
+      break;
+    case mc::ultrawide::kUiPieceLeft:
+      ui_piece_side_ = -1;
+      break;
+    case mc::ultrawide::kUiPieceRight:
+      ui_piece_side_ = 1;
+      break;
+    case mc::ultrawide::kUiPieceEnd:
+      ui_piece_side_ = 0;
+      break;
+    default:
+      break;
+  }
+}
+
+float Scene::UiShiftOf(float squeeze) const {
+  // CHECK: that every draw of a HUD piece is one UiSqueezeOf squeezes (blended, into the screen's image,
+  // or a depth-only mask): one it leaves whole stays where the guest drew it and the piece tears.
+  if (ui_piece_side_ == 0 || !(squeeze < 1.0f)) {
+    return 0.0f;
+  }
+  // t is 0 while the picture is not wider than 16:9, which UiSqueezeOf has already seen as a squeeze of 1.
+  const float t = float(mc::ultrawide::HudWidthFraction());
+  return float(ui_piece_side_) * t * (1.0f - squeeze) * 0.5f;
 }
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
@@ -1401,8 +1441,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // Ultrawide: the UI of a widened picture is drawn squeezed, in the middle (UiSqueezeOf). After the
   // memo above, which keeps the game's own position.
   d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion);
+  d.ui_shift = UiShiftOf(d.ui_squeeze);
   if (d.ui_squeeze < 1.0f) {
-    SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze);
+    SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze,
+                   d.ui_shift);
   }
   Lap(Stage::kConstants);
   // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
@@ -2187,7 +2229,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   }
   plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
   if (d.ui_squeeze < 1.0f) {
-    scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_squeeze);
+    scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_squeeze, d.ui_shift);
   }
   d.scissor = scissor;
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
@@ -2586,6 +2628,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   scene_marker_seen_ = true;
   ui_phase_ = true;
   ui_world_ = false;
+  ui_piece_side_ = 0;
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
@@ -2699,6 +2742,7 @@ void Scene::OnPresent() {
   scene_marker_seen_ = false;
   ui_phase_ = false;
   ui_world_ = false;
+  ui_piece_side_ = 0;
   if (layers_) {
     layers_->OnGuestPresent();
   }

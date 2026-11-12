@@ -22,6 +22,8 @@ The game boots to the menu, free roam and races work, and saves load. On top of 
 
 **Camera and suspension that do not break at high frame rates.** Chase camera lag, chassis roll and the ground depth filter step with continuous-time exponential decay calibrated against the 30 FPS console curve, so they behave identically at any frame rate.
 
+**Ultrawide.** A 21:9 or 32:9 window gets a wider view instead of black bars (the vertical field of view stays the game's), with the HUD at 16:9 in the middle. `hud_width` (0 to 100, applies at once, default 0) moves the HUD's corner pieces (minimap, speedometer, race position, lap and time) out toward the screen edges: 100 puts each as far from its edge as on a 16:9 screen. `aspect_ratio` picks a fixed shape instead of the window's own.
+
 **A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
 
 **Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker that reaches the German and Italian translations the retail NTSC/U build region-gates out.

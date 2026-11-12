@@ -11,7 +11,9 @@
 // the same factor around the centre of the screen: they come out 16:9-correct, in the middle
 // (gpu/scene.cpp, UiSqueeze). A frame with no 3D scene in it (a movie, a loading screen, a menu on
 // a flat background) is not squeezed or stretched at all: the present shows it 16:9 in the middle
-// of the window with black on both sides, as it always did (gpu/present.h, display aspect).
+// of the window with black on both sides, as it always did (gpu/present.h, display aspect). The
+// setting `hud_width` moves the corner pieces of the driving HUD out of that middle block toward the
+// screen edges (the last section of this file).
 //
 // CHECK: that the four camera hooks and the constant at 0x8201E7EC are every place the game takes its
 // 3D aspect ratio from (the rear-view mirror, garage, showroom, map and photo cameras especially); a
@@ -68,7 +70,7 @@ void Init();
 //    draws the UI (the queued icon list, sub_82236558: racer, checkpoint and place icons): its
 //    position is already the widened camera's, so the renderer must not squeeze those draws (and
 //    their depth test against the scene's depth needs the unmoved position). The two hooks around
-//    the list's draw tell the renderer which draws they are (NoteWorldIcons, gpu/scene.h SetUiWorld).
+//    the list's draw tell the renderer which draws they are (NoteWorldIcons, gpu/scene.h OnUiMessage).
 //
 // CHECK: both are from reading the guest code only; see ULTRAWIDE-TEST.md items 6 and 8.
 
@@ -135,5 +137,81 @@ double MapVisibleAspect();
 // wider than 16:9: the vertical angle is the 16:9 one and the sides show more, as in gameplay. The
 // gameplay cameras do not go through that division.
 // CHECK: from the generated code only; ULTRAWIDE-TEST.md, item 13.
+
+// --- the HUD's corner pieces (the setting hud_width) --------------------------------------------------
+//
+// The squeeze puts the whole HUD in the middle 16:9 block. With `hud_width` above 0 the corner pieces of
+// the driving HUD move out toward the screen edges instead, each as one unit. Read from the game's own
+// data (the two HUD movies, resources/ui/hud/hud.xsf and hudmap/hudmap.xsf, and the ActionScript of the
+// first) and from the guest code; nothing was run.
+//
+// - The driving HUD is two Flash movies on a 1280x720 stage: hud.swf (the HUD manager's gauge movie, drawn
+//   by sub_8223D780 through sub_82721258, not named in the UI manager's map) and hudmap.swf (HUDMAPMOVIE).
+//   Each has one clip named "HUD" under its root (hud.swf's root also holds `gamertags`, the floating
+//   names: not touched here), and the pieces are the children of that clip.
+// - hud.swf: the game already lays its pieces out for a 16:9 screen: the script of the first frame
+//   (hud.xsf, the action block at 0xB982, `_global.aspect` not 0) moves them out with `_x` offsets, +135
+//   for info, glows, speedometer, posmeter, playerList, delivery and CTF_score, -135 for flagTime,
+//   flagsDelivered, bomb, flag, lapmeter, laptime and totaltime. Those two lists are the pieces and their
+//   sides. `chat` (the text at the top left) has no offset in the script and is anchored left with the
+//   others. Left in the middle: screenSafe, camera_indicator, Splash0, Splash1, Splash1_wide,
+//   Splash1_overlap, Splash2 (the messages: each is a text box centred on the stage, as its origin and
+//   the 0.95 and 1.15 scales say) and countdownOffline: centred, or spanning the middle.
+// - hudmap.swf: the minimap is the clips miniBG, ring, ringNorth and renderMe (a bitmap of the minimap's
+//   render target that the script places with `viewportWindow`: it has to move with the other three), on the
+//   left. The same movie holds the expanded map (mapBorder, title_bar and renderMe again), which is
+//   centred: the script makes mapBorder transparent and ring, ringNorth and miniBG as opaque as the HUD in
+//   the minimap's state, and the reverse in the expanded map's. So the four are anchored only while ring
+//   is not transparent (its alpha byte, +79).
+// - A piece is identified by its instance name and its place in the clip tree, read from guest memory when
+//   the game's Flash player draws it: sub_825FB348 draws one instance and, recursively, its children;
+//   the instance has its parent at +184, its name at +196. A child of a clip named "HUD" whose name is in the
+//   lists is a piece (only the two HUD movies, and the developer HUD, have a clip of that name).
+//
+// The mechanism is the world icons' (above): the guest side only names the draws and the renderer moves
+// them. Two hooks, at the entry of sub_825FB348 and at its one exit, send the renderer which piece the draws
+// that follow belong to (kUiPieceLeft or kUiPieceRight, then kUiPieceEnd) through the composite record's
+// bucket, and the renderer adds the shift to the squeeze of each of those draws (gpu/scene.cpp,
+// Scene::UiShiftOf). All of a piece is drawn between the two hooks (the instance, its children, the
+// masks and the text), so it moves as one unit, and it never goes through the guest's own transform: the
+// scissor, the viewport and the depth-only mask draws are moved by the same formula as the geometry.
+// Chosen over moving the piece's stage x in the guest (as Patch_UiMarkerX does the gamertag) because that
+// would have the squeeze cut a moved piece off at the scissor the guest draws it with (the stage-wide
+// scissor, squeezed with the rest), and the shift has to be recomputed from hud_width and the aspect ratio
+// on every frame anyway; and over a position rule in the renderer because it names whole pieces.
+//
+// The shift is, in the image the guest draws (1280 wide), t * 640 * (1 - k) pixels for t = hud_width / 100
+// and k = UiWidthFraction(): to the left for a left piece (its left edge ends up t of the way to the screen
+// edge, and at t = 1 as far from it as on a 16:9 screen), to the right for a right piece. In stage units
+// that is t * 640 * (1 - k) / k, as a guest-side move would need.
+//
+// CHECK: all of this is read from the data and the code: the piece names (the clips' own names are in the
+// movies, the sides are the game's own script's), the +184/+196 offsets and the exit at 0x825FB698
+// (every path of sub_825FB348 ends there), that the minimap's bitmap is renderMe, and that no piece of
+// either movie is drawn outside sub_825FB348 (a draw by another path would stay in the middle and tear), that
+// `chat` is a left piece (a text box at the top left that the game's script does not offset), that the rep and
+// cash pop-ups are the Splash clips (messages, centred) and not a piece of the list, and that the renderer
+// prepares each draw in record order on the render thread, as the world icons' bracket needs too.
+// Not moved: the GPS arrow in the HUD (a 3D arrow in a viewport of its own, not a clip's draw).
+// The log lists the pieces found (ULTRAWIDE-TEST.md, item 14).
+
+// hud_width / 100 while the aspect ratio is wider than 16:9 (Active()); 0 otherwise.
+double HudWidthFraction();
+
+// More messages on the composite record's side channel (see kUiWorldBegin): the draws that follow, until
+// kUiPieceEnd, are the whole of one HUD piece, which is anchored to the left or the right edge.
+inline constexpr uint32_t kUiPieceLeft = 0x7F000003u;
+inline constexpr uint32_t kUiPieceRight = 0x7F000004u;
+inline constexpr uint32_t kUiPieceEnd = 0x7F000005u;
+
+// Whether a composite record's bucket is one of this side channel's messages (not a real bucket: those are
+// single bits).
+inline bool IsUiMessage(uint32_t bucket) { return (bucket & 0xFF000000u) == 0x7F000000u; }
+
+// Around the guest's draw of one instance of the Flash player (the guest render thread): `begin` at the
+// entry of sub_825FB348 with the instance (r3), the end at its exit with the same instance (r30). Sends the
+// renderer kUiPieceLeft / kUiPieceRight / kUiPieceEnd when the instance is a piece and hud_width is above 0;
+// a no-op otherwise (the setting is 0 by default, the picture is not wider than 16:9, the Xenia renderer).
+void NoteUiPiece(uint32_t instance, bool begin);
 
 }  // namespace mc::ultrawide

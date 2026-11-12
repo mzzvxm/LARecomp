@@ -14,6 +14,11 @@ void Patch_UiMarkerX_82289808(PPCRegister& f7);
 void Patch_UiWorldIcons_Begin();
 void Patch_UiWorldIcons_End();
 
+// The Flash player's draw of one instance, sub_825FB348: its entry (r3) and its exit at 0x825FB698 (r30). Tells the
+// renderer which draws are one HUD corner piece (ultrawide.h, hud_width).
+void Patch_UiPiece_Begin(PPCRegister& r3);
+void Patch_UiPiece_End(PPCRegister& r30);
+
 // The nav map's visible ground (sub_826206B0), the load of its 16:9 constant at 0x82620700.
 bool Patch_MapVisibleAspect_82620700(PPCRegister& f27);
 

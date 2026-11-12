@@ -25202,6 +25202,21 @@ name = "Patch_UiWorldIcons_Begin"
 address = 0x822365B0
 name = "Patch_UiWorldIcons_End"
 
+# The HUD's corner pieces (mc_engine/ultrawide.h, hud_width). sub_825FB348 is the Flash player's draw of one
+# instance (r3) and, recursively, its children; every path ends at 0x825FB698 (`addi r1,r1,144`, the first
+# instruction of the epilogue) with r30 still the instance. The two hooks tell the renderer which draws are
+# the whole of one piece of the HUD (a child of the clip named "HUD" in hud.swf or hudmap.swf, by its name),
+# so that it can move them as one. A no-op unless hud_width is above 0 and the picture is wider than 16:9.
+[[midasm_hook]]
+address = 0x825FB348
+name = "Patch_UiPiece_Begin"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x825FB698
+name = "Patch_UiPiece_End"
+registers = ["r30"]
+
 # The nav map (mc_engine/ultrawide.h). sub_826206B0 works out the ground the map camera sees (the
 # cursor's box and the map's edges) from the map's own aspect ratio: f27 is 1.33333 (0x8201FACC,
 # loaded at 0x826206E0) unless the console is in widescreen, when it is 1.7778 (0x8201FAC8, loaded

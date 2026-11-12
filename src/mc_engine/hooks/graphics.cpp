@@ -50,12 +50,22 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade 
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // "auto" is the window's own shape (mc_engine/ultrawide.h): wider than 16:9 widens the view and keeps
-// the HUD 16:9 in the middle. The others pick a shape whatever the window is (the picture then has
-// black bars where the window is not that shape); 16:10 is the same as 16:9.
+// the HUD 16:9 in the middle (hud_width, below, moves its corner pieces out). The others pick a shape
+// whatever the window is (the picture then has black bars where the window is not that shape); 16:10
+// is the same as 16:9.
 REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
     "Aspect ratio of the picture: auto follows the window (21:9, 32:9 and other wide windows get a "
     "wider view; the HUD stays 16:9 in the middle), or 16:9, 21:9, 32:9.")
     .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// Live, and only on a picture wider than 16:9 (mc_engine/ultrawide.h, "the HUD's corner pieces"): the
+// guest hooks read it when a piece is drawn and the renderer when it squeezes the piece's draws.
+REXCVAR_DEFINE_INT32(hud_width, 0, "MCLA/Patches",
+    "On a wide picture, how far the HUD's corner pieces (the minimap, speedometer, race position, lap "
+    "and time) move out toward the screen edges, in percent: 0 keeps the whole HUD in the middle "
+    "16:9, 100 puts each piece as far from its edge as on a 16:9 screen.")
+    .range(0, 100)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",

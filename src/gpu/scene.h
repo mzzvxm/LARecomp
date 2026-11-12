@@ -144,10 +144,13 @@ class Scene {
   // open list, for the passes that run at this point.
   void OnComposite(const CompositeRecord& record, plume::RenderCommandList* list);
 
-  // Ultrawide: the draws from here until SetUiWorld(false) are the UI pass's world icons, 3D movies
-  // drawn with the (widened) camera's own projection (mc_engine/ultrawide.h, NoteWorldIcons): they
-  // are not squeezed. Render thread, from the guest's bracket record.
-  void SetUiWorld(bool on) { ui_world_ = on; }
+  // Ultrawide: one of the messages the guest sends through a composite record's bucket
+  // (mc_engine/ultrawide.h, IsUiMessage), in order with the draws around it. Either the bracket of
+  // the UI pass's world icons, 3D movies drawn with the (widened) camera's own projection
+  // (NoteWorldIcons): their draws are not squeezed. Or the bracket of one piece of the HUD
+  // (NoteUiPiece): its draws are moved toward the left or the right screen edge, all by the same
+  // amount, by the setting hud_width (UiShiftOf). Render thread.
+  void OnUiMessage(uint32_t bucket);
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
@@ -220,6 +223,9 @@ class Scene {
     // Ultrawide: the draw is UI and is drawn squeezed sideways around the centre of the screen by
     // this factor (UiSqueezeOf); 1: as the game has it.
     float ui_squeeze = 1.0f;
+    // Ultrawide: and then moved sideways by this share of the screen's width, to the right when
+    // positive (UiShiftOf): the draw is one of a HUD piece that hud_width moves toward a screen edge.
+    float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
   };
 
@@ -318,9 +324,16 @@ class Scene {
   // back to 16:9 in the middle of the window; 1 for a draw that keeps its place: before the marker,
   // not into the screen's image, a copy that blends nothing (the scene copied into the pause view's
   // target), a blended rectangle over the whole screen (a fade: a draw of inline vertices that cover
-  // it), the world icons (SetUiWorld), or an aspect ratio of 16:9.
+  // it), the world icons (OnUiMessage), or an aspect ratio of 16:9.
   float UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
                     const InputLayout* layout, PrimitiveConversion conversion);
+  // The share of the screen's width a squeezed UI draw is moved sideways by afterwards (to the right
+  // when positive): 0 unless the draw belongs to a piece of the HUD the guest has bracketed
+  // (OnUiMessage) and hud_width is above 0. A left piece moves by -t * (1 - k) / 2, a right piece by
+  // t * (1 - k) / 2, for the squeeze k and t = hud_width / 100: the shift that puts the piece's edge
+  // as far from the screen's edge as on a 16:9 screen when t is 1 (the squeeze took 1 - k of the
+  // screen's width, half of it on each side).
+  float UiShiftOf(float squeeze) const;
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
@@ -490,8 +503,11 @@ class Scene {
   // From the composite marker to the guest's present: what the frame draws is screen-space, the HUD
   // and the menus (UiSqueezeOf).
   bool ui_phase_ = false;
-  // Inside the guest's draw of the world icons (SetUiWorld): drawn as the game has them.
+  // Inside the guest's draw of the world icons (OnUiMessage): drawn as the game has them.
   bool ui_world_ = false;
+  // Inside the guest's draw of one piece of the HUD (OnUiMessage): -1 anchored to the left edge, 1 to the
+  // right edge, 0 not inside one.
+  int ui_piece_side_ = 0;
   // How many full-screen UI draws kept the whole screen have been logged (UiSqueezeOf).
   uint32_t ultrawide_fills_logged_ = 0;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record

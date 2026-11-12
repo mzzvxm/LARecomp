@@ -4,13 +4,18 @@
 #include "ultrawide.h"
 
 #include <rex/cvar.h>
+#include <rex/runtime.h>
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <vector>
 
 #include "hooks/hooks.h"
 #include "hooks/hooks_internal.h"
@@ -20,6 +25,7 @@
 #endif
 
 REXCVAR_DECLARE(std::string, aspect_ratio);  // hooks/graphics.cpp
+REXCVAR_DECLARE(int32_t, hud_width);         // hooks/graphics.cpp
 
 namespace mc::ultrawide {
 
@@ -29,6 +35,9 @@ namespace {
 std::atomic<uint64_t> g_window{0};
 // The aspect ratio in force, between kBaseAspect and kMaxAspect.
 std::atomic<double> g_aspect{kBaseAspect};
+// The setting hud_width, 0 to 100: from Init and its change callback; read by the guest hooks that name
+// the HUD's pieces and by the renderer (HudWidthFraction).
+std::atomic<int> g_hud_width{0};
 
 // The setting's text, as the last change left it (a change callback is given the new value; reading
 // the cvar inside the callback is not safe, it may run with the registry locked).
@@ -136,6 +145,11 @@ double UiWidthFraction() {
   return aspect > kBaseAspect * 1.001 ? kBaseAspect / aspect : 1.0;
 }
 
+double HudWidthFraction() {
+  const int percent = g_hud_width.load(std::memory_order_relaxed);
+  return percent > 0 && Active() ? double(percent) / 100.0 : 0.0;
+}
+
 float MarkerStageX(float stage_x) {
   if (!Active()) {
     return stage_x;
@@ -190,6 +204,213 @@ void NoteWorldIcons(bool begin) {
 #endif
 }
 
+// --- the HUD's corner pieces (the setting hud_width; ultrawide.h says how they were found) ----------------
+
+namespace {
+
+enum class Side : int8_t { kLeft = -1, kRight = 1 };
+// Which of the two HUD movies a piece is of.
+enum class HudMovie : uint8_t { kGauge, kMinimap };
+
+struct Piece {
+  const char* name;  // the instance's name, a child of the clip named "HUD"
+  Side side;
+  HudMovie movie;
+};
+
+// hud.xsf: the two lists of the script's widescreen branch (the action block at 0xB982: `_x` + 135 for
+// the right pieces, - 135 for the left ones), and `chat`; hudmap.xsf: the minimap's four clips.
+// CHECK: `chat` (no offset in the script) is a left piece: that its text box does not span the middle.
+constexpr Piece kPieces[] = {
+    {"info", Side::kRight, HudMovie::kGauge},
+    {"glows", Side::kRight, HudMovie::kGauge},
+    {"speedometer", Side::kRight, HudMovie::kGauge},
+    {"posmeter", Side::kRight, HudMovie::kGauge},
+    {"playerList", Side::kRight, HudMovie::kGauge},
+    {"delivery", Side::kRight, HudMovie::kGauge},
+    {"CTF_score", Side::kRight, HudMovie::kGauge},
+    {"flagTime", Side::kLeft, HudMovie::kGauge},
+    {"flagsDelivered", Side::kLeft, HudMovie::kGauge},
+    {"bomb", Side::kLeft, HudMovie::kGauge},
+    {"flag", Side::kLeft, HudMovie::kGauge},
+    {"lapmeter", Side::kLeft, HudMovie::kGauge},
+    {"laptime", Side::kLeft, HudMovie::kGauge},
+    {"totaltime", Side::kLeft, HudMovie::kGauge},
+    {"chat", Side::kLeft, HudMovie::kGauge},
+    {"miniBG", Side::kLeft, HudMovie::kMinimap},
+    {"ring", Side::kLeft, HudMovie::kMinimap},
+    {"ringNorth", Side::kLeft, HudMovie::kMinimap},
+    {"renderMe", Side::kLeft, HudMovie::kMinimap},
+};
+constexpr size_t kPieceCount = sizeof(kPieces) / sizeof(kPieces[0]);
+static_assert(kPieceCount <= 32, "the log's bit mask is 32 bits");
+
+// The Flash player's instance (rage::swfINSTANCE), as hooks/swf_dom.cpp has it.
+constexpr uint32_t kInstAlpha = 79;        // u8, 255 opaque
+constexpr uint32_t kInstParent = 184;      // the parent instance, 0 for the movie's root
+constexpr uint32_t kInstFirstChild = 188;
+constexpr uint32_t kInstNext = 192;        // the next child of the parent
+constexpr uint32_t kInstName = 196;        // char*, the name the movie gave the instance, or 0
+
+bool PlausibleEa(uint32_t ea) { return ea >= 0x10000u && ea < 0xC0000000u; }
+
+// The guest string at `ea` is `text`.
+bool GuestNameIs(const uint8_t* base, uint32_t ea, const char* text) {
+  if (!PlausibleEa(ea)) {
+    return false;
+  }
+  const char* s = reinterpret_cast<const char*>(base + ea);
+  for (size_t i = 0;; ++i) {
+    if (s[i] != text[i]) {
+      return false;
+    }
+    if (text[i] == '\0') {
+      return true;
+    }
+  }
+}
+
+// The guest string at `ea`, up to 31 characters of printable text ("" if it is not).
+std::string GuestName(const uint8_t* base, uint32_t ea) {
+  std::string out;
+  if (!PlausibleEa(ea)) {
+    return out;
+  }
+  const char* s = reinterpret_cast<const char*>(base + ea);
+  for (size_t i = 0; i < 31 && s[i] != '\0'; ++i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x20 || c > 0x7E) {
+      return std::string();
+    }
+    out.push_back(char(c));
+  }
+  return out;
+}
+
+// The guest memory the hooks read: the base is the same for the whole run.
+const uint8_t* GuestBase() {
+  static std::atomic<const uint8_t*> cached{nullptr};
+  const uint8_t* base = cached.load(std::memory_order_relaxed);
+  if (!base) {
+    if (rex::Runtime* runtime = rex::Runtime::instance()) {
+      base = runtime->virtual_membase();
+      cached.store(base, std::memory_order_relaxed);
+    }
+  }
+  return base;
+}
+
+// What the log has said: one line for each piece found (the bit is the table's index), one for each other
+// child of the HUD clip (the names, at most 16: what stays in the middle), and one for the minimap's
+// pieces when the expanded map keeps them in the middle.
+std::atomic<uint32_t> g_pieces_logged{0};
+std::mutex g_kept_mutex;
+std::vector<std::string> g_kept_logged;
+std::atomic<bool> g_expanded_logged{false};
+constexpr size_t kMaxKeptLogged = 16;
+
+// The first child of `parent` with this name, or 0.
+uint32_t FindChildNamed(const uint8_t* base, uint32_t parent, const char* name) {
+  uint32_t child = ReadGuestU32(base, parent + kInstFirstChild);
+  for (int guard = 0; PlausibleEa(child) && guard < 256; ++guard) {
+    if (GuestNameIs(base, ReadGuestU32(base, child + kInstName), name)) {
+      return child;
+    }
+    child = ReadGuestU32(base, child + kInstNext);
+  }
+  return 0;
+}
+
+// The piece the draw of this instance is the whole of, or null: a child of a clip named "HUD" whose name is
+// in the table, and, for the minimap, while the minimap shows (the clip `ring` is not transparent: in the
+// expanded map the script hides it and the other three).
+const Piece* PieceOf(const uint8_t* base, uint32_t instance) {
+  if (!PlausibleEa(instance)) {
+    return nullptr;
+  }
+  const uint32_t parent = ReadGuestU32(base, instance + kInstParent);
+  if (!PlausibleEa(parent) || !GuestNameIs(base, ReadGuestU32(base, parent + kInstName), "HUD")) {
+    return nullptr;
+  }
+  const uint32_t name_ea = ReadGuestU32(base, instance + kInstName);
+  for (size_t i = 0; i < kPieceCount; ++i) {
+    const Piece& piece = kPieces[i];
+    if (!GuestNameIs(base, name_ea, piece.name)) {
+      continue;
+    }
+    if (piece.movie == HudMovie::kMinimap) {
+      const uint32_t ring = FindChildNamed(base, parent, "ring");
+      if (!ring || base[ring + kInstAlpha] == 0) {
+        if (!g_expanded_logged.exchange(true, std::memory_order_relaxed)) {
+          LARECOMP_APP_INFO(
+              "ultrawide: the minimap's pieces stay in the middle while its ring is transparent "
+              "(the expanded map, or the HUD hidden)");
+        }
+        return nullptr;
+      }
+    }
+    if (!(g_pieces_logged.fetch_or(1u << i, std::memory_order_relaxed) & (1u << i))) {
+      LARECOMP_APP_INFO("ultrawide: HUD piece \"{}\" ({}) is anchored to the {} edge",
+                        piece.name, piece.movie == HudMovie::kGauge ? "hud.swf" : "hudmap.swf",
+                        piece.side == Side::kLeft ? "left" : "right");
+    }
+    return &piece;
+  }
+  // Another child of the HUD clip: stays in the middle with the rest of the HUD. The first few are named
+  // in the log, so that a piece the lists missed shows up in a test.
+  const std::string name = GuestName(base, name_ea);
+  if (!name.empty()) {
+    std::lock_guard<std::mutex> lock(g_kept_mutex);
+    if (g_kept_logged.size() < kMaxKeptLogged &&
+        std::find(g_kept_logged.begin(), g_kept_logged.end(), name) == g_kept_logged.end()) {
+      g_kept_logged.push_back(name);
+      LARECOMP_APP_INFO("ultrawide: HUD clip \"{}\" stays in the middle ({} of {} logged)", name,
+                        g_kept_logged.size(), kMaxKeptLogged);
+    }
+  }
+  return nullptr;
+}
+
+// The instance whose draw this thread has told the renderer about, 0 when none: the bracket is closed by
+// the exit of that same draw, and a draw inside a piece is no piece of its own.
+thread_local uint32_t t_open_piece = 0;
+
+}  // namespace
+
+void NoteUiPiece(uint32_t instance, bool begin) {
+#if defined(LARECOMP_HAS_GPU)
+  if (!begin) {
+    // The end is sent even if the picture has stopped being wide, or the setting is 0, in between (a
+    // window resized or a setting changed inside the draw): the renderer's state closes.
+    if (t_open_piece != 0 && t_open_piece == instance) {
+      t_open_piece = 0;
+      mcla::gpu::OnGuestSceneComposited(kUiPieceEnd);
+    }
+    return;
+  }
+  // The hot path: this runs for every instance the Flash player draws (the menus have hundreds).
+  if (g_hud_width.load(std::memory_order_relaxed) == 0 || t_open_piece != 0) {
+    return;
+  }
+  if (!Active() || !PlumeRenderer()) {
+    return;
+  }
+  const uint8_t* base = GuestBase();
+  if (!base) {
+    return;
+  }
+  const Piece* piece = PieceOf(base, instance);
+  if (!piece) {
+    return;
+  }
+  t_open_piece = instance;
+  mcla::gpu::OnGuestSceneComposited(piece->side == Side::kLeft ? kUiPieceLeft : kUiPieceRight);
+#else
+  (void)instance;
+  (void)begin;
+#endif
+}
+
 // From InitHooks, once, before any guest code: the setting is read, and a change of it (the F4
 // panel, the launcher's config) is followed while the game runs.
 void Init() {
@@ -198,6 +419,19 @@ void Init() {
     g_ask = REXCVAR_GET(aspect_ratio);
     g_ask_known = true;
   }
+  g_hud_width.store(std::clamp<int32_t>(REXCVAR_GET(hud_width), 0, 100), std::memory_order_relaxed);
+  rex::cvar::RegisterChangeCallback("hud_width", [](std::string_view, std::string_view value) {
+    int32_t percent = 0;
+    const char* end = value.data() + value.size();
+    if (std::from_chars(value.data(), end, percent).ec != std::errc()) {
+      return;
+    }
+    percent = std::clamp<int32_t>(percent, 0, 100);
+    if (g_hud_width.exchange(percent, std::memory_order_relaxed) != percent) {
+      LARECOMP_APP_INFO("ultrawide: hud_width is {}%{}", percent,
+                        Active() ? "" : " (the picture is not wider than 16:9: nothing moves)");
+    }
+  });
   rex::cvar::RegisterChangeCallback("aspect_ratio", [](std::string_view, std::string_view value) {
     {
       std::lock_guard<std::mutex> lock(g_ask_mutex);
@@ -236,6 +470,16 @@ void Patch_UiMarkerX_82289808(PPCRegister& f7) {
 // its neighbours, draw at once when the thread flag at [r13]+72 is set) is not inside the bracket.
 void Patch_UiWorldIcons_Begin() { mc::ultrawide::NoteWorldIcons(true); }
 void Patch_UiWorldIcons_End() { mc::ultrawide::NoteWorldIcons(false); }
+
+// sub_825FB348 (the Flash player's draw of one instance and, recursively, its children, ultrawide.h "the HUD's
+// corner pieces"): the entry hook (r3 = the instance) and the one at the exit, 0x825FB698, the label every path
+// of the function ends at (the instance is `mr r30,r3` all through, and the exit's `addi r1,r1,144` is the
+// first instruction of the epilogue). The hot path is the first line of NoteUiPiece: it runs for every instance
+// the player draws, a few hundred a frame in the menus.
+// CHECK: that r30 still holds the instance at 0x825FB698 on every path (the code reads it so), and that
+// midasm hooks at a function's entry and at an epilogue label work as the world icons' do (0x82236558, 0x822365B0).
+void Patch_UiPiece_Begin(PPCRegister& r3) { mc::ultrawide::NoteUiPiece(r3.u32, true); }
+void Patch_UiPiece_End(PPCRegister& r30) { mc::ultrawide::NoteUiPiece(r30.u32, false); }
 
 // sub_826206B0 (the nav map: the ground the map camera sees, as a box in world x and z for the cursor
 // and the map's edges): 0x82620700 is `lfs f27,-1336(r11)`, the load of the map's 16:9 aspect ratio
