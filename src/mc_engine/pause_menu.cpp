@@ -485,30 +485,49 @@ void EnsureStringTableText(const char* key, const char* text) {
 // -- Language ----------------------------------------------------------
 //
 // The .strtbl files carry eleven language blocks in the order of the engine's
-// own name table (off_8281B908): en es fr de it pt jp cht chs ko no. MCLA
-// filled six of them -- en/es/fr/de/it and jp -- and left pt and the rest at
-// zero length. sub_82218A38 is the only thing that ever sets the loaded one:
-// it takes the index in r4, stores it at mgr+28, and re-runs the loader.
+// own name table (off_8281B908): en es fr de it pt jp cht chs ko no. Six of
+// them hold text: en/es/fr/de/it (4018 strings each) and jp. pt and the rest
+// are zero length, and pt's start offset equals jp's, so asking the loader for
+// pt reads the Japanese block (no Japanese font): pt is not offered.
 //
-// Only three of the five latin languages are reachable on a retail NTSC/U
-// build. sub_82387928 maps the console's XConfig language to the index, and
-// both its German and its Italian arms fall through to English when
-// XGetGameRegion() & 0xFF00 is zero, which is exactly the Americas. Nothing
-// is missing from the data -- de and it hold 4018 translated strings each,
-// same as the languages that do come through.
+// The game chooses its language itself. sub_8238C120 calls the mapper
+// sub_82387928, which turns the console's XConfig user language
+// (ExGetXConfigSetting(3, 9) in sub_82457AB0: the SDK's `user_language` cvar,
+// XLanguage ids) into the block index and stores it at singleton+1320; the
+// string table (sub_82218A38), the hard-coded download dialog and the "lang"
+// pushed into the UI movies all follow from that (CHECK: what the movies'
+// scripts do with "lang" is not read). English is simply what `user_language`
+// defaults to in the SDK. The German and Italian arms of the mapper are shut
+// only on a console whose XGetGameRegion() & 0xFF00 is zero (the Americas); the
+// SDK answers 0xFFFF, so with region 0xFFFF every arm is open:
+//   XLanguage 1 en -> 0,  5 es -> 1,  4 fr -> 2,  3 de -> 3,  6 it -> 4;
+// 2 (Japanese) and everything else give 0 (English) with the "fell back" flag.
+// InitLanguageSetting (below) writes `user_language` from the `language` cvar
+// before the guest runs, so the game takes the whole path itself.
 //
-// jp is left out: sub_821FE648 only loads ui/jp_fonts + shared_jp when the
-// mapper returns 6, which it never does, and neither asset is in this build.
+// jp is never offered: sub_821FE648 loads ui/jp_fonts and the jp_*.xsf movies
+// when the mapper returns 6, which it never does, and those movies are not on
+// the disc (only the jp_*.sharetex are); forcing the index was measured to be a
+// hard crash.
 constexpr uint32_t kSetLanguageFn = 0x82218A38;  // (mgr, langIndex)
+// The game's own language setter, as its dev language form (sub_8264BCB8) calls
+// it: sub_8238C070(sub_82387B90(), idx) stores idx at singleton+1320 and at the
+// global 0x8288E5A0 (read by the hard-coded download dialog) and sets the
+// singleton's settings-changed byte (+0x3E050), then the form reloads the string
+// table. sub_82387B90 returns the singleton (0x8288E920).
+constexpr uint32_t kLanguageSingletonFn = 0x82387B90;  // () -> singleton
+constexpr uint32_t kSetLanguageStateFn  = 0x8238C070;  // (singleton, langIndex)
 
-constexpr const char* kLangVals[]  = {"auto", "en", "es", "fr", "de", "it",
-                                      "pt"};
+constexpr const char* kLangVals[]  = {"auto", "en", "es", "fr", "de", "it"};
 constexpr const char* kLangNames[] = {"AUTO", "ENGLISH", "ESPANOL", "FRANCAIS",
-                                      "DEUTSCH", "ITALIANO", "PORTUGUES"};
-// Index into the .strtbl language table, parallel to kLangVals. -1 = leave the
-// game's own choice alone. 5 (pt) is empty in the shipped files -- it only
-// has text when a mod archive supplies a .strtbl that fills it.
-constexpr int kLangIndex[] = {-1, 0, 1, 2, 3, 4, 5};
+                                      "DEUTSCH", "ITALIANO"};
+// Index into the .strtbl language table (the mapper's result), parallel to
+// kLangVals. -1 = auto: whatever the mapper gives for the `user_language` the
+// SDK and the player have.
+constexpr int kLangIndex[] = {-1, 0, 1, 2, 3, 4};
+// The XLanguage id that makes the mapper give that index (region 0xFFFF).
+// 0 = auto: `user_language` is left alone.
+constexpr uint32_t kLangXLanguage[] = {0, 1, 5, 4, 3, 6};
 constexpr int kNumLangs = int(sizeof(kLangVals) / sizeof(kLangVals[0]));
 
 // Reload the string table in place.
@@ -523,12 +542,22 @@ constexpr int kNumLangs = int(sizeof(kLangVals) / sizeof(kLangVals[0]));
 // keeps every one of them readable.
 //
 // What does not update is anything that resolved its text once and kept the
-// pointer -- a row's label is cached at +48 by its constructor. Those keep the
-// previous language until the screen is rebuilt.
+// pointer -- a row's label is cached at +48 by its constructor -- nor what the
+// game read once at start (the "lang" its UI movies were given, the +1238
+// "fell back" flag). Those keep the previous language until the screen is
+// rebuilt, or until the game is started again, which is why the LANGUAGE row
+// says "(RESTART)".
 bool ApplyLanguageNow(int idx) {
     if (idx < 0) return false;
     uint32_t mgr = ReadGuestBE32(kStringTableGlobal);
     if (!mgr) return false;
+
+    // The game's own setter first, as its dev language form does, so the singleton
+    // and the global the hard-coded dialog reads agree with the string table.
+    // CHECK: the settings-changed byte it sets (singleton+0x3E050, the one the
+    // profile code sets after a change) may make the game write its profile.
+    if (const uint32_t singleton = CallGuestFn1(kLanguageSingletonFn, 0))
+        CallGuestFn2(kSetLanguageStateFn, singleton, uint32_t(idx));
 
     MC_INFO("[language] reloading string table as index {}", idx);
     CallGuestFn2(kSetLanguageFn, mgr, uint32_t(idx));
@@ -544,10 +573,19 @@ bool ApplyLanguageNow(int idx) {
 // and drained on the guest thread, where calling into guest code is safe.
 std::atomic<int> g_pending_language{-1};
 
-// The index sub_82218A38 was called with the first time, i.e. the one the
-// console profile and the region gate produced. Kept so AUTO is a real value
-// the live switch can go back to, not just "whatever loaded at boot".
-std::atomic<int> g_boot_language{-1};
+// The XLanguage id `user_language` had before InitLanguageSetting wrote it:
+// what AUTO means (the SDK's default, English, or what the player put in
+// larecomp.toml). Kept so AUTO is a real value the live switch can go back to,
+// not just "whatever loaded at boot".
+uint32_t g_auto_xlanguage = 1;
+
+// The string-table index AUTO gives: the mapper's answer (sub_82387928, region
+// 0xFFFF) for g_auto_xlanguage. Anything the mapper does not know is English.
+int AutoLanguageIndex() {
+    for (int i = 1; i < kNumLangs; ++i)
+        if (kLangXLanguage[i] == g_auto_xlanguage) return kLangIndex[i];
+    return 0;
+}
 
 // ── Allocate a new vhsmState via the engine factory ───────────────────
 
@@ -1156,11 +1194,11 @@ int LanguageIndexFromCvar() {
     return -1;
 }
 
-// Same, but with AUTO resolved to the index the game itself derived. -1 only
-// if that has not been seen yet, which cannot happen after boot.
+// Same, but with AUTO resolved to the index the game itself derives from the
+// `user_language` it started with.
 int ResolveLanguageIndex() {
     const int idx = LanguageIndexFromCvar();
-    return idx >= 0 ? idx : g_boot_language.load(std::memory_order_relaxed);
+    return idx >= 0 ? idx : AutoLanguageIndex();
 }
 
 // ── Item / menu tables ─────────────────────────────────────────────────
@@ -1899,12 +1937,13 @@ const ItemDef kCarbonItems[] = {
     Carbon("PM_RxCarbonExtras",  kCarbonExtras,  "GRILL & INTERCOOLER: "),
 };
 
-// The five latin languages MCLA actually shipped strings for. AUTO is the
-// game's own pick; the other four are the ones region-gated out of a retail
-// NTSC/U build, plus the two that were never gated.
+// The five latin languages the disc has strings for. AUTO is the game's own
+// default (English unless user_language says otherwise). A change reloads the
+// text at once, but the game reads its language in several places at start, so
+// the row says "(RESTART)" and leaving the menu offers RESTART NOW.
 const ItemDef kLangItems[] = {
     Str ("PM_RxLanguage", "language", "LANGUAGE: ",
-         kLangVals, kLangNames, kNumLangs),
+         kLangVals, kLangNames, kNumLangs, " (RESTART)"),
 };
 
 // Cutscene gallery. One value row walking the whole table plus the button
@@ -3459,19 +3498,78 @@ void InitPauseMenuHooks() {
     MC_INFO("[pause-menu] hooks registered");
 }
 
+// OnPreSetup, before the runtime exists and so before any guest code: the game's
+// language comes from the console's user language, which in this runtime is the
+// SDK's `user_language` cvar (XLanguage id; see "Language" above). The choice in
+// `language` is written there, so the game's own path -- mapper, string table, hard-coded
+// text, achievements, Discord -- all see it. AUTO writes nothing: the SDK default
+// (English), or the player's own user_language, stays. NoteStartupCvar keeps this
+// write out of larecomp.toml: the file keeps the player's `language`.
+void InitLanguageSetting() {
+    const rex::cvar::FlagEntry* user = rex::cvar::GetFlagInfo("user_language");
+    if (!user) {
+        MC_WARN("[language] this SDK has no user_language cvar; the language choice only "
+                "reloads the string table");
+        return;
+    }
+    // The getter prints the number (the SDK's cvar is a uint32).
+    g_auto_xlanguage = uint32_t(std::strtoul(user->getter().c_str(), nullptr, 10));
+
+    // A `language = "pt"` (or any value not offered) in larecomp.toml was refused when the
+    // file was read, so the cvar is still at its default: it is auto, as the log line says.
+    // (Portuguese had no text on the disc: its block is empty and reads the Japanese one.)
+    // The cvar is then written once with its own default, so the next settings save
+    // rewrites the old line to "auto".
+    const rex::cvar::FlagEntry* lang = rex::cvar::GetFlagInfo("language");
+    if (lang && lang->source == rex::cvar::Source::kDefault) {
+        std::string saved = TomlLineValue(ConfigPath(), "language");
+        // The toml's own quotes are not part of the value.
+        if (saved.size() >= 2 && (saved.front() == '"' || saved.front() == '\x27') &&
+            saved.back() == saved.front())
+            saved = saved.substr(1, saved.size() - 2);
+        bool offered = saved.empty();
+        for (const char* v : kLangVals) offered = offered || saved == v;
+        if (!offered) {
+            MC_WARN("[language] larecomp.toml has language = '{}', which is not offered (the disc "
+                    "has no text for it); using auto", saved);
+            rex::cvar::SetFlagByName("language", "auto");
+        }
+    }
+
+    const std::string choice = CvarGet("language");
+    int pos = 0;
+    for (int i = 0; i < kNumLangs; ++i)
+        if (choice == kLangVals[i]) pos = i;
+    if (pos == 0) {
+        MC_INFO("[language] auto: user_language {} stays as it is (string table {})",
+                g_auto_xlanguage, AutoLanguageIndex());
+        return;
+    }
+
+    const std::string xlanguage = std::to_string(kLangXLanguage[pos]);
+    if (!rex::cvar::SetFlagByName("user_language", xlanguage)) {
+        MC_WARN("[language] could not set user_language {} for '{}'; the game starts in "
+                "user_language {}", xlanguage, choice, g_auto_xlanguage);
+        return;
+    }
+    larecomp::NoteStartupCvar("user_language");
+    MC_INFO("[language] {} -> user_language {} (string table {})", choice, xlanguage,
+            kLangIndex[pos]);
+}
+
 // sub_82218A38(mgr, langIndex) -- the one place the string table's language is
 // ever set. Hooked one instruction past the prologue, before `mr r29, r4`
-// copies the index off, so overriding r4 here is enough to make the game load
-// a different language at boot with no reload at all.
+// copies the index off. With InitLanguageSetting the game's own mapper already
+// gives the index the `language` cvar asks for (and so does our live reload),
+// so this changes nothing; it is a safety net that says so in the log when the
+// two ever differ.
 bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4) {
     (void)r3;
-    int expected = -1;
-    g_boot_language.compare_exchange_strong(expected, int(uint32_t(r4.u64)),
-                                            std::memory_order_relaxed);
-
     const int idx = LanguageIndexFromCvar();
-    if (idx >= 0) {
-        MC_INFO("[language] boot language {} -> {}", uint32_t(r4.u64), idx);
+    if (idx >= 0 && uint32_t(idx) != uint32_t(r4.u64)) {
+        // CHECK: not expected; a run with language set to de/fr/es/it must not log this.
+        MC_WARN("[language] the game asked for string table {}, the language cvar says {}: using {}",
+                uint32_t(r4.u64), idx, idx);
         r4.u64 = uint32_t(idx);
     }
     return false;

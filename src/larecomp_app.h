@@ -164,6 +164,7 @@ class LarecompApp : public rex::ReXApp {
         "anisotropic_override", "d3d12_adapter", "vulkan_device",
         "gpu_allow_invalid_fetch_constants", "log_level",
         "audio_maxqframes", "audio_mute", "shader_pack_dir", "shader_pack_threads",
+        "language", "user_language",
     };
     std::filesystem::create_directories("logs");
     if (FILE* f = fopen("logs/effective_config.txt", "w")) {
@@ -478,6 +479,11 @@ class LarecompApp : public rex::ReXApp {
     // LARecomp draws its own MCLA controller toast (mc_engine/ui); the SDK's
     // would stack a second, unstyled card next to it.
     SetFlag("controller_toast_enable", "false");
+
+    // The game's language: LARecomp's `language` choice becomes the console's user language
+    // (user_language) before anything runs, the achievement list included (the kernel reads it
+    // when the title loads). Not saved: see NoteStartupCvar.
+    InitLanguageSetting();
 
 #if !defined(_WIN32)
     // XInput exists only on Windows. A larecomp.toml carried over from there says

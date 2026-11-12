@@ -63,24 +63,24 @@ REXCVAR_DEFINE_STRING(button_prompts, "auto", "MCLA/UI",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
-    "UI text language. MCLA shipped five full translations inside its own "
-    "ui/mc4stringtable*.strtbl files (English, Spanish, French, German, "
-    "Italian) but the retail NTSC/U build can only reach three of them: the "
-    "language mapper (sub_82387928) sends German and Italian back to English "
-    "whenever XGetGameRegion() reports the Americas. auto keeps that original "
-    "behaviour; any other value overrides the index the string table loads.\n"
-    "Japanese is not offered. Its strings, glyph pages and (given the retail "
-    "jp_fonts folder) metrics all exist, but not one of the fourteen jp_*.xsf "
-    "movies shipped on this disc -- only their .sharetex. sub_821FCB90 builds "
-    "the jp_ name, the loader faults instead of returning 0, and the fallback "
-    "to the latin movie right below it never runs. Measured: hard crash.\n"
-    "pt is the empty eleventh slot every shipped .strtbl carries but never "
-    "fills. It stays blank -- and therefore English -- unless a mod archive "
-    "supplies files that fill it; tools/strtbl.py writes them.\n"
-    "Switching in-game reloads the table live. Screens already drawn keep "
-    "their old text until they are reopened -- the pause menu itself included, "
-    "since the game resolves a row's label once when the row is built.")
-    .allowed({"auto", "en", "es", "fr", "de", "it", "pt"})
+    "UI text language. The disc has five full translations in its own "
+    "ui/mc4stringtable*.strtbl files: English, Spanish, French, German and Italian. "
+    "The game picks its language from the console's user language, which here is "
+    "the SDK's user_language setting (English unless it says otherwise); at start-up "
+    "LARecomp sets that from this choice (en, es, fr, de, it), so the game's own "
+    "language code, its achievement list and the Discord status all follow it. "
+    "The setting itself is not saved to larecomp.toml, only this one. auto leaves "
+    "user_language as it is.\n"
+    "Switching in-game reloads the text table at once and tells the game its new "
+    "language, but screens already drawn keep their old text until they are "
+    "reopened (the pause menu itself too: the game resolves a row's label once when "
+    "the row is built), and the few things the game reads only at start follow after "
+    "a restart.\n"
+    "Not offered: Japanese (its UI movies, jp_*.xsf, are not on the disc, and asking "
+    "for them is a hard crash) and Portuguese (the disc's Portuguese block is empty "
+    "and starts where the Japanese one does, so it would show Japanese text). A saved "
+    "pt is read as auto.")
+    .allowed({"auto", "en", "es", "fr", "de", "it"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
