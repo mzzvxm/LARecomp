@@ -619,6 +619,10 @@ constexpr uint32_t kCarPageShift = 8;
 bool g_mod_archive_ready = false;
 std::vector<std::string> g_archives_to_mount;
 
+// The raw files that went into the mod archive: lowercased archive path -> the file on disk.
+// Filled once at the end of Init, read through ModRawFile.
+std::map<std::string, std::filesystem::path, std::less<>> g_raw_file_sources;
+
 // Driver animation name of each new car -> the name whose animations it borrows.
 // Filled while the cars are built, read by the guest's path formatters.
 std::mutex g_driver_alias_mutex;
@@ -4951,6 +4955,8 @@ void Init() {
     // file after a resource some mesh also builds and nothing gets built at
     // all. Nothing checks for that, because a mod has no reason to do it.
     std::vector<std::string> taken_paths;
+    // The file on disk behind each entry of taken_paths, for ModRawFile.
+    std::vector<std::filesystem::path> taken_sources;
     if (!raw_files.empty()) boot::BeginPhase("Files", static_cast<int>(raw_files.size()));
     for (const RawFile& file : raw_files) {
         boot::Step(file.archive_path);
@@ -5007,6 +5013,7 @@ void Init() {
             if (rim >= 0) {
                 writer.Add(file.archive_path, std::move(config), static_cast<uint32_t>(size), 0);
                 taken_paths.push_back(std::move(key));
+                taken_sources.push_back(file.source);
                 LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, rim byte {:#04x} resolved to "
                                   "catalog index {})",
                                   file.mod_name, file.archive_path, size, asked, rim);
@@ -5038,6 +5045,7 @@ void Init() {
             destination->AddFromFile(file.archive_path, file.source, size,
                                      static_cast<uint32_t>(size), 0);
             taken_paths.push_back(std::move(key));
+            taken_sources.push_back(file.source);
             LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, verbatim)", file.mod_name,
                               file.archive_path, size);
             continue;
@@ -5139,6 +5147,7 @@ void Init() {
         const size_t stored = bytes.size();
         writer.Add(file.archive_path, std::move(bytes), flag, resource_type);
         taken_paths.push_back(std::move(key));
+        taken_sources.push_back(file.source);
         if (resource_type) {
             LARECOMP_APP_INFO("[mods] {}: {} ({} bytes, resource type {}, flag {:#010x}, {})",
                               file.mod_name, file.archive_path, stored, resource_type, flag,
@@ -5366,6 +5375,19 @@ void Init() {
     g_mod_archive_ready = true;
     LARECOMP_APP_INFO("[mods] {} with {} replacement(s) and {} music archive(s), mounted last",
                        kModArchiveName, writer.size(), music_archives);
+
+    // The first mod to ship a path is the one packed (the check above), so it is the one listed.
+    for (size_t i = 0; i < taken_paths.size() && i < taken_sources.size(); ++i)
+        g_raw_file_sources.emplace(taken_paths[i], taken_sources[i]);
+}
+
+std::filesystem::path ModRawFile(std::string_view archive_path) {
+    if (!g_mod_archive_ready) return {};
+    std::string key(archive_path);
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const auto found = g_raw_file_sources.find(key);
+    return found == g_raw_file_sources.end() ? std::filesystem::path() : found->second;
 }
 
 }  // namespace mc::modloader

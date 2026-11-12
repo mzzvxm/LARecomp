@@ -6,9 +6,10 @@ void InitPauseMenuHooks();
 
 // OnPreSetup, before any guest code: sets the SDK's `user_language` (the console language the
 // game's own language mapper reads) from LARecomp's `language` cvar, so the string table, the
-// hard-coded text, the achievements and Discord all follow it. `auto` leaves user_language alone.
-// Not saved to larecomp.toml (NoteStartupCvar). A `language` value that is no longer offered
-// (pt) in larecomp.toml is logged and taken as auto.
+// hard-coded text, the achievements and Discord all follow it. `auto` and `pt` leave user_language
+// alone (no XLanguage gives the Portuguese block). Not saved to larecomp.toml (NoteStartupCvar).
+// A `language` value in larecomp.toml that is not offered at all is logged and taken as auto; a
+// saved pt is kept, and takes effect only when the mods' string tables have Portuguese text.
 void InitLanguageSetting();
 
 // Pop one level off the VirtualHSM navigation stack -- the same call the B
@@ -62,7 +63,9 @@ bool Hook_ListViewPopulate(PPCRegister& r3);
 
 // sub_82218A38 (string table SetLanguage, r4 = index into the .strtbl language
 // table). The game's mapper already gives the index the `language` cvar asks for
-// (InitLanguageSetting); this only logs and corrects it if the two ever differ.
+// (InitLanguageSetting) for en/es/fr/de/it; this only logs and corrects it if the two ever
+// differ. For pt it sets index 5, when the mods' string tables have Portuguese text (decided
+// here, at the first call: the mod files are known by then).
 bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4);
 
 // Options > Controller key dispatch (sub_8264D0D8). Handles accept/customise

@@ -53,6 +53,14 @@ inline bool IsReservedModFolder(std::string_view name) {
 // engine will mount. Call once at startup, before guest code runs.
 void Init();
 
+// The file on disk that went into the mod archive for `archive_path` (a raw file a mod ships as
+// modloader/<mod>/files/<archive_path>, e.g. "ui/mc4stringtable.strtbl"; compared case-insensitively),
+// or an empty path when none did: no mod ships it, the mod archive is not in use (the model_mods
+// setting is off, there is no mod folder, the archive could not be built), or the file was skipped.
+// With the same path in two mods the first one is the one in the archive, and so the one named here.
+// Valid once Init() has run; before that it answers with an empty path.
+std::filesystem::path ModRawFile(std::string_view archive_path);
+
 // Appends the mod archive to the ';'-separated list the engine just copied into
 // its parse buffer. `buffer` is the guest address of that buffer and `capacity`
 // its size in bytes, terminator included. Does nothing when the modloader is

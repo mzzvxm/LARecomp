@@ -10,6 +10,7 @@
 #include "menu_items.h"
 #include "upscaling_menu.h"
 #include "logging.h"
+#include "modloader/modloader.h"
 #include "online/online_toast.h"
 #include "online/server_browser/browser_ui.h"
 #include "ui_forms.h"
@@ -488,7 +489,9 @@ void EnsureStringTableText(const char* key, const char* text) {
 // own name table (off_8281B908): en es fr de it pt jp cht chs ko no. Six of
 // them hold text: en/es/fr/de/it (4018 strings each) and jp. pt and the rest
 // are zero length, and pt's start offset equals jp's, so asking the loader for
-// pt reads the Japanese block (no Japanese font): pt is not offered.
+// pt on the disc's tables reads the Japanese block (no Japanese font). pt is
+// therefore offered only when a mod ships string tables that fill it: see
+// "Portuguese" below.
 //
 // The game chooses its language itself. sub_8238C120 calls the mapper
 // sub_82387928, which turns the console's XConfig user language
@@ -518,17 +521,24 @@ constexpr uint32_t kSetLanguageFn = 0x82218A38;  // (mgr, langIndex)
 constexpr uint32_t kLanguageSingletonFn = 0x82387B90;  // () -> singleton
 constexpr uint32_t kSetLanguageStateFn  = 0x8238C070;  // (singleton, langIndex)
 
-constexpr const char* kLangVals[]  = {"auto", "en", "es", "fr", "de", "it"};
+constexpr const char* kLangVals[]  = {"auto", "en", "es", "fr", "de", "it", "pt"};
 constexpr const char* kLangNames[] = {"AUTO", "ENGLISH", "ESPANOL", "FRANCAIS",
-                                      "DEUTSCH", "ITALIANO"};
-// Index into the .strtbl language table (the mapper's result), parallel to
-// kLangVals. -1 = auto: whatever the mapper gives for the `user_language` the
-// SDK and the player have.
-constexpr int kLangIndex[] = {-1, 0, 1, 2, 3, 4};
+                                      "DEUTSCH", "ITALIANO", "PORTUGUES"};
+// Index into the .strtbl language table, parallel to kLangVals. -1 = auto:
+// whatever the mapper gives for the `user_language` the SDK and the player have.
+// 5 (pt) is not a mapper result: the mapper only gives 0..4, so pt is set by
+// rewriting the string table's index (Hook_StringTableLanguage).
+constexpr int kLangIndex[] = {-1, 0, 1, 2, 3, 4, 5};
 // The XLanguage id that makes the mapper give that index (region 0xFFFF).
-// 0 = auto: `user_language` is left alone.
-constexpr uint32_t kLangXLanguage[] = {0, 1, 5, 4, 3, 6};
+// 0 = `user_language` is left alone: auto, and pt (no XLanguage gives 5).
+constexpr uint32_t kLangXLanguage[] = {0, 1, 5, 4, 3, 6, 0};
 constexpr int kNumLangs = int(sizeof(kLangVals) / sizeof(kLangVals[0]));
+// pt: its block in the .strtbl language table, and its place in the lists above.
+constexpr int kPtIndex = 5;
+constexpr int kPtPos = 6;
+static_assert(kLangIndex[kPtPos] == kPtIndex);
+
+int AutoLanguageIndex();
 
 // Reload the string table in place.
 //
@@ -554,10 +564,14 @@ bool ApplyLanguageNow(int idx) {
 
     // The game's own setter first, as its dev language form does, so the singleton
     // and the global the hard-coded dialog reads agree with the string table.
+    // pt is the exception: 5 is not a language the game knows (its mapper cannot
+    // return it, and the movies and the dialog have nothing for it), so the
+    // singleton goes back to auto's index and only the string table reads block 5.
     // CHECK: the settings-changed byte it sets (singleton+0x3E050, the one the
     // profile code sets after a change) may make the game write its profile.
+    const int state_idx = idx == kPtIndex ? AutoLanguageIndex() : idx;
     if (const uint32_t singleton = CallGuestFn1(kLanguageSingletonFn, 0))
-        CallGuestFn2(kSetLanguageStateFn, singleton, uint32_t(idx));
+        CallGuestFn2(kSetLanguageStateFn, singleton, uint32_t(state_idx));
 
     MC_INFO("[language] reloading string table as index {}", idx);
     CallGuestFn2(kSetLanguageFn, mgr, uint32_t(idx));
@@ -583,8 +597,145 @@ uint32_t g_auto_xlanguage = 1;
 // 0xFFFF) for g_auto_xlanguage. Anything the mapper does not know is English.
 int AutoLanguageIndex() {
     for (int i = 1; i < kNumLangs; ++i)
-        if (kLangXLanguage[i] == g_auto_xlanguage) return kLangIndex[i];
+        if (kLangXLanguage[i] != 0 && kLangXLanguage[i] == g_auto_xlanguage) return kLangIndex[i];
     return 0;
+}
+
+// -- Portuguese --------------------------------------------------------
+//
+// pt is the empty eleventh block of every shipped .strtbl. It has text only when a
+// mod ships string tables that fill it: modloader/<mod>/files/ui/mc4stringtable*.strtbl
+// (the mod loader packs them into xarchive_mods.rpf, which is mounted last and wins).
+// perf/scripts/make_pt_test_mod.py writes such a mod from the disc's files.
+//
+// A .strtbl is little endian: u32 n (11), u32 offset[n] (absolute file offsets, 0 = no
+// block), u32 512, a key-name table only tools read (u32 count, then per name a u32
+// length and length + 1 bytes), then the blocks. sub_825F23C0 reads n and the offsets,
+// keeps offset[lang] (0 gives "No data for language"), seeks there and reads the block:
+// u32 count (0 gives "No translations available"), then per string a u32 key hash, u16
+// flags, u32 name length + name, u32 text length (UTF-16 chars, the NUL included) + text
+// (UTF-16LE), two f32 and two u8. It never looks at a block's length. On the disc pt's
+// offset equals jp's, so a block runs from its offset to the next language's.
+//
+// The tables the game reads with the language index (mgr+28, every one of them block
+// `lang` of its own file):
+//   ui/mc4stringtable.strtbl            sub_822185E8, inside SetLanguage (boot, every switch)
+//   ui/mc4stringtable_0001..0008.strtbl sub_82217778, the same call; the disc has 0001-0003
+//   ui/mc4stringtable_tms.strtbl        sub_82217618, when the TMS data loads (later)
+//   mc4stringtable_downloaded           sub_82217618, for downloaded content (later), from
+//                                       the content's own mount ("%s:\mc4stringtable_downloaded",
+//                                       0x820393E4), not from ui/, so a mod cannot replace it
+// Every table the disc has holds Japanese text under pt, and one the mod does not ship is
+// the disc's, so a table without its own pt block would put Japanese text (no font) on
+// the keys it holds: vehicle and paint names in _0001-_0003, the TMS texts. The game
+// cannot be told per table, and _tms reads the index when it loads, so pt is available
+// only when EVERY ui/ table the disc has is shipped by a mod with text in its pt block,
+// and any other one a mod ships has one too. Otherwise this run uses auto. The downloaded
+// table is not required (no mod can supply it): with downloaded content installed, its
+// few texts would read their Japanese block under pt.
+struct StringTableFile {
+    const char* path;  // archive path
+    bool on_disc;      // not shipped by a mod: the disc's file is read, and it has no pt text
+};
+constexpr StringTableFile kStringTableFiles[] = {
+    {"ui/mc4stringtable.strtbl", true},
+    {"ui/mc4stringtable_0001.strtbl", true},
+    {"ui/mc4stringtable_0002.strtbl", true},
+    {"ui/mc4stringtable_0003.strtbl", true},
+    {"ui/mc4stringtable_0004.strtbl", false},
+    {"ui/mc4stringtable_0005.strtbl", false},
+    {"ui/mc4stringtable_0006.strtbl", false},
+    {"ui/mc4stringtable_0007.strtbl", false},
+    {"ui/mc4stringtable_0008.strtbl", false},
+    {"ui/mc4stringtable_tms.strtbl", true},
+};
+
+// Whether the pt block of one .strtbl has text, from its header. False, with the reason,
+// for a file that cannot be read, has no pt slot or offset, whose block is zero length
+// (it starts where the next language's does, as on the disc) or holds no strings.
+bool PtBlockHasText(const std::filesystem::path& file, std::string& why) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        why = "cannot be read";
+        return false;
+    }
+    in.seekg(0, std::ios::end);
+    const uint64_t size = uint64_t(in.tellg());
+    auto u32_at = [&](uint64_t at, uint32_t& value) {
+        uint8_t b[4] = {};
+        in.clear();
+        in.seekg(std::streamoff(at));
+        if (!in.read(reinterpret_cast<char*>(b), 4)) return false;
+        value = uint32_t(b[0]) | uint32_t(b[1]) << 8 | uint32_t(b[2]) << 16 | uint32_t(b[3]) << 24;
+        return true;
+    };
+
+    uint32_t n = 0, start = 0, next = 0, count = 0;
+    if (!u32_at(0, n) || n <= uint32_t(kPtIndex) || n > 64 || !u32_at(4 + 4 * kPtIndex, start)) {
+        why = "has no pt slot in its header";
+        return false;
+    }
+    if (start == 0) {
+        why = "has no pt block (its offset is 0)";
+        return false;
+    }
+    // The next language's offset ends the block; the last language's block ends with the file.
+    uint64_t end = size;
+    if (n > uint32_t(kPtIndex) + 1 && u32_at(4 + 4 * (kPtIndex + 1), next) && next != 0) end = next;
+    if (start >= end || end > size) {
+        why = "has an empty pt block (it ends where it starts)";
+        return false;
+    }
+    if (!u32_at(start, count) || count == 0 || start + 4 > end) {
+        why = "has a pt block with no strings";
+        return false;
+    }
+    return true;
+}
+
+// 1: every table the game loads has Portuguese text; 0: not; -1: not decided yet.
+std::atomic<int> g_pt_state{-1};
+
+// Whether pt is usable. Only reads what DecidePortuguese found, so it is safe under the cvar
+// lock; before the decision it is false.
+bool PortugueseAvailable() { return g_pt_state.load(std::memory_order_relaxed) == 1; }
+
+// Decides once, at the first SetLanguage call (the boot load). The mod archive is built before
+// the guest starts, so the files the mods ship are known by then; OnPreSetup, where the language
+// is set up, is too early. `wanted`: the `language` setting is pt, so a "no" is worth a warning.
+void DecidePortuguese(bool wanted) {
+    if (g_pt_state.load(std::memory_order_relaxed) >= 0) return;
+
+    int filled = 0;
+    std::string why;
+    for (const StringTableFile& table : kStringTableFiles) {
+        const std::filesystem::path file = mc::modloader::ModRawFile(table.path);
+        if (file.empty()) {
+            if (!table.on_disc) continue;
+            why = filled == 0
+                      ? std::string("no mod ships string tables with Portuguese text (a mod's "
+                                    "files/ui/mc4stringtable*.strtbl with the pt block filled)")
+                      : std::string(table.path) + " is not shipped by the mod, and the disc's "
+                                                  "has no Portuguese text";
+            break;
+        }
+        std::string problem;
+        if (!PtBlockHasText(file, problem)) {
+            why = std::string(table.path) + " from the mod " + problem;
+            break;
+        }
+        ++filled;
+    }
+
+    const bool ok = why.empty();
+    g_pt_state.store(ok ? 1 : 0, std::memory_order_relaxed);
+    if (ok)
+        MC_INFO("[language] Portuguese is available: {} string table(s) from mods have pt text", filled);
+    else if (wanted)
+        MC_WARN("[language] language = pt, but {}: using auto (string table {}); the setting is kept "
+                "for when the mod is installed", why, AutoLanguageIndex());
+    else
+        MC_DEBUG("[language] Portuguese is not offered: {}", why);
 }
 
 // ── Allocate a new vhsmState via the engine factory ───────────────────
@@ -1186,11 +1337,14 @@ void LanOnlineTick() {
 }
 
 // Which .strtbl language block the `language` cvar asks for. -1 = auto, i.e.
-// leave whatever sub_82387928 derived from the console profile.
+// leave whatever sub_82387928 derived from the console profile. pt is auto too
+// while the mods' string tables have no Portuguese text (PortugueseAvailable);
+// the cvar itself is left as it is.
 int LanguageIndexFromCvar() {
     std::string v = CvarGet("language");
     for (int i = 0; i < kNumLangs; ++i)
-        if (v == kLangVals[i]) return kLangIndex[i];
+        if (v == kLangVals[i])
+            return kLangIndex[i] == kPtIndex && !PortugueseAvailable() ? -1 : kLangIndex[i];
     return -1;
 }
 
@@ -1937,13 +2091,31 @@ const ItemDef kCarbonItems[] = {
     Carbon("PM_RxCarbonExtras",  kCarbonExtras,  "GRILL & INTERCOOLER: "),
 };
 
-// The five latin languages the disc has strings for. AUTO is the game's own
-// default (English unless user_language says otherwise). A change reloads the
-// text at once, but the game reads its language in several places at start, so
-// the row says "(RESTART)" and leaving the menu offers RESTART NOW.
+// The five latin languages the disc has strings for, and PORTUGUES when the mods' string tables
+// have Portuguese text (PortugueseAvailable; it is the last entry, so the list is one shorter
+// without it). AUTO is the game's own default (English unless user_language says otherwise). A
+// saved pt that is not available shows as AUTO, which is what runs; the setting itself is not
+// touched. A change reloads the text at once, but the game reads its language in several places
+// at start, so the row says "(RESTART)" and leaving the menu offers RESTART NOW.
+int LangCount() { return PortugueseAvailable() ? kNumLangs : kNumLangs - 1; }
+std::string LangLabel(int i) { return i >= 0 && i < LangCount() ? kLangNames[i] : ""; }
+int LangIndex() {
+    const std::string value = CvarGet("language");
+    for (int i = 0; i < LangCount(); ++i)
+        if (value == kLangVals[i]) return i;
+    return 0;
+}
+void LangSet(int i, CvarWriter write) {
+    if (i >= 0 && i < LangCount()) write("language", kLangVals[i]);
+}
+constexpr RowDynamics kLangRowDynamics = {.str_label = LangLabel,
+                                          .value_count = LangCount,
+                                          .value_index = LangIndex,
+                                          .set_value = LangSet};
 const ItemDef kLangItems[] = {
-    Str ("PM_RxLanguage", "language", "LANGUAGE: ",
-         kLangVals, kLangNames, kNumLangs, " (RESTART)"),
+    WithDynamics(Str("PM_RxLanguage", "language", "LANGUAGE: ",
+                     kLangVals, kLangNames, kNumLangs, " (RESTART)"),
+                 &kLangRowDynamics),
 };
 
 // Cutscene gallery. One value row walking the whole table plus the button
@@ -3515,11 +3687,12 @@ void InitLanguageSetting() {
     // The getter prints the number (the SDK's cvar is a uint32).
     g_auto_xlanguage = uint32_t(std::strtoul(user->getter().c_str(), nullptr, 10));
 
-    // A `language = "pt"` (or any value not offered) in larecomp.toml was refused when the
-    // file was read, so the cvar is still at its default: it is auto, as the log line says.
-    // (Portuguese had no text on the disc: its block is empty and reads the Japanese one.)
-    // The cvar is then written once with its own default, so the next settings save
-    // rewrites the old line to "auto".
+    // A `language` in larecomp.toml that is not offered at all (jp, a typo) was refused when
+    // the file was read, so the cvar is still at its default: it is auto, as the log line says.
+    // The cvar is then written once with its own default, so the next settings save rewrites
+    // the old line to "auto". A saved pt is offered and stays: whether it takes effect depends
+    // on the mods' files (DecidePortuguese), which are not known yet, and it must survive a
+    // run without the mod.
     const rex::cvar::FlagEntry* lang = rex::cvar::GetFlagInfo("language");
     if (lang && lang->source == rex::cvar::Source::kDefault) {
         std::string saved = TomlLineValue(ConfigPath(), "language");
@@ -3550,6 +3723,11 @@ void InitLanguageSetting() {
                 g_auto_xlanguage, AutoLanguageIndex());
         return;
     }
+    if (kLangXLanguage[pos] == 0) {  // pt: no XLanguage gives string table 5
+        MC_INFO("[language] pt: user_language {} stays as it is; the text comes from the string "
+                "tables of a mod, checked when the game starts", g_auto_xlanguage);
+        return;
+    }
 
     const std::string xlanguage = std::to_string(kLangXLanguage[pos]);
     if (!rex::cvar::SetFlagByName("user_language", xlanguage)) {
@@ -3565,16 +3743,27 @@ void InitLanguageSetting() {
 // sub_82218A38(mgr, langIndex) -- the one place the string table's language is
 // ever set. Hooked one instruction past the prologue, before `mr r29, r4`
 // copies the index off. With InitLanguageSetting the game's own mapper already
-// gives the index the `language` cvar asks for (and so does our live reload),
-// so this changes nothing; it is a safety net that says so in the log when the
-// two ever differ.
+// gives the index the `language` cvar asks for for en/es/fr/de/it (and so does
+// our live reload), so there this changes nothing; it is a safety net that says
+// so in the log when the two ever differ. pt is the one that needs it: the
+// mapper cannot return 5, so the index is rewritten here, and only when the
+// mods' string tables have Portuguese text (otherwise LanguageIndexFromCvar
+// says auto and the game's own index stands).
+// The first call is the boot load, which is where pt is decided: the mods' files
+// are known by then.
 bool Hook_StringTableLanguage(PPCRegister& r3, PPCRegister& r4) {
     (void)r3;
+    DecidePortuguese(CvarGet("language") == kLangVals[kPtPos]);
     const int idx = LanguageIndexFromCvar();
     if (idx >= 0 && uint32_t(idx) != uint32_t(r4.u64)) {
-        // CHECK: not expected; a run with language set to de/fr/es/it must not log this.
-        MC_WARN("[language] the game asked for string table {}, the language cvar says {}: using {}",
-                uint32_t(r4.u64), idx, idx);
+        if (idx == kPtIndex) {
+            MC_INFO("[language] pt: string table block {} instead of the game's {}", idx,
+                    uint32_t(r4.u64));
+        } else {
+            // CHECK: not expected; a run with language set to de/fr/es/it must not log this.
+            MC_WARN("[language] the game asked for string table {}, the language cvar says {}: "
+                    "using {}", uint32_t(r4.u64), idx, idx);
+        }
         r4.u64 = uint32_t(idx);
     }
     return false;
