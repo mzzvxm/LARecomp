@@ -14,6 +14,7 @@
 #include "spdlog_console.h"
 #include "larecomp_log.h"
 #include "crash_handler.h"
+#include "cpu_level.h"
 #include "achievement_metadata.h"
 #include "mc_engine/hooks/hooks.h"
 #include "native_gfx/nocp/nocp_app.h"
@@ -110,6 +111,9 @@ class LarecompApp : public rex::ReXApp {
     mcla::WaitForRestartedGame();
     InitLarecompLogging();
     LARECOMP_APP_INFO("LA Recompiled - @by mzzvxm");
+    // The CPU level this build was compiled for (CMake LARECOMP_CPU_LEVEL) and what this CPU has.
+    LARECOMP_APP_INFO("[cpu] built for {}; CPU: {}", larecomp::cpu::BuiltLevel(),
+                      larecomp::cpu::DescribeFeatures());
     InstallCrashLogger();
     if (auto* w = window()) {
       w->SetTitle("Midnight Club Los Angeles - by @mzzvxm");
