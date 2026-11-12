@@ -24,7 +24,7 @@ The game boots to the menu, free roam and races work, and saves load. On top of 
 
 **A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
 
-**Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker that reaches the German and Italian translations the retail NTSC/U build region-gates out.
+**Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker for the five translations on the disc: English, Spanish, French, German and Italian.
 
 Under the hood there are 112 mid-asm hooks, 155 settings, and 24,927 named function hints driving codegen.
 
