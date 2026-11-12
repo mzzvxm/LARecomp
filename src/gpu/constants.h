@@ -73,6 +73,20 @@ static_assert(offsetof(SharedConstants, pos_scale) == 560);
 static_assert(offsetof(SharedConstants, pos_offset) == 576);
 static_assert(offsetof(SharedConstants, inv_resolution_scale) == 592);
 
+// The HDR scene variant of the game's tone map (hdr_tonemap.h, shaders.h kHdrVariant) reads 16 bytes
+// after the SharedConstants block: the pack builder (tools/build_hdr_variants.py) declares them in
+// the variant's HLSL as `float4 g_HdrScene` at byte 608 (c38 of the block). Only the draw that
+// uses the variant uploads them (SharedConstants followed by this); every other draw, and the
+// main pack's contract (v7 and v8, 608 bytes), is as it was. Contract 1 of the HDR pack.
+struct HdrSceneConstants {
+  float knee;        // where the HDR curve leaves the game's, in the game's linear units (1 = its white)
+  float highlights;  // the slope above the knee, times the game curve's (mcla_gpu_hdr_highlights)
+  float peak;        // the display's peak in the game's linear units (the viewing transfer inverted)
+  float reserved;
+};
+static_assert(sizeof(HdrSceneConstants) == 16);
+inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {
@@ -122,16 +136,21 @@ AlphaTest ComputeAlphaTest(const XenosState& state);
 // g_AlphaToMask (contract v5 and v6; the generated computeAlphaToMask, Xenia's
 // rule): bits 0-7 the dither offsets of the four pixels of a quad --
 // RB_COLORCONTROL's alpha_to_mask_offset0..3, or with mcla_gpu_a2c_dither_all
-// the dithered 3, 1, 0, 2 of the game's colour passes for every draw --
+// AlphaToMaskOffsets for every draw --
 // bit 8 enabled, bits 9-10 the sample count log2 -- of the host target,
 // `host_samples` (M6d.2: a guest 2x target with 4 host samples takes the 4x
 // pattern; 8, contract v8, the generated 8-sample branch). 0 = off (every sample covered). Read by the ALPHA_TEST variant
 // only.
 uint32_t AlphaToMaskParameters(const XenosState& state, uint32_t host_samples);
 
+// The offsets (bits 0-7 above) every draw takes with mcla_gpu_a2c_dither_all:
+// the dithered 3, 1, 0, 2 of the game's colour passes at 2 host samples or
+// more, the solid 2, 2, 2, 2 of its pre-passes at 1; without it the game's.
+uint32_t AlphaToMaskOffsets(const XenosState& state, uint32_t host_samples);
+
 // Whether AlphaToMaskParameters gives this draw other offsets than the game's
-// (mcla_gpu_a2c_dither_all on, alpha to mask on, the game's not dithered).
-bool AlphaToMaskOffsetsReplaced(const XenosState& state);
+// (alpha to mask on, AlphaToMaskOffsets not the game's).
+bool AlphaToMaskOffsetsReplaced(const XenosState& state, uint32_t host_samples);
 
 // What FillSharedConstants could not express; the caller reports each kind.
 enum SharedConstantsIssue : uint32_t {

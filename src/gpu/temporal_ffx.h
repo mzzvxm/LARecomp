@@ -22,9 +22,11 @@
 // is Status(): the menu lists only that. FSR 3.1 is made with the runtime's version override, so
 // that "FSR 3.1" is never FSR 4 on a card that has it.
 //
-// Context. Made and destroyed on the worker (about 0.6 s, hundreds of MB at 4K): for one request
-// (the upscaler, the sizes) at a time; a request that differs retires the old one behind the frames
-// that may use it. Flags: HDR input (the scene is linear and scene referred), inverted depth (the
+// Context. Made and destroyed on the worker (0.3 to 0.6 s on the logged runs, hundreds of MB at 4K):
+// for one request (the upscaler, the sizes) at a time; a request that differs retires the old one
+// behind the frames that may use it. A second context can be prepared beside the current one (Prepare,
+// Commit: a live change of mode or upscaler): the old one dispatches until the new one is made, so
+// for about half a second the memory of two is held. Flags: HDR input (the scene is linear and scene referred), inverted depth (the
 // game stores 1 near, 0 far), automatic exposure, motion vectors at render size with the jitter
 // already taken out (no jitter cancellation), no dynamic resolution.
 //
@@ -53,6 +55,10 @@ class FfxBackend final : public TemporalBackend {
   void Request(const BackendRequest& request) override;
   bool Ready(const BackendRequest& request) const override;
   uint32_t JitterPhaseCount() const override;
+  void Prepare(const BackendRequest& next) override;
+  bool PreparedReady(const BackendRequest& next) const override;
+  bool Commit(const BackendRequest& next) override;
+  void CancelPrepared() override;
   void Release() override;
   void Fail(const std::string& reason) override;
   bool Upscale(plume::RenderCommandList* list, const TemporalInputs& inputs) override;

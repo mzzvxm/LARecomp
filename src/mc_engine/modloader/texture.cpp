@@ -250,7 +250,8 @@ std::vector<uint8_t> DecodeImage(const std::vector<uint8_t>& encoded, uint32_t& 
     return out;
 }
 
-// The tiling maths is a straight port of Rpf3Crypto/XGAddress2DTiled: given the
+// The tiling maths is a straight port of XGAddress2DTiled in Foxxyyy's
+// CodeX.Games.MCLA (RPF3/Rpf3Crypto.cs; credited in the README): given the
 // index of a block in tiled order it returns where that block sits in the plain
 // linear image. The extraction tools run it one way; writing a texture runs the
 // same map the other way round.

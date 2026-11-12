@@ -8,7 +8,10 @@
 
 #include "backend_impl.h"
 
+#include "temporal_dlss.h"
+
 #include <algorithm>
+#include <cstring>
 #include <format>
 #include <string>
 #include <vector>
@@ -151,8 +154,67 @@ void ReleaseDebugDevice(void* debug_device) {
   static_cast<ID3D12DebugDevice*>(debug_device)->Release();
 }
 
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+namespace {
+
+// NVIDIA Streamline's wrapper of the swap chain (temporal_dlss.h): it can only go in once
+// Streamline has finished starting, seconds after the swap chain was made, so Plume asks before
+// every present. With nothing to do this is one atomic read.
+void UpgradeSwapChainAtPresent(void*, IDXGISwapChain1** swap_chain) {
+  if (!dlss::SwapChainUpgradePending() || !*swap_chain) {
+    return;
+  }
+  IDXGISwapChain1* native = *swap_chain;
+  void* wrapper = native;
+  if (dlss::UpgradeSwapChain(&wrapper)) {
+    *swap_chain = static_cast<IDXGISwapChain1*>(wrapper);
+    native->Release();  // the wrapper holds a reference of its own to it
+  }
+}
+
+}  // namespace
+#endif
+
 std::unique_ptr<plume::RenderInterface> CreateInterface() {
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+  plume::D3D12InterfaceHooks hooks;
+  hooks.upgradeSwapChainAtPresent = &UpgradeSwapChainAtPresent;
+  return plume::CreateD3D12Interface(hooks);
+#else
   return plume::CreateD3D12Interface();
+#endif
+}
+
+// The DXGI factory a swap chain is made with is Plume's interface's member, read when the chain is made
+// (plume_d3d12.cpp D3D12SwapChain's constructor): a wrapper of it in its place for the call gives a chain
+// that is the wrapper's (NVIDIA Streamline's proxy factory, for DLSS frame generation).
+// CHECK: Plume keeps no other use of the factory while a swap chain is made (the constructor calls its
+// CreateSwapChainForHwnd and MakeWindowAssociation only), and the wrapper answers both.
+bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
+                           void** wrapper) {
+  auto* d3d_device = static_cast<plume::D3D12Device*>(device);
+  if (!wrap || !d3d_device || !d3d_device->renderInterface ||
+      !d3d_device->renderInterface->dxgiFactory) {
+    return false;
+  }
+  void* factory = d3d_device->renderInterface->dxgiFactory;
+  void* proxy = factory;
+  if (!wrap(&proxy) || !proxy || proxy == factory) {
+    return false;
+  }
+  *original = factory;
+  *wrapper = proxy;
+  d3d_device->renderInterface->dxgiFactory = static_cast<IDXGIFactory4*>(proxy);
+  return true;
+}
+
+void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrapper) {
+  auto* d3d_device = static_cast<plume::D3D12Device*>(device);
+  if (d3d_device && d3d_device->renderInterface) {
+    d3d_device->renderInterface->dxgiFactory = static_cast<IDXGIFactory4*>(original);
+  }
+  // The wrapper's own reference; it holds one of the factory's, which it gives back.
+  static_cast<IUnknown*>(wrapper)->Release();
 }
 
 bool IsNullBacked(const plume::RenderTexture* texture) {
@@ -422,6 +484,7 @@ RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter) 
       out.found = true;
       out.name = utf8;
       out.vendor_id = desc.VendorId;
+      out.index = static_cast<int>(i);
       if (named) {
         break;
       }
@@ -441,6 +504,11 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   const auto* dev = static_cast<const plume::D3D12Device*>(device);
   if (dev) {
     out.device = dev->d3d;
+    if (dev->d3d) {
+      static_assert(sizeof(LUID) == sizeof(uint64_t));
+      const LUID luid = dev->d3d->GetAdapterLuid();
+      std::memcpy(&out.adapter_luid, &luid, sizeof(luid));
+    }
   }
   return out;
 }
@@ -453,6 +521,27 @@ void* NativeListHandle(plume::RenderCommandList* list) {
 void* NativeTextureHandle(const plume::RenderTexture* texture) {
   const auto* t = static_cast<const plume::D3D12Texture*>(texture);
   return t ? t->d3d : nullptr;
+}
+
+NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use) {
+  NativeImage out;
+  const auto* t = static_cast<const plume::D3D12Texture*>(texture);
+  if (!t || !t->d3d) {
+    return out;
+  }
+  out.resource = t->d3d;
+  // The states Plume leaves a texture in for these layouts (toTextureState): shader read at the
+  // compute stage is NON_PIXEL_SHADER_RESOURCE, general with the storage flag UNORDERED_ACCESS.
+  out.state = use == ImageUse::kStorage ? uint32_t(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                                        : uint32_t(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  out.mip_levels = t->desc.mipLevels ? t->desc.mipLevels : 1;
+  out.array_layers = t->desc.arraySize ? t->desc.arraySize : 1;
+  out.complete = true;
+  return out;
+}
+
+void ForgetImageContents(plume::RenderTexture* texture) {
+  (void)texture;  // Streamline gives D3D12 back buffers back in the present state
 }
 
 void InvalidateAfterExternalWork(plume::RenderCommandList* list) {

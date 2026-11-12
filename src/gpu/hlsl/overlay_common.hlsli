@@ -19,6 +19,11 @@ struct OverlayPush {
   // Bindless texture slot, or kOverlayNoTexture for vertex color only.
   uint texture;
   uint sampler_index;
+  // OVERLAY_HDR only (hdr.h HdrLevels): the UI's level on an HDR10 swap chain.
+  float hdr_white;
+  float hdr_peak;
+  float hdr_knee;
+  uint hdr_flags;
 };
 
 static const uint kOverlayNoTexture = 0xFFFFFFFFu;

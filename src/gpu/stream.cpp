@@ -37,6 +37,23 @@ std::chrono::microseconds SpinBeforeSleep() {
   return spin;
 }
 
+// How long the guest polls for the present it waits for (WaitExecuted) before it sleeps. The render
+// thread is a few tens of microseconds from the release point when the guest starts waiting (about 60
+// us a frame measured, 200 at the 99th percentile), and a sleeping waiter needs a wake-up on top: a
+// kernel call on the render thread and the scheduler's delay before the guest runs again, tens of
+// microseconds, more when idle cores sleep deeply. Not with 5 or fewer logical processors, where a
+// polling guest can hold the very core the render thread needs to finish.
+// CHECK: not built or run. The gain (the guest's present wait, gpresent_ms in the frame log, was 0.06
+// ms a frame mean and 0.2 at p99 with 16 logical processors) is an estimate: the wake-up share of that
+// wait is not measured. A real loss would show as guest-thread CPU per frame up with no wait saved.
+constexpr std::chrono::microseconds kSpinWaitExecuted{100};
+
+std::chrono::microseconds SpinWaitExecuted() {
+  static const std::chrono::microseconds spin =
+      ::mc::FewLogicalProcessors() ? std::chrono::microseconds{0} : kSpinWaitExecuted;
+  return spin;
+}
+
 inline void CpuRelax() {
 #if defined(_M_X64) || defined(__x86_64__)
   _mm_pause();
@@ -100,13 +117,16 @@ bool CommandStream::Initialize(uint32_t capacity) {
   }
   capacity_ = capacity;
   tail_ = 0;
+  tail_offset_ = 0;
   next_sequence_ = 1;
   unpublished_records_ = 0;
   unpublished_bytes_ = 0;
+  consumer_woken_ = false;
   published_tail_.store(0, std::memory_order_relaxed);
   head_.store(0, std::memory_order_relaxed);
   executed_sequence_.store(0, std::memory_order_relaxed);
   read_ = 0;
+  read_offset_ = 0;
   released_ = 0;
   stop_.store(false, std::memory_order_release);
   return true;
@@ -140,25 +160,28 @@ uint8_t* CommandStream::Writer::Begin(RecordType type, uint32_t payload_bytes) {
   }
   const uint32_t size = AlignRecord(uint32_t(sizeof(RecordHeader)) + payload_bytes);
   uint64_t at = s.tail_;
-  const uint64_t offset = at % s.capacity_;
+  uint64_t offset = s.tail_offset_;  // at % capacity_
   const uint64_t pad = offset + size > s.capacity_ ? s.capacity_ - offset : 0;
   if (!s.WaitForSpace(lock_, at + pad + size)) {
     return nullptr;
   }
   if (pad != 0) {
-    auto* filler = reinterpret_cast<RecordHeader*>(s.At(at));
+    auto* filler = reinterpret_cast<RecordHeader*>(s.buffer_.get() + offset);
     *filler = RecordHeader{};
     filler->size = uint32_t(pad);
     filler->type = RecordType::kPad;
     at += pad;
+    offset = 0;  // the filler runs to the end of the buffer
     s.tail_ = at;
+    s.tail_offset_ = 0;
     s.unpublished_bytes_ += pad;
   }
-  auto* header = reinterpret_cast<RecordHeader*>(s.At(at));
+  auto* header = reinterpret_cast<RecordHeader*>(s.buffer_.get() + offset);
   *header = RecordHeader{};
   header->size = size;
   header->type = type;
   record_at_ = at;
+  record_offset_ = offset;
   record_size_ = size;
   type_ = type;
   begun_ = true;
@@ -171,11 +194,15 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   }
   begun_ = false;
   CommandStream& s = stream_;
-  auto* header = reinterpret_cast<RecordHeader*>(s.At(record_at_));
+  auto* header = reinterpret_cast<RecordHeader*>(s.buffer_.get() + record_offset_);
   const uint64_t sequence = s.next_sequence_++;
   header->sequence = sequence;
   header->flags = publication == Publication::kWaited ? kRecordSync : 0;
   s.tail_ = record_at_ + record_size_;
+  // A record never crosses the end of the buffer (Begin pads first), so the offset after it is
+  // at most the capacity, and exactly the capacity means the start.
+  const uint64_t next_offset = record_offset_ + record_size_;
+  s.tail_offset_ = next_offset == s.capacity_ ? 0 : next_offset;
   ++s.unpublished_records_;
   s.unpublished_bytes_ += record_size_;
   // One writer at a time (this writer holds producer_lock_): a plain load and
@@ -183,9 +210,21 @@ uint64_t CommandStream::Writer::Commit(Publication publication) {
   s.bytes_written_.store(s.bytes_written_.load(std::memory_order_relaxed) + record_size_,
                          std::memory_order_relaxed);
   if (publication != Publication::kBatched || s.unpublished_records_ >= kPublishRecords ||
-      s.unpublished_bytes_ >= kPublishBytes ||
-      s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
+      s.unpublished_bytes_ >= kPublishBytes) {
     s.Publish(s.tail_);
+  } else if (s.consumer_sleeping_.load(std::memory_order_seq_cst)) {
+    // CHECK: not built or run; the effect is read from the guest thread's frame time with 4 logical
+    // processors, and from "consumer wakes" per frame (the stats line), which must not change.
+    // The consumer is asleep: the first record it can read wakes it. It needs 50 to 100 us to
+    // run (longer with every core busy) and the guest commits a record about every 1.4 us, so
+    // publishing each of those records too was a locked store, the wake mutex and a notify per
+    // record for a consumer that was already on its way. They join one batch; a thread that
+    // keeps sleeping is woken again after a few records.
+    if (!s.consumer_woken_ || s.unpublished_records_ >= kWakingPublishRecords) {
+      s.Publish(s.tail_);
+    }
+  } else {
+    s.consumer_woken_ = false;
   }
   return sequence;
 }
@@ -220,12 +259,30 @@ void CommandStream::Publish(uint64_t tail) {
       std::lock_guard lock(wake_mutex_);
     }
     work_cv_.notify_one();
+    consumer_woken_ = true;
+  } else {
+    consumer_woken_ = false;
   }
 }
 
 void CommandStream::WaitExecuted(uint64_t sequence) {
   if (sequence == 0 || executed_sequence_.load(std::memory_order_acquire) >= sequence) {
     return;
+  }
+  const auto spin = SpinWaitExecuted();
+  if (spin.count() != 0) {
+    const auto spin_until = std::chrono::steady_clock::now() + spin;
+    for (;;) {
+      for (int i = 0; i < 64; ++i) {
+        if (stopped() || executed_sequence_.load(std::memory_order_acquire) >= sequence) {
+          return;
+        }
+        CpuRelax();
+      }
+      if (std::chrono::steady_clock::now() >= spin_until) {
+        break;
+      }
+    }
   }
   std::unique_lock lock(done_mutex_);
   done_cv_.wait(lock, [&] {
@@ -242,8 +299,8 @@ const RecordHeader* CommandStream::Next() {
     if (read_ == published) {
       return nullptr;
     }
-    const auto* header = reinterpret_cast<const RecordHeader*>(At(read_));
-    const uint64_t offset = read_ % capacity_;
+    const uint64_t offset = read_offset_;  // read_ % capacity_
+    const auto* header = reinterpret_cast<const RecordHeader*>(buffer_.get() + offset);
     if (header->size < sizeof(RecordHeader) || header->size % kRecordAlignment != 0 ||
         offset + header->size > capacity_ || read_ + header->size > published) {
       // Only a bug in this file can get here. Stopping is the only safe answer:
@@ -261,8 +318,48 @@ const RecordHeader* CommandStream::Next() {
   }
 }
 
+const RecordHeader* CommandStream::Peek(uint64_t* position) const {
+  const uint64_t published = published_tail_.load(std::memory_order_acquire);
+  for (;;) {
+    const uint64_t at = *position;
+    if (at >= published || at < read_) {
+      return nullptr;
+    }
+    // The buffer offset comes from the consumer's (read_offset_ is read_ % capacity_, kept beside
+    // it), not from a division: the published records lie less than a capacity ahead of read_ (the
+    // producers write only into space the consumer released, and head_ never passes read_).
+    // CHECK: written without a compiler or a run (the At() this replaces no longer exists); a
+    // record whose offset came out wrong would be read as garbage, which the size checks below
+    // refuse (null), so the look would stop and Next would read the record as before.
+    const uint64_t ahead = at - read_;
+    if (ahead >= capacity_) {
+      return nullptr;
+    }
+    uint64_t offset = read_offset_ + ahead;
+    if (offset >= capacity_) {
+      offset -= capacity_;
+    }
+    const auto* header = reinterpret_cast<const RecordHeader*>(buffer_.get() + offset);
+    if (header->size < sizeof(RecordHeader) || header->size % kRecordAlignment != 0 ||
+        offset + header->size > capacity_ || at + header->size > published) {
+      return nullptr;  // Next reports it, and stops, when the consumer gets there
+    }
+    *position = at + header->size;
+    if (header->type == RecordType::kPad) {
+      continue;
+    }
+    return header;
+  }
+}
+
 void CommandStream::Release(const RecordHeader* record) {
   read_ += record->size;
+  // Next checked that the record lies inside the buffer, so the offset reaches the capacity at
+  // most, and exactly the capacity is the start.
+  read_offset_ += record->size;
+  if (read_offset_ >= capacity_) {
+    read_offset_ -= capacity_;
+  }
   // head_ bounds the producers' free space and they read it at every record:
   // stored at every record, its cache line moved between the two cores twice
   // a record. It is stored once kReleaseBytes went by,

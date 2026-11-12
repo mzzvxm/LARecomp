@@ -40,6 +40,7 @@
 #include "mc_engine/ui/imgui_theme.h"
 #include "shaderpack/builder.h"
 #include "shaderpack/hdr_variant.h"
+#include "shaderpack/xex_image.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
@@ -51,6 +52,19 @@ REXCVAR_DEFINE_INT32(
     "by itself from the processor's cores and the free memory. A lower number leaves the PC more "
     "usable during the build, which then takes longer.")
     .range(0, 64)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    build_shader_packs, false, "MCLA/GPU",
+    "Builds the shader packs from your game files and closes, without starting the game: no "
+    "window, no graphics. The launcher runs this at the end of its setup so that the first start "
+    "has nothing to build. Progress is printed to the console; the log is logs/shader_build.txt. "
+    "Exit code 0 when the packs are in place.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    build_shader_packs_force, false, "MCLA/GPU",
+    "With build_shader_packs: build even when the packs in place are current.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace larecomp::shaderbuild {
@@ -121,7 +135,7 @@ void OpenFolder(const std::filesystem::path& folder) {
 
 // The build's progress goes to the boot popup, its log lines to the app's log and to
 // logs/shader_build.txt (all of them: the file is what a support request needs).
-class AppSink final : public sp::ProgressSink {
+class AppSink : public sp::ProgressSink {
  public:
   explicit AppSink(const std::filesystem::path& file) : started_(Clock::now()) {
     std::error_code ec;
@@ -179,6 +193,38 @@ class AppSink final : public sp::ProgressSink {
   std::ofstream file_;
   Clock::time_point started_;
 };
+
+// The request both ways of building make (the popup's phase and the command line): the same
+// folders, formats, compiler and HDR step, so the stamp they write is the one the other accepts.
+// The caller adds the guest image.
+sp::BuildRequest MakeRequest(const std::filesystem::path& game_root, const std::filesystem::path& folder,
+                             uint32_t formats, bool force, sp::ProgressSink* sink) {
+  sp::BuildRequest request;
+  request.game_root = game_root;
+  request.out_dir = folder;
+  request.dxc_dir = ShaderCompilerFolder();
+  request.formats = formats;
+  request.threads = static_cast<unsigned>(std::max(0, REXCVAR_GET(shader_pack_threads)));
+  request.force = force;
+  request.sink = sink;
+  request.hdr_step = HdrStepForBuild();
+  request.app_version = LARECOMP_VERSION_LABEL;
+  return request;
+}
+
+sp::BuildResult BuildGuarded(const sp::BuildRequest& request) {
+  sp::BuildResult result;
+  try {
+    result = sp::BuildShaderPacks(request);
+  } catch (const std::exception& e) {
+    result.status = sp::Status::kCompileFailed;
+    result.message = std::string("The shader build stopped unexpectedly: ") + e.what();
+  } catch (...) {
+    result.status = sp::Status::kCompileFailed;
+    result.message = "The shader build stopped unexpectedly.";
+  }
+  return result;
+}
 
 // The dialog after a build that failed or was cancelled: the short reason, and what can be done.
 // Retry runs the build again from the start; the game cannot draw without the packs.
@@ -360,6 +406,143 @@ void InstallStartupGate(const std::filesystem::path& game_root) {
 #endif
 }
 
+bool PacksCurrent(const std::filesystem::path& game_root) {
+  return PacksCurrentAtStartup(game_root);
+}
+
+bool CommandLineRequested() {
+  return REXCVAR_GET(build_shader_packs);
+}
+
+namespace {
+
+// What a program that runs `larecomp.exe --build_shader_packs` reads on stdout, one line each, every
+// line starting with "@shaderpack|" (the console also carries the engine's own log lines, which are
+// not for it). Fields are separated by '|'; the last one is free text and may contain more of them.
+//   @shaderpack|folder|<where the packs go>                      once, first
+//   @shaderpack|phase|<steps, 0 when unknown>|<name>             a phase begins ("Compiling shaders")
+//   @shaderpack|step|<done>|<steps>|<item>                       progress in it, at most five a second
+//   @shaderpack|log|<info|warn|error>|<text>                     the build's own log lines
+//   @shaderpack|result|<status>|<text>                           once, last: ok, up to date, or what failed (StatusName)
+// The exit code is 0 when the packs are in place (ok, up to date, not needed), 1 otherwise. There is
+// no cancel message: ending the process is the cancel, and it is safe at any moment (the packs are
+// written under temporary names and the stamp comes last, so nothing that validates is left half
+// done).
+void Emit(const std::string& line) {
+  std::fwrite(line.data(), 1, line.size(), stdout);
+  std::fputc('\n', stdout);
+  std::fflush(stdout);  // a pipe is fully buffered; the reader wants every line now
+}
+
+// One line of free text: no line breaks, not too long (the log file has the whole of it).
+std::string Field(std::string text, size_t max = 600) {
+  for (char& c : text) {
+    if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+  }
+  if (text.size() > max) text = text.substr(0, max - 3) + "...";
+  return text;
+}
+
+class CommandLineSink final : public AppSink {
+ public:
+  using AppSink::AppSink;
+
+  void BeginPhase(const std::string& name, int total) override {
+    AppSink::BeginPhase(name, total);
+    total_ = total;
+    done_ = 0;
+    last_emit_ = Clock::time_point{};
+    Emit("@shaderpack|phase|" + std::to_string(total) + "|" + Field(name));
+  }
+  void Step(const std::string& item) override {
+    AppSink::Step(item);
+    ++done_;
+    const Clock::time_point now = Clock::now();
+    if (done_ == total_ || now - last_emit_ >= std::chrono::milliseconds(200)) {
+      last_emit_ = now;
+      Emit("@shaderpack|step|" + std::to_string(done_) + "|" + std::to_string(total_) + "|" + Field(item));
+    }
+  }
+  void Log(sp::LogLevel level, const std::string& text) override {
+    AppSink::Log(level, text);
+    Emit(std::string("@shaderpack|log|") +
+         (level == sp::LogLevel::kError ? "error" : level == sp::LogLevel::kWarn ? "warn" : "info") + "|" +
+         Field(text));
+  }
+
+ private:
+  int total_ = 0;
+  int done_ = 0;
+  Clock::time_point last_emit_{};
+};
+
+}  // namespace
+
+// CHECK: written without a build of larecomp (the xex image decoder was compiled and run on its own, the
+// rest only syntax checked). Run it: `larecomp.exe --build_shader_packs` in the install's game folder, with
+// the stdout piped; expect the folder, phase, step and result lines, exit 0, and then a normal start of the
+// game that logs no shader build and shows no "preparing" popup (the stamp it wrote is current).
+int RunCommandLine(const std::filesystem::path& game_root) {
+#if defined(LARECOMP_HAS_GPU)
+  // The folder the game itself will look in: shader_pack_dir, else the one OnConfigurePaths gave
+  // (a cache folder the player named), else <program folder>\cache\shaders, else the local
+  // application data folder. Needs no renderer, so it is the same here as at the game's start.
+  const std::filesystem::path folder = mcla::gpu::ShaderPackFolder();
+  CommandLineSink sink(LogFolder() / "shader_build.txt");
+  Emit("@shaderpack|folder|" + Field(PathUtf8(folder), 1000));
+  sink.Line("command line: building the shader packs into " + PathUtf8(folder) + " from " + PathUtf8(game_root));
+
+  const auto finish = [&](int code, const char* status, const std::string& text) {
+    sink.Line(std::string("result: ") + status + ": " + text);
+    if (code == 0) {
+      LARECOMP_APP_INFO("[shaderpack] {}: {}", status, text);
+    } else {
+      LARECOMP_APP_WARN("[shaderpack] {}: {}", status, text);
+    }
+    Emit(std::string("@shaderpack|result|") + status + "|" + Field(text));
+    return code;
+  };
+
+  // Packs that are current need nothing, not even the executable's image to be read.
+  const bool force = REXCVAR_GET(build_shader_packs_force);
+  if (!force) {
+    const sp::StampCheck check =
+        sp::CheckStamp(folder, AllFormats(), sp::GameFilesQuick{game_root, ShaderCompilerFolder()}, HdrStepForBuild());
+    if (check.main_ok && check.hdr_ok) return finish(0, "up to date", "The shader packs are up to date.");
+    sink.Line("the packs need building: " + (check.why.empty() ? std::string("no valid stamp") : check.why));
+  }
+
+  // The executable's shaders (119 of 2056) are read from its image. There is no guest memory yet:
+  // the image is decoded from default.xex, the same bytes the runtime would have loaded.
+  const std::filesystem::path xex_file = game_root / "default.xex";
+  sp::XexImage xex;
+  std::string why;
+  if (!sp::LoadXexImage(xex_file, &xex, &why)) {
+    return finish(1, "no image", why + " The game builds the shader packs itself when it starts.");
+  }
+  // Exactly the range the game scans in guest memory.
+  xex.data.resize(sp::kGuestImageSize, 0);
+
+  sp::BuildRequest request = MakeRequest(game_root, folder, AllFormats(), force, &sink);
+  request.image.data = xex.data.data();
+  request.image.size = xex.data.size();
+  request.image.base_address = sp::kGuestImageBase;
+
+  const sp::BuildResult result = BuildGuarded(request);
+  sink.Summary(result);
+  mc::boot::EndPhase();
+  std::string text = result.message;
+  if (!result.first_shader.empty() && text.find(result.first_shader) == std::string::npos) {
+    text += " (" + result.first_shader + ")";
+  }
+  return finish(result.ok() ? 0 : 1, sp::StatusName(result.status), text);
+#else
+  (void)game_root;
+  Emit("@shaderpack|result|not needed|This build has no Plume renderer, so it needs no shader packs.");
+  return 0;
+#endif
+}
+
 Phase::Phase(const std::filesystem::path& game_root, const uint8_t* guest_memory, bool force)
     : game_root_(game_root), guest_memory_(guest_memory), force_(force) {
 #if defined(LARECOMP_HAS_GPU)
@@ -383,31 +566,13 @@ void Phase::Run() {
   AppSink sink(log_file_);
   sink.Line("building the shader packs into " + PathUtf8(folder_) + " from " + PathUtf8(game_root_));
 
-  sp::BuildRequest request;
-  request.game_root = game_root_;
-  request.out_dir = folder_;
-  request.dxc_dir = ShaderCompilerFolder();
+  sp::BuildRequest request = MakeRequest(game_root_, folder_, formats_, force_, &sink);
   // The game's executable is in guest memory at 0x82000000, where the builder reads its shaders.
   // Nothing runs in the guest yet, and nothing writes there while the build reads.
   request.image.data = guest_memory_ ? guest_memory_ + sp::kGuestImageBase : nullptr;
   request.image.size = guest_memory_ ? sp::kGuestImageSize : 0;
-  request.formats = formats_;
-  request.threads = static_cast<unsigned>(std::max(0, REXCVAR_GET(shader_pack_threads)));
-  request.force = force_;
-  request.sink = &sink;
-  request.hdr_step = HdrStepForBuild();
-  request.app_version = LARECOMP_VERSION_LABEL;
 
-  sp::BuildResult result;
-  try {
-    result = sp::BuildShaderPacks(request);
-  } catch (const std::exception& e) {
-    result.status = sp::Status::kCompileFailed;
-    result.message = std::string("The shader build stopped unexpectedly: ") + e.what();
-  } catch (...) {
-    result.status = sp::Status::kCompileFailed;
-    result.message = "The shader build stopped unexpectedly.";
-  }
+  const sp::BuildResult result = BuildGuarded(request);
   sink.Summary(result);
   LARECOMP_APP_INFO("[shaderpack] {}: {}", sp::StatusName(result.status), result.message);
 

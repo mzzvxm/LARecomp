@@ -69,7 +69,7 @@ Only these are read. Everything else is a cvar.
 | `REX_LOG_LEVEL` | `trace` on non-Release | Set to `warn`. |
 | `MCLA_GAME_DATA` | auto-detect | Folder holding `default.xex`. An invalid path warns and falls back to auto-detection. |
 | `MCLA_FPS_CAP` | unset | Overrides the `fps_limit` cvar. |
-| `MCLA_MAX_FRAME_MS` | `125` | Caps how far one frame can advance the clock. Clamped to 16-1000 ms; cannot be turned off. |
+| `MCLA_MAX_FRAME_MS` | unset | A fixed cap, in ms, on how far one frame can advance the clock; wins over the `frame_step_cap` cvar (default `adaptive`: about 34 ms at 60 FPS, 50 ms at 30 FPS, at most 125 ms). Clamped to 16-1000 ms; the cap cannot be turned off. |
 | `MCLA_TIMING_LOG` | off | `1` writes the timing log described below. |
 | `MCLA_TEX_SOFT` / `MCLA_TEX_HARD` / `MCLA_TEX_RTT` | `1536` / `2048` / `64` | Texture cache limits in MB. |
 | `MCLA_VSYNC` | `false` | On costs about 30% throughput. |

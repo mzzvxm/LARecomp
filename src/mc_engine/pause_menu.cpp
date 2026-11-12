@@ -5,6 +5,8 @@
 #include "camera_look.h"
 #include "config_save.h"
 #include "cutscene_gallery.h"
+#include "display_menu.h"
+#include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "upscaling_menu.h"
 #include "logging.h"
@@ -44,6 +46,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/latency.h"
 #endif
 
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
@@ -637,13 +640,9 @@ const char* const kDeferredCvars[] = {
     // The SDK's API switch, read at startup by the emulated GPU's plugin and by
     // the Plume renderer alike.
     "graphics_backend",
-    // The Plume renderer sizes its targets once, when the EDRAM is created;
-    // an FSR1 preset picks that size too.
-    "mcla_gpu_resolution_scale",
-    "mcla_gpu_fsr_preset",
-    // The 3D scene's size under an upscaler mode is fixed at the start too (gpu.h StartUpscale).
-    "mcla_gpu_fsr31_mode",
-    "mcla_gpu_fsr4_mode",
+    // The render scale (mcla_gpu_resolution_scale, mcla_gpu_fsr_preset) and the upscaler modes
+    // (mcla_gpu_fsr31_mode, _fsr4_mode, _dlss_mode) are not here: the renderer makes its targets
+    // again at the new size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
 };
 
 std::mutex g_deferred_mutex;
@@ -763,11 +762,26 @@ double CvarGetDouble(const char* name) {
     return std::strtod(CvarGet(name).c_str(), nullptr);
 }
 
+// DISPLAY > HDR > TEST PATTERN is a preview, not a setting: the bars replace the whole picture, this
+// menu included (the game draws the pause menu into the same frame: a pause frame has no UI layer
+// the present could keep above the bars, frame_layers.h), so they show only while their row is the
+// highlighted row of the open HDR menu (HdrTestPatternTick), and they are never written to
+// larecomp.toml (config_save.h NoteSessionOnlyCvar). True while the menu's row has them on.
+constexpr const char* kHdrTestPatternCvar = "mcla_gpu_hdr_test_pattern";
+std::atomic<bool> g_hdr_pattern_by_menu{false};
+
+// The menu is about to change `name`: remembers what it was, for the "restart now?" prompt
+// (below, "Restart now?").
+void NoteMenuWrite(const char* name);
+
 void CvarSet(const char* name, const char* value) {
+    NoteMenuWrite(name);
     if (std::string_view(name) == kRendererCvar) {
         RendererSet(value);
         return;
     }
+    if (std::string_view(name) == kHdrTestPatternCvar)
+        g_hdr_pattern_by_menu.store(std::string_view(value) == "true", std::memory_order_relaxed);
     if (IsDeferredCvar(name)) {
         MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
         SetDeferred(name, value);
@@ -1165,6 +1179,7 @@ using mcla_menu::ActionId;
 using mcla_menu::Bool;
 using mcla_menu::Carbon;
 using mcla_menu::Color;
+using mcla_menu::CvarWriter;
 using mcla_menu::Dbl;
 using mcla_menu::ItemDef;
 using mcla_menu::ItemKind;
@@ -1174,6 +1189,8 @@ using mcla_menu::kActionQuitNo;
 using mcla_menu::kActionQuitYes;
 using mcla_menu::kActionReloadTextures;
 using mcla_menu::kActionRestart;
+using mcla_menu::kActionRestartLater;
+using mcla_menu::kActionRestartNow;
 using mcla_menu::NativeOnly;
 using mcla_menu::RowDynamics;
 using mcla_menu::Str;
@@ -1183,22 +1200,10 @@ using mcla_menu::XeniaOnly;
 
 // ── Value tables ───────────────────────────────────────────────────────
 
-constexpr const char* kResVals[]   = {"", "720p", "1080p", "1440p", "4k"};
-constexpr const char* kResNames[]  = {"DEFAULT", "720P", "1080P", "1440P", "4K"};
+#if !defined(LARECOMP_HAS_GPU)
+// A build without the Plume renderer has no RENDER SCALE row (upscaling_menu.cpp): the emulated
+// renderer's own draw scale stays a row of the DISPLAY page.
 constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
-#if defined(LARECOMP_HAS_GPU)
-// RENDER RES (mcla_gpu_resolution_scale): 0 is the screen's scale -- the one
-// that renders at the size of the window's 16:9 area, measured at start --
-// and the rest go in steps of 0.5. larecomp.toml takes any step of 0.05.
-constexpr double kRenderResVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0};
-// FSR1's quality presets (mcla_gpu_fsr_preset), in the order of
-// mcla::gpu::FsrPreset. With FSR1 on, a preset picks the render scale from the
-// window; CUSTOM leaves it to RENDER RES.
-constexpr const char* kFsrPresetVals[]  = {"custom", "ultra_quality", "quality",
-                                           "balanced", "performance", "ultra_performance"};
-constexpr const char* kFsrPresetNames[] = {"CUSTOM", "ULTRA QUALITY", "QUALITY",
-                                           "BALANCED", "PERFORMANCE", "ULTRA PERF"};
-constexpr int kNumFsrPresets = int(sizeof(kFsrPresetVals) / sizeof(kFsrPresetVals[0]));
 #endif
 constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
 constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
@@ -1306,148 +1311,252 @@ constexpr RowDynamics kRbNitroStartDynamics = {.value_label = RbNitroStartLabel}
 
 constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0};
 
+constexpr double kImpulseStrengthVals[] = {25.0, 50.0, 75.0, 100.0};
+
 #if defined(LARECOMP_HAS_GPU)
-// ── RENDER RES and FSR1 ────────────────────────────────────────────────
+// ── HDR ────────────────────────────────────────────────────────────────
 //
-// What these rows show is what the next start does: they ask the renderer
-// what it would choose (gpu.h PreviewRenderScale) from the held settings and
-// the window as it is now.
+// HDR (mcla_gpu_hdr) is live: the renderer applies it at the end of a frame, making the window's
+// swap chain again in the other format (the picture may flicker once), and AUTO follows Windows'
+// HDR switch while the game runs. The level rows work while HDR output is on: AUTO shows what it
+// stands for now (Windows' report for the display the window is on), and without HDR output they are
+// grey.
 
-bool FsrOn() { return CvarGetBool("mcla_gpu_fsr"); }
+// Width: the page's widest pair is "PEAK BRIGHTNESS (HDR OFF)" + "AUTO (1000 NITS)", about 690 units
+// (see "Page width").
+constexpr const char* kHdrModeVals[]  = {"off", "auto", "on"};
+constexpr const char* kHdrModeNames[] = {"OFF", "AUTO", "ON"};
+// Windows' SDR content brightness slider covers 80 to 480 nits.
+constexpr double kHdrPaperWhiteVals[] = {0.0, 80.0, 100.0, 120.0, 160.0, 200.0,
+                                         240.0, 280.0, 320.0, 400.0, 480.0};
+constexpr double kHdrPeakVals[] = {0.0, 200.0, 400.0, 600.0, 800.0, 1000.0,
+                                   1200.0, 1500.0, 2000.0, 3000.0, 4000.0};
+// How far the scene's lights go above paper white (mcla_gpu_hdr_highlights, the HDR curve's slope):
+// NORMAL, BRIGHT, BRIGHTER (the default), BRIGHTEST.
+constexpr double kHdrHighlightVals[] = {1.0, 1.5, 2.0, 3.0};
 
-// The preset held for the next start.
-mcla::gpu::FsrPreset FsrPresetChosen() {
-    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
-    mcla::gpu::ParseFsrPreset(CvarGet("mcla_gpu_fsr_preset"), &preset);
-    return preset;
-}
+bool HdrActive() { return mcla::gpu::HdrOutputActive(); }
 
-// FSR1 on with a preset: the preset picks the render scale, not RENDER RES.
-bool FsrPresetDecides() {
-    return FsrOn() && FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom;
-}
-
-unsigned RenderHeight(mcla::gpu::Scale scale) {
-    return unsigned(scale.Edge(mcla::gpu::kAssumedScreenHeight));
-}
-
-// "1.5X (1080P)": the scale with one decimal on the steps of 0.1 and two on
-// the twentieths between them (1.35X), and the height it renders at.
-std::string RenderScaleText(mcla::gpu::Scale scale) {
+// "240 NITS", and for 0 "AUTO (240 NITS)": what AUTO is on this display.
+std::string HdrNitsLabel(double value, float automatic) {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), scale.n % 2 == 0 ? "%.1fX (%uP)" : "%.2fX (%uP)",
-                  double(scale.n) / mcla::gpu::Scale::kDenominator, RenderHeight(scale));
+    if (value <= 0.0) {
+        std::snprintf(buf, sizeof(buf), "AUTO (%.0f NITS)", double(automatic));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.0f NITS", value);
+    }
+    return buf;
+}
+std::string HdrPaperWhiteLabel(double value) {
+    return HdrNitsLabel(value, mcla::gpu::HdrAutoPaperWhiteNits());
+}
+std::string HdrPeakLabel(double value) {
+    return HdrNitsLabel(value, mcla::gpu::HdrAutoPeakNits());
+}
+
+const char* HdrLevelSuffix() { return HdrActive() ? "" : " (HDR OFF)"; }
+
+std::string HdrHighlightLabel(double value) {
+    if (value == 1.0) return "NORMAL";
+    if (value == 1.5) return "BRIGHT";
+    if (value == 2.0) return "BRIGHTER";
+    if (value == 3.0) return "BRIGHTEST";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%g", value);  // set by hand between the steps
     return buf;
 }
 
-std::string RenderResValueLabel(double value) {
-    const mcla::gpu::RenderScaleChoice c =
-        mcla::gpu::PreviewRenderScale(value, false, mcla::gpu::FsrPreset::kCustom);
-    if (c.source == mcla::gpu::RenderScaleChoice::Source::kScreen)
-        return "SCREEN (" + std::to_string(RenderHeight(c.scale)) + "P)";
-    return RenderScaleText(c.scale);
-}
-
-bool RenderResEnabled() { return !FsrPresetDecides(); }
-
-// Grey, the row shows no value: the suffix says what decides instead. The
-// resolution the preset gives is on the preset's own row.
-const char* RenderResSuffix() {
-    return FsrPresetDecides() ? " (SET BY FSR1)" : " (RESTART)";
-}
-
-// With a preset chosen, FSR1 on or off also moves the render scale, which
-// waits for the next start (the filter itself changes at once).
-const char* FsrToggleSuffix() {
-    return FsrPresetChosen() != mcla::gpu::FsrPreset::kCustom ? " (RESTART)" : "";
-}
-
-// "QUALITY (720P)": the preset and the height it renders at in this window.
-std::string FsrPresetLabel(int i) {
-    if (i < 0 || i >= kNumFsrPresets) return "";
-    mcla::gpu::FsrPreset preset = mcla::gpu::FsrPreset::kCustom;
-    mcla::gpu::ParseFsrPreset(kFsrPresetVals[i], &preset);
-    if (preset == mcla::gpu::FsrPreset::kCustom) return kFsrPresetNames[i];
-    const mcla::gpu::RenderScaleChoice c = mcla::gpu::PreviewRenderScale(1.0, true, preset);
-    return std::string(kFsrPresetNames[i]) + " (" + std::to_string(RenderHeight(c.scale)) + "P)";
-}
-
-constexpr RowDynamics kRenderResDynamics = {
-    .value_label = RenderResValueLabel,
-    .enabled = RenderResEnabled,
-    .suffix = RenderResSuffix,
-};
-constexpr RowDynamics kFsrToggleDynamics = {.suffix = FsrToggleSuffix};
-constexpr RowDynamics kFsrPresetDynamics = {.str_label = FsrPresetLabel, .enabled = FsrOn};
-constexpr RowDynamics kFsrSharpDynamics = {.enabled = FsrOn};
+constexpr RowDynamics kHdrPaperWhiteDynamics = {
+    .value_label = HdrPaperWhiteLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrPeakDynamics = {
+    .value_label = HdrPeakLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrTestDynamics = {.enabled = HdrActive, .suffix = HdrLevelSuffix};
+constexpr RowDynamics kHdrHighlightDynamics = {
+    .value_label = HdrHighlightLabel, .enabled = HdrActive, .suffix = HdrLevelSuffix};
 #endif
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
-// Rows tagged XeniaOnly / NativeOnly are listed only when that renderer is the
-// one this launch runs (MenuItemCount): RES SCALE and VSYNC are two different
-// mechanisms, the emulated path's and the Plume renderer's own.
+#if defined(LARECOMP_HAS_GPU)
+// ── VSYNC and MSAA: one row each, whichever renderer runs ──────────────
+//
+// The DISPLAY page is one page for both renderers: a row has the same name and place on both and maps
+// to the running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list).
+// A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
+// comes back when the renderer is switched back.
+// CHECK: on XENIA (RENDERER set to XENIA, restarted) the DISPLAY page lists DISPLAY MODE, VSYNC,
+// RESOLUTION, DISPLAY GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, RENDER SCALE, MSAA and
+// ANISOTROPIC (10 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
+// disable_msaa, RENDER SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale;
+// leaving the menu after changing either of those two offers "Restart now?". ANISOTROPIC is live and
+// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
+// GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
+// ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes
+// mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
+// SETTINGS.
+
+// VSYNC: the Plume renderer's mcla_gpu_vsync (live, at the next present), or the SDK's vsync.
+const char* VsyncCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_vsync" : "vsync"; }
+constexpr RowDynamics kVsyncDynamics = {.cvar = VsyncCvar};
+
+int FindStringIndex(const std::string& value, const char* const* vals, int count);
+
+// MSAA. NATIVE: OFF, 2X, 4X, 8X in mcla_gpu_msaa, all live (gpu/msaa_level.h; the row says "(APPLYING)"
+// while the pipelines for a new level are made, and is grey while a temporal upscaler does the
+// anti-aliasing: upscaling_menu.cpp). XENIA: only the game's own switch, which the game reads at
+// start: OFF or 2X in disable_msaa, "(RESTART)". A saved 4X or 8X shows as 2X on XENIA.
+// Width: "MSAA (FSR 3.1 ON)" 17 at most ("MSAA (APPLYING)" 15), values 3.
+const char* MsaaCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_msaa" : "disable_msaa"; }
+int MsaaCount() { return mcla_menu::NativeRendererRuns() ? 4 : 2; }
+std::string MsaaLabel(int i) { return i >= 0 && i < MsaaCount() ? kGpuMsaaNames[i] : ""; }
+int MsaaIndex() {
+    if (mcla_menu::NativeRendererRuns()) return FindStringIndex(CvarGet("mcla_gpu_msaa"), kGpuMsaaVals, 4);
+    return CvarGetBool("disable_msaa") ? 0 : 1;
+}
+void MsaaSet(int i, CvarWriter write) {
+    if (mcla_menu::NativeRendererRuns()) {
+        if (i >= 0 && i < 4) write("mcla_gpu_msaa", kGpuMsaaVals[i]);
+    } else {
+        write("disable_msaa", i == 0 ? "true" : "false");
+    }
+}
+bool MsaaEnabled() {
+    return !mcla_menu::NativeRendererRuns() || !mcla_menu::kMsaaDynamics.enabled ||
+           mcla_menu::kMsaaDynamics.enabled();
+}
+const char* MsaaSuffix() {
+    if (!mcla_menu::NativeRendererRuns()) return " (RESTART)";
+    return mcla_menu::kMsaaDynamics.suffix ? mcla_menu::kMsaaDynamics.suffix() : "";
+}
+constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
+                                          .enabled = MsaaEnabled,
+                                          .suffix = MsaaSuffix,
+                                          .value_count = MsaaCount,
+                                          .value_index = MsaaIndex,
+                                          .set_value = MsaaSet,
+                                          .cvar = MsaaCvar};
+#endif
+
+// DISPLAY: every row is one row for both renderers. DISPLAY MODE, RESOLUTION and VSYNC are live on
+// both; MSAA, RENDER SCALE (upscaling_menu.cpp) and the rest map to the running renderer's own
+// setting. What only one renderer has (UPSCALING, SHARPNESS, HDR, frame generation) is tagged
+// XeniaOnly / NativeOnly and listed only when that renderer is the one this launch runs
+// (MenuItemCount).
+//
+// The page is three runs of rows, in this order (the last two come from VideoExtraRows):
+//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
+//      GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI);
+//   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
+//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering
+//      and occlusion that used to sit on the RENDERER page);
+//   3. frame generation's rows (frame_generation_menu.cpp).
+// At most 19 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
+// kMaxRowsPerMenu (24) is refused whole.
+// CHECK: that a page of 18 or 19 rows scrolls in the pause menu like the 12 and 14 row ones do (the
+// cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
+// drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
-    Bool("PM_RxFullscreen", "fullscreen", "FULLSCREEN: "),
-    XeniaOnly(Bool("PM_RxVsync", "vsync", "VSYNC: ")),
+    // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
+    // (display_menu.h, display_mode.h). Both are live where the window can do it (Windows).
+    WithDynamics(Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
+                 &mcla_menu::kDisplayModeDynamics),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Bool("PM_RxGpuVsync", "mcla_gpu_vsync", "VSYNC: ")),
-#endif
-    Str ("PM_RxResolution", "resolution", "RESOLUTION: ",
-         kResVals, kResNames, 5, " (RESTART)"),
-    XeniaOnly(Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ",
-                  kResScaleVals, 4, "%gX", " (RESTART)")),
-#if defined(LARECOMP_HAS_GPU)
-    // The render scale, 0.5X to 3.0X or the screen's, each with the height it
-    // renders at; grey while an FSR1 preset picks it. FSR1 opens below it.
-    NativeOnly(WithDynamics(Dbl("PM_RxGpuResScale", "mcla_gpu_resolution_scale",
-                                "RENDER RES: ", kRenderResVals, 7, "%g", " (RESTART)"),
-                            &kRenderResDynamics)),
-    NativeOnly(Submenu("PM_RxSubGpuFsr", "FSR1", "RxGpuFsrMenu")),
-#endif
-#if defined(LARECOMP_HAS_GPU)
-    XeniaOnly(Bool("PM_RxMsaa", "disable_msaa", "MSAA: ", true, " (RESTART)")),
-    // NATIVE: OFF is the game's own switch, 2X the console's, 4X more samples on
-    // the host for the images of the screen the game multisamples (M6d.2).
-    NativeOnly(WithDynamics(Str("PM_RxGpuMsaa", "mcla_gpu_msaa", "MSAA: ",
-                                kGpuMsaaVals, kGpuMsaaNames, 4, " (RESTART)"),
-                            &mcla_menu::kMsaaDynamics)),
+    WithDynamics(Bool("PM_RxVsync", "vsync", "VSYNC: "), &kVsyncDynamics),
 #else
-    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
+    Bool("PM_RxVsync", "vsync", "VSYNC: "),
 #endif
-    Dbl ("PM_RxFpsCap",      "fps_limit",                "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "", "UNCAPPED"),
+    WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
+                 &mcla_menu::kResolutionDynamics),
+#if !defined(LARECOMP_HAS_GPU)
+    Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ", kResScaleVals, 4, "%gX", " (RESTART)"),
+#endif
+#if defined(LARECOMP_HAS_GPU)
+    // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
+    // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
+    // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
+    NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
+#endif
+    // Live, both renderers: the game's gamma ramp is set again at the next frame
+    // (hooks/display_gamma.cpp). CONSOLE is the console's TV ramp, PC an sRGB one. Width: 13, values 7.
+    Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
+         kDisplayGammaVals, kDisplayGammaNames, 2),
+    // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
+    // (frame_generation_menu.h) and counts rendered frames.
+    WithDynamics(Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
+                     "UNCAPPED"),
+                 &mcla_menu::kFpsLimitDynamics),
     Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
 
+// (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems; the controller rows are on the CONTROLLER
+// page, kControllerItems.)
+// Width: the longest label is "ORIGINAL INTRO SPEED (NEXT START)" (33) and the values are ON / OFF (3),
+// 36 together, under the 41 characters a page can take ("Page width" above ItemRowLabel).
 const ItemDef kRecompItems[] = {
-    // Live: the game's gamma ramp is set again at the next frame (hooks/display_gamma.cpp).
-    Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
-         kDisplayGammaVals, kDisplayGammaNames, 2),
     Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
-    // Live, but the intro has played by the time this menu opens: the next start.
-    Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: "),
-    // Live. A DualSense only: a spring on R2 and a brake on L2 while a car is driven.
-    Bool("PM_RxTriggers",    "adaptive_triggers",        "DUALSENSE TRIGGERS: "),
+    // The legal screens and logos it paces have played before this menu can be opened, so a change
+    // is seen at the next start. The word is NEXT START and not RESTART on purpose: nothing needs
+    // the game started again, so the "restart now?" prompt (RowSaysRestart) must not offer it.
+    // CHECK: RECOMP SETTINGS shows "ORIGINAL INTRO SPEED (NEXT START)" without a cut at the right
+    // edge, and flipping the row then leaving the page does not offer "restart now?".
+    Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: ", false,
+         " (NEXT START)"),
     // BadassBaboon's Recomp Adjustments: in-game pause menu options
     Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
+};
+
+// CONTROLLER: everything about the pad, in three runs: the game's vibration, the trigger effects
+// (DualSense, then Xbox), then the sticks, and last the prompts' button set. The page is listed
+// whether or not a pad is connected (nothing here asks): a keyboard player can set it up before
+// plugging one in, and every row is read live by the code it belongs to, so it takes hold when a pad
+// appears. A row for a pad that is not the one in use does nothing to the others (DUALSENSE rows
+// touch a DualSense only, XBOX rows an Xbox One or Series pad only).
+// Width ("Page width" above ItemRowLabel): the widest labels are "XBOX TRIGGER STRENGTH" and
+// "RIGHT STICK DEAD ZONE" (21), the widest value "PLAYSTATION" (11, BUTTON LAYOUT): 32 together, under
+// the 41 a page can take; no row has a suffix.
+// CHECK: on the SETTINGS tab, CONTROLLER is a new button between GAMEPLAY and INTERFACE (7 buttons
+// with QUIT now, one more than before): the cursor reaches every button including QUIT, nothing is cut
+// off the bottom of the tab's panel, and A opens a page of 8 rows in the order above with the line
+// "Vibration, triggers, sticks and buttons." under it (not cut at the right edge). RECOMP SETTINGS has
+// four rows (REAL FRAME DELTA, HIDE MOUSE POINTER, ORIGINAL INTRO SPEED, SUSPENSION FIX); INTERFACE >
+// UI has the three colour rows and SPEED UNITS, the colour swatches still lined up with their rows.
+// Every row keeps the cvar it had (a value set on RECOMP SETTINGS before this change reads the same
+// here, and the page's rows write larecomp.toml as before), and with no pad connected the page lists
+// and steps as usual.
+const ItemDef kControllerItems[] = {
     // Live: the game's rumble stops reaching the controller, and one that runs stops.
     Bool("PM_RxVibration",   "controller_vibration",     "VIBRATION: "),
+    // Live. A DualSense only: a spring on R2 and a brake on L2 while a car is driven.
+    Bool("PM_RxTrigResist",  "trigger_resistance",       "DUALSENSE RESISTANCE: "),
+    // Live. A DualSense only: R2 vibrates while the wheels spin, L2 while the brakes lock them.
+    Bool("PM_RxTrigVibrate", "trigger_vibration",        "DUALSENSE VIBRATION: "),
+    // Live. Xbox One and Series pads: the same slip, in the trigger motors.
+    Bool("PM_RxImpulse",     "impulse_triggers",         "XBOX TRIGGER RUMBLE: "),
+    Dbl ("PM_RxImpulseStr",  "impulse_trigger_strength", "XBOX TRIGGER STRENGTH: ",
+         kImpulseStrengthVals, 4, "%.0f%%"),
     // Live: for a stick that rests off centre (hooks/stick_deadzone.cpp).
     Dbl ("PM_RxDeadzoneL",   "left_stick_deadzone",      "LEFT STICK DEAD ZONE: ",
          kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
     Dbl ("PM_RxDeadzoneR",   "right_stick_deadzone",     "RIGHT STICK DEAD ZONE: ",
          kStickDeadzoneVals, 7, "%.0f%%", "", "OFF"),
+    // Which buttons the prompts show (hooks/ui.cpp): AUTO follows the pad in use. It moved here from
+    // the UI page; the keyboard glyph set is for players with no pad, so the row is not pad-only.
+    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
+         kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
 // Everything that trades image quality for framerate, in one place.
 //
-// The four SHADOWS/IMPOSTORS/FOLIAGE/SCREEN BLUR toggles reactivate the game's
-// own dev switches (noshadows, noimpostors, notrees, nofsblur). They are read
-// once, during renderer init, so they only take effect on a restart — the
-// suffix says so on the row.
+// CHEAP CAR SHADOW, TREE IMPOSTORS, FOLIAGE and SCREEN BLUR reactivate the game's
+// own dev switches (fastVehShadows, noimpostors, notrees, nofsblur). The game
+// reads them when a system is made, not every frame: the first, the second and
+// the last at the start (the fork measured it for the impostor targets and lists
+// the car shadow and full-screen blur with them), so those rows say "(RESTART)";
+// FOLIAGE's prop parse is "(ON RELOAD)" (render_phases.cpp, unmeasured). The
+// SHADOWS and FOLIAGE SHADOWS rows are live.
 //
 // PROP DRAW DIST and BREAK FPS FLOOR patch rage::fragTuneStruct in place after
 // the game has parsed $/tune/types/fragments, so they apply live. "Prop" here
@@ -1467,16 +1576,22 @@ const ItemDef kPerfShadItems[] = {
          kShadowBitVals, kShadowBitNames, 4),
     Bool("PM_RxFastVehShad", "perf_fast_vehicle_shadows", "CHEAP CAR SHADOW: ", false, " (RESTART)"),
     // Load-time switches: noimpostors skips allocating the impostor render
-    // targets, notrees skips the prop parse. node+4 is kept in sync with the
-    // cvar every frame, so a change lands the next time that system loads —
-    // a district change — rather than needing the process restarted.
-    Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (ON RELOAD)"),
+    // targets, which the game makes once, with the world, at start-up (the fork
+    // measured it): a restart. notrees skips the prop parse; node+4 is kept in
+    // sync with the cvar every frame, so a change lands the next time that
+    // system loads.
+    // CHECK: whether the prop parse runs again after a district change or only
+    // at start-up; if only then, FOLIAGE says "(RESTART)" too.
+    Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (RESTART)"),
     Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
 };
 
 const ItemDef kPerfRendItems[] = {
     Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
     Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
+    // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
+    // Patch_EdramLimit lets through only while this is on (graphics.cpp)? If a live ON
+    // misbehaves, this row says "(RESTART)" and the cvar is tagged for it.
     Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
     // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so
     // the next fence poll already sees a change made here. Worth a row rather
@@ -1510,41 +1625,40 @@ const ItemDef kPerfWorldItems[] = {
 };
 
 const ItemDef kPerfLodItems[] = {
-    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true, " (RESTART)"),
+    // Live: the hook reads the cvar on every pass (graphics.cpp).
+    Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
 };
 
+// The SDK presenter builds its paint config from these four cvars once, when it is
+// made (BuildGuestOutputPaintConfigFromCVar in presenter.cpp, called only from
+// InitializeCommonSurfaceIndependent), and nothing calls its
+// SetGuestOutputPaintConfigFromUIThread, so a change here is seen at the next start.
 const ItemDef kFfxItems[] = {
     XeniaOnly(Str("PM_RxUpscaler",   "present_effect", "UPSCALER: ",
-         kEffectVals, kEffectNames, 5)),
+         kEffectVals, kEffectNames, 5, " (RESTART)")),
     XeniaOnly(Str("PM_RxFsrQuality", "present_fsr_quality_mode", "FSR QUALITY: ",
-         kFsrQVals, kFsrQNames, 6)),
+         kFsrQVals, kFsrQNames, 6, " (RESTART)")),
     XeniaOnly(Dbl("PM_RxCasSharp",   "present_cas_additional_sharpness",
-         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g")),
+         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g", " (RESTART)")),
     XeniaOnly(Dbl("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
-         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g")),
+         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g", " (RESTART)")),
 };
 
-// Renderer. RENDERER picks the emulated path (Xenia's command processor) or the
-// Plume renderer (NATIVE), and brings the no-CP mode and continuous rendering
-// along (kRendererChoices), so neither has a row of its own. GRAPHICS API is the
-// SDK's graphics_backend, which both read. NATIVE AA and FSR are the Plume
-// renderer's own and only listed while it runs; the legacy runtime is no longer
-// offered here.
+// Renderer. The RENDERER page is the renderer and nothing else: RENDERER picks the emulated path
+// (Xenia's command processor) or the Plume renderer (NATIVE), and brings the no-CP mode and continuous
+// rendering along (kRendererChoices), so neither has a row of its own; GRAPHICS API is the SDK's
+// graphics_backend, which both read. Both are restart-only. The picture settings that used to be here
+// (POST AA, ambient occlusion, anisotropic filtering) are on DISPLAY now, next to the upscaler and
+// MSAA (kPictureItems). The legacy runtime is no longer offered here.
+// Width: "GRAPHICS API (RESTART)" is 22 characters and "NATIVE" / "VULKAN" 6.
 const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
 const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
 #if defined(LARECOMP_HAS_GPU)
 const char* const kRendererVals[]  = {"xenia", "plume"};
 const char* const kRendererNames[] = {"XENIA", "NATIVE"};
 constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
-// The NATIVE (Plume) renderer's post (M6c), all live: the scene's
-// anti-aliasing before the UI, and FSR1 on the present.
-const char* const kNativeAaVals[]  = {"off", "fxaa", "smaa"};
-const char* const kNativeAaNames[] = {"OFF", "FXAA", "SMAA"};
-// Anisotropic filtering (M6d.1, live): the game's own or forced.
-const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
-const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
 #endif
 
 const ItemDef kNativeItems[] = {
@@ -1554,28 +1668,160 @@ const ItemDef kNativeItems[] = {
 #endif
     Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
          kApiVals, kApiNames, 3, " (RESTART)"),
-#if defined(LARECOMP_HAS_GPU)
-    NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "NATIVE AA: ",
-                                 kNativeAaVals, kNativeAaNames, 3),
-                            &mcla_menu::kNativeAaDynamics)),
-    NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
-                    kNativeAnisoVals, kNativeAnisoNames, 6)),
-#endif
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// DISPLAY > FSR1: the renderer's FSR1 on the present, its quality preset and
-// RCAS. The preset and the sharpness are grey while FSR1 is off.
-const ItemDef kGpuFsrItems[] = {
-    WithDynamics(Bool("PM_RxGpuFsr", "mcla_gpu_fsr", "FSR1: "), &kFsrToggleDynamics),
-    WithDynamics(Str("PM_RxGpuFsrPreset", "mcla_gpu_fsr_preset", "QUALITY: ",
-                     kFsrPresetVals, kFsrPresetNames, kNumFsrPresets, " (RESTART)"),
-                 &kFsrPresetDynamics),
-    WithDynamics(Dbl("PM_RxGpuFsrSharp", "mcla_gpu_fsr_sharpness", "SHARP REDUCE: ",
-                     kFsrSharpVals, 5, "%g"),
-                 &kFsrSharpDynamics),
+// POST AA (mcla_gpu_aa, the NATIVE renderer's post pass, M6c, live): FXAA or SMAA on the finished
+// scene before the UI. It is named for what it is (a pass on the picture, after it is drawn) so that it
+// does not read like FSR's and DLSS's "NATIVE AA" mode, a render at the output's own size. The row is
+// grey and says what does the job while a temporal upscaler runs (upscaling_menu.cpp, "POST AA (FSR 3.1
+// ON)", 20 characters).
+const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
+const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
+// Ambient occlusion (gpu/ao.h, live): off, half resolution, full resolution. The row is at most 23
+// characters with its longest value.
+const char* const kNativeAoVals[]  = {"off", "low", "high"};
+const char* const kNativeAoNames[] = {"OFF", "LOW", "HIGH"};
+// How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
+// off. At most 21 characters with its longest value.
+const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
+const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
+bool AoOn() {
+    const std::string mode = CvarGet("mcla_gpu_ao");
+    return mode == "low" || mode == "high";
+}
+constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
+// Anisotropic filtering (M6d.1, live): the game's own or forced.
+const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
+const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
+#endif
+// The emulated GPU's anisotropic filtering (the SDK's anisotropic_override, which it reads for every
+// sampler it makes, so a change is live): -1 the game's own, 0 off, then 1 = 1x, 2 = 2x, 3 = 4x, 4 = 8x,
+// 5 = 16x. LARecomp starts it at 16x (larecomp_app.h) unless larecomp.toml says otherwise.
+const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
+const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
+
+// DISPLAY, after the upscaler's rows (VideoExtraRows): how the picture is smoothed, filtered and
+// shaded, in the order the owner asked for (2026-11-07): MSAA, POST AA, ANISOTROPIC, AMBIENT
+// OCCLUSION, AO INTENSITY. One ANISOTROPIC row per renderer (the same name and place), MSAA on both
+// (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
+// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "DEFAULT" (7), both
+// under the page's widest ("Page width").
+const ItemDef kPictureItems[] = {
+#if defined(LARECOMP_HAS_GPU)
+    WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
+                 &kMsaaRowDynamics),
+    NativeOnly(WithDynamics(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "POST AA: ",
+                                 kPostAaVals, kPostAaNames, 3),
+                            &mcla_menu::kPostAaDynamics)),
+    NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
+                    kNativeAnisoVals, kNativeAnisoNames, 6)),
+#else
+    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
+#endif
+    // CHECK: live on the emulated GPU (the SDK says kHotReload): a texture seen before the change
+    // takes the new level when its sampler is made again.
+    XeniaOnly(Str ("PM_RxXeAniso",      "anisotropic_override",  "ANISOTROPIC: ",
+                   kXeniaAnisoVals, kXeniaAnisoNames, 7)),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Str ("PM_RxGpuAo",       "mcla_gpu_ao",           "AMBIENT OCCLUSION: ",
+                    kNativeAoVals, kNativeAoNames, 3)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
+                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
+                            &kAoIntensityDynamics)),
+#endif
+};
+
+// The rows DISPLAY has after its own table (MenuDef::extra): the upscaler's, kPictureItems, then
+// frame generation's (frame_generation_menu.cpp puts them together and keeps the table).
+const ItemDef* VideoExtraRows(int& count) {
+    return DisplayMenuRows(kPictureItems, int(sizeof(kPictureItems) / sizeof(kPictureItems[0])), count);
+}
+
+#if defined(LARECOMP_HAS_GPU)
+// DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
+const ItemDef kGpuHdrItems[] = {
+    Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
+        kHdrModeVals, kHdrModeNames, 3),
+    WithDynamics(Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
+                     kHdrPaperWhiteVals, 11, "%.0f"),
+                 &kHdrPaperWhiteDynamics),
+    WithDynamics(Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
+                     kHdrPeakVals, 11, "%.0f"),
+                 &kHdrPeakDynamics),
+    // How far lights, the sun, the dusk sky and the headlights go above paper white.
+    WithDynamics(Dbl("PM_RxGpuHdrHighlights", "mcla_gpu_hdr_highlights", "HIGHLIGHTS: ",
+                     kHdrHighlightVals, 4, "%g"),
+                 &kHdrHighlightDynamics),
+    WithDynamics(Bool("PM_RxGpuHdrTest", "mcla_gpu_hdr_test_pattern", "TEST PATTERN: "),
+                 &kHdrTestDynamics),
 };
 #endif
+
+// PERFORMANCE > RENDERING > NVIDIA REFLEX / AMD ANTI-LAG 2 (mcla_gpu_low_latency, live): the GPU vendor's
+// latency reducer. The row comes from the renderer's own answer (gpu/latency.h): it names the vendor's
+// feature, and there is none where the GPU, the driver or the graphics API has no reducer, which is
+// how a PC that cannot run it never sees it. AUTO says what it comes to on this GPU. Anti-Lag 2 has no
+// boost, so its row stops at ON.
+#if defined(LARECOMP_HAS_GPU)
+const char* const kLowLatencyVals[]  = {"auto", "off", "on", "boost"};
+const char* const kLowLatencyNames[] = {"AUTO", "OFF", "ON", "ON + BOOST"};
+
+std::string LowLatencyLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::latency::AutoIsOn() ? "AUTO (ON)" : "AUTO (OFF)";
+    case 1:  return "OFF";
+    case 2:  return "ON";
+    default: return "ON + BOOST";
+    }
+}
+
+// Says why a reducer that is asked for is not working right now. While frame generation runs it is
+// forced on (latency.cpp): the row is grey and says so.
+const char* LowLatencySuffix() {
+    if (mcla_menu::LatencyRowLocked()) return " (FRAME GEN)";
+    switch (mcla::gpu::latency::CurrentHealth()) {
+    case mcla::gpu::latency::Health::kPaused: return " (PAUSED)";
+    case mcla::gpu::latency::Health::kFailed: return " (NOT WORKING)";
+    default:                                  return "";
+    }
+}
+
+bool LowLatencyFree() { return !mcla_menu::LatencyRowLocked(); }
+
+constexpr RowDynamics kLowLatencyDynamics = {.str_label = LowLatencyLabel,
+                                             .enabled = LowLatencyFree,
+                                             .suffix = LowLatencySuffix};
+
+const ItemDef kReflexRows[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
+                                kLowLatencyVals, kLowLatencyNames, 4),
+                            &kLowLatencyDynamics)),
+};
+const ItemDef kAntiLagRows[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
+                                kLowLatencyVals, kLowLatencyNames, 3),
+                            &kLowLatencyDynamics)),
+};
+#endif
+
+// The rows RENDERING takes from the renderer (MenuDef::extra): the vendor's latency reducer, or none.
+const ItemDef* LowLatencyMenuRows(int& count) {
+#if defined(LARECOMP_HAS_GPU)
+    switch (mcla::gpu::latency::AvailableKind()) {
+    case mcla::gpu::latency::Kind::kReflex:
+        count = int(sizeof(kReflexRows) / sizeof(kReflexRows[0]));
+        return kReflexRows;
+    case mcla::gpu::latency::Kind::kAntiLag:
+        count = int(sizeof(kAntiLagRows) / sizeof(kAntiLagRows[0]));
+        return kAntiLagRows;
+    default:
+        break;
+    }
+#endif
+    count = 0;
+    return nullptr;
+}
 
 // Where the rear view mirror sits (rearview_position, rear_view.cpp).
 constexpr const char* kRearViewPosVals[]  = {"stock", "left_top", "middle_top",
@@ -1691,13 +1937,12 @@ const ItemDef kUiItems[] = {
     Color("PM_RxUiFrame",  "ui_theme_frame",  "FRAME GRAY", g_theme_vals, kNumThemeColors),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
-    Str ("PM_RxButtonLayout", "button_prompts",          "BUTTON LAYOUT: ",
-         kButtonLayoutVals, kButtonLayoutNames, 4),
+    // (BUTTON LAYOUT is on the CONTROLLER page now, kControllerItems.)
 };
 
-// The SETTINGS tab holds a handful of hubs, each a list of Submenu rows. Their
-// children are ordinary menus below; a menu some row opens gets no button of
-// its own (MenuIsNested).
+// The SETTINGS tab holds a few pages of rows (RECOMP SETTINGS, CONTROLLER) and a handful of hubs,
+// each a list of Submenu rows. The hubs' children are ordinary menus below; a menu some row opens gets
+// no button of its own (MenuIsNested).
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
     Submenu("PM_RxSubNative", "RENDERER",    "RxNativeMenu"),
@@ -1721,6 +1966,10 @@ const ItemDef kDiffItems[] = {
     WithDynamics(Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
                      kAiDiffVals, int(sizeof(kAiDiffVals) / sizeof(kAiDiffVals[0])), "%g"),
                  &kAiDiffDynamics),
+    // CHECK: when the three manager hooks run (rubberband.cpp). They read the cvar on every
+    // call, so it may not need a restart, but whether a flip mid-race shows at once, at the
+    // next race or only at the next start is unmeasured (nothing in the code says). "(RESTART)"
+    // is true whichever it is; if a flip shows at once, drop the suffix and retag the cvar.
     Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Dbl ("PM_RxRbCatchup",   "rubberband_catchup_scale", "CATCH-UP (AI BEHIND): ",
          kRbScaleVals, int(sizeof(kRbScaleVals) / sizeof(kRbScaleVals[0])), "%gX"),
@@ -1766,6 +2015,13 @@ const ItemDef kQuitItems[] = {
     Action("PM_RxQuitYes", kActionQuitYes),
     Action("PM_RxQuitRestart", kActionRestart),
 };
+// Shown over the menu that was just left when a setting that needs a restart was changed in
+// this session (RestartPromptTick). NOT NOW first, like NO on the QUIT form: a stray A keeps
+// playing, and B closes it the same way.
+const ItemDef kRestartAskItems[] = {
+    Action("PM_RxRestartLater", kActionRestartLater),
+    Action("PM_RxRestartNow",   kActionRestartNow),
+};
 
 // One RexGlue menu: a native list form (ui_forms.h) of `items` rows. A menu no
 // Submenu row opens gets a button on the pause SETTINGS tab and opens from the
@@ -1786,6 +2042,15 @@ struct MenuDef {
     // rather than a pointer so nothing depends on static initialisation order
     // between two translation units.
     const ItemDef* (*extra)(int& count);
+    // True for a menu only code opens (the "restart now?" prompt): no button on the SETTINGS tab.
+    bool opened_by_code = false;
+    // For a menu whose `extra` rows can change while the game runs (the upscalers: one that fails is
+    // not listed any more). The guest rows are built once and indexed by position, so `extra` keeps
+    // returning the rows the form was built with until this is applied: apply=false says whether the
+    // live rows are no longer those, apply=true makes them the ones `extra` returns from then on.
+    // EnsureMenuForm builds the form again, when it is closed, if it says so. Null: the rows never
+    // change.
+    bool (*relayout)(bool apply) = nullptr;
 };
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
@@ -1847,7 +2112,7 @@ const ItemDef& MenuItemAt(const MenuDef& md, int i) {
 
 const MenuDef kMenus[] = {
     // The buttons of the SETTINGS tab: the recomp's own fixes first, then the
-    // hubs.
+    // hubs, with the controller page after GAMEPLAY.
     {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
      "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
@@ -1857,6 +2122,10 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
      "RxGameMenu",
      kGameHubItems, int(sizeof(kGameHubItems) / sizeof(kGameHubItems[0]))},
+    // The line is 40 characters, as long as the longest the form takes (the QUIT line is 41).
+    {"PM_RxTabCtrl", "CONTROLLER", "Vibration, triggers, sticks and buttons.",
+     "RxCtrlMenu",
+     kControllerItems, int(sizeof(kControllerItems) / sizeof(kControllerItems[0]))},
     {"PM_RxTabIface", "INTERFACE", "Menu colors and language.",
      "RxIfaceMenu",
      kIfaceHubItems, int(sizeof(kIfaceHubItems) / sizeof(kIfaceHubItems[0]))},
@@ -1864,10 +2133,10 @@ const MenuDef kMenus[] = {
      "RxExtrasMenu",
      kExtrasHubItems, int(sizeof(kExtrasHubItems) / sizeof(kExtrasHubItems[0]))},
     // Reached through a hub.
-    {"PM_RxTabVideo", "DISPLAY", "Window, resolution, vsync and FPS limit.",
+    {"PM_RxTabVideo", "DISPLAY", "Window, picture quality and frame rate.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     UpscalingMenuRows},
+     VideoExtraRows, false, UpscalingMenuRelayout},
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
@@ -1876,7 +2145,8 @@ const MenuDef kMenus[] = {
      kPerfShadItems, int(sizeof(kPerfShadItems) / sizeof(kPerfShadItems[0]))},
     {"PM_RxTabPerfRend", "RENDERING", "Screen effects and frame pacing.",
      "RxPerfRendMenu",
-     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0]))},
+     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0])),
+     LowLatencyMenuRows},
     {"PM_RxTabPerfWorld", "WORLD DENSITY", "Traffic, pedestrians and props.",
      "RxPerfWorldMenu",
      kPerfWorldItems, int(sizeof(kPerfWorldItems) / sizeof(kPerfWorldItems[0]))},
@@ -1895,9 +2165,15 @@ const MenuDef kMenus[] = {
      "RxNativeMenu",
      kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabGpuFsr", "FSR1", "Upscaling of the render to the window.",
-     "RxGpuFsrMenu",
-     kGpuFsrItems, int(sizeof(kGpuFsrItems) / sizeof(kGpuFsrItems[0]))},
+    // The paused world behind the menu shows the highlights too (the UI is a layer in the pause
+    // view as well, gpu/frame_layers.h), so the HIGHLIGHTS row's change is seen at once. This line
+    // says so: it is the only help text a menu has.
+    // CHECK: the 40 characters fit under the list (the CAMERA line is as long), and the pause menu
+    // shows the highlights on every screen (a screen whose UI cannot be separated shows the SDR
+    // picture; the frame layers' log says which).
+    {"PM_RxTabGpuHdr", "HDR", "HDR levels. The paused world shows them.",
+     "RxGpuHdrMenu",
+     kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif
     {"PM_RxTabCam", "CAMERA", "Chase camera, free camera and rear view.",
      "RxCamMenu",
@@ -1942,6 +2218,11 @@ const MenuDef kMenus[] = {
     {"PM_RxQuit", "QUIT", "Close the game and return to the desktop?",
      "RxQuitMenu",
      kQuitItems, int(sizeof(kQuitItems) / sizeof(kQuitItems[0]))},
+    // Opened by RestartPromptTick, never from the SETTINGS tab.
+    {"PM_RxRestartAsk", "RESTART", "Restart to apply the changed settings?",
+     "RxRestartAskMenu",
+     kRestartAskItems, int(sizeof(kRestartAskItems) / sizeof(kRestartAskItems[0])),
+     nullptr, true},
 };
 constexpr int kNumMenus = int(sizeof(kMenus) / sizeof(kMenus[0]));
 
@@ -1960,6 +2241,7 @@ int MenuByKey(const char* menu_key) {
 // True when some Submenu row opens menu m: it then lives inside that menu and
 // has no button of its own on the SETTINGS tab.
 bool MenuIsNested(int m) {
+    if (kMenus[m].opened_by_code) return true;
     for (int p = 0; p < kNumMenus; ++p)
         for (int i = 0; i < MenuRawCount(kMenus[p]); ++i) {
             const ItemDef& it = MenuRawAt(kMenus[p], i);
@@ -2039,6 +2321,13 @@ bool ItemIsLabelOnly(const ItemDef& it) {
            it.kind == ItemKind::kSubmenu;
 }
 
+// The setting a row reads and writes (a checkbox) and the "restart now?" prompt looks up: its own
+// `cvar`, or what RowDynamics::cvar says for the renderer this launch runs (VSYNC, MSAA and RENDER SCALE
+// are one row each, mapped to the running renderer's own setting). Null for a row that has none.
+const char* ItemCvar(const ItemDef& it) {
+    return it.dynamics && it.dynamics->cvar ? it.dynamics->cvar() : it.cvar;
+}
+
 // RowDynamics::enabled; a row without one is always enabled.
 bool ItemEnabled(const ItemDef& it) {
     return !it.dynamics || !it.dynamics->enabled || it.dynamics->enabled();
@@ -2063,12 +2352,25 @@ std::vector<double> DblValues(const ItemDef& it) {
     return values;
 }
 
+// A kStrCycle row with a list of its own (RowDynamics::value_count): how many values it has, which
+// one it is on and what stepping to one writes all come from the row, and the list can change between
+// two draws. The game's row never sees the count: it is given a three-value window (kRowWindow).
+bool ItemOwnsList(const ItemDef& it) {
+    return it.kind == ItemKind::kStrCycle && it.dynamics && it.dynamics->value_count &&
+           it.dynamics->value_index && it.dynamics->set_value;
+}
+
+// Rows whose entry the cvar sits on can differ from the one stepped to, because the list changes
+// under the step (an entry for a value the row does not list is dropped once the row leaves it).
+bool ItemListMoves(const ItemDef& it) { return ItemLabelsValues(it) || ItemOwnsList(it); }
+
 int ItemValueCount(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool:
     case ItemKind::kCarbonBit: return 2;
     case ItemKind::kDblCycle:  return ItemLabelsValues(it) ? int(DblValues(it).size()) : it.nvals;
-    case ItemKind::kStrCycle:
+    case ItemKind::kStrCycle:  return ItemOwnsList(it) ? std::max(it.dynamics->value_count(), 0)
+                                                       : it.nvals;
     case ItemKind::kColor:     return it.nvals;
     case ItemKind::kAction:
     case ItemKind::kSubmenu:   return 0;
@@ -2105,13 +2407,18 @@ std::string ItemValueLabel(const ItemDef& it, int i) {
 int ItemValueIndex(const ItemDef& it) {
     switch (it.kind) {
     case ItemKind::kBool: {
-        bool on = CvarGetBool(it.cvar);
+        bool on = CvarGetBool(ItemCvar(it));
         if (it.inverted) on = !on;
         return on ? 1 : 0;
     }
     case ItemKind::kCarbonBit:
         return (CarbonHaveCar() && CarbonHasGroup(uint8_t(it.nvals))) ? 1 : 0;
     case ItemKind::kStrCycle:
+        if (ItemOwnsList(it)) {
+            const int n = ItemValueCount(it);
+            return n > 0 ? std::clamp(it.dynamics->value_index(), 0, n - 1) : 0;
+        }
+        return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kDblCycle: {
@@ -2138,11 +2445,19 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
     case ItemKind::kBool: {
         bool on = (i != 0);
         if (it.inverted) on = !on;
-        CvarSet(it.cvar, on ? "true" : "false");
+        CvarSet(ItemCvar(it), on ? "true" : "false");
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     }
     case ItemKind::kStrCycle:
+        if (ItemOwnsList(it)) {
+            it.dynamics->set_value(i, CvarSet);
+            g_settings_saved.store(false, std::memory_order_relaxed);
+            break;
+        }
+        CvarSet(it.cvar, it.svals[i]);
+        g_settings_saved.store(false, std::memory_order_relaxed);
+        break;
     case ItemKind::kColor:
         CvarSet(it.cvar, it.svals[i]);
         g_settings_saved.store(false, std::memory_order_relaxed);
@@ -2163,6 +2478,34 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
     }
 }
 
+// Page width. The pause movie sizes a page to its widest label (suffix
+// included) plus its widest value, over every row of the page and every value
+// a row can step to (the rows below the ones in view too), not row by row; past
+// about 750 of the movie's units the page is cut at a straight edge on the
+// right, the button prompts and the scroll bar first, at any screen size. A
+// page comes to about 245 units plus 11 a character of that label and value
+// (capitals of the menu's font: I and digits narrower, M and W wider).
+// DISPLAY must stay at or under 41 characters of that pair (24 and 17, say),
+// about 700 units, in every state of every row (the Windows and the other
+// platforms' suffixes, both renderers, sizes such as "2560X1440"). Its widest
+// label is "RESOLUTION (7680X4320)" (22; 23 at five digits across), then "RENDER
+// SCALE (RESTART)" (XENIA, 22), "UPSCALING (APPLYING)" and "SHARPNESS (FSR ONLY)"
+// (20); its widest value 18 ("FSR 3.1 (APPLYING)", the frame generation row while
+// it is being made), then 17 ("PERFORMANCE (50%)" and the mode row's other longest:
+// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)";
+// the DISPLAY MODE and RESOLUTION values are 10 and 9): 40 together (41 at five
+// digits across), so a row that joins the page may bring a label of up to 23
+// characters with a value of up to 18, and nothing wider than either. A label or a
+// value that is longer than its page's widest needs counting against that before
+// it goes in, in each state a suffix can be in; the upscaling rows' states are
+// counted in upscaling_menu.cpp, the display rows' in display_menu.h.
+// DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
+// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT"). The
+// RENDERER page has two rows: "GRAPHICS API (RESTART)" 22 and "RENDERER (RESTART)" 18, values at most 6.
+// The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
+// STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has four
+// rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
+//
 // The row's own text. Carbon rows say so when there is no car to edit, since
 // their value list would otherwise claim a state the car does not have.
 std::string ItemRowLabel(const ItemDef& it) {
@@ -2178,11 +2521,14 @@ std::string ItemRowLabel(const ItemDef& it) {
         case kActionDumpTextures:   return "DUMP SCENE TEXTURES";
         case kActionReloadTextures: return "RELOAD TEXTURE MODS";
         case kActionRestart:        return "RESTART GAME";
+        case kActionRestartLater:   return "NOT NOW";
+        case kActionRestartNow:     return "RESTART NOW";
         }
         return "";
     }
 
-    std::string label = it.prefix;
+    // A row named for what it sets now ("DLSS MODE", "RENDER SCALE") says so in RowDynamics::label.
+    std::string label = it.dynamics && it.dynamics->label ? it.dynamics->label() : it.prefix;
     while (!label.empty() && (label.back() == ' ' || label.back() == ':'))
         label.pop_back();
 
@@ -2198,13 +2544,13 @@ std::string ItemRowLabel(const ItemDef& it) {
 void ApplyItem(const ItemDef& it, int dir) {
     switch (it.kind) {
     case ItemKind::kBool:
-        CvarSet(it.cvar, CvarGetBool(it.cvar) ? "false" : "true");
+        CvarSet(ItemCvar(it), CvarGetBool(ItemCvar(it)) ? "false" : "true");
         g_settings_saved.store(false, std::memory_order_relaxed);
         break;
     case ItemKind::kStrCycle: {
-        int i = FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
-        CvarSet(it.cvar, it.svals[(i + dir + it.nvals) % it.nvals]);
-        g_settings_saved.store(false, std::memory_order_relaxed);
+        // Through the row's own list, which for a row with one (ItemOwnsList) is not the cvar's.
+        const int n = ItemValueCount(it);
+        if (n > 0) ItemSetValueIndex(it, ((ItemValueIndex(it) + dir) % n + n) % n);
         break;
     }
     case ItemKind::kDblCycle: {
@@ -2255,8 +2601,10 @@ void ApplyItem(const ItemDef& it, int dir) {
             break;
         }
         case kActionRestart:
+        case kActionRestartNow:
             PauseMenuRestartGame();
             break;
+        case kActionRestartLater:
         case kActionQuitNo:
             // Closes the QUIT form the way B does; the select sound is the A's.
             larecomp::ui::CloseForm(larecomp::ui::TopForm());
@@ -2291,7 +2639,10 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // the other route entirely and stops using states as rows: real row objects
 // of the game's own value class, handed to the list through its widget array.
 
-constexpr int kMaxRowsPerMenu = 18;  // BuildNativeRows refuses a longer menu
+// Sizes the tables below, nothing else: the form's own row list is made with the page's row count
+// (ui_forms.cpp CreateListForm), and a long page scrolls. DISPLAY reaches 19 on a card with the frame
+// generation multiplier row; a page over the cap is refused whole (BuildNativeRows), so there is room.
+constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {
     uint32_t row[kMaxRowsPerMenu] = {};     // guest row objects
@@ -2534,8 +2885,9 @@ void PollNativeRows(int m) {
             const int idx = ((nr.last_index[i] + dir) % n + n) % n;
             ItemSetValueIndex(it, idx);
             // A row that lists the cvar's own value drops that entry once the
-            // value leaves it, so where it now is is read again.
-            CentreRowWindow(nr, i, it, ItemLabelsValues(it) ? ItemValueIndex(it) : idx);
+            // value leaves it, and a row with a list of its own can have another one now
+            // (the choice above its mode row), so where it now is is read again.
+            CentreRowWindow(nr, i, it, ItemListMoves(it) ? ItemValueIndex(it) : idx);
             continue;
         }
 
@@ -2645,11 +2997,55 @@ bool MenuFormCancel(uint32_t form);
 void MenuFormClosed(uint32_t form);
 bool MenuFormKey(uint32_t form, uint32_t key);
 
-uint32_t EnsureMenuForm(int m) {
-    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) return form;
-    if (!BuildNativeRows(m)) return 0;
+// How many times a menu's form may be built again for rows that changed (MenuDef::relayout): each
+// one is a new form the game keeps (ui_forms.cpp holds 40, the menus use 30), and the layout changes
+// once or twice in a run (an upscaler failing).
+constexpr int kMaxFormRebuilds = 4;
+int g_form_rebuilds = 0;
 
+// CHECK: the page built again (needs a real DLSS failure, e.g. the fail injection of
+// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'DISPLAY': its rows changed
+// ... built again (1 of 4)" and a second "[ui-forms] form 'DISPLAY' created" when DISPLAY is next
+// opened (not before), the page opens with no DLSS in UPSCALING and no DLSS mode row, its rows and
+// the highlight work, B and re-entering work, and a DISPLAY left open across the failure keeps its
+// rows (DLSS mode row grey "(UNAVAILABLE)") with no row showing another row's label or value.
+uint32_t EnsureMenuForm(int m) {
     const MenuDef& md = kMenus[m];
+    // A form that was built with other rows than the live ones (an upscaler failed since): built
+    // again, with the new rows, once it is closed. The old form and its rows stay where they are
+    // (the game owns them; they are never opened again). A form that is open keeps its rows until it
+    // is left (UpscalingMenuRows still returns them), so it is never indexed by the wrong ones.
+    uint32_t old_form = 0;
+    NativeRows old_rows;
+    if (const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed)) {
+        if (!md.relayout || larecomp::ui::FormIsOpen(form) || g_form_rebuilds >= kMaxFormRebuilds ||
+            !md.relayout(/*apply=*/false)) {
+            return form;
+        }
+        old_form = form;
+        old_rows = g_rows[m];
+        g_rows[m] = NativeRows{};
+        g_menu_form[m].store(0, std::memory_order_relaxed);
+        md.relayout(/*apply=*/true);
+        ++g_form_rebuilds;
+        MC_INFO("[pause-menu] '{}': its rows changed since the page was built (an upscaler is not "
+                "available any more): the page is built again ({} of {})",
+                md.label, g_form_rebuilds, kMaxFormRebuilds);
+    } else if (md.relayout) {
+        md.relayout(/*apply=*/true);  // the rows as they are now
+    }
+    // The page cannot be built again: the old one is put back (its rows are the ones UpscalingMenuRows
+    // no longer returns, so a row or two may be the wrong one until the next start; a build that fails
+    // already warned).
+    const auto fail = [&]() -> uint32_t {
+        if (old_form) {
+            g_menu_form[m].store(old_form, std::memory_order_relaxed);
+            g_rows[m] = old_rows;
+        }
+        return 0;
+    };
+    if (!BuildNativeRows(m)) return fail();
+
     // Title and description are resolved through the string table once, by
     // the ctor. The description's key is the title's plus "_desc", the way
     // the game pairs "options" with "options_desc".
@@ -2666,7 +3062,7 @@ uint32_t EnsureMenuForm(int m) {
     const NativeRows& nr = g_rows[m];
     const uint32_t form = larecomp::ui::CreateListForm(
         md.menu_key, md.desc ? desc_key.c_str() : nullptr, nr.count, handler);
-    if (!form) return 0;
+    if (!form) return fail();
     for (int i = 0; i < nr.count; ++i) {
         if (!larecomp::ui::AddFormRow(form, nr.row[i])) {
             MC_WARN("[pause-menu] '{}': row {} did not fit in the form", md.label, i);
@@ -2686,6 +3082,108 @@ bool OpenMenu(int m, uint32_t from) {
     larecomp::ui::OpenForm(form, from);
     MC_INFO("[pause-menu] opened '{}'", kMenus[m].label);
     return true;
+}
+
+// ── "Restart now?" ─────────────────────────────────────────────────────
+//
+// A row whose label says "(RESTART)" (or "AFTER RESTART") writes its cvar at once, but the game
+// reads it at the start, so nothing happens until it is started again. Rather than leave the
+// player to look for RESTART GAME on the QUIT menu, leaving a menu in which such a setting was
+// changed offers it: a form over the menu just left, NOT NOW (first, the form's default) or
+// RESTART NOW (the QUIT menu's RESTART GAME: settings saved, the game started again, this one
+// closed). NOT NOW and B keep today's behaviour: the setting applies at the next start.
+//
+// Which settings count: those the menu wrote (NoteMenuWrite, called by CvarSet, remembers each
+// one's value from before) whose row says it needs a restart now (RowSaysRestart: the suffix is
+// read as drawn, so a row that is live in this state, like an upscaler mode row, does not
+// count), and that are not back at the value they had. One prompt per menu exit: what
+// was offered is remembered per setting (`asked`), so leaving the next menu does not ask again
+// until another setting changed. Guest thread only, like the menu.
+struct RestartWatch {
+    std::string cvar;
+    std::string orig;   // its value before the menu first changed it
+    std::string asked;  // its value when the player was last offered a restart
+};
+std::vector<RestartWatch> g_restart_watch;
+// Set when one of our menus closes after B (MenuFormClosed); taken by RestartPromptTick.
+std::atomic<bool> g_restart_check{false};
+
+void NoteMenuWrite(const char* name) {
+    for (const RestartWatch& w : g_restart_watch)
+        if (w.cvar == name) return;
+    const std::string now = CvarGet(name);
+    g_restart_watch.push_back({name, now, now});
+}
+
+// "1" and "1.0" are the same value (a double row writes %g, the toml may say 1.0).
+bool SameCvarValue(const std::string& a, const std::string& b) {
+    if (a == b) return true;
+    if (a.empty() || b.empty()) return false;
+    char* end_a = nullptr;
+    char* end_b = nullptr;
+    const double x = std::strtod(a.c_str(), &end_a);
+    const double y = std::strtod(b.c_str(), &end_b);
+    return *end_a == '\0' && *end_b == '\0' && x == y;
+}
+
+// Whether the row's label, as it is drawn now, says the setting needs a restart.
+bool RowSaysRestart(const ItemDef& it) {
+    const char* suffix = it.dynamics && it.dynamics->suffix ? it.dynamics->suffix() : it.suffix;
+    return suffix && std::strstr(suffix, "RESTART");
+}
+
+// Whether a row that sets `cvar` (in any menu this launch lists) says it needs a restart.
+bool CvarNeedsRestart(const std::string& cvar) {
+    for (int m = 0; m < kNumMenus; ++m) {
+        for (int i = 0; i < MenuItemCount(kMenus[m]); ++i) {
+            const ItemDef& it = MenuItemAt(kMenus[m], i);
+            if (it.kind != ItemKind::kBool && it.kind != ItemKind::kStrCycle &&
+                it.kind != ItemKind::kDblCycle)
+                continue;
+            const char* row_cvar = ItemCvar(it);
+            if (row_cvar && cvar == row_cvar && RowSaysRestart(it)) return true;
+        }
+    }
+    return false;
+}
+
+// A setting that needs a restart has changed and the player has not been offered one for it.
+bool RestartDue() {
+    bool due = false;
+    for (RestartWatch& w : g_restart_watch) {
+        const std::string now = CvarGet(w.cvar.c_str());
+        if (SameCvarValue(now, w.orig)) {  // back where it started: nothing to apply
+            w.asked = now;
+            continue;
+        }
+        if (!SameCvarValue(now, w.asked) && CvarNeedsRestart(w.cvar)) due = true;
+    }
+    return due;
+}
+
+void MarkRestartOffered() {
+    for (RestartWatch& w : g_restart_watch) w.asked = CvarGet(w.cvar.c_str());
+}
+
+// Once per UI update (PauseMenuFormsTick): after a menu of ours was left, opens the prompt over
+// what is on top now (the pause screen, or the menu the one left was opened from) when a setting
+// that needs a restart has changed. A tick later, not inside the key handler that closed the form.
+void RestartPromptTick() {
+    if (!g_restart_check.exchange(false, std::memory_order_relaxed)) return;
+    const uint32_t pause = larecomp::ui::PauseForm();
+    const uint32_t top = larecomp::ui::TopForm();
+    // The pause screen is gone, or a screen of the game's own has the pad: no prompt (the
+    // settings were saved on the way out, and apply at the next start).
+    if (!pause || !top || !larecomp::ui::FormIsOpen(pause)) return;
+    if (top != pause && !larecomp::ui::IsOurForm(top)) return;
+    const int ask = MenuByKey("RxRestartAskMenu");
+    if (ask < 0 || top == g_menu_form[ask].load(std::memory_order_relaxed)) return;
+    if (!RestartDue()) return;
+    MarkRestartOffered();
+    if (OpenMenu(ask, top))
+        MC_INFO("[pause-menu] a setting that needs a restart changed: offered RESTART NOW");
+    else
+        MC_WARN("[pause-menu] could not open the restart prompt (top form 0x{:08X})", top);
 }
 
 bool MenuFormAccept(uint32_t form, int row) {
@@ -2750,6 +3248,9 @@ void MenuFormClosed(uint32_t form) {
     const int m = MenuOfForm(form);
     MC_INFO("[pause-menu] left '{}'", m >= 0 ? kMenus[m].label : "?");
     if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
+    // The prompt itself is not a menu a setting is changed in.
+    if (m >= 0 && !kMenus[m].opened_by_code)
+        g_restart_check.store(true, std::memory_order_relaxed);
 }
 
 // An open strip owns the d-pad: left/right walk it, the rest of the list's
@@ -2907,6 +3408,12 @@ void EnsureControllerButtonRow(uint32_t list) {
 
 }  // anonymous namespace
 
+namespace mcla_menu {
+
+bool NativeRendererRuns() { return RunningRendererMask() == kRendNative; }
+
+}  // namespace mcla_menu
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 // RESTART GAME: as the QUIT form's YES, but the game is started again before this one closes
@@ -2940,6 +3447,15 @@ void InitPauseMenuHooks() {
     // Runs from FinishSetupAfterBootBuild, before ReXApp::LaunchModule starts
     // the guest -- the only point where the online cvar is still the player's.
     InitOnlineSettings();
+    // The test pattern lives for the run: a save never writes it, and one an older save left in the
+    // file is switched off now (it would cover the menu that could switch it off).
+    larecomp::NoteSessionOnlyCvar(kHdrTestPatternCvar);
+    if (const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(kHdrTestPatternCvar);
+        info && info->source == rex::cvar::Source::kConfig && info->getter() == "true") {
+        MC_INFO("[pause-menu] {} = true in larecomp.toml is ignored: the test pattern is never kept",
+                kHdrTestPatternCvar);
+        rex::cvar::SetFlagByName(kHdrTestPatternCvar, "false");
+    }
     MC_INFO("[pause-menu] hooks registered");
 }
 
@@ -4402,7 +4918,59 @@ void PauseMenuLeaveSubmenu() {
 // the open-form stack holding the pad. The color strip closes as soon as its
 // form is not the top one.
 
+// Whether the highlighted row of the menu on top is DISPLAY > HDR > TEST PATTERN.
+bool HdrTestPatternRowFocused() {
+    const int m = MenuByKey("RxGpuHdrMenu");
+    if (m < 0) return false;
+    const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed);
+    if (!form || larecomp::ui::TopForm() != form) return false;
+    const int row = larecomp::ui::FormSelectedRow(form);
+    if (row < 0 || row >= MenuItemCount(kMenus[m])) return false;
+    const char* cvar = MenuItemAt(kMenus[m], row).cvar;
+    return cvar && std::strcmp(cvar, kHdrTestPatternCvar) == 0;
+}
+
+// The test pattern the menu's row switched on goes off as soon as that row is not the highlighted
+// row of the open HDR menu: the cursor moved, the HDR menu was left or the pause menu closed.
+// Its box follows the cvar (PollNativeRows). A pattern set on the command line (or from the F4
+// panel or the console) is not the menu's and stays as it is.
+// CHECK: the box clears when the cursor leaves the row; FormSelectedRow is the row the cursor is on
+// at the tick, not one frame behind.
+void HdrTestPatternTick() {
+    if (!g_hdr_pattern_by_menu.load(std::memory_order_relaxed)) return;
+    if (CvarGetBool(kHdrTestPatternCvar) && HdrTestPatternRowFocused()) return;
+    if (CvarGetBool(kHdrTestPatternCvar)) {
+        MC_INFO("[pause-menu] the HDR test pattern is off: its row is not highlighted any more");
+        CvarSet(kHdrTestPatternCvar, "false");  // clears g_hdr_pattern_by_menu
+    }
+    g_hdr_pattern_by_menu.store(false, std::memory_order_relaxed);
+}
+
+// The HDR menu's level rows (PAPER WHITE, PEAK BRIGHTNESS, HIGHLIGHTS, TEST PATTERN) are enabled while the swap chain IS HDR10
+// (HdrActive), not while the setting says HDR. A step on the HDR row changes the setting at once, but the render thread switches
+// the swap chain a few frames later, after the rows were drawn: they showed the state before the step ("(HDR OFF)" with HDR just
+// turned on, live values with it just turned off) until the next input (Mz, 2026-11-08). Watched here once per UI update: when the
+// output flips while the HDR menu is open, its rows are synced and the list drawn again, the way a row is after A.
+void HdrOutputWatchTick() {
+#if defined(LARECOMP_HAS_GPU)
+    static bool last = false;  // guest thread only
+    const bool now = HdrActive();
+    if (now == last) return;
+    last = now;
+    const int m = MenuByKey("RxGpuHdrMenu");
+    if (m < 0) return;
+    const uint32_t form = g_menu_form[m].load(std::memory_order_relaxed);
+    if (!form || !larecomp::ui::FormIsOpen(form)) return;
+    SyncNativeRowsFromCvars(m);
+    larecomp::ui::RefreshFormList(form);
+    MC_INFO("[pause-menu] HDR output is {} now: the HDR menu's rows follow it", now ? "on" : "off");
+#endif
+}
+
 void PauseMenuFormsTick() {
+    HdrTestPatternTick();
+    HdrOutputWatchTick();
+    RestartPromptTick();
     if (g_color_open >= 0 && larecomp::ui::TopForm() != g_color_form) ColorStripClose(false);
     if (!larecomp::ui::TopmostOurForm()) return;
     if (larecomp::ui::FormIsOpen(larecomp::ui::PauseForm())) return;

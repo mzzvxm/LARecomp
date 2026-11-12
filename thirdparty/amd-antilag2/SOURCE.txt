@@ -1,0 +1,7 @@
+AMD Anti-Lag 2, the Direct3D 12 header of its SDK, used for AMD Anti-Lag 2 on the D3D12 backend
+(src/gpu/latency_d3d12.cpp).
+Origin: https://github.com/GPUOpen-LibrariesAndSDKs/AntiLag2-SDK, the header as the FidelityFX SDK carries it
+        (sdk/libs/antilag2/ffx_antilag2_dx12.h), taken from the MCLA fork's copy of it. MIT (LICENSE.txt).
+Two small edits for clang and mingw-w64, marked MCLA in the file: a reinterpret_cast where AMD's has an
+MSVC-only static_cast from void* to a function pointer, and the interface's __CRT_UUID_DECL under __MINGW32__.
+Nothing of AMD's is shipped: the header loads amdxc64.dll from the AMD driver.

@@ -80,6 +80,28 @@
 // that failed here. A finished build nobody asks for again is taken at the end
 // of the frame (EndFrame), so it is recorded and persists like any other.
 //
+// Live MSAA level (PrebuildForLevel): a pipeline's sample count is its draw's targets' host
+// samples, which the MSAA level sets for an image of the screen the guest multisamples
+// (EdramTargets::HostSamplesAt). A draw whose targets take the level says so (PipelineInputs::
+// msaa_guest_samples), and the first time its pipeline is had it is remembered apart from its
+// sample count. When the level is about to change, one copy per remembered pipeline at the new
+// level's sample count is handed to the builder threads at a lower priority than anything a draw
+// is waiting for (the queue after urgent_, before the precache list); the caller waits for them
+// (PrebuildWaiting) and only then changes the targets, so no frame draws with a pipeline that is
+// not there. A copy a draw asks for before it is ready is moved up to urgent_ like any other
+// pending build. A copy is taken (and recorded for the next start) by the first draw that asks for
+// it, not at the end of the frame like other background builds: copies for a level the player went
+// back from leave nothing in the cache file.
+//
+// Command line prebuild (larecomp.exe --precache_pipelines, pipeline_prebuild.h): the launcher
+// runs the same precache before the first start, with no render thread and no guest
+// (PrecacheForSetup): the same files are read, the same workers make the same pipelines, only more
+// of them, at normal priority, each dropped as soon as it is made (the driver keeps its compiled
+// form in its own cache on disk, which is the point), and the records are written back at the end.
+// It also makes a copy of every multisampled record at the sample counts the start's MSAA level
+// asks for (SetupOptions::level_samples: the setting's level, 1 under an upscaler), which is what
+// PrebuildForLevel would hand the builders at runtime; the copies are made, not recorded.
+//
 // Threading: the render thread; the builder threads (the precache workers)
 // touch only the entries and requests they were handed, the ShaderStore
 // (GetShader locks) and the device; the autosave thread only the bytes it was
@@ -96,6 +118,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -145,11 +168,38 @@ struct PipelineKeyHash {
   size_t operator()(const PipelineKey& k) const;
 };
 
+// The blend words of a key (PipelineKey::blend), 4 bits per field: enable, src, dst, op, srcA, dstA,
+// opA, write mask. The UI layer split (frame_layers.h) reads them to tell a draw it can separate and
+// changes the alpha part.
+inline uint32_t PackBlend(const plume::RenderBlendDesc& b) {
+  return uint32_t(b.blendEnabled) | (uint32_t(b.srcBlend) << 4) | (uint32_t(b.dstBlend) << 8) |
+         (uint32_t(b.blendOp) << 12) | (uint32_t(b.srcBlendAlpha) << 16) |
+         (uint32_t(b.dstBlendAlpha) << 20) | (uint32_t(b.blendOpAlpha) << 24) |
+         (uint32_t(b.renderTargetWriteMask) << 28);
+}
+
+inline plume::RenderBlendDesc UnpackBlend(uint32_t v) {
+  plume::RenderBlendDesc b;
+  b.blendEnabled = (v & 0xF) != 0;
+  b.srcBlend = plume::RenderBlend((v >> 4) & 0xF);
+  b.dstBlend = plume::RenderBlend((v >> 8) & 0xF);
+  b.blendOp = plume::RenderBlendOperation((v >> 12) & 0xF);
+  b.srcBlendAlpha = plume::RenderBlend((v >> 16) & 0xF);
+  b.dstBlendAlpha = plume::RenderBlend((v >> 20) & 0xF);
+  b.blendOpAlpha = plume::RenderBlendOperation((v >> 24) & 0xF);
+  b.renderTargetWriteMask = uint8_t((v >> 28) & 0xF);
+  return b;
+}
+
 // What a draw needs besides the key to create its pipeline.
 struct PipelineInputs {
   const ShaderStore::Entry* vs = nullptr;
   const ShaderStore::Entry* ps = nullptr;
   const InputLayout* input_layout = nullptr;
+  // The draw's targets take the host's MSAA level (EdramTargets::HostSamplesFollowLevel): their
+  // guest sample count, 2 or 4; 0 for any other draw. Only for Pipelines::Get, which remembers the
+  // pipeline of such a draw for PrebuildForLevel.
+  uint32_t msaa_guest_samples = 0;
 };
 
 // The polygon offset of a draw in host units.
@@ -217,6 +267,23 @@ class Pipelines {
   plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs,
                              const Deferral* deferral = nullptr, bool* pending = nullptr);
 
+  // The host MSAA level is about to become `level` (1, 2, 4 or 8): hands the builder threads one copy,
+  // at the sample count `level` gives it, of every pipeline Get was asked for with
+  // PipelineInputs::msaa_guest_samples set (the sample count is `level`, also where it is more or
+  // fewer than the guest's: 1 is OFF and an upscaler, over the game's 2 sample layout). A pipeline that is already there, queued or being made for another reason is not
+  // made again. Render thread. Calling it again for the same or another level starts a new count.
+  struct LevelPrebuild {
+    uint32_t known = 0;    // pipelines remembered (draws into targets that take the level)
+    uint32_t present = 0;  // ... whose copy at `level` was there already or needs nothing made
+    uint32_t queued = 0;   // copies handed to the builders by this call
+    uint32_t waiting = 0;  // copies, this call's or earlier ones, not finished yet
+  };
+  LevelPrebuild PrebuildForLevel(uint32_t level);
+  // Copies of the last PrebuildForLevel not finished yet (being made or waiting for a thread).
+  // 0: the targets may change. A copy that failed counts as finished: its draws are made (and the
+  // failure reported) the usual way.
+  uint32_t PrebuildWaiting() const;
+
   // Once a frame (a guest present), on the render thread: counts the frame,
   // takes the background builds that finished, and Autosave.
   void EndFrame();
@@ -252,6 +319,58 @@ class Pipelines {
   };
   Stats TakeStats();
   size_t size() const { return pipelines_.size(); }
+
+  // --- the command line prebuild (pipeline_prebuild.h) --------------------------------------------
+  // The list a prebuild works on: the records of this API's file, the other API's and the starter
+  // list that the pack has the shaders for, and a hash of their keys (what a stamp binds).
+  struct SetupList {
+    size_t records = 0;
+    size_t copies = 0;   // the level copies on top of them (SetupOptions::level_samples)
+    uint64_t hash = 0;   // of the records' keys, then the copies'
+  };
+  struct SetupOptions {
+    // Worker threads; 0 = every usable processor but one, at most kSetupMaxThreads.
+    uint32_t threads = 0;
+    // The sample counts of the images of the screen the game multisamples that the next start
+    // draws with (EdramTargets::HostSamplesAt: the MSAA setting's level, and 1 when an upscaler
+    // is the saved choice). For every record whose key has more than one sample, a copy at each
+    // of these counts that no record has is made too (what PrebuildForLevel makes at runtime when
+    // the level changes); the cache file does not get them. Empty: the records as they are.
+    std::vector<uint32_t> level_samples;
+    // Called once with the list, before any pipeline is made; false: nothing to do (the cache is
+    // complete for this driver and pack). May be empty (always build).
+    std::function<bool(const SetupList&)> wanted;
+    // Called from the thread that called PrecacheForSetup, about every 100 ms while the workers
+    // build: pipelines finished of the list's size. May be empty.
+    std::function<void(uint32_t done, uint32_t total)> progress;
+  };
+  enum class SetupOutcome : uint8_t {
+    kNotReady,   // not initialized, or persistence started already
+    kDisabled,   // mcla_gpu_pipeline_cache is off: the game reads and writes no cache
+    kNotWanted,  // `wanted` said no
+    kEmpty,      // nothing is listed (no starter list and no cache file)
+    kBuilt,      // every pipeline of the list was tried and the records are in this API's file
+    kStalled,    // no pipeline finished for kSetupStallSeconds: the workers are left running, the
+                 // caller must end the process without joining them (and not destroy this object)
+  };
+  struct SetupResult {
+    SetupOutcome outcome = SetupOutcome::kNotReady;
+    SetupList list;
+    uint32_t threads = 0;
+    uint32_t ready = 0;   // made (the copies included)
+    uint32_t failed = 0;  // not made (shader missing or refused, logged; the game fails the same)
+    double seconds = 0;
+  };
+  static constexpr uint32_t kSetupMaxThreads = 16;
+  static constexpr uint32_t kSetupStallSeconds = 180;
+  // The second half of the start for a process that draws nothing: instead of StartPersistence.
+  // Reads the files, asks `wanted`, makes every pipeline of the list on the workers (waiting for
+  // them here), then writes the records to this API's file as the game would at its exit. The
+  // device, layout and a shader pack that is attached (and its HDR variants, if wanted) must be in
+  // place, as for StartPersistence. Once per object; persist_ stays off, so Shutdown writes nothing.
+  SetupResult PrecacheForSetup(ShaderStore& shaders, const SetupOptions& options);
+  // This API's cache file; set once the files were read.
+  const std::filesystem::path& cache_path() const { return cache_path_; }
 
  private:
   // An input layout by content, the persistent stand-in of InputLayout::id:
@@ -303,8 +422,16 @@ class Pipelines {
   // Counts a pipeline that could not be made and reports it (the first few).
   void LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
                   ShaderStore::ShaderResult ps_result);
-  void StartPrecache();
+  // `setup_threads` != 0: the command line prebuild (PrecacheForSetup): that many workers, none
+  // leaves, normal priority, no boot mode.
+  void StartPrecache(uint32_t setup_threads = 0);
   void StopPrecache();
+  // The paths of the cache files and the starter list, and the records they hold (StartPersistence
+  // and PrecacheForSetup).
+  void LoadPersistent();
+  uint64_t HashRecords() const;
+  // PrecacheForSetup: fills setup_copies_ (see SetupOptions::level_samples).
+  void MakeLevelCopies(const std::vector<uint32_t>& samples);
   void PrecacheWorker(uint32_t index);
 
   // How a lookup that gave no pipeline ended: nothing is known of the key
@@ -322,6 +449,11 @@ class Pipelines {
   // to make, or failed (`miss.take` says which).
   plume::RenderPipeline* TakePrecached(const PipelineKey& key, Miss& miss,
                                        const PipelineInputs& inputs);
+  // Get's slow path: the key is in neither map.
+  plume::RenderPipeline* Resolve(const PipelineKey& key, const PipelineInputs& inputs,
+                                 const Deferral* deferral, bool* pending);
+  // Remembers a pipeline just had for a draw whose targets take the MSAA level (PrebuildForLevel).
+  void NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs);
 
   Device* device_ = nullptr;
   const GuestLayout* layout_ = nullptr;
@@ -408,6 +540,12 @@ class Pipelines {
   // moves the workers on to the entries after it (FollowRenderThread). Then the extra workers
   // leave and the others drop to below normal, as with more processors, which never have it.
   std::atomic<bool> boot_mode_{false};
+  // The command line prebuild: set before the workers start, not changed while they run. Its
+  // workers run at normal priority and drop each pipeline once it is made.
+  bool setup_mode_ = false;
+  // The command line prebuild's copies of records at other sample counts (MakeLevelCopies): made
+  // after the list, never looked up by a draw and never recorded.
+  std::vector<Record> setup_copies_;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
   std::chrono::steady_clock::time_point boot_deadline_;
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
@@ -434,6 +572,10 @@ class Pipelines {
     const StoredLayout* layout = nullptr;    // owned by stored_layouts_
     uint32_t stored = 0;                     // its index there
     uint64_t asked_frame = 0;
+    // A copy for a coming MSAA level (PrebuildForLevel), in low_ until a draw asks for it (then
+    // `promoted`: it was moved up to urgent_). Render thread only.
+    bool low = false;
+    bool promoted = false;
     std::atomic<uint8_t> state{kQueued};
     std::unique_ptr<plume::RenderPipeline> pipeline;
     ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
@@ -447,6 +589,19 @@ class Pipelines {
   };
   std::unordered_map<PipelineKey, std::shared_ptr<Request>, PipelineKeyHash> requests_;
   std::deque<Urgent> urgent_;  // work_mutex_
+  // After urgent_, before the precache list: the copies for a coming MSAA level (work_mutex_).
+  std::deque<Urgent> low_;
+  // The pipelines drawn into targets that take the MSAA level, apart from their sample count: the
+  // session key with sample_count = the draw's guest samples (2 or 4), and the stored layout.
+  struct LevelDependent {
+    PipelineKey key;
+    uint32_t stored = 0;
+  };
+  std::vector<LevelDependent> level_dependent_;
+  std::unordered_set<PipelineKey, PipelineKeyHash> level_dependent_index_;
+  // The copies PrebuildForLevel waits for.
+  std::vector<std::shared_ptr<Request>> prebuild_requests_;
+  std::vector<Precached*> prebuild_precached_;
   std::mutex work_mutex_;
   std::condition_variable work_cv_;
   uint64_t frame_ = 0;  // EndFrame's count, for the waits

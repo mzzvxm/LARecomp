@@ -17,14 +17,35 @@
 #include "backend.h"
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
+#include "ao_apply_ms_ps.hlsl.dxil.h"
+#include "ao_apply_ps.hlsl.dxil.h"
+#include "ao_denoise_ps.hlsl.dxil.h"
+#include "ao_depth_ms_ps.hlsl.dxil.h"
+#include "ao_depth_ps.hlsl.dxil.h"
+#include "ao_main_ps.hlsl.dxil.h"
+#include "ao_mip_ps.hlsl.dxil.h"
+#include "ao_temporal_ms_ps.hlsl.dxil.h"
+#include "ao_temporal_ps.hlsl.dxil.h"
+#include "fg_compose_ps.hlsl.dxil.h"
+#include "dlssg_ui_hdr_ps.hlsl.dxil.h"
+#include "dlssg_ui_ps.hlsl.dxil.h"
+#include "fg_copy_ps.hlsl.dxil.h"
+#include "fg_prepare_ps.hlsl.dxil.h"
 #include "fsr_easu_ps.hlsl.dxil.h"
 #include "fxaa_ps.hlsl.dxil.h"
 #include "fsr_rcas_ps.hlsl.dxil.h"
+#include "fsr_rcas_hdr_ps.hlsl.dxil.h"
 #include "fullscreen_vs.hlsl.dxil.h"
+#include "hdr_compose_ps.hlsl.dxil.h"
+#include "layers_resolve_ps.hlsl.dxil.h"
+#include "layers_restore_ps.hlsl.dxil.h"
+#include "overlay_hdr_ps.hlsl.dxil.h"
 #include "overlay_ps.hlsl.dxil.h"
 #include "overlay_vs.hlsl.dxil.h"
 #include "post_luma_ps.hlsl.dxil.h"
+#include "present_hdr_ps.hlsl.dxil.h"
 #include "present_ps.hlsl.dxil.h"
+#include "present_stretch_hdr_ps.hlsl.dxil.h"
 #include "present_stretch_ps.hlsl.dxil.h"
 #include "reduce_ps.hlsl.dxil.h"
 #include "resolve_color_ms_ps.hlsl.dxil.h"
@@ -45,16 +66,39 @@
 #include "smaa_weights_ps.hlsl.dxil.h"
 #include "temporal_copy_ps.hlsl.dxil.h"
 #include "temporal_mv_ps.hlsl.dxil.h"
+#include "temporal_vehicle_table_ps.hlsl.dxil.h"
+#include "vehicle_motion_mask_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
+#include "ao_apply_ms_ps.hlsl.spirv.h"
+#include "ao_apply_ps.hlsl.spirv.h"
+#include "ao_denoise_ps.hlsl.spirv.h"
+#include "ao_depth_ms_ps.hlsl.spirv.h"
+#include "ao_depth_ps.hlsl.spirv.h"
+#include "ao_main_ps.hlsl.spirv.h"
+#include "ao_mip_ps.hlsl.spirv.h"
+#include "ao_temporal_ms_ps.hlsl.spirv.h"
+#include "ao_temporal_ps.hlsl.spirv.h"
+#include "fg_compose_ps.hlsl.spirv.h"
+#include "dlssg_ui_hdr_ps.hlsl.spirv.h"
+#include "dlssg_ui_ps.hlsl.spirv.h"
+#include "fg_copy_ps.hlsl.spirv.h"
+#include "fg_prepare_ps.hlsl.spirv.h"
 #include "fsr_easu_ps.hlsl.spirv.h"
 #include "fxaa_ps.hlsl.spirv.h"
 #include "fsr_rcas_ps.hlsl.spirv.h"
+#include "fsr_rcas_hdr_ps.hlsl.spirv.h"
 #include "fullscreen_vs.hlsl.spirv.h"
+#include "hdr_compose_ps.hlsl.spirv.h"
+#include "layers_resolve_ps.hlsl.spirv.h"
+#include "layers_restore_ps.hlsl.spirv.h"
+#include "overlay_hdr_ps.hlsl.spirv.h"
 #include "overlay_ps.hlsl.spirv.h"
 #include "overlay_vs.hlsl.spirv.h"
 #include "post_luma_ps.hlsl.spirv.h"
+#include "present_hdr_ps.hlsl.spirv.h"
 #include "present_ps.hlsl.spirv.h"
+#include "present_stretch_hdr_ps.hlsl.spirv.h"
 #include "present_stretch_ps.hlsl.spirv.h"
 #include "reduce_ps.hlsl.spirv.h"
 #include "resolve_color_ms_ps.hlsl.spirv.h"
@@ -75,6 +119,8 @@
 #include "smaa_weights_ps.hlsl.spirv.h"
 #include "temporal_copy_ps.hlsl.spirv.h"
 #include "temporal_mv_ps.hlsl.spirv.h"
+#include "temporal_vehicle_table_ps.hlsl.spirv.h"
+#include "vehicle_motion_mask_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -106,6 +152,39 @@ inline HostShaderBlob OverlayVertexShader() {
 
 inline HostShaderBlob OverlayPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(overlay_ps);
+}
+
+// HDR10 output (hdr.h): the overlay, the present, its stretch and FSR1's RCAS as they are with
+// hlsl/hdr_output.hlsli's encoding as their last step, for an HDR10 back buffer.
+inline HostShaderBlob OverlayHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(overlay_hdr_ps);
+}
+
+inline HostShaderBlob PresentHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(present_hdr_ps);
+}
+
+inline HostShaderBlob PresentStretchHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(present_stretch_hdr_ps);
+}
+
+inline HostShaderBlob FsrRcasHdrPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fsr_rcas_hdr_ps);
+}
+
+// The UI layer split (frame_layers.h, hdr_scene.h): the underlay drawn back under the UI into the
+// guest's target, and the HDR present's compose of the underlay and the UI layer.
+inline HostShaderBlob LayersRestorePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(layers_restore_ps);
+}
+
+// The same layers' copy out of a multisampled target: the mean of its samples.
+inline HostShaderBlob LayersResolvePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(layers_resolve_ps);
+}
+
+inline HostShaderBlob HdrComposePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(hdr_compose_ps);
 }
 
 inline HostShaderBlob FullscreenVertexShader() {
@@ -193,6 +272,54 @@ inline HostShaderBlob TemporalMotionPixelShader() {
 
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
+}
+
+// One row of the vehicle table the motion vector pass reads (temporal_mv.h, vehicle_motion.h), and the
+// R8 mask of the cars' shadow decals the upscalers take as their reactive input (vehicle_motion_mask.h).
+inline HostShaderBlob TemporalVehicleTablePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(temporal_vehicle_table_ps);
+}
+
+inline HostShaderBlob VehicleMotionMaskPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(vehicle_motion_mask_ps);
+}
+
+// Frame generation (frame_generation.h): the scene prepared for the interpolation, the generated
+// frame composed with the UI layer, and the pacer's copy of a present image into the back buffer.
+inline HostShaderBlob FrameGenerationPreparePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_prepare_ps);
+}
+
+inline HostShaderBlob FrameGenerationComposePixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_compose_ps);
+}
+
+inline HostShaderBlob FrameGenerationCopyPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(fg_copy_ps);
+}
+
+// DLSS frame generation (dlss_frame_generation.h): the UI layer in the back buffer's terms, for an SDR
+// and for an HDR10 back buffer.
+inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
+  return hdr ? MCLA_GPU_HOST_SHADER_BLOB(dlssg_ui_hdr_ps) : MCLA_GPU_HOST_SHADER_BLOB(dlssg_ui_ps);
+}
+
+// The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0
+// the linear depth, 1 the same from a multisampled depth plane, 2 a coarser level, 3 the
+// visibility, 4 the denoise, 5 the apply, 6 the apply over a multisampled depth plane, 7 the
+// accumulation over frames, 8 the same over a multisampled depth target.
+inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(ao_mip_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
+    case 6: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
+    case 7: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ms_ps);
+  }
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).

@@ -9,6 +9,7 @@
 #include "backend.h"
 #include "device.h"
 #include "frame.h"
+#include "latency.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -22,20 +23,64 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
     return true;
   }
   device_ = &device;
+  window_ = window;
+  vsync_ = options.vsync;
   present_wait_ = options.present_wait && device.capabilities().presentWait;
   if (options.present_wait && !present_wait_) {
     REXLOG_WARN("[gpu] present wait requested but {} does not support it; vsync paces presents",
                 device.backend_info());
   }
-  const plume::RenderSwapChainDesc desc(window, kFormat, kFramesInFlight + 1, present_wait_,
-                                        kFramesInFlight);
-  swap_chain_ = device.queue()->createSwapChain(desc);
-  if (!swap_chain_) {
-    REXLOG_ERROR("[gpu] Plume could not create the swap chain");
+  if (!MakeChain(options.hdr10)) {
     device_ = nullptr;
     return false;
   }
-  swap_chain_->setVsyncEnabled(options.vsync);
+  return true;
+}
+
+plume::RenderCommandQueue* SwapChain::Queue() const {
+  return queue_ ? queue_ : device_->queue();
+}
+
+bool SwapChain::MakeChain(bool hdr10) {
+  format_ = kSdrFormat;
+  hdr_ = false;
+  // NVIDIA Streamline's proxy factory, while DLSS frame generation is on (D3D12): the chains made in
+  // this call are its own. The frame latency is then the number of buffers: its pacer presents the
+  // generated frames behind the game's, and the guide asks for room for them ("raising the limit to
+  // the internal back-buffer count"); Plume sets the value on the chain after it is made.
+  const backend::SwapChainFactoryScope factory(device_->device(), factory_wrapper_);
+  through_wrapper_ = factory.wrapped();
+  const uint32_t latency = factory.wrapped() ? kFramesInFlight + 1 : kFramesInFlight;
+  if (hdr10) {
+    // The output has to take the HDR10 colour space (D3D12 CheckColorSpaceSupport, Vulkan's
+    // surface formats); Plume says no by returning null, with the reason on stderr. The SDR chain
+    // is the answer then, made after this one is gone (a window has one flip-model chain).
+    // CHECK: with the renderer on one GPU and the display on another, whether D3D12 accepts the HDR10
+    // colour space is not verified; a refusal lands in the SDR chain below with the log line.
+    const plume::RenderSwapChainDesc hdr_desc(
+        window_, FormatFor(true), kFramesInFlight + 1, present_wait_, latency,
+        plume::RenderSwapChainColorSpace::HDR10_ST2084);
+    swap_chain_ = Queue()->createSwapChain(hdr_desc);
+    if (swap_chain_) {
+      format_ = FormatFor(true);
+      hdr_ = true;
+    } else {
+      REXLOG_WARN("[gpu] hdr: {} would not make an HDR10 swap chain for this window (the output "
+                  "does not present the HDR10 colour space, or the surface does not list it; "
+                  "Plume's message is on stderr); the SDR swap chain is used",
+                  device_->backend_info());
+    }
+  }
+  if (!swap_chain_) {
+    const plume::RenderSwapChainDesc desc(window_, kSdrFormat, kFramesInFlight + 1, present_wait_,
+                                          latency);
+    swap_chain_ = Queue()->createSwapChain(desc);
+  }
+  if (!swap_chain_) {
+    REXLOG_ERROR("[gpu] Plume could not create the swap chain");
+    return false;
+  }
+  swap_chain_->setVsyncEnabled(vsync_);
   if (SwapChainNeedsInitialResize()) {
     swap_chain_->resize();
   }
@@ -45,7 +90,6 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
     if (swap_chain_->getWidth() != 0 && swap_chain_->getHeight() != 0) {
       REXLOG_ERROR("[gpu] the swap chain came back empty");
       swap_chain_.reset();
-      device_ = nullptr;
       return false;
     }
     REXLOG_WARN("[gpu] window has no area yet; the swap chain is built at the first present");
@@ -53,13 +97,49 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
   }
   if (!BuildPerImageObjects()) {
     swap_chain_.reset();
-    device_ = nullptr;
     return false;
   }
-  REXLOG_INFO("[gpu] swap chain {}x{}, {} buffers, latency {}, vsync {}, present wait {}",
-              width(), height(), image_count(), kFramesInFlight, options.vsync ? "on" : "off",
-              present_wait_ ? "on" : "off");
+  REXLOG_INFO("[gpu] swap chain {}x{}, {} buffers, latency {}, vsync {}, present wait {}, {}",
+              width(), height(), image_count(), kFramesInFlight, vsync_ ? "on" : "off",
+              present_wait_ ? "on" : "off", hdr_ ? "HDR10" : "SDR");
   return true;
+}
+
+// CHECK: not run (written without a build). D3D12: DXGI makes the chain for the window only once the
+// old one is fully released (the framebuffers, the back buffer references, Streamline's wrapper);
+// CreateSwapChainForHwnd failing here shows as "CreateSwapChainForHwnd failed" on stderr and the
+// old format coming back (kKept) or "the swap chain" errors (kLost). Vulkan: the old chain and its
+// surface are destroyed straight after FrameRing::WaitIdle, as Rebuild does before it resizes; the
+// validation layer is the judge (VUID-vkDestroySwapchainKHR, binary semaphores of a present).
+SwapChain::Recreated SwapChain::Recreate(bool hdr10) {
+  if (device_ && swap_chain_) {
+    vsync_ = swap_chain_->isVsyncEnabled();
+  }
+  return RecreateOn(queue_, hdr10, vsync_);
+}
+
+SwapChain::Recreated SwapChain::RecreateOn(plume::RenderCommandQueue* queue, bool hdr10,
+                                           bool vsync, const std::function<void()>& between) {
+  if (!device_) {
+    return Recreated::kLost;
+  }
+  const bool was_hdr = hdr_;
+  queue_ = queue;
+  vsync_ = vsync;
+  // The framebuffers name the back buffers, so they go before the chain.
+  framebuffers_.clear();
+  render_semaphores_.clear();
+  swap_chain_.reset();
+  if (between) {
+    between();  // the old chain is gone, the new one not made yet
+  }
+  // The format asked for, else the one it had: a refused HDR10 chain falls back to SDR inside
+  // MakeChain (which says why), and an SDR chain that could not be made is tried in HDR10 again.
+  if (!MakeChain(hdr10) && !MakeChain(was_hdr)) {
+    hdr_ = false;
+    return Recreated::kLost;
+  }
+  return hdr_ == hdr10 ? Recreated::kChanged : Recreated::kKept;
 }
 
 void SwapChain::Shutdown() {
@@ -68,6 +148,7 @@ void SwapChain::Shutdown() {
   render_semaphores_.clear();
   swap_chain_.reset();
   device_ = nullptr;
+  queue_ = nullptr;
 }
 
 bool SwapChain::NeedsRebuild() const {
@@ -107,12 +188,20 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
     return false;
   }
   const ScopedGpuWait wait;  // may block for a free image
+  // Vulkan: the acquire needs the chain to itself, so the latency reducer's calls on the update
+  // thread that name it wait (latency.h).
+  const latency::SwapChainUse use;
+  const std::lock_guard lock(use_mutex_);
   return swap_chain_->acquireTexture(signal, image);
 }
 
 bool SwapChain::Present(uint32_t image) {
   plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
   const ScopedGpuWait wait;  // may block on the queue of presents
+  // Vulkan: the present needs the chain to itself, so the latency reducer's calls on the update
+  // thread that name it wait (latency.h).
+  const latency::SwapChainUse use;
+  const std::lock_guard lock(use_mutex_);
   return swap_chain_->present(image, waits, 1);
 }
 
@@ -120,6 +209,16 @@ void SwapChain::SetVsync(bool vsync) {
   if (swap_chain_ && swap_chain_->isVsyncEnabled() != vsync) {
     swap_chain_->setVsyncEnabled(vsync);
   }
+}
+
+bool SwapChain::SetHdrMetadata(const plume::RenderHdrMetadata& metadata) {
+  if (!hdr_ || !swap_chain_) {
+    return false;
+  }
+  // Vulkan: vkSetHdrMetadataEXT needs the chain to itself too (as Present and Acquire).
+  const latency::SwapChainUse use;
+  const std::lock_guard lock(use_mutex_);
+  return swap_chain_->setHdrMetadata(metadata);
 }
 
 void SwapChain::WaitForPresentSlot() {

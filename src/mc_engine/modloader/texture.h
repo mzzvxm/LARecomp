@@ -70,7 +70,8 @@ void TileXbox360(const std::vector<uint8_t>& linear_blocks, uint32_t width, uint
                  BlockFormat format, std::vector<uint8_t>& out);
 
 // The size a level occupies once stored: padded to 128 in each axis, then
-// blocks. Matches Rpf3Crypto.GetVirtualSize + the per-format block maths.
+// blocks. Matches Rpf3Crypto.GetVirtualSize (Foxxyyy's CodeX.Games.MCLA) + the
+// per-format block maths.
 uint32_t StoredTextureSize(uint32_t width, uint32_t height, BlockFormat format);
 
 // A normal map that perturbs nothing, in the encoding MCLA's character normal

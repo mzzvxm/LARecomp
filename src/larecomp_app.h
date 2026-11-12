@@ -10,6 +10,7 @@
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
 #include "mc_engine/graphics_button.h"
+#include "mc_engine/display_mode.h"
 #include "spdlog_console.h"
 #include "larecomp_log.h"
 #include "crash_handler.h"
@@ -45,9 +46,11 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "profile/larecomp_profile_picker.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "bootprogress/larecomp_shader_build.h"
+#include "bootprogress/larecomp_pipeline_build.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/adaptive_triggers.h"
+#include "mc_engine/impulse_triggers.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/debug_overlay.h"
 #include "mc_engine/ui/controller_toast.h"
@@ -65,6 +68,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include <filesystem>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <vector>
 
 #ifdef _WIN32
@@ -80,6 +84,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #endif
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/runtime.h>
 #include <rex/graphics/flags.h>
 #include <rex/ui/flags.h>
@@ -156,7 +161,8 @@ class LarecompApp : public rex::ReXApp {
         "render_target_path_d3d12", "texture_cache_memory_limit_soft",
         "texture_cache_memory_limit_hard",
         "texture_cache_memory_limit_render_to_texture",
-        "anisotropic_override", "gpu_allow_invalid_fetch_constants", "log_level",
+        "anisotropic_override", "d3d12_adapter", "vulkan_device",
+        "gpu_allow_invalid_fetch_constants", "log_level",
         "audio_maxqframes", "audio_mute", "shader_pack_dir", "shader_pack_threads",
     };
     std::filesystem::create_directories("logs");
@@ -332,6 +338,33 @@ class LarecompApp : public rex::ReXApp {
     SetFlag("video_mode_refresh_rate", (rr && *rr) ? rr : "60");
   }
 
+  // Which GPU the emulated GPU runs on. Its SDK takes the first adapter that is not software
+  // (d3d12_adapter = -1) or the loader's first Vulkan device (vulkan_device = -1), which on a PC
+  // with two GPUs is often the integrated one that drives the screen. So it is given the number of
+  // the GPU the Plume renderer would use (gpu.h XeniaAdapterIndex): mcla_gpu_adapter's by name, else
+  // Windows' graphics setting for this exe, else the high-performance GPU. A d3d12_adapter or
+  // vulkan_device the player wrote (larecomp.toml, the command line) wins.
+  // CHECK: not run on a PC with two GPUs (the emulated GPU's log line "DXGI adapter: ..." says which
+  // it took; logs/effective_config.txt has the number).
+  void ChooseXeniaAdapter(bool vulkan, const std::string& adapter_name) {
+#if defined(LARECOMP_HAS_GPU)
+    const char* flag = vulkan ? "vulkan_device" : "d3d12_adapter";
+    if (FlagWasConfigured(flag)) {
+      return;
+    }
+    const int index = mcla::gpu::XeniaAdapterIndex(vulkan, adapter_name);
+    if (index < 0) {
+      return;
+    }
+    SetFlag(flag, std::to_string(index).c_str());
+    LARECOMP_APP_INFO("Xenia GPU: {} = {}{}{}", flag, index,
+                      adapter_name.empty() ? "" : " for ", adapter_name);
+#else
+    (void)vulkan;
+    (void)adapter_name;
+#endif
+  }
+
   // The SDK loads the GPU plugin with the plugin's own default backend ("any": Direct3D 12 first
   // where both are built) and has no setting for it, so graphics_backend (GRAPHICS API in the menu,
   // which the Plume renderer reads too) never reached the emulated GPU: it always ran Direct3D 12.
@@ -340,15 +373,22 @@ class LarecompApp : public rex::ReXApp {
   void LoadXenosWithChosenBackend(rex::RuntimeConfig& config) {
     const std::string asked = rex::cvar::GetFlagByName("graphics_backend");
     std::string backend;
+    // The GPU Plume would run on: mcla_gpu_adapter, else (graphics_backend auto, Vulkan) the one
+    // that choice was made for. Empty: no name, the rules of ChooseXeniaAdapter.
+    std::string adapter_name = rex::cvar::GetFlagByName("mcla_gpu_adapter");
     if (asked == "d3d12" || asked == "vulkan") {
       backend = asked;
 #if defined(LARECOMP_HAS_GPU)
     } else if (asked.empty() || asked == "auto") {
-      backend = mcla::gpu::AutoBackendIsVulkan(rex::cvar::GetFlagByName("mcla_gpu_adapter"))
-                    ? "vulkan"
-                    : "d3d12";
+      std::string auto_adapter;
+      backend = mcla::gpu::AutoBackendIsVulkan(adapter_name, &auto_adapter) ? "vulkan" : "d3d12";
+      if (adapter_name.empty()) {
+        adapter_name = auto_adapter;
+      }
 #endif
     }
+    // The emulated GPU is Direct3D 12 first where the SDK picks its own backend.
+    ChooseXeniaAdapter(backend == "vulkan", adapter_name);
     if (backend.empty()) {
       return;
     }
@@ -510,23 +550,13 @@ class LarecompApp : public rex::ReXApp {
       return false;
     }
 
-    // The SDK's callback for `fullscreen` calls Window::SetFullscreen on the
-    // thread that set the cvar, with the cvar registry locked. The pause menu
-    // sets it on the game thread; SetFullscreen then waits for the UI thread,
-    // and with the settings panel or the console open the UI thread is waiting
-    // for that lock when it reads a cvar, so the game hung for good. The window
-    // change is queued for the UI thread instead and runs after the lock is
-    // released. The SDK registers no other callback for this name.
-    rex::cvar::UnregisterChangeCallbacks("fullscreen");
-    rex::cvar::RegisterChangeCallback(
-        "fullscreen", [this](std::string_view, std::string_view value) {
-          const bool fullscreen = rex::string::from_string<bool>(value, false);
-          app_context().CallInUIThreadDeferred([this, fullscreen] {
-            if (auto* w = window()) {
-              w->SetFullscreen(fullscreen);
-            }
-          });
-        });
+    // The window's display mode (windowed, borderless, exclusive fullscreen) and its size follow the
+    // `fullscreen`, `fullscreen_exclusive` and `resolution` settings while the game runs
+    // (mc_engine/display_mode.h). The SDK's callback for `fullscreen`, which called
+    // Window::SetFullscreen on the thread that set the cvar with the cvar registry locked (the pause
+    // menu's thread then waited for the UI thread, which waited for that lock: the game hung for
+    // good), is replaced there by ones that queue the change for the UI thread.
+    mcla::display::Initialize(window());
 
     if (imgui_drawer()) {
       mcla::ui::ApplyMclaTheme(ImGui::GetStyle(), &imgui_drawer()->style());
@@ -615,6 +645,12 @@ class LarecompApp : public rex::ReXApp {
 #endif
   }
 
+  // FULLSCREEN (exclusive) gives the display its own mode back while another window has the focus.
+  void OnWindowFocusChanged(bool focused) override {
+    rex::ReXApp::OnWindowFocusChanged(focused);
+    mcla::display::OnFocusChanged(focused);
+  }
+
   // A normal window close never reaches OnShutdown: ReXApp::OnClosing
   // terminates the title and _Exit()s. The work before that (the Plume renderer
   // stops its render thread, drains the GPU and gives the swap chain back) is
@@ -659,6 +695,8 @@ class LarecompApp : public rex::ReXApp {
     MclaWaitForSaves();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
+    larecomp::impulse::Shutdown();   // the Xbox triggers back to still
+    mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
@@ -699,6 +737,8 @@ class LarecompApp : public rex::ReXApp {
     larecomp::WaitForBootBuild();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
+    larecomp::impulse::Shutdown();
+    mcla::display::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
     mcla::gpu::Shutdown();
 #endif
@@ -721,8 +761,33 @@ class LarecompApp : public rex::ReXApp {
     if (!rex::ReXApp::SetupEnvironment()) {
       return false;
     }
+    const bool build_packs = larecomp::shaderbuild::CommandLineRequested();
+    const bool precache_pipelines = larecomp::pipelinebuild::CommandLineRequested();
+    if (build_packs || precache_pipelines) {
+      // --build_shader_packs (the launcher's setup runs it): build the packs from the game files and
+      // end here, before there is a window, a renderer or a runtime. The paths and the config are
+      // final and logging is up, so the folders are the ones the game itself will use.
+      // CHECK: the exe is a GUI program (WIN32): its stdout reaches a parent only through a pipe the
+      // parent made (the launcher does); run it once from the launcher's step and read the lines.
+      int code = 0;
+      if (build_packs) {
+        code = larecomp::shaderbuild::RunCommandLine(game_data_root());
+      }
+      // --precache_pipelines (the launcher's step after the packs): fill the graphics driver's
+      // pipeline cache from them. On the same command line as the packs it runs once they are in
+      // place; alone it needs them already.
+      if (precache_pipelines && code == 0) {
+        code = larecomp::pipelinebuild::RunCommandLine(game_data_root());
+      }
+      rex::FlushLogging();
+      ShutdownLarecompLogging();
+      std::_Exit(code);
+    }
     larecomp::PrepareProfileChoice(user_data_root());
     larecomp::identity::SetUserDataRoot(user_data_root());
+    // Before anything starts this executable's SDL joystick layer (the wheel thread starts it):
+    // the GameInput driver for the Xbox trigger rumble.
+    larecomp::impulse::EarlyInit();
     // Before the window starts SDL's joystick layer: keeps known wheels out of the gamepad layer.
     larecomp::wheel::EarlyInit();
     return true;
@@ -1009,6 +1074,19 @@ class LarecompApp : public rex::ReXApp {
       }
     } else {
       LARECOMP_APP_ERROR("Embedded achievements.toml resource not found");
+    }
+#else
+    // No resources in a Linux executable: CMake copies src/achievements.toml next to it as
+    // assets/achievements.toml.
+    // CHECK: not run on Linux (the labels and descriptions of the achievements).
+    const std::filesystem::path loose =
+        rex::filesystem::GetExecutableFolder() / "assets" / "achievements.toml";
+    std::ifstream in(loose, std::ios::binary);
+    if (in) {
+      const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      larecomp::LoadAchievementMetadata(achievements(), text, "assets/achievements.toml");
+    } else {
+      LARECOMP_APP_WARN("assets/achievements.toml not found next to the executable");
     }
 #endif
   }

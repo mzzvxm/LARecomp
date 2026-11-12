@@ -18,11 +18,20 @@
 #include "gpu/gpu.h"
 #endif
 
+// Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
+// every pass through them (nothing keeps a copy), and the pause menu's MOTION BLUR row flips it
+// without a restart. It was tagged kRequiresRestart, which made the F4 panel and the launcher show
+// it as a restart setting.
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// Live: Patch_DisableImposterShadows reads this on every pass through its site in the imposter
+// shadow submission (sub_8230C860) and nothing keeps a copy; the same hook is a plain, switchable
+// toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during
+// play). It was tagged kRequiresRestart, and its pause row said "(RESTART)".
+// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.
 REXCVAR_DEFINE_BOOL(disable_imposter_shadows, true, "MCLA/Patches", "Performance Mode: Foliage won't cast shadows.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing (MSAA).")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -197,19 +206,22 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
     return false;
 }
 
-// The game's MSAA switch. Under the NATIVE renderer its MSAA row
-// (mcla_gpu_msaa, OFF/2X/4X/8X) owns it and disable_msaa -- the XENIA row,
-// hidden there -- is not read; both cvars are read by name or flag here, the
-// renderer's lives with the renderer. The renderer also holds MSAA off for a
-// game started with an upscaler that runs (gpu.h GuestMsaaOff): this hook runs
-// once, when the game makes its renderer, so that is decided at the start.
+// The game's MSAA switch. The NATIVE renderer never turns it off: the game
+// always draws its own 2 sample layout, and the renderer's MSAA row
+// (mcla_gpu_msaa, OFF/2X/4X/8X) and an upscaler that runs set how many samples
+// the host gives the game's targets, 1 for OFF, live (gpu/msaa_level.h). So
+// OFF and an upscaler start are the same game as 2X and none of them restart
+// it. disable_msaa -- the XENIA row, hidden under the native renderer -- is
+// read only for the Xenia renderer, which keeps the game's own switch. The
+// call also decides the upscaler's start (gpu.h GetStartUpscale, which waits
+// a moment for the upscaler probe): this hook runs once, when the game makes
+// its renderer, so that wait is the game thread's and not the renderer's.
 static bool MsaaOff() {
     if (rex::cvar::GetFlagByName("mcla_gpu") == "true") {
 #if defined(LARECOMP_HAS_GPU)
-        return mcla::gpu::GuestMsaaOff();
-#else
-        return rex::cvar::GetFlagByName("mcla_gpu_msaa") == "off";
+        (void)mcla::gpu::GetStartUpscale();
 #endif
+        return false;
     }
     return REXCVAR_GET(disable_msaa);
 }

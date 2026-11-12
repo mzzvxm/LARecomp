@@ -156,7 +156,7 @@ class ResolveMemory {
     uint32_t product_slot = 0;
     // Depth: the EDRAM target's planes and how the copy reads them.
     bool depth = false;
-    bool msaa = false;
+    bool msaa = false;  // the target has more than one host sample, whatever the guest's count
     uint32_t source_slot = 0;
     uint32_t stencil_slot = 0;
     int32_t offset_x = 0;  // EDRAM pixel = destination texel + offset

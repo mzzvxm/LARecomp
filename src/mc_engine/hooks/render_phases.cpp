@@ -66,26 +66,46 @@ REXCVAR_DEFINE_BOOL(perf_no_race_shadows, false, "MCLA/Performance",
 
 REXCVAR_DEFINE_BOOL(perf_fast_vehicle_shadows, false, "MCLA/Performance",
     "Cheap blob shadow under vehicles instead of the real-time one (dev switch "
-    "'fastVehShadows'). Use instead of perf_no_shadows to keep world shadows.")
+    "'fastVehShadows'). Use instead of perf_no_shadows to keep world shadows. Applies at the "
+    "next start of the game.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /
 // ShadowImpostor / ImpostorColor / ImpostorNormal render targets. node+4 is kept
-// in sync with this cvar every frame, so the change lands the next time the
-// impostor system loads rather than needing a process restart.
+// in sync with this cvar every frame, but the game makes these targets once, with
+// the world, at start-up (the fork logged one world setup and 53 impostor setups
+// at start-up and none when a race started or was quit: sub_82305230 ->
+// sub_8230C388 -> sub_8230B778), so the change is seen at the next start. This
+// said "the next load of that system" before, and the pause row "(ON RELOAD)".
+// CHECK: toggled in the pause menu, then a district change: the impostors do not
+// change until the game is started again.
 REXCVAR_DEFINE_BOOL(perf_no_impostors, false, "MCLA/Performance",
     "Do not allocate the foliage impostor render targets (dev switch 'noimpostors'). "
-    "Distant trees lose their billboards. Applies on the next load of that system.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    "Distant trees lose their billboards. Applies at the next start of the game.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Same shape: sub_82310478 skips the prop parse for $/city/<district> entirely.
+// CHECK: when that parse runs. If it is part of the world's set-up at start-up, like the
+// impostor targets, this too is seen only at the next start (tag, description and the pause
+// row's "(ON RELOAD)" would then say restart).
 REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
     "Skip loading the prop/foliage set (dev switch 'notrees'). Last resort. Applies on "
     "the next district load.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// Read once by the game, when it starts (the fork: "the options the game reads once, at
+// start-up": FULLSCREEN BLUR is one of them), and the owner saw it do nothing when flipped
+// during play. The tag and the pause row's "(RESTART)" stay.
+// CHECK: that a flip is not seen at a district load either (an earlier survey read the log's
+// "(applies on next load of that system)" as "applies at the next load").
+// Not a candidate for a live switch through the phase mask (ApplyRenderPhaseMask): the fork's
+// frame-structure survey puts the 0x2 phase on the 256x256 reflection view, and the blur passes
+// (motion blur, the bloom blurs) are inside the post phase (0x08000000) with the bright pass and the
+// luminance chain, so no phase bit drops a blur alone.
+// CHECK: which pass nofsblur skips (not found in the code; the survey is the fork's, not re-read).
 REXCVAR_DEFINE_BOOL(perf_no_fullscreen_blur, false, "MCLA/Performance",
-    "Skip the full-screen blur pass (dev switch 'nofsblur').")
+    "Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of "
+    "the game.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Bumped once per frame from Patch_DeltaTimePre; read by the freeze watchdog.

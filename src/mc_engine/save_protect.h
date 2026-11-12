@@ -7,16 +7,25 @@
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/object_table.h>
+#include <rex/system/xam/content_manager.h>
 #include <rex/system/xfile.h>
 
 // A career save being written: a file open for writing on a content package,
-// which the SDK mounts at \Device\Content\<n>\ (xam/content_manager.cpp).
+// which the SDK mounts at \Device\Content\<n>\ (xam/content_manager.cpp), or
+// (an SDK that keeps the previous save aside while the game rewrites it) a save
+// the game has not closed yet: ending then would bring the old save back at the
+// next start.
 inline bool MclaSaveInProgress() {
   auto* runtime = rex::Runtime::instance();
   auto* kernel = runtime ? runtime->kernel_state() : nullptr;
   if (!kernel) {
     return false;
   }
+#ifdef REX_CONTENT_MANAGER_HAS_UNCLOSED_BACKUPS
+  if (auto* content = kernel->content_manager(); content && content->HasUnclosedBackups()) {
+    return true;
+  }
+#endif
   // GENERIC_WRITE, GENERIC_ALL, FILE_WRITE_DATA, FILE_APPEND_DATA.
   constexpr uint32_t kWriteAccess = 0x40000000u | 0x10000000u | 0x2u | 0x4u;
   for (const auto& file : kernel->object_table()->GetObjectsByType<rex::system::XFile>()) {

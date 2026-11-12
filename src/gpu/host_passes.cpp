@@ -64,6 +64,14 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
 std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
     const plume::RenderShader& pixel_shader, plume::RenderFormat format, uint8_t write_mask,
     const char* name) {
+  plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+  blend.renderTargetWriteMask = write_mask;
+  return CreatePipeline(pixel_shader, format, blend, name);
+}
+
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
+    const plume::RenderShader& pixel_shader, plume::RenderFormat format,
+    const plume::RenderBlendDesc& blend, const char* name) {
   plume::RenderGraphicsPipelineDesc desc;
   desc.pipelineLayout = layout_.get();
   desc.vertexShader = vertex_shader_.get();
@@ -76,8 +84,7 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
   desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
   desc.multisampling.sampleCount = plume::RenderSampleCount::COUNT_1;
   desc.renderTargetFormat[0] = format;
-  desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
-  desc.renderTargetBlend[0].renderTargetWriteMask = write_mask;
+  desc.renderTargetBlend[0] = blend;
   desc.renderTargetCount = 1;
   return device_->CreateGraphicsPipeline(desc, name);
 }
@@ -100,6 +107,27 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
   // Blending off is a copy: ONE/ZERO/ADD (UNKNOWN factors are invalid in Plume
   // even when the blend is disabled).
   desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
+  desc.renderTargetCount = 1;
+  return device_->CreateGraphicsPipeline(desc, name);
+}
+
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    plume::RenderFormat format, const plume::RenderBlendDesc& blend, uint32_t sample_count,
+    const char* name) {
+  plume::RenderGraphicsPipelineDesc desc;
+  desc.pipelineLayout = &layout;
+  desc.vertexShader = vertex_shader_.get();
+  desc.pixelShader = &pixel_shader;
+  desc.depthClipEnabled = false;
+  desc.depthEnabled = false;
+  desc.depthWriteEnabled = false;
+  desc.cullMode = plume::RenderCullMode::NONE;
+  desc.fillMode = plume::RenderFillMode::SOLID;
+  desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+  desc.multisampling = plume::RenderMultisampling(plume::RenderSampleCounts(sample_count));
+  desc.renderTargetFormat[0] = format;
+  desc.renderTargetBlend[0] = blend;
   desc.renderTargetCount = 1;
   return device_->CreateGraphicsPipeline(desc, name);
 }

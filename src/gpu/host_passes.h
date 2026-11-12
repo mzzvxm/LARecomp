@@ -5,7 +5,7 @@
 // The resolve conversions (resolve.h)
 // and the present pass (present.h) draw one triangle over a viewport with a
 // pixel shader that reads bindless textures by slot and takes its parameters
-// from 32 bytes of push constants. One pipeline layout serves them all
+// from up to 64 bytes of push constants. One pipeline layout serves them all
 // (hlsl/host_pass_common.hlsli): the BindlessHeap's texture set bound at
 // spaces 0-3 -- Texture2D<float4>[], Texture2DMS<float4>[], Texture2D<uint4>[],
 // Texture2DMS<uint4>[]: a descriptor carries its own dimension and format, so
@@ -54,7 +54,15 @@ struct HostImage {
 
 class HostPasses {
  public:
-  static constexpr uint32_t kPushConstantBytes = 32;
+  // 32 bytes held every pass's constants until the HDR10 output (hdr.h) added the four values
+  // its last passes take (48), and the present's and the DLSS frame generation's UI pass then
+  // each took one more (the frame layers' gap, frame_layers.h Frame::gap); the passes that push
+  // less push less.
+  // CHECK: Plume turns the range into 16 root constants on D3D12 (the signature stays well under 64
+  // dwords: with the five descriptor tables about 21) and a 64-byte push range on Vulkan (the
+  // guaranteed maxPushConstantsSize is 128); the passes' shaders declare less and that is fine on
+  // both. Not run on a device here.
+  static constexpr uint32_t kPushConstantBytes = 64;
 
   HostPasses() = default;
   ~HostPasses();
@@ -84,12 +92,31 @@ class HostPasses {
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
                                                         plume::RenderFormat format,
                                                         uint8_t write_mask, const char* name);
+  // The same with the target's blend as given (the UI layer split's put-back draws the scene
+  // under the UI with INV_DEST_ALPHA / ONE, frame_layers.h).
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderShader& pixel_shader,
+                                                        plume::RenderFormat format,
+                                                        const plume::RenderBlendDesc& blend,
+                                                        const char* name);
   // The same with another pipeline layout, for a pass with resources of its
   // own (resolve_memory.h's decode). The full-screen vertex shader reads none.
   std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,
                                                         const plume::RenderShader& pixel_shader,
                                                         plume::RenderFormat format,
                                                         const char* name);
+
+  // The same with another pipeline layout, the target's blend as given and its sample count (1, 2,
+  // 4 or 8): for a pass drawing into a multisampled scene target (ao.h's apply pass, which
+  // multiplies the colour of every sample by one factor).
+  std::unique_ptr<plume::RenderPipeline> CreatePipeline(const plume::RenderPipelineLayout& layout,
+                                                        const plume::RenderShader& pixel_shader,
+                                                        plume::RenderFormat format,
+                                                        const plume::RenderBlendDesc& blend,
+                                                        uint32_t sample_count, const char* name);
+
+  // The pass layout (bindless texture sets, samplers, push constants), for a pipeline made with the
+  // overload that takes a layout and a sample count. After Initialize.
+  const plume::RenderPipelineLayout& layout() const { return *layout_; }
 
   // Binds the layout, the four texture sets and the sampler set on `list`.
   void Bind(plume::RenderCommandList* list) const;

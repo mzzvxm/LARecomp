@@ -46,7 +46,24 @@ void VideoMemoryBudget::Shutdown() {
   resolve_ = nullptr;
   resolve_memory_ = nullptr;
   edram_ = nullptr;
+  holders_.clear();
   window_ = Window{};
+}
+
+void VideoMemoryBudget::AddHolder(const char* name, std::function<uint64_t()> bytes) {
+  holders_.push_back({name, std::move(bytes)});
+}
+
+std::string VideoMemoryBudget::HoldersText() const {
+  std::string text;
+  for (const Holder& holder : holders_) {
+    const uint64_t bytes = holder.bytes ? holder.bytes() : 0;
+    if (bytes != 0) {
+      text += std::format("{}{} {:.0f} MiB", text.empty() ? "" : ", ", holder.name,
+                          double(bytes) * kMiB);
+    }
+  }
+  return text.empty() ? text : " | held here, not released by this: " + text;
 }
 
 backend::VideoMemory VideoMemoryBudget::Sample() {
@@ -96,14 +113,15 @@ void VideoMemoryBudget::BeginFrame() {
       last_onset_ = frame;
       if (memory.budget != 0) {
         REXLOG_INFO("[gpu] video memory: short, {} of {} MiB in use ({}%){}; unused resources "
-                    "are released, the longest idle first",
+                    "are released, the longest idle first{}",
                     memory.used >> 20, memory.budget >> 20, memory.used * 100 / memory.budget,
                     failed ? std::format(", a creation of {} MiB failed", failed >> 20)
-                           : std::string());
+                           : std::string(),
+                    HoldersText());
       } else {
         REXLOG_INFO("[gpu] video memory: short, a creation of {} MiB failed (the adapter reports "
-                    "no budget); unused resources are released, the longest idle first",
-                    failed >> 20);
+                    "no budget); unused resources are released, the longest idle first{}",
+                    failed >> 20, HoldersText());
       }
     }
   }
@@ -185,14 +203,14 @@ void VideoMemoryBudget::LogReleased(const backend::VideoMemory& memory) {
       "EDRAM targets ({:.1f} MiB), {} decoded textures ({:.1f} MiB) and {} textures ({:.1f} MiB), "
       "each idle for at least {} frames | {} of {} MiB in use at the last check | held now: "
       "textures {:.0f}, products {:.0f}, EDRAM targets {:.0f}, resolve memory {:.0f} MiB | {} "
-      "checks, {} short ({} by a failed creation), {} creations not retried",
+      "checks, {} short ({} by a failed creation), {} creations not retried{}",
       frame - last_log_, w.products.items, double(w.products.bytes) * kMiB, w.targets.items,
       double(w.targets.bytes) * kMiB, w.decoded.items, double(w.decoded.bytes) * kMiB,
       w.textures.items, double(w.textures.bytes) * kMiB, kIdleBands[2], memory.used >> 20,
       memory.budget >> 20, double(textures_->HeldBytes()) * kMiB,
       double(resolve_->HeldBytes()) * kMiB, double(edram_->HeldBytes()) * kMiB,
       double(resolve_memory_->HeldBytes()) * kMiB, w.checks, w.short_checks, w.failures,
-      w.skipped);
+      w.skipped, HoldersText());
   window_ = Window{};
   last_log_ = frame;
 }

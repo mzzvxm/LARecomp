@@ -24,7 +24,12 @@ set(_ffx_files
     "09ac1855bc4c2f711243d6982909385072ca3f8d30db44d1a82ee5bd637832ad Kits/FidelityFX/api/include/vk/ffx_api_vk.h"
     "7757c3ffa6b1e189bca5eec3b8c93aa8f802386642648a0dfeb8c2c52502e5ba Kits/FidelityFX/api/include/vk/ffx_api_vk.hpp"
     "13091e7fe5fd9c82b1fb7c044b9f08f664d9653f599d2ea500738709236fca4d Kits/FidelityFX/upscalers/include/ffx_upscale.h"
-    "52066379fd629080ed5c9a2821627cd7a3b972e6592565c7f3fa54a95404bac0 Kits/FidelityFX/upscalers/include/ffx_upscale.hpp")
+    "52066379fd629080ed5c9a2821627cd7a3b972e6592565c7f3fa54a95404bac0 Kits/FidelityFX/upscalers/include/ffx_upscale.hpp"
+    # Frame generation (src/gpu/frame_generation_ffx.h): the headers of its ffx API and its two effect DLLs.
+    "bc78a18aa95f5157b4699b0602700592b624788c5bc55d1762cb46a1b6557ca1 Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h"
+    "396596af3df63310674e8036abd2ad0fcd061e61334e7a2c76653a2be3c686b4 Kits/FidelityFX/framegeneration/include/ffx_framegeneration_api_types.h"
+    "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6 Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll"
+    "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4 Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll")
 
 set(_ffx_ok TRUE)
 foreach(_ffx_entry IN LISTS _ffx_files)
@@ -56,7 +61,7 @@ foreach(_ffx_entry IN LISTS _ffx_files)
     file(RENAME "${_ffx_local}.part" "${_ffx_local}")
 endforeach()
 if(_ffx_ok)
-    set(LARECOMP_FFX_SDK_DIR "${_ffx_root}" CACHE PATH
-        "AMD FidelityFX SDK (the folder holding Kits/FidelityFX); empty builds without FSR" FORCE)
+    # A plain variable, not the cache: the next configure checks the files again (CMakeLists.txt).
+    set(LARECOMP_FFX_SDK_DIR "${_ffx_root}")
     message(STATUS "larecomp: FidelityFX SDK 2.4.0 files fetched and checked in ${_ffx_root}")
 endif()

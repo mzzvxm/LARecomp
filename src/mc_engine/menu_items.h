@@ -22,12 +22,19 @@ enum class ItemKind { kBool, kStrCycle, kDblCycle, kCarbonBit, kAction, kColor, 
 // Action ids for ItemKind::kAction, carried in ItemDef::nvals.
 enum ActionId {
     kActionPlayCutscene = 1, kActionQuitYes, kActionQuitNo, kActionDumpTextures,
-    kActionReloadTextures, kActionRestart
+    kActionReloadTextures, kActionRestart,
+    // The "restart now?" prompt shown when a menu is left with a setting that needs one.
+    kActionRestartLater, kActionRestartNow
 };
 
 // Which renderer a row belongs to. The renderer is a restart-only choice, so
 // the pause menu only lists the rows of the one this launch is running.
 enum RendererMask : uint8_t { kRendXenia = 1, kRendNative = 2, kRendAny = 3 };
+
+// How a row writes a setting: the pause menu's own (it remembers what the setting was for the
+// "restart now?" prompt, holds the restart-only ones back and logs the change). RowDynamics::set_value
+// is given it, so a row that sets several cvars goes through the same path as any other row.
+using CvarWriter = void (*)(const char* cvar, const char* value);
 
 // What a row shows and allows when that depends on other settings. Computed
 // each time the row is drawn; every member is optional.
@@ -45,6 +52,28 @@ struct RowDynamics {
     bool (*enabled)() = nullptr;
     // The label's suffix, instead of `suffix`; it can say why the row is grey.
     const char* (*suffix)() = nullptr;
+    // The label's text, instead of `prefix` (its trailing ": " is dropped as usual): a row that is named
+    // for what it sets now ("DLSS MODE", "RENDER SCALE"). A fixed set of texts, no allocation.
+    const char* (*label)() = nullptr;
+    // kStrCycle: a list of the row's own, instead of `svals`/`nvals` and the cvar. All three are set
+    // together, with `str_label` for the text of each value. The game's value row shows three values
+    // at a time (a window the pause menu moves along its list, pause_menu.cpp "kRowWindow"), so the
+    // list may be longer, shorter or another list from one draw to the next.
+    //   value_count  how many values the list has now (at least 1; the row is listed with its count at
+    //                the time the page is built, which must be above 0)
+    //   value_index  which one the row is on now
+    //   set_value    the row was stepped to value i: write whatever that means, through `write`
+    //                (any number of cvars). `cvar` still names the setting the row is about, which the
+    //                "restart now?" prompt looks up (it may be null for a row that has none).
+    int (*value_count)() = nullptr;
+    int (*value_index)() = nullptr;
+    void (*set_value)(int i, CvarWriter write) = nullptr;
+    // kBool, kStrCycle, kDblCycle: the setting the row is about, instead of `cvar`: a row that is one
+    // setting on one renderer and another on the other (VSYNC, MSAA, RENDER SCALE: mcla_gpu_vsync or
+    // vsync, ...), one row with one name in one place. A checkbox reads and writes it; the "restart now?"
+    // prompt looks it up (a row whose suffix says RESTART). May return null: a row that writes several
+    // settings through `set_value` has none to give.
+    const char* (*cvar)() = nullptr;
 };
 
 struct ItemDef {
@@ -69,6 +98,10 @@ struct ItemDef {
     // row is what the fields above say.
     const RowDynamics* dynamics = nullptr;
 };
+
+// True when this launch runs the NATIVE (Plume) renderer, false for the emulated one (XENIA). The renderer
+// is a restart-only choice, so the answer never changes while the game runs.
+bool NativeRendererRuns();
 
 // A row of one renderer only, e.g. XeniaOnly(Dbl(...)).
 constexpr ItemDef XeniaOnly(ItemDef it)  { it.renderers = kRendXenia;  return it; }

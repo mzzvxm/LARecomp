@@ -107,7 +107,7 @@ $env:REX_LOG_LEVEL="warn"; Start-Process larecomp.exe
 
 Everything else is in the pause menu. It defaults to 60 FPS with real frame delta on and vsync off.
 
-**The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them.
+**The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them. `larecomp.exe --build_shader_packs` builds them without starting the game (no window; progress on the console, exit code 0 when they are in place): an installer can run it so the first start has nothing to build. After it, `larecomp.exe --precache_pipelines` does the pipelines the game would otherwise compile while the title starts, for your saved MSAA and upscaler choice: it fills your graphics driver's own cache for the game's API (add `--precache_pipelines_backend=vulkan` or `d3d12` for the other one) and, when nothing changed since (same driver, graphics card, settings and files), finishes in about a second.
 
 ---
 
@@ -131,7 +131,7 @@ These are the environment variables the build reads. Everything else moved to cv
 | `REX_LOG_LEVEL` | `trace` on non-Release | Set to `warn`. See above. |
 | `MCLA_GAME_DATA` | auto-detect | Folder holding `default.xex`. |
 | `MCLA_FPS_CAP` | unset | Overrides the `fps_limit` cvar. |
-| `MCLA_MAX_FRAME_MS` | `125` | Caps how far one frame can advance the clock. Clamped to 16-1000 ms; cannot be turned off. |
+| `MCLA_MAX_FRAME_MS` | unset | A fixed cap, in ms, on how far one frame can advance the clock; wins over the `frame_step_cap` cvar (default `adaptive`: about 34 ms at 60 FPS, 50 ms at 30 FPS, at most 125 ms). Clamped to 16-1000 ms; the cap cannot be turned off. |
 | `MCLA_TIMING_LOG` | off | `1` writes frame-time stats and a histogram. |
 | `MCLA_TEX_SOFT` / `MCLA_TEX_HARD` / `MCLA_TEX_RTT` | `1536` / `2048` / `64` | Texture cache limits in MB. |
 | `MCLA_VSYNC` | `false` | Leave off. On costs about 30% throughput. |
@@ -228,8 +228,12 @@ Fixes made directly in LARecomp:
 - **Adaptive texture cache limits & D3D12 primary buffer submission.** Replaced hardcoded texture cache overrides with a universally safe 2560 MB soft / 4096 MB hard baseline that prevents VRAM exhaustion on 6 GB and 8 GB GPUs while respecting user TOML overrides on high-VRAM cards (12 GB–24 GB). Enabled `d3d12_submit_on_primary_buffer_end = true` to allow asynchronous overlap of GPU rendering with CPU command recording, smoothing out pipeline bubbles.
 - **Guest profiler 144 FPS / GPU Commands call-stack sampling.** Added `profile_gpu_commands.ps1` helper for targeting `GPU Commands` with `RtlVirtualUnwind` stack sampling at 144 FPS / 7.0ms threshold.
 
-**[Foxxyyy](https://github.com/Foxxyyy)**, for reverse-engineering work on **[CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)**: the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here.
+**[Foxxyyy](https://github.com/Foxxyyy)**, for reverse-engineering work on **[CodeX.Games.MCLA](https://github.com/Foxxyyy/CodeX.Games.MCLA)**: the RAGE `RSC5` resource format, type layouts and string databases behind the typed structures used here, and the texture tiling and size maths the mod loader ports from its code (`RPF3/Rpf3Crypto.cs`).
 
 **[ReXGlue Team](https://github.com/rexglue/rexglue)**, for the Xbox 360 static recompilation toolkit and runtime.
+
+**NVIDIA DLSS** and **NVIDIA Reflex**. LARecomp uses NVIDIA DLSS Super Resolution through NVIDIA Streamline, and NVIDIA Reflex, on NVIDIA RTX graphics cards. NVIDIA, NVIDIA RTX, DLSS and Reflex are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries. NVIDIA's files stay under NVIDIA's licences, which are copied next to the exe with them (`nvngx_dlss_license.txt`, `reflex_license.txt`, `streamline_license.txt`, `streamline_third_party_licenses.md`).
+
+**AMD FidelityFX** and **AMD Anti-Lag 2**. LARecomp uses FidelityFX Super Resolution (FSR 1, FSR 3.1, FSR 4) and CAS for upscaling and sharpening, and AMD Anti-Lag 2. The FidelityFX SDK is under the MIT licence, copied next to the exe with its files (`amd_fidelityfx_license.md`). AMD FidelityFX, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.
 
 **Rockstar San Diego**, who made the game.
