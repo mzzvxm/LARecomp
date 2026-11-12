@@ -622,13 +622,17 @@ int AutoLanguageIndex() {
 //   ui/mc4stringtable.strtbl            sub_822185E8, inside SetLanguage (boot, every switch)
 //   ui/mc4stringtable_0001..0008.strtbl sub_82217778, the same call; the disc has 0001-0003
 //   ui/mc4stringtable_tms.strtbl        sub_82217618, when the TMS data loads (later)
-//   ui/mc4stringtable_downloaded.strtbl sub_82217618, for downloaded content (later)
+//   mc4stringtable_downloaded           sub_82217618, for downloaded content (later), from
+//                                       the content's own mount ("%s:\mc4stringtable_downloaded",
+//                                       0x820393E4), not from ui/, so a mod cannot replace it
 // Every table the disc has holds Japanese text under pt, and one the mod does not ship is
 // the disc's, so a table without its own pt block would put Japanese text (no font) on
-// the keys it holds: vehicle and paint names in _0001-_0003, the TMS and download texts.
-// The game cannot be told per table, and the late tables read the index when they load,
-// so pt is available only when EVERY table the disc has is shipped by a mod with text in
-// its pt block, and any other table a mod ships has one too. Otherwise this run uses auto.
+// the keys it holds: vehicle and paint names in _0001-_0003, the TMS texts. The game
+// cannot be told per table, and _tms reads the index when it loads, so pt is available
+// only when EVERY ui/ table the disc has is shipped by a mod with text in its pt block,
+// and any other one a mod ships has one too. Otherwise this run uses auto. The downloaded
+// table is not required (no mod can supply it): with downloaded content installed, its
+// few texts would read their Japanese block under pt.
 struct StringTableFile {
     const char* path;  // archive path
     bool on_disc;      // not shipped by a mod: the disc's file is read, and it has no pt text
@@ -644,7 +648,6 @@ constexpr StringTableFile kStringTableFiles[] = {
     {"ui/mc4stringtable_0007.strtbl", false},
     {"ui/mc4stringtable_0008.strtbl", false},
     {"ui/mc4stringtable_tms.strtbl", true},
-    {"ui/mc4stringtable_downloaded.strtbl", true},
 };
 
 // Whether the pt block of one .strtbl has text, from its header. False, with the reason,

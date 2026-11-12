@@ -80,7 +80,7 @@ REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
     "tables carry an empty Portuguese block, and on the disc it starts where the "
     "Japanese block does, so it would show Japanese text. A mod can fill it with its "
     "own ui/mc4stringtable*.strtbl files (modloader/<mod>/files/ui/): every string "
-    "table the game loads (mc4stringtable, _0001 to _0003, _tms, _downloaded) needs a "
+    "table the game loads from ui/ (mc4stringtable, _0001 to _0003, _tms) needs a "
     "Portuguese block with text. Until then pt is used as auto, with a line in the "
     "log, and the setting stays in larecomp.toml for when the mod is installed. pt "
     "leaves user_language alone: only the text changes, the game's own language "
