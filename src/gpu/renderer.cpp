@@ -981,6 +981,9 @@ void Renderer::AdoptSwapChain() {
 // in the pipeline cache when the session started without HDR: the records naming them are dropped
 // at load, pipelines.cpp); the picture should flicker at most once.
 bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
+  // A held present (deferred_) names a back buffer of the chain about to be made again: it goes
+  // out first, at its time.
+  FlushDeferredPresent(/*wait=*/true);
   using Clock = std::chrono::steady_clock;
   const auto millis = [](Clock::time_point from, Clock::time_point to) {
     return std::chrono::duration<double, std::milli>(to - from).count();
@@ -1202,7 +1205,8 @@ void Renderer::ExecutePresent(PresentSource source) {
   const uint64_t latency_frame = latency::DetachRenderFrame();
   // When to present it (present_schedule.h): its time plus the lateness carried
   // from late frames before it; 0 = at once.
-  const int64_t due = source == PresentSource::kGuest && present_target_ != 0
+  // Streamline's pacer owns the presents while DLSS frame generation runs (SchedulesPresents).
+  const int64_t due = source == PresentSource::kGuest && present_target_ != 0 && !dlssg_.active()
                           ? schedule_.Due(present_target_, ready_qpc)
                           : 0;
   if (due != 0) {
@@ -1250,6 +1254,9 @@ bool Renderer::ApplyFrameGenerationSetting() {
 // "on (Nx: ...)", and once Reflex has made a few sleeps "generating: Nx". The swap chain is made
 // again twice around a resize (off, then on after the window has been still): the picture may flicker.
 bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, bool resize) {
+  // A held present (deferred_) names a back buffer of the chain about to be made again: it goes
+  // out first, at its time.
+  FlushDeferredPresent(/*wait=*/true);
   using Clock = std::chrono::steady_clock;
   const bool on = change == DlssFrameGeneration::Change::kOn;
   const auto begin = Clock::now();
@@ -1323,6 +1330,9 @@ bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, boo
 // whose DIRECT family has one queue (AMD, Intel), that the shared VkQueue's lock does not hold the
 // render thread's submissions behind a blocked present.
 bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
+  // A held present (deferred_) names a back buffer of the chain about to be made again: it goes
+  // out first, at its time.
+  FlushDeferredPresent(/*wait=*/true);
   using Clock = std::chrono::steady_clock;
   const bool on = change == FrameGeneration::Change::kOn;
   const auto begin = Clock::now();
@@ -1974,8 +1984,11 @@ void SetNextPresentTarget(int64_t qpc) {
 
 bool SchedulesPresents() {
 #if defined(_WIN32)
+  // Frame generation (FSR's or DLSS's) presents through a pacer of its own, which the game's
+  // latency reducer paces: no frame is held to a target then.
   return g_capture_active.load(std::memory_order_acquire) != nullptr &&
-         !REXCVAR_GET(mcla_gpu_vsync);
+         !REXCVAR_GET(mcla_gpu_vsync) && !FrameGenerationRunning() &&
+         !DlssFrameGenerationRunning();
 #else
   return false;
 #endif

@@ -202,7 +202,8 @@ void SetPresentObserver(PresentObserver observer);
 // the frame's GPU work is submitted and the guest released). 0 = when ready.
 void SetNextPresentTarget(int64_t qpc);
 // Whether presents are held to their targets: the renderer runs (Startup
-// succeeded) without mcla_gpu_vsync, on Windows. Any thread.
+// succeeded) without mcla_gpu_vsync and without frame generation, on Windows.
+// Any thread.
 bool SchedulesPresents();
 // What scheduled frames came to, oldest first, since the last call: per frame,
 // its target and how its readiness compared with it (ready minus target, QPC
