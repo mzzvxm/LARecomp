@@ -5,9 +5,75 @@
 #include "format.h"
 #include "temporal_dlss.h"
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_object_names, false, "MCLA/GPU",
+    "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
+    "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
+    "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
+    "when something can read them: on their own when RenderDoc, PIX or Nsight Graphics started "
+    "the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for "
+    "a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the "
+    "device opens.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DECLARE(bool, mcla_gpu_perf_markers);  // perf_markers.cpp
+
 namespace mcla::gpu {
+
+namespace {
+
+// Why debug names are wanted (Device::object_names), or null when nothing is known to read them.
+const char* ObjectNamesReason(bool debug_layer) {
+  if (REXCVAR_GET(mcla_gpu_object_names)) {
+    return "mcla_gpu_object_names";
+  }
+  if (debug_layer) {
+    return "the debug layer";
+  }
+  if (REXCVAR_GET(mcla_gpu_perf_markers)) {
+    return "mcla_gpu_perf_markers";
+  }
+#ifndef NDEBUG
+  // Plume names Vulkan objects in the same builds.
+  return "a build without NDEBUG";
+#else
+#if defined(_WIN32)
+  // A tool that starts the game injects its DLL before the device exists, so the module is
+  // there when this runs. (Vulkan names exist only in a Plume build without NDEBUG: on Vulkan
+  // this changes nothing but the formatting the callers skip.)
+  static constexpr struct {
+    const wchar_t* module;
+    const char* tool;
+  } kTools[] = {
+      {L"renderdoc.dll", "RenderDoc"},
+      {L"WinPixGpuCapturer.dll", "PIX"},
+      // CHECK: the module name is from memory of Nsight Graphics' interception layer; not seen
+      // loaded here. A tool this misses is covered by mcla_gpu_object_names.
+      {L"Nvda.Graphics.Interception.dll", "Nsight Graphics"},
+  };
+  for (const auto& tool : kTools) {
+    if (GetModuleHandleW(tool.module)) {
+      return tool.tool;
+    }
+  }
+#endif
+  return nullptr;
+#endif
+}
+
+}  // namespace
 
 Device::~Device() {
   Shutdown();
@@ -90,6 +156,14 @@ bool Device::Open(const Options& options) {
   debug_layer_ = debug_layer;
   if (debug_layer_) {
     backend::InstallDebugMessageSink(device_.get());
+  }
+  const char* names_reason = ObjectNamesReason(debug_layer_);
+  names_ = names_reason != nullptr;
+  if (names_) {
+    REXLOG_INFO("[gpu] object names on ({})", names_reason);
+  } else {
+    REXLOG_INFO("[gpu] object names off (no capture tool is loaded; mcla_gpu_object_names sets "
+                "them)");
   }
 
   // The XenosRecomp shaders read their constant buffers through buffer device
@@ -181,9 +255,7 @@ std::unique_ptr<plume::RenderTexture> Device::CreateTexture(const plume::RenderT
     NoteFailed(backoff_key, TextureBytes(desc), /*video_memory=*/true);
     return nullptr;
   }
-  if (name) {
-    texture->setName(name);
-  }
+  Name(*texture, name);
   return texture;
 }
 
@@ -280,9 +352,7 @@ std::unique_ptr<plume::RenderShader> Device::CreateShader(const void* data, uint
     ReportCreationFailure("shader", name);
     return nullptr;
   }
-  if (name) {
-    shader->setName(name);
-  }
+  Name(*shader, name);
   return shader;
 }
 
@@ -341,9 +411,7 @@ std::unique_ptr<plume::RenderBuffer> Device::CreateBuffer(const plume::RenderBuf
     NoteFailed(backoff_key, desc.size, desc.heapType == plume::RenderHeapType::DEFAULT);
     return nullptr;
   }
-  if (name) {
-    buffer->setName(name);
-  }
+  Name(*buffer, name);
   return buffer;
 }
 
@@ -360,9 +428,7 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateGraphicsPipeline(
     ReportCreationFailure("graphics pipeline", name);
     return nullptr;
   }
-  if (name) {
-    pipeline->setName(name);
-  }
+  Name(*pipeline, name);
   return pipeline;
 }
 
@@ -379,9 +445,7 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateComputePipeline(
     ReportCreationFailure("compute pipeline", name);
     return nullptr;
   }
-  if (name) {
-    pipeline->setName(name);
-  }
+  Name(*pipeline, name);
   return pipeline;
 }
 

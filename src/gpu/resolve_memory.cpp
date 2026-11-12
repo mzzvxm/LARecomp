@@ -1521,11 +1521,14 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
     fresh->key = key;
     fresh->format = format;
     fresh->kind = kind;
-    const std::string name = std::format("resolve memory texture {}", key.Describe());
+    // The name is built only where a tool can read it (Device::object_names).
+    const std::string name = device_->object_names()
+                                 ? std::format("resolve memory texture {}", key.Describe())
+                                 : std::string();
     fresh->texture = device_->CreateTexture(
         plume::RenderTextureDesc::Texture2D(key.width, key.height, key.levels(), format,
                                             plume::RenderTextureFlag::RENDER_TARGET),
-        name.c_str());
+        name.empty() ? nullptr : name.c_str());
     if (!fresh->texture) {
       *why = std::format("{} {}x{} with {} levels", format::PlumeFormatName(format), key.width,
                          key.height, key.levels());

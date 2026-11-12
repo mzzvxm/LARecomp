@@ -76,7 +76,8 @@ class Device {
 
   // Validated creation. Null on failure, never a null-backed wrapper. `name`
   // becomes the debug name (RenderDoc, PIX, validation messages) where Plume
-  // has one for the object, and names the object in the failure log always.
+  // has one for the object and object_names() is on, and names the object in
+  // the failure log when the caller passed one (null is logged as '?').
   std::unique_ptr<plume::RenderTexture> CreateTexture(const plume::RenderTextureDesc& desc,
                                                       const char* name);
   std::unique_ptr<plume::RenderTextureView> CreateTextureView(
@@ -107,6 +108,18 @@ class Device {
       plume::RenderQueryType type = plume::RenderQueryType::TIMESTAMP);
   std::unique_ptr<plume::RenderFramebuffer> CreateFramebuffer(
       const plume::RenderFramebufferDesc& desc, const char* name);
+
+  // Whether the objects made here get their debug name (a D3D12 SetName is a
+  // few microseconds with the UTF-16 conversion, and the textures of a world
+  // are made in the hundreds in one frame; the name's own formatting costs as
+  // much again). Fixed when the device opens: on when something can read the
+  // names, which is a capture tool loaded in the process before the device
+  // (RenderDoc, PIX, Nsight Graphics), the D3D12 debug layer, a build without
+  // NDEBUG, mcla_gpu_perf_markers, or mcla_gpu_object_names (for the tools that
+  // do not load a DLL, and for one that attaches later: the names must be
+  // there from the start, a capture cannot ask for them afterwards). Off, a
+  // caller that formats a name for each creation passes null instead.
+  bool object_names() const { return names_; }
 
   // A texture or buffer whose creation failed with the device alive is not
   // asked for again -- the same description, from anywhere -- for kBackoffFrames
@@ -146,6 +159,13 @@ class Device {
  private:
   // One attempt on the active backend; leaves nothing behind on failure.
   bool Open(const Options& options);
+  // Names `object` unless names are off or the caller gave none.
+  template <class Object>
+  void Name(Object& object, const char* name) const {
+    if (names_ && name) {
+      object.setName(name);
+    }
+  }
   void ReportCreationFailure(const char* what, const char* name);
   // Whether this creation failure is logged in full (counts every failure).
   bool LogThisFailure();
@@ -183,6 +203,7 @@ class Device {
   std::string backend_info_;
   Backend requested_backend_ = kDefaultBackend;
   bool debug_layer_ = false;
+  bool names_ = false;  // object_names(); set by Open, before any creation or second thread
   std::atomic<bool> lost_{false};
 };
 
