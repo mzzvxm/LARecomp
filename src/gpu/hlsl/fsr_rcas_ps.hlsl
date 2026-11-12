@@ -47,6 +47,21 @@ void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const uint2 pixel = uint2(int2(position.xy) - g_push.output_offset);
+#if RCAS_HDR
+  if ((g_push.hdr_flags & 2u) != 0u) {
+    // The HDR test pattern (hdr_flags bit 1) instead of the picture, as present_ps.hlsl Finish
+    // draws it: over the picture's area. This pass is 1:1, so its input is the size of the
+    // letterbox the picture is fitted into.
+    HdrLevels pattern_levels;
+    pattern_levels.white = g_push.hdr_white;
+    pattern_levels.peak = g_push.hdr_peak;
+    pattern_levels.knee = g_push.hdr_knee;
+    pattern_levels.flags = g_push.hdr_flags;
+    return float4(HdrTestPattern((float2(pixel) + 0.5f) / float2(g_push.input_max + 1),
+                                 pattern_levels),
+                  1.0f);
+  }
+#endif
   // FsrRcasCon: con[0] the sharpness; con[1] (packed halves) is for the FP16
   // path only.
   const uint4 con = uint4(asuint(g_push.sharpness), 0u, 0u, 0u);
