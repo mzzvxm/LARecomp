@@ -20,6 +20,9 @@ bool Patch_MapVisibleAspect_82620700(PPCRegister& f27);
 // The orthographic debug camera's width (sub_822C0320), the load of 1.77778 at 0x822C0918.
 bool Patch_AspectRatio_822C0918(PPCRegister& f0);
 
+// The cutscene camera's vertical field of view (sub_822C0320): f1 is the divisor of `fdivs f12,f28,f1` at 0x822C04E8.
+void Patch_CutsceneFovAspect_822C04E8(PPCRegister& f1);
+
 bool Patch_DisableDoF();
 void Patch_DofComposite(PPCRegister& r3);
 

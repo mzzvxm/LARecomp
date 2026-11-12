@@ -268,4 +268,35 @@ bool Patch_AspectRatio_822C0918(PPCRegister& f0) {
   f0.f64 = double(float(mc::ultrawide::DisplayAspect()));
   return true;
 }
+
+// sub_822C0320 (the scene camera update), the branch that takes the pose and the field of view from
+// the cutscene director's camera (the engine's own cutscenes; 0x822C0474..0x822C0510, taken when the
+// in-game override flag r19 is 0, the director object at 0x8286D8E8 exists and sub_823CDC90, "is
+// the camera active", says yes). The vertical field of view it hands on (80(r1): the perspective of
+// sub_822E5E10 after Patch_FOVScale) is worked out there as
+//   f12 = (mcCineCamera + 104, radians) * 57.2958 / sub_82171600(the player's viewport)   [0x822C04E8, fdivs f12,f28,f1]
+// where sub_82171600 returns the aspect ratio the last Perspective call stored in the viewport
+// (+700; sub_822E5E10 makes that call with the aspect ratio the four camera hooks above widen). The
+// authored angle is taken to be horizontal, as sub_8221BE98 does for the map's camera flight: its
+// division by the aspect ratio makes the vertical angle. With the widened aspect ratio in f1 the
+// vertical angle shrinks by 16:9 over the aspect ratio and a cutscene is zoomed into the middle of
+// the wide picture. The hook runs before the division and gives it 16:9 whenever the picture is
+// wider, so the vertical angle is the one the game has at 16:9, and the wide picture (its Perspective
+// aspect ratio is still the widened one) shows more at the sides, as the gameplay cameras do. f1 is
+// the return value of the call before: nothing reads it after the division (the next uses are
+// loads or the result of a later call). Only this branch divides by it: the gameplay cameras take
+// their vertical angle from the camera rig (sub_822AFA30, no aspect ratio) and are not touched.
+// CHECK: that f1 here is the viewport's aspect ratio and that the cine camera's value at +104 is a
+// horizontal angle in radians: a cutscene (`--tour cutscene`) at 2560x1080 and 3840x1080 must
+// show the vertical framing of the 1920x1080 one with more at the sides. The 13 other callers of
+// sub_82171600 (return addresses 0x82172308, 0x82172618, 0x82172858, 0x8217CB84, 0x82206F84,
+// 0x8223FB50, 0x822FB5E4, 0x82306D10, 0x82320258, 0x8249B688, 0x825F5038, 0x82725E0C, 0x82725F08)
+// were not read for an effect on the picture: 0x82320258 (sub_8231FE30, `fdivs f11,f30,f1`, a
+// frustum) and 0x825F5038 (`fmuls f9,f1,f31`) use it as a factor. That a cutscene is never
+// split-screen: the hook gives every viewport 16:9.
+void Patch_CutsceneFovAspect_822C04E8(PPCRegister& f1) {
+  if (mc::ultrawide::Active()) {
+    f1.f64 = double(float(mc::ultrawide::kBaseAspect));
+  }
+}
 #endif  // REXGLUE_HAS_XEO3_TARGET

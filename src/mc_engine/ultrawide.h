@@ -125,4 +125,15 @@ void NoteWorldIcons(bool begin);
 // 32:9). The value returned keeps the box as wide, against the picture, as the game has it at 16:9.
 double MapVisibleAspect();
 
+// --- cutscene cameras ------------------------------------------------------------------------------
+//
+// The engine's own cutscenes (not movies) are taken by sub_822C0320 from the cutscene director's camera,
+// whose angle is a horizontal one in radians that the game turns into the vertical angle by dividing
+// by the viewport's aspect ratio (0x822C04E8, `fdivs f12,f28,f1`). The viewport's aspect ratio is the
+// widened one, so the vertical angle would shrink and the picture would zoom into the middle. The hook
+// Patch_CutsceneFovAspect_822C04E8 (ultrawide.cpp) gives the division kBaseAspect while the picture is
+// wider than 16:9: the vertical angle is the 16:9 one and the sides show more, as in gameplay. The
+// gameplay cameras do not go through that division.
+// CHECK: from the generated code only; ULTRAWIDE-TEST.md, item 13.
+
 }  // namespace mc::ultrawide

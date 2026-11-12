@@ -25222,6 +25222,17 @@ name = "Patch_AspectRatio_822C0918"
 registers = ["f0"]
 jump_address_on_true = 0x822C091C
 
+# sub_822C0320 also builds the cutscene director's camera: the vertical field of view it passes on is the
+# camera's angle (radians, taken as horizontal) times 57.2958 over the viewport's aspect ratio, `fdivs
+# f12,f28,f1` at 0x822C04E8 with f1 = sub_82171600's return value, the widened aspect ratio. Divided by
+# it a cutscene is zoomed into the middle of a wide picture; the hook gives f1 16:9 when the picture is
+# wider, so the vertical field of view stays the 16:9 one and the picture shows more at the sides. It
+# runs before the instruction. The gameplay cameras do not pass through this division.
+[[midasm_hook]]
+address = 0x822C04E8
+name = "Patch_CutsceneFovAspect_822C04E8"
+registers = ["f1"]
+
 # Depth of Field (DoF) Hooks
 #
 # DEAD ENDS (do not retry):
