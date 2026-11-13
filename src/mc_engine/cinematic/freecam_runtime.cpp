@@ -7,8 +7,11 @@
 // before sub_822C0320 hands it to the renderer; camera_runtime.cpp (M1b) puts a scene's camera there and this file puts the flight's.
 // The flight comes first: a pilot who armed it wants it even while a scene's own camera track runs. The slots (sub_822C0320's frame, r1):
 // vertical field of view in degrees at +0x50, far +0x54, near +0x58, a cutscene's horizontal field of view +0x5C (-1.0 = none), rows right,
-// up and forward at +0x60, +0x70, +0x80 and the position at +0x90. At the hook they hold the game's own camera, which is where the flight
-// starts (and where Back + X brings it home). E3 flew a scripted camera 600 m from the car and the streamer followed the camera by
+// up and BACK at +0x60, +0x70, +0x80 and the position at +0x90. The third row is the camera's BACK, minus the way it looks (the game's chase
+// camera at the car's spawn reads (0.474, 0.067, -0.878) there while it looks along (-0.474, -0.067, 0.878) at the car, and the renderer's
+// anchor has the same rows as its c12 to c14): the flight reads and writes the rows through cam::FromSlotRows / ToSlotRows (freecam.h's
+// PoseFromSlotRows / SlotRowsOf), like camera_runtime.cpp, and the game's world is right-handed (the right is forward x up). At the hook the
+// slots hold the game's own camera, which is where the flight starts (and where Back + X brings it home). E3 flew a scripted camera 600 m from the car and the streamer followed the camera by
 // itself, so nothing here moves the car or locks the streaming.
 //
 // ONCE AN UPDATE. The hook may run more than once in an update (CHECK); the flight steps only when the game's frame counter has moved
@@ -188,19 +191,34 @@ struct State {
 };
 State g;
 
+// A vector of the slots' frame (a row or the position).
+cam::Vec3 SlotVec(const uint8_t* base, uint32_t sp, uint32_t off) {
+    return {RF(base, sp + off + 0), RF(base, sp + off + 4), RF(base, sp + off + 8)};
+}
+
+// The camera rows of sub_822C0320's frame as they are now: right, up and BACK (not forward: see the top of this file).
+cam::SlotRows ReadRows(const uint8_t* base, uint32_t sp) {
+    return {SlotVec(base, sp, kSlotRow0), SlotVec(base, sp, kSlotRow1), SlotVec(base, sp, kSlotRow2)};
+}
+
 void AnnounceCut(const uint8_t* base, uint32_t sp, const char* why) {
     const uint32_t frame = R32(base, kClock + 0x2C);
-    const float px = RF(base, sp + kSlotPos + 0), py = RF(base, sp + kSlotPos + 4), pz = RF(base, sp + kSlotPos + 8);
-    LARECOMP_APP_INFO("[fly] cut ({}) at game frame {}: the camera is at {:.2f} {:.2f} {:.2f}", why, frame, px, py, pz);
+    const cam::Vec3 at = SlotVec(base, sp, kSlotPos);
+    const cam::Basis shot = cam::FromSlotRows(ReadRows(base, sp));  // forward is minus the third row: where the camera looks
+    LARECOMP_APP_INFO("[fly] cut ({}) at game frame {}: the camera is at {:.2f} {:.2f} {:.2f}, looking along {:.3f} {:.3f} {:.3f}", why, frame, at.x, at.y, at.z,
+                      shot.forward.x, shot.forward.y, shot.forward.z);
 #if defined(LARECOMP_HAS_GPU)
+    // The pose is what the renderer's anchor will read: its forward is minus the third row (the camera's back), see cut_request.h.
     mcla::gpu::cut::CameraPose pose;
-    pose.position[0] = px;
-    pose.position[1] = py;
-    pose.position[2] = pz;
-    for (int c = 0; c < 3; ++c) {
-        pose.up[c] = RF(base, sp + kSlotRow1 + 4 * static_cast<uint32_t>(c));
-        pose.forward[c] = RF(base, sp + kSlotRow2 + 4 * static_cast<uint32_t>(c));
-    }
+    pose.position[0] = at.x;
+    pose.position[1] = at.y;
+    pose.position[2] = at.z;
+    pose.up[0] = shot.up.x;
+    pose.up[1] = shot.up.y;
+    pose.up[2] = shot.up.z;
+    pose.forward[0] = shot.forward.x;
+    pose.forward[1] = shot.forward.y;
+    pose.forward[2] = shot.forward.z;
     mcla::gpu::cut::Submit(frame, pose);
 #else
     (void)frame;
@@ -209,36 +227,30 @@ void AnnounceCut(const uint8_t* base, uint32_t sp, const char* why) {
 
 // The game's own camera as it stands in the slots.
 fc::Pose GameCamera(const uint8_t* base, uint32_t sp, double keep_yaw) {
-    const auto row = [&](uint32_t off) {
-        return cam::Vec3{RF(base, sp + off + 0), RF(base, sp + off + 4), RF(base, sp + off + 8)};
-    };
-    cam::Basis b;
-    b.right = row(kSlotRow0);
-    b.up = row(kSlotRow1);
-    b.forward = row(kSlotRow2);
-    const cam::Vec3 pos = row(kSlotPos);
+    const cam::SlotRows rows = ReadRows(base, sp);
+    const cam::Vec3 pos = SlotVec(base, sp, kSlotPos);
     double fov = RF(base, sp + kSlotFov);
-    const bool sane = std::isfinite(fov) && fov > 5.0 && fov < 150.0 && std::isfinite(pos.x + pos.y + pos.z) && cam::Length(b.forward) > 0.5 &&
-                      cam::Length(b.right) > 0.5 && cam::Length(b.up) > 0.5;
+    const bool sane = std::isfinite(fov) && fov > 5.0 && fov < 150.0 && std::isfinite(pos.x + pos.y + pos.z) && cam::Length(rows.back) > 0.5 &&
+                      cam::Length(rows.right) > 0.5 && cam::Length(rows.up) > 0.5;
     if (!sane) {
         fc::Pose p;
         p.yaw = keep_yaw;
         return p;
     }
-    return fc::PoseFromBasis(pos, b, fov, keep_yaw);
+    return fc::PoseFromSlotRows(pos, rows, fov, keep_yaw);
 }
 
 void WriteCamera(uint8_t* base, uint32_t sp, const fc::Pose& pose) {
-    const cam::Basis b = fc::BasisOf(pose);
+    const cam::SlotRows rows = fc::SlotRowsOf(pose);  // right, up and BACK (minus forward)
     const auto put = [&](uint32_t off, cam::Vec3 a, float w) {
         WF(base, sp + off + 0, static_cast<float>(a.x));
         WF(base, sp + off + 4, static_cast<float>(a.y));
         WF(base, sp + off + 8, static_cast<float>(a.z));
         WF(base, sp + off + 12, w);
     };
-    put(kSlotRow0, b.right, 0.0f);
-    put(kSlotRow1, b.up, 0.0f);
-    put(kSlotRow2, b.forward, 0.0f);
+    put(kSlotRow0, rows.right, 0.0f);
+    put(kSlotRow1, rows.up, 0.0f);
+    put(kSlotRow2, rows.back, 0.0f);
     put(kSlotPos, pose.position, 1.0f);
     WF(base, sp + kSlotFov, static_cast<float>(pose.fov));
     WF(base, sp + kSlotHFov, -1.0f);  // not a cutscene's horizontal lens: the vertical one of +0x50 (E5)

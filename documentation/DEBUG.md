@@ -246,7 +246,7 @@ The camera starts where the game's own camera is. The game gets no pad input whi
 | Control | What it does |
 |---|---|
 | left stick | move: forward and back along where the camera looks, left and right level |
-| right stick | look: yaw and pitch (up looks up) |
+| right stick | look: yaw and pitch (right turns right, up looks up) |
 | right / left trigger | up / down |
 | L3 / R3 (stick clicks, held) | fast (x4) / slow (x1/4) |
 | D-pad left / right | the base speed one step (x1.25) per press |
@@ -268,7 +268,7 @@ t,scene_t,frame,x,y,z,yaw,pitch,roll,fov,flags
 0.000000,-1.000000,48211,819.6120,17.6000,-808.4000,-28.0000,0.0000,0.0000,50.0000,0
 ```
 
-`t` is seconds since the recording started, summed from the engine timer's frame deltas before the time scale, which is what a scene's clock adds, so a scene whose camera track holds this flight's keys moves the camera the same way from its own 0. `scene_t` is the scene's clock when one runs (else -1): a flight flown against a scene's hour ramp can be keyed to that scene's time. Angles are in the scene file's words (yaw 0 along +Z, pitch + up, roll + lifts the right side), yaw is continuous. `flags` bit 0 starts a new shot (home, Back + Y).
+`t` is seconds since the recording started, summed from the engine timer's frame deltas before the time scale, which is what a scene's clock adds, so a scene whose camera track holds this flight's keys moves the camera the same way from its own 0. `scene_t` is the scene's clock when one runs (else -1): a flight flown against a scene's hour ramp can be keyed to that scene's time. Angles are in the scene file's words (yaw 0 along +Z, pitch + up, roll + lifts the right side), yaw is continuous. The game's world is right-handed (x east, z south), so a growing yaw turns the camera to the left and a turn to the right lowers it; the flight, the scene's camera and `scene_cam.py` share that one basis, so a recorded pose replays exactly (`freecam_test` round-trips the game's own camera rows through the file and a scene key). The camera slots hold the rows right, up and BACK; the flight reads and writes them that way, like the scene camera. `flags` bit 0 starts a new shot (home, Back + Y).
 
 **From a flight to a scene.**
 

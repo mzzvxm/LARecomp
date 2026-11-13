@@ -156,7 +156,7 @@ void TestAngles() {
     Basis up;
     up.forward = {0, 1, 0};
     up.up = {0, 0, -1};
-    up.right = {1, 0, 0};
+    up.right = {-1, 0, 0};  // forward x up: the game's world is right-handed
     double y = 0, p = 0, r = 0;
     AnglesFromBasis(up, 33.0, &y, &p, &r);
     CheckNum(y, 33.0, "straight up keeps the yaw given");
@@ -196,7 +196,7 @@ void TestMovement() {
         Fly(f, pad, 1.0, 60, p);
         CheckVec(f.pose().position, {12, 0, 0}, "yaw 90: forward is +X", 1e-9);
     }
-    {  // strafing is level: right of a camera that looks along +X is -Z
+    {  // strafing is level: the game's world is right-handed (x east, z south), so the right of a camera that looks along +X (east) is +Z (south)
         Pose s;
         s.yaw = 90.0;
         s.pitch = 40.0;
@@ -205,11 +205,28 @@ void TestMovement() {
         pad = Pad{};
         pad.lx = 1.0;
         Fly(f, pad, 1.0, 60, p);
-        CheckVec(f.pose().position, {0, 0, -12}, "yaw 90, pitch 40: strafing right goes -Z and does not climb", 1e-9);
+        CheckVec(f.pose().position, {0, 0, 12}, "yaw 90, pitch 40: strafing right goes +Z and does not climb", 1e-9);
         // and it matches the camera's own right on level ground
         Pose lvl;
         lvl.yaw = 90.0;
-        CheckVec(BasisOf(lvl).right, {0, 0, -1}, "the camera's right at yaw 90 is -Z", 1e-12);
+        CheckVec(BasisOf(lvl).right, {0, 0, 1}, "the camera's right at yaw 90 is +Z", 1e-12);
+        // at yaw 0 (south) the right is west
+        Flyer g;
+        g.Seed(Pose{});
+        Fly(g, pad, 1.0, 60, p);
+        CheckVec(g.pose().position, {-12, 0, 0}, "yaw 0 looks along +Z (south): strafing right goes -X (west)", 1e-9);
+        // for every yaw the strafe is the camera's own right: the flight and the scene's camera share one basis
+        bool same = true;
+        for (int yaw = -170; yaw <= 180; yaw += 35) {
+            Pose y;
+            y.yaw = yaw;
+            y.pitch = 25.0;
+            Flyer h;
+            h.Seed(y);
+            Fly(h, pad, 0.5, 60, p);
+            if (Length(h.pose().position - BasisOf(y).right * 6.0) > 1e-9 && Length(h.pose().position - HeadingBasis(yaw * kDeg).right * 6.0) > 1e-9) same = false;
+        }
+        Check(same, "strafing right moves along the camera's own right (forward x up) at every yaw");
     }
     {  // the triggers are up and down
         Flyer f;
@@ -312,11 +329,13 @@ void TestLookRollZoom() {
         f.Seed(Pose{});
         pad.rx = 1.0;
         Fly(f, pad, 1.0, 60, p);
-        CheckNum(f.pose().yaw, 70.0, "the right stick to the right turns 70 degrees a second to the right (yaw +)", 1e-9);
+        // The world is right-handed: from +Z (yaw 0, south) to +X (yaw 90, east) is a turn to the LEFT, so a turn to the right lowers the yaw.
+        CheckNum(f.pose().yaw, -70.0, "the right stick to the right turns 70 degrees a second to the right (yaw -)", 1e-9);
+        Check(Dot(BasisOf(f.pose()).forward, BasisFromYawPitch(0, 0).right) > 0.9, "after a right turn the camera looks toward where its right was (west, -X)");
         pad = Pad{};
         pad.rx = -1.0;
         Fly(f, pad, 2.0, 60, p);
-        CheckNum(f.pose().yaw, -70.0, "and to the left", 1e-9);
+        CheckNum(f.pose().yaw, 70.0, "and to the left", 1e-9);
     }
     {
         Flyer f;
@@ -796,6 +815,218 @@ void TestScript() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------- the game's camera slots
+
+// What the game's memory holds is float32.
+double F32(double v) {
+    return static_cast<double>(static_cast<float>(v));
+}
+Vec3 F32(Vec3 v) {
+    return {F32(v.x), F32(v.y), F32(v.z)};
+}
+SlotRows F32(const SlotRows& r) {
+    return {F32(r.right), F32(r.up), F32(r.back)};
+}
+
+// The scene's camera at time t for a scene text with `cam` lines: false when the scene does not build or the camera is not on.
+bool SceneCameraAt(const std::string& scene_text, double t, View* out, std::string* why) {
+    ParseResult pr;
+    pr = ParseScene(scene_text);
+    if (!pr.Ok()) {
+        for (const Diagnostic& d : pr.diagnostics) {
+            if (d.severity == Severity::kError) *why += FormatDiagnostic(d, "scene") + "\n";
+        }
+        return false;
+    }
+    const BuildResult built = BuildTrack(pr.scene);
+    if (!built.Ok()) {
+        for (const Diagnostic& d : built.diagnostics) {
+            if (d.severity == Severity::kError) *why += FormatDiagnostic(d, "camera") + "\n";
+        }
+        return false;
+    }
+    Rig rig;
+    NoCars cars;
+    *out = rig.Evaluate(built.track, t, cars);
+    return out->active;
+}
+
+// One camera through the whole path of a recorded flight, the way the game's glue and the tools do it: the slots' rows (float32, as the game's memory holds
+// them) -> the pose the recorder samples (freecam_runtime.cpp's GameCamera) -> the raw file's text -> the scene's `cam` line (scene_cam.py writes the same words) ->
+// the scene's camera (the rig, camera_runtime.cpp) -> the slots' rows the scene camera's hook writes.
+struct Trip {
+    bool ok = false;
+    Pose recorded;     // what the raw file holds
+    SlotRows rows;     // the rows the scene camera writes
+    Vec3 position;
+    double fov = 0.0;
+    std::string why;
+};
+Trip RoundTrip(const SlotRows& game_rows, Vec3 position, double fov, double keep_yaw) {
+    Trip t;
+    Sample s;
+    s.pose = PoseFromSlotRows(F32(position), F32(game_rows), fov, keep_yaw);
+    RawTrack parsed;
+    std::string error;
+    if (!ParseRawTrack(RawHeader({"round trip"}) + RawRow(s), &parsed, &error) || parsed.samples.size() != 1) {
+        t.why = "the raw row did not read back: " + error;
+        return t;
+    }
+    t.recorded = parsed.samples[0].pose;
+    View v;
+    if (!SceneCameraAt("scene a\n" + CamLine(parsed.samples[0], 0.0) + "end 5\n", 0.0, &v, &t.why)) return t;
+    t.rows = ToSlotRows(v.basis);
+    t.position = v.position;
+    t.fov = v.fov;
+    t.ok = true;
+    return t;
+}
+
+double RowsDistance(const SlotRows& a, const SlotRows& b) {
+    return std::max({Length(a.right - b.right), Length(a.up - b.up), Length(a.back - b.back)});
+}
+
+void TestSlotRows() {
+    // 1. the free camera's own rows are right, up, BACK: a proper rotation, the third row is minus the way the camera looks
+    {
+        bool proper = true, back_is_minus_forward = true, via_pose = true;
+        for (int yaw = -170; yaw <= 180; yaw += 50) {
+            for (int pitch = -80; pitch <= 80; pitch += 40) {
+                for (int roll = -40; roll <= 120; roll += 80) {
+                    Pose p;
+                    p.yaw = yaw;
+                    p.pitch = pitch;
+                    p.roll = roll;
+                    const SlotRows rows = SlotRowsOf(p);
+                    const Basis b = BasisOf(p);
+                    if (Length(Cross(rows.right, rows.up) - rows.back) > 1e-9) proper = false;
+                    if (Length(rows.back + b.forward) > 1e-12) back_is_minus_forward = false;
+                    const Pose q = PoseFromSlotRows({1, 2, 3}, rows, 50.0, 0.0);
+                    if (std::fabs(WrapDegrees(q.yaw - yaw)) > 1e-6 || std::fabs(q.pitch - pitch) > 1e-6 || std::fabs(WrapDegrees(q.roll - roll)) > 1e-6) via_pose = false;
+                }
+            }
+        }
+        Check(proper, "the free camera's slot rows are right, up, BACK: right x up = back");
+        Check(back_is_minus_forward, "the third row is minus the way the camera looks, not the forward vector");
+        Check(via_pose, "a pose comes back from its slot rows (yaw, pitch and roll)");
+        CheckVec(SlotRowsOf(Pose{}).back, {0, 0, -1}, "a camera that looks along +Z has -Z in the third row");
+        Pose east;
+        east.yaw = 90.0;
+        CheckVec(SlotRowsOf(east).back, {-1, 0, 0}, "a camera that looks along +X has -X in the third row");
+        CheckVec(SlotRowsOf(east).right, {0, 0, 1}, "and the right row is +Z (facing east, the right is south)");
+    }
+
+    // 2. the round trip over a grid of cameras: slot rows -> pose -> raw file -> scene key -> scene camera -> slot rows is the identity (the file and the
+    // scene write four decimals: rows within 1e-5, metres within 2e-4)
+    {
+        int bad = 0, total = 0;
+        double worst_rows = 0.0, worst_pos = 0.0;
+        for (int yaw = -175; yaw <= 180; yaw += 35) {
+            for (int pitch = -80; pitch <= 80; pitch += 40) {
+                for (int roll = -40; roll <= 120; roll += 40) {
+                    Pose p;
+                    p.position = {823.84, 19.61, -816.17};
+                    p.yaw = yaw;
+                    p.pitch = pitch;
+                    p.roll = roll;
+                    p.fov = 42.5;
+                    const SlotRows in = SlotRowsOf(p);
+                    const Trip t = RoundTrip(in, p.position, p.fov, 0.0);
+                    ++total;
+                    if (!t.ok) {
+                        ++bad;
+                        continue;
+                    }
+                    const double dr = RowsDistance(F32(in), t.rows), dp = Length(t.position - p.position);
+                    worst_rows = std::max(worst_rows, dr);
+                    worst_pos = std::max(worst_pos, dp);
+                    if (dr > 1e-5 || dp > 2e-4 || std::fabs(t.fov - 42.5) > 1e-3) ++bad;
+                }
+            }
+        }
+        std::printf("slot round trip: %d cameras, worst rows %.2e, worst position %.2e m\n", total, worst_rows, worst_pos);
+        Check(bad == 0, "slot rows -> pose -> raw file -> scene key -> scene camera -> slot rows comes back (" + std::to_string(bad) + " of " + std::to_string(total) + " off)");
+    }
+
+    // 3. the game's own camera (the E5 run's chase camera at the car's spawn, with the numbers and the sides of camera_test.cpp's TestSlotRows) goes round the
+    // same trip and still looks at its car, with the two cars on the sides the first smoke run's picture shows. The rows are the game's: right = up x back
+    // (menu_camera.cpp's recipe), made orthonormal because four decimals of a printed row are not exactly a rotation.
+    {
+        const Vec3 at{823.84, 19.61, -816.17};
+        SlotRows game;
+        game.back = Normalize({0.4737, 0.0670, -0.8782}, {0, 0, -1});
+        const Vec3 up0{-0.0168, 0.9976, 0.0671};
+        game.up = Normalize(up0 - game.back * Dot(up0, game.back), {0, 1, 0});
+        game.right = Cross(game.up, game.back);
+        Check(Length(Cross(game.right, game.up) - game.back) < 1e-9, "the game's rows are a proper rotation: right x up = back");
+        const Vec3 car = Vec3{819.61, 17.56, -808.41} - at;     // the player's car: the camera looks at it
+        const Vec3 murcielago = Vec3{817.0, 17.2, -797.3} - at;  // p1: left of the player's car on screen
+        const Vec3 red_car = Vec3{809.4, 17.6, -798.0} - at;     // p2: right of it
+        const Basis direct = FromSlotRows(game);
+        Check(Dot(direct.forward, Normalize(car, {0, 0, 1})) > 0.95, "the game's camera looks toward its car: forward is minus the third row");
+        Check(Dot(game.back, Normalize(car, {0, 0, 1})) < -0.95, "the third row points away from the car: it is the BACK");
+
+        const Trip t = RoundTrip(game, at, 45.0, 0.0);
+        Check(t.ok, "the game's camera goes round the trip: " + t.why);
+        if (t.ok) {
+            Check(RowsDistance(F32(game), t.rows) < 1e-5, "the game's own camera comes back from the recording and the scene as the rows it had");
+            const Basis seen = FromSlotRows(t.rows);
+            Check(Dot(seen.forward, Normalize(car, {0, 0, 1})) > 0.95, "the replayed camera looks toward the car it followed");
+            Check(Dot(t.rows.back, Normalize(car, {0, 0, 1})) < -0.95, "its third row is still the BACK");
+            Check(Dot(seen.right, murcielago) < 0.0, "a car at x 817 is on the LEFT of the replayed camera (the right is forward x up)");
+            Check(Dot(seen.right, red_car) > 0.0, "a car at x 809 is on the RIGHT of the replayed camera");
+            CheckNum(t.recorded.fov, 45.0, "the field of view is the game's", 1e-4);
+        }
+
+        // the flight, seeded from that camera: the pad's right is the same side as the picture's right, and a right turn turns toward the red car
+        Flyer f;
+        f.Seed(PoseFromSlotRows(at, F32(game), 45.0, 0.0));
+        const Pose seed = f.pose();
+        Pad strafe;
+        strafe.lx = 1.0;
+        Fly(f, strafe, 0.5, 60, Crisp());
+        const Vec3 moved = f.pose().position - at;
+        Check(Dot(moved, murcielago) < 0.0 && Dot(moved, red_car) > 0.0, "the left stick to the right moves the camera toward the red car's side, away from the blue one's");
+        Check(std::fabs(moved.y) < 1e-9, "and level");
+        Flyer g;
+        g.Seed(seed);
+        Pad turn;
+        turn.rx = 1.0;
+        Fly(g, turn, 0.1, 60, Crisp());  // 7 degrees: the red car is about 10 degrees right of where the camera looks, the blue one about 8 left
+        Check(Dot(BasisOf(g.pose()).forward, BasisOf(seed).right) > 0.1, "the right stick to the right turns the camera toward its own right side");
+        Check(AngleBetween(BasisOf(g.pose()).forward, red_car) < AngleBetween(BasisOf(seed).forward, red_car) - 3.0,
+              "the right stick to the right turns the camera toward the red car (right of the player's car)");
+        Check(AngleBetween(BasisOf(g.pose()).forward, murcielago) > AngleBetween(BasisOf(seed).forward, murcielago) + 3.0, "and away from the blue one");
+        // what that flight writes into the slots is a proper camera too: the third row points away from where it looks
+        const SlotRows w = SlotRowsOf(g.pose());
+        Check(Dot(w.back, BasisOf(g.pose()).forward) < -0.999 && Length(Cross(w.right, w.up) - w.back) < 1e-9, "the flown camera's slot rows are right, up, BACK");
+    }
+
+    // 4. a flown path goes round the trip sample by sample: what the recorder samples is what the scene camera shows at the same time
+    {
+        Pose seed;
+        seed.position = {819.6, 17.6, -808.4};
+        seed.yaw = -28.0;
+        seed.fov = 50.0;
+        const std::vector<Sample> flight = FlyScript(FlightScript(), seed, Params{}, 60.0);
+        int bad = 0, n = 0;
+        double worst = 0.0;
+        for (size_t i = 0; i < flight.size(); i += 17) {
+            const SlotRows rows = SlotRowsOf(flight[i].pose);
+            const Trip t = RoundTrip(rows, flight[i].pose.position, flight[i].pose.fov, flight[i].pose.yaw);
+            ++n;
+            if (!t.ok) {
+                ++bad;
+                continue;
+            }
+            worst = std::max(worst, RowsDistance(F32(rows), t.rows));
+            if (RowsDistance(F32(rows), t.rows) > 1e-5 || Length(t.position - flight[i].pose.position) > 2e-4) ++bad;
+        }
+        std::printf("flight round trip: %d samples, worst rows %.2e\n", n, worst);
+        Check(n > 40 && bad == 0, "every 17th sample of the scripted flight goes slot rows -> scene key -> slot rows (" + std::to_string(bad) + " of " + std::to_string(n) + " off)");
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the files
 
 std::string ReadFile(const char* path, bool* ok) {
@@ -915,6 +1146,7 @@ int main(int argc, char** argv) {
     TestRaw();
     TestSceneMeaning();
     TestScript();
+    TestSlotRows();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

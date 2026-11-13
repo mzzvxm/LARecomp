@@ -97,6 +97,14 @@ Pose PoseFromBasis(Vec3 position, const cam::Basis& basis, double fov, double ke
     return p;
 }
 
+cam::SlotRows SlotRowsOf(const Pose& pose) {
+    return cam::ToSlotRows(BasisOf(pose));
+}
+
+Pose PoseFromSlotRows(Vec3 position, const cam::SlotRows& rows, double fov, double keep_yaw) {
+    return PoseFromBasis(position, cam::FromSlotRows(rows), fov, keep_yaw);
+}
+
 double AngleBetween(Vec3 a, Vec3 b) {
     return std::acos(std::clamp(cam::Dot(cam::Normalize(a, {0.0, 0.0, 1.0}), cam::Normalize(b, {0.0, 0.0, 1.0})), -1.0, 1.0)) / kDeg;
 }
@@ -171,8 +179,9 @@ Events Flyer::Step(const Pad& pad, double dt, const Params& p) {
     const double roll_mean = smooth(&roll_rate_, roll_in * p.roll_rate, p.inertia * 0.5);
     const double zoom_mean = smooth(&zoom_, zoom_in, p.inertia * 0.5);
 
-    // look, roll, zoom
-    pose_.yaw += yaw_mean * dt;
+    // look, roll, zoom. The game's world is right-handed (x east, z south) and a growing yaw goes from +Z to +X, which is a turn to the LEFT: the stick to the right
+    // (yaw_in > 0) lowers the yaw.
+    pose_.yaw -= yaw_mean * dt;
     pose_.pitch = std::clamp(pose_.pitch + pitch_mean * dt, -kMaxPitch, kMaxPitch);
     pose_.roll += roll_mean * dt;
     if (zoom_mean != 0.0) {
@@ -180,12 +189,12 @@ Events Flyer::Step(const Pad& pad, double dt, const Params& p) {
         pose_.fov = std::clamp(cam::FovFromFocal(focal), p.min_fov, p.max_fov);
     }
 
-    // move: forward along the view (pitch included), sideways level, up along Y
+    // move: forward along the view (pitch included), sideways level (the camera's own right, forward x up: -X at yaw 0, +Z at yaw 90), up along Y
     const double modifier = ((pad.buttons & kBtnL3) ? p.fast : 1.0) * ((pad.buttons & kBtnR3) ? p.slow : 1.0);
     const double step = p.speed * speed_mult_ * modifier * dt;
     const double yaw = pose_.yaw * kDeg, pitch = pose_.pitch * kDeg;
     const Vec3 fwd{std::cos(pitch) * std::sin(yaw), std::sin(pitch), std::cos(pitch) * std::cos(yaw)};
-    const Vec3 right{std::cos(yaw), 0.0, -std::sin(yaw)};
+    const Vec3 right = cam::HeadingBasis(yaw).right;
     pose_.position = pose_.position + fwd * (forward_mean * step) + right * (strafe_mean * step) + Vec3{0.0, rise_mean * step, 0.0};
     return ev;
 }

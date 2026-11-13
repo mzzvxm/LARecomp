@@ -12,7 +12,7 @@
 // still opens):
 //
 //   left stick            move: forward and back along where the camera looks (up and down too), left and right level
-//   right stick           look: yaw and pitch (stick up looks up)
+//   right stick           look: yaw and pitch (stick right turns right, stick up looks up)
 //   right / left trigger  up / down (world Y)
 //   L3 (left stick click) hold: fast (x4)         R3 (right stick click) hold: slow (x1/4)
 //   D-pad left / right    the base speed one step (x1/1.25, x1.25) per press
@@ -38,7 +38,9 @@
 //            can be keyed to the scene's own time (scene_cam.py --time scene)
 //   frame    the game's frame counter
 //   x y z    world metres, Y up; yaw pitch roll degrees in the scene file's meaning (cam yaw 0 looks along +Z, 90 along +X; pitch + looks
-//            up; roll + lifts the right side); yaw is continuous (not wrapped); fov: vertical degrees
+//            up; roll + lifts the right side); yaw is continuous (not wrapped); fov: vertical degrees. The game's world is right-handed
+//            (x east, y up, z south), so a growing yaw turns the camera to the LEFT (south to east) and the camera's right is forward x up
+//            (camera.h); the free camera, the scene's camera and scene_cam.py all use that one basis, so a recorded pose replays exactly
 //   flags    bit 0: a cut: this sample starts a new shot (the flight jumped to it: home; or the pilot marked one: Back + Y)
 //
 // ports\scripts\scene_cam.py reads it: smooths it, reduces it to keys within an error bound and writes a scene's `cam` track.
@@ -115,6 +117,11 @@ cam::Basis BasisOf(const Pose& pose);
 // The angles of a camera basis. yaw is in -180..180, pitch -90..90; at straight up or down yaw is `keep_yaw`. Round trip with BasisOf.
 void AnglesFromBasis(const cam::Basis& basis, double keep_yaw, double* yaw, double* pitch, double* roll);
 Pose PoseFromBasis(cam::Vec3 position, const cam::Basis& basis, double fov, double keep_yaw = 0.0);
+// The rows the game's camera slots hold for a pose: right, up and BACK (minus forward), as camera.h's ToSlotRows says; and the pose of the
+// camera that the slots hold (the game's own, to seed the flight from). The third row is NOT the forward vector: a camera written with it
+// looks the opposite way and a cut request built from it is never met by the renderer's anchor (the first smoke run of the scene camera).
+cam::SlotRows SlotRowsOf(const Pose& pose);
+Pose PoseFromSlotRows(cam::Vec3 position, const cam::SlotRows& rows, double fov, double keep_yaw = 0.0);
 // The smallest turn between two directions, degrees (0..180).
 double AngleBetween(cam::Vec3 a, cam::Vec3 b);
 // The difference of two angles in degrees, wrapped to -180..180.
