@@ -81,7 +81,9 @@ struct ImageView {
 // loaded compiler and the main pack's fingerprint, and records the lines it returns in the stamp.
 
 struct VariantStepInput {
-  const ContainerSet* containers = nullptr;  // for a variant-only rebuild only the image's shaders are in it
+  // For a variant-only rebuild only the image's shaders are in it, unless the step asked for the RPF's
+  // too (VariantStep::NeedsRpfShaders).
+  const ContainerSet* containers = nullptr;
   std::shared_ptr<DxcRuntime> dxc;           // loaded; make a DxcWorker per thread
   std::filesystem::path out_dir;             // mcla_shaders_variants.v2.pack goes here (kVariantPackFileName)
   uint32_t formats = 0;                      // build these formats (the main pack's)
@@ -102,6 +104,10 @@ class VariantStep {
   // build of larecomp: CheckStamp compares them with the stamp's, so a changed edit rebuilds the variant
   // pack alone.
   virtual std::vector<StampLine> ExpectedStampLines() const = 0;
+  // Whether a shader of some variant lives in the RPF (xarchive_cache.rpf) and not in the executable. The
+  // builder reads the RPF's containers for a variant-only rebuild only when this is true: reading them
+  // takes seconds, and a build whose main pack stays and whose variants are current does without.
+  virtual bool NeedsRpfShaders() const { return false; }
   // Writes the variant pack to input.out_dir under its final name (a .tmp then a move is its own
   // business). A failure here fails the step, not the build: the renderer then draws the game's own
   // shaders (HDR stays at stage 2, the bloom at the guest's taps), which the reader allows.
