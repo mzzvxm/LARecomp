@@ -20,11 +20,15 @@
 #
 # The first configure with a hash still marked CHECK prints the hash of that file: fill it in.
 
+include("${CMAKE_CURRENT_LIST_DIR}/DownloadProgress.cmake")
+
 set(_sl_version "2.14.16")
 set(_sl_zip_url "https://github.com/NVIDIA-RTX/Streamline/releases/download/v${_sl_version}/streamline-sdk-v${_sl_version}.zip")
 # The SHA-256 of the whole zip, as GitHub's release API lists it for the asset (its "digest" field).
 # (Checked 2026-11-06 against the download and `gh api repos/NVIDIA-RTX/Streamline/releases/tags/v2.14.16`.)
 set(_sl_zip_sha256 "32041e51db0cab709a271b72a352281b690c2abbd669a827809401a5dd23956b")
+# Its size in bytes (the same API's "size" field), for the download's progress bar: bump it with the hash.
+set(_sl_zip_size 276016170)
 set(_sl_root "${CMAKE_BINARY_DIR}/_deps/streamline-${_sl_version}")
 
 # "<sha256> <path in the SDK>", the path under the zip's SDK root (package.bat of Streamline lays out
@@ -132,8 +136,7 @@ if(_sl_missing)
         set(_sl_zip_ours TRUE)
         if(NOT EXISTS "${_sl_zip}")
             message(STATUS "larecomp: fetching Streamline ${_sl_version} (about 276 MB, once) from ${_sl_zip_url}")
-            file(DOWNLOAD "${_sl_zip_url}" "${_sl_zip}.part" SHOW_PROGRESS INACTIVITY_TIMEOUT 120
-                 STATUS _sl_status TLS_VERIFY ON)
+            larecomp_download_with_bar("${_sl_zip_url}" "${_sl_zip}.part" ${_sl_zip_size} "Streamline" _sl_status)
             list(GET _sl_status 0 _sl_code)
             if(NOT _sl_code EQUAL 0)
                 list(GET _sl_status 1 _sl_message)
