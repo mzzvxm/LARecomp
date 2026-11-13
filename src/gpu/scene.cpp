@@ -36,6 +36,7 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "shafts.h"
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
@@ -805,6 +806,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (ao_) {
     ao_->BeginFrame();
   }
+  if (shafts_) {
+    shafts_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -1201,6 +1205,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (ao_ && ao_->wants_draws()) {
       ao_->OnAnchor(banks);  // this frame's camera: the next frame's occlusion uses its lens
     }
+    if (shafts_ && shafts_->wants_draws()) {
+      shafts_->OnAnchor(banks);  // ... and the next frame's sun shafts place the sun by it
+    }
   }
 
   if (!list) {
@@ -1217,7 +1224,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
-      if (ao_ && ao_->wants_draws()) {
+      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws())) {
         NoteAmbientOcclusion(banks, d);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
@@ -1718,7 +1725,12 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   draw.writes_depth = (d.key.depth & 2u) != 0;
   draw.stencil_ids = temporal::StencilIdsWritten(d.state);  // the vehicles' own motion (ao.h)
-  ao_->OnMainDraw(draw, banks);
+  if (ao_ && ao_->wants_draws()) {
+    ao_->OnMainDraw(draw, banks);
+  }
+  if (shafts_ && shafts_->wants_draws()) {
+    shafts_->OnMainDraw(draw.match, banks);
+  }
 }
 
 void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -2721,12 +2733,22 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
+  if (shafts_ && shafts_->wants_draws()) {
+    // The end-of-scene copy of the main colour (shafts.h): the sun shafts' light goes into the colour
+    // before the copy reads it.
+    shafts_->BeforeResolve(record, list);
+  }
   const ResolveCache::Summary summary = resolve_->Execute(record, list);
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
     // below forgets for the next draw.
     ao_->OnResolve(record, summary, list, UpscalerRunning());
+  }
+  if (shafts_ && shafts_->wants_draws()) {
+    // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
+    // targets: the reset below forgets them too).
+    shafts_->OnResolve(record, summary, list, UpscalerRunning());
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
@@ -2776,6 +2798,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
+  }
+  if (shafts_) {
+    shafts_->OnComposite();
   }
   if (temporal_) {
     temporal_->OnComposite();
@@ -2896,6 +2921,9 @@ void Scene::OnPresent() {
   edram_->SetScenePhase(true);  // the next frame's scene
   if (ao_) {
     ao_->OnPresent();
+  }
+  if (shafts_) {
+    shafts_->OnPresent();
   }
   if (temporal_) {
     temporal_->EndFrame();
