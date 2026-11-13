@@ -13,9 +13,9 @@ Fails (exit 1) on:
   1. an untagged cvar with no row and not on the exception list (a new cvar must be classified when it is written);
   2. a tagged cvar that a normal (non-debug) row uses, unless it is on the pending list; also a tagged cvar on the exception list;
   3. a cvar that a debug table names and that is not tagged, or whose chain says kRequiresRestart / kInitOnly (a debug row cannot be restart-only);
-  4. a cvar defined twice (the Linux stubs, the legacy runtime) with the tag on one definition and not on the other;
-  5. the table kLockedPanelCvars in src\mc_engine\ui\settings.cpp (what the F4 panel lists while the debug menu is locked) and the exception list
-     of settings_exposure.toml name different cvars (whole-tree runs only).
+  4. a cvar defined twice (the Linux stubs, the legacy runtime) with the tag on one definition and not on the other.
+The rules say nothing about the function-key menus: F4 lists every setting for everyone (only the pause menu is cleaned up), so the exception list is
+only "a setting that is not debug-only and has no row".
 Warnings (exit 0, 1 with --strict): list entries that name a cvar the sources do not define, pending entries that are not needed any more.
 
 --dirs <path> ...  checks only the definitions in these folders / files of <src dir> (relative to it, for example gpu native_gfx), so that each part of a
@@ -244,23 +244,6 @@ def load_config(path):
         sys.exit(f"cannot read {path}: {e}")
 
 
-# The F4 panel lists these while the debug menu is locked (SX-G3); it is the exception list, written out in C++.
-LOCKED_PANEL_FILE = "mc_engine/ui/settings.cpp"
-LOCKED_PANEL_TABLE = "kLockedPanelCvars"
-
-
-def locked_panel_names(src):
-    """The set of names in kLockedPanelCvars, or None when the file or the table is not there."""
-    path = os.path.join(src, LOCKED_PANEL_FILE)
-    if not os.path.exists(path):
-        return None
-    text = strip_comments(read(path))
-    m = re.search(r"\b" + LOCKED_PANEL_TABLE + r"\s*\[\s*\]\s*=\s*\{(.*?)\}\s*;", text, re.S)
-    if not m:
-        return None
-    return set(STRING.findall(m.group(1)))
-
-
 def names_of(cfg, key):
     out = {}
     for entry in cfg.get(key, []):
@@ -349,7 +332,7 @@ def main():
                 else:
                     problems.append(f"{name}: `.debug_only()` ({where}) but a normal row uses it: {', '.join(uses)}")
             if name in exceptions:
-                problems.append(f"{name}: `.debug_only()` ({where}) but it is on the exception list, which is for cvars players see with the debug menu locked")
+                problems.append(f"{name}: `.debug_only()` ({where}) but it is on the exception list, which is for settings that are not debug-only and have no row")
         else:
             if normal_rows:
                 row_pause.append(name)
@@ -373,16 +356,6 @@ def main():
                     warnings.append(f"the pending list names {name}, which is not tagged: add `.debug_only()` to it, or remove the entry from settings_exposure.toml")
                 else:
                     warnings.append(f"the pending list names {name}, but no normal row uses it any more: remove the entry from settings_exposure.toml")
-
-    if not dirs:
-        panel = locked_panel_names(src)
-        if panel is None:
-            warnings.append(f"cannot read {LOCKED_PANEL_TABLE} in {LOCKED_PANEL_FILE}: the F4 panel's locked list is not compared with the exception list")
-        else:
-            for name in sorted(set(exceptions) - panel):
-                problems.append(f"{name}: on the exception list but not in {LOCKED_PANEL_TABLE} ({LOCKED_PANEL_FILE}): a locked F4 panel would not list it")
-            for name in sorted(panel - set(exceptions)):
-                problems.append(f"{name}: in {LOCKED_PANEL_TABLE} ({LOCKED_PANEL_FILE}) but not on the exception list of settings_exposure.toml")
 
     n_defs = sum(1 for n in checked for d in defs[n] if in_dirs(d["file"], dirs))
     print(f"check_settings_exposure: {src}" + (f"  (--dirs {' '.join(dirs)})" if dirs else ""))

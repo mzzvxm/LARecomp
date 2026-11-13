@@ -13,7 +13,7 @@ dynamic_files = ["upscaling_menu.cpp", "frame_generation_menu.cpp", "display_men
 debug_files = ["debug_menu_pages.cpp"]
 debug_table_pattern = "^kDebug"
 
-# The exception list: cvars with no row that stay visible to players while the debug menu is locked. They are NOT `.debug_only()`.
+# The exception list: cvars with no pause-menu or launcher row that are still ordinary settings of the game. They are NOT `.debug_only()`.
 [[exception]]
 why = "keyboard rebinding: the F4 panel is the only place to rebind a key and the launcher has no key picker"
 names = [
@@ -31,7 +31,7 @@ names = [
 ]
 
 [[exception]]
-why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in the locked F4 for now"
+why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in F4 for now"
 names = [
   "online_master_server", "server_browser_servers", "server_browser_show_icons",
   "rmr_enabled", "rmr_server", "rmr_server_port", "leaderboards_enabled",

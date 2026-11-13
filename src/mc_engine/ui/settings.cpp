@@ -16,13 +16,11 @@
 #include <climits>
 #include <cstdlib>
 #include <functional>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 
 namespace mcla::ui {
 
@@ -71,54 +69,10 @@ bool IsKeybindCategory(const std::string& category) {
   return CategoryIsPathOrChild(category, "Input/Keybinds");
 }
 
-// The cvars that have no row in the pause menu or the launcher and that a player still sees in
-// this panel while the debug menu is locked: the exception list of tools/settings_exposure.toml
-// ([[exception]]). They are the player's only way to rebind a key, to type a server address, and
-// so on. tools/check_settings_exposure.py fails when this table and that list differ, so add a
-// name to both or to neither. (A name of the "MCLA/Input" categories is listed there as well
-// although the category rule below would show it anyway: the check compares the two lists as
-// they are.)
-constexpr std::string_view kLockedPanelCvars[] = {
-    // keyboard rebinding
-    "keyboard_native", "kb_ui_accept", "kb_ui_back", "kb_ui_x", "kb_ui_y", "kb_ui_lb", "kb_ui_rb",
-    "kb_ui_lt", "kb_ui_rt", "kb_ui_up", "kb_ui_down", "kb_ui_left", "kb_ui_right", "kb_ui_start",
-    "kb_ui_select", "kb_drive_steer_left", "kb_drive_steer_right", "kb_drive_gas",
-    "kb_drive_brake", "kb_drive_handbrake", "kb_drive_weight", "kb_drive_nitro",
-    "kb_drive_headlights", "kb_drive_horn", "kb_drive_camera", "kb_drive_camera_keys",
-    "kb_drive_camera_views", "kb_drive_lookback", "kb_drive_map", "kb_drive_talk",
-    "kb_drive_shift_up", "kb_drive_shift_down", "kb_drive_pause", "kb_drive_popup_select",
-    "kb_drive_popup_back", "extra_button_l4", "extra_button_l5", "extra_button_r4",
-    "extra_button_r5",
-    // online choices (server list, Rate My Ride, leaderboards)
-    "online_master_server", "server_browser_servers", "server_browser_show_icons", "rmr_enabled",
-    "rmr_server", "rmr_server_port", "leaderboards_enabled",
-    // safety: a wheel's emergency stop
-    "wheel_ffb_panic", "wheel_ffb_rearm",
-    // legacy migration
-    "adaptive_triggers",
-};
-
-// What a locked panel lists: the key binds (the SDK's "Input/Keybinds*", LARecomp's "MCLA/Input*")
-// and the exception list, and nothing that is tagged .debug_only(). Everything else, the SDK's own
-// cvars included, is left out.
-bool ListedWhileLocked(const rex::cvar::FlagEntry& entry) {
-  if (entry.is_debug_only) {
-    return false;
-  }
-  if (IsKeybindCategory(entry.category) || CategoryIsPathOrChild(entry.category, "MCLA/Input")) {
-    return true;
-  }
-  static const std::unordered_set<std::string_view> exceptions(std::begin(kLockedPanelCvars),
-                                                               std::end(kLockedPanelCvars));
-  return exceptions.count(entry.name) != 0;
-}
-
-// Locked: only ListedWhileLocked. Unlocked: every cvar, as before. The SDK's
-// settings_hide_inactive_backend_cvars still decides the backend part of this.
+// Every cvar is listed, for every player, whether or not the debug menu is unlocked: this panel
+// (F4) is a function-key menu, not the pause menu, and only the pause menu is cleaned up. The
+// SDK's settings_hide_inactive_backend_cvars decides the backend part of this.
 bool ShouldShow(const rex::cvar::FlagEntry& entry) {
-  if (!larecomp::DebugMenuUnlocked() && !ListedWhileLocked(entry)) {
-    return false;
-  }
   if (rex::cvar::GetFlagByName("settings_hide_inactive_backend_cvars") == "false") {
     return true;
   }
@@ -247,14 +201,12 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
       if (larecomp::SaveCvarsToConfig(config_path_)) {
         saved_flash_ = 2.0f;
         // The save skips the debug settings changed in this session (config_save.cpp), so say how
-        // many were left out. A locked panel lists none, so it has nothing to say.
+        // many were left out. This panel lists them for everyone, locked or not.
         unsaved_debug_ = 0;
-        if (larecomp::DebugMenuUnlocked()) {
-          for (const larecomp::DebugCvarChange& change : larecomp::NonDefaultDebugCvars()) {
-            if (change.source == rex::cvar::Source::kRuntime) ++unsaved_debug_;
-          }
-          if (unsaved_debug_ > 0) saved_flash_ = 6.0f;
+        for (const larecomp::DebugCvarChange& change : larecomp::NonDefaultDebugCvars()) {
+          if (change.source == rex::cvar::Source::kRuntime) ++unsaved_debug_;
         }
+        if (unsaved_debug_ > 0) saved_flash_ = 6.0f;
       }
     }
     saved_flash_ = std::max(0.0f, saved_flash_ - io.DeltaTime);
@@ -315,10 +267,8 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
                     " NOT saved: they last until the game closes.";
       }
     } else {
-      subtitle = "Yellow settings apply after a restart. Hover one for what it does.";
-      if (larecomp::DebugMenuUnlocked()) {
-        subtitle += " Debug settings are not saved.";
-      }
+      subtitle = "Yellow settings apply after a restart. Hover one for what it does. "
+                 "Debug settings are not saved.";
     }
     PanelSubtitle(subtitle.c_str());
 
