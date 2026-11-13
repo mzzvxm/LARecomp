@@ -775,6 +775,9 @@ void TestCvarRefusal() {
         // the capture settings (the program ffmpeg runs from, its arguments, the sink, the folder, the rest)
         "mcla_capture_ffmpeg", "mcla_capture_ffmpeg_args", "mcla_capture_sink", "mcla_capture_out", "mcla_capture_fps",
         "mcla_capture_ring", "mcla_capture_lag", "mcla_capture_delay_ms", "mcla_capture_future_setting",
+        "mcla_capture_dir", "mcla_capture_name", "mcla_capture_statelog", "mcla_capture_audio", "mcla_capture_memory_mb",
+        // the state log's file (M3a) and the flight recorder's (M1d)
+        "mcla_state_log", "mcla_freecam_record", "mcla_freecam_out", "MCLA_STATE_LOG",
         // the scene's own settings
         "mcla_scene", "mcla_scene_restart", "mcla_scene_t",
         // paths, folders, programs, arguments, servers
@@ -803,6 +806,7 @@ void TestCvarRefusal() {
         "mcla_gpu_dlss_mode", "mcla_gpu_upscaler", "mcla_gpu_hdr", "mcla_gpu_resolution_scale", "mcla_cam_log", "mcla_cin_hud_alpha",
         "mcla_fixed_step_fps", "aspect_ratio", "display_gamma", "speed_units", "weather", "time_of_day", "ui_interpolate", "x", "some_text",
         "mcla_capture", "capture_fps",  // not the mcla_capture_ prefix
+        "mcla_gpu_sync_builds", "mcla_freecam_speed", "mcla_freecam_log",
     };
     for (const char* name : allowed) {
         Check(CvarRefusal(name).empty(), std::string("a scene may set ") + name + ": " + CvarRefusal(name));

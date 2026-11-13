@@ -1048,6 +1048,9 @@ constexpr std::string_view kRefusedCvars[] = {
     "online_master_server",
     "server_browser_servers",
     "server_browser_pending",
+    "mcla_state_log",                    // the state log's file or folder (M3a)
+    "mcla_freecam_record",               // writes a flight file (M1d)
+    "mcla_freecam_out",                  // names it
 };
 
 constexpr std::string_view kRefusedSuffixes[] = {
