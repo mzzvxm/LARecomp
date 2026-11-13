@@ -1,0 +1,85 @@
+# settings_exposure.toml: what tools\check_settings_exposure.py needs besides the sources (SETTINGS-REVIEW.md, B.1 and 5.7).
+#
+# A cvar of the game is one of: a row (pause menu, found in the sources; or launcher only, listed here), on the exception list below, or
+# `.debug_only()`. Everything else fails the check, so a new cvar is classified when it is written. Names are cvar names, one entry per group.
+
+# Which pause-menu files hold rows. normal_files: the rows are for every player. dynamic_files: files that only exist to build rows; every
+# string in them that is a cvar's name counts as written by a row (the upscaling mode row names no cvar in its constructor).
+# debug_files / debug_table_pattern: rows of the hidden debug menu (SX-G4); a cvar named there must be `.debug_only()` and not restart-only.
+# Paths are relative to src (a bare file name means src/mc_engine/).
+[menus]
+normal_files = ["pause_menu.cpp", "upscaling_menu.cpp", "frame_generation_menu.cpp", "camera_look.cpp", "display_menu.cpp"]
+dynamic_files = ["upscaling_menu.cpp", "frame_generation_menu.cpp", "display_menu.cpp"]
+debug_files = ["debug_menu_pages.cpp"]
+debug_table_pattern = "^kDebug"
+
+# The exception list: cvars with no row that stay visible to players while the debug menu is locked. They are NOT `.debug_only()`.
+[[exception]]
+why = "keyboard rebinding: the F4 panel is the only place to rebind a key and the launcher has no key picker"
+names = [
+  "keyboard_native",
+  "kb_ui_accept", "kb_ui_back", "kb_ui_x", "kb_ui_y",
+  "kb_ui_lb", "kb_ui_rb", "kb_ui_lt", "kb_ui_rt",
+  "kb_ui_up", "kb_ui_down", "kb_ui_left", "kb_ui_right",
+  "kb_ui_start", "kb_ui_select", "kb_drive_steer_left", "kb_drive_steer_right",
+  "kb_drive_gas", "kb_drive_brake", "kb_drive_handbrake", "kb_drive_weight",
+  "kb_drive_nitro", "kb_drive_headlights", "kb_drive_horn", "kb_drive_camera",
+  "kb_drive_camera_keys", "kb_drive_camera_views", "kb_drive_lookback", "kb_drive_map",
+  "kb_drive_talk", "kb_drive_shift_up", "kb_drive_shift_down", "kb_drive_pause",
+  "kb_drive_popup_select", "kb_drive_popup_back",
+  "extra_button_l4", "extra_button_l5", "extra_button_r4", "extra_button_r5",
+]
+
+[[exception]]
+why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in the locked F4 for now"
+names = [
+  "online_master_server", "server_browser_servers", "server_browser_show_icons",
+  "rmr_enabled", "rmr_server", "rmr_server_port", "leaderboards_enabled",
+]
+
+[[exception]]
+why = "safety: an emergency stop for a wheel's force (wheel_ffb.cpp)"
+names = ["wheel_ffb_panic", "wheel_ffb_rearm"]
+
+[[exception]]
+why = "legacy migration: ReadOldSetting writes it back at start and only SaveCvarsToConfig removes the old larecomp.toml line; tagging it would keep an old false line and re-apply it every start"
+names = ["adaptive_triggers"]
+
+# Cvars that a launcher row (SettingsSchema.cs) writes and the pause menu has no row for (SETTINGS-REVIEW.md A.2, KEEP). They are not tagged.
+# The launcher lives in another repository, so the list is kept here; the catalog check (check_settings_catalog.py) keeps the launcher in step.
+[[launcher_row]]
+why = "A.2 KEEP rows with no pause-menu row"
+names = [
+  "camera_shake_scale", "rearview_cars",
+  "map_mouse", "map_mouse_zoom", "map_mouse_hide_cursor", "map_mouse_magnet",
+  "trigger_throttle", "trigger_brake", "mcla_controller_toast",
+  "custom_music_announce", "custom_music_announce_seconds", "custom_music_cue_gain_db",
+  "larecomp_discord_rpc", "larecomp_discord_rpc_language",
+  "mcla_gpu_adapter", "skip_intro", "unlock_ride_height", "unlock_wheel_fit",
+  "profile_auto_select", "model_mods",
+  "wheel_mode", "wheel_ffb", "wheel_ffb_strength", "wheel_ffb_boost", "wheel_ffb_centering", "wheel_ffb_sign",
+  "wheel_device_range", "wheel_game_range", "wheel_steer_deadzone",
+]
+
+# Rows whose constructor names a key that is not a cvar. The row writes the cvars listed (the constructor's string or constant is `rows`).
+[[virtual_row]]
+rows = ["renderer"]
+why = "the RENDERER row writes four held restart-only cvars (pause_menu.cpp kRendererChoices); owner 2026-11-13: DEBUG in the game"
+names = ["mcla_gpu", "mcla_native_gfx", "mcla_native_gfx_nocp", "mcla_native_gfx_continuous"]
+
+# Tagged cvars whose DEBUG (or REMOVE) row is still in a normal pause-menu table. SX-G4 moves the rows to the debug pages and SX-G5 takes them out
+# of the normal tables; each of those packages deletes the entries it settles. A check with --ignore-pending must pass once SX-G5 is merged.
+[[pending]]
+why = "DEBUG row still in a normal pause-menu table (SETTINGS-REVIEW.md A.1, owner answers 7.1)"
+names = [
+  "pace_at_swap",
+  "mcla_gpu", "mcla_native_gfx", "mcla_native_gfx_nocp", "mcla_native_gfx_continuous",
+  "perf_shadow_phase_bits", "perf_fast_vehicle_shadows", "perf_no_impostors", "perf_no_trees", "perf_no_fullscreen_blur",
+  "single_tile", "fence_spin_throttle", "breaking_frame_rate_limit",
+  "real_frame_delta", "smooth_chassis_depth", "smooth_chase_cam",
+  "debug_cam", "debug_cam_speed", "cam_freelook_collide", "cam_freelook_cs_invert",
+]
+
+[[pending]]
+why = "REMOVE row still in a normal pause-menu table (SX-G5 removes the row; the cvar stays, so it is tagged if it has no other row)"
+names = ["enable_ambient_tuning", "disable_rubberbanding"]
