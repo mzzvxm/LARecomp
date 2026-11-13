@@ -23,7 +23,8 @@ REXCVAR_DEFINE_INT32(
     "flicker); one that does not read it looks as before. Only while FSR or DLSS runs. 0: the real "
     "masks. Live.")
     .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace mcla::gpu {
 

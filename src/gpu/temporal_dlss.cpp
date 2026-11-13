@@ -86,7 +86,8 @@ REXCVAR_DEFINE_INT32(
     "the test on, 1 alone, then 2 alone, then 4 alone; the one that makes the picture lose its "
     "smoothness over time is read. Live.")
     .range(0, 7)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace mcla::gpu {
 
