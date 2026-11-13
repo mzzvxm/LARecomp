@@ -520,7 +520,7 @@ class TemporalSystem {
   double last_step_[3] = {};
   bool last_step_known_ = false;
   Scale last_scale_ = Scale::None();
-  Clock::time_point last_anchor_time_{};
+  double last_anchor_ms_ = 0.0;  // the scene clock's (mc::cinematic::SceneClockNowMs) time of the last accepted anchor
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
   uint32_t misses_ = 0;
   bool disarmed_ = false;

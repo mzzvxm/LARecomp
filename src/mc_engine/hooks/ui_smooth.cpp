@@ -44,6 +44,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "../cinematic/capture_mode.h"
 #include "../swf_dom.h"
 
 REXCVAR_DEFINE_BOOL(ui_interpolate, true, "MCLA/UI",
@@ -77,10 +78,9 @@ constexpr double kTurnPx = 40.0;
 // A move of the matrix's scale or skew terms by more than this is a flip, not a glide.
 constexpr double kScaleJump = 0.75;
 
+// The same clock ui.cpp paces the movies by (the scene clock: the steady clock, or a take's virtual one).
 uint64_t NowUs() {
-    return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count());
+    return uint64_t(mc::cinematic::SceneClockNowNs() / 1000);
 }
 
 uint8_t U8(const uint8_t* base, uint32_t a) { return a < 0x10000 ? 0 : base[a]; }

@@ -17,6 +17,7 @@
 #include "device.h"
 #include "format.h"
 #include "frame.h"
+#include "mc_engine/cinematic/capture_mode.h"
 #include "pass_timing.h"
 #include "records.h"
 #include "render_scale.h"
@@ -1049,8 +1050,7 @@ void TemporalSystem::StandInForPostChain() {
   // accepts. A camera cut cannot be known yet: the cut frame's bloom and exposure show the view
   // before it, for that one frame.
   if (last_dispatch_frame_ == ~uint64_t(0) || last_dispatch_frame_ + 1 != fr.frame ||
-      std::chrono::duration<double, std::milli>(Clock::now() - last_anchor_time_).count() >
-          kMaxGapMs) {
+      mc::cinematic::SceneClockNowMs(fr.frame) - last_anchor_ms_ > kMaxGapMs) {  // the scene clock: a slow capture is no stall
     return;
   }
   // The scene drawn at the output's size (Native AA, DLAA) has no sub-pixel glint the jitter
@@ -1731,7 +1731,9 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   }
   fr.anchor_textures.bound = true;
 
-  const Clock::time_point now = Clock::now();
+  // The wall clock, or, during a capture take, the frames times the step (mc_engine/cinematic/capture_mode.h): a slow capture must not
+  // look like a stall to the history rule below.
+  const double now_ms = mc::cinematic::SceneClockNowMs(fr.frame);
   uint32_t reset = 0;
   temporal::Cut cut;
   if (!ran_last_) {
@@ -1739,7 +1741,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
     // the first of a view whose kind the frame before did not have (a pause opening or closing).
     reset |= fr.view_changed ? kResetView : kResetFirst;
   } else {
-    const double gap_ms = std::chrono::duration<double, std::milli>(now - last_anchor_time_).count();
+    const double gap_ms = now_ms - last_anchor_ms_;
     fr.frame_time_ms = float(std::clamp(gap_ms, 1.0, kMaxGapMs));
     if (gap_ms > kMaxGapMs) {
       reset |= kResetTime;
@@ -1762,8 +1764,9 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   if (!camera.previous_valid) {
     reset |= kResetNoPrevious;
   }
-  last_anchor_time_ = now;
+  last_anchor_ms_ = now_ms;
   fr.reset = reset;
+  mc::cinematic::SceneClockNoteAnchor(reset, kResetTime);  // counted during a take: the summary says how often the history started again
 
   // The lens (field of view, near, far): a line when it changes, not only in the summaries (the
   // census logged it in its first two frames only and saw 25 degrees in play, 53.75 in the pause).

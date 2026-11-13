@@ -142,6 +142,8 @@ std::atomic<uint64_t> g_window_size{0};
 std::atomic<mcla::gpu::PresentObserver> g_present_observer{nullptr};
 // gpu.h SetNextPresentTarget: the due time OnGuestSwap hands the next present.
 std::atomic<int64_t> g_next_present_target{0};
+// gpu.h SetNextPresentTag (capture mode): the tag OnGuestSwap hands the next present.
+std::atomic<uint64_t> g_next_present_tag{0};
 
 void PublishWindowSize(uint32_t width, uint32_t height) {
   g_window_size.store(uint64_t(width) << 32 | height, std::memory_order_relaxed);
@@ -282,6 +284,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     flicker_probe_.Initialize(device_, frames_, swap_chain_.format());
+    capture_readback_.Initialize(device_, frames_, pass_timing_, swap_chain_.format());  // capture mode: made on a take's first frame
     // The temporal groundwork's passes: made on first use, never fail the renderer.
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
     temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
@@ -320,6 +323,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     temporal_.Shutdown();
     ao_.Shutdown();
     flicker_probe_.Shutdown();
+    capture_readback_.Shutdown();
     hdr_tone_.Shutdown();
     hdr_scene_.Shutdown();
     layers_.Shutdown();
@@ -481,6 +485,7 @@ void Renderer::Shutdown() {
   temporal_.Shutdown();
   ao_.Shutdown();
   flicker_probe_.Shutdown();
+  capture_readback_.Shutdown();
   hdr_tone_.Shutdown();
   hdr_scene_.Shutdown();
   layers_.Shutdown();
@@ -552,7 +557,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       // The guest waits for this record (kRecordSync); ReleaseGuest may let it go sooner.
       release_sequence_ = (header.flags & kRecordSync) != 0 ? header.sequence : 0;
       present_target_ = reinterpret_cast<const PresentRecord*>(payload)->target_qpc;
+      present_tag_ = reinterpret_cast<const PresentRecord*>(payload)->tag;  // capture mode
       ExecutePresent(PresentSource::kGuest);
+      present_tag_ = 0;
       present_target_ = 0;
       release_sequence_ = 0;
       return;
@@ -1122,6 +1129,13 @@ void Renderer::UpdateDisplayAspect() {
 }
 
 void Renderer::ExecutePresent(PresentSource source) {
+  // Capture mode: a guest present tagged as a frame of the capture take must be read back (RecordPresentPass) or reported lost,
+  // whichever way this function returns. An untagged present (every present, when no take runs) costs a flag test.
+  capture_readback_.BeginPresent(source == PresentSource::kGuest ? present_tag_ : 0);
+  struct CapturePresentScope {
+    CaptureReadback& readback;
+    ~CapturePresentScope() { readback.EndPresent(); }
+  } capture_scope{capture_readback_};
   // A held present goes first: its back buffer is the one ahead of this
   // frame's in the chain, and nothing else may touch the chain before it.
   FlushDeferredPresent(/*wait=*/true);
@@ -1253,6 +1267,8 @@ void Renderer::ExecutePresent(PresentSource source) {
   upload_.ResetSlot(frames_.slot());
   // What its previous round counted for the guest's occlusion queries is readable now.
   occlusion_.OnSlotReady(frames_.slot());
+  // Capture mode: in lock-step the take's readback of this frame is done before the present returns.
+  capture_readback_.AfterAdvance();
   ++presented_;
   if (source == PresentSource::kGuest) {
     ++guest_presents_;
@@ -1561,6 +1577,7 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
     // buffer: the probe records 8-bit SDR, and a live HDR switch can turn the chain HDR10 under it.)
     flicker_probe_.Record(list, present_, guest_presents_ + 1);
   }
+  capture_readback_.Record(list, present_);  // a no-op unless the present is a frame of the take
   ReleaseGuest();
   plume::RenderTexture* back = swap_chain_.texture(image);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -2006,8 +2023,9 @@ void OnGuestFrameEnd(uint8_t* base) {
 
 void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   const int64_t target = g_next_present_target.exchange(0, std::memory_order_relaxed);
+  const uint64_t tag = g_next_present_tag.exchange(0, std::memory_order_relaxed);  // capture mode
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
-    c->Present(base, device, front_buffer, target);
+    c->Present(base, device, front_buffer, target, tag);
   }
 }
 
@@ -2017,6 +2035,10 @@ void SetPresentObserver(PresentObserver observer) {
 
 void SetNextPresentTarget(int64_t qpc) {
   g_next_present_target.store(qpc, std::memory_order_relaxed);
+}
+
+void SetNextPresentTag(uint64_t tag) {
+  g_next_present_tag.store(tag, std::memory_order_relaxed);
 }
 
 bool SchedulesPresents() {

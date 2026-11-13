@@ -149,6 +149,7 @@ set(LARECOMP_SOURCES
     # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core). Inert unless a scene's
     # capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
     src/mc_engine/cinematic/capture_core.cpp
+    src/mc_engine/cinematic/capture_mode.cpp
 
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
