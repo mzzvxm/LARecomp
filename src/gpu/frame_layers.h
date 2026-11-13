@@ -137,6 +137,7 @@
 #include "pipelines.h"
 #include "records.h"
 #include "textures.h"
+#include "ui_fade.h"
 
 namespace mcla::gpu {
 
@@ -318,7 +319,7 @@ class FrameLayers {
   // The alpha a consumer shows `frame`'s UI at: ui_alpha(), except that a pause view's frame (the
   // pause menu, the DEBUG menu, the race pause, the full map: the player's own menus) shows its UI
   // whole. What HdrScene::Compose and both frame generations read.
-  float UiAlphaFor(const Frame& frame) const { return frame.pause_view ? 1.0f : ui_alpha_; }
+  float UiAlphaFor(const Frame& frame) const { return ShownUiAlpha(frame.pause_view, ui_alpha_); }
 
   std::string TakeSummary();
 

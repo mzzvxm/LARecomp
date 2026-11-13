@@ -46,23 +46,21 @@ float UiAlpha() {
 bool Renderer::ApplyUiFade() {
   const float asked = ClampUiAlpha(REXCVAR_GET(mcla_cin_hud_alpha));
   const bool armed = g_armed.load(std::memory_order_relaxed);
-  if (!ui_fade_layers_ && !armed && asked == 1.0f && ui_fade_seen_ == 1.0f) {
+  if (ui_fade_.AtRest(asked, armed, ui_fade_layers_)) {
     return false;  // at rest at 1: the game's frame, nothing asked for
   }
-  const double now = SecondsNow();
-  if (asked != ui_fade_seen_) {
-    // A new value: the time a caller left with it (once), else at once.
-    ui_fade_seen_ = asked;
-    const float seconds = g_next_fade_seconds.exchange(0.0f);
-    if (seconds > 0.0f) {
-      REXLOG_INFO("[gpu] hud fade: alpha {:.2f} -> {:.2f} over {:.2f} s", ui_fade_.Value(now), asked,
-                  seconds);
-    }
-    ui_fade_.Go(asked, seconds, now);
+  // Follows the value at every frame boundary, whatever the game is showing (play, a pause view,
+  // loading): a new value takes the time a caller left with it (once), else it is at once. A pause
+  // view's frame is shown whole by what the layers captured (ShownUiAlpha), never by holding this.
+  const UiFadeFollower::Step step = ui_fade_.Update(
+      asked, armed, SecondsNow(), [] { return g_next_fade_seconds.exchange(0.0f); });
+  if (step.new_value && step.seconds > 0.0f) {
+    REXLOG_INFO("[gpu] hud fade: alpha {:.2f} -> {:.2f} over {:.2f} s", step.from, asked,
+                step.seconds);
   }
-  const float alpha = ui_fade_.Value(now);
+  const float alpha = step.alpha;
   // The layers are wanted while the UI is below 1 (now or where it is heading) and while armed.
-  const bool want = armed || alpha < 1.0f || ui_fade_.Target() < 1.0f;
+  const bool want = step.want_layers;
   bool changed = false;
   if (want != ui_fade_layers_) {
     ui_fade_layers_ = want;
