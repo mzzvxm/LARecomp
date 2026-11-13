@@ -117,22 +117,6 @@ The list, 112 names in 13 groups (the number in brackets is the group's size):
 **Model mod tuning (all `model_mods_*`; the `model_mods` switch itself has a launcher row)** (38)
 `model_mods_anchor_bones`, `model_mods_bone`, `model_mods_cabin_light`, `model_mods_car_budget`, `model_mods_car_pack_write`, `model_mods_car_scale`, `model_mods_car_space_only`, `model_mods_car_textures`, `model_mods_car_verbatim`, `model_mods_car_yaw`, `model_mods_decimate`, `model_mods_diag`, `model_mods_glass_band`, `model_mods_grow`, `model_mods_grow_probe`, `model_mods_grow_slack`, `model_mods_offset_x`, `model_mods_offset_y`, `model_mods_offset_z`, `model_mods_part_growth`, `model_mods_passthrough`, `model_mods_pitch`, `model_mods_proportions`, `model_mods_rim_autoalign`, `model_mods_rim_inherit_shade`, `model_mods_rim_offset_x`, `model_mods_rim_pitch`, `model_mods_rim_roll`, `model_mods_rim_scale`, `model_mods_rim_shade_occlusion`, `model_mods_rim_yaw`, `model_mods_roll`, `model_mods_scale`, `model_mods_share_images`, `model_mods_submeshes`, `model_mods_textures`, `model_mods_weight_smoothing`, `model_mods_yaw`
 
-## The game's own UI on and off (the trailer toolkit)
-
-For a take without a HUD. `mcla_cin_hud_alpha` (0 to 1, default 1) is how much of the game's own UI the picture shows: the HUD, the minimap and the full map, the phone and its pop-ups, button prompts, gamertags and the 3D world icons. 1 is the game's frame and costs nothing; 0 is the 3D picture alone; in between is a fade. It is a debug-only setting like the others here (live, never saved), with a row on the TOOLS page, HUD ALPHA (the Plume renderer only; 1, 0.75, 0.5, 0.25, 0: a value a scene left shows as the nearest of them). The row writes the cvar, and the picture follows on the next frame.
-
-```powershell
-larecomp.exe --debug_menu --mcla_cin_hud_alpha=0
-```
-
-How it works: the renderer keeps the game's UI as a layer of its own (the one HDR output and frame generation use) and the present shows the 3D picture plus that layer times the alpha. Below 1 the layers run (about 0.4 ms at 3x on a desktop GPU: two copies of the UI target and a clear and a put-back), the present composes them (also in SDR), and frame generation's composed frame and DLSS frame generation's UI hint use the same alpha. At 1 nothing asks for the layers: no draw changes, nothing is copied, and a frame boundary costs a cvar read.
-
-What is never faded: the pause menu, this DEBUG menu, the race pause and the full map's pause view (a frame whose UI target is the pause view's shows its UI whole), and the SDK's overlays (the F3 card, the F4 panel, toasts), which are drawn after the picture. The effect therefore shows once the menu is closed. What it cannot fade: 3D objects (race checkpoints, the race line, the GPS ribbon are scene, not UI), and frames whose UI the renderer cannot keep apart from the picture (loading, movies), which show it whole. The title screen's PRESS prompt is UI over a 3D picture too and fades with the rest (a tour that waits for it needs the alpha at 1 until it has pressed it).
-
-A scene sets it through `mc::cinematic::SetHudAlpha(alpha, fade_seconds)` (`src/mc_engine/cinematic/hud.h`), which writes the cvar, so the row shows it and the last writer wins. `fade_seconds` is on the renderer's wall clock; a runner that steps its own clock (a capture) calls it with 0 on every update. The scene's keys are `at T hud off`, `hud on`, `hud <alpha>`, `hud fade <a>..<b> to <x>` (from scene time a to b, in a straight line, from the alpha it has at a) and `hud fade over <s> to <x>` (`src/mc_engine/cinematic/hud_track.h`); the runner (M1a) calls them once it applies the HUD track. `ReleaseHud()` puts the alpha back to what it was before the scene.
-
-Checks without a game: `larecomp_ui_fade_test` (the clamp and the ramp) and `larecomp_hud_track_test` (the key parser and the track), CMake targets that are not built with the rest.
-
 ## The game's own developer options
 
 `debug_options.txt` in the game folder (next to `larecomp.exe`) switches on options from the game's own developer list (`unlockall`, `money`, `timeofday` and the rest of 540, named in `src/mc_engine/debug_options_table.inc`) when the game starts. One option per line: `name`, or `name=value` (a bare name means `1`). `#` and `;` start a comment. An unknown name is logged as `[DbgOpt] unknown option`. It needs no unlock and has no menu row.
@@ -173,7 +157,8 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `capture fps <n> [step 1/<n>]`, `capture off` | a take (capture mode, below): the game steps by exactly 1/n a second and every frame is read back; the take ends at `capture off` or the scene's `end` |
 | `cam`, `cut` | the camera (below) |
 | `car <id> spawn\|delete\|profile ...` | cars in free roam and the player's garage car ("Cars in a scene", below) |
-| `hud`, `start` | kept for the HUD and preamble packages of the toolkit; read and linted, not applied yet |
+| `hud off\|on\|<alpha>`, `hud fade <a>..<b> to <x>`, `hud fade over <s> to <x>` | the game's own UI shown at an alpha ("The game's own UI on and off", below); `<x>` is `off`, `on` or an alpha |
+| `start` | kept for the preamble package of the toolkit; read and linted, not applied yet |
 
 The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`, one line for every key as its time comes, a `state` line every 2 s that puts the scene's hour, weather and time scale next to what the game reports, `finished`. Natives are called one or two an update, on the game thread.
 
@@ -239,6 +224,22 @@ at 20 car p1 delete
 **Poses (for the camera).** `src/mc_engine/cinematic/cars.h`: `GetCarPose("p1", &pose)` and `CarMatrixById("p1", matrix)` give the position, the axes and the heading of the player (`"player"`) and of every scene car, read from the car entity's world matrix (`racer+48 -> entity, +28 -> matrix, +16`: right, up, back, position) at the moment of the call, with the last good pose as the fallback; a registry (`car_registry.h`) holds each car's last pose and the update that read it. `racer+0x470`, the race cars' own position copy, holds a fill value outside a race and is not used. `CarMatrixById` has the shape of the camera package's `CarResolver` and is installed as its car source when that package is in the build. The log writes a `[cars] pose <id> (x, y, z) heading h` line every 2 s for each car that has one, and `[cars] <id> placed:` once after the placement with the matrix, `Racer_GetPosition` and what the scene asked for side by side.
 
 The log lines start with `[cars]`: the scene's keys as they come due, every native with its arguments and result (so the last line before a crash names the call), `ready`, `pose`, `placed`, `is deleted`. `cmake --build <dir> --target larecomp_cars_test` builds the checks of the statements, the pose maths, the registry and the whole spawn / delete / garage script against a pretend game (222 checks); they need no game.
+
+## The game's own UI on and off (the trailer toolkit)
+
+For a take without a HUD. `mcla_cin_hud_alpha` (0 to 1, default 1) is how much of the game's own UI the picture shows: the HUD, the minimap and the full map, the phone and its pop-ups, button prompts, gamertags and the 3D world icons. 1 is the game's frame and costs nothing; 0 is the 3D picture alone; in between is a fade. It is a debug-only setting like the others here (live, never saved), with a row on the TOOLS page, HUD ALPHA (the Plume renderer only; 1, 0.75, 0.5, 0.25, 0: a value a scene left shows as the nearest of them). The row writes the cvar, and the picture follows on the next frame.
+
+```powershell
+larecomp.exe --debug_menu --mcla_cin_hud_alpha=0
+```
+
+How it works: the renderer keeps the game's UI as a layer of its own (the one HDR output and frame generation use) and the present shows the 3D picture plus that layer times the alpha. Below 1 the layers run (about 0.4 ms at 3x on a desktop GPU: two copies of the UI target and a clear and a put-back), the present composes them (also in SDR), and frame generation's composed frame and DLSS frame generation's UI hint use the same alpha. At 1 nothing asks for the layers: no draw changes, nothing is copied, and a frame boundary costs a cvar read.
+
+What is never faded: the pause menu, this DEBUG menu, the race pause and the full map's pause view (a frame whose UI target is the pause view's shows its UI whole), and the SDK's overlays (the F3 card, the F4 panel, toasts), which are drawn after the picture. The effect therefore shows once the menu is closed. What it cannot fade: 3D objects (race checkpoints, the race line, the GPS ribbon are scene, not UI), and frames whose UI the renderer cannot keep apart from the picture (loading, movies), which show it whole. The title screen's PRESS prompt is UI over a 3D picture too and fades with the rest (a tour that waits for it needs the alpha at 1 until it has pressed it).
+
+A scene sets it through `mc::cinematic::SetHudAlpha(alpha, fade_seconds)` (`src/mc_engine/cinematic/hud.h`), which writes the cvar, so the row shows it and the last writer wins. `fade_seconds` is on the renderer's wall clock; a runner that steps its own clock (a capture) calls it with 0 on every update. The scene's keys are `at T hud off`, `hud on`, `hud <alpha>`, `hud fade <a>..<b> to <x>` (from scene time a to b, in a straight line, from the alpha it has at a) and `hud fade over <s> to <x>` (`src/mc_engine/cinematic/hud_track.h`); the scene runner applies the track (`hud_runtime.cpp`: it parses the keys when the scene starts, an error names the line and leaves the HUD alone, and calls `SetHudAlpha(alpha, 0)` on every update; `ReleaseHud()` at the end puts the alpha back to what it was before the scene).
+
+Checks without a game: `larecomp_ui_fade_test` (the clamp and the ramp) and `larecomp_hud_track_test` (the key parser and the track), CMake targets that are not built with the rest.
 
 ## Capture mode (a take)
 
