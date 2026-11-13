@@ -119,6 +119,7 @@ inline constexpr uint32_t kVariantVertexShaders = 4;
 inline constexpr uint32_t kFirstPackedVariant = 2;  // 0 and 1 are the main pack's
 inline constexpr uint32_t kVariantHdrScene = 2;    // the tone map continued above white, into a float image
 inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians: taps at the render scale
+inline constexpr uint32_t kVariantGlowSoft = 6;    // the glow sprites' visibility: a share of 24 depth taps, not one compare
 inline constexpr uint32_t kVariantSlots = 8;       // ids 0..7 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack
