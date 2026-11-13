@@ -1490,10 +1490,6 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
 // SETTINGS.
 
-// VSYNC: the Plume renderer's mcla_gpu_vsync (live, at the next present), or the SDK's vsync.
-const char* VsyncCvar() { return mcla_menu::NativeRendererRuns() ? "mcla_gpu_vsync" : "vsync"; }
-constexpr RowDynamics kVsyncDynamics = {.cvar = VsyncCvar};
-
 int FindStringIndex(const std::string& value, const char* const* vals, int count);
 
 // MSAA. NATIVE: OFF, 2X, 4X, 8X in mcla_gpu_msaa, all live (gpu/msaa_level.h; the row says "(APPLYING)"
@@ -1556,9 +1552,10 @@ const ItemDef kVideoItems[] = {
     WithDynamics(Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
                  &mcla_menu::kDisplayModeDynamics),
 #if defined(LARECOMP_HAS_GPU)
-    WithDynamics(Bool("PM_RxVsync", "vsync", "VSYNC: "), &kVsyncDynamics),
-#else
-    Bool("PM_RxVsync", "vsync", "VSYNC: "),
+    // VSYNC is the native renderer's (mcla_gpu_vsync, live at the next present). The Xenia renderer's
+    // vsync only sets the guest's vblank interval and does not stop tearing (its presenter always
+    // presents with tearing allowed), so it is XENIA VSYNC on the debug RENDERING page instead.
+    NativeOnly(Bool("PM_RxVsync", "mcla_gpu_vsync", "VSYNC: ")),
 #endif
     WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
                  &mcla_menu::kResolutionDynamics),

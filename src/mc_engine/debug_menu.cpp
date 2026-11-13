@@ -43,6 +43,7 @@ constexpr const char* kSdkDebugCvars[] = {
     "present_cas_additional_sharpness",
     "present_fsr_sharpness_reduction",
     "graphics_backend",
+    "vsync",  // the Xenia renderer's vsync: XENIA VSYNC on the debug RENDERING page
 };
 
 }  // namespace
