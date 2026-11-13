@@ -1541,13 +1541,13 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 //      GAMMA, FPS LIMIT, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
 //      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, CONTACT SHADOWS, SUN SHAFTS, ROAD
-//      REFLECTIONS: the anti-aliasing, filtering, occlusion, light and reflections that used to sit on
-//      the RENDERER page or came after it);
+//      REFLECTIONS, CAR REFLECTIONS: the anti-aliasing, filtering, occlusion, light and reflections that
+//      used to sit on the RENDERER page or came after it);
 //   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 21 rows (the native renderer on an RTX 50 series card, which has the frame generation
-// multiplier row: 7 here, 3 of the upscaler's, 8 picture rows, 3 of frame generation's); a page over
+// At most 22 rows (the native renderer on an RTX 50 series card, which has the frame generation
+// multiplier row: 7 here, 3 of the upscaler's, 9 picture rows, 3 of frame generation's); a page over
 // kMaxRowsPerMenu (24) is refused whole.
-// CHECK: that a page of 20 or 21 rows scrolls in the pause menu like the 12 and 14 row ones do (the
+// CHECK: that a page of 20 to 22 rows scrolls in the pause menu like the 12 and 14 row ones do (the
 // cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
 // drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
@@ -1769,6 +1769,19 @@ std::string RoadReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabel};
+// Car reflections (mcla_gpu_env_resolution, gpu/side_view_env.cpp, live): how sharp the world the paint,
+// windows and bonnet of the cars reflect is, the game's own 512x256 (GAME), 1024x512 (HIGH) or 1536x768
+// (ULTRA). The same values and the same label rule as the road reflections' row. Width: the label is 17
+// characters and the longest value "AUTO (HIGH)" 11, 28 together, under the page's 40.
+std::string CarReflectionLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::side_views::AutoLabel(mcla::gpu::SideView::kEnv);
+    case 1:  return "GAME";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1781,7 +1794,8 @@ const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "
 
 // DISPLAY, after the upscaler's rows (VideoExtraRows): how the picture is smoothed, filtered and
 // shaded, in the order the owner asked for (2026-11-07): MSAA, POST AA, ANISOTROPIC, AMBIENT
-// OCCLUSION, AO INTENSITY, then the graphics upgrades (CONTACT SHADOWS, SUN SHAFTS, ROAD REFLECTIONS).
+// OCCLUSION, AO INTENSITY, then the graphics upgrades (CONTACT SHADOWS, SUN SHAFTS, ROAD REFLECTIONS, CAR
+// REFLECTIONS).
 // One ANISOTROPIC row per renderer (the same name and place), MSAA on both
 // (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
 // Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "DEFAULT" (7), both
@@ -1815,6 +1829,9 @@ const ItemDef kPictureItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kRoadReflectionDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
+                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
+                            &kCarReflectionDynamics)),
 #endif
 };
 

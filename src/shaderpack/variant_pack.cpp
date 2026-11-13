@@ -28,6 +28,7 @@
 #include "shaderpack/pack_format.h"
 #include "shaderpack/pack_writer.h"
 #include "shaderpack/variants/bloom_gauss.h"
+#include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/hdr_scene.h"
 
 namespace larecomp::shaderpack {
@@ -164,6 +165,10 @@ class VariantStepImpl final : public VariantStep {
     std::vector<StampLine> lines = StepLines();
     for (const VariantDef& def : variants_) AddVariantLines(def, &lines);
     return lines;
+  }
+
+  bool NeedsRpfShaders() const override {
+    return std::any_of(variants_.begin(), variants_.end(), [](const VariantDef& def) { return def.needs_rpf; });
   }
 
   VariantStepResult Build(const VariantStepInput& input) override {
@@ -433,6 +438,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
     left_out->push_back("hdr_scene: " + why);
   }
   variants.push_back(MakeBloomGaussVariant());
+  variants.push_back(MakeEnvMapVariant());
   return variants;
 }
 

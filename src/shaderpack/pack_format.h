@@ -119,6 +119,7 @@ inline constexpr uint32_t kVariantVertexShaders = 4;
 inline constexpr uint32_t kFirstPackedVariant = 2;  // 0 and 1 are the main pack's
 inline constexpr uint32_t kVariantHdrScene = 2;    // the tone map continued above white, into a float image
 inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians: taps at the render scale
+inline constexpr uint32_t kVariantEnvMap = 4;       // the car reflections' environment map: its mip level pass and its 64x32 reduction at the map's scale
 inline constexpr uint32_t kVariantSlots = 8;       // ids 0..7 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

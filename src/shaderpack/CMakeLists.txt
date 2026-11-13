@@ -102,6 +102,7 @@ add_library(larecomp_shaderpack STATIC
     variant_pack.cpp
     variants/hdr_scene.cpp
     variants/bloom_gauss.cpp
+    variants/env_map.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp

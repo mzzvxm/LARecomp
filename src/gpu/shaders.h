@@ -46,7 +46,8 @@
 // renderer can draw with another version of their text, a blob per backend of that version, keyed by the
 // same identity and a variant id: the HDR scene's tone map (kHdrVariant, hdr_tonemap.h: its curve and its
 // encode changed for values above white, with the identity of the vertex shaders it is drawn with) and the
-// bloom's Gaussians at a render scale (kBloomVariant, pipelines.cpp). A pipeline key names one with
+// bloom's Gaussians at a render scale (kBloomVariant, pipelines.cpp) and the environment map's level pass and
+// reduction at the map's scale (kEnvVariant, pipelines.cpp). A pipeline key names one with
 // ps_variant. The pack is not the main one's contract: the SharedConstants block stays 608 bytes and a
 // variant with constants of its own reads them after it (the HDR tone map: constants.h
 // HdrSceneConstants, uploaded only by the draw that uses it). A missing, malformed or foreign file leaves
@@ -98,9 +99,11 @@ class ShaderStore {
   // the ids from kFirstPackedVariant are the variant pack's, up to kVariantSlots - 1.
   static constexpr uint32_t kFirstPackedVariant = larecomp::shaderpack::kFirstPackedVariant;
   static constexpr uint32_t kVariantSlots = larecomp::shaderpack::kVariantSlots;
-  // A pixel shader's HDR scene variant, and the bloom's Gaussians at a render scale.
+  // A pixel shader's HDR scene variant, the bloom's Gaussians at a render scale, and the environment map's
+  // mip level pass and 64x32 reduction at the map's scale.
   static constexpr uint32_t kHdrVariant = larecomp::shaderpack::kVariantHdrScene;
   static constexpr uint32_t kBloomVariant = larecomp::shaderpack::kVariantBloomGauss;
+  static constexpr uint32_t kEnvVariant = larecomp::shaderpack::kVariantEnvMap;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
