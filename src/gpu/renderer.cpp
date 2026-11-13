@@ -248,6 +248,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   if (ok) {
     // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
     ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
+    shafts_.Initialize(device_, passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -263,6 +264,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetOcclusion(&occlusion_);
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
+    scene_.SetSunShafts(&shafts_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -319,6 +321,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ao_.Shutdown();
+    shafts_.Shutdown();
     flicker_probe_.Shutdown();
     hdr_tone_.Shutdown();
     hdr_scene_.Shutdown();
@@ -479,6 +482,7 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ao_.Shutdown();
+  shafts_.Shutdown();
   flicker_probe_.Shutdown();
   hdr_tone_.Shutdown();
   hdr_scene_.Shutdown();
@@ -1617,6 +1621,7 @@ void Renderer::ReportFrameStats() {
                                                                       hdr_tone_.HeldBytes())
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
+                           ", sun shafts " + mib(shafts_.HeldBytes()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())

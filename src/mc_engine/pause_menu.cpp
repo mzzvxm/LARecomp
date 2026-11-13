@@ -52,6 +52,7 @@
 #include "gpu/contact_shadows.h"
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
+#include "gpu/shafts_setting.h"
 #endif
 
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
@@ -1539,8 +1540,8 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 //   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
 //      GAMMA, FPS LIMIT, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
-//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering
-//      and occlusion that used to sit on the RENDERER page);
+//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, SUN SHAFTS: the anti-aliasing,
+//      filtering, occlusion and light that used to sit on the RENDERER page or came after it);
 //   3. frame generation's rows (frame_generation_menu.cpp).
 // At most 18 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
 // kMaxRowsPerMenu (24) is refused whole.
@@ -1721,6 +1722,16 @@ std::string ContactLabel(int i) {
     }
 }
 constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
+// Sun shafts (gpu/shafts.h, live): AUTO picks by the graphics card and the row says what it comes to
+// ("AUTO (HIGH)"); or OFF, LOW (32 steps) or HIGH (64). They show at dawn and dusk only. At most 23
+// characters with its longest value ("SUN SHAFTS: AUTO (HIGH)").
+const char* const kNativeShaftsVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+std::string ShaftsLabel(int i) {
+    if (i == 0) return mcla::gpu::sun_shafts::AutoLabel();
+    return i > 0 && i < 4 ? kNativeShaftsNames[i] : "";
+}
+constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1760,6 +1771,9 @@ const ItemDef kPictureItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
                                 kNativeContactVals, kNativeContactNames, 4),
                             &kContactDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
+                                kNativeShaftsVals, kNativeShaftsNames, 4),
+                            &kShaftsDynamics)),
 #endif
 };
 
@@ -2595,8 +2609,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most
-// 11 ("AUTO (HIGH)").
+// 17, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "AO INTENSITY" 12, "ANISOTROPIC" 11, "SUN SHAFTS" 10,
+// values at most 11 ("AUTO (HIGH)").
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
