@@ -247,7 +247,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
-    ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.

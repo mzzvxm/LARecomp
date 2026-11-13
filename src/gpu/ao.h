@@ -81,11 +81,49 @@
 // fails the plane, depth or clamp test and get the wide blur. The pause and map view moves nothing by
 // itself: its vehicle pixels take the camera's motion like the world's.
 //
+// CONTACT SHADOWS (hlsl/ao_contact_ps.hlsl, mcla_gpu_contact_shadows): the game has no shadow for the
+// small things of the world (its sun shadows are four cascades of 1 to 25 cm texels, 4-tap filtered,
+// and at 6 h, 18 h and in rain none at all). They are found here from the same depth chain, at the
+// same trigger, with the same camera and light constants as the occlusion, and applied in the same
+// apply pass (hlsl/ao_apply_ps.hlsl), so they work with the occlusion off, and the occlusion with
+// them off. A ray toward the sun is marched in view space over the linear depth over a short length
+// (0.6 m, longer when the sun is low: 0.7 / tan(elevation), 1 to 3 times; 8 steps at low, 16 at
+// high), the result is cleaned by the occlusion's own bilateral pass twice (it has no history of its
+// own: the noise rotates every frame and the temporal upscaler, when it runs, averages it), and the
+// apply pass darkens only the SUN's share of the light by it:
+//   sun_share = Ls * N.L * vis / (La + Ls * N.L * vis)
+//   factor    = 1 - sun_share * strength * (1 - contact) * distance_fade
+// where vis is the game's own sun shadow mask (the 1280x720 k_8_8_8_8 resolve product at 06ACD000,
+// the collector's output which the lit shaders read, stored as half the visibility: x2) in the
+// frames that have one (8 h to 17 h by day), so nothing the game already shadows is darkened twice,
+// and 1 where the game has none (6 h, 18 h and rain: the contact shadows are then the only shadow of
+// the sun there). The strength has two gates, both from the frame's own constants: the sun's
+// elevation (from VS c16: none at 3 degrees and below, all from 12: the night's light points up
+// and 19 h is at 2.5 degrees with a grey sun) and the wetness (VS c43.x, gReflectionParams.x: 0.095
+// dry, 1.17 in rain: the overcast key light has no shadows to draw). A gate of 0 records nothing:
+// the frame is the one without the setting.
+// With the setting on and the occlusion off the passes are the depth pass, the contact march, two
+// bilateral passes and the apply: the coarser depth levels, the visibility and the history are not
+// made. The pause menu's and the map's world gets them as the occlusion does.
+// CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
+// max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
+// lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
+// the road shaders: mcla_gpu_contact_shadows_view 3 must be white in the sun and black in a car's
+// cascade shadow, else change mcla_gpu_contact_shadows_mask_gain; (2) that the mask product is still
+// active and in the shader-read layout at the trigger (the log says once if not); (3) VS c43.x as the
+// frame's wetness (0.095 dry, 1.17 in rain: census 6A.2 item 4) on the draws before the trigger;
+// (4) in the pause/map view (no census of whether the collector runs there: the sun is then not
+// shadowed by the mask and the contact shadows go on everything lit); (5) shimmer in motion without
+// an upscaler (no history of their own: if visible, run ao_temporal_ps over a second history).
+//
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
 //
-// Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row) and
+// Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row),
+// mcla_gpu_contact_shadows (auto, off, low, high; live; the CONTACT SHADOWS row; auto is off on an
+// integrated GPU, low on a discrete one with under 6 GiB, high on the rest) with the tuning cvars
+// mcla_gpu_contact_shadows_length / _strength / _thickness / _mask_gain / _view, and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
@@ -173,14 +211,17 @@ class AmbientOcclusion {
   // Makes the layout and the shaders and lists the pipelines with the host precache (before the
   // Renderer starts it). Never fails the renderer: without them there is no occlusion (logged).
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
-                  EdramTargets& edram, PassTiming& pass_timing);
+                  EdramTargets& edram, PassTiming& pass_timing, ResolveCache& resolve);
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
-  // True while the draw hooks have anything to do (the occlusion is on, or the census).
-  bool wants_draws() const { return mode_ != Mode::kOff || census_every_ != 0; }
+  // True while the draw hooks have anything to do (the occlusion or the contact shadows are on, or
+  // the census).
+  bool wants_draws() const {
+    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0;
+  }
 
   // A prepared draw into the main view's identities (the play view's or the pause/map view's), with
   // the draw's own banks, before the draw is recorded.
@@ -230,6 +271,7 @@ class AmbientOcclusion {
     kPassApplyMs,
     kPassTemporal,
     kPassTemporalMs,
+    kPassContact,
     kPassCount,
   };
 
@@ -245,7 +287,8 @@ class AmbientOcclusion {
     kVTemporalMs = 6,
     kVVehicleTable = 7,  // a row of the vehicle table (the temporal system's shader)
     kVApplyBase = 8,     // + 4 * debug + log2(samples)
-    kVariantCount = kVApplyBase + 8,
+    kVContact = kVApplyBase + 8,
+    kVariantCount = kVContact + 1,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
   static std::string VariantName(uint32_t variant);
@@ -304,19 +347,49 @@ class AmbientOcclusion {
   std::string TriggerText() const;
 
   // --- the passes (ao.cpp) ---
+  // What the contact shadows do in a frame (PlanContact): off when the setting is, when a gate says 0,
+  // or when the frame has no light constants.
+  struct ContactPlan {
+    Mode mode = Mode::kOff;
+    float strength = 0.0f;         // the setting's, times the elevation and the wetness gates
+    float length = 0.6f;           // the ray's length, world units
+    float thickness = 0.3f;        // how far in front of a step a surface may be and still hide it
+    uint32_t steps = 8;
+    float fade_start = 40.0f;      // the distance fade, world units
+    float fade_end = 80.0f;
+    float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
+  };
   struct Plan {
-    Mode mode = Mode::kHigh;
+    Mode mode = Mode::kHigh;       // the occlusion's own quality (slices, steps)
     bool probe = false;            // read the coarsest level back for the census
     bool apply = true;             // the apply pass runs (false: the census's probe only)
+    bool occlusion = true;         // the occlusion's term is computed (the AO setting is not off)
+    bool low = false;              // the passes run at half the picture's size
     bool upscaler = false;
     uint32_t render[2] = {};       // the main view, host pixels
-    uint32_t ao[2] = {};           // the AO's size
+    uint32_t ao[2] = {};           // the passes' size (the depth chain's level 0)
     uint32_t level[2][2] = {};     // the coarser levels' sizes
-    uint32_t view = 0;
+    uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
+    ContactPlan contact;
   };
   // Records the passes for the trigger `summary` (whose source target is the depth). True when
   // anything was recorded.
   bool Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list, const Plan& plan);
+  // --- the contact shadows (hlsl/ao_contact_ps.hlsl) ---
+  // Decides what they do in this frame: the setting, the sun's elevation and the wetness gates from
+  // the light constants and the wetness the frame's draws carried before the trigger (the same
+  // light the occlusion uses), the ray's length, the steps, the fades. Logs a change of state once.
+  void PlanContact(Plan* plan);
+  // The ray march and its two bilateral passes into raw_ (denoised_ is the scratch), after the
+  // occlusion's own passes have finished with both. Returns the slot of the result, or kNoSlot.
+  uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base);
+  // A resolve of the frame into the game's shadow mask page: remembers its texture key.
+  void NoteMaskResolve(const ResolveRecord& record);
+  // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
+  // still what the page holds; kNoSlot otherwise (the frame has no mask: visibility 1).
+  uint32_t FindMaskSlot();
+  // The wetness the frame's main view draws carried (VS c43.x): the commonest value, to 0.1.
+  bool PickWet(float* value) const;
   bool EnsureImages(const Plan& plan);
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
@@ -391,6 +464,7 @@ class AmbientOcclusion {
 
   // Settings, read at the frame's start.
   Mode mode_ = Mode::kOff;
+  Mode contact_mode_ = Mode::kOff;    // mcla_gpu_contact_shadows, `auto` resolved for this GPU
   uint32_t census_every_ = 0;
   uint32_t off_frames_ = 0;
 
@@ -469,6 +543,37 @@ class AmbientOcclusion {
   uint32_t vs_compared_[2] = {};      // frames compared (play, pause/map)
   uint32_t vs_equal_[2] = {};         // ... of them equal
 
+  // The contact shadows. The wetness the colour draws before the trigger carried in VS c43.x (the
+  // game's gReflectionParams.x), counted in bins of 0.1 up to 4: the commonest one is the frame's.
+  static constexpr uint32_t kWetBins = 41;
+  std::array<uint16_t, kWetBins> wet_bins_{};
+  uint32_t wet_draws_ = 0;
+  // The game's sun shadow mask: the texture key of the last resolve into its page and the frame it
+  // came in (a frame without such a resolve has no mask: the page then holds the last frame's depth
+  // copy, which must never be read as one).
+  TextureKey mask_key_;
+  uint64_t mask_frame_ = ~uint64_t(0);
+  // What PlanContact found, for the census and the log: the state of the last trigger.
+  enum class ContactState : uint8_t {
+    kOff,       // the setting is off
+    kNoLight,   // no usable light constants before the trigger
+    kGated,     // the sun's elevation or the wetness gate is 0
+    kActive,
+  };
+  ContactState contact_state_ = ContactState::kOff;
+  uint32_t contact_state_logged_ = ~0u;
+  double contact_elevation_ = 0.0;    // degrees
+  float contact_wet_ = 0.0f;
+  float contact_gate_sun_ = 0.0f;
+  float contact_gate_wet_ = 0.0f;
+  float contact_strength_ = 0.0f;
+  bool contact_mask_ = false;         // the last contact frame had the mask
+  uint64_t contact_runs_ = 0;
+  uint64_t contact_mask_frames_ = 0;
+  uint64_t contact_no_mask_frames_ = 0;
+  uint32_t last_contact_logged_ = ~0u;
+  bool mask_why_logged_ = false;
+
   // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
   // vehicle_motion_ is the last anchor's own motion of them (valid bits; none after a frame that gave
   // no camera or a pause/map frame), made in frame vehicle_motion_frame_.
@@ -517,6 +622,7 @@ class AmbientOcclusion {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
