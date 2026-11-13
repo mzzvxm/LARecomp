@@ -139,6 +139,9 @@ class ResolveCache {
     // no enlarged one. The fetches of these views are UV lookups, which need nothing else; the
     // sampler is the guest's.
     bool own_scale = false;
+    // The log has said the size of this product as a side view's (once for each time it is made: a
+    // product made again at another scale is a new one).
+    bool own_scale_logged = false;
   };
 
   ResolveCache() = default;

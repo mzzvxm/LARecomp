@@ -37,8 +37,9 @@
 #include "shaderpack/rpf_shaders.h"
 #include "shaderpack/xex_image.h"
 
-// The variant step: the tool builds the variant pack too (the bloom's Gaussians always, the HDR scene's
-// tone map when the build has the HDR curve embedded); --no-variants leaves it out.
+// The variant step: the tool builds the variant pack too (the bloom's Gaussians, the environment map's and
+// the sun shadow collector's soft lookup always, the HDR scene's tone map when the build has the HDR curve embedded);
+// --no-variants leaves it out.
 #include "shaderpack/variant_pack.h"
 
 namespace sp = larecomp::shaderpack;

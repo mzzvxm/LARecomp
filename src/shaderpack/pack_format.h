@@ -20,13 +20,16 @@
 //
 // Variant pack, mcla_shaders_variants.v2.pack (the optional second pack: the pixel shaders the
 // renderer can draw with another version of the game's own text -- the HDR scene's tone map, the
-// bloom's Gaussians at a render scale; src/shaderpack/variant_pack.h; read by src/gpu/shaders.cpp):
+// bloom's Gaussians at a render scale, the car reflections' environment map at its scale, the sun shadow
+// collector's soft lookup; src/shaderpack/variant_pack.h; read by src/gpu/shaders.cpp):
 //   header (32 bytes) : magic "MSHV" | version u32 | entry count u32 | formats u32 | contract u32 |
 //                       main pack version u32 | 8 reserved
 //   entries (80 bytes): pixel shader key u64 | 4 vertex shader keys u64 (0 = none) | variant u32 |
 //                       reserved u32 | DXIL blob record | SPIR-V blob record
 //                       sorted by (variant, pixel shader key), strictly increasing
 //   blob record (16)  : offset u32 | size u32 | fnv u64 (FNV-1a 64 of the blob), as in the main pack
+//                       Entries whose blobs are byte for byte the same (the shadow collector's shaders
+//                       share one text per body shape) point at one copy: offsets need not be increasing.
 // Version 1 (mcla_shaders_hdr.v1.pack) held the HDR scene's tone map only and had `flags u32` where
 // version 2 has `variant u32`; the old file is not read.
 // ===========================================================================
@@ -120,6 +123,7 @@ inline constexpr uint32_t kFirstPackedVariant = 2;  // 0 and 1 are the main pack
 inline constexpr uint32_t kVariantHdrScene = 2;    // the tone map continued above white, into a float image
 inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians: taps at the render scale
 inline constexpr uint32_t kVariantEnvMap = 4;       // the car reflections' environment map: its mip level pass and its 64x32 reduction at the map's scale
+inline constexpr uint32_t kVariantShadowFilter = 5;  // the sun shadow collector's lookup: soft Vogel taps (16 bytes of constants)
 inline constexpr uint32_t kVariantSlots = 8;       // ids 0..7 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

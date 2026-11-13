@@ -72,6 +72,7 @@
 #include "thread_load.h"
 #include "records.h"
 #include "shaders.h"
+#include "shadow_filter.h"
 #include "topology.h"
 #include "upload.h"
 #include "upscaler_masks.h"
@@ -328,6 +329,10 @@ class Scene {
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
+  // A draw of the shadow filter variant (ShaderStore::kShadowFilterVariant) reads 16 bytes after the shared
+  // constants (shadow_filter.h): the draw's own copy of them and the block, in one span that replaces
+  // `shared_constants`; the last one is kept for the next draw when neither changed.
+  bool UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told).
@@ -400,6 +405,9 @@ class Scene {
   std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
+  SharedConstants last_shadow_shared_{};
+  shadow_filter::ShadowFilterConstants last_shadow_block_{};
+  UploadSpan last_shadow_span_;
   uint64_t draws_since_flush_ = 0;
   // What the open list has bound (ResetListState forgets it).
   struct ListState {

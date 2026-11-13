@@ -28,6 +28,7 @@
 #include "edram.h"
 #include "format.h"
 #include "layout.h"
+#include "shadow_filter.h"
 #include "side_views.h"
 #include "temporal_backend.h"
 
@@ -97,10 +98,12 @@ namespace {
 // The variant of a pixel shader the settings ask for, from the variants the pack has for it (`ps.variants`,
 // not 0), or 0 for the game's own shader. The HDR scene's tone map (kHdrVariant) is not chosen here: the
 // HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
-// mcla_gpu_bloom_scale, and the environment map's level pass and reduction (kEnvVariant) are used while the
-// car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h); both are read at
-// each draw so a change of the setting shows at the next frame. At `game` the game's own shaders draw: the
-// variant is the same arithmetic at the game's size, but that is not asked.
+// mcla_gpu_bloom_scale, the environment map's level pass and reduction (kEnvVariant), which are used while the
+// car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), and the sun shadow
+// collector's lookup mcla_gpu_shadow_filter (soft, or pcss, which is soft for now; auto resolved for the GPU
+// class: shadow_filter.h); each is read at each draw so a change of the setting shows at the next frame. At
+// `game` the game's own shaders draw and the picture stays the game's (the environment map's variant is the same
+// arithmetic at the game's size, but that is not asked). A shader has one of them at most.
 uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 && REXCVAR_GET(mcla_gpu_bloom_scale)) {
     return ShaderStore::kBloomVariant;
@@ -108,6 +111,9 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   if ((ps.variants & (1u << ShaderStore::kEnvVariant)) != 0 &&
       side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
     return ShaderStore::kEnvVariant;
+  }
+  if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::SoftSelected()) {
+    return ShaderStore::kShadowFilterVariant;
   }
   return 0;
 }

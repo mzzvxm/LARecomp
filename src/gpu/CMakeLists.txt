@@ -63,6 +63,7 @@ add_library(larecomp_gpu OBJECT
     samplers.cpp
     scene.cpp
     shaders.cpp
+    shadow_filter.cpp
     shafts.cpp
     side_view_env.cpp
     side_view_reflection.cpp
@@ -93,6 +94,9 @@ add_library(larecomp_gpu OBJECT
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
+#   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
+add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
