@@ -24,7 +24,12 @@ enum ActionId {
     kActionPlayCutscene = 1, kActionQuitYes, kActionQuitNo, kActionDumpTextures,
     kActionReloadTextures, kActionRestart,
     // The "restart now?" prompt shown when a menu is left with a setting that needs one.
-    kActionRestartLater, kActionRestartNow
+    kActionRestartLater, kActionRestartNow,
+    // The hidden DEBUG menu (debug_menu_pages.cpp runs them): list the debug settings that are not at
+    // their default in the log, put their launch arguments on the clipboard, put them back to their
+    // default, open the settings panel (F4) and the telemetry card (F3).
+    kActionDebugShowChanged, kActionDebugCopyArgs, kActionDebugReset,
+    kActionDebugOpenSettings, kActionDebugTelemetry
 };
 
 // Which renderer a row belongs to. The renderer is a restart-only choice, so
