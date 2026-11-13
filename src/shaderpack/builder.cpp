@@ -517,8 +517,12 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
   bool existing_ok = !request.force && check.inputs_match;
   // Nothing of the main pack needs redoing.
   bool main_stays = existing_ok && check.formats_ok;
-  // The RPF is read unless the main pack stays and its game files are known to be the same.
-  const bool read_rpf = !(main_stays && !check.content_check_needed);
+  // The RPF is read unless the main pack stays and its game files are known to be the same, and also when
+  // the variant pack is to be rebuilt and a variant is made of a shader that lives in the RPF (the sun shadow
+  // collector's): a variant-only rebuild would not find it among the image's.
+  const bool variants_stale = request.variant_step != nullptr && !check.variants_ok;
+  const bool variants_need_rpf = variants_stale && request.variant_step->NeedsRpfShaders();
+  const bool read_rpf = !(main_stays && !check.content_check_needed) || variants_need_rpf;
 
   // ---- 1. the game files
   const Clock::time_point read_start = Clock::now();
@@ -766,7 +770,7 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
   // VARIANT STEP (written separately: variant_pack.{h,cpp}; see VariantStep in builder.h).
   // Called once, here: after the main pack is in place and its stamp lines are known, before the
   // stamp is written. `set` holds the containers read above (only the image's when the main pack
-  // stayed: a variant of a shader that lives in the RPF would have to make `read_rpf` above true),
+  // stayed and no variant needs the RPF's shaders: VariantStep::NeedsRpfShaders makes `read_rpf` above true),
   // `runtime` the loaded compiler. The lines it returns go into the stamp with the three the builder
   // owns (kStampVariantsFormats, kStampVariantsMainPackXxh3, kStampVariantsPackSize). A step that
   // fails leaves the main pack as it is and the stamp without variants_* lines.

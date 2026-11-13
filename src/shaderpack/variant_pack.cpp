@@ -12,11 +12,13 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -94,6 +96,9 @@ bool LayOutVariantPack(std::span<const PackEntry> entries, uint32_t formats, std
 
   const uint64_t blob_base = uint64_t(kVariantPackHeaderBytes) + uint64_t(entries.size()) * kVariantPackEntryBytes;
   std::vector<uint8_t> blobs;
+  // A blob that is byte for byte one already laid out is not written twice: the entries point at one copy
+  // (the shadow collector's shaders share a text per body shape, so 147 entries hold four pairs of blobs).
+  std::map<std::pair<uint64_t, size_t>, std::vector<std::pair<uint64_t, size_t>>> laid_out;  // (fnv, size) -> (at, size)
   for (const PackEntry& entry : entries) {
     const size_t entry_start = out->size();
     Put64(*out, entry.ps_key);
@@ -107,15 +112,29 @@ bool LayOutVariantPack(std::span<const PackEntry> entries, uint32_t formats, std
         Put64(*out, 0);
         continue;
       }
-      const uint64_t offset = blob_base + blobs.size();
-      if (offset + blob->size() > kMaxPackBytes) {
-        *error = "the variant pack would pass 4 GiB (blob offsets are 32 bit)";
-        return false;
+      const uint64_t fnv = mcla::native_gfx::Fnv1a64(blob->data(), blob->size());
+      uint64_t offset = 0;
+      bool shared = false;
+      std::vector<std::pair<uint64_t, size_t>>& same = laid_out[{fnv, blob->size()}];
+      for (const auto& placed : same) {
+        if (std::equal(blob->begin(), blob->end(), blobs.begin() + std::ptrdiff_t(placed.first))) {
+          offset = blob_base + placed.first;
+          shared = true;
+          break;
+        }
+      }
+      if (!shared) {
+        offset = blob_base + blobs.size();
+        if (offset + blob->size() > kMaxPackBytes) {
+          *error = "the variant pack would pass 4 GiB (blob offsets are 32 bit)";
+          return false;
+        }
+        same.emplace_back(blobs.size(), blob->size());
+        blobs.insert(blobs.end(), blob->begin(), blob->end());
       }
       Put32(*out, uint32_t(offset));
       Put32(*out, uint32_t(blob->size()));
-      Put64(*out, mcla::native_gfx::Fnv1a64(blob->data(), blob->size()));
-      blobs.insert(blobs.end(), blob->begin(), blob->end());
+      Put64(*out, fnv);
     }
     if (out->size() - entry_start != kVariantPackEntryBytes) {
       *error = "internal error: a variant pack entry is not 80 bytes";
@@ -166,6 +185,10 @@ class VariantStepImpl final : public VariantStep {
     return lines;
   }
 
+  bool NeedsRpfShaders() const override {
+    return std::any_of(variants_.begin(), variants_.end(), [](const VariantDef& def) { return def.needs_rpf; });
+  }
+
   VariantStepResult Build(const VariantStepInput& input) override {
     VariantStepResult result;
     try {
@@ -193,17 +216,47 @@ class VariantStepImpl final : public VariantStep {
     result->stamp_lines.clear();
   }
 
+  // The pixel shaders of a variant: the ones it names by identity (found by name when the game is not the
+  // retail one), then every one whose name ends with one of its suffixes, in key order (the container set
+  // is sorted by key), each once. False with *error when a named shader is not there.
+  struct Target {
+    VariantShader shader;
+    const ShaderSource* source = nullptr;
+  };
+  static bool ListTargets(const ContainerSet& set, const VariantDef& def, std::vector<Target>* targets,
+                          std::string* error) {
+    targets->clear();
+    for (const VariantShader& named : def.pixel_shaders) {
+      const ShaderSource* pixel = ResolveShader(set, named, ShaderStage::kPixel, error);
+      if (!pixel) return false;
+      targets->push_back({named, pixel});
+    }
+    for (const std::string_view suffix : def.pixel_name_suffixes) {
+      for (const ShaderSource& shader : set.shaders) {
+        if (shader.stage != ShaderStage::kPixel || !std::string_view(shader.name).ends_with(suffix)) continue;
+        const bool have = std::any_of(targets->begin(), targets->end(),
+                                      [&](const Target& target) { return target.source->key == shader.key; });
+        if (!have) targets->push_back({VariantShader{shader.name, shader.key}, &shader});
+      }
+    }
+    if (targets->empty()) {
+      *error = "no pixel shader of the game is one it names";
+      return false;
+    }
+    return true;
+  }
+
   // One variant: its vertex shaders, then each of its pixel shaders translated, edited, compiled for the
   // formats asked and checked. False with *error (the first thing that went wrong) and nothing of it in
-  // *entries.
+  // *entries; *note is a few words for the summary line (the compiles, the shaders left out).
   bool BuildVariant(const VariantStepInput& input, DxcWorker& worker, const VariantDef& def, uint32_t formats,
-                    std::vector<PackEntry>* entries, std::string* error) const {
+                    std::vector<PackEntry>* entries, std::string* note, std::string* error) const {
     ProgressSink& sink = *input.sink;
     if (!def.transform) {
       *error = "it has no transform";
       return false;
     }
-    if (def.pixel_shaders.empty()) {
+    if (def.pixel_shaders.empty() && def.pixel_name_suffixes.empty()) {
       *error = "it names no pixel shader";
       return false;
     }
@@ -229,10 +282,18 @@ class VariantStepImpl final : public VariantStep {
 
     // 2. Each pixel shader: the translator's own text, the edits, the blobs (spec variant 0: no alpha test,
     // the formats of the main pack, the same dxc arguments as every other pixel shader of the pack, dxc.h).
+    // Shaders whose edited text is the same are compiled once (the blobs depend on the text alone).
+    std::vector<Target> targets;
+    if (!ListTargets(*input.containers, def, &targets, error)) return false;
+    struct Compiled {
+      std::vector<uint8_t> dxil;
+      std::vector<uint8_t> spirv;
+    };
+    std::unordered_map<std::string, Compiled> compiled;  // by the variant's HLSL
+    std::map<std::string, size_t> skipped;               // why a shader was left out -> how many
     std::vector<PackEntry> made;
-    for (const VariantShader& target : def.pixel_shaders) {
-      const ShaderSource* pixel = ResolveShader(*input.containers, target, ShaderStage::kPixel, error);
-      if (!pixel) return false;
+    for (const Target& target : targets) {
+      const ShaderSource* pixel = target.source;
       TranslatedShader translated;
       if (!TranslateContainer(pixel->container, &translated, error)) {
         *error = pixel->name + ": " + *error;
@@ -242,7 +303,12 @@ class VariantStepImpl final : public VariantStep {
         *error = pixel->name + " is not a pixel shader";
         return false;
       }
-      const VariantTransformResult variant = def.transform(target, translated.hlsl);
+      const VariantTransformResult variant = def.transform(target.shader, translated.hlsl);
+      if (variant.skip) {
+        ++skipped[variant.error];
+        sink.Step(pixel->name);
+        continue;
+      }
       if (!variant.ok) {
         *error = pixel->name + ": " + variant.error;
         return false;
@@ -256,52 +322,68 @@ class VariantStepImpl final : public VariantStep {
       entry.variant = def.id;
       entry.ps_key = pixel->key;
       entry.vs_keys = vs_keys;
-      const std::string label = std::format("{} [{}] ({} variant)", pixel->name, Hex64(pixel->key), def.name);
-      CompileRequest request;
-      request.hlsl = variant.hlsl;
-      request.stage = ShaderStage::kPixel;
-      request.spec_constants = 0;
-      request.name = label;
-      DxcStatus status;
-      if ((formats & kDxil) != 0) {
-        status = worker.CompileDxil(request, &entry.dxil);
-        if (!status.ok()) {
-          *error = status.message;
+      auto found = compiled.find(variant.hlsl);
+      if (found == compiled.end()) {
+        Compiled blobs;
+        const std::string label = std::format("{} [{}] ({} variant)", pixel->name, Hex64(pixel->key), def.name);
+        CompileRequest request;
+        request.hlsl = variant.hlsl;
+        request.stage = ShaderStage::kPixel;
+        request.spec_constants = 0;
+        request.name = label;
+        DxcStatus status;
+        if ((formats & kDxil) != 0) {
+          status = worker.CompileDxil(request, &blobs.dxil);
+          if (!status.ok()) {
+            *error = status.message;
+            return false;
+          }
+        }
+        if (sink.Cancelled()) {
+          *error = "The shader build was cancelled.";
           return false;
         }
-      }
-      if (sink.Cancelled()) {
-        *error = "The shader build was cancelled.";
-        return false;
-      }
-      if ((formats & kSpirv) != 0) {
-        status = worker.CompileSpirv(request, &entry.spirv);
-        if (!status.ok()) {
-          *error = status.message;
-          return false;
+        if ((formats & kSpirv) != 0) {
+          status = worker.CompileSpirv(request, &blobs.spirv);
+          if (!status.ok()) {
+            *error = status.message;
+            return false;
+          }
         }
-      }
 
-      // 3. What the runtime relies on, read back from the blobs: the colour output is there, and no
-      // coverage output, sample mask or specialization constant (this is the draw without alpha to coverage).
-      if (!entry.dxil.empty() && !BytesContain(entry.dxil, "SV_Target")) {
-        *error = label + ": the DXIL has no SV_Target";
-        return false;
+        // 3. What the runtime relies on, read back from the blobs: the colour output is there, and no
+        // coverage output, sample mask or specialization constant (this is the draw without alpha to
+        // coverage). Once per text: the same text gives the same blobs.
+        if (!blobs.dxil.empty() && !BytesContain(blobs.dxil, "SV_Target")) {
+          *error = label + ": the DXIL has no SV_Target";
+          return false;
+        }
+        Problems problems;
+        BlobContractInput blob;
+        blob.name = label;
+        blob.stage = ShaderStage::kPixel;
+        blob.variant = 0;
+        blob.writes_oc0 = false;
+        blob.dxil = blobs.dxil;
+        blob.spirv = blobs.spirv;
+        if (!CheckBlobContract(blob, &problems)) {
+          *error = JoinProblems(problems);
+          return false;
+        }
+        found = compiled.emplace(variant.hlsl, std::move(blobs)).first;
       }
-      Problems problems;
-      BlobContractInput blob;
-      blob.name = label;
-      blob.stage = ShaderStage::kPixel;
-      blob.variant = 0;
-      blob.writes_oc0 = false;
-      blob.dxil = entry.dxil;
-      blob.spirv = entry.spirv;
-      if (!CheckBlobContract(blob, &problems)) {
-        *error = JoinProblems(problems);
-        return false;
-      }
+      entry.dxil = found->second.dxil;
+      entry.spirv = found->second.spirv;
       sink.Step(pixel->name);
       made.push_back(std::move(entry));
+    }
+    if (made.empty()) {
+      *error = std::format("none of its {} pixel shaders is one its edits are for", targets.size());
+      return false;
+    }
+    if (!skipped.empty() || compiled.size() != made.size()) {
+      *note = std::format("{} compile{}", compiled.size(), compiled.size() == 1 ? "" : "s");
+      for (const auto& [why, count] : skipped) *note += std::format("; {} left out: {}", count, why);
     }
     for (PackEntry& entry : made) entries->push_back(std::move(entry));
     return true;
@@ -331,7 +413,12 @@ class VariantStepImpl final : public VariantStep {
     if (variants_.empty()) return fail("this build has no shader variants");
     ProgressSink& sink = *input.sink;
     size_t shader_count = 0;
-    for (const VariantDef& def : variants_) shader_count += def.pixel_shaders.size();
+    for (const VariantDef& def : variants_) {
+      std::vector<Target> targets;
+      std::string ignored;
+      shader_count += ListTargets(*input.containers, def, &targets, &ignored) ? targets.size()
+                                                                              : def.pixel_shaders.size();
+    }
     sink.BeginPhase("Preparing the shader variants", int(shader_count));
 
     DxcStatus status;
@@ -346,8 +433,9 @@ class VariantStepImpl final : public VariantStep {
     std::string left_out_text;
     for (const VariantDef& def : variants_) {
       std::string error;
+      std::string note;
       std::vector<PackEntry> made;
-      if (BuildVariant(input, *worker, def, formats, &made, &error)) {
+      if (BuildVariant(input, *worker, def, formats, &made, &note, &error)) {
         AddVariantLines(def, &variant_lines);
         std::string keys;
         for (const PackEntry& entry : made) {
@@ -365,7 +453,8 @@ class VariantStepImpl final : public VariantStep {
           variant_lines.push_back({StampKey(def, "vs_keys"), vertex_keys});  // informational
         }
         if (!built_text.empty()) built_text += ", ";
-        built_text += std::format("{} ({} shader{})", def.name, made.size(), made.size() == 1 ? "" : "s");
+        built_text += std::format("{} ({} shader{}{}{})", def.name, made.size(), made.size() == 1 ? "" : "s",
+                                  note.empty() ? "" : "; ", note);
         for (PackEntry& entry : made) entries.push_back(std::move(entry));
       } else {
         if (sink.Cancelled()) return fail("The shader build was cancelled.");

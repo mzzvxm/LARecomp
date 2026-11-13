@@ -27,6 +27,8 @@
 //                       reserved u32 | DXIL blob record | SPIR-V blob record
 //                       sorted by (variant, pixel shader key), strictly increasing
 //   blob record (16)  : offset u32 | size u32 | fnv u64 (FNV-1a 64 of the blob), as in the main pack
+//                       Entries whose blobs are byte for byte the same (the shadow collector's shaders
+//                       share one text per body shape) point at one copy: offsets need not be increasing.
 // Version 1 (mcla_shaders_hdr.v1.pack) held the HDR scene's tone map only and had `flags u32` where
 // version 2 has `variant u32`; the old file is not read.
 // ===========================================================================
