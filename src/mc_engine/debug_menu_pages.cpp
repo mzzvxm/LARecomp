@@ -225,6 +225,10 @@ const ItemDef kDebugToolsItems[] = {
 #endif
     // The game's own TestMovie button on the pause screen (pause_menu.cpp Hook_EnablePMTeste).
     Bool("PM_RxDbgTestMovie", "show_test_movie", "TEST MOVIE BUTTON: "),
+    // The trailer toolkit's free camera and flight recorder (cinematic/freecam.h): the pad flies the camera and the game gets no pad input
+    // but Start, so close this menu to fly; Back + A on the pad records too. The file name is mcla_freecam_out.
+    Bool("PM_RxDbgFlyCam",    "mcla_freecam",        "TRAILER FREE CAMERA: "),
+    Bool("PM_RxDbgFlyRec",    "mcla_freecam_record", "RECORD FLIGHT: "),
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),

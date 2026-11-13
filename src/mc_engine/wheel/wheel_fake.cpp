@@ -61,6 +61,7 @@
 #include <windows.h>
 #endif
 
+#include "../cinematic/freecam_runtime.h"
 #include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
@@ -277,6 +278,8 @@ extern "C" REX_FUNC(rex_sub_8275CB70) {
 extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t user = ctx.r3.u32;
     const uint32_t state = ctx.r4.u32;
+    // When this function ends (the SDK's state, the dead zones and any test pad done) a flying free camera takes the pad and clears the game's copy.
+    mc::cinematic::FreecamPadScope freecam_pad(base, user, state);
     __imp__rex_sub_8275CB78(ctx, base);
     const FakeMode mode = CurrentMode();
     if (!IsWheelUser(user) || state == 0 ||
