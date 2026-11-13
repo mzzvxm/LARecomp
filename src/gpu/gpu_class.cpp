@@ -16,7 +16,8 @@
 REXCVAR_DEFINE_STRING(
     mcla_gpu_class, "auto", "MCLA/GPU",
     "Diagnostic: forces the GPU class the graphics upgrades' auto values are chosen from (low: "
-    "integrated GPUs and handhelds, mid: discrete with under 6 GiB of video memory, high: the rest). "
+    "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory, high: the "
+    "rest). "
     "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...'. Only "
     "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
     "detail, contact shadows, sun shafts, dawn shadows, bounce light, cars in road reflections); "
@@ -125,6 +126,10 @@ void LogClass() {
 
 void Initialize(const plume::RenderDeviceDescription& description,
                 const plume::RenderDeviceCapabilities& caps) {
+  // CHECK: read from Plume's code, not yet seen on the test PC's adapters: D3D12 never fills
+  // description.type, so an integrated GPU is known there only by caps.uma (DXGI's UMA flag); Vulkan
+  // sets both (uma needs the integrated type and a host-visible device-local memory type). The log
+  // line of a run on --adapter 1 (the 2-CU iGPU) says which one decided.
   AdapterFacts facts;
   facts.uma = caps.uma;
   facts.integrated = description.type == plume::RenderDeviceType::INTEGRATED;
