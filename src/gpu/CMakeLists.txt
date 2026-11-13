@@ -65,6 +65,7 @@ add_library(larecomp_gpu OBJECT
     shaders.cpp
     stream.cpp
     swap_chain.cpp
+    sync_builds.cpp
     temporal.cpp
     temporal_backend.cpp
     temporal_camera.cpp
@@ -85,6 +86,9 @@ add_library(larecomp_gpu OBJECT
     vram_budget.cpp
     watch.cpp
 )
+# The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
+add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
