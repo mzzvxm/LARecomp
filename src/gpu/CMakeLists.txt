@@ -64,6 +64,10 @@ add_library(larecomp_gpu OBJECT
     scene.cpp
     shaders.cpp
     shafts.cpp
+    side_view_env.cpp
+    side_view_reflection.cpp
+    side_view_shadow.cpp
+    side_views.cpp
     stream.cpp
     swap_chain.cpp
     temporal.cpp

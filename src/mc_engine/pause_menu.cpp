@@ -53,6 +53,7 @@
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
 #include "gpu/shafts_setting.h"
+#include "gpu/side_views.h"
 #endif
 
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
@@ -1732,6 +1733,22 @@ std::string ShaftsLabel(int i) {
     return i > 0 && i < 4 ? kNativeShaftsNames[i] : "";
 }
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
+// Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
+// on wet roads, windows and water is, the game's own 256x256 stretched over the screen (GAME), 512x512
+// (HIGH) or 768x768 (ULTRA). AUTO says what it comes to on this GPU (the first value's label, like
+// the latency reducer's). Width: the label is 16 characters and the longest value "AUTO (HIGH)" 11,
+// 27 together ("AUTO (ULTRA)" would make it 28), under the page's 40.
+const char* const kSideViewVals[]  = {"auto", "game", "high", "ultra"};
+const char* const kSideViewNames[] = {"AUTO", "GAME", "HIGH", "ULTRA"};
+std::string RoadReflectionLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::side_views::AutoLabel(mcla::gpu::SideView::kReflection);
+    case 1:  return "GAME";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1774,6 +1791,9 @@ const ItemDef kPictureItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
                                 kNativeShaftsVals, kNativeShaftsNames, 4),
                             &kShaftsDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
+                                "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
+                            &kRoadReflectionDynamics)),
 #endif
 };
 
