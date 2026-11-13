@@ -60,7 +60,7 @@ constexpr uint32_t kGuestDtMax      = 0x827D7524;  // [r3+36]
 constexpr uint32_t kGuestDtMin      = 0x827D7528;  // [r3+40]
 
 // graphics.cpp
-void ApplyAspectRatioPatch(std::string_view ratio);
+void ApplyAspectRatioPatch();
 
 // readback_window.cpp
 // Who is holding the global resolve readback (d3d12_/vulkan_readback_resolve) open.

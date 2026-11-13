@@ -8,6 +8,26 @@ bool Patch_AspectRatio_82214BB8(PPCRegister& f10);
 bool Patch_AspectRatio_822E5E68(PPCRegister& f12);
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 
+// Ultrawide markers (mc_engine/ultrawide.h). The floating gamertag's Flash x, after
+// `fmuls f7,f9,f13` in sub_82289530; the two ends of the queued world icons' draw, sub_82236558.
+void Patch_UiMarkerX_82289808(PPCRegister& f7);
+void Patch_UiWorldIcons_Begin();
+void Patch_UiWorldIcons_End();
+
+// The Flash player's draw of one instance, sub_825FB348: its entry (r3) and its exit at 0x825FB698 (r30). Tells the
+// renderer which draws are one HUD corner piece (ultrawide.h, hud_width).
+void Patch_UiPiece_Begin(PPCRegister& r3);
+void Patch_UiPiece_End(PPCRegister& r30);
+
+// The nav map's visible ground (sub_826206B0), the load of its 16:9 constant at 0x82620700.
+bool Patch_MapVisibleAspect_82620700(PPCRegister& f27);
+
+// The orthographic debug camera's width (sub_822C0320), the load of 1.77778 at 0x822C0918.
+bool Patch_AspectRatio_822C0918(PPCRegister& f0);
+
+// The cutscene camera's vertical field of view (sub_822C0320): f1 is the divisor of `fdivs f12,f28,f1` at 0x822C04E8.
+void Patch_CutsceneFovAspect_822C04E8(PPCRegister& f1);
+
 bool Patch_DisableDoF();
 void Patch_DofComposite(PPCRegister& r3);
 

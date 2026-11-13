@@ -28,6 +28,7 @@
 #include "draw_state.h"
 #include "format.h"
 #include "layout.h"
+#include "mc_engine/ultrawide.h"
 #include "native_gfx/vertex_declaration.h"
 #include "occlusion.h"
 #include "pass_timing.h"
@@ -389,7 +390,280 @@ void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fet
   }
 }
 
+// The squeeze of a UI draw (Scene::UiSqueezeOf): its position's x becomes centre + (x - centre) * k
+// on the screen, and then `shift` of the screen's width further (Scene::UiShiftOf: a HUD piece
+// that hud_width moves toward an edge; 0 for the rest of the UI). The draw's NDC is
+// x_ndc = oPos.x * scale + offset * w; the same map on NDC is k * x_ndc + (1 - k) * u + 2 * shift *
+// screen / viewport, u being where the screen's centre is in the draw's own NDC (the draw's host
+// viewport need not be the whole screen).
+// CHECK: that the epilogue's NDC is linear in the viewport's pixels as ComputeViewport makes it, for
+// the screen-space draws with clipping disabled too (the squeeze is checked on the HUD only).
+void SqueezeSharedX(SharedConstants& shared, const plume::RenderViewport& viewport,
+                    uint32_t screen_width, float k, float shift) {
+  if (!(viewport.width > 0.0f)) {
+    return;
+  }
+  const float centre = 0.5f * float(screen_width);
+  const float u = 2.0f * (centre - (viewport.x + 0.5f * viewport.width)) / viewport.width;
+  const float move = 2.0f * shift * float(screen_width) / viewport.width;
+  shared.pos_scale[0] *= k;
+  shared.pos_offset[0] = shared.pos_offset[0] * k + (1.0f - k) * u + move;
+}
+
+// The same map on the scissor, outwards to whole pixels: what the guest clips its UI to stays where
+// the squeezed (and moved) UI is.
+plume::RenderRect SqueezeScissorX(const plume::RenderRect& rect, uint32_t screen_width, float k,
+                                  float shift) {
+  const double centre = 0.5 * double(screen_width);
+  const double move = double(shift) * double(screen_width);
+  const int32_t width = int32_t(screen_width);
+  plume::RenderRect out = rect;
+  out.left =
+      std::clamp(int32_t(std::floor(centre + (double(rect.left) - centre) * k + move)), 0, width);
+  out.right =
+      std::clamp(int32_t(std::ceil(centre + (double(rect.right) - centre) * k + move)), 0, width);
+  return out;
+}
+
+// Whether an inline draw of one rectangle -- three vertices of a rectangle list, or four to six of a
+// quad or two triangles -- covers the whole screen: what a fade, a tint or a dimmed backdrop is. The
+// positions are the first stream's POSITION as the guest wrote them, before the vertex shader: for
+// the rectangle list the game draws its full-screen passes with, in guest pixels or in the clip
+// space (-1..1) of a pass-through shader; for the others in guest pixels only (a unit quad that a
+// matrix scales to a panel has the other spaces' numbers too).
+// CHECK: that the game's fades are inline draws with positions in pixels (or a rectangle list), the
+// log line of Scene::UiSqueezeOf says which kind it found; one drawn from a vertex buffer is not
+// looked at and stays squeezed.
+bool InlineRectCoversScreen(const DrawView& view, const InputLayout& layout, bool rect_list,
+                            uint32_t screen_width, uint32_t screen_height, const char** space) {
+  const DrawRecord& r = view.record();
+  if (r.kind != DrawKind::kInline || layout.streams.empty() || r.inline_stride == 0 ||
+      r.count < 3 || r.count > 6 || r.inline_bytes < r.count * r.inline_stride) {
+    return false;
+  }
+  const int32_t offset = layout.streams[0].position_offset;
+  if (offset < 0 || uint32_t(offset) + 8 > r.inline_stride) {
+    return false;
+  }
+  float x[7], y[7];
+  uint32_t n = r.count;
+  const uint8_t* data = view.inline_data();
+  for (uint32_t v = 0; v < n; ++v) {
+    const uint8_t* at = data + size_t(v) * r.inline_stride + uint32_t(offset);
+    const uint32_t bx = LoadBe32(at);
+    const uint32_t by = LoadBe32(at + 4);
+    std::memcpy(&x[v], &bx, 4);
+    std::memcpy(&y[v], &by, 4);
+  }
+  if (rect_list && n == 3) {
+    // The fourth corner of a rectangle list is made from the first three.
+    x[3] = x[0] + x[2] - x[1];
+    y[3] = y[0] + y[2] - y[1];
+    n = 4;
+  }
+  float lo_x = x[0], hi_x = x[0], lo_y = y[0], hi_y = y[0];
+  for (uint32_t v = 0; v < n; ++v) {
+    if (!std::isfinite(x[v]) || !std::isfinite(y[v])) {
+      return false;
+    }
+    lo_x = std::min(lo_x, x[v]);
+    hi_x = std::max(hi_x, x[v]);
+    lo_y = std::min(lo_y, y[v]);
+    hi_y = std::max(hi_y, y[v]);
+  }
+  const float w = float(screen_width), h = float(screen_height);
+  if (lo_x <= 0.5f && hi_x >= w - 0.5f && lo_y <= 0.5f && hi_y >= h - 0.5f) {
+    *space = "pixels";
+    return true;
+  }
+  if (rect_list && lo_x <= -0.999f && hi_x >= 0.999f && lo_y <= -0.999f && hi_y >= 0.999f) {
+    *space = "clip";
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
+
+float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
+                         const InputLayout* layout, PrimitiveConversion conversion, float* clip) {
+  *clip = 1.0f;
+  ui_phone_draw_ = false;
+  ui_hide_draw_ = false;
+  if (!ui_phase_) {
+    return 1.0f;
+  }
+  // The Sidekick phone and the pause menu's card, at any aspect ratio (the phone's draws: see the 3D models
+  // below). While the pause menu is open the game parks the phone just past the screen's left edge, with a
+  // sliver of it still in the picture (on a television that is the overscan; on a monitor it shows, at 16:9
+  // at the screen's edge): the card is drawn first in such a frame, and the phone's draws after it are not
+  // drawn (the owner, 2026-11-12). The phone drawn in a frame without the card (free roam) is drawn.
+  // CHECK: that no screen of the game shows the phone and the card together on purpose (the census saw the
+  // card only behind the pause menu and its pages, the phone there only parked).
+  constexpr uint64_t kPauseCardVs = 0xC5D4645CF8A34EDCull;   // the card's 828-index frame
+  constexpr uint64_t kPhoneMeshVs = 0x6137CE3EB560D293ull;   // the phone's two meshes
+  constexpr uint64_t kPhoneScreenVs = 0xEFE38E9E73C08B45ull; // the phone's screen quad, after its meshes
+  bool phone = false;
+  if (view.record().kind != DrawKind::kInline) {
+    const uint64_t vs = view.record().vs_identity;
+    const bool phone_mesh = vs == kPhoneMeshVs;
+    phone = phone_mesh || (ui_after_phone_mesh_ && vs == kPhoneScreenVs);
+    ui_after_phone_mesh_ = phone_mesh;
+    if (vs == kPauseCardVs) {
+      ui_card_this_frame_ = true;
+    }
+    if (phone && ui_card_this_frame_) {
+      ui_hide_draw_ = true;
+      return 1.0f;
+    }
+  }
+  // The world icons: the game's own 3D view put them where their points are on the widened picture,
+  // and their depth test needs the position unmoved (mc_engine/ultrawide.h).
+  // CHECK: the icons of a race (racers, checkpoints, places) are drawn inside the bracket the hooks
+  // make (ultrawide.cpp, Patch_UiWorldIcons_*); one drawn outside it is squeezed with the HUD.
+  if (ui_world_) {
+    return 1.0f;
+  }
+  const double fraction = mc::ultrawide::UiWidthFraction();
+  if (!(fraction < 0.999)) {
+    return 1.0f;
+  }
+  // The screen's own image (colour or its stencil masks): the width of the game's screen.
+  uint32_t screen_width = 0, screen_height = 0;
+  if (!edram_->GuestScreen(&screen_width, &screen_height, /*quiet=*/true) ||
+      state.surface_pitch != screen_width) {
+    return 1.0f;
+  }
+  if (key.color_count != 0) {
+    const ColorTargetState& color = state.color[0];
+    if (!color.bound || (color.format != xe::ColorRenderTargetFormat::k_8_8_8_8 &&
+                         color.format != xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
+      return 1.0f;
+    }
+    // CHECK: that what the UI phase draws with blending off is only copies of the scene (the pause
+    // view's first draw, the tone map) and full-screen backgrounds, which must keep the whole
+    // screen; a UI element drawn with blending off would stay stretched.
+    const plume::RenderBlendDesc blend = UnpackBlend(key.blend[0]);
+    if (!blend.blendEnabled || blend.renderTargetWriteMask == 0) {
+      return 1.0f;
+    }
+    // A fade, a tint or a dimmed backdrop (a blended rectangle over the whole screen) is stretched
+    // with the picture, not squeezed with the HUD: squeezed, it would leave the sides unfaded.
+    const char* space = "";
+    if (layout &&
+        InlineRectCoversScreen(view, *layout, conversion == PrimitiveConversion::kRectList,
+                               screen_width, screen_height, &space)) {
+      if (ultrawide_fills_logged_ < 12) {
+        ++ultrawide_fills_logged_;
+        const DrawRecord& r = view.record();
+        REXLOG_INFO("[gpu] ultrawide: a full-screen UI draw is stretched, not squeezed ({}: VS {:016X} "
+                    "PS {:016X}, {} vertices, positions in {}) ({} of 12 logged)",
+                    conversion == PrimitiveConversion::kRectList ? "rectangle list" : "quad or triangles",
+                    r.vs_identity, r.ps_identity, r.count, space, ultrawide_fills_logged_);
+      }
+      return 1.0f;
+    }
+  } else if (!state.depth_bound) {
+    return 1.0f;
+  }
+  // The game's 3D objects among the UI (the pause menu's card, the Sidekick phone, the menus' globe) are
+  // drawn from vertex buffers, with a camera the hooks widened like every other: on the wide picture they
+  // already have their 16:9 shape and place, and squeezed they came out narrower by the same factor and
+  // nearer the middle. What the UI draws flat (the Flash player's shapes, text and bitmaps, the fades) are
+  // inline draws (a census at 3440x1440, 2026-11-12: every squeezed draw of the HUD and the menus was
+  // inline; the card's two meshes and the phone's were indexed).
+  // The UI's own models (they write depth: the card, the phone) are still clipped to the middle 16:9
+  // like the rest of the UI, so that what the game puts beyond a 16:9 screen's edge stays out of sight
+  // (the phone, parked at the left edge while the pause menu is open, shows the sliver a 16:9 screen
+  // shows). What the world draws after the scene is composed (the airplanes in the sky: depth tested,
+  // not written) is not clipped: it belongs to the whole wide picture.
+  // CHECK: a 2D element drawn from a vertex buffer would be stretched now; the log names the first ones.
+  //
+  // The Sidekick phone is a left piece of the HUD: hud_width moves it toward the screen's left edge as it
+  // moves the minimap, whose corner it pops up over at 16:9 (the owner, 2026-11-12; the sliver of it the game
+  // leaves in the picture while paused is not drawn at all, above). Its draws, in the order a
+  // frame makes them (3440x1440, 2026-11-12): two meshes with the vertex shader kPhoneMeshVs (1587 and 306
+  // indices), then its screen, a quad with kPhoneScreenVs, the pause menu's card's shader too (the card is
+  // an 828-index frame, kPhoneScreenVs' 96-index contents follow it, and it stays where it is): so a draw
+  // with kPhoneScreenVs is the phone's only right after the phone's meshes.
+  // CHECK: that no other 3D model the UI draws uses kPhoneMeshVs (the census saw it only for the phone, in
+  // free roam and behind the pause menu), and that the phone's draws stay together in this order (one that
+  // comes apart shows as the screen beside the body). The shaders are named at the top of this function.
+  *clip = float(fraction);
+  if (view.record().kind != DrawKind::kInline) {
+    if (!state.depth_control.z_write_enable) {
+      *clip = 1.0f;
+    }
+    const DrawRecord& r = view.record();
+    ui_phone_draw_ = phone;
+    if (ultrawide_3d_logged_ < ultrawide_3d_vs_.size() &&
+        std::find(ultrawide_3d_vs_.begin(), ultrawide_3d_vs_.begin() + ultrawide_3d_logged_,
+                  r.vs_identity) == ultrawide_3d_vs_.begin() + ultrawide_3d_logged_) {
+      ultrawide_3d_vs_[ultrawide_3d_logged_++] = r.vs_identity;
+      REXLOG_INFO("[gpu] ultrawide: a UI draw from a vertex buffer keeps its shape (a 3D object: VS {:016X} "
+                  "PS {:016X}, {} {}, {}) ({} of 12 shaders logged)",
+                  r.vs_identity, r.ps_identity, r.count,
+                  r.kind == DrawKind::kIndexed ? "indices" : "vertices",
+                  *clip < 1.0f ? "clipped to the middle 16:9" : "not clipped",
+                  ultrawide_3d_logged_);
+    }
+    return 1.0f;
+  }
+  ui_after_phone_mesh_ = false;
+  return float(fraction);
+}
+
+void Scene::OnUiMessage(uint32_t bucket) {
+  switch (bucket) {
+    case mc::ultrawide::kUiWorldBegin:
+      ui_world_ = true;
+      break;
+    case mc::ultrawide::kUiWorldEnd:
+      ui_world_ = false;
+      break;
+    case mc::ultrawide::kUiPieceLeft:
+      ui_piece_side_ = -1;
+      ui_piece_at_edge_ = false;
+      break;
+    case mc::ultrawide::kUiPieceRight:
+      ui_piece_side_ = 1;
+      ui_piece_at_edge_ = false;
+      break;
+    case mc::ultrawide::kUiEdgeLeft:
+      ui_piece_side_ = -1;
+      ui_piece_at_edge_ = true;
+      break;
+    case mc::ultrawide::kUiEdgeRight:
+      ui_piece_side_ = 1;
+      ui_piece_at_edge_ = true;
+      break;
+    case mc::ultrawide::kUiPieceEnd:
+      ui_piece_side_ = 0;
+      ui_piece_at_edge_ = false;
+      break;
+    default:
+      break;
+  }
+}
+
+float Scene::UiShiftOf(float squeeze) {
+  if (ui_phone_draw_) {
+    // The Sidekick phone (UiSqueezeOf): a left piece of the HUD, moved by hud_width as the minimap is (at
+    // 16:9 it pops up over the minimap's corner).
+    ui_phone_draw_ = false;
+    const float t_phone = float(mc::ultrawide::HudWidthFraction());
+    return squeeze < 1.0f ? -t_phone * (1.0f - squeeze) * 0.5f : 0.0f;
+  }
+  // CHECK: that every draw of a HUD piece is one UiSqueezeOf squeezes (blended, into the screen's image,
+  // or a depth-only mask): one it leaves whole stays where the guest drew it and the piece tears.
+  if (ui_piece_side_ == 0 || !(squeeze < 1.0f)) {
+    return 0.0f;
+  }
+  // t is 0 while the picture is not wider than 16:9, which UiSqueezeOf has already seen as a squeeze of 1.
+  // A clip that always sits at its edge (kUiEdgeLeft / kUiEdgeRight) moves as a piece does at t = 1.
+  const float t = ui_piece_at_edge_ ? 1.0f : float(mc::ultrawide::HudWidthFraction());
+  return float(ui_piece_side_) * t * (1.0f - squeeze) * 0.5f;
+}
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
                        GeometryCache& geometry, EdramTargets& edram, TextureCache& textures,
@@ -1254,6 +1528,15 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (temporal_ && temporal_->active()) {
     temporal_->BeforeTextures(r);  // the anchor draw's textures are bound without the stand-in
   }
+  // Ultrawide: the UI of a widened picture is drawn squeezed, in the middle (UiSqueezeOf). After the
+  // memo above, which keeps the game's own position.
+  d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion, &d.ui_clip);
+  d.ui_hidden = ui_hide_draw_;
+  d.ui_shift = UiShiftOf(d.ui_clip);
+  if (d.ui_squeeze < 1.0f || d.ui_shift != 0.0f) {
+    SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze,
+                   d.ui_shift);
+  }
   Lap(Stage::kConstants);
   // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
   // again into the float scene image (hdr_tonemap.h).
@@ -2035,7 +2318,13 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.viewport = d.viewport.viewport;
     bound_.viewport_bound = true;
   }
-  const plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
+  plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
+  if (d.ui_clip < 1.0f) {
+    scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_clip, d.ui_shift);
+  }
+  if (d.ui_hidden) {
+    scissor.right = scissor.left;  // an empty scissor: the draw puts nothing on the screen (UiSqueezeOf)
+  }
   d.scissor = scissor;
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
     list->setScissors(&scissor, 1);
@@ -2430,6 +2719,12 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // Where the scene was composed -- the frame's last colour target -- counted
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
+  scene_marker_seen_ = true;
+  ui_after_phone_mesh_ = false;
+  ui_card_this_frame_ = false;
+  ui_phase_ = true;
+  ui_world_ = false;
+  ui_piece_side_ = 0;
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
@@ -2539,6 +2834,11 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  last_frame_had_scene_ = scene_marker_seen_;
+  scene_marker_seen_ = false;
+  ui_phase_ = false;
+  ui_world_ = false;
+  ui_piece_side_ = 0;
   if (layers_) {
     layers_->OnGuestPresent();
   }

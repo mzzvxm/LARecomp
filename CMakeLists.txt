@@ -138,6 +138,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/camera_trace.cpp
     src/mc_engine/display_menu.cpp
     src/mc_engine/display_mode.cpp
+    src/mc_engine/ultrawide.cpp
     src/mc_engine/frame_generation_menu.cpp
     src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp

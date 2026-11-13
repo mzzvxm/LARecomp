@@ -27,6 +27,7 @@
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
+#include "mc_engine/ultrawide.h"
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -629,6 +630,14 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       return;
     }
     case RecordType::kComposite: {
+      // Ultrawide: the guest's hooks around the draw of the world icons, and around each piece of
+      // the HUD, use the composite record as a one-way message to the render thread
+      // (mc_engine/ultrawide.h, IsUiMessage): not a composition, no list to open.
+      const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
+      if (mc::ultrawide::IsUiMessage(bucket)) {
+        scene_.OnUiMessage(bucket);
+        return;
+      }
       plume::RenderCommandList* list = OpenFrameList();
       PerfScope label(markers_, list, "Composite", PerfMarkers::kEvent);
       scene_.OnComposite(*reinterpret_cast<const CompositeRecord*>(payload), list);
@@ -1091,6 +1100,18 @@ void Renderer::UpdateHdr() {
   }
 }
 
+void Renderer::UpdateDisplayAspect() {
+  // The guest frame's own 16:9 picture (a movie, a loading screen, a flat menu: no scene composed in
+  // it) is not stretched; one with a scene is, to the shape its cameras were built for.
+  // CHECK: that every frame that shows a 3D picture has the marker (title, garage, showroom, map,
+  // photo mode, the rear-view mirror inside play): one that has none is shown 16:9 with its picture
+  // still squeezed.
+  // At 16:9 (or narrower) nothing is asked: the fit is the front buffer's own, to the pixel.
+  present_.SetDisplayAspect(scene_.last_frame_had_scene() && mc::ultrawide::Active()
+                                ? mc::ultrawide::DisplayAspect()
+                                : 0.0);
+}
+
 void Renderer::ExecutePresent(PresentSource source) {
   // A held present goes first: its back buffer is the one ahead of this
   // frame's in the chain, and nothing else may touch the chain before it.
@@ -1126,6 +1147,7 @@ void Renderer::ExecutePresent(PresentSource source) {
                                     : (dlssg_.active() ? dlssg_.WantsVsync()
                                                        : REXCVAR_GET(mcla_gpu_vsync)));
   UpdateHdr();
+  UpdateDisplayAspect();
 
   if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
       swap_chain_.NeedsRebuild()) {

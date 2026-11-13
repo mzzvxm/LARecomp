@@ -17,8 +17,10 @@
 // whenever the bytes change; an all-zero table (the device not built yet)
 // presents through the identity instead, logged once.
 //
-// Fit: the image keeps its aspect, centred, black around it (letterbox),
-// sampled with the table applied per texel before the bilinear mix
+// Fit: the image keeps its aspect, centred, black around it (letterbox) -- or, for a frame the
+// renderer was told to show at a wider aspect (SetDisplayAspect: an ultrawide window, mc_engine/
+// ultrawide.h), the picture the game drew squeezed sideways is stretched to that aspect, which is
+// the window's, and fills it. Sampled with the table applied per texel before the bilinear mix
 // (hlsl/present_ps.hlsl). An idle present (the guest not swapping) shows the
 // last front buffer again. The SDK presenter's present_effect does not apply in
 // this mode (logged at startup); the renderer's own FSR1 does:
@@ -111,6 +113,12 @@ class PresentPass {
   // buffer. Not owned; null: the front buffer always.
   void SetHdrScene(HdrScene* scene) { hdr_scene_ = scene; }
 
+  // The aspect ratio the next frames are shown at: the front buffer is stretched sideways to it
+  // before it is fitted into the window (mc_engine/ultrawide.h: the game drew the scene with a
+  // camera of this aspect into its 16:9 image). 0, or the front buffer's own aspect: shown as it
+  // is. Once per frame, before Prepare; it holds for PrepareImage and Draw after it.
+  void SetDisplayAspect(double aspect) { display_aspect_ = aspect; }
+
   // Outside any render pass: binds the front buffer (its upload, if it comes
   // from memory) and writes the table when it changed, into `list`; with FSR1
   // on and an upscale to a letterbox in `width` x `height`, records the passes
@@ -166,21 +174,21 @@ class PresentPass {
   std::string TakeSummary();
 
  private:
-  // The letterbox: the largest rectangle of the source's aspect, centred, on
-  // whole pixels, in a `width` x `height` target.
+  // The letterbox: the largest rectangle of the source's aspect (`aspect` when it is not 0: the
+  // source stretched sideways to it), centred, on whole pixels, in a `width` x `height` target.
   struct Fit {
     uint32_t x = 0;
     uint32_t y = 0;
     uint32_t w = 0;
     uint32_t h = 0;
   };
-  static Fit FitOf(uint32_t source_width, uint32_t source_height, uint32_t width,
-                   uint32_t height);
+  static Fit FitOf(uint32_t source_width, uint32_t source_height, uint32_t width, uint32_t height,
+                   double aspect = 0.0);
   // The tail of Prepare and PrepareImage: the letterbox, FSR1's passes or the table pass, for the
   // source bound.
   void PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height);
-  // Draw's body: false when there is nothing to draw.
-  bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
+  // Draw's body: false when there is nothing to draw. `aspect`: FitOf's.
+  bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height, double aspect);
   // The bilinear present of `source` (`width` x `height` texels) into `fit`,
   // with `pipeline` (the table applied, or not); inside a render pass.
   // `gap`: Push::gap, for a source that is an image of the frame layers.
@@ -303,6 +311,7 @@ class PresentPass {
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;
   Fit fit_;             // Prepare's letterbox
+  double display_aspect_ = 0.0;  // SetDisplayAspect
   // What the log said last (a line when the route or the sizes change).
   std::string reported_route_;
   std::unique_ptr<plume::RenderTexture> ramp_texture_;

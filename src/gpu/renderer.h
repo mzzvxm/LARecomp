@@ -201,6 +201,10 @@ class Renderer final : public RenderThread::Executor {
   // HDR10 only, once per present: this frame's levels to the present pass and the overlay, and the
   // display's metadata when the peak moved.
   void UpdateHdr();
+  // Before each present: the aspect ratio the picture is shown at. A guest frame that had a 3D scene
+  // is shown at the window's (mc_engine/ultrawide.h), the game's own 16:9 stays for the others; an
+  // idle present shows the last guest frame, so it keeps that frame's choice.
+  void UpdateDisplayAspect();
 
   // mcla_gpu_frame_generation is live (frame_generation.h). At a frame boundary, with the HDR
   // setting's check, the setting and what the runtime says are compared with whether it runs, and a

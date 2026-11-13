@@ -25180,6 +25180,74 @@ name = "Patch_AspectRatio_8223E5E0"
 registers = ["f13"]
 jump_address_on_true = 0x8223E5E4
 
+# Ultrawide markers (mc_engine/ultrawide.h). sub_82289530 puts the floating gamertag of a car (a
+# Flash clip of the HUD movie) at the car's projected position: f9 = (ndc_x + 1) * 0.5, f13 = 1280,
+# `fmuls f7,f9,f13` at 0x82289808 is the clip's x on the 1280 stage, stored right after as
+# "gamertag_x". The hook moves it so the squeezed UI still lands it on the car in a wide picture.
+[[midasm_hook]]
+address = 0x82289808
+name = "Patch_UiMarkerX_82289808"
+registers = ["f7"]
+after_instruction = true
+
+# sub_82236558 draws the queue of world icons (96 bytes an entry, a 3D movie each with the camera's
+# own view and projection) in the UI pass. The renderer must not squeeze these draws: a hook at the
+# function's first instruction and one at its last (0x822365B0 `b 0x823d924c`, every path ends
+# there) bracket them for it.
+[[midasm_hook]]
+address = 0x82236558
+name = "Patch_UiWorldIcons_Begin"
+
+[[midasm_hook]]
+address = 0x822365B0
+name = "Patch_UiWorldIcons_End"
+
+# The HUD's corner pieces (mc_engine/ultrawide.h, hud_width). sub_825FB348 is the Flash player's draw of one
+# instance (r3) and, recursively, its children; every path ends at 0x825FB698 (`addi r1,r1,144`, the first
+# instruction of the epilogue) with r30 still the instance. The two hooks tell the renderer which draws are
+# the whole of one piece of the HUD (a child of the clip named "HUD" in hud.swf or hudmap.swf, by its name),
+# so that it can move them as one. A no-op unless hud_width is above 0 and the picture is wider than 16:9.
+[[midasm_hook]]
+address = 0x825FB348
+name = "Patch_UiPiece_Begin"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x825FB698
+name = "Patch_UiPiece_End"
+registers = ["r30"]
+
+# The nav map (mc_engine/ultrawide.h). sub_826206B0 works out the ground the map camera sees (the
+# cursor's box and the map's edges) from the map's own aspect ratio: f27 is 1.33333 (0x8201FACC,
+# loaded at 0x826206E0) unless the console is in widescreen, when it is 1.7778 (0x8201FAC8, loaded
+# at 0x82620700). On a wide picture the hook gives the widescreen branch the matching aspect ratio.
+[[midasm_hook]]
+address = 0x82620700
+name = "Patch_MapVisibleAspect_82620700"
+registers = ["f27"]
+jump_address_on_true = 0x82620704
+
+# sub_822C0320 (the scene camera update) builds an orthographic camera instead of the perspective one
+# when the developer variable "orthoheight" is set (default -1: never in play): half width = half
+# height * 1.77778, loaded at 0x822C0918 (`lfs f0,-28432(r8)`, 0x820390F0). The hook gives it the
+# picture's aspect ratio, like the four perspective camera hooks above.
+[[midasm_hook]]
+address = 0x822C0918
+name = "Patch_AspectRatio_822C0918"
+registers = ["f0"]
+jump_address_on_true = 0x822C091C
+
+# sub_822C0320 also builds the cutscene director's camera: the vertical field of view it passes on is the
+# camera's angle (radians, taken as horizontal) times 57.2958 over the viewport's aspect ratio, `fdivs
+# f12,f28,f1` at 0x822C04E8 with f1 = sub_82171600's return value, the widened aspect ratio. Divided by
+# it a cutscene is zoomed into the middle of a wide picture; the hook gives f1 16:9 when the picture is
+# wider, so the vertical field of view stays the 16:9 one and the picture shows more at the sides. It
+# runs before the instruction. The gameplay cameras do not pass through this division.
+[[midasm_hook]]
+address = 0x822C04E8
+name = "Patch_CutsceneFovAspect_822C04E8"
+registers = ["f1"]
+
 # Depth of Field (DoF) Hooks
 #
 # DEAD ENDS (do not retry):

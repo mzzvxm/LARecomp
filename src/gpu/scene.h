@@ -144,8 +144,20 @@ class Scene {
   // open list, for the passes that run at this point.
   void OnComposite(const CompositeRecord& record, plume::RenderCommandList* list);
 
+  // Ultrawide: one of the messages the guest sends through a composite record's bucket
+  // (mc_engine/ultrawide.h, IsUiMessage), in order with the draws around it. Either the bracket of
+  // the UI pass's world icons, 3D movies drawn with the (widened) camera's own projection
+  // (NoteWorldIcons): their draws are not squeezed. Or the bracket of one piece of the HUD
+  // (NoteUiPiece): its draws are moved toward the left or the right screen edge, all by the same
+  // amount, by the setting hud_width (UiShiftOf). Render thread.
+  void OnUiMessage(uint32_t bucket);
+
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
+  // The last guest frame that presented had a 3D scene in it: the end of the post chain (the
+  // composite marker) came in it. False for a movie, a loading screen or a menu on a flat background,
+  // which draw no scene. The present shows such a frame as it is (mc_engine/ultrawide.h).
+  bool last_frame_had_scene() const { return last_frame_had_scene_; }
   // Final report (at renderer shutdown).
   void Finish();
 
@@ -208,6 +220,19 @@ class Scene {
     plume::RenderPipeline* shadow_pipeline = nullptr;
     // Set by Record, for the second draw.
     plume::RenderRect scissor;
+    // Ultrawide: the draw is UI and is drawn squeezed sideways around the centre of the screen by
+    // this factor (UiSqueezeOf); 1: as the game has it.
+    float ui_squeeze = 1.0f;
+    // Ultrawide: the factor the draw's scissor is squeezed by: ui_squeeze for the flat UI, and for a 3D
+    // object of the UI (drawn whole, ui_squeeze 1) the UI's own, so that it is clipped to the middle 16:9
+    // as the rest of the UI is (UiSqueezeOf).
+    float ui_clip = 1.0f;
+    // The draw puts nothing on the screen (its scissor is empty): the phone parked behind the pause menu
+    // (UiSqueezeOf).
+    bool ui_hidden = false;
+    // Ultrawide: and then moved sideways by this share of the screen's width, to the right when
+    // positive (UiShiftOf): the draw is one of a HUD piece that hud_width moves toward a screen edge.
+    float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
   };
 
@@ -300,6 +325,26 @@ class Scene {
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
+  // Ultrawide (mc_engine/ultrawide.h): the UI the game draws after the scene is composed is made for
+  // a 16:9 screen, and the present stretches the whole image over a wider window. The factor (below 1)
+  // a draw's screen-space x is squeezed by around the screen's centre so that the stretch brings it
+  // back to 16:9 in the middle of the window; 1 for a draw that keeps its place: before the marker,
+  // not into the screen's image, a copy that blends nothing (the scene copied into the pause view's
+  // target), a blended rectangle over the whole screen (a fade: a draw of inline vertices that cover
+  // it), the world icons (OnUiMessage), or an aspect ratio of 16:9.
+  // `clip` is set to the factor the draw's scissor is squeezed by: the same as the result, except for a
+  // 3D object of the UI (a draw from a vertex buffer), which keeps its shape (result 1) but is clipped
+  // to the middle 16:9 with the rest of the UI.
+  float UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
+                    const InputLayout* layout, PrimitiveConversion conversion, float* clip);
+  // The share of the screen's width a squeezed UI draw is moved sideways by afterwards (to the right
+  // when positive): 0 unless the draw belongs to a piece of the HUD the guest has bracketed
+  // (OnUiMessage) and hud_width is above 0. A left piece moves by -t * (1 - k) / 2, a right piece by
+  // t * (1 - k) / 2, for the squeeze k and t = hud_width / 100: the shift that puts the piece's edge
+  // as far from the screen's edge as on a 16:9 screen when t is 1 (the squeeze took 1 - k of the
+  // screen's width, half of it on each side).
+  // The Sidekick phone (UiSqueezeOf marks its draws) moves as a left piece of the HUD does.
+  float UiShiftOf(float squeeze);
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
@@ -463,6 +508,34 @@ class Scene {
   EdramTargets::Target* last_color0_ = nullptr;
   uint32_t last_color0_width_ = 0;
   uint32_t last_color0_height_ = 0;
+  // The composite marker came in the frame being recorded; OnPresent keeps it for the present.
+  bool scene_marker_seen_ = false;
+  bool last_frame_had_scene_ = false;
+  // From the composite marker to the guest's present: what the frame draws is screen-space, the HUD
+  // and the menus (UiSqueezeOf).
+  bool ui_phase_ = false;
+  // Inside the guest's draw of the world icons (OnUiMessage): drawn as the game has them.
+  bool ui_world_ = false;
+  // Inside the guest's draw of one piece of the HUD (OnUiMessage): -1 anchored to the left edge, 1 to the
+  // right edge, 0 not inside one.
+  int ui_piece_side_ = 0;
+  // The piece is one that always sits at its edge (kUiEdgeLeft / kUiEdgeRight): moved fully, whatever
+  // hud_width is.
+  bool ui_piece_at_edge_ = false;
+  // The draw UiSqueezeOf has just looked at is one of the Sidekick phone's (UiShiftOf moves it with
+  // hud_width), and the last UI 3D draw was one of the phone's meshes (its screen quad follows them).
+  bool ui_phone_draw_ = false;
+  bool ui_after_phone_mesh_ = false;
+  // The pause menu's card has been drawn in this frame's UI, and the draw UiSqueezeOf has just looked at is
+  // the phone parked behind it: not drawn (an empty scissor).
+  bool ui_card_this_frame_ = false;
+  bool ui_hide_draw_ = false;
+  // How many full-screen UI draws kept the whole screen have been logged (UiSqueezeOf).
+  uint32_t ultrawide_fills_logged_ = 0;
+  // The vertex shaders of the UI draws from a vertex buffer (3D objects) that kept their shape, logged
+  // once each (UiSqueezeOf).
+  std::array<uint64_t, 12> ultrawide_3d_vs_{};
+  uint32_t ultrawide_3d_logged_ = 0;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
   FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
   HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)
