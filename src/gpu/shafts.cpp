@@ -243,10 +243,26 @@ void SunShafts::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& 
   passes_ = &passes;
   edram_ = &edram;
   pass_timing_ = &pass_timing;
+  shaders_failed_ = false;
+  // The shaders and the pipelines are made only where the sun shafts are on at the start (not on the Low
+  // class, where `auto` is off): where they are off they would be compile work and memory for nothing.
+  // A live switch to on makes the shaders in BeginFrame and the pipelines at their first use.
+  if (ReadMode() != Mode::kOff && MakeShaders()) {
+    ListPrecache();
+  }
+}
+
+bool SunShafts::MakeShaders() {
+  if (ready_) {
+    return true;
+  }
+  if (shaders_failed_ || !passes_) {
+    return false;
+  }
   bool ok = true;
   for (uint32_t i = 0; i < kPassCount && ok; ++i) {
     const HostShaderBlob blob = SunShaftsPixelShader(i);
-    shaders_[i] = passes.CreateShader(blob.data, blob.size, blob.name);
+    shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
     ok = shaders_[i] != nullptr;
   }
   if (!ok) {
@@ -254,10 +270,11 @@ void SunShafts::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& 
     for (auto& shader : shaders_) {
       shader.reset();
     }
-    return;
+    shaders_failed_ = true;
+    return false;
   }
   ready_ = true;
-  ListPrecache();
+  return true;
 }
 
 void SunShafts::Shutdown() {
@@ -350,8 +367,13 @@ plume::RenderPipeline* SunShafts::Pipeline(uint32_t variant) {
 void SunShafts::BeginFrame() {
   census_every_ = uint32_t(std::max(0, REXCVAR_GET(mcla_gpu_sun_shafts_census)));
   Mode mode = ReadMode();
+  if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
+    // Off at the start, on now (a live change): the shaders were not made; the pipelines are made at their
+    // first use (Pipeline: unlisted in the precache, so on this thread, once).
+    REXLOG_INFO("[gpu] shafts: the sun shafts were off at the start: their shaders are made now");
+  }
   if (!ready_ && mode != Mode::kOff) {
-    mode = Mode::kOff;  // the shaders could not be made (Initialize said so)
+    mode = Mode::kOff;  // the shaders could not be made (MakeShaders said so)
   }
   if (uint32_t(mode) != last_mode_logged_) {
     last_mode_logged_ = uint32_t(mode);

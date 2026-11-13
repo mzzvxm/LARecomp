@@ -224,6 +224,9 @@ class SunShafts {
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
+  // Makes the shaders once (Initialize when the shafts are on at the start, else BeginFrame at the switch);
+  // false when one could not be made (said in the log, not tried again).
+  bool MakeShaders();
   void ListPrecache();
   void Census();
 
@@ -264,7 +267,8 @@ class SunShafts {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
-  bool ready_ = false;  // the shaders exist
+  bool ready_ = false;  // the shaders exist (made only when the sun shafts are on: MakeShaders)
+  bool shaders_failed_ = false;
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};

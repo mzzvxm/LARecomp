@@ -395,6 +395,8 @@ class AmbientOcclusion {
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
+  // The contact march's shader, made when it was not at the start (the contact shadows were off). Render thread.
+  bool EnsureContactShader();
   void ListPrecache();
   void Bind(plume::RenderCommandList* list) const;
   // A full-screen triangle into `image` (all of it) with `pipeline` and `push`.
@@ -624,7 +626,8 @@ class AmbientOcclusion {
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
-  bool ready_ = false;  // the layout and the shaders exist
+  bool ready_ = false;  // the layout and the shaders exist (the contact march's only when it is on: Initialize)
+  bool contact_shader_failed_ = false;
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;

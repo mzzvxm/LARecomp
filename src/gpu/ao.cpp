@@ -452,7 +452,15 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   builder.end();
   layout_ = device.CreatePipelineLayout(builder, "ao layout");
   bool ok = layout_ != nullptr;
+  // The contact march's shader (and, in ListPrecache, its pipeline) is made only where the contact shadows
+  // are on at the start (not on the Low class, where `auto` is off): where they are off it would be
+  // compile work and memory for nothing. A live switch to on makes it then (EnsureContactShader).
+  const bool contact_at_start = ReadContactMode() != Mode::kOff;
+  contact_shader_failed_ = false;
   for (uint32_t i = 0; i < kPassCount && ok; ++i) {
+    if (i == kPassContact && !contact_at_start) {
+      continue;
+    }
     const HostShaderBlob blob = AmbientOcclusionPixelShader(i);
     shaders_[i] = passes.CreateShader(blob.data, blob.size, blob.name);
     ok = shaders_[i] != nullptr;
@@ -524,7 +532,11 @@ void AmbientOcclusion::ListPrecache() {
   std::vector<uint32_t> listed = {kVDepth,           kVDepthMs,          kVMip,
                                   kVMain,            kVDenoise,          kVTemporal,
                                   kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
-                                  ApplyVariant(false, 4), kVContact};
+                                  ApplyVariant(false, 4)};
+  // The contact march only where its shader was made (the contact shadows are on at the start).
+  if (shaders_[kPassContact]) {
+    listed.push_back(kVContact);
+  }
   // The host's MSAA level changes while the game runs (msaa_level.h) and gives the main view's
   // colour target the new level's samples: the apply pass for 8 samples is listed whatever the
   // level is at the start, so a switch to 8x finds it made instead of making it on the render
@@ -548,7 +560,10 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
   const std::string name = VariantName(variant);
   const plume::RenderBlendDesc copy = plume::RenderBlendDesc::Copy();
   const auto make = [&](Pass pass, plume::RenderFormat format, const plume::RenderBlendDesc& blend,
-                        uint32_t samples) {
+                        uint32_t samples) -> std::unique_ptr<plume::RenderPipeline> {
+    if (!shaders_[pass]) {
+      return nullptr;  // the contact march's, while the contact shadows were never on (Pipeline asks first)
+    }
     return passes_->CreatePipeline(*layout_, *shaders_[pass], format, blend, samples, name.c_str());
   };
   switch (variant) {
@@ -588,11 +603,36 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
               plume::RenderFormat::R16G16B16A16_FLOAT, blend, samples);
 }
 
+bool AmbientOcclusion::EnsureContactShader() {
+  if (shaders_[kPassContact]) {
+    return true;
+  }
+  if (contact_shader_failed_ || !passes_) {
+    return false;
+  }
+  // The contact shadows were off at the start and are on now: the shader is made here, on the render thread
+  // (never listed in the precache, so no builder thread reads the slot), and the pipeline after it by
+  // Pipeline: a compile at the switch, once.
+  const HostShaderBlob blob = AmbientOcclusionPixelShader(kPassContact);
+  shaders_[kPassContact] = passes_->CreateShader(blob.data, blob.size, blob.name);
+  if (!shaders_[kPassContact]) {
+    contact_shader_failed_ = true;
+    REXLOG_ERROR("[gpu] ao: the contact shadows' shader could not be made: no contact shadows this session");
+    return false;
+  }
+  REXLOG_INFO("[gpu] ao: the contact shadows were off at the start: their shader and pipeline are made now");
+  return true;
+}
+
 plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
   if (pipelines_[variant]) {
     return pipelines_[variant].get();
   }
   if (pipeline_failed_[variant]) {
+    return nullptr;
+  }
+  if (variant == kVContact && !EnsureContactShader()) {
+    pipeline_failed_[variant] = true;  // EnsureContactShader said why
     return nullptr;
   }
   // Made ahead when listed; a variant nobody listed (a debug view, a 4x target) is made here.
