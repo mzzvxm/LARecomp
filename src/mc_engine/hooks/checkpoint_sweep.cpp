@@ -175,11 +175,11 @@ extern "C" REX_FUNC(rex_sub_822653A8) {
     ctx.lr = lr;
     if ((ctx.r3.u32 & 0xFFu) != 0) {
         ctx.r3.u64 = 1;
-        if (g_told[0].fetch_add(1) < 4) {
-            LARECOMP_APP_INFO("[CheckpointSweep] checkpoint {:08X}: the car crossed it between two looks of "
-                              "the script ({} ms apart, {:.1f} m): it is told it was hit",
-                              checkpoint, gap_ms, std::sqrt(Dot(Sub(previous, start), Sub(previous, start))));
-        }
+        // A rescue: the game's own segment said no (it ran first) and the road since the previous look
+        // says yes. One line for each.
+        LARECOMP_APP_INFO("[CheckpointSweep] checkpoint {:08X}: the car crossed it between two looks of "
+                          "the script ({} ms apart, {:.1f} m): it is told it was hit",
+                          checkpoint, gap_ms, std::sqrt(Dot(Sub(previous, start), Sub(previous, start))));
     } else {
         ctx.r3.u64 = 0;
     }
@@ -204,12 +204,13 @@ void Hook_TriggerLineSweep(PPCRegister& r1, PPCRegister& r31, PPCRegister& r27) 
     int64_t gap_ms = -1;
     if (!PreviousEnd(thread, pc, r31.u32, r27.u32, start, end, previous, gap_ms)) return;
     WriteV3(base, start_ptr, previous);
+    // Not a rescue as such (the longer segment is tested once, so whether the game's own would have hit
+    // is not known here) and it happens on most looks above 30 FPS, so it is only in a debug log.
     if (g_told[1].fetch_add(1) < 4) {
-        // CHECK: not seen in a running game; whether the longer segment changed the answer is not known here.
-        LARECOMP_APP_INFO("[CheckpointSweep] line trigger {:08X}: the script looked {} ms after its "
-                          "previous look; the line is tested from where the previous look ended "
-                          "({:.1f} m before the car's last position)",
-                          r31.u32, gap_ms, std::sqrt(Dot(Sub(previous, start), Sub(previous, start))));
+        LARECOMP_APP_DEBUG("[CheckpointSweep] line trigger {:08X}: the script looked {} ms after its "
+                           "previous look; the line is tested from where the previous look ended "
+                           "({:.1f} m before the car's last position)",
+                           r31.u32, gap_ms, std::sqrt(Dot(Sub(previous, start), Sub(previous, start))));
     }
 }
 #endif  // REXGLUE_HAS_XEO3_TARGET

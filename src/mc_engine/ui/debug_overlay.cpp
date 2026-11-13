@@ -1,5 +1,6 @@
 #include "debug_overlay.h"
 #include "imgui_theme.h"
+#include "mc_engine/menu_items.h"
 
 #include <rex/cvar.h>
 #include <rex/perf/counter.h>
@@ -21,7 +22,6 @@
 #include <psapi.h>
 #endif
 
-REXCVAR_DECLARE(bool, mcla_native_gfx);
 REXCVAR_DECLARE(double, video_mode_refresh_rate);
 
 namespace mcla::ui {
@@ -63,25 +63,43 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing,
                  prompts)) {
-    const int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
-    const float ft_ms = static_cast<float>(ft_us) / 1000.0f;
-    const int64_t fps = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFps);
+    int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
+    int64_t fps = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFps);
+    // Only the SDK's Xenia command processor sets these two counters (and only in a build with perf
+    // counters), so on the native renderer they stay 0. There the card uses ImGui's own frame clock:
+    // the time of the last frame the UI was drawn in and its rolling 60-frame rate (the UI is drawn
+    // with each presented frame: 60 FPS at a 60 cap, 227 to 229 FPS uncapped against the frame log's 234).
+    if (ft_us <= 0 && fps <= 0 && io.DeltaTime > 0.0f && io.Framerate > 0.0f) {
+      ft_us = static_cast<int64_t>(io.DeltaTime * 1.0e6f);
+      fps = static_cast<int64_t>(io.Framerate + 0.5f);
+    }
+    // Nothing yet (the first frame of the card): a 0 ms frame is not a frame (it would read as
+    // 10000 FPS and pull the graph to the floor).
+    const bool measured = ft_us > 0 || fps > 0;
 
-    frame_time_history_[frame_history_idx_] = ft_ms;
-    frame_history_idx_ = (frame_history_idx_ + 1) % kFrameHistorySize;
-
-    const long long display_fps =
-        fps > 0 ? static_cast<long long>(fps)
-                : static_cast<long long>(1000.0f / std::max(0.1f, ft_ms));
     const int refresh = static_cast<int>(REXCVAR_GET(video_mode_refresh_rate));
     const int target_hz = refresh > 0 ? refresh : 60;
 
     // The headline reads like the GPS card's "ROOKIE - 3640 REP" line, with
     // the meter under it filling toward the target rate.
     char line[64];
-    std::snprintf(line, sizeof(line), "%lld FPS - %.2f MS", display_fps, ft_ms);
-    ImGui::TextUnformatted(line);
-    SegmentMeter(static_cast<float>(display_fps) / static_cast<float>(target_hz), kContentWidth);
+    if (measured) {
+      // One counter can be there without the other: the missing one comes from it.
+      const float ft_ms = ft_us > 0 ? static_cast<float>(ft_us) / 1000.0f
+                                    : 1000.0f / static_cast<float>(fps);
+      const long long display_fps =
+          fps > 0 ? static_cast<long long>(fps)
+                  : static_cast<long long>(1000.0f / std::max(0.1f, ft_ms));
+      frame_time_history_[frame_history_idx_] = ft_ms;
+      frame_history_idx_ = (frame_history_idx_ + 1) % kFrameHistorySize;
+      std::snprintf(line, sizeof(line), "%lld FPS - %.2f MS", display_fps, ft_ms);
+      ImGui::TextUnformatted(line);
+      // The meter clamps to a full bar, so a rate above the target cannot overflow it.
+      SegmentMeter(static_cast<float>(display_fps) / static_cast<float>(target_hz), kContentWidth);
+    } else {
+      ImGui::TextUnformatted("-- FPS - -- MS");
+      SegmentMeter(0.0f, kContentWidth);
+    }
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.55f));
@@ -94,10 +112,15 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
     ImGui::PopStyleColor();
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
-    StatRow("RENDERER", REXCVAR_GET(mcla_native_gfx) ? "NATIVE GFX" : "REXGLUE GFX");
+    // The test the menus use to list a renderer's rows (NativeRendererRuns: the Plume renderer is
+    // mcla_gpu), with the names the menus and the docs give the two renderers.
+    const bool native = mcla_menu::NativeRendererRuns();
+    StatRow("RENDERER", native ? "NATIVE" : "XENIA");
 
-    const bool vsync_on = (rex::cvar::GetFlagByName("vsync") == "true") ||
-                          (rex::cvar::GetFlagByName("mcla_native_gfx_nocp_vsync") == "true");
+    // Each renderer's own switch: the native renderer's VSYNC row is mcla_gpu_vsync; with Xenia's,
+    // `vsync` (the debug page's XENIA VSYNC).
+    const bool vsync_on =
+        rex::cvar::GetFlagByName(native ? "mcla_gpu_vsync" : "vsync") == "true";
     std::snprintf(line, sizeof(line), "%s - %d HZ", vsync_on ? "ON" : "OFF", target_hz);
     StatRow("VSYNC", line);
 
