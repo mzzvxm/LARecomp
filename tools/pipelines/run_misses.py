@@ -28,7 +28,15 @@ SCENE = re.compile(r"scene \((interval|final)\):.*?pipelines (\d+) total \(\+(\d
                    r"pending, (\d+) draws skipped, (\d+) taken \((\d+) of keys the list lacked\)")
 STARTER = re.compile(r"pipelines: (\d+) records and \d+ layouts in .*mcla_pipelines\.bin: (\d+) new here \((\d+) dropped")
 PRECACHE = re.compile(r"pipelines: precache done in ([\d.]+) ms: (\d+) ready, (\d+) failed")
-PRECACHING = re.compile(r"pipelines: precaching (\d+) pipelines on (\d+) threads")
+# The log says "precaching N pipelines (K of them copies at other sample counts) on T threads" (and, after T threads, "; boot
+# mode on ..." on a small CPU), the command line prebuild "command line prebuild: precaching N pipelines (K ...) on T threads
+# at normal priority (...)". It once said "precaching N pipelines on T threads": the selftest below uses the real texts.
+PRECACHING = re.compile(r"pipelines: (?:command line prebuild: )?precaching (\d+) pipelines (?:\(\d+ of them copies[^)]*\) )?on (\d+) threads")
+NOTHING_TO_PRECACHE = re.compile(r"pipelines: nothing to precache; (\d+) threads")
+# The host passes (resolve, decode, occlusion, contact shadows, sun shafts): what the start listed, and what the render thread
+# still had to make in play (host_precache.cpp).
+HOST_AT_START = re.compile(r"host pipelines at start: (\d+) listed")
+HOST_ON_RENDER_THREAD = re.compile(r"host pipelines: '.*' made on the render thread")
 WRITTEN = re.compile(r"pipelines: (\d+) records \((\d+) new this session")
 
 
@@ -65,7 +73,8 @@ def read_run(folder):
             marks = json.load(f)
     except (OSError, ValueError):
         pass
-    facts = {"intervals": [], "starter": None, "precaching": None, "precache": None, "written": None}
+    facts = {"intervals": [], "starter": None, "precaching": None, "precache": None, "written": None, "host_listed": None,
+             "host_render_thread": 0}
     with open(log, encoding="utf-8", errors="replace") as f:
         for line in f:
             t = epoch(line)
@@ -82,6 +91,14 @@ def read_run(folder):
                 m = rx.search(line)
                 if m:
                     facts[key] = tuple(float(x) if "." in x else int(x) for x in m.groups())
+            m = NOTHING_TO_PRECACHE.search(line)
+            if m:
+                facts["precaching"] = (0, int(m.group(1)))
+            m = HOST_AT_START.search(line)
+            if m:
+                facts["host_listed"] = int(m.group(1))
+            if HOST_ON_RENDER_THREAD.search(line):
+                facts["host_render_thread"] += 1
     return facts, marks
 
 
@@ -97,6 +114,9 @@ def report(folder):
                      f"{facts['precache'][0]:.0f} ms ({facts['precache'][1]} ready, {facts['precache'][2]} failed)")
     elif facts["precaching"]:
         lines.append(f"  precache: {facts['precaching'][0]} pipelines on {facts['precaching'][1]} threads (no 'done' line)")
+    if facts["host_listed"] is not None:
+        lines.append(f"  host passes: {facts['host_listed']} pipelines listed at the start; {facts['host_render_thread']} made on the "
+                     "render thread in play (each is a logged hitch)")
     segs = segments(marks)
     tot = {k: sum(d[k] for _, d in iv) for k in ("created", "background", "skipped", "taken")}
     if segs:
@@ -133,7 +153,12 @@ def selftest():
                     f"lacked), wait mean 0.0, longest 0 frames; made here 0 new) | input layouts 3")
         lines = [f"{stamp(0)} [info] [core] [t1] [gpu] pipelines: 1743 records and 91 layouts in C:\\x\\assets\\mcla_pipelines.bin: "
                  "1167 new here (0 dropped: a shader the pack does not have; 652 static depth biases zeroed)",
-                 f"{stamp(0)} [info] [core] [t1] [gpu] pipelines: precaching 1167 pipelines on 6 threads",
+                 f"{stamp(0)} [info] [core] [t1] [gpu] host pipelines at start: 38 listed, made ahead on one builder thread; by the "
+                 "settings: ambient occlusion high (set): 11; contact shadows low (auto on the mid class): 1; sun shafts low "
+                 "(auto on the mid class): 6; the other 20 are the resolve conversions' and the decode's, which every start uses",
+                 f"{stamp(2)} [info] [core] [t1] [gpu] host pipelines: 'shafts add 8x' made on the render thread (not listed, 31.5 ms)",
+                 f"{stamp(0)} [info] [core] [t1] [gpu] pipelines: precaching 1167 pipelines (310 of them copies at other sample "
+                 "counts) on 6 threads",
                  f"{stamp(3)} [info] [core] [t1] [gpu] pipelines: precache done in 2650.5 ms: 1167 ready, 0 failed",
                  scene(10, 3, 100, 0, 0), scene(20, 0, 5, 0, 0), scene(30, 31, 5, 0, 12), scene(40, 0, 5, 4, 7), scene(50, 0, 5, 0, 0),
                  f"{stamp(55)} [info] [core] [t1] [gpu] pipelines: 1211 records (44 new this session, 1167 from the other API's file)"]
@@ -148,7 +173,8 @@ def selftest():
         print(text)
         ok = True
         for want in ("1167 pipelines on 6 threads, done in 2650 ms", "ZOOM_OUT (Start -> the car exists)",
-                     "roam -> pause", "34 created on the render thread", "1211 records, 44 new this session"):
+                     "roam -> pause", "34 created on the render thread", "1211 records, 44 new this session",
+                     "38 pipelines listed at the start; 1 made on the render thread"):
             if want not in text:
                 ok = False
                 print("FAIL: missing", want)
@@ -156,6 +182,25 @@ def selftest():
         if not re.search(r"roam -> pause\s+10\.0\s+31\s+12\s+0\s", text) or not re.search(r"pause -> end\s+10\.0\s+0\s+7\s+4\s", text):
             ok = False
             print("FAIL: a segment row has the wrong counts")
+        # The four texts the game logs for the precache start (src/gpu/pipelines.cpp StartPrecache), as it prints them: the
+        # first-run counts depend on every one of them being read (the plain form went unread once, after its text changed).
+        forms = {
+            "plain": ("pipelines: precaching 1167 pipelines (310 of them copies at other sample counts) on 6 threads", (1167, 6)),
+            "boot mode": ("pipelines: precaching 1167 pipelines (310 of them copies at other sample counts) on 4 threads; boot mode "
+                          "on 4 usable processors: normal priority until the list is done or 20 s have passed, then 2 threads at "
+                          "below normal", (1167, 4)),
+            "command line prebuild": ("pipelines: command line prebuild: precaching 1167 pipelines (310 of them copies at other "
+                                      "sample counts) on 8 threads at normal priority (8 usable processors)", (1167, 8)),
+            "nothing to precache": ("pipelines: nothing to precache; 4 threads for background builds", (0, 4)),
+        }
+        for name, (text, want) in forms.items():
+            with tempfile.TemporaryDirectory() as d2:
+                with open(os.path.join(d2, "larecomp.log"), "w", encoding="utf-8") as f:
+                    f.write(f"{stamp(0)} [info] [core] [t1] [gpu] {text}\n")
+                got = read_run(d2)[0]["precaching"]
+            if got != want:
+                ok = False
+                print(f"FAIL: the '{name}' precache line read as {got}, wanted {want}")
         print("selftest:", "ok" if ok else "FAILED")
         return 0 if ok else 1
 
