@@ -77,7 +77,11 @@ void TakeBook::Begin(uint64_t first_update) {
 bool TakeBook::OnFrame(uint64_t update, bool lost) {
     const uint64_t want = have_last_ ? last_ + 1 : first_;
     const bool ok = update == want;
-    if (!ok) ++anomalies_;
+    if (!ok) {
+        ++anomalies_;
+        if (update < want) ++repeated_;
+        else skipped_ += update - want;
+    }
     ++rows_;
     if (lost) ++lost_;
     last_ = update;
@@ -92,6 +96,10 @@ Verdict Judge(const TakeBook& book, uint64_t end_update, uint64_t handed) {
     char buf[256];
     const bool exact = book.Rows() == updates && book.Lost() == 0 && book.Anomalies() == 0 && handed == updates;
     v.exact = exact;
+    // Updates that got a picture: the rows that were read back and were not a repeat. The rest of the updates have none.
+    const uint64_t good = book.Rows() > book.Lost() + book.Repeated() ? book.Rows() - book.Lost() - book.Repeated() : 0;
+    v.dropped = updates > good ? updates - good : 0;
+    v.repeated = book.Repeated();
     if (exact) {
         std::snprintf(buf, sizeof(buf), "%llu frames for %llu updates (%llu..%llu): exact", static_cast<unsigned long long>(book.Rows()),
                       static_cast<unsigned long long>(updates), static_cast<unsigned long long>(book.FirstUpdate()),
@@ -164,6 +172,10 @@ bool ParseSinkKind(const std::string& text, SinkKind* out) {
         *out = SinkKind::kRaw;
         return true;
     }
+    if (text == "png") {
+        *out = SinkKind::kPng;
+        return true;
+    }
     return false;
 }
 
@@ -172,8 +184,13 @@ const char* SinkKindName(SinkKind kind) {
         case SinkKind::kNone: return "none";
         case SinkKind::kFfmpeg: return "ffmpeg";
         case SinkKind::kRaw: return "raw";
+        case SinkKind::kPng: return "png";
     }
     return "none";
+}
+
+bool SinkUsesFfmpeg(SinkKind kind) {
+    return kind == SinkKind::kFfmpeg || kind == SinkKind::kPng;
 }
 
 std::string FfmpegCommandLine(const std::string& program, uint32_t width, uint32_t height, bool bgra, double fps,
@@ -187,6 +204,12 @@ std::string FfmpegCommandLine(const std::string& program, uint32_t width, uint32
     if (!args.empty()) cmd += args + " ";
     cmd += "\"" + out_file + "\"";
     return cmd;
+}
+
+std::string FfmpegPngCommandLine(const std::string& program, uint32_t width, uint32_t height, bool bgra, double fps,
+                                 const std::string& out_pattern) {
+    return FfmpegCommandLine(program, width, height, bgra, fps,
+                             "-fps_mode passthrough -c:v png -compression_level 3 -pix_fmt rgb24 -start_number 0", out_pattern);
 }
 
 }  // namespace mc::cinematic::capture

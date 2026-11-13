@@ -236,8 +236,9 @@ const ItemDef kDebugToolsItems[] = {
     // to render (the FPS limit, the step cap and frame pacing stand aside). No take and no frame gate: the world runs fast or slow.
     Dbl("PM_RxDbgFixedStep", "mcla_fixed_step_fps", "FIXED STEP: ", kFixedStepVals, Len(kFixedStepVals), "%g", "", "OFF"),
 #if defined(LARECOMP_HAS_GPU)
-    // A take: the fixed step at this rate, every frame read back and the game held at the frame gate until it is. Writes to
-    // mcla_capture_out (a launch argument or F4); the sink is mcla_capture_sink (none until set). A scene's capture key does the same.
+    // A take: the fixed step at this rate, every frame read back and the game held at the frame gate until it is. It makes a take
+    // folder under mcla_capture_dir (mcla_capture_out names one exactly); the sink is mcla_capture_sink (none until set).
+    // A scene's capture key does the same.
     NativeOnly(Dbl("PM_RxDbgCapture", "mcla_capture_fps", "CAPTURE FPS: ", kCaptureFpsVals, Len(kCaptureFpsVals), "%g", "", "OFF")),
 #endif
     // The trailer toolkit's free camera and flight recorder (cinematic/freecam.h): the pad flies the camera and the game gets no pad input

@@ -168,7 +168,7 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `timescale <x>`, `timescale <a>..<b> over <s>` | the scale is put into the engine timer itself (a hook in `sub_821BDA90`), so the game's own slow motion and its floor of 0.1 do not matter; the state line's `engine step ratio` is what the engine really did (below about 0.006 at 60 FPS the engine's own floor under the scaled step, 0.1 ms, holds it) |
 | `set <setting> <value>` | the setting, live ones only; the old value comes back at the end. Not every setting: see "What a scene cannot set" |
 | `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
-| `capture fps <n> [step 1/<n>]`, `capture off` | a take (capture mode, below): the game steps by exactly 1/n a second and every frame is read back; the take ends at `capture off` or the scene's `end` |
+| `capture fps <n> [step 1/<n>] [name <take>] [sink none\|ffmpeg\|png\|raw] [statelog on\|off]`, `capture off` | a take (capture mode, below): the game steps by exactly 1/n a second and every frame is read back; `name` is the take's folder, `sink` where the frames go, `statelog on` asks for `state.csv`; the take ends at `capture off` or the scene's `end` |
 | `cam`, `cut` | the camera (below) |
 | `car <id> spawn\|delete\|profile ...` | cars in free roam and the player's garage car ("Cars in a scene", below) |
 | `hud off\|on\|<alpha>`, `hud fade <a>..<b> to <x>`, `hud fade over <s> to <x>` | the game's own UI shown at an alpha ("The game's own UI on and off", below); `<x>` is `off`, `on` or an alpha |
@@ -338,7 +338,7 @@ For a recording the game has to advance by exactly one frame's time per picture,
 
 ```
 scene take fps 60
-at 0 capture fps 60          # from here: a take at 60 frames a second
+at 0 capture fps 60 name harbor sink ffmpeg statelog on   # from here: a take at 60 frames a second, into the folder "harbor"
 at 0 hour 17.5 hold
 end 10                       # the take ends with the scene (or at `capture off`)
 ```
@@ -346,24 +346,48 @@ end 10                       # the take ends with the scene (or at `capture off`
 - **Fixed step.** Every update gives the engine timer exactly `1/n` s in the game's own ticks (60 fps is 831250 ticks), whatever the frame took. The FPS limit, the step cap and frame pacing stand aside. The step is the capture rate (`step 1/<n>` may be written, and must say the same); slow motion is a `timescale` key with a higher capture rate, not another step. The path of a car depends on the step, so a take is tied to its rate.
 - **Frame gate.** The game does not start update `k + 1` until frame `k` has been read back (the 1:1 present output, before the overlays, 8-bit SDR, so the F3 card and menus are not in it; the output must not be HDR and frame generation must be off). The frame of an update is told at the hand-over of the frame to the render thread, where that thread is idle, so a take always holds exactly the pictures of its updates: the first is the take's first update and the last is the update before the take's end gate. The log says `[cap] frame count: N frames for N updates (a..b): exact`, or `[cap] FRAME COUNT: ...` with what is off (and `[cap] TAG:` / `frame of update N lost:` for the cause). A wait that runs out is a `[cap] gate timeout`; three in a row switch the waiting off for the take.
 - **Scene clock.** During a take the upscaler's history rule and the UI movies' pacing read frames times the step instead of the wall clock, so a slow capture is not a stall to them (`[cap] summary` shows `upscaler: ... history_restarts=N (gap_over_100ms=K)`: K is every frame without the clock). `mcla_capture_virtual_clock` turns it off.
-- **The first frame.** The take starts at the first update after the `capture` key; the scene time of its first frame (the key's update plus one step) is in the `[cap] take starts` line and `<prefix>.info.txt` (`first_scene_t`).
+- **The first frame.** The take starts at the first update after the `capture` key; the scene time of its first frame (the key's update plus one step) is in the `[cap] take starts` line and `take.json` (`scene.first_frame_scene_t`).
+- **The take folder.** Every take is a folder of its own, and a take never overwrites another (a taken name gets `-2`, `-3` ...). It holds everything that says what the take is, so it can be kept with its scene and compared with another take:
+
+  | File | What |
+  |---|---|
+  | `take.json` | the scene (name, where it was, a hash), the exe (path, the commit the harness's `SET-SOURCE.txt` names, the version), the settings that differ from their defaults, the picture size, the rate (`step_ticks`), the sink and its output, the frame count, the first and last update, `dropped` and `repeated` (0 for a take that did what it should), the gate, the memory it held, the free RAM at the start, lowest and end, how it ended. Written when the take starts (`"state": "running"`, so a crash leaves it) and again when it ends: `complete` (one picture for every update, none dropped or repeated, the output is what the frames say), `inexact` (it ended, but a frame was dropped or repeated) or `failed` (it could not run or stopped: `error` says why). |
+  | `video.mkv` | sink `ffmpeg`: the frames as one FFV1 file |
+  | `frames/f000000.png` ... | sink `png`: one picture for every frame (ffmpeg writes them; a frame takes as long as ffmpeg needs to compress it, and the take waits) |
+  | `video.bgra` | sink `raw`: B8G8R8A8 frames, rows packed, `width x height x 4` bytes each (sizes in `take.json`) |
+  | `frames.csv` | one row for every frame: its update, its scene time, what it cost (the frame/update map: frame `k` shows update `first_update + k` in an exact take) |
+  | `state.csv` | only when the scene says `statelog on` (or `mcla_capture_statelog`): one row for every frame of the game's state as the frame shows it: scene time, hour, time scale, the update's step, the pause flag, the player's car position and a hash of its matrix. A take that matches another matches in these rows to the last bit. It holds no random-number or traffic state. |
+  | `scene.scene` | a copy of the scene file the take ran |
+  | `ffmpeg.log` | ffmpeg's own output (sinks `ffmpeg` and `png`) |
+
+  EXR pictures are not written: the readback is the 8-bit picture, and a float format needs the HDR scene read back first.
+- **Memory is bounded.** A take makes its GPU readback buffers and its host ring once, at the picture's size, from a plan that has to fit `mcla_capture_memory_mb` (2048) and the PC's free memory less `mcla_capture_ram_floor_mb` (1024). The ring is cut first (to 2), then the GPU buffers (to 2 in lock-step); a take that does not fit with 2 + 2 frames does not run, and the log says what it needs and what to change (`[cap] TAKE FAILED: a 7680x4320 take needs at least 506.3 MiB ...`). Nothing grows with the take's length or the writer's speed: a writer slower than the render fills the ring, the render thread waits for a free buffer, and the frame gate holds the game's next update. Only a writer that finishes nothing for the gate's timeout (ffmpeg stuck, a full disk) ends the take, with an error; the free memory is checked every 15 updates and a take stops when it falls below the floor. The buffers are freed when the take ends. At 4K the take holds 8 buffers of 31.6 MiB (253 MiB); at 8K 8 buffers of 126.6 MiB (1012.5 MiB). The only thing that grows with the length of a take is its books, about 130 bytes a frame (an hour at 60 fps is 28 MB). The plan covers the take's own buffers, not the game's render targets at a high render scale (that is what used up the PC's RAM at 8K): the renderer stops at scale 3 and `scene_run.py` never goes above it.
 
 Settings (all debug-only and live; the sink and the files are read when a take starts). A scene cannot set any of them ("What a scene cannot set" above): they come from the command line, F4 or the console.
 
 | Setting | Does |
 |---|---|
 | `mcla_capture_fps` (row CAPTURE FPS, Plume only), `mcla_fixed_step_fps` (row FIXED STEP) | a take, or the fixed step alone with no gate (for repeatability tests), at this rate; 0 is off. A scene's key wins over the take setting. |
-| `mcla_capture_sink` | `none` (default: the readback and its copies are measured and dropped), `ffmpeg` (a pipe, FFV1 in mkv) or `raw` (B8G8R8A8 frames) |
-| `mcla_capture_out` | the file prefix: `<prefix>.mkv` / `.bgra`, `.cap.csv` (one row of costs per frame), `.info.txt`, `.ffmpeg.log`. A relative prefix is relative to the game folder; a take with the same prefix overwrites the files. |
-| `mcla_capture_ffmpeg`, `mcla_capture_ffmpeg_args` | the program and its output options (default `-c:v ffv1 -level 3 -g 1 -slices 24 -pix_fmt bgr0`) |
-| `mcla_capture_ring`, `mcla_capture_lag` | host buffers between the readback and the writer (2 to 8); how many frames the game may run ahead of the readback (0: lock-step) |
-| `mcla_capture_gate_timeout_ms`, `mcla_capture_delay_ms`, `mcla_capture_log_every` | the gate's wait limit; an artificial wait per frame to try a slow capture; a `[cap] f=` line every n frames |
+| `mcla_capture_sink` | `none` (default: the readback and its copies are measured and dropped), `ffmpeg` (a pipe, FFV1 in mkv), `png` (ffmpeg writes one PNG a frame) or `raw` (B8G8R8A8 frames). A scene's `sink` wins. |
+| `mcla_capture_dir`, `mcla_capture_name` | where the take folders go (`captures`, relative to the game folder) and the folder's name when the scene gives none (`name`; else the scene's own name, else `take`) |
+| `mcla_capture_out` | the take folder itself, exactly (new or empty, else the take is refused): what the check chain and `scene_run.py` use |
+| `mcla_capture_statelog` | write `state.csv` (a scene's `statelog on` does the same) |
+| `mcla_capture_ffmpeg`, `mcla_capture_ffmpeg_args` | the program and the output options of the mkv sink (default `-c:v ffv1 -level 3 -g 1 -slices 24 -pix_fmt bgr0`) |
+| `mcla_capture_ring`, `mcla_capture_lag` | host buffers between the readback and the writer (2 to 8, as many as the memory plan allows); how many frames the game may run ahead of the readback (0: lock-step) |
+| `mcla_capture_memory_mb`, `mcla_capture_ram_floor_mb` | the hard cap on what a take holds; the free memory that has to stay free (0: no floor) |
+| `mcla_capture_gate_timeout_ms`, `mcla_capture_delay_ms`, `mcla_capture_log_every` | how long nothing may move at the gate or in the ring before it counts as a timeout; an artificial wait per frame to try a slow capture; a `[cap] f=` line every n frames |
 
 ```powershell
-larecomp.exe --debug_menu --mcla_scene=take --mcla_capture_sink=ffmpeg --mcla_capture_out=C:\takes\a --mcla_gpu_hdr=off
+larecomp.exe --debug_menu --mcla_scene=take-20s --mcla_capture_out=C:\takes\a --mcla_gpu_hdr=off
 ```
 
-Memory: a take holds the ring (4 host buffers) and six GPU readback buffers of one frame each, 31.6 MiB a frame at 4K; an 8K take is eight times that per buffer, and ffmpeg's FFV1 encoder runs next to the game. Not tried at 8K. `cmake --build <dir> --target larecomp_capture_test` builds the checks of the step maths, the frame books and the clock (they need no game); `larecomp_scene_test` covers the `capture` statement.
+**One command for a whole take.** The test harness has `ports\scripts\scene_run.py`: it starts the game from a save, runs the tour to free roam, arms the scene (which makes the take), waits for the take to finish, checks `take.json` (state `complete`, frames = updates, nothing dropped or repeated, the output files) and prints the folder:
+
+```powershell
+python -I ports\scripts\scene_run.py --exe-dir ports\exe\b-m2b --scene ports\scripts\scenes\take-20s.scene --scale 3 --window 1920x1080
+```
+
+`--scale` is the render scale (1 = 1280x720, 3 = 3840x2160: never above 3). It adds a `run` block to `take.json` (the command, the save, the exe's size and SHA-256, the PC's free RAM before and after); `scene_run.py selftest` and `check-json <take.json>` need no game. `cmake --build <dir> --target larecomp_take_test` builds the checks of the take folder (names, the memory plan, the host ring on real threads with a slow and a stuck writer, `take.json` read back, the state log); `larecomp_capture_test` the step maths, the frame books and the clock; `larecomp_scene_test` the `capture` statement. None needs a game.
 
 ## Adding a debug setting
 
