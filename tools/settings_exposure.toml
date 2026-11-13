@@ -61,25 +61,6 @@ names = [
   "wheel_device_range", "wheel_game_range", "wheel_steer_deadzone",
 ]
 
-# Rows whose constructor names a key that is not a cvar. The row writes the cvars listed (the constructor's string or constant is `rows`).
-[[virtual_row]]
-rows = ["renderer"]
-why = "the RENDERER row writes four held restart-only cvars (pause_menu.cpp kRendererChoices); owner 2026-11-13: DEBUG in the game"
-names = ["mcla_gpu", "mcla_native_gfx", "mcla_native_gfx_nocp", "mcla_native_gfx_continuous"]
-
-# Tagged cvars whose DEBUG (or REMOVE) row is still in a normal pause-menu table. SX-G4 moves the rows to the debug pages and SX-G5 takes them out
-# of the normal tables; each of those packages deletes the entries it settles. A check with --ignore-pending must pass once SX-G5 is merged.
-[[pending]]
-why = "DEBUG row still in a normal pause-menu table (SETTINGS-REVIEW.md A.1, owner answers 7.1)"
-names = [
-  "pace_at_swap",
-  "mcla_gpu", "mcla_native_gfx", "mcla_native_gfx_nocp", "mcla_native_gfx_continuous",
-  "perf_shadow_phase_bits", "perf_fast_vehicle_shadows", "perf_no_impostors", "perf_no_trees", "perf_no_fullscreen_blur",
-  "single_tile", "fence_spin_throttle", "breaking_frame_rate_limit",
-  "real_frame_delta", "smooth_chassis_depth", "smooth_chase_cam",
-  "debug_cam", "debug_cam_speed", "cam_freelook_collide", "cam_freelook_cs_invert",
-]
-
-[[pending]]
-why = "REMOVE row still in a normal pause-menu table (SX-G5 removes the row; the cvar stays, so it is tagged if it has no other row)"
-names = ["enable_ambient_tuning", "disable_rubberbanding"]
+# No [[pending]] list: SX-G5 took every DEBUG and REMOVE row out of the normal pause-menu tables, so a `.debug_only()` cvar that a
+# normal row names fails the check outright. (A row that names a key that is not a cvar, like the old RENDERER row, would be a
+# [[virtual_row]] entry: `rows` is the constructor's key, `names` the cvars it writes. None is left.)

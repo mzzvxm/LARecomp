@@ -5,7 +5,7 @@ r"""check_settings_exposure.py: is every cvar of the game either a row, on the e
 Reads, under <src dir> (default: the src folder next to tools\):
   * every REXCVAR_DEFINE_* (BOOL, INT32, ..., COMMAND) with its chained calls, and whether the chain has `.debug_only()`;
   * the rows of the pause menu (pause_menu.cpp and the menu files named in settings_exposure.toml): the cvar each Bool / Str / Dbl / Color row
-    writes, and the cvars a row writes that its constructor does not name (the upscaling mode row, RENDERER, VSYNC's native cvar);
+    writes, and the cvars a row writes that its constructor does not name (the upscaling mode row, VSYNC's native cvar);
   * tools\settings_exposure.toml: the exception list (SETTINGS-REVIEW.md B.1), the cvars that only the launcher has a row for, the virtual rows,
     and the "pending" list (a tagged cvar whose row is still in a normal pause-menu table until SX-G4 and SX-G5 move it).
 
