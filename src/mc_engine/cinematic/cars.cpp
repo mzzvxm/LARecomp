@@ -255,7 +255,7 @@ std::string Hex(uint32_t v) {
     return buf;
 }
 
-std::string Vec3(double x, double y, double z) {
+std::string Triple(double x, double y, double z) {
     char buf[96];
     std::snprintf(buf, sizeof(buf), "(%.2f, %.2f, %.2f)", x, y, z);
     return buf;
@@ -286,7 +286,7 @@ void LogPoses(int64_t now) {
     for (const CarEntry& e : g.dir.registry().entries()) {
         if (!e.have_pose) continue;
         LARECOMP_APP_INFO("[cars] pose {} {} heading {:.1f} (racer {}, matrix read {} update(s) ago)", e.id,
-                          Vec3(e.pose.position[0], e.pose.position[1], e.pose.position[2]), e.pose.heading, Hex(e.racer),
+                          Triple(e.pose.position[0], e.pose.position[1], e.pose.position[2]), e.pose.heading, Hex(e.racer),
                           g.frame - e.pose_frame);
     }
 }
@@ -366,7 +366,7 @@ std::string Describe(const Call& c) {
     if (c.ptr) s += " ptr " + Hex(c.ptr);
     if (c.native == Native::kGetProfile || c.native == Native::kHostCarName) s += " index " + std::to_string(c.index);
     if (c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig || c.native == Native::kTeleport) {
-        s += " at " + Vec3(c.position[0], c.position[1], c.position[2]) + " heading " + std::to_string(static_cast<int>(std::lround(c.heading_native))) + " (native)";
+        s += " at " + Triple(c.position[0], c.position[1], c.position[2]) + " heading " + std::to_string(static_cast<int>(std::lround(c.heading_native))) + " (native)";
     }
     return s;
 }
@@ -391,7 +391,7 @@ void LogPlacement(const uint8_t* base, const Director::Next& n, const NativeResu
     if (dh > 180.0) dh = 360.0 - dh;
     LARECOMP_APP_INFO("[cars] {} placed: the matrix says {} heading {:.1f}; Racer_GetPosition says {} ({:.2f} m apart); the scene asked for {} heading {:.1f} "
                       "(off by {:.2f} m on the ground, {:.1f} degrees)",
-                      n.car, Vec3(p.position[0], p.position[1], p.position[2]), p.heading, Vec3(nx, ny, nz), dn, Vec3(ax, ay, az),
+                      n.car, Triple(p.position[0], p.position[1], p.position[2]), p.heading, Triple(nx, ny, nz), dn, Triple(ax, ay, az),
                       asked_heading, da, dh);
 }
 
@@ -498,7 +498,7 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
                            NativeName(c.native), wrapper);
     } else {
         std::string value = r.ret_written ? Hex(r.ret) + " (int " + std::to_string(static_cast<int32_t>(r.ret)) + ")" : std::string("(no value)");
-        if (r.vec_count > 0) value += "; vec0=" + Vec3(r.vec[0][0], r.vec[0][1], r.vec[0][2]);
+        if (r.vec_count > 0) value += "; vec0=" + Triple(r.vec[0][0], r.vec[0][1], r.vec[0][2]);
         LARECOMP_APP_INFO("[cars] {} {} -> {} ({:.3f} ms)", n.car, NativeName(c.native), value, r.ms);
         if (c.native == Native::kGetPosition) LogPlacement(base, n, r);
     }
