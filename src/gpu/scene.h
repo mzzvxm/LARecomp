@@ -44,6 +44,8 @@
 // every frame for the same purpose. It sees only that the target was drawn
 // into in each of the last frames; a target made for one picture (car paint,
 // vinyl) is not.
+// While a capture runs (sync_builds.h) the rule only counts: no draw is left out for a pending
+// pipeline, every one waits for it.
 //
 // Statistics: a line every kReportInterval guest frames and at shutdown.
 //

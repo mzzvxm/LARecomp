@@ -37,6 +37,7 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "sync_builds.h"
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
@@ -911,8 +912,9 @@ void Scene::PrepareHdrDraw(PreparedDraw& d, const PipelineInputs& inputs,
   PipelineKey variant;
   hdr_tone_->VariantKey(action, d.key, &variant);
   // A pipeline nobody made yet is built in the background: the second draw (and with it the frame's
-  // float scene) waits for it, the game's own draw does not.
-  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr};
+  // float scene) waits for it, the game's own draw does not. While a capture runs (sync_builds.h)
+  // nothing waits: the lookup makes or waits for the pipeline.
+  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kHdrVariant};
   bool pending = false;
   plume::RenderPipeline* pipeline = pipelines_->Get(variant, inputs, &deferral, &pending);
   if (!pipeline) {
@@ -1040,8 +1042,8 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
   PipelineInputs variant_inputs = inputs;
   variant_inputs.msaa_guest_samples = 0;
   // A pipeline nobody made yet is built in the background: the second draw waits for it (the frame
-  // has less of a mask), the game's own draw does not.
-  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr};
+  // has less of a mask), the game's own draw does not. Not while a capture runs (sync_builds.h).
+  const Deferral deferral{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kUpscalerMask};
   bool pending = false;
   d.mask_pipeline = pipelines_->Get(variant, variant_inputs, &deferral, &pending);
   if (d.mask_pipeline) {
@@ -1523,7 +1525,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     ++memo_hits_[size_t(Memo::kPipeline)];
     d.pipeline = pipeline_memo_;
   } else {
-    // A miss may leave the draw out while a builder thread makes the pipeline.
+    // A miss may leave the draw out while a builder thread makes the pipeline (not while a capture
+    // runs: sync_builds.h).
     const SkipAsk ask{this, &d};
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
     bool pending = false;
@@ -3088,6 +3091,8 @@ void Scene::Report(const char* why) {
           : 0.0,
       w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
       cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text);
+  // The waits for pipelines a capture kept from being left out (a line only once the flag was on).
+  sync_builds::LogInterval(why);
   if (ab::Enabled() && std::string_view(why) == "interval") {
     // Per draw: the scene's draw count moves a few percent between windows.
     const double ms = cycles::ToNs(w.prepare_cycles) / frames / 1e6;
