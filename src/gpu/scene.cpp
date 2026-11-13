@@ -1387,6 +1387,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     return;
   }
   draw.writes_depth = (d.key.depth & 2u) != 0;
+  draw.stencil_ids = temporal::StencilIdsWritten(d.state);  // the vehicles' own motion (ao.h)
   ao_->OnMainDraw(draw, banks);
 }
 

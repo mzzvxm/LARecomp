@@ -52,7 +52,8 @@ REXCVAR_DEFINE_INT32(
     "(only while it is on): 1 the factor the picture is multiplied by (white: none), 2 the "
     "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
     "(a log scale), 6 how much of the last frames each pixel kept (white: all it can, black: none, "
-    "so it is new, a vehicle, or has no history yet; the history itself goes on as usual). 0: "
+    "so it is new, a vehicle whose own motion is not known, or has no history yet; the history itself "
+    "goes on as usual). 0: "
     "off. Live.")
     .range(0, 6)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -101,8 +102,19 @@ constexpr float kMinVisibility = 0.1f;
 constexpr uint32_t kReleaseAfterFrames = 60;
 // Sizes below this (host pixels, either way) are not worth the passes.
 constexpr uint32_t kMinRenderSize = 64;
-// The history's flag in the push block's flags (hlsl/ao_temporal_ps.hlsl AoHistoryOn).
+// The history's flag in the push block's flags (hlsl/ao_temporal_ps.hlsl AoHistoryOn), and the flag
+// of the pause/map view, whose vehicle pixels take the camera's motion like the world
+// (AoVehiclesAsWorld).
 constexpr uint32_t kHistoryFlag = 1u << 20;
+constexpr uint32_t kVehiclesAsWorldFlag = 1u << 21;
+constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+// The vehicle table (hlsl/ao_temporal_ps.hlsl): a row an ID, four texels a row (the three columns of
+// the matrix and the usable flag, hlsl/temporal_vehicle_table_ps.hlsl).
+constexpr plume::RenderFormat kVehicleTableFormat = plume::RenderFormat::R32G32B32A32_FLOAT;
+constexpr uint32_t kVehicleTableWidth = 4;
+// The vehicle summary line is printed every this many guest frames (and once, the first time a table
+// is drawn).
+constexpr uint64_t kVehicleLogEvery = 3600;
 // The vertex constants' view inverse is taken as the frame's own camera once it matched the
 // anchor's within kVsMatch in a frame whose camera moved by at least kVsMoved (an entry of the
 // view inverse: a step of that size shows in it; a stale copy of the last frame's would not match).
@@ -290,6 +302,7 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVDenoise: return "ao denoise";
     case kVTemporal: return "ao temporal";
     case kVTemporalMs: return "ao temporal (multisampled)";
+    case kVVehicleTable: return "ao vehicle table";
     default: break;
   }
   const uint32_t index = variant - kVApplyBase;
@@ -332,6 +345,15 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
     layout_.reset();
     return;
   }
+  // The vehicle table's rows are drawn with the temporal system's own shader (three float4 of push
+  // constants as the three columns, a flag in the fourth texel) into an image of the occlusion's own.
+  // Without it the vehicles keep no history (the wide blur, as before the vehicles' motion was used).
+  const HostShaderBlob table = TemporalVehicleTablePixelShader();
+  vehicle_table_shader_ = passes.CreateShader(table.data, table.size, table.name);
+  if (!vehicle_table_shader_) {
+    REXLOG_ERROR("[gpu] ao: the vehicle table's shader could not be made: the vehicles' pixels keep "
+                 "no history this session (the wide blur)");
+  }
   ready_ = true;
   ListPrecache();
 }
@@ -354,6 +376,7 @@ void AmbientOcclusion::Shutdown() {
     image = HostImage{};
   }
   weight_ = HostImage{};
+  vehicle_table_ = HostImage{};
   history_valid_ = false;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
@@ -361,6 +384,7 @@ void AmbientOcclusion::Shutdown() {
   for (auto& shader : shaders_) {
     shader.reset();
   }
+  vehicle_table_shader_.reset();
   layout_.reset();
   ready_ = false;
   device_ = nullptr;
@@ -389,6 +413,9 @@ void AmbientOcclusion::ListPrecache() {
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     listed.push_back(ApplyVariant(false, 8));
   }
+  if (vehicle_table_shader_) {
+    listed.push_back(kVVehicleTable);
+  }
   for (const uint32_t variant : listed) {
     precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
                  VariantName(variant), [this, variant] { return MakePipeline(variant); });
@@ -410,6 +437,11 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVDenoise: return make(kPassDenoise, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVTemporal: return make(kPassTemporal, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVTemporalMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16_FLOAT, copy, 1);
+    case kVVehicleTable:
+      // The host pass layout (the row's 48 bytes of push constants), as the temporal system's own table.
+      return vehicle_table_shader_ ? passes_->CreatePipeline(*vehicle_table_shader_,
+                                                             kVehicleTableFormat, name.c_str())
+                                   : nullptr;
     default: break;
   }
   // The apply pass: into the scene colour (float16 RGBA) with the target's sample count. The
@@ -482,6 +514,7 @@ uint64_t AmbientOcclusion::HeldBytes() const {
     add(image);
   }
   add(weight_);
+  add(vehicle_table_);
   return bytes;
 }
 
@@ -498,6 +531,7 @@ void AmbientOcclusion::ReleaseImages() {
     passes_->ReleaseImage(image);
   }
   passes_->ReleaseImage(weight_);
+  passes_->ReleaseImage(vehicle_table_);
   history_valid_ = false;
   history_cut_ = false;
   ++generation_;
@@ -519,6 +553,9 @@ void AmbientOcclusion::OnMainDraw(const MainDraw& draw, const ConstantBanks::Ban
     ++draws_at_anchor_;
     return;
   }
+  // The vehicle IDs the main view's draws write before the anchor (the anchor's constants hold the
+  // motion of those only).
+  stencil_ids_ |= draw.stencil_ids;
   if (qualifying_resolves_ != 0) {
     ++draws_after_;
     if (draw.match.depth && draw.writes_depth) {
@@ -598,6 +635,7 @@ void AmbientOcclusion::OnDepthClear(const EdramKey& key, float z) {
 void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
   have_camera_ = false;
+  vehicle_motion_.valid = 0;  // read again below, once this frame gives a camera
   lens_step_valid_ = false;
   vs_compare_valid_ = false;
   // The play view's camera and the pause/map world's (4x samples) are kept apart: the lens differs
@@ -706,6 +744,12 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
     have_last_step_ = false;
     last_motion_valid_ = false;
     vs_pose_trusted_ = false;
+  }
+  // The vehicles' own motion over this frame, from the game's matrices in these constants, for the
+  // next frame's history. The pause/map world has nothing that moves by itself: its vehicle pixels
+  // take the camera's motion.
+  if (!pause) {
+    NoteVehicles(ps);
   }
   camera_ = camera;
   have_camera_ = true;
@@ -1235,6 +1279,135 @@ void AmbientOcclusion::NoteHistory(const HistoryUse& use) {
   }
 }
 
+void AmbientOcclusion::NoteVehicles(const uint8_t* ps_bank) {
+  const temporal::VehicleStats s =
+      temporal::ReadVehicleMotion(ps_bank, stencil_ids_, &vehicle_motion_);
+  vehicle_motion_frame_ = frame_;
+  VehicleCounts& v = vehicles_;
+  ++v.anchors;
+  if (s.asked != 0) {
+    ++v.anchors_with_ids;
+    v.ids_asked += s.asked;
+    v.ids_taken += s.taken;
+    v.not_sane += s.not_sane;
+    v.not_rigid += s.not_rigid;
+    v.max_asked = std::max(v.max_asked, s.asked);
+  }
+  v.no_world += s.no_world ? 1 : 0;
+}
+
+uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, const HistoryUse& use,
+                                              uint32_t* slot) {
+  *slot = kNoSlot;
+  // The pause/map view's vehicles take the camera's motion (no table); a motion that is not the last
+  // frame's anchor's (a frame with no camera in between) is not used.
+  if (!use.on || trigger_pause_ || vehicle_motion_.valid == 0 ||
+      vehicle_motion_frame_ + 1 != frame_) {
+    return 0;
+  }
+  plume::RenderPipeline* pipeline = Pipeline(kVVehicleTable);
+  if (!pipeline ||
+      !passes_->EnsureImage(vehicle_table_, kVehicleTableWidth, temporal::kVehicleIds,
+                            kVehicleTableFormat, "ao vehicle table")) {
+    return 0;
+  }
+  // For a point of vehicle k, this frame's game view space into the last frame's: the camera's motion
+  // `use.motion` is v_now W_now V_prev for the world; the vehicle's own step T_k takes this frame's world
+  // position of the point to its position in the last frame (vehicle_motion.h), so the point goes
+  // v_now W_now T_k V_prev = use.motion * W_prev * T_k * V_prev (V_prev W_prev is the identity: previous_
+  // is the camera the history was made with). Then into this renderer's view space (x right, y up, z
+  // forward: S M S with S = diag(1, 1, -1, 1), as the camera's rows of the push block), three columns of
+  // four floats the shader takes as rows.
+  // CHECK: the direction of T_k (this frame's world to the last frame's, as BuildVehicleTable uses it
+  // between clip_now and clip_prev) and the repeat of last frame's step for this frame; a car that
+  // drives away from its own history in debug view 6 (black on a moving car) says one of them is wrong.
+  const temporal::Mat4 to_world = temporal::Mul(use.motion, previous_.view_inverse);
+  struct Row {
+    uint32_t id;
+    float columns[12];
+  };
+  static_assert(sizeof(Row::columns) == 48);  // the host pass layout's push range is 64 bytes
+  Row rows[temporal::kVehicleIds];
+  uint32_t count = 0;
+  uint32_t mask = 0;
+  for (uint32_t k = 1; k < temporal::kVehicleIds; ++k) {
+    if (!(vehicle_motion_.valid & (1u << k))) {
+      continue;
+    }
+    const temporal::Mat4 m =
+        temporal::Mul(temporal::Mul(to_world, vehicle_motion_.world[k]), previous_.view);
+    if (!temporal::Finite(m)) {
+      continue;
+    }
+    Row& row = rows[count++];
+    row.id = k;
+    for (int c = 0; c < 3; ++c) {
+      for (int r = 0; r < 4; ++r) {
+        const double sign = ((r == 2) != (c == 2)) ? -1.0 : 1.0;
+        row.columns[c * 4 + r] = float(sign * m.m[r][c]);
+      }
+    }
+    mask |= 1u << k;
+  }
+  if (count == 0) {
+    return 0;
+  }
+  // One draw a vehicle over the four texels of its row (hlsl/temporal_vehicle_table_ps.hlsl); the
+  // image is cleared first, so the row of an ID nobody drew reads as not usable.
+  // CHECK: the same sequence as TemporalMotion::RecordVehicleTable (host pass layout, 4 x 1 viewports
+  // and scissors, a clear every frame) in this frame's list between two of the occlusion's own passes.
+  HostImage& image = vehicle_table_;
+  if (image.layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image.texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image.framebuffer.get());
+  list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  passes_->Bind(list);
+  list->setPipeline(pipeline);
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t id = rows[i].id;
+    const plume::RenderViewport viewport{0.0f, float(id), float(kVehicleTableWidth), 1.0f};
+    list->setViewports(&viewport, 1);
+    const plume::RenderRect scissor(0, int32_t(id), int32_t(kVehicleTableWidth), int32_t(id + 1));
+    list->setScissors(&scissor, 1);
+    list->setGraphicsPushConstants(0, rows[i].columns, 0, sizeof(rows[i].columns));
+    list->drawInstanced(3, 1, 0, 0);
+  }
+  list->setFramebuffer(nullptr);
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(image.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  image.layout = plume::RenderTextureLayout::SHADER_READ;
+  *slot = image.slot;
+  return mask;
+}
+
+void AmbientOcclusion::LogVehicleSummary() {
+  const VehicleCounts& v = vehicles_;
+  if (v.anchors_with_ids == 0 && v.frames_with_ids == 0 && v.pause_with_ids == 0) {
+    return;  // no vehicle seen yet
+  }
+  const uint64_t seen = v.history_frames + v.pause_frames;
+  if (seen == vehicles_logged_at_) {
+    return;
+  }
+  vehicles_logged_at_ = seen;
+  REXLOG_INFO("[gpu] ao: vehicle history, totals so far: of {} play frames that averaged over a history, "
+              "{} had vehicle IDs in the stencil; {} of those {} IDs had a motion row ({:.1f}%), a "
+              "table was drawn in {} frames ({} rows); the anchors' own constants gave a usable "
+              "matrix to {} of {} IDs in {} of {} anchors (up to {} IDs an anchor; not sane {}, not "
+              "rigid {}, c69 unusable in {} anchors); pause/map view: {} of {} history frames had "
+              "vehicle IDs (up to {} a frame), which take the camera's motion like the world",
+              v.history_frames, v.frames_with_ids, v.ids_with_row, v.ids_now,
+              v.ids_now ? 100.0 * double(v.ids_with_row) / double(v.ids_now) : 0.0, v.table_frames,
+              v.table_rows, v.ids_taken, v.ids_asked, v.anchors_with_ids, v.anchors, v.max_asked,
+              v.not_sane, v.not_rigid, v.no_world, v.pause_with_ids, v.pause_frames,
+              v.pause_max_ids);
+}
+
 bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            const Plan& plan) {
   EdramTargets::Target& depth_target = *summary.source;
@@ -1338,6 +1511,40 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.slots2[0] = use.on ? history_in.slot : depth_[0].slot;
     push.slots2[2] |= use.on ? kHistoryFlag : 0u;
     push.slots2[3] = summary.stencil_slot;
+    // The vehicles' rows: the vehicle table is drawn first (the list is outside any pass here), and the
+    // pause/map view's vehicle pixels take the camera's motion instead.
+    // CHECK: that nothing moves by itself in the pause/map view (the cars there are still, as the
+    // world is): a car that did move in a pause spell would be reprojected as still and fail the
+    // plane, depth or clamp test (the wide blur, ghosts held to the clamp's margin). The census's
+    // "vehicles" line and the summary line count the pause frames that had vehicle IDs.
+    uint32_t vehicle_slot = kNoSlot;
+    const uint32_t vehicle_rows = RecordVehicleTable(list, use, &vehicle_slot);
+    push.slots[0] = vehicle_slot;
+    push.slots2[2] |= trigger_pause_ ? kVehiclesAsWorldFlag : 0u;
+    if (use.on) {
+      // What the log says: the vehicle IDs the main view had written by now and how many had a row.
+      const uint32_t ids_now = stencil_ids_ & ~1u & ((1u << temporal::kVehicleIds) - 1u);
+      const uint32_t count_now = uint32_t(std::popcount(ids_now));
+      VehicleCounts& v = vehicles_;
+      if (trigger_pause_) {
+        ++v.pause_frames;
+        if (count_now != 0) {
+          ++v.pause_with_ids;
+          v.pause_max_ids = std::max(v.pause_max_ids, count_now);
+        }
+      } else {
+        ++v.history_frames;
+        if (count_now != 0) {
+          ++v.frames_with_ids;
+          v.ids_now += count_now;
+          v.ids_with_row += uint32_t(std::popcount(ids_now & vehicle_rows));
+        }
+        if (vehicle_rows != 0) {
+          ++v.table_frames;
+          v.table_rows += uint32_t(std::popcount(vehicle_rows));
+        }
+      }
+    }
     push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
     push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
     // The motion in this renderer's view space (x right, y up, z forward): the game's looks along
@@ -1600,6 +1807,10 @@ void AmbientOcclusion::ProcessProbe(uint64_t frame, uint64_t generation, uint32_
 
 void AmbientOcclusion::OnPresent() {
   pause_spell_ = pause_view_ && !play_view_ ? pause_spell_ + 1 : 0;
+  if (frame_ % kVehicleLogEvery == 0 || (!vehicles_first_logged_ && vehicles_.table_frames != 0)) {
+    vehicles_first_logged_ = vehicles_first_logged_ || vehicles_.table_frames != 0;
+    LogVehicleSummary();
+  }
   if (census_every_ != 0 && frame_had_main_view_) {
     Census();
   }
@@ -1617,6 +1828,7 @@ void AmbientOcclusion::OnPresent() {
   composite_seen_ = false;
   play_view_ = false;
   pause_view_ = false;
+  stencil_ids_ = 0;
   frame_had_main_view_ = false;
   qualifying_resolves_ = 0;
   later_tiles_ = 0;
@@ -1830,6 +2042,10 @@ void AmbientOcclusion::Census() {
               pose_frames_[size_t(Pose::kVertexBank)], pose_frames_[size_t(Pose::kPredicted)],
               pose_frames_[size_t(Pose::kStill)],
               vs_pose_trusted_ ? "are trusted" : "are not trusted yet");
+  REXLOG_INFO("{}   vehicles: IDs the main view wrote before this point {:#08x}; the last anchor "
+              "(frame {}) gave a usable motion for {:#08x}; table rows drawn so far {} in {} frames",
+              kPrefix, stencil_ids_ & ~1u, vehicle_motion_frame_,
+              vehicle_motion_.valid, vehicles_.table_rows, vehicles_.table_frames);
   REXLOG_INFO("{}   occlusion: {} (mcla_gpu_ao), passes {} this frame, {} runs in all, {} frames "
               "without a previous frame's camera; pause/map view: {} runs, {} triggers without "
               "a pause/map camera, {} held back for the lens (second frame or a sweep); the depth "
