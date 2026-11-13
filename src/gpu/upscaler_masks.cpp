@@ -205,6 +205,17 @@ void UpscalerMasks::VariantKey(const PipelineKey& key, PipelineKey* out) {
   // The game's depth and stencil test, and neither written: the depth bit 1 is the write enable, bits
   // 8 to 15 of the masks the stencil write mask. The depth format and the bias stay, the framebuffer
   // has the game's depth beside the coverage image.
+  if ((key.depth & 3u) == 3u) {
+    // A draw that writes depth: the game's own draw has just written this draw's depth, so a strict
+    // comparison would fail against it; the inclusive one passes exactly where the game's passed.
+    const auto func = plume::RenderComparisonFunction((key.depth >> 2) & 0xF);
+    if (func == plume::RenderComparisonFunction::LESS) {
+      out->depth = (out->depth & 3u) | (uint32_t(plume::RenderComparisonFunction::LESS_EQUAL) << 2);
+    } else if (func == plume::RenderComparisonFunction::GREATER) {
+      out->depth =
+          (out->depth & 3u) | (uint32_t(plume::RenderComparisonFunction::GREATER_EQUAL) << 2);
+    }
+  }
   out->depth &= ~2u;
   out->stencil_masks &= ~0xFF00u;
   out->sample_count = 1;
