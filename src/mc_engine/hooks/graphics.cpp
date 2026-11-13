@@ -63,13 +63,15 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 0.0, "MCLA/LOD",
 
 // "auto" is the window's own shape (mc_engine/ultrawide.h): wider than 16:9 widens the view and keeps
 // the HUD 16:9 in the middle (hud_width, below, moves its corner pieces out). The others pick a shape
-// whatever the window is (the picture then has black bars where the window is not that shape); 16:10
-// is the same as 16:9.
+// whatever the window is: the picture lies in the largest frame of that shape in the window, centred,
+// with pure black bars where the window is not that shape (mc_engine/frame_fit.h). Live: the pause
+// menu's DISPLAY > ASPECT RATIO and the launcher write it while the game runs. The Xenia renderer
+// always follows the window.
 REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
-    "Aspect ratio of the picture: auto follows the window (21:9, 32:9 and other wide windows get a "
-    "wider view; the HUD stays 16:9 in the middle), or 16:9, 21:9, 32:9.")
-    .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
-    .debug_only()
+    "Shape of the picture: auto fills the window (a 21:9 or 32:9 window gets a wider view; the HUD "
+    "stays 16:9 in the middle), or 16:9, 21:9 or 32:9 whatever the window is, with black bars above "
+    "and below where the window is narrower than that shape and at the sides where it is wider.")
+    .allowed({"auto", "16:9", "21:9", "32:9"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Live, and only on a picture wider than 16:9 (mc_engine/ultrawide.h, "the HUD's corner pieces"): the

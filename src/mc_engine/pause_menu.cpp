@@ -1381,6 +1381,9 @@ constexpr const char* kButtonLayoutVals[]  = {"auto", "xbox", "playstation", "ke
 constexpr const char* kButtonLayoutNames[] = {"AUTO", "XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
+// ASPECT RATIO: ":" is not allowed in a name, so the shapes read 16X9 as RESOLUTION reads 2560X1440.
+constexpr const char* kAspectVals[]  = {"auto", "16:9", "21:9", "32:9"};
+constexpr const char* kAspectNames[] = {"AUTO", "16X9", "21X9", "32X9"};
 // DIFFICULTY. AI DIFFICULTY is a percent, -1 = the game's own choice (STOCK);
 // the scales are multipliers over the shipped RubberBandTune (1 = as shipped).
 constexpr double kAiDiffVals[]     = {-1.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
@@ -1485,7 +1488,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // ANISOTROPIC (9 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
 // disable_msaa, RENDER SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale;
 // leaving the menu after changing either of those two offers "Restart now?". ANISOTROPIC is live and
-// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
+// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR, DISPLAY
 // GAMMA, FPS LIMIT, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
 // ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes
 // mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
@@ -1536,13 +1539,13 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 // (MenuItemCount).
 //
 // The page is three runs of rows, in this order (the last two come from VideoExtraRows):
-//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
-//      GAMMA, FPS LIMIT, SMOOTH UI);
+//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR,
+//      DISPLAY GAMMA, FPS LIMIT, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
 //      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering
 //      and occlusion that used to sit on the RENDERER page);
 //   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 18 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
+// At most 19 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
 // kMaxRowsPerMenu (24) is refused whole.
 // CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
 // cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
@@ -1561,6 +1564,10 @@ const ItemDef kVideoItems[] = {
     WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
                  &mcla_menu::kResolutionDynamics),
 #if defined(LARECOMP_HAS_GPU)
+    // ASPECT RATIO: the shape of the picture in the window (mc_engine/frame_fit.h, ultrawide.h). AUTO fills
+    // the window; 16X9, 21X9 and 32X9 keep that shape and leave pure black bars where the window is not
+    // that shape. Live, NATIVE only (the Xenia renderer's present always fills the window). Width: 14 and 4.
+    NativeOnly(Str("PM_RxAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames, 4)),
     // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
     // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
     // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
@@ -2292,7 +2299,7 @@ const MenuDef kMenus[] = {
     {"PM_RxDbgTabPerf", "PERFORMANCE", "Pacing and speed switches for testing.",
      "RxDbgPerfMenu",
      nullptr, 0, mcla_menu::DebugPerformanceRows, false, nullptr, true},
-    {"PM_RxDbgTabRend", "RENDERING", "Renderer views and logs, aspect ratio.",
+    {"PM_RxDbgTabRend", "RENDERING", "Renderer views and logs.",
      "RxDbgRendMenu",
      nullptr, 0, mcla_menu::DebugRenderingRows, false, nullptr, true},
     {"PM_RxDbgTabCam", "CAMERA", "Free camera and camera tests.",
