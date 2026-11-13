@@ -97,6 +97,9 @@ add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
 # The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
 #   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
 add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
+# Where the sun shafts are added and when they fall back (shafts_anchor.h) likewise:
+#   cmake --build <dir> --target larecomp_shafts_anchor_test, then run src/gpu/larecomp_shafts_anchor_test.
+add_executable(larecomp_shafts_anchor_test EXCLUDE_FROM_ALL shafts_anchor_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
