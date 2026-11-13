@@ -636,7 +636,7 @@ void AmbientOcclusion::OnDepthClear(const EdramKey& key, float z) {
   depth_clear_z_ = z;
 }
 
-void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
+void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks, bool requested_cut) {
   anchor_seen_ = true;
   have_camera_ = false;
   vehicle_motion_.valid = 0;  // read again below, once this frame gives a camera
@@ -712,7 +712,7 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks) {
   if (lens_delta_valid_) {
     const temporal::Cut cut =
         temporal::TestCut(camera, previous_, have_last_step_ ? last_step_ : nullptr);
-    if (cut.fires) {
+    if (cut.fires || requested_cut) {
       history_valid_ = false;
       history_cut_ = true;
       have_last_step_ = false;

@@ -94,7 +94,7 @@ TemporalSystem::AnchorStatus StatusOf(temporal::Reject reject) {
 const char* ResetName(uint32_t index) {
   static const char* const kNames[TemporalSystem::kResetReasons] = {
       "no anchor in the frame before", "camera cut", "size changed", "gap over 100 ms",
-      "no previous matrix", "the view changed"};
+      "no previous matrix", "the view changed", "cut requested"};
   return index < TemporalSystem::kResetReasons ? kNames[index] : "?";
 }
 
@@ -1758,6 +1758,11 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
     if (cut.fires) {
       reset |= kResetCut;
     }
+  }
+  if (fr.cut_requested) {
+    // The game's own camera cut (the trailer toolkit, cut_request.h): a small cut the rule above does not see, or a cut of a
+    // frame the rule would call a step.
+    reset |= kResetRequest;
   }
   if (!camera.previous_valid) {
     reset |= kResetNoPrevious;

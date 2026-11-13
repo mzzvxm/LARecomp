@@ -154,11 +154,52 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `timescale <x>`, `timescale <a>..<b> over <s>` | the engine timer's time scale (below about 0.006 at 60 FPS the game holds its own lowest step) |
 | `set <setting> <value>` | the setting, live ones only; the old value comes back at the end |
 | `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
-| `cam`, `cut`, `hud`, `car`, `start` | kept for the camera, HUD and car packages of the toolkit; read and linted, not applied yet |
+| `cam`, `cut` | the camera (below) |
+| `hud`, `car`, `start` | kept for the HUD and car packages of the toolkit; read and linted, not applied yet |
 
 The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`, one line for every key as its time comes, a `state` line every 2 s that puts the scene's hour, weather and time scale next to what the game reports, `finished`. Natives are called one or two an update, on the game thread.
 
 The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
+
+### The camera track
+
+The `cam` and `cut` statements move the camera. Nothing changes unless a scene with a camera track runs: without one the camera hook costs a flag test and the renderer's cut code one atomic load a frame. The camera takes over at the first `cam` key and keeps going until `cam <t> off` or the scene's end. It replaces the game's own camera in every camera mode, at the one place they all pass (`0x822C0868`), so the shadows and the level of detail follow it as they follow the game's (where the sound's listener is, the car or the camera, is not known yet). The world follows it too: a camera 600 m from the car loads the city around itself, so the car does not move and nothing locks the streaming. While the game is paused, or in a menu or a loading screen, the game's own camera is left alone.
+
+```
+cam 0 pos 800 5 -800 yaw 80 pitch -4 roll 0 fov 40       # a point, an aim by angles
+cam 4 look car:player 0 1.2 0 pos 830 3 -790 fov 35 ease inout   # a look at the car, one metre twenty above it
+cam 6 attach car:player 0 2 -6 heading follow 0.15 fov 45  # six metres behind and two up, lagging the car by 0.15 s
+cut 8                                                      # a cut
+cam 8 orbit car:player r 7 az 0 el 12 fov 30               # on a sphere around the car
+cam 10 orbit car:player r 9 az 180 el 20                   # azimuth, elevation and radius blend: an arc round the car
+cam 12 off                                                 # the game's camera again
+```
+
+| Word | Meaning |
+|---|---|
+| `pos x y z` | the camera's place, in the game's metres (Y up) |
+| `attach car:<id> [dx dy dz]` | at that offset in the car's frame: x right, y up, z forward (`0 2 -6` is behind and above). `heading` uses only the car's heading, so the camera does not pitch or roll with the car. `follow <s>` lags the car's place and heading by about that many seconds |
+| `orbit car:<id> r <m> az <deg> el <deg> [at dx dy dz]` | on a sphere around the car (the point `at`, in its heading frame): az 0 is behind, 90 on the right, 180 in front; it looks at that point unless the key says how to aim |
+| `yaw <deg> pitch <deg>` | the aim by angles: yaw 0 looks along +Z, 90 along +X; pitch + looks up |
+| `look car:<id> [dx dy dz]`, `look x y z` | the aim at a car (a point at an offset in its heading frame) or at a world point. `aimfollow <s>` lags the aim behind a moving target |
+| `roll <deg>` | + tilts the right side up |
+| `fov <deg>`, `near <m>`, `far <m>` | the vertical field of view (a zoom is even: it is interpolated in focal length), near and far. A channel no key names stays the game's own |
+| `ease linear\|in\|out\|inout` | how the segment that STARTS at this key runs |
+| `cam <t> off` | the game's camera from `t` |
+| `cut <t>` | a cut: no key before it blends with a key after it, and the frame at `t` starts a new shot (below) |
+
+Each channel (position, aim, roll, fov, near, far) has its own keys and runs from key to key. The first key names a position and an aim. A position runs along a smooth curve through the keys (a Catmull-Rom spline; an attach or orbit key is a point that moves with its car, and two orbit keys of one car blend their angles); the aim is a slerp between what each key aims at; a value holds after its last key. After a cut a channel the new shot's first keys do not name carries on from where it was. `car:player` is the player's own car; the other ids are for the car package. A car that does not exist (yet) is held at its last place, or the origin, and the log says so once.
+
+**Cuts.** The take-over, a `cut`, a restart of the scene, and the hand-back (`cam off`, the end) are announced to the renderer with the camera of that frame (`[cam] cut #n ...`). The first frame whose motion blur draw has that camera is the cut frame (`[gpu] cut: ...`; a request that nothing met in 240 frames is dropped with a warning). On that frame the temporal upscalers' history starts again (`[gpu] temporal: history starts again ... cut requested`), so does the occlusion's, and the game's motion blur is told that the previous frame looked the same, so it does not smear the picture (without it the first frame of a shot streaks as if the camera had moved from the old shot). The renderer's own cut rule (25 m, 30 degrees, 5% of the field of view) still applies to every other frame; a jump that is not a `cut` in the scene is only seen by it.
+
+| Setting (debug only, live) | What it does |
+|---|---|
+| `mcla_cam_log` | log the camera every this many frames (`[cam] t=... at x y z, looking along ...`); 0: only the cuts |
+| `mcla_cam_cut_blur_fix` | on by default: the motion blur fix of a cut. Off, for A/B pictures: the game's own constants |
+
+`cmake --build <dir> --target larecomp_camera_test` builds the checks of the maths, the parser and the camera rig, and `larecomp_cut_request_test` those of the cut requests and the blur constants; neither needs the game. `larecomp_camera_test a.scene` reads the camera keys of scene files and says what the game would say (`camera: 9 position keys (5 attach, 2 orbit), 6 aim keys ...`). The test harness's `cut_frames.py` finds the cuts in a lossless burst clip of a run and says whether the frames round each one are smeared.
+
+CHECK (nothing here has run in the game yet): that the racer matrix rows are the car's right, up and BACK (the camera's attach and look would be mirrored if not); that the camera object's c12 to c15 are the rows the hook wrote, with the field of view left out (the match of a cut to its frame); that c69 to c164 are the motion blur's only previous-frame constants; and that the hook runs once an update (a second run in one update gets the same camera and no second cut).
 
 ## Adding a debug setting
 

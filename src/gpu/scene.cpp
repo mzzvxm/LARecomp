@@ -22,6 +22,7 @@
 #include "backend.h"
 #include "ab.h"
 #include "ao.h"
+#include "cut_request.h"
 #include "cycles.h"
 #include "descriptors.h"
 #include "draw_decode.h"
@@ -74,6 +75,14 @@ REXCVAR_DEFINE_BOOL(
     "away from its source. Off: nothing is checked.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_cam_cut_blur_fix, true, "MCLA/Cinematic",
+    "TRAILER TOOLKIT (for A/B pictures): on a frame where the scene's camera cuts, the game's motion blur "
+    "gets this frame's own matrices as the previous frame's, so it does not smear the frame (E5: the first frame "
+    "after a cut). Off: the game's constants as they are.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
@@ -1198,8 +1207,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   // after the main view's last draw (EdramTargets::DepthLayer).
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     edram_->SetScenePhase(false);
+    NoteAnchorCut(banks);  // a cut the scene camera asked for: before the histories look at the frame
     if (ao_ && ao_->wants_draws()) {
-      ao_->OnAnchor(banks);  // this frame's camera: the next frame's occlusion uses its lens
+      ao_->OnAnchor(banks, anchor_cut_);  // this frame's camera: the next frame's occlusion uses its lens
     }
   }
 
@@ -1605,6 +1615,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
   }
+  if (cut_blur_pending_ && r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
+    NeutralizeAnchorBlur(banks, d);
+  }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
     // The tone map's second draw reads 16 bytes after the shared constants: its own copy of them.
     const UploadSpan span = upload_->Allocate(
@@ -1756,6 +1769,63 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
       temporal_->PatchAnchor(shared);
     }
   }
+}
+
+void Scene::NoteAnchorCut(const ConstantBanks::Banks& banks) {
+  anchor_cut_ = false;
+  cut_blur_pending_ = false;
+  if (!cut::Global().Pending()) {
+    return;  // the usual frame: one atomic load
+  }
+  cut::CameraPose camera;
+  if (!cut::CameraFromGuestBank(banks.ps.data(), &camera)) {
+    return;
+  }
+  const cut::Requests::Taken taken = cut::Global().Take(camera);
+  if (taken.expired != 0) {
+    REXLOG_WARN("[gpu] cut: {} cut(s) the game asked for were never met by an anchor's camera in {} frames (the first: request {}, "
+                "game frame {}): dropped; their frames got the renderer's own cut rule only",
+                taken.expired, cut::kGiveUpAfter, taken.expired_serial, taken.expired_game_frame);
+  }
+  if (!taken.hit) {
+    return;
+  }
+  anchor_cut_ = true;
+  cut_blur_pending_ = true;
+  ++cut_frames_;
+  REXLOG_INFO("[gpu] cut: guest frame {} is the game's frame {} (request {}, found {} anchor(s) after it was asked for{}): the temporal "
+              "history and the occlusion's start again, {} (cut #{})",
+              frame_serial_, taken.game_frame, taken.serial, taken.age,
+              taken.skipped != 0 ? std::format(", {} older request(s) went with it", taken.skipped) : std::string(),
+              REXCVAR_GET(mcla_cam_cut_blur_fix) ? "the motion blur's previous matrices are made this frame's own"
+                                                 : "the motion blur keeps the game's matrices (mcla_cam_cut_blur_fix is off)",
+              cut_frames_);
+  if (temporal_ && temporal_->active()) {
+    temporal_->NoteRequestedCut();
+  }
+}
+
+void Scene::NeutralizeAnchorBlur(const ConstantBanks::Banks& banks, PreparedDraw& d) {
+  cut_blur_pending_ = false;
+  if (!REXCVAR_GET(mcla_cam_cut_blur_fix)) {
+    return;
+  }
+  static_assert(sizeof(float) * 256 * 4 == guest::kConstantBankBytes, "the pixel bank is 256 registers of 4 floats");
+  alignas(16) float host[256 * 4];
+  SwapBankToHost(banks.ps.data(), reinterpret_cast<uint8_t*>(host));
+  if (!cut::NeutralizeMotionBlur(host)) {
+    if (cut_blur_refused_++ < 4) {
+      REXLOG_WARN("[gpu] cut: the anchor's view-projection or frame size (c8 to c11, c62) is not usable: the motion blur keeps the game's "
+                  "own matrices on this cut");
+    }
+    return;
+  }
+  UploadSpan span = upload_->Allocate(slot_, guest::kConstantBankBytes, kConstantAlignment);
+  if (!span) {
+    return;  // the draw keeps the constants UploadConstants gave it
+  }
+  std::memcpy(span.cpu, host, guest::kConstantBankBytes);
+  d.ps_constants = span;
 }
 
 void Scene::ApplyFetch(const FetchMemo& m, uint32_t slot, SharedConstants& sc) {
