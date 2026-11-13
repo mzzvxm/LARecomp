@@ -65,6 +65,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -75,6 +76,7 @@
 #include <plume_render_interface.h>
 
 #include "scale.h"
+#include "side_views.h"
 #include "texture_bytes.h"
 
 namespace mcla::gpu {
@@ -178,6 +180,11 @@ class EdramTargets {
     // it through a surface declared with the screen's size over 2^k (an image of the screen).
     // Decided when it is made; the level it has is HostSamplesAt(key, msaa_follows, level).
     bool msaa_follows = false;
+    // The side view class the identity belongs to (side_views.h), decided when it is made from its
+    // key and the declared size of the surface of its first use: its scale and host samples are the
+    // class's then (EdramTargets::side_scales), not the screen's rule; a resolve of it makes a product
+    // that is read at its own scale (ResolveCache::Product::own_scale).
+    SideView side_view = SideView::kNone;
     // The last declared size (D3DSurface SizeBits) seen binding it that
     // agreed with its scale or was reported (NoteDeclaredScale).
     uint32_t declared_size_bits = 0;
@@ -255,11 +262,12 @@ class EdramTargets {
   // and the post-processing the engine sizes from the screen. Those are made
   // at the internal scale; every other target -- luminance, shadow,
   // reflection, impostors, noise, the rain's particle state, the vinyl -- at
-  // the guest's size. The screen is the game's own (grcDevice's width and
-  // height, read on first use). A target keeps the scale it was made at until SetScales moves
-  // every target it applies to at once (a live change of the render scale, or of the scene's): a
-  // use whose surface classifies otherwise is counted and reported once per
-  // identity (NoteDeclaredScale).
+  // the guest's size, except the side views (side_views.h: the shadow cascades, the environment map
+  // and the road reflection), which are made at the scale of their class (side_scales). The screen is
+  // the game's own (grcDevice's width and height, read on first use). A target keeps the scale it was
+  // made at until SetScales (or SetSideScales) moves every target it applies to at once (a live
+  // change of the render scale, or of the scene's, or of a side view's): a use whose surface
+  // classifies otherwise is counted and reported once per identity (NoteDeclaredScale).
   static constexpr uint32_t kMaxScreenShift = 3;
   Scale resolution_scale() const { return resolution_scale_; }
   // The scale a target bound through a surface declared with `size_bits`
@@ -291,8 +299,8 @@ class EdramTargets {
     return key.samples > 1 && IsScreenImage(size_bits);
   }
   // Samples a new target of `key` bound through a surface declared with
-  // `size_bits` gets on the host: the level in force when the guest multisamples
-  // it and it is an image of the screen, else the guest's.
+  // `size_bits` gets on the host: its side view class's at the class's scale (side_views.h), else the
+  // level in force when the guest multisamples it and it is an image of the screen, else the guest's.
   uint32_t HostSamplesFor(const EdramKey& key, uint32_t size_bits);
   // Whether `key`'s target takes the host's MSAA level: its own answer when it exists, otherwise
   // FollowsMsaaLevel's. A pipeline of such a draw is made again at the new level's sample count
@@ -333,10 +341,26 @@ class EdramTargets {
     const auto it = targets_.find(key);
     return it != targets_.end() ? it->second->scale : ScaleForUse(key, size_bits);
   }
-  // The scale a new target of `key` bound through a surface declared with `size_bits` gets:
-  // ScaleForDeclared's, except that the scene's identities (IsSceneKey) take the scene's scale
-  // when it is not the images of the screen's.
+  // The scale a new target of `key` bound through a surface declared with `size_bits` gets: its
+  // side view class's (side_views.h; the one in force, side_scales) when it is a member of one, else
+  // ScaleForDeclared's, except that the scene's identities (IsSceneKey) take the scene's scale when
+  // it is not the images of the screen's.
   Scale ScaleForUse(const EdramKey& key, uint32_t size_bits);
+
+  // --- the side views: the shadow cascades, the environment map, the road reflection ---
+  // (side_views.h). The scale each class is made at now: what the settings asked for the last time
+  // they stood still (UpdateSideViews, at every frame boundary), or less when a member could not be
+  // made (Get falls back one whole scale and the rest follow at the next boundary).
+  const SideScales& side_scales() const { return side_scales_; }
+  // Every class moves to `scales` at once: the members that exist are made again at the new scale
+  // and host samples (the same all-or-nothing step as SetScales, with the same rules for `list`),
+  // and a resolve into a product from them makes the product again at that scale
+  // (ResolveCache::Activate). True when the scales are the wanted ones afterwards, also when they
+  // already were; false when a texture could not be made (video memory): nothing was changed and
+  // the caller may try again later. UpdateSideViews is the caller of it while the game runs.
+  bool SetSideScales(const SideScales& scales, plume::RenderCommandList* list) {
+    return Retarget(resolution_scale_, scene_scale_, msaa_level_, scales, list);
+  }
 
   // --- the scales change while the game runs ---
   // The images of the screen move to `output` and the 3D scene to `scene` (temporal.cpp SwitchPath:
@@ -691,11 +715,26 @@ class EdramTargets {
   // Whether a surface declared with `size_bits` is an image of the screen (IsScreenImage), asked
   // without counting or logging: a target made earlier is classified again when the scale changes.
   bool ClassifiesAsScreenImage(uint32_t size_bits);
-  // The scale `target` has when the images of the screen are at `output` and the 3D scene at `scene`.
-  Scale ScaleAfter(const Target& target, Scale output, Scale scene);
-  // SetScales and SetMsaaLevel: the targets that change scale or host samples are made again in one
-  // step.
-  bool Retarget(Scale output, Scale scene, uint32_t msaa_level, plume::RenderCommandList* list);
+  // The scale `target` has when the images of the screen are at `output`, the 3D scene at `scene` and
+  // the side view classes at `side`.
+  Scale ScaleAfter(const Target& target, Scale output, Scale scene, const SideScales& side);
+  // The host samples `target` has made at `scale` when the host MSAA level is `level`: its class's
+  // (side_views.h) for a side view, else the level's for an image of the screen the guest
+  // multisamples, else the guest's.
+  uint32_t SamplesAfter(const Target& target, Scale scale, uint32_t level) const;
+  // SetScales, SetMsaaLevel and SetSideScales: the targets that change scale or host samples are
+  // made again in one step.
+  bool Retarget(Scale output, Scale scene, uint32_t msaa_level, const SideScales& side,
+                plume::RenderCommandList* list);
+  // The side views' settings, once a frame at the boundary (BeginFrame): when what they ask for has
+  // stood still for kSideSettle, the classes move (SetSideScales); one that cannot be made is asked
+  // again after 3 s, 6 s ... up to 30 s while the previous scale goes on.
+  void UpdateSideViews(plume::RenderCommandList* list);
+  // A member of a side view class could not be made at its class's scale (video memory): the class
+  // falls back one whole scale, the member is tried again at it, and the members that exist are made
+  // at the new scale by the next UpdateSideViews. False when the class is at the guest's size
+  // already.
+  bool FallBackSideView(Target& target);
   // The game view is the main view's colour at the guest's 2 samples, the pause menu's and the
   // map's world view the same colour at the guest's 4: each logs once, and again when it changes,
   // the samples the host draws it with. Called for a target when it is made and when it is remade.
@@ -793,6 +832,25 @@ class EdramTargets {
   // The sample counts the device can do for every format an image of the screen is stored as
   // (bits 2, 4, 8), read at start (SupportedMsaaLevel); 1 always works.
   uint32_t msaa_supported_ = 0xFFu;
+  // The side views (side_views.h): the scale each class is made at now; whether a member had to fall
+  // back and the others still stand at the old scale (UpdateSideViews makes them again at once);
+  // and the settings being staged: what they ask for, since when, and when a failed attempt is
+  // asked again.
+  using SideClock = std::chrono::steady_clock;
+  static constexpr std::chrono::milliseconds kSideSettle{400};
+  static constexpr std::chrono::seconds kSideRetry{3};
+  static constexpr std::chrono::seconds kSideRetryMax{30};
+  struct SideStage {
+    bool staged = false;  // `wanted` is being waited for (the first of a value starts the wait)
+    SideScales wanted;
+    SideClock::time_point since{};
+    SideClock::time_point retry_after{};
+    std::chrono::seconds retry_delay = kSideRetry;
+    bool failure_logged = false;
+  };
+  SideScales side_scales_;
+  bool side_dirty_ = false;
+  SideStage side_stage_;
   // The game's screen (ScreenSize), 0 until read.
   uint32_t screen_width_ = 0;
   uint32_t screen_height_ = 0;
@@ -847,6 +905,7 @@ class EdramTargets {
     uint64_t declared_unknown = 0;  // classifications with no declared size (guest's size)
     uint64_t scale_conflicts = 0;   // uses whose declared size gives another scale than the target's
     uint64_t made_host_msaa = 0;    // targets made with other samples than the guest's (M6d.2)
+    uint64_t made_side = 0;         // targets made as a member of a side view class
     uint64_t trimmed = 0;           // textures released for want of video memory (Trim)
     uint64_t remade = 0;            // ... made again by a Get
     uint64_t rescaled = 0;          // targets made again at another scale or MSAA level (Retarget)

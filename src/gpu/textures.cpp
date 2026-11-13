@@ -743,9 +743,20 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
     //   linear fetch of the smaller image would blend neighbouring depths;
     // - anything else is read as it is: a product at the guest's size already
     //   has the console's density, and colour is enlarged by the game's filter.
-    const bool reduce = product->scale > reader_scale && product->scale > Scale{};
-    const bool enlarge =
-        product->scale < reader_scale && product->scale < Scale{} && product->depth_source;
+    // - a product of a side view (side_views.h) is read at its own scale whatever the reader's: the
+    //   shadow atlas, the environment map with its levels and the road reflection are made at a
+    //   scale of their own to be sharper than the reader's pixels (or the game's), and a reduced
+    //   copy would give that away -- or, with more than one level, no texture at all. Their
+    //   fetches are UV lookups with the guest's sampler.
+    // CHECK: an own-scale product with more than one level (the environment map, once its class takes
+    // the three downsample passes) binds all its levels as it is, at any reader scale.
+    const bool reduce =
+        !product->own_scale && product->scale > reader_scale && product->scale > Scale{};
+    const bool enlarge = !product->own_scale && product->scale < reader_scale &&
+                         product->scale < Scale{} && product->depth_source;
+    if (product->own_scale && !reader_scale.none() && product->scale != reader_scale) {
+      ++stats_.product_own_scale;
+    }
     if (!reader_scale.none() && (reduce || enlarge)) {
       bool recorded = false;
       std::string why;
@@ -1603,12 +1614,14 @@ std::string TextureCache::TakeSummary(uint64_t frames) {
   }
   std::string text = std::format(
       "textures: {} live ({:.1f} MiB, {} hashed) | resolutions {:.0f}/frame: products {} ({} "
-      "through a reduced copy), memory {} | created {}, uploads {} ({:.2f} MiB/frame, {:.2f} "
+      "through a reduced copy, {} of a side view at their own scale), memory {} | created {}, "
+      "uploads {} ({:.2f} MiB/frame, {:.2f} "
       "ms/frame), decompressed {} | writes seen {}, hashes {} ({:.2f} MiB/frame), to hashed {}, to "
       "watched {} | evicted {}, failures {} | from the resolve memory {} ({} unsupported), memory "
       "read under a product {}",
       entries_.size(), double(bytes) / 1048576.0, hashed, double(stats_.lookups) / f,
-      stats_.product_hits, stats_.product_reduced, stats_.memory_hits, stats_.created, stats_.uploads,
+      stats_.product_hits, stats_.product_reduced, stats_.product_own_scale, stats_.memory_hits,
+      stats_.created, stats_.uploads,
       double(stats_.upload_bytes) / f / 1048576.0, double(stats_.decode_ns) / f / 1e6,
       stats_.decompressed, stats_.invalidations, stats_.hashes,
       double(stats_.hashed_bytes) / f / 1048576.0, stats_.to_hashed, stats_.to_watched,

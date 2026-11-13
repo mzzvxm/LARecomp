@@ -7,10 +7,12 @@
 #include <exception>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -39,7 +41,7 @@
 #include "mc_engine/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "shaderpack/builder.h"
-#include "shaderpack/hdr_variant.h"
+#include "shaderpack/variant_pack.h"
 #include "shaderpack/xex_image.h"
 
 #if defined(LARECOMP_HAS_GPU)
@@ -97,14 +99,16 @@ std::filesystem::path ShaderCompilerFolder() {
   return rex::filesystem::GetExecutableFolder() / "D3D12";
 }
 
-// The HDR variant pack's step: the startup check, the check inside BuildShaderPacks and the
-// build request all read it from this one place. Null when this build of larecomp has no tone map
-// curve embedded (the HDR feature's file is not in the tree): no HDR pack is built or looked for.
-sp::HdrStep* HdrStepForBuild() {
-  static const std::unique_ptr<sp::HdrStep> step = [] {
-    std::unique_ptr<sp::HdrStep> made = sp::CreateHdrStep();
-    if (!made) {
-      LARECOMP_APP_INFO("[shaderpack] no HDR variant pack is built: {}", sp::HdrStepUnavailableReason());
+// The variant pack's step (the HDR scene's tone map, the bloom's Gaussians at a render scale, ...): the
+// startup check, the check inside BuildShaderPacks and the build request all read it from this one place.
+// A variant this build cannot make (the HDR scene's, when the tone map curve is not embedded: the HDR
+// feature's file is not in the tree) is left out and logged; the others are built.
+sp::VariantStep* VariantStepForBuild() {
+  static const std::unique_ptr<sp::VariantStep> step = [] {
+    std::vector<std::string> left_out;
+    std::unique_ptr<sp::VariantStep> made = sp::CreateBuiltInVariantStep(&left_out);
+    for (const std::string& line : left_out) {
+      LARECOMP_APP_INFO("[shaderpack] no shader variant {}", line);
     }
     return made;
   }();
@@ -183,9 +187,9 @@ class AppSink : public sp::ProgressSink {
     Line(std::string("result: ") + sp::StatusName(r.status) + (r.message.empty() ? "" : ": " + r.message));
     if (!r.first_shader.empty()) Line("first failing shader: " + r.first_shader);
     for (const std::string& problem : r.problems) Line("also: " + problem);
-    char times[160];
-    std::snprintf(times, sizeof(times), "times: read %.1f s, compile %.1f s, write %.1f s, hdr %.1f s, total %.1f s",
-                  r.seconds_read, r.seconds_compile, r.seconds_write, r.seconds_hdr, r.seconds_total);
+    char times[176];
+    std::snprintf(times, sizeof(times), "times: read %.1f s, compile %.1f s, write %.1f s, variants %.1f s, total %.1f s",
+                  r.seconds_read, r.seconds_compile, r.seconds_write, r.seconds_variants, r.seconds_total);
     Line(times);
     Line("shaders " + std::to_string(r.shaders) + " (" + std::to_string(r.vertex_shaders) + " vertex, " +
          std::to_string(r.pixel_shaders) + " pixel), blobs compiled " + std::to_string(r.blobs_compiled) +
@@ -198,7 +202,7 @@ class AppSink : public sp::ProgressSink {
 };
 
 // The request both ways of building make (the popup's phase and the command line): the same
-// folders, formats, compiler and HDR step, so the stamp they write is the one the other accepts.
+// folders, formats, compiler and variant step, so the stamp they write is the one the other accepts.
 // The caller adds the guest image.
 sp::BuildRequest MakeRequest(const std::filesystem::path& game_root, const std::filesystem::path& folder,
                              uint32_t formats, bool force, sp::ProgressSink* sink) {
@@ -210,7 +214,7 @@ sp::BuildRequest MakeRequest(const std::filesystem::path& game_root, const std::
   request.threads = static_cast<unsigned>(std::max(0, REXCVAR_GET(shader_pack_threads)));
   request.force = force;
   request.sink = sink;
-  request.hdr_step = HdrStepForBuild();
+  request.variant_step = VariantStepForBuild();
   request.app_version = LARECOMP_VERSION_LABEL;
   return request;
 }
@@ -363,12 +367,35 @@ std::string PlayerReason(const sp::BuildResult& result) {
   return std::string(lead) + "\n\n" + ShortReason(result.message);
 }
 
+#if defined(LARECOMP_HAS_GPU)
+// A variant the build tried and left out (its edits did not match this game's shader text, or its text did not
+// compile) has no shaders in the variant pack; the stamp keeps why (variants_<name>_left_out). Said once at
+// the start so the log tells why the renderer draws the game's own shader there.
+void LogLeftOutVariantsOnce(const sp::Stamp& stamp) {
+  static std::once_flag once;
+  std::call_once(once, [&stamp] {
+    const std::string prefix = sp::kStampVariantsPrefix;
+    const std::string suffix = std::string("_") + sp::kStampVariantLeftOut;
+    for (const sp::StampLine& line : stamp.lines()) {
+      if (line.key.size() <= prefix.size() + suffix.size() || !line.key.starts_with(prefix) ||
+          !line.key.ends_with(suffix)) {
+        continue;
+      }
+      const std::string name = line.key.substr(prefix.size(), line.key.size() - prefix.size() - suffix.size());
+      LARECOMP_APP_INFO("[shaderpack] the shader variant {} is not in the variant pack (the game's own shader "
+                        "is drawn instead): {}",
+                        name, line.value);
+    }
+  });
+}
+#endif
+
 // Whether the stamp next to the packs vouches for them (and so whether Startup may attach them).
 bool PacksCurrentAtStartup(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
   const std::filesystem::path folder = mcla::gpu::ShaderPackFolder();
   const sp::GameFilesQuick files{game_root, ShaderCompilerFolder()};
-  const sp::StampCheck check = sp::CheckStamp(folder, AllFormats(), files, HdrStepForBuild());
+  const sp::StampCheck check = sp::CheckStamp(folder, AllFormats(), files, VariantStepForBuild());
   if (check.stamp.empty()) {
     // No stamp: the packs of an older install, or ones put there by hand, are used as they are.
     // When there is no valid pack at all the shader phase builds one.
@@ -376,7 +403,8 @@ bool PacksCurrentAtStartup(const std::filesystem::path& game_root) {
                       PathUtf8(folder), check.why);
     return true;
   }
-  if (check.main_ok && check.hdr_ok) {
+  if (check.main_ok && check.variants_ok) {
+    LogLeftOutVariantsOnce(check.stamp);
     return true;
   }
   LARECOMP_APP_INFO("[shaderpack] the packs in {} are not current: {}; they are rebuilt first",
@@ -510,8 +538,8 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   const bool force = REXCVAR_GET(build_shader_packs_force);
   if (!force) {
     const sp::StampCheck check =
-        sp::CheckStamp(folder, AllFormats(), sp::GameFilesQuick{game_root, ShaderCompilerFolder()}, HdrStepForBuild());
-    if (check.main_ok && check.hdr_ok) return finish(0, "up to date", "The shader packs are up to date.");
+        sp::CheckStamp(folder, AllFormats(), sp::GameFilesQuick{game_root, ShaderCompilerFolder()}, VariantStepForBuild());
+    if (check.main_ok && check.variants_ok) return finish(0, "up to date", "The shader packs are up to date.");
     sink.Line("the packs need building: " + (check.why.empty() ? std::string("no valid stamp") : check.why));
   }
 

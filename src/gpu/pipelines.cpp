@@ -28,6 +28,8 @@
 #include "edram.h"
 #include "format.h"
 #include "layout.h"
+#include "shadow_filter.h"
+#include "side_views.h"
 #include "temporal_backend.h"
 
 #if defined(_WIN32)
@@ -78,9 +80,43 @@ REXCVAR_DEFINE_BOOL(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_bloom_scale, true, "MCLA/GPU",
+    "Fix: the glow of lights (the bloom) keeps the size the game gives it at render scales above 1x "
+    "(a higher render resolution, or an upscaler to a 1080p or 4K output). The game blurs the bloom "
+    "with taps a fixed number of pixels apart; at 2x or 3x the same taps reach half or a third as far "
+    "on the screen, so a window's glow shrinks and the glow of a lamp or a tail light disappears. This "
+    "makes each tap cover the pixels it stands for, so the glow looks as it does at 1x. At a render "
+    "scale of 1x the picture is the same either way. Off: the game's own taps. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
+
+// The variant of a pixel shader the settings ask for, from the variants the pack has for it (`ps.variants`,
+// not 0), or 0 for the game's own shader. The HDR scene's tone map (kHdrVariant) is not chosen here: the
+// HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
+// mcla_gpu_bloom_scale, the environment map's level pass and reduction (kEnvVariant), which are used while the
+// car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), and the sun shadow
+// collector's lookup mcla_gpu_shadow_filter (soft, or pcss, which is soft for now; auto resolved for the GPU
+// class: shadow_filter.h); each is read at each draw so a change of the setting shows at the next frame. At
+// `game` the game's own shaders draw and the picture stays the game's (the environment map's variant is the same
+// arithmetic at the game's size, but that is not asked). A shader has one of them at most.
+uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
+  if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 && REXCVAR_GET(mcla_gpu_bloom_scale)) {
+    return ShaderStore::kBloomVariant;
+  }
+  if ((ps.variants & (1u << ShaderStore::kEnvVariant)) != 0 &&
+      side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
+    return ShaderStore::kEnvVariant;
+  }
+  if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::SoftSelected()) {
+    return ShaderStore::kShadowFilterVariant;
+  }
+  return 0;
+}
 
 // The pipeline cache file: a header, the layouts, the records.
 // Host byte order; any mismatch discards the whole file.
@@ -1234,11 +1270,14 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   uint32_t zeroed = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
-    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with an HDR scene
-    // variant (stage 3 of the HDR output) while the HDR pack is not loaded or lacks it.
-    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !shaders_->Find(r.key.ps)) ||
-        (r.key.ps_variant == ShaderStore::kHdrVariant &&
-         (r.key.ps == 0 || !shaders_->Find(r.key.ps)->hdr_variant))) {
+    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant of the
+    // variant pack (the HDR scene's tone map, the bloom's Gaussians: ps_variant 2 and up) while that
+    // pack is not loaded or lacks the variant of that shader.
+    const ShaderStore::Entry* record_ps = r.key.ps != 0 ? shaders_->Find(r.key.ps) : nullptr;
+    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !record_ps) ||
+        (r.key.ps_variant >= ShaderStore::kFirstPackedVariant &&
+         (!record_ps || r.key.ps_variant >= ShaderStore::kVariantSlots ||
+          (record_ps->variants & (1u << r.key.ps_variant)) == 0))) {
       ++dropped;
       continue;
     }
@@ -1404,6 +1443,11 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
                "variant; nothing is discarded and every sample is covered");
       }
     }
+  }
+  // A variant of the pixel shader from the variant pack, where the settings ask for one. They are built for
+  // spec variant 0, so a draw that needs the alpha test keeps the main pack's shader.
+  if (ps && key.ps_variant == 0 && ps->variants != 0) {
+    key.ps_variant = ChoosePackedVariant(*ps);
   }
   key.input_layout = inputs.input_layout->id;
   key.topology = uint32_t(topology);

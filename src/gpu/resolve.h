@@ -132,6 +132,16 @@ class ResolveCache {
     std::vector<std::unique_ptr<Reduced>> reduced;
     uint64_t writes = 0;        // resolves into it
     bool depth_source = false;  // the last resolve into it read an EDRAM depth target
+    // The last resolve into it read a member of a side view class (side_views.h: the shadow
+    // cascades, the environment map, the road reflection). Such a product is READ AT ITS OWN SCALE:
+    // TextureCache::Bind2D binds it as it is for a reader at any scale -- no reduced copy (which
+    // would give back the guest's density, and for a product with mip levels no texture at all) and
+    // no enlarged one. The fetches of these views are UV lookups, which need nothing else; the
+    // sampler is the guest's.
+    bool own_scale = false;
+    // The log has said the size of this product as a side view's (once for each time it is made: a
+    // product made again at another scale is a new one).
+    bool own_scale_logged = false;
   };
 
   ResolveCache() = default;

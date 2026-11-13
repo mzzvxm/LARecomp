@@ -4,7 +4,7 @@
 // build_shader_pack_v3.py, build_shader_pack_v8.py, by mzzvxm) with one pass:
 //   read the RPF's Shaders folder and the image -> containers (key, vertex elements, flags, texture
 //   mask) -> per key, on a pool: translate, check the HLSL, compile the variants of the formats
-//   asked, check the blobs and the vertex position -> write the pack in key order -> HDR step ->
+//   asked, check the blobs and the vertex position -> write the pack in key order -> variant step ->
 //   stamp.
 
 #include "shaderpack/builder.h"
@@ -498,8 +498,8 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
 
   // ---- what is there
   const GameFilesQuick quick{request.game_root, request.dxc_dir};
-  const StampCheck check = CheckStamp(request.out_dir, wanted, quick, request.hdr_step);
-  if (!request.force && check.main_ok && check.hdr_ok) {
+  const StampCheck check = CheckStamp(request.out_dir, wanted, quick, request.variant_step);
+  if (!request.force && check.main_ok && check.variants_ok) {
     result.formats_built = check.stamped_formats;
     result.message = "The shader packs are up to date.";
     result.status = Status::kUpToDate;
@@ -513,12 +513,17 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
   }
 
   // The pack on disk is the right one for the inputs and the compiler (what may differ: its formats,
-  // the HDR pack, the game files' times).
+  // the variant pack, the game files' times).
   bool existing_ok = !request.force && check.inputs_match;
   // Nothing of the main pack needs redoing.
   bool main_stays = existing_ok && check.formats_ok;
-  // The RPF is read unless the main pack stays and its game files are known to be the same.
-  const bool read_rpf = !(main_stays && !check.content_check_needed);
+  // The RPF is read unless the main pack stays and its game files are known to be the same, and also when
+  // the variant pack is to be rebuilt and a variant is made of a shader that lives in the RPF (the car
+  // reflections' 64x32 reduction, the sun shadow collector's lookups): a variant-only rebuild would not find it
+  // among the image's.
+  const bool variants_stale = request.variant_step != nullptr && !check.variants_ok;
+  const bool variants_need_rpf = variants_stale && request.variant_step->NeedsRpfShaders();
+  const bool read_rpf = !(main_stays && !check.content_check_needed) || variants_need_rpf;
 
   // ---- 1. the game files
   const Clock::time_point read_start = Clock::now();
@@ -596,9 +601,9 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
   if (existing_ok && !main_stays) reuse_formats = check.stamped_formats & (kDxil | kSpirv);
   uint32_t pack_formats = main_stays ? (check.stamped_formats & (kDxil | kSpirv)) : (wanted | reuse_formats);
 
-  // The HDR variant step runs after a main build and when only the HDR pack is stale.
-  const bool run_hdr = request.hdr_step != nullptr && (!main_stays || !check.hdr_ok);
-  result.hdr_only = main_stays && run_hdr;
+  // The variant step runs after a main build and when only the variant pack is stale.
+  const bool run_variants = request.variant_step != nullptr && (!main_stays || !check.variants_ok);
+  result.variants_only = main_stays && run_variants;
 
   // ---- 2. the compiler (only when something is to be compiled)
   std::shared_ptr<DxcRuntime> runtime;
@@ -763,51 +768,53 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
   }
 
   // ===========================================================================================
-  // HDR VARIANT STEP (written separately: hdr_variant.{h,cpp}; see HdrStep in builder.h).
+  // VARIANT STEP (written separately: variant_pack.{h,cpp}; see VariantStep in builder.h).
   // Called once, here: after the main pack is in place and its stamp lines are known, before the
   // stamp is written. `set` holds the containers read above (only the image's when the main pack
-  // stayed), `runtime` the loaded compiler. The lines it returns go into the stamp with the three
-  // the builder owns (kStampHdrFormats, kStampHdrMainPackXxh3, kStampHdrPackSize). A step that
-  // fails leaves the main pack as it is and the stamp without HDR lines.
+  // stayed and no variant needs the RPF's shaders: VariantStep::NeedsRpfShaders makes `read_rpf` above true),
+  // `runtime` the loaded compiler. The lines it returns go into the stamp with the three the builder
+  // owns (kStampVariantsFormats, kStampVariantsMainPackXxh3, kStampVariantsPackSize). A step that
+  // fails leaves the main pack as it is and the stamp without variants_* lines.
   // ===========================================================================================
-  stamp.RemovePrefix(kStampHdrPrefix);
-  if (run_hdr) {
-    const Clock::time_point hdr_start = Clock::now();
+  stamp.RemovePrefix(kStampVariantsPrefix);
+  stamp.RemovePrefix(kStampLegacyHdrPrefix);  // an older build's HDR pack lines
+  if (run_variants) {
+    const Clock::time_point variants_start = Clock::now();
     {
-      // The old stamp no longer vouches for the HDR pack that is about to be replaced.
+      // The old stamp no longer vouches for the variant pack that is about to be replaced.
       std::error_code ec;
       std::filesystem::remove(stamp_path, ec);
     }
     if (!runtime && !load_compiler()) {
-      // The main pack is fine without it: HDR stays off, and the next start tries again.
-      result.hdr_message = result.message;
+      // The main pack is fine without it: the variants stay off, and the next start tries again.
+      result.variants_message = result.message;
       result.status = Status::kOk;
       result.message.clear();
     } else {
-      HdrStepInput input;
+      VariantStepInput input;
       input.containers = &set;
       input.dxc = runtime;
       input.out_dir = request.out_dir;
       input.formats = pack_formats;
       input.threads = ChooseThreadCount(request.threads, set.shaders.size());
       input.sink = &sink;
-      const HdrStepResult hdr = request.hdr_step->Build(input);
-      result.hdr_built = hdr.built;
-      result.hdr_message = hdr.message;
-      if (hdr.built) {
-        for (const StampLine& line : hdr.stamp_lines) stamp.Set(line.key, line.value);
-        stamp.Set(kStampHdrFormats, uint64_t(pack_formats));
-        stamp.SetHex(kStampHdrMainPackXxh3, pack_xxh3);
-        stamp.Set(kStampHdrPackSize, StatFile(request.out_dir / kHdrPackFileName).size);
+      const VariantStepResult variants = request.variant_step->Build(input);
+      result.variants_built = variants.built;
+      result.variants_message = variants.message;
+      if (variants.built) {
+        for (const StampLine& line : variants.stamp_lines) stamp.Set(line.key, line.value);
+        stamp.Set(kStampVariantsFormats, uint64_t(pack_formats));
+        stamp.SetHex(kStampVariantsMainPackXxh3, pack_xxh3);
+        stamp.Set(kStampVariantsPackSize, StatFile(request.out_dir / kVariantPackFileName).size);
       } else {
-        SHADERPACK_LOG_WARN("the HDR variant pack was not built: {}", hdr.message);
+        SHADERPACK_LOG_WARN("the variant pack was not built: {}", variants.message);
       }
     }
-    result.seconds_hdr = SecondsSince(hdr_start);
-  } else if (main_stays && check.hdr_ok && request.hdr_step) {
+    result.seconds_variants = SecondsSince(variants_start);
+  } else if (main_stays && check.variants_ok && request.variant_step) {
     // Still current: keep its lines as they were.
     for (const StampLine& line : check.stamp.lines()) {
-      if (line.key.starts_with(kStampHdrPrefix)) stamp.Set(line.key, line.value);
+      if (line.key.starts_with(kStampVariantsPrefix)) stamp.Set(line.key, line.value);
     }
   }
 
@@ -818,7 +825,7 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
       return finish(Status::kIoError, "The shader stamp could not be written: " + error);
     }
   }
-  if (main_stays && !run_hdr) {
+  if (main_stays && !run_variants) {
     result.message = "The shader packs are up to date (only the game files' times had changed).";
     result.status = Status::kUpToDate;
     result.seconds_total = SecondsSince(total_start);
