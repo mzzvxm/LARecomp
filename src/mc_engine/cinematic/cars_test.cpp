@@ -5,7 +5,7 @@
 //   <build dir>/larecomp_cars_test
 //
 // The compile by hand (the msvc-target clang of labuild, include path src/mc_engine/cinematic):
-//   clang++ -std=c++23 -Wall -Wextra src/mc_engine/cinematic/cars_test.cpp src/mc_engine/cinematic/car_verbs.cpp \
+//   clang++ -std=c++23 -Wall -Wextra src/mc_engine/cinematic/cars_test.cpp \
 //       src/mc_engine/cinematic/car_registry.cpp src/mc_engine/cinematic/car_spawn.cpp -o cars_test.exe
 
 #include <algorithm>
