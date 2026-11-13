@@ -9,7 +9,6 @@
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "mc_engine/logging.h"
-#include "mc_engine/graphics_button.h"
 #include "mc_engine/display_mode.h"
 #include "mc_engine/ultrawide.h"
 #include "spdlog_console.h"
@@ -1292,7 +1291,6 @@ class LarecompApp : public rex::ReXApp {
 
   void FinishSetupAfterBootBuild() {
     LARECOMP_Discord_Init();
-    mc::ui::InitGraphicsButtonPatch();
     InitPauseMenuHooks();
     // UI thread (the build's completion is handed back here), as the dialog
     // has to be created on it.

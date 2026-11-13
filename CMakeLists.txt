@@ -122,7 +122,6 @@ set(LARECOMP_SOURCES
 
     src/mc_engine/guest_profiler.cpp
     src/mc_engine/carbon_parts.cpp
-    src/mc_engine/graphics_button.cpp
     src/mc_engine/pause_menu.cpp
     src/mc_engine/config_save.cpp
     src/mc_engine/debug_menu.cpp
