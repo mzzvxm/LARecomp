@@ -38,7 +38,7 @@
 //     weak, a middle and a strong GPU, and how many host samples a member has at a scale.
 //
 // A class's settings read `auto | game | high | ultra`: game = the guest's size (1x), high = 2x,
-// ultra = 3x; `auto` is the cell of the GPU class table (package GT, GFX-UPGRADES-DESIGN.md 9).
+// ultra = 3x; `auto` is the cell of the GPU class table (gpu_class.h, GFX-UPGRADES-DESIGN.md 9).
 // A class at `game` changes nothing about its targets (the guest's size and samples, the same
 // pipelines): the picture is the game's own.
 //
@@ -51,6 +51,7 @@
 #include <string>
 #include <string_view>
 
+#include "gpu_class.h"
 #include "scale.h"
 
 namespace mcla::gpu {
@@ -89,13 +90,6 @@ inline constexpr const char* LevelText(SideLevel level) {
   return level == SideLevel::kUltra ? "ultra" : level == SideLevel::kHigh ? "high" : "game";
 }
 
-// The GPU class `auto` is resolved by.
-// CHECK: GT. Package GT (src/gpu/gpu_class.{h,cpp}) is the owner of the class and of the `auto` table;
-// this is a stand-in with its rule (Low = a UMA GPU, Mid = a discrete one with under 6 GiB of
-// dedicated memory, High = the rest) so that this package stands alone. Where GT has landed, the one
-// function that reads it (side_views.cpp CurrentClass) answers from GT instead and this enum goes.
-enum class GpuClassStub : uint8_t { kLow = 0, kMid = 1, kHigh = 2 };
-
 // One class's rule. Each rule file defines exactly one (extern below); the registry in
 // side_views.cpp lists them. A rule's functions are pure except `setting`, which reads its cvar.
 struct SideViewRule {
@@ -109,8 +103,9 @@ struct SideViewRule {
   bool (*matches)(const EdramKey& key, uint32_t size_bits) = nullptr;
   // The class's setting as typed: auto, game, high or ultra (any case).
   std::string (*setting)() = nullptr;
-  // What `auto` stands for on a Low, a Mid and a High GPU.
-  std::array<SideLevel, 3> autos = {SideLevel::kGame, SideLevel::kGame, SideLevel::kGame};
+  // The class's row of the `auto` table (gpu_class.h): what `auto` stands for on a Low, a Mid and a
+  // High GPU, and the label of the pause row.
+  gpu_class::Effect effect = gpu_class::Effect::kReflectionResolution;
   // A test scale (a debug cvar) that replaces the setting's when it is set: Scale::None() when not.
   Scale (*test_scale)() = nullptr;
   // The host samples of a member made at `scale` (never none), the guest drawing it with
@@ -123,11 +118,6 @@ extern const SideViewRule kEnvRule;
 extern const SideViewRule kReflectionRule;
 
 namespace side_views {
-
-// The GPU class, once (EdramTargets::Initialize); logged.
-void InitializeGpuClass(Device& device);
-GpuClassStub CurrentClass();
-const char* ClassName(GpuClassStub gpu_class);
 
 // The class an EDRAM identity belongs to (kNone: none), as a use of it declared `size_bits`.
 SideView Classify(const EdramKey& key, uint32_t size_bits);

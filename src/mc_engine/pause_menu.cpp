@@ -49,10 +49,9 @@
 #include <rex/ui/windowed_app_context.h>
 
 #if defined(LARECOMP_HAS_GPU)
-#include "gpu/contact_shadows.h"
 #include "gpu/gpu.h"
+#include "gpu/gpu_class.h"
 #include "gpu/latency.h"
-#include "gpu/shafts_setting.h"
 #include "gpu/side_views.h"
 #endif
 
@@ -1708,15 +1707,13 @@ bool AoOn() {
 constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
 // and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, LOW on
-// a discrete one with under 6 GiB, HIGH on the rest. The row is "CONTACT SHADOWS" (15 characters) with
-// a value of at most 11 ("AUTO (HIGH)").
-// CHECK: GT -- the label comes from gpu/contact_shadows.h until package GT's gpu_class.h lands, then
-// from gpu_class::AutoLabel(Effect::kContactShadows).
+// a discrete one with under 5.5 GiB, HIGH on the rest (gpu/gpu_class.h). The row is "CONTACT SHADOWS"
+// (15 characters) with a value of at most 11 ("AUTO (HIGH)").
 const char* const kNativeContactVals[]  = {"auto", "off", "low", "high"};
 const char* const kNativeContactNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
 std::string ContactLabel(int i) {
     switch (i) {
-    case 0:  return mcla::gpu::contact_shadows::AutoLabel();
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kContactShadows);
     case 1:  return "OFF";
     case 2:  return "LOW";
     default: return "HIGH";
@@ -1729,7 +1726,7 @@ constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
 const char* const kNativeShaftsVals[]  = {"auto", "off", "low", "high"};
 const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
 std::string ShaftsLabel(int i) {
-    if (i == 0) return mcla::gpu::sun_shafts::AutoLabel();
+    if (i == 0) return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSunShafts);
     return i > 0 && i < 4 ? kNativeShaftsNames[i] : "";
 }
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};

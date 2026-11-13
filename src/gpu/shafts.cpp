@@ -3,7 +3,6 @@
 #include "shafts.h"
 
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <cctype>
 #include <cmath>
@@ -18,9 +17,9 @@
 #include "device.h"
 #include "draw_decode.h"
 #include "draw_state.h"
+#include "gpu_class.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
-#include "shafts_setting.h"
 #include "texture_bytes.h"
 
 REXCVAR_DEFINE_STRING(
@@ -29,7 +28,7 @@ REXCVAR_DEFINE_STRING(
     "through a haze. They show at dawn and dusk (strongest between 2.5 and 27 degrees of sun "
     "height, none by day above 45 degrees, none at night or in rain) and only while the sun is on "
     "the screen or not far beyond its edge. auto (the default) picks by the graphics card: off on an "
-    "integrated one, low on a card with little video memory, high on the rest; low (32 steps) or "
+    "integrated one, low on a card with less than 5.5 GiB of video memory, high on the rest; low (32 steps) or "
     "high (64 steps) at half resolution, off. Costs graphics card time only while they show. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -187,62 +186,34 @@ std::string Lower(std::string value) {
 }
 
 // ---------------------------------------------------------------------------
-// the `auto` value
+// the setting
 // ---------------------------------------------------------------------------
-// CHECK: GT -- a stand-in for package GT's GPU class (shafts_setting.h). Low is a UMA GPU, Mid a
-// discrete GPU with less than 6 GiB of dedicated memory, High the rest; the table of the design
-// (GFX-UPGRADES-DESIGN.md section 9): sun shafts off on Low, low on Mid, high on High. A card that
-// reports no dedicated memory is taken as High.
-enum class StandInClass : uint8_t { kLow, kMid, kHigh };
-std::atomic<uint8_t> g_stand_in_class{uint8_t(StandInClass::kHigh)};
-
-StandInClass StandInClassOf(const Device& device) {
-  if (device.capabilities().uma) {
-    return StandInClass::kLow;
+// mcla_gpu_sun_shafts with `auto` resolved for this graphics card (gpu_class.h: off on Low, low on
+// Mid, high on High). Anything the list does not know (a hand-edited file) counts as `auto`.
+bool ParseMode(const std::string& value, SunShafts::Mode* mode) {
+  if (value == "off") {
+    *mode = SunShafts::Mode::kOff;
+  } else if (value == "low") {
+    *mode = SunShafts::Mode::kLow;
+  } else if (value == "high") {
+    *mode = SunShafts::Mode::kHigh;
+  } else {
+    return false;
   }
-  const uint64_t video = device.description().dedicatedVideoMemory;
-  return video != 0 && video < (uint64_t(6) << 30) ? StandInClass::kMid : StandInClass::kHigh;
-}
-
-SunShafts::Mode AutoMode() {
-  switch (StandInClass(g_stand_in_class.load(std::memory_order_relaxed))) {
-    case StandInClass::kLow: return SunShafts::Mode::kOff;
-    case StandInClass::kMid: return SunShafts::Mode::kLow;
-    case StandInClass::kHigh: break;
-  }
-  return SunShafts::Mode::kHigh;
+  return true;
 }
 
 SunShafts::Mode ReadMode() {
-  const std::string value = Lower(REXCVAR_GET(mcla_gpu_sun_shafts));
-  if (value == "off") {
-    return SunShafts::Mode::kOff;
+  SunShafts::Mode mode = SunShafts::Mode::kOff;
+  if (!ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts,
+                                    Lower(REXCVAR_GET(mcla_gpu_sun_shafts))),
+                 &mode)) {
+    ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts, "auto"), &mode);
   }
-  if (value == "low") {
-    return SunShafts::Mode::kLow;
-  }
-  if (value == "high") {
-    return SunShafts::Mode::kHigh;
-  }
-  return AutoMode();  // auto, and anything the list does not know
+  return mode;
 }
 
 }  // namespace
-
-namespace sun_shafts {
-
-const char* AutoName() {
-  return ModeName(AutoMode());
-}
-
-std::string AutoLabel() {
-  std::string name = AutoName();
-  std::transform(name.begin(), name.end(), name.begin(),
-                 [](unsigned char c) { return char(std::toupper(c)); });
-  return "AUTO (" + name + ")";
-}
-
-}  // namespace sun_shafts
 
 SunShafts::~SunShafts() {
   Shutdown();
@@ -268,12 +239,10 @@ std::string SunShafts::VariantName(uint32_t variant) {
   return std::format("shafts {} {}x", (index & 4) ? "view" : "add", 1u << (index & 3));
 }
 
-void SunShafts::Initialize(Device& device, HostPasses& passes, EdramTargets& edram,
-                           PassTiming& pass_timing) {
+void SunShafts::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing) {
   passes_ = &passes;
   edram_ = &edram;
   pass_timing_ = &pass_timing;
-  g_stand_in_class.store(uint8_t(StandInClassOf(device)), std::memory_order_relaxed);
   bool ok = true;
   for (uint32_t i = 0; i < kPassCount && ok; ++i) {
     const HostShaderBlob blob = SunShaftsPixelShader(i);

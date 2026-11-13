@@ -444,9 +444,8 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                   msaa_level_, msaa_level_ == 1 ? "" : "s");
     }
   }
-  // The side views (side_views.h): the GPU class, then the scale each class starts at, from the
-  // settings as they stand (a change while the game runs is UpdateSideViews').
-  side_views::InitializeGpuClass(device);
+  // The side views (side_views.h): the scale each class starts at, from the settings as they stand
+  // (`auto` by the GPU class, gpu_class.h; a change while the game runs is UpdateSideViews').
   side_scales_ = side_views::Wanted();
   side_dirty_ = false;
   side_stage_ = SideStage{};

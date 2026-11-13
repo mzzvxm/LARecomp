@@ -3,7 +3,6 @@
 #include "ao.h"
 
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <cctype>
 #include <cmath>
@@ -18,10 +17,10 @@
 #include "device.h"
 #include "format.h"
 #include "frame.h"
+#include "gpu_class.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
-#include "contact_shadows.h"
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao, "high", "MCLA/GPU",
@@ -79,7 +78,7 @@ REXCVAR_DEFINE_STRING(
     "morning and in the evening, when the game draws no sun shadows at all, they are the only ones. "
     "They are left out at night and in rain. off, low (half resolution, 8 steps), high (full "
     "resolution, 16 steps) or auto (the default): off on an integrated graphics card, low on a "
-    "discrete one with less than 6 GiB of video memory, high on the rest. Costs graphics card time, "
+    "discrete one with less than 5.5 GiB of video memory, high on the rest. Costs graphics card time, "
     "high more than low. Also drawn behind the pause menu and on the map. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -219,23 +218,6 @@ constexpr float kContactFadeEnd = 80.0f;
 constexpr uint32_t kContactStepsLow = 8;
 constexpr uint32_t kContactStepsHigh = 16;
 
-// CHECK: GT -- the GPU class (Low: a UMA GPU, Mid: a discrete one with under 6 GiB of dedicated
-// memory, High: the rest) is package GT's (src/gpu/gpu_class.h). This stub reads it from the device in
-// AmbientOcclusion::Initialize and holds this effect's cell of the `auto` table (Low off, Mid low,
-// High high); gpu_class::Resolve(Effect::kContactShadows, ...) replaces it and contact_shadows.h goes.
-enum class StubClass : int { kLow = 0, kMid = 1, kHigh = 2 };
-std::atomic<int> g_stub_class{int(StubClass::kHigh)};
-constexpr uint64_t kStubMidBytes = 6ull << 30;
-
-const char* StubAutoContact() {
-  switch (StubClass(g_stub_class.load(std::memory_order_relaxed))) {
-    case StubClass::kLow: return "off";
-    case StubClass::kMid: return "low";
-    case StubClass::kHigh: break;
-  }
-  return "high";
-}
-
 float Smoothstep(double edge0, double edge1, double x) {
   const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
   return float(t * t * (3.0 - 2.0 * t));
@@ -353,12 +335,10 @@ std::string Lower(std::string value) {
   return value;
 }
 
-// mcla_gpu_contact_shadows with `auto` resolved for this GPU. (CHECK: GT: gpu_class::Resolve.)
+// mcla_gpu_contact_shadows with `auto` resolved for this GPU (gpu_class.h).
 AmbientOcclusion::Mode ReadContactMode() {
-  std::string value = Lower(REXCVAR_GET(mcla_gpu_contact_shadows));
-  if (value == "auto") {
-    value = StubAutoContact();
-  }
+  const std::string value = gpu_class::Resolve(gpu_class::Effect::kContactShadows,
+                                               Lower(REXCVAR_GET(mcla_gpu_contact_shadows)));
   if (value == "low") {
     return AmbientOcclusion::Mode::kLow;
   }
@@ -405,21 +385,6 @@ float Luma(const float c[3]) {
 }
 
 }  // namespace
-
-namespace contact_shadows {
-
-std::string ResolveAuto() {
-  return StubAutoContact();
-}
-
-std::string AutoLabel() {
-  std::string text = StubAutoContact();
-  std::transform(text.begin(), text.end(), text.begin(),
-                 [](unsigned char c) { return char(std::toupper(c)); });
-  return "AUTO (" + text + ")";
-}
-
-}  // namespace contact_shadows
 
 bool AmbientOcclusion::LightRaw::operator==(const LightRaw& o) const {
   return std::memcmp(dwords, o.dwords, sizeof(dwords)) == 0;
@@ -469,16 +434,6 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
                                   PassTiming& pass_timing, ResolveCache& resolve) {
   resolve_ = &resolve;
   device_ = &device;
-  // CHECK: GT -- the GPU class (StubClass above): an integrated GPU is Low, a discrete one with under
-  // 6 GiB of dedicated memory Mid (an unreported size counts as enough), the rest High.
-  {
-    const bool uma = device.capabilities().uma;
-    const uint64_t dedicated = device.description().dedicatedVideoMemory;
-    const StubClass gpu_class =
-        uma ? StubClass::kLow
-            : (dedicated != 0 && dedicated < kStubMidBytes ? StubClass::kMid : StubClass::kHigh);
-    g_stub_class.store(int(gpu_class), std::memory_order_relaxed);
-  }
   frames_ = &frames;
   heap_ = &heap;
   passes_ = &passes;

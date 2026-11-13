@@ -118,8 +118,8 @@ const SideViewRule kReflectionRule = {
     .name = "road reflection",
     .matches = Matches,
     .setting = Setting,
-    // Low (integrated) game, Mid (under 6 GiB) high, High high: GFX-UPGRADES-DESIGN.md 9.
-    .autos = {SideLevel::kGame, SideLevel::kHigh, SideLevel::kHigh},
+    // `auto` is game on Low, high on Mid and High (gpu_class.h, GFX-UPGRADES-DESIGN.md 9).
+    .effect = gpu_class::Effect::kReflectionResolution,
     .test_scale = TestScale,
     .host_samples = HostSamples,
 };

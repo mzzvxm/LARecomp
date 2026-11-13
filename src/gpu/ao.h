@@ -122,7 +122,7 @@
 //
 // Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row),
 // mcla_gpu_contact_shadows (auto, off, low, high; live; the CONTACT SHADOWS row; auto is off on an
-// integrated GPU, low on a discrete one with under 6 GiB, high on the rest) with the tuning cvars
+// integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h) with the tuning cvars
 // mcla_gpu_contact_shadows_length / _strength / _thickness / _mask_gain / _view, and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,

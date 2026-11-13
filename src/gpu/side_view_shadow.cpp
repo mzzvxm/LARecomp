@@ -45,6 +45,7 @@ const SideViewRule kShadowRule = {
     .name = "sun shadows",
     .matches = Matches,
     .setting = Setting,
+    .effect = gpu_class::Effect::kShadowResolution,
     .host_samples = HostSamples,
 };
 

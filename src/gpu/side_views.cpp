@@ -19,11 +19,6 @@ namespace side_views {
 
 namespace {
 
-constexpr uint64_t kMidDedicatedBytes = uint64_t(6) << 30;  // GT's first guess: under 6 GiB is Mid
-
-GpuClassStub g_class = GpuClassStub::kHigh;
-bool g_class_known = false;
-
 // The rules by class; every rule file defines its own (side_views.h).
 const SideViewRule& Rule(SideView view) {
   switch (view) {
@@ -39,40 +34,7 @@ std::string Lower(std::string text) {
   return text;
 }
 
-std::string Upper(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(),
-                 [](unsigned char c) { return char(std::toupper(c)); });
-  return text;
-}
-
 }  // namespace
-
-const char* ClassName(GpuClassStub gpu_class) {
-  switch (gpu_class) {
-    case GpuClassStub::kLow: return "low";
-    case GpuClassStub::kMid: return "mid";
-    default: return "high";
-  }
-}
-
-void InitializeGpuClass(Device& device) {
-  // CHECK: GT. The same rule as the design's table (GFX-UPGRADES-DESIGN.md 9): a UMA GPU (an
-  // integrated one, a handheld's APU) is Low, a discrete one with under 6 GiB of dedicated memory is
-  // Mid, the rest High. Replace this body with a read of gpu_class::Current() when package GT is in.
-  const bool uma = device.capabilities().uma;
-  const uint64_t dedicated = device.device()->getDescription().dedicatedVideoMemory;
-  g_class = uma ? GpuClassStub::kLow
-            : dedicated < kMidDedicatedBytes ? GpuClassStub::kMid
-                                             : GpuClassStub::kHigh;
-  g_class_known = true;
-  REXLOG_INFO("[gpu] side views: GPU class {} (uma {}, {} MiB dedicated; a stand-in for package GT)",
-              ClassName(g_class), uma, dedicated >> 20);
-}
-
-GpuClassStub CurrentClass() {
-  // Before the device is known (a call too early) the strongest class: nothing is made smaller.
-  return g_class_known ? g_class : GpuClassStub::kHigh;
-}
 
 SideView Classify(const EdramKey& key, uint32_t size_bits) {
   for (const SideView view : {SideView::kReflection, SideView::kShadow, SideView::kEnv}) {
@@ -97,25 +59,32 @@ std::string SettingText(SideView view) {
   return rule.setting ? Lower(rule.setting()) : std::string("game");
 }
 
+bool ParseLevel(const std::string& text, SideLevel* level) {
+  if (text == "game") {
+    *level = SideLevel::kGame;
+  } else if (text == "high") {
+    *level = SideLevel::kHigh;
+  } else if (text == "ultra") {
+    *level = SideLevel::kUltra;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 SideLevel LevelOf(SideView view) {
   const SideViewRule& rule = Rule(view);
-  const std::string text = SettingText(view);
-  if (text == "game") {
-    return SideLevel::kGame;
+  SideLevel level = SideLevel::kGame;
+  if (!ParseLevel(gpu_class::Resolve(rule.effect, SettingText(view)), &level)) {
+    // auto resolves in the line above; what is left is not a value (a hand-edited file): the
+    // default, which is auto.
+    ParseLevel(gpu_class::Resolve(rule.effect, "auto"), &level);
   }
-  if (text == "high") {
-    return SideLevel::kHigh;
-  }
-  if (text == "ultra") {
-    return SideLevel::kUltra;
-  }
-  // auto, and anything that is not a value (a hand-edited file): the default, which is auto.
-  return rule.autos[size_t(CurrentClass())];
+  return level;
 }
 
 std::string AutoLabel(SideView view) {
-  const SideViewRule& rule = Rule(view);
-  return std::format("AUTO ({})", Upper(LevelText(rule.autos[size_t(CurrentClass())])));
+  return gpu_class::AutoLabel(Rule(view).effect);
 }
 
 SideScales Wanted() {

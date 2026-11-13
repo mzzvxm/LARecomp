@@ -50,6 +50,7 @@ const SideViewRule kEnvRule = {
     .name = "car reflections",
     .matches = Matches,
     .setting = Setting,
+    .effect = gpu_class::Effect::kEnvResolution,
     .host_samples = HostSamples,
 };
 

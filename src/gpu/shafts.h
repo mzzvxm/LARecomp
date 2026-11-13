@@ -50,7 +50,7 @@
 // none).
 //
 // Settings: mcla_gpu_sun_shafts (auto, off, low, high; live; the pause menu's SUN SHAFTS row; `auto`
-// is shafts_setting.h) and the tuning cvars _intensity, _density, _threshold, _sky_depth, _view
+// is gpu_class.h's) and the tuning cvars _intensity, _density, _threshold, _sky_depth, _view
 // (debug views), _early and _census, all debug-only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
@@ -74,7 +74,6 @@
 
 namespace mcla::gpu {
 
-class Device;
 class PassTiming;
 
 class SunShafts {
@@ -93,8 +92,7 @@ class SunShafts {
 
   // Makes the shaders and lists the pipelines with the host precache (before the Renderer starts
   // it). Never fails the renderer: without them there are no shafts (logged).
-  void Initialize(Device& device, HostPasses& passes, EdramTargets& edram,
-                  PassTiming& pass_timing);
+  void Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
 
