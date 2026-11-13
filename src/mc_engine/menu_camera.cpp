@@ -75,6 +75,8 @@
 #include <mutex>
 #include <string>
 
+#include "cinematic/camera_runtime.h"
+#include "cinematic/scene_runtime.h"
 #include "larecomp_log.h"
 #include "menu_camera.h"
 #include "time_of_day.h"
@@ -799,11 +801,19 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
         }
     }
 
+    // The scene's camera (trailer toolkit, cinematic/camera_runtime.cpp), in every camera mode: it replaces whatever the game made
+    // and the menu code below must not run on top of it. One flag test and nothing else unless a scene with a camera track runs.
+    if (mc::cinematic::CinematicCameraApply(base, sp, mode)) return;
+
     // Only menu shots. The gameplay camera keeps its own mode id, so it is never
     // touched even with the cvars on.
     if (mode != kModeMenu) {
-        TimeOfDay_RequestHour(-1.0f);
-        Weather_RequestIndex(-1);
+        // A running scene renews its own hour and weather every update (scene_runtime.cpp); this is where a menu shot's request
+        // lapses, which must not take a scene's with it.
+        if (mc::cinematic::CurrentSceneState() != mc::cinematic::SceneState::kRunning) {
+            TimeOfDay_RequestHour(-1.0f);
+            Weather_RequestIndex(-1);
+        }
         return;
     }
 

@@ -151,6 +151,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/scene.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
     src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/camera_runtime.cpp
     src/mc_engine/cinematic/native_call.cpp
 
     src/mc_engine/map_warp.cpp
