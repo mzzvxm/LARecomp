@@ -1136,7 +1136,9 @@ void Renderer::UpdateDisplayAspect() {
   // CHECK: that every frame that shows a 3D picture has the marker (title, garage, showroom, map,
   // photo mode, the rear-view mirror inside play): one that has none is shown 16:9 with its picture
   // still squeezed.
-  // At 16:9 (or narrower) nothing is asked: the fit is the front buffer's own, to the pixel.
+  // At 16:9 nothing is asked: the fit is the front buffer's own, to the pixel. A taller picture (16:10, 4:3,
+  // a portrait window: Vert+, mc_engine/ultrawide.h) is asked for the same way as a wider one: the guest drew
+  // it stretched sideways into the 16:9 image and the present squeezes it into the frame.
   present_.SetDisplayAspect(scene_.last_frame_had_scene() && mc::ultrawide::Active()
                                 ? mc::ultrawide::DisplayAspect()
                                 : 0.0);
