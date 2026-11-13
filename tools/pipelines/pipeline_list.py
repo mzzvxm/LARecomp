@@ -67,7 +67,7 @@ SAMPLES_AT = 32
 DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
 FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
-VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians"}  # ShaderStore::kHdrVariant, kBloomVariant
+VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians", 4: "environment map"}  # ShaderStore::kHdrVariant, kBloomVariant, kEnvVariant
 
 # The shader pack (src/shaderpack/pack_format.h): "MSPK", version, count, formats, 16 reserved; entries of 88
 # bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 80
