@@ -23,6 +23,11 @@
 // A frame without layers (the front buffer is not their picture, reaches past them, none made: the
 // pause menus, movies, loading) is shown from the front buffer as stage 1 does.
 //
+// The HUD fade (ui_fade.h) scales the UI's colour and coverage by FrameLayers::UiAlphaFor(frame) in
+// the compose, so an SDR present composes the layers too while the alpha is below 1 (Renderer::
+// ApplyUiFade makes it so). The composed image is made again when that alpha changes, also for an
+// idle present. The debug views of mcla_gpu_hdr_layers_view do not apply it.
+//
 // The first host column and row at a render scale (FrameLayers::Frame::gap) are not in the picture
 // the layers keep: the compose reads them from the next ones, as the guest's resolve does for the
 // front buffer, so the two ways of showing a frame agree along the edges of the screen.
@@ -91,6 +96,7 @@ class HdrScene {
     uint32_t view;
     uint32_t reference;  // the 8-bit underlay (the debug views that compare)
     uint32_t gap;        // FrameLayers::Frame::gap: the first columns and rows are read from the next
+    float ui_alpha;      // FrameLayers::UiAlphaFor: the UI layer's share of the frame (view 0 only)
   };
   static_assert(sizeof(Push) <= HostPasses::kPushConstantBytes);
 
@@ -101,9 +107,10 @@ class HdrScene {
   std::unique_ptr<plume::RenderShader> shader_;
   std::unique_ptr<plume::RenderPipeline> pipeline_;
   HostImage image_;                // hdr_source: the frame in the game's code values, float16
-  uint64_t composed_generation_ = 0;  // the layers' generation and view the image holds
+  uint64_t composed_generation_ = 0;  // the layers' generation, view and UI alpha the image holds
   uint32_t composed_view_ = 0;
-  bool float_scene_ = false;       // the image holds the frame's float scene
+  float composed_alpha_ = 1.0f;
+  bool float_scene_ = false;      // the image holds the frame's float scene
   uint32_t idle_presents_ = 0;     // presents in a row without layers
 
   struct Stats {
