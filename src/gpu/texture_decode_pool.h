@@ -12,7 +12,8 @@
 // thread in Finish), then kDone; kQueued -> kCancelled by Quiesce. Whatever a job writes is
 // published by the release store of kDone and read after Finish saw it.
 //
-// The workers run below the game's threads (THREAD_PRIORITY_BELOW_NORMAL): they take the cores the
+// The workers run below the game's threads (the below-normal intent of os/thread_priority.h:
+// THREAD_PRIORITY_BELOW_NORMAL on Windows, nice +5 on Linux): they take the cores the
 // game leaves idle, and what they have not started by the time the render thread needs it, the
 // render thread decodes.
 //

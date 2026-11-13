@@ -34,6 +34,7 @@
 #endif
 
 #include "native_gfx/shader_identity.h"
+#include "os/thread_priority.h"
 #include "shaderpack/contract_checks.h"
 #include "shaderpack/hash.h"
 #include "shaderpack/hlsl_source.h"
@@ -127,10 +128,10 @@ unsigned ChooseThreadCount(unsigned requested, size_t jobs) {
 }
 
 void LowerThreadPriority() {
-#ifdef _WIN32
-  // The overlay, the log and the render thread keep their cores.
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-#endif
+  // The overlay, the log and the render thread keep their cores. Nothing waits for one of these
+  // workers (the build thread only counts what they have finished), so on Linux this is the
+  // background level (os/thread_priority.h): below normal on Windows, as before.
+  larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kBackground);
 }
 
 // ---------------------------------------------------------------------------

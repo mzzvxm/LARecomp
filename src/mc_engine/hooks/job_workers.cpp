@@ -25,22 +25,22 @@
 // core each while the main thread fell from 90% to 35% and the render thread from 85% to 32%.
 //
 // On a PC with 4 or fewer logical processors each physics pool thread gets
-// THREAD_PRIORITY_BELOW_NORMAL when it starts, so the main, render and audio threads take a
-// core first and the workers fill what is left. The thread that fills the list blocks, not
-// spins, on the workers, so it is not held up by their lower priority. Elsewhere nothing
-// changes. The other pools are left as they are. One line in larecomp.log per pool thread says
-// what was done to it. Windows only: elsewhere the threads are left as they are.
+// the below-normal intent of os/thread_priority.h when it starts (THREAD_PRIORITY_BELOW_NORMAL
+// on Windows, a nice value 5 above the process's own on Linux, which an unprivileged process may
+// always do), so the main, render and audio threads take a core first and the workers fill what
+// is left. The thread that fills the list blocks, not spins, on the workers, so it is not held
+// up by their lower priority. Elsewhere nothing changes. The other pools are left as they are.
+// One line in larecomp.log per pool thread says what was done to it.
 
-#if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
+#if !defined(REXGLUE_HAS_XEO3_TARGET)
 #include <rex/ppc.h>
 
 #include <cstdint>
 #include <cstring>
 
-#include <windows.h>
-
 #include "larecomp_log.h"
 #include "mc_engine/threading.h"
+#include "os/thread_priority.h"
 
 REX_EXTERN(__imp__rex_sub_821C4528);  // the body of every task pool thread
 
@@ -50,11 +50,9 @@ namespace {
 constexpr char kPhysicsPoolName[] = "[RAGE] Physics Task";
 constexpr uint32_t kNameBytes = 32;  // the name field at the start of the thread's slot
 
-constexpr int kLeaveAlone = 100;  // not a THREAD_PRIORITY value
-
-// The host priority to give a physics pool thread on this PC, or kLeaveAlone.
-int PhysicsThreadPriority() {
-    return mc::FourOrFewerLogicalProcessors() ? THREAD_PRIORITY_BELOW_NORMAL : kLeaveAlone;
+// Whether a physics pool thread gets a lower priority on this PC.
+bool LowerPhysicsThreads() {
+    return mc::FourOrFewerLogicalProcessors();
 }
 
 // Applies the priority to the calling thread, if it is one of the physics pool's, and logs one
@@ -65,20 +63,17 @@ void ApplyToThisThread(const uint8_t* base, uint32_t slot) {
     std::memcpy(name, base + slot, kNameBytes);
     name[kNameBytes] = '\0';
     const bool physics = std::strncmp(name, kPhysicsPoolName, sizeof(kPhysicsPoolName) - 1) == 0;
-    const DWORD logical = mc::UsableLogicalProcessors();
-    const int priority = physics ? PhysicsThreadPriority() : kLeaveAlone;
-    if (priority == kLeaveAlone) {
+    const unsigned logical = mc::UsableLogicalProcessors();
+    if (!physics || !LowerPhysicsThreads()) {
         LARECOMP_APP_INFO("[JobWorker] pool thread \"{}\" started, priority left alone ({}, {} "
                           "logical processors)",
                           name, physics ? "physics pool" : "not the physics pool", logical);
         return;
     }
-    const BOOL set = SetThreadPriority(GetCurrentThread(), priority);
-    const DWORD set_error = set ? 0 : GetLastError();
-    LARECOMP_APP_INFO("[JobWorker] physics pool thread \"{}\" started ({} logical processors): "
-                      "SetThreadPriority {} (error {}), now {}",
-                      name, logical, set ? "ok" : "failed", set_error,
-                      GetThreadPriority(GetCurrentThread()));
+    const larecomp::os::ThreadResult result =
+        larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kBelowNormal);
+    LARECOMP_APP_INFO("[JobWorker] physics pool thread \"{}\" started ({} logical processors): {}",
+                      name, logical, result.Text());
 }
 
 }  // namespace
@@ -92,4 +87,4 @@ extern "C" REX_FUNC(rex_sub_821C4528) {
     }
     __imp__rex_sub_821C4528(ctx, base);
 }
-#endif  // _WIN32 && !REXGLUE_HAS_XEO3_TARGET
+#endif  // !REXGLUE_HAS_XEO3_TARGET

@@ -22,8 +22,10 @@
 //   3 highest and registered with the Windows multimedia scheduler ("Pro Audio"),
 //  -1 automatic: 3 on a PC with 6 or fewer logical processors, else 0.
 // Takes effect at the next start. Whatever the setting, one line in larecomp.log per thread
-// says that it started and what was done to it. Windows only: elsewhere the threads are left
-// as they are.
+// says that it started and what was done to it. The levels are intents of os/thread_priority.h:
+// on Windows the calls named above; on Linux a raise of the thread's nice value (by 5, 10 and 11),
+// which an unprivileged process may not do (RLIMIT_NICE or CAP_SYS_NICE allow it): then the
+// threads stay as they are and one line says why.
 //
 // The same override counts audio dropouts. The callback runs for each 5.33 ms frame, but the
 // output device takes audio in 10 ms steps, so about half of the gaps between two calls are
@@ -38,7 +40,7 @@
 // tells one), so a gap that comes with a load is counted. The counters are written by the audio
 // worker alone, with no lock; the closing line reads them with atomics.
 
-#if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
+#if !defined(REXGLUE_HAS_XEO3_TARGET)
 #include <rex/cvar.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
@@ -46,22 +48,23 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-
-#include <windows.h>
-#include <avrt.h>
+#include <string>
 
 #include "hooks.h"
 #include "mc_engine/threading.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "mc_engine/adaptive_triggers.h"
+#include "os/thread_priority.h"
 
 REXCVAR_DEFINE_INT32(audio_mixer_priority, -1, "MCLA/Audio",
     "Host priority of the game's two audio threads: the guest thread that mixes each 5.33 ms "
     "frame (the game's request for a higher priority is ignored) and the SDK's audio worker "
     "that calls the game for each frame: 0 = normal, 1 = above normal, 2 = highest, 3 = highest "
     "and registered with the Windows multimedia scheduler (\"Pro Audio\"), -1 = automatic: 3 on "
-    "a PC with 6 or fewer logical processors, 0 otherwise. Takes effect at the next start.")
+    "a PC with 6 or fewer logical processors, 0 otherwise. On Linux 1 to 3 raise the threads' "
+    "nice value if the system allows it (it usually does not for an ordinary user). Takes "
+    "effect at the next start.")
     .range(-1, 3)
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -71,10 +74,10 @@ REX_EXTERN(__imp__sub_823F56D0);      // the game's audio callback, run by the S
 
 namespace {
 
-constexpr DWORD kSmallPcLogicalProcessors = 6;
+constexpr unsigned kSmallPcLogicalProcessors = 6;
 
 // The level to apply, from the setting and the PC.
-int AudioLevel(DWORD logical) {
+int AudioLevel(unsigned logical) {
     const int setting = REXCVAR_GET(audio_mixer_priority);
     if (setting >= 0) {
         return setting;
@@ -84,40 +87,28 @@ int AudioLevel(DWORD logical) {
 
 // Applies the setting to the calling thread and logs one line about it; `who` starts the line.
 void ApplyToThisThread(const char* who) {
-    const DWORD logical = mc::UsableLogicalProcessors();
+    const unsigned logical = mc::UsableLogicalProcessors();
     const int level = AudioLevel(logical);
-    HANDLE self = GetCurrentThread();
     // The name the SDK gave the thread, if any: it shows that the right thread was found.
-    char name[64] = "?";
-    PWSTR description = nullptr;
-    if (SUCCEEDED(GetThreadDescription(self, &description)) && description) {
-        if (WideCharToMultiByte(CP_UTF8, 0, description, -1, name, int(sizeof(name)), nullptr,
-                                nullptr) <= 0) {
-            name[0] = '?';
-            name[1] = '\0';
-        }
-        LocalFree(description);
-    }
+    const std::string name = larecomp::os::CurrentThreadName();
     if (level == 0) {
         LARECOMP_APP_INFO("{}, priority left alone (audio_mixer_priority {}, {} logical "
                           "processors); thread \"{}\"",
                           who, REXCVAR_GET(audio_mixer_priority), logical, name);
         return;
     }
-    const BOOL set = SetThreadPriority(
-        self, level >= 2 ? THREAD_PRIORITY_HIGHEST : THREAD_PRIORITY_ABOVE_NORMAL);
-    const DWORD set_error = set ? 0 : GetLastError();
-    // The multimedia scheduler registration lasts until the thread ends; both threads run for
-    // the whole session, so it is never reverted.
-    DWORD task = 0;
-    HANDLE mmcss = level >= 3 ? AvSetMmThreadCharacteristicsW(L"Pro Audio", &task) : nullptr;
-    const DWORD mmcss_error = (level >= 3 && !mmcss) ? GetLastError() : 0;
-    LARECOMP_APP_INFO("{}, level {} (audio_mixer_priority {}, {} logical processors): "
-                      "SetThreadPriority {} (error {}), now {}; multimedia scheduler {} (error "
-                      "{}); thread \"{}\"",
-                      who, level, REXCVAR_GET(audio_mixer_priority), logical,
-                      set ? "ok" : "failed", set_error, GetThreadPriority(self),
-                      level >= 3 ? (mmcss ? "ok" : "failed") : "not asked", mmcss_error, name);
+    // Level 1 above normal, 2 highest, 3 highest and the OS's audio scheduling (Windows: the
+    // multimedia scheduler's "Pro Audio" task, which lasts until the thread ends; both threads
+    // run for the whole session, so it is never reverted).
+    const larecomp::os::ThreadIntent intent =
+        level >= 3 ? larecomp::os::ThreadIntent::kAudio
+                   : (level == 2 ? larecomp::os::ThreadIntent::kHigh
+                                 : larecomp::os::ThreadIntent::kAboveNormal);
+    const larecomp::os::ThreadResult result = larecomp::os::SetCurrentThreadIntent(intent);
+    LARECOMP_APP_INFO("{}, level {} (audio_mixer_priority {}, {} logical processors): {}; "
+                      "thread \"{}\"",
+                      who, level, REXCVAR_GET(audio_mixer_priority), logical, result.Text(true),
+                      name);
 }
 
 // --- The dropout counter ---------------------------------------------------------------------
@@ -235,4 +226,4 @@ extern "C" REX_FUNC(sub_823F56D0) {
 }
 #else
 void LogAudioDropoutSummary() {}
-#endif  // _WIN32 && !REXGLUE_HAS_XEO3_TARGET
+#endif  // !REXGLUE_HAS_XEO3_TARGET

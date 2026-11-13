@@ -28,6 +28,7 @@
 #include "edram.h"
 #include "format.h"
 #include "layout.h"
+#include "os/thread_priority.h"
 #include "temporal_backend.h"
 
 #if defined(_WIN32)
@@ -687,10 +688,8 @@ void Pipelines::StopPrecache() {
 }
 
 void Pipelines::PrecacheWorker(uint32_t index) {
-#if defined(_WIN32)
   bool priority_set = false;
   bool priority_boosted = false;
-#endif
   for (;;) {
     // What the render thread handed over comes first, then the next entry of
     // the list; with neither the worker sleeps. The workers above
@@ -725,17 +724,17 @@ void Pipelines::PrecacheWorker(uint32_t index) {
         from_list = NextListEntry(entry);
       }
     }
-#if defined(_WIN32)
     // Normal priority in boot mode, below normal after: the guest's threads come first once
     // the render thread no longer waits for the list. The command line prebuild has no guest.
+    // Below normal, not the background level: a draw that may not be skipped waits for the
+    // build under way (Get), and on Linux the lower level could not be given back.
     const bool boosted = boot_mode_.load() || setup_mode_;
     if (!priority_set || boosted != priority_boosted) {
-      SetThreadPriority(GetCurrentThread(),
-                        boosted ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL);
+      larecomp::os::SetCurrentThreadIntent(boosted ? larecomp::os::ThreadIntent::kNormal
+                                                   : larecomp::os::ThreadIntent::kBelowNormal);
       priority_set = true;
       priority_boosted = boosted;
     }
-#endif
     if (urgent.request) {
       BuildRequest(*urgent.request);
     } else if (urgent.precached) {

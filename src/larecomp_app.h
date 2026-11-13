@@ -8,6 +8,7 @@
 #include <rex/system/gpu_plugin.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
+#include "os/thread_priority.h"
 #include "mc_engine/logging.h"
 #include "mc_engine/display_mode.h"
 #include "mc_engine/ultrawide.h"
@@ -1116,6 +1117,8 @@ class LarecompApp : public rex::ReXApp {
   void OnPostSetup() override {
     // BadassBaboon's Recomp Adjustments: Enable 1ms timer resolution and apply optimal GPU/Texture limits
     mc::EnableHighResTimer();
+    // The one line a refused priority raise logs (Linux, os/thread_priority.h) goes to larecomp.log.
+    larecomp::os::SetLogCallback([](const std::string& line) { LARECOMP_APP_INFO("{}", line); });
     ApplyGpuFlags();
     DumpEffectiveConfig();
     MCLA_StartInputProbe();
