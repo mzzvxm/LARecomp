@@ -74,6 +74,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/threading.cpp
     src/mc_engine/fma_fast.cpp
 
+    # Thread priorities for every OS (os/thread_priority.h). The shader pack library and its tool
+    # expect this file from whoever links them.
+    src/os/thread_priority.cpp
+
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
     src/mc_engine/wheel/wheel_input.cpp
@@ -661,6 +665,18 @@ else()
         target_compile_definitions(larecomp_master_server PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(larecomp_master_server PRIVATE ws2_32)
     endif()
+
+    # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
+    #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
+    add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL
+        src/os/thread_priority_test.cpp
+        src/os/thread_priority.cpp
+    )
+    target_include_directories(larecomp_thread_priority_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_thread_priority_test PRIVATE cxx_std_23)
+    # std::thread: glibc before 2.34 needs libpthread named at the link.
+    find_package(Threads REQUIRED)
+    target_link_libraries(larecomp_thread_priority_test PRIVATE Threads::Threads)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD

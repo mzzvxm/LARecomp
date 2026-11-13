@@ -39,6 +39,7 @@ add_executable(larecomp_shaderpack_tool
     "${_larecomp_repo}/src/mc_engine/modloader/rpf3.cpp"
     "${_larecomp_repo}/src/mc_engine/modloader/texture.cpp"
     "${_larecomp_repo}/src/native_gfx/shader_identity.cpp"
+    "${_larecomp_repo}/src/os/thread_priority.cpp"
 )
 target_link_libraries(larecomp_shaderpack_tool PRIVATE larecomp_shaderpack)
 if(WIN32)
