@@ -63,11 +63,18 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing,
                  prompts)) {
-    const int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
-    const int64_t fps = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFps);
-    // Both counters are 0 until the first snapshot has been taken, and the card can open before that:
-    // there is nothing to show yet, and a 0 ms frame is not a frame (it would read as 10000 FPS and
-    // pull the graph to the floor).
+    int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
+    int64_t fps = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFps);
+    // Only the SDK's Xenia command processor sets these two counters (and only in a build with perf
+    // counters), so on the native renderer they stay 0. There the card uses ImGui's own frame clock:
+    // the time of the last frame the UI was drawn in and its rolling 60-frame rate (the UI is drawn
+    // with each presented frame: 60 FPS at a 60 cap, 227 to 229 FPS uncapped against the frame log's 234).
+    if (ft_us <= 0 && fps <= 0 && io.DeltaTime > 0.0f && io.Framerate > 0.0f) {
+      ft_us = static_cast<int64_t>(io.DeltaTime * 1.0e6f);
+      fps = static_cast<int64_t>(io.Framerate + 0.5f);
+    }
+    // Nothing yet (the first frame of the card): a 0 ms frame is not a frame (it would read as
+    // 10000 FPS and pull the graph to the floor).
     const bool measured = ft_us > 0 || fps > 0;
 
     const int refresh = static_cast<int>(REXCVAR_GET(video_mode_refresh_rate));
