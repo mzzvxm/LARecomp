@@ -83,6 +83,7 @@
 #include "../time_of_day.h"
 #include "larecomp_log.h"
 #include "native_call.h"
+#include "state_log.h"
 
 #include "../hooks/hooks.h"  // MCLATimeScaleOverride, defined at the end of this file
 
@@ -518,6 +519,7 @@ void ReleaseAll(const char* why) {
     uint8_t* base = Membase();
     if (base) FlushState(base);  // the last update's state line, before the hand-back line
     LARECOMP_APP_INFO("[scene] handing the game back ({})", why);
+    statelog::SceneEnd();
     if (base) {
         g.calls_this_tick = 0;
         ApplyWorld(WorldState{}, base, 8);
@@ -529,6 +531,7 @@ void ReleaseAll(const char* why) {
 
 // The cvars and the other packages' tracks of the scene that is going; the world stays as it is until the next one says.
 void ReleaseEvents() {
+    statelog::SceneEnd();
     RestoreCvars();
     EndAppliers();
     LogUnapplied();
@@ -540,6 +543,7 @@ void BeginScene(const char* why) {
     g.state_pending = false;
     std::memset(g.unapplied, 0, sizeof(g.unapplied));
     LARECOMP_APP_INFO("[scene] start ({}): '{}', {}", why, g.scene.name, Summarize(g.scene));
+    statelog::SceneBegin(g.scene);  // opens the state log when the scene asks for one (`statelog on`)
     for (size_t i = 0; i < g_applier_count; ++i) {
         if (g_appliers[i]->begin) g_appliers[i]->begin(g.scene);
     }
@@ -582,8 +586,10 @@ void RunAt(double t, uint8_t* base) {
             case Track::kPolice:
             case Track::kTimeScale:
             case Track::kLabel:
+                break;  // the world is read from the timeline below; labels are only logged
             case Track::kMark:
-                break;  // the world is read from the timeline below; labels and marks are only logged
+                statelog::NoteMark(e->name);  // the state log's next row carries it (a no-op when no log is open)
+                break;
             default:
                 if (!HandledByApplier(e->track)) ++g.unapplied[static_cast<int>(e->track)];
                 break;
@@ -799,6 +805,7 @@ const std::string& WantedScene() {
 // ---------------------------------------------------------------- the public side
 
 void TickScene() {
+    statelog::Tick();  // the per-update state log (mcla_state_log or a scene's `statelog on`): the row is the state after the update before; one string test when off
     const std::string& want = WantedScene();
     if (want.empty()) {
         if (g.armed) Disarm("mcla_scene was cleared");

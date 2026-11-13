@@ -68,6 +68,10 @@
 #include "camera_runtime.h"  // M1b: SetCarResolver. Present once its branch is merged; then the registry is the camera's car source
 #define LARECOMP_CARS_HAS_CAMERA_RUNTIME 1
 #endif
+#if __has_include("state_log.h")
+#include "state_log.h"  // M3a: RegisterCarSource. Present once its branch is merged; then the registry is the state log's source for the scene's cars
+#define LARECOMP_CARS_HAS_STATE_LOG 1
+#endif
 
 namespace mc::cinematic {
 
@@ -526,7 +530,48 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
 
 // ---------------------------------------------------------------- the scene runner's applier
 
+#if defined(LARECOMP_CARS_HAS_STATE_LOG)
+// The state log's view of the scene's cars (state_log.h): the cars of the registry that a scene made, in the order they were added, the
+// player not among them (the log has columns of its own for the player's car). Read on the game thread once an update while a log is open.
+// Registered when a scene with car keys begins, not from a static constructor: the log's own state is made in another translation unit.
+size_t StateLogCarCount() {
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    size_t n = 0;
+    for (const CarEntry& e : g.dir.registry().entries()) {
+        if (!e.is_player) ++n;
+    }
+    return n;
+}
+
+bool StateLogCarGet(size_t index, char* id, size_t id_size, float matrix[16]) {
+    std::string name;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g.mutex);
+        size_t k = 0;
+        for (const CarEntry& e : g.dir.registry().entries()) {
+            if (e.is_player) continue;
+            if (k++ == index) {
+                name = e.id;
+                break;
+            }
+        }
+    }
+    if (name.empty()) return false;
+    if (id && id_size > 0) {  // the id is given even when the car has no pose this update
+        const size_t n = std::min(name.size(), id_size - 1);
+        std::memcpy(id, name.data(), n);
+        id[n] = '\0';
+    }
+    return PoseOf(name, matrix, nullptr);
+}
+
+const statelog::CarSource kStateLogCars = {&StateLogCarCount, &StateLogCarGet};
+#endif
+
 void ApplierBegin(const Scene& scene) {
+#if defined(LARECOMP_CARS_HAS_STATE_LOG)
+    statelog::RegisterCarSource(&kStateLogCars);
+#endif
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
     g.keys.clear();
     g.next_key = 0;

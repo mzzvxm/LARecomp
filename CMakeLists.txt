@@ -161,6 +161,8 @@ set(LARECOMP_SOURCES
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/state_log_core.cpp
+    src/mc_engine/cinematic/state_log.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/camera_runtime.cpp
@@ -390,6 +392,17 @@ add_executable(larecomp_capture_audio_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/capture_audio_test.cpp
     src/mc_engine/cinematic/capture_audio_core.cpp)
 target_include_directories(larecomp_capture_audio_test PRIVATE src/mc_engine/cinematic)
+# The state log's pure half (src/mc_engine/cinematic/state_log_core.h: the row, the hashes, the file's place, the bounded queue, the writer)
+# has a check that needs no game: cmake --build <build dir> --target larecomp_state_log_test, then run <build dir>/larecomp_state_log_test.
+add_executable(larecomp_state_log_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/state_log_test.cpp
+    src/mc_engine/cinematic/state_log_core.cpp)
+target_include_directories(larecomp_state_log_test PRIVATE src/mc_engine/cinematic)
+find_package(Threads)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_state_log_test PRIVATE Threads::Threads)
+endif()
+
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
