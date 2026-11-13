@@ -686,6 +686,9 @@ void CaptureGate() {
 }
 
 void CaptureOnHandOver() {
+    // CHECK: that the render thread is idle here and has swapped the frame before. frame_pacing.cpp's header says so of sub_82305B38 (read in
+    // the generated code: the hand-over waits for "render done", which the render thread signals after D3DDevice_Swap, then signals it again);
+    // nothing has run it. If a swap ever arrives with the stamp of the frame after it, every take shows "[cap] TAG" lines.
     if (!g_take_active.load(std::memory_order_acquire)) return;
     const core::HandOver h = g_handover.Note(g_updates.load(std::memory_order_relaxed), true, g_take_first.load(std::memory_order_acquire));
     g_stamp.store(h.tag, std::memory_order_release);
@@ -695,6 +698,8 @@ void CaptureOnSwap() {
     // This runs on the guest's render thread BEFORE D3DDevice_Swap writes the present record (gpu.h says so of SetNextPresentTarget, which
     // frame pacing sets from the same hook): a tag that arrived after the record would be dropped. The stamp was set by the hand-over of
     // this very frame, while this thread was idle, so it can neither be older nor newer than the frame.
+    // CHECK: that Patch_60FPS_Byte (sub_824199B0's swap-interval patch) runs on every swap before the present record is written; the pacer
+    // relies on the same, and E7's CaptureOnSwap ran from here, but a swap that does not pass through it is a take frame with no tag (lost).
     if (g_stamp.load(std::memory_order_acquire) == 0) return;
     const uint64_t tag = g_stamp.exchange(0, std::memory_order_acq_rel);
 #if defined(LARECOMP_HAS_GPU)
