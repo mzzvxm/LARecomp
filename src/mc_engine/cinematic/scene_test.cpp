@@ -285,6 +285,15 @@ void TestOrderAndEnd() {
     Check(ParseScene("scene c\nat 1 label \"a # b\"\nend 2\n").scene.events[0].text == "a # b", "a # inside quotes is not a comment");
 }
 
+void TestDiagnosticOrder() {
+    // diagnostics come out by line, the whole-file ones first, errors and warnings together
+    const ParseResult r = ParseScene("scene a\nat 5 hour 12\nat 2 weather sunny\nat 3 traffic off\nat 4 mark m\n");
+    bool sorted = true;
+    for (size_t i = 1; i < r.diagnostics.size(); ++i) sorted = sorted && r.diagnostics[i - 1].line <= r.diagnostics[i].line;
+    Check(sorted && r.diagnostics.size() >= 3, "diagnostics are in line order (got " + std::to_string(r.diagnostics.size()) + ")");
+    Check(r.diagnostics.front().line == 0, "the no-end warning is first");
+}
+
 void TestFormat() {
     Diagnostic d{12, Severity::kError, "unknown weather 'sunny'"};
     CheckEq(FormatDiagnostic(d, "intro.scene"), "intro.scene:12: error: unknown weather 'sunny'", "file and line");
@@ -597,6 +606,7 @@ int main(int argc, char** argv) {
     TestStatements();
     TestStatementsErrors();
     TestOrderAndEnd();
+    TestDiagnosticOrder();
     TestFormat();
     TestEase();
     TestEvaluate();

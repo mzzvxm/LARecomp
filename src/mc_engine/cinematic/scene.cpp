@@ -199,6 +199,8 @@ class Parser {
             pos = nl + 1;
         }
         Finish();
+        std::stable_sort(result_.diagnostics.begin(), result_.diagnostics.end(),
+                         [](const Diagnostic& x, const Diagnostic& y) { return x.line < y.line; });  // the whole-file ones (line 0) first
         result_.scene.events = std::move(events_);
         return std::move(result_);
     }
