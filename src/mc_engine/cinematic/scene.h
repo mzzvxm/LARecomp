@@ -141,6 +141,17 @@ std::string Summarize(const Scene& scene);
 // Weather names, in the game's index order (time_of_day.cpp): nice cloudy stormy foggy.
 int WeatherIndexFromName(std::string_view name);  // -1 when it is not one of the four
 
+// The time scale of a scene as the engine timer is told it (the timer hook in scene_runtime.cpp replaces the scale the timer
+// reads, f13 after `lfs f13,84(r3)` in sub_821BDA90): the scene's value held to the range the parser takes (0..10);
+// -1 when it is not a number, which means no override.
+double TimeScaleForEngine(double scene_value);
+// What the engine did with it: the frame's scaled step over its unscaled one (timer + 0x08 over + 0x58). 0 when there is no
+// usable step (zero, negative, not a number).
+double EngineStepRatio(double scaled, double unscaled);
+// Whether that ratio is what the scene asked for, to the one frame a ramp lags and the engine's own floor under the scaled
+// step (1e-4 s): within 0.05 + 10% of the asked value. A time scale that is not followed for a while is logged once.
+bool TimeScaleFollowed(double want, double ratio);
+
 // ---------------------------------------------------------------------------------------------------------------- the timeline
 
 // What the world tracks say at one moment. Pure: a function of the scene and the time, so a still at any time (a

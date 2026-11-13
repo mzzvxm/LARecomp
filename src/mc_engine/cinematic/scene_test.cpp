@@ -577,6 +577,45 @@ void TestReload() {
     Check(w.Poll(Stamp(310, 481), 9000) == ReloadWatcher::Action::kLoad, "after Reset the same file is a first sight again");
 }
 
+// The time scale as the engine timer is given it, and the check that the engine took it (the M1a check's first run found a time
+// scale that did nothing: the engine step ratio stayed 1).
+void TestTimeScale() {
+    CheckNum(TimeScaleForEngine(0.2), 0.2, "a scene's 0.2 goes to the engine as it is");
+    CheckNum(TimeScaleForEngine(0.02), 0.02, "0.02 too: the engine is overridden inside the timer, not held to the game's own floor of 0.1");
+    CheckNum(TimeScaleForEngine(0.0), 0.0, "0 is a value (a world held as far as the engine's step floor lets it)");
+    CheckNum(TimeScaleForEngine(1.0), 1.0, "1");
+    CheckNum(TimeScaleForEngine(25.0), 10.0, "held to the range the parser takes");
+    CheckNum(TimeScaleForEngine(-0.5), 0.0, "never negative");
+    CheckNum(TimeScaleForEngine(std::nan("")), -1.0, "not a number: no override");
+    CheckNum(TimeScaleForEngine(INFINITY), -1.0, "infinity: no override");
+
+    // the scale of every example key survives the round trip through the timeline
+    const ParseResult r = ParseScene("world timescale 0.02\nat 4 timescale 0.02..1 over 2\nend 8\n");
+    CheckNum(TimeScaleForEngine(EvaluateWorld(r.scene, 0).timescale), 0.02, "world timescale 0.02 reaches the engine");
+    CheckNum(TimeScaleForEngine(EvaluateWorld(r.scene, 5).timescale), 0.51, "the middle of a ramp 0.02..1", 1e-9);
+
+    CheckNum(EngineStepRatio(0.2 / 60.0, 1.0 / 60.0), 0.2, "scaled over unscaled");
+    CheckNum(EngineStepRatio(1.0 / 60.0, 1.0 / 60.0), 1.0, "1 at the game's own speed");
+    CheckNum(EngineStepRatio(0.001, 0.0), 0.0, "no unscaled step: no ratio");
+    CheckNum(EngineStepRatio(0.001, -1.0), 0.0, "a negative step: no ratio");
+    CheckNum(EngineStepRatio(std::nan(""), 0.016), 0.0, "NaN scaled: no ratio");
+    CheckNum(EngineStepRatio(0.016, std::nan("")), 0.0, "NaN unscaled: no ratio");
+    CheckNum(EngineStepRatio(-0.016, 0.016), 0.0, "a negative scaled step: no ratio");
+
+    Check(TimeScaleFollowed(0.2, 0.2), "followed exactly");
+    Check(TimeScaleFollowed(0.2, 0.24), "followed within the tolerance (a ramp's frame lag)");
+    Check(!TimeScaleFollowed(0.2, 1.0), "not followed: the engine stayed at 1 (the first run's finding)");
+    Check(TimeScaleFollowed(0.02, 0.024), "0.02 at 240 FPS: the step floor lifts the ratio to 0.024, still followed");
+    Check(!TimeScaleFollowed(0.02, 0.1), "0.02 at 1000 FPS: the floor gives 0.1, not followed (the log says why)");
+    Check(TimeScaleFollowed(1.0, 1.0), "1");
+    Check(TimeScaleFollowed(1.0, 1.1), "1.1 is 10% off: followed");
+    Check(!TimeScaleFollowed(1.0, 1.25), "1.25 is not");
+    Check(!TimeScaleFollowed(0.2, 0.0), "no ratio (0) when 0.2 was asked: not followed");
+    Check(TimeScaleFollowed(0.0, 0.0), "0 asked, 0 seen");
+    Check(!TimeScaleFollowed(std::nan(""), 0.2), "NaN asked");
+    Check(!TimeScaleFollowed(0.2, std::nan("")), "NaN seen");
+}
+
 // Parse files given on the command line and say what the game would say. Returns 1 when one has an error.
 int ParseFiles(int argc, char** argv) {
     int rc = 0;
@@ -610,6 +649,7 @@ int main(int argc, char** argv) {
     TestFormat();
     TestEase();
     TestEvaluate();
+    TestTimeScale();
     TestCursor();
     TestClock();
     TestReload();

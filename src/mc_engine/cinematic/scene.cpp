@@ -761,6 +761,21 @@ int WeatherIndexFromName(std::string_view name) {
     return -1;
 }
 
+double TimeScaleForEngine(double scene_value) {
+    if (!std::isfinite(scene_value)) return -1.0;
+    return std::clamp(scene_value, 0.0, kMaxTimeScale);
+}
+
+double EngineStepRatio(double scaled, double unscaled) {
+    if (!std::isfinite(scaled) || !std::isfinite(unscaled) || unscaled <= 0.0 || scaled < 0.0) return 0.0;
+    return scaled / unscaled;
+}
+
+bool TimeScaleFollowed(double want, double ratio) {
+    if (!std::isfinite(want) || !std::isfinite(ratio)) return false;
+    return std::fabs(ratio - want) <= 0.05 + 0.1 * want;
+}
+
 double Scene::LastKeyEnd() const {
     double last = 0.0;
     for (const Event& e : events) last = std::max(last, e.t + (e.over > 0.0 ? e.over : 0.0));

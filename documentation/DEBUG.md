@@ -148,10 +148,10 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 
 | Statement | What the game does |
 |---|---|
-| `hour <h>`, `hour <a>..<b> over <s>`, `hour free` | `TimeOfDay_RequestHour`: the hour is pinned (a value over 24 wraps); `free` gives the day cycle back |
-| `weather nice\|cloudy\|stormy\|foggy\|game` | `Weather_RequestIndex`; `game` gives the weather back |
+| `hour <h>`, `hour <a>..<b> over <s>`, `hour free` | `TimeOfDay_SceneHour`, the scene's own request: the hour is pinned (a value over 24 wraps) and outranks `time_of_day_hold` and the clock setting, which carry on when the scene lets go; `free` gives the day cycle back |
+| `weather nice\|cloudy\|stormy\|foggy\|game` | `Weather_SceneIndex`, the scene's own request, over the `weather` setting; `game` gives the weather back |
 | `traffic`, `peds`, `parked`, `police` `on\|off` | the game's own script natives (`AmbientMgr_Set*Enable`, `PoliceManager_SetAllPoliceActive`); the enable byte is read back and the log says what it became |
-| `timescale <x>`, `timescale <a>..<b> over <s>` | the engine timer's time scale (below about 0.006 at 60 FPS the game holds its own lowest step) |
+| `timescale <x>`, `timescale <a>..<b> over <s>` | the scale is put into the engine timer itself (a hook in `sub_821BDA90`), so the game's own slow motion and its floor of 0.1 do not matter; the state line's `engine step ratio` is what the engine really did (below about 0.006 at 60 FPS the engine's own floor under the scaled step, 0.1 ms, holds it) |
 | `set <setting> <value>` | the setting, live ones only; the old value comes back at the end |
 | `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
 | `cam`, `cut`, `hud`, `car`, `start` | kept for the camera, HUD and car packages of the toolkit; read and linted, not applied yet |
