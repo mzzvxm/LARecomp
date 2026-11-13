@@ -488,6 +488,7 @@ bool InlineRectCoversScreen(const DrawView& view, const InputLayout& layout, boo
 float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
                          const InputLayout* layout, PrimitiveConversion conversion, float* clip) {
   *clip = 1.0f;
+  ui_phone_draw_ = false;
   if (!ui_phase_) {
     return 1.0f;
   }
@@ -552,12 +553,28 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   // shows). What the world draws after the scene is composed (the airplanes in the sky: depth tested,
   // not written) is not clipped: it belongs to the whole wide picture.
   // CHECK: a 2D element drawn from a vertex buffer would be stretched now; the log names the first ones.
+  //
+  // The Sidekick phone sits at the screen's left edge, as far from it as on a 16:9 screen (the owner,
+  // 2026-11-12: parked while the pause menu is open, the 16:9 sliver of it showed in the middle of the wide
+  // picture, at the middle block's edge; a 16:9 screen shows it at its own edge). Its draws, in the order a
+  // frame makes them (3440x1440, 2026-11-12): two meshes with the vertex shader kPhoneMeshVs (1587 and 306
+  // indices), then its screen, a quad with kPhoneScreenVs, the pause menu's card's shader too (the card is
+  // an 828-index frame, kPhoneScreenVs' 96-index contents follow it, and it stays where it is): so a draw
+  // with kPhoneScreenVs is the phone's only right after the phone's meshes.
+  // CHECK: that no other 3D model the UI draws uses kPhoneMeshVs (the census saw it only for the phone, in
+  // free roam and behind the pause menu), and that the phone's draws stay together in this order (one that
+  // comes apart shows as the screen beside the body).
   *clip = float(fraction);
   if (view.record().kind != DrawKind::kInline) {
     if (!state.depth_control.z_write_enable) {
       *clip = 1.0f;
     }
     const DrawRecord& r = view.record();
+    constexpr uint64_t kPhoneMeshVs = 0x6137CE3EB560D293ull;
+    constexpr uint64_t kPhoneScreenVs = 0xEFE38E9E73C08B45ull;
+    const bool phone_mesh = r.vs_identity == kPhoneMeshVs;
+    ui_phone_draw_ = phone_mesh || (ui_after_phone_mesh_ && r.vs_identity == kPhoneScreenVs);
+    ui_after_phone_mesh_ = phone_mesh;
     if (ultrawide_3d_logged_ < ultrawide_3d_vs_.size() &&
         std::find(ultrawide_3d_vs_.begin(), ultrawide_3d_vs_.begin() + ultrawide_3d_logged_,
                   r.vs_identity) == ultrawide_3d_vs_.begin() + ultrawide_3d_logged_) {
@@ -571,6 +588,7 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
     }
     return 1.0f;
   }
+  ui_after_phone_mesh_ = false;
   return float(fraction);
 }
 
@@ -607,7 +625,12 @@ void Scene::OnUiMessage(uint32_t bucket) {
   }
 }
 
-float Scene::UiShiftOf(float squeeze) const {
+float Scene::UiShiftOf(float squeeze) {
+  if (ui_phone_draw_) {
+    // The Sidekick phone (UiSqueezeOf): at the left edge, as a left piece at hud_width 100.
+    ui_phone_draw_ = false;
+    return squeeze < 1.0f ? -(1.0f - squeeze) * 0.5f : 0.0f;
+  }
   // CHECK: that every draw of a HUD piece is one UiSqueezeOf squeezes (blended, into the screen's image,
   // or a depth-only mask): one it leaves whole stays where the guest drew it and the piece tears.
   if (ui_piece_side_ == 0 || !(squeeze < 1.0f)) {
@@ -2670,6 +2693,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   // against what the frame draws after it (M6c.0).
   composite_census_.OnComposite(CompositeTarget(last_color0_));
   scene_marker_seen_ = true;
+  ui_after_phone_mesh_ = false;
   ui_phase_ = true;
   ui_world_ = false;
   ui_piece_side_ = 0;
