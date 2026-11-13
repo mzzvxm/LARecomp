@@ -49,6 +49,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #if defined(LARECOMP_HAS_GPU)
+#include "gpu/contact_shadows.h"
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
 #endif
@@ -1703,6 +1704,23 @@ bool AoOn() {
     return mode == "low" || mode == "high";
 }
 constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
+// Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
+// and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, LOW on
+// a discrete one with under 6 GiB, HIGH on the rest. The row is "CONTACT SHADOWS" (15 characters) with
+// a value of at most 11 ("AUTO (HIGH)").
+// CHECK: GT -- the label comes from gpu/contact_shadows.h until package GT's gpu_class.h lands, then
+// from gpu_class::AutoLabel(Effect::kContactShadows).
+const char* const kNativeContactVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeContactNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+std::string ContactLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::contact_shadows::AutoLabel();
+    case 1:  return "OFF";
+    case 2:  return "LOW";
+    default: return "HIGH";
+    }
+}
+constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1739,6 +1757,9 @@ const ItemDef kPictureItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
                                 kNativeAoLevelVals, kNativeAoLevelNames, 4),
                             &kAoIntensityDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
+                                kNativeContactVals, kNativeContactNames, 4),
+                            &kContactDynamics)),
 #endif
 };
 
@@ -2574,7 +2595,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
+// 17, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most
+// 11 ("AUTO (HIGH)").
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
