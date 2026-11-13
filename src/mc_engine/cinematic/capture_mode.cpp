@@ -123,6 +123,7 @@ extern char** environ;
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/sync_builds.h"
 #endif
 
 REXCVAR_DEFINE_DOUBLE(mcla_capture_fps, 0.0, "MCLA/Cinematic",
@@ -1099,6 +1100,10 @@ void BeginTake(uint64_t u0, double fps) {
     g_take_ticks.store(t.ticks, std::memory_order_release);
     g_state_log_on.store(t.state_log, std::memory_order_release);
     g_take_active.store(true, std::memory_order_release);
+#if defined(LARECOMP_HAS_GPU)
+    // No draw is left out for a pipeline that is still being made while the take runs (gpu/sync_builds.h, M2d): the renderer waits for it.
+    ::mcla::gpu::sync_builds::SetCaptureActive(true);
+#endif
     {
         std::lock_guard<std::mutex> lock(g_rows_mutex);
         WriteTakeJson(t, Outcome{});
@@ -1117,6 +1122,9 @@ void EndTake(uint64_t u_end) {
     o.handed = g_handover.Handed();
     g_take_active.store(false, std::memory_order_release);
     g_state_log_on.store(false, std::memory_order_release);
+#if defined(LARECOMP_HAS_GPU)
+    ::mcla::gpu::sync_builds::SetCaptureActive(false);  // the renderer may leave a draw out for a pending pipeline again (gpu/sync_builds.h)
+#endif
     capture_audio::End(o.handed);  // the WAV is finished and the real output has its mixer back before the sink's flush
     CloseSink();
     if (g_state_file) {
