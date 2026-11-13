@@ -8,15 +8,19 @@
 //
 //   xrage_fastmipmap::PSFastMipMap  (identity 4AA33D052D8AAD13, in the executable)
 //       the pass that makes mip levels 1 to 3: three draws a frame into the environment map's own target, each
-//       taking the average of 4 taps that sit at +-0.5 TexelSize around the pixel's UV (TexelSize is a pixel
-//       shader constant: 1 / the size of the level read, in the game's pixels). The taps are meant to land
-//       on the centres of the 2x2 texels that make one pixel of the next level. The game's constant does not
-//       know the map is S times larger, so the taps sit S times too far from the pixel's centre: at 2x each
-//       lands on a corner of the texels and the average becomes a 4x4 box (a level twice as blurry as the
-//       game's, whatever the level), at 3x it lands on texel centres 1.5 texels away and skips the nearest
-//       two (a dotted, shimmering level). The variant multiplies the offset by g_InvResolutionScale (1 / the
-//       scale of the target the draw is made into, the environment map's own), which puts the taps back on
-//       the 2x2 texels at any scale. At 1x it is the game's own arithmetic.
+//       taking the average of 4 taps that sit at +-0.5 TexelSize around the pixel's UV. TexelSize is a pixel
+//       shader constant that the game sets in ITS texels. Its value is the guest's and neither the translated
+//       text nor the census shows it [I]: 1 over the size of the level the pass reads (the four taps then sit
+//       on the centres of the 2x2 texels that make one pixel of the next level) or of the level it makes. In
+//       UV that is the same at any scale, which is S times as many host texels once the map is S times larger:
+//       the game's kernel becomes S times as wide in the map's own texels. For the taps on the 2x2 texel
+//       centres: at 2x each lands on a corner of the texels and the average is a 4x4 box (a level twice as
+//       blurry as the game's, whatever the level), and at 3x on texel centres 1.5 away that skip the nearest
+//       two (a dotted, shimmering level). The variant multiplies the offset by
+//       g_InvResolutionScale (1 / the scale of the target the draw is made into, the environment map's own),
+//       which keeps the game's kernel in host texels at any scale (the draw's implicit LOD is the same at
+//       every scale: the map and its pixels grow together, so it reads the same level). At 1x it is the
+//       game's own arithmetic.
 //
 //   xSpecMapGen::PS_Blit  (identity F92316724CFA62ED, in the RPF, cars)
 //       the first of the three draws that make the 64x32 specular copy: ONE bilinear tap of the environment
