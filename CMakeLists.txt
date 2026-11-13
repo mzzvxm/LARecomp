@@ -154,6 +154,7 @@ set(LARECOMP_SOURCES
     # Trailer toolkit M2c: the take's sound. The capture driver sits in front of the game's audio output (audio_output.h) and only acts during a take;
     # the sample books and the WAV file are in capture_audio_core.
     src/mc_engine/cinematic/capture_audio_core.cpp
+    src/mc_engine/cinematic/capture_audio.cpp
 
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
