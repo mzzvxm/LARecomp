@@ -97,6 +97,17 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+#include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+
+extern char** environ;
 #endif
 
 #include "capture_core.h"
@@ -372,8 +383,35 @@ class Pipe {
         write_ = write;
         return true;
 #else
-        file_ = popen((command_line + " >\"" + log_path + "\" 2>&1").c_str(), "w");
-        return file_ != nullptr;
+        // The program runs through the shell (the command line is one string with its quotes), standard input the pipe, output
+        // and errors the log. A write to a pipe whose reader is gone has to fail with EPIPE (the take then fails with
+        // ffmpeg.log to read) and not end the game with SIGPIPE.
+        signal(SIGPIPE, SIG_IGN);
+        int fds[2] = {-1, -1};
+        if (pipe(fds) != 0) return false;
+        fcntl(fds[0], F_SETFD, FD_CLOEXEC);  // only the dup2'd standard input reaches the program, so it sees the end of the data
+        fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+#if defined(F_SETPIPE_SZ)
+        // As the 4 MiB of the Windows pipe, as far as the system allows (/proc/sys/fs/pipe-max-size, 1 MiB by default).
+        if (fcntl(fds[1], F_SETPIPE_SZ, 4 << 20) < 0) fcntl(fds[1], F_SETPIPE_SZ, 1 << 20);
+#endif
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_adddup2(&actions, fds[0], 0);
+        posix_spawn_file_actions_addopen(&actions, 1, log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_adddup2(&actions, 1, 2);
+        const char* argv[] = {"sh", "-c", command_line.c_str(), nullptr};
+        pid_t pid = 0;
+        const int rc = posix_spawn(&pid, "/bin/sh", &actions, nullptr, const_cast<char* const*>(argv), environ);
+        posix_spawn_file_actions_destroy(&actions);
+        close(fds[0]);
+        if (rc != 0) {
+            close(fds[1]);
+            return false;
+        }
+        pid_ = pid;
+        fd_ = fds[1];
+        return true;
 #endif
     }
 
@@ -388,7 +426,17 @@ class Pipe {
         }
         return true;
 #else
-        return std::fwrite(data, 1, static_cast<size_t>(bytes), file_) == bytes;
+        while (bytes > 0) {
+            const ssize_t n = ::write(fd_, data, static_cast<size_t>(std::min<uint64_t>(bytes, 1u << 20)));
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return false;
+            }
+            if (n == 0) return false;
+            data += n;
+            bytes -= static_cast<uint64_t>(n);
+        }
+        return true;
 #endif
     }
 
@@ -396,7 +444,7 @@ class Pipe {
 #if defined(_WIN32)
         return process_ != nullptr;
 #else
-        return file_ != nullptr;
+        return pid_ > 0;
 #endif
     }
 
@@ -404,6 +452,8 @@ class Pipe {
     void Kill() {
 #if defined(_WIN32)
         if (process_) TerminateProcess(process_, 1);
+#else
+        if (pid_ > 0) kill(pid_, SIGKILL);
 #endif
     }
 
@@ -424,9 +474,24 @@ class Pipe {
         process_ = nullptr;
         return code;
 #else
-        (void)wait_ms;
-        int code = file_ ? pclose(file_) : -1;
-        file_ = nullptr;
+        if (fd_ >= 0) close(fd_);
+        fd_ = -1;
+        int code = -1;
+        if (pid_ > 0) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+            for (;;) {
+                int status = 0;
+                const pid_t done = waitpid(pid_, &status, WNOHANG);
+                if (done == pid_) {
+                    code = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
+                    break;
+                }
+                if (done < 0 && errno != EINTR) break;  // not ours to wait for (a SIGCHLD that is ignored reaps it): the code is unknown
+                if (std::chrono::steady_clock::now() >= deadline) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+        pid_ = -1;
         return code;
 #endif
     }
@@ -436,7 +501,8 @@ class Pipe {
     HANDLE process_ = nullptr;
     HANDLE write_ = nullptr;
 #else
-    FILE* file_ = nullptr;
+    pid_t pid_ = -1;
+    int fd_ = -1;
 #endif
 };
 
@@ -594,6 +660,15 @@ uint64_t AvailablePhysicalBytes() {
     ms.dwLength = sizeof ms;
     return GlobalMemoryStatusEx(&ms) ? static_cast<uint64_t>(ms.ullAvailPhys) : 0;
 #else
+    // MemAvailable: what a program can get without the system swapping (free memory and the caches it gives back).
+    std::ifstream in("/proc/meminfo");
+    std::string key;
+    uint64_t kib = 0;
+    std::string rest;
+    while (in >> key >> kib) {
+        std::getline(in, rest);
+        if (key == "MemAvailable:") return kib * 1024;
+    }
     return 0;
 #endif
 }
