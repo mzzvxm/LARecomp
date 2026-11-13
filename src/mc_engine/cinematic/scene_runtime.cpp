@@ -30,8 +30,9 @@
 //   label, mark logged. Labels are data for the compositor: nothing is drawn in the game.
 //   capture     nothing here: capture.cpp registers the applier that asks for a take (a fixed step, the frame gate and the readback)
 //               from the `capture fps` key to `capture off` or the scene's end.
-//   camera, cut, hud, car, start
-//               nothing: the packages that own them register a TrackApplier (scene_runtime.h).
+//   camera, cut, hud, car
+//               nothing here: camera_runtime.cpp, hud_runtime.cpp and cars.cpp register a TrackApplier (scene_runtime.h) each.
+//   start       no applier yet (the preamble: save, seed, warp, car slot); the runner says so in the log.
 //
 // The scene ends at its `end` (a scene with none runs until the cvar is cleared): everything it changed goes back, the world
 // tracks to the game's own, the settings to their old values, the toggles to what the bytes were.
@@ -255,7 +256,7 @@ struct ToggleState {
     int failures = 0;
 };
 
-constexpr size_t kMaxAppliers = 4;
+constexpr size_t kMaxAppliers = 8;  // camera, capture, cars, hud, and room for the free-camera recorder and the audio take
 const TrackApplier* g_appliers[kMaxAppliers] = {};
 size_t g_applier_count = 0;
 

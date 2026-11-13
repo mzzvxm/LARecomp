@@ -46,7 +46,7 @@ struct TrackApplier {
 constexpr uint32_t TrackBit(Track t) {
     return 1u << static_cast<int>(t);
 }
-// Up to four; the appliers are not owned (give it something that lives as long as the game).
+// Up to eight (camera, capture, cars and hud use four); the appliers are not owned (give it something that lives as long as the game).
 bool RegisterTrackApplier(const TrackApplier* applier);
 
 }  // namespace mc::cinematic

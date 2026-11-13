@@ -30,9 +30,11 @@
 //   at T capture fps <n> [step 1/<n>]                     a take: from this key the game steps by exactly 1/n a second and every
 //                                                         frame is read back (capture mode, M2a); one capture rate in a scene
 //   at T capture off                                      the take ends (it also ends with the scene's `end`)
+//   at T capture fps <n> | capture off                    a take (M2a, capture_core.h); the parser reads it (Track::kCapture)
 //   cam <T> <...>   cut <T>   at T hud <...>   at T car <id> <...>   start <...>
 //                                                         the camera, HUD, car and preamble tracks (M1b, M1c, M4):
-//                                                         kept as words for their packages; the runtime applies none of them yet
+//                                                         kept as words for their packages, which register a TrackApplier
+//                                                         (camera.h, hud_track.h, car_verbs.h read them); `start` has none yet
 //
 // ease: linear (default), in, out, inout. A key's value holds until the next key of the same track.
 //

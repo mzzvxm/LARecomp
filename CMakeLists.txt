@@ -179,6 +179,7 @@ set(LARECOMP_SOURCES
     # Trailer toolkit: the game's own UI on and off (the HUD alpha, its scene track). Inert at alpha 1.
     src/mc_engine/cinematic/hud.cpp
     src/mc_engine/cinematic/hud_track.cpp
+    src/mc_engine/cinematic/hud_runtime.cpp
 
     # Custom MP3 radio: <exe>/music/*.mp3 injected into mcMusicManager, decoded
     # and played on the host (Media Foundation + XAudio2).
