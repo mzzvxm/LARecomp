@@ -20,6 +20,7 @@
 #include "hooks/hooks.h"
 #include "hooks/hooks_internal.h"
 #include "larecomp_log.h"
+#include "swf_dom.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
@@ -375,6 +376,45 @@ const Piece* PieceOf(const uint8_t* base, uint32_t instance) {
 // the exit of that same draw, and a draw inside a piece is no piece of its own.
 thread_local uint32_t t_open_piece = 0;
 
+// --- the title screen's prompt bar ---------------------------------------------------------------------
+//
+// The title's "PRESS START" (white text and the Start button on a dark bar, bottom right) is the movie the UI
+// manager has as PROMPTMOVIE, the game's shared prompt bar (a census at 3440x1440, 2026-11-12: of the movies
+// with a prompt bar, PROMPTMOVIE's `allprompts` is the one drawn straight onto the screen; PAUSEMOVIE's is
+// inside the pause menu's card, NAVSYSMOVIE's and POPUPMOVIE's belong to their own panels). It sits at the
+// screen's right edge on a wide picture, as far from it as on a 16:9 screen, whatever hud_width is (the
+// owner, 2026-11-12: centred, it looked out of place under the wide title view). Only until the driving HUD
+// has first been drawn (the title and the sign-in steps): later prompts of the same movie belong to screens
+// whose menus stay in the middle.
+// CHECK: that nothing but the prompt bar is drawn by PROMPTMOVIE before the game is entered (the sign-in and
+// profile steps included), that a game started with the HUD switched off still draws its speedometer clip
+// (otherwise the bar keeps moving to the edge in those later screens), and that after quitting to the title
+// the bar staying in the middle is acceptable.
+
+// The driving HUD (hud.swf's `speedometer`, a child of its clip "HUD") has been drawn once.
+std::atomic<bool> g_hud_seen{false};
+std::atomic<bool> g_title_prompt_logged{false};
+
+void NoteHudSeen(const uint8_t* base, uint32_t instance) {
+  if (g_hud_seen.load(std::memory_order_relaxed) ||
+      !GuestNameIs(base, ReadGuestU32(base, instance + kInstName), "speedometer")) {
+    return;
+  }
+  const uint32_t parent = ReadGuestU32(base, instance + kInstParent);
+  if (PlausibleEa(parent) && GuestNameIs(base, ReadGuestU32(base, parent + kInstName), "HUD")) {
+    g_hud_seen.store(true, std::memory_order_relaxed);
+  }
+}
+
+// `instance` is the root of PROMPTMOVIE and the game has not been entered yet.
+bool IsTitlePromptRoot(const uint8_t* base, uint32_t instance) {
+  if (g_hud_seen.load(std::memory_order_relaxed) || ReadGuestU32(base, instance + kInstParent) != 0) {
+    return false;  // (a movie's root has no parent: only the few roots a frame get the lookup)
+  }
+  larecomp::swf::Movie movie;
+  return larecomp::swf::FindMovie(base, "PROMPTMOVIE", movie) && movie.root == instance;
+}
+
 }  // namespace
 
 void NoteUiPiece(uint32_t instance, bool begin) {
@@ -389,14 +429,25 @@ void NoteUiPiece(uint32_t instance, bool begin) {
     return;
   }
   // The hot path: this runs for every instance the Flash player draws (the menus have hundreds).
-  if (g_hud_width.load(std::memory_order_relaxed) == 0 || t_open_piece != 0) {
-    return;
-  }
-  if (!Active() || !PlumeRenderer()) {
+  if (t_open_piece != 0 || !Active() || !PlumeRenderer()) {
     return;
   }
   const uint8_t* base = GuestBase();
   if (!base) {
+    return;
+  }
+  if (!g_hud_seen.load(std::memory_order_relaxed)) {
+    NoteHudSeen(base, instance);
+    if (IsTitlePromptRoot(base, instance)) {
+      if (!g_title_prompt_logged.exchange(true, std::memory_order_relaxed)) {
+        LARECOMP_APP_INFO("ultrawide: the title's prompt bar (PROMPTMOVIE) is at the right edge until the game is entered");
+      }
+      t_open_piece = instance;
+      mcla::gpu::OnGuestSceneComposited(kUiEdgeRight);
+      return;
+    }
+  }
+  if (g_hud_width.load(std::memory_order_relaxed) == 0) {
     return;
   }
   const Piece* piece = PieceOf(base, instance);

@@ -223,6 +223,10 @@ class Scene {
     // Ultrawide: the draw is UI and is drawn squeezed sideways around the centre of the screen by
     // this factor (UiSqueezeOf); 1: as the game has it.
     float ui_squeeze = 1.0f;
+    // Ultrawide: the factor the draw's scissor is squeezed by: ui_squeeze for the flat UI, and for a 3D
+    // object of the UI (drawn whole, ui_squeeze 1) the UI's own, so that it is clipped to the middle 16:9
+    // as the rest of the UI is (UiSqueezeOf).
+    float ui_clip = 1.0f;
     // Ultrawide: and then moved sideways by this share of the screen's width, to the right when
     // positive (UiShiftOf): the draw is one of a HUD piece that hud_width moves toward a screen edge.
     float ui_shift = 0.0f;
@@ -325,8 +329,11 @@ class Scene {
   // not into the screen's image, a copy that blends nothing (the scene copied into the pause view's
   // target), a blended rectangle over the whole screen (a fade: a draw of inline vertices that cover
   // it), the world icons (OnUiMessage), or an aspect ratio of 16:9.
+  // `clip` is set to the factor the draw's scissor is squeezed by: the same as the result, except for a
+  // 3D object of the UI (a draw from a vertex buffer), which keeps its shape (result 1) but is clipped
+  // to the middle 16:9 with the rest of the UI.
   float UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
-                    const InputLayout* layout, PrimitiveConversion conversion);
+                    const InputLayout* layout, PrimitiveConversion conversion, float* clip);
   // The share of the screen's width a squeezed UI draw is moved sideways by afterwards (to the right
   // when positive): 0 unless the draw belongs to a piece of the HUD the guest has bracketed
   // (OnUiMessage) and hud_width is above 0. A left piece moves by -t * (1 - k) / 2, a right piece by
@@ -508,8 +515,15 @@ class Scene {
   // Inside the guest's draw of one piece of the HUD (OnUiMessage): -1 anchored to the left edge, 1 to the
   // right edge, 0 not inside one.
   int ui_piece_side_ = 0;
+  // The piece is one that always sits at its edge (kUiEdgeLeft / kUiEdgeRight): moved fully, whatever
+  // hud_width is.
+  bool ui_piece_at_edge_ = false;
   // How many full-screen UI draws kept the whole screen have been logged (UiSqueezeOf).
   uint32_t ultrawide_fills_logged_ = 0;
+  // The vertex shaders of the UI draws from a vertex buffer (3D objects) that kept their shape, logged
+  // once each (UiSqueezeOf).
+  std::array<uint64_t, 12> ultrawide_3d_vs_{};
+  uint32_t ultrawide_3d_logged_ = 0;
   PostAa* post_ = nullptr;  // the scene's anti-aliasing at the composite record
   FrameLayers* layers_ = nullptr;  // the UI layer split (frame_layers.h), from the composite record
   HdrToneMap* hdr_tone_ = nullptr;  // the float scene of HDR output (hdr_tonemap.h)

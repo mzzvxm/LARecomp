@@ -486,7 +486,8 @@ bool InlineRectCoversScreen(const DrawView& view, const InputLayout& layout, boo
 }  // namespace
 
 float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const PipelineKey& key,
-                         const InputLayout* layout, PrimitiveConversion conversion) {
+                         const InputLayout* layout, PrimitiveConversion conversion, float* clip) {
+  *clip = 1.0f;
   if (!ui_phase_) {
     return 1.0f;
   }
@@ -539,6 +540,37 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   } else if (!state.depth_bound) {
     return 1.0f;
   }
+  // The game's 3D objects among the UI (the pause menu's card, the Sidekick phone, the menus' globe) are
+  // drawn from vertex buffers, with a camera the hooks widened like every other: on the wide picture they
+  // already have their 16:9 shape and place, and squeezed they came out narrower by the same factor and
+  // nearer the middle. What the UI draws flat (the Flash player's shapes, text and bitmaps, the fades) are
+  // inline draws (a census at 3440x1440, 2026-11-12: every squeezed draw of the HUD and the menus was
+  // inline; the card's two meshes and the phone's were indexed).
+  // The UI's own models (they write depth: the card, the phone) are still clipped to the middle 16:9
+  // like the rest of the UI, so that what the game puts beyond a 16:9 screen's edge stays out of sight
+  // (the phone, parked at the left edge while the pause menu is open, shows the sliver a 16:9 screen
+  // shows). What the world draws after the scene is composed (the airplanes in the sky: depth tested,
+  // not written) is not clipped: it belongs to the whole wide picture.
+  // CHECK: a 2D element drawn from a vertex buffer would be stretched now; the log names the first ones.
+  *clip = float(fraction);
+  if (view.record().kind != DrawKind::kInline) {
+    if (!state.depth_control.z_write_enable) {
+      *clip = 1.0f;
+    }
+    const DrawRecord& r = view.record();
+    if (ultrawide_3d_logged_ < ultrawide_3d_vs_.size() &&
+        std::find(ultrawide_3d_vs_.begin(), ultrawide_3d_vs_.begin() + ultrawide_3d_logged_,
+                  r.vs_identity) == ultrawide_3d_vs_.begin() + ultrawide_3d_logged_) {
+      ultrawide_3d_vs_[ultrawide_3d_logged_++] = r.vs_identity;
+      REXLOG_INFO("[gpu] ultrawide: a UI draw from a vertex buffer keeps its shape (a 3D object: VS {:016X} "
+                  "PS {:016X}, {} {}, {}) ({} of 12 shaders logged)",
+                  r.vs_identity, r.ps_identity, r.count,
+                  r.kind == DrawKind::kIndexed ? "indices" : "vertices",
+                  *clip < 1.0f ? "clipped to the middle 16:9" : "not clipped",
+                  ultrawide_3d_logged_);
+    }
+    return 1.0f;
+  }
   return float(fraction);
 }
 
@@ -552,12 +584,23 @@ void Scene::OnUiMessage(uint32_t bucket) {
       break;
     case mc::ultrawide::kUiPieceLeft:
       ui_piece_side_ = -1;
+      ui_piece_at_edge_ = false;
       break;
     case mc::ultrawide::kUiPieceRight:
       ui_piece_side_ = 1;
+      ui_piece_at_edge_ = false;
+      break;
+    case mc::ultrawide::kUiEdgeLeft:
+      ui_piece_side_ = -1;
+      ui_piece_at_edge_ = true;
+      break;
+    case mc::ultrawide::kUiEdgeRight:
+      ui_piece_side_ = 1;
+      ui_piece_at_edge_ = true;
       break;
     case mc::ultrawide::kUiPieceEnd:
       ui_piece_side_ = 0;
+      ui_piece_at_edge_ = false;
       break;
     default:
       break;
@@ -571,7 +614,8 @@ float Scene::UiShiftOf(float squeeze) const {
     return 0.0f;
   }
   // t is 0 while the picture is not wider than 16:9, which UiSqueezeOf has already seen as a squeeze of 1.
-  const float t = float(mc::ultrawide::HudWidthFraction());
+  // A clip that always sits at its edge (kUiEdgeLeft / kUiEdgeRight) moves as a piece does at t = 1.
+  const float t = ui_piece_at_edge_ ? 1.0f : float(mc::ultrawide::HudWidthFraction());
   return float(ui_piece_side_) * t * (1.0f - squeeze) * 0.5f;
 }
 
@@ -1440,9 +1484,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // Ultrawide: the UI of a widened picture is drawn squeezed, in the middle (UiSqueezeOf). After the
   // memo above, which keeps the game's own position.
-  d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion);
-  d.ui_shift = UiShiftOf(d.ui_squeeze);
-  if (d.ui_squeeze < 1.0f) {
+  d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion, &d.ui_clip);
+  d.ui_shift = UiShiftOf(d.ui_clip);
+  if (d.ui_squeeze < 1.0f || d.ui_shift != 0.0f) {
     SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze,
                    d.ui_shift);
   }
@@ -2228,8 +2272,8 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.viewport_bound = true;
   }
   plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
-  if (d.ui_squeeze < 1.0f) {
-    scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_squeeze, d.ui_shift);
+  if (d.ui_clip < 1.0f) {
+    scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_clip, d.ui_shift);
   }
   d.scissor = scissor;
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {

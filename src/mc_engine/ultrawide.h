@@ -207,6 +207,10 @@ double HudWidthFraction();
 inline constexpr uint32_t kUiPieceLeft = 0x7F000003u;
 inline constexpr uint32_t kUiPieceRight = 0x7F000004u;
 inline constexpr uint32_t kUiPieceEnd = 0x7F000005u;
+// The same for a clip that always sits at its edge on a wide picture, whatever hud_width is (the title
+// screen's prompt bar, "PRESS START"): moved as a piece is at hud_width 100. Closed by kUiPieceEnd.
+inline constexpr uint32_t kUiEdgeLeft = 0x7F000006u;
+inline constexpr uint32_t kUiEdgeRight = 0x7F000007u;
 
 // Whether a composite record's bucket is one of this side channel's messages (not a real bucket: those are
 // single bits).
@@ -214,8 +218,9 @@ inline bool IsUiMessage(uint32_t bucket) { return (bucket & 0xFF000000u) == 0x7F
 
 // Around the guest's draw of one instance of the Flash player (the guest render thread): `begin` at the
 // entry of sub_825FB348 with the instance (r3), the end at its exit with the same instance (r30). Sends the
-// renderer kUiPieceLeft / kUiPieceRight / kUiPieceEnd when the instance is a piece and hud_width is above 0;
-// a no-op otherwise (the setting is 0 by default, the picture is not wider than 16:9, the Xenia renderer).
+// renderer kUiPieceLeft / kUiPieceRight / kUiPieceEnd when the instance is a piece and hud_width is above 0,
+// and kUiEdgeRight for the title screen's prompt bar (PROMPTMOVIE's root until the game is entered, ultrawide.cpp);
+// a no-op otherwise (the picture is not wider than 16:9, the Xenia renderer).
 void NoteUiPiece(uint32_t instance, bool begin);
 
 }  // namespace mc::ultrawide
