@@ -172,6 +172,7 @@ class UpscalerMasks {
     uint64_t size_mismatch = 0;        // frames whose image was not the render size
     uint64_t image_failures = 0;
     uint64_t max_in_frame = 0;         // the most second draws in one frame
+    uint64_t frames_any = 0;           // frames with at least one second draw (any layer)
   };
 
   bool Prepare();

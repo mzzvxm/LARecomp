@@ -285,6 +285,7 @@ uint64_t UpscalerMasks::HeldBytes() const {
 
 void UpscalerMasks::BeginFrame() {
   stats_.max_in_frame = std::max(stats_.max_in_frame, frame_drawn_);
+  stats_.frames_any += frame_drawn_ != 0 ? 1 : 0;
   frame_drawn_ = 0;
   for (LayerState& l : layers_) {
     l.clear_pending = true;
@@ -316,6 +317,12 @@ HostImage* UpscalerMasks::Target(Layer layer, uint32_t width, uint32_t height, b
   return &l.coverage;
 }
 
+// CHECK: a framebuffer of an RGBA8 coverage image with the game's depth attachment (one sample, the
+// depth left in DEPTH_WRITE by the game's own draw, the pipelines not writing it) on D3D12 with the debug
+// layer and on Vulkan with validation: that the render pass is compatible with the pipelines of
+// VariantKey, that the depth keeps what the game's draws wrote when the game's framebuffer is bound
+// again, and that retiring this framebuffer after the depth texture it names was retired (the depth
+// target was made again at a new scale or MSAA level) is harmless.
 plume::RenderFramebuffer* UpscalerMasks::DepthFramebuffer(Layer layer,
                                                           const plume::RenderTexture* depth,
                                                           uint32_t generation) {
@@ -438,13 +445,16 @@ std::string UpscalerMasks::Summary() const {
   }
   const auto& d = stats_.drawn;
   const auto& s = stats_.skipped;
+  const uint64_t frames_any = stats_.frames_any + (frame_drawn_ != 0 ? 1 : 0);
   return std::format(
       "upscaler masks: draws recorded again {} ({} shadow decals, {} particles, {} light volumes, {} "
-      "glass; at most {} in a frame), masks made: reactive {} of {} frames with draws, transparency "
-      "{} of {}{}; left out: {} not blended, {} no depth target, {} size or samples, {} no image, {} "
-      "pipeline pending; {} frames whose image was not the render size, {} image failures",
+      "glass; {:.1f} a frame over the {} frames that had any, at most {} in a frame), masks made: "
+      "reactive {} of {} frames with draws, transparency {} of {}{}; left out: {} not blended, {} no "
+      "depth target, {} size or samples, {} no image, {} pipeline pending; {} frames whose image was "
+      "not the render size, {} image failures",
       drawn, d[size_t(Kind::kShadowDecal)], d[size_t(Kind::kParticle)],
       d[size_t(Kind::kLightVolume)], d[size_t(Kind::kGlass)],
+      frames_any ? double(drawn) / double(frames_any) : 0.0, frames_any,
       std::max(stats_.max_in_frame, frame_drawn_), stats_.resolved[0] - stats_.forced[0],
       stats_.frames[0], stats_.resolved[1] - stats_.forced[1], stats_.frames[1],
       forced != 0 ? std::format(" (all-ones diagnostic: {} and {} frames)", stats_.forced[0],

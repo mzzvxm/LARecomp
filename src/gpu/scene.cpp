@@ -764,6 +764,11 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
   }
 }
 
+// CHECK: the cost of the render pass switches (the game's framebuffer, the coverage image's own for the
+// layer's first clear, the coverage image with the game's depth, the game's again) a second draw makes
+// on Vulkan, on a card with little power, in a frame with hundreds of particle draws (PassTiming marks
+// "upscaler mask draws"); consecutive second draws could be batched behind the last of a run of
+// draws of the families if it shows.
 void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list) {
   UpscalerMasks& masks = temporal_->masks();
   const UpscalerMasks::Layer layer = UpscalerMasks::LayerOf(d.mask_kind);
