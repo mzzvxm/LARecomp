@@ -15,6 +15,11 @@
 //
 // A scene with no `hud` key costs one empty loop at begin and a flag test an update. Plume renderer only (the rest is a cvar the
 // other renderers ignore); no game memory is read here.
+//
+// CHECK: written without a build or a run (clang -fsyntax-only clean with the build tree's flags). Not seen in a game: that the cvar
+// written from the update thread is the alpha of the frame after it (the renderer reads it at its frame boundary), that inside a take
+// the fade is one step a frame (perf\scripts\chain-cinint.ps1's hud-full / hud-half / hud-off pictures), and that a reload of the
+// scene (end, then begin) leaves the alpha back at what it was and arms the layer again.
 
 #include <string>
 
