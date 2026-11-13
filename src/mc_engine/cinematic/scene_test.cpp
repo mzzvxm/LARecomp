@@ -597,6 +597,78 @@ int ParseFiles(int argc, char** argv) {
     return rc;
 }
 
+// capture mode (M2a): `capture fps N [step 1/N]`, `capture off`, the take's window
+void TestCapture() {
+    const ParseResult r = ParseScene(
+        "scene cap fps 60 step 1/60\n"
+        "at 0 capture fps 60 step 1/60\n"
+        "at 4 mark four\n"
+        "end 10\n");
+    Check(r.Ok(), "a scene with a capture parses");
+    CheckNum(r.WarningCount(), 0, "and has no warning");
+    const Event* cap = First(r.scene, Track::kCapture);
+    Check(cap != nullptr && cap->state == 1 && cap->line == 2, "the capture key is a kCapture event on its line");
+    if (cap) CheckNum(cap->to, 60, "its fps");
+    CheckNum(r.scene.capture_fps, 60, "the scene's capture rate");
+    CheckNum(r.scene.capture_from, 0, "the take starts at 0");
+    CheckNum(r.scene.capture_to, 10, "and ends with the scene");
+    CheckEq(TrackName(Track::kCapture), "capture", "the track's name");
+    Check(Summarize(r.scene).find("capture 1") != std::string::npos, "the summary counts it: " + Summarize(r.scene));
+
+    // the window
+    Check(!EvaluateCapture(r.scene, -0.5).on, "no take before the scene starts");
+    Check(EvaluateCapture(r.scene, 0.0).on, "a take at 0");
+    CheckNum(EvaluateCapture(r.scene, 5.0).fps, 60, "at its rate");
+    Check(EvaluateCapture(r.scene, 9.999).on, "to the end");
+    Check(!EvaluateCapture(r.scene, 10.0).on, "and off at the end itself (the update that reaches it is the take's last frame)");
+    Check(!EvaluateCapture(ParseScene("scene a\nat 1 mark m\nend 5\n").scene, 2.0).on, "a scene with no capture key makes no take");
+
+    // a later start, an explicit off, a bare statement at time 0, no step
+    const ParseResult late = ParseScene("scene a\nat 2 capture fps 24\nat 6.5 capture off\nat 8 mark m\nend 9\n");
+    Check(late.Ok() && late.WarningCount() == 0, "a take from 2 to 6.5 parses");
+    Check(!EvaluateCapture(late.scene, 1.9).on && EvaluateCapture(late.scene, 2.0).on, "it starts at 2");
+    Check(EvaluateCapture(late.scene, 6.4).on && !EvaluateCapture(late.scene, 6.5).on, "and ends at 6.5, not at the scene's end");
+    CheckNum(late.scene.capture_to, 6.5, "capture_to is the off key's time");
+    const ParseResult bare = ParseScene("scene a\ncapture fps 30\nend 3\n");
+    Check(bare.Ok() && bare.scene.capture_from == 0.0 && bare.scene.capture_fps == 30.0, "a bare capture statement is at time 0");
+    const ParseResult mixed = ParseScene("scene a\nat 1 CAPTURE FPS 48 STEP 1/48\nend 3\n");
+    Check(mixed.Ok() && mixed.scene.capture_fps == 48.0, "the words are not case sensitive");
+    const ParseResult dec = ParseScene("scene a\nat 1 capture fps 25 step 0.04\nend 3\n");
+    Check(dec.Ok(), "a step in seconds that is 1/fps is fine");
+
+    // errors, each on its line
+    CheckError("at 1 capture", "nothing after 'capture'");
+    CheckError("at 1 capture fps", "'fps' needs a value");
+    CheckError("at 1 capture fps 5", "bad fps '5'");
+    CheckError("at 1 capture fps 5000", "bad fps '5000'");
+    CheckError("at 1 capture fps sixty", "bad fps 'sixty'");
+    CheckError("at 1 capture fps 60 step 1/50", "the step of a capture is 1/fps");
+    CheckError("at 1 capture fps 60 step 0", "bad step '0'");
+    CheckError("at 1 capture fps 60 speed 2", "unknown option 'speed'");
+    CheckError("at 1 capture now", "is neither");
+    CheckError("at 1 capture off now", "capture off takes nothing after it");
+    CheckError("at 1 capture off", "'capture off' with no 'capture fps' before it");
+    const ParseResult twice = ParseScene("scene a\nat 0 capture fps 60\nat 3 capture fps 30\nend 5\n");
+    const Diagnostic* td = Find(twice, "a second 'capture fps'");
+    Check(!twice.Ok() && td && td->line == 3 && Find(twice, "line 2") != nullptr, "a second capture rate is an error on its line, naming the first");
+    const ParseResult same = ParseScene("scene a\nat 2 capture fps 60\nat 2 capture off\nend 5\n");
+    Check(!same.Ok() && Find(same, "nothing would be captured") != nullptr, "an off at the start's own time captures nothing");
+    const ParseResult offtwice = ParseScene("scene a\nat 1 capture fps 60\nat 3 capture off\nat 4 capture off\nend 5\n");
+    const Diagnostic* ot = Find(offtwice, "a second 'capture off'");
+    Check(offtwice.Ok() && ot && ot->severity == Severity::kWarning && ot->line == 4, "a second off is a warning");
+    const ParseResult past = ParseScene("scene a\nat 7 capture fps 60\nend 5\n");
+    Check(!past.Ok() && Find(past, "after the scene's end") != nullptr, "a capture after the end is an error");
+
+    // warnings
+    const ParseResult mismatch = ParseScene("scene a fps 30\nat 0 capture fps 60\nend 5\n");
+    const Diagnostic* md = Find(mismatch, "the capture's is used");
+    Check(mismatch.Ok() && md && md->severity == Severity::kWarning && md->line == 2, "a header fps that differs from the capture's is a warning");
+    const ParseResult open = ParseScene("scene a\nat 0 capture fps 60\n");
+    Check(open.Ok() && Find(open, "the take runs until the scene is turned off") != nullptr, "a take with no end and no off says it never finishes");
+    CheckNum(open.scene.capture_to, -1, "and has no end");
+    Check(EvaluateCapture(open.scene, 1e6).on, "it is on for as long as the scene runs");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -613,6 +685,7 @@ int main(int argc, char** argv) {
     TestCursor();
     TestClock();
     TestReload();
+    TestCapture();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

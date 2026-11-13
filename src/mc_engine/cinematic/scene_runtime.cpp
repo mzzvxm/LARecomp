@@ -28,6 +28,8 @@
 //               tells when something else changed it (CHECK: the game's own slow-motion also writes it).
 //   set         rex::cvar::SetFlagByName; the value that was there comes back when the scene ends. Only live (hot reload) settings.
 //   label, mark logged. Labels are data for the compositor: nothing is drawn in the game.
+//   capture     nothing here: capture.cpp registers the applier that asks for a take (a fixed step, the frame gate and the readback)
+//               from the `capture fps` key to `capture off` or the scene's end.
 //   camera, cut, hud, car, start
 //               nothing: the packages that own them register a TrackApplier (scene_runtime.h).
 //
@@ -228,6 +230,9 @@ std::string Describe(const Event& e) {
             return out + " (data for the compositor: nothing is drawn in the game)";
         case Track::kMark:
             return out + e.name;
+        case Track::kCapture:
+            if (!e.state) return out + "off (the take ends)";
+            return out + "fps " + Fmt(e.to, "%.6g") + " (a take: the game steps by 1/fps and every frame is read back)";
         default:
             break;
     }

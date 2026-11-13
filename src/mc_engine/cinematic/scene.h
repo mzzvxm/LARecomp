@@ -27,6 +27,9 @@
 //   at T set <cvar> <value...>                            a setting (the old value comes back when the scene ends)
 //   at T label "<text>" [side <s>] [fade <s>] [for <s>]   an on-screen label: DATA for the compositor, never drawn in game
 //   at T mark <name>                                      a named instant, logged
+//   at T capture fps <n> [step 1/<n>]                     a take: from this key the game steps by exactly 1/n a second and every
+//                                                         frame is read back (capture mode, M2a); one capture rate in a scene
+//   at T capture off                                      the take ends (it also ends with the scene's `end`)
 //   cam <T> <...>   cut <T>   at T hud <...>   at T car <id> <...>   start <...>
 //                                                         the camera, HUD, car and preamble tracks (M1b, M1c, M4):
 //                                                         kept as words for their packages; the runtime applies none of them yet
@@ -84,6 +87,8 @@ enum class Track : uint8_t {
     kHud,     // `hud`  (M1c)
     kCar,     // `car`  (M4)
     kStart,   // `start`: the preamble (save, seed, warp, car slot)
+    // capture mode (M2a)
+    kCapture,  // `capture fps <n>` (state 1, fps in `to`) and `capture off` (state 0)
 };
 const char* TrackName(Track track);
 
@@ -116,6 +121,10 @@ struct Scene {
     double fps = 0.0;   // 0 = not given
     double step = 0.0;  // seconds; 0 = not given
     double end = -1.0;  // the `end` time; -1 = the scene never finishes
+    // The take (`capture fps` .. `capture off` or the end), worked out when the file is read: 0 = the scene makes none.
+    double capture_fps = 0.0;
+    double capture_from = 0.0;
+    double capture_to = -1.0;  // -1 = to the scene's end, which it never reaches
     std::vector<Event> events;  // in time order; the file's order within one time
 
     // When the last key and everything it started (a ramp, a label) is over. 0 for no events.
@@ -158,6 +167,14 @@ struct WorldState {
     bool operator==(const WorldState&) const = default;
 };
 WorldState EvaluateWorld(const Scene& scene, double t);
+
+// Whether the scene wants a take at scene time `t` and at what rate: from the `capture fps` key to `capture off` (or the end),
+// the end itself not included (the frame of the update that reaches it is the last one of the take). Pure, like EvaluateWorld.
+struct CaptureWindow {
+    bool on = false;
+    double fps = 0.0;
+};
+CaptureWindow EvaluateCapture(const Scene& scene, double t);
 
 // Walks the events once in time order: Take() hands over every event whose time has come (<= t) and was not given before.
 // Reset() to start again from the first. The runtime acts on the discrete ones (cvar, label, mark, and the other
