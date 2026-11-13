@@ -9,7 +9,9 @@
 #include "post.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <format>
 
@@ -110,16 +112,15 @@ bool PostAa::Initialize(Device& device, BindlessHeap& heap, UploadRing& upload, 
       !smaa_blend_shader_) {
     return false;
   }
-  luma_pipeline_ = passes.CreatePipeline(*luma_shader_, kColorFormat, "aa copy");
-  fxaa_pipeline_ = passes.CreatePipeline(*fxaa_shader_, kColorFormat, kWriteRgb, "aa fxaa");
-  smaa_edges_pipeline_ = passes.CreatePipeline(*smaa_edges_shader_, kEdgesFormat, "aa smaa edges");
-  smaa_weights_pipeline_ =
-      passes.CreatePipeline(*smaa_weights_shader_, kColorFormat, "aa smaa weights");
-  smaa_blend_pipeline_ =
-      passes.CreatePipeline(*smaa_blend_shader_, kColorFormat, kWriteRgb, "aa smaa blend");
-  if (!luma_pipeline_ || !fxaa_pipeline_ || !smaa_edges_pipeline_ || !smaa_weights_pipeline_ ||
-      !smaa_blend_pipeline_) {
-    return false;
+  // The pipelines of the mode that is on now, so that the first frame is smoothed as it was when
+  // all five were made here. Nothing is made with the default (off): a mode switched on later
+  // finds its pipelines made by the background build (PipelinesReady).
+  if (const uint32_t pieces = ModePieces(ReadMode()); pieces != 0) {
+    Pipelines made;
+    if (MakePieces(pieces, &made) != 0) {
+      return false;
+    }
+    Adopt(made);
   }
   // SMAA's lookups: made now, uploaded on first use (a list is needed).
   area_ = device.CreateTexture(plume::RenderTextureDesc::Texture2D(
@@ -154,6 +155,12 @@ bool PostAa::Initialize(Device& device, BindlessHeap& heap, UploadRing& upload, 
 }
 
 void PostAa::Shutdown() {
+  // The background build's job names the shaders below: it ends first.
+  build_.Join();
+  build_made_ = Pipelines{};
+  build_pieces_ = 0;
+  build_failed_pieces_ = 0;
+  failed_pieces_ = 0;
   // The GPU is idle and the heap goes later: the slots are not handed back.
   copy_ = HostImage{};
   edges_ = HostImage{};
@@ -183,6 +190,100 @@ void PostAa::Shutdown() {
   pass_timing_ = nullptr;
 }
 
+uint32_t PostAa::ModePieces(Mode mode) {
+  switch (mode) {
+    case Mode::kFxaa: return kLuma | kFxaa;
+    case Mode::kSmaa: return kLuma | kEdges | kWeights | kBlend;
+    case Mode::kOff: break;
+  }
+  return 0;
+}
+
+uint32_t PostAa::Missing(Mode mode) const {
+  uint32_t missing = 0;
+  const uint32_t pieces = ModePieces(mode);
+  if ((pieces & kLuma) && !luma_pipeline_) missing |= kLuma;
+  if ((pieces & kFxaa) && !fxaa_pipeline_) missing |= kFxaa;
+  if ((pieces & kEdges) && !smaa_edges_pipeline_) missing |= kEdges;
+  if ((pieces & kWeights) && !smaa_weights_pipeline_) missing |= kWeights;
+  if ((pieces & kBlend) && !smaa_blend_pipeline_) missing |= kBlend;
+  return missing;
+}
+
+uint32_t PostAa::MakePieces(uint32_t pieces, Pipelines* into) {
+  uint32_t failed = 0;
+  if (pieces & kLuma) {
+    into->luma = passes_->CreatePipeline(*luma_shader_, kColorFormat, "aa copy");
+    if (!into->luma) failed |= kLuma;
+  }
+  if (pieces & kFxaa) {
+    into->fxaa = passes_->CreatePipeline(*fxaa_shader_, kColorFormat, kWriteRgb, "aa fxaa");
+    if (!into->fxaa) failed |= kFxaa;
+  }
+  if (pieces & kEdges) {
+    into->edges =
+        passes_->CreatePipeline(*smaa_edges_shader_, kEdgesFormat, "aa smaa edges");
+    if (!into->edges) failed |= kEdges;
+  }
+  if (pieces & kWeights) {
+    into->weights =
+        passes_->CreatePipeline(*smaa_weights_shader_, kColorFormat, "aa smaa weights");
+    if (!into->weights) failed |= kWeights;
+  }
+  if (pieces & kBlend) {
+    into->blend =
+        passes_->CreatePipeline(*smaa_blend_shader_, kColorFormat, kWriteRgb, "aa smaa blend");
+    if (!into->blend) failed |= kBlend;
+  }
+  return failed;
+}
+
+void PostAa::Adopt(Pipelines& made) {
+  if (made.luma) luma_pipeline_ = std::move(made.luma);
+  if (made.fxaa) fxaa_pipeline_ = std::move(made.fxaa);
+  if (made.edges) smaa_edges_pipeline_ = std::move(made.edges);
+  if (made.weights) smaa_weights_pipeline_ = std::move(made.weights);
+  if (made.blend) smaa_blend_pipeline_ = std::move(made.blend);
+}
+
+bool PostAa::PipelinesReady(Mode mode) {
+  if (build_.Collect()) {
+    // The job ended: what it made joins the members, what it failed to make is not tried again.
+    Adopt(build_made_);
+    failed_pieces_ |= build_failed_pieces_;
+    if (build_failed_pieces_ != 0) {
+      REXLOG_ERROR("[gpu] post: the pipelines for scene anti-aliasing could not be made in the "
+                   "background (Device logged why): {} stays off this session",
+                   ModeName(mode));
+    } else {
+      REXLOG_INFO("[gpu] post: the background build made {} pipeline(s) for scene anti-aliasing "
+                  "in {:.1f} ms",
+                  std::popcount(build_pieces_), double(build_ns_) / 1.0e6);
+    }
+  }
+  const uint32_t missing = Missing(mode);
+  if (missing == 0) {
+    return true;
+  }
+  if ((missing & failed_pieces_) != 0 || build_.Running()) {
+    return false;
+  }
+  build_pieces_ = missing;
+  build_failed_pieces_ = 0;
+  build_ns_ = 0;
+  REXLOG_INFO("[gpu] post: scene anti-aliasing {} was off at start: its {} pipeline(s) are made on "
+              "a worker thread, the scene is not smoothed until they are",
+              ModeName(mode), std::popcount(missing));
+  build_.Start([this, missing] {
+    const auto began = std::chrono::steady_clock::now();
+    build_failed_pieces_ = MakePieces(missing, &build_made_);
+    build_ns_ = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now() - began)
+                             .count());
+  });
+  return false;
+}
+
 bool PostAa::Apply(plume::RenderCommandList* list, uint32_t slot, Mode mode,
                    EdramTargets::Target& target, uint32_t width, uint32_t height) {
   if (mode == Mode::kOff || !list || width == 0 || height == 0) {
@@ -195,6 +296,10 @@ bool PostAa::Apply(plume::RenderCommandList* list, uint32_t slot, Mode mode,
                    "colour target; it is not anti-aliased (counted; reported once per target)",
                    DescribeEdramKey(target.key));
     }
+    return false;
+  }
+  if (!PipelinesReady(mode)) {
+    ++stats_.pending;
     return false;
   }
   const uint32_t w = target.scale.Edge(std::min(width, target.width));
@@ -315,8 +420,10 @@ bool PostAa::UploadLookups(plume::RenderCommandList* list, uint32_t slot) {
 
 std::string PostAa::TakeSummary() {
   std::string text = std::format(
-      "post: scene anti-aliasing {}: fxaa {}, smaa {}, target not 8:8:8:8 1x {}, failed {}",
-      ModeName(reported_mode_), stats_.fxaa, stats_.smaa, stats_.skipped_target, stats_.failed);
+      "post: scene anti-aliasing {}: fxaa {}, smaa {}, target not 8:8:8:8 1x {}, failed {}, "
+      "before its pipelines were made {}",
+      ModeName(reported_mode_), stats_.fxaa, stats_.smaa, stats_.skipped_target, stats_.failed,
+      stats_.pending);
   stats_ = Stats{};
   return text;
 }

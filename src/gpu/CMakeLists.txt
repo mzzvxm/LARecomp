@@ -12,6 +12,7 @@ add_library(larecomp_gpu OBJECT
     ab.cpp
     ao.cpp
     backend.cpp
+    background_build.cpp
     buffer_heap.cpp
     capture.cpp
     constants.cpp
@@ -88,6 +89,9 @@ add_library(larecomp_gpu OBJECT
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The background build's hand-over rules (background_build.h) have one too: no renderer, no GPU.
+#   cmake --build <dir> --target larecomp_background_build_test, then run src/gpu/larecomp_background_build_test.
+add_executable(larecomp_background_build_test EXCLUDE_FROM_ALL background_build_test.cpp background_build.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

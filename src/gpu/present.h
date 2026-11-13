@@ -45,6 +45,15 @@
 // may exceed 1, so the table is read as before up to 1 and goes on above 1 by the slope of its last
 // step (kHdrFlagExtendedCodes); FSR1's passes read that image in float16.
 //
+// FSR1's pipelines (the table's intermediate pass, EASU, RCAS into an intermediate and RCAS into
+// the back buffer: four of them) are made at Initialize only when mcla_gpu_fsr is on then. With the
+// default (off) the first frame that would use FSR1 (the letterbox larger than the picture on both
+// axes) starts making them on a worker thread (background_build.h) and the frames until it is done take
+// the bilinear route; a later HDR/SDR switch makes the new set's RCAS with the rest of its passes
+// once FSR1 has been wanted. The bilinear stretch and the scaled present's table pass are not
+// FSR1's alone (the scaled present of a window at least three times the picture's area uses them
+// too): they are made at Initialize always.
+//
 // Dither (mcla_gpu_present_dither): the last pass that writes the back buffer -- the present, the
 // stretch or RCAS, whichever the route ends with -- adds a threshold of -0.5 .. +0.5 of one code of
 // the back buffer (8-bit SDR, 10-bit HDR10) to the colour in its encoding, after the gamma table or
@@ -67,6 +76,7 @@
 
 #include <plume_render_interface.h>
 
+#include "background_build.h"
 #include "guest_device.h"
 #include "hdr.h"
 #include "host_passes.h"
@@ -277,6 +287,12 @@ class PresentPass {
   bool EnsureIntermediate(uint32_t index, uint32_t width, uint32_t height);
   // Prepare's FSR1 half: the passes before the back buffer's, and route_.
   void PrepareFsr(plume::RenderCommandList* list, const Fit& fit);
+  // FSR1's pipelines (ramp_pipeline_, easu_pipeline_, rcas_offscreen_pipeline_ and the set in use's
+  // RCAS) are all made. When some are missing, starts the background build (or waits for the one
+  // running) and says no: the frame takes the bilinear route. Render thread.
+  bool FsrPipelinesReady();
+  // What the background build made, into the members (and the RCAS of the set it was made for).
+  void AdoptFsrPipelines();
   // Prepare's bilinear half when the present scales: the table once per
   // source texel into ramped_ (kRamped), instead of once per texel each
   // back buffer pixel reads (four).
@@ -310,6 +326,24 @@ class PresentPass {
     std::unique_ptr<plume::RenderPipeline> stretch_pipeline;
   };
   Output outputs_[2];
+  // FSR1's pipelines are wanted: mcla_gpu_fsr was on at Initialize, or a frame asked for them since.
+  // From then on BuildOutput makes the RCAS of a set with the rest of it.
+  bool fsr_wanted_ = false;
+  // The background build of them: its result (written by the worker, taken after Collect), which
+  // pieces it was asked for, and whether it failed (then FSR1 stays off this session).
+  struct FsrMade {
+    std::unique_ptr<plume::RenderPipeline> ramp;
+    std::unique_ptr<plume::RenderPipeline> easu;
+    std::unique_ptr<plume::RenderPipeline> rcas_offscreen;
+    std::unique_ptr<plume::RenderPipeline> rcas;  // for the set `rcas_hdr`
+    bool rcas_hdr = false;
+    bool shared = false;  // ramp, easu and rcas_offscreen were asked for
+    bool failed = false;
+    uint64_t ns = 0;
+  };
+  BackgroundBuild fsr_build_;
+  FsrMade fsr_made_;
+  bool fsr_failed_ = false;
   // The set in use (set by UseOutput; owned by outputs_).
   plume::RenderPipeline* pipeline_ = nullptr;          // present into the back buffer
   plume::RenderPipeline* rcas_pipeline_ = nullptr;     // RCAS into the back buffer
@@ -374,6 +408,7 @@ class PresentPass {
     uint64_t fsr = 0;          // presents through FSR1 (stretched ones among them)
     uint64_t fsr_stretched = 0;
     uint64_t fsr_failed = 0;   // FSR1 asked, an intermediate could not be made
+    uint64_t fsr_pending = 0;  // FSR1 asked before the background build made its pipelines
     uint64_t ramped = 0;       // scaled presents with the table applied first (kRamped)
     uint64_t ramped_failed = 0;  // ramped_ could not be made: the table per texel read
   };
