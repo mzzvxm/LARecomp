@@ -91,7 +91,8 @@ namespace {
 
 // ---------------------------------------------------------------- guest addresses
 
-constexpr uint32_t kGuestUnscaledDelta = 0x827D7558;  // timer + 0x58: the frame's delta before the time scale (hooks_internal.h)
+constexpr uint32_t kGuestScaledDelta = 0x827D7508;    // timer + 0x08: the frame's delta after the time scale (hooks_internal.h)
+constexpr uint32_t kGuestUnscaledDelta = 0x827D7558;  // timer + 0x58: the frame's delta before the time scale
 constexpr uint32_t kGuestTimeScale = 0x827D7554;      // timer + 0x54
 constexpr uint32_t kPauseStatePtr = 0x828CCEA0;       // +4 paused, +10 run-one-frame (map_warp.cpp, cutscene_gallery.cpp)
 constexpr uint32_t kAmbientMgrPtr = 0x8286D8E4;       // the ambient manager (world_tuning.cpp)
@@ -482,9 +483,12 @@ void BeginScene(const char* why) {
 
 void LogState(double t, const uint8_t* base, const WorldState& w) {
     const float hour = TimeOfDay_GetHour();
-    LARECOMP_APP_INFO("[scene] t={:.2f} state: hour {} (game {:.2f}), weather {} (game {}), timescale {} (game {:.3f}), traffic {} peds {} parked {} police {}",
+    const float unscaled = RF(base, kGuestUnscaledDelta);
+    const float ratio = unscaled > 0.0f ? RF(base, kGuestScaledDelta) / unscaled : 0.0f;  // what the engine really did with the time scale
+    LARECOMP_APP_INFO("[scene] t={:.2f} state: hour {} (game {:.2f}), weather {} (game {}), timescale {} (game {:.3f}, engine step ratio {:.3f}), "
+                      "traffic {} peds {} parked {} police {}",
                       t, w.hour_set ? Fmt(w.hour) : std::string("-"), hour, w.weather >= 0 ? w.weather : -1, Weather_GetIndex(),
-                      w.timescale_set ? Fmt(w.timescale, "%.3f") : std::string("-"), RF(base, kGuestTimeScale), w.traffic, w.peds,
+                      w.timescale_set ? Fmt(w.timescale, "%.3f") : std::string("-"), RF(base, kGuestTimeScale), ratio, w.traffic, w.peds,
                       w.parked, w.police);
 }
 
