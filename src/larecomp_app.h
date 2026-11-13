@@ -1114,6 +1114,9 @@ class LarecompApp : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
+    // Linux crash logger, second half: the runtime has put its own fault handling in place (it does
+    // in Runtime::Setup, which has run) and the logger has to go behind and in front of it (crash_handler.cpp).
+    InstallCrashLoggerAfterRuntime();
     // BadassBaboon's Recomp Adjustments: Enable 1ms timer resolution and apply optimal GPU/Texture limits
     mc::EnableHighResTimer();
     ApplyGpuFlags();
