@@ -760,14 +760,19 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
       !MakeResource(in.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, &d.output)) {
     return fail("an input image has no native object or a format the runtime does not know");
   }
-  // exposure and transparencyAndComposition stay empty: automatic exposure. The reactive mask is the
-  // cars' shadow decals' (vehicle_motion_mask.h), in the frames that have one: the dark patch under a
-  // car moves with the car and the road under it with the camera, so no vector is right for its
-  // pixels and their history is trusted less in proportion to the patch's opacity.
-  // CHECK: FSR 4 (the ML provider) may ignore the reactive mask; FSR 3.1 reads it.
+  // exposure stays empty: automatic exposure. The reactive mask is the layers no vector is right for
+  // (upscaler_masks.h: the cars' shadow decals, particles, light volumes), in the frames that have one:
+  // their history is trusted less in proportion to their opacity. The transparency and composition
+  // mask is the car glass: its pixel lock is reduced (FSR's "alpha of special objects").
+  // CHECK: FSR 4 (the ML provider) may ignore both masks; FSR 3.1 reads them.
   if (in.mask.texture &&
       !MakeResource(in.mask, FFX_API_RESOURCE_STATE_COMPUTE_READ, &d.reactive)) {
-    return fail("the shadow mask has no native object or a format the runtime does not know");
+    return fail("the reactive mask has no native object or a format the runtime does not know");
+  }
+  if (in.transparency.texture &&
+      !MakeResource(in.transparency, FFX_API_RESOURCE_STATE_COMPUTE_READ,
+                    &d.transparencyAndComposition)) {
+    return fail("the transparency mask has no native object or a format the runtime does not know");
   }
   d.jitterOffset = {in.jitter[0], in.jitter[1]};
   // The vectors are previous minus current, in render pixels (measured in game against the world

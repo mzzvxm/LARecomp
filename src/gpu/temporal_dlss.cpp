@@ -76,6 +76,18 @@
 
 REXCVAR_DECLARE(std::string, mcla_gpu_frame_generation);  // frame_generation.cpp
 
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_dlss_mask_tags, 7, "MCLA/GPU",
+    "Diagnostic: which of Streamline's hint inputs carry the masks DLSS is given (what is drawn "
+    "again for the upscaler: shadows of cars, particles, light volumes, car glass). Add up: 1 the "
+    "reactive mask goes in as the bias-current-colour hint, 2 as the reactive mask hint, 4 the glass "
+    "mask goes in as the transparency and composition hint. 7: all three. Used with "
+    "mcla_gpu_upscaler_mask_test (an all-ones mask) to see which hint the DLSS plugin reads: with "
+    "the test on, 1 alone, then 2 alone, then 4 alone; the one that makes the picture lose its "
+    "smoothness over time is read. Live.")
+    .range(0, 7)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
@@ -2439,13 +2451,21 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
       !output_native.complete) {
     return "an input image has no native object, or Plume cannot describe it to Streamline";
   }
-  // The cars' shadow decals' mask (vehicle_motion_mask.h), in the frames that have one: tagged as the
-  // bias-current-colour hint (lerp(history, current, mask): 1 rejects the pixel's history). A mask
-  // Plume cannot describe is left out, not a failure.
-  // CHECK: that the DLSS plugin of Streamline 2.14.16 reads this tag (an all-ones mask settles it).
+  // The masks (upscaler_masks.h), in the frames that have them. The reactive mask (the cars' shadow
+  // decals, particles, light volumes) is tagged as the bias-current-colour hint (lerp(history,
+  // current, mask): 1 rejects the pixel's history) and as the reactive mask hint (0 not reactive, 1
+  // fully); the transparency and composition mask (car glass) as the hint of that name (1: the pixel
+  // lock is gone). A mask Plume cannot describe is left out, not a failure.
+  // CHECK: which of these three tags the DLSS plugin of Streamline 2.14.16 reads (the docs excerpt
+  // we have lists only the exposure tag for it): mcla_gpu_upscaler_mask_test with
+  // mcla_gpu_dlss_mask_tags 1, 2 and 4 in turn settles it. A tag it does not read is ignored.
+  const uint32_t tag_bits = uint32_t(REXCVAR_GET(mcla_gpu_dlss_mask_tags));
   const backend::NativeImage mask_native =
       backend::NativeImageOf(in.mask.texture, backend::ImageUse::kComputeRead);
   const bool has_mask = in.mask.texture != nullptr && mask_native.complete;
+  const backend::NativeImage transparency_native =
+      backend::NativeImageOf(in.transparency.texture, backend::ImageUse::kComputeRead);
+  const bool has_transparency = in.transparency.texture != nullptr && transparency_native.complete;
 
   // The images and their tags, local to this evaluation (no global tags, so no frame-based tagging
   // flag and nothing that waits for a present). The states are the ones the caller transitioned
@@ -2466,7 +2486,12 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   sl::ResourceTag output_tag(&output_res, sl::kBufferTypeScalingOutputColor, lifecycle,
                              &output_extent);
   sl::Resource mask_res = MakeSlResource(in.mask, mask_native);
-  sl::ResourceTag mask_tag(&mask_res, sl::kBufferTypeBiasCurrentColorHint, lifecycle, &render_extent);
+  sl::ResourceTag bias_tag(&mask_res, sl::kBufferTypeBiasCurrentColorHint, lifecycle, &render_extent);
+  sl::ResourceTag reactive_tag(&mask_res, sl::kBufferTypeReactiveMaskHint, lifecycle, &render_extent);
+  sl::Resource transparency_res = MakeSlResource(in.transparency, transparency_native);
+  sl::ResourceTag transparency_tag(&transparency_res,
+                                   sl::kBufferTypeTransparencyAndCompositionMaskHint, lifecycle,
+                                   &render_extent);
 
   // The constants (row-major matrices of row vectors without the jitter, as the game's own are).
   const bool reset = in.reset || !context.dispatched;
@@ -2529,10 +2554,18 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   if (result != sl::Result::eOk) {
     return "slSetConstants failed: " + ResultText(result);
   }
-  const sl::BaseStructure* inputs[] = {&viewport,   &color_tag, &depth_tag,
-                                       &motion_tag, &output_tag, &mask_tag};
-  result = rt.api.evaluate(sl::kFeatureDLSS, *token, inputs,
-                           uint32_t(std::size(inputs)) - (has_mask ? 0u : 1u), native_list);
+  const sl::BaseStructure* inputs[8] = {&viewport, &color_tag, &depth_tag, &motion_tag, &output_tag};
+  uint32_t input_count = 5;
+  if (has_mask && (tag_bits & 1u) != 0) {
+    inputs[input_count++] = &bias_tag;
+  }
+  if (has_mask && (tag_bits & 2u) != 0) {
+    inputs[input_count++] = &reactive_tag;
+  }
+  if (has_transparency && (tag_bits & 4u) != 0) {
+    inputs[input_count++] = &transparency_tag;
+  }
+  result = rt.api.evaluate(sl::kFeatureDLSS, *token, inputs, input_count, native_list);
   if (result != sl::Result::eOk) {
     return "slEvaluateFeature failed: " + ResultText(result);
   }

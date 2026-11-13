@@ -1214,10 +1214,17 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
               kept.depth->flags};
   in.motion = {kept.motion->texture.get(), kept.motion->width, kept.motion->height,
                kept.motion->format, kept.motion->flags};
-  // The cars' shadow decals' mask, in a frame that drew one at this render size (vehicle_motion_mask.h).
+  // The masks (upscaler_masks.h), in a frame that drew into one at this render size: the reactive one
+  // (shadow decals, particles, light volumes) and the transparency and composition one (glass).
   if (kept.mask && kept.mask->texture && kept.mask->width == width && kept.mask->height == height) {
     in.mask = {kept.mask->texture.get(), kept.mask->width, kept.mask->height, kept.mask->format,
                kept.mask->flags};
+  }
+  if (kept.transparency && kept.transparency->texture && kept.transparency->width == width &&
+      kept.transparency->height == height) {
+    in.transparency = {kept.transparency->texture.get(), kept.transparency->width,
+                       kept.transparency->height, kept.transparency->format,
+                       kept.transparency->flags};
   }
   in.output = {output_.texture.get(), out_width, out_height, kOutputFormat, kOutputFlags};
   in.jitter[0] = fr.jitter[0];
@@ -1284,6 +1291,11 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(kept.mask->texture.get(),
                                                                 plume::RenderTextureLayout::SHADER_READ));
   }
+  if (in.transparency.texture) {
+    list->barriers(Stage::COMPUTE,
+                   plume::RenderTextureBarrier(kept.transparency->texture.get(),
+                                               plume::RenderTextureLayout::SHADER_READ));
+  }
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(output_.texture.get(),
                                                               plume::RenderTextureLayout::GENERAL));
   const bool ok = backend->Upscale(list, in);
@@ -1299,6 +1311,11 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   if (in.mask.texture) {
     list->barriers(Stage::GRAPHICS, plume::RenderTextureBarrier(kept.mask->texture.get(),
                                                                  plume::RenderTextureLayout::SHADER_READ));
+  }
+  if (in.transparency.texture) {
+    list->barriers(Stage::GRAPHICS,
+                   plume::RenderTextureBarrier(kept.transparency->texture.get(),
+                                               plume::RenderTextureLayout::SHADER_READ));
   }
   list->barriers(graphics_and_compute,
                  plume::RenderTextureBarrier(output_.texture.get(),

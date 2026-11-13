@@ -19,9 +19,10 @@
 //            image first (RecordVehicleTable). What moves by itself without an ID (pedestrians,
 //            particles, glass) keeps the camera term and can ghost when it moves. After a history
 //            restart the image is zero.
-//   mask     R8_UNORM, render size, when the frame drew a car's shadow decal: the reactive input of
-//            the upscalers (vehicle_motion_mask.h), made from the Scene's second draws of those
-//            decals.
+//   mask     R8_UNORM, render size, when the frame drew a car's shadow decal, a particle or a light
+//            volume: the reactive input of the upscalers; and transparency, the same for car glass: the
+//            transparency and composition input (upscaler_masks.h), both made from the Scene's second
+//            draws of those draws.
 //
 // They are the images a backend (FSR, DLSS) reads at the anchor, and the ones frame generation
 // keeps for the present (kept()); the depth is double buffered (the previous frame's depth stays
@@ -40,8 +41,8 @@
 #include "frame.h"
 #include "host_passes.h"
 #include "temporal_camera.h"
+#include "upscaler_masks.h"
 #include "vehicle_motion.h"
-#include "vehicle_motion_mask.h"
 
 namespace mcla::gpu {
 
@@ -81,9 +82,11 @@ class TemporalMotion {
     // SHADER_READ.
     const HostImage* motion = nullptr;
     bool motion_is_zero = false;  // the history started again in this frame
-    // R8_UNORM, render size, SHADER_READ: the shadow decals' mask of this frame, null when the frame
-    // drew none (the upscalers then get no mask).
+    // R8_UNORM, render size, SHADER_READ: the reactive mask of this frame (shadow decals, particles,
+    // light volumes), null when the frame drew none (the upscalers then get none); and the transparency
+    // and composition mask (car glass), null likewise (upscaler_masks.h).
     const HostImage* mask = nullptr;
+    const HostImage* transparency = nullptr;
   };
 
   TemporalMotion() = default;
@@ -109,8 +112,9 @@ class TemporalMotion {
 
   Kept kept() const;
 
-  // The decals' mask: the Scene draws the decals into it and asks for its pipeline key (scene.cpp).
-  ShadowMask& shadow_mask() { return mask_; }
+  // The upscalers' masks: the Scene draws the draws they take again into their coverage images
+  // (scene.cpp PrepareUpscalerMask, RecordUpscalerMask).
+  UpscalerMasks& masks() { return masks_; }
 
   // The component (0 to 3) of the stencil view that holds the stencil byte, from the six dwords of its
   // fetch constant: the host swizzle the texture cache gives the view (the fetch constant's over
@@ -124,8 +128,7 @@ class TemporalMotion {
     return (slot & 0x0FFFFFFFu) | ((channel & 7u) << 28);
   }
 
-  // The vehicle table's counts and the shadow decals' mask for the summary; empty when neither was
-  // ever used.
+  // The vehicle table's counts and the masks' for the summary; empty when neither was ever used.
   std::string Summary() const;
 
  private:
@@ -194,13 +197,13 @@ class TemporalMotion {
   HostImage depth_[2];
   HostImage motion_;
   HostImage table_;  // the vehicle table: R32G32B32A32_FLOAT, 4 x 24, a row a stencil ID
-  ShadowMask mask_;  // the shadow decals' mask (vehicle_motion_mask.h)
+  UpscalerMasks masks_;  // the reactive and the transparency mask (upscaler_masks.h)
   uint32_t cur_ = 0;
   bool recorded_ = false;        // depth_[cur_] and motion_ hold a recorded frame
   uint64_t recorded_frame_ = 0;
   bool motion_zero_ = false;
   uint32_t logged_size_[2] = {};  // the render size the log last named
-  bool mask_recorded_ = false;    // the frame's mask was made (kept().mask)
+  bool mask_recorded_ = false;    // the frame's masks were made (kept().mask, kept().transparency)
 
   // For Summary().
   struct VehicleCounts {
