@@ -96,7 +96,10 @@
 //   - the pre-warm (temporal_backend.h Prewarm): on D3D12, on a PC that can run DLSS whose game was
 //     not started with it (a Vulkan game has no live switch to DLSS, so no pre-warm), the worker
 //     makes one context per mode (the saved mode first) at the real sizes a few
-//     seconds after the game first draws, each with the same first evaluation, and frees it at once:
+//     seconds after the game first draws (with mcla_gpu_upscaler_lazy_load on, the default, once the
+//     pause menu has shown its UPSCALING row or DLSS frame generation is chosen: gpu.h
+//     NoteUpscalerInterest, upscaler_load_policy.h; a game that never asks loads nothing of
+//     Streamline), each with the same first evaluation, and frees it at once:
 //     nothing is kept in video memory. On D3D12 it begins with Streamline's own start (slInit and
 //     NGX, about 10 s, on the worker). What the runs measured (RTX 5080): the first feature of a
 //     process 1.2 s (Performance) to 8.4 s (DLAA, and Quality on Vulkan), every later one 25 to

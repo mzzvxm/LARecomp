@@ -24,6 +24,7 @@
 #include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
+#include "upscaler_load_policy.h"
 
 namespace mcla::gpu {
 
@@ -830,6 +831,19 @@ void TemporalSystem::PrewarmDlss() {
   // The settings ask for DLSS (or it runs): the backend ends the pre-warm itself at its Request or
   // Prepare, and the real context is the worker's first job.
   if (wanted_ == Upscaler::kDlss || effective_ == Upscaler::kDlss) {
+    return;
+  }
+  // Lazy loading (upscaler_load_policy.h, mcla_gpu_upscaler_lazy_load): nothing of Streamline starts
+  // until something says that a live switch to DLSS may come (the pause menu showed the UPSCALING row,
+  // or DLSS frame generation is chosen: NoteUpscalerInterest). Until then a frame costs one atomic
+  // read; only the boot protection's clock runs, so that interest noted during the start (frame
+  // generation saved) still waits kPrewarmDelay after the first frames, as the warm-up always did,
+  // and interest noted later in the session (the menu) starts it at once.
+  static const bool lazy_load = UpscalerLazyLoad();
+  if (!upscaler_load::WarmupMayStart({lazy_load, UpscalerInterestNoted()})) {
+    if (prewarm_wait_since_ == Clock::time_point{}) {
+      prewarm_wait_since_ = Clock::now();
+    }
     return;
   }
   uint32_t guest[2] = {};
