@@ -489,8 +489,33 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
                          const InputLayout* layout, PrimitiveConversion conversion, float* clip) {
   *clip = 1.0f;
   ui_phone_draw_ = false;
+  ui_hide_draw_ = false;
   if (!ui_phase_) {
     return 1.0f;
+  }
+  // The Sidekick phone and the pause menu's card, at any aspect ratio (the phone's draws: see the 3D models
+  // below). While the pause menu is open the game parks the phone just past the screen's left edge, with a
+  // sliver of it still in the picture (on a television that is the overscan; on a monitor it shows, at 16:9
+  // at the screen's edge): the card is drawn first in such a frame, and the phone's draws after it are not
+  // drawn (the owner, 2026-11-12). The phone drawn in a frame without the card (free roam) is drawn.
+  // CHECK: that no screen of the game shows the phone and the card together on purpose (the census saw the
+  // card only behind the pause menu and its pages, the phone there only parked).
+  constexpr uint64_t kPauseCardVs = 0xC5D4645CF8A34EDCull;   // the card's 828-index frame
+  constexpr uint64_t kPhoneMeshVs = 0x6137CE3EB560D293ull;   // the phone's two meshes
+  constexpr uint64_t kPhoneScreenVs = 0xEFE38E9E73C08B45ull; // the phone's screen quad, after its meshes
+  bool phone = false;
+  if (view.record().kind != DrawKind::kInline) {
+    const uint64_t vs = view.record().vs_identity;
+    const bool phone_mesh = vs == kPhoneMeshVs;
+    phone = phone_mesh || (ui_after_phone_mesh_ && vs == kPhoneScreenVs);
+    ui_after_phone_mesh_ = phone_mesh;
+    if (vs == kPauseCardVs) {
+      ui_card_this_frame_ = true;
+    }
+    if (phone && ui_card_this_frame_) {
+      ui_hide_draw_ = true;
+      return 1.0f;
+    }
   }
   // The world icons: the game's own 3D view put them where their points are on the widened picture,
   // and their depth test needs the position unmoved (mc_engine/ultrawide.h).
@@ -563,18 +588,14 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   // with kPhoneScreenVs is the phone's only right after the phone's meshes.
   // CHECK: that no other 3D model the UI draws uses kPhoneMeshVs (the census saw it only for the phone, in
   // free roam and behind the pause menu), and that the phone's draws stay together in this order (one that
-  // comes apart shows as the screen beside the body).
+  // comes apart shows as the screen beside the body). The shaders are named at the top of this function.
   *clip = float(fraction);
   if (view.record().kind != DrawKind::kInline) {
     if (!state.depth_control.z_write_enable) {
       *clip = 1.0f;
     }
     const DrawRecord& r = view.record();
-    constexpr uint64_t kPhoneMeshVs = 0x6137CE3EB560D293ull;
-    constexpr uint64_t kPhoneScreenVs = 0xEFE38E9E73C08B45ull;
-    const bool phone_mesh = r.vs_identity == kPhoneMeshVs;
-    ui_phone_draw_ = phone_mesh || (ui_after_phone_mesh_ && r.vs_identity == kPhoneScreenVs);
-    ui_after_phone_mesh_ = phone_mesh;
+    ui_phone_draw_ = phone;
     if (ultrawide_3d_logged_ < ultrawide_3d_vs_.size() &&
         std::find(ultrawide_3d_vs_.begin(), ultrawide_3d_vs_.begin() + ultrawide_3d_logged_,
                   r.vs_identity) == ultrawide_3d_vs_.begin() + ultrawide_3d_logged_) {
@@ -1508,6 +1529,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // Ultrawide: the UI of a widened picture is drawn squeezed, in the middle (UiSqueezeOf). After the
   // memo above, which keeps the game's own position.
   d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion, &d.ui_clip);
+  d.ui_hidden = ui_hide_draw_;
   d.ui_shift = UiShiftOf(d.ui_clip);
   if (d.ui_squeeze < 1.0f || d.ui_shift != 0.0f) {
     SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze,
@@ -2298,6 +2320,9 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   if (d.ui_clip < 1.0f) {
     scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_clip, d.ui_shift);
   }
+  if (d.ui_hidden) {
+    scissor.right = scissor.left;  // an empty scissor: the draw puts nothing on the screen (UiSqueezeOf)
+  }
   d.scissor = scissor;
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
     list->setScissors(&scissor, 1);
@@ -2694,6 +2719,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   composite_census_.OnComposite(CompositeTarget(last_color0_));
   scene_marker_seen_ = true;
   ui_after_phone_mesh_ = false;
+  ui_card_this_frame_ = false;
   ui_phase_ = true;
   ui_world_ = false;
   ui_piece_side_ = 0;

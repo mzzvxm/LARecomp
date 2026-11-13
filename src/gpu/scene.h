@@ -227,6 +227,9 @@ class Scene {
     // object of the UI (drawn whole, ui_squeeze 1) the UI's own, so that it is clipped to the middle 16:9
     // as the rest of the UI is (UiSqueezeOf).
     float ui_clip = 1.0f;
+    // The draw puts nothing on the screen (its scissor is empty): the phone parked behind the pause menu
+    // (UiSqueezeOf).
+    bool ui_hidden = false;
     // Ultrawide: and then moved sideways by this share of the screen's width, to the right when
     // positive (UiShiftOf): the draw is one of a HUD piece that hud_width moves toward a screen edge.
     float ui_shift = 0.0f;
@@ -524,6 +527,10 @@ class Scene {
   // edge), and the last UI 3D draw was one of the phone's meshes (its screen quad follows them).
   bool ui_phone_draw_ = false;
   bool ui_after_phone_mesh_ = false;
+  // The pause menu's card has been drawn in this frame's UI, and the draw UiSqueezeOf has just looked at is
+  // the phone parked behind it: not drawn (an empty scissor).
+  bool ui_card_this_frame_ = false;
+  bool ui_hide_draw_ = false;
   // How many full-screen UI draws kept the whole screen have been logged (UiSqueezeOf).
   uint32_t ultrawide_fills_logged_ = 0;
   // The vertex shaders of the UI draws from a vertex buffer (3D objects) that kept their shape, logged
