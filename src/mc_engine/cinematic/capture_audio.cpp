@@ -47,6 +47,8 @@
 //   4. The SDK's audio worker sleeps 500 ms after a wait that timed out (audio_system.cpp WorkerThreadMain): a take whose frames are more
 //      than 0.5 s apart may wait up to that for the mixer per frame (the render scale 6 case). Not met at scale 1 to 3.
 //   5. The game's audioFrameTimer (sub_82144888) reads the host clock: a sound that times itself with it runs in wall time, not take time.
+//   6. That the mixer's callback never waits for something the game thread holds while it sits at the gate (a guest lock): the first sign
+//      would be a step that gives up (the log's "the mixer gave no frame"), three in a row end the take's sound.
 //
 
 #include "capture_audio.h"
