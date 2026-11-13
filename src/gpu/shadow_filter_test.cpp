@@ -13,6 +13,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "shadow_filter.h"
 
@@ -133,6 +134,33 @@ void CheckConstants() {
   CheckNum(back[0], 6, "the block read as four floats: taps");
 }
 
+// G1a: the radius follows the atlas's scale (side_view_shadow.cpp): 1 / scale, so the filter keeps its width in
+// atlas texels. The scales are the class's: 1x, 2x, 3x (high, ultra) and the grid's steps in between.
+void CheckAtlasRadius() {
+  CheckNum(shadow_filter::AtlasRadiusScale(Scale{}), 1.0, "the game's 1280 atlas: the game's radius");
+  CheckNum(shadow_filter::AtlasRadiusScale(Scale::Whole(2)), 0.5, "high (2x, 2560): half the radius");
+  Check(shadow_filter::AtlasRadiusScale(Scale::Whole(3)) > 0.3333f &&
+            shadow_filter::AtlasRadiusScale(Scale::Whole(3)) < 0.3334f,
+        "ultra (3x, 3840): a third of the radius");
+  CheckNum(shadow_filter::AtlasRadiusScale(Scale{30}), 20.0f / 30.0f, "1.5x: two thirds");
+  // Never above the game's radius, and a missing scale is the game's: a coarser atlas is not made.
+  CheckNum(shadow_filter::AtlasRadiusScale(Scale{10}), 1.0, "0.5x is clamped to the game's radius");
+  CheckNum(shadow_filter::AtlasRadiusScale(Scale::None()), 1.0, "no scale is the game's radius");
+  // Through the constants: the soft filter's radius at each setting, tuning 1.
+  for (const auto& [scale, want] : {std::pair{Scale{}, 1.0}, {Scale::Whole(2), 0.5}, {Scale::Whole(3), 1.0 / 3.0}}) {
+    const shadow_filter::ShadowFilterConstants c = shadow_filter::MakeConstants(
+        GpuClass::kHigh, 0, 1.0, shadow_filter::AtlasRadiusScale(scale), false, false, 0);
+    Check(c.radius_scale > want - 1e-6 && c.radius_scale < want + 1e-6,
+          "the constants' radius at " + scale.Text() + "x");
+  }
+  // The width in atlas texels is the same at every scale: the game's radius is count / 1280 UV, an atlas
+  // of 1280 x scale texels sees it as count x scale texels, and the radius scale takes the scale out again.
+  for (const Scale scale : {Scale{}, Scale::Whole(2), Scale::Whole(3)}) {
+    const double texels = (1.0 / 1280.0) * (1280.0 * scale.value()) * shadow_filter::AtlasRadiusScale(scale);
+    Check(texels > 1.0 - 1e-6 && texels < 1.0 + 1e-6, "one game texel of radius is one atlas texel at " + scale.Text() + "x");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -140,6 +168,7 @@ int main() {
   CheckModes();
   CheckTaps();
   CheckConstants();
+  CheckAtlasRadius();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

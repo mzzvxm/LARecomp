@@ -1981,6 +1981,13 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
 
 bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d) {
   static_assert(kShadowFilterConstantsOffset == sizeof(SharedConstants));
+  // The atlas the lookup reads is as fine as the cascades are made now (the sun shadows side view,
+  // side_view_shadow.cpp: 1x, 2x, 3x): the radius follows it, so the filter keeps its width in atlas texels
+  // and its edge is that much narrower in the world. The class's scale is what the cascade targets and
+  // their products are at (a member that could not be made at the setting's scale lowers the whole class,
+  // EdramTargets::FallBackSideView), and it moves between two frames, before the cascades are drawn.
+  shadow_filter::SetAtlasRadiusScale(
+      shadow_filter::AtlasRadiusScale(edram_->side_scales()[SideView::kShadow]));
   // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
   // averages it out); without one the pattern stays where it is.
   const shadow_filter::ShadowFilterConstants block =

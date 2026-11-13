@@ -27,6 +27,7 @@
 #include <string_view>
 
 #include "gpu_class.h"
+#include "scale.h"
 
 namespace mcla::gpu::shadow_filter {
 
@@ -88,8 +89,18 @@ static_assert(sizeof(ShadowFilterConstants) == 16);
 inline constexpr double kMinRadiusTuning = 0.25;
 inline constexpr double kMaxRadiusTuning = 4.0;
 
-// `atlas_scale_inverse` is what the cascade resolution package gives (1 at the game's 1280, 0.5 at 2x); the
-// tuning cvar multiplies it. `temporal_frame_valid`: a temporal upscaler works on the frame, so the noise
+// What the cascade resolution (G1a, side_view_shadow.cpp) gives the radius: 1 / the scale the cascade atlas is made
+// at (1 at the game's 1280x1280, 0.5 at 2x, 1/3 at 3x), so the filter keeps its width in ATLAS TEXELS and its edge is
+// that much narrower in the world. The game's radius is count / 1280 in UV, which a finer atlas reads as it is: the
+// same width in the world, so without this the soft filter at 2x would be 2x as wide in texels and no sharper than
+// the game's. Never above 1: no setting makes an atlas coarser than the game's.
+constexpr float AtlasRadiusScale(Scale atlas_scale) {
+  return atlas_scale.n <= Scale::kDenominator ? 1.0f
+                                              : float(Scale::kDenominator) / float(atlas_scale.n);
+}
+
+// `atlas_scale_inverse` is what the cascade resolution package gives (AtlasRadiusScale: 1 at the game's 1280, 0.5 at
+// 2x); the tuning cvar multiplies it. `temporal_frame_valid`: a temporal upscaler works on the frame, so the noise
 // moves from frame to frame and the upscaler's history averages it; otherwise the pattern stays where it is.
 constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int forced_taps, double radius_tuning,
                                               float atlas_scale_inverse, bool gather, bool temporal_frame_valid,
@@ -114,8 +125,9 @@ inline bool SoftSelected() { return CurrentMode() == Mode::kSoft; }
 // `frame` a number that changes every frame (the scene's frame serial).
 ShadowFilterConstants CurrentConstants(bool temporal_upscaler, uint64_t frame);
 
-// The cascade resolution package (G1a) says how much finer the atlas is than the game's: 1 / its scale, so the
-// filter keeps its width in texels (and is that much narrower in the world). 1 until it is set. Any thread.
+// The cascade resolution package (G1a) says how much finer the atlas is than the game's: 1 / its scale
+// (AtlasRadiusScale), so the filter keeps its width in texels (and is that much narrower in the world). 1 until it
+// is set; Scene::UploadShadowFilterConstants sets it from the scale the cascades are made at now. Any thread.
 void SetAtlasRadiusScale(float scale_inverse);
 
 }  // namespace mcla::gpu::shadow_filter

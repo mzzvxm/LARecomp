@@ -17,7 +17,7 @@ REXCVAR_DEFINE_STRING(
     mcla_gpu_shadow_filter, "auto", "MCLA/GPU",
     "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
     "pixel to pixel, a grainy edge), soft (more taps on a disk, turned by noise of the screen pixel, a "
-    "smooth edge of the same width), pcss (soft shadows that sharpen where they touch their caster; it "
+    "smooth edge of the same width, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft shadows that sharpen where they touch their caster; it "
     "is the same as soft until that is in). auto (the default) picks by the graphics card: game on an "
     "integrated one, soft on the rest. The sun's shadows show from 8 to 17 hours in clear weather. "
     "Costs graphics card time in the screen's shadowed pixels. Live; the first time soft shows, the "
@@ -33,8 +33,10 @@ REXCVAR_DEFINE_INT32(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_shadow_filter_radius, 1.0, "MCLA/GPU",
-    "Diagnostic: how wide the soft shadow filter is, as a multiple of the game's own filter (1: the same "
-    "width: the edge of a shadow takes about the same number of pixels). Live.")
+    "Diagnostic: how wide the soft shadow filter is, as a multiple of the game's own filter measured in "
+    "texels of the shadow map (1: the edge of a shadow takes the same number of shadow map texels, so "
+    "the same width as the game's on its own 1280x1280 map, half as wide on high and a third on ultra: "
+    "mcla_gpu_shadow_resolution). Live.")
     .debug_only()
     .range(0.25, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
