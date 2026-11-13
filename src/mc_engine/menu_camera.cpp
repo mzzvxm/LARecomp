@@ -86,6 +86,7 @@ REXCVAR_DEFINE_BOOL(menu_cam_lock, false, "MCLA/Menu Camera",
     "game picks (setMenuCam plus its own visibility probes) and menu_cam_slot is "
     "ignored; on = menu_cam_slot every time. This is the on/off switch — the "
     "slot number by itself never locks anything.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_exposure_log, 0, "MCLA/NativeGfx",
@@ -94,22 +95,26 @@ REXCVAR_DEFINE_UINT32(mcla_exposure_log, 0, "MCLA/NativeGfx",
     "runtime on OR off -- which is the point: the native path renders menu camera 53 "
     "a uniform 1.8x brighter than the emulated one, and the emulated exposure has "
     "never been read.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_exposure_log_addr, 0x02D6C000, "MCLA/NativeGfx",
     "TEMP DIAG: physical guest address mcla_exposure_log reads (the 1x1 luminance "
     "target).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(menu_cam_slot, 0, "MCLA/Menu Camera",
     "Which shot menu_cam_lock pins (0-63). Ignored while menu_cam_lock is off, "
     "so parking a number here is harmless.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(menu_cam_custom, false, "MCLA/Menu Camera",
     "Place the menu camera at the shot from <exe dir>/menu_cameras.txt matching "
     "the current slot. Slots with no line keep the stock camera. The file is "
     "re-read when it changes, so you can tune it with the menu on screen.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(menu_cam_only_custom, false, "MCLA/Menu Camera",
@@ -117,6 +122,7 @@ REXCVAR_DEFINE_BOOL(menu_cam_only_custom, false, "MCLA/Menu Camera",
     "lines present in menu_cameras.txt, so the stock cameras never appear. The "
     "game's rotation still decides which of your shots comes up; turn on "
     "menu_cam_lock to pin one. Needs menu_cam_custom.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(menu_cam_cycle, 0.0, "MCLA/Menu Camera",
@@ -125,6 +131,7 @@ REXCVAR_DEFINE_DOUBLE(menu_cam_cycle, 0.0, "MCLA/Menu Camera",
     "only calls setMenuCam for the network and garage menus, so without this the "
     "boot screen sits on one shot forever. Ignored while menu_cam_lock is on.")
     .range(0.0, 600.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(menu_cam_record, false, "MCLA/Menu Camera",
@@ -135,12 +142,14 @@ REXCVAR_DEFINE_BOOL(menu_cam_record, false, "MCLA/Menu Camera",
     "while the menus cycle, then turn it off: every shot, stock and custom, is "
     "now a line you own. Works with menu_cam_custom on; it always records what "
     "the game produced, never what this placed.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(menu_cam_diag, false, "MCLA/Menu Camera",
     "Log the camera the game hands to the renderer (mode id, position, matrix "
     "rows) once per mode change, and every shot this places. Turn on if a shot "
     "does not show up or points the wrong way.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Forward decl so the command cvar below can name it.
@@ -151,6 +160,7 @@ REXCVAR_DEFINE_COMMAND(menu_cam_dump, MenuCamDump, "MCLA/Menu Camera",
     "'cam' line. Fly there with debug_cam = free first (the free-fly pose gives "
     "both the position and the look direction); without it the player car's "
     "position is used. Also records the menu camera currently on screen.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // ---------------------------------------------------------------- guest memory

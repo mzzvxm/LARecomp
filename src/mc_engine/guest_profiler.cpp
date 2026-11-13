@@ -52,6 +52,7 @@ REXCVAR_DEFINE_BOOL(guest_profile, false, "MCLA/Diag",
     "where frame time goes; the stall dump is the one that matters when a load "
     "never finishes, because the thread the sampler follows is parked in a wait by "
     "then and the stuck one is somebody else. Reports land in logs/profile_*.log.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mc::profiler {

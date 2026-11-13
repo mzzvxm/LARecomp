@@ -76,30 +76,36 @@
 REXCVAR_DEFINE_BOOL(squash_stretch, false, "MCLA/Fun",
     "Squash & stretch the player's car like the \"Why's This Dealer?\" meme. "
     "Visual only — physics and collision are untouched.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(squash_amplitude, 0.25, "MCLA/Fun",
     "Squash depth, 0..0.9. 0.25 = the body loses a quarter of its height at the "
     "bottom of the cycle and gains half of that in width.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(squash_hz, 1.5, "MCLA/Fun",
     "Oscillations per second.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(squash_pivot, 0.0, "MCLA/Fun",
     "Pivot height in metres along the up axis, in car space. 0 = scale about the "
     "car origin (the body sinks and rises). Negative values push the pivot down "
     "toward the tyre contact patch so the car keeps its ground contact.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(squash_up_axis, 2, "MCLA/Fun",
     "Which car-space axis is up: 0 = X, 1 = Y, 2 = Z (RAGE default). The other "
     "two axes take the anti-phase widening.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(squash_traffic, false, "MCLA/Fun",
     "Apply the squash to every car in the world instead of just the player's.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

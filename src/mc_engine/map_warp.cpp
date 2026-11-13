@@ -65,11 +65,13 @@ REXCVAR_DEFINE_STRING(warp_spot, "", "MCLA/World",
     "Where F9 drops the car: \"x y z heading\" (heading in degrees, 0 = facing +Z). "
     "Empty = the first point a mod names in models/<mod>/warps.txt. The car is "
     "dropped onto whatever collision is below the point.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(start_garage_last, "hollywood", "MCLA/World",
     "The garage nearest the car the last time it was driven (hollywood, beaches or sc); "
     "start_garage = last starts the session there. The game keeps it up to date.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(start_garage, "hollywood", "MCLA/World",
@@ -602,7 +604,8 @@ void TickStartGarage() {
 REXCVAR_DEFINE_COMMAND_ARGS(warp, ConsoleWarp, "MCLA/World",
                             "Warp the car: 'warp <point>' (a mod's warps.txt), 'warp back' (to "
                             "where it was), 'warp x y z [heading]', or 'warp' to list the points. "
-                            "The car is dropped onto whatever collision is below the point.");
+                            "The car is dropped onto whatever collision is below the point.")
+    .debug_only();
 
 void TickMapWarp() {
     RegisterBindOnce();

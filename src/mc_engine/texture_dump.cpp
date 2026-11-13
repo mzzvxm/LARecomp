@@ -28,7 +28,8 @@
 
 REXCVAR_DEFINE_STRING(larecomp_texture_folder, "", "Graphics",
                       "Folder the texture dumps are written to. Empty: textures_dump/ in the "
-                      "mod folder (modloader/, mods/ or models/ beside the executable)");
+                      "mod folder (modloader/, mods/ or models/ beside the executable)")
+    .debug_only();
 
 namespace mcla {
 

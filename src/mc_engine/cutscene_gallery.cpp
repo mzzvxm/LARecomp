@@ -33,6 +33,7 @@ REXCVAR_DEFINE_STRING(cutscene_replay, "cut_story_district_champs", "MCLA/Cutsce
 REXCVAR_DEFINE_STRING(cutscene_play_now, "", "MCLA/Cutscenes",
     "Set to a cutscene name to play it immediately, without going through the "
     "menu. Clears itself once the scene starts.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_force_events, false, "MCLA/Cutscenes",
@@ -42,6 +43,7 @@ REXCVAR_DEFINE_BOOL(cutscene_force_events, false, "MCLA/Cutscenes",
     "clock there -- measured: the garage scene picked 2.833s and ended in four "
     "frames, and district champs picked 74.233s and its clock went 0.036 -> "
     "74.254 in one frame. Leave it off; it is kept only to reproduce that.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_force_camera, false, "MCLA/Cutscenes",
@@ -53,6 +55,7 @@ REXCVAR_DEFINE_BOOL(cutscene_force_camera, false, "MCLA/Cutscenes",
     "negative -- so if the event is queued but never dispatched, this is exactly "
     "the work the game skipped, done with the game's own function and the game's "
     "own event object. It is a no-op when the camera is already running.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_menu_autoclose, true, "MCLA/Cutscenes",
@@ -62,6 +65,7 @@ REXCVAR_DEFINE_BOOL(cutscene_menu_autoclose, true, "MCLA/Cutscenes",
     "menu closes through the game's own transition -- the one that unpauses and "
     "emits resume/ENTERNORMAL/HUDMOVIE. Turn it off to arm the scene and close "
     "the menu by hand instead.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_skip_uses_teardown, false, "MCLA/Cutscenes",
@@ -73,6 +77,7 @@ REXCVAR_DEFINE_BOOL(cutscene_skip_uses_teardown, false, "MCLA/Cutscenes",
     "camera back, brings the HUD in and stops the speech. Our teardown skips all "
     "of that, which is why it left the audio playing and nothing restored. Kept "
     "only as an escape hatch if a scene wedges with no cut event to jump to.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_keep_movies, true, "MCLA/Cutscenes",
@@ -88,6 +93,7 @@ REXCVAR_DEFINE_BOOL(cutscene_keep_movies, true, "MCLA/Cutscenes",
     "because the flow rebuilds the movies on the way back to gameplay; a replay "
     "has no flow. The cost of skipping it is the scene's subtitle movie not "
     "being released -- a leak, not a crash.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_probe_log, false, "MCLA/Cutscenes",
@@ -97,6 +103,7 @@ REXCVAR_DEFINE_BOOL(cutscene_probe_log, false, "MCLA/Cutscenes",
     "because a 74 second scene is a few hundred lines. The things that mean "
     "something went wrong -- a bailed script, a wedged scene, a stuck release "
     "counter -- are always printed regardless.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(cutscene_run_script, "", "MCLA/Cutscenes",
@@ -104,6 +111,7 @@ REXCVAR_DEFINE_STRING(cutscene_run_script, "", "MCLA/Cutscenes",
     "frame. Meant for the game's own cutscene harness -- "
     "'tools/CutsceneTests/SETUP_GENERIC_CUTSCENE' slots the racers and "
     "characters a scene needs. Clears itself once the script is mounted.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_setup, true, "MCLA/Cutscenes",
@@ -111,6 +119,7 @@ REXCVAR_DEFINE_BOOL(cutscene_setup, true, "MCLA/Cutscenes",
     "scene. It is the game's own standalone-cutscene harness: it slots four "
     "racers and nine character sets, which is what a generated cutscene script "
     "assumes and bails out without.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_bind_coordsys, false, "MCLA/Cutscenes",
@@ -127,6 +136,7 @@ REXCVAR_DEFINE_BOOL(cutscene_bind_coordsys, false, "MCLA/Cutscenes",
     "what the reward and cop-pullover scenes do natively. Off by default: it "
     "made things worse in play, so the anchor stays behind this flag until "
     "there is a measurement that says what it broke.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_pad_racers, true, "MCLA/Cutscenes",
@@ -134,11 +144,13 @@ REXCVAR_DEFINE_BOOL(cutscene_pad_racers, true, "MCLA/Cutscenes",
     "has fewer racers than the scene wants. Wrong on screen -- several cars end "
     "up being the same one -- but it is what gets a scene past its "
     "'insufficient number of racers slotted' guard in free roam.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cutscene_debug, false, "MCLA/Cutscenes",
     "Dump the whole script-thread tree and the scrThread array with each "
     "cutscene gate report. Off by default: it is ~200 lines a shot.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(cutscene_stop, "", "MCLA/Cutscenes",
@@ -146,6 +158,7 @@ REXCVAR_DEFINE_STRING(cutscene_stop, "", "MCLA/Cutscenes",
     "opened. 'kill' raises the script's own kill flag; 'finish' runs the "
     "teardown directly, which is what gets the HUD back from a wedged scene.")
     .allowed({"", "kill", "finish"})
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
