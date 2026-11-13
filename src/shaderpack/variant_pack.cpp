@@ -30,6 +30,7 @@
 #include "shaderpack/pack_format.h"
 #include "shaderpack/pack_writer.h"
 #include "shaderpack/variants/bloom_gauss.h"
+#include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/hdr_scene.h"
 #include "shaderpack/variants/shadow_filter.h"
@@ -526,6 +527,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeBloomGaussVariant());
   variants.push_back(MakeEnvMapVariant());
   variants.push_back(MakeShadowFilterVariant());
+  variants.push_back(MakeCarSelfReflVariant());
   return variants;
 }
 
