@@ -52,6 +52,7 @@
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
+#include "gpu/shadow_filter.h"
 #include "gpu/side_views.h"
 #endif
 
@@ -1731,18 +1732,21 @@ bool AoOn() {
 }
 constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // Shadow filter (mcla_gpu_shadow_filter, gpu/shadow_filter.h, live): how the sun's shadows are smoothed, the
-// game's own four taps (GAME: the picture is the game's) or more taps on a disk (SOFT). AUTO says what it
-// comes to on this GPU (the first value's label, like the latency reducer's): GAME on an integrated GPU,
-// SOFT on the rest (gpu/gpu_class.h). The cvar also takes `pcss` (contact hardening, a later package; it is
-// soft until then), which has no value here yet. The row is "SHADOW FILTER" (13 characters) with a value of at
-// most 11 ("AUTO (SOFT)", "AUTO (GAME)").
-const char* const kNativeShadowFilterVals[]  = {"auto", "game", "soft"};
-const char* const kNativeShadowFilterNames[] = {"AUTO", "GAME", "SOFT"};
+// game's own four taps (GAME: the picture is the game's), more taps on a disk (SOFT) or that with contact
+// hardening (PCSS: a shadow is sharp where it touches what casts it and softer with the distance from it).
+// AUTO says what it comes to on this GPU (the first value's label, like the latency reducer's): GAME on an
+// integrated GPU, SOFT on the rest (gpu/gpu_class.h; PCSS on the strong class is proposed, not decided).
+// PCSS on an integrated GPU has no blocker search (the same cost rule as its AUTO) and says so: "PCSS (SOFT)".
+// The row is "SHADOW FILTER" (13 characters) with a value of at most 11 ("AUTO (SOFT)", "AUTO (GAME)",
+// "PCSS (SOFT)").
+const char* const kNativeShadowFilterVals[]  = {"auto", "game", "soft", "pcss"};
+const char* const kNativeShadowFilterNames[] = {"AUTO", "GAME", "SOFT", "PCSS"};
 std::string ShadowFilterLabel(int i) {
     switch (i) {
     case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kShadowFilter);
     case 1:  return "GAME";
-    default: return "SOFT";
+    case 2:  return "SOFT";
+    default: return mcla::gpu::shadow_filter::PcssRuns() ? "PCSS" : "PCSS (SOFT)";
     }
 }
 constexpr RowDynamics kShadowFilterDynamics = {.str_label = ShadowFilterLabel};
@@ -1859,7 +1863,7 @@ const ItemDef kGfxQualityItems[] = {
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
                             &kShadowDetailDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowFilter", "mcla_gpu_shadow_filter", "SHADOW FILTER: ",
-                                kNativeShadowFilterVals, kNativeShadowFilterNames, 3),
+                                kNativeShadowFilterVals, kNativeShadowFilterNames, 4),
                             &kShadowFilterDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
                                 kNativeContactVals, kNativeContactNames, 4),
