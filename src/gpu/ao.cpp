@@ -15,7 +15,9 @@
 
 #include "descriptors.h"
 #include "device.h"
+#include "format.h"
 #include "frame.h"
+#include "gpu_class.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
@@ -68,6 +70,60 @@ REXCVAR_DEFINE_INT32(
     .debug_only()
     .range(1, 64)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_contact_shadows, "auto", "MCLA/GPU",
+    "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot "
+    "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
+    "on the sun's light, so they never darken what the game's own shadows already cover. Early in the "
+    "morning and in the evening, when the game draws no sun shadows at all, they are the only ones. "
+    "They are left out at night and in rain. off, low (half resolution, 8 steps), high (full "
+    "resolution, 16 steps) or auto (the default): off on an integrated graphics card, low on a "
+    "discrete one with less than 5.5 GiB of video memory, high on the rest. Costs graphics card time, "
+    "high more than low. Also drawn behind the pause menu and on the map. Live.")
+    .allowed({"auto", "off", "low", "high"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_length, 0.6, "MCLA/GPU",
+    "Diagnostic: how far toward the sun contact shadows look, in the game's world units (about "
+    "metres), with the sun high. The length grows with a low sun (0.7 / tan of its elevation, 1 to 3 "
+    "times). Live.")
+    .debug_only()
+    .range(0.1, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_strength, 1.0, "MCLA/GPU",
+    "Diagnostic: how strongly contact shadows darken the sun's light where they apply, 0 to 2 "
+    "(the sun's elevation and the wetness scale it further). Live.")
+    .debug_only()
+    .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_thickness, 0.3, "MCLA/GPU",
+    "Diagnostic: how far in front of a step of the ray a surface may be and still hide it, in the "
+    "game's world units: a thing nearer to the camera than that only overlaps on screen and hides "
+    "nothing. Live.")
+    .debug_only()
+    .range(0.05, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_mask_gain, 2.0, "MCLA/GPU",
+    "Diagnostic: what the game's sun shadow mask's stored value is multiplied by to give the sun's "
+    "visibility (1 lit): the game's collector stores half of it and the lit shaders multiply by 2. "
+    "Look at mcla_gpu_contact_shadows_view 3 (white where lit) if shadows are darkened twice or not "
+    "at all. Live.")
+    .debug_only()
+    .range(0.5, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_contact_shadows_view, 0, "MCLA/GPU",
+    "Diagnostic: shows a stage of the contact shadows as a grey picture instead of applying them "
+    "(only while they are on, and instead of mcla_gpu_ao_view): 1 the factor the picture is "
+    "multiplied by (white: none), 2 the contact visibility (black where the ray is hidden), 3 the "
+    "sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), "
+    "4 the sun's share of the light. 0: off. Live.")
+    .debug_only()
+    .range(0, 4)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_census, 0, "MCLA/GPU",
     "Diagnostic: every Nth guest frame (and the first three frames with the main view), one block "
@@ -96,6 +152,8 @@ constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) |
 constexpr uint32_t kPsAmbient = 26;
 constexpr uint32_t kPsSunColor = 39;
 constexpr uint32_t kVsSunDirection = 16;
+// VS c43: gReflectionParams, whose x is the road's wetness (0.095 dry, 1.17 in rain).
+constexpr uint32_t kVsReflectionParams = 43;
 
 // The settings the passes use that no cvar sets: the effect's falloff range as a share of the
 // radius, the floor of the final visibility (no black blotches). The power of the visibility is
@@ -126,6 +184,44 @@ constexpr double kVsMatch = 5e-4;
 constexpr double kVsMoved = 5e-3;
 // The sky and anything the linearisation could not place (hlsl/ao_common.hlsli kAoSky).
 constexpr float kSkyDistance = 60000.0f;
+
+// The flags of the apply pass (hlsl/ao_apply_ps.hlsl): the occlusion's term, the contact shadows', the
+// game's shadow mask.
+constexpr uint32_t kApplyOcclusionFlag = 1u << 22;
+constexpr uint32_t kApplyContactFlag = 1u << 23;
+constexpr uint32_t kApplyMaskFlag = 1u << 24;
+// The debug views of the contact shadows are 8 to 11 in the apply pass's view field (the occlusion's
+// are 1 to 6).
+constexpr uint32_t kContactViewBase = 7;
+
+// Contact shadows. The game's shadow mask: the page of the resolve that makes it (the 1280x720
+// k_8_8_8_8 collector output, resolved at the main view's phase 0x4000), a texture key's base page.
+constexpr uint32_t kMaskPage = 0x06ACD000u >> 12;
+constexpr uint8_t kTextureFormat8888 = 6;  // xenos::TextureFormat::k_8_8_8_8
+constexpr uint32_t kMaskMinWidth = 640;
+// The sun's elevation gate: no contact shadows at this many degrees and below (the night's light
+// points up, 19 h is at 2.5 degrees with a grey sun), all of them from kGateFullDegrees.
+constexpr double kGateOffDegrees = 3.0;
+constexpr double kGateFullDegrees = 12.0;
+// The wetness gate (VS c43.x: 0.095 dry, 1.17 in rain): full strength up to kWetDry, none from
+// kWetDry + kWetSpan.
+constexpr float kWetDry = 0.2f;
+constexpr float kWetSpan = 0.5f;
+// The ray grows with a low sun, 0.7 / tan(elevation), kept between 1 and 3 times the setting.
+constexpr double kLengthTan = 0.7;
+constexpr double kLengthMaxScale = 3.0;
+// The distance fade of the contact shadows, in world units: a ray of a few tenths of a metre is
+// under a pixel far away.
+constexpr float kContactFadeStart = 40.0f;
+constexpr float kContactFadeEnd = 80.0f;
+// The steps of the ray at low and at high.
+constexpr uint32_t kContactStepsLow = 8;
+constexpr uint32_t kContactStepsHigh = 16;
+
+float Smoothstep(double edge0, double edge1, double x) {
+  const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+  return float(t * t * (3.0 - 2.0 * t));
+}
 
 // The looks of mcla_gpu_ao_intensity (the pause menu's AO INTENSITY row): the darkening's strength,
 // the radius in the game's world units, the power of the visibility and the direct share (how much
@@ -233,6 +329,25 @@ AmbientOcclusion::Mode ReadMode() {
   return AmbientOcclusion::Mode::kOff;
 }
 
+std::string Lower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  return value;
+}
+
+// mcla_gpu_contact_shadows with `auto` resolved for this GPU (gpu_class.h).
+AmbientOcclusion::Mode ReadContactMode() {
+  const std::string value = gpu_class::Resolve(gpu_class::Effect::kContactShadows,
+                                               Lower(REXCVAR_GET(mcla_gpu_contact_shadows)));
+  if (value == "low") {
+    return AmbientOcclusion::Mode::kLow;
+  }
+  if (value == "high") {
+    return AmbientOcclusion::Mode::kHigh;
+  }
+  return AmbientOcclusion::Mode::kOff;
+}
+
 // A binary16 as a float.
 float HalfToFloat(uint16_t h) {
   const uint32_t sign = uint32_t(h & 0x8000u) << 16;
@@ -307,6 +422,7 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVTemporal: return "ao temporal";
     case kVTemporalMs: return "ao temporal (multisampled)";
     case kVVehicleTable: return "ao vehicle table";
+    case kVContact: return "ao contact shadows";
     default: break;
   }
   const uint32_t index = variant - kVApplyBase;
@@ -315,7 +431,8 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
 
 void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                                   HostPasses& passes, EdramTargets& edram,
-                                  PassTiming& pass_timing) {
+                                  PassTiming& pass_timing, ResolveCache& resolve) {
+  resolve_ = &resolve;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -397,6 +514,7 @@ void AmbientOcclusion::Shutdown() {
   passes_ = nullptr;
   edram_ = nullptr;
   pass_timing_ = nullptr;
+  resolve_ = nullptr;
 }
 
 void AmbientOcclusion::ListPrecache() {
@@ -406,7 +524,7 @@ void AmbientOcclusion::ListPrecache() {
   std::vector<uint32_t> listed = {kVDepth,           kVDepthMs,          kVMip,
                                   kVMain,            kVDenoise,          kVTemporal,
                                   kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
-                                  ApplyVariant(false, 4)};
+                                  ApplyVariant(false, 4), kVContact};
   // The host's MSAA level changes while the game runs (msaa_level.h) and gives the main view's
   // colour target the new level's samples: the apply pass for 8 samples is listed whatever the
   // level is at the start, so a switch to 8x finds it made instead of making it on the render
@@ -441,6 +559,7 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVDenoise: return make(kPassDenoise, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVTemporal: return make(kPassTemporal, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVTemporalMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16_FLOAT, copy, 1);
+    case kVContact: return make(kPassContact, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVVehicleTable:
       // The host pass layout (the row's 48 bytes of push constants), as the temporal system's own table.
       return vehicle_table_shader_ ? passes_->CreatePipeline(*vehicle_table_shader_,
@@ -500,6 +619,17 @@ void AmbientOcclusion::BeginFrame() {
     REXLOG_INFO("[gpu] ao: ambient occlusion {} (mcla_gpu_ao, live)", ModeName(mode));
   }
   mode_ = mode;
+  Mode contact = ReadContactMode();
+  if (!ready_ || !resolve_) {
+    contact = Mode::kOff;  // the passes could not be made (Initialize said so)
+  }
+  if (uint32_t(contact) != last_contact_logged_) {
+    last_contact_logged_ = uint32_t(contact);
+    const std::string setting = Lower(REXCVAR_GET(mcla_gpu_contact_shadows));
+    REXLOG_INFO("[gpu] contact shadows {}{} (mcla_gpu_contact_shadows {}, live)", ModeName(contact),
+                setting == "auto" ? " (auto on this GPU)" : "", setting);
+  }
+  contact_mode_ = contact;
 }
 
 uint64_t AmbientOcclusion::HeldBytes() const {
@@ -577,6 +707,14 @@ void AmbientOcclusion::OnMainDraw(const MainDraw& draw, const ConstantBanks::Ban
   LightRaw light;
   const uint8_t* ps = banks.ps.data();
   const uint8_t* vs = banks.vs.data();
+  // The wetness, for the contact shadows' gate: counted in bins of 0.1 (PickWet).
+  if (contact_mode_ != Mode::kOff) {
+    const float wet = BankFloat(vs, kVsReflectionParams, 0);
+    if (std::isfinite(wet) && wet >= 0.0f && wet <= 4.0f) {
+      ++wet_bins_[uint32_t(wet * 10.0f + 0.5f)];
+      ++wet_draws_;
+    }
+  }
   for (uint32_t i = 0; i < 3; ++i) {
     light.dwords[i] = LoadBe32(ps + kPsAmbient * 16 + i * 4);
     light.dwords[3 + i] = LoadBe32(ps + kPsSunColor * 16 + i * 4);
@@ -864,6 +1002,9 @@ bool AmbientOcclusion::IsLaterTile(const ResolveCache::Summary& summary) const {
 
 bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
                                  plume::RenderCommandList* list, bool upscaler_running) {
+  if (contact_mode_ != Mode::kOff) {
+    NoteMaskResolve(record);
+  }
   if (!summary.depth_copy) {
     ++other_resolves_;
     return false;
@@ -931,16 +1072,28 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   outcome_ = Outcome::kIdle;
   Plan plan;
   plan.mode = mode_;
+  plan.occlusion = mode_ != Mode::kOff;
+  PlanContact(&plan);
+  const bool contact = plan.contact.mode != Mode::kOff;
   plan.probe = census_every_ != 0 && (probes_done_ < 3 || frame_ % census_every_ == 0);
-  if (mode_ == Mode::kOff) {
+  if (!plan.occlusion && !contact) {
     if (!plan.probe) {
       return false;
     }
     plan.mode = Mode::kLow;  // the cheaper size is enough for a statistic
     plan.apply = false;
   }
+  // The passes run at half the picture's size when nothing that is on asks for the whole of it.
+  plan.low = !(plan.occlusion && plan.mode == Mode::kHigh) &&
+             !(contact && plan.contact.mode == Mode::kHigh);
   plan.upscaler = upscaler_running;
-  plan.view = mode_ == Mode::kOff ? 0u : uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 6));
+  plan.view = plan.occlusion ? uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 6)) : 0u;
+  if (contact) {
+    const uint32_t contact_view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, 4));
+    if (contact_view != 0) {
+      plan.view = kContactViewBase + contact_view;  // instead of the occlusion's
+    }
+  }
   // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
   // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
   // turning it on, the first frame of a pause spell: the play view's lens is not the pause
@@ -999,7 +1152,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     outcome_ = Outcome::kTooSmall;
     return false;
   }
-  const bool low = plan.mode == Mode::kLow;
+  const bool low = plan.low;
   for (uint32_t axis = 0; axis < 2; ++axis) {
     plan.ao[axis] = low ? (plan.render[axis] + 1) / 2 : plan.render[axis];
     plan.level[0][axis] = (plan.ao[axis] + 1) / 2;
@@ -1015,25 +1168,33 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
 // ---------------------------------------------------------------------------
 
 bool AmbientOcclusion::EnsureImages(const Plan& plan) {
-  bool ok =
-      passes_->EnsureImage(depth_[0], plan.ao[0], plan.ao[1], plume::RenderFormat::R32_FLOAT,
-                           "ao depth") &&
-      passes_->EnsureImage(depth_[1], plan.level[0][0], plan.level[0][1],
-                           plume::RenderFormat::R16_FLOAT, "ao depth 1/2") &&
-      passes_->EnsureImage(depth_[2], plan.level[1][0], plan.level[1][1],
-                           plume::RenderFormat::R16_FLOAT, "ao depth 1/4");
-  if (ok && plan.apply) {
+  // The coarser depth levels are the occlusion's (and the census probe's); the contact shadows read
+  // level 0 only. The two scratch images hold the occlusion's visibility passes and, after those,
+  // the contact shadows'; the history is the occlusion's alone.
+  const bool levels = plan.occlusion || plan.probe;
+  const bool scratch = plan.apply;
+  bool ok = passes_->EnsureImage(depth_[0], plan.ao[0], plan.ao[1], plume::RenderFormat::R32_FLOAT,
+                                 "ao depth");
+  if (ok && levels) {
+    ok = passes_->EnsureImage(depth_[1], plan.level[0][0], plan.level[0][1],
+                              plume::RenderFormat::R16_FLOAT, "ao depth 1/2") &&
+         passes_->EnsureImage(depth_[2], plan.level[1][0], plan.level[1][1],
+                              plume::RenderFormat::R16_FLOAT, "ao depth 1/4");
+  }
+  if (ok && scratch) {
     ok = passes_->EnsureImage(raw_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
                               "ao visibility") &&
          passes_->EnsureImage(denoised_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
-                              "ao denoised visibility") &&
-         passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
+                              "ao denoised visibility");
+  }
+  if (ok && plan.occlusion) {
+    ok = passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 1");
   }
   // The picture of debug view 6, made only while that view is shown.
-  if (ok && plan.apply && plan.view == 6u) {
+  if (ok && plan.occlusion && plan.view == 6u) {
     ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_FLOAT,
                               "ao history weight");
   } else if (weight_.texture) {
@@ -1042,10 +1203,14 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   if (ok && (images_made_for_[0] != plan.ao[0] || images_made_for_[1] != plan.ao[1])) {
     images_made_for_[0] = plan.ao[0];
     images_made_for_[1] = plan.ao[1];
-    REXLOG_INFO("[gpu] ao: images at {}x{} for a {}x{} picture ({}): linear depth R32_FLOAT with "
-                "two coarser levels, visibility R16_FLOAT x2, history R16G16_FLOAT x2, {:.1f} MiB",
-                plan.ao[0], plan.ao[1], plan.render[0], plan.render[1],
-                plan.apply ? ModeName(plan.mode) : "census probe only",
+    const char* what = plan.apply ? (plan.occlusion ? ModeName(plan.mode) : "contact shadows only")
+                                  : "census probe only";
+    REXLOG_INFO("[gpu] ao: images at {}x{} for a {}x{} picture ({}): linear depth R32_FLOAT{}{}{}, "
+                "{:.1f} MiB",
+                plan.ao[0], plan.ao[1], plan.render[0], plan.render[1], what,
+                levels ? " with two coarser levels" : "",
+                scratch ? ", visibility R16_FLOAT x2" : "",
+                plan.occlusion ? ", history R16G16_FLOAT x2" : "",
                 double(HeldBytes()) / (1024.0 * 1024.0));
   }
   return ok;
@@ -1112,9 +1277,12 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   std::memset(push, 0, sizeof(*push));
   push->slots[0] = summary.sample_slot;
   push->slots[1] = summary.host_sample;
-  const bool low = plan.mode == Mode::kLow;
-  const uint32_t slices = low ? 2 : 3;
-  const uint32_t steps = low ? 2 : 3;
+  // The occlusion's own quality picks the slices and steps; the images are at half the picture's size
+  // (the flag the shaders read) when nothing that is on asks for more (Plan::low).
+  const bool ao_low = plan.mode == Mode::kLow;
+  const bool low = plan.low;
+  const uint32_t slices = ao_low ? 2 : 3;
+  const uint32_t steps = ao_low ? 2 : 3;
   // The noise changes every frame (hlsl/ao_main_ps.hlsl); the denoise is a 3x3 each time.
   const uint32_t denoise_radius = 1;
   push->slots2[1] = uint32_t(frame_ & 1023);
@@ -1416,19 +1584,30 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                            const Plan& plan) {
   EdramTargets::Target& depth_target = *summary.source;
   const bool ms = depth_target.host_samples > 1;
-  // Everything that can fail before anything is recorded.
+  // Everything that can fail before anything is recorded. The coarser depth levels are the
+  // occlusion's (and the census probe's); the contact shadows need the depth pass, their own march
+  // and the denoise pass the occlusion uses.
+  const bool levels = plan.occlusion || plan.probe;
+  const bool contact = plan.contact.mode != Mode::kOff;
   plume::RenderPipeline* depth_pipeline = Pipeline(ms ? kVDepthMs : kVDepth);
-  plume::RenderPipeline* mip_pipeline = Pipeline(kVMip);
+  plume::RenderPipeline* mip_pipeline = levels ? Pipeline(kVMip) : nullptr;
   plume::RenderPipeline* main_pipeline = nullptr;
   plume::RenderPipeline* denoise_pipeline = nullptr;
   plume::RenderPipeline* temporal_pipeline = nullptr;
-  if (plan.apply) {
+  plume::RenderPipeline* contact_pipeline = nullptr;
+  if (plan.occlusion) {
     main_pipeline = Pipeline(kVMain);
-    denoise_pipeline = Pipeline(kVDenoise);
     temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
   }
-  if (!depth_pipeline || !mip_pipeline ||
-      (plan.apply && (!main_pipeline || !denoise_pipeline || !temporal_pipeline))) {
+  if (plan.apply) {
+    denoise_pipeline = Pipeline(kVDenoise);
+  }
+  if (contact) {
+    contact_pipeline = Pipeline(kVContact);
+  }
+  if (!depth_pipeline || (levels && !mip_pipeline) ||
+      (plan.occlusion && (!main_pipeline || !temporal_pipeline)) ||
+      (plan.apply && !denoise_pipeline) || (contact && !contact_pipeline)) {
     return false;
   }
   if (!EnsureImages(plan)) {
@@ -1457,22 +1636,26 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   push.sizes[2] = float(plan.render[0]);
   push.sizes[3] = float(plan.render[1]);
   DrawPass(list, depth_[0], depth_pipeline, push);
-  // The coarser levels.
-  push.slots[2] = depth_[0].slot;
-  push.sizes[0] = float(plan.level[0][0]);
-  push.sizes[1] = float(plan.level[0][1]);
-  push.sizes[2] = float(plan.ao[0]);
-  push.sizes[3] = float(plan.ao[1]);
-  DrawPass(list, depth_[1], mip_pipeline, push);
-  push.slots[2] = depth_[1].slot;
-  push.sizes[0] = float(plan.level[1][0]);
-  push.sizes[1] = float(plan.level[1][1]);
-  push.sizes[2] = float(plan.level[0][0]);
-  push.sizes[3] = float(plan.level[0][1]);
-  DrawPass(list, depth_[2], mip_pipeline, push);
+  if (levels) {
+    // The coarser levels.
+    push.slots[2] = depth_[0].slot;
+    push.sizes[0] = float(plan.level[0][0]);
+    push.sizes[1] = float(plan.level[0][1]);
+    push.sizes[2] = float(plan.ao[0]);
+    push.sizes[3] = float(plan.ao[1]);
+    DrawPass(list, depth_[1], mip_pipeline, push);
+    push.slots[2] = depth_[1].slot;
+    push.sizes[0] = float(plan.level[1][0]);
+    push.sizes[1] = float(plan.level[1][1]);
+    push.sizes[2] = float(plan.level[0][0]);
+    push.sizes[3] = float(plan.level[0][1]);
+    DrawPass(list, depth_[2], mip_pipeline, push);
+  }
 
-  bool applied = false;
-  if (plan.apply) {
+  // The visibility image the apply pass reads for the occlusion's term (the depth image stands in
+  // while the term is off: the apply pass does not read it then).
+  uint32_t ao_slot = depth_[0].slot;
+  if (plan.occlusion) {
     // The visibility from the chain.
     pass_timing_->Mark(list, "ao visibility");
     push = base;
@@ -1583,22 +1766,60 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     history_tan_[0] = base.lens[0];
     history_tan_[1] = base.lens[1];
     history_age_ = use.on ? std::min(use.age + 1, use.cap) : 0u;
-    // The apply into the scene colour.
+    ao_slot = (plan.view == 6u ? weight_ : history_out).slot;
+  }
+  // The contact shadows: their march and its denoise, into the two scratch images the occlusion has
+  // finished with.
+  uint32_t contact_slot = kNoSlot;
+  uint32_t mask_slot = kNoSlot;
+  if (contact) {
+    contact_slot = RecordContact(list, plan, base);
+    if (contact_slot != kNoSlot) {
+      mask_slot = FindMaskSlot();
+    }
+  }
+  const bool contact_applied = contact_slot != kNoSlot;
+  bool applied = false;
+  if (plan.apply) {
+    // The apply into the scene colour: the occlusion's term and the contact shadows' in one factor.
     push = base;
-    push.slots[2] = (plan.view == 6u ? weight_ : history_out).slot;
+    push.slots[2] = ao_slot;
     push.slots[3] = depth_[0].slot;
     push.sizes[0] = float(plan.render[0]);
     push.sizes[1] = float(plan.render[1]);
     push.sizes[2] = float(plan.ao[0]);
     push.sizes[3] = float(plan.ao[1]);
+    push.slots2[2] |= (plan.occlusion ? kApplyOcclusionFlag : 0u) |
+                      (contact_applied ? kApplyContactFlag : 0u) |
+                      (mask_slot != kNoSlot ? kApplyMaskFlag : 0u);
+    push.slots2[0] = contact_applied ? contact_slot : 0u;
+    push.slots2[3] = mask_slot != kNoSlot ? mask_slot : 0u;
+    push.lens[2] = plan.contact.fade_start;
+    push.lens[3] = plan.contact.fade_end;
+    push.shape[0] = plan.contact.mask_gain;
+    push.extra[3] = plan.contact.strength;
     applied = RecordApply(list, summary, plan, push);
     applied_this_frame_ = applied;
+  }
+  if (contact_applied) {
+    contact_mask_ = mask_slot != kNoSlot;
+    if (contact_runs_ == 0) {
+      REXLOG_INFO("[gpu] contact shadows: the first frame: {} at {}x{} (images {}x{}), {} steps over "
+                  "{:.2f} m (thickness {:.2f} m), strength {:.2f}, the game's shadow mask {} (the "
+                  "sun's visibility is 1 where it is not found), {}",
+                  ModeName(plan.contact.mode), plan.render[0], plan.render[1], plan.ao[0],
+                  plan.ao[1], plan.contact.steps, plan.contact.length, plan.contact.thickness,
+                  plan.contact.strength, contact_mask_ ? "found" : "not found",
+                  plan.occlusion ? "with the occlusion" : "without the occlusion");
+    }
+    ++contact_runs_;
+    ++(contact_mask_ ? contact_mask_frames_ : contact_no_mask_frames_);
   }
   if (plan.probe) {
     RecordProbe(list, plan);
   }
   ran_this_frame_ = true;
-  if (plan.apply && applied) {
+  if (plan.occlusion && applied) {
     if (runs_ == 0) {
       REXLOG_INFO("[gpu] ao: the first occlusion pass: {} at {}x{} (visibility {}x{}), {} depth, "
                   "{}{}",
@@ -1683,6 +1904,188 @@ bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// the contact shadows
+// ---------------------------------------------------------------------------
+
+bool AmbientOcclusion::PickWet(float* value) const {
+  if (wet_draws_ == 0) {
+    return false;
+  }
+  uint32_t best = 0;
+  for (uint32_t i = 1; i < kWetBins; ++i) {
+    if (wet_bins_[i] > wet_bins_[best]) {
+      best = i;
+    }
+  }
+  *value = 0.1f * float(best);
+  return true;
+}
+
+void AmbientOcclusion::PlanContact(Plan* plan) {
+  plan->contact = ContactPlan{};
+  ContactState state = ContactState::kOff;
+  const auto finish = [&] {
+    contact_state_ = state;
+    if (uint32_t(state) != contact_state_logged_) {
+      contact_state_logged_ = uint32_t(state);
+      switch (state) {
+        case ContactState::kOff:
+          break;
+        case ContactState::kNoLight:
+          REXLOG_INFO("[gpu] contact shadows: no usable light constants before the trigger: none "
+                      "this frame (logged when the state changes)");
+          break;
+        case ContactState::kGated:
+          REXLOG_INFO("[gpu] contact shadows: none now: the sun is at {:.1f} degrees (gate {:.2f}, "
+                      "off at {:.0f} and below, full from {:.0f}) and the wetness is {:.1f} (gate "
+                      "{:.2f}) (logged when the state changes)",
+                      contact_elevation_, contact_gate_sun_, kGateOffDegrees, kGateFullDegrees,
+                      contact_wet_, contact_gate_wet_);
+          break;
+        case ContactState::kActive:
+          REXLOG_INFO("[gpu] contact shadows: on: the sun is at {:.1f} degrees (gate {:.2f}), the "
+                      "wetness {:.1f} (gate {:.2f}), strength {:.2f} (logged when the state "
+                      "changes)",
+                      contact_elevation_, contact_gate_sun_, contact_wet_, contact_gate_wet_,
+                      contact_strength_);
+          break;
+      }
+    }
+  };
+  if (contact_mode_ == Mode::kOff) {
+    finish();
+    return;
+  }
+  LightRaw light;
+  uint32_t with_it = 0;
+  float ambient[3], sun[3], dir[3];
+  if (!PickLight(&light, &with_it)) {
+    state = ContactState::kNoLight;
+    finish();
+    return;
+  }
+  DecodeLight(light, ambient, sun, dir);
+  const double length = Length3(dir);
+  if (!std::isfinite(length) || length < 0.5) {
+    state = ContactState::kNoLight;
+    finish();
+    return;
+  }
+  // VS c16 is the direction the light travels, so the sun's height above the horizon is -c16.y: noon
+  // is +0.867 (60 degrees), 19 h 2.5 degrees, the night's light points up (negative here).
+  const double sin_elevation = std::clamp(-double(dir[1]) / length, -1.0, 1.0);
+  const double elevation = std::asin(sin_elevation) * 180.0 / 3.14159265358979323846;
+  float wet = 0.0f;
+  PickWet(&wet);  // none readable: dry
+  contact_elevation_ = elevation;
+  contact_wet_ = wet;
+  contact_gate_sun_ = Smoothstep(kGateOffDegrees, kGateFullDegrees, elevation);
+  contact_gate_wet_ = 1.0f - std::clamp((wet - kWetDry) / kWetSpan, 0.0f, 1.0f);
+  const float setting = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_strength), 0.0, 2.0));
+  contact_strength_ = setting * contact_gate_sun_ * contact_gate_wet_;
+  if (!(contact_strength_ > 0.002f) || !(Luma(sun) > 1e-4f)) {
+    state = ContactState::kGated;
+    finish();
+    return;
+  }
+  state = ContactState::kActive;
+  ContactPlan& c = plan->contact;
+  c.mode = contact_mode_;
+  c.strength = contact_strength_;
+  // The ray grows with a low sun (its shadows are long): 0.7 / tan(elevation), 1 to 3 times.
+  const double tan_elevation = std::tan(elevation * 3.14159265358979323846 / 180.0);
+  const double grow = tan_elevation > 1e-3
+                          ? std::clamp(kLengthTan / tan_elevation, 1.0, kLengthMaxScale)
+                          : kLengthMaxScale;
+  c.length = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_length), 0.1, 3.0) * grow);
+  c.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_thickness), 0.05, 3.0));
+  c.steps = contact_mode_ == Mode::kLow ? kContactStepsLow : kContactStepsHigh;
+  c.fade_start = kContactFadeStart;
+  c.fade_end = kContactFadeEnd;
+  c.mask_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_mask_gain), 0.5, 4.0));
+  finish();
+}
+
+void AmbientOcclusion::NoteMaskResolve(const ResolveRecord& record) {
+  // A colour copy (not a depth one, not a clear alone) into the mask's page, as the lit shaders fetch
+  // it: k_8_8_8_8, the picture's size, level 0.
+  const uint32_t source = record.resolve_flags & 7;
+  if (source >= 4 || (record.resolve_flags & 0x2000) != 0 || record.dest_level != 0 ||
+      !(record.flags & kEventHasDest) || (record.flags & kEventDestUnreadable)) {
+    return;
+  }
+  uint32_t dwords[6];
+  for (uint32_t i = 0; i < 6; ++i) {
+    dwords[i] = LoadBe32(record.dest_header + guest::kTextureFetchOffset + 4 * i);
+  }
+  const TextureFetch dest = ReadTextureFetch(dwords);
+  if (!dest.is_texture || dest.key.base_page != kMaskPage ||
+      dest.key.format != kTextureFormat8888 || dest.key.width < kMaskMinWidth) {
+    return;
+  }
+  mask_key_ = dest.key;
+  mask_frame_ = frame_;
+}
+
+uint32_t AmbientOcclusion::FindMaskSlot() {
+  // Only a resolve of this frame made the mask: at night, at 6 h and 18 h and in rain none comes,
+  // and the page then holds the last frame's depth copy (the same key, a depth source), which is
+  // not a mask. The game's sun shadow is then not there to leave out: the visibility is 1.
+  if (!resolve_ || mask_frame_ != frame_) {
+    return kNoSlot;
+  }
+  ResolveCache::Product* product = resolve_->Find(mask_key_, mask_key_.base_page);
+  if (!product || !product->texture || product->depth_source ||
+      product->layout != plume::RenderTextureLayout::SHADER_READ) {
+    if (!mask_why_logged_) {
+      mask_why_logged_ = true;
+      REXLOG_INFO("[gpu] contact shadows: a resolve into the mask's page came this frame but the "
+                  "product is {}: no mask, the sun's visibility is 1 (reported once)",
+                  !product ? "not found"
+                           : (!product->texture ? "without a texture"
+                              : (product->depth_source ? "a depth copy"
+                                                       : "not in the shader-read layout")));
+    }
+    return kNoSlot;
+  }
+  const uint32_t slot =
+      product->views.Slot(*device_, *heap_, *product->texture, product->format,
+                          mask_key_.levels(), format::kHostSwizzleRGBA, "ao contact mask view");
+  return slot == kInvalidBindlessSlot ? kNoSlot : slot;
+}
+
+uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const Plan& plan,
+                                         const Push& base) {
+  plume::RenderPipeline* march = Pipeline(kVContact);
+  plume::RenderPipeline* denoise = Pipeline(kVDenoise);
+  if (!march || !denoise) {
+    return kNoSlot;
+  }
+  const ContactPlan& c = plan.contact;
+  // The march: the linear depth in, the contact visibility out (raw_). Its constants are in the
+  // header of hlsl/ao_contact_ps.hlsl.
+  pass_timing_->Mark(list, "ao contact");
+  Push push = base;
+  push.slots[2] = depth_[0].slot;
+  push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
+  push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
+  push.lens[2] = c.length;
+  push.lens[3] = c.thickness;
+  push.shape[1] = float(c.steps);
+  push.extra[1] = c.fade_end;
+  DrawPass(list, raw_, march, push);
+  // The occlusion's bilateral pass twice (the way the occlusion has no history of its own): the
+  // noise of the ray's start goes, the edges of the depth stay.
+  pass_timing_->Mark(list, "ao contact denoise");
+  push.slots[2] = raw_.slot;
+  push.slots[3] = depth_[0].slot;
+  DrawPass(list, denoised_, denoise, push);
+  push.slots[2] = denoised_.slot;
+  DrawPass(list, raw_, denoise, push);
+  return raw_.slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -1818,8 +2221,10 @@ void AmbientOcclusion::OnPresent() {
   if (census_every_ != 0 && frame_had_main_view_) {
     Census();
   }
-  if (mode_ == Mode::kOff) {
-    // Off for a second: the images go back (they are made again by the first trigger after).
+  // Nothing to compute for a second (the occlusion off, the contact shadows off or gated to nothing):
+  // the images go back (they are made again by the first trigger after).
+  const bool contact_working = contact_mode_ != Mode::kOff && contact_state_ == ContactState::kActive;
+  if (mode_ == Mode::kOff && !contact_working) {
     if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames &&
         census_every_ == 0) {
       ReleaseImages();
@@ -1836,6 +2241,8 @@ void AmbientOcclusion::OnPresent() {
   frame_had_main_view_ = false;
   qualifying_resolves_ = 0;
   later_tiles_ = 0;
+  wet_bins_.fill(0);
+  wet_draws_ = 0;
   draws_before_ = 0;
   color_draws_before_ = 0;
   draws_after_ = 0;
@@ -2056,6 +2463,23 @@ void AmbientOcclusion::Census() {
               "statistic follows when the GPU has run its copy",
               kPrefix, ModeName(mode_), ran_this_frame_ ? "recorded" : "not recorded", runs_,
               skipped_no_lens_, pause_runs_, pause_skipped_no_lens_, pause_skipped_lens_);
+  if (contact_mode_ != Mode::kOff) {
+    float wet = 0.0f;
+    const bool have_wet = PickWet(&wet);
+    const char* state = contact_state_ == ContactState::kActive    ? "active"
+                        : contact_state_ == ContactState::kGated   ? "gated to nothing"
+                        : contact_state_ == ContactState::kNoLight ? "no light constants"
+                                                                   : "off";
+    REXLOG_INFO("{}   contact shadows: {} (mcla_gpu_contact_shadows), {}; sun at {:.1f} degrees (gate "
+                "{:.2f}), wetness VS c43.x {} (gate {:.2f}), strength {:.2f}; the game's shadow "
+                "mask: a resolve into its page {} this frame; frames with contact shadows so far: "
+                "{} with the mask, {} without it, {} in all",
+                kPrefix, ModeName(contact_mode_), state, contact_elevation_, contact_gate_sun_,
+                have_wet ? std::format("{:.1f} ({} draws)", wet, wet_draws_) : std::string("not read"),
+                contact_gate_wet_, contact_strength_,
+                mask_frame_ == frame_ ? "came" : "did not come", contact_mask_frames_,
+                contact_no_mask_frames_, contact_runs_);
+  }
 }
 
 }  // namespace mcla::gpu

@@ -1478,6 +1478,10 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         Fail(Failure::kProduct, std::format("{}: {}", key.Describe(), why));
         break;
       }
+      // A product of a side view is read at its own scale (Product::own_scale). Told again by each
+      // resolve into it, which is one source's: a product that two identities write, at two scales,
+      // would be made again at each of them (Activate), so a class has to take all of its sources.
+      p->own_scale = src->side_view != SideView::kNone;
       plume::RenderFramebuffer* framebuffer = LevelFramebuffer(*p, level);
       plume::RenderPipeline* pipeline = Pipeline(depth_source, host_multisampled, host.format);
       if (!framebuffer || !pipeline) {

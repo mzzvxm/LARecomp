@@ -293,7 +293,7 @@ bool DllMatches(const Stamp& stamp, const std::string& prefix, const std::filesy
 }  // namespace
 
 StampCheck CheckStamp(const std::filesystem::path& out_dir, uint32_t formats_needed,
-                      const GameFilesQuick& files, const HdrStep* hdr_step) {
+                      const GameFilesQuick& files, const VariantStep* variant_step) {
   StampCheck check;
   std::string error;
   if (!Stamp::Read(out_dir / kStampFileName, &check.stamp, &error)) {
@@ -379,41 +379,43 @@ StampCheck CheckStamp(const std::filesystem::path& out_dir, uint32_t formats_nee
   check.main_ok = inputs_match && check.formats_ok && !check.content_check_needed;
   if (inputs_match && !check.formats_ok) check.why = "the pack lacks a format this start needs";
 
-  // The HDR pack (judged whenever the main pack is the right one for these inputs, so that a build
-  // can tell "only the HDR pack is stale" from "everything is").
+  // The variant pack (judged whenever the main pack is the right one for these inputs, so that a build
+  // can tell "only the variant pack is stale" from "everything is").
   if (!inputs_match) {
-    check.hdr_ok = false;
-  } else if (!hdr_step) {
-    check.hdr_ok = true;
+    check.variants_ok = false;
+  } else if (!variant_step) {
+    check.variants_ok = true;
   } else {
-    bool hdr_ok = true;
-    const auto hdr_stale = [&](std::string why) {
-      if (hdr_ok) check.why = std::move(why);
-      hdr_ok = false;
+    bool variants_ok = true;
+    const auto variants_stale = [&](std::string why) {
+      if (variants_ok) check.why = std::move(why);
+      variants_ok = false;
     };
-    for (const StampLine& line : hdr_step->ExpectedStampLines()) {
+    for (const StampLine& line : variant_step->ExpectedStampLines()) {
       const std::string* value = stamp.Get(line.key);
       if (!value || *value != line.value) {
-        hdr_stale(std::format("{} is {} in the stamp, expected {}", line.key,
-                              value ? *value : std::string("missing"), line.value));
+        variants_stale(std::format("{} is {} in the stamp, expected {}", line.key,
+                                   value ? *value : std::string("missing"), line.value));
       }
     }
-    uint64_t hdr_formats = 0;
-    if (!stamp.GetU64(kStampHdrFormats, &hdr_formats) || (uint32_t(hdr_formats) & formats_needed) != formats_needed) {
-      hdr_stale("the HDR pack lacks a format this start needs");
+    uint64_t variants_formats = 0;
+    if (!stamp.GetU64(kStampVariantsFormats, &variants_formats) ||
+        (uint32_t(variants_formats) & formats_needed) != formats_needed) {
+      variants_stale("the variant pack lacks a format this start needs");
     }
     uint64_t main_xxh3 = 0;
     uint64_t pack_xxh3 = 0;
-    if (!stamp.GetHex(kStampHdrMainPackXxh3, &main_xxh3) || !stamp.GetHex("pack_xxh3", &pack_xxh3) ||
+    if (!stamp.GetHex(kStampVariantsMainPackXxh3, &main_xxh3) || !stamp.GetHex("pack_xxh3", &pack_xxh3) ||
         main_xxh3 != pack_xxh3) {
-      hdr_stale("the HDR pack was built beside another main pack");
+      variants_stale("the variant pack was built beside another main pack");
     }
-    const FileStat hdr_pack = StatFile(out_dir / kHdrPackFileName);
-    uint64_t hdr_size = 0;
-    if (!hdr_pack.exists || !stamp.GetU64(kStampHdrPackSize, &hdr_size) || hdr_size != hdr_pack.size) {
-      hdr_stale("the HDR pack is missing or is not the one in the stamp");
+    const FileStat variant_pack = StatFile(out_dir / kVariantPackFileName);
+    uint64_t variants_size = 0;
+    if (!variant_pack.exists || !stamp.GetU64(kStampVariantsPackSize, &variants_size) ||
+        variants_size != variant_pack.size) {
+      variants_stale("the variant pack is missing or is not the one in the stamp");
     }
-    check.hdr_ok = hdr_ok;
+    check.variants_ok = variants_ok;
   }
   return check;
 }

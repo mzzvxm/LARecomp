@@ -179,6 +179,10 @@ bool EdramTargets::IsSceneKey(const EdramKey& key) {
 }
 
 Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
+  // A side view is made at the scale of its class, whatever the render scale is (side_views.h).
+  if (const SideView view = side_views::Classify(key, size_bits); view != SideView::kNone) {
+    return side_scales_[view];
+  }
   if (IsSceneKey(key) && SceneApart() && IsScreenImage(size_bits)) {
     return scene_scale_;
   }
@@ -254,7 +258,17 @@ void EdramTargets::DecideScene() {
 
 uint32_t EdramTargets::HostSamplesFor(const EdramKey& key, uint32_t size_bits) {
   DecideScene();  // an upscaler that runs from the start gives the level up before any target takes it
+  if (const SideView view = side_views::Classify(key, size_bits); view != SideView::kNone) {
+    return side_views::HostSamples(view, side_scales_[view], key.samples);
+  }
   return HostSamplesAt(key, FollowsMsaaLevel(key, size_bits), msaa_level_);
+}
+
+uint32_t EdramTargets::SamplesAfter(const Target& target, Scale scale, uint32_t level) const {
+  if (target.side_view != SideView::kNone) {
+    return side_views::HostSamples(target.side_view, scale, target.key.samples);
+  }
+  return HostSamplesAt(target.key, target.msaa_follows, level);
 }
 
 void EdramTargets::NoteMainViews(const Target& target) {
@@ -428,6 +442,18 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
       REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples get {} sample{} on "
                   "the host (mcla_gpu_msaa); the game draws its own 2 sample layout",
                   msaa_level_, msaa_level_ == 1 ? "" : "s");
+    }
+  }
+  // The side views (side_views.h): the scale each class starts at, from the settings as they stand
+  // (`auto` by the GPU class, gpu_class.h; a change while the game runs is UpdateSideViews').
+  side_scales_ = side_views::Wanted();
+  side_dirty_ = false;
+  side_stage_ = SideStage{};
+  for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+    if (!side_scales_[view].unit()) {
+      REXLOG_INFO("[gpu] edram: the {} side view is made at {}x the game's size (setting '{}'); "
+                  "the game's own size is 1x",
+                  side_views::Name(view), side_scales_[view], side_views::SettingText(view));
     }
   }
   // The detector and its checks are chosen at start.
@@ -680,15 +706,19 @@ bool EdramTargets::ClassifiesAsScreenImage(uint32_t size_bits) {
   return false;
 }
 
-Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) {
-  // The rule ScaleForUse and ScaleForDeclared apply to a new target, for the scales given: the scene's
-  // identities at the scene's, an image of the screen at the output's (1x is the guest's size, as
-  // ScaleForDeclared says), anything else at the guest's size.
+Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene,
+                               const SideScales& side) {
+  // The rule ScaleForUse and ScaleForDeclared apply to a new target, for the scales given: a side
+  // view's at its class's, the scene's identities at the scene's, an image of the screen at the
+  // output's (1x is the guest's size, as ScaleForDeclared says), anything else at the guest's size.
   // CHECK: that the classification by the first use's declared size (creation_size_bits) is the one
   // every target was made at: after 1x -> 2x -> 1x -> 2x there must be no "was made at ... and is now
   // bound through a surface declared ..., which classifies at ..." line, and no target left at a scale
   // other than its kind's (the "[gpu] edram: ... made at" census lines of a fresh start at 2x and the
   // targets after a live change to 2x list the same scales).
+  if (target.side_view != SideView::kNone) {
+    return side[target.side_view];
+  }
   if (IsSceneKey(target.key)) {
     return scene;
   }
@@ -697,7 +727,7 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene) 
 
 bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
   DecideScene();  // may give the host MSAA level up for an upscaler that runs from the start
-  return Retarget(output, scene, msaa_level_, list);
+  return Retarget(output, scene, msaa_level_, side_scales_, list);
 }
 
 bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) {
@@ -713,10 +743,10 @@ bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) 
   // occlusion count is scaled by guest over host samples), alpha-to-mask (solid offsets at 1, dithered
   // above) and the pause view, in the frame of the switch and after it.
   DecideScene();  // the scene's scale is the start's decision: kept as it is
-  return Retarget(resolution_scale_, scene_scale_, level, list);
+  return Retarget(resolution_scale_, scene_scale_, level, side_scales_, list);
 }
 
-bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
+bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level, const SideScales& side,
                             plume::RenderCommandList* list) {
   // CHECK: the frame that remakes every image of the screen under the D3D12 debug layer and Vulkan
   // validation (new textures cleared before use, the retired ones behind the frames in flight, no
@@ -727,7 +757,8 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   // are cleared here); photo mode reads what an earlier frame left (memory project_native_gfx_photo_
   // capture): a render scale change just before it shows a cleared target until a frame is drawn.
   DecideScene();  // the start's decision first: a change before the first use must not be undone by it
-  if (output == resolution_scale_ && scene == scene_scale_ && level == msaa_level_) {
+  if (output == resolution_scale_ && scene == scene_scale_ && level == msaa_level_ &&
+      side == side_scales_ && !side_dirty_) {
     return true;
   }
   if (!device_ || !frames_ || !list || output.none() || scene.none() || level < 1) {
@@ -744,8 +775,8 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   std::vector<Remade> remade;
   uint32_t samples_changed = 0;  // of them, those whose sample count changes
   for (const auto& [key, target] : targets_) {
-    const Scale wanted = ScaleAfter(*target, output, scene);
-    const uint32_t wanted_samples = HostSamplesAt(key, target->msaa_follows, level);
+    const Scale wanted = ScaleAfter(*target, output, scene, side);
+    const uint32_t wanted_samples = SamplesAfter(*target, wanted, level);
     if (!target->texture ||
         (target->scale == wanted && target->host_samples == wanted_samples)) {
       continue;
@@ -764,11 +795,18 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
       // Asked again every few seconds by the caller: the first few are logged.
       if (scale_move_failures_logged_ < 4) {
         ++scale_move_failures_logged_;
+        std::string sides;
+        for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+          if (side[view] != side_scales_[view]) {
+            sides += std::format("{}{} {}x to {}x", sides.empty() ? "; side views: " : ", ",
+                                 side_views::Name(view), side_scales_[view], side[view]);
+          }
+        }
         REXLOG_ERROR("[gpu] edram: the images of the screen could not be moved from {}x to {}x (the "
-                     "3D scene from {}x to {}x, host MSAA from {}x to {}x): {} could not be made "
+                     "3D scene from {}x to {}x, host MSAA from {}x to {}x{}): {} could not be made "
                      "at the new size and samples, most likely for want of video memory; {} "
                      "target(s) made before it were freed again and everything stays as it was",
-                     resolution_scale_, output, scene_scale_, scene, msaa_level_, level,
+                     resolution_scale_, output, scene_scale_, scene, msaa_level_, level, sides,
                      DescribeEdramKey(key), remade.size());
       }
       return false;
@@ -780,6 +818,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   const Scale output_before = resolution_scale_;
   const Scale scene_before = scene_scale_;
   const uint32_t level_before = msaa_level_;
+  const SideScales side_before = side_scales_;
   uint64_t old_bytes = 0;
   uint64_t new_bytes = 0;
   for (Remade& r : remade) {
@@ -808,8 +847,8 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   }
   for (const auto& [key, target] : targets_) {
     // Also a target released for want of memory: Get makes it at this scale and these samples.
-    target->scale = ScaleAfter(*target, output, scene);
-    target->host_samples = HostSamplesAt(key, target->msaa_follows, level);
+    target->scale = ScaleAfter(*target, output, scene, side);
+    target->host_samples = SamplesAfter(*target, target->scale, level);
     NoteMainViews(*target);
   }
   if (old_bytes != 0) {
@@ -818,17 +857,46 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
   resolution_scale_ = output;
   scene_scale_ = scene;
   msaa_level_ = level;
+  side_scales_ = side;
+  side_dirty_ = false;
   scene_decided_ = true;
   // What was memoized from the targets (a draw's scale and framebuffers, the depth's layer, which
   // follows whether the scene is apart from the images of the screen) is stale.
   ++change_serial_;
+  if (side != side_before) {
+    // A side view class moved (SetSideScales), with or without the rest: one line a class. The
+    // memory is that of everything remade in this step.
+    for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+      if (side[view] == side_before[view]) {
+        continue;
+      }
+      uint32_t members = 0;
+      uint32_t samples_after = 0, guest_samples = 1;
+      for (const auto& [key, target] : targets_) {
+        if (target->side_view == view) {
+          ++members;
+          samples_after = target->host_samples;
+          guest_samples = key.samples;
+        }
+      }
+      REXLOG_INFO("[gpu] edram: the {} side view (setting '{}') is now made at {}x the game's size "
+                  "(was {}x), {} host sample{} (was {}): {} target(s) in the class, {} remade in "
+                  "this step, {:.1f} MiB (was {:.1f} MiB); its products are read at their own scale",
+                  side_views::Name(view), side_views::SettingText(view), side[view],
+                  side_before[view], samples_after, samples_after == 1 ? "" : "s",
+                  side_views::HostSamples(view, side_before[view], guest_samples), members,
+                  remade.size(), double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+    }
+  }
   if (output == output_before && scene == scene_before) {
-    // Only the host MSAA level moved (SetMsaaLevel).
-    REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples now get {} sample{} on "
-                "the host (were {}): {} target(s) remade ({} with other samples), {:.1f} MiB (was "
-                "{:.1f} MiB)",
-                level, level == 1 ? "" : "s", level_before, remade.size(), samples_changed,
-                double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+    if (level != level_before) {
+      // Only the host MSAA level moved (SetMsaaLevel).
+      REXLOG_INFO("[gpu] edram: the images of the screen the game multisamples now get {} sample{} "
+                  "on the host (were {}): {} target(s) remade ({} with other samples), {:.1f} MiB "
+                  "(was {:.1f} MiB)",
+                  level, level == 1 ? "" : "s", level_before, remade.size(), samples_changed,
+                  double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
+    }
     return true;
   }
   if (output == output_before) {
@@ -848,6 +916,90 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level,
                 double(new_bytes) / 1048576.0, double(old_bytes) / 1048576.0);
   }
   return true;
+}
+
+bool EdramTargets::FallBackSideView(Target& target) {
+  const SideView view = target.side_view;
+  if (view == SideView::kNone || target.scale.n <= Scale::kDenominator) {
+    return false;  // not a side view, or already at the game's size (or below it): nothing smaller
+  }
+  const Scale lower = side_views::StepDown(target.scale);
+  REXLOG_ERROR("[gpu] edram: {} could not be made at {}x the game's size ({} host sample{}), most "
+               "likely for want of video memory: the {} side view falls back to {}x; its members "
+               "that exist follow at the next frame boundary, and the setting ('{}') is asked "
+               "again after a while",
+               DescribeEdramKey(target.key), target.scale, target.host_samples,
+               target.host_samples == 1 ? "" : "s", side_views::Name(view), lower,
+               side_views::SettingText(view));
+  side_scales_[view] = lower;
+  side_dirty_ = true;
+  ++change_serial_;  // what was memoized from the targets' scales is stale
+  target.scale = lower;
+  target.host_samples = side_views::HostSamples(view, lower, target.key.samples);
+  return true;
+}
+
+void EdramTargets::UpdateSideViews(plume::RenderCommandList* list) {
+  // CHECK: a live change game -> ultra -> game of mcla_gpu_reflection_resolution under the D3D12 debug
+  // layer and Vulkan validation (new textures cleared before use, the retired ones behind the frames in
+  // flight; the product made again at the new scale by the next resolve; the pipelines for the new
+  // sample count -- the reflection's draws go from 2 host samples to 1 -- are made by the background
+  // builders the first time, so the reflection image can be empty for a few frames after the first
+  // change of a session: "pending" draws in the pipeline statistics), and the hitch of the switch
+  // frame ("switched in N ms").
+  if (!device_ || !list) {
+    return;
+  }
+  const SideClock::time_point now = SideClock::now();
+  if (side_dirty_) {
+    // A member fell back when it was made (Get) and the others stand at the old scale: they are
+    // made again at the one in force, now, and the setting is asked again after that.
+    if (now >= side_stage_.retry_after &&
+        !Retarget(resolution_scale_, scene_scale_, msaa_level_, side_scales_, list)) {
+      side_stage_.retry_after = now + kSideRetry;
+    }
+    return;
+  }
+  const SideScales wanted = side_views::Wanted();
+  if (wanted == side_scales_) {
+    side_stage_ = SideStage{};
+    return;
+  }
+  if (!side_stage_.staged || wanted != side_stage_.wanted) {
+    // A new value (a row stepped through high on its way to ultra asks for nothing in between).
+    side_stage_ = SideStage{};
+    side_stage_.staged = true;
+    side_stage_.wanted = wanted;
+    side_stage_.since = now;
+  }
+  if (now - side_stage_.since < kSideSettle || now < side_stage_.retry_after) {
+    return;
+  }
+  const SideScales before = side_scales_;
+  if (!Retarget(resolution_scale_, scene_scale_, msaa_level_, wanted, list)) {
+    // Video memory most likely: the previous scales go on and the change is asked again after 3 s,
+    // 6 s ... up to 30 s. Another value (a smaller one) is asked at once.
+    side_stage_.retry_delay =
+        side_stage_.failure_logged ? std::min(side_stage_.retry_delay * 2, kSideRetryMax)
+                                   : kSideRetry;
+    side_stage_.retry_after = now + side_stage_.retry_delay;
+    if (!side_stage_.failure_logged) {
+      side_stage_.failure_logged = true;
+      std::string what;
+      for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+        if (wanted[view] != before[view]) {
+          what += std::format("{}{} {}x", what.empty() ? "" : ", ", side_views::Name(view),
+                              wanted[view]);
+        }
+      }
+      REXLOG_WARN("[gpu] edram: the change of the side views ({}) was not made: the targets could "
+                  "not be made (video memory is most likely short): the game stays as it is, and "
+                  "the change is asked again after {} seconds, then less often",
+                  what, side_stage_.retry_delay.count());
+    }
+    return;
+  }
+  side_stage_ = SideStage{};
 }
 
 void EdramTargets::Clear(Target& target, plume::RenderCommandList* list) {
@@ -888,15 +1040,28 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     auto target = std::make_unique<Target>();
     target->key = key;
     target->creation_size_bits = size_bits;
-    // An image of the screen at the internal scale, the scene at its own (when the scene is drawn
-    // smaller: the scale of a use is ScaleOf's, which gave no other); anything else at the
-    // guest's size.
-    target->scale = (scale == resolution_scale_ || (scene_decided_ && scale == scene_scale_))
-                        ? scale
-                        : Scale{};
-    target->msaa_follows = FollowsMsaaLevel(key, size_bits);
-    target->host_samples = HostSamplesAt(key, target->msaa_follows, msaa_level_);
-    if (!Create(*target, wanted)) {
+    // A side view at the scale and the samples of its class (side_views.h); else an image of the
+    // screen at the internal scale, the scene at its own (when the scene is drawn smaller: the
+    // scale of a use is ScaleOf's, which gave no other); anything else at the guest's size.
+    target->side_view = side_views::Classify(key, size_bits);
+    if (target->side_view != SideView::kNone) {
+      target->scale = side_scales_[target->side_view];
+      target->msaa_follows = false;
+      target->host_samples = side_views::HostSamples(target->side_view, target->scale, key.samples);
+    } else {
+      target->scale = (scale == resolution_scale_ || (scene_decided_ && scale == scene_scale_))
+                          ? scale
+                          : Scale{};
+      target->msaa_follows = FollowsMsaaLevel(key, size_bits);
+      target->host_samples = HostSamplesAt(key, target->msaa_follows, msaa_level_);
+    }
+    bool made = Create(*target, wanted);
+    // A side view too big for the card falls back one whole scale at a time (the class: the others
+    // follow at the next frame boundary) rather than going without it.
+    while (!made && FallBackSideView(*target)) {
+      made = Create(*target, wanted);
+    }
+    if (!made) {
       failed_.push_back(key);
       REXLOG_ERROR("[gpu] edram: no host target for {} format {} at tile {} pitch {} {}x "
                    "(reported once)",
@@ -905,26 +1070,33 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
       return nullptr;
     }
     ++stats_.created;
-    if (!target->scale.unit()) {
+    if (target->side_view != SideView::kNone) {
+      ++stats_.made_side;
+    } else if (!target->scale.unit()) {
       ++stats_.made_scaled;
     } else {
       ++stats_.made_unscaled;
     }
-    if (target->host_samples != key.samples) {
+    if (target->host_samples != key.samples && target->side_view == SideView::kNone) {
       ++stats_.made_host_msaa;
       REXLOG_INFO("[gpu] edram: {} made with {} samples on the host (an image of the screen, "
                   "first use {} rows)",
                   DescribeEdramKey(key), target->host_samples, height);
     }
     NoteMainViews(*target);
-    if (!resolution_scale_.unit() || (scene_decided_ && !scene_scale_.unit())) {
+    if (!resolution_scale_.unit() || (scene_decided_ && !scene_scale_.unit()) ||
+        target->side_view != SideView::kNone) {
       // The census of the rule: what each identity became, once.
       REXLOG_INFO("[gpu] edram: {} made at {}x ({}; declared {}x{}, first use {} rows)",
                   DescribeEdramKey(key), target->scale,
-                  scene_decided_ && scene_scale_ != resolution_scale_ && IsSceneKey(key)
-                      ? "the 3D scene"
-                  : !target->scale.unit() ? "an image of the screen"
-                                          : "the guest's size",
+                  target->side_view != SideView::kNone
+                      ? std::format("the {} side view, {} host sample{}",
+                                    side_views::Name(target->side_view), target->host_samples,
+                                    target->host_samples == 1 ? "" : "s")
+                  : scene_decided_ && scene_scale_ != resolution_scale_ && IsSceneKey(key)
+                      ? std::string("the 3D scene")
+                  : !target->scale.unit() ? std::string("an image of the screen")
+                                          : std::string("the guest's size"),
                   size_bits ? (size_bits >> 18) + 1 : 0u,
                   size_bits ? ((size_bits >> 3) & 0x7FFFu) + 1 : 0u, height);
     }
@@ -1560,6 +1732,8 @@ void EdramTargets::HarvestCoverage(uint32_t slot) {
 
 void EdramTargets::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   ++frame_;
+  // The side views' settings at the frame boundary: `list` is the frame's first, nothing recorded.
+  UpdateSideViews(list);
   if (!coverage_ || slot >= coverage_checks_.size()) {
     return;  // no pool to read or reset
   }
@@ -1721,7 +1895,7 @@ std::string EdramTargets::TakeSummary() {
   if (!resolution_scale_.unit()) {
     size_t scaled = 0;
     for (const auto& [key, target] : targets_) {
-      scaled += !target->scale.unit();
+      scaled += !target->scale.unit() && target->side_view == SideView::kNone;
     }
     text += std::format(" | scale {}x: {} of {} targets images of the screen (made now {} scaled, {} "
                         "at the guest's size), {} classifications without a declared size, {} uses "
@@ -1745,12 +1919,39 @@ std::string EdramTargets::TakeSummary() {
     // world view, which the game draws with 4.
     size_t other = 0;
     for (const auto& [key, target] : targets_) {
-      other += target->host_samples != key.samples;
+      other += target->host_samples != key.samples && target->side_view == SideView::kNone;
     }
     if (msaa_level_ != 2 || other != 0) {
       text += std::format(" | host MSAA {}x: {} of {} targets have other samples than the guest's "
                           "(made with them {})",
                           msaa_level_, other, targets_.size(), stats_.made_host_msaa);
+    }
+  }
+  {
+    // The side views: each class's scale and what its targets hold now.
+    std::string sides;
+    for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+      uint32_t members = 0;
+      uint32_t samples = 0;
+      uint64_t member_bytes = 0;
+      for (const auto& [key, target] : targets_) {
+        if (target->side_view == view && target->texture) {
+          ++members;
+          samples = target->host_samples;
+          member_bytes += uint64_t(target->scale.Edge(target->width)) *
+                          target->scale.Edge(target->height) * BytesPerPixel(target->format) *
+                          target->host_samples;
+        }
+      }
+      if (members != 0) {
+        sides += std::format("{}{} {}x ({} target(s), {} host sample{}, {:.1f} MiB)",
+                             sides.empty() ? "" : ", ", side_views::Name(view), side_scales_[view],
+                             members, samples, samples == 1 ? "" : "s",
+                             double(member_bytes) / 1048576.0);
+      }
+    }
+    if (!sides.empty()) {
+      text += std::format(" | side views (targets made now {}): {}", stats_.made_side, sides);
     }
   }
   if (aliasing_) {

@@ -18,9 +18,9 @@
 #                                one inside LAR-XenosRecomp's own thirdparty/dxc-bin)
 #   LARECOMP_XXHASH_INCLUDE_DIR  the folder with xxhash.h (default: the SDK's, else the one inside
 #                                LAR-XenosRecomp's thirdparty/xxHash)
-#   LARECOMP_HDR_HLSLI           the HDR scene's curve, hdr_tonemap_shoulder.hlsli, which the HDR variant
-#                                step embeds (default src/gpu/hlsl/hdr_tonemap_shoulder.hlsli; without
-#                                the file there is no HDR step and no HDR pack)
+#   LARECOMP_HDR_HLSLI           the HDR scene's curve, hdr_tonemap_shoulder.hlsli, which the HDR scene
+#                                variant embeds (default src/gpu/hlsl/hdr_tonemap_shoulder.hlsli; without
+#                                the file there is no HDR variant, and the variant pack holds the others)
 
 get_filename_component(LARECOMP_SHADERPACK_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 
@@ -98,8 +98,10 @@ add_library(larecomp_shaderpack STATIC
     pack_writer.cpp
     stamp.cpp
     builder.cpp
-    # the HDR variant of the game's tone map (builder.h HdrStep)
-    hdr_variant.cpp
+    # the pixel shader variant pack (builder.h VariantStep): the framework, then one file per variant
+    variant_pack.cpp
+    variants/hdr_scene.cpp
+    variants/bloom_gauss.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -114,12 +116,13 @@ target_include_directories(larecomp_shaderpack PRIVATE
 # not LAR-XenosRecomp's include path).
 target_link_libraries(larecomp_shaderpack PRIVATE XenosRecompLib)
 
-# ---- the HDR variant's curve -----------------------------------------------------------------
-# hdr_variant.cpp pastes the HDR scene's curve into the game's tone map shader. The curve is a file of
+# ---- the HDR scene variant's curve -------------------------------------------------------------
+# variants/hdr_scene.cpp pastes the HDR scene's curve into the game's tone map shader. The curve is a file of
 # the HDR feature (src/gpu/hlsl/hdr_tonemap_shoulder.hlsli), not of this code: when it exists in the
 # source tree (or where LARECOMP_HDR_HLSLI points) its bytes are turned into an array that is compiled
 # into the library, so the HDR pack always matches the curve of the build that wrote it and the stamp
-# can carry its hash. When it does not exist, CreateHdrStep() returns null: no HDR pack, no failure.
+# can carry its hash. When it does not exist, BuiltInVariants() leaves the HDR scene variant out: no
+# failure, the variant pack holds the other variants.
 # The file is read when CMake configures (and CMake configures again when it changes). A build
 # directory that was configured before the file existed has to be configured again.
 set(_larecomp_hdr_hlsli "${LARECOMP_HDR_HLSLI}")
@@ -137,10 +140,10 @@ if(EXISTS "${_larecomp_hdr_hlsli}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_larecomp_hdr_hlsli}")
     target_include_directories(larecomp_shaderpack PRIVATE "${_larecomp_hdr_generated}")
     target_compile_definitions(larecomp_shaderpack PRIVATE LARECOMP_HDR_HLSLI_EMBEDDED=1)
-    message(STATUS "larecomp_shaderpack: the HDR variant step embeds ${_larecomp_hdr_hlsli}")
+    message(STATUS "larecomp_shaderpack: the HDR scene variant embeds ${_larecomp_hdr_hlsli}")
 else()
-    message(STATUS "larecomp_shaderpack: ${_larecomp_hdr_hlsli} does not exist: no HDR variant step, "
-                   "the HDR pack is not built")
+    message(STATUS "larecomp_shaderpack: ${_larecomp_hdr_hlsli} does not exist: no HDR scene variant, "
+                   "the variant pack is built without it")
 endif()
 if(WIN32)
     target_compile_definitions(larecomp_shaderpack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)

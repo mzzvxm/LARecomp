@@ -63,6 +63,11 @@ add_library(larecomp_gpu OBJECT
     samplers.cpp
     scene.cpp
     shaders.cpp
+    shafts.cpp
+    side_view_env.cpp
+    side_view_reflection.cpp
+    side_view_shadow.cpp
+    side_views.cpp
     stream.cpp
     swap_chain.cpp
     temporal.cpp
@@ -352,6 +357,14 @@ larecomp_gpu_host_shader(ao_temporal_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_temporal_ms_ps ps_6_0 SOURCE ao_temporal_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_apply_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_apply_ms_ps ps_6_0 SOURCE ao_apply_ps DEFINES AO_DEPTH_MS=1)
+# The contact shadows' ray march over the occlusion's linear depth (ao.h).
+larecomp_gpu_host_shader(ao_contact_ps ps_6_0)
+# The sun shafts' passes (shafts.h): the sky's brightness from the main view's depth and colour planes
+# (plain or multisampled), the radial blur toward the sun, the light added to the scene colour.
+larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
+larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
+larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
+larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

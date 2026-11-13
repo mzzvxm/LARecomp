@@ -99,7 +99,7 @@ std::string StampText(Parts& parts, const Pipelines::SetupList& list,
   line(std::format("driver={:#x}", d.driverVersion));
   line("exe=" + FileIdentity(rex::filesystem::GetExecutablePath()));
   line("pack=" + FileIdentity(parts.shaders.path()));
-  line("hdr_pack=" + (parts.shaders.has_hdr_variants() ? FileIdentity(parts.shaders.hdr_path())
+  line("variant_pack=" + (parts.shaders.has_variants() ? FileIdentity(parts.shaders.variants_path())
                                                        : std::string("none")));
   line(std::format("key_size={}", sizeof(PipelineKey)));
   line("samples=" + JoinCounts(samples));
@@ -283,12 +283,12 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
                 "There is no shader pack to make the pipelines from. Build the shader packs first "
                 "(larecomp.exe --build_shader_packs).");
   }
-  // The HDR variants too when the pack has them: the records that name them are kept and made,
-  // and the file written below does not lose them (the game only reads them while HDR is on).
+  // The shader variants too when the pack has them (the HDR scene's tone map, the bloom's Gaussians):
+  // the records that name them are kept and made, and the file written below does not lose them.
   {
     std::string why;
-    if (!parts.shaders.LoadHdrVariants(&why)) {
-      log(0, "no HDR variant pack is used: " + why);
+    if (!parts.shaders.LoadVariants(&why)) {
+      log(0, "no shader variant pack is used: " + why);
     }
   }
   parts.pipelines.Initialize(parts.device, parts.layout, parts.shaders);

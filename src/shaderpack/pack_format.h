@@ -18,13 +18,17 @@
 //   then the vertex element words (u32: address:12 | usage:4 | usage_index:4), then the blobs.
 // Offsets are u32, so a pack stays under 4 GiB (kMaxPackBytes).
 //
-// HDR variant pack, mcla_shaders_hdr.v1.pack (the optional second pack of the HDR stage 3 work,
-// branch feat/hdr-scene; main does not read it yet -- the constants live here so the writer and
-// that reader agree from the start):
+// Variant pack, mcla_shaders_variants.v2.pack (the optional second pack: the pixel shaders the
+// renderer can draw with another version of the game's own text -- the HDR scene's tone map, the
+// bloom's Gaussians at a render scale; src/shaderpack/variant_pack.h; read by src/gpu/shaders.cpp):
 //   header (32 bytes) : magic "MSHV" | version u32 | entry count u32 | formats u32 | contract u32 |
 //                       main pack version u32 | 8 reserved
-//   entries (80 bytes): pixel shader key u64 | 4 vertex shader keys u64 (0 = none) | flags u32 |
+//   entries (80 bytes): pixel shader key u64 | 4 vertex shader keys u64 (0 = none) | variant u32 |
 //                       reserved u32 | DXIL blob record | SPIR-V blob record
+//                       sorted by (variant, pixel shader key), strictly increasing
+//   blob record (16)  : offset u32 | size u32 | fnv u64 (FNV-1a 64 of the blob), as in the main pack
+// Version 1 (mcla_shaders_hdr.v1.pack) held the HDR scene's tone map only and had `flags u32` where
+// version 2 has `variant u32`; the old file is not read.
 // ===========================================================================
 
 #include <cstdint>
@@ -34,7 +38,9 @@ namespace larecomp::shaderpack {
 // --- file names (a pack folder holds these) --------------------------------
 
 inline constexpr const char* kPackFileName = "mcla_shaders.v8.pack";
-inline constexpr const char* kHdrPackFileName = "mcla_shaders_hdr.v1.pack";
+inline constexpr const char* kVariantPackFileName = "mcla_shaders_variants.v2.pack";
+// What version 1 of the variant pack was called: the builder removes it when it writes the new one.
+inline constexpr const char* kLegacyHdrPackFileName = "mcla_shaders_hdr.v1.pack";
 // Written last by the builder, after the packs are in place (section 3.1 of the pipeline plan).
 inline constexpr const char* kStampFileName = "mcla_shaders.stamp";
 
@@ -95,14 +101,24 @@ inline constexpr char kDxbcMagic[4] = {'D', 'X', 'B', 'C'};
 inline constexpr uint32_t kSpirvMagic = 0x07230203u;
 inline constexpr uint32_t kSpirvMinBytes = 20;
 
-// --- HDR variant pack ------------------------------------------------------------
+// --- variant pack ----------------------------------------------------------------
 
-inline constexpr char kHdrPackMagic[4] = {'M', 'S', 'H', 'V'};
-inline constexpr uint32_t kHdrPackVersion = 1;
-// The shared-constants layout the HDR variants were compiled against (hdr_tonemap.h).
-inline constexpr uint32_t kHdrContract = 1;
-inline constexpr uint32_t kHdrPackHeaderBytes = 32;
-inline constexpr uint32_t kHdrPackEntryBytes = 80;
-inline constexpr uint32_t kHdrVertexShaders = 4;
+inline constexpr char kVariantPackMagic[4] = {'M', 'S', 'H', 'V'};
+inline constexpr uint32_t kVariantPackVersion = 2;
+// The shared-constants layout the variants were compiled against: the main pack's 608 bytes (v7 and
+// v8), and for the variants that have extra constants the bytes after them (src/gpu/constants.h).
+inline constexpr uint32_t kVariantContract = 1;
+inline constexpr uint32_t kVariantPackHeaderBytes = 32;
+inline constexpr uint32_t kVariantPackEntryBytes = 80;
+inline constexpr uint32_t kVariantVertexShaders = 4;
+
+// The variant ids. They are the numbers PipelineKey::ps_variant carries: 0 and 1 are the main pack's
+// spec variants (no alpha test / the alpha test and alpha to coverage one), the others are the variant
+// pack's, one id per kind of change. A variant is compiled for spec variant 0 only (the draws that
+// use it have no alpha test). Ids are never reused for another change: a pipeline cache holds them.
+inline constexpr uint32_t kFirstPackedVariant = 2;  // 0 and 1 are the main pack's
+inline constexpr uint32_t kVariantHdrScene = 2;    // the tone map continued above white, into a float image
+inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians: taps at the render scale
+inline constexpr uint32_t kVariantSlots = 8;       // ids 0..7 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

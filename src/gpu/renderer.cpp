@@ -247,7 +247,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
   }
   if (ok) {
     // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
-    ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
+    shafts_.Initialize(passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -263,6 +264,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetOcclusion(&occlusion_);
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
+    scene_.SetSunShafts(&shafts_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -319,6 +321,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ao_.Shutdown();
+    shafts_.Shutdown();
     flicker_probe_.Shutdown();
     hdr_tone_.Shutdown();
     hdr_scene_.Shutdown();
@@ -376,28 +379,27 @@ bool Renderer::SetUpHdrScene(bool layers_ok) {
   return false;
 }
 
-void Renderer::LoadHdrVariants() {
-  if (!shaders_.attached() || shaders_.has_hdr_variants()) {
+void Renderer::LoadShaderVariants() {
+  if (!shaders_.attached() || shaders_.has_variants()) {
     return;
   }
   std::string why;
-  if (!shaders_.LoadHdrVariants(&why)) {
-    REXLOG_INFO("[gpu] hdr scene: the HDR variants of the game's shaders are not available ({}); "
-                "the HDR output keeps the scene at paper white (stage 2)",
+  if (!shaders_.LoadVariants(&why)) {
+    REXLOG_INFO("[gpu] shader variants: the variant pack beside the main shader pack is not available "
+                "({}); the HDR output keeps the scene at paper white (stage 2) and the bloom keeps the "
+                "game's taps above a render scale of 1x",
                 why);
   }
 }
 
 void Renderer::OnShaderPackAttached() {
-  // The HDR scene variants of the game's shaders (stage 3, hdr_tonemap.h), from the folder the
-  // main pack came from, when HDR output is on. Before the pipeline records are read: a record
-  // that names a variant is dropped while the variants are not loaded. They change the entries
-  // (hdr_variant), so this is the one place they are loaded, for a pack attached at startup and for
-  // one attached later; HdrToneMap::active() waits for them.
-  // With HDR output off they are loaded when it is turned on (SwitchHdr).
-  if (hdr::Wanted()) {
-    LoadHdrVariants();
-  }
+  // The shader variants (shaders.h: the HDR scene's tone map for stage 3, hdr_tonemap.h, and the bloom's
+  // Gaussians at a render scale), from the folder the main pack came from. Always, whether HDR output is
+  // on or not: the bloom's are used by every start. Before the pipeline records are read: a record that
+  // names a variant is dropped while the variants are not loaded. They change the entries (variants,
+  // hdr_variant), so this is the one place they are loaded, for a pack attached at startup and for one
+  // attached later; HdrToneMap::active() waits for them.
+  LoadShaderVariants();
   pipelines_.StartPersistence(shaders_);
 }
 
@@ -480,6 +482,7 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ao_.Shutdown();
+  shafts_.Shutdown();
   flicker_probe_.Shutdown();
   hdr_tone_.Shutdown();
   hdr_scene_.Shutdown();
@@ -1025,8 +1028,8 @@ bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
   }
   if (to_hdr) {
     // The scene variants of the game's tone map; without them the HDR output keeps the scene at
-    // paper white (logged).
-    LoadHdrVariants();
+    // paper white (logged). Loaded by OnShaderPackAttached already unless the pack was missing then.
+    LoadShaderVariants();
   }
   const auto built = Clock::now();
 
@@ -1618,6 +1621,7 @@ void Renderer::ReportFrameStats() {
                                                                       hdr_tone_.HeldBytes())
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
+                           ", sun shafts " + mib(shafts_.HeldBytes()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
