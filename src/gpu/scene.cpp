@@ -820,6 +820,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
+  last_shadow_span_ = UploadSpan{};
   draws_since_flush_ = 0;
 }
 
@@ -842,6 +843,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   list_ = nullptr;
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
+  last_shadow_span_ = UploadSpan{};
   draws_since_flush_ = 0;
 }
 
@@ -1612,6 +1614,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
   }
+  // The sun shadow collector's soft lookup reads 16 bytes after the shared constants.
+  if (d.key.ps_variant == ShaderStore::kShadowFilterVariant && !UploadShadowFilterConstants(shared, d)) {
+    return Skip::kUpload;
+  }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
     // The tone map's second draw reads 16 bytes after the shared constants: its own copy of them.
     const UploadSpan span = upload_->Allocate(
@@ -1970,6 +1976,33 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
   d.vs_constants = u.vs;
   d.ps_constants = u.ps;
   d.shared_constants = last_shared_span_;
+  return true;
+}
+
+bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kShadowFilterConstantsOffset == sizeof(SharedConstants));
+  // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
+  // averages it out); without one the pattern stays where it is.
+  const shadow_filter::ShadowFilterConstants block =
+      shadow_filter::CurrentConstants(UpscalerRunning(), frame_serial_);
+  if (last_shadow_span_ && std::memcmp(&last_shadow_shared_, &shared, sizeof(shared)) == 0 &&
+      std::memcmp(&last_shadow_block_, &block, sizeof(block)) == 0) {
+    d.shared_constants = last_shadow_span_;
+    return true;
+  }
+  const UploadSpan span = upload_->Allocate(
+      slot_, kShadowFilterConstantsOffset + sizeof(shadow_filter::ShadowFilterConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kShadowFilterConstantsOffset, &block, sizeof(block));
+  last_shadow_shared_ = shared;
+  last_shadow_block_ = block;
+  last_shadow_span_ = span;
+  ++window_.shared_uploads;
+  window_.upload_bytes += kShadowFilterConstantsOffset + sizeof(block);
+  d.shared_constants = span;
   return true;
 }
 

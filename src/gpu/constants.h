@@ -91,6 +91,12 @@ struct HdrSceneConstants {
 static_assert(sizeof(HdrSceneConstants) == 16);
 inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
 
+// The shadow filter variant (shadow_filter.h, shaders.h kShadowFilterVariant) reads its 16 bytes at the
+// same place: `float4 g_ShadowFilter` at byte 608 (c38 of the block), in the draws that use it (every
+// draw of the sun shadow collector whose shader has the variant), which upload SharedConstants followed by
+// shadow_filter::ShadowFilterConstants (Scene::UploadShadowFilterConstants).
+inline constexpr uint64_t kShadowFilterConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {
