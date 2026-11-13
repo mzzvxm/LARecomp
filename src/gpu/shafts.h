@@ -8,20 +8,30 @@
 // radially toward the sun's position in the picture, so the gaps in front of the sun stream light
 // across the scene, and the result is added to the scene colour as scattered sunlight.
 //
-// WHERE (the frame, see AO-DESIGN.md 2.1): two points of the main view.
+// WHERE (the frame, see AO-DESIGN.md 2.1 and GFX-UPGRADES-DESIGN.md 6B.1): two points of the main view.
 //   1. the game's mid-scene depth copy (phase 0x02000000, into 078B0000: the ambient occlusion's
 //      point, ao.h): every opaque draw is in the colour target, the fog, particles and the post chain
 //      are not. Here the sky's brightness is taken from the colour and the depth (one half-size image,
-//      hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here: at the
-//      end of the scene the game resolves and may clear it before it copies the colour.
-//   2. the first copy of the main colour inside EndTiling (the game's end-of-scene resolve of the
-//      picture, phase 0x04000000, one per tile: the first is the trigger), BEFORE the copy is made:
-//      the fog quad and the particles are in the colour by then, so the shafts are added in front of
-//      them (in-scattering lies between the camera and what it sees), and the resolve, the temporal
-//      upscaler, the bloom and the tone map all see them. The radial blur (hlsl/shafts_blur_ps.hlsl)
-//      and the additive pass (hlsl/shafts_add_ps.hlsl) run here.
-// mcla_gpu_sun_shafts_early runs the second step at the first point instead (the fallback of the
-// design: the fog then covers the shafts) so the pictures can compare the two.
+//      hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here. This
+//      point is in every frame of the play view whatever the hour, the weather, the render scale or
+//      the upscaler (the main view's depth is copied there in all of them), and whether the sun gives
+//      shafts is decided by the sun alone (below): a noon, a night or a rain takes no sky and says
+//      nothing.
+//   2. the first copy of the main colour after the first point (the game's end-of-scene copy of the
+//      picture, into 07FE0, two tiles of the picture: the first is the trigger), BEFORE the copy is
+//      made: the fog quad and the particles are in the colour by then, so the shafts are added in
+//      front of them (in-scattering lies between the camera and what it sees), and the copy, the
+//      temporal upscaler, the bloom and the tone map all see them. The radial blur
+//      (hlsl/shafts_blur_ps.hlsl) and the additive pass (hlsl/shafts_add_ps.hlsl) run here. It is
+//      found by its source (colour 0, the main colour's identity at the depth's samples), its place
+//      (after the first point, before the anchor draw) and by being a copy; it does NOT have to be
+//      issued from inside EndTiling: the census shows the game's tile copies of the main depth as plain
+//      Resolve calls (perf/out/AO.txt, caller 0x821790e4), and the first version of this pass, which
+//      asked for a copy inside EndTiling, never found one (w1s-survey-h17_7-both).
+// The second point is the preferred one, and the shafts_anchor.h policy keeps the pass alive if a build
+// or a scene gives no such copy: after a few frames without it the shafts go in at the first point (the
+// fog then covers them at distance), the copy is still watched, and the end of the scene is used again
+// when it comes back. mcla_gpu_sun_shafts_early forces the first point (to compare the two).
 //
 // WHAT: per frame, when it is on and the sun is where shafts show (below):
 //   sky     the half-size image of max(luma(colour) - threshold, 0) where the depth is the far plane
@@ -69,6 +79,7 @@
 #include "host_passes.h"
 #include "records.h"
 #include "resolve.h"
+#include "shafts_anchor.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 
@@ -107,8 +118,8 @@ class SunShafts {
   // The game's motion blur draw: this frame's camera, which the next frame's shafts use.
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A resolve, BEFORE ResolveCache::Execute makes its copy, with `list` the frame's open list
-  // outside any render pass: the end-of-scene copy of the main colour is the second point. True
-  // when passes were recorded (the caller's list state is gone).
+  // outside any render pass: the first copy of the main colour after the first point is the second
+  // point (shafts_anchor.h). True when passes were recorded (the caller's list state is gone).
   bool BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list);
   // A resolve, after Execute: the mid-scene depth copy is the first point. `upscaler_running`: a
   // temporal upscaler works on this frame (the noise then shifts every frame, which it averages).
@@ -203,7 +214,7 @@ class SunShafts {
     kGated,       // the fades gave nothing: no pass recorded
     kTooSmall,    // the picture is smaller than the passes are worth
     kNotRecorded, // a pipeline or an image could not be made
-    kSkyOnly,     // the sky was taken, the second point never came
+    kSkyOnly,     // the sky was taken, the second point never came (nothing was added)
     kRecorded,    // all three passes
   };
   static const char* OutcomeName(Outcome outcome);
@@ -211,6 +222,13 @@ class SunShafts {
   bool IsFirstPoint(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   // The EDRAM identity of a resolve's colour 0 source (as FrameLayers::ResolveSourceKey).
   static bool ColourSourceKey(const ResolveRecord& record, EdramKey* key);
+  // The resolves between the first point and the anchor, kept in short to say what they were when no
+  // copy of the main colour came among them (`key`: the identity of a colour 0 source, else null).
+  void NoteResolve(const ResolveRecord& record, const EdramKey* key);
+  void LogMissingCopy();
+  // The frame's end: the policy, the interval's tally and its log line.
+  void EndSkyFrame();
+  void LogInterval();
   static void PictureSize(const ResolveCache::Summary& summary, uint32_t* width, uint32_t* height);
   EdramTargets::Target* ColourTarget(const EdramKey& key, plume::RenderCommandList* list);
 
@@ -251,10 +269,26 @@ class SunShafts {
   // used: this is kept for every draw).
   uint32_t vs_view_inverse_[16] = {};
   uint32_t vs_view_inverse_draws_ = 0;
-  Pending pending_;
+  Pending pending_;                  // the plan of the frame's shafts; valid until they are added
   Sun sun_;                          // the frame's, for the census
   Outcome outcome_ = Outcome::kNoTrigger;
   bool recorded_this_frame_ = false;
+  // Where the shafts of this frame go and what became of them (a frame in which the sky was taken).
+  bool sky_taken_ = false;           // the sky image was recorded at the first point
+  shafts_anchor::Anchor anchor_ = shafts_anchor::Anchor::kEndOfScene;
+  bool copy_seen_ = false;           // a copy of the main colour came after the first point, before the anchor
+  bool composited_ = false;          // the blur and the add pass were recorded
+  // The resolves seen between the first point and the anchor (what each was, for the log of a miss).
+  struct SeenResolve {
+    uint32_t caller = 0;
+    uint32_t flags = 0;              // ResolveRecord::flags
+    uint32_t resolve_flags = 0;
+    bool keyed = false;              // a colour 0 source whose identity was read
+    EdramKey key;
+  };
+  static constexpr size_t kSeenResolves = 8;
+  std::array<SeenResolve, kSeenResolves> seen_resolves_{};
+  uint32_t seen_resolve_count_ = 0;  // all of them, kept or not
 
   // The camera: the previous frame's (the lens and the view of the sun's position), and whether the
   // vertex constants have been shown to hold a frame's own view (ao.h).
@@ -278,16 +312,21 @@ class SunShafts {
   uint32_t images_made_for_[2] = {};
   bool images_failed_logged_ = false;
 
-  // What the log has said once, and the totals.
+  // The anchor policy (shafts_anchor.h), the interval's tally and what the log has said once.
+  shafts_anchor::Policy policy_;
+  shafts_anchor::Tally interval_;
   uint32_t last_mode_logged_ = ~0u;
-  bool no_end_of_scene_logged_ = false;
+  uint32_t missing_copy_logged_ = 0;
   bool first_run_logged_ = false;
   uint32_t census_frames_logged_ = 0;
+  // The totals: composites by anchor, sky frames lost, the frames the sun gave no shafts.
   uint64_t runs_ = 0;
+  uint64_t runs_end_ = 0;
+  uint64_t runs_mid_ = 0;
   uint64_t triggers_ = 0;
   uint64_t skipped_no_camera_ = 0;
   uint64_t gated_ = 0;
-  uint64_t sky_only_ = 0;
+  uint64_t lost_ = 0;
   uint32_t census_end_logged_ = 0;
 };
 

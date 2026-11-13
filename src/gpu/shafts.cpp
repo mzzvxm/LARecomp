@@ -72,8 +72,9 @@ REXCVAR_DEFINE_INT32(
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_sun_shafts_early, false, "MCLA/GPU",
     "Diagnostic: adds the sun shafts at the game's mid-scene depth copy, before the fog and the "
-    "particles, instead of at the end-of-scene copy of the picture (the fog then covers them), to "
-    "compare the two. Live.")
+    "particles, instead of at the game's copy of the main colour after them (the fog then covers "
+    "them), to compare the two. Without it the shafts go in at that copy and fall back to the "
+    "mid-scene point by themselves when no such copy comes. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
@@ -104,6 +105,10 @@ constexpr plume::RenderFormat kImageFormat = plume::RenderFormat::R16_FLOAT;
 constexpr uint32_t kMinRenderSize = 64;
 // Frames without a pass before the images are given back (a noon, a night, rain: 2 s).
 constexpr uint32_t kReleaseAfterFrames = 120;
+// Frames of a logging interval (the scene's own interval is 600) and the changes of anchor logged in all.
+constexpr uint32_t kIntervalFrames = 600;
+constexpr uint32_t kAnchorChangesLogged = 8;
+constexpr uint32_t kMissingCopyLogs = 3;
 // Below this strength nothing is recorded.
 constexpr float kMinStrength = 1.0f / 256.0f;
 // The built-in strength of the light: the brightness the blurred image holds (a ray through open sky
@@ -756,15 +761,17 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
     return false;
   }
   recorded_this_frame_ = true;
+  sky_taken_ = true;
   pending_ = plan;
-  pending_.valid = true;
+  pending_.valid = true;  // the shafts are still to be added
   outcome_ = Outcome::kSkyOnly;
-  if (REXCVAR_GET(mcla_gpu_sun_shafts_early)) {
-    // The design's fallback: the shafts at this point, before the fog and the particles.
+  anchor_ = policy_.Choose(REXCVAR_GET(mcla_gpu_sun_shafts_early));
+  if (anchor_ == shafts_anchor::Anchor::kMidScene) {
+    // Here, before the fog and the particles: the debug switch, or the fall-back of a build or a scene
+    // that gives no copy of the main colour at the second point. The copy is still watched there.
     pending_.valid = false;
-    if (RecordShafts(list, plan)) {
-      outcome_ = Outcome::kRecorded;
-    }
+    composited_ = RecordShafts(list, plan);
+    outcome_ = composited_ ? Outcome::kRecorded : Outcome::kNotRecorded;
   }
   return true;
 }
@@ -857,21 +864,27 @@ bool SunShafts::ColourSourceKey(const ResolveRecord& r, EdramKey* key) {
 }
 
 bool SunShafts::BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
-  if (!pending_.valid || !list || !ready_) {
+  // Only after the first point of a frame whose sky was taken, before the anchor draw, and until a copy
+  // of the main colour has come (the first is the trigger: the second tile's finds the light in it).
+  if (!sky_taken_ || copy_seen_ || !list || !ready_) {
     return false;
   }
   if (anchor_seen_ || composite_seen_) {
-    pending_.valid = false;  // the scene is over: this frame's sky is not used
-    return false;
+    return false;  // the scene is over: no copy of the main colour came in time
   }
-  // The end-of-scene copy: inside EndTiling (one per tile, the first is the trigger), a copy (not a
-  // clear), of the main colour at the samples the sky was taken at.
-  if ((record.flags & kEventInsideEndTiling) == 0 || (record.resolve_flags & 0x2000u) != 0) {
-    return false;
-  }
+  // The second point: a copy (not a clear alone) of the main colour at the samples the sky was taken
+  // at. Where the game issues it from does not matter: its tile copies of the main depth are plain
+  // Resolve calls (the AO census), and the first version of this rule asked for EndTiling's and never
+  // found a copy.
   EdramKey key;
-  if (!ColourSourceKey(record, &key) || !(key == pending_.colour)) {
+  const bool keyed = ColourSourceKey(record, &key);
+  if (!keyed || !(key == pending_.colour) || (record.resolve_flags & 0x2000u) != 0) {
+    NoteResolve(record, keyed ? &key : nullptr);
     return false;
+  }
+  copy_seen_ = true;
+  if (!pending_.valid) {
+    return false;  // the shafts went in at the first point: the copy was only watched
   }
   const Pending plan = pending_;
   pending_.valid = false;  // once: the other tiles' copies find the picture with the light in it
@@ -891,17 +904,47 @@ bool SunShafts::BeforeResolve(const ResolveRecord& record, plume::RenderCommandL
       }
     }
     REXLOG_INFO("{} frame {}: the end-of-scene copy that triggers the second point: caller "
-                "{:#010x}, source {}, destination {}",
-                kPrefix, frame_, record.caller, DescribeEdramKey(key),
-                have ? destination.Describe() : std::string("unreadable"));
+                "{:#010x}, {}, source {}, destination {}, after {} other resolves since the first "
+                "point",
+                kPrefix, frame_, record.caller,
+                (record.flags & kEventInsideEndTiling) ? "inside EndTiling" : "plain resolve",
+                DescribeEdramKey(key), have ? destination.Describe() : std::string("unreadable"),
+                seen_resolve_count_);
   }
-  const bool recorded = RecordShafts(list, plan);
-  if (recorded) {
-    outcome_ = Outcome::kRecorded;
-  } else {
-    outcome_ = Outcome::kNotRecorded;
+  composited_ = RecordShafts(list, plan);
+  outcome_ = composited_ ? Outcome::kRecorded : Outcome::kNotRecorded;
+  return composited_;
+}
+
+void SunShafts::NoteResolve(const ResolveRecord& record, const EdramKey* key) {
+  if (seen_resolve_count_ < kSeenResolves) {
+    SeenResolve& seen = seen_resolves_[seen_resolve_count_];
+    seen.caller = record.caller;
+    seen.flags = record.flags;
+    seen.resolve_flags = record.resolve_flags;
+    seen.keyed = key != nullptr;
+    seen.key = key ? *key : EdramKey{};
   }
-  return recorded;
+  ++seen_resolve_count_;
+}
+
+void SunShafts::LogMissingCopy() {
+  std::string text;
+  const uint32_t shown = std::min<uint32_t>(seen_resolve_count_, kSeenResolves);
+  for (uint32_t i = 0; i < shown; ++i) {
+    const SeenResolve& seen = seen_resolves_[i];
+    text += std::format("{}[caller {:#010x}, {}, resolve flags {:#x}, {}]", i ? " " : "", seen.caller,
+                        (seen.flags & kEventInsideEndTiling) ? "inside EndTiling" : "plain",
+                        seen.resolve_flags,
+                        seen.keyed ? DescribeEdramKey(seen.key) : std::string("not a colour 0 copy"));
+  }
+  REXLOG_WARN("[gpu] shafts: frame {}: the sky was taken at the mid-scene depth copy but no copy of "
+              "the main colour ({}) came before the anchor draw; {} other resolves between the two"
+              "{}{} (logged {} of at most {}; after {} frames in a row the shafts are added at the "
+              "mid-scene point instead)",
+              frame_, DescribeEdramKey(pending_.colour), seen_resolve_count_,
+              shown ? ": " : "", text, missing_copy_logged_, kMissingCopyLogs,
+              shafts_anchor::Policy::kMissesToFallBack);
 }
 
 bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan) {
@@ -936,15 +979,19 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   if (!first_run_logged_) {
     first_run_logged_ = true;
     REXLOG_INFO("[gpu] shafts: the first sun shafts pass: {} at {}x{} (images {}x{}), {} steps, {} "
-                "host samples, the sun at ({:.2f}, {:.2f}) of the picture, {}, {} (the debug cvars "
-                "mcla_gpu_sun_shafts_intensity, _density, _threshold tune the look)",
+                "host samples, the sun at ({:.2f}, {:.2f}) of the picture, {}, at {} (the debug "
+                "cvars mcla_gpu_sun_shafts_intensity, _density, _threshold tune the look)",
                 ModeName(mode_), plan.render[0], plan.render[1], plan.image[0], plan.image[1],
                 plan.steps, plan.host_samples, plan.sun_uv[0], plan.sun_uv[1],
                 plan.view != 0 ? "a debug view" : "added to the colour",
-                REXCVAR_GET(mcla_gpu_sun_shafts_early) ? "at the mid-scene depth copy (_early)"
-                                                       : "at the end-of-scene copy");
+                shafts_anchor::AnchorName(anchor_));
   }
   ++runs_;
+  if (anchor_ == shafts_anchor::Anchor::kEndOfScene) {
+    ++runs_end_;
+  } else {
+    ++runs_mid_;
+  }
   return true;
 }
 
@@ -1002,25 +1049,80 @@ const char* SunShafts::OutcomeName(Outcome outcome) {
     case Outcome::kNotRecorded:
       return "a pipeline or an image could not be made (see the errors above)";
     case Outcome::kSkyOnly:
-      return "the sky was taken, the second point (the end-of-scene copy of the main colour) never "
-             "came";
+      return "the sky was taken, no copy of the main colour came after it before the anchor draw: "
+             "nothing added";
     case Outcome::kRecorded: return "all three passes recorded";
   }
   return "?";
 }
 
-void SunShafts::OnPresent() {
-  if (pending_.valid) {
-    // The sky was taken and the end-of-scene copy never came before the anchor: nothing was added.
-    pending_.valid = false;
-    ++sky_only_;
-    if (!no_end_of_scene_logged_) {
-      no_end_of_scene_logged_ = true;
-      REXLOG_INFO("[gpu] shafts: the sky was taken at the mid-scene depth copy but no end-of-scene "
-                  "copy of the main colour inside EndTiling came before the anchor draw: no sun "
-                  "shafts in that frame (counted, logged once; mcla_gpu_sun_shafts_early adds them "
-                  "at the first point instead, and mcla_gpu_sun_shafts_census prints the copies)");
+void SunShafts::EndSkyFrame() {
+  // A frame in which the sky was taken is over: what became of its shafts teaches the policy where to
+  // add them, and the interval's tally.
+  if (!copy_seen_ && missing_copy_logged_ < kMissingCopyLogs) {
+    ++missing_copy_logged_;
+    LogMissingCopy();
+  }
+  const bool was_fallen_back = policy_.fallen_back();
+  policy_.EndOfFrame(anchor_, copy_seen_);
+  interval_.Sky(anchor_, composited_, copy_seen_);
+  if (!composited_) {
+    ++lost_;
+  }
+  if (was_fallen_back != policy_.fallen_back()) {
+    const uint32_t changes = policy_.fallbacks() + policy_.returns();
+    if (changes <= kAnchorChangesLogged) {
+      if (policy_.fallen_back()) {
+        REXLOG_WARN("[gpu] shafts: frame {}: no copy of the main colour came after the first point in {} "
+                    "frames in a row: the sun shafts are added at {} from now on, where the fog covers "
+                    "them at distance; the copy is still watched and the end of the scene is used again "
+                    "after {} frames with it",
+                    frame_, shafts_anchor::Policy::kMissesToFallBack,
+                    shafts_anchor::AnchorName(shafts_anchor::Anchor::kMidScene),
+                    shafts_anchor::Policy::kHitsToReturn);
+      } else {
+        REXLOG_INFO("[gpu] shafts: frame {}: the copy of the main colour came in {} frames in a row: "
+                    "the sun shafts are added at {} again",
+                    frame_, shafts_anchor::Policy::kHitsToReturn,
+                    shafts_anchor::AnchorName(shafts_anchor::Anchor::kEndOfScene));
+      }
     }
+  }
+}
+
+void SunShafts::LogInterval() {
+  // One line per interval, and only when the sun gave shafts in it (a noon, a night or a rain says
+  // nothing): where they went in and how often.
+  if (!interval_.Worth()) {
+    return;
+  }
+  REXLOG_INFO("[gpu] shafts (interval): {} frames, the sun gave shafts in {}: added {} times at {}, {} "
+              "at {}, {} not at all; no copy of the main colour came after the first point in {}; "
+              "now adding at {}{} ({} falls back and {} returns so far; {} frames with shafts in all, "
+              "{} at the end of the scene, {} at the mid-scene point, {} lost)",
+              interval_.frames, interval_.sky, interval_.end_of_scene,
+              shafts_anchor::AnchorName(shafts_anchor::Anchor::kEndOfScene), interval_.mid_scene,
+              shafts_anchor::AnchorName(shafts_anchor::Anchor::kMidScene), interval_.lost,
+              interval_.copies_missing, shafts_anchor::AnchorName(policy_.Choose(
+                  REXCVAR_GET(mcla_gpu_sun_shafts_early))),
+              REXCVAR_GET(mcla_gpu_sun_shafts_early)
+                  ? " (forced by mcla_gpu_sun_shafts_early)"
+                  : (policy_.fallen_back() ? " (the fall-back)" : ""),
+              policy_.fallbacks(), policy_.returns(), runs_ + lost_, runs_end_, runs_mid_, lost_);
+}
+
+void SunShafts::OnPresent() {
+  if (mode_ != Mode::kOff) {
+    if (sky_taken_) {
+      EndSkyFrame();
+    }
+    interval_.Frame();
+    if (interval_.frames >= kIntervalFrames) {
+      LogInterval();
+      interval_.Clear();
+    }
+  } else {
+    interval_.Clear();
   }
   if (census_every_ != 0 && (play_view_ || pause_view_)) {
     Census();
@@ -1053,6 +1155,10 @@ void SunShafts::OnPresent() {
   sun_ = Sun{};
   outcome_ = Outcome::kNoTrigger;
   recorded_this_frame_ = false;
+  sky_taken_ = false;
+  copy_seen_ = false;
+  composited_ = false;
+  seen_resolve_count_ = 0;
   ++frame_;
 }
 
@@ -1072,12 +1178,16 @@ void SunShafts::Census() {
   REXLOG_INFO("{} frame {}: {}; sun height {:.1f} deg, wetness {:.3f}, in view space ({:+.3f}, "
               "{:+.3f}, {:+.3f}), in the picture at ({:.2f}, {:.2f}) (ndc {:+.2f}, {:+.2f}), the "
               "rotation from {}; fades: height {:.2f}, rain {:.2f}, view {:.2f}, strength {:.3f}; "
-              "{} first points, {} gated, {} sky only, {} runs",
+              "{} first points, {} gated, {} lost, {} runs ({} at the end of the scene, {} at the "
+              "mid-scene point); anchor of this frame: {}{}, copy of the main colour {}",
               kPrefix, frame_, OutcomeName(outcome_), sun_.elevation, sun_.wetness,
               sun_.to_sun[0], sun_.to_sun[1], sun_.to_sun[2], sun_.uv[0], sun_.uv[1], sun_.ndc[0],
               sun_.ndc[1], sun_.vertex_pose ? "the vertex constants" : "the previous camera",
               sun_.fade_elevation, sun_.fade_wet, sun_.fade_view, sun_.strength, triggers_,
-              gated_, sky_only_, runs_);
+              gated_, lost_, runs_, runs_end_, runs_mid_,
+              sky_taken_ ? shafts_anchor::AnchorName(anchor_) : "none (the sky was not taken)",
+              policy_.fallen_back() ? " (the fall-back)" : "",
+              sky_taken_ ? (copy_seen_ ? "seen" : "NOT seen") : "not watched");
 }
 
 }  // namespace mcla::gpu
