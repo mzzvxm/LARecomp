@@ -153,6 +153,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_mode.cpp
 
+    # Trailer toolkit M2c: the take's sound. The capture driver sits in front of the game's audio output (audio_output.h) and only acts during a take;
+    # the sample books and the WAV file are in capture_audio_core.
+    src/mc_engine/cinematic/capture_audio_core.cpp
+    src/mc_engine/cinematic/capture_audio.cpp
+
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
@@ -378,6 +383,13 @@ add_executable(larecomp_take_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_core.cpp)
 target_include_directories(larecomp_take_test PRIVATE src/mc_engine/cinematic)
+# A take's sound (src/mc_engine/cinematic/capture_audio_core.h): the samples a number of video frames owns, the mixer frames that cover them, the books of what
+# was released, arrived, given up and written, and the WAV file. A check that needs no game:
+#   cmake --build <build dir> --target larecomp_capture_audio_test, then run <build dir>/larecomp_capture_audio_test (exit 0 = passed).
+add_executable(larecomp_capture_audio_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_audio_test.cpp
+    src/mc_engine/cinematic/capture_audio_core.cpp)
+target_include_directories(larecomp_capture_audio_test PRIVATE src/mc_engine/cinematic)
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL

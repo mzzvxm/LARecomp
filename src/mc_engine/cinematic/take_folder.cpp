@@ -94,6 +94,8 @@ TakeLayout MakeLayout(const std::string& folder) {
     l.ffmpeg_log = JoinPath(folder, kFfmpegLogName);
     l.video_mkv = JoinPath(folder, kVideoMkvName);
     l.video_raw = JoinPath(folder, kVideoRawName);
+    l.audio_wav = JoinPath(folder, kAudioWavName);
+    l.audio_csv = JoinPath(folder, kAudioCsvName);
     l.frames_dir = JoinPath(folder, kFramesDirName);
     l.frame_pattern = JoinPath(l.frames_dir, "f%06d.png");
     return l;

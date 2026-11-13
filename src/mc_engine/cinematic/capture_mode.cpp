@@ -62,6 +62,10 @@
 // the take when it falls below the floor. A failed take (TakeFail) ends at the game's next gate; the scene's request is not taken up again until it has
 // gone to 0.
 //
+// THE SOUND (M2c). The take's audio is capture_audio.h's: at the take's start (BeginTake) the game's mixer is taken over, at every gate
+// (GateInTake) it is given the credits that cover the video frames so far and its frames are written to the take folder's audio.wav, at the end
+// (EndTake) the real output gets its mixer back. Nothing else of the take knows about it.
+//
 // Written without a build or a run. CHECK marks what rests on reading the code and the E7 log only.
 //
 
@@ -110,6 +114,7 @@
 extern char** environ;
 #endif
 
+#include "capture_audio.h"
 #include "capture_core.h"
 #include "larecomp_log.h"
 #include "larecomp_version.h"
@@ -1088,6 +1093,7 @@ void BeginTake(uint64_t u0, double fps) {
     g_anchors = 0;
     g_anchor_restarts = 0;
     g_anchor_gap_restarts = 0;
+    capture_audio::Begin(fps, t.layout.audio_wav, t.layout.audio_csv, u0);  // the take's sound: the game's mixer is the take's until EndTake (capture_audio.h)
     t.t0 = Clock::now();
     g_take_first.store(u0, std::memory_order_release);
     g_take_ticks.store(t.ticks, std::memory_order_release);
@@ -1111,6 +1117,7 @@ void EndTake(uint64_t u_end) {
     o.handed = g_handover.Handed();
     g_take_active.store(false, std::memory_order_release);
     g_state_log_on.store(false, std::memory_order_release);
+    capture_audio::End(o.handed);  // the WAV is finished and the real output has its mixer back before the sink's flush
     CloseSink();
     if (g_state_file) {
         std::fclose(g_state_file);
@@ -1201,6 +1208,7 @@ void GateInTake(uint64_t u, double want_fps) {
     const uint64_t handed = g_handover.Handed();
     const uint64_t needed = core::FramesNeeded(handed, static_cast<uint32_t>(t.lag), ending);
     const int timeout_ms = REXCVAR_GET(mcla_capture_gate_timeout_ms);
+    capture_audio::StepBegin(handed);  // the mixer runs for the frames so far while the readback is waited for
     const auto w0 = Clock::now();
     bool off;
     {
@@ -1231,6 +1239,7 @@ void GateInTake(uint64_t u, double want_fps) {
         std::lock_guard<std::mutex> lock(g_gate_mutex);
         g_gate.NoteMet();
     }
+    capture_audio::StepEnd();  // the mixer's frames are in, the video frames' samples are in the WAV
     t.gate_ms.push_back(wait_ms);
     if (const int every = REXCVAR_GET(mcla_capture_log_every); every > 0 && !t.gate_ms.empty()) {
         const uint64_t k_prev = t.gate_ms.size() - 1;

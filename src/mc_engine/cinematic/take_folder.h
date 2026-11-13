@@ -68,6 +68,8 @@ struct TakeLayout {
     std::string ffmpeg_log;
     std::string video_mkv;
     std::string video_raw;
+    std::string audio_wav;  // the take's sound (capture_audio.h): audio.wav, 32 bit float, 48 kHz
+    std::string audio_csv;  // a row for every video frame of it: audio.csv
     std::string frames_dir;
     std::string frame_pattern;  // for ffmpeg: <frames_dir>/f%06d.png
 };
@@ -79,6 +81,8 @@ inline constexpr const char* kStateCsvName = "state.csv";
 inline constexpr const char* kSceneCopyName = "scene.scene";
 inline constexpr const char* kFfmpegLogName = "ffmpeg.log";
 inline constexpr const char* kVideoMkvName = "video.mkv";
+inline constexpr const char* kAudioWavName = "audio.wav";
+inline constexpr const char* kAudioCsvName = "audio.csv";
 inline constexpr const char* kVideoRawName = "video.bgra";
 inline constexpr const char* kFramesDirName = "frames";
 inline constexpr const char* kFramePatternName = "frames/f%06d.png";

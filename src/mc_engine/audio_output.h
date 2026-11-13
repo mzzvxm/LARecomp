@@ -8,6 +8,10 @@
 // is swapped for a null output that plays nothing but consumes frames at the
 // hardware's rate, so the guest keeps its timing. --mcla_audio_output=null
 // forces it.
+//
+// Either output sits behind the capture driver (cinematic/capture_audio.h): it
+// passes every frame on untouched, and only while a capture-mode take runs does
+// it take the mixer over to write the take's sound.
 
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +25,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/thread.h>
+
+#include "cinematic/capture_audio.h"
 
 REXCVAR_DEFINE_STRING(mcla_audio_output, "auto", "MCLA/Audio",
                       "auto: the default device, or silence when none opens. null: always silent.")
@@ -94,16 +100,20 @@ class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem {
   rex::X_STATUS CreateDriver(size_t index, rex::thread::Semaphore* semaphore,
                              rex::audio::AudioDriver** out_driver) override {
     if (REXCVAR_GET(mcla_audio_output) != "null") {
-      if (SDLAudioSystem::CreateDriver(index, semaphore, out_driver) == X_STATUS_SUCCESS) {
+      rex::audio::AudioDriver* device = nullptr;
+      if (SDLAudioSystem::CreateDriver(index, semaphore, &device) == X_STATUS_SUCCESS) {
+        *out_driver = mc::cinematic::capture_audio::WrapDriver(memory_, semaphore, device, index);
         return X_STATUS_SUCCESS;
       }
       REXLOG_WARN("[audio] no output device could be opened; continuing without sound");
     }
-    *out_driver = new NullOutputDriver(memory_, semaphore);
+    *out_driver = mc::cinematic::capture_audio::WrapDriver(
+        memory_, semaphore, new NullOutputDriver(memory_, semaphore), index);
     return X_STATUS_SUCCESS;
   }
 
   void DestroyDriver(rex::audio::AudioDriver* driver) override {
+    driver = mc::cinematic::capture_audio::Unwrap(driver);  // the output behind the capture driver
     if (auto* null_driver = dynamic_cast<NullOutputDriver*>(driver)) {
       delete null_driver;
     } else {

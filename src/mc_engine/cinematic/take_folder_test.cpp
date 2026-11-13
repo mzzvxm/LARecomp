@@ -125,6 +125,8 @@ void TestLayout() {
     CheckEq(l.scene_copy, "C:\\takes\\t1\\scene.scene", "scene copy");
     CheckEq(l.video_mkv, "C:\\takes\\t1\\video.mkv", "video.mkv");
     CheckEq(l.video_raw, "C:\\takes\\t1\\video.bgra", "video.bgra");
+    CheckEq(l.audio_wav, "C:\\takes\\t1\\audio.wav", "audio.wav");
+    CheckEq(l.audio_csv, "C:\\takes\\t1\\audio.csv", "audio.csv");
     CheckEq(l.frames_dir, "C:\\takes\\t1\\frames", "frames");
     CheckEq(l.frame_pattern, "C:\\takes\\t1\\frames\\f%06d.png", "the pattern ffmpeg numbers by");
     CheckEq(l.ffmpeg_log, "C:\\takes\\t1\\ffmpeg.log", "ffmpeg.log");

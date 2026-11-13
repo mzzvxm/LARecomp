@@ -355,6 +355,7 @@ end 10                       # the take ends with the scene (or at `capture off`
   | `video.mkv` | sink `ffmpeg`: the frames as one FFV1 file |
   | `frames/f000000.png` ... | sink `png`: one picture for every frame (ffmpeg writes them; a frame takes as long as ffmpeg needs to compress it, and the take waits) |
   | `video.bgra` | sink `raw`: B8G8R8A8 frames, rows packed, `width x height x 4` bytes each (sizes in `take.json`) |
+  | `audio.wav`, `audio.csv` | the take's sound, in step with the frames ("The take's sound" below): 32 bit float, 48 kHz, as long as the video to the sample, and a row for every frame of what the mixer did. Not there when `mcla_capture_audio` is off or the game has no capture audio driver. |
   | `frames.csv` | one row for every frame: its update, its scene time, what it cost (the frame/update map: frame `k` shows update `first_update + k` in an exact take) |
   | `state.csv` | only when the scene says `statelog on` (or `mcla_capture_statelog`): one row for every frame of the game's state as the frame shows it: scene time, hour, time scale, the update's step, the pause flag, the player's car position and a hash of its matrix. A take that matches another matches in these rows to the last bit. It holds no random-number or traffic state. |
   | `scene.scene` | a copy of the scene file the take ran |
@@ -388,6 +389,27 @@ python -I ports\scripts\scene_run.py --exe-dir ports\exe\b-m2b --scene ports\scr
 ```
 
 `--scale` is the render scale (1 = 1280x720, 3 = 3840x2160: never above 3). It adds a `run` block to `take.json` (the command, the save, the exe's size and SHA-256, the PC's free RAM before and after); `scene_run.py selftest` and `check-json <take.json>` need no game. `cmake --build <dir> --target larecomp_take_test` builds the checks of the take folder (names, the memory plan, the host ring on real threads with a slow and a stuck writer, `take.json` read back, the state log); `larecomp_capture_test` the step maths, the frame books and the clock; `larecomp_scene_test` the `capture` statement. None needs a game.
+
+## The take's sound
+
+A take also records the game's own sound, in step with the pictures. While a take runs the game's audio output is replaced by one that advances the mixer exactly as far as the video has advanced and writes what it mixed to `audio.wav` in the take's folder; when the take ends the real device gets its mixer back. Outside a take nothing changes: the capture driver sits in front of the real output (`src/mc_engine/audio_output.h`) and passes every frame on untouched.
+
+- **How the mixer is driven.** The game's mixer makes one 256-sample frame (5.33 ms at 48 kHz) for every credit the SDK's audio worker finds on a semaphore, and the real output gives a credit back when it has played the frame, so the mixer normally runs about 43 ms ahead of the speakers. At the start of a take the credits are taken out of the semaphore (the mixer stops) and what it had made ahead is thrown away. At the frame gate of every update the capture releases the credits that cover the video frames so far (3.125 mixer frames a frame at 60 fps), while the picture is read back, then waits for the mixer's frames and writes the frame's samples. The game thread is held at the gate, so the sounds an update asked for are the ones mixed next.
+- **No drift.** Video frame `k` owns the samples from `round(k x 48000 / fps)` to `round((k + 1) x 48000 / fps)`, computed from the product, never as a running sum: 60 s at 60 fps is 2,880,000 samples and a rate that does not divide 48000 (59.94) stays within half a sample of the video's length for any length. The mixer's 256-sample frames do not divide a video frame, so the tail of the last one (under 256 samples) opens the next video frame: a sound the game starts in update `k` is in the first mixer frame mixed after it, never before its picture and under 5.33 ms after it. The file is cut to the video's length after every frame (`drift_samples` in the CSV is 0).
+- **A stall.** A mixer frame that does not come within `mcla_capture_audio_timeout_ms` is given up on: a frame of silence takes its place, the one that arrives late is thrown away, the length stays exact, and the log says `[cap] audio: video frame N: the mixer gave no frame`. Three such steps in a row stop the waiting (the rest of the WAV is silence).
+- **The end.** The credits go back into the semaphore (all of them, as at the start of the game) and the mixer refills the real output's queue by itself; the log says `[cap] audio: the mixer is back on the real output` at the first frame, and `[cap] audio summary ... samples=N expected=N (exact)`.
+
+Files, in the take's folder with the others: `audio.wav` (32 bit float, 48 kHz, the stereo fold the real output plays, or the six channels of the game's 5.1 with `mcla_capture_audio_surround`; both are the SDK's own conversion, so they clip at 1.0 as the real output does) and `audio.csv`, a row for every video frame: the update, the mixer frames released / used / thrown away / silent, the samples written, the running total, the expected total and their difference, the tail of mixed samples not yet written (under 256), the wait for the mixer, the loudest sample, the game's audio clock (it gains 1 s per take second when 48,000 samples are a game second) and the position the emitter system was given as the listener.
+
+| Setting | Does |
+|---|---|
+| `mcla_capture_audio` | on (default): the take's sound goes to the WAV and the real output is silent during the take. Off: the real output plays in real time and no WAV is made. Read when a take starts. |
+| `mcla_capture_audio_surround` | the WAV has the six channels instead of the stereo fold |
+| `mcla_capture_audio_timeout_ms` | the wait for the mixer's frames of one video frame (2000) |
+
+What it cannot do: a take whose frames are more than 0.5 s apart can wait up to that for the mixer on each frame (the SDK's audio worker sleeps 500 ms after a wait that found no credit); a sound that times itself with the game's `audioFrameTimer` (it reads the host clock) runs in wall time, not take time; a take needs the game's own audio (`--mcla_audio_output=null` is fine, the capture works behind it). Nothing here has run in the game yet.
+
+`cmake --build <dir> --target larecomp_capture_audio_test` builds the checks of the sample books and the WAV file (no game needed). The test harness has `wav_check.py <take folder> --press 600,1100,1600` for a take with a horn pressed at known take frames: the WAV's length, the CSV, the onsets of the sounds against the presses and against each other.
 
 ## Adding a debug setting
 
