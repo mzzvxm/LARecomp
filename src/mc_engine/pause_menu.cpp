@@ -2064,8 +2064,13 @@ const ItemDef kExtrasHubItems[] = {
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
     Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
          " (NEXT HOST)"),
+    // The car is moved once per session, when it first appears at Hollywood's door (map_warp.cpp
+    // TickStartGarage), so a change shows the next time the game is started. NEXT START and not
+    // RESTART, as ORIGINAL INTRO SPEED: nothing needs the game started again now, so the "restart
+    // now?" prompt (RowSaysRestart) must not offer it. Width: "START GARAGE (NEXT START)" 25 with
+    // "SOUTH CENTRAL" 13.
     Str ("PM_RxStartGarage", "start_garage", "START GARAGE: ",
-         kStartGarageVals, kStartGarageNames, 4, " (RESTART)"),
+         kStartGarageVals, kStartGarageNames, 4, " (NEXT START)"),
 };
 #if defined(LARECOMP_HAS_GPU)
 // Texture mods on the Plume renderer. The two modder actions (DUMP SCENE TEXTURES, RELOAD TEXTURE
