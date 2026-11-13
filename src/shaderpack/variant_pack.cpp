@@ -27,6 +27,7 @@
 #include "shaderpack/log.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/pack_writer.h"
+#include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/hdr_scene.h"
 
 namespace larecomp::shaderpack {
@@ -431,6 +432,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   } else if (left_out) {
     left_out->push_back("hdr_scene: " + why);
   }
+  variants.push_back(MakeBloomGaussVariant());
   return variants;
 }
 

@@ -101,6 +101,7 @@ add_library(larecomp_shaderpack STATIC
     # the pixel shader variant pack (builder.h VariantStep): the framework, then one file per variant
     variant_pack.cpp
     variants/hdr_scene.cpp
+    variants/bloom_gauss.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
