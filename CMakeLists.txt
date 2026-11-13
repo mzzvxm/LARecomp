@@ -352,6 +352,14 @@ add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_camera_test PRIVATE src/mc_engine/cinematic)
+# The free camera's flight, the pad, the recorder's chords and the raw track file (src/mc_engine/cinematic/freecam.h):
+#   cmake --build <build dir> --target larecomp_freecam_test, then run <build dir>/larecomp_freecam_test (exit 0 = passed).
+add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/freecam_test.cpp
+    src/mc_engine/cinematic/freecam.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_freecam_test PRIVATE src/mc_engine/cinematic)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
