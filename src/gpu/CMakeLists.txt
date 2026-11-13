@@ -68,6 +68,7 @@ add_library(larecomp_gpu OBJECT
     temporal.cpp
     temporal_backend.cpp
     temporal_camera.cpp
+    temporal_cut.cpp
     temporal_mv.cpp
     texture_decode.cpp
     texture_decode_pool.cpp
