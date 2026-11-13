@@ -601,6 +601,16 @@ std::string MusicArchiveName(size_t index) {
            std::to_string(index) + ".rpf";
 }
 
+// Removes a generated archive and the ".stamp" Rpf3Writer::WriteIfChanged keeps
+// beside it, so taking the mods away leaves the game folder as it was.
+void RemoveArchive(const std::filesystem::path& archive) {
+    std::error_code ec;
+    std::filesystem::remove(archive, ec);
+    std::filesystem::path stamp = archive;
+    stamp += ".stamp";
+    std::filesystem::remove(stamp, ec);
+}
+
 // Side of one atlas cell. Four materials land in a 2x2 grid of these, which is
 // exactly the 512x512 the character's diffuse map measures, so the common case
 // costs no resampling at all.
@@ -4874,9 +4884,9 @@ void Init() {
     }
 
     if (mods.empty() && rim_mods.empty() && car_mods.empty() && raw_files.empty()) {
-        std::filesystem::remove(game_root / kModArchiveName, ec);
+        RemoveArchive(game_root / kModArchiveName);
         for (size_t i = 0; i < kMaxMusicArchives; ++i)
-            std::filesystem::remove(game_root / MusicArchiveName(i), ec);
+            RemoveArchive(game_root / MusicArchiveName(i));
         return;
     }
     const bool has_meshes = !mods.empty() || !rim_mods.empty() || !car_mods.empty();
@@ -5314,9 +5324,9 @@ void Init() {
 
     if (writer.empty()) {
         // Leaving a stale archive behind would silently keep an old mod alive.
-        std::filesystem::remove(mod_archive, ec);
+        RemoveArchive(mod_archive);
         for (size_t i = 0; i < kMaxMusicArchives; ++i)
-            std::filesystem::remove(game_root / MusicArchiveName(i), ec);
+            RemoveArchive(game_root / MusicArchiveName(i));
         LARECOMP_APP_ERROR("[mods] nothing built, model replacement disabled");
         boot::EndPhase();
         return;
@@ -5367,8 +5377,7 @@ void Init() {
 
     for (size_t i = 0; i < kMaxMusicArchives; ++i) {
         if (!music_writers[i].empty()) continue;
-        std::filesystem::remove(game_root / MusicArchiveName(i), ec);
-        std::filesystem::remove(game_root / (MusicArchiveName(i) + ".stamp"), ec);
+        RemoveArchive(game_root / MusicArchiveName(i));
     }
 
     g_archives_to_mount.push_back(kModArchiveName);
