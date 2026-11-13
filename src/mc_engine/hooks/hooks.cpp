@@ -16,6 +16,7 @@
 #include "../impulse_triggers.h"
 #include "../camera_look.h"
 #include "../camera_trace.h"
+#include "../cinematic/scene_runtime.h"
 #include "../cursor_hide.h"
 #include "../cutscene_gallery.h"
 #include "../hud_units.h"
@@ -178,6 +179,7 @@ void Patch_DeltaTimePre() {
     ApplyRubberBandLevel();       // forced AI difficulty tune index
     ApplyRubberBandScales();      // AI catch-up / hold-back limits
     ApplyRubberBandLive();        // ...pushed into the AI racers of the race in progress
+    mc::cinematic::TickScene();   // trailer toolkit: a scene armed by mcla_scene (hour, weather, traffic, time scale, settings); one string test when off
     LogRenderPhaseMaskOnce();     // a few samples of the real per-frame masks
     g_frame_heartbeat.fetch_add(1, std::memory_order_relaxed);
 }

@@ -146,8 +146,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
 
-    # Trailer toolkit: the scene file (parser, timeline, clock).
+    # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
+    # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/scene_runtime.cpp
+    src/mc_engine/cinematic/native_call.cpp
 
     src/mc_engine/map_warp.cpp
     src/mc_engine/real_weather.cpp
