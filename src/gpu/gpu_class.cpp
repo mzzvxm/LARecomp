@@ -142,12 +142,14 @@ void Initialize(const plume::RenderDeviceDescription& description,
                    description.type == plume::RenderDeviceType::CPU ||
                    IsSoftwareName(description.name);
   facts.dedicated_bytes = description.dedicatedVideoMemory;
+  facts.raytracing = caps.raytracing;
   const Verdict verdict = Classify(facts);
 
   {
     std::lock_guard<std::mutex> lock(g_text_mutex);
     g_detected_why = verdict.why;
-    g_adapter = "'" + description.name + "', " + VendorName(description.vendor);
+    g_adapter = "'" + description.name + "', " + VendorName(description.vendor) +
+                (facts.raytracing ? ", ray tracing yes" : ", ray tracing no");
   }
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
   g_shares_memory.store(SharesMemory(facts), std::memory_order_relaxed);
