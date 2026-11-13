@@ -121,29 +121,31 @@ constexpr uint32_t kStepsHigh = 64;
 constexpr float kDecayAt64 = 0.96f;
 // The sky image's brightness is kept under this (the sun's disc is far brighter than the rest).
 constexpr float kShineLimit = 4.0f;
-// The sun's elevation fades, in degrees: none at and under 0, full from 2.5, falling to none at 45
-// (the full range starts to fall at 27).
-constexpr double kElevFadeIn = 2.5;
-constexpr double kElevFadeOutStart = 27.0;
-constexpr double kElevFadeOutEnd = 45.0;
 // The wetness (VS c43.x) at which the rain's gate starts and ends: 0.095 dry, 1.17 in rain.
 constexpr double kWetStart = 0.2;
 constexpr double kWetEnd = 0.7;
-// The view fade: full while the sun is within this many screen half-widths of the centre (1: the
-// screen's edge) and none from kViewFadeEnd, one and a half screens (three half-widths) beyond the
-// edge. The play camera's field of view is narrow (25 degrees vertically), so a sun at dusk is often
-// above the picture, and its shafts come in from the top.
-constexpr double kViewFadeStart = 1.0;
-constexpr double kViewFadeEnd = 4.0;
-constexpr double kPi = 3.14159265358979323846;
+// The sky shaders that draw the main view's sky and sun disc (xrage_atmoscatt_clouds ps_main, ps_main_withmoon,
+// ps_main_withstarfield, ps_main_withstarfield_withmoon, ps_sunonly), as the renderer identifies them (FNV-1a 64
+// of the microcode with the vertex fetches normalised: shader_identity.h; computed from the game's own XEX shader
+// containers with native/tools/build_shader_pack.py's functions, which reproduce the anchor's identities too).
+// Every one reads the direction toward the sun at PS c65 `SunDirection` (the same register in all five).
+constexpr uint64_t kSkyPixelShaders[] = {
+    0xA6755E24615016F2ull,  // ps_main
+    0xC59AA42D684F1D98ull,  // ps_main_withmoon
+    0x42099300C5CFA72Full,  // ps_main_withstarfield
+    0xA2B20192EA547E84ull,  // ps_main_withstarfield_withmoon
+    0xF1CFDA6F8EC76266ull,  // ps_sunonly
+};
+constexpr uint32_t kPsSkySunDirection = 65;
+// A sky constant told this many frames ago or less is still used (the sky's draws come every frame of the play
+// view: this only bridges a frame whose sky draw was not seen before the first point).
+constexpr uint64_t kSkyMaxAge = 120;
+// Frames in a row with a sun to place and no sky constant before the log says so (twice at most).
+constexpr uint32_t kSkyMissingFramesToWarn = 90;
+constexpr uint32_t kSkyLogsMax = 3;
 
 float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
   return std::bit_cast<float>(LoadBe32(bank + reg * 16 + comp * 4));
-}
-
-double Smooth(double edge0, double edge1, double x) {
-  const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
-  return t * t * (3.0 - 2.0 * t);
 }
 
 // A light constant that is a usable amount (a draw whose shaders do not use the register can leave
@@ -432,7 +434,32 @@ bool SunShafts::EnsureImages(const Pending& plan) {
 // what the draws tell
 // ---------------------------------------------------------------------------
 
-void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks) {
+void SunShafts::NoteSkyDraw(uint64_t ps_identity, const ConstantBanks::Banks& banks) {
+  bool sky = false;
+  for (const uint64_t identity : kSkyPixelShaders) {
+    sky = sky || identity == ps_identity;
+  }
+  if (!sky) {
+    return;
+  }
+  const uint8_t* ps = banks.ps.data();
+  float dir[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    dir[i] = BankFloat(ps, kPsSkySunDirection, i);
+  }
+  if (!std::isfinite(dir[0]) || !std::isfinite(dir[1]) || !std::isfinite(dir[2])) {
+    return;  // a draw that left garbage in the register: the last good one stands
+  }
+  std::memcpy(sky_dir_, dir, sizeof(dir));
+  sky_have_ = true;
+  sky_frame_ = frame_;
+  sky_ps_ = ps_identity;
+  ++sky_draws_;
+  ++sky_draws_total_;
+}
+
+void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks,
+                           uint64_t ps_identity) {
   if (!match) {
     return;
   }
@@ -441,9 +468,15 @@ void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks
     return;
   }
   play_view_ = true;
+  if (anchor_seen_ || composite_seen_ || !match.color) {
+    return;
+  }
+  // The sun disc's direction: the sky's draws tell it (kept from frame to frame; a sky draw after the first
+  // point serves the next frame).
+  NoteSkyDraw(ps_identity, banks);
   // The light of the frame is the one most colour draws before the first point carry (a draw whose
   // shaders do not use a register leaves what an earlier one set).
-  if (anchor_seen_ || composite_seen_ || first_point_seen_ || !match.color) {
+  if (first_point_seen_) {
     return;
   }
   ++main_draws_;
@@ -568,7 +601,9 @@ bool SunShafts::ComputeSun(Sun* out) const {
   }
   out->wetness = std::isfinite(wet) ? std::clamp(double(wet), 0.0, 16.0) : 0.0;
   // c16 is the direction the light travels (y is -0.867 at noon): the sun is where it comes from.
-  out->elevation = std::asin(std::clamp(-double(dir[1]) / length, -1.0, 1.0)) * 180.0 / kPi;
+  const double toward_light[3] = {-double(dir[0]) / length, -double(dir[1]) / length,
+                                  -double(dir[2]) / length};
+  out->elevation = shafts_sun::ElevationDegrees(toward_light);
 
   // The direction to the sun in view space (x right, y up, z forward): the game's view space looks
   // along -z, so z changes sign. The rotation is the frame's own view from the vertex constants once
@@ -601,39 +636,54 @@ bool SunShafts::ComputeSun(Sun* out) const {
     }
   }
   out->vertex_pose = vertex;
-  double view[3] = {};
-  for (int j = 0; j < 3; ++j) {
-    for (int i = 0; i < 3; ++i) {
-      view[j] += double(dir[i]) * rotation[i][j];
-    }
-  }
-  view[2] = -view[2];
-  const double view_length = std::sqrt(view[0] * view[0] + view[1] * view[1] + view[2] * view[2]);
-  if (!(view_length > 1e-6) || !std::isfinite(view_length)) {
+  if (!shafts_sun::WorldToView(rotation, toward_light, out->to_sun)) {
     return false;
-  }
-  for (int i = 0; i < 3; ++i) {
-    out->to_sun[i] = -view[i] / view_length;
   }
 
   // The sun in the picture: the previous frame's lens (tan of the half field of view, x and y).
   const temporal::Mat4& p = previous_.projection;
   const double tan_x = 1.0 / std::max(std::fabs(p.m[0][0]), 1e-9);
   const double tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
-  double view_fade = 0.0;
-  if (out->to_sun[2] > 0.05) {
-    out->ndc[0] = out->to_sun[0] / (out->to_sun[2] * tan_x);
-    out->ndc[1] = out->to_sun[1] / (out->to_sun[2] * tan_y);
-    const double away = std::max(std::fabs(out->ndc[0]), std::fabs(out->ndc[1]));
-    view_fade = 1.0 - Smooth(kViewFadeStart, kViewFadeEnd, away);
-  }
-  out->uv[0] = float(0.5 + 0.5 * out->ndc[0]);
-  out->uv[1] = float(0.5 - 0.5 * out->ndc[1]);
+  const shafts_sun::Placement light = shafts_sun::Place(out->to_sun, tan_x, tan_y);
+  out->light_ndc[0] = light.ndc[0];
+  out->light_ndc[1] = light.ndc[1];
+  out->light_uv[0] = float(light.uv[0]);
+  out->light_uv[1] = float(light.uv[1]);
 
-  out->fade_elevation = Smooth(0.0, kElevFadeIn, out->elevation) *
-                        (1.0 - Smooth(kElevFadeOutStart, kElevFadeOutEnd, out->elevation));
+  // The sky's own sun constant (the disc the player sees) places the sun when a sky draw has told it and it
+  // is the sun of the light's axes (shafts_sun.h JudgeSky); else the light does.
+  const bool sky_at_hand = sky_have_ && frame_ - sky_frame_ <= kSkyMaxAge;
+  const double sky[3] = {double(sky_dir_[0]), double(sky_dir_[1]), double(sky_dir_[2])};
+  shafts_sun::SkyJudgement judged = shafts_sun::JudgeSky(sky_at_hand, sky, toward_light);
+  out->sky_age = sky_at_hand ? frame_ - sky_frame_ : 0;
+  shafts_sun::Placement used = light;
+  if (judged.state == shafts_sun::SkyState::kUsed ||
+      judged.state == shafts_sun::SkyState::kFarFromLight) {
+    if (shafts_sun::WorldToView(rotation, sky, out->sky_to_sun)) {
+      const shafts_sun::Placement placed = shafts_sun::Place(out->sky_to_sun, tan_x, tan_y);
+      out->sky_ndc[0] = placed.ndc[0];
+      out->sky_ndc[1] = placed.ndc[1];
+      out->sky_uv[0] = float(placed.uv[0]);
+      out->sky_uv[1] = float(placed.uv[1]);
+      if (judged.state == shafts_sun::SkyState::kUsed) {
+        used = placed;
+        out->from_sky = true;
+      }
+    } else {
+      judged.state = shafts_sun::SkyState::kUnusable;
+    }
+  }
+  out->sky_state = judged.state;
+  out->sky_elevation = judged.elevation;
+  out->sky_light_angle = judged.light_angle;
+  out->ndc[0] = used.ndc[0];
+  out->ndc[1] = used.ndc[1];
+  out->uv[0] = float(used.uv[0]);
+  out->uv[1] = float(used.uv[1]);
+
+  out->fade_elevation = shafts_sun::ElevationFade(out->elevation, out->from_sky, judged.elevation);
   out->fade_wet = 1.0 - std::clamp((out->wetness - kWetStart) / (kWetEnd - kWetStart), 0.0, 1.0);
-  out->fade_view = view_fade;
+  out->fade_view = shafts_sun::ViewFade(used);
   out->strength = float(out->fade_elevation * out->fade_wet * out->fade_view);
 
   // The sun's colour, its largest channel 1 (the strength is the fades' and the setting's).
@@ -647,6 +697,66 @@ bool SunShafts::ComputeSun(Sun* out) const {
   }
   out->valid = true;
   return true;
+}
+
+std::string SunShafts::SkyText(const Sun& sun) {
+  switch (sun.sky_state) {
+    case shafts_sun::SkyState::kNotSeen:
+      return "the sky's sun constant (PS c65): not told by any sky draw";
+    case shafts_sun::SkyState::kUnusable:
+      return "the sky's sun constant (PS c65): not a direction";
+    case shafts_sun::SkyState::kFarFromLight:
+    case shafts_sun::SkyState::kUsed:
+      break;
+  }
+  return std::format(
+      "the sky's sun constant (PS c65, told {} frames ago): height {:.1f} deg, {:.1f} deg from the "
+      "light's sun, in view space ({:+.3f}, {:+.3f}, {:+.3f}), in the picture at ({:.2f}, {:.2f}) "
+      "(ndc {:+.2f}, {:+.2f}){}",
+      sun.sky_age, sun.sky_elevation, sun.sky_light_angle, sun.sky_to_sun[0], sun.sky_to_sun[1],
+      sun.sky_to_sun[2], sun.sky_uv[0], sun.sky_uv[1], sun.sky_ndc[0], sun.sky_ndc[1],
+      sun.sky_state == shafts_sun::SkyState::kUsed
+          ? ""
+          : std::format(", NOT USED (further than {:.0f} deg from the light's sun)",
+                        shafts_sun::kMaxSkyLightAngle));
+}
+
+void SunShafts::LogSkySun(const Sun& sun) {
+  switch (sun.sky_state) {
+    case shafts_sun::SkyState::kUsed:
+      sky_missing_frames_ = 0;
+      if (!sky_used_logged_) {
+        sky_used_logged_ = true;
+        REXLOG_INFO("[gpu] shafts: the sun's place in the picture comes from the sky's own sun "
+                    "constant (PS c65 of the sky shader {:016x}, {} sky draws told it so far): {}; "
+                    "the light's sun (VS c16, height {:.1f} deg) would be at ({:.2f}, {:.2f}) of the "
+                    "picture",
+                    sky_ps_, sky_draws_total_, SkyText(sun), sun.elevation, sun.light_uv[0],
+                    sun.light_uv[1]);
+      }
+      break;
+    case shafts_sun::SkyState::kFarFromLight:
+      sky_missing_frames_ = 0;
+      if (sky_far_logged_ < kSkyLogsMax) {
+        ++sky_far_logged_;
+        REXLOG_WARN("[gpu] shafts: frame {}: {}; the light's place ({:.2f}, {:.2f}) is used "
+                    "(logged {} of at most {})",
+                    frame_, SkyText(sun), sun.light_uv[0], sun.light_uv[1], sky_far_logged_,
+                    kSkyLogsMax);
+      }
+      break;
+    case shafts_sun::SkyState::kUnusable:
+    case shafts_sun::SkyState::kNotSeen:
+      if (++sky_missing_frames_ == kSkyMissingFramesToWarn &&
+          sky_missing_logged_ < kSkyLogsMax - 1) {
+        ++sky_missing_logged_;
+        REXLOG_WARN("[gpu] shafts: frame {}: {} for {} frames in a row ({} sky draws seen in all): "
+                    "the light's place ({:.2f}, {:.2f}) is used",
+                    frame_, SkyText(sun), kSkyMissingFramesToWarn, sky_draws_total_,
+                    sun.light_uv[0], sun.light_uv[1]);
+      }
+      break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +824,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
     return false;
   }
   sun_ = sun;
+  LogSkySun(sun);
   const Mode mode = mode_;
   const float intensity = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_intensity), 0.0, 8.0));
   const float strength = sun.strength * intensity;
@@ -746,6 +857,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   plan.colour.samples = summary.source_key.samples;
   plan.sun_uv[0] = sun.uv[0];
   plan.sun_uv[1] = sun.uv[1];
+  plan.sun_from_sky = sun.from_sky;
   for (int i = 0; i < 3; ++i) {
     plan.tint[i] = sun.colour[i] * strength * kGain;
   }
@@ -979,10 +1091,11 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   if (!first_run_logged_) {
     first_run_logged_ = true;
     REXLOG_INFO("[gpu] shafts: the first sun shafts pass: {} at {}x{} (images {}x{}), {} steps, {} "
-                "host samples, the sun at ({:.2f}, {:.2f}) of the picture, {}, at {} (the debug "
-                "cvars mcla_gpu_sun_shafts_intensity, _density, _threshold tune the look)",
+                "host samples, the sun at ({:.2f}, {:.2f}) of the picture (from {}), {}, at {} (the "
+                "debug cvars mcla_gpu_sun_shafts_intensity, _density, _threshold tune the look)",
                 ModeName(mode_), plan.render[0], plan.render[1], plan.image[0], plan.image[1],
                 plan.steps, plan.host_samples, plan.sun_uv[0], plan.sun_uv[1],
+                plan.sun_from_sky ? "the sky's sun constant" : "the light's direction",
                 plan.view != 0 ? "a debug view" : "added to the colour",
                 shafts_anchor::AnchorName(anchor_));
   }
@@ -1066,6 +1179,7 @@ void SunShafts::EndSkyFrame() {
   const bool was_fallen_back = policy_.fallen_back();
   policy_.EndOfFrame(anchor_, copy_seen_);
   interval_.Sky(anchor_, composited_, copy_seen_);
+  interval_.SunPlacedBy(pending_.sun_from_sky);
   if (!composited_) {
     ++lost_;
   }
@@ -1097,12 +1211,14 @@ void SunShafts::LogInterval() {
     return;
   }
   REXLOG_INFO("[gpu] shafts (interval): {} frames, the sun gave shafts in {}: added {} times at {}, {} "
-              "at {}, {} not at all; no copy of the main colour came after the first point in {}; "
-              "now adding at {}{} ({} falls back and {} returns so far; {} frames with shafts in all, "
-              "{} at the end of the scene, {} at the mid-scene point, {} lost)",
+              "at {}, {} not at all; the sun's place came from the sky's sun constant in {} of them "
+              "and from the light's direction in {}; no copy of the main colour came after the first "
+              "point in {}; now adding at {}{} ({} falls back and {} returns so far; {} frames with "
+              "shafts in all, {} at the end of the scene, {} at the mid-scene point, {} lost)",
               interval_.frames, interval_.sky, interval_.end_of_scene,
               shafts_anchor::AnchorName(shafts_anchor::Anchor::kEndOfScene), interval_.mid_scene,
               shafts_anchor::AnchorName(shafts_anchor::Anchor::kMidScene), interval_.lost,
+              interval_.sun_by_sky, interval_.sun_by_light,
               interval_.copies_missing, shafts_anchor::AnchorName(policy_.Choose(
                   REXCVAR_GET(mcla_gpu_sun_shafts_early))),
               REXCVAR_GET(mcla_gpu_sun_shafts_early)
@@ -1153,6 +1269,7 @@ void SunShafts::OnPresent() {
   vs_view_inverse_draws_ = 0;
   pending_ = Pending{};
   sun_ = Sun{};
+  sky_draws_ = 0;
   outcome_ = Outcome::kNoTrigger;
   recorded_this_frame_ = false;
   sky_taken_ = false;
@@ -1170,24 +1287,31 @@ void SunShafts::Census() {
   ++census_frames_logged_;
   if (!sun_.valid) {
     REXLOG_INFO("{} frame {}: {} view, {} (mcla_gpu_sun_shafts = {}); main view colour draws {} "
-                "before the first point; {} first points in all, {} without a camera",
+                "before the first point; {} first points in all, {} without a camera; {} sky draws "
+                "told the sun disc's direction (this frame {})",
                 kPrefix, frame_, pause_view_ ? "pause/map" : "play", OutcomeName(outcome_),
-                ModeName(mode_), main_draws_, triggers_, skipped_no_camera_);
+                ModeName(mode_), main_draws_, triggers_, skipped_no_camera_, sky_draws_total_,
+                sky_draws_);
     return;
   }
-  REXLOG_INFO("{} frame {}: {}; sun height {:.1f} deg, wetness {:.3f}, in view space ({:+.3f}, "
-              "{:+.3f}, {:+.3f}), in the picture at ({:.2f}, {:.2f}) (ndc {:+.2f}, {:+.2f}), the "
+  REXLOG_INFO("{} frame {}: {}; sun height {:.1f} deg (the light's, VS c16), wetness {:.3f}, in view "
+              "space ({:+.3f}, {:+.3f}, {:+.3f}), in the picture at ({:.2f}, {:.2f}) (ndc {:+.2f}, "
+              "{:+.2f}) by the light; {}; the sun's place used: ({:.2f}, {:.2f}) from {}; the "
               "rotation from {}; fades: height {:.2f}, rain {:.2f}, view {:.2f}, strength {:.3f}; "
               "{} first points, {} gated, {} lost, {} runs ({} at the end of the scene, {} at the "
-              "mid-scene point); anchor of this frame: {}{}, copy of the main colour {}",
+              "mid-scene point); anchor of this frame: {}{}, copy of the main colour {}; {} sky draws "
+              "told the sun disc's direction in all (this frame {})",
               kPrefix, frame_, OutcomeName(outcome_), sun_.elevation, sun_.wetness,
-              sun_.to_sun[0], sun_.to_sun[1], sun_.to_sun[2], sun_.uv[0], sun_.uv[1], sun_.ndc[0],
-              sun_.ndc[1], sun_.vertex_pose ? "the vertex constants" : "the previous camera",
+              sun_.to_sun[0], sun_.to_sun[1], sun_.to_sun[2], sun_.light_uv[0], sun_.light_uv[1],
+              sun_.light_ndc[0], sun_.light_ndc[1], SkyText(sun_), sun_.uv[0], sun_.uv[1],
+              sun_.from_sky ? "the sky's sun constant" : "the light's direction",
+              sun_.vertex_pose ? "the vertex constants" : "the previous camera",
               sun_.fade_elevation, sun_.fade_wet, sun_.fade_view, sun_.strength, triggers_,
               gated_, lost_, runs_, runs_end_, runs_mid_,
               sky_taken_ ? shafts_anchor::AnchorName(anchor_) : "none (the sky was not taken)",
               policy_.fallen_back() ? " (the fall-back)" : "",
-              sky_taken_ ? (copy_seen_ ? "seen" : "NOT seen") : "not watched");
+              sky_taken_ ? (copy_seen_ ? "seen" : "NOT seen") : "not watched", sky_draws_total_,
+              sky_draws_);
 }
 
 }  // namespace mcla::gpu

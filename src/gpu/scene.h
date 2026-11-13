@@ -335,8 +335,9 @@ class Scene {
   bool UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
-  // draws are told).
-  void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d);
+  // draws are told), with the pixel shader's identity (the sky's draws tell the shafts where the sun is).
+  void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
+                            uint64_t ps_identity);
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;

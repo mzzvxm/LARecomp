@@ -41,13 +41,22 @@
 //           (ONE, ONE on every sample of the multisampled target, the alpha untouched)
 // Nothing is recorded, and nothing costs, in a frame where the sun gives no shafts.
 //
-// THE SUN: its direction and colour are the game's own constants as the ambient occlusion reads them
-// (VS c16 the direction the light travels, PS c39 the sun colour), taken from the draws of the main
-// view before the first point; the camera is the previous frame's (it exists only at the game's motion
-// blur draw, after both points), or the frame's own view from the vertex constants once those have
-// matched the anchor's (as ao.h: vs_pose_trusted_). The strength is the product of
-//   elevation  0 at and under the horizon, full from 2.5 degrees, falling to none at 45 degrees (the
-//              sun's elevation is asin of minus c16.y): dawn and dusk, where the cascades are off
+// THE SUN: the game has two (shafts_sun.h). The light's direction and colour are the game's own constants
+// as the ambient occlusion reads them (VS c16 the direction the light travels, PS c39 the sun colour),
+// taken from the draws of the main view before the first point. The sun the player sees is the sky's:
+// PS c65 `SunDirection` of the sky shaders (xrage_atmoscatt_clouds ps_main*, ps_sunonly; the direction
+// toward the sun), told by the sky's own draws (NoteSkyDraw). The two differ: at 17.7 h the light is 18.7
+// degrees above the horizon and the disc about 2 (ports/run/w1s-survey-h17_7-both), so a blur toward the
+// light's place converged above the picture. The rays radiate from the disc: THE PLACE IN THE PICTURE
+// comes from the sky's constant, and from the light when no sky draw has told it, when it is not a
+// direction or when it is more than shafts_sun::kMaxSkyLightAngle from the light (not the sun in these
+// axes). The camera is the previous frame's (it exists only at the game's motion blur draw, after both
+// points), or the frame's own view from the vertex constants once those have matched the anchor's (as
+// ao.h: vs_pose_trusted_). The strength is the product of
+//   elevation  0 at and under the horizon, full from 2.5 degrees, falling to none at 45 degrees: the
+//              light's elevation (asin of minus c16.y) says how much sunlight there is and when the day
+//              is too high for shafts, and the fade in is of the lower of the light's and the sky's sun
+//              (a disc at the horizon gives none): dawn and dusk, where the cascades are off
 //              (the census: none at 6 h, 18 h and 19 h to night) and a screen-space shaft is the only
 //              possible one; noon, 60 degrees, shows none and records nothing
 //   wetness    VS c43.x (gReflectionParams.x, 0.095 dry, 1.17 in rain): none in rain, where the sky is
@@ -80,6 +89,7 @@
 #include "records.h"
 #include "resolve.h"
 #include "shafts_anchor.h"
+#include "shafts_sun.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 
@@ -113,8 +123,9 @@ class SunShafts {
   bool wants_draws() const { return mode_ != Mode::kOff; }
 
   // A prepared draw of the main view (play or pause/map, temporal_identities.h MatchMainView), with
-  // the draw's own banks.
-  void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
+  // the draw's own banks and its pixel shader's identity (the sky's draws tell where the sun is).
+  void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks,
+                  uint64_t ps_identity);
   // The game's motion blur draw: this frame's camera, which the next frame's shafts use.
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A resolve, BEFORE ResolveCache::Execute makes its copy, with `list` the frame's open list
@@ -181,6 +192,7 @@ class SunShafts {
     uint32_t render[2] = {};       // the picture in host pixels
     uint32_t image[2] = {};        // the sky and shaft images' size
     float sun_uv[2] = {};
+    bool sun_from_sky = false;     // the sun's place came from the sky's constant (else the light's)
     float tint[3] = {};            // the light's colour times its strength
     uint32_t steps = 0;
     float density = 0.9f;
@@ -192,19 +204,36 @@ class SunShafts {
   // The sun of a frame: where it is in the picture and how strongly it shines.
   struct Sun {
     bool valid = false;
-    double elevation = 0.0;        // degrees
+    double elevation = 0.0;        // degrees, the light's (c16)
     double wetness = 0.0;
-    double to_sun[3] = {};         // view space, x right, y up, z forward
-    double ndc[2] = {};
+    double to_sun[3] = {};         // the light's sun in view space, x right, y up, z forward
+    double light_ndc[2] = {};      // ... and where the light puts it in the picture
+    float light_uv[2] = {};
+    // The sky's own sun constant (PS c65 of the sky draws): what became of it, and where it puts the sun.
+    shafts_sun::SkyState sky_state = shafts_sun::SkyState::kNotSeen;
+    double sky_elevation = 0.0;    // degrees
+    double sky_light_angle = 0.0;  // degrees between the sky's sun and the light's
+    double sky_to_sun[3] = {};     // view space (set when the sky's constant is a direction)
+    double sky_ndc[2] = {};
+    float sky_uv[2] = {};
+    uint64_t sky_age = 0;          // frames since a sky draw told it (0: this frame)
+    bool from_sky = false;         // the sun's place below is the sky's
+    double ndc[2] = {};            // the place used
+    float uv[2] = {};
     double fade_elevation = 0.0;
     double fade_wet = 0.0;
     double fade_view = 0.0;
-    float uv[2] = {};
     float colour[3] = {};          // the sun's colour, the largest channel 1
     float strength = 0.0f;         // the product of the fades
     bool vertex_pose = false;      // the rotation came from the vertex constants
   };
   bool ComputeSun(Sun* out) const;
+  // A draw of the main view whose pixel shader is one of the sky's: its PS c65 is the sun disc's direction.
+  void NoteSkyDraw(uint64_t ps_identity, const ConstantBanks::Banks& banks);
+  // What the log says about the sky's sun constant, a few times and no more: first used, further from the
+  // light than it may be, never told.
+  void LogSkySun(const Sun& sun);
+  static std::string SkyText(const Sun& sun);
 
   // Why a frame had no shafts (the census says it).
   enum class Outcome : uint8_t {
@@ -296,6 +325,20 @@ class SunShafts {
   bool have_previous_ = false;
   uint64_t previous_frame_ = 0;
   bool vs_pose_trusted_ = false;
+
+  // The sky's sun constant, told by the sky's draws and kept from frame to frame (the hour moves slowly):
+  // the direction toward the sun, the frame and the shader that told it, how many sky draws told it this
+  // frame and in all, and what the log has said.
+  float sky_dir_[3] = {};
+  bool sky_have_ = false;
+  uint64_t sky_frame_ = 0;
+  uint64_t sky_ps_ = 0;
+  uint32_t sky_draws_ = 0;
+  uint64_t sky_draws_total_ = 0;
+  uint32_t sky_missing_frames_ = 0;  // frames in a row with a sun to place and no sky constant
+  uint32_t sky_missing_logged_ = 0;
+  uint32_t sky_far_logged_ = 0;
+  bool sky_used_logged_ = false;
 
   // The GPU side.
   HostPasses* passes_ = nullptr;
