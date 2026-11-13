@@ -8,6 +8,8 @@
 
 #include "backend_impl.h"
 
+#include <algorithm>
+#include <concepts>
 #include <cstring>
 #include <format>
 #include <iterator>
@@ -18,6 +20,7 @@
 
 #include <plume_vulkan.h>
 
+#include "device_fault_format.h"
 #include "temporal_dlss.h"
 
 namespace plume {
@@ -182,8 +185,170 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   return out;
 }
 
-int64_t DeviceRemovedReason(plume::RenderDevice*) {
-  return 0;
+namespace {
+
+// VulkanDevice::deviceFaultSupported exists only in a Plume that enables VK_EXT_device_fault
+// (Plume branch fix/vulkan-device-fault). This file builds against the pinned Plume with or
+// without it: without, the fault report is left out and the log line says so.
+template <class T>
+concept HasDeviceFaultFlag = requires(const T& device) {
+  { device.deviceFaultSupported } -> std::convertible_to<bool>;
+};
+constexpr bool kPlumeEnablesDeviceFault = HasDeviceFaultFlag<plume::VulkanDevice>;
+
+// A template, so that the branch the Plume at hand cannot compile is not looked at.
+template <class T>
+bool DeviceFaultEnabled(const T& device) {
+  if constexpr (HasDeviceFaultFlag<T>) {
+    return device.deviceFaultSupported;
+  } else {
+    return false;
+  }
+}
+
+// Most entries read from the driver's fault report (it has a handful at most).
+constexpr uint32_t kMaxFaultEntries = 32;
+
+}  // namespace
+
+// How a Vulkan device loss reaches the renderer. Plume's queue submit, fence wait, acquire and
+// present each come back with VK_ERROR_DEVICE_LOST on a lost device, but Plume prints it to stderr
+// (submit, wait) or turns it into a plain false (acquire, present), and keeps no state. Changing
+// that in Plume is not needed: a loss is sticky, so a status call on any object of the device
+// answers VK_ERROR_DEVICE_LOST from the moment one call has, and asking right after each call
+// (Device::CheckLost, from FrameRing and the swap chain's failure paths) names the call that was
+// the first to see it. The object is a fence nothing ever signals: vkGetFenceStatus is the status
+// call every driver implements with the device-lost check (the spec lists VK_ERROR_DEVICE_LOST
+// among its results, as for vkGetEventStatus, which was the other candidate).
+void* CreateLossProbe(plume::RenderDevice* device) {
+  static_assert(sizeof(VkFence) == sizeof(void*), "the probe is a VkFence held as a pointer");
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->vk == VK_NULL_HANDLE || !vkCreateFence || !vkGetFenceStatus ||
+      !vkDestroyFence) {
+    return nullptr;
+  }
+  VkFenceCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  VkFence fence = VK_NULL_HANDLE;
+  const VkResult result = vkCreateFence(dev->vk, &info, nullptr, &fence);
+  if (result != VK_SUCCESS) {
+    REXLOG_WARN("[gpu] the device-loss probe fence could not be made ({}): a device loss will not "
+                "be noticed on Vulkan",
+                device_fault::VkResultName(static_cast<int32_t>(result)));
+    return nullptr;
+  }
+  return reinterpret_cast<void*>(fence);
+}
+
+void DestroyLossProbe(plume::RenderDevice* device, void* probe) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (dev && probe && dev->vk != VK_NULL_HANDLE) {
+    vkDestroyFence(dev->vk, reinterpret_cast<VkFence>(probe), nullptr);
+  }
+}
+
+int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || !probe || dev->vk == VK_NULL_HANDLE) {
+    return 0;
+  }
+  // VK_NOT_READY while the device is alive (nothing signals the fence). Out of memory and the
+  // like are not a loss.
+  const VkResult result = vkGetFenceStatus(dev->vk, reinterpret_cast<VkFence>(probe));
+  return result == VK_ERROR_DEVICE_LOST ? static_cast<int64_t>(result) : 0;
+}
+
+// VK_EXT_device_fault: a description, the faulting addresses and the vendor's own fault codes,
+// from the driver, once a command has returned VK_ERROR_DEVICE_LOST (the probe's status call is
+// one). Asked for once, by Device::CheckLost, on whichever thread saw the loss first.
+//
+// Why not VK_NV_device_diagnostic_checkpoints or VK_AMD_buffer_marker (the other two ways to learn
+// which pass a hang was in): each needs a marker recorded into every pass of every frame, through
+// a new method on Plume's backend-neutral command list (and a persistent host-visible buffer for
+// AMD's), which costs on the 2-CU iGPU and the Deck where frames are tight; each works for one
+// vendor family only (NVIDIA; AMD and Mesa); and each answers with the last marker, which only
+// helps when the renderer also names its passes -- it keeps labels only under
+// mcla_gpu_pass_timing. device_fault costs nothing until a loss; the pass labels of the frames in
+// flight (Renderer::ReportDeviceLost) cover the rest. Worth revisiting only if the fault report
+// proves empty on the drivers that matter.
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->vk == VK_NULL_HANDLE) {
+    return {};
+  }
+  if (!DeviceFaultEnabled(*dev)) {
+    return {kPlumeEnablesDeviceFault
+                ? "device fault: VK_EXT_device_fault is not offered by this driver: the result "
+                  "code is all it says"
+                : "device fault: this Plume does not enable VK_EXT_device_fault (its branch "
+                  "fix/vulkan-device-fault does): the result code is all it says"};
+  }
+  const auto get = reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(
+      vkGetDeviceProcAddr ? vkGetDeviceProcAddr(dev->vk, "vkGetDeviceFaultInfoEXT") : nullptr);
+  if (!get) {
+    return {"device fault: vkGetDeviceFaultInfoEXT could not be loaded"};
+  }
+  VkDeviceFaultCountsEXT counts = {};
+  counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+  VkResult result = get(dev->vk, &counts, nullptr);
+  if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+    return {std::format("device fault: vkGetDeviceFaultInfoEXT (counts) answered {}",
+                        device_fault::VkResultName(static_cast<int32_t>(result)))};
+  }
+  device_fault::FaultReport report;
+  report.address_count = counts.addressInfoCount;
+  report.vendor_count = counts.vendorInfoCount;
+  report.vendor_binary_bytes = static_cast<uint64_t>(counts.vendorBinarySize);
+
+  std::vector<VkDeviceFaultAddressInfoEXT> addresses(
+      std::min(counts.addressInfoCount, kMaxFaultEntries));
+  std::vector<VkDeviceFaultVendorInfoEXT> vendors(
+      std::min(counts.vendorInfoCount, kMaxFaultEntries));
+  VkDeviceFaultCountsEXT capacity = {};
+  capacity.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+  capacity.addressInfoCount = static_cast<uint32_t>(addresses.size());
+  capacity.vendorInfoCount = static_cast<uint32_t>(vendors.size());
+  capacity.vendorBinarySize = 0;  // the crash dump is not read (and its feature is not enabled)
+  VkDeviceFaultInfoEXT info = {};
+  info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+  info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+  info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
+  info.pVendorBinaryData = nullptr;
+  result = get(dev->vk, &capacity, &info);
+  if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+    return {std::format("device fault: vkGetDeviceFaultInfoEXT answered {}",
+                        device_fault::VkResultName(static_cast<int32_t>(result)))};
+  }
+  report.description.assign(info.description, strnlen(info.description, sizeof(info.description)));
+  const size_t address_count = std::min<size_t>(capacity.addressInfoCount, addresses.size());
+  for (size_t i = 0; i < address_count; ++i) {
+    report.addresses.push_back({static_cast<uint32_t>(addresses[i].addressType),
+                                static_cast<uint64_t>(addresses[i].reportedAddress),
+                                static_cast<uint64_t>(addresses[i].addressPrecision)});
+  }
+  const size_t vendor_count = std::min<size_t>(capacity.vendorInfoCount, vendors.size());
+  for (size_t i = 0; i < vendor_count; ++i) {
+    report.vendors.push_back(
+        {std::string(vendors[i].description,
+                     strnlen(vendors[i].description, sizeof(vendors[i].description))),
+         vendors[i].vendorFaultCode, vendors[i].vendorFaultData});
+  }
+  return device_fault::FormatFaultReport(report);
+}
+
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  const char* fault =
+      !dev ? "no device"
+      : DeviceFaultEnabled(*dev)
+          ? "VK_EXT_device_fault is on: a loss logs the driver's fault report"
+      : kPlumeEnablesDeviceFault ? "VK_EXT_device_fault is not offered by this driver"
+                                 : "VK_EXT_device_fault is not enabled (this Plume does not ask for it)";
+  return std::format(
+      "a loss is read from {}; {}",
+      probe ? "a fence status call after every submit, wait and present"
+            : "nothing (the probe fence could not be made: a loss will go unnoticed)",
+      fault);
 }
 
 bool QueryPresentStatistics(plume::RenderSwapChain*, PresentStatistics&) {

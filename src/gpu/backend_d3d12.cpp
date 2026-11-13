@@ -335,13 +335,29 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   return out;
 }
 
-int64_t DeviceRemovedReason(plume::RenderDevice* device) {
+void* CreateLossProbe(plume::RenderDevice*) {
+  return nullptr;  // GetDeviceRemovedReason needs no object
+}
+
+void DestroyLossProbe(plume::RenderDevice*, void*) {}
+
+int64_t DeviceRemovedReason(plume::RenderDevice* device, void*) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->d3d) {
     return 0;
   }
   const HRESULT reason = dev->d3d->GetDeviceRemovedReason();
   return FAILED(reason) ? static_cast<int64_t>(static_cast<uint32_t>(reason)) : 0;
+}
+
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice*) {
+  // DRED has to be enabled before the device is made (ID3D12DeviceRemovedExtendedDataSettings),
+  // which this renderer does not do; the reason code is all there is.
+  return {};
+}
+
+std::string DescribeLossReporting(plume::RenderDevice*, void*) {
+  return "a loss is read from GetDeviceRemovedReason; no removal data (DRED) is collected";
 }
 
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {

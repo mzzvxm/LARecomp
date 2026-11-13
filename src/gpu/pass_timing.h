@@ -64,6 +64,19 @@ class PassTiming {
   // The labels by GPU time per frame since the last call, then a new window.
   std::string TakeSummary();
 
+  // The passes of the frames whose command lists may still have been on the GPU, in the order
+  // they were recorded -- the oldest frame in flight first, the frame being recorded last: what
+  // the log lists when the device is lost (Renderer::ReportDeviceLost). Only a measured run
+  // (mcla_gpu_pass_timing) has the labels: empty without it. A frame lists its marks as they
+  // were written, so the GPU's own position in it is unknown; the last label is the newest pass
+  // of that frame. Render thread.
+  struct RecordedFrame {
+    uint32_t slot = 0;
+    bool open = false;  // the frame that was being recorded (the others were submitted)
+    std::vector<std::string> labels;
+  };
+  std::vector<RecordedFrame> RecordedFrames() const;
+
  private:
   bool Grow(Device& device, uint32_t marks);
   void Harvest(uint32_t slot);

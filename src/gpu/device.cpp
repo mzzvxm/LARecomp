@@ -2,6 +2,7 @@
 
 #include "device.h"
 
+#include "device_fault_format.h"
 #include "format.h"
 #include "gpu_class.h"
 #include "temporal_dlss.h"
@@ -197,6 +198,9 @@ bool Device::Open(const Options& options) {
     return false;
   }
 
+  loss_probe_ = backend::CreateLossProbe(device_.get());
+  REXLOG_INFO("[gpu] device loss: {}", backend::DescribeLossReporting(device_.get(), loss_probe_));
+
   const auto& caps = device_->getCapabilities();
   const auto vram = QueryVideoMemory();
   REXLOG_INFO(
@@ -233,6 +237,10 @@ void Device::Shutdown() {
     report.Capture(device_.get());
   }
   queue_.reset();
+  if (device_) {
+    backend::DestroyLossProbe(device_.get(), loss_probe_);
+  }
+  loss_probe_ = nullptr;
   device_.reset();
   interface_.reset();
   report.ReportAndRelease();
@@ -461,15 +469,19 @@ bool Device::CheckLost(const char* context) {
   if (!device_) {
     return false;
   }
-  const int64_t reason = backend::DeviceRemovedReason(device_.get());
+  const int64_t reason = backend::DeviceRemovedReason(device_.get(), loss_probe_);
   if (reason == 0) {
     return false;
   }
   if (!lost_.exchange(true, std::memory_order_acq_rel)) {
-    // 0x887A0005 removed/reset, 0x887A0006 hung (TDR), 0x887A0007 internal
-    // error, 0x887A0020 driver internal error.
-    REXLOG_ERROR("[gpu] device lost, noticed at {}: reason {:#010x}", context ? context : "?",
-                 static_cast<uint32_t>(reason));
+    // The first thread to see it logs, once; the others already see IsLost().
+    REXLOG_ERROR("[gpu] device lost, noticed at {}: reason {} (frame {}, {} on {})",
+                 context ? context : "?",
+                 device_fault::RemovedReasonText(ActiveBackend() == Backend::kVulkan, reason),
+                 frame(), BackendName(), device_->getDescription().name);
+    for (const std::string& line : backend::DescribeDeviceFault(device_.get())) {
+      REXLOG_ERROR("[gpu] {}", line);
+    }
   }
   return true;
 }

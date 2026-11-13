@@ -43,7 +43,11 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
-int64_t DeviceRemovedReason(plume::RenderDevice* device);
+void* CreateLossProbe(plume::RenderDevice* device);
+void DestroyLossProbe(plume::RenderDevice* device, void* probe);
+int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
 std::string DefaultAdapterName();
 RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
@@ -86,7 +90,11 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
-int64_t DeviceRemovedReason(plume::RenderDevice* device);
+void* CreateLossProbe(plume::RenderDevice* device);
+void DestroyLossProbe(plume::RenderDevice* device, void* probe);
+int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
 std::string DefaultAdapterName();
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);

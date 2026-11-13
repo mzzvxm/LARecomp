@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <plume_render_interface.h>
 
@@ -193,10 +194,33 @@ struct VideoMemory {
 };
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 
-// The device-removed reason, or 0 while the device is alive. Vulkan reports
-// loss per call (VK_ERROR_DEVICE_LOST), which Plume does not surface, so it
-// answers 0 there; the device also latches loss it sees on its own paths.
-int64_t DeviceRemovedReason(plume::RenderDevice* device);
+// What DeviceRemovedReason polls, made once after the device exists and given back to it before
+// the device is destroyed. Vulkan: a fence nothing ever signals, whose status call answers
+// VK_NOT_READY while the device is alive and VK_ERROR_DEVICE_LOST once it is gone (Plume's own
+// calls get that answer too, but print it to stderr and return nothing the renderer can see).
+// D3D12 needs no object: null, and nothing to destroy.
+void* CreateLossProbe(plume::RenderDevice* device);
+void DestroyLossProbe(plume::RenderDevice* device, void* probe);
+
+// The device-removed reason, or 0 while the device is alive. D3D12: the HRESULT of
+// GetDeviceRemovedReason (a DXGI_ERROR_DEVICE_* code). Vulkan: the VkResult (-4,
+// VK_ERROR_DEVICE_LOST) that the probe's status call returned; any other answer of that call is
+// not a loss and gives 0. Cheap enough to ask after every submit and every wait. Any thread.
+// device_fault_format.h RemovedReasonText prints either.
+int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
+
+// What the driver can say about a device that DeviceRemovedReason found lost, as log lines
+// (device_fault_format.h FormatFaultReport): Vulkan with VK_EXT_device_fault enabled on the device
+// (Plume's VulkanDevice::deviceFaultSupported); one line saying why there is nothing otherwise.
+// Empty on D3D12 (its removal data, DRED, has to be switched on before the device is made: the
+// legacy runtime's context.cpp does, this renderer does not). Call it only after a loss was
+// reported by DeviceRemovedReason: the extension allows nothing else.
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
+
+// One line for the log at start-up: how a loss of this device will be noticed, and whether
+// DescribeDeviceFault has anything to add ("VK_EXT_device_fault is on", "... is not offered by
+// this driver", "... is not in the pinned Plume").
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
 
 // What the window's presentation reports about its own presents (gpu.h
 // PresentObservation). D3D12: GetLastPresentCount, and GetFrameStatistics when

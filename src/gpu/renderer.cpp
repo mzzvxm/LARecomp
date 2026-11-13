@@ -17,6 +17,7 @@
 #include <rex/ui/window.h>
 
 #include "backend.h"
+#include "device_fault_format.h"
 #include "gpu.h"
 #include "guest_capture.h"
 #include "hdr.h"
@@ -810,6 +811,7 @@ void Renderer::SubmitFrameWithoutPresent() {
 
 void Renderer::OnIdle() {
   if (shutting_down_.load(std::memory_order_acquire) || device_.IsLost()) {
+    ReportDeviceLost();
     return;
   }
   if (guest_has_presented_ &&
@@ -1147,6 +1149,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   tail_open_ = false;
   const latency::IdlePresentScope idle_scope(source == PresentSource::kIdle);
   if (device_.IsLost()) {
+    ReportDeviceLost();
     // Nothing recorded will run: drop the guest frame being recorded.
     if (frames_.is_open()) {
       scene_.EndFrame(nullptr);
@@ -1702,6 +1705,32 @@ void Renderer::ReportFrameStats() {
   overlay_draws_ = 0;
   for (uint64_t& count : records_) {
     count = 0;
+  }
+}
+
+void Renderer::ReportDeviceLost() {
+  if (device_lost_reported_ || !device_.IsLost()) {
+    return;
+  }
+  device_lost_reported_ = true;
+  // What the renderer does about it is what it already did on D3D12: nothing more is submitted or
+  // presented (Device::IsLost stops every creation, submit and wait), the guest runs on.
+  REXLOG_ERROR(
+      "[gpu] device lost: no more work is issued and nothing more is presented (the game runs on "
+      "without a picture; it has to be restarted) | {} presents ({} guest, {} idle), {} skipped, "
+      "device frame {}",
+      presented_, guest_presents_, idle_presents_, skipped_, device_.frame());
+  const std::vector<PassTiming::RecordedFrame> frames = pass_timing_.RecordedFrames();
+  if (frames.empty()) {
+    REXLOG_ERROR(
+        "[gpu] device lost: the passes of the last frames are not kept (mcla_gpu_pass_timing is "
+        "off; with it on, they are listed here, oldest frame first)");
+    return;
+  }
+  for (const PassTiming::RecordedFrame& frame : frames) {
+    REXLOG_ERROR("[gpu] device lost: frame in slot {} ({}), {} passes: {}", frame.slot,
+                 frame.open ? "being recorded" : "submitted", frame.labels.size(),
+                 device_fault::FormatLabelTrail(frame.labels, 12));
   }
 }
 
