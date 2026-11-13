@@ -20,7 +20,7 @@ REXCVAR_DEFINE_STRING(
     "rest). "
     "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...'. Only "
     "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
-    "detail, contact shadows, sun shafts, dawn shadows, bounce light, cars in road reflections); "
+    "detail, contact shadows, sun shafts, dawn shadows, bounce light); "
     "a choice of the player's own is never changed. Live.")
     .allowed({"auto", "low", "mid", "high"})
     .debug_only()

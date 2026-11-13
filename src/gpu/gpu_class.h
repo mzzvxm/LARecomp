@@ -57,9 +57,8 @@ enum class Effect : uint8_t {
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, low, high
   kDawnShadows,           // mcla_gpu_dawn_shadows       auto, off, on
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
-  kRoadReflectionCars,    // mcla_gpu_road_reflection_cars  auto, off, on
 };
-inline constexpr int kEffectCount = 9;
+inline constexpr int kEffectCount = 8;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -75,7 +74,6 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
     {"mcla_gpu_dawn_shadows", "off", "on", "on"},
     {"mcla_gpu_ssgi", "off", "off", "low"},
-    {"mcla_gpu_road_reflection_cars", "off", "off", "on"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little
