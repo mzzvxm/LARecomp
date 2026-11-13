@@ -158,6 +158,9 @@ set(LARECOMP_SOURCES
     src/mc_engine/texture_dump.cpp
     src/mc_engine/boot_progress.cpp
 
+    # Trailer toolkit: the HUD track of a scene (hud_track.h).
+    src/mc_engine/cinematic/hud_track.cpp
+
     # Custom MP3 radio: <exe>/music/*.mp3 injected into mcMusicManager, decoded
     # and played on the host (Media Foundation + XAudio2).
     src/mc_engine/mp3custom/mp3custom.cpp
@@ -307,6 +310,12 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/achievements.cpp
     src/mc_engine/ui/kerning.cpp
 )
+# The HUD track's parser and evaluation (src/mc_engine/cinematic/hud_track.h) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_hud_track_test, then run <build dir>/larecomp_hud_track_test (exit 0 = passed).
+add_executable(larecomp_hud_track_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/hud_track_test.cpp
+    src/mc_engine/cinematic/hud_track.cpp)
+target_include_directories(larecomp_hud_track_test PRIVATE src/mc_engine/cinematic)
 if(NOT WIN32)
     # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
     # drive it) is Windows-only; Linux renders through Plume. The guest-side
