@@ -5,6 +5,8 @@
 #include "camera_look.h"
 #include "config_save.h"
 #include "cutscene_gallery.h"
+#include "debug_menu.h"
+#include "debug_menu_pages.h"
 #include "display_menu.h"
 #include "frame_generation_menu.h"
 #include "menu_items.h"
@@ -1378,6 +1380,11 @@ using mcla_menu::CvarWriter;
 using mcla_menu::Dbl;
 using mcla_menu::ItemDef;
 using mcla_menu::ItemKind;
+using mcla_menu::kActionDebugCopyArgs;
+using mcla_menu::kActionDebugOpenSettings;
+using mcla_menu::kActionDebugReset;
+using mcla_menu::kActionDebugShowChanged;
+using mcla_menu::kActionDebugTelemetry;
 using mcla_menu::kActionDumpTextures;
 using mcla_menu::kActionPlayCutscene;
 using mcla_menu::kActionQuitNo;
@@ -2296,7 +2303,16 @@ struct MenuDef {
     // EnsureMenuForm builds the form again, when it is closed, if it says so. Null: the rows never
     // change.
     bool (*relayout)(bool apply) = nullptr;
+    // True for the hidden DEBUG menu: its hub and its pages (debug_menu_pages.cpp). Such a menu has no rows
+    // and no button while the debug menu is locked (MenuLocked), so a locked game builds, lists and logs
+    // nothing of it.
+    bool debug_only = false;
 };
+
+// A menu of the hidden DEBUG menu while DebugMenuUnlocked() is false: it counts as empty (MenuRawCount),
+// is not a button of the SETTINGS tab (EnsureSubmenus) and is not one of any other menu's pages
+// (MenuIsNested). The answer is fixed at start-up (InitDebugMenu), so it cannot change under an open menu.
+bool MenuLocked(const MenuDef& md) { return md.debug_only && !larecomp::DebugMenuUnlocked(); }
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
 // restart-only choice (RendererSet only holds the new one), so it cannot change
@@ -2319,6 +2335,7 @@ uint8_t RunningRendererMask() {
 // contributed or filtered rows behaves exactly like a plain one and the
 // list's selected index keeps naming the right row.
 int MenuRawCount(const MenuDef& md) {
+    if (MenuLocked(md)) return 0;
     int extra = 0;
     if (md.extra) md.extra(extra);
     return md.num_items + extra;
@@ -2459,6 +2476,36 @@ const MenuDef kMenus[] = {
     {"PM_RxTabUi", "UI", "Colors of the menus, speed units and HUD width.",
      "RxUiMenu",
      kUiItems, int(sizeof(kUiItems) / sizeof(kUiItems[0]))},
+    // The hidden DEBUG menu (debug_menu_pages.cpp): a hub button before QUIT and the seven pages it opens.
+    // All of it is MenuDef::debug_only: with the menu locked these have no rows, no button and no log
+    // line, and the SETTINGS tab is what it was. The rows are the cvars of the DEBUG verdict of
+    // SETTINGS-REVIEW.md, session only (a debug cvar's change is never saved, config_save.cpp).
+    // CHECK: with --debug_menu the SETTINGS tab has eight buttons and the panel holds them (the CONTROLLER
+    // note above counted seven); every page up to 14 rows scrolls like the 12 and 14 row ones do.
+    {"PM_RxDbgTab", "DEBUG", "Developer settings. They are not saved.",
+     "RxDbgMenu",
+     nullptr, 0, mcla_menu::DebugHubRows, false, nullptr, true},
+    {"PM_RxDbgTabFixes", "FIXES", "Turn a fix off to look for a bug.",
+     "RxDbgFixesMenu",
+     nullptr, 0, mcla_menu::DebugFixesRows, false, nullptr, true},
+    {"PM_RxDbgTabPerf", "PERFORMANCE", "Pacing and speed switches for testing.",
+     "RxDbgPerfMenu",
+     nullptr, 0, mcla_menu::DebugPerformanceRows, false, nullptr, true},
+    {"PM_RxDbgTabRend", "RENDERING", "Renderer views and logs, aspect ratio.",
+     "RxDbgRendMenu",
+     nullptr, 0, mcla_menu::DebugRenderingRows, false, nullptr, true},
+    {"PM_RxDbgTabCam", "CAMERA", "Free camera and camera tests.",
+     "RxDbgCamMenu",
+     nullptr, 0, mcla_menu::DebugCameraRows, false, nullptr, true},
+    {"PM_RxDbgTabTools", "TOOLS", "Texture tools, panels and test items.",
+     "RxDbgToolsMenu",
+     nullptr, 0, mcla_menu::DebugToolsRows, false, nullptr, true},
+    {"PM_RxDbgTabLog", "LOGGING", "Extra lines in the log file.",
+     "RxDbgLogMenu",
+     nullptr, 0, mcla_menu::DebugLoggingRows, false, nullptr, true},
+    {"PM_RxDbgTabInfo", "INFO", "Changed settings and launch arguments.",
+     "RxDbgInfoMenu",
+     nullptr, 0, mcla_menu::DebugInfoRows, false, nullptr, true},
     // Last, so its button ends the SETTINGS tab.
     {"PM_RxQuit", "QUIT", "Close the game and return to the desktop?",
      "RxQuitMenu",
@@ -2487,6 +2534,9 @@ int MenuByKey(const char* menu_key) {
 // has no button of its own on the SETTINGS tab.
 bool MenuIsNested(int m) {
     if (kMenus[m].opened_by_code) return true;
+    // A page of the locked DEBUG menu has no row that opens it (its hub is empty), but it must not turn
+    // into a button of its own.
+    if (MenuLocked(kMenus[m])) return true;
     for (int p = 0; p < kNumMenus; ++p)
         for (int i = 0; i < MenuRawCount(kMenus[p]); ++i) {
             const ItemDef& it = MenuRawAt(kMenus[p], i);
@@ -2768,6 +2818,12 @@ std::string ItemRowLabel(const ItemDef& it) {
         case kActionRestart:        return "RESTART GAME";
         case kActionRestartLater:   return "NOT NOW";
         case kActionRestartNow:     return "RESTART NOW";
+        case kActionDebugShowChanged:
+        case kActionDebugCopyArgs:
+        case kActionDebugReset:
+        case kActionDebugOpenSettings:
+        case kActionDebugTelemetry:
+            return mcla_menu::DebugActionLabel(ActionId(it.nvals));
         }
         return "";
     }
@@ -2864,6 +2920,15 @@ void ApplyItem(const ItemDef& it, int dir) {
 #if defined(LARECOMP_HAS_GPU)
             mcla::gpu::RequestTextureReload();
 #endif
+            break;
+        case kActionDebugShowChanged:
+        case kActionDebugCopyArgs:
+        case kActionDebugReset:
+        case kActionDebugOpenSettings:
+        case kActionDebugTelemetry:
+            // The DEBUG menu's own actions (debug_menu_pages.cpp). They write through the cvar
+            // registry, so the page's rows follow once the menu syncs them (MenuFormAccept).
+            mcla_menu::DebugActionRun(ActionId(it.nvals));
             break;
         }
         break;
@@ -3532,6 +3597,8 @@ void EnsureSubmenus() {
 
     for (int m = 0; m < kNumMenus; ++m) {
         const MenuDef& md = kMenus[m];
+        // The DEBUG hub and its pages exist only while the debug menu is unlocked: no button, no log line.
+        if (MenuLocked(md)) continue;
         // Reached through the Submenu row that opens it, not from here.
         if (MenuIsNested(m)) continue;
 
