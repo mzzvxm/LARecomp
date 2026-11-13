@@ -28,6 +28,7 @@
 //               tells when something else changed it (CHECK: the game's own slow-motion also writes it).
 //   set         rex::cvar::SetFlagByName; the value that was there comes back when the scene ends. Only live (hot reload) settings.
 //   label, mark logged. Labels are data for the compositor: nothing is drawn in the game.
+//   split       the renderer's before/after split position (split_runtime.cpp: a TrackApplier that writes mcla_gpu_split).
 //   camera, cut, hud, car, start
 //               nothing: the packages that own them register a TrackApplier (scene_runtime.h).
 //
@@ -228,6 +229,10 @@ std::string Describe(const Event& e) {
             return out + " (data for the compositor: nothing is drawn in the game)";
         case Track::kMark:
             return out + e.name;
+        case Track::kSplit:
+            if (e.release) return out + "off (the effects are applied everywhere)";
+            if (e.has_from) return out + Fmt(e.from) + ".." + Fmt(e.to) + " over " + Fmt(e.over) + " s, ease " + EaseName(e.ease);
+            return out + Fmt(e.to) + " (held)";
         default:
             break;
     }
@@ -277,7 +282,7 @@ struct Runner {
     int timescale_changed = 0;
     ToggleState toggles[kToggleCount];
     std::vector<SavedCvar> saved;
-    int unapplied[16] = {};  // keys of tracks nobody applies, by Track
+    int unapplied[32] = {};  // keys of tracks nobody applies, by Track (a bit each in TrackBit: 32 at most)
     double next_state_log = 0.0;
     int calls_this_tick = 0;
     int waiting_ticks = 0;
@@ -443,7 +448,7 @@ void EndAppliers() {
 
 void LogUnapplied() {
     std::string parts;
-    for (int t = 0; t < 16; ++t) {
+    for (int t = 0; t < 32; ++t) {
         if (g.unapplied[t] == 0) continue;
         if (!parts.empty()) parts += ", ";
         parts += std::string(TrackName(static_cast<Track>(t))) + " " + std::to_string(g.unapplied[t]);

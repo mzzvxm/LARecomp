@@ -180,7 +180,7 @@ bool IsWorldTrack(Track t) {
 }
 
 constexpr const char* kVerbList =
-    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, cam, cut, hud, car, start, world, end";
+    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, split, cam, cut, hud, car, start, world, end";
 
 using Args = std::vector<std::string>;
 
@@ -327,6 +327,7 @@ class Parser {
         if (verb == "set") return SetCvar(line, t, a);
         if (verb == "label") return Label(line, t, a);
         if (verb == "mark") return Mark(line, t, a);
+        if (verb == "split") return Split(line, t, a);
         if (verb == "end") return End(line, t, a);
         if (verb == "cam" || verb == "cut" || verb == "hud" || verb == "car" || verb == "start") return Opaque(line, t, verb, a);
         Error(line, "unknown statement '" + verb + "' (" + kVerbList + ")");
@@ -585,6 +586,67 @@ class Parser {
         Add(std::move(e));
     }
 
+    // split <x> | split <a>..<b> over <s> [ease <e>] | split off: the renderer's before/after split (gpu/split.h), x in 0..1.
+    void Split(int line, double t, const Args& a) {
+        if (a.empty()) {
+            Error(line, "split needs a value: split <x> (0 to 1 of the picture's width), split <a>..<b> over <seconds>, or split off");
+            return;
+        }
+        Event e;
+        e.t = t;
+        e.line = line;
+        e.track = Track::kSplit;
+        if (Lower(a[0]) == "off") {
+            if (a.size() > 1) Error(line, "split off takes nothing after it");
+            e.release = true;
+            Add(std::move(e));
+            return;
+        }
+        double lo = 0.0, hi = 0.0;
+        bool range = false;
+        if (!ParseRangeOrNumber(a[0], &lo, &hi, &range) || lo < 0.0 || lo > 1.0 || (range && (hi < 0.0 || hi > 1.0))) {
+            Error(line, "bad split position '" + a[0] + "' (a number from 0 to 1 of the picture's width, or a range a..b; split off for none)");
+            return;
+        }
+        if (range) {
+            e.has_from = true;
+            e.from = lo;
+            e.to = hi;
+        } else {
+            e.to = lo;
+        }
+        bool have_over = false;
+        const bool ok = ForPairs(line, "split", a, 1, [&](const std::string& key, const std::string& value) {
+            if (key == "over") {
+                if (!ParseDuration(value, &e.over)) {
+                    Error(line, "bad length '" + value + "' after over (seconds, more than 0)");
+                    return false;
+                }
+                have_over = true;
+                return true;
+            }
+            if (key == "ease") {
+                if (!ParseEase(value, &e.ease)) {
+                    Error(line, "unknown ease '" + value + "' (linear, in, out, inout)");
+                    return false;
+                }
+                return true;
+            }
+            Error(line, "split: unknown option '" + key + "' (over, ease)");
+            return false;
+        });
+        if (!ok) return;
+        if (range && !have_over) {
+            Error(line, "a split ramp needs a length: split " + a[0] + " over <seconds>");
+            return;
+        }
+        if (!range && have_over) {
+            Error(line, "a single split position does not move: write split <a>..<b> over <seconds> for a ramp");
+            return;
+        }
+        Add(std::move(e));
+    }
+
     void End(int line, double t, const Args& a) {
         if (!a.empty()) {
             Error(line, "end <time> takes nothing after the time");
@@ -653,7 +715,7 @@ class Parser {
 
         std::array<const Event*, 16> last{};
         for (const Event& e : events_) {
-            if (!IsWorldTrack(e.track)) continue;
+            if (!IsWorldTrack(e.track) && e.track != Track::kSplit) continue;
             const size_t k = static_cast<size_t>(e.track);
             if (last[k] && std::fabs(last[k]->t - e.t) < kEpsilon) {
                 Warn(e.line, std::string("two ") + TrackName(e.track) + " keys at t=" + Num(e.t) + " (line " +
@@ -744,6 +806,7 @@ const char* TrackName(Track track) {
         case Track::kCvar: return "set";
         case Track::kLabel: return "label";
         case Track::kMark: return "mark";
+        case Track::kSplit: return "split";
         case Track::kCamera: return "cam";
         case Track::kCut: return "cut";
         case Track::kHud: return "hud";
@@ -786,7 +849,8 @@ ParseResult ParseScene(std::string_view text) {
 std::string Summarize(const Scene& scene) {
     constexpr Track kOrder[] = {Track::kHour,   Track::kWeather, Track::kTraffic, Track::kPeds,   Track::kParked,
                                 Track::kPolice, Track::kTimeScale, Track::kCvar,  Track::kLabel,  Track::kMark,
-                                Track::kCamera, Track::kCut,     Track::kHud,     Track::kCar,    Track::kStart};
+                                Track::kSplit,  Track::kCamera,  Track::kCut,     Track::kHud,    Track::kCar,
+                                Track::kStart};
     std::string out = std::to_string(scene.events.size()) + (scene.events.size() == 1 ? " event" : " events");
     std::string parts;
     for (const Track track : kOrder) {
@@ -852,6 +916,21 @@ WorldState EvaluateWorld(const Scene& scene, double t) {
         w.timescale = RampValue(ts_a, ts_b, ts_t0, ts_over, ts_ease, t);
     }
     return w;
+}
+
+SplitState EvaluateSplit(const Scene& scene, double t) {
+    SplitState s;
+    const Event* key = nullptr;
+    for (const Event& e : scene.events) {
+        if (e.t > t) break;  // sorted by time
+        if (e.track != Track::kSplit) continue;
+        key = e.release ? nullptr : &e;
+    }
+    if (key) {
+        s.set = true;
+        s.position = std::clamp(key->has_from ? RampValue(key->from, key->to, key->t, key->over, key->ease, t) : key->to, 0.0, 1.0);
+    }
+    return s;
 }
 
 void EventCursor::Take(const Scene& scene, double t, std::vector<const Event*>* out) {

@@ -151,6 +151,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/scene.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
     src/mc_engine/cinematic/native_call.cpp
+    # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
+    src/mc_engine/cinematic/split_runtime.cpp
 
     src/mc_engine/map_warp.cpp
     src/mc_engine/real_weather.cpp
@@ -343,6 +345,12 @@ add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/scene_test.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_scene_test PRIVATE src/mc_engine/cinematic)
+# The scene's `split` track (the parser's keys and EvaluateSplit) has a check of its own, also without the game:
+#   cmake --build <build dir> --target larecomp_split_track_test, then run <build dir>/larecomp_split_track_test (exit 0 = passed).
+add_executable(larecomp_split_track_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/split_track_test.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_split_track_test PRIVATE src/mc_engine/cinematic)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
