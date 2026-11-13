@@ -73,8 +73,6 @@ const Row kTable[] = {
      "AUTO (LOW)", "AUTO (HIGH)"},
     {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
      "AUTO (HIGH)"},
-    {Effect::kDawnShadows, "mcla_gpu_dawn_shadows", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)",
-     "AUTO (ON)"},
     {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "low", "AUTO (OFF)", "AUTO (OFF)",
      "AUTO (LOW)"},
 };
