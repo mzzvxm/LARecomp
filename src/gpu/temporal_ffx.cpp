@@ -34,6 +34,7 @@
 #include "ffx_common.h"
 #include "frame.h"
 #include "temporal_ffx_glue.h"
+#include "upscaler_load_policy.h"
 
 namespace mcla::gpu {
 
@@ -96,6 +97,11 @@ struct FfxBackend::Impl {
   std::wstring loader_path;
   std::wstring upscaler_path;
   bool probe_started = false;
+  // Lazy loading (upscaler_load_policy.h DecideFfxLoad): the probe checked what needs no runtime and
+  // published FSR 3.1 as listed; the worker, and with it the runtime, starts when an FSR is first
+  // asked for (Request, Prepare). `lazy` is under `mu`.
+  bool lazy_mode = false;
+  upscaler_load::LazyRuntime lazy;
 
   // ---- the runtime (worker thread only, once loaded; the render thread reads `fn` after Ready)
   HMODULE loader = nullptr;
@@ -131,6 +137,8 @@ struct FfxBackend::Impl {
 
   void WorkerMain();
   void ProbeRuntime();
+  // Lazy mode, render thread, under `mu`: the first FSR asked for starts the worker (once).
+  void StartLazyWorkerLocked();
   bool LoadRuntime(std::string* why);
   bool QueryVersions(std::string* why);
   std::shared_ptr<Context> CreateContext(const BackendRequest& request, std::string* why);
@@ -214,10 +222,44 @@ void FfxBackend::Probe(Device& device, FrameRing& frames) {
     i.SetStatus(BackendState::kUnavailable, false, false, reason);
     return;
   }
+  // When the runtime is opened (upscaler_load_policy.h): at the start where the start decision or FSR
+  // 4's listing needs its answer, else when an FSR is first asked for.
+  const Upscaler saved = ReadUpscalerSettings().upscaler;
+  upscaler_load::FfxLoadInputs load;
+  load.lazy_enabled = UpscalerLazyLoad();
+  load.vendor = uint32_t(device.description().vendor);
+  load.fsr_saved = saved == Upscaler::kFsr31 || saved == Upscaler::kFsr4;
+  i.lazy_mode = upscaler_load::DecideFfxLoad(load) == upscaler_load::FfxLoad::kOnFirstUse;
+  {
+    std::lock_guard lock(i.mu);
+    i.lazy = upscaler_load::LazyRuntime{};
+  }
+  if (i.lazy_mode) {
+    // FSR 3.1 is listed from what is known now: the files are there and the device takes shader model
+    // 6.2. This GPU is not an AMD one, so FSR 4 is never offered here and nothing needs the runtime's
+    // list of versions. If the runtime then cannot be opened or offers no 3.1 provider, the first use
+    // finds out, says so, and the entry goes (the same end as a failed context: off for the session).
+    REXLOG_INFO("{} device can run FidelityFX ({}); FSR 3.1 is listed and the runtime "
+                "(amd_fidelityfx_loader_{}.dll and amd_fidelityfx_upscaler_{}.dll) is opened when an "
+                "FSR is first asked for, not now (FSR 4 is not offered on a GPU that is not an AMD "
+                "one)",
+                kPrefix, support.detail, Utf8(suffix), Utf8(suffix));
+    i.SetStatus(BackendState::kAvailable, true, false, {});
+    return;
+  }
   REXLOG_INFO("{} device can run FidelityFX ({}); loading the runtime on a worker thread", kPrefix,
               support.detail);
   i.SetStatus(BackendState::kProbing, false, false, {});
   i.worker = std::thread([&i] { i.WorkerMain(); });
+}
+
+void FfxBackend::Impl::StartLazyWorkerLocked() {
+  REXLOG_INFO("{} an FSR was asked for: opening the runtime now on a worker thread (it was left "
+              "closed at the start); the frames are drawn without it until its first context is made",
+              kPrefix);
+  if (!worker.joinable() && !stop) {
+    worker = std::thread([this] { WorkerMain(); });
+  }
 }
 
 bool FfxBackend::Impl::LoadRuntime(std::string* why) {
@@ -459,6 +501,11 @@ void FfxBackend::Impl::DestroyContext(Context& context) {
 void FfxBackend::Impl::WorkerMain() {
   ProbeRuntime();
   std::unique_lock lock(mu);
+  if (lazy_mode) {
+    // The lazily opened runtime's answer: what the optimistic listing said is now what the runtime
+    // says (SetStatus: FSR 3.1 offered or not). A request made meanwhile is waiting in `want`.
+    lazy.Ended(status.state == BackendState::kAvailable);
+  }
   for (;;) {
     cv.wait(lock, [this] {
       return stop || !doomed.empty() || WantCurrentLocked() || WantNextLocked();
@@ -606,6 +653,9 @@ void FfxBackend::Request(const BackendRequest& request) {
     if (i.status.state != BackendState::kAvailable || !i.KindUsableLocked(request.upscaler)) {
       return;
     }
+    if (i.lazy_mode && i.lazy.Need()) {
+      i.StartLazyWorkerLocked();
+    }
     if (i.want && i.want_request == request) {
       return;
     }
@@ -641,6 +691,9 @@ void FfxBackend::Prepare(const BackendRequest& request) {
     std::lock_guard lock(i.mu);
     if (i.status.state != BackendState::kAvailable || !i.KindUsableLocked(request.upscaler)) {
       return;
+    }
+    if (i.lazy_mode && i.lazy.Need()) {
+      i.StartLazyWorkerLocked();
     }
     if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
       // The current context is, or is being made as, the one asked for: nothing to prepare beside it.
