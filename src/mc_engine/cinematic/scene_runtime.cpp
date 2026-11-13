@@ -28,8 +28,9 @@
 //               tells when something else changed it (CHECK: the game's own slow-motion also writes it).
 //   set         rex::cvar::SetFlagByName; the value that was there comes back when the scene ends. Only live (hot reload) settings.
 //   label, mark logged. Labels are data for the compositor: nothing is drawn in the game.
-//   capture     nothing here: capture.cpp registers the applier that asks for a take (a fixed step, the frame gate and the readback)
-//               from the `capture fps` key to `capture off` or the scene's end.
+//   capture     nothing here: capture_mode.cpp registers the applier that asks for a take (a fixed step, the frame gate and the readback)
+//               from the `capture fps` key to `capture off` or the scene's end, with the take's name, sink and state log (M2b). The
+//               take copies the scene file (SceneFilePath) and reads the game's state for its state log (SampleGameState).
 //   camera, cut, hud, car, start
 //               nothing: the packages that own them register a TrackApplier (scene_runtime.h).
 //
@@ -99,6 +100,8 @@ constexpr uint32_t kGuestTimeScale = 0x827D7554;      // timer + 0x54
 constexpr uint32_t kPauseStatePtr = 0x828CCEA0;       // +4 paused, +10 run-one-frame (map_warp.cpp, cutscene_gallery.cpp)
 constexpr uint32_t kAmbientMgrPtr = 0x8286D8E4;       // the ambient manager (world_tuning.cpp)
 constexpr uint32_t kPlayerMgrPtr = 0x82874374;
+constexpr uint32_t kRacerEntityAt = 48;    // racer + 48: its entity (map_warp.cpp)
+constexpr uint32_t kEntityMatrixAt = 28;   // entity + 28: a pointer to the live matrix, whose 16 floats start at +16
 constexpr uint32_t kPlayerValidFn = 0x821E80F8;       // (playerMgr, index) -> bool
 constexpr uint32_t kPlayerRacerFn = 0x822A3998;       // (playerMgr, index) -> racer
 constexpr uint32_t kPlayerSweep = 4;
@@ -232,7 +235,11 @@ std::string Describe(const Event& e) {
             return out + e.name;
         case Track::kCapture:
             if (!e.state) return out + "off (the take ends)";
-            return out + "fps " + Fmt(e.to, "%.6g") + " (a take: the game steps by 1/fps and every frame is read back)";
+            out += "fps " + Fmt(e.to, "%.6g") + " (a take: the game steps by 1/fps and every frame is read back)";
+            if (!e.name.empty()) out += " name " + e.name;
+            if (!e.text.empty()) out += " sink " + e.text;
+            if (e.index >= 0) out += std::string(" statelog ") + (e.index ? "on" : "off");
+            return out;
         default:
             break;
     }
@@ -706,6 +713,36 @@ double SceneTime() {
     return g.armed && g.have_scene ? g.clock.time() : 0.0;
 }
 
+std::string SceneFilePath() {
+    return g.armed && g.have_scene ? g.path : std::string();
+}
+
+std::string SceneName() {
+    return g.armed && g.have_scene ? g.scene.name : std::string();
+}
+
+bool SampleGameState(GameStateSample* out) {
+    *out = GameStateSample{};
+    const uint8_t* base = Membase();
+    if (!base) return false;
+    out->hour = TimeOfDay_GetHour();
+    out->time_scale = RF(base, kGuestTimeScale);
+    out->dt = RF(base, kGuestScaledDelta);
+    out->dt_unscaled = RF(base, kGuestUnscaledDelta);
+    out->paused = GamePaused(base);
+    out->player = PlayerRacer(base);
+    out->world_ready = R32(base, kAmbientMgrPtr) != 0 && out->player != 0;
+    if (out->player != 0) {
+        const uint32_t entity = R32(base, out->player + kRacerEntityAt);
+        const uint32_t matrix = entity ? R32(base, entity + kEntityMatrixAt) : 0;
+        if (matrix != 0) {
+            for (int i = 0; i < 16; ++i) out->matrix[i] = RF(base, matrix + 16 + 4 * static_cast<uint32_t>(i));
+            out->has_matrix = true;
+        }
+    }
+    return true;
+}
+
 bool RegisterTrackApplier(const TrackApplier* applier) {
     if (!applier || g_applier_count >= kMaxAppliers) return false;
     g_appliers[g_applier_count++] = applier;
@@ -724,6 +761,9 @@ SceneState CurrentSceneState() { return SceneState::kOff; }
 const char* SceneStateName(SceneState) { return "off"; }
 bool SceneDone() { return false; }
 double SceneTime() { return 0.0; }
+std::string SceneFilePath() { return std::string(); }
+std::string SceneName() { return std::string(); }
+bool SampleGameState(GameStateSample* out) { *out = GameStateSample{}; return false; }
 bool RegisterTrackApplier(const TrackApplier*) { return false; }
 }  // namespace mc::cinematic
 

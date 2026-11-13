@@ -669,6 +669,45 @@ void TestCapture() {
     Check(EvaluateCapture(open.scene, 1e6).on, "it is on for as long as the scene runs");
 }
 
+// the take folder's verbs (M2b): name, sink, statelog on the `capture fps` key
+void TestCaptureOptions() {
+    const ParseResult r = ParseScene(
+        "scene opts\n"
+        "at 0 capture fps 60 step 1/60 name harbor-flyby_2.take sink png statelog on\n"
+        "end 20\n");
+    Check(r.Ok(), "a capture with a name, a sink and a state log parses: " + (r.diagnostics.empty() ? std::string() : r.diagnostics[0].message));
+    CheckEq(r.scene.capture_name, "harbor-flyby_2.take", "the take's name");
+    CheckEq(r.scene.capture_sink, "png", "the sink");
+    Check(r.scene.capture_state_log, "the state log is asked for");
+    const Event* cap = First(r.scene, Track::kCapture);
+    Check(cap && cap->name == "harbor-flyby_2.take" && cap->text == "png" && cap->index == 1, "and the event carries them");
+    CheckNum(r.scene.capture_fps, 60, "the rate is still the rate");
+
+    const ParseResult plain = ParseScene("scene a\nat 0 capture fps 60\nend 5\n");
+    Check(plain.scene.capture_name.empty() && plain.scene.capture_sink.empty() && !plain.scene.capture_state_log, "none given: none set");
+    const Event* pc = First(plain.scene, Track::kCapture);
+    Check(pc && pc->index == -1, "a state log not mentioned is -1 on the event");
+
+    const ParseResult any_order = ParseScene("scene a\nat 0 capture fps 30 SINK FFMPEG statelog off name x\nend 5\n");
+    Check(any_order.Ok() && any_order.scene.capture_sink == "ffmpeg" && !any_order.scene.capture_state_log && any_order.scene.capture_name == "x",
+          "any order, any case, statelog off");
+    for (const char* sink : {"none", "ffmpeg", "png", "raw"}) {
+        Check(ParseScene(std::string("scene a\nat 0 capture fps 60 sink ") + sink + "\nend 5\n").Ok(), std::string("sink ") + sink + " is known");
+    }
+    CheckError("at 1 capture fps 60 sink mp4", "bad sink 'mp4' (none, ffmpeg, png or raw)");
+    CheckError("at 1 capture fps 60 sink", "'sink' needs a value");
+    CheckError("at 1 capture fps 60 name", "'name' needs a value");
+    CheckError("at 1 capture fps 60 name a/b", "bad take name 'a/b'");
+    CheckError("at 1 capture fps 60 name .x", "bad take name '.x'");
+    CheckError("at 1 capture fps 60 name -x", "bad take name '-x'");
+    CheckError("at 1 capture fps 60 name a:b", "bad take name 'a:b'");
+    CheckError("at 1 capture fps 60 name " + std::string(65, 'a'), "bad take name");
+    Check(ParseScene("scene a\nat 1 capture fps 60 name " + std::string(64, 'a') + "\nend 5\n").Ok(), "64 characters are allowed");
+    CheckError("at 1 capture fps 60 statelog maybe", "statelog on or statelog off, not 'maybe'");
+    CheckError("at 1 capture off name x", "capture off takes nothing after it");
+    CheckError("at 1 capture fps 60 speed 2", "(fps, step, name, sink, statelog)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -686,6 +725,7 @@ int main(int argc, char** argv) {
     TestClock();
     TestReload();
     TestCapture();
+    TestCaptureOptions();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

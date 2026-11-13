@@ -11,6 +11,7 @@
 //
 
 #include <cstdint>
+#include <string>
 
 #include "scene.h"
 
@@ -31,6 +32,27 @@ bool SceneDone();
 
 // Scene time in seconds while running (the last time it reached when finished), else 0.
 double SceneTime();
+
+// The armed scene's file, as it was looked up (a full path when one was found), and its name from the `scene` line; empty when none is armed or
+// the file has not been read. A take copies the file into its folder (capture_mode.cpp, M2b).
+std::string SceneFilePath();
+std::string SceneName();
+
+// The game's state as the take's state log writes it (take_folder.h StateRow): the engine timer's two deltas and its time scale word, the
+// day cycle's hour, the pause flag, and the player's car (the live matrix, 16 floats, read the way map_warp.cpp reads it). Game thread only,
+// between updates (the hand-over of a frame). False when the runtime is not up; a field it cannot read stays 0.
+struct GameStateSample {
+    float hour = 0.0f;
+    float time_scale = 0.0f;
+    float dt = 0.0f;           // seconds: this update's step after the time scale
+    float dt_unscaled = 0.0f;  // before it
+    bool paused = false;
+    bool world_ready = false;  // a car on the road and the ambient manager built
+    uint32_t player = 0;       // the player's racer (guest address), 0 = none
+    bool has_matrix = false;
+    float matrix[16] = {};     // the player car's live matrix: right, up, back, position rows
+};
+bool SampleGameState(GameStateSample* out);
 
 // What the other packages' tracks implement. The runner calls begin when a scene starts (and again when a reload restarts it),
 // apply with the scene time on every game update while it runs, and end when it finishes, is replaced or is turned off:

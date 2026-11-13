@@ -129,6 +129,18 @@ bool IsMarkName(std::string_view s) {
     return true;
 }
 
+// A take's name, as the folder will be called (take_folder.h's SanitizeTakeName keeps such a name as it is): letters, digits, _ - . , at most 64,
+// starting with a letter, a digit or _.
+bool IsTakeName(std::string_view s) {
+    if (s.empty() || s.size() > 64) return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        if (!(alnum || (i > 0 && (c == '-' || c == '.')))) return false;
+    }
+    return true;
+}
+
 bool ParseOnOff(std::string_view s, int* out) {
     const std::string l = Lower(s);
     if (l == "on" || l == "1" || l == "true") *out = 1;
@@ -603,11 +615,13 @@ class Parser {
         result_.scene.end = t;
     }
 
-    // `capture fps <n> [step 1/<n>]` starts a take, `capture off` ends it. The step of a take is 1/fps (the capture rate and the
-    // simulation step are one; slow motion is a timescale track and a higher fps), so a step that says otherwise is an error.
+    // `capture fps <n> [step 1/<n>] [name <take>] [sink none|ffmpeg|png|raw] [statelog on|off]` starts a take, `capture off` ends it. The step of
+    // a take is 1/fps (the capture rate and the simulation step are one; slow motion is a timescale track and a higher fps), so a step that says
+    // otherwise is an error. `name` is the take's folder (a name that is taken gets -2, -3 ...), `sink` what the frames go to, `statelog on` asks
+    // for the state log (state.csv) of the take (capture_mode.cpp, take_folder.h).
     void Capture(int line, double t, const Args& a) {
         if (a.empty()) {
-            Error(line, "capture fps <n> [step 1/<n>], or capture off: nothing after 'capture'");
+            Error(line, "capture fps <n> [step 1/<n>] [name <take>] [sink <sink>] [statelog on|off], or capture off: nothing after 'capture'");
             return;
         }
         Event e;
@@ -624,7 +638,7 @@ class Parser {
             return;
         }
         if (Lower(a[0]) != "fps") {
-            Error(line, "capture fps <n> [step 1/<n>], or capture off: '" + a[0] + "' is neither");
+            Error(line, "capture fps <n> [step 1/<n>] [name <take>] [sink <sink>] [statelog on|off], or capture off: '" + a[0] + "' is neither");
             return;
         }
         double fps = 0.0;
@@ -647,7 +661,33 @@ class Parser {
                 have_step = true;
                 return true;
             }
-            Error(line, "capture: unknown option '" + key + "' (fps, step)");
+            if (key == "name") {
+                if (!IsTakeName(value)) {
+                    Error(line, "bad take name '" + value + "' (letters, digits and _ - . , at most 64, not starting with . or -)");
+                    return false;
+                }
+                e.name = value;
+                return true;
+            }
+            if (key == "sink") {
+                const std::string sink = Lower(value);
+                if (sink != "none" && sink != "ffmpeg" && sink != "png" && sink != "raw") {  // capture_core.h's SinkKind
+                    Error(line, "bad sink '" + value + "' (none, ffmpeg, png or raw)");
+                    return false;
+                }
+                e.text = sink;
+                return true;
+            }
+            if (key == "statelog") {
+                const std::string v = Lower(value);
+                if (v != "on" && v != "off") {
+                    Error(line, "statelog on or statelog off, not '" + value + "'");
+                    return false;
+                }
+                e.index = v == "on" ? 1 : 0;
+                return true;
+            }
+            Error(line, "capture: unknown option '" + key + "' (fps, step, name, sink, statelog)");
             return false;
         });
         if (!ok) return;
@@ -750,6 +790,9 @@ class Parser {
         }
         if (cap_start) {
             scene.capture_fps = cap_start->to;
+            scene.capture_name = cap_start->name;
+            scene.capture_sink = cap_start->text;
+            scene.capture_state_log = cap_start->index == 1;
             scene.capture_from = cap_start->t;
             scene.capture_to = cap_stop ? cap_stop->t : scene.end;
             if (scene.fps > 0.0 && std::fabs(scene.fps - scene.capture_fps) > 1e-6) {

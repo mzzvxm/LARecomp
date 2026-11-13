@@ -27,8 +27,12 @@
 //   at T set <cvar> <value...>                            a setting (the old value comes back when the scene ends)
 //   at T label "<text>" [side <s>] [fade <s>] [for <s>]   an on-screen label: DATA for the compositor, never drawn in game
 //   at T mark <name>                                      a named instant, logged
-//   at T capture fps <n> [step 1/<n>]                     a take: from this key the game steps by exactly 1/n a second and every
-//                                                         frame is read back (capture mode, M2a); one capture rate in a scene
+//   at T capture fps <n> [step 1/<n>] [name <take>] [sink <s>] [statelog on|off]
+//                                                         a take: from this key the game steps by exactly 1/n a second and every
+//                                                         frame is read back (capture mode, M2a); one capture rate in a scene.
+//                                                         name: the take's folder (letters, digits, _ - .; a taken name gets -2, -3 ...),
+//                                                         sink: none, ffmpeg (FFV1 in mkv), png (one picture a frame) or raw; statelog on:
+//                                                         the game's state for every frame in state.csv (the take folder, M2b)
 //   at T capture off                                      the take ends (it also ends with the scene's `end`)
 //   cam <T> <...>   cut <T>   at T hud <...>   at T car <id> <...>   start <...>
 //                                                         the camera, HUD, car and preamble tracks (M1b, M1c, M4):
@@ -106,11 +110,11 @@ struct Event {
     Ease ease = Ease::kLinear;
     bool release = false;  // hour free / weather game: the game's own again
 
-    int index = -1;  // weather: 0 nice, 1 cloudy, 2 stormy, 3 foggy
+    int index = -1;  // weather: 0 nice, 1 cloudy, 2 stormy, 3 foggy; capture fps: statelog 1 on, 0 off, -1 not given
     int state = 0;   // traffic, peds, parked, police: 1 on, 0 off
 
-    std::string name;                // cvar name; mark name; car id
-    std::string text;                // cvar value; label text
+    std::string name;                // cvar name; mark name; car id; capture fps: the take's name
+    std::string text;                // cvar value; label text; capture fps: the sink
     std::string side;                // label side
     double fade = 0.0;               // label fade, seconds
     std::vector<std::string> words;  // camera, cut, hud, car, start: the words after the verb, in the file's spelling
@@ -125,6 +129,10 @@ struct Scene {
     double capture_fps = 0.0;
     double capture_from = 0.0;
     double capture_to = -1.0;  // -1 = to the scene's end, which it never reaches
+    // What the `capture fps` key asked for besides the rate (M2b): "" = not given (the debug settings and the scene's name decide).
+    std::string capture_name;
+    std::string capture_sink;
+    bool capture_state_log = false;
     std::vector<Event> events;  // in time order; the file's order within one time
 
     // When the last key and everything it started (a ramp, a label) is over. 0 for no events.
