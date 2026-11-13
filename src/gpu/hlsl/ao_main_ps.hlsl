@@ -21,7 +21,36 @@
 // occlusion's own accumulation over frames (ao_temporal_ps) integrates, and what the denoise
 // takes out of any one frame (g_push.slots2.y = the frame number).
 
+//
+// SCREEN-SPACE GLOBAL ILLUMINATION (G7a; compiled a second time as ao_main_gi_ps with AO_GI=1, the
+// plain pass above is the source without it, bit for bit): the same slices, steps and horizon search,
+// but the horizons are a visibility BITMASK (Therrien, Levesque and Gilet 2023, "Screen Space
+// Indirect Lighting with Visibility Bitmask"; written from the paper's idea, not copied): per slice a
+// 32 bit mask over the arc of the hemisphere around the normal, one bit a sector of equal measure
+// (the slice's cosine weighted arc integral of GTAO, cdf of cos(theta - n) |sin theta|, so that the
+// unset bits are the same visibility as the horizons give, within 1/32). A sample sets the bits
+// between its front horizon and, with a thickness, its back horizon (the sample's surface moved
+// `thickness` away along the view ray; thickness 0 = a solid: everything below the front horizon, which
+// is the GTAO horizon search exactly); the bits that are NEW add the sample's radiance, from the
+// colour chain (ao_color_ps: the scene colour at the trigger, averaged over the MSAA samples, three
+// levels like the depth chain), weighted by its share of the slice and by how much its surface faces
+// the pixel (the slope of the depth one texel on, along the slice). The output is one RGBA16F pixel:
+//   x   the visibility (the final power and the floor applied, as the plain pass), the same number the
+//       GTAO pass gives to within the sector quantisation; the denoise and the history read this channel
+//   yzw the bounce: the cosine weighted mean radiance of the blocked part of the hemisphere, in the
+//       scene colour's own units (a uniform emitter of colour C over the whole hemisphere gives C): what
+//       the game's ambient light (a constant colour for "the average surroundings") would be if the
+//       blocked part were the emitter. 0 on the sky and past the fade.
+// Push fields of this variant (the others as above): slots.x, slots.y, slots2.w the bindless slots of
+// the colour chain's levels 0, 1, 2 (RGBA16F; the plain pass leaves them unused), shape.z the
+// thickness in world units (0 = solid), shape.w the weight of the facing test (0 = a sample's surface
+// is assumed to face the pixel; 1 = the full test).
+
 #include "ao_common.hlsli"
+
+#ifndef AO_GI
+#define AO_GI 0
+#endif
 
 static const float kPi = 3.14159265358979f;
 static const float kHalfPi = 1.57079632679490f;
@@ -47,6 +76,206 @@ float ChainDepth(float2 p, uint level) {
   }
   return AoLoadLinear(g_push.slots2.x, q);
 }
+
+#if AO_GI
+
+static const uint kSectors = 32u;
+
+// The colour chain's radiance at the continuous pixel position `p` (level-0 pixels), nearest texel of
+// `level`: the slots come straight from the push constants, as the depth chain's do.
+float3 ChainColour(float2 p, uint level) {
+  const int2 size0 = int2(g_push.sizes.zw);
+  const int shift = int(level);
+  const int2 size = max((size0 + int(1u << level) - 1) >> shift, int2(1, 1));
+  const int2 q = clamp(int2(floor(p)) >> shift, int2(0, 0), size - 1);
+  if (level == 0u) {
+    return g_textures[g_push.slots.x].Load(int3(q, 0)).rgb;
+  }
+  if (level == 1u) {
+    return g_textures[g_push.slots.y].Load(int3(q, 0)).rgb;
+  }
+  return g_textures[g_push.slots2.w].Load(int3(q, 0)).rgb;
+}
+
+// Where the signed angle `theta` (from the view vector, positive towards the slice's +direction) falls
+// in the slice's 32 sectors, 0 to 1: the share of the arc's measure below it. The arc is the half
+// circle around the normal (angle n; sin_n, cos_n are its sine and cosine) and the measure is GTAO's,
+// cos(theta - n) |sin theta| d theta, whose integral from 0 to theta is
+//   G(theta) = (cos n - cos(2 theta - n) + 2 theta sin n) / 4
+// (the 'arc' of the plain pass); `g_end` = G(n - pi/2) is the measure of the arc below the view
+// vector and `inv_total` is 1 over the measure of the whole arc, cos n + n sin n.
+float AoSectorPos(float theta, float n, float sin_n, float cos_n, float g_end, float inv_total) {
+  const float t = n + clamp(theta - n, -kHalfPi, kHalfPi);
+  const float g = (cos_n - cos(2.0f * t - n) + 2.0f * t * sin_n) * 0.25f;
+  const float below = t < 0.0f ? g_end - g : g_end + g;
+  return saturate(below * inv_total);
+}
+
+// The sectors from `lo` to `hi` (0 to 1, lo <= hi) as a mask: rounded to the nearest sector at each end
+// (no bias towards more or less occlusion than the horizon search), and a span that exists is at least
+// one sector wide (a thin thing still blocks something).
+uint AoSectorBits(float lo, float hi) {
+  const uint start = uint(lo * float(kSectors) + 0.5f);
+  const uint stop = uint(hi * float(kSectors) + 0.5f);
+  uint width = stop > start ? stop - start : 0u;
+  if (width == 0u && hi > lo + 1e-4f) {
+    width = 1u;
+  }
+  if (start >= kSectors || width == 0u) {
+    return 0u;
+  }
+  width = min(width, kSectors - start);
+  return (width >= kSectors ? 0xFFFFFFFFu : ((1u << width) - 1u)) << start;
+}
+
+// One sample of one side of a slice: the front horizon (as the plain pass takes it, with its falloff),
+// the sectors it blocks, and for the sectors that are new the sample's radiance. `side` is +1 for the
+// slice's +direction and -1 for the other; `away` is the screen direction (pixels, y down) from the
+// pixel through the sample; `low` is the cosine of the tangent horizon on that side; `axis` is the
+// slice plane's normal. `occupied` and `light` are the slice's mask and radiance so far.
+void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3 pc,
+                float3 view_vec, float3 axis, float falloff_mul, float falloff_add, float n,
+                float sin_n, float cos_n, float g_end, float inv_total, float thickness,
+                float facing_weight, inout uint occupied, inout float3 light) {
+  const float2 size = g_push.sizes.zw;
+  if (!(all(p >= 0.0f) && all(p < size))) {
+    return;  // off screen: nothing there, the sky share of the hemisphere stays the game's ambient
+  }
+  const float3 sp = AoViewPos(floor(p) + 0.5f, size, ChainDepth(p, level));
+  const float3 delta = sp - pc;
+  const float dist = length(delta);
+  const float w = saturate(dist * falloff_mul + falloff_add);
+  const float3 dir = delta / max(dist, 1e-6f);
+  const float cos_front = max(lerp(low, dot(dir, view_vec), w), low);
+  const float u_front = AoSectorPos(side * acos(clamp(cos_front, -1.0f, 1.0f)), n, sin_n, cos_n,
+                                    g_end, inv_total);
+  float u_back = side > 0.0f ? 1.0f : 0.0f;  // a solid: everything below the front horizon
+  if (thickness > 0.0f) {
+    const float3 behind = delta + sp * (thickness / max(length(sp), 1e-6f));
+    const float cos_back = max(lerp(low, dot(normalize(behind), view_vec), w), low);
+    u_back = AoSectorPos(side * acos(clamp(cos_back, -1.0f, 1.0f)), n, sin_n, cos_n, g_end,
+                         inv_total);
+  }
+  const uint bits = AoSectorBits(min(u_front, u_back), max(u_front, u_back));
+  const uint fresh = bits & ~occupied;
+  occupied |= bits;
+  if (fresh == 0u) {
+    return;
+  }
+  // Its radiance, for the share of the slice it newly covers. A diffuse surface radiates the same in
+  // every direction, so the sector's measure already is the solid angle it fills (a wall seen from
+  // the ground at a steep angle is a thin sliver of the sky because it is one, not because of a
+  // second cosine); what is left to ask is whether the surface faces the pixel at all: the slope of
+  // its depth one texel further along the slice gives its normal in the slice plane (towards the
+  // camera), and the weight is 0 for a surface that faces away (a roof seen from the ground, a wall
+  // seen from behind), 1 from a quarter of the way to facing straight at the pixel, a ramp between.
+  // No second depth (the sky, the image's edge): it is taken to face the pixel.
+  float facing = 1.0f;
+  if (facing_weight > 0.0f) {
+    const float2 p2 = p + away * float(1u << level);
+    const float t2 = ChainDepth(p2, level);
+    const float3 tangent = AoViewPos(floor(p2) + 0.5f, size, t2) - sp;
+    if (t2 < kAoSky * 0.5f && dot(tangent, tangent) > 1e-10f) {
+      float3 normal_s = cross(tangent, axis);
+      const float length_n = length(normal_s);
+      if (length_n > 1e-6f) {
+        normal_s /= length_n;
+        if (dot(normal_s, sp) > 0.0f) {
+          normal_s = -normal_s;
+        }
+        facing = lerp(1.0f, saturate(4.0f * dot(normal_s, -dir)), facing_weight);
+      }
+    }
+  }
+  light += (float(countbits(fresh)) * (1.0f / float(kSectors)) * facing) * ChainColour(p, level);
+}
+
+float4 main(float4 position : SV_Position) : SV_Target {
+  const int2 pixel = int2(position.xy);
+  const float2 size = g_push.sizes.zw;
+  const int2 isize = int2(size);
+  const float tc = AoLoadLinear(g_push.slots.z, pixel);
+  // The sky, and what is past where the effect fades out entirely: nothing to occlude, nothing blocks.
+  if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
+    return float4(1.0f, 0.0f, 0.0f, 0.0f);
+  }
+  const float2 centre = float2(pixel) + 0.5f;
+  const float3 pc = AoViewPos(centre, size, tc);
+  const float3 normal = AoNormalFromImage(g_push.slots.z, pixel, isize, tc, pc);
+  const float3 view_vec = normalize(-pc);
+
+  const float radius = g_push.lens.z;
+  const float pixels_per_unit = 0.5f * size.y / (g_push.lens.y * tc);
+  const float radius_px = min(radius * pixels_per_unit, kMaxRadiusShare * size.y);
+  if (radius_px < kMinOffsetPixels + 0.5f) {
+    return float4(1.0f, 0.0f, 0.0f, 0.0f);  // the effect would be inside the pixel
+  }
+  const float falloff_ratio = max(g_push.lens.w, 0.01f);
+  const float falloff_mul = -1.0f / (falloff_ratio * radius);
+  const float falloff_add = 1.0f / falloff_ratio;
+  const float thickness = max(g_push.shape.z, 0.0f);
+  const float facing_weight = saturate(g_push.shape.w);
+
+  const uint slices = max(AoSlices(), 1u);
+  const uint steps = max(AoSteps(), 1u);
+  const float2 noise_at = float2(pixel);
+  const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  const float frame = float(g_push.slots2.y & 1023u);
+  const float2 noise = frac(spatial + frame * float2(0.75487766624669f, 0.56984029099806f));
+  const float min_offset = kMinOffsetPixels / radius_px;
+
+  float visibility = 0.0f;
+  float3 bounce = float3(0.0f, 0.0f, 0.0f);
+  for (uint slice = 0u; slice < slices; ++slice) {
+    const float phi = (float(slice) + noise.x) / float(slices) * kPi;
+    const float2 dir_px = float2(cos(phi), sin(phi));
+    const float3 dir_view = float3(dir_px.x, -dir_px.y, 0.0f);
+    const float3 ortho = dir_view - dot(dir_view, view_vec) * view_vec;
+    const float3 axis = normalize(cross(ortho, view_vec));
+    const float3 projected = normal - axis * dot(normal, axis);
+    const float projected_len = length(projected);
+    const float sign_n = sign(dot(ortho, projected));
+    const float cos_n = saturate(dot(projected, view_vec) / max(projected_len, 1e-6f));
+    const float n = sign_n * acos(cos_n);
+    const float low0 = cos(n + kHalfPi);
+    const float low1 = cos(n - kHalfPi);
+    // The slice's arc: its sine and its measure (AoSectorPos).
+    const float sin_n = sin(n);
+    const float total = cos_n + n * sin_n;
+    const float inv_total = 1.0f / max(total, 1e-3f);
+    const float g_end = (2.0f * cos_n + (2.0f * n - kPi) * sin_n) * 0.25f;
+
+    uint occupied = 0u;
+    float3 light = float3(0.0f, 0.0f, 0.0f);
+    for (uint s = 0u; s < steps; ++s) {
+      const float step_noise = frac(noise.y + float(slice + s * slices) * 0.6180339887f);
+      float share = (float(s) + step_noise) / float(steps);
+      share = share * share + min_offset;
+      const float2 offset = dir_px * (share * radius_px);
+      const float level_f = clamp(log2(max(length(offset), 1.0f)) - 3.0f, 0.0f, 2.0f);
+      const uint level = uint(level_f);
+      AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, falloff_mul,
+                 falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
+                 light);
+      AoGiSample(centre - offset, level, -dir_px, -1.0f, low1, pc, view_vec, axis, falloff_mul,
+                 falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
+                 light);
+    }
+    // The slice's share of the picture: the arc's measure times the projected normal's length, as the
+    // plain pass weighs it. The open sectors are the visibility, the radiance of the closed ones the
+    // bounce.
+    const float weight = projected_len * total;
+    visibility += weight * float(kSectors - countbits(occupied)) * (1.0f / float(kSectors));
+    bounce += weight * light;
+  }
+  visibility = saturate(visibility / float(slices));
+  visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
+  // A half float keeps 65504; the chain's colours are capped well under that, and a NaN counts as none.
+  bounce = min(max(bounce / float(slices), 0.0f), 60000.0f);
+  return float4(visibility, bounce);
+}
+
+#else  // !AO_GI
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
@@ -141,3 +370,5 @@ float4 main(float4 position : SV_Position) : SV_Target {
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   return float4(visibility, 0.0f, 0.0f, 0.0f);
 }
+
+#endif  // AO_GI

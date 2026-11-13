@@ -42,8 +42,8 @@
 // render to (B5G5R5A1, an optional render target in Vulkan) stays with its
 // owner: a pipeline made for a format nobody used would log a failure.
 //
-// The graphics settings' passes (ambient occlusion, contact shadows, sun shafts) are listed only
-// when the settings in force at the start use them (host_plan.h says which), and each owner says
+// The graphics settings' passes (ambient occlusion, contact shadows, sun shafts, bounce light) are listed
+// only when the settings in force at the start use them (host_plan.h says which), and each owner says
 // what it listed and why with Note: Start writes one log line with the count and the words of every
 // note. A pass whose setting is switched on later lists its pipelines with AddLive, which makes them
 // on a worker thread of their own while the game runs; the owner draws without the pass until Ready

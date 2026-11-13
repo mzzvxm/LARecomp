@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- which host passes a start needs pipelines for
 // ===========================================================================
 // The renderer's own screen passes that the graphics settings switch (ambient occlusion, contact
-// shadows, sun shafts and, with its package, bounce light) make a dozen pipelines each, and a pipeline
+// shadows, sun shafts and bounce light) make a dozen pipelines each, and a pipeline
 // is a driver compile of 20 to 150 ms. They are made ahead of use (host_precache.h) -- but only the
 // ones the settings in force will use: a pass that is off at the start is not compiled for nothing on a
 // weak PC, and one that is switched on later is made in the background before its first frame
@@ -17,15 +17,17 @@
 //             disagree about what is on
 //   Decide    the four settings -> the plan of a start
 //   Describe  the words of the start's log line: what was decided and why
-//   Ambient   which of the occlusion's pipeline groups a level of the occlusion and of the contact
-//             shadows need together (they share the depth, denoise and apply passes)
+//   Ambient   which of the occlusion's pipeline groups a level of the occlusion, of the contact
+//             shadows and of the bounce light need together (the first two share the depth, denoise
+//             and apply passes; the bounce light adds passes of its own)
 //
 // What each setting's text can be, and what anything else means, is kept as each owner had it:
 //   occlusion  mcla_gpu_ao            off, low, high; no `auto`; anything else is off
 //   contact    mcla_gpu_contact_shadows   auto, off, low, high; anything else is off
 //   shafts     mcla_gpu_sun_shafts    auto, off, low, high; anything else counts as `auto`
 //   bounce     mcla_gpu_ssgi          auto, off, low, high; anything else is off; `auto` is off until the
-//                                     class is known; needs the occlusion on (it reads its images)
+//                                     class is known (and off on every class for now: gpu_class.h);
+//                                     needs the occlusion on (it reads its images)
 // ===========================================================================
 
 #include <cstdint>
@@ -66,6 +68,7 @@ struct Choice {
   Level level = Level::kOff;
   bool automatic = false;  // `auto`: the class's cell decided (also a text the setting does not know, for the shafts)
   bool unknown = false;    // the text is not a value of the setting
+  bool held = false;       // the setting says on, but a pass it needs is off (HoldBounce)
 };
 
 // The graphics upgrade whose `auto` cell the pass reads (the occlusion has none).
@@ -135,6 +138,16 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
   return choice;
 }
 
+// The bounce light reads the occlusion's images and passes: it is off while the occlusion is, whatever its
+// own setting says (the draws and the precache both ask here).
+inline Choice HoldBounce(Choice bounce, Level occlusion) {
+  if (occlusion == Level::kOff && bounce.level != Level::kOff) {
+    bounce.level = Level::kOff;
+    bounce.held = true;
+  }
+  return bounce;
+}
+
 struct Plan {
   Choice pass[kPassCount];
   const Choice& of(Pass p) const { return pass[static_cast<int>(p)]; }
@@ -148,11 +161,8 @@ inline Plan Decide(gpu_class::GpuClass cls, bool class_known, std::string_view o
   plan.pass[static_cast<int>(Pass::kOcclusion)] = Resolve(Pass::kOcclusion, cls, class_known, occlusion);
   plan.pass[static_cast<int>(Pass::kContact)] = Resolve(Pass::kContact, cls, class_known, contact);
   plan.pass[static_cast<int>(Pass::kShafts)] = Resolve(Pass::kShafts, cls, class_known, shafts);
-  Choice gi = Resolve(Pass::kBounce, cls, class_known, bounce);
-  if (plan.of(Pass::kOcclusion).level == Level::kOff) {
-    gi.level = Level::kOff;
-  }
-  plan.pass[static_cast<int>(Pass::kBounce)] = gi;
+  plan.pass[static_cast<int>(Pass::kBounce)] =
+      HoldBounce(Resolve(Pass::kBounce, cls, class_known, bounce), plan.of(Pass::kOcclusion).level);
   return plan;
 }
 
@@ -163,7 +173,9 @@ inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass
   text += ' ';
   text += LevelName(choice.level);
   text += " (";
-  if (choice.unknown && choice.automatic) {
+  if (choice.held) {
+    text += "needs the ambient occlusion, which is off";
+  } else if (choice.unknown && choice.automatic) {
     text += "not a value of the setting: taken as auto on the ";
     text += gpu_class::ClassName(cls);
     text += " class";
@@ -180,9 +192,11 @@ inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass
   return text;
 }
 
-// What the occlusion's pipeline groups need when the occlusion is at `occlusion` and the contact shadows
-// at `contact` (both are drawn with the depth passes, the denoise and the apply). `census`: the
-// occlusion's debug census, which runs the depth passes and the coarser levels with everything off.
+// What the occlusion's pipeline groups need when the occlusion is at `occlusion`, the contact shadows at
+// `contact` (both are drawn with the depth passes, the denoise and the apply) and the bounce light at
+// `bounce` (its own passes on top of the occlusion's: the pause menu's and the map's world, and a frame
+// that cannot have it, run the plain occlusion). `census`: the occlusion's debug census, which runs the
+// depth passes and the coarser levels with everything off.
 struct AmbientNeeds {
   bool depth = false;      // the linear depth, plain and multisampled
   bool mip = false;        // the coarser depth levels
@@ -190,10 +204,11 @@ struct AmbientNeeds {
   bool denoise = false;
   bool apply = false;      // the pass that multiplies the colour (every sample count in use)
   bool contact = false;    // the contact shadows' march
-  bool any() const { return depth || mip || occlusion || denoise || apply || contact; }
+  bool bounce = false;     // the bounce light's colour chain, bitmask, denoise, history, filter and apply
+  bool any() const { return depth || mip || occlusion || denoise || apply || contact || bounce; }
 };
 
-inline AmbientNeeds Ambient(Level occlusion, Level contact, bool census) {
+inline AmbientNeeds Ambient(Level occlusion, Level contact, Level bounce, bool census) {
   AmbientNeeds needs;
   const bool ao = occlusion != Level::kOff;
   const bool cs = contact != Level::kOff;
@@ -203,6 +218,7 @@ inline AmbientNeeds Ambient(Level occlusion, Level contact, bool census) {
   needs.denoise = ao || cs;
   needs.apply = ao || cs;
   needs.contact = cs;
+  needs.bounce = ao && bounce != Level::kOff;  // it needs the occlusion's images
   return needs;
 }
 
