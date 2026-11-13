@@ -84,6 +84,8 @@ struct Options {
   bool fifth_lookup = false;
   bool with_average = true;
   bool with_main = true;
+  bool with_a0 = true;           // `int a0 = 0;` (the game's address register: 4 x the cascade's index)
+  bool with_light_rows = true;   // the four reads of the cascade's light matrix, gLightMatrixArr(k + a0)
   bool crlf = false;
 };
 
@@ -107,8 +109,15 @@ std::string Fixture(const Shape& shape, const Options& options = Options()) {
   if (options.with_radii) {
     t += "\tfloat4 c255 = asfloat(uint4(0x3A19999A, 0x3A4CCCCD, 0x39CCCCCD, 0x394CCCCD));\n";
   }
+  if (options.with_a0) t += "\tint a0 = 0;\n";
   t += "\tCubeMapData cubeMapData = (CubeMapData)0;\n\n";
   t += "\tr3.xyzw = r1.xxxx * c255.xyzw;\n";
+  if (options.with_light_rows) {
+    // The cascade's light matrix as the game reads it (the three lines of every edited shader's text).
+    t += "\tr4.xyzw = r0.zzzz * gLightMatrixArr(2 + a0).xyzw + gLightMatrixArr(3 + a0).xyzw;\n";
+    t += "\tr4.xyzw = r0.yyyy * gLightMatrixArr(1 + a0).xywz + r4.xywz;\n";
+    t += "\tr4.xyzw = r0.xxxx * gLightMatrixArr(0 + a0).xyzw + r4.xywz;\n";
+  }
   t += "\tif (p0)\n\t{\n\t\t" + a + ".xyzw = r4.xxyy + " + a + ".zxyw;\n\t}\n";
   const std::string xw = options.wrong_swizzle ? "zw" : "xw";
   if (options.no_lookup) {
@@ -175,8 +184,8 @@ void CheckEdited(const Shape& shape, const std::string& hlsl) {
   // The average is the helper's call, into the average's register.
   Check(Contains(out, std::string("\t\t") + shape.average + ".x = ShadowFilterSoft(DepthTextureSampler0_"
                       "Texture2DDescriptorIndex, DepthTextureSampler0_SamplerDescriptorIndex, shadowTap1, "
-                      "shadowTap2, shadowTap3, shadowTap4, shadowDepth, iPos.xy);\n"),
-        what + "the average is the helper's call");
+                      "shadowTap2, shadowTap3, shadowTap4, shadowDepth, iPos.xy, a0);\n"),
+        what + "the average is the helper's call (with the game's a0)");
   Check(!Contains(out, "dot(" + std::string(shape.compared) + ".wzxy, c253.yyyy)"), what + "the game's average is gone");
   // The four fetches stay (dead code), once each.
   Check(Count(out, "= tfetch2D(DepthTextureSampler0_Texture2DDescriptorIndex") == 4,
@@ -188,6 +197,16 @@ void CheckEdited(const Shape& shape, const std::string& hlsl) {
   Check(Contains(out, "float2 g_InvResolutionScale : packoffset(c37.x); \\\n    float4 g_ShadowFilter : packoffset(c38);"),
         what + "g_ShadowFilter in the DXIL constants");
   Check(out.find("float ShadowFilterSoft(") < out.find("void main("), what + "the helper is before main");
+  // Contact hardening's pieces: the penumbra from the light matrix's rows, the mode bit, the search's constants.
+  Check(Count(out, "float2 ShadowFilterPenumbra(") == 1 && Count(out, "gLightMatrixArr(0 + base)") == 1 &&
+            Count(out, "gLightMatrixArr(3 + base)") == 1,
+        what + "the penumbra helper reads the four rows of the cascade by its base");
+  Check(Contains(out, "(mode & 2u) != 0u") && Contains(out, "kShadowFilterSearchTaps = 8") &&
+            Contains(out, "kShadowFilterSunTan = 0.0047123890"),
+        what + "the blocker search is behind mode bit 2, 8 taps, the sun's 0.27 degrees");
+  // The game's own reads of its light matrix stay where they were (the helper's are another text: `+ base`).
+  Check(Count(out, "gLightMatrixArr(0 + a0)") == 1 && Count(out, "gLightMatrixArr(3 + a0)") == 1,
+        what + "the game's reads of its light matrix are untouched");
   Check(out.find("#ifndef __spirv__\n[shader(\"pixel\")]") != std::string::npos, what + "main's attribute is kept");
   // Everything else is as it was: the text without the edits' lines equals the fixture's.
   Check(Contains(out, "\tr0.y = -ShaderGlobals.z + c253.x;\n\toC0.xyzw = max(r0.xxxw, r0.xxxw);\n\treturn;\n}\n"),
@@ -251,6 +270,13 @@ void CheckFixtures() {
   o = Options();
   o.with_main = false;
   CheckFails(Fixture(kShapeA, o), "no main", "pixel shader main");
+  // Contact hardening needs the game's address register and the four reads of the light matrix.
+  o = Options();
+  o.with_a0 = false;
+  CheckFails(Fixture(kShapeA, o), "no address register", "int a0 = 0;");
+  o = Options();
+  o.with_light_rows = false;
+  CheckFails(Fixture(kShapeA, o), "no light matrix rows", "gLightMatrixArr(0 + a0)");
   // A compare that does not read the fetched register, a fetch with another offset.
   std::string broken = Fixture(kShapeA);
   const size_t at = broken.find("r2.xyzw >= r1.xxxx");
@@ -259,6 +285,9 @@ void CheckFixtures() {
   broken = Fixture(kShapeA);
   broken.replace(broken.find("float2(0, 0)).x;"), 16, "float2(0.5, 0)).x;");
   CheckFails(broken, "a fetch with an offset", "tfetch2D");
+  broken = Fixture(kShapeA);
+  broken.replace(broken.find("gLightMatrixArr(3 + a0)"), 23, "gLightMatrixArr(3 + a1)");
+  CheckFails(broken, "a light matrix row read by another register", "gLightMatrixArr(3 + a0)");
   // The original is not touched: the variant's text is a new string.
   const std::string original = Fixture(kShapeA);
   const std::string copy = original;

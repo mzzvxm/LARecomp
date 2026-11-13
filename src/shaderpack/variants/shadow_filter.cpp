@@ -1,5 +1,5 @@
-// LARecomp shader pack builder -- variant "shadow_filter": the sun shadow collector's soft lookup (see
-// shadow_filter.h).
+// LARecomp shader pack builder -- variant "shadow_filter": the sun shadow collector's soft lookup and its
+// contact hardening (see shadow_filter.h).
 
 #include "shaderpack/variants/shadow_filter.h"
 
@@ -39,10 +39,15 @@ constexpr std::string_view kHelper = R"HLSL(// LARecomp variant shadow_filter (s
 // on a Vogel disk instead of the game's four. g_ShadowFilter (16 bytes after the shared constants): x the number
 // of taps, y the radius scale (1: the game's radius), z the noise frame (0: a fixed pattern; a temporal upscaler
 // gets the frame number so that its history averages the pattern out), w the mode bits (1: Gather taps, a
-// bilinear weighted compare of four texels each, instead of the sampler's own bilinear depth).
+// bilinear weighted compare of four texels each, instead of the sampler's own bilinear depth; 2: contact
+// hardening, a blocker search first; bits 8 to 15: the sun's size for it, in sixteenths of the real sun's).
 static const float kShadowFilterRadiusGain = 1.05;     // the weighted disk is as wide as the game's four taps
 static const float kShadowFilterGoldenCos = -0.7373688780783197;  // cos and sin of the golden angle, 137.5 degrees
 static const float kShadowFilterGoldenSin = 0.6754902942615238;
+static const float kShadowFilterSunTan = 0.0047123890;  // tan of the sun's angular radius, 0.27 degrees
+static const float kShadowFilterMinTexels = 0.75;       // contact hardening: the smallest kernel radius, in atlas texels
+static const float kShadowFilterMaxRadii = 2.0;         // and the largest, in radii of the soft filter (the search covers it)
+static const int kShadowFilterSearchTaps = 8;
 
 // Interleaved gradient noise of a host pixel, plus the R2 shift of the frame (as the ambient occlusion's).
 float ShadowFilterNoise(float2 pixel, float frame)
@@ -66,19 +71,76 @@ float ShadowFilterLookup(uint resourceDescriptorIndex, uint samplerDescriptorInd
     return lit;
 }
 
+// Contact hardening: the half widths, along the atlas's u and v, of the kernel that a receiver needs when the
+// blockers the search found lie `gap` (a difference of atlas depths) nearer to the sun. The sun's disc, seen
+// from the receiver through the blockers' plane, is a disc of radius (the distance to the blockers) x tan(the
+// sun's angular radius): that is the radius of the PCF's disc in the world. The cascade's light matrix turns it
+// into the atlas: its rows base + 0 to 2 hold the gradients of u, v and the depth along the world's x, y and z
+// (at right angles to one another, a rotation and a scale), so their lengths are the atlas uv per metre across
+// the sun's rays (u and v: the texels are taller than wide) and the depth per metre along them (row 3's w is
+// the factor the receiver's depth is multiplied by). The kernel is never narrower than minTexels atlas texels
+// (the map cannot show a sharper edge) nor wider than maxRadius (the soft filter's twice).
+float2 ShadowFilterPenumbra(int base, float gap, float sunTan, float texel, float maxRadius)
+{
+    float4 row0 = gLightMatrixArr(0 + base);
+    float4 row1 = gLightMatrixArr(1 + base);
+    float4 row2 = gLightMatrixArr(2 + base);
+    float4 row3 = gLightMatrixArr(3 + base);
+    float uPerMetre = length(float3(row0.x, row1.x, row2.x));
+    float vPerMetre = length(float3(row0.y, row1.y, row2.y));
+    float depthPerMetre = max(length(float3(row0.z, row1.z, row2.z)) * row3.w, 1.0e-9);
+    float metres = gap / depthPerMetre * sunTan;
+    float lowest = kShadowFilterMinTexels * texel;
+    return clamp(metres * float2(uPerMetre, vPerMetre), float2(lowest, lowest), float2(maxRadius, maxRadius));
+}
+
 // The average of the game's four taps, replaced. tap1..tap4 are the game's tap coordinates (a cross: tap 1 at
 // centre + 1.0 R u, tap 3 at centre - 0.5 R u, tap 2 at centre + 0.75 R v, tap 4 at centre - 0.25 R v, u and v
-// at right angles, R = count / 1280): the centre and R come from taps 1 and 3.
+// at right angles, R = count / 1280): the centre and R come from taps 1 and 3. `cascadeBase` is the game's own
+// a0 (4 x the cascade's index: the first row of its light matrix).
+// Mode bit 2 (contact hardening) puts a blocker search first: 8 taps over a disc of twice the soft radius, the
+// bilinear sampler's depth compared with the receiver's as the game does (nearer to the sun: a blocker). None
+// found: lit, all found: in shadow (no more taps for the pixels that are not near an edge). Else the kernel is the
+// penumbra of the average blocker (ShadowFilterPenumbra) and the PCF below runs on it, an ellipse along u and v.
 float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 tap1, float2 tap2,
-                       float2 tap3, float2 tap4, float depth, float2 pixel)
+                       float2 tap3, float2 tap4, float depth, float2 pixel, int cascadeBase)
 {
     float4 constants = g_ShadowFilter;
+    uint mode = uint(constants.w + 0.5);
     float2 centre = (tap1 + 2.0 * tap3) * (1.0 / 3.0);
     float radius = length(tap1 - tap3) * (1.0 / 1.5) * constants.y * kShadowFilterRadiusGain;
     int count = clamp(int(constants.x + 0.5), 4, 32);
-    bool gather = (uint(constants.w + 0.5) & 1u) != 0u;
+    bool gather = (mode & 1u) != 0u;
     float angle = 6.28318530718 * ShadowFilterNoise(pixel, constants.z);
     float2 direction = float2(cos(angle), sin(angle));
+    float2 kernel = float2(radius, radius);
+    if ((mode & 2u) != 0u)
+    {
+        float maxRadius = kShadowFilterMaxRadii * radius;
+        float blockerSum = 0.0;
+        int blockers = 0;
+        [loop]
+        for (int j = 0; j < kShadowFilterSearchTaps; ++j)
+        {
+            float share = (float(j) + 0.5) / float(kShadowFilterSearchTaps);
+            float stored = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex,
+                                       centre + direction * (sqrt(share) * maxRadius), float2(0.0, 0.0), 0.0).x;
+            if (stored < depth)
+            {
+                blockerSum += stored;
+                blockers += 1;
+            }
+            direction = float2(direction.x * kShadowFilterGoldenCos - direction.y * kShadowFilterGoldenSin,
+                               direction.x * kShadowFilterGoldenSin + direction.y * kShadowFilterGoldenCos);
+        }
+        if (blockers == 0)
+            return 1.0;
+        if (blockers == kShadowFilterSearchTaps)
+            return 0.0;
+        float sunTan = float(mode >> 8u) * (kShadowFilterSunTan * (1.0 / 16.0));
+        kernel = ShadowFilterPenumbra(cascadeBase, depth - blockerSum / float(blockers), sunTan,
+                                      constants.y * (1.0 / 1280.0), maxRadius);
+    }
     float sum = 0.0;
     float total = 0.0;
     [loop]
@@ -87,7 +149,7 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
         float share = (float(i) + 0.5) / float(count);  // r^2: equal areas
         float weight = 1.0 - 0.5 * share;
         sum += weight * ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex,
-                                           centre + direction * (sqrt(share) * radius), depth, gather);
+                                           centre + direction * (sqrt(share) * kernel), depth, gather);
         total += weight;
         direction = float2(direction.x * kShadowFilterGoldenCos - direction.y * kShadowFilterGoldenSin,
                            direction.x * kShadowFilterGoldenSin + direction.y * kShadowFilterGoldenCos);
@@ -213,6 +275,20 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
                           "this transform was written for");
   }
 
+  // 0b. What contact hardening reads: the cascade's light matrix, by the game's own address register
+  // (`gLightMatrixArr(k + a0)`, k = 0 to 3: the gradients of u, v and the depth, and the offset).
+  if (CountOccurrences(text, "int a0 = 0;") != 1) {
+    return Failed(shader, "the address register `int a0 = 0;` is not declared exactly once: the HLSL tree is not "
+                          "the one this transform was written for");
+  }
+  for (int row = 0; row < 4; ++row) {
+    const std::string needle = std::format("gLightMatrixArr({} + a0)", row);
+    if (CountOccurrences(text, needle) < 1) {
+      return Failed(shader, std::format("`{}` is not read: the HLSL tree is not the one this transform was written "
+                                        "for", needle));
+    }
+  }
+
   // 1. The four taps: each on a line of its own, in the order of the cross (coordinates .xw, .yz of one
   // register, .xy, .zw of another), into the four components of one register.
   std::vector<Tap> taps;
@@ -300,7 +376,7 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
   {
     std::string call = std::string(average_line.indent) + average_dest.reg + ".x = ShadowFilterSoft(" +
                        "DepthTextureSampler0_Texture2DDescriptorIndex, DepthTextureSampler0_SamplerDescriptorIndex, "
-                       "shadowTap1, shadowTap2, shadowTap3, shadowTap4, shadowDepth, iPos.xy);";
+                       "shadowTap1, shadowTap2, shadowTap3, shadowTap4, shadowDepth, iPos.xy, a0);";
     edits.push_back({average_line.begin, average_line.end - average_line.begin, std::move(call)});
     edits.push_back({compare_line.begin, 0,
                      std::string(compare_line.indent) + "shadowDepth = " + depth_reg + ".x;\n"});
@@ -370,7 +446,8 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
       {"float4 constants = g_ShadowFilter;", 1},
       {"\tshadowTap1 = ", 1},          {"\tshadowTap2 = ", 1},
       {"\tshadowTap3 = ", 1},          {"\tshadowTap4 = ", 1},
-      {"\tshadowDepth = ", 1},
+      {"\tshadowDepth = ", 1},        {"shadowDepth, iPos.xy, a0);", 1},
+      {"gLightMatrixArr(0 + base)", 1}, {"float2 ShadowFilterPenumbra(", 1},
   };
   for (const auto& check : kChecks) {
     const size_t count = CountOccurrences(text, check.needle);

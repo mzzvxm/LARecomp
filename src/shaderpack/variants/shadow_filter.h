@@ -39,10 +39,33 @@
 //
 // Extra constants: 16 bytes after the SharedConstants, `float4 g_ShadowFilter` at byte 608 (c38 of the block;
 // src/gpu/shadow_filter.h ShadowFilterConstants): x = taps, y = radius scale (1; G1a sets 1 / the atlas
-// scale), z = the noise frame, w = mode bits (1: Gather taps; 2: contact hardening, G1c, not read yet).
+// scale), z = the noise frame, w = mode bits (1: Gather taps; 2: contact hardening; bits 8 to 15: the sun's
+// size for it, in sixteenths of the real sun's angular radius, 0.27 degrees).
+//
+// Contact hardening (PCSS, package G1c; mode bit 2, the same shader and pipeline as soft: one uniform branch):
+//   - a blocker search first: 8 bilinear taps over a disc of twice the soft radius (the game's radius times
+//     the atlas scale: the cap below), a tap nearer to the sun than the receiver (stored < depth, the game's
+//     own compare turned round) is a blocker. None: lit, all 8: in shadow, and the 16 taps are not taken at
+//     all (the pixels away from an edge cost 8 taps, half of what soft takes everywhere).
+//   - the penumbra: the distance from the receiver to the average blocker along the sun's rays times
+//     tan(the sun's angular radius) is the radius of the sun's disc seen through the blockers' plane, i.e.
+//     of the PCF's disc in the world. World units come from the cascade's light matrix (the game's own
+//     address register a0 picks its rows: gLightMatrixArr(a0 .. a0 + 3), which the collector's PS c64-c79
+//     hold, the same in every draw of a frame: 6B.2 item 1): rows 0 to 2 are the gradients of u, v and the
+//     depth along the world's x, y, z and are at right angles (a rotation and a scale: on the census constants
+//     of gc3-day-s1 the cosines between the three are under 2e-6 in all four cascades, and the u and v axes
+//     are the planes' right and top axes of c85 and c82), so the lengths of (row0.x, row1.x, row2.x)
+//     and (row0.y, row1.y, row2.y) are the atlas uv per metre across the rays in u and in v, and the length
+//     of (row0.z, row1.z, row2.z) times row 3's w the depth per metre along them. The kernel is that radius in
+//     uv, per axis: an ellipse, because the atlas texels are taller than wide.
+//   - clamped to [0.75 atlas texels, twice the soft filter's radius] per axis: the map cannot show an edge
+//     sharper than about a texel, and the cap keeps the PCF's 16 taps dense enough (it follows the atlas scale
+//     with the soft radius: constants.y). With the real sun the penumbra is under a texel for every caster
+//     lower than about 3.5 m at the nearest cascade, so the sun's size is a setting (mcla_gpu_shadow_filter_sun).
+//   - a Low class never gets the search (the host leaves the bit out): LOW is soft.
 //
 // Runtime: src/gpu/pipelines.cpp selects it per draw (ps_variant kVariantShadowFilter) while
-// mcla_gpu_shadow_filter resolves to soft; src/gpu/scene.cpp uploads the constants. A variant is built for
+// mcla_gpu_shadow_filter resolves to soft or pcss; src/gpu/scene.cpp uploads the constants. A variant is built for
 // spec variant 0 only, so a collector draw that has the alpha test or alpha to coverage on keeps the game's
 // shader (CHECK in the report: whether the alpha shaders are drawn that way).
 // ===========================================================================
@@ -55,7 +78,7 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line
 // variants_shadow_filter_version).
-inline constexpr uint32_t kShadowFilterVariantVersion = 1;
+inline constexpr uint32_t kShadowFilterVariantVersion = 2;  // 2: contact hardening (mode bit 2), a0 passed to the helper
 
 // The collector's pixel shaders, found by name (the entry points of the .updb path; the identities differ
 // per material and the pack records each one's own).
