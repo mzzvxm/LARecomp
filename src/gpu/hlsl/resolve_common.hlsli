@@ -46,6 +46,7 @@
 #define kFlagSourceFloat24 (1u << 10)
 #define kFlagDestFloat24 (1u << 11)
 #define kFlagSourceNanToZero (1u << 12)
+#define kFlagSourceCeiling7e3 (1u << 13)
 
 uint HostSample(uint i) {
   return (g_push.samples >> (8u + 3u * i)) & 7u;
@@ -90,6 +91,17 @@ float4 ResolveSample(int2 source, uint i) {
     const uint4 bits = asuint(c);
     const uint4 nan = ((0x7F800000u - (bits & 0x7FFFFFFFu)) >> 31u) & nan_to_zero;
     c = asfloat(bits & (nan - 1u));
+  }
+  // kFlagSourceCeiling7e3: the colour of a 7e3 target holds 0 to 31.875 and no more, red, green
+  // and blue each. What is stored is the colour times 2^exp_bias, which is also what the host
+  // target holds, so the limits apply to the sample as loaded. Branch-free, for the reason above:
+  // with the flag off the limits are the infinities (0x7F800000, 0xFF800000) and the sample is
+  // unchanged. The NaNs were zeroed above, so min and max have nothing to order.
+  {
+    const bool ceiling_7e3 = (g_push.mode & kFlagSourceCeiling7e3) != 0u;
+    const float ceiling = asfloat(select(ceiling_7e3, 0x41FF0000u, 0x7F800000u));  // 31.875
+    const float floor_value = asfloat(select(ceiling_7e3, 0u, 0xFF800000u));
+    c.rgb = max(min(c.rgb, ceiling), floor_value);
   }
   if ((g_push.mode & kFlagGammaSource) != 0u) {
     c.rgb = XeLinearToPWLGamma3(c.rgb);

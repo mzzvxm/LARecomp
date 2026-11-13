@@ -36,6 +36,7 @@
 #include "pass_timing.h"
 #include "resolve_memory.h"
 #include "frame.h"
+#include "hdr.h"
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "temporal_backend.h"
@@ -57,6 +58,18 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
                     "resolve_resolution_scale_fill_half_pixel_offset does. Off: "
                     "the gap keeps whatever was there, a 1-pixel line on the top and left "
                     "edges. A/B switch.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_7e3_ceiling, true, "MCLA/GPU",
+                    "A resolve of a 7e3 colour target (k_2_10_10_10_FLOAT, the 3D scene) clamps "
+                    "each sample's red, green and blue to what the console's target holds, as "
+                    "Xenia does: 0 to 31.875 as stored, which with the game's exponent bias of 4 "
+                    "is a colour of 1.99 at most. The host's float16 target holds far more, "
+                    "and the tone map and the bloom then see lights the console never had: a "
+                    "red underglow pool is white in the middle instead of pink. Off: no clamp. "
+                    "Not applied while the output is HDR10 (the HDR tone map wants the range). "
+                    "A/B switch.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -1290,6 +1303,13 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         // they were.)
         if (src_format == 1 || src_format == 3) {
           full_mode |= kFlagSourceNanToZero;
+        }
+        // The 7e3 target's range: 0 to 31.875 on the console, up to 65504 in the host's float16.
+        // Not with HDR output: its tone map (hdr_tonemap.h) exists to show what the neon signs,
+        // the headlights and the sun have above the console's white, so it keeps what the host
+        // holds.
+        if (src_format == 3 && REXCVAR_GET(mcla_gpu_resolve_7e3_ceiling) && !hdr::Active()) {
+          full_mode |= kFlagSourceCeiling7e3;
         }
       } else if (src_format == uint32_t(xe::DepthRenderTargetFormat::kD24FS8)) {
         full_mode |= kFlagSourceFloat24;
