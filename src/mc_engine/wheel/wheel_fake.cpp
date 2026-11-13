@@ -279,7 +279,7 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t user = ctx.r3.u32;
     const uint32_t state = ctx.r4.u32;
     // When this function ends (the SDK's state, the dead zones and any test pad done) a flying free camera takes the pad and clears the game's copy.
-    mc::cinematic::FreecamPadScope freecam_pad(base, user, state);
+    mc::cinematic::FreecamPadScope freecam_pad(base, user, state, ctx.r3.u64);
     __imp__rex_sub_8275CB78(ctx, base);
     const FakeMode mode = CurrentMode();
     if (!IsWheelUser(user) || state == 0 ||

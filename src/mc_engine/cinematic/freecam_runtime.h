@@ -26,11 +26,15 @@ void FreecamObservePad(uint8_t* base, uint32_t user, uint32_t state);
 // True while the camera is the flight's.
 bool FreecamActive();
 
-// An object on the stack of the XamInputGetState wrapper: runs FreecamObservePad when the wrapper returns, whatever path it took.
+// An object on the stack of the XamInputGetState wrapper: runs FreecamObservePad when the wrapper returns, whatever path it took, unless the
+// call failed (`result` is the wrapper's r3, which holds the call's result by then: 0 = a pad answered).
 class FreecamPadScope {
   public:
-    FreecamPadScope(uint8_t* base, uint32_t user, uint32_t state) : base_(base), user_(user), state_(state) {}
-    ~FreecamPadScope() { FreecamObservePad(base_, user_, state_); }
+    FreecamPadScope(uint8_t* base, uint32_t user, uint32_t state, const uint64_t& result)
+        : base_(base), user_(user), state_(state), result_(result) {}
+    ~FreecamPadScope() {
+        if ((result_ & 0xFFFFFFFFull) == 0) FreecamObservePad(base_, user_, state_);
+    }
     FreecamPadScope(const FreecamPadScope&) = delete;
     FreecamPadScope& operator=(const FreecamPadScope&) = delete;
 
@@ -38,6 +42,7 @@ class FreecamPadScope {
     uint8_t* base_;
     uint32_t user_;
     uint32_t state_;
+    const uint64_t& result_;
 };
 
 }  // namespace mc::cinematic
