@@ -132,6 +132,8 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgKeyRepeat",  "ui_input_repeat_30hz",      "MENU KEY REPEAT: "),
     Bool("PM_RxDbgMenuInput",  "ui_advance_on_input",       "MENU INPUT: "),
     Bool("PM_RxDbgMenu3d",     "ui_interpolate_camera",     "SMOOTH MENU 3D: "),
+    // The neon underglow's pulse held on the console's 30 Hz clock (hooks/neon_pulse.cpp).
+    Bool("PM_RxDbgNeonPulse",  "mcla_fix_neon_30hz",        "NEON PULSE 30 HZ: "),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
     NativeOnly(Bool("PM_RxDbgA2c",    "mcla_gpu_a2c_dither_all", "ALPHA TO MASK FIX: ")),

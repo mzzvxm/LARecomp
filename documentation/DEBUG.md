@@ -62,7 +62,7 @@ Every row is live: it takes effect at once and is never saved. A page has at mos
 
 | Page | What it is for |
 |---|---|
-| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI and dither fixes), to see whether a fix caused a bug. |
+| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI and dither fixes, the neon pulse held on the console's 30 Hz clock), to see whether a fix caused a bug. |
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, foliage, break FPS floor. |
 | RENDERING | The Plume renderer's debug views (AO, HDR layers), performance markers, the ghost and memory logs, the aspect ratio override, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
