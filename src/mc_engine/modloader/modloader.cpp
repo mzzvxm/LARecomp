@@ -56,40 +56,48 @@ REXCVAR_DEFINE_INT32(model_mods_bone, -1, "MCLA/Mods",
     "matching its joints to the driver's bones by bind-pose position, so the "
     "model follows the seated pose. Any value >= 0 ignores the weights and "
     "rides the whole mesh rigidly on that one bone, which is all a .obj can do.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_offset_y, 0.0, "MCLA/Mods",
     "Extra height for the replacement model, in metres, on top of the automatic "
     "lift onto its bone. Positive raises it. Use this if the model still sits "
     "below or above the seat -- it takes a restart but no rebuild.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_offset_x, 0.0, "MCLA/Mods",
     "Sideways nudge for the replacement model, in metres.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_offset_z, 0.0, "MCLA/Mods",
     "Forward/back nudge for the replacement model, in metres.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_yaw, 0.0, "MCLA/Mods",
     "Turns the replacement model about the vertical axis, in degrees. Source "
     "models rarely face the same way the game does -- 180 turns a model that "
     "sits with its back to the wheel.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_pitch, 0.0, "MCLA/Mods",
     "Tips the replacement model forward or back, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_roll, 0.0, "MCLA/Mods",
     "Rolls the replacement model sideways, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_scale, 1.0, "MCLA/Mods",
     "Size multiplier on top of the automatic fit, which matches the model's "
     "height to the driver's. 1.0 leaves it alone.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_submeshes, true, "MCLA/Mods",
     "Spread the replacement mesh across every submesh of the character instead "
@@ -100,7 +108,8 @@ REXCVAR_DEFINE_BOOL(model_mods_submeshes, true, "MCLA/Mods",
     "with no welding at all. Every submesh borrowed this way is repointed at "
     "the shader whose textures were replaced. Turn it off to go back to filling "
     "one submesh, which is the conservative path if a model renders oddly.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_decimate, false, "MCLA/Mods",
     "Whether a replacement mesh larger than the slot it has to live in may be "
@@ -116,7 +125,8 @@ REXCVAR_DEFINE_BOOL(model_mods_decimate, false, "MCLA/Mods",
     "yourself in a modelling tool, where you can see what you are giving up. "
     "Expect the low LOD to be refused first, so the original driver reappears "
     "at a distance. On welds it in instead.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_proportions, 0.0, "MCLA/Mods",
     "How much of the replacement model's own build to keep when it is reposed "
@@ -129,7 +139,8 @@ REXCVAR_DEFINE_DOUBLE(model_mods_proportions, 0.0, "MCLA/Mods",
     "skeleton. The cost is that limbs no longer end where the game thinks they "
     "do, so hands drift off the wheel as it goes up. Try 1 for anything that is "
     "not roughly human.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_textures, true, "MCLA/Mods",
     "Use the replacement model's own textures. The images embedded in a .glb "
@@ -137,7 +148,8 @@ REXCVAR_DEFINE_BOOL(model_mods_textures, true, "MCLA/Mods",
     "are remapped into its own cell, and the result is written over the "
     "character's diffuse map in place -- same address, same size, same format. "
     "Off leaves the mesh wearing the original driver's skin.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_car_textures, true, "MCLA/Mods",
     "Give a replacement car body its own textures. A car is drawn by several "
@@ -153,7 +165,8 @@ REXCVAR_DEFINE_BOOL(model_mods_car_textures, true, "MCLA/Mods",
     "\n"
     "Off ships the donor's packs exactly as the game holds them, and the body "
     "comes back wearing the donor's own artwork.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_autoalign, true, "MCLA/Mods",
     "Put a replacement wheel on the game's axle, in two steps. First the turn: "
@@ -167,7 +180,8 @@ REXCVAR_DEFINE_BOOL(model_mods_rim_autoalign, true, "MCLA/Mods",
     "with the shipped wheel's instead, turning the model around first if it came "
     "in facing inward. The manual rim angles and nudge below are applied on top. "
     "Turn this off to place a wheel entirely by hand.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_keep_badge, true, "MCLA/Mods",
     "Leave the wheel's badge quad as it shipped instead of silencing it.\n"
@@ -180,7 +194,8 @@ REXCVAR_DEFINE_BOOL(model_mods_rim_keep_badge, true, "MCLA/Mods",
     "Off restores the old behaviour. Only mods that bring an image of their own "
     "reach this at all, so a wheel mod with no texture behaves the same either "
     "way -- which makes this the switch to try first when a textured wheel mod "
-    "misbehaves and an untextured one on the same build does not.");
+    "misbehaves and an untextured one on the same build does not.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_shade_profile, true, "MCLA/Mods",
     "Rebuild a replaced wheel's baked shading from the template instead of "
@@ -205,7 +220,8 @@ REXCVAR_DEFINE_BOOL(model_mods_rim_shade_profile, true, "MCLA/Mods",
     "another's bake it reaches R^2 -0.09, no better than the flat average, at "
     "every grid size tried -- half of a wheel's bake is its own spokes, and "
     "there is no bake for geometry the game never saw. Off restores the flat "
-    "average, which is featureless but is not a guess.");
+    "average, which is featureless but is not a guess.")
+    .debug_only();
 
 REXCVAR_DEFINE_INT32(model_mods_rim_texture_mode, -1, "MCLA/Mods",
     "Where a wheel mod's own image is applied: -1 auto, 0 the hub cap, 1 the "
@@ -226,7 +242,8 @@ REXCVAR_DEFINE_INT32(model_mods_rim_texture_mode, -1, "MCLA/Mods",
     "\n"
     "Either way the badge quad is left as it shipped, so the cap is never "
     "blank. Force the choice with 0 or 1 when a mod's alpha does not say what "
-    "it meant.");
+    "it meant.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_band_profile, false, "MCLA/Mods",
     "Carry the template wheel's material bands onto the replacement instead of "
@@ -252,7 +269,8 @@ REXCVAR_DEFINE_BOOL(model_mods_rim_band_profile, false, "MCLA/Mods",
     "matching on absolute depth and 57%/70% matching on each mesh's own depth "
     "span. Neither normalisation wins in both directions, so the bands are in "
     "the same PLACES on every wheel without being predictable per vertex from "
-    "where a vertex sits. Kept, off, so the next idea has something to beat.");
+    "where a vertex sits. Kept, off, so the next idea has something to beat.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_shade_occlusion, true, "MCLA/Mods",
     "Bake the wheel's shade lane from occlusion measured on the replacement."
@@ -279,7 +297,8 @@ REXCVAR_DEFINE_BOOL(model_mods_rim_shade_occlusion, true, "MCLA/Mods",
     "Takes precedence over model_mods_rim_shade_profile, which guesses the same "
     "lane from statistics and which its own comment scores at R^2 -0.09 across "
     "wheels -- no better than the flat average it replaces.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_rim_inherit_shade, false, "MCLA/Mods",
     "Diagnostic. Copy the shipped wheel's per-vertex shading onto the "
@@ -291,33 +310,39 @@ REXCVAR_DEFINE_BOOL(model_mods_rim_inherit_shade, false, "MCLA/Mods",
     "scattered by proximity across a shape that does not have them. Off, which "
     "is the default, gives the whole wheel one band and that band's own average "
     "shade, both read off the template.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_rim_offset_x, 0.0, "MCLA/Mods",
     "Nudge for a replacement wheel along its axle, where one unit is the "
     "wheel's own diameter. Positive pushes it further into the tyre, negative "
     "pulls it out. Only needed when the automatic flush above lands slightly "
     "off for a particular model.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_rim_yaw, 0.0, "MCLA/Mods",
     "Turns a replacement wheel about the vertical axis, in degrees. Separate "
     "from the character angles because a wheel and a driver never want the same "
     "correction.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_rim_pitch, 0.0, "MCLA/Mods",
     "Tips a replacement wheel forward or back, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_rim_roll, 0.0, "MCLA/Mods",
     "Rolls a replacement wheel sideways, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_rim_scale, 1.0, "MCLA/Mods",
     "Size multiplier for a replacement wheel, on top of the automatic fit to "
     "the shipped wheel's own bounds. 1.0 leaves it alone.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_car_yaw, 180.0, "MCLA/Mods",
     "Turns a replacement car about the vertical axis before its parts are "
@@ -325,7 +350,8 @@ REXCVAR_DEFINE_DOUBLE(model_mods_car_yaw, 180.0, "MCLA/Mods",
     "model face +Z and MCLA has it face -Z, which is checked rather than "
     "assumed -- the shipped cars keep their headlights at negative Z and their "
     "tail lights at positive Z, and an exported car has it the other way round.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(model_mods_car_scale, 1.0, "MCLA/Mods",
     "Size multiplier for a replacement car, on top of the automatic fit. The "
@@ -333,7 +359,8 @@ REXCVAR_DEFINE_DOUBLE(model_mods_car_scale, 1.0, "MCLA/Mods",
     "replaces, and every part of the car is then moved by that one factor -- "
     "scaling each part into its own slot instead would leave a hood a size "
     "larger than the doors beside it. 1.0 leaves it alone.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_grow, false, "MCLA/Mods",
     "Give a replacement wheel or car part buffers of its own instead of welding "
@@ -347,7 +374,8 @@ REXCVAR_DEFINE_BOOL(model_mods_grow, false, "MCLA/Mods",
     "affected: a skinned submesh also caps its bone palette, which is a separate "
     "allocation, so they stay on the path that already works. Turn this off to "
     "go back to welding everything into the shipped buffers.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(model_mods_car_budget, 16777216, "MCLA/Mods",
     "The largest a replaced car body may be grown to, in bytes for LOD 0; the "
@@ -373,7 +401,8 @@ REXCVAR_DEFINE_UINT32(model_mods_car_budget, 16777216, "MCLA/Mods",
     "\n"
     "0 lifts the ceiling entirely, which is the setting to try when you want to "
     "know whether size is what a car is failing on.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_car_pack_write, true, "MCLA/Mods",
     "Write the mod's atlases into the car's material packs."
@@ -389,7 +418,8 @@ REXCVAR_DEFINE_BOOL(model_mods_car_pack_write, true, "MCLA/Mods",
     "car then wears the donor's artwork through the mod's UVs, which looks "
     "wrong on purpose -- what is being read is the GEOMETRY. Whole means the "
     "pack rewrite is at fault; in pieces means the UV rewrite is.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
     "Let two materials that name the same picture share one cell of the atlas."
@@ -409,7 +439,8 @@ REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
     "a UV by more than a texel -- and something downstream of that is not "
     "surviving it. Until that is understood this stays off and each material "
     "keeps its own cell.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_cabin_light, true, "MCLA/Mods",
     "Give a replacement car's cabin (the car-space part slots, interior0) the "
@@ -420,7 +451,8 @@ REXCVAR_DEFINE_BOOL(model_mods_cabin_light, true, "MCLA/Mods",
     "interior lights (siColor0..2: the interior neon among them) reaches it. "
     "Flooded with one average the BMW's cabin barely answered the interior neon "
     "being switched on. Off restores the flood.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
     "Ship a replacement car's LOD 1 as a byte copy of the LOD 0 just built, for "
@@ -440,14 +472,16 @@ REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
     "block rounding already makes both LODs of the body 2 MB.\n"
     "\n"
     "OFF rebuilds LOD 1 from the donor's own LOD 1 on a quarter budget, the "
-    "old behaviour.");
+    "old behaviour.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_part_probe, true, "MCLA/Mods",
     "TEMPORARY diagnostic: every second, while the player's car is waiting to "
     "reattach its parts (car+6467) -- which is when the game draws none of it, "
     "wheels included -- log which selected part is not resident yet and the "
     "state of its stream (object, resource, handle, flags, state, refcount). "
-    "See PartProbeLoop.");
+    "See PartProbeLoop.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(model_mods_glass_band, true, "MCLA/Mods",
     "Give a replacement body's glass the pane number of the donor glass nearest "
     "each piece of it, instead of the dominant pane of the submesh it is written "
@@ -455,7 +489,8 @@ REXCVAR_DEFINE_BOOL(model_mods_glass_band, true, "MCLA/Mods",
     "1 rear, 2/3 doors -- and the window film tints 1-3 only, so a body flooded "
     "with 0 takes no film at all. See MeshOffset::band_by_piece. Read at archive "
     "build time.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
     "How much larger than the donor's own a replacement PART may be, as a "
     "multiple of the shipped resource.\n"
@@ -469,7 +504,8 @@ REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
     "\n"
     "1 keeps every part at exactly the size the donor shipped, which is the "
     "setting to try when a car loads without its parts.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_car_verbatim, false, "MCLA/Mods",
     "Diagnostic, cars only. Copies each part's shipped file into the mod "
@@ -482,7 +518,8 @@ REXCVAR_DEFINE_BOOL(model_mods_car_verbatim, false, "MCLA/Mods",
     "second archive at all. `model_mods_passthrough` cannot answer that on its "
     "own, because it still re-encodes the stream -- and an LZX of stored blocks "
     "is larger than the compressed original it replaces.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_passthrough, false, "MCLA/Mods",
     "Diagnostic. Repacks the original character resource without touching its "
@@ -490,7 +527,8 @@ REXCVAR_DEFINE_BOOL(model_mods_passthrough, false, "MCLA/Mods",
     "with this on, the packing path (LZX, archive, mount, flags) is sound and "
     "any breakage belongs to the mesh rewrite; if it breaks, the packing path "
     "is at fault.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_anchor_bones, true, "MCLA/Mods",
     "Whether the repose plants each of the mod's joints on the bone it was "
@@ -506,7 +544,8 @@ REXCVAR_DEFINE_BOOL(model_mods_anchor_bones, true, "MCLA/Mods",
     "wrist landing 38 mm and the foot 96 mm off their bones, which swings them "
     "on the wrong lever once animation starts. Standing still, off looks "
     "better; in motion is what only the game can answer.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_INT32(model_mods_weight_smoothing, 4, "MCLA/Mods",
     "How many rounds of neighbour averaging the mod's skin weights get before "
@@ -521,7 +560,8 @@ REXCVAR_DEFINE_INT32(model_mods_weight_smoothing, 4, "MCLA/Mods",
     "character's back. Smoothing gives a seam vertex a share of both bones so "
     "the seam bends instead. Four rounds took the worst edge to 2.1x; away from "
     "a seam it changes nothing.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(model_mods_grow_slack, 65536, "MCLA/Mods",
     "Room left unused at the end of a resource `model_mods_grow` has enlarged. "
@@ -531,7 +571,8 @@ REXCVAR_DEFINE_UINT32(model_mods_grow_slack, 65536, "MCLA/Mods",
     "clean. Where between those two the boundary sits has not been pinned down, "
     "so the default is the distance that was measured to work rather than the "
     "smallest that might. 0 restores the old behaviour and the holes with it.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_car_space_only, true, "MCLA/Mods",
     "Write a donor car's replacement mesh only into the models the donor authors "
@@ -550,7 +591,8 @@ REXCVAR_DEFINE_BOOL(model_mods_car_space_only, true, "MCLA/Mods",
     "elsewhere (MeshOffset::block_align). Kept switchable because it is the one "
     "thing between a car in its right place and a car whose nose is in the "
     "ground. Read at archive build time, so it needs a restart and no rebuild.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_INT32(model_mods_grow_probe, 0, "MCLA/Mods",
     "With `model_mods_grow` on: 1 grows the resource and stops there, the segment "
@@ -566,7 +608,8 @@ REXCVAR_DEFINE_INT32(model_mods_grow_probe, 0, "MCLA/Mods",
     "That is what says whether the bytes written into the grown space actually "
     "arrive and can be fetched from -- 1 never reads them. Only when both pass "
     "is a changed count worth trying.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(model_mods_diag, false, "MCLA/Mods",
     "Write a `.diag` folder beside the mods: one .txt per rebuilt asset "
@@ -576,7 +619,8 @@ REXCVAR_DEFINE_BOOL(model_mods_diag, false, "MCLA/Mods",
     "mangled is one of three things (a joint on the wrong bone, a bad deal, or "
     "a submesh the writer could not describe and therefore left drawing what it "
     "shipped) and they all look alike on screen; this tells them apart.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 namespace mc::modloader {
 

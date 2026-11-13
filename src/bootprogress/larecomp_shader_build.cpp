@@ -52,7 +52,8 @@ REXCVAR_DEFINE_INT32(
     "by itself from the processor's cores and the free memory. A lower number leaves the PC more "
     "usable during the build, which then takes longer.")
     .range(0, 64)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(
     build_shader_packs, false, "MCLA/GPU",
@@ -60,12 +61,14 @@ REXCVAR_DEFINE_BOOL(
     "window, no graphics. The launcher runs this at the end of its setup so that the first start "
     "has nothing to build. Progress is printed to the console; the log is logs/shader_build.txt. "
     "Exit code 0 when the packs are in place.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(
     build_shader_packs_force, false, "MCLA/GPU",
     "With build_shader_packs: build even when the packs in place are current.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 namespace larecomp::shaderbuild {
 namespace {

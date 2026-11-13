@@ -38,7 +38,8 @@ REXCVAR_DEFINE_BOOL(custom_music, false, "MCLA/Audio",
     "exactly as it does for a shipped song. This only ever sees a file the "
     "native route could not take, and playing that one a second-class way hides "
     "the reason instead of showing it.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(custom_music_announce, true, "MCLA/Audio",
     "Print the song name on the HUD info strip (the bar under the speedometer "
@@ -59,7 +60,8 @@ REXCVAR_DEFINE_DOUBLE(custom_music_volume, 0.5, "MCLA/Audio",
     "Trim applied on top of the in-game music slider for custom MP3 tracks. "
     "The shipped radio goes through the RAGE mixer and its ducking curves, "
     "which the host player does not, so 1.0 comes out noticeably louder.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(custom_music_cue_gain_db, 4.0, "MCLA/Audio",
     "Gain for native custom music in the game's audio mixer, after the bank's "
@@ -72,7 +74,8 @@ REXCVAR_DEFINE_BOOL(music_bank_log, false, "MCLA/Audio",
     "into the sounds.dat string table) and whether the file was found. Use it "
     "when a song plays silently -- it separates 'the bank was never asked for' "
     "from 'the bank was opened and decoded to nothing'.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(music_list, false, "MCLA/Audio",
     "Log the whole radio once, right after mcMusicManager finishes building it: "
@@ -80,7 +83,8 @@ REXCVAR_DEFINE_BOOL(music_list, false, "MCLA/Audio",
     "tell whether a song added through the audio metadata (a rebuilt game.dat "
     "plus its wave bank) actually reached AddSong, since the game's own log "
     "line for that was compiled out.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 namespace {
 

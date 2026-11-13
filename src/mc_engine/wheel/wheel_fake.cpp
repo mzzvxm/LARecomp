@@ -72,12 +72,14 @@ REXCVAR_DEFINE_STRING(wheel_fake, "off", "MCLA/Wheel",
     "pedals, bumpers shift). keys: A/D steer, W throttle, S brake, Q/E shift down/up. Takes "
     "effect on the next input poll.")
     .allowed({"off", "pad", "keys"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_ffb_log, true, "MCLA/Wheel",
     "Log every force-feedback command the game sends while wheel_fake is on: effect id, type, "
     "duration and parameters. Capped so a long race cannot fill the log.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_8275CB70);
 REX_EXTERN(__imp__rex_sub_8275CB78);
