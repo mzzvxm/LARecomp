@@ -140,6 +140,44 @@
 // the test on against off; (3) the main view's colour target is readable at the trigger in the
 // layout the transition gives it (the sun shafts read it there too).
 //
+// SECOND STEP: THE BOUNCE'S HISTORY AND DENOISE (hlsl/ao_denoise_ps.hlsl and hlsl/ao_temporal_ps.hlsl compiled
+// with AO_GI, hlsl/ao_atrous_ps.hlsl; the same test cvar): one frame of the bounce is noisy (a handful of
+// samples' colours, a different handful every frame), and the test now makes it steady the way the
+// occlusion makes its visibility steady, on four channels at once (visibility x, bounce yzw):
+//   denoise   the occlusion's 3x3 depth-aware blur over the four channels (gi_ into gi_dn_); a frame with
+//             no history to lean on blurs a second time (gi_dn_ into the idle history image)
+//   temporal  the occlusion's own accumulation pass over four channels, into RGBA16F history images
+//             that take turns. Everything the occlusion's history decides is the same decision here:
+//             the camera's motion into the last frame (FrameMotion), the vehicles' rows in the table
+//             (RecordVehicleTable), the plane and depth tests and the confidence, the wide blur where the
+//             history does not hold, and the reasons for no history at all (a cut, a gap of frames, the
+//             other kind of view, a new size, mcla_gpu_ao_history 1; plus the history being the other
+//             kind: the test turned on or off). The last frame's linear depth is not in the history (the
+//             plain history's second channel has no room now) but in an R32_FLOAT image of its own: the
+//             depth image of the frame before, which depth_[0] and depth_prev_ trade places for at the end
+//             of each frame. The visibility's part is to the last operation the plain pass's (its weight is
+//             mcla_gpu_ao_history frames); the bounce averages over mcla_gpu_ssgi_test_history frames
+//             and its history is clipped to a box round the mean of this frame's 3x3 neighbourhood,
+//             mcla_gpu_ssgi_test_history_clamp standard deviations wide (never under 5% of the mean): a light
+//             that changed is a ghost only until the history is clipped to it.
+//   a-trous   mcla_gpu_ssgi_test_atrous iterations (0 to 3, 2 by default) of an edge-avoiding a-trous filter
+//             of the bounce over the history (5x5 B3 spline, taps 1, 2, 4 pixels apart, each weighed by
+//             its distance from the pixel's tangent plane): the history image itself stays unfiltered, the
+//             filtered copy goes into gi_dn_ and the idle history image, and is what the picture's bounce
+//             will be made of; mcla_gpu_ssgi_test_view shows the history (7), the filtered bounce (8) and
+//             the weight each pixel kept of the history (9). Still nothing is added to the picture.
+// While the test is on the occlusion's own RG16F history is not made (its images are given back): the apply
+// pass reads the visibility from the x channel of the RGBA16F history instead.
+// A model of the accumulation and the filter on a flat plane (ports/diffs/g7b-history-emu.py) chose the
+// defaults: a history of 16 frames and a clip 1.25 deviations wide, which leaves 3 to 13% of noise after the
+// history and 1 to 5% after the filter (from 30 to 100% of the light before), and a doubled light at 90% in 5
+// to 14 frames.
+// CHECK: (none of this could be run) (1) no crawl and no lag on a moving car with an upscaler on (DLSS, FSR):
+// view 7 against view 8 on a drive, and view 9 (the car's own pixels white while its table row holds); (2)
+// the filtered bounce keeps the edge of a wall's foot (view 8 at the corner); (3) the visibility is the
+// plain occlusion's to within the bitmask (the history's x channel against mcla_gpu_ao_view 2 with the
+// test off).
+//
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
@@ -153,7 +191,8 @@
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
 // darkened too). Also mcla_gpu_ao_history (the frames averaged), _fade_end, _view (the debug
 // views) and _census (a diagnostic log). The SSGI test: mcla_gpu_ssgi_test and its tuning and view
-// cvars mcla_gpu_ssgi_test_thickness / _clamp / _facing / _view / _view_gain (all debug-only).
+// cvars mcla_gpu_ssgi_test_thickness / _clamp / _facing / _view / _view_gain / _history / _history_clamp /
+// _atrous (all debug-only).
 // The push block stays 128 bytes: power rides in shape.x, direct in the free lane extra.z.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
@@ -303,6 +342,10 @@ class AmbientOcclusion {
     kPassColorMs,
     kPassColorMip,
     kPassColorView,
+    kPassDenoiseGi,                // the denoise over the four channels (G7b)
+    kPassTemporalGi,               // the accumulation over the four channels
+    kPassTemporalGiMs,
+    kPassAtrous,                   // the a-trous filter of the bounce
     kPassCount,
   };
 
@@ -325,7 +368,11 @@ class AmbientOcclusion {
     kVColorMs = kVColor + 1,
     kVColorMip = kVColorMs + 1,
     kVGiView = kVColorMip + 1,  // + log2(samples), four
-    kVariantCount = kVGiView + 4,
+    kVDenoiseGi = kVGiView + 4,
+    kVTemporalGi = kVDenoiseGi + 1,
+    kVTemporalGiMs = kVTemporalGi + 1,
+    kVAtrous = kVTemporalGiMs + 1,
+    kVariantCount = kVAtrous + 1,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiViewVariant(uint32_t host_samples);
@@ -406,7 +453,12 @@ class AmbientOcclusion {
     float cap = 2.0f;              // the cap of a sample's radiance, in ambient + sun
     float facing = 1.0f;           // the weight of the facing test (0: surfaces are taken to face the pixel)
     float view_gain = 1.0f;
-    uint32_t view = 0;             // 0 none; 1 the bounce, 2-4 the chain's levels 0-2, 5 the bounce cleaned, 6 the visibility
+    // 0 none; 1 the bounce, 2-4 the chain's levels 0-2, 5 the bounce cleaned, 6 the visibility, 7 the
+    // bounce's history, 8 the bounce after the a-trous filter, 9 the history's weight
+    uint32_t view = 0;
+    uint32_t history = 16;         // the frames the bounce's history spans at most
+    float clamp_width = 1.25f;     // the clip of the bounce's history, in standard deviations of the neighbourhood
+    uint32_t atrous = 2;           // the a-trous iterations (taps 1, 2, 4 pixels apart)
   };
   struct Plan {
     Mode mode = Mode::kHigh;       // the occlusion's own quality (slices, steps)
@@ -489,6 +541,7 @@ class AmbientOcclusion {
     kGap,    // not the frame after the one that made it
     kView,   // the other kind of view (play against pause/map)
     kSize,   // another image size
+    kKind,   // the history of the other kind (the bounce light test turned on or off)
     kCut,    // the camera jumped or turned (the temporal system's cut rule)
     kCap,    // mcla_gpu_ao_history is 1
     kCount,
@@ -716,6 +769,17 @@ class AmbientOcclusion {
   // pass's output (RGBA16F: visibility, bounce r, g, b).
   HostImage colour_[3];
   HostImage gi_;
+  // The bounce's history and denoise (the second step): the denoise's output (also the a-trous filter's
+  // first scratch), the history's two images (RGBA16F: visibility, bounce; they take turns and the idle one
+  // is the a-trous filter's second scratch), the last frame's linear depth (R32_FLOAT: depth_[0] and this
+  // trade places at the end of a frame that ran the test) and the history weight's picture (made only
+  // while the debug view that shows it is on). The history_[] images above are not made while the test
+  // runs: history_gi_ says which kind the history written last is.
+  HostImage gi_dn_;
+  HostImage gi_hist_[2];
+  HostImage depth_prev_;
+  HostImage gi_weight_;
+  bool history_gi_ = false;
   uint32_t history_index_ = 0;
   bool history_valid_ = false;    // it holds a picture the next frame may lean on
   bool history_cut_ = false;      // ... and was dropped by a cut (for the census)
@@ -749,6 +813,7 @@ class AmbientOcclusion {
   // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
   bool gi_failed_logged_ = false;
   uint64_t gi_runs_ = 0;
+  uint64_t gi_history_runs_ = 0;   // ... of them with a history to lean on
   // The census probe's readback.
   std::unique_ptr<plume::RenderBuffer> probe_buffer_;
   uint64_t probe_buffer_bytes_ = 0;
