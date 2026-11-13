@@ -1482,6 +1482,15 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       // resolve into it, which is one source's: a product that two identities write, at two scales,
       // would be made again at each of them (Activate), so a class has to take all of its sources.
       p->own_scale = src->side_view != SideView::kNone;
+      if (p->own_scale && !p->own_scale_logged) {
+        // What a side view's product costs (the sun shadows' atlas: 25 MiB at 2x, 56 MiB at 3x).
+        p->own_scale_logged = true;
+        REXLOG_INFO("[gpu] resolve: {} is a product of the {} side view: {}x{} host texels ({}x the "
+                    "guest's), {} level{}, {:.1f} MiB, read at its own scale",
+                    key.Describe(), side_views::Name(src->side_view), resolution_scale.Edge(key.width),
+                    resolution_scale.Edge(key.height), resolution_scale, key.levels(),
+                    key.levels() == 1 ? "" : "s", double(ProductBytes(*p)) / 1048576.0);
+      }
       plume::RenderFramebuffer* framebuffer = LevelFramebuffer(*p, level);
       plume::RenderPipeline* pipeline = Pipeline(depth_source, host_multisampled, host.format);
       if (!framebuffer || !pipeline) {
