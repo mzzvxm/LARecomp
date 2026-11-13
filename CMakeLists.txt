@@ -662,6 +662,11 @@ else()
         target_link_libraries(larecomp_master_server PRIVATE ws2_32)
     endif()
 
+    # The value steps and texts of the pause-menu rows the launcher also has (pause_parity_rows.h) have a
+    # check that needs no game: cmake --build <dir> --target larecomp_pause_parity_test, then run it
+    # (exit 0 = passed).
+    add_executable(larecomp_pause_parity_test EXCLUDE_FROM_ALL src/mc_engine/pause_parity_rows_test.cpp)
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
