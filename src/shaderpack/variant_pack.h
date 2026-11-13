@@ -16,6 +16,8 @@
 //                  the checks of that variant change, and only the variant pack is rebuilt
 //   input_xxh3     a fingerprint of anything else the text depends on (the HDR curve), 0 for none
 //   pixel_shaders  the shaders to make the variant of, by identity on the retail game and by name
+//   needs_rpf      a shader of the variant (pixel or vertex) lives in xarchive_cache.rpf and not in the executable:
+//                  a variant-only rebuild then reads the RPF's containers too (VariantStep::NeedsRpfShaders)
 //   vertex_shaders the vertex shaders the pixel shaders are drawn with, when the variant reads their
 //                  outputs (the HDR tone map: the runtime requires one of them); empty for none
 //   transform      the edits: translated HLSL in, the variant's HLSL out, or why not
@@ -26,13 +28,14 @@
 // nothing could be built. A variant is compiled for spec variant 0 (no alpha test) with the pack's usual
 // dxc arguments; a draw that needs the alpha test keeps the main pack's shader.
 //
-// The variants of this build: variants/hdr_scene.h (when the HDR curve is embedded, CMakeLists.txt) and
-// variants/bloom_gauss.h. A package that adds one writes variants/<name>.{h,cpp} with a function that
+// The variants of this build: variants/hdr_scene.h (when the HDR curve is embedded, CMakeLists.txt),
+// variants/bloom_gauss.h and variants/env_map.h. A package that adds one writes variants/<name>.{h,cpp} with a function that
 // returns its VariantDef and adds it to BuiltInVariants() in variant_pack.cpp.
 //
 // CHECK for the first variant whose shaders live in the RPF and not in the executable (the shadow
 // filter): when the main pack stays and only the variant pack is stale, the builder reads only the
 // executable's containers (builder.cpp `read_rpf`); that variant has to make it read the RPF too.
+// (Done with the environment map's variant, whose 64x32 reduction lives in the RPF: VariantDef::needs_rpf.)
 //
 // The step is the builder's (builder.h VariantStep): it runs after the main pack, polls the progress
 // sink for cancel, and writes the file under a temporary name and moves it into place.
@@ -73,6 +76,7 @@ struct VariantDef {
   std::string name;  // lower case words and underscores: "hdr_scene", "bloom_gauss"
   uint32_t version = 0;
   uint64_t input_xxh3 = 0;
+  bool needs_rpf = false;
   std::vector<VariantShader> pixel_shaders;
   std::vector<VariantShader> vertex_shaders;  // at most kVariantVertexShaders
   // The shader (one of pixel_shaders: its name tells two of them apart) and its translated HLSL in, the
