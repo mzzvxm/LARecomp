@@ -53,6 +53,11 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+#include <sys/uio.h>
+#include <unistd.h>
+
+#include <cerrno>
 #endif
 
 #include "../time_of_day.h"
@@ -114,8 +119,17 @@ bool SafeCopy(uint32_t ea, void* dst, uint32_t bytes) {
         return false;
     }
 #else
-    std::memcpy(dst, base + ea, bytes);
-    return true;
+    // No structured exceptions: process_vm_readv on this very process answers an unmapped or PROT_NONE page (guest memory
+    // that is reserved and not committed) with EFAULT, where memcpy would fault the game.
+    iovec local{dst, bytes};
+    iovec remote{base + ea, bytes};
+    const ssize_t n = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+    if (n == static_cast<ssize_t>(bytes)) return true;
+    if (n < 0 && (errno == ENOSYS || errno == EPERM)) {  // the call is not allowed here: read as before
+        std::memcpy(dst, base + ea, bytes);
+        return true;
+    }
+    return false;
 #endif
 }
 
