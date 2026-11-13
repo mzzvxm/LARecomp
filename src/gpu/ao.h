@@ -52,9 +52,10 @@
 // occlusion averages it over frames, as the games' own do (mcla_gpu_ao_history: the frames, 12 by
 // default; an exponential average once that many have been added up, the plain mean before). The
 // game has no motion vectors for what moves by itself, so a pixel is found in the last frame from
-// the camera alone, and the history is trusted only where it is the same surface: the plane test
-// and the depth test of the shader, a clamp to this frame's neighbourhood against ghosts, the
-// vehicle stencil IDs. What it cannot trust gets the wide blur of this frame in its place. The
+// the camera alone (a vehicle's pixels also with the vehicle's own motion, below), and the history is
+// trusted only where it is the same surface: the plane test and the depth test of the shader, a
+// clamp to this frame's neighbourhood against ghosts. What it cannot trust gets the wide blur of
+// this frame in its place. The
 // camera of the trigger's own frame is not known when it fires (the anchor draw comes later), so
 // the motion into the last frame is either the frame's own view inverse read from the vertex
 // constants of its draws (c12-c15: trusted only once it matched the anchor's camera in a frame the
@@ -63,6 +64,22 @@
 // the last step. The history starts again after a cut (the temporal system's own rule on the
 // camera), a gap of frames, the pause/map view switching and a new image size. One history serves
 // both views: switching is a reset (the pause view's first frame has no occlusion anyway).
+//
+// THE VEHICLES (vehicle_motion.h): what moves by itself cannot be found again from the camera, and
+// a car's own pixels (the stencil ID 1 to 23 of the depth target) used to get no history at all, only
+// a wide blur of one frame whose noise changes every frame, which showed as a moving film grain
+// in the occluded places of a car (under a spoiler, round the rear window). They keep their history
+// now, found with the vehicle's own motion on top of the camera's. At each anchor the game's matrices
+// c(69 + 4 ID) give, for every ID the main view wrote that frame, the vehicle's rigid motion over the
+// frame (ReadVehicleMotion; alive with the motion blur off, and with or without an upscaler, which
+// keeps its own table of the same numbers). The next frame's trigger comes before its own anchor, as
+// the camera's does, so it repeats that step (the constant velocity guess: the vehicle moves the way
+// it did) and composes it with the camera's motion into one 3x4 per ID, drawn into a small table
+// image (RecordVehicleTable) that the temporal pass reads by the pixel's stencil ID. An ID without a
+// usable row keeps no history, as before. IDs are handed out per frame in draw order, so a car has no
+// stable ID: when one changed owner, or the car moved differently, its pixels land on a texel that
+// fails the plane, depth or clamp test and get the wide blur. The pause and map view moves nothing by
+// itself: its vehicle pixels take the camera's motion like the world's.
 //
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
@@ -95,6 +112,7 @@
 #include "resolve.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
+#include "vehicle_motion.h"
 
 namespace mcla::gpu {
 
@@ -117,6 +135,8 @@ class AmbientOcclusion {
   struct MainDraw {
     temporal::MainMatch match;
     bool writes_depth = false;  // the pipeline writes depth
+    // The stencil IDs the draw writes (bit k; temporal::StencilIdsWritten), for the vehicles' motion.
+    uint32_t stencil_ids = 0;
   };
 
   // Why a depth resolve is or is not the trigger (one bit each for what failed).
@@ -223,7 +243,8 @@ class AmbientOcclusion {
     kVDenoise = 4,
     kVTemporal = 5,
     kVTemporalMs = 6,
-    kVApplyBase = 8,  // + 4 * debug + log2(samples)
+    kVVehicleTable = 7,  // a row of the vehicle table (the temporal system's shader)
+    kVApplyBase = 8,     // + 4 * debug + log2(samples)
     kVariantCount = kVApplyBase + 8,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
@@ -352,6 +373,16 @@ class AmbientOcclusion {
   bool FrameMotion(temporal::Mat4* motion, Pose* source, bool* cut) const;
   // Counts what ChooseHistory decided (the census says it) and logs the first use.
   void NoteHistory(const HistoryUse& use);
+  // --- the vehicles' history (hlsl/ao_temporal_ps.hlsl, vehicle_motion.h) ---
+  // The vehicles' own motion of the anchor that just ended, kept for the next frame's trigger.
+  void NoteVehicles(const uint8_t* ps_bank);
+  // Draws the vehicle table for the trigger's temporal pass: for each ID with a usable motion, the 3x4
+  // that moves this frame's view space into the history's with the camera's motion `use.motion` and the
+  // vehicle's step repeated. Returns the IDs (bit k) that got a row; 0 means no table was drawn and
+  // `*slot` is then none.
+  uint32_t RecordVehicleTable(plume::RenderCommandList* list, const HistoryUse& use, uint32_t* slot);
+  // One summary line of the totals (every few thousand frames, and the first time a table is drawn).
+  void LogVehicleSummary();
   // The census's depth statistic: a copy of the coarsest level into a readback buffer, and its
   // processing when the GPU has run the copy.
   void RecordProbe(plume::RenderCommandList* list, const Plan& plan);
@@ -437,6 +468,40 @@ class AmbientOcclusion {
   double vs_compare_diff_ = 0.0;
   uint32_t vs_compared_[2] = {};      // frames compared (play, pause/map)
   uint32_t vs_equal_[2] = {};         // ... of them equal
+
+  // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
+  // vehicle_motion_ is the last anchor's own motion of them (valid bits; none after a frame that gave
+  // no camera or a pause/map frame), made in frame vehicle_motion_frame_.
+  uint32_t stencil_ids_ = 0;
+  temporal::VehicleMotion vehicle_motion_;
+  uint64_t vehicle_motion_frame_ = 0;
+  std::unique_ptr<plume::RenderShader> vehicle_table_shader_;
+  HostImage vehicle_table_;  // R32G32B32A32_FLOAT, 4 x 24: a row an ID (hlsl/ao_temporal_ps.hlsl)
+  // The totals for the log. Anchor side: what the game's matrices gave. Trigger side: the frames that
+  // averaged over a history, the vehicle IDs the main view had written by then and how many of them
+  // had a row in the table.
+  struct VehicleCounts {
+    uint64_t anchors = 0;          // play-view anchors read
+    uint64_t anchors_with_ids = 0;
+    uint64_t ids_asked = 0;        // IDs 1 to 23 the main view wrote before the anchor
+    uint64_t ids_taken = 0;        // ... with a usable matrix
+    uint64_t not_sane = 0;
+    uint64_t not_rigid = 0;
+    uint64_t no_world = 0;         // anchors whose c69 was not usable
+    uint32_t max_asked = 0;
+    uint64_t history_frames = 0;   // play-view frames that averaged over a history
+    uint64_t frames_with_ids = 0;  // ... with vehicle IDs in the stencil by the trigger
+    uint64_t ids_now = 0;          // ... the IDs there, summed
+    uint64_t ids_with_row = 0;     // ... of them with a row in the table
+    uint64_t table_frames = 0;     // ... with a table drawn
+    uint64_t table_rows = 0;
+    uint64_t pause_frames = 0;     // pause/map frames that averaged over a history
+    uint64_t pause_with_ids = 0;   // ... with vehicle IDs (they take the camera's motion)
+    uint32_t pause_max_ids = 0;
+  };
+  VehicleCounts vehicles_;
+  uint64_t vehicles_logged_at_ = 0;  // history_frames + pause_frames when the summary was last printed
+  bool vehicles_first_logged_ = false;
 
   // The census.
   uint32_t census_frames_logged_ = 0;

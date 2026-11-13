@@ -94,9 +94,8 @@ uint32_t StencilIdsWritten(const XenosState& s) {
   return ids;
 }
 
-VehicleStats BuildVehicleTable(const uint8_t* ps_bank, uint32_t ids, const Camera& now,
-                               const Camera& before, VehicleTable* out) {
-  *out = VehicleTable{};
+VehicleStats ReadVehicleMotion(const uint8_t* ps_bank, uint32_t ids, VehicleMotion* out) {
+  out->valid = 0;
   VehicleStats stats;
   const uint32_t vehicles = ids & ~1u & ((1u << kVehicleIds) - 1u);
   if (vehicles == 0) {
@@ -112,12 +111,6 @@ VehicleStats BuildVehicleTable(const uint8_t* ps_bank, uint32_t ids, const Camer
     return stats;
   }
 
-  // This frame's clip space to the world, and the previous frame's world to its guest pixels, both
-  // from this renderer's own cameras (the world's own motion is the camera term of temporal_mv.h).
-  const Mat4 to_world = now.view_projection_inverse;
-  const Mat4 from_world =
-      Mul(before.view_projection, ClipToPixels(double(now.width), double(now.height)));
-
   for (uint32_t k = 1; k < kVehicleIds; ++k) {
     if (!(vehicles & (1u << k))) {
       continue;
@@ -128,14 +121,42 @@ VehicleStats BuildVehicleTable(const uint8_t* ps_bank, uint32_t ids, const Camer
       continue;
     }
     // The vehicle's own motion since the game's previous frame, in world coordinates: the world's
-    // matrix cancels, whatever it is.
+    // matrix cancels, whatever it is. (A result that is not finite is not rigid either: every
+    // comparison of IsRigid fails on a NaN.)
     const Mat4 motion = Mul(slot, world_inverse);
     if (!IsRigid(motion)) {
       ++stats.not_rigid;
       continue;
     }
-    const Mat4 c = Mul(Mul(to_world, motion), from_world);
+    out->world[k] = motion;
+    out->valid |= 1u << k;
+    ++stats.taken;
+  }
+  return stats;
+}
+
+VehicleStats BuildVehicleTable(const uint8_t* ps_bank, uint32_t ids, const Camera& now,
+                               const Camera& before, VehicleTable* out) {
+  *out = VehicleTable{};
+  VehicleMotion motion;
+  VehicleStats stats = ReadVehicleMotion(ps_bank, ids, &motion);
+  if (motion.valid == 0) {
+    return stats;
+  }
+
+  // This frame's clip space to the world, and the previous frame's world to its guest pixels, both
+  // from this renderer's own cameras (the world's own motion is the camera term of temporal_mv.h).
+  const Mat4 to_world = now.view_projection_inverse;
+  const Mat4 from_world =
+      Mul(before.view_projection, ClipToPixels(double(now.width), double(now.height)));
+
+  for (uint32_t k = 1; k < kVehicleIds; ++k) {
+    if (!(motion.valid & (1u << k))) {
+      continue;
+    }
+    const Mat4 c = Mul(Mul(to_world, motion.world[k]), from_world);
     if (!Finite(c)) {
+      --stats.taken;
       ++stats.not_finite;
       continue;
     }
@@ -147,7 +168,6 @@ VehicleStats BuildVehicleTable(const uint8_t* ps_bank, uint32_t ids, const Camer
       columns[8 + row] = float(c.m[row][3]);
     }
     out->valid |= 1u << k;
-    ++stats.taken;
   }
   return stats;
 }

@@ -33,6 +33,13 @@
 // garbage) or without a usable c69 is left out, and its pixels keep the camera's motion.
 // TemporalMotion (temporal_mv.h) draws the table into an image and the vector pass reads it.
 //
+// The same T_ID is what the ambient occlusion's history (ao.h) takes for the pixels of a vehicle: it
+// moves a vehicle pixel back into the last frame with the vehicle's own motion on top of the camera's
+// (ReadVehicleMotion, which BuildVehicleTable is made of). The occlusion works before the frame's own
+// anchor, so it uses the last frame's T_ID for this frame (the vehicle keeps moving the way it did),
+// and the history's own agreement tests (the surface plane, the depth, the neighbourhood clamp) throw
+// out what the guess got wrong, an ID that changed owner included.
+//
 // Pure functions on the bank and the camera: nothing here touches the GPU. Threading: render thread.
 // ===========================================================================
 
@@ -56,7 +63,15 @@ struct VehicleTable {
   float columns[kVehicleIds][12] = {};
 };
 
-// What one BuildVehicleTable found, for the summary line.
+// The vehicles' own motion of one frame, in world coordinates: T_k = c(69 + 4 k) * inverse(c69), row
+// vectors, takes the world position of a point of vehicle k in this frame to its world position one
+// frame ago (a rigid transform). Bit k (1 to 23) of `valid` says that world[k] is usable.
+struct VehicleMotion {
+  uint32_t valid = 0;
+  Mat4 world[kVehicleIds];
+};
+
+// What one BuildVehicleTable (or ReadVehicleMotion) found, for the summary line.
 struct VehicleStats {
   uint32_t asked = 0;       // IDs 1 to 23 the main view wrote
   uint32_t taken = 0;       // ... with a usable matrix
@@ -72,6 +87,12 @@ struct VehicleStats {
 // CHECK: a draw that writes the stencil another way (REPLACE on a failed depth test, INCR, INVERT) is
 // not an ID writer here; the census saw REPLACE on pass with mask 0xff only.
 uint32_t StencilIdsWritten(const XenosState& state);
+
+// The vehicles' own motion of a frame from the anchor's pixel registers: for each ID of `ids` (bit k, the
+// IDs the frame's main view wrote before the anchor) the slot c(69 + 4 k) times the inverse of c69,
+// taken only when it is sane and a rigid transform. Needs no camera. `out->valid` is cleared first.
+// stats.taken counts the usable ones; not_finite stays 0 (BuildVehicleTable counts it).
+VehicleStats ReadVehicleMotion(const uint8_t* ps_bank, uint32_t ids, VehicleMotion* out);
 
 // The table of a frame whose anchor was accepted and whose previous frame follows it directly
 // (`before`: this renderer's own camera of that frame). `ps_bank`: the anchor's 256 pixel registers,

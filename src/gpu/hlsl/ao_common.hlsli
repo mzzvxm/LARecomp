@@ -51,7 +51,11 @@ struct AoPush {
   // takes lin, shape and light as the three rows of the 3x4 matrix that moves a point of this
   // frame's view space into the history's, extra.x and extra.z as the tan of the half field of view
   // (x, y) the history was made with, extra.w as the weight the history keeps, slots2.w as the
-  // depth target's stencil plane slot (vehicle IDs) and flags bit 20 as "there is a history".
+  // depth target's stencil plane slot (vehicle IDs), slots.x as the slot of the vehicle table (an
+  // RGBA32F image of 4 x 24 texels, a row an ID: the same three rows for that vehicle, with the
+  // camera's motion and the vehicle's own in one; texel 3 holds 1 in x for a usable row; 0xFFFFFFFF
+  // none), flags bit 20 as "there is a history" and flags bit 21 as "vehicles move like the world"
+  // (the pause and map view).
 };
 
 #ifdef __spirv__
@@ -61,7 +65,7 @@ ConstantBuffer<AoPush> g_push : register(b0, space4);
 #endif
 
 // flags: bits 0-7 debug view (0 none), 8-11 slices, 12-15 steps, 16 low (half resolution), 17-19
-// the denoise radius.
+// the denoise radius, 20 and 21 the temporal pass's (ao_temporal_ps.hlsl).
 uint AoView() { return g_push.slots2.z & 0xFFu; }
 uint AoSlices() { return (g_push.slots2.z >> 8) & 0xFu; }
 uint AoSteps() { return (g_push.slots2.z >> 12) & 0xFu; }
