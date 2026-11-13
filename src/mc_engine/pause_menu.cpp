@@ -2153,7 +2153,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabCtrl", "CONTROLLER", "Vibration, triggers, sticks and buttons.",
      "RxCtrlMenu",
      kControllerItems, int(sizeof(kControllerItems) / sizeof(kControllerItems[0]))},
-    {"PM_RxTabIface", "INTERFACE", "Menu colors and language.",
+    {"PM_RxTabIface", "INTERFACE", "Menu colors, HUD width and language.",
      "RxIfaceMenu",
      kIfaceHubItems, int(sizeof(kIfaceHubItems) / sizeof(kIfaceHubItems[0]))},
     {"PM_RxTabExtras", "EXTRAS", "Extra things to watch and do.",
