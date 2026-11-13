@@ -34,6 +34,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
 #include "mc_engine/config_save.h"
+#include "mc_engine/debug_menu.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
@@ -988,6 +989,10 @@ class LarecompApp : public rex::ReXApp {
       LARECOMP_APP_WARN("Game data: {}", note);
     }
     path_notes_.clear();
+    // The command line, the environment and larecomp.toml have all been read by now: fix the
+    // answer of larecomp::DebugMenuUnlocked() and log it, with the debug settings that are
+    // not at their default.
+    larecomp::InitDebugMenu();
   }
 
   // Filled by OnConfigurePaths, which runs before logging exists.
