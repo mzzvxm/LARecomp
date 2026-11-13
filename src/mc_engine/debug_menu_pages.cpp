@@ -91,6 +91,8 @@ constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
+// The share of the game's own UI the picture shows (the trailer toolkit's HUD fade); 1 is the game's frame.
+constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 #endif
 
 // The shapes aspect_ratio allows (":" is not allowed in a name).
@@ -216,7 +218,7 @@ const ItemDef kDebugCameraItems[] = {
          "%g"),
 };
 
-// TOOLS: the modder's texture tools, the panels, a leftover test button.
+// TOOLS: the modder's texture tools, the panels, a leftover test button, the trailer toolkit's HUD fade.
 const ItemDef kDebugToolsItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Action("PM_RxDbgTexDump",   kActionDumpTextures)),
@@ -228,6 +230,13 @@ const ItemDef kDebugToolsItems[] = {
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),
+#if defined(LARECOMP_HAS_GPU)
+    // The game's own UI (HUD, map, phone, prompts, gamertags, world icons) faded in the picture; the
+    // pause menu, this menu and the F3 card are never faded, so the effect shows once the menu is
+    // closed. Applies to the next frame and costs nothing at 1 (src/gpu/ui_fade.h).
+    NativeOnly(Dbl("PM_RxDbgHudAlpha", "mcla_cin_hud_alpha", "HUD ALPHA: ", kHudAlphaVals,
+                   Len(kHudAlphaVals), "%g")),
+#endif
 };
 
 // LOGGING: the log switches that can be flipped while the game runs. The restart-only diagnostics are
