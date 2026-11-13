@@ -52,10 +52,10 @@ Press Start or Escape and open the **SETTINGS** tab. Buttons, and what each hold
 
 | Button | Contents |
 |---|---|
-| RECOMP SETTINGS | Hide mouse pointer, original intro speed |
+| RECOMP SETTINGS | Hide mouse pointer, original intro speed, skip intro videos (both intro rows take hold at the next start) |
 | GRAPHICS | **DISPLAY**: display mode, vsync, resolution, HDR (page), display gamma, FPS limit, smooth UI, then the picture rows (NATIVE renderer: upscaling, render scale, sharpness, MSAA, post AA, anisotropic, ambient occlusion, AO intensity, frame generation; XENIA renderer: render scale, MSAA, anisotropic). **PERFORMANCE**: RENDERING (shadows, depth of field, NVIDIA Reflex or AMD Anti-Lag 2), WORLD DENSITY (traffic range, pedestrians, parked cars, prop draw distance), LOD AND FOLIAGE (foliage shadows, traffic LOD, city LOD: AUTO, 0.5X, 1X, 1.5X or 2X; AUTO is 2X on a mid-range or fast graphics card and 1X on integrated graphics). **TEXTURE MODS** (NATIVE only): texture mods on or off |
-| GAMEPLAY | **CAMERA**: motion blur, CHASE CAMERA (smoothing factor), FOV, REAR VIEW, LOOK AROUND (free look). **TIME OF DAY**: real clock, hold time, time, day speed, weather. **CARBON FIBER**: per-car carbon part toggles. **DIFFICULTY**: AI difficulty and the rubberband scales |
-| CONTROLLER | Vibration, DualSense and Xbox trigger effects, stick dead zones, button layout |
+| GAMEPLAY | **CAMERA**: motion blur, CHASE CAMERA (smoothing factor, camera shake), FOV, REAR VIEW (mirror, position, frame, cars in the mirror), LOOK AROUND (free look). **TIME OF DAY**: real clock, hold time, time, day speed, weather. **CARBON FIBER**: per-car carbon part toggles. **DIFFICULTY**: AI difficulty and the rubberband scales. **MAP MOUSE**: mouse on the full map, scroll-wheel zoom, hide the pointer, cursor magnet |
+| CONTROLLER | Vibration, DualSense and Xbox trigger effects (DualSense throttle and brake strength included), stick dead zones, button layout |
 | INTERFACE | **UI**: menu colors, speed units, HUD width. **LANGUAGES** |
 | EXTRAS | Cutscenes, extra vinyl layers, no 8 player limits, start garage |
 | QUIT | Quit or restart |
