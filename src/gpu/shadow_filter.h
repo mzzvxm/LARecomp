@@ -10,16 +10,18 @@
 //   mcla_gpu_shadow_filter   auto | game | soft | pcss (live; the pause menu's SHADOW FILTER row)
 //     game   the game's own shaders: nothing of the variant is selected, the picture is the game's, bit for bit
 //     soft   the variant: Vogel taps of the game's radius
-//     pcss   contact hardening (package G1c); it is the same as soft until that package is in
-//     auto   gpu_class.h's table: game on Low, soft on Mid and High
+//     pcss   contact hardening (package G1c): the same variant and pipeline with a blocker search in front (8
+//            taps) and the kernel that the sun's size gives at the distance of the blockers: sharp where a
+//            shadow touches its caster, softer with distance. A Low class has no search: pcss is soft there.
+//     auto   gpu_class.h's table: game on Low, soft on Mid and High (pcss on High is proposed, not decided)
 //
-// Pipelines::ChoosePackedVariant asks SoftSelected() per draw; Scene::Prepare uploads the 16 bytes the
+// Pipelines::ChoosePackedVariant asks VariantSelected() per draw; Scene::Prepare uploads the 16 bytes the
 // variant reads after the shared constants (ShadowFilterConstants, byte 608 of the draw's SharedConstants
 // block: `float4 g_ShadowFilter`) for the draws that use it.
 //
 // Everything that decides something is a pure inline function here (ParseChoice, ModeFor, TapsFor,
 // MakeConstants) and this header includes nothing of the renderer: shadow_filter_test.cpp builds on its own.
-// Current(), SoftSelected() and CurrentConstants() (shadow_filter.cpp) add the cvars and the GPU class.
+// Current(), VariantSelected() and CurrentConstants() (shadow_filter.cpp) add the cvars and the GPU class.
 // ===========================================================================
 
 #include <algorithm>
@@ -31,7 +33,7 @@
 
 namespace mcla::gpu::shadow_filter {
 
-enum class Mode : uint8_t { kGame, kSoft };
+enum class Mode : uint8_t { kGame, kSoft, kPcss };
 
 // What the cvar says. A text the list does not know (a hand edited file) counts as auto.
 enum class Choice : uint8_t { kAuto, kGame, kSoft, kPcss };
@@ -45,20 +47,30 @@ constexpr Choice ParseChoice(std::string_view text) {
 
 // What a cell of gpu_class.h's table stands for.
 constexpr Mode ModeOfCell(std::string_view cell) {
-  return cell == "game" ? Mode::kGame : Mode::kSoft;
+  return cell == "game" ? Mode::kGame : cell == "pcss" ? Mode::kPcss : Mode::kSoft;
 }
 
-// The mode a choice comes to on a class: `auto` is the table's cell, `pcss` is soft until package G1c.
+// A Low class (an integrated GPU) never runs the blocker search: it is 8 more taps on the pixels near an edge, and
+// the table's own cell for Low is `game`; a hand set `pcss` there is soft, with its 8 taps.
+constexpr bool PcssAvailable(gpu_class::GpuClass cls) { return cls != gpu_class::GpuClass::kLow; }
+
+// The mode a choice comes to on a class: `auto` is the table's cell, `pcss` is the contact hardening on a class
+// that has the search and soft on one that has not.
 constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice) {
+  Mode mode = Mode::kSoft;
   switch (choice) {
     case Choice::kGame:
       return Mode::kGame;
     case Choice::kSoft:
-    case Choice::kPcss:
       return Mode::kSoft;
+    case Choice::kPcss:
+      mode = Mode::kPcss;
+      break;
     default:
-      return ModeOfCell(gpu_class::Cell(gpu_class::Effect::kShadowFilter, cls));
+      mode = ModeOfCell(gpu_class::Cell(gpu_class::Effect::kShadowFilter, cls));
+      break;
   }
+  return mode == Mode::kPcss && !PcssAvailable(cls) ? Mode::kSoft : mode;
 }
 
 // How many taps: 8 on a Low class (an integrated GPU that was given `soft` by hand), 16 on the others (the
@@ -74,7 +86,21 @@ constexpr int TapsFor(gpu_class::GpuClass cls, int forced_taps) {
 
 // The `mode` bits of the constants (hlsl: `uint(g_ShadowFilter.w + 0.5)`).
 inline constexpr uint32_t kModeGather = 1u;  // Gather taps (a bilinear weighted compare of 4 texels) instead of the sampler's
-inline constexpr uint32_t kModePcss = 2u;    // contact hardening (G1c: nothing reads it yet, never set)
+inline constexpr uint32_t kModePcss = 2u;    // contact hardening (G1c): the blocker search and the penumbra's kernel
+// With kModePcss, bits 8 to 15 hold the sun's size, in sixteenths of its real angular radius (0.27 degrees). The real
+// sun's penumbra is under one texel of the nearest cascade for every caster lower than about 3 m (6 m at the second
+// cascade), so a sun that shows at a car's height is bigger than the real one: 4 times by default (to be decided
+// on pictures: mcla_gpu_shadow_filter_sun).
+inline constexpr uint32_t kSunShift = 8u;
+inline constexpr double kSunUnit = 1.0 / 16.0;
+inline constexpr double kMinSunTuning = 0.25;
+inline constexpr double kMaxSunTuning = 15.0;
+inline constexpr double kDefaultSunTuning = 4.0;
+// The sun's size as the bits the shader reads: sixteenths, 4 (a quarter of the real sun) to 240 (15 times).
+constexpr uint32_t SunBits(double sun_tuning) {
+  const double clamped = std::clamp(sun_tuning, kMinSunTuning, kMaxSunTuning);
+  return static_cast<uint32_t>(clamped / kSunUnit + 0.5);
+}
 
 // The 16 bytes after the SharedConstants (constants.h kShadowFilterConstantsOffset), `float4 g_ShadowFilter` in
 // the variant's HLSL (shaderpack/variants/shadow_filter.cpp).
@@ -82,7 +108,7 @@ struct ShadowFilterConstants {
   float taps;          // x: how many
   float radius_scale;  // y: times the game's radius (1; G1a gives 1 / the atlas scale)
   float noise_frame;   // z: the frame the noise is shifted by (R2, as the occlusion's), 0 for a fixed pattern
-  float mode;          // w: kMode* bits
+  float mode;          // w: kMode* bits, and with kModePcss the sun's size from bit kSunShift
 };
 static_assert(sizeof(ShadowFilterConstants) == 16);
 
@@ -102,15 +128,20 @@ constexpr float AtlasRadiusScale(Scale atlas_scale) {
 // `atlas_scale_inverse` is what the cascade resolution package gives (AtlasRadiusScale: 1 at the game's 1280, 0.5 at
 // 2x); the tuning cvar multiplies it. `temporal_frame_valid`: a temporal upscaler works on the frame, so the noise
 // moves from frame to frame and the upscaler's history averages it; otherwise the pattern stays where it is.
+// `pcss`: the contact hardening, with the sun `sun_tuning` times its real size; a Low class never gets the bit (the
+// search is not run there, whatever the caller says).
 constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int forced_taps, double radius_tuning,
                                               float atlas_scale_inverse, bool gather, bool temporal_frame_valid,
-                                              uint64_t frame) {
+                                              uint64_t frame, bool pcss = false,
+                                              double sun_tuning = kDefaultSunTuning) {
   ShadowFilterConstants constants{};
   constants.taps = static_cast<float>(TapsFor(cls, forced_taps));
   constants.radius_scale =
       static_cast<float>(std::clamp(radius_tuning, kMinRadiusTuning, kMaxRadiusTuning)) * atlas_scale_inverse;
   constants.noise_frame = temporal_frame_valid ? static_cast<float>(frame & 1023u) : 0.0f;
-  constants.mode = static_cast<float>(gather ? kModeGather : 0u);
+  uint32_t mode = gather ? kModeGather : 0u;
+  if (pcss && PcssAvailable(cls)) mode |= kModePcss | (SunBits(sun_tuning) << kSunShift);
+  constants.mode = static_cast<float>(mode);
   return constants;
 }
 
@@ -119,7 +150,10 @@ constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int force
 // The mode in force: the cvar's choice with `auto` resolved for the GPU class (the weakest class until the
 // class is known: gpu_class::Known()). Any thread, cheap; a change of the cvar is seen at once.
 Mode CurrentMode();
-inline bool SoftSelected() { return CurrentMode() == Mode::kSoft; }
+// The variant is drawn (soft or pcss: one shader, the constants tell them apart); `game` selects nothing.
+inline bool VariantSelected() { return CurrentMode() != Mode::kGame; }
+// Whether pcss has its blocker search on this GPU (not on a Low class): the pause row says PCSS (SOFT) where it has not.
+bool PcssRuns();
 
 // The constants for a draw that uses the variant. `temporal_upscaler`: one works on this frame (Scene::UpscalerRunning);
 // `frame` a number that changes every frame (the scene's frame serial).

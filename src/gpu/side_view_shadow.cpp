@@ -33,7 +33,12 @@
 //     radius from the game's own tap coordinates and multiplies the radius by the constant that
 //     Scene::UploadShadowFilterConstants sets from this class's scale (shadow_filter.h AtlasRadiusScale,
 //     1 / scale): the soft filter keeps its width in ATLAS TEXELS, so its edge is 1/2 (2x) and 1/3 (3x) as
-//     wide in the world. Its Gather taps read the host texture's own size (getTexture2DDimensions).
+//     wide in the world. Its Gather taps read the host texture's own size (getTexture2DDimensions). With
+//     pcss (G1c) the blocker search covers twice that radius and the kernel's floor (0.75 atlas texels) and cap
+//     (twice the radius) follow the same constant, so the dense sampling and the sharpest edge stay in texels;
+//     between them the kernel is in WORLD units (the sun's disc at the blockers' distance, through the light
+//     matrix of the cascade the game picked: a0), so a finer atlas makes the contact sharper and leaves a tall
+//     caster's penumbra where it is.
 //  2. The same shaders of the car paint, the skinned metal and the breaking glass (5 of the 152, left out
 //     of the variant): four taps at immediate texel offsets of (+-0.5, +-0.5) and the weights of a bilinear
 //     2x2 block, frac(uv * size + offset - 0.5). The translator's tfetch2D divides an immediate offset by the
