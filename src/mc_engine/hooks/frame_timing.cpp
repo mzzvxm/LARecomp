@@ -618,7 +618,9 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // ticks, whatever the frame took. 0: none, and the rest is as it always was.
     const uint64_t fixed_step = game_thread ? mc::cinematic::FixedStepTicks() : 0;
     uint64_t cap;
-    if (game_thread) {
+    if (game_thread && fixed_step == 0) {
+        // (Under a fixed step the measured delta is the time a slow capture took, not a frame time: it stays out of the cap's history,
+        // so the first frames after a take are capped as they were before it.)
         cap = StepCapForFrame(r8.u64);
     } else {
         cap = g_step_cap_ticks.load(std::memory_order_relaxed);
