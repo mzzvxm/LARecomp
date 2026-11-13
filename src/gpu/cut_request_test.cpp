@@ -206,6 +206,53 @@ void TestCameraFromBank() {
   Check(!CameraFromGuestBank(bank.data(), &p), "no backward axis is no camera");
 }
 
+// The cut request of the first smoke run never met an anchor: the camera hook put the third row of the camera slots (the camera's
+// BACK) into the request as the FORWARD vector, so the request's forward was the opposite of the anchor's (minus c14) and the match
+// failed on every frame of the 240. The numbers are the E5 run's chase camera (the game's own, at the car's spawn): the third row
+// (0.4737, 0.0670, -0.8782) is also the anchor's c14, and the renderer logged "looking along -0.4737, -0.0670, 0.8782", toward the car.
+void TestHookRowsAreTheAnchorsRows() {
+  const double row0[3] = {-0.8806, 0.0170, -0.4737};  // the right: up x back
+  const double row1[3] = {-0.0168, 0.9976, 0.0671};
+  const double row2[3] = {0.4737, 0.0670, -0.8782};
+  const double pos[3] = {823.84, 19.61, -816.17};
+  std::array<uint8_t, 256 * 16> bank{};
+  for (uint32_t c = 0; c < 3; ++c) {
+    PutBe(bank.data(), 12, c, float(row0[c]));
+    PutBe(bank.data(), 13, c, float(row1[c]));
+    PutBe(bank.data(), 14, c, float(row2[c]));
+    PutBe(bank.data(), 15, c, float(pos[c]));
+  }
+  CameraPose anchor;
+  Check(CameraFromGuestBank(bank.data(), &anchor), "the E5 camera is read from the bank");
+  CheckNum(anchor.forward[0], -0.4737, "the anchor looks along minus the third row: x", 1e-4);
+  CheckNum(anchor.forward[2], 0.8782, "the anchor looks along minus the third row: z", 1e-4);
+
+  // What the hook now submits: the position, the second row as up, MINUS the third row as forward.
+  CameraPose right_way;
+  for (int c = 0; c < 3; ++c) {
+    right_way.position[c] = pos[c];
+    right_way.up[c] = row1[c];
+    right_way.forward[c] = -row2[c];
+  }
+  Check(SameCamera(right_way, anchor), "the hook's pose (forward = minus the third row) is the anchor's camera");
+  // What it submitted before: the third row itself.
+  CameraPose wrong_way = right_way;
+  for (int c = 0; c < 3; ++c) wrong_way.forward[c] = row2[c];
+  Check(!SameCamera(wrong_way, anchor), "a pose whose forward is the third row (the camera's back) is never the anchor's camera");
+
+  // Through the queue: the right pose is met by the first anchor with this camera, the wrong one never is.
+  Requests r;
+  r.Submit(4922, right_way);
+  r.Submit(4923, wrong_way);
+  const Requests::Taken t = r.Take(anchor);
+  Check(t.hit && t.game_frame == 4922 && t.skipped == 0 && t.age == 1, "the anchor of the cut frame meets the hook's request on the first anchor");
+  Requests only_wrong;
+  only_wrong.Submit(1, wrong_way);
+  bool met = false;
+  for (uint32_t i = 0; i < kGiveUpAfter + 5 && only_wrong.Pending(); ++i) met = met || only_wrong.Take(anchor).hit;
+  Check(!met && !only_wrong.Pending(), "the request with the back for the forward is dropped after the give-up age, never met");
+}
+
 struct Mat {
   double m[4][4];
 };
@@ -288,6 +335,7 @@ int main() {
   TestRequests();
   TestThreads();
   TestCameraFromBank();
+  TestHookRowsAreTheAnchorsRows();
   TestNeutralize();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
