@@ -26,7 +26,9 @@
 //   larecomp_version (information)    deliberately not a trigger: the packs are rebuilt when their
 //                                     inputs change, not on every release
 //
-// The HDR variant step adds lines of its own (hdr_*), see builder.h.
+// The variant step (the variant pack, variant_pack.h) adds lines of its own (variants_*), see builder.h.
+// An older build's stamp has hdr_* lines instead: they are dropped when the stamp is next written, and
+// their absence makes the variant pack stale, so only that pack is rebuilt.
 // ===========================================================================
 
 #include <cstdint>
@@ -41,11 +43,14 @@ namespace larecomp::shaderpack {
 inline constexpr uint32_t kStampFormat = 1;
 inline constexpr uint32_t kBuilderVersion = 1;
 
-// The names of the HDR step's lines the builder itself writes and checks.
-inline constexpr const char* kStampHdrFormats = "hdr_formats";           // the formats the HDR pack carries
-inline constexpr const char* kStampHdrMainPackXxh3 = "hdr_main_pack_xxh3";  // the main pack it was built beside
-inline constexpr const char* kStampHdrPackSize = "hdr_pack_size";         // size of mcla_shaders_hdr.v1.pack
-inline constexpr const char* kStampHdrPrefix = "hdr_";
+// The names of the variant step's lines the builder itself writes and checks.
+inline constexpr const char* kStampVariantsFormats = "variants_formats";           // the formats the variant pack carries
+inline constexpr const char* kStampVariantsMainPackXxh3 = "variants_main_pack_xxh3";  // the main pack it was built beside
+inline constexpr const char* kStampVariantsPackSize = "variants_pack_size";         // size of mcla_shaders_variants.v2.pack
+inline constexpr const char* kStampVariantsPrefix = "variants_";
+// The first version of the variant pack held the HDR tone map only (mcla_shaders_hdr.v1.pack) and its lines
+// began with this.
+inline constexpr const char* kStampLegacyHdrPrefix = "hdr_";
 
 struct StampLine {
   std::string key;

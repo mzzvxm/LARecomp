@@ -1234,11 +1234,14 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   uint32_t zeroed = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
-    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with an HDR scene
-    // variant (stage 3 of the HDR output) while the HDR pack is not loaded or lacks it.
-    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !shaders_->Find(r.key.ps)) ||
-        (r.key.ps_variant == ShaderStore::kHdrVariant &&
-         (r.key.ps == 0 || !shaders_->Find(r.key.ps)->hdr_variant))) {
+    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant of the
+    // variant pack (the HDR scene's tone map, the bloom's Gaussians: ps_variant 2 and up) while that
+    // pack is not loaded or lacks the variant of that shader.
+    const ShaderStore::Entry* record_ps = r.key.ps != 0 ? shaders_->Find(r.key.ps) : nullptr;
+    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !record_ps) ||
+        (r.key.ps_variant >= ShaderStore::kFirstPackedVariant &&
+         (!record_ps || r.key.ps_variant >= ShaderStore::kVariantSlots ||
+          (record_ps->variants & (1u << r.key.ps_variant)) == 0))) {
       ++dropped;
       continue;
     }

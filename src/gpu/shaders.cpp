@@ -23,7 +23,7 @@
 
 REXCVAR_DEFINE_STRING(
     shader_pack_dir, "", "MCLA/GPU",
-    "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_hdr.v1.pack) are read from "
+    "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v2.pack) are read from "
     "and built into. Empty: the cache/shaders folder next to the program or, where that folder "
     "cannot be written to, larecomp/cache/shaders in the local application data folder; a pack "
     "left in the program's assets folder by an older install is still used when there is none "
@@ -311,9 +311,12 @@ void ShaderStore::Shutdown() {
   for (auto& slots : slots_) {
     slots.clear();
   }
-  hdr_ready_.store(false, std::memory_order_release);
-  hdr_variants_.clear();
-  hdr_file_.reset();
+  variants_ready_.store(false, std::memory_order_release);
+  hdr_variant_count_ = 0;
+  for (auto& variants : variants_) {
+    variants.clear();
+  }
+  variants_file_.reset();
   entries_.clear();
   file_.reset();
   device_ = nullptr;
@@ -369,9 +372,9 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
     out = ShaderResult::kNoPack;
     return nullptr;
   }
-  const bool hdr = variant == kHdrVariant;
-  if (variant > kHdrVariant || (variant == 1 && entry.spec_mask == 0) ||
-      (hdr && !entry.hdr_variant)) {
+  const bool packed = variant >= kFirstPackedVariant;
+  if (variant >= kVariantSlots || (variant == 1 && entry.spec_mask == 0) ||
+      (packed && (entry.variants & (1u << variant)) == 0)) {
     out = ShaderResult::kNoVariant;
     return nullptr;
   }
@@ -379,14 +382,21 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
   Slot& slot = slots_[variant][entry.key];
   if (!slot.done) {
     slot.done = true;
-    const HdrVariant* hdr_blobs = nullptr;
-    if (hdr) {
-      const auto it = hdr_variants_.find(entry.key);
-      hdr_blobs = it == hdr_variants_.end() ? nullptr : &it->second;
+    const Variant* packed_blobs = nullptr;
+    if (packed) {
+      const auto it = variants_[variant].find(entry.key);
+      packed_blobs = it == variants_[variant].end() ? nullptr : &it->second;
     }
-    const Blob& blob = hdr ? (Dxil() ? hdr_blobs->dxil : hdr_blobs->spirv)
-                           : (Dxil() ? entry.dxil[variant] : entry.spirv[variant]);
-    const uint8_t* base = hdr ? hdr_file_->data() : file_->data();
+    // A packed variant that the entry says it has is in the table (LoadVariants set both); a missing one
+    // is a bug, answered as "not compiled" instead of a null read.
+    if (packed && (!packed_blobs || !variants_file_)) {
+      out = ShaderResult::kNoVariant;
+      slots_[variant].erase(entry.key);
+      return nullptr;
+    }
+    const Blob& blob = packed ? (Dxil() ? packed_blobs->dxil : packed_blobs->spirv)
+                              : (Dxil() ? entry.dxil[variant] : entry.spirv[variant]);
+    const uint8_t* base = packed ? variants_file_->data() : file_->data();
     if (!VerifyBlob(entry, blob, !Dxil(), base)) {
       slot.result = ShaderResult::kBadBlob;
     } else {
@@ -409,32 +419,37 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
 }
 
 // ---------------------------------------------------------------------------
-// the HDR scene variants
+// the variant pack
 // ---------------------------------------------------------------------------
-// Layout of mcla_shaders_hdr.v1.pack (little-endian; the constants are in shaderpack/pack_format.h),
-// written by src/shaderpack's hdr_variant step and by tools/build_hdr_variants.py:
+// Layout of mcla_shaders_variants.v2.pack (little-endian; the constants are in shaderpack/pack_format.h),
+// written by src/shaderpack's variant step (variant_pack.h):
 //   header : magic 'MSHV' | version u32 | entry_count u32 | formats u32 (bit 0 DXIL, bit 1 SPIR-V) |
 //            contract u32 | main pack version u32 | 2 reserved u32                       (32 bytes)
-//   entries: ps key u64 | vs keys 4 x u64 (0 = none) | flags u32 | reserved u32 |
+//   entries: ps key u64 | vs keys 4 x u64 (0 = none) | variant u32 | reserved u32 |
 //            dxil {off u32, size u32, fnv u64} | spirv {...}                             (80 bytes)
+//            in increasing (variant, ps key) order
 //   blobs  : per entry, DXIL then SPIR-V
 
-bool ShaderStore::LoadHdrVariants(std::string* why) {
-  constexpr uint32_t kHdrHeaderBytes = pack::kHdrPackHeaderBytes;
-  constexpr uint32_t kHdrEntryBytes = pack::kHdrPackEntryBytes;
-  if (hdr_ready_.load(std::memory_order_acquire)) {
+bool ShaderStore::LoadVariants(std::string* why) {
+  constexpr uint32_t kHeaderBytes = pack::kVariantPackHeaderBytes;
+  constexpr uint32_t kEntryBytes = pack::kVariantPackEntryBytes;
+  if (variants_ready_.load(std::memory_order_acquire)) {
     return true;
   }
   // Beside the main pack: the folder it was attached from (the builder writes both there).
-  // CHECK: a test setup with the main pack in cache/shaders and the hand-built HDR pack only in
-  // <exe>/assets (native\scripts\p-pack-hdr.ps1's target) finds none: put both in one folder.
-  hdr_path_ = folder_ / kHdrPackFileName;
+  // CHECK: a test setup with the main pack in cache/shaders and a hand-built variant pack only in
+  // <exe>/assets finds none: put both in one folder.
+  variants_path_ = folder_ / kVariantPackFileName;
   const auto fail = [&](const std::string& text) {
-    hdr_variants_.clear();
+    for (auto& variants : variants_) {
+      variants.clear();
+    }
     for (auto& [key, entry] : entries_) {
+      entry.variants = 0;
       entry.hdr_variant = false;
     }
-    hdr_file_.reset();
+    hdr_variant_count_ = 0;
+    variants_file_.reset();
     if (why) {
       *why = text;
     }
@@ -443,80 +458,105 @@ bool ShaderStore::LoadHdrVariants(std::string* why) {
   if (!attached() || entries_.empty()) {
     return fail("the shader pack is not attached");
   }
-  hdr_file_ = rex::memory::MappedMemory::Open(hdr_path_, rex::memory::MappedMemory::Mode::kRead);
-  if (!hdr_file_ || !hdr_file_->data()) {
-    return fail("cannot open " + rex::path_to_utf8(hdr_path_) +
+  variants_file_ = rex::memory::MappedMemory::Open(variants_path_, rex::memory::MappedMemory::Mode::kRead);
+  if (!variants_file_ || !variants_file_->data()) {
+    return fail("cannot open " + rex::path_to_utf8(variants_path_) +
                 " (the shader pack build writes it beside the main pack)");
   }
-  const uint8_t* data = hdr_file_->data();
-  const uint64_t size = hdr_file_->size();
-  if (size < kHdrHeaderBytes || std::memcmp(data, pack::kHdrPackMagic, 4) != 0) {
-    return fail("not an HDR variant pack");
+  const uint8_t* data = variants_file_->data();
+  const uint64_t size = variants_file_->size();
+  if (size < kHeaderBytes || std::memcmp(data, pack::kVariantPackMagic, 4) != 0) {
+    return fail("not a shader variant pack");
   }
   const uint32_t version = ReadU32(data + 4);
   const uint32_t count = ReadU32(data + 8);
   const uint32_t formats = ReadU32(data + 12);
   const uint32_t contract = ReadU32(data + 16);
   const uint32_t main_version = ReadU32(data + 20);
-  if (version != kHdrPackVersion || contract != kHdrContract || main_version != kPackVersion) {
+  if (version != kVariantPackVersion || contract != kVariantContract || main_version != kPackVersion) {
     return fail("version " + std::to_string(version) + ", constants contract " +
                 std::to_string(contract) + ", built for shader pack " +
                 std::to_string(main_version) + "; this build reads version " +
-                std::to_string(kHdrPackVersion) + ", contract " + std::to_string(kHdrContract) +
+                std::to_string(kVariantPackVersion) + ", contract " + std::to_string(kVariantContract) +
                 ", pack " + std::to_string(kPackVersion));
   }
   if ((formats & (Dxil() ? pack::kDxil : pack::kSpirv)) == 0) {
     return fail(std::string("carries no ") + (Dxil() ? "DXIL" : "SPIR-V"));
   }
-  if (uint64_t(kHdrHeaderBytes) + uint64_t(count) * kHdrEntryBytes > size) {
+  if (uint64_t(kHeaderBytes) + uint64_t(count) * kEntryBytes > size) {
     return fail("entry table past the end of the file");
   }
   const auto in_file = [&](const Blob& blob) {
     return uint64_t(blob.offset) + blob.size <= size;
   };
-  std::unordered_map<uint64_t, HdrVariant> variants;
+  std::unordered_map<uint64_t, Variant> variants[kVariantSlots];
   for (uint32_t i = 0; i < count; ++i) {
-    const uint8_t* e = data + kHdrHeaderBytes + uint64_t(i) * kHdrEntryBytes;
-    HdrVariant v;
+    const uint8_t* e = data + kHeaderBytes + uint64_t(i) * kEntryBytes;
+    Variant v;
     v.ps_key = ReadU64(e);
-    for (uint32_t k = 0; k < kHdrVertexShaders; ++k) {
+    for (uint32_t k = 0; k < kVariantVertexShaders; ++k) {
       v.vs_keys[k] = ReadU64(e + 8 + 8 * k);
     }
-    v.flags = ReadU32(e + 40);
+    v.variant = ReadU32(e + 40);
+    v.reserved = ReadU32(e + 44);
     v.dxil = ReadBlob(e + 48);
     v.spirv = ReadBlob(e + 64);
+    if (v.variant < kFirstPackedVariant || v.variant >= kVariantSlots) {
+      return fail("entry " + std::to_string(i) + " has the variant id " + std::to_string(v.variant) +
+                  ", which this build does not know (it reads " + std::to_string(kFirstPackedVariant) + " to " +
+                  std::to_string(kVariantSlots - 1) + ")");
+    }
     const Blob& needed = Dxil() ? v.dxil : v.spirv;
     if (needed.size == 0 || !in_file(v.dxil) || !in_file(v.spirv)) {
       return fail("entry " + std::to_string(i) + " lacks a blob this backend needs or has one "
                   "past the end");
     }
-    // The pack must be the one this HDR pack was built for: the shader is in it, a pixel shader,
-    // and so are the vertex shaders it names (at least one).
+    // The pack must be the one this variant pack was built for: the shader is in it, a pixel shader, and
+    // so are the vertex shaders it names.
     const auto main_entry = entries_.find(v.ps_key);
-    bool vertex_shaders_ok = v.vs_keys[0] != 0;
+    bool vertex_shaders_ok = true;
     for (uint64_t vs_key : v.vs_keys) {
       vertex_shaders_ok &= vs_key == 0 || entries_.contains(vs_key);
     }
-    if (main_entry == entries_.end() || main_entry->second.stage != Stage::kPixel ||
-        !vertex_shaders_ok) {
+    if (main_entry == entries_.end() || main_entry->second.stage != Stage::kPixel || !vertex_shaders_ok) {
       return fail("entry " + std::to_string(i) + " names a shader the main pack does not have "
                   "(another build of the pack?)");
     }
-    variants.emplace(v.ps_key, v);
+    if (!variants[v.variant].emplace(v.ps_key, v).second) {
+      return fail("entry " + std::to_string(i) + " repeats the variant " + std::to_string(v.variant) +
+                  " of a shader");
+    }
   }
-  for (const auto& [key, v] : variants) {
-    entries_.find(key)->second.hdr_variant = true;
+  uint32_t total = 0;
+  uint32_t per_variant[kVariantSlots] = {};
+  for (uint32_t id = 0; id < kVariantSlots; ++id) {
+    for (const auto& [key, v] : variants[id]) {
+      Entry& entry = entries_.find(key)->second;
+      entry.variants |= 1u << id;
+      ++per_variant[id];
+      ++total;
+    }
   }
-  hdr_variants_ = std::move(variants);
-  hdr_ready_.store(true, std::memory_order_release);  // last: has_hdr_variants()
-  REXLOG_INFO("[gpu] shader pack: {} HDR scene variants from {} ({} bytes)", hdr_variants_.size(),
-              rex::path_to_utf8(hdr_path_), size);
+  for (auto& [key, entry] : entries_) {
+    entry.hdr_variant = (entry.variants & (1u << kHdrVariant)) != 0;
+  }
+  hdr_variant_count_ = per_variant[kHdrVariant];
+  for (uint32_t id = 0; id < kVariantSlots; ++id) {
+    variants_[id] = std::move(variants[id]);
+  }
+  variants_ready_.store(true, std::memory_order_release);  // last: has_variants()
+  REXLOG_INFO("[gpu] shader pack: {} shader variants from {} ({} bytes): HDR scene {}, bloom Gaussians {}",
+              total, rex::path_to_utf8(variants_path_), size, per_variant[kHdrVariant],
+              per_variant[kBloomVariant]);
   return true;
 }
 
-const ShaderStore::HdrVariant* ShaderStore::FindHdrVariant(uint64_t identity) const {
-  const auto it = hdr_variants_.find(identity);
-  return it == hdr_variants_.end() ? nullptr : &it->second;
+const ShaderStore::Variant* ShaderStore::FindVariant(uint64_t identity, uint32_t variant) const {
+  if (variant >= kVariantSlots) {
+    return nullptr;
+  }
+  const auto it = variants_[variant].find(identity);
+  return it == variants_[variant].end() ? nullptr : &it->second;
 }
 
 }  // namespace mcla::gpu
