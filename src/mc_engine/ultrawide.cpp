@@ -34,11 +34,21 @@ namespace {
 
 // The window's size, width << 32 | height; 0 until the app says.
 std::atomic<uint64_t> g_window{0};
-// The aspect ratio in force, between kBaseAspect and kMaxAspect.
+// The aspect ratio in force, between kBaseAspect and kMaxAspect: the frame's (frame_fit.h).
 std::atomic<double> g_aspect{kBaseAspect};
+// The choice in force (mc::frame::Choice), -1 until the first Recompute.
+std::atomic<int> g_choice{-1};
 // The setting hud_width, 0 to 100: from Init and its change callback; read by the guest hooks that name
 // the HUD's pieces and by the renderer (HudWidthFraction).
 std::atomic<int> g_hud_width{0};
+
+// The layout in force and what the last setting or window changed in it (frame_fit.h Tracker): one
+// writer at a time, no cvar is read or set while this is held.
+std::mutex g_layout_mutex;
+mc::frame::Tracker g_tracker;
+// What the log last said: a window dragged to a new size changes the aspect ratio at every step.
+double g_logged_aspect = 0.0;
+bool g_logged_boxed = false;
 
 // The setting's text, as the last change left it (a change callback is given the new value; reading
 // the cvar inside the callback is not safe, it may run with the registry locked).
@@ -51,52 +61,24 @@ bool g_ask_known = false;  // Init ran
 // widened picture needs. The value given to it last (-1: none yet, so the first window size sets it
 // whatever an old config file says); the Plume renderer has its own present.
 int g_xenia_stretch = -1;
-// The aspect ratio the log last printed: a window dragged to a new size changes it at every step.
-double g_logged_aspect = 0.0;
 
-// The fixed choices of the setting. 16:10 is below the game's own shape: the window then keeps the
-// 16:9 picture with black bars above and below, as 16:9 does.
-double FixedAspect(std::string_view ask) {
-  if (ask == "21:9") return 7.0 / 3.0;
-  if (ask == "32:9") return kMaxAspect;
-  return kBaseAspect;
+bool PlumeRenderer() {
+#if defined(LARECOMP_HAS_GPU)
+  return mcla::gpu::Enabled();
+#else
+  return false;
+#endif
 }
 
-double Choose(std::string_view ask, uint64_t window) {
-  const uint32_t width = uint32_t(window >> 32);
-  const uint32_t height = uint32_t(window & 0xFFFFFFFFu);
-  double aspect = kBaseAspect;
-  if (ask == "auto" || ask.empty()) {
-    if (width != 0 && height != 0) {
-      aspect = double(width) / double(height);
-    }
-  } else {
-    aspect = FixedAspect(ask);
+// The setting's text as a choice. Anything that is none of them (an old value: 16:10 was a debug choice
+// that came to the same as 16:9) is AUTO. The Xenia renderer's present fills the window with the
+// picture and has no frame to draw it in: it always follows the window.
+mc::frame::Choice ChoiceOf(std::string_view ask) {
+  mc::frame::Choice choice = mc::frame::Choice::kAuto;
+  if (!mc::frame::ParseChoice(ask, &choice)) {
+    choice = mc::frame::Choice::kAuto;
   }
-  aspect = std::clamp(aspect, kBaseAspect, kMaxAspect);
-  // A window a few pixels off 16:9 (a frame, a scaling factor's rounding) is 16:9: nothing to
-  // widen, and the picture keeps its place.
-  if (aspect < kBaseAspect * 1.005) {
-    aspect = kBaseAspect;
-  }
-  return aspect;
-}
-
-// The setting or the window changed. Never called with the cvar registry locked except from the
-// setting's own change callback, which takes `ask` from the callback's argument.
-void Recompute(std::string_view ask) {
-  const uint64_t window = g_window.load(std::memory_order_acquire);
-  const double aspect = Choose(ask, window);
-  const double before = g_aspect.exchange(aspect, std::memory_order_acq_rel);
-  if (std::abs(aspect - before) > 1e-4) {
-    if (std::abs(aspect - g_logged_aspect) > 0.02 || (aspect == kBaseAspect) != (g_logged_aspect == kBaseAspect)) {
-      g_logged_aspect = aspect;
-      LARECOMP_APP_INFO("ultrawide: the aspect ratio is {:.4f}:1 (setting \"{}\", window {}x{}){}",
-                        aspect, ask, uint32_t(window >> 32), uint32_t(window & 0xFFFFFFFFu),
-                        aspect > kBaseAspect * 1.001 ? "" : ", the game's own 16:9");
-    }
-    ApplyAspectRatioPatch();
-  }
+  return PlumeRenderer() ? choice : mc::frame::Choice::kAuto;
 }
 
 // The window's size arrives (SetupPresentation) before Init does: the cvar has its value by then.
@@ -110,12 +92,53 @@ std::string Ask() {
   return REXCVAR_GET(aspect_ratio);
 }
 
-bool PlumeRenderer() {
-#if defined(LARECOMP_HAS_GPU)
-  return mcla::gpu::Enabled();
-#else
-  return false;
-#endif
+// The choice in force, for a caller that has no setting text (no registry read once Recompute has run).
+mc::frame::Choice ChoiceNow() {
+  const int choice = g_choice.load(std::memory_order_relaxed);
+  return choice >= 0 ? mc::frame::Choice(choice) : ChoiceOf(Ask());
+}
+
+// The setting or the window changed: the layout is worked out again, and what the change touches is
+// done at once: the cameras' aspect ratio in guest memory (the camera hooks and the renderer read
+// DisplayAspect()), the log. The present, the render scale and the mouse read the frame themselves
+// (FrameFor) at their next frame, so a live change of the setting needs nothing more. Never called
+// with the cvar registry locked except from the setting's own change callback, which takes `ask`
+// from the callback's argument.
+void Recompute(std::string_view ask) {
+  const uint64_t window = g_window.load(std::memory_order_acquire);
+  const uint32_t window_w = uint32_t(window >> 32);
+  const uint32_t window_h = uint32_t(window & 0xFFFFFFFFu);
+  const mc::frame::Choice choice = ChoiceOf(ask);
+  uint32_t change = 0;
+  mc::frame::Layout layout;
+  bool log = false;
+  {
+    std::lock_guard<std::mutex> lock(g_layout_mutex);
+    change = g_tracker.Update(choice, window_w, window_h);
+    layout = g_tracker.layout();
+    g_aspect.store(layout.aspect, std::memory_order_release);
+    g_choice.store(int(choice), std::memory_order_relaxed);
+    if (change & (mc::frame::kChoiceChanged | mc::frame::kAspectChanged)) {
+      log = (change & mc::frame::kChoiceChanged) != 0 || std::abs(layout.aspect - g_logged_aspect) > 0.02 ||
+            (layout.wide != (g_logged_aspect > kBaseAspect * 1.001)) ||
+            layout.boxed() != g_logged_boxed;
+      if (log) {
+        g_logged_aspect = layout.aspect;
+        g_logged_boxed = layout.boxed();
+      }
+    }
+  }
+  if (change & mc::frame::kAspectChanged) {
+    ApplyAspectRatioPatch();
+  }
+  if (log) {
+    LARECOMP_APP_INFO(
+        "ultrawide: the aspect ratio is {:.4f}:1 (setting \"{}\", window {}x{}): the frame is {}x{} at ({}, {}), "
+        "bars {} left {} right {} above {} below{}",
+        layout.aspect, mc::frame::ChoiceName(layout.choice), window_w, window_h, layout.frame.w,
+        layout.frame.h, layout.frame.x, layout.frame.y, layout.bar_left(), layout.bar_right(), layout.bar_top(),
+        layout.bar_bottom(), layout.wide ? "" : ", the game's own 16:9");
+  }
 }
 
 }  // namespace
@@ -141,9 +164,19 @@ void SetWindowSize(uint32_t width, uint32_t height) {
 
 double DisplayAspect() { return g_aspect.load(std::memory_order_acquire); }
 
-double UiWidthFraction() {
-  const double aspect = DisplayAspect();
-  return aspect > kBaseAspect * 1.001 ? kBaseAspect / aspect : 1.0;
+double UiWidthFraction() { return mc::frame::UiFraction(DisplayAspect()); }
+
+mc::frame::Rect FrameFor(uint32_t window_width, uint32_t window_height) {
+  // The setting as it is now, the window as the caller measured it (not the app's last report: the
+  // renderer's first frames and the map's mouse have their own sizes, and the start of the renderer comes
+  // before the app's first report).
+  return mc::frame::FrameOf(window_width, window_height,
+                            mc::frame::AspectOf(ChoiceNow(), window_width, window_height));
+}
+
+mc::frame::Rect FrameRect() {
+  const uint64_t window = g_window.load(std::memory_order_acquire);
+  return FrameFor(uint32_t(window >> 32), uint32_t(window & 0xFFFFFFFFu));
 }
 
 double HudWidthFraction() {

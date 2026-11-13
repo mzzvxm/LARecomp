@@ -11,29 +11,37 @@
 // the same factor around the centre of the screen: they come out 16:9-correct, in the middle
 // (gpu/scene.cpp, UiSqueeze). A frame with no 3D scene in it (a movie, a loading screen, a menu on
 // a flat background) is not squeezed or stretched at all: the present shows it 16:9 in the middle
-// of the window with black on both sides, as it always did (gpu/present.h, display aspect). The
-// setting `hud_width` moves the corner pieces of the driving HUD out of that middle block toward the
-// screen edges (the last section of this file).
+// of the frame (the window, when the setting is AUTO) with black on both sides, as it always did
+// (gpu/present.h, display aspect). The setting `hud_width` moves the corner pieces of the driving HUD
+// out of that middle block toward the screen edges (the last section of this file).
 //
 // CHECK: that the four camera hooks and the constant at 0x8201E7EC are every place the game takes its
 // 3D aspect ratio from (the rear-view mirror, garage, showroom, map and photo cameras especially); a
 // camera that keeps 16:9 shows its picture stretched.
 //
-// The aspect ratio is the window's: it follows the window as it is resized, goes fullscreen or
-// changes monitor, with nothing to set. It is never below 16:9 (a taller window keeps 16:9 and the
-// black bars above and below) and never above 32:9 (a wider window has black bars at the sides).
-// The setting `aspect_ratio` (hooks/graphics.cpp) is "auto" unless the player picks one.
+// The aspect ratio is the setting `aspect_ratio` (hooks/graphics.cpp, the pause menu's DISPLAY > ASPECT
+// RATIO) and the window's size. AUTO is the window's own shape: it follows the window as it is resized,
+// goes fullscreen or changes monitor, with nothing to set, between 16:9 and 32:9 (a taller window keeps
+// 16:9 and the black bars above and below, a wider one has black bars at the sides). 16:9, 21:9 (64:27,
+// a 2560x1080 monitor's shape) and 32:9 are those shapes whatever the window is: a ratio wider than the
+// window has black bars above and below it, a narrower one at the sides. The picture lies in the FRAME,
+// the largest rectangle of that aspect ratio in the window, centred (frame_fit.h); the cameras, the
+// UI's squeeze, the present's viewport, the render scale and the upscalers' sizes and the map's mouse
+// all follow the frame, and the bars hold nothing of the game. A change of the setting or of the
+// window applies at once (Recompute): no restart.
 //
 // Threading: every function can be called from any thread.
 //
 
 #include <cstdint>
 
+#include "frame_fit.h"
+
 namespace mc::ultrawide {
 
 // The game's own picture and the widest one built (a 32:9 monitor, 5120x1440 or 3840x1080).
-inline constexpr double kBaseAspect = 16.0 / 9.0;
-inline constexpr double kMaxAspect = 32.0 / 9.0;
+inline constexpr double kBaseAspect = mc::frame::kAspect16x9;
+inline constexpr double kMaxAspect = mc::frame::kAspect32x9;
 
 // The window's size in pixels: from the app on every size change (UI thread), once the window
 // exists. 0 in either is ignored (a minimised window keeps the last size).
@@ -49,6 +57,13 @@ inline bool Active() { return DisplayAspect() > kBaseAspect * 1.001; }
 // What fraction of the screen's width the UI keeps (16:9 over the aspect ratio): 1 when Active() is
 // false, 3/4 at 21:9 (2560x1080 is 0.75; 3440x1440 is 0.744), 1/2 at 32:9.
 double UiWidthFraction();
+
+// The frame of the picture in a window of this size (physical pixels), for the setting as it is now:
+// where the picture lies and what the bars leave (frame_fit.h). Any window size, not only the app's own:
+// the renderer measures its swap chain, the map's mouse the window. Empty for a window with no size.
+mc::frame::Rect FrameFor(uint32_t window_width, uint32_t window_height);
+// The same for the window the app last told (SetWindowSize); empty before it.
+mc::frame::Rect FrameRect();
 
 // From InitHooks, once, before any guest code: reads the setting, follows its changes while the
 // game runs and writes the aspect ratio into the constant the game's cameras load it from (guest

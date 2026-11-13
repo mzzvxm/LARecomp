@@ -26,6 +26,7 @@
 #include "host_passes.h"
 #include "hdr_scene.h"
 #include "host_shaders.h"
+#include "mc_engine/frame_fit.h"
 #include "pass_timing.h"
 #include "textures.h"
 #include "upload.h"
@@ -404,7 +405,7 @@ void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, u
 }
 
 void PresentPass::PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
-  fit_ = FitOf(source_width_, source_height_, width, height, display_aspect_);
+  fit_ = FitOf(source_width_, source_height_, width, height, display_aspect_, frame_aspect_);
   if (REXCVAR_GET(mcla_gpu_fsr)) {
     PrepareFsr(list, fit_);
   } else if (!quiet_route_ && !reported_route_.empty()) {
@@ -451,7 +452,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
 
 void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   if (route_ == Route::kBilinear) {
-    if (RecordDraw(list, width, height, display_aspect_, DitherLsb())) {
+    if (RecordDraw(list, width, height, display_aspect_, frame_aspect_, DitherLsb())) {
       ++stats_.drawn;
     }
     return;
@@ -507,7 +508,7 @@ void PresentPass::DrawUnscaled(plume::RenderCommandList* list) {
     return;
   }
   // The probe compares the picture with the guest's frames: no dither.
-  RecordDraw(list, source_width_, source_height_, 0.0, 0.0f);
+  RecordDraw(list, source_width_, source_height_, 0.0, 0.0, 0.0f);
 }
 
 float PresentPass::DitherLsb() const {
@@ -527,29 +528,23 @@ float PresentPass::DitherLsb() const {
 }
 
 PresentPass::Fit PresentPass::FitOf(uint32_t source_width, uint32_t source_height,
-                                    uint32_t width, uint32_t height, double aspect) {
-  Fit fit;
-  if (source_width == 0 || source_height == 0 || width == 0 || height == 0) {
-    return fit;
-  }
+                                    uint32_t width, uint32_t height, double aspect,
+                                    double frame_aspect) {
   // The shape the picture is shown in: the source's own, or the one asked for (the source is then
-  // stretched sideways to it).
-  const double shown_width = aspect > 0.0 ? double(source_height) * aspect : double(source_width);
-  const double scale = std::min(double(width) / shown_width, double(height) / source_height);
-  fit.w = std::max(uint32_t(std::lround(shown_width * scale)), 1u);
-  fit.h = std::max(uint32_t(std::lround(source_height * scale)), 1u);
-  fit.x = (width - std::min(fit.w, width)) / 2;
-  fit.y = (height - std::min(fit.h, height)) / 2;
-  return fit;
+  // stretched sideways to it), in the window or, with the ASPECT RATIO setting, in its frame.
+  const mc::frame::Rect r =
+      mc::frame::PlaceSource(source_width, source_height, width, height, aspect, frame_aspect);
+  return Fit{r.x, r.y, r.w, r.h};
 }
 
 bool PresentPass::RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height,
-                             double aspect, float dither_lsb) {
+                             double aspect, double frame_aspect, float dither_lsb) {
   if (!source_ready_ || width == 0 || height == 0 || source_width_ == 0 || source_height_ == 0) {
     return false;
   }
   RecordFitted(list, pipeline_, source_slot_, source_width_, source_height_,
-               FitOf(source_width_, source_height_, width, height, aspect), source_gap_, dither_lsb);
+               FitOf(source_width_, source_height_, width, height, aspect, frame_aspect), source_gap_,
+               dither_lsb);
   return true;
 }
 
