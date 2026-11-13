@@ -1382,8 +1382,8 @@ constexpr const char* kButtonLayoutNames[] = {"AUTO", "XBOX", "PLAYSTATION", "KE
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 // ASPECT RATIO: ":" is not allowed in a name, so the shapes read 16X9 as RESOLUTION reads 2560X1440.
-constexpr const char* kAspectVals[]  = {"auto", "16:9", "21:9", "32:9"};
-constexpr const char* kAspectNames[] = {"AUTO", "16X9", "21X9", "32X9"};
+constexpr const char* kAspectVals[]  = {"auto", "16:9", "16:10", "21:9", "32:9"};
+constexpr const char* kAspectNames[] = {"AUTO", "16X9", "16X10", "21X9", "32X9"};
 // DIFFICULTY. AI DIFFICULTY is a percent, -1 = the game's own choice (STOCK);
 // the scales are multipliers over the shipped RubberBandTune (1 = as shipped).
 constexpr double kAiDiffVals[]     = {-1.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
@@ -1565,9 +1565,11 @@ const ItemDef kVideoItems[] = {
                  &mcla_menu::kResolutionDynamics),
 #if defined(LARECOMP_HAS_GPU)
     // ASPECT RATIO: the shape of the picture in the window (mc_engine/frame_fit.h, ultrawide.h). AUTO fills
-    // the window; 16X9, 21X9 and 32X9 keep that shape and leave pure black bars where the window is not
-    // that shape. Live, NATIVE only (the Xenia renderer's present always fills the window). Width: 14 and 4.
-    NativeOnly(Str("PM_RxAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames, 4)),
+    // the window at any shape (a wider one shows more at the sides, a taller one more above and below);
+    // 16X9, 16X10, 21X9 and 32X9 keep that shape and leave pure black bars where the window is not that
+    // shape. Live, NATIVE only (the Xenia renderer's present always fills the window, 16:9 at least).
+    // Width: "ASPECT RATIO: " 14 and "16X10" 5.
+    NativeOnly(Str("PM_RxAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames, 5)),
     // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
     // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
     // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
@@ -1987,8 +1989,9 @@ void InitThemePalette() {
 // keeps the whole HUD in the middle 16:9, WIDER (50) moves the pieces halfway out, FULL (100) puts each
 // piece as far from its edge as on a 16:9 screen. Live, NATIVE only (the renderer moves the pieces).
 // Another value set by hand in larecomp.toml (60) gets an entry of its own, shown as its number
-// (value_label). Grey with "(ULTRAWIDE ONLY)" while the picture is 16:9 or narrower, where the setting
-// moves nothing. Width: "HUD WIDTH (ULTRAWIDE ONLY)" 26 (grey: no value), "HUD WIDTH" 9 with
+// (value_label). Grey with "(16X9: NO EFFECT)" while the picture is the game's own 16:9, where the setting
+// moves nothing (a wider picture moves the pieces to the sides, a taller one to the top and the bottom).
+// Width: "HUD WIDTH (16X9: NO EFFECT)" 27 (grey: no value), "HUD WIDTH" 9 with
 // "CENTERED" 8.
 constexpr double kHudWidthVals[] = {0, 50, 100};
 std::string HudWidthLabel(double v) {
@@ -2000,7 +2003,7 @@ std::string HudWidthLabel(double v) {
     return buf;
 }
 bool HudWidthEnabled() { return mc::ultrawide::Active(); }
-const char* HudWidthSuffix() { return HudWidthEnabled() ? "" : " (ULTRAWIDE ONLY)"; }
+const char* HudWidthSuffix() { return HudWidthEnabled() ? "" : " (16X9: NO EFFECT)"; }
 constexpr RowDynamics kHudWidthDynamics = {.value_label = HudWidthLabel,
                                            .enabled = HudWidthEnabled,
                                            .suffix = HudWidthSuffix};
