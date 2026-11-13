@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <format>
 #include <memory>
 #include <string>
 
@@ -107,6 +108,15 @@ REXCVAR_DEFINE_BOOL(
     "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
     "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
     "so it never runs more than that ahead.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_present_release_check, false, "MCLA/GPU",
+    "Diagnostic, with mcla_gpu_present_release: checks what that rests on. It releases the guest at "
+    "every guest present (also when the GPU is behind), and from the release to the end of the "
+    "present it counts, and logs the first 16, each read or write of guest memory by the render "
+    "thread. The count is in the '[gpu] present release:' line at shutdown; it must be 0.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -307,6 +317,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     release_early_ = REXCVAR_GET(mcla_gpu_present_release);
     // The swap chain exists and the render thread, which marks the frames, has not started.
     latency::Initialize(device_, swap_chain_);
+    check_release_ = release_early_ && REXCVAR_GET(mcla_gpu_present_release_check);
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -353,7 +364,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
               kFramesInFlight, kIdlePeriod.count(), validate_ ? "on" : "off",
               batch_draws_ ? "a batch every " + std::to_string(batch_draws_) + " draws"
                            : std::string("one submission per guest frame"),
-              release_early_ ? "early" : "after the present");
+              release_early_ ? (check_release_ ? "early, checked" : "early") : "after the present");
   return true;
 }
 
@@ -437,8 +448,12 @@ void Renderer::Shutdown() {
   // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
   fg_.StopPacer();
   if (release_early_) {
-    REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early",
-                early_releases_, guest_presents_);
+    REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early{}",
+                early_releases_, guest_presents_,
+                check_release_ ? std::format("; {} reads or writes of guest memory after the "
+                                             "release (must be 0)",
+                                             released_accesses_)
+                               : std::string());
   }
   // The last reports (and the validator's CSVs), now that no record arrives.
   if (validate_) {
@@ -555,6 +570,10 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       ExecutePresent(PresentSource::kGuest);
       present_target_ = 0;
       release_sequence_ = 0;
+      if (check_release_) {
+        GuestMemory::MarkReleased(false);
+        released_accesses_ += GuestMemory::TakeReleasedAccesses();
+      }
       return;
     case RecordType::kDraw:
       if (validate_) {
@@ -1539,13 +1558,17 @@ void Renderer::ReleaseGuest() {
   // draws from the GPU's copies, submits and presents.
   tail_start_ = std::chrono::steady_clock::now();
   tail_open_ = true;
-  if (release_sequence_ == 0 || !release_early_ || !tail_short_ ||
+  if (release_sequence_ == 0 || !release_early_ || (!tail_short_ && !check_release_) ||
       REXCVAR_GET(mcla_gpu_vsync)) {
     return;
   }
   thread_.stream().MarkExecuted(release_sequence_);
   release_sequence_ = 0;
   ++early_releases_;
+  if (check_release_) {
+    // From here to the end of the present, a read of guest memory is a bug of the release.
+    GuestMemory::MarkReleased(true);
+  }
 }
 
 void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
