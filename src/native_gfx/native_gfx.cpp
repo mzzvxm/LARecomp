@@ -64,6 +64,7 @@
 #include "d3d12/barrier_batch.h"
 #include "d3d12/untile_pass.h"
 #include "diag.h"
+#include "../mc_engine/debug_menu.h"
 
 // Defined in device_manager.cpp and swapchain.cpp
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
@@ -1160,9 +1161,12 @@ bool TryInitialize() {
       g_presenter = nocp::PresenterPtr();
     }
     rex::ui::UnregisterBind("bind_renderdoc_capture");
-    rex::ui::RegisterBind("bind_native_gfx_renderdoc", "F11",
-                          "Capture the next guest frame with RenderDoc (native runtime)",
-                          [] { RequestRenderDocCapture(); });
+    // F11 is a developer key: only while the debug menu is unlocked.
+    if (larecomp::DebugMenuUnlocked()) {
+      rex::ui::RegisterBind("bind_native_gfx_renderdoc", "F11",
+                            "Capture the next guest frame with RenderDoc (native runtime)",
+                            [] { RequestRenderDocCapture(); });
+    }
     g_present_ready = true;
     return true;
   }
@@ -1231,9 +1235,12 @@ bool TryInitialize() {
   // Only done once this runtime is actually active; when it is off the SDK bind
   // stays as it was.
   rex::ui::UnregisterBind("bind_renderdoc_capture");
-  rex::ui::RegisterBind("bind_native_gfx_renderdoc", "F11",
-                        "Capture the next guest frame with RenderDoc (native runtime)",
-                        [] { RequestRenderDocCapture(); });
+  // F11 is a developer key: only while the debug menu is unlocked.
+  if (larecomp::DebugMenuUnlocked()) {
+    rex::ui::RegisterBind("bind_native_gfx_renderdoc", "F11",
+                          "Capture the next guest frame with RenderDoc (native runtime)",
+                          [] { RequestRenderDocCapture(); });
+  }
 
   // Resource ownership: reserve the guest-visible heap up front so its one
   // "HostHeap ready" line lands in the log next to the rest of bring-up rather

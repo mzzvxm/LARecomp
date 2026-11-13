@@ -8,7 +8,8 @@
 //   <exe>/models/<mod>/warps.txt      name x y z [heading in degrees, 0 = +Z]
 //
 // F9 (bind_map_warp) takes the car to the first of them -- or to warp_spot when
-// that is set -- and back to where it was; the console command reaches any.
+// that is set -- and back to where it was; the console command reaches any. A warp can break a
+// mission, so the key exists only while the debug menu is unlocked (debug_menu.h).
 //
 // RE map (default.xex):
 //
@@ -56,6 +57,7 @@
 #include <string_view>
 #include <vector>
 
+#include "debug_menu.h"
 #include "logging.h"
 #include "map_warp.h"
 #include "profile/larecomp_profile_store.h"
@@ -365,6 +367,9 @@ bool FindSpot(const std::string& name, Spot* out) {
 
 void RegisterBindOnce() {
     if (g_bind_registered.exchange(true)) return;
+    // The warp can break a mission, so the key is for testers: only while the debug menu is
+    // unlocked (the `warp` console command is tagged debug-only as well).
+    if (!larecomp::DebugMenuUnlocked()) return;
     rex::ui::RegisterBind("bind_map_warp", "F9",
                           "Warp the car to a mod's warp point, and back to where it was",
                           [] { File({Kind::kToggle, {}, {}}); });

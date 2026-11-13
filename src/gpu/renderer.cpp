@@ -27,6 +27,7 @@
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
+#include "mc_engine/debug_menu.h"
 #include "mc_engine/ultrawide.h"
 #include "watch.h"
 
@@ -1865,30 +1866,36 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   // (ProcessKeyEvent stops at the first match), so the SDK's is unregistered
   // first, as the legacy runtime does.
   rex::ui::UnregisterBind("bind_renderdoc_capture");
-  rex::ui::RegisterBind("bind_gpu_renderdoc_capture", "F11",
-                        "Capture the next frame with RenderDoc (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestCapture();
-                          }
-                        });
-  // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
-  // frame counter cannot be aimed at (menus, pause, photo mode).
-  rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
-                        "Write a raw trace of the next guest frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTrace();
-                            REXLOG_INFO("[gpu] trace: the frame after the next present will be "
-                                        "written");
-                          }
-                        });
-  // F2: every texture of the next frame to the dump folder, named after the
-  // game's texture and its dictionary, for texture mods (textures.h).
-  rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
-                        "Dump the textures of the next frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTextureDump();
-                          }
-                        });
+  // The three developer keys below (F11, F10, F2) exist only while the debug menu is unlocked
+  // (--debug_menu, REX_DEBUG_MENU=1 or debug_menu = true in larecomp.toml): for a player the keys
+  // do nothing and are not listed in the settings panel. The SDK's F11 bind stays unregistered
+  // either way.
+  if (larecomp::DebugMenuUnlocked()) {
+    rex::ui::RegisterBind("bind_gpu_renderdoc_capture", "F11",
+                          "Capture the next frame with RenderDoc (Plume renderer)", [] {
+                            if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                              r->RequestCapture();
+                            }
+                          });
+    // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
+    // frame counter cannot be aimed at (menus, pause, photo mode).
+    rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
+                          "Write a raw trace of the next guest frame (Plume renderer)", [] {
+                            if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                              r->RequestTrace();
+                              REXLOG_INFO("[gpu] trace: the frame after the next present will be "
+                                          "written");
+                            }
+                          });
+    // F2: every texture of the next frame to the dump folder, named after the
+    // game's texture and its dictionary, for texture mods (textures.h).
+    rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
+                          "Dump the textures of the next frame (Plume renderer)", [] {
+                            if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                              r->RequestTextureDump();
+                            }
+                          });
+  }
   return true;
 }
 
