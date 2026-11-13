@@ -8,11 +8,13 @@
 #include "pipelines.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -89,17 +91,59 @@ REXCVAR_DEFINE_BOOL(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_glow_visibility, "soft", "MCLA/GPU",
+    "How the glow of street lamps (their halo and star) and the other glow sprites decide whether they are "
+    "hidden by the scene: game (the game's own: one depth test at the glow's centre, so a lamp beside a palm "
+    "trunk or a pole pops fully on and off as the wind or the camera moves it by a fraction of a pixel) or "
+    "soft (the share of 24 tests on a small disc round the centre scales the glow: a glow in the open is the "
+    "game's, one at an edge fades over about two pixels instead of popping; the disc is the same size at every "
+    "render scale). game leaves the game's own shaders, and the picture, as they are. Needs the shader pack's "
+    "variant file. Live; the first time soft shows, the graphics card builds its shaders (a short stutter).")
+    .debug_only()
+    .allowed({"game", "soft"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
 
+// mcla_gpu_glow_visibility as its change callback last saw it (the render thread never reads the cvar's string
+// while another thread may be writing it: the debug menu, the console), logged when it changes. Anything but
+// `game` is soft.
+std::atomic<bool> g_glow_soft{true};
+bool IsGameChoice(std::string_view text) {
+  std::string lower(text);
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return lower == "game";
+}
+bool GlowSoftSelected() {
+  static std::once_flag registered;
+  std::call_once(registered, [] {
+    g_glow_soft.store(!IsGameChoice(REXCVAR_GET(mcla_gpu_glow_visibility)), std::memory_order_relaxed);
+    REXLOG_INFO("[gpu] glow visibility: {} (mcla_gpu_glow_visibility; live)",
+                g_glow_soft.load(std::memory_order_relaxed) ? "soft" : "the game's own");
+    rex::cvar::RegisterChangeCallback("mcla_gpu_glow_visibility", [](std::string_view, std::string_view value) {
+      g_glow_soft.store(!IsGameChoice(value), std::memory_order_relaxed);
+      REXLOG_INFO("[gpu] glow visibility: {} (mcla_gpu_glow_visibility; live)",
+                  g_glow_soft.load(std::memory_order_relaxed) ? "soft" : "the game's own");
+    });
+  });
+  return g_glow_soft.load(std::memory_order_relaxed);
+}
+
 // The variant of a pixel shader the settings ask for, from the variants the pack has for it (`ps.variants`,
 // not 0), or 0 for the game's own shader. The HDR scene's tone map (kHdrVariant) is not chosen here: the
 // HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
-// mcla_gpu_bloom_scale, read at each draw so a change of the setting shows at the next frame.
+// mcla_gpu_bloom_scale, the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing, so
+// the game's own shader and its picture stay), each read at each draw so a change of the setting shows at the
+// next frame. A shader has one of them at most.
 uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 && REXCVAR_GET(mcla_gpu_bloom_scale)) {
     return ShaderStore::kBloomVariant;
+  }
+  if ((ps.variants & (1u << ShaderStore::kGlowVariant)) != 0 && GlowSoftSelected()) {
+    return ShaderStore::kGlowVariant;
   }
   return 0;
 }

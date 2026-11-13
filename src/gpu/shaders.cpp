@@ -545,9 +545,10 @@ bool ShaderStore::LoadVariants(std::string* why) {
     variants_[id] = std::move(variants[id]);
   }
   variants_ready_.store(true, std::memory_order_release);  // last: has_variants()
-  REXLOG_INFO("[gpu] shader pack: {} shader variants from {} ({} bytes): HDR scene {}, bloom Gaussians {}",
+  REXLOG_INFO("[gpu] shader pack: {} shader variants from {} ({} bytes): HDR scene {}, bloom Gaussians {}, "
+              "glow visibility {}",
               total, rex::path_to_utf8(variants_path_), size, per_variant[kHdrVariant],
-              per_variant[kBloomVariant]);
+              per_variant[kBloomVariant], per_variant[kGlowVariant]);
   return true;
 }
 

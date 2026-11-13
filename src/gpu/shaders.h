@@ -101,6 +101,8 @@ class ShaderStore {
   // A pixel shader's HDR scene variant, and the bloom's Gaussians at a render scale.
   static constexpr uint32_t kHdrVariant = larecomp::shaderpack::kVariantHdrScene;
   static constexpr uint32_t kBloomVariant = larecomp::shaderpack::kVariantBloomGauss;
+  // The glow sprites' soft visibility: a share of depth taps in place of the one compare (pipelines.cpp).
+  static constexpr uint32_t kGlowVariant = larecomp::shaderpack::kVariantGlowSoft;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
