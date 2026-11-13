@@ -34,6 +34,8 @@ constexpr int kNoOverride = -1;
 
 std::atomic<uint8_t> g_detected{static_cast<uint8_t>(GpuClass::kHigh)};
 std::atomic<bool> g_known{false};  // Initialize has run: g_detected is what the adapter said
+std::atomic<bool> g_shares_memory{false};
+std::atomic<uint64_t> g_dedicated_bytes{0};
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
@@ -148,6 +150,8 @@ void Initialize(const plume::RenderDeviceDescription& description,
     g_adapter = "'" + description.name + "', " + VendorName(description.vendor);
   }
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
+  g_shares_memory.store(SharesMemory(facts), std::memory_order_relaxed);
+  g_dedicated_bytes.store(facts.dedicated_bytes, std::memory_order_relaxed);
 
   ApplyOverride(REXCVAR_GET(mcla_gpu_class));
   g_known.store(true, std::memory_order_release);
@@ -173,6 +177,14 @@ GpuClass Current() {
 
 bool Known() {
   return g_known.load(std::memory_order_acquire);
+}
+
+bool SharesSystemMemory() {
+  return g_shares_memory.load(std::memory_order_relaxed);
+}
+
+uint64_t DedicatedBytes() {
+  return g_dedicated_bytes.load(std::memory_order_relaxed);
 }
 
 std::string Resolve(Effect effect, std::string_view user_value) {
