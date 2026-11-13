@@ -285,6 +285,43 @@ void TestOrderAndEnd() {
     Check(ParseScene("scene c\nat 1 label \"a # b\"\nend 2\n").scene.events[0].text == "a # b", "a # inside quotes is not a comment");
 }
 
+// The `statelog` option of the whole scene (state_log.h): no time, one a scene, a folder only with `on`.
+void TestStateLogOption() {
+    const ParseResult off = ParseScene("scene a\nmark x\nend 3\n");
+    Check(off.Ok() && !off.scene.statelog && off.scene.statelog_dir.empty(), "no statelog line: the option is off");
+    CheckEq(Summarize(off.scene), "1 event (mark 1); ends at 3.00 s", "the summary says nothing about the state log when it is off");
+
+    const ParseResult on = ParseScene("scene a\nstatelog on\nend 3\n");
+    Check(on.Ok() && on.scene.statelog && on.scene.statelog_dir.empty(), "statelog on");
+    Check(on.scene.events.empty(), "statelog is not a timeline key");
+    CheckEq(Summarize(on.scene), "0 events; ends at 3.00 s; state log on", "the summary says the state log is on");
+
+    const ParseResult dir = ParseScene("scene a\nstatelog on dir \"C:\\takes\\one\"\nend 3\n");
+    Check(dir.Ok() && dir.scene.statelog && dir.scene.statelog_dir == "C:\\takes\\one", "statelog on dir <folder> (quoted)");
+    CheckEq(Summarize(dir.scene), "0 events; ends at 3.00 s; state log on (dir C:\\takes\\one)", "the summary names the folder");
+
+    const ParseResult explicit_off = ParseScene("scene a\nstatelog OFF\nend 3\n");
+    Check(explicit_off.Ok() && !explicit_off.scene.statelog, "statelog off (any case)");
+    Check(ParseScene("scene a\nat 0 statelog on\nend 3\n").scene.statelog, "at 0 statelog on is the same as a bare one");
+    Check(ParseScene("scene a\nworld hour 12\nstatelog on\nstatelog_note\n").ErrorCount() == 1,
+          "a word that merely starts like it is still an unknown statement");
+
+    CheckError("at 2 statelog on", "an option of the whole scene");
+    CheckError("statelog", "nothing after 'statelog'");
+    CheckError("statelog maybe", "'maybe' is neither");
+    CheckError("statelog on dir", "'dir' needs a value");
+    CheckError("statelog on file x.csv", "unknown option 'file' (dir)");
+    CheckError("statelog on dir \"\"", "statelog dir needs a folder");
+    CheckError("statelog off now", "statelog off takes nothing after it");
+    const ParseResult twice = ParseScene("scene a\nstatelog on\nstatelog off\nend 3\n");
+    const Diagnostic* d = Find(twice, "a second 'statelog'");
+    Check(!twice.Ok() && d && d->line == 3 && Find(twice, "line 2") != nullptr, "a second statelog is an error on its line, naming the first");
+    // a scene that is only the option and an end is a scene
+    Check(ParseScene("statelog on\nend 4\n").Ok(), "a scene of only statelog and end parses");
+    const ParseResult unknown = ParseScene("scene a\nstatelo on\nend 3\n");
+    Check(Find(unknown, "end, statelog)") != nullptr, "the list of statements in the unknown-statement error names statelog");
+}
+
 void TestDiagnosticOrder() {
     // diagnostics come out by line, the whole-file ones first, errors and warnings together
     const ParseResult r = ParseScene("scene a\nat 5 hour 12\nat 2 weather sunny\nat 3 traffic off\nat 4 mark m\n");
@@ -606,6 +643,7 @@ int main(int argc, char** argv) {
     TestStatements();
     TestStatementsErrors();
     TestOrderAndEnd();
+    TestStateLogOption();
     TestDiagnosticOrder();
     TestFormat();
     TestEase();

@@ -15,6 +15,9 @@
 //
 //   scene <name> [fps <n>] [step <seconds or 1/n>]        header (the capture rate and the simulation step, as notes)
 //   end <time>                                            the scene finishes there and hands everything back
+//   statelog on [dir <folder>] | off                      the scene writes the per-update state log (state_log.h): an option of the
+//                                                         whole scene, so no time; the CSV goes to <folder>\state.csv (default: the
+//                                                         take folder when one is set, else statelogs\ next to the game)
 //   world <key> <value> ...                               a bundle at time 0 of: hour <h> [hold], weather <w>,
 //                                                         traffic|peds|parked|police on|off, timescale <x>
 //   at T hour <h>                                         the world sits at that hour (0..24) until the next key
@@ -122,6 +125,10 @@ struct Scene {
     double LastKeyEnd() const;
     // The scene's length: `end`, or -1 when it has none.
     double Duration() const { return end; }
+
+    // Options of the whole scene (written without a time): `statelog on [dir <folder>]`.
+    bool statelog = false;
+    std::string statelog_dir;  // empty = the default place
 };
 
 struct ParseResult {

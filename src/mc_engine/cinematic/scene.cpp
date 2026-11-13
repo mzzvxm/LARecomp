@@ -180,7 +180,7 @@ bool IsWorldTrack(Track t) {
 }
 
 constexpr const char* kVerbList =
-    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, cam, cut, hud, car, start, world, end";
+    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, cam, cut, hud, car, start, world, end, statelog";
 
 using Args = std::vector<std::string>;
 
@@ -329,6 +329,7 @@ class Parser {
         if (verb == "mark") return Mark(line, t, a);
         if (verb == "end") return End(line, t, a);
         if (verb == "cam" || verb == "cut" || verb == "hud" || verb == "car" || verb == "start") return Opaque(line, t, verb, a);
+        if (verb == "statelog") return StateLog(line, t, a);
         Error(line, "unknown statement '" + verb + "' (" + kVerbList + ")");
     }
 
@@ -585,6 +586,52 @@ class Parser {
         Add(std::move(e));
     }
 
+    // `statelog on [dir <folder>]` / `statelog off`: the per-update state log (state_log.h) is an option of the whole scene, so it takes no time.
+    void StateLog(int line, double t, const Args& a) {
+        constexpr const char* kShape = "statelog on [dir <folder>], or statelog off";
+        if (t > kEpsilon) {
+            Error(line, "statelog is an option of the whole scene: write it without a time (" + std::string(kShape) + ")");
+            return;
+        }
+        if (statelog_line_ != 0) {
+            Error(line, "a second 'statelog' (the first is on line " + std::to_string(statelog_line_) + ")");
+            return;
+        }
+        if (a.empty()) {
+            Error(line, std::string(kShape) + ": nothing after 'statelog'");
+            return;
+        }
+        const std::string state = Lower(a[0]);
+        if (state != "on" && state != "off") {
+            Error(line, std::string(kShape) + ": '" + a[0] + "' is neither");
+            return;
+        }
+        std::string dir;
+        if (state == "off") {
+            if (a.size() != 1) {
+                Error(line, "statelog off takes nothing after it");
+                return;
+            }
+        } else {
+            const bool ok = ForPairs(line, "statelog", a, 1, [&](const std::string& key, const std::string& value) {
+                if (key == "dir") {
+                    if (value.empty()) {
+                        Error(line, "statelog dir needs a folder");
+                        return false;
+                    }
+                    dir = value;
+                    return true;
+                }
+                Error(line, "statelog: unknown option '" + key + "' (dir)");
+                return false;
+            });
+            if (!ok) return;
+        }
+        statelog_line_ = line;
+        result_.scene.statelog = state == "on";
+        result_.scene.statelog_dir = dir;
+    }
+
     void End(int line, double t, const Args& a) {
         if (!a.empty()) {
             Error(line, "end <time> takes nothing after the time");
@@ -684,6 +731,7 @@ class Parser {
     bool have_header_ = false;
     int header_line_ = 0;
     int end_line_ = 0;
+    int statelog_line_ = 0;
     double max_t_ = 0.0;
     int max_line_ = 0;
 };
@@ -798,6 +846,7 @@ std::string Summarize(const Scene& scene) {
     }
     if (!parts.empty()) out += " (" + parts + ")";
     out += scene.end >= 0.0 ? "; ends at " + Num(scene.end) + " s" : "; no end";
+    if (scene.statelog) out += "; state log on" + (scene.statelog_dir.empty() ? std::string() : " (dir " + scene.statelog_dir + ")");
     return out;
 }
 
