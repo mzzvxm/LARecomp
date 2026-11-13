@@ -22,6 +22,7 @@
 #include "backend.h"
 #include "ab.h"
 #include "ao.h"
+#include "car_selfrefl.h"
 #include "cycles.h"
 #include "descriptors.h"
 #include "draw_decode.h"
@@ -809,6 +810,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (shafts_) {
     shafts_->BeginFrame();
   }
+  if (car_refl_) {
+    car_refl_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -1210,6 +1214,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (shafts_ && shafts_->wants_draws()) {
       shafts_->OnAnchor(banks);  // ... and the next frame's sun shafts place the sun by it
     }
+    if (car_refl_ && car_refl_->wants_draws()) {
+      car_refl_->OnAnchor(banks);  // ... and the next frame's car paint reprojects into this frame's history by it
+    }
   }
 
   if (!list) {
@@ -1226,7 +1233,8 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
-      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws())) {
+      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
+          (car_refl_ && car_refl_->wants_draws())) {
         NoteAmbientOcclusion(banks, d);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
@@ -1618,6 +1626,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (d.key.ps_variant == ShaderStore::kShadowFilterVariant && !UploadShadowFilterConstants(shared, d)) {
     return Skip::kUpload;
   }
+  // The car paint's self-reflection variant reads 112 bytes after the shared constants.
+  if (d.key.ps_variant == ShaderStore::kCarSelfReflVariant && !UploadCarSelfReflConstants(shared, d)) {
+    return Skip::kUpload;
+  }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
     // The tone map's second draw reads 16 bytes after the shared constants: its own copy of them.
     const UploadSpan span = upload_->Allocate(
@@ -1736,6 +1748,9 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   if (shafts_ && shafts_->wants_draws()) {
     shafts_->OnMainDraw(draw.match, banks);
+  }
+  if (car_refl_ && car_refl_->wants_draws()) {
+    car_refl_->OnMainDraw(draw.match, draw.stencil_ids);
   }
 }
 
@@ -2009,6 +2024,25 @@ bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedD
   last_shadow_span_ = span;
   ++window_.shared_uploads;
   window_.upload_bytes += kShadowFilterConstantsOffset + sizeof(block);
+  d.shared_constants = span;
+  return true;
+}
+
+bool Scene::UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kCarSelfReflConstantsOffset == sizeof(SharedConstants));
+  car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();  // the game's paint, with no history to read
+  if (car_refl_) {
+    car_refl_->FillConstants(d.state, UpscalerRunning(), &block);
+  }
+  const UploadSpan span = upload_->Allocate(
+      slot_, kCarSelfReflConstantsOffset + sizeof(car_selfrefl::CarSelfReflConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kCarSelfReflConstantsOffset, &block, sizeof(block));
+  ++window_.shared_uploads;
+  window_.upload_bytes += kCarSelfReflConstantsOffset + sizeof(block);
   d.shared_constants = span;
   return true;
 }
@@ -2790,6 +2824,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // targets: the reset below forgets them too).
     shafts_->OnResolve(record, summary, list, UpscalerRunning());
   }
+  if (car_refl_ && car_refl_->wants_draws()) {
+    // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
+    // its own pass and target: the reset below forgets them too).
+    car_refl_->OnResolve(record, summary, list);
+  }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
   ResetListState();
@@ -2841,6 +2880,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (shafts_) {
     shafts_->OnComposite();
+  }
+  if (car_refl_) {
+    car_refl_->OnComposite();
   }
   if (temporal_) {
     temporal_->OnComposite();
@@ -2964,6 +3006,9 @@ void Scene::OnPresent() {
   }
   if (shafts_) {
     shafts_->OnPresent();
+  }
+  if (car_refl_) {
+    car_refl_->OnPresent();
   }
   if (temporal_) {
     temporal_->EndFrame();

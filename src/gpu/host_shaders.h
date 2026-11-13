@@ -27,6 +27,8 @@
 #include "ao_mip_ps.hlsl.dxil.h"
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
+#include "car_history_ms_ps.hlsl.dxil.h"
+#include "car_history_ps.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
 #include "dlssg_ui_hdr_ps.hlsl.dxil.h"
 #include "dlssg_ui_ps.hlsl.dxil.h"
@@ -85,6 +87,8 @@
 #include "ao_mip_ps.hlsl.spirv.h"
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
+#include "car_history_ms_ps.hlsl.spirv.h"
+#include "car_history_ps.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
 #include "dlssg_ui_hdr_ps.hlsl.spirv.h"
 #include "dlssg_ui_ps.hlsl.spirv.h"
@@ -344,6 +348,12 @@ inline HostShaderBlob SunShaftsPixelShader(uint32_t pass) {
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(shafts_blur_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(shafts_add_ps);
   }
+}
+
+// The car self-reflection history pass (car_selfrefl.h, hlsl/car_history_ps.hlsl), numbered as CarSelfRefl::Pass: 0 from plain
+// planes, 1 from multisampled planes.
+inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
+  return pass == 0 ? MCLA_GPU_HOST_SHADER_BLOB(car_history_ps) : MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).

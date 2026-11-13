@@ -14,6 +14,7 @@ add_library(larecomp_gpu OBJECT
     backend.cpp
     buffer_heap.cpp
     capture.cpp
+    car_selfrefl.cpp
     constants.cpp
     cycles.cpp
     descriptors.cpp
@@ -97,6 +98,9 @@ add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
 # The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
 #   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
 add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
+# The car self-reflection's rules (car_selfrefl_rules.h: the modes, the matrix, the constants, the depth linearisation) likewise:
+#   cmake --build <dir> --target larecomp_car_selfrefl_rules_test, then run src/gpu/larecomp_car_selfrefl_rules_test.
+add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_rules_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
@@ -369,6 +373,10 @@ larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
+# The car self-reflection history (car_selfrefl.h): the main view's colour and the car's depth into one image, read by the
+# next frame's car paint variant.
+larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
+larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

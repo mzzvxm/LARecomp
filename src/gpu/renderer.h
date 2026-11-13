@@ -53,6 +53,7 @@
 
 #include "ao.h"
 #include "capture.h"
+#include "car_selfrefl.h"
 #include "descriptors.h"
 #include "device.h"
 #include "dlss_frame_generation.h"
@@ -267,6 +268,7 @@ class Renderer final : public RenderThread::Executor {
   TemporalSystem temporal_;   // render thread; the temporal upscalers' groundwork (temporal.h)
   AmbientOcclusion ao_;       // render thread; screen-space ambient occlusion (ao.h)
   SunShafts shafts_;          // render thread; screen-space sun shafts (shafts.h)
+  CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

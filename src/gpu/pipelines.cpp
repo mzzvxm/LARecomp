@@ -23,6 +23,7 @@
 #include <rex/logging.h>
 
 #include "backend.h"
+#include "car_selfrefl.h"
 #include "constants.h"
 #include "device.h"
 #include "edram.h"
@@ -114,6 +115,10 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   }
   if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::SoftSelected()) {
     return ShaderStore::kShadowFilterVariant;
+  }
+  // The car paint's self-reflection (car_selfrefl.h, a debug-only prototype): only while its test cvar is on.
+  if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
+    return ShaderStore::kCarSelfReflVariant;
   }
   return 0;
 }
