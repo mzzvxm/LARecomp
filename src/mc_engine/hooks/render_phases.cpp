@@ -111,16 +111,22 @@ REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// Read once by the game, when it starts (the fork: "the options the game reads once, at
-// start-up": FULLSCREEN BLUR is one of them), and the owner saw it do nothing when flipped
-// during play. The tag and the pause row's "(RESTART)" stay.
-// CHECK: that a flip is not seen at a district load either (an earlier survey read the log's
-// "(applies on next load of that system)" as "applies at the next load").
-// Not a candidate for a live switch through the phase mask (ApplyRenderPhaseMask): the fork's
-// frame-structure survey puts the 0x2 phase on the 256x256 reflection view, and the blur passes
-// (motion blur, the bloom blurs) are inside the post phase (0x08000000) with the bright pass and the
-// luminance chain, so no phase bit drops a blur alone.
-// CHECK: which pass nofsblur skips (not found in the code; the survey is the fork's, not re-read).
+// Read once, at start-up. The recompiled code reads the switch in sub_82306860, the constructor of
+// the post-effect object with vtable 0x820424B0: it stores `nofsblur == 0` as a byte at object+5
+// (and `fastdraw == 0 && nomotionblur == 0` at object+4); no other reader of the node was found. The
+// constructor is reached from the game's start-up chain (direct calls: sub_821305E8 -> sub_821BD7C0
+// -> sub_82131790 -> sub_82131508 -> sub_822C2EA8 -> sub_823047D8; the same chain makes the other
+// renderer clients), so ApplyLoadTimeDevOptions keeping node+4 equal to the cvar reaches nothing
+// until the object is made again: a flip during play does nothing, as the owner saw, and a district
+// load does not make it again. (An earlier survey read the harness's "applies on the next load of
+// that system" as "applies at the next load"; the code says start.)
+// Not a candidate for the phase mask (ApplyRenderPhaseMask): the fork's frame-structure survey puts
+// the 0x2 phase on the 256x256 reflection view, and the blur passes (motion blur, the bloom blurs)
+// are inside the post phase (0x08000000) with the bright pass and the luminance chain, so no phase
+// bit drops a blur alone. A live switch would write object+5 of the live object (sub_823047D8
+// stores the new object at `[r3 + 20]` of its argument) or hook the loads of that byte.
+// CHECK: where the object is kept, which pass reads byte +5 and what it skips; none of that was
+// run, and the row stays a launch argument until it is.
 REXCVAR_DEFINE_BOOL(perf_no_fullscreen_blur, false, "MCLA/Performance",
     "Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of "
     "the game.")
