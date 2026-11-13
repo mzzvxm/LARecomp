@@ -146,9 +146,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
 
-    # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core). Inert unless a scene's
-    # capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
+    # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core), and the take folder (names, memory plan,
+    # host ring, take.json in take_folder). Inert unless a scene's capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
     src/mc_engine/cinematic/capture_core.cpp
+    src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_mode.cpp
 
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
@@ -349,6 +350,14 @@ add_executable(larecomp_capture_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/capture_core_test.cpp
     src/mc_engine/cinematic/capture_core.cpp)
 target_include_directories(larecomp_capture_test PRIVATE src/mc_engine/cinematic)
+# The take folder's names, memory plan, host ring (real threads), take.json and state log rows (src/mc_engine/cinematic/take_folder.h) have a check that
+# needs no game (give it a file name and it also writes a sample take.json for scene_run.py's reader):
+#   cmake --build <build dir> --target larecomp_take_test, then run <build dir>/larecomp_take_test [sample.json] (exit 0 = passed).
+add_executable(larecomp_take_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/take_folder_test.cpp
+    src/mc_engine/cinematic/take_folder.cpp
+    src/mc_engine/cinematic/capture_core.cpp)
+target_include_directories(larecomp_take_test PRIVATE src/mc_engine/cinematic)
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL

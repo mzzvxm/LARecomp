@@ -123,6 +123,10 @@ class TakeBook {
     uint64_t Rows() const { return rows_; }
     uint64_t Lost() const { return lost_; }
     uint64_t Anomalies() const { return anomalies_; }
+    // Of the anomalies: frames of an update the take already had (or one before its first), and updates that no frame came for between
+    // two frames (a gap's size, so three missing updates count three).
+    uint64_t Repeated() const { return repeated_; }
+    uint64_t Skipped() const { return skipped_; }
     uint64_t FirstUpdate() const { return first_; }
     uint64_t LastUpdate() const { return last_; }
     // Updates the take ran, `end_update` being the first update that did not (the gate it ended at).
@@ -134,12 +138,18 @@ class TakeBook {
     uint64_t rows_ = 0;
     uint64_t lost_ = 0;
     uint64_t anomalies_ = 0;
+    uint64_t repeated_ = 0;
+    uint64_t skipped_ = 0;
     bool have_last_ = false;
 };
 
 struct Verdict {
     bool exact = false;  // one picture for every update, none repeated, none lost
     std::string text;    // "240 frames for 240 updates (7397..7636): exact" or what is off
+    // The take's own counts (take.json writes them): updates that have no picture (lost, skipped, or cut off at the end) and
+    // pictures that are not the one of a new update. Both are 0 for an exact take.
+    uint64_t dropped = 0;
+    uint64_t repeated = 0;
 };
 // The take's verdict at its end: `end_update`, the first update that did not run in it; `handed`, the frames the hand-overs
 // stamped as the take's.
@@ -188,13 +198,21 @@ std::string FormatStat(const Stat& s);
 
 // ---------------------------------------------------------------------------------------------------------------- the sink
 
-enum class SinkKind : uint8_t { kNone, kFfmpeg, kRaw };
-// "none", "ffmpeg" or "raw"; false for anything else (and `*out` is kNone).
+enum class SinkKind : uint8_t { kNone, kFfmpeg, kRaw, kPng };
+// "none", "ffmpeg", "raw" or "png"; false for anything else (and `*out` is kNone). A scene's `capture ... sink <name>` uses the same
+// four names (scene.cpp keeps its own copy of the list, so that it needs nothing else to build).
 bool ParseSinkKind(const std::string& text, SinkKind* out);
 const char* SinkKindName(SinkKind kind);
+// The sinks that run ffmpeg (a pipe of raw frames to it): the FFV1 video and the PNG pictures.
+bool SinkUsesFfmpeg(SinkKind kind);
 // ffmpeg's command line for a take of raw frames on its standard input: `program` (quoted), `args` (its output options),
 // `out_file` (quoted). The rate is written as the shortest form with six significant digits.
 std::string FfmpegCommandLine(const std::string& program, uint32_t width, uint32_t height, bool bgra, double fps,
                               const std::string& args, const std::string& out_file);
+// The same input for a sequence of PNG pictures: one file for every frame, numbered from 0 (`out_pattern` has a %06d in it), no frame
+// repeated or dropped by ffmpeg's own rate conversion (-fps_mode passthrough), RGB (the readback's alpha is not a picture). ffmpeg's
+// PNG encoder is the writer: a frame costs about as long as it takes ffmpeg to compress it, and the ring holds the take back meanwhile.
+std::string FfmpegPngCommandLine(const std::string& program, uint32_t width, uint32_t height, bool bgra, double fps,
+                                 const std::string& out_pattern);
 
 }  // namespace mc::cinematic::capture
