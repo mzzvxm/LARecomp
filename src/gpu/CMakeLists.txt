@@ -374,6 +374,10 @@ larecomp_gpu_host_shader(ao_denoise_gi_ps ps_6_0 SOURCE ao_denoise_ps DEFINES AO
 larecomp_gpu_host_shader(ao_temporal_gi_ps ps_6_0 SOURCE ao_temporal_ps DEFINES AO_GI=1 AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_temporal_gi_ms_ps ps_6_0 SOURCE ao_temporal_ps DEFINES AO_GI=1 AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_atrous_ps ps_6_0)
+# The bounce light's apply (ao.h, G7c): the apply pass compiled with the bounce, one factor a colour channel
+# (a plain or a multisampled colour target's own pipeline, as the occlusion's apply).
+larecomp_gpu_host_shader(ao_apply_gi_ps ps_6_0 SOURCE ao_apply_ps DEFINES AO_DEPTH_MS=0 AO_GI=1)
+larecomp_gpu_host_shader(ao_apply_gi_ms_ps ps_6_0 SOURCE ao_apply_ps DEFINES AO_DEPTH_MS=1 AO_GI=1)
 # The sun shafts' passes (shafts.h): the sky's brightness from the main view's depth and colour planes
 # (plain or multisampled), the radial blur toward the sun, the light added to the scene colour.
 larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)

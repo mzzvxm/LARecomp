@@ -23,7 +23,9 @@
 // no sample is brighter than the cap the push block gives (a multiple of the frame's ambient + sun,
 // ao.cpp: a street lamp, neon, the sun's disc and a specular glint are sources of the game's own light,
 // not surfaces that bounce it, and one of them would light its whole neighbourhood white). The cap is
-// on luma and keeps the hue: the colour is scaled down, never clipped per channel.
+// on luma and keeps the hue: the colour is scaled down, never clipped per channel. Level 0's alpha is the
+// share of the texel's samples that the cap took something from (0 a surface, 1 a source of light): the
+// apply pass (ao_apply_ps.hlsl, AO_GI) gives such a pixel no bounce, as it has no albedo to estimate.
 //
 // Push block (ao_common.hlsli AoPush), the fields of these passes:
 //   pass 0   slots.x the colour plane's bindless slot, slots.y its host samples, sizes.xy this image's
@@ -54,8 +56,9 @@ static const float kViewScale = 0.3f;
 
 #if AO_COLOR_PASS == 0
 
-// The sample `s` of the pixel `p`, finite, non-negative, and not brighter than the cap.
-float3 TakeColour(int2 p, uint s) {
+// The sample `s` of the pixel `p`, finite, non-negative, and not brighter than the cap; w is 1 when the cap
+// took something from it.
+float4 TakeColour(int2 p, uint s) {
 #if AO_COLOR_MS
   float3 colour = g_textures_ms[g_push.slots.x].Load(p, s).rgb;
 #else
@@ -64,7 +67,7 @@ float3 TakeColour(int2 p, uint s) {
   colour = min(max(colour, 0.0f), kColourMax);  // max(NaN, 0) is 0
   const float luma = dot(colour, kLuma);
   const float cap = max(g_push.shape.x, 1e-3f);
-  return luma > cap ? colour * (cap / luma) : colour;
+  return luma > cap ? float4(colour * (cap / luma), 1.0f) : float4(colour, 0.0f);
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {
@@ -77,7 +80,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
 #else
   const uint samples = 1u;
 #endif
-  float3 sum = float3(0.0f, 0.0f, 0.0f);
+  float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   for (int j = 0; j < across; ++j) {
     for (int i = 0; i < across; ++i) {
       const int2 p = min(base + int2(i, j), last);
@@ -86,7 +89,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       }
     }
   }
-  return float4(sum / float(uint(across * across) * samples), 1.0f);
+  return sum / float(uint(across * across) * samples);
 }
 
 #elif AO_COLOR_PASS == 1

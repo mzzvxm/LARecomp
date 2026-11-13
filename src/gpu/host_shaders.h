@@ -17,6 +17,8 @@
 #include "backend.h"
 
 #if defined(LARECOMP_GPU_HAS_D3D12)
+#include "ao_apply_gi_ms_ps.hlsl.dxil.h"
+#include "ao_apply_gi_ps.hlsl.dxil.h"
 #include "ao_apply_ms_ps.hlsl.dxil.h"
 #include "ao_apply_ps.hlsl.dxil.h"
 #include "ao_atrous_ps.hlsl.dxil.h"
@@ -84,6 +86,8 @@
 #include "upscaler_masks_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
+#include "ao_apply_gi_ms_ps.hlsl.spirv.h"
+#include "ao_apply_gi_ps.hlsl.spirv.h"
 #include "ao_apply_ms_ps.hlsl.spirv.h"
 #include "ao_apply_ps.hlsl.spirv.h"
 #include "ao_atrous_ps.hlsl.spirv.h"
@@ -341,7 +345,9 @@ inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
 // the same from a multisampled one, 13 a coarser level of the colour chain, 14 the debug picture of it
 // (ao_color_ps.hlsl; G7a), 15 the denoise over four channels, 16 and 17 the accumulation over frames over
 // four channels (from a plain and from a multisampled depth target's stencil), 18 the a-trous filter of
-// the bounce (ao_denoise_ps.hlsl and ao_temporal_ps.hlsl compiled with AO_GI, ao_atrous_ps.hlsl; G7b).
+// the bounce (ao_denoise_ps.hlsl and ao_temporal_ps.hlsl compiled with AO_GI, ao_atrous_ps.hlsl; G7b), 19 and 20
+// the apply pass with the bounce light, for a plain and for a multisampled colour target (ao_apply_ps.hlsl
+// compiled with AO_GI; G7c).
 inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
@@ -362,6 +368,8 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 16: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_gi_ps);
     case 17: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_gi_ms_ps);
     case 18: return MCLA_GPU_HOST_SHADER_BLOB(ao_atrous_ps);
+    case 19: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_gi_ps);
+    case 20: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_gi_ms_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ao_contact_ps);
   }
 }
