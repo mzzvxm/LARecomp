@@ -116,6 +116,30 @@
 // shadowed by the mask and the contact shadows go on everything lit); (5) shimmer in motion without
 // an upscaler (no history of their own: if visible, run ao_temporal_ps over a second history).
 //
+// SCREEN-SPACE GLOBAL ILLUMINATION, FIRST STEP (hlsl/ao_color_ps.hlsl, hlsl/ao_main_ps.hlsl compiled
+// with AO_GI; mcla_gpu_ssgi_test, off by default and debug-only: nothing of it runs for a player, and
+// with it off every pass, push block and image of the occlusion is the one above, to the bit): the
+// occlusion's main pass gets a second output, what colour the blockers are. At the trigger the main
+// view's colour target (the opaque scene, before the fog and the particles) is averaged over its MSAA
+// samples into a colour chain, RGBA16F at the passes' size and two coarser levels (one pass a level, as
+// the depth chain's), each sample cleaned and capped at a multiple of the frame's ambient + sun
+// (mcla_gpu_ssgi_test_clamp; a lamp or neon is the game's own light, not a surface that bounces it).
+// The main pass is then the visibility bitmask version of the horizon search: 32 sectors of the slice's
+// arc, the bits a sample newly sets add its radiance from the chain (weighted by how much its surface
+// faces the pixel), the unset bits are the visibility. It writes one RGBA16F image, (visibility,
+// bounce r, g, b): the occlusion's denoise and history take the visibility from it (the first denoise
+// pass reads its x channel in place of the GTAO pass's image), the bounce is only shown, by the debug
+// views of mcla_gpu_ssgi_test_view (the bounce, the chain's levels, a 5x5 mean of the bounce). Nothing
+// is added to the picture yet: the history and denoise of the bounce, the albedo estimate that turns it
+// into light and the setting are the next steps (design: feature-parity/GFX-UPGRADES-DESIGN.md 8.3,
+// packages G7b and G7c). It needs the occlusion on and the main view's colour target at the depth's
+// samples and scale; when anything it needs is missing the frame is the plain occlusion (logged once).
+// CHECK: (none of this could be run) (1) the picture of a flat plane is unchanged and an inner corner's
+// bounce is the neighbour's colour (debug view 1 or 5 at a wall base, with the sun low); (2) with the
+// thickness at 0 (a solid) the visibility is the GTAO pass's to within 1/32: mcla_gpu_ao_view 2 with
+// the test on against off; (3) the main view's colour target is readable at the trigger in the
+// layout the transition gives it (the sun shafts read it there too).
+//
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
@@ -128,7 +152,8 @@
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
 // darkened too). Also mcla_gpu_ao_history (the frames averaged), _fade_end, _view (the debug
-// views) and _census (a diagnostic log).
+// views) and _census (a diagnostic log). The SSGI test: mcla_gpu_ssgi_test and its tuning and view
+// cvars mcla_gpu_ssgi_test_thickness / _clamp / _facing / _view / _view_gain (all debug-only).
 // The push block stays 128 bytes: power rides in shape.x, direct in the free lane extra.z.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
@@ -272,6 +297,12 @@ class AmbientOcclusion {
     kPassTemporal,
     kPassTemporalMs,
     kPassContact,
+    kCorePassCount,  // the passes above are the occlusion's: without one of them there is none
+    kPassMainGi = kCorePassCount,  // the visibility bitmask and the bounce (the test only)
+    kPassColor,
+    kPassColorMs,
+    kPassColorMip,
+    kPassColorView,
     kPassCount,
   };
 
@@ -288,9 +319,16 @@ class AmbientOcclusion {
     kVVehicleTable = 7,  // a row of the vehicle table (the temporal system's shader)
     kVApplyBase = 8,     // + 4 * debug + log2(samples)
     kVContact = kVApplyBase + 8,
-    kVariantCount = kVContact + 1,
+    // The SSGI test's (never listed with the host precache: made on first use).
+    kVMainGi = kVContact + 1,
+    kVColor = kVMainGi + 1,
+    kVColorMs = kVColor + 1,
+    kVColorMip = kVColorMs + 1,
+    kVGiView = kVColorMip + 1,  // + log2(samples), four
+    kVariantCount = kVGiView + 4,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
+  static uint32_t GiViewVariant(uint32_t host_samples);
   static std::string VariantName(uint32_t variant);
 
   // The light constants of a draw, as the raw big-endian dwords of the registers: PS c26.xyz (the
@@ -359,6 +397,17 @@ class AmbientOcclusion {
     float fade_end = 80.0f;
     float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
   };
+  // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
+  // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
+  // is; Run turns it off for the frame when anything it needs is missing.
+  struct GiPlan {
+    bool on = false;
+    float thickness = 0.0f;        // the back face of a sample, world units: 0 = a solid (GTAO's horizons)
+    float cap = 2.0f;              // the cap of a sample's radiance, in ambient + sun
+    float facing = 1.0f;           // the weight of the facing test (0: surfaces are taken to face the pixel)
+    float view_gain = 1.0f;
+    uint32_t view = 0;             // 0 none; 1 the bounce, 2-4 the chain's levels 0-2, 5 the bounce cleaned, 6 the visibility
+  };
   struct Plan {
     Mode mode = Mode::kHigh;       // the occlusion's own quality (slices, steps)
     bool probe = false;            // read the coarsest level back for the census
@@ -371,6 +420,7 @@ class AmbientOcclusion {
     uint32_t level[2][2] = {};     // the coarser levels' sizes
     uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
     ContactPlan contact;
+    GiPlan gi;
   };
   // Records the passes for the trigger `summary` (whose source target is the depth). True when
   // anything was recorded.
@@ -383,6 +433,23 @@ class AmbientOcclusion {
   // The ray march and its two bilateral passes into raw_ (denoised_ is the scratch), after the
   // occlusion's own passes have finished with both. Returns the slot of the result, or kNoSlot.
   uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base);
+  // --- the SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl) ---
+  // Decides what it does in this frame: the setting, the occlusion being on, the tuning cvars.
+  void PlanGi(Plan* plan);
+  // Makes the test's shaders the first time they are asked for; false (logged once) when they cannot be.
+  bool EnsureGiShaders();
+  // Everything the frame's SSGI needs that can fail, before anything is recorded: the pipelines, the
+  // main view's colour target (at the depth's samples and scale; *colour, *colour_slot), the images.
+  // False, logged once, and the frame is the plain occlusion.
+  bool PrepareGi(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
+                 const Plan& plan, EdramTargets::Target** colour, uint32_t* colour_slot);
+  // The colour chain: the colour target's mean over its samples (cleaned and capped), then two coarser
+  // levels. The colour target is left in the shader-read layout (the apply pass moves it back).
+  void RecordColourChain(plume::RenderCommandList* list, const Plan& plan, const Push& base,
+                         EdramTargets::Target& colour, uint32_t colour_slot);
+  // The SSGI images: the colour chain's three and the main pass's; given back when the test is off.
+  bool EnsureGiImages(const Plan& plan);
+  void ReleaseGiImages();
   // A resolve of the frame into the game's shadow mask page: remembers its texture key.
   void NoteMaskResolve(const ResolveRecord& record);
   // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
@@ -465,6 +532,7 @@ class AmbientOcclusion {
   // Settings, read at the frame's start.
   Mode mode_ = Mode::kOff;
   Mode contact_mode_ = Mode::kOff;    // mcla_gpu_contact_shadows, `auto` resolved for this GPU
+  bool gi_test_ = false;              // mcla_gpu_ssgi_test
   uint32_t census_every_ = 0;
   uint32_t off_frames_ = 0;
 
@@ -624,6 +692,10 @@ class AmbientOcclusion {
   PassTiming* pass_timing_ = nullptr;
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist
+  // The SSGI test's shaders exist (made the first frame the test is on: EnsureGiShaders), or could not be
+  // made (they take only the test with them).
+  bool gi_ready_ = false;
+  bool gi_shaders_failed_ = false;
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
@@ -640,6 +712,10 @@ class AmbientOcclusion {
   // Debug view 6's picture: the temporal pass's weights, in the same format; only while that view
   // is shown.
   HostImage weight_;
+  // The SSGI test's: the colour chain (RGBA16F: the AO's size, then 1/2 and 1/4 of it) and the main
+  // pass's output (RGBA16F: visibility, bounce r, g, b).
+  HostImage colour_[3];
+  HostImage gi_;
   uint32_t history_index_ = 0;
   bool history_valid_ = false;    // it holds a picture the next frame may lean on
   bool history_cut_ = false;      // ... and was dropped by a cut (for the census)
@@ -670,6 +746,9 @@ class AmbientOcclusion {
   bool history_logged_ = false;
   uint32_t images_made_for_[2] = {};
   bool images_failed_logged_ = false;
+  // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
+  bool gi_failed_logged_ = false;
+  uint64_t gi_runs_ = 0;
   // The census probe's readback.
   std::unique_ptr<plume::RenderBuffer> probe_buffer_;
   uint64_t probe_buffer_bytes_ = 0;
