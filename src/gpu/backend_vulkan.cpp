@@ -129,6 +129,45 @@ bool TimestampsSupported(plume::RenderDevice* device) {
   return dev && dev->physicalDeviceProperties.limits.timestampComputeAndGraphics == VK_TRUE;
 }
 
+std::string RequirementProblem(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceFeatures2) {
+    return {};
+  }
+  // What the physical device supports. Plume creates the device with every core feature it supports
+  // (pEnabledFeatures = what vkGetPhysicalDeviceFeatures2 returned), so a core feature the device
+  // has is one that is enabled.
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing = {};
+  indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  VkPhysicalDeviceFeatures2 features = {};
+  features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features.pNext = &indexing;
+  vkGetPhysicalDeviceFeatures2(dev->physicalDevice, &features);
+  const VkPhysicalDeviceFeatures& core = features.features;
+  const VkPhysicalDeviceLimits& limits = dev->physicalDeviceProperties.limits;
+
+  std::string missing;
+  const auto lacks = [&missing](bool present, const char* what) {
+    if (!present) {
+      missing += std::format("{}{}", missing.empty() ? "" : ", ", what);
+    }
+  };
+  // The guest shaders read their constant buffers through 64-bit addresses (shader_common.h:
+  // vk::RawBufferLoad off a push constant), which is a 64-bit integer in the SPIR-V.
+  lacks(core.shaderInt64, "64-bit integers in shaders (shaderInt64)");
+  // The guest's textures are mostly DXT (BC1 to BC3, format.cpp), made as they are.
+  lacks(core.textureCompressionBC, "BC textures (textureCompressionBC)");
+  // The bindless texture and sampler sets are written while they are bound (descriptors.h: the
+  // slots are rewritten as textures come and go), which their UPDATE_AFTER_BIND flag asks for.
+  lacks(indexing.descriptorBindingSampledImageUpdateAfterBind,
+        "updating sampled image and sampler descriptors after a set is bound "
+        "(descriptorBindingSampledImageUpdateAfterBind)");
+  // The host passes, the resolve conversions and the ambient occlusion bind four texture sets and
+  // one more (set 0 to 4); the Vulkan minimum is 4.
+  lacks(limits.maxBoundDescriptorSets >= 5, "five bound descriptor sets (maxBoundDescriptorSets)");
+  return missing.empty() ? std::string() : "it lacks " + missing;
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::VulkanDevice*>(device);
   if (!dev) {

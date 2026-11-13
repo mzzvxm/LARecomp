@@ -1842,6 +1842,16 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");
+    // The app closes next, with the log as the only word of why: say it here, in plain terms, with
+    // what each backend said when it was refused (Device::refusals).
+    const std::string& refusals = g_renderer->device().refusals();
+    rex::ShowSimpleMessageBox(
+        rex::SimpleMessageBoxType::Error,
+        "LARecomp could not start on this PC's graphics card.\n\n" +
+            (refusals.empty() ? std::string("The reason is in the log.\n\n") : refusals + "\n\n") +
+            "The game needs a graphics card and driver with Direct3D 12 (shader model 6.0 and "
+            "resource binding tier 2) or Vulkan (descriptor indexing and buffer device address). "
+            "Updating the graphics driver may help. The details are in the log.");
     g_overlay_host->Disconnect();
     return false;
   }
