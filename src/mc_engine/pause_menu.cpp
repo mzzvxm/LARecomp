@@ -50,6 +50,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/gpu_class.h"
 #include "gpu/latency.h"
 #endif
 
@@ -1675,11 +1676,32 @@ const ItemDef kPerfWorldItems[] = {
          "%gM", "", "STOCK"),
 };
 
+// CITY LOD (lod_city_scale, graphics.cpp, live): AUTO, 0.5X, 1X, 1.5X, 2X (the launcher's the same).
+// AUTO is the cvar's 0 and says what it comes to on this GPU, like the other AUTO rows: "AUTO (2X)" on a
+// mid-range or high-end card, "AUTO (1X)" on integrated graphics and where the class is not known (the
+// Xenia renderer; gpu/gpu_class.h CityLodAutoFor). A value from an older larecomp.toml that is not a
+// step (0.1, 5, 10) gets an entry of its own, shown as its number (value_label), and keeps working
+// until the player steps off it. Width: "CITY LOD" 8 with "AUTO (2X)" 9.
+constexpr double kCityLodVals[] = {0.0, 0.5, 1.0, 1.5, 2.0};
+std::string CityLodLabel(double v) {
+#if defined(LARECOMP_HAS_GPU)
+    return mcla::gpu::gpu_class::CityLodLabel(v);
+#else
+    if (!(v > 0.0)) return "AUTO (1X)";  // no GPU class without the native renderer
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%gX", v);
+    return buf;
+#endif
+}
+constexpr RowDynamics kCityLodDynamics = {.value_label = CityLodLabel};
+
 const ItemDef kPerfLodItems[] = {
     // Live: the hook reads the cvar on every pass (graphics.cpp).
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
-    Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
+    WithDynamics(Dbl("PM_RxLodCity", "lod_city_scale", "CITY LOD: ", kCityLodVals,
+                     int(sizeof(kCityLodVals) / sizeof(kCityLodVals[0])), "%gX"),
+                 &kCityLodDynamics),
 };
 
 #if defined(LARECOMP_HAS_GPU)
