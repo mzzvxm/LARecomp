@@ -216,6 +216,7 @@ VariantDef MakeGlowSoftVariant() {
   def.name = "glow_soft";
   def.version = kGlowSoftVariantVersion;
   def.pixel_shaders = {kGlowSoftTrail, kGlowSoftStar};
+  def.needs_rpf = true;  // xstar_glow lives in the RPF (effects, fxl_final/0xA5EA667B), not in the executable
   def.transform = [](const VariantShader& shader, std::string_view hlsl) {
     return TransformGlowSoftHlsl(shader, hlsl);
   };

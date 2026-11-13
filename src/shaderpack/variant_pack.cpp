@@ -167,6 +167,10 @@ class VariantStepImpl final : public VariantStep {
     return lines;
   }
 
+  bool NeedsRpfShaders() const override {
+    return std::any_of(variants_.begin(), variants_.end(), [](const VariantDef& def) { return def.needs_rpf; });
+  }
+
   VariantStepResult Build(const VariantStepInput& input) override {
     VariantStepResult result;
     try {

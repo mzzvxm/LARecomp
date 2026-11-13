@@ -16,6 +16,8 @@
 //                  the checks of that variant change, and only the variant pack is rebuilt
 //   input_xxh3     a fingerprint of anything else the text depends on (the HDR curve), 0 for none
 //   pixel_shaders  the shaders to make the variant of, by identity on the retail game and by name
+//   needs_rpf      a shader of the variant (pixel or vertex) lives in xarchive_cache.rpf and not in the executable:
+//                  a variant-only rebuild then reads the RPF's containers too (VariantStep::NeedsRpfShaders)
 //   vertex_shaders the vertex shaders the pixel shaders are drawn with, when the variant reads their
 //                  outputs (the HDR tone map: the runtime requires one of them); empty for none
 //   transform      the edits: translated HLSL in, the variant's HLSL out, or why not
@@ -73,6 +75,7 @@ struct VariantDef {
   std::string name;  // lower case words and underscores: "hdr_scene", "bloom_gauss"
   uint32_t version = 0;
   uint64_t input_xxh3 = 0;
+  bool needs_rpf = false;
   std::vector<VariantShader> pixel_shaders;
   std::vector<VariantShader> vertex_shaders;  // at most kVariantVertexShaders
   // The shader (one of pixel_shaders: its name tells two of them apart) and its translated HLSL in, the

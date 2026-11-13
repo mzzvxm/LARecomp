@@ -434,8 +434,8 @@ void CheckFixtures() {
   // The variant's definition.
   const sp::VariantDef def = sp::MakeGlowSoftVariant();
   Check(def.id == sp::kVariantGlowSoft && def.id == 6 && def.name == "glow_soft" && def.pixel_shaders.size() == 2 &&
-            def.vertex_shaders.empty() && def.transform,
-        "the definition: id 6, name, two pixel shaders, no vertex shader, a transform");
+            def.vertex_shaders.empty() && def.needs_rpf && def.transform,
+        "the definition: id 6, name, two pixel shaders, no vertex shader, the RPF, a transform");
   Check(def.version == sp::kGlowSoftVariantVersion && def.version >= 1, "the definition carries the version");
   Check(def.pixel_shaders[0].name == "xstar_glow__PSTrailSeedRT" && def.pixel_shaders[0].key == 0xF6A55A0E0E26E0BBull &&
             def.pixel_shaders[1].name == "xstar_glow__PSSeedRT1" && def.pixel_shaders[1].key == 0x92CAA8C0D85D8EC2ull,
