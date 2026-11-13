@@ -194,6 +194,10 @@
 // 4x view runs the plain occlusion). The setting's low is the main pass with 2 slices and 2 steps (the
 // occlusion's low), at half the picture's size where nothing else asks for the whole of it (the occlusion
 // low); high is 3 and 3 at the picture's size. `auto` is gpu_class.h's table (off on Low and Mid, low on High).
+// The cost of a low that leaves the occlusion at full size is a guess (about the design's high at 4K, the
+// history, denoise and a-trous passes being four channels at that size): mcla_gpu_ssgi_low 1 (half size) and
+// 2 (both) are the cheaper ones to be measured, at the price of the occlusion's own picture being half size
+// too while the bounce light is on (the same samples give both).
 // With the setting off and the test off every pass, push block and image is the plain occlusion's, to the bit.
 // The images go back 10 seconds after the last frame that used them (a pause spell does not make them again).
 // CHECK: (none of this could be run) (1) the pictures of GFX-UPGRADES-DESIGN.md 8.3 (night with lamp pools and
@@ -493,7 +497,9 @@ class AmbientOcclusion {
     uint32_t atrous = 2;           // the a-trous iterations (taps 1, 2, 4 pixels apart)
     // The third step (G7c): the bounce in the picture.
     bool test = false;             // mcla_gpu_ssgi_test forced it (the debug override: the occlusion's own quality)
-    Mode mode = Mode::kHigh;       // the setting's quality: low 2 slices and 2 steps, high 3 and 3 (and the picture's size)
+    Mode mode = Mode::kHigh;       // the setting's quality (high: 3 slices and 3 steps at the picture's size)
+    bool fewer = false;            // the main pass takes 2 slices and 2 steps (the occlusion's low)
+    bool half = false;             // the passes run at half the picture's size even where the occlusion is high
     bool apply = false;            // the apply pass with the bounce runs (else the plain apply reads the visibility)
     float strength = 0.75f;        // the bounce's gain; 0 runs the passes and adds nothing
     float limit = 0.5f;            // the most it may add to a pixel, as a share of the pixel's own colour

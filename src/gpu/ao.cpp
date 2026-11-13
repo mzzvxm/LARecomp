@@ -130,8 +130,9 @@ REXCVAR_DEFINE_STRING(
     "the walls beside it, found from the picture, so a red wall tints the pavement by it and a street "
     "lamp's pool lights the wall next to it. It takes the place of part of the sky light the ambient "
     "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
-    "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search; half resolution where "
-    "the occlusion is low too), high (the full search at full resolution) or auto (the default): off on "
+    "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search: 2 directions and 2 steps "
+    "each; half resolution where the occlusion is low too), high (3 and 3 at full resolution) or auto (the "
+    "default): off on "
     "an integrated graphics card and on a discrete one with less than 5.5 GiB of video memory, low on "
     "the rest. Costs graphics card time, high more than low. Not drawn behind the pause menu or on "
     "the map. Live.")
@@ -160,6 +161,16 @@ REXCVAR_DEFINE_DOUBLE(
     "mcla_gpu_ssgi_test_clamp.) Live.")
     .debug_only()
     .range(0.05, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_low, 0, "MCLA/GPU",
+    "Diagnostic: what the bounce light's low does (mcla_gpu_ssgi low or auto that comes to low) to be cheaper "
+    "than high: 0 fewer directions (2 slices and 2 steps each instead of 3 and 3) at the occlusion's own "
+    "size, 1 half the picture's size (the occlusion's slices and steps) even where the occlusion is high, 2 "
+    "both. The same samples give the occlusion's visibility, so 1 and 2 also make the occlusion's own "
+    "picture half resolution while the bounce light is on. Live.")
+    .debug_only()
+    .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ssgi_view, 0, "MCLA/GPU",
@@ -1409,6 +1420,9 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   plan.low = !(plan.occlusion && plan.mode == Mode::kHigh) &&
              !(contact && plan.contact.mode == Mode::kHigh) &&
              !(plan.gi.on && plan.gi.mode == Mode::kHigh);
+  if (plan.gi.on && plan.gi.half && !(contact && plan.contact.mode == Mode::kHigh)) {
+    plan.low = true;  // the bounce light's low at half the size, whatever the occlusion's own quality
+  }
   // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
   // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
   // turning it on, the first frame of a pause spell: the play view's lens is not the pause
@@ -1597,7 +1611,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // The occlusion's own quality picks the slices and steps; the images are at half the picture's size
   // (the flag the shaders read) when nothing that is on asks for more (Plan::low).
   // (the bounce light's own quality when it runs: its main pass is the occlusion's)
-  const bool ao_low = (plan.gi.on ? plan.gi.mode : plan.mode) == Mode::kLow;
+  const bool ao_low = plan.gi.on ? plan.gi.fewer : plan.mode == Mode::kLow;
   const bool low = plan.low;
   const uint32_t slices = ao_low ? 2 : 3;
   const uint32_t steps = ao_low ? 2 : 3;
@@ -2305,7 +2319,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   "albedo estimate takes the sun as unshadowed); the pause menu's and the map's world "
                   "runs the plain occlusion",
                   ModeName(plan.gi.mode), plan.gi.test ? "the debug override mcla_gpu_ssgi_test" : "mcla_gpu_ssgi",
-                  plan.gi.mode == Mode::kLow ? 2 : 3, plan.gi.mode == Mode::kLow ? 2 : 3, plan.ao[0],
+                  plan.gi.fewer ? 2 : 3, plan.gi.fewer ? 2 : 3, plan.ao[0],
                   plan.ao[1], plan.render[0], plan.render[1], plan.gi.strength, plan.gi.limit,
                   plan.gi.radius, mask_slot != kNoSlot ? "found" : "not found in this frame");
     }
@@ -2623,6 +2637,12 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   g.on = true;
   g.test = gi_test_;
   g.mode = gi_test_ ? plan->mode : gi_mode_;
+  // What the quality means: the debug override is the occlusion's own (as it was); the setting's high is 3 and
+  // 3 at the picture's size and its low is cheaper by fewer directions, by half the size, or both
+  // (mcla_gpu_ssgi_low).
+  const int low_how = std::clamp(REXCVAR_GET(mcla_gpu_ssgi_low), 0, 2);
+  g.fewer = gi_test_ ? plan->mode == Mode::kLow : (g.mode == Mode::kLow && low_how != 1);
+  g.half = !gi_test_ && g.mode == Mode::kLow && low_how >= 1;
   g.strength = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_strength), 0.0, 2.0));
   g.limit = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_clamp), 0.05, 4.0));
   g.radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_radius), 0.5, 3.0));
