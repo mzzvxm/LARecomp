@@ -154,11 +154,29 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `timescale <x>`, `timescale <a>..<b> over <s>` | the engine timer's time scale (below about 0.006 at 60 FPS the game holds its own lowest step) |
 | `set <setting> <value>` | the setting, live ones only; the old value comes back at the end |
 | `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
+| `split <x>`, `split <a>..<b> over <s> [ease e]`, `split off` | `mcla_gpu_split`: where the before/after split sits, 0 to 1 across the picture (see Before/after sweeps); `off` is no split |
 | `cam`, `cut`, `hud`, `car`, `start` | kept for the camera, HUD and car packages of the toolkit; read and linted, not applied yet |
 
 The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`, one line for every key as its time comes, a `state` line every 2 s that puts the scene's hour, weather and time scale next to what the game reports, `finished`. Natives are called one or two an update, on the game thread.
 
 The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
+
+## Before/after sweeps (the trailer toolkit)
+
+A before/after clip shows one setting off and on in the same picture. Two ways to get it:
+
+**One take, split in the engine.** `mcla_gpu_split` is a position from 0 to 1 across the picture's width (debug only, live; -1 is off and is the default). A per-pixel effect that honours it is applied left of the split and left out right of it, in the same frame, so a world that moves works too. `mcla_gpu_split_effects` (`all`, `ao` or `dither`) says which effects it cuts: ambient occlusion (the apply pass is drawn only left of the split) and the present's dither (the pass that writes the back buffer is drawn in two parts, the dither on the left one only). An effect that is off in its own setting stays off. A scene moves the split with `split <x>`, `split <a>..<b> over <s> [ease e]` and `split off`; the old value comes back when the scene ends. At the default nothing changes and nothing costs: one cvar read and a compare a frame. The edge sits on a whole column, `round(position x width)` of the render target for the occlusion and of the letterboxed picture for the dither; with an upscaler the occlusion's edge is filtered by it. There is no divider in the engine: the compositor draws it.
+
+**Two takes, one compositor.** For a setting that is not per pixel (an upscaler, the render scale) the same parked scene is run twice and `ports\scripts\scene_cut.py` wipes between the takes: straight or tilted, held or moving and eased, a divider line, labels in the AO video's style, a lossless master (`.master.mkv`) and a share copy (`.mp4`). The takes must show the same world (a parked car, a held world: `scenes\sweep-parked.scene`); a driven take does not repeat. Left of the divider is the setting on, right of it off, as in the engine's split.
+
+```powershell
+python -I scene_sweep.py --exe-dir ports\exe\b-m5 --setting mcla_gpu_upscaler --on dlss --off off --name dlss      # two takes, then the wipe
+python -I scene_sweep.py --exe-dir ports\exe\b-m5 --in-engine ao --name ao                                          # one take with the engine's split (scenes\sweep-split-ao.scene)
+python -I scene_cut.py on.mp4 off.mp4 -o wipe --pos 0.15..0.85 --ease inout --label-left "DLSS ON" --label-right "DLSS OFF"
+python -I scene_cut.py --one-take clip.mp4 --scene scenes\sweep-split-ao.scene -o ao-wipe                              # divider and labels over an engine-split clip
+```
+
+`scene_sweep.py` runs each take as one `opt_run.py` run through the main session's lockrun (`--plan` prints the commands and starts nothing). Until the take folder of capture mode is merged a take is `opt_run.py`'s clip of the game window; `scene_cut.py` already reads a take folder (its video, or its frames with `take.json`). `larecomp_split_test` (`src/gpu/split.h`: the columns and the two draws) and `larecomp_split_track_test` (the `split` statement and `EvaluateSplit`) check the pure parts without the game; `scene_cut.py selftest` and `scene_sweep.py selftest` check the tools on synthetic frames.
 
 ## Adding a debug setting
 
