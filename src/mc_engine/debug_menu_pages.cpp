@@ -240,6 +240,10 @@ const ItemDef kDebugToolsItems[] = {
     // mcla_capture_out (a launch argument or F4); the sink is mcla_capture_sink (none until set). A scene's capture key does the same.
     NativeOnly(Dbl("PM_RxDbgCapture", "mcla_capture_fps", "CAPTURE FPS: ", kCaptureFpsVals, Len(kCaptureFpsVals), "%g", "", "OFF")),
 #endif
+    // The trailer toolkit's free camera and flight recorder (cinematic/freecam.h): the pad flies the camera and the game gets no pad input
+    // but Start, so close this menu to fly; Back + A on the pad records too. The file name is mcla_freecam_out.
+    Bool("PM_RxDbgFlyCam",    "mcla_freecam",        "TRAILER FREE CAMERA: "),
+    Bool("PM_RxDbgFlyRec",    "mcla_freecam_record", "RECORD FLIGHT: "),
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),

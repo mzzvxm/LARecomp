@@ -372,7 +372,7 @@ bool CinematicCameraApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     }
     const uint32_t every = REXCVAR_GET(mcla_cam_log);
     if (every != 0 && g.frames % every == 0) {
-        LARECOMP_APP_INFO("[cam] t={:.2f} mode {} shot {}: at {:.2f} {:.2f} {:.2f}, looking along {:.3f} {:.3f} {:.3f}, up {:.3f} {:.3f} {:.3f}, fov {:.2f}", g.t,
+        LARECOMP_APP_INFO("[cam] t={:.3f} mode {} shot {}: at {:.3f} {:.3f} {:.3f}, looking along {:.4f} {:.4f} {:.4f}, up {:.4f} {:.4f} {:.4f}, fov {:.3f}", g.t,
                           mode, v.shot, v.position.x, v.position.y, v.position.z, v.basis.forward.x, v.basis.forward.y, v.basis.forward.z,
                           v.basis.up.x, v.basis.up.y, v.basis.up.z, v.fov);
     }

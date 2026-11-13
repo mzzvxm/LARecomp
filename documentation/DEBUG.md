@@ -60,7 +60,7 @@ Every row is live: it takes effect at once and is never saved. A page has at mos
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, foliage, break FPS floor. |
 | RENDERING | The Plume renderer's debug views (AO, HDR layers), performance markers, the ghost and memory logs, the aspect ratio override, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
-| TOOLS | Texture dump and reload for texture mods, buttons for F4 and the telemetry card, the leftover TestMovie button, squash and stretch, HUD ALPHA (the game's own UI faded, see below), FIXED STEP and CAPTURE FPS (capture mode, see below). |
+| TOOLS | Texture dump and reload for texture mods, buttons for F4 and the telemetry card, the leftover TestMovie button, squash and stretch, HUD ALPHA (the game's own UI faded, see below), FIXED STEP and CAPTURE FPS (capture mode, see below), TRAILER FREE CAMERA and RECORD FLIGHT (the pad flies a free camera and the recorder writes the flight down, see "The free camera and the flight recorder"). |
 | LOGGING | One switch per diagnostic that adds lines to the log and can be flipped while the game runs (UI colour, map mouse, wheel, music bank, warp, online and others). |
 | INFO | SHOW CHANGED SETTINGS, COPY LAUNCH ARGUMENTS, RESET DEBUG SETTINGS. |
 
@@ -228,6 +228,72 @@ Each channel (position, aim, roll, fov, near, far) has its own keys and runs fro
 `cmake --build <dir> --target larecomp_camera_test` builds the checks of the maths, the parser and the camera rig, and `larecomp_cut_request_test` those of the cut requests and the blur constants; neither needs the game. `larecomp_camera_test a.scene` reads the camera keys of scene files and says what the game would say (`camera: 9 position keys (5 attach, 2 orbit), 6 aim keys ...`). The test harness's `cut_frames.py` finds the cuts in a lossless burst clip of a run and says whether the frames round each one are smeared.
 
 CHECK (nothing here has run in the game yet): that the racer matrix rows are the car's right, up and BACK (the camera's attach and look would be mirrored if not); that the camera object's c12 to c15 are the rows the hook wrote, with the field of view left out (the match of a cut to its frame); that c69 to c164 are the motion blur's only previous-frame constants; and that the hook runs once an update (a second run in one update gets the same camera and no second cut).
+
+### The free camera and the flight recorder
+
+A scene's camera is easier to fly than to type. The free camera is a camera the pad flies, detached from the car, and the recorder writes the flight down so that `ports\scripts\scene_cam.py` can turn it into a `cam` track. Nothing changes until it is armed: the camera hook costs a flag test and the pad wrapper one atomic load.
+
+```powershell
+larecomp.exe --debug_menu --mcla_freecam=true       # or DEBUG menu > TOOLS > TRAILER FREE CAMERA (close the menu to fly)
+```
+
+The camera starts where the game's own camera is. The game gets no pad input while it flies except Start, so the car does not drive and the pause menu still opens; a paused game, the front end's shots and a loading screen leave the game's own camera and pad alone, and the flight goes on from where it was when the game runs again. Turning the camera off gives the game's camera back (a cut, announced to the renderer like the scene camera's).
+
+| Control | What it does |
+|---|---|
+| left stick | move: forward and back along where the camera looks, left and right level |
+| right stick | look: yaw and pitch (up looks up) |
+| right / left trigger | up / down |
+| L3 / R3 (stick clicks, held) | fast (x4) / slow (x1/4) |
+| D-pad left / right | the base speed one step (x1.25) per press |
+| D-pad up / down (held) | zoom in / out, even in focal length |
+| LB / RB (held) | tilt the horizon left / right |
+| Y | level the horizon and bring the field of view back to where it started |
+| Back + A | start or stop recording |
+| Back + X | home: fly again from the game's own camera (a cut) |
+| Back + Y | mark a cut in the recording |
+
+The sticks have a dead zone and a bent response (fine control near the middle). Every control runs through an inertia of 0.25 s that is exact in time: the same flight covers the same distance at 60 and at 240 FPS.
+
+**Recording.** `mcla_freecam_record` (row RECORD FLIGHT, or Back + A) writes one sample per game update into a raw track file while the camera flies. `mcla_freecam_out` names the file (an existing one is replaced); empty, it is `freecam\flight-<date>-<time>.cam.csv` next to the game. Rows are flushed twice a second. The file is text:
+
+```
+# larecomp freecam v1
+# started 2026-11-13 14:00:00 / game frame 48211 / scene none / seed ...
+t,scene_t,frame,x,y,z,yaw,pitch,roll,fov,flags
+0.000000,-1.000000,48211,819.6120,17.6000,-808.4000,-28.0000,0.0000,0.0000,50.0000,0
+```
+
+`t` is seconds since the recording started, summed from the engine timer's frame deltas before the time scale, which is what a scene's clock adds, so a scene whose camera track holds this flight's keys moves the camera the same way from its own 0. `scene_t` is the scene's clock when one runs (else -1): a flight flown against a scene's hour ramp can be keyed to that scene's time. Angles are in the scene file's words (yaw 0 along +Z, pitch + up, roll + lifts the right side), yaw is continuous. `flags` bit 0 starts a new shot (home, Back + Y).
+
+**From a flight to a scene.**
+
+```powershell
+python -I ports\scripts\scene_cam.py convert freecam\flight-20261113-140000.cam.csv -o flight.scene
+python -I ports\scripts\scene_cam.py compare freecam\flight-20261113-140000.cam.csv --scene flight.scene
+```
+
+`convert` cuts the flight into shots (the flagged samples and any jump), smooths each (a zero-phase Gaussian, `--smooth` seconds, the ends mirrored so a path does not shrink), and keeps the fewest keys that stay within a bound of the replay: the replay is the game's own (a centripetal Catmull-Rom through the position keys, a slerp between the aims, linear roll, field of view linear in focal length), so the bound holds against what the game will do. Each channel (position, aim, roll, field of view) is keyed on its own; the defaults are 0.25 m, 0.5 degrees of aim, 0.75 degrees of roll and 0.4 degrees of field of view (`--tol-pos` and the rest; looser gives fewer keys). The first comment lines of the output say what the bounds gave against the smoothed flight and against the raw samples. `--time scene` keys the flight at the scene's own clock, `--start` moves it, `--lines-only` writes only the `cam` and `cut` lines.
+
+The edit helpers touch only `cam` and `cut` lines (comments and every other statement stay): `shift --by S` (`--with-end` moves the `end` too), `speed --factor F` (2 is twice as fast), `trim --from A --to B [--rebase]` (keys inside the window, new ones at both ends, and the keys the ends need to keep the path), `graft base.scene track.scene` (the base scene's world and events with the track's camera) and `info`. `trim` and `compare --scene` replay the track here, so they take a track of world keys (`pos`, `yaw`, `pitch`, `roll`, `fov`) and refuse `attach`, `orbit`, `look`, `follow`, `near` and `far`.
+
+`compare --log larecomp.log` checks a replay in the game: run the scene with `--mcla_cam_log=1` and the tool reads the `[cam] t=...` pose lines and compares each with the flight interpolated at that time (`--max-pos`, `--max-aim`, `--max-roll` and `--max-fov` make it exit 1). `verify track.scene larecomp.log` asks the other question, whether the game plays a scene's camera the way the tool's replay (and so the converter's bound) says: the same log lines against the replay of the same scene, with tight bounds. `python -I ports\scripts\scene_cam.py selftest` runs the tool's own checks, which include numbers printed by the game's rig.
+
+| Setting (debug only, live) | What it does |
+|---|---|
+| `mcla_freecam` | arms the free camera |
+| `mcla_freecam_record` | records the flight (only while the camera flies) |
+| `mcla_freecam_out` | the file of the next recording |
+| `mcla_freecam_speed` | metres a second at a full stick (12) |
+| `mcla_freecam_look` | degrees a second at a full right stick (70) |
+| `mcla_freecam_inertia` | seconds the movement takes to settle (0.25; the turn and the tilt take half; 0 is none) |
+| `mcla_freecam_log` | log the pose every this many frames |
+
+The log lines start with `[fly]`: on and off, the seed, home, cut marks, `recording to <file>`, `recording ended` with the samples, seconds, metres flown and cut marks, and the converter's command line.
+
+`cmake --build <dir> --target larecomp_freecam_test` builds the checks of the flight, the pad, the chords and the file format (no game needed). `larecomp_freecam_test --synth f.cam.csv` flies a scripted pad flight and writes it, `--raw f.cam.csv` reads a file, and `--compare f.cam.csv f.scene` evaluates a scene's camera track with the game's rig at every sample's time and prints how far it is from the flight: the whole path from a flight to a replay can be tried without the game.
+
+CHECK (nothing here has run in the game yet): that the camera hook runs once per update (the flight steps on the frame counter, so a second run in one update only rewrites the camera); that the XamInputGetState wrapper sees the pad every update and that clearing the guest copy keeps the car still (the car coasts); that the unscaled frame delta at `0x827D7558` is the delta of the update the camera is built in; that the game's own camera in the slots at the hook is a good starting point in every mode; that Start (pause) and the loading screens behave as written above.
 
 ### Cars in a scene (spawn, delete, the player's garage car, poses)
 

@@ -76,6 +76,7 @@
 #include <string>
 
 #include "cinematic/camera_runtime.h"
+#include "cinematic/freecam_runtime.h"
 #include "cinematic/scene_runtime.h"
 #include "larecomp_log.h"
 #include "menu_camera.h"
@@ -800,6 +801,10 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
                             Weather_GetIndex());
         }
     }
+
+    // The free camera (trailer toolkit, cinematic/freecam_runtime.cpp): the pad flies the final camera while it is armed. It comes before the
+    // scene's camera, which a pilot who armed it does not want. One flag test when it is not armed.
+    if (mc::cinematic::FreecamApply(base, sp, mode)) return;
 
     // The scene's camera (trailer toolkit, cinematic/camera_runtime.cpp), in every camera mode: it replaces whatever the game made
     // and the menu code below must not run on top of it. One flag test and nothing else unless a scene with a camera track runs.
