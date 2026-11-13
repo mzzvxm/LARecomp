@@ -278,7 +278,9 @@ std::string DescribeUpscalerTarget(Scale output, uint32_t window_width, uint32_t
 struct RenderScaleStatus {
   Scale running = Scale::None();  // the scale the images of the screen are made at; none before the renderer is up
   // The scale the settings ask for but that could not be made (video memory is short): the renderer
-  // keeps `running` and tries again; none while nothing is waiting for that.
+  // keeps `running` and tries again; none while nothing is waiting for that. Also the screen's scale
+  // that scale_cap.h lowered because the card's budget cannot hold it (`running` is the lowered one;
+  // nothing is tried again: it is weighed again when the window changes).
   Scale blocked = Scale::None();
 };
 // Written by the temporal system (render thread).
