@@ -226,6 +226,97 @@ int main() {
         CHECK(biggest < 0.0085f);  // 1 / (2 s * 60) = 0.00833
         CHECK(Near(last, 1.0f));
     }
+    // ---- the track is a function of scene time alone: a pause (time standing still), a scrub back, a reload of the scene and
+    //      the same ask twice all give the value in force at that time: the track keeps no state, so nothing that happens
+    //      between two updates can lose a key. The keys are the nine alpha sets of the M1c check's tour (tours/cin-hud.tour).
+    {
+        HudTrack t;
+        HudKey k;
+        struct Set {
+            double at;
+            const char* words;
+        };
+        const Set sets[] = {{3.0, "0.75"}, {5.0, "0.5"}, {7.0, "0.25"}, {9.0, "off"}, {25.0, "on"},
+                            {27.0, "off"}, {40.0, "0.5"}, {45.0, "off"}, {50.0, "on"}};
+        for (const Set& s : sets) {
+            CHECK(Parse(s.words, s.at, &k));
+            t.Add(k);
+        }
+        CHECK(t.keys().size() == 9);
+        CHECK(t.End() == 50.0);
+        struct Probe {
+            double at;
+            float alpha;
+        };
+        const Probe probes[] = {{0.0, 1.0f},   {2.9, 1.0f},  {3.0, 0.75f},  {4.0, 0.75f}, {5.0, 0.5f},  {6.5, 0.5f},
+                                {7.0, 0.25f},  {8.0, 0.25f}, {9.0, 0.0f},   {20.0, 0.0f}, {25.0, 1.0f}, {26.0, 1.0f},
+                                {27.0, 0.0f},  {30.0, 0.0f}, {39.9, 0.0f},  {40.0, 0.5f}, {44.0, 0.5f}, {45.0, 0.0f},
+                                {49.0, 0.0f},  {50.0, 1.0f}, {60.0, 1.0f}};
+        const int n = int(sizeof(probes) / sizeof(probes[0]));
+        bool forward = true, backward = true, twice = true, shuffled = true, stalled = true;
+        for (int i = 0; i < n; ++i) {
+            forward = forward && t.AlphaAt(probes[i].at) == probes[i].alpha;
+            twice = twice && t.AlphaAt(probes[i].at) == t.AlphaAt(probes[i].at);
+        }
+        for (int i = n - 1; i >= 0; --i) {
+            backward = backward && t.AlphaAt(probes[i].at) == probes[i].alpha;
+        }
+        unsigned seed = 12345;
+        for (int round = 0; round < 200; ++round) {
+            seed = seed * 1103515245u + 12345u;
+            const int i = int((seed >> 16) % unsigned(n));
+            shuffled = shuffled && t.AlphaAt(probes[i].at) == probes[i].alpha;
+        }
+        // Scene time standing still for 100 updates (a pause), at a held value and in the middle of a fade.
+        for (int i = 0; i < 100; ++i) {
+            stalled = stalled && t.AlphaAt(8.0) == 0.25f;
+        }
+        CHECK(forward);
+        CHECK(backward);
+        CHECK(twice);
+        CHECK(shuffled);
+        CHECK(stalled);
+    }
+    // ---- what the applier does with it (hud_runtime.cpp: SetHudAlpha(track.AlphaAt(t)) on every update, and SetHudAlpha writes
+    //      the cvar only when the value is not the cvar's): no write while a value holds, however many updates and pauses
+    //      come, one write for each change, and a fade writes a value a step.
+    {
+        HudTrack t;
+        HudKey k;
+        CHECK(Parse("off", 2.0, &k));
+        t.Add(k);
+        CHECK(Parse("fade 4..5 to 1", 0.0, &k));
+        t.Add(k);
+        double cvar = 1.0;
+        int writes = 0;
+        const auto update = [&](double at) {
+            const double a = double(t.AlphaAt(at));
+            if (cvar != a) {
+                cvar = a;
+                ++writes;
+            }
+        };
+        for (int i = 0; i < 100; ++i) {
+            update(1.0);  // before the first key: the game's own picture
+        }
+        CHECK(writes == 0 && cvar == 1.0);
+        for (int i = 0; i < 100; ++i) {
+            update(2.0);  // the pause starts right at the first key: it is written once
+        }
+        CHECK(writes == 1 && cvar == 0.0);
+        for (int i = 0; i < 100; ++i) {
+            update(3.0 + i * 0.001);  // held at 0 while time creeps: no write
+        }
+        CHECK(writes == 1 && cvar == 0.0);
+        for (int i = 0; i <= 60; ++i) {
+            update(4.0 + i / 60.0);  // the fade back in at 60 updates a second: a write a step
+        }
+        CHECK(writes == 1 + 60 && cvar == 1.0);  // (the first fade step, at 4.0, is the held 0 itself)
+        for (int i = 0; i < 100; ++i) {
+            update(9.0);
+        }
+        CHECK(writes == 1 + 60 && cvar == 1.0);
+    }
 
     std::printf("hud_track_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

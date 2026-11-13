@@ -70,4 +70,62 @@ class UiFade {
   double end_ = 0.0;
 };
 
+// The alpha a consumer shows a frame's UI layer at (FrameLayers::UiAlphaFor): the fade's alpha, except
+// that a pause view's frame -- the pause menu, the DEBUG menu, the race pause, the full map, the
+// player's own menus and every piece of their UI -- shows it whole. Nothing about the fade changes
+// while such a frame is shown: the alpha it follows is held, and the first frame of play after it is
+// shown at the fade's alpha again (a value set during the pause included).
+inline float ShownUiAlpha(bool pause_view, float fade_alpha) {
+  return pause_view ? 1.0f : fade_alpha;
+}
+
+// The renderer's follow of the cvar at a frame boundary (Renderer::ApplyUiFade), as pure code: the
+// cvar's value last seen, the move in progress, and what the renderer must do about it -- whether the
+// layers are wanted and the alpha the layers' consumers get. It knows nothing about pauses on
+// purpose: the frame boundary comes the same in play, in a pause view and while the game loads, a
+// value written at any time is followed at the next boundary, and the pause is a property of the frame
+// the layers captured (ShownUiAlpha), not of this state.
+class UiFadeFollower {
+ public:
+  struct Step {
+    bool new_value = false;    // the cvar differs from the value seen last: a move to it began
+    float from = 1.0f;         // (new_value) where that move started from
+    float seconds = 0.0f;      // (new_value) the time the caller left for it (0: at once)
+    float alpha = 1.0f;        // the alpha now
+    bool want_layers = false;  // the layers are wanted: below 1 now or heading below 1, or armed
+  };
+
+  // At rest at 1: nothing is asked for, the layers are not on and no value is pending, so the
+  // renderer returns after a cvar read and a compare (`asked` is the clamped cvar).
+  bool AtRest(float asked, bool armed, bool layers_on) const {
+    return !layers_on && !armed && asked == 1.0f && seen_ == 1.0f;
+  }
+
+  // Follows `asked` at the time `now`. `take_seconds` is called (once) only when the value is new,
+  // and returns the time the caller left with it (SetUiAlphaFade); a value that has not changed
+  // leaves what a caller left for the next change where it is.
+  template <class TakeSeconds>
+  Step Update(float asked, bool armed, double now, TakeSeconds&& take_seconds) {
+    Step step;
+    if (asked != seen_) {
+      seen_ = asked;
+      step.new_value = true;
+      step.from = fade_.Value(now);
+      step.seconds = take_seconds();
+      fade_.Go(asked, step.seconds, now);
+    }
+    step.alpha = fade_.Value(now);
+    step.want_layers = armed || step.alpha < 1.0f || fade_.Target() < 1.0f;
+    return step;
+  }
+
+  // The cvar's value last seen, and where the move is heading.
+  float seen() const { return seen_; }
+  float target() const { return fade_.Target(); }
+
+ private:
+  UiFade fade_;
+  float seen_ = 1.0f;
+};
+
 }  // namespace mcla::gpu

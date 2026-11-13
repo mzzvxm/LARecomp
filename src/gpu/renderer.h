@@ -317,8 +317,7 @@ class Renderer final : public RenderThread::Executor {
   // The HUD fade (ApplyUiFade): the move in progress, the cvar's value last seen, whether this asked
   // for the frame layers, and whether the present composes them for it (false while they cannot be
   // made: the picture then stays as the game draws it).
-  UiFade ui_fade_;
-  float ui_fade_seen_ = 1.0f;
+  UiFadeFollower ui_fade_;
   bool ui_fade_layers_ = false;
   bool ui_fade_composing_ = false;
   // Inside ExecutePresent: OpenFrameList then must not switch the output (the back buffer is
