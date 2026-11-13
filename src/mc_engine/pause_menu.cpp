@@ -15,6 +15,7 @@
 #include "ui_forms.h"
 #include "ui_palette.h"
 #include "save_protect.h"
+#include "ultrawide.h"
 #include "online/system_link.h"
 
 #include <algorithm>
@@ -1925,6 +1926,32 @@ void InitThemePalette() {
     for (int k = 0; k < kNumThemeColors; ++k) g_theme_vals[k] = larecomp::UiPaletteHex(k);
 }
 
+#if defined(LARECOMP_HAS_GPU)
+// HUD WIDTH (hud_width, ultrawide.h HudWidthFraction): on a picture wider than 16:9, how far the HUD's
+// corner pieces (the minimap, speedometer, race position, lap and time) move out toward the screen
+// edges, in percent. The row names three steps (the launcher's the same): CENTERED (0, the default)
+// keeps the whole HUD in the middle 16:9, WIDER (50) moves the pieces halfway out, FULL (100) puts each
+// piece as far from its edge as on a 16:9 screen. Live, NATIVE only (the renderer moves the pieces).
+// Another value set by hand in larecomp.toml (60) gets an entry of its own, shown as its number
+// (value_label). Grey with "(ULTRAWIDE ONLY)" while the picture is 16:9 or narrower, where the setting
+// moves nothing. Width: "HUD WIDTH (ULTRAWIDE ONLY)" 26 (grey: no value), "HUD WIDTH" 9 with
+// "CENTERED" 8.
+constexpr double kHudWidthVals[] = {0, 50, 100};
+std::string HudWidthLabel(double v) {
+    if (v <= 0.0) return "CENTERED";
+    if (v == 50.0) return "WIDER";
+    if (v >= 100.0) return "FULL";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%.0f", v);
+    return buf;
+}
+bool HudWidthEnabled() { return mc::ultrawide::Active(); }
+const char* HudWidthSuffix() { return HudWidthEnabled() ? "" : " (ULTRAWIDE ONLY)"; }
+constexpr RowDynamics kHudWidthDynamics = {.value_label = HudWidthLabel,
+                                           .enabled = HudWidthEnabled,
+                                           .suffix = HudWidthSuffix};
+#endif
+
 const ItemDef kUiItems[] = {
     Color("PM_RxUiAccent", "ui_theme_accent", "MENU BLUE", g_theme_vals, kNumThemeColors),
     Color("PM_RxUiTitle",  "ui_theme_title",  "TITLES AND GLOBE", g_theme_vals,
@@ -1932,6 +1959,11 @@ const ItemDef kUiItems[] = {
     Color("PM_RxUiFrame",  "ui_theme_frame",  "FRAME GRAY", g_theme_vals, kNumThemeColors),
     Str ("PM_RxSpeedUnits",  "speed_units",              "SPEED UNITS: ",
          kSpeedUnitVals, kSpeedUnitNames, 3),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(WithDynamics(Dbl("PM_RxHudWidth", "hud_width", "HUD WIDTH: ", kHudWidthVals,
+                                int(sizeof(kHudWidthVals) / sizeof(kHudWidthVals[0])), "%g"),
+                            &kHudWidthDynamics)),
+#endif
     // (BUTTON LAYOUT is on the CONTROLLER page now, kControllerItems.)
 };
 
@@ -2206,7 +2238,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabCut", "CUTSCENES", "Watch the story cutscenes again.",
      "RxCutMenu",
      kCutsceneItems, int(sizeof(kCutsceneItems) / sizeof(kCutsceneItems[0]))},
-    {"PM_RxTabUi", "UI", "Colors of the menus.",
+    {"PM_RxTabUi", "UI", "Colors of the menus, speed units and HUD width.",
      "RxUiMenu",
      kUiItems, int(sizeof(kUiItems) / sizeof(kUiItems[0]))},
     // Last, so its button ends the SETTINGS tab.

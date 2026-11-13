@@ -61,10 +61,13 @@ REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
 
 // Live, and only on a picture wider than 16:9 (mc_engine/ultrawide.h, "the HUD's corner pieces"): the
 // guest hooks read it when a piece is drawn and the renderer when it squeezes the piece's draws.
+// The pause menu (INTERFACE > UI, HUD WIDTH) and the launcher name three steps: CENTERED 0, WIDER 50,
+// FULL 100.
 REXCVAR_DEFINE_INT32(hud_width, 0, "MCLA/Patches",
     "On a wide picture, how far the HUD's corner pieces (the minimap, speedometer, race position, lap "
-    "and time) move out toward the screen edges, in percent: 0 keeps the whole HUD in the middle "
-    "16:9, 100 puts each piece as far from its edge as on a 16:9 screen.")
+    "and time) move out toward the screen edges, in percent: 0 (Centered) keeps the whole HUD in the "
+    "middle 16:9, 50 (Wider) is halfway, 100 (Full) puts each piece as far from its edge as on a 16:9 "
+    "screen.")
     .range(0, 100)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
