@@ -247,6 +247,7 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgOnlineDiag",  "online_diag",           "ONLINE DIAG: "),
     Bool("PM_RxDbgLbDiag",      "leaderboards_diag",     "LEADERBOARDS DIAG: "),
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
+    Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
 };
 
 // INFO: what differs from the defaults, and the way back.
