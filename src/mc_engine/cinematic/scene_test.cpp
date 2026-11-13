@@ -139,11 +139,14 @@ void TestParse() {
             "at 3 car player profile 4\n"
             "at 4 car a delete\n"
             "at 5 car b path sunset.route speed 1\n"
+            "at 6 car b path routes/lane.route speed x1.5 mode brain\n"
+            "at 7 car b stop\n"
+            "at 8 car b dance 3\n"
             "end 9\n");
-        Check(cars.Ok() && cars.WarningCount() == 0, "car spawn, spawn profile, player profile, delete and a path (another package's) all parse");
+        Check(cars.Ok() && cars.WarningCount() == 0, "car spawn, spawn profile, player profile, delete, path (both modes), stop and a verb nobody knows all parse");
         int n = 0;
         for (const Event& e : cars.scene.events) n += e.track == Track::kCar ? 1 : 0;
-        Check(n == 5, "five car keys");
+        Check(n == 8, "eight car keys");
     }
     CheckEq(Summarize(r.scene).substr(0, 21), "17 events (hour 2, we", "Summarize starts with the counts");
     Check(Summarize(r.scene).find("ends at 60.00 s") != std::string::npos, "Summarize names the end");
@@ -238,6 +241,15 @@ void TestStatementsErrors() {
     CheckError("at 1 car p1 profile 3", "only the player's car");
     CheckError("at 1 car player profile", "car player profile <N>");
     CheckError("at 1 car player delete", "'player' is the player's own car");
+    // the path verbs (M4c)
+    CheckError("at 1 car p1 path", "path needs a route file");
+    CheckError("at 1 car p1 path ../x.route", "not a route file name");
+    CheckError("at 1 car p1 path a.route speed fast", "speed needs metres a second");
+    CheckError("at 1 car p1 path a.route mode flying", "brain (the game's own AI drives) or kinematic");
+    CheckError("at 1 car p1 path a.route colour red", "path: unknown option 'colour'");
+    CheckError("at 1 car player path a.route", "'player' is the player's own car");
+    CheckError("at 1 car p1 stop now", "takes nothing after it");
+    CheckError("at 1 car player stop", "'player' is the player's own car");
     CheckError("start", "nothing after it");
     CheckError("at 1 dance", "unknown statement 'dance'");
     CheckError("dance 1", "unknown statement 'dance'");
