@@ -579,9 +579,9 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   // not written) is not clipped: it belongs to the whole wide picture.
   // CHECK: a 2D element drawn from a vertex buffer would be stretched now; the log names the first ones.
   //
-  // The Sidekick phone sits at the screen's left edge, as far from it as on a 16:9 screen (the owner,
-  // 2026-11-12: parked while the pause menu is open, the 16:9 sliver of it showed in the middle of the wide
-  // picture, at the middle block's edge; a 16:9 screen shows it at its own edge). Its draws, in the order a
+  // The Sidekick phone is a left piece of the HUD: hud_width moves it toward the screen's left edge as it
+  // moves the minimap, whose corner it pops up over at 16:9 (the owner, 2026-11-12; the sliver of it the game
+  // leaves in the picture while paused is not drawn at all, above). Its draws, in the order a
   // frame makes them (3440x1440, 2026-11-12): two meshes with the vertex shader kPhoneMeshVs (1587 and 306
   // indices), then its screen, a quad with kPhoneScreenVs, the pause menu's card's shader too (the card is
   // an 828-index frame, kPhoneScreenVs' 96-index contents follow it, and it stays where it is): so a draw
@@ -648,9 +648,11 @@ void Scene::OnUiMessage(uint32_t bucket) {
 
 float Scene::UiShiftOf(float squeeze) {
   if (ui_phone_draw_) {
-    // The Sidekick phone (UiSqueezeOf): at the left edge, as a left piece at hud_width 100.
+    // The Sidekick phone (UiSqueezeOf): a left piece of the HUD, moved by hud_width as the minimap is (at
+    // 16:9 it pops up over the minimap's corner).
     ui_phone_draw_ = false;
-    return squeeze < 1.0f ? -(1.0f - squeeze) * 0.5f : 0.0f;
+    const float t_phone = float(mc::ultrawide::HudWidthFraction());
+    return squeeze < 1.0f ? -t_phone * (1.0f - squeeze) * 0.5f : 0.0f;
   }
   // CHECK: that every draw of a HUD piece is one UiSqueezeOf squeezes (blended, into the screen's image,
   // or a depth-only mask): one it leaves whole stays where the guest drew it and the piece tears.

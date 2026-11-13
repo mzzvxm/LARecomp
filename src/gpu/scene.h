@@ -343,8 +343,7 @@ class Scene {
   // t * (1 - k) / 2, for the squeeze k and t = hud_width / 100: the shift that puts the piece's edge
   // as far from the screen's edge as on a 16:9 screen when t is 1 (the squeeze took 1 - k of the
   // screen's width, half of it on each side).
-  // The Sidekick phone (UiSqueezeOf marks its draws) moves as a left piece at hud_width 100, whatever
-  // hud_width is: at the screen's left edge.
+  // The Sidekick phone (UiSqueezeOf marks its draws) moves as a left piece of the HUD does.
   float UiShiftOf(float squeeze);
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -523,8 +522,8 @@ class Scene {
   // The piece is one that always sits at its edge (kUiEdgeLeft / kUiEdgeRight): moved fully, whatever
   // hud_width is.
   bool ui_piece_at_edge_ = false;
-  // The draw UiSqueezeOf has just looked at is one of the Sidekick phone's (UiShiftOf moves it to the left
-  // edge), and the last UI 3D draw was one of the phone's meshes (its screen quad follows them).
+  // The draw UiSqueezeOf has just looked at is one of the Sidekick phone's (UiShiftOf moves it with
+  // hud_width), and the last UI 3D draw was one of the phone's meshes (its screen quad follows them).
   bool ui_phone_draw_ = false;
   bool ui_after_phone_mesh_ = false;
   // The pause menu's card has been drawn in this frame's UI, and the draw UiSqueezeOf has just looked at is

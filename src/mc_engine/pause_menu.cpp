@@ -1928,7 +1928,7 @@ void InitThemePalette() {
 
 #if defined(LARECOMP_HAS_GPU)
 // HUD WIDTH (hud_width, ultrawide.h HudWidthFraction): on a picture wider than 16:9, how far the HUD's
-// corner pieces (the minimap, speedometer, race position, lap and time) move out toward the screen
+// corner pieces (the minimap, speedometer, race position, lap and time, the phone) move out toward the screen
 // edges, in percent. The row names three steps (the launcher's the same): CENTERED (0, the default)
 // keeps the whole HUD in the middle 16:9, WIDER (50) moves the pieces halfway out, FULL (100) puts each
 // piece as far from its edge as on a 16:9 screen. Live, NATIVE only (the renderer moves the pieces).

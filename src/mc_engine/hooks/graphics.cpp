@@ -65,7 +65,7 @@ REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
 // FULL 100.
 REXCVAR_DEFINE_INT32(hud_width, 0, "MCLA/Patches",
     "On a wide picture, how far the HUD's corner pieces (the minimap, speedometer, race position, lap "
-    "and time) move out toward the screen edges, in percent: 0 (Centered) keeps the whole HUD in the "
+    "and time, and the phone) move out toward the screen edges, in percent: 0 (Centered) keeps the whole HUD in the "
     "middle 16:9, 50 (Wider) is halfway, 100 (Full) puts each piece as far from its edge as on a 16:9 "
     "screen.")
     .range(0, 100)
