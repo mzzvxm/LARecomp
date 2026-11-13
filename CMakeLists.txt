@@ -341,8 +341,17 @@ endif()
 #   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/scene_test.cpp
-    src/mc_engine/cinematic/scene.cpp)
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/car_verbs.cpp)
 target_include_directories(larecomp_scene_test PRIVATE src/mc_engine/cinematic)
+# The scene's cars (car_verbs.h, car_registry.h, car_spawn.h: the statements, the registry of poses and the script of native calls, pure) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_cars_test, then run <build dir>/larecomp_cars_test (exit 0 = passed).
+add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/cars_test.cpp
+    src/mc_engine/cinematic/car_verbs.cpp
+    src/mc_engine/cinematic/car_registry.cpp
+    src/mc_engine/cinematic/car_spawn.cpp)
+target_include_directories(larecomp_cars_test PRIVATE src/mc_engine/cinematic)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
