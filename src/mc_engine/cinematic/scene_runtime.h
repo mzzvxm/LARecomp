@@ -11,6 +11,7 @@
 //
 
 #include <cstdint>
+#include <string>
 
 #include "scene.h"
 
@@ -31,6 +32,10 @@ bool SceneDone();
 
 // Scene time in seconds while running (the last time it reached when finished), else 0.
 double SceneTime();
+
+// Where the armed scene file was found, as the runner opens it ("scenes/x.scene", or the path given); empty when no scene is armed and read. A
+// file a scene names (a car's route) is looked for beside it. Game thread only (the appliers' begin / apply / end).
+std::string SceneFilePath();
 
 // What the other packages' tracks implement. The runner calls begin when a scene starts (and again when a reload restarts it),
 // apply with the scene time on every game update while it runs, and end when it finishes, is replaced or is turned off:

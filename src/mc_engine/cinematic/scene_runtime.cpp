@@ -833,6 +833,10 @@ double SceneTime() {
     return g.armed && g.have_scene ? g.clock.time() : 0.0;
 }
 
+std::string SceneFilePath() {
+    return g.armed && g.have_scene ? g.path : std::string();
+}
+
 bool RegisterTrackApplier(const TrackApplier* applier) {
     if (!applier || g_applier_count >= kMaxAppliers) return false;
     g_appliers[g_applier_count++] = applier;
@@ -864,6 +868,7 @@ SceneState CurrentSceneState() { return SceneState::kOff; }
 const char* SceneStateName(SceneState) { return "off"; }
 bool SceneDone() { return false; }
 double SceneTime() { return 0.0; }
+std::string SceneFilePath() { return {}; }
 bool RegisterTrackApplier(const TrackApplier*) { return false; }
 }  // namespace mc::cinematic
 

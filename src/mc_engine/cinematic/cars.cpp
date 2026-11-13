@@ -16,6 +16,14 @@
 // LookupCar, LocalOptions_*, Racer_GetLoadState / IsCarStreamed / GetPosition and the car table of the game's memory (the name
 // string of a car). No guest memory is poked. The scene's end deletes what the scene spawned and puts the player's car back.
 //
+// PATHS (M4c). `car <id> path <route> [speed <x>] [mode brain|kinematic]` and `car <id> stop`. The route file is read when the scene starts (beside the
+// scene file, or in a `routes` folder beside it). Kinematic: every update, for each car that has a path and is ready, one Racer_Teleport(racer, place,
+// heading, speed) at the place the route has at the PATH CLOCK (the scene's time with the scene's time scale applied, integrated here: a car follows a
+// slowed-down world); the first one puts the car on the route's first point. Brain: BrainFactory_CreateBrainCruising, SetSpeed, SetDestSpeed,
+// SetLooping(false), AppendDest x N, BrainCruising_DriveToNearestRail (car_spawn.h), one native an update through the same Director as the spawn
+// steps; the brain's state byte and destination index (brain+1708, brain+1656) are READ from the guest memory every update for the log. Nothing in the
+// guest memory is written by the host.
+//
 // THE POSE (M4d). racer+48 -> entity, entity+28 -> matrix, 16 floats from matrix+16: right, up, BACK, position. That is what E4's
 // matrix route read for the player and for the spawned car (racer+0x470 holds the 0xCDCDCDCD fill outside a race). Every update the
 // matrix of each car that exists is read into the registry; GetCarPose / CarMatrixById read it again at the moment they are asked.
@@ -40,6 +48,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -88,6 +101,8 @@ constexpr uint32_t kCarTable = 0x828CD0A8;          // LookupCar's table: +0 rec
 constexpr uint32_t kCarRecordBytes = 104;
 constexpr uint32_t kRacerEntityAt = 48;
 constexpr uint32_t kEntityMatrixAt = 28;
+constexpr uint32_t kBrainDestAt = 1656;   // BrainCruising: the index of the destination it heads for (-1: none); sub_82746340
+constexpr uint32_t kBrainStateAt = 1708;  // ... and its state (0 idle with the brake held, 4 no lane, 6 goal reached)
 
 constexpr int kSettleTicks = 10;           // updates the world must have been ready before a native is called
 constexpr int kWorldCheckEvery = 15;       // updates between looking for lost cars in the opponent manager
@@ -114,6 +129,15 @@ constexpr NativeDef kNatives[] = {
     {Native::kGetPosition, 0x822AEF88},           // Racer_GetPosition
     {Native::kDeleteOpponent, 0x822B7F90},        // OpponentManager_DeleteOpponent
     {Native::kChangeCarByConfig, 0x822AD9D8},     // Racer_ChangeCarByConfig
+    {Native::kCreateBrain, 0x82742A78},           // BrainFactory_CreateBrainCruising
+    {Native::kBrainSetSpeed, 0x82745858},         // BrainCruising_SetSpeed
+    {Native::kBrainSetDestSpeed, 0x82745870},     // BrainCruising_SetDestSpeed
+    {Native::kBrainSetLooping, 0x82745888},       // BrainCruising_SetLooping
+    {Native::kBrainAppendDest, 0x827460A8},       // BrainCruising_AppendDest
+    {Native::kBrainDrive, 0x827469D8},            // BrainCruising_DriveToNearestRail
+    {Native::kBrainReached, 0x82745830},          // BrainCruising_HasReachedGoal
+    {Native::kBrainStop, 0x827457F0},             // BrainCruising_RemoveFromTraffic
+    {Native::kDeleteBrain, 0x82742AD8},           // BrainFactory_DeleteBrain
 };
 
 uint32_t WrapperFor(Native n) {
@@ -227,6 +251,14 @@ bool InManager(const uint8_t* base, uint32_t mgr, uint32_t racer) {
     return false;
 }
 
+// The brain's state byte and the index of its destination, or false when the brain's memory is not readable.
+bool ReadBrain(const uint8_t* base, uint32_t brain, int* state, int* dest) {
+    if (!brain || !Mapped(brain + kBrainDestAt, kBrainStateAt + 4 - kBrainDestAt)) return false;
+    *state = static_cast<int>(R32(base, brain + kBrainStateAt));
+    *dest = static_cast<int>(R32(base, brain + kBrainDestAt));
+    return true;
+}
+
 // The name string of record `index` of the game's car table (a game-owned string: it stays), or 0.
 uint32_t CarTableName(const uint8_t* base, int32_t index) {
     if (index < 0 || !Mapped(kCarTable, 8)) return 0;
@@ -248,6 +280,11 @@ struct CarKey {
     CarCommand cmd;
 };
 
+struct RouteEntry {
+    std::shared_ptr<Route> route;
+    std::string error;  // why there is none
+};
+
 struct State {
     std::recursive_mutex mutex;  // the camera hook reads poses; both run on the game thread (a native could even call the hook inside TickCars)
     Director dir;
@@ -257,6 +294,10 @@ struct State {
     int ready_ticks = 0;
     int64_t next_pose_log_ms = 0;
     bool was_ready = false;
+    std::map<std::string, RouteEntry> routes;  // the route files of the scene's path keys, by the name as written
+    double path_clock = 0.0;                   // the scene's time with its time scale applied, in seconds
+    double last_scene_t = 0.0;
+    bool have_scene_t = false;
 };
 State g;
 std::atomic<bool> g_active{false};  // anything to do: the one flag TickCars tests
@@ -351,6 +392,30 @@ bool TakesRacer(Native n) {
         case Native::kGetPosition:
         case Native::kDeleteOpponent:
         case Native::kChangeCarByConfig:
+        case Native::kCreateBrain:
+        case Native::kBrainSetSpeed:
+        case Native::kBrainSetDestSpeed:
+        case Native::kBrainSetLooping:
+        case Native::kBrainAppendDest:
+        case Native::kBrainDrive:
+        case Native::kBrainReached:
+        case Native::kBrainStop:
+        case Native::kDeleteBrain:
+            return true;  // (the brain natives take the brain, and the car it drives is the racer the books are checked for)
+        default:
+            return false;
+    }
+}
+
+bool TakesBrain(Native n) {
+    switch (n) {
+        case Native::kBrainSetSpeed:
+        case Native::kBrainSetDestSpeed:
+        case Native::kBrainSetLooping:
+        case Native::kBrainAppendDest:
+        case Native::kBrainDrive:
+        case Native::kBrainReached:
+        case Native::kBrainStop:
             return true;
         default:
             return false;
@@ -367,6 +432,15 @@ bool NeedsInWorld(Native n) {
         case Native::kTeleport:
         case Native::kGetPosition:
         case Native::kDeleteOpponent:
+        case Native::kCreateBrain:
+        case Native::kBrainSetSpeed:
+        case Native::kBrainSetDestSpeed:
+        case Native::kBrainSetLooping:
+        case Native::kBrainAppendDest:
+        case Native::kBrainDrive:
+        case Native::kBrainReached:
+        case Native::kBrainStop:
+        case Native::kDeleteBrain:
             return true;
         default:
             return false;
@@ -383,9 +457,21 @@ std::string Describe(const Call& c) {
     if (c.racer) s += " racer " + Hex(c.racer);
     if (!c.text.empty()) s += " \"" + c.text + "\"";
     if (c.ptr) s += " ptr " + Hex(c.ptr);
+    if (c.brain) s += " brain " + Hex(c.brain);
+    if (c.native == Native::kBrainSetSpeed || c.native == Native::kBrainSetDestSpeed) {
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), " %.2f m/s", c.speed);
+        s += buf;
+    }
+    if (c.native == Native::kBrainAppendDest) s += " #" + std::to_string(c.index) + " at " + Triple(c.position[0], c.position[1], c.position[2]);
     if (c.native == Native::kGetProfile || c.native == Native::kHostCarName) s += " index " + std::to_string(c.index);
     if (c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig || c.native == Native::kTeleport) {
         s += " at " + Triple(c.position[0], c.position[1], c.position[2]) + " heading " + std::to_string(static_cast<int>(std::lround(c.heading_native))) + " (native)";
+        if (c.native == Native::kTeleport && c.speed != 0.0) {
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), " speed %.2f m/s", c.speed);
+            s += buf;
+        }
     }
     return s;
 }
@@ -438,6 +524,11 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
         g.dir.Report(out);
         return;
     }
+    if (TakesBrain(c.native) && c.brain == 0) {
+        LARECOMP_APP_ERROR("[cars] {} {}: refused, the brain is 0", n.car, NativeName(c.native));
+        g.dir.Report(out);
+        return;
+    }
     if (IsOpponentManagerNative(c.native) && !mgr) {
         LARECOMP_APP_ERROR("[cars] {} {}: refused, the opponent manager does not exist", n.car, NativeName(c.native));
         g.dir.Report(out);
@@ -454,6 +545,7 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
     std::vector<uint32_t> args;
     const uint32_t zero_bits = std::bit_cast<uint32_t>(0.0f);
     const uint32_t heading_bits = std::bit_cast<uint32_t>(static_cast<float>(c.heading_native));
+    const uint32_t speed_bits = std::bit_cast<uint32_t>(static_cast<float>(c.speed));
     switch (c.native) {
         case Native::kLookupCar:
             args = {GuestPutString(c.text.c_str())};
@@ -470,7 +562,7 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
         case Native::kTeleport:
             args = {c.racer,
                     GuestPutVec(static_cast<float>(c.position[0]), static_cast<float>(c.position[1]), static_cast<float>(c.position[2]), 0.0f),
-                    heading_bits, zero_bits};
+                    heading_bits, speed_bits};
             break;
         case Native::kGetPosition:
             args = {c.racer, GuestPutVec(0.0f, 0.0f, 0.0f, 0.0f)};
@@ -478,12 +570,29 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
         case Native::kChangeCarByConfig:
             args = {c.racer, c.ptr};
             break;
+        case Native::kBrainSetSpeed:
+        case Native::kBrainSetDestSpeed:
+            args = {c.brain, speed_bits};
+            break;
+        case Native::kBrainSetLooping:
+            args = {c.brain, c.index != 0 ? 1u : 0u};
+            break;
+        case Native::kBrainAppendDest:
+            args = {c.brain, GuestPutVec(static_cast<float>(c.position[0]), static_cast<float>(c.position[1]), static_cast<float>(c.position[2]), 0.0f)};
+            break;
+        case Native::kBrainDrive:
+        case Native::kBrainReached:
+        case Native::kBrainStop:
+            args = {c.brain};
+            break;
         case Native::kAddOpponent:
         case Native::kGetLoadState:
         case Native::kIsCarStreamed:
         case Native::kActivate:
         case Native::kLockStreaming:
         case Native::kDeleteOpponent:
+        case Native::kCreateBrain:
+        case Native::kDeleteBrain:
             args = {c.racer};
             break;
         default:  // no arguments: the garage counts, CreateOpponent
@@ -492,7 +601,7 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
     // a pointer argument the shim could not make (no block): not called
     for (size_t i = 0; i < args.size(); ++i) {
         const bool pointer = (c.native == Native::kLookupCar && i == 0) || ((c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig) && i == 2) ||
-                             (c.native == Native::kTeleport && i == 1) || (c.native == Native::kGetPosition && i == 1);
+                             (c.native == Native::kTeleport && i == 1) || (c.native == Native::kGetPosition && i == 1) || (c.native == Native::kBrainAppendDest && i == 1);
         if (pointer && args[i] == 0) {
             LARECOMP_APP_ERROR("[cars] {} {}: no guest memory for the argument (no guest thread, or the call block could not be made)", n.car, NativeName(c.native));
             g.dir.Report(out);
@@ -524,12 +633,119 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
     g.dir.Report(out);
 }
 
+// ---------------------------------------------------------------- the route files
+
+std::filesystem::path PathFromUtf8(const std::string& s) {
+    return std::filesystem::path(std::u8string(s.begin(), s.end()));
+}
+
+// The route a `path` key names, looked for beside the scene file and then in a `routes` folder beside it; a name with no extension also tries
+// `.route`. The name was checked by the parser (a relative path, no `..`).
+bool FindRouteFile(const std::string& name, std::filesystem::path* found, std::string* tried) {
+    const std::string scene = SceneFilePath();
+    std::filesystem::path dir = scene.empty() ? std::filesystem::path("scenes") : PathFromUtf8(scene).parent_path();
+    std::vector<std::filesystem::path> candidates;
+    for (const std::filesystem::path& base : {dir, dir / "routes"}) {
+        candidates.push_back(base / PathFromUtf8(name));
+        if (!PathFromUtf8(name).has_extension()) candidates.push_back(base / PathFromUtf8(name + ".route"));
+    }
+    std::error_code ec;
+    for (const std::filesystem::path& c : candidates) {
+        if (std::filesystem::is_regular_file(c, ec)) {
+            *found = c;
+            return true;
+        }
+        const std::u8string u = c.u8string();
+        *tried += (tried->empty() ? "" : ", ") + std::string(u.begin(), u.end());
+    }
+    return false;
+}
+
+void LoadRoute(const std::string& name, int line) {
+    if (g.routes.count(name)) return;
+    RouteEntry entry;
+    std::filesystem::path file;
+    std::string tried;
+    if (!FindRouteFile(name, &file, &tried)) {
+        entry.error = "no route file '" + name + "' (looked for " + tried + ")";
+    } else {
+        std::error_code ec;
+        const uintmax_t size = std::filesystem::file_size(file, ec);
+        if (!ec && size > 4u * 1024 * 1024) {
+            entry.error = "the route file is " + std::to_string(size / 1024) + " KB: too big for a route";
+        } else {
+            std::ifstream in(file, std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            auto route = std::make_shared<Route>();
+            std::string why;
+            PathSampler probe;
+            if (!ParseRoute(text, route.get(), &why) || !probe.Build(*route, SpeedSpec{}, &why)) {
+                entry.error = why;
+            } else {
+                entry.route = route;
+                const std::u8string u = file.u8string();
+                LARECOMP_APP_INFO("[cars] route {} = {}: {} points, {:.1f} m{}", name, std::string(u.begin(), u.end()), probe.PointCount(), probe.Length(),
+                                  route->has_y ? ", with heights" : "");
+            }
+        }
+    }
+    if (!entry.route) LARECOMP_APP_ERROR("[cars] line {}: route '{}': {}", line, name, entry.error);
+    g.routes[name] = std::move(entry);
+}
+
+// ---------------------------------------------------------------- the paths
+
+// Every update, for the cars that follow a route: the kinematic ones are put on it (one Racer_Teleport each), the brains are read. Not subject to the
+// spawn steps' one native an update: these are the same cheap call E4 measured at 0.02 to 0.19 ms, once for each such car.
+void TickPaths(const uint8_t* base, uint32_t mgr) {
+    std::vector<Director::TeleportDue> due;
+    g.dir.PollTeleports(g.path_clock, &due);
+    const uint32_t wrapper = WrapperFor(Native::kTeleport);
+    for (const Director::TeleportDue& d : due) {
+        const PathDrive::Teleport& t = d.teleport;
+        if (!InManager(base, mgr, d.racer)) {
+            LARECOMP_APP_WARN("[cars] {}: racer {} is not in the opponent manager's list any more (the world was rebuilt?): the car is dropped", d.car, Hex(d.racer));
+            g.dir.MarkLost(d.racer);
+            continue;
+        }
+        const uint32_t vec = GuestPutVec(static_cast<float>(t.position[0]), static_cast<float>(t.position[1]), static_cast<float>(t.position[2]), 0.0f);
+        if (!vec) {
+            LARECOMP_APP_ERROR("[cars] {} path put: no guest memory for Racer_Teleport's argument (no guest thread, or the call block could not be made)", d.car);
+            g.dir.ReportTeleport(d.car, false);
+            continue;
+        }
+        const bool noisy = t.first || t.last;
+        if (noisy) {
+            LARECOMP_APP_INFO("[cars] {} path put ({}): Racer_Teleport racer {} at {} heading {} (native) speed {:.2f} m/s, {:.1f} m along the route", d.car,
+                              t.first ? "first" : "last", Hex(d.racer), Triple(t.position[0], t.position[1], t.position[2]),
+                              static_cast<int>(std::lround(t.heading_native)), t.speed, t.along);
+        }
+        const NativeResult r = CallNative(wrapper, {d.racer, vec, std::bit_cast<uint32_t>(static_cast<float>(t.heading_native)),
+                                                    std::bit_cast<uint32_t>(static_cast<float>(t.speed))},
+                                          noisy);
+        if (!r.called) {
+            LARECOMP_APP_ERROR("[cars] {} path put: Racer_Teleport (wrapper 0x{:08X}) could not be called (no guest thread, no such function, or no block for the context)", d.car,
+                               wrapper);
+        }
+        g.dir.ReportTeleport(d.car, r.called);
+    }
+    for (const Director::BrainReader& b : g.dir.BrainReaders()) {
+        int state = 0;
+        int dest = 0;
+        if (ReadBrain(base, b.brain, &state, &dest)) g.dir.NoteBrain(b.id, g.path_clock, state, dest);
+    }
+}
+
 // ---------------------------------------------------------------- the scene runner's applier
 
 void ApplierBegin(const Scene& scene) {
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
     g.keys.clear();
     g.next_key = 0;
+    g.routes.clear();
+    g.path_clock = 0.0;
+    g.last_scene_t = 0.0;
+    g.have_scene_t = false;
     for (const Event& e : scene.events) {
         if (e.track != Track::kCar) continue;
         CarCommand cmd;
@@ -539,7 +755,7 @@ void ApplierBegin(const Scene& scene) {
                 g.keys.push_back({e.t, e.line, cmd});
                 break;
             case CarParse::kOtherVerb:
-                LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, delete and profile (a path is for a later package)", e.line,
+                LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, delete, profile, path and stop", e.line,
                                   e.words.empty() ? std::string() : e.words[0], e.words.size() > 1 ? e.words[1] : std::string());
                 break;
             case CarParse::kError:
@@ -548,16 +764,35 @@ void ApplierBegin(const Scene& scene) {
         }
     }
     if (g.keys.empty()) return;
+    for (const CarKey& k : g.keys) {
+        if (k.cmd.verb == CarVerb::kPath) LoadRoute(k.cmd.route, k.line);
+    }
     g.dir.BeginScene();
     g_active.store(true, std::memory_order_relaxed);
     LARECOMP_APP_INFO("[cars] the scene '{}' has {} car key(s); one native an update, from {} updates after a car is on the road", scene.name, g.keys.size(), kSettleTicks);
 }
 
-void ApplierApply(const Scene&, double t) {
+void ApplierApply(const Scene& scene, double t) {
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    // The path clock: the scene's time, with the time scale the scene asked for at the last update applied to the step (the engine timer takes the
+    // scale one update late, so a car follows the slowed-down world, not the scene's own wall time).
+    if (!g.have_scene_t) {
+        g.path_clock = t;
+    } else if (t > g.last_scene_t) {
+        const WorldState w = EvaluateWorld(scene, g.last_scene_t);
+        const double scale = w.timescale_set ? std::clamp(w.timescale, 0.0, 10.0) : 1.0;
+        g.path_clock += (t - g.last_scene_t) * scale;
+    }
+    g.last_scene_t = t;
+    g.have_scene_t = true;
     while (g.next_key < g.keys.size() && g.keys[g.next_key].t <= t + 1e-9) {
         const CarKey& k = g.keys[g.next_key++];
-        const Director::Applied a = g.dir.Apply(k.cmd);
+        const Route* route = nullptr;
+        if (k.cmd.verb == CarVerb::kPath) {
+            const auto it = g.routes.find(k.cmd.route);
+            if (it != g.routes.end()) route = it->second.route.get();
+        }
+        const Director::Applied a = g.dir.Apply(k.cmd, g.path_clock, route);
         if (a.ok) LARECOMP_APP_INFO("[cars] t={:.2f} (line {}) {}", t, k.line, a.message);
         else LARECOMP_APP_WARN("[cars] t={:.2f} (line {}) {}", t, k.line, a.message);
     }
@@ -618,6 +853,7 @@ void TickCars() {
     g.was_ready = calls_ok;
     const Director::Next next = g.dir.Poll(now, player, calls_ok);
     if (next.call.native != Native::kNone) Execute(base, next, mgr);
+    if (calls_ok) TickPaths(base, mgr);
 
     FlushEvents();
     LogPoses(now);

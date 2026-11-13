@@ -34,8 +34,10 @@ struct NativeResult {
     float vec[4][4] = {};       // ... as it left them: x, y, z, w
 };
 
-// Up to 8 arguments, each one 32-bit slot. Natives that return nothing leave ret_written false.
-NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args);
+// Up to 8 arguments, each one 32-bit slot. Natives that return nothing leave ret_written false. The log is flushed before the call (a line written
+// before it is on disk if the call takes the game down); a caller that makes the same cheap call every update (a kinematic path's teleport)
+// passes false once its first call has shown the call is safe.
+NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args, bool flush_log = true);
 
 // Guest memory for what a native takes by pointer: a vector (x, y, z, w) or a C string. The block is a ring: a pointer stays good
 // for the next 15 vectors and for about 500 bytes of strings, which is for the call being built, not for keeping. 0 when there is
