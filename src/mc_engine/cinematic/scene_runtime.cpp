@@ -406,8 +406,10 @@ void ApplyWorld(const WorldState& w, uint8_t* base, int budget) {
 }
 
 void ApplyCvar(const Event& e) {
-    if (e.name.rfind("mcla_scene", 0) == 0) {
-        LARECOMP_APP_WARN("[scene] line {}: a scene does not set {}", e.line, e.name);
+    // The parser already refuses these (the scene does not load); this stays because nothing else stands between a scene and the
+    // program that ffmpeg's settings would start.
+    if (const std::string why = CvarRefusal(e.name); !why.empty()) {
+        LARECOMP_APP_ERROR("[scene] line {}: {}", e.line, why);
         return;
     }
     const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(e.name);

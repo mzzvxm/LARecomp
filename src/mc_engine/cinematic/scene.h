@@ -24,7 +24,8 @@
 //   at T traffic|peds|parked|police on|off                the ambient switches (police: every cop active or not)
 //   at T timescale <x> [over <s>] [ease <e>]              the game's time scale; a ramp starts from the value before it
 //   at T timescale <a>..<b> over <s> [ease <e>]
-//   at T set <cvar> <value...>                            a setting (the old value comes back when the scene ends)
+//   at T set <cvar> <value...>                            a setting (the old value comes back when the scene ends); not one that names a
+//                                                         program, a path or arguments, or writes a file (CvarRefusal below)
 //   at T label "<text>" [side <s>] [fade <s>] [for <s>]   an on-screen label: DATA for the compositor, never drawn in game
 //   at T mark <name>                                      a named instant, logged
 //   at T capture fps <n> [step 1/<n>]                     a take: from this key the game steps by exactly 1/n a second and every
@@ -151,6 +152,21 @@ std::string Summarize(const Scene& scene);
 
 // Weather names, in the game's index order (time_of_day.cpp): nice cloudy stormy foggy.
 int WeatherIndexFromName(std::string_view name);  // -1 when it is not one of the four
+
+// What a scene may `set`. A scene file is data that gets sent around, so `set` must never be a way to start a program or to write
+// a file somewhere. This returns the sentence to show when a scene may not set the setting `name` (the parser gives it as the line's
+// error, the runner as its warning), and an empty string when it may; the runner still asks the cvar system whether the setting exists,
+// is live and takes the value. Not settable by a scene (names compared without regard to case):
+//   mcla_scene*          a scene does not arm another one
+//   mcla_capture_*       every capture setting: the take's program (ffmpeg), its arguments, its sink and its folder. A take is started
+//                        with the scene's own `capture` key; where it goes is chosen on the command line
+//   a setting that names a program, a path, a server or arguments (a name ending in _path, _dir, _folder, _file, _root, _exe, _args,
+//                        _command, _csv ..., and a few others by name) or that makes the game write a file of its own (a name with
+//                        "dump" in it, or ending in _probe, _diag, _trace, _census, _telemetry ..., and a few others by name)
+// A new setting of that kind is refused by naming it so; one that does not follow the pattern goes into kRefusedCvars (scene.cpp).
+// The same rule is in ports\scripts\scene_check.py (the lint says it first); both are checked against the same names (scene_test.cpp,
+// scene_check.py selftest).
+std::string CvarRefusal(std::string_view name);
 
 // ---------------------------------------------------------------------------------------------------------------- the timeline
 

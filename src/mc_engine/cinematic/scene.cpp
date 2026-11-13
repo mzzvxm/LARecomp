@@ -528,6 +528,10 @@ class Parser {
             Error(line, "'" + a[0] + "' is not a setting name (letters, digits and _)");
             return;
         }
+        if (const std::string why = CvarRefusal(a[0]); !why.empty()) {
+            Error(line, why);
+            return;
+        }
         Event e;
         e.t = t;
         e.line = line;
@@ -864,6 +868,59 @@ int WeatherIndexFromName(std::string_view name) {
         if (l == kWeatherNames[i]) return i;
     }
     return -1;
+}
+
+namespace {
+
+// Settings a scene may not set, by exact name (lower case), besides the patterns in CvarRefusal. Each one names a program, a path, a
+// server or arguments, or makes the game write a file of its own (the file is in the game's folder, not the take's). Found by going through
+// every REXCVAR_DEFINE_* of the game and the SDK on 2026-11-13; add a setting here when it does not end in or hold one of the patterns.
+constexpr std::string_view kRefusedCvars[] = {
+    "cl",                                // extra command line for the guest
+    "user_name",                         // names the save's folder
+    "import_vinyl",                      // a .vgp file name, read from the game's folder
+    "export_vinyl",                      // writes a .vgp file
+    "capture_vinyl_shapes",              // writes the vinyl shape map
+    "allow_game_relative_writes",        // lets the game write below game://
+    "lzx_stats",                         // appends to lzx_stats.txt
+    "menu_cam_record",                   // writes menu_cameras.txt
+    "wheel_learn",                       // opens a console and writes wheel_profiles.ini
+    "mcla_gpu_trace_frame",              // writes mcla_gpu_trace_<n>.txt
+    "mcla_gpu_trace_count",
+    "mcla_native_gfx_capture",           // writes mcla_native_gfx_frame.txt and .tga
+    "mcla_native_gfx_firstdraw",         // writes mcla_native_gfx_firstdraw.txt and .tga
+    "mcla_native_gfx_ab_cvar",           // flips another setting by name, which would go round this list
+    "rmr_server",                        // a server the game talks to
+    "online_master_server",
+    "server_browser_servers",
+    "server_browser_pending",
+};
+
+constexpr std::string_view kRefusedSuffixes[] = {
+    "_path", "_paths", "_dir", "_dirs", "_folder", "_file", "_files", "_root", "_exe", "_args", "_command", "_cmd", "_csv",
+    "_probe", "_diag", "_trace", "_census", "_telemetry",
+};
+
+bool StartsWith(std::string_view s, std::string_view prefix) {
+    return s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
+}
+
+bool EndsWith(std::string_view s, std::string_view suffix) {
+    return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
+}
+
+}  // namespace
+
+std::string CvarRefusal(std::string_view name) {
+    const std::string n = Lower(name);
+    const std::string given(name);
+    if (StartsWith(n, "mcla_scene")) return "a scene does not set " + given;
+    bool refused = StartsWith(n, "mcla_capture_") || n.find("dump") != std::string::npos;
+    for (const std::string_view suffix : kRefusedSuffixes) refused = refused || EndsWith(n, suffix);
+    for (const std::string_view exact : kRefusedCvars) refused = refused || n == exact;
+    if (!refused) return std::string();
+    return "a scene does not set " + given +
+           ": it names a program, a path, a server or arguments, or makes the game write a file of its own (put it on the command line)";
 }
 
 double Scene::LastKeyEnd() const {

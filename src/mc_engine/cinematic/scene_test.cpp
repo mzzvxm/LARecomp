@@ -691,6 +691,67 @@ void TestCapture() {
     Check(EvaluateCapture(open.scene, 1e6).on, "it is on for as long as the scene runs");
 }
 
+// What a scene may set (CvarRefusal): the capture settings and every setting that names a program, a path, a server or arguments, or
+// makes the game write a file of its own are refused, by the parser as the line's error and by CvarRefusal for the runner. The same names
+// are checked by the selftest of ports\scripts\scene_check.py.
+void TestCvarRefusal() {
+    const char* const refused[] = {
+        // the capture settings (the program ffmpeg runs from, its arguments, the sink, the folder, the rest)
+        "mcla_capture_ffmpeg", "mcla_capture_ffmpeg_args", "mcla_capture_sink", "mcla_capture_out", "mcla_capture_fps",
+        "mcla_capture_ring", "mcla_capture_lag", "mcla_capture_delay_ms", "mcla_capture_future_setting",
+        // the scene's own settings
+        "mcla_scene", "mcla_scene_restart", "mcla_scene_t",
+        // paths, folders, programs, arguments, servers
+        "log_file", "dump_path", "dump_shaders", "dump_source", "cache_root", "game_data_root", "user_data_root", "update_data_root",
+        "metadata_root", "hid_mappings_file", "keycaps_dir", "larecomp_texture_folder", "string_folder", "shader_pack_dir", "perf_log_csv",
+        "cl", "user_name", "import_vinyl", "rmr_server", "online_master_server", "server_browser_servers", "server_browser_pending",
+        "some_future_path", "some_future_exe", "some_future_args", "some_future_command",
+        // the game writing a file of its own
+        "cam_trace", "cam_probe_dump", "export_vinyl", "capture_vinyl_shapes", "dump_vinyl_shapes", "fxc_probe", "lzx_stats",
+        "rubberband_dump", "menu_cam_record", "wheel_learn", "allow_game_relative_writes", "mcla_gpu_texture_dump", "mcla_gpu_lock_dump",
+        "mcla_gpu_trace_frame", "mcla_gpu_trace_count", "mcla_native_gfx_capture", "mcla_native_gfx_census", "mcla_native_gfx_telemetry",
+        "mcla_native_gfx_geomdump", "mcla_native_gfx_firstdraw", "mcla_native_gfx_diag", "mcla_native_gfx_exposure_probe",
+        "string_dump_enabled", "model_mods_diag", "mcla_gfx_probe",
+        // it flips another setting by name, which would go round the list
+        "mcla_native_gfx_ab_cvar",
+        // the names are not case sensitive
+        "MCLA_CAPTURE_FFMPEG", "Mcla_Capture_Sink", "LOG_FILE", "Mcla_Scene",
+    };
+    for (const char* name : refused) {
+        const std::string why = CvarRefusal(name);
+        Check(!why.empty(), std::string("a scene may not set ") + name);
+        Check(why.find(std::string("a scene does not set ") + name) == 0, std::string("and the refusal of ") + name + " names it: " + why);
+    }
+    const char* const allowed[] = {
+        "mcla_gpu_ao", "mcla_gpu_ao_view", "mcla_gpu_scale", "mcla_gpu_split", "mcla_gpu_split_effects", "mcla_gpu_msaa", "mcla_gpu_aa",
+        "mcla_gpu_dlss_mode", "mcla_gpu_upscaler", "mcla_gpu_hdr", "mcla_gpu_resolution_scale", "mcla_cam_log", "mcla_cin_hud_alpha",
+        "mcla_fixed_step_fps", "aspect_ratio", "display_gamma", "speed_units", "weather", "time_of_day", "ui_interpolate", "x", "some_text",
+        "mcla_capture", "capture_fps",  // not the mcla_capture_ prefix
+    };
+    for (const char* name : allowed) {
+        Check(CvarRefusal(name).empty(), std::string("a scene may set ") + name + ": " + CvarRefusal(name));
+    }
+    CheckEq(CvarRefusal("mcla_scene"), "a scene does not set mcla_scene", "the old sentence for mcla_scene");
+
+    // the parser refuses it, on its line, as an error: the scene does not load
+    CheckError("at 1 set mcla_capture_ffmpeg C:/x/prog.exe", "a scene does not set mcla_capture_ffmpeg");
+    CheckError("at 1 set mcla_capture_ffmpeg_args -f lavfi -i x", "a scene does not set mcla_capture_ffmpeg_args");
+    CheckError("at 1 set mcla_capture_sink ffmpeg", "a scene does not set mcla_capture_sink");
+    CheckError("at 1 set mcla_capture_out C:/Users/x/Startup/a", "a scene does not set mcla_capture_out");
+    CheckError("at 1 set MCLA_CAPTURE_SINK ffmpeg", "a scene does not set MCLA_CAPTURE_SINK");
+    CheckError("at 1 set mcla_scene other", "a scene does not set mcla_scene");
+    CheckError("at 1 set log_file x.log", "makes the game write a file of its own");
+    CheckError("at 1 set dump_shaders C:/x", "it names a program, a path, a server or arguments");
+    const ParseResult bad = ParseScene("scene a\nat 0 set mcla_gpu_ao off\nat 1 set mcla_capture_ffmpeg x\nat 2 set mcla_gpu_ao high\nend 5\n");
+    Check(!bad.Ok() && bad.ErrorCount() == 1, "one refused line is one error");
+    const Diagnostic* d = Find(bad, "a scene does not set mcla_capture_ffmpeg");
+    Check(d != nullptr && d->line == 3, "on its own line (3)");
+    Check(FormatDiagnostic(*d, "x.scene").find("x.scene:3: error: a scene does not set mcla_capture_ffmpeg") == 0, "and formats as a scene error line");
+    // and the lines next to it are still read
+    const ParseResult ok = ParseScene("scene a\nat 0 set mcla_gpu_ao off\nat 2 set mcla_gpu_ao high\nend 5\n");
+    Check(ok.Ok(), "settings that are allowed still parse");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -708,6 +769,7 @@ int main(int argc, char** argv) {
     TestClock();
     TestReload();
     TestCapture();
+    TestCvarRefusal();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

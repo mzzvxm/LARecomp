@@ -166,7 +166,7 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `weather nice\|cloudy\|stormy\|foggy\|game` | `Weather_RequestIndex`; `game` gives the weather back |
 | `traffic`, `peds`, `parked`, `police` `on\|off` | the game's own script natives (`AmbientMgr_Set*Enable`, `PoliceManager_SetAllPoliceActive`); the enable byte is read back and the log says what it became |
 | `timescale <x>`, `timescale <a>..<b> over <s>` | the engine timer's time scale (below about 0.006 at 60 FPS the game holds its own lowest step) |
-| `set <setting> <value>` | the setting, live ones only; the old value comes back at the end |
+| `set <setting> <value>` | the setting, live ones only; the old value comes back at the end. Not every setting: see "What a scene cannot set" |
 | `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
 | `capture fps <n> [step 1/<n>]`, `capture off` | a take (capture mode, below): the game steps by exactly 1/n a second and every frame is read back; the take ends at `capture off` or the scene's `end` |
 | `cam`, `cut` | the camera (below) |
@@ -175,6 +175,15 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `start` | kept for the preamble package of the toolkit; read and linted, not applied yet |
 
 The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`, one line for every key as its time comes, a `state` line every 2 s that puts the scene's hour, weather and time scale next to what the game reports, `finished`. Natives are called one or two an update, on the game thread.
+
+**What a scene cannot set.** A scene file is data that gets sent around, so `set` is never a way to start a program or write a file. The parser refuses the line (the scene does not load, and the log and the lint say `a scene does not set mcla_capture_ffmpeg: it names a program, a path, a server or arguments, or makes the game write a file of its own (put it on the command line)`) for:
+
+- every `mcla_capture_*` setting (the take's program, its arguments, sink and folder; a scene starts a take with its own `capture` key, and where it goes is chosen on the command line) and `mcla_scene*`;
+- a setting that names a program, a path, a folder, a server or arguments: a name ending in `_path`, `_dir`, `_folder`, `_file`, `_root`, `_exe`, `_args`, `_command`, `_csv`, and by name `cl`, `user_name`, `import_vinyl`, `rmr_server`, `online_master_server`, `server_browser_servers`;
+- a setting that makes the game write a file of its own in the game's folder: a name with `dump` in it or ending in `_probe`, `_diag`, `_trace`, `_census`, `_telemetry`, and by name `export_vinyl`, `capture_vinyl_shapes`, `lzx_stats`, `menu_cam_record`, `wheel_learn`, `mcla_gpu_trace_frame`, `mcla_native_gfx_capture` and the like;
+- `mcla_native_gfx_ab_cvar`, which flips another setting by name and would go round this list.
+
+The rule is `CvarRefusal` in `scene.cpp` (lists `kRefusedCvars` and `kRefusedSuffixes`) and `cvar_refusal` in `scene_check.py`; both are checked against the same names. A new setting of that kind that does not follow a pattern goes into the list. All of them stay settable by hand: a launch argument, the launcher's **More game options**, a line in `larecomp.toml`, F4 or the console.
 
 The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
 
@@ -271,7 +280,7 @@ end 10                       # the take ends with the scene (or at `capture off`
 - **Scene clock.** During a take the upscaler's history rule and the UI movies' pacing read frames times the step instead of the wall clock, so a slow capture is not a stall to them (`[cap] summary` shows `upscaler: ... history_restarts=N (gap_over_100ms=K)`: K is every frame without the clock). `mcla_capture_virtual_clock` turns it off.
 - **The first frame.** The take starts at the first update after the `capture` key; the scene time of its first frame (the key's update plus one step) is in the `[cap] take starts` line and `<prefix>.info.txt` (`first_scene_t`).
 
-Settings (all debug-only and live; the sink and the files are read when a take starts):
+Settings (all debug-only and live; the sink and the files are read when a take starts). A scene cannot set any of them ("What a scene cannot set" above): they come from the command line, F4 or the console.
 
 | Setting | Does |
 |---|---|
