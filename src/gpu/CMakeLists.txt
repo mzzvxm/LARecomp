@@ -65,6 +65,7 @@ add_library(larecomp_gpu OBJECT
     samplers.cpp
     scene.cpp
     shaders.cpp
+    split.cpp
     stream.cpp
     swap_chain.cpp
     sync_builds.cpp
@@ -101,6 +102,9 @@ add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp c
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
+# The before/after split's columns and spans (split.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_split_test, then run src/gpu/larecomp_split_test (exit 0 = passed).
+add_executable(larecomp_split_test EXCLUDE_FROM_ALL split_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

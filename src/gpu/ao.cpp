@@ -18,6 +18,7 @@
 #include "frame.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
+#include "split.h"
 #include "texture_bytes.h"
 
 REXCVAR_DEFINE_STRING(
@@ -1675,7 +1676,13 @@ bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
   list->setFramebuffer(framebuffer);
   const plume::RenderViewport viewport{0.0f, 0.0f, float(plan.render[0]), float(plan.render[1])};
   list->setViewports(&viewport, 1);
-  const plume::RenderRect scissor(0, 0, int32_t(plan.render[0]), int32_t(plan.render[1]));
+  // The before/after split (split.h, mcla_gpu_split): the occlusion is applied left of it only, so the scissor ends at its column and
+  // the pixels right of it are left as the game drew them. Off (the default): the whole target, nothing computed.
+  uint32_t apply_columns = plan.render[0];
+  if (const std::optional<double> cut = split::PositionFor(split::kEffectAo)) {
+    apply_columns = split::EffectColumns(*cut, plan.render[0]);
+  }
+  const plume::RenderRect scissor(0, 0, int32_t(apply_columns), int32_t(plan.render[1]));
   list->setScissors(&scissor, 1);
   Bind(list);
   list->setPipeline(pipeline);

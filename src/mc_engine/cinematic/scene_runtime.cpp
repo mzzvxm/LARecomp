@@ -43,6 +43,7 @@
 //   capture     nothing here: capture_mode.cpp registers the applier that asks for a take (a fixed step, the frame gate and the readback)
 //               from the `capture fps` key to `capture off` or the scene's end, with the take's name, sink and state log (M2b). The
 //               take copies the scene file (SceneFilePath) and reads the game's state for its state log (SampleGameState).
+//   split       the renderer's before/after split position (split_runtime.cpp: a TrackApplier that writes mcla_gpu_split).
 //   camera, cut, hud, car
 //               nothing here: camera_runtime.cpp, hud_runtime.cpp and cars.cpp register a TrackApplier (scene_runtime.h) each.
 //   start       no applier yet (the preamble: save, seed, warp, car slot); the runner says so in the log.
@@ -251,6 +252,10 @@ std::string Describe(const Event& e) {
             if (!e.text.empty()) out += " sink " + e.text;
             if (e.index >= 0) out += std::string(" statelog ") + (e.index ? "on" : "off");
             return out;
+        case Track::kSplit:
+            if (e.release) return out + "off (the effects are applied everywhere)";
+            if (e.has_from) return out + Fmt(e.from) + ".." + Fmt(e.to) + " over " + Fmt(e.over) + " s, ease " + EaseName(e.ease);
+            return out + Fmt(e.to) + " (held)";
         default:
             break;
     }
@@ -306,7 +311,7 @@ struct Runner {
     bool ts_warned = false;
     ToggleState toggles[kToggleCount];
     std::vector<SavedCvar> saved;
-    int unapplied[16] = {};  // keys of tracks nobody applies, by Track
+    int unapplied[32] = {};  // keys of tracks nobody applies, by Track (a bit each in TrackBit: 32 at most)
     double next_state_log = 0.0;
     bool state_pending = false;  // a state line queued by the last update, written by the next (see RunAt)
     double state_t = 0.0;
@@ -503,7 +508,7 @@ void EndAppliers() {
 
 void LogUnapplied() {
     std::string parts;
-    for (int t = 0; t < 16; ++t) {
+    for (int t = 0; t < 32; ++t) {
         if (g.unapplied[t] == 0) continue;
         if (!parts.empty()) parts += ", ";
         parts += std::string(TrackName(static_cast<Track>(t))) + " " + std::to_string(g.unapplied[t]);

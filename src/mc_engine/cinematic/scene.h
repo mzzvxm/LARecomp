@@ -39,6 +39,10 @@
 //                                                         the game's state for every frame in state.csv (the take folder, M2b)
 //   at T capture off                                      the take ends (it also ends with the scene's `end`)
 //   at T capture fps <n> | capture off                    a take (M2a, capture_core.h); the parser reads it (Track::kCapture)
+//   at T split <x>                                        the before/after split (M5b) sits at x, 0..1 of the picture's width: the
+//                                                         effects it cuts are applied left of it only; until the next key
+//   at T split <a>..<b> over <s> [ease <e>]               the split moves from a to b
+//   at T split off                                        no split: the effects are applied everywhere again
 //   cam <T> <...>   cut <T>   at T hud <...>   at T car <id> <...>   start <...>
 //                                                         the camera, HUD, car and preamble tracks (M1b, M1c, M4):
 //                                                         kept as words for their packages, which register a TrackApplier
@@ -91,6 +95,8 @@ enum class Track : uint8_t {
     kCvar,
     kLabel,
     kMark,
+    // the renderer's before/after split (M5b): the value is `to`, a ramp starts at `from`, `release` = off
+    kSplit,
     // other packages: kept as words
     kCamera,  // `cam`  (M1b)
     kCut,     // `cut`  (M1b)
@@ -219,6 +225,14 @@ struct CaptureWindow {
     double fps = 0.0;
 };
 CaptureWindow EvaluateCapture(const Scene& scene, double t);
+// What the split track says at one moment: `set` false = no split (before the first key, or after `split off`); else the
+// position, 0..1 of the picture's width (a ramp's value at t). Pure, like EvaluateWorld.
+struct SplitState {
+    bool set = false;
+    double position = 0.0;
+    bool operator==(const SplitState&) const = default;
+};
+SplitState EvaluateSplit(const Scene& scene, double t);
 
 // Walks the events once in time order: Take() hands over every event whose time has come (<= t) and was not given before.
 // Reset() to start again from the first. The runtime acts on the discrete ones (cvar, label, mark, and the other
