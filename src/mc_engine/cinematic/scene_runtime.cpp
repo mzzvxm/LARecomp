@@ -26,7 +26,9 @@
 //   police      PoliceManager_SetAllPoliceActive (a native: no byte to read back).
 //   timescale   the engine timer's time scale word, 0x827D7554 (timer + 0x54), written every update; a read-back before each write
 //               tells when something else changed it (CHECK: the game's own slow-motion also writes it).
-//   set         rex::cvar::SetFlagByName; the value that was there comes back when the scene ends. Only live (hot reload) settings.
+//   set         a setting through larecomp::SetCvarForScene (SetFlagByName, and the old value and its origin are kept: the value comes back
+//               when the scene ends, and a save of the settings in the middle of the scene does not write the scene's value). Only live
+//               (hot reload) settings, and not the ones CvarRefusal (scene.h) names: a scene cannot start a program or write a file.
 //   label, mark logged. Labels are data for the compositor: nothing is drawn in the game.
 //   capture     nothing here: capture.cpp registers the applier that asks for a take (a fixed step, the frame gate and the readback)
 //               from the `capture fps` key to `capture off` or the scene's end.
@@ -63,6 +65,7 @@
 #include <utility>
 #include <vector>
 
+#include "../config_save.h"
 #include "../time_of_day.h"
 #include "larecomp_log.h"
 #include "native_call.h"
@@ -427,7 +430,7 @@ void ApplyCvar(const Event& e) {
     }
     const std::string before = rex::cvar::GetFlagByName(e.name);
     const bool known = std::any_of(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == e.name; });
-    if (!rex::cvar::SetFlagByName(e.name, e.text)) {
+    if (!larecomp::SetCvarForScene(e.name, e.text)) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' did not take '{}' (a value out of its range, or not of its kind)", e.line, e.name, e.text);
         return;
     }
@@ -435,10 +438,15 @@ void ApplyCvar(const Event& e) {
     LARECOMP_APP_INFO("[scene] set {} = {} (was {})", e.name, rex::cvar::GetFlagByName(e.name), before);
 }
 
+// Every setting the scene took goes back to its value and its origin (default, file, command line, run time): a command-line value
+// is not a change a later save would write.
 void RestoreCvars() {
     for (auto it = g.saved.rbegin(); it != g.saved.rend(); ++it) {
-        rex::cvar::SetFlagByName(it->name, it->before);
-        LARECOMP_APP_INFO("[scene] set {} back to {}", it->name, it->before);
+        if (larecomp::RestoreCvarForScene(it->name)) {
+            LARECOMP_APP_INFO("[scene] set {} back to {}", it->name, it->before);
+        } else {
+            LARECOMP_APP_WARN("[scene] {} could not be put back to {}", it->name, it->before);
+        }
     }
     g.saved.clear();
 }

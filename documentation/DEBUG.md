@@ -185,6 +185,8 @@ The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`
 
 The rule is `CvarRefusal` in `scene.cpp` (lists `kRefusedCvars` and `kRefusedSuffixes`) and `cvar_refusal` in `scene_check.py`; both are checked against the same names. A new setting of that kind that does not follow a pattern goes into the list. All of them stay settable by hand: a launch argument, the launcher's **More game options**, a line in `larecomp.toml`, F4 or the console.
 
+**A scene's settings are not saved.** A scene takes a setting through the same call a menu does, but remembers the value it had and where that value came from. Saving the settings in the middle of a scene (the pause menu, F4) leaves the scene's value out of `larecomp.toml` (a value the player had changed before the scene is written as the player left it), and the end of the scene puts back exactly the old value and its origin, so a value that came from the command line is still a command-line value and a later save does not write it. `cmake --build <dir> --target larecomp_config_save_test` builds the check of that rule.
+
 The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
 
 ### The camera track

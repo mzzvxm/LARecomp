@@ -387,6 +387,11 @@ add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/car_registry.cpp
     src/mc_engine/cinematic/car_spawn.cpp)
 target_include_directories(larecomp_cars_test PRIVATE src/mc_engine/cinematic)
+# What a settings save does with a cvar a scene holds (src/mc_engine/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).
+add_executable(larecomp_config_save_test EXCLUDE_FROM_ALL
+    src/mc_engine/config_save_test.cpp)
+target_include_directories(larecomp_config_save_test PRIVATE src/mc_engine)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
