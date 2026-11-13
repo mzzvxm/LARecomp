@@ -1717,16 +1717,28 @@ const ItemDef kPerfLodItems[] = {
 // ON)", 20 characters).
 const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
-// Ambient occlusion (gpu/ao.h, live): off, half resolution, full resolution. The row is at most 23
-// characters with its longest value.
-const char* const kNativeAoVals[]  = {"off", "low", "high"};
-const char* const kNativeAoNames[] = {"OFF", "LOW", "HIGH"};
+// Ambient occlusion (gpu/ao.h, live): AUTO (the default), off, half resolution, full resolution. AUTO
+// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, LOW on a
+// discrete one with under 5.5 GiB, HIGH on the rest (gpu/gpu_class.h). The row is "AMBIENT OCCLUSION"
+// (17 characters) with a value of at most 11 ("AUTO (HIGH)"), 28 together, under the page's 40.
+const char* const kNativeAoVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeAoNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+std::string AoLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kAmbientOcclusion);
+    case 1:  return "OFF";
+    case 2:  return "LOW";
+    default: return "HIGH";
+    }
+}
+constexpr RowDynamics kAoDynamics = {.str_label = AoLabel};
 // How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
-// off. At most 21 characters with its longest value.
+// off (what AUTO comes to counts). At most 21 characters with its longest value.
 const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
 const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
 bool AoOn() {
-    const std::string mode = CvarGet("mcla_gpu_ao");
+    const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kAmbientOcclusion,
+                                                           CvarGet("mcla_gpu_ao"));
     return mode == "low" || mode == "high";
 }
 constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
@@ -1831,8 +1843,8 @@ const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "
 // kGfxQualityItems below.)
 // One ANISOTROPIC row per renderer (the same name and place), MSAA on both
 // (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
-// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "DEFAULT" (7), both
-// under the page's widest ("Page width").
+// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "AUTO (HIGH)" (11, the
+// ambient occlusion row's), both under the page's widest ("Page width").
 const ItemDef kPictureItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
@@ -1848,8 +1860,9 @@ const ItemDef kPictureItems[] = {
     XeniaOnly(Str ("PM_RxXeAniso",      "anisotropic_override",  "ANISOTROPIC: ",
                    kXeniaAnisoVals, kXeniaAnisoNames, 7)),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Str ("PM_RxGpuAo",       "mcla_gpu_ao",           "AMBIENT OCCLUSION: ",
-                    kNativeAoVals, kNativeAoNames, 3)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
+                                kNativeAoVals, kNativeAoNames, 4),
+                            &kAoDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
                                 kNativeAoLevelVals, kNativeAoLevelNames, 4),
                             &kAoIntensityDynamics)),
@@ -2729,7 +2742,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
+// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 11 ("AUTO (HIGH)", the
+// ambient occlusion row's AUTO; the others' longest is "DEFAULT", 7).
 // The GRAPHICS QUALITY page (kGfxQualityItems, 6 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
 // then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "SUN SHAFTS" 10; values at most 11
 // ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together.
