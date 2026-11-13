@@ -22,7 +22,8 @@
 //       - SIGBUS, SIGFPE, SIGABRT (and any signal before InstallLate): FatalSignalHandler reports.
 //   * The report (Report) is async-signal-safe: no malloc, no locks, no stdio, no iostreams. It
 //     asks the helper thread to flush the log sink and waits for it at most 300 ms (the crashing
-//     thread may hold the sink's lock), then writes the lines with write(2) to the log file (opened
+//     thread may hold the sink's lock; a report that hangs anyway ends the process after 15 s with
+//     SIGALRM), then writes the lines with write(2) to the log file (opened
 //     again by path, O_APPEND, the same file the sink appends to) and to stderr, and fsync()s.
 //   * Last, the default action is restored and the signal raised again, so the exit status is the
 //     normal "killed by SIGSEGV" and a core dump is still written.
@@ -399,6 +400,13 @@ inline bool Report(const Fault& f) {
   sigemptyset(&block_pipe);
   sigaddset(&block_pipe, SIGPIPE);
   pthread_sigmask(SIG_BLOCK, &block_pipe, &old_mask);
+  // A report that hangs (a lock held by a thread that is gone, a stuck read) must end the process
+  // rather than freeze it: SIGALRM's default action does. The handler's own mask may block it.
+  sigset_t unblock_alarm;
+  sigemptyset(&unblock_alarm);
+  sigaddset(&unblock_alarm, SIGALRM);
+  pthread_sigmask(SIG_UNBLOCK, &unblock_alarm, nullptr);
+  alarm(15);
 
   // 1. The stack, before anything else disturbs it.
   const int got = backtrace(s.frames, kFrameSlots);
@@ -615,6 +623,7 @@ inline bool Report(const Fault& f) {
     close(fd_log);
   }
   __atomic_store_n(&s.reported, 1, __ATOMIC_RELEASE);
+  alarm(0);
   pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
   errno = saved_errno;
   return true;
