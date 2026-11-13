@@ -54,11 +54,12 @@ void CheckVec(Vec3 got, Vec3 want, const std::string& what, double tol = 1e-9) {
     }
 }
 
-// A camera basis is a proper rotation: unit, orthogonal, right x up = forward.
+// A camera basis is a proper rotation: unit, orthogonal, and the game's world is right-handed, so the right is forward x up and
+// right x up = BACK = -forward (the slots' rows right, up, back are a proper rotation).
 bool Proper(const Basis& b, double tol = 1e-9) {
     const auto unit = [&](Vec3 v) { return std::fabs(Length(v) - 1.0) < tol; };
     return unit(b.right) && unit(b.up) && unit(b.forward) && std::fabs(Dot(b.right, b.up)) < tol && std::fabs(Dot(b.up, b.forward)) < tol &&
-           std::fabs(Dot(b.right, b.forward)) < tol && Length(Cross(b.right, b.up) - b.forward) < tol;
+           std::fabs(Dot(b.right, b.forward)) < tol && Length(Cross(b.right, b.up) + b.forward) < tol;
 }
 
 double AngleBetween(Vec3 a, Vec3 b) {
@@ -80,10 +81,13 @@ void TestVectors() {
 void TestBasis() {
     const Basis level = BasisFromYawPitch(0, 0);
     CheckVec(level.forward, {0, 0, 1}, "yaw 0 looks along +Z");
-    CheckVec(level.right, {1, 0, 0}, "yaw 0: right is +X");
+    CheckVec(level.right, {-1, 0, 0}, "yaw 0 looks along +Z (south): right is -X (west), the right-handed world's");
     CheckVec(level.up, {0, 1, 0}, "yaw 0: up is +Y");
     CheckVec(BasisFromYawPitch(90, 0).forward, {1, 0, 0}, "yaw 90 looks along +X");
-    CheckVec(BasisFromYawPitch(90, 0).right, {0, 0, -1}, "yaw 90: right is -Z");
+    CheckVec(BasisFromYawPitch(90, 0).right, {0, 0, 1}, "yaw 90 looks along +X (east): right is +Z (south)");
+    CheckVec(BasisFromYawPitch(180, 0).right, {1, 0, 0}, "yaw 180 looks north: right is east");
+    CheckVec(Basis{}.right, {-1, 0, 0}, "the default basis looks along +Z with the right at -X");
+    Check(Proper(Basis{}), "the default basis is a proper rotation");
     CheckVec(BasisFromYawPitch(-90, 0).forward, {-1, 0, 0}, "yaw -90 looks along -X");
     CheckNum(BasisFromYawPitch(0, 30).forward.y, 0.5, "pitch 30 looks up by sin 30");
     CheckNum(BasisFromYawPitch(0, 300).forward.y, std::sin(89 * kDeg), "pitch is clamped to 89", 1e-12);
@@ -95,7 +99,7 @@ void TestBasis() {
     // roll
     const Basis rolled = WithRoll(level, 90);
     CheckVec(rolled.right, {0, 1, 0}, "roll +90: the right side is up");
-    CheckVec(rolled.up, {-1, 0, 0}, "roll +90: up swings to the left");
+    CheckVec(rolled.up, {1, 0, 0}, "roll +90: up swings to the left (+X, the old right)");
     CheckVec(rolled.forward, {0, 0, 1}, "roll leaves forward alone");
     Check(Proper(WithRoll(BasisFromYawPitch(33, -12), 27.5)), "a roll keeps a proper rotation");
     CheckVec(WithRoll(level, 0).right, level.right, "roll 0 is no change");
@@ -113,7 +117,8 @@ void TestBasis() {
     CheckNum(HeadingOf({1, 0, 0}, 9.0), kPi / 2, "heading of +X");
     CheckNum(HeadingOf({0, 1, 0}, 9.0), 9.0, "heading of straight up keeps the old one");
     CheckVec(HeadingBasis(kPi / 2).forward, {1, 0, 0}, "heading basis forward at 90 degrees", 1e-12);
-    CheckVec(HeadingBasis(kPi / 2).right, {0, 0, -1}, "heading basis right at 90 degrees", 1e-12);
+    CheckVec(HeadingBasis(kPi / 2).right, {0, 0, 1}, "heading basis right at 90 degrees (facing east, the right is south)", 1e-12);
+    CheckVec(HeadingBasis(kPi).right, {1, 0, 0}, "heading basis right at 180 degrees (facing north, the right is east)", 1e-12);
     Check(Proper(HeadingBasis(1.234)), "heading basis is a proper rotation");
 }
 
@@ -124,9 +129,9 @@ void TestQuat() {
         for (int pitch = -80; pitch <= 80; pitch += 40) bases.push_back(WithRoll(BasisFromYawPitch(yaw, pitch), yaw * 0.3));
     }
     bases.push_back(Basis{});
-    bases.push_back(Basis{{-1, 0, 0}, {0, 1, 0}, {0, 0, -1}});  // 180 about Y
-    bases.push_back(Basis{{1, 0, 0}, {0, -1, 0}, {0, 0, -1}});  // 180 about X
-    bases.push_back(Basis{{-1, 0, 0}, {0, -1, 0}, {0, 0, 1}});  // 180 about Z
+    bases.push_back(Basis{{1, 0, 0}, {0, 1, 0}, {0, 0, -1}});   // 180 about Y
+    bases.push_back(Basis{{-1, 0, 0}, {0, -1, 0}, {0, 0, -1}});  // 180 about X
+    bases.push_back(Basis{{1, 0, 0}, {0, -1, 0}, {0, 0, 1}});    // 180 about Z
     int bad = 0;
     for (const Basis& b : bases) {
         const Basis r = ToBasis(ToQuat(b));
@@ -135,7 +140,8 @@ void TestQuat() {
     Check(bad == 0, "a basis comes back from its quaternion (" + std::to_string(bad) + " of " + std::to_string(bases.size()) + " did not)");
     const Quat q = ToQuat(BasisFromYawPitch(40, 20));
     CheckNum(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z, 1.0, "a quaternion from a basis is a unit one");
-    CheckVec(Rotate(ToQuat(BasisFromYawPitch(90, 0)), {0, 0, 1}), {1, 0, 0}, "rotating +Z by the yaw 90 quaternion gives +X");
+    CheckVec(Rotate(ToQuat(BasisFromYawPitch(90, 0)), {0, 0, -1}), {1, 0, 0}, "rotating -Z (the slots' back) by the yaw 90 quaternion gives +X, where it looks");
+    CheckVec(Rotate(ToQuat(BasisFromYawPitch(90, 0)), {1, 0, 0}), {0, 0, 1}, "rotating +X by the yaw 90 quaternion gives the right, +Z");
 }
 
 void TestSlerp() {
@@ -227,16 +233,16 @@ void TestSpline() {
 }
 
 void TestOrbitPoint() {
-    const Basis hf = HeadingBasis(0.0);  // looking along +Z
+    const Basis hf = HeadingBasis(0.0);  // looking along +Z (south): the right is -X (west)
     CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 0, 0), {0, 0, -5}, "az 0 is behind", 1e-12);
-    CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 90, 0), {5, 0, 0}, "az 90 is on the right", 1e-12);
+    CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 90, 0), {-5, 0, 0}, "az 90 is on the right", 1e-12);
     CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 180, 0), {0, 0, 5}, "az 180 is in front", 1e-12);
-    CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 270, 0), {-5, 0, 0}, "az 270 is on the left", 1e-12);
+    CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 270, 0), {5, 0, 0}, "az 270 is on the left", 1e-12);
     CheckVec(OrbitPoint({0, 0, 0}, hf, 5, 0, 90), {0, 5, 0}, "el 90 is straight above", 1e-12);
     CheckVec(OrbitPoint({1, 2, 3}, hf, 5, 0, 0), {1, 2, -2}, "around a target", 1e-12);
-    const Basis east = HeadingBasis(kPi / 2);  // looking along +X: behind is -X, right is -Z
+    const Basis east = HeadingBasis(kPi / 2);  // looking along +X (east): behind is -X, right is +Z (south)
     CheckVec(OrbitPoint({0, 0, 0}, east, 4, 0, 0), {-4, 0, 0}, "behind a car that faces +X", 1e-12);
-    CheckVec(OrbitPoint({0, 0, 0}, east, 4, 90, 0), {0, 0, -4}, "right of a car that faces +X", 1e-12);
+    CheckVec(OrbitPoint({0, 0, 0}, east, 4, 90, 0), {0, 0, 4}, "right of a car that faces +X", 1e-12);
     CheckNum(Length(OrbitPoint({0, 0, 0}, hf, 7, 33, 21)), 7.0, "the radius holds", 1e-12);
 }
 
@@ -481,6 +487,58 @@ CameraTrack Track(const std::string& text) {
         for (const Diagnostic& d : r.diagnostics) std::printf("  %s\n", FormatDiagnostic(d, "t").c_str());
     }
     return std::move(r.track);
+}
+
+// The rows the game's camera slots hold: right, up and BACK. The first smoke run wrote the forward vector into the third row, so the
+// camera looked away from its car and no cut was ever met; the numbers below are the game's own camera (the E5 run's chase camera at
+// the car's spawn), and the sides come from the smoke run's first picture (tour_02: the blue Murcielago left of the player's car, the
+// red one right of it).
+void TestSlotRows() {
+    // the round trip, and the rows are a proper rotation: right x up = back
+    bool round = true, rows_proper = true;
+    for (int yaw = -170; yaw <= 180; yaw += 50) {
+        for (int pitch = -80; pitch <= 80; pitch += 40) {
+            const Basis b = WithRoll(BasisFromYawPitch(yaw, pitch), yaw * 0.3);
+            const SlotRows rows = ToSlotRows(b);
+            const Basis r = FromSlotRows(rows);
+            if (Length(r.right - b.right) > 1e-12 || Length(r.up - b.up) > 1e-12 || Length(r.forward - b.forward) > 1e-12) round = false;
+            if (Length(Cross(rows.right, rows.up) - rows.back) > 1e-9 || Length(rows.back + b.forward) > 1e-12) rows_proper = false;
+        }
+    }
+    Check(round, "a basis comes back from its slot rows");
+    Check(rows_proper, "the slot rows are right, up, BACK: right x up = back = minus forward");
+    CheckVec(ToSlotRows(BasisLookAt({0, 0, 0}, {0, 0, 10}, Basis{})).back, {0, 0, -1}, "a camera that looks at +Z has -Z in the third row");
+    CheckVec(ToSlotRows(BasisFromYawPitch(90, 0)).back, {-1, 0, 0}, "a camera that looks along +X has -X in the third row");
+
+    // The game's own camera: third row (0.4737, 0.0670, -0.8782), second row (-0.0168, 0.9976, 0.0671), at (823.84, 19.61, -816.17);
+    // the player's car it follows is at (819.61, 17.56, -808.41): the camera looks toward the car, along MINUS the third row.
+    const Vec3 up{-0.0168, 0.9976, 0.0671}, back{0.4737, 0.0670, -0.8782}, at{823.84, 19.61, -816.17};
+    SlotRows game;
+    game.up = Normalize(up, {0, 1, 0});
+    game.back = Normalize(back, {0, 0, -1});
+    game.right = Cross(game.up, game.back);  // menu_camera.cpp's recipe, "the one the game takes"
+    const Basis seen = FromSlotRows(game);
+    const Vec3 car = Vec3{819.61, 17.56, -808.41} - at;
+    Check(Dot(seen.forward, Normalize(car, {0, 0, 1})) > 0.95, "the game's camera looks toward the car it follows (forward is minus the third row)");
+    Check(Dot(game.back, Normalize(car, {0, 0, 1})) < -0.95, "the third row points away from the car it follows: it is the BACK");
+    const Vec3 murcielago = Vec3{817.0, 17.2, -797.3} - at;   // p1: left of the player's car on screen
+    const Vec3 red_car = Vec3{809.4, 17.6, -798.0} - at;      // p2: right of it
+    Check(Dot(seen.right, murcielago) < 0.0, "a car at x 817 is on the LEFT of that camera (the right is forward x up)");
+    Check(Dot(seen.right, red_car) > 0.0, "a car at x 809 is on the RIGHT of that camera");
+
+    // The rig's camera written to the slots looks at its car: the third row points from the car to the camera.
+    FakeCars cars;
+    cars.cars["p1"] = CarAt({817.0, 17.2, -797.3}, 62);
+    const CameraTrack tr = Track("scene t\ncam 0 orbit car:p1 r 9 az 20 el 8 fov 40\nend 99\n");
+    Rig rig;
+    const View v = rig.Evaluate(tr, 0.0, cars);
+    const SlotRows w = ToSlotRows(v.basis);
+    const Vec3 to_camera = Normalize(v.position - Vec3{817.0, 17.2, -797.3}, {0, 0, 1});
+    Check(Dot(w.back, to_camera) > 0.95, "an orbit camera's third row points from its car to the camera, so it looks at the car");
+    Check(Dot(v.basis.forward, to_camera) < -0.95, "and the camera looks along minus that, at the car");
+    // az 20 is 20 degrees toward the car's right: the camera is on the car's right side (the car faces heading 62: forward = (sin, 0, cos))
+    const CarPose p1 = cars.cars["p1"];
+    Check(Dot(Normalize(v.position - Vec3{817.0, 17.2, -797.3}, {0, 0, 1}), p1.frame.right) > 0.2, "az 20 puts the camera on the car's right side, not its left");
 }
 
 void TestRigPath() {
@@ -742,7 +800,7 @@ void TestRigCars() {
         Check(aimed, "an orbit looks at its car");
         Rig q;
         const View mid = q.Evaluate(tr, 2.0, cars);
-        CheckVec(mid.position, {20, 0, 10}, "halfway round (az 90) it is on the car's right", 1e-9);
+        CheckVec(mid.position, {0, 0, 10}, "halfway round (az 90) it is on the car's right (a car that faces +Z has -X on its right)", 1e-9);
     }
     {
         // a car nobody has: the camera holds its last pose and the rig says so
@@ -827,6 +885,7 @@ int main(int argc, char** argv) {
     TestOrbitPoint();
     TestDamped();
     TestParser();
+    TestSlotRows();
     TestRigPath();
     TestRigEase();
     TestRigSmooth();

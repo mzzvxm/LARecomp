@@ -666,6 +666,44 @@ void TestLost() {
     Check(!dir.Active(), "the lost car is gone from the books");
 }
 
+// The first smoke run's scene end: the scene's own cleanup deletes the cars, which takes them out of the opponent manager's list at
+// once, and a few updates later the game side's periodic look at the cars "that should be in the list" (InWorld) found them missing
+// and warned "not in the opponent manager's list any more (the world was rebuilt?)" for both, as if something else had removed them.
+// A car being deleted is not expected in the list: InWorld() leaves it out from the delete call on.
+void TestDeleteIsNotLost() {
+    Director dir;
+    FakeGame game;
+    dir.BeginScene();
+    dir.Apply(Spawn("p1", "vp_lam_murcielago_06"));
+    Drive(dir, game, 0, 9000);
+    Check(dir.spawned() == 1 && dir.InWorld().size() == 1, "ready, and expected in the manager's list");
+    dir.EndScene();
+    int64_t t = 9016;
+    for (; t < 30000 && game.N("OpponentManager_DeleteOpponent") == 0; t += 16) Drive(dir, game, t, t);
+    Check(game.N("OpponentManager_DeleteOpponent") == 1, "the scene's cleanup deletes the car");
+    Check(dir.Active(), "the manager is still given time to clean up");
+    Check(dir.InWorld().empty(), "a car that has been deleted is no longer expected in the manager's list (no warning for its absence)");
+    // a look at the list at any moment of the settle finds nothing to report; the car then ends as deleted, not as lost
+    dir.TakeEvents();
+    Drive(dir, game, t, t + 5000);
+    Check(!dir.Active() && dir.deleted() == 1 && dir.failed() == 0, "the car ends deleted, none failed");
+    bool warned = false;
+    for (const CarEvent& e : dir.TakeEvents()) {
+        if (e.warning || e.text.find("world was rebuilt") != std::string::npos || e.text.find("no longer has the car") != std::string::npos) warned = true;
+    }
+    Check(!warned, "no warning about a lost car at the scene's end");
+    // the opposite case stays: a car the scene did not delete that is missing from the list is lost, and says so
+    Director lost;
+    FakeGame game2;
+    lost.BeginScene();
+    lost.Apply(Spawn("p2", "vp_lam_murcielago_06"));
+    Drive(lost, game2, 0, 9000);
+    Check(lost.InWorld().size() == 1, "a car that is ready is expected in the list");
+    lost.MarkLost(0xBDAE19B0u);
+    Drive(lost, game2, 9016, 9100);
+    Check(lost.InWorld().empty() && lost.failed() == 1, "a car the game lost counts as failed");
+}
+
 }  // namespace
 
 int main() {
@@ -680,6 +718,7 @@ int main() {
     TestOneCallAnUpdate();
     TestPlayerDress();
     TestLost();
+    TestDeleteIsNotLost();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

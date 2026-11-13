@@ -75,10 +75,10 @@ Vec3 Rotate(Quat q, Vec3 v) {
 }
 
 Quat ToQuat(const Basis& b) {
-    // The matrix with right, up, forward as its columns.
-    const double m00 = b.right.x, m01 = b.up.x, m02 = b.forward.x;
-    const double m10 = b.right.y, m11 = b.up.y, m12 = b.forward.y;
-    const double m20 = b.right.z, m21 = b.up.z, m22 = b.forward.z;
+    // The matrix with right, up, back (minus forward) as its columns: a proper rotation (right x up = back).
+    const double m00 = b.right.x, m01 = b.up.x, m02 = -b.forward.x;
+    const double m10 = b.right.y, m11 = b.up.y, m12 = -b.forward.y;
+    const double m20 = b.right.z, m21 = b.up.z, m22 = -b.forward.z;
     const double trace = m00 + m11 + m22;
     Quat q;
     if (trace > 0.0) {
@@ -102,7 +102,23 @@ Basis ToBasis(Quat q) {
     Basis b;
     b.right = Rotate(q, {1.0, 0.0, 0.0});
     b.up = Rotate(q, {0.0, 1.0, 0.0});
-    b.forward = Rotate(q, {0.0, 0.0, 1.0});
+    b.forward = Rotate(q, {0.0, 0.0, -1.0});
+    return b;
+}
+
+SlotRows ToSlotRows(const Basis& b) {
+    SlotRows r;
+    r.right = b.right;
+    r.up = b.up;
+    r.back = b.forward * -1.0;
+    return r;
+}
+
+Basis FromSlotRows(const SlotRows& rows) {
+    Basis b;
+    b.right = rows.right;
+    b.up = rows.up;
+    b.forward = rows.back * -1.0;
     return b;
 }
 
@@ -112,8 +128,8 @@ Basis BasisFromYawPitch(double yaw_deg, double pitch_deg) {
     const Vec3 f{std::cos(p) * std::sin(y), std::sin(p), std::cos(p) * std::cos(y)};
     Basis b;
     b.forward = f;
-    b.right = Normalize(Cross({0.0, 1.0, 0.0}, f), {1.0, 0.0, 0.0});
-    b.up = Cross(f, b.right);
+    b.right = Normalize(Cross(f, {0.0, 1.0, 0.0}), {-1.0, 0.0, 0.0});
+    b.up = Cross(b.right, f);
     return b;
 }
 
@@ -121,16 +137,16 @@ Basis BasisLookAt(Vec3 from, Vec3 to, const Basis& fallback) {
     const Vec3 d = to - from;
     if (Length(d) < 1e-6) return fallback;
     const Vec3 f = Normalize(d, fallback.forward);
-    Vec3 r = Cross({0.0, 1.0, 0.0}, f);
+    Vec3 r = Cross(f, {0.0, 1.0, 0.0});
     if (Length(r) < 1e-6) {
         // straight up or down: the roll of the fallback decides
         r = fallback.right - f * Dot(fallback.right, f);
-        if (Length(r) < 1e-6) r = {1.0, 0.0, 0.0};
+        if (Length(r) < 1e-6) r = {-1.0, 0.0, 0.0};
     }
     Basis b;
     b.forward = f;
-    b.right = Normalize(r, {1.0, 0.0, 0.0});
-    b.up = Cross(f, b.right);
+    b.right = Normalize(r, {-1.0, 0.0, 0.0});
+    b.up = Cross(b.right, f);
     return b;
 }
 
@@ -153,7 +169,7 @@ double HeadingOf(Vec3 forward, double keep) {
 Basis HeadingBasis(double heading_rad) {
     Basis b;
     b.forward = {std::sin(heading_rad), 0.0, std::cos(heading_rad)};
-    b.right = {std::cos(heading_rad), 0.0, -std::sin(heading_rad)};
+    b.right = {-std::cos(heading_rad), 0.0, std::sin(heading_rad)};  // forward x up
     b.up = {0.0, 1.0, 0.0};
     return b;
 }

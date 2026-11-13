@@ -81,16 +81,30 @@ Quat Normalize(Quat q);
 Quat Slerp(Quat a, Quat b, double u);
 Vec3 Rotate(Quat q, Vec3 v);
 
-// A camera's axes, as the game's camera slots hold them row by row: right, up, forward (a left-handed look: right x up = forward
-// with the usual cross product). Always a proper rotation.
+// A camera's axes in the game's world, which is right-handed (x east, y up, z south): looking along `forward` with `up` above, the
+// right is forward x up (looking along +Z, the right is -X; facing north, -Z, it is east). The game's camera slots hold the rows
+// right, up and BACK (minus forward), a proper rotation: right x up = back (menu_camera.cpp writes them that way, and the pictures
+// of the first smoke run, which wrote forward into the third row, looked the wrong way). Basis keeps the forward vector and not the
+// back, so right x up = -forward here.
 struct Basis {
-    Vec3 right{1.0, 0.0, 0.0};
+    Vec3 right{-1.0, 0.0, 0.0};
     Vec3 up{0.0, 1.0, 0.0};
     Vec3 forward{0.0, 0.0, 1.0};
 };
-// The rotation that takes the local axes (1,0,0), (0,1,0), (0,0,1) to right, up, forward.
+// The rotation that takes the local axes (1,0,0), (0,1,0), (0,0,1) to right, up, back (the slots' rows).
 Quat ToQuat(const Basis& b);
 Basis ToBasis(Quat q);
+
+// The three rows the game's camera slots (and a car's matrix: right, up, back, position) hold for a camera. The third row is the
+// BACK: the game's own camera looks along minus it (the E5 run's chase camera: third row (0.474, 0.067, -0.878), the car it follows
+// at (-0.47, -0.23, 0.86) from the camera), and the renderer's anchor reads the same rows as its c12 to c14.
+struct SlotRows {
+    Vec3 right{-1.0, 0.0, 0.0};
+    Vec3 up{0.0, 1.0, 0.0};
+    Vec3 back{0.0, 0.0, -1.0};
+};
+SlotRows ToSlotRows(const Basis& b);
+Basis FromSlotRows(const SlotRows& rows);
 
 // yaw 0 looks along +Z and 90 along +X; pitch + looks up (clamped to +-89 degrees); no roll.
 Basis BasisFromYawPitch(double yaw_deg, double pitch_deg);

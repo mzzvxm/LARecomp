@@ -9,8 +9,11 @@
 // shadows and LOD at the frustum edge, field of view 30 to 110 degrees and roll to 30 degrees); E3 flew it 600 m from the car and
 // the streamer followed the camera by itself (the sector under the camera loaded, City_DoneStreaming true), so nothing here moves
 // the car or locks the streaming. The slots (sub_822C0320's frame, r1): vertical field of view in degrees at +0x50, far +0x54,
-// near +0x58, a cutscene's horizontal field of view +0x5C (-1.0 = none), rows right, up, forward at +0x60, +0x70, +0x80 and the
-// position at +0x90.
+// near +0x58, a cutscene's horizontal field of view +0x5C (-1.0 = none), rows right, up, BACK at +0x60, +0x70, +0x80 and the
+// position at +0x90. The third row is the camera's BACK, minus the way it looks (the first smoke run wrote the forward vector there:
+// the camera looked the wrong way and no cut was ever met): the game's chase camera at the car's spawn reads (0.474, 0.067, -0.878)
+// there while it looks along (-0.474, -0.067, 0.878) at the car, and the renderer's anchor draw has the same rows as its c12 to c14.
+// The game's world is right-handed (x east, y up, z south): the right is forward x up.
 //
 // WHEN. The runner calls `apply` once an update (Patch_DeltaTimePre, before the game's update) with the scene time; that only stores
 // the time. The rig is evaluated in the hook, so that a car the camera is attached to has had this update's physics: a camera that
@@ -163,9 +166,8 @@ class GuestCars final : public cam::CarSource {
             return false;
         }
         out->position = {m[12], m[13], m[14]};
-        out->frame.right = {m[0], m[1], m[2]};
-        out->frame.up = {m[4], m[5], m[6]};
-        out->frame.forward = {-m[8], -m[9], -m[10]};  // the third row is the car's BACK
+        // rows right, up, BACK (like the camera's)
+        out->frame = cam::FromSlotRows({{m[0], m[1], m[2]}, {m[4], m[5], m[6]}, {m[8], m[9], m[10]}});
         return true;
     }
 
@@ -196,22 +198,31 @@ struct State {
 };
 State g;
 
+// The camera rows of sub_822C0320's frame as they are now: right, up and BACK.
+cam::SlotRows ReadRows(const uint8_t* base, uint32_t sp) {
+    const auto row = [&](uint32_t off) { return cam::Vec3{RF(base, sp + off + 0), RF(base, sp + off + 4), RF(base, sp + off + 8)}; };
+    return {row(kSlotRow0), row(kSlotRow1), row(kSlotRow2)};
+}
+
 void AnnounceCut(const uint8_t* base, uint32_t sp, const char* why, double t) {
     const uint32_t frame = R32(base, kClock + 0x2C);
     ++g.cuts;
     const float px = RF(base, sp + kSlotPos + 0), py = RF(base, sp + kSlotPos + 4), pz = RF(base, sp + kSlotPos + 8);
+    const cam::Basis shot = cam::FromSlotRows(ReadRows(base, sp));  // forward is minus the third row: where the camera looks
     LARECOMP_APP_INFO("[cam] cut #{} ({}) at game frame {}, scene t={:.2f}: the camera is at {:.2f} {:.2f} {:.2f}, looking along {:.3f} {:.3f} {:.3f}",
-                      g.cuts, why, frame, t, px, py, pz, RF(base, sp + kSlotRow2 + 0), RF(base, sp + kSlotRow2 + 4),
-                      RF(base, sp + kSlotRow2 + 8));
+                      g.cuts, why, frame, t, px, py, pz, shot.forward.x, shot.forward.y, shot.forward.z);
 #if defined(LARECOMP_HAS_GPU)
+    // The pose is what the renderer's anchor will read: its forward is minus the third row (the camera's back), see cut_request.h.
     mcla::gpu::cut::CameraPose pose;
     pose.position[0] = px;
     pose.position[1] = py;
     pose.position[2] = pz;
-    for (int c = 0; c < 3; ++c) {
-        pose.up[c] = RF(base, sp + kSlotRow1 + 4 * static_cast<uint32_t>(c));
-        pose.forward[c] = RF(base, sp + kSlotRow2 + 4 * static_cast<uint32_t>(c));
-    }
+    pose.up[0] = shot.up.x;
+    pose.up[1] = shot.up.y;
+    pose.up[2] = shot.up.z;
+    pose.forward[0] = shot.forward.x;
+    pose.forward[1] = shot.forward.y;
+    pose.forward[2] = shot.forward.z;
     mcla::gpu::cut::Submit(frame, pose);
 #else
     (void)frame;
@@ -225,9 +236,10 @@ void WriteCamera(uint8_t* base, uint32_t sp, const cam::View& v) {
         WF(base, sp + off + 8, static_cast<float>(a.z));
         WF(base, sp + off + 12, w);
     };
-    put(kSlotRow0, v.basis.right, 0.0f);
-    put(kSlotRow1, v.basis.up, 0.0f);
-    put(kSlotRow2, v.basis.forward, 0.0f);
+    const cam::SlotRows rows = cam::ToSlotRows(v.basis);  // right, up and BACK (minus forward)
+    put(kSlotRow0, rows.right, 0.0f);
+    put(kSlotRow1, rows.up, 0.0f);
+    put(kSlotRow2, rows.back, 0.0f);
     put(kSlotPos, v.position, 1.0f);
     if (v.fov > 0.0) {
         WF(base, sp + kSlotFov, static_cast<float>(v.fov));

@@ -19,6 +19,11 @@
 // reported. The field of view is left out of the match: the game scales it after the hook (Patch_FOVScale), so the renderer's
 // value is not the hook's; a cut of the field of view alone is left to the renderer's own rule.
 //
+// FORWARD IS MINUS THE THIRD ROW. The camera slots the hook writes (and the anchor's c12 to c15 that come out of them) hold the rows
+// right, up and BACK: the camera looks along minus the third row. A request's forward is that look direction, so the hook submits the
+// third row negated (the first smoke run submitted the row itself: the request was the opposite of every anchor's camera and was
+// never met, three cuts in a row; cut_request_test.cpp has that case with the numbers of the game's own camera).
+//
 // THE MOTION BLUR. The anchor draw (temporal_identities.h) is the game's motion blur. It reads, in its pixel constants c69 to
 // c164, the previous frame's view-projection to guest pixels (c69) and, for each of the 23 vehicle ids, the same with the vehicle's
 // own motion (c69 + 4 id): a pixel's streak runs from where that matrix puts the pixel to where it is. On the first frame of a
