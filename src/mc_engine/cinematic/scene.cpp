@@ -600,8 +600,7 @@ class Parser {
         result_.scene.end = t;
     }
 
-    // camera, cut, hud and start: only their shape is checked here; the packages that apply them read the words. car: its verbs
-    // are read by car_verbs.h (spawn, delete, profile); the others are another package's.
+    // camera, cut, hud, car and start: only their shape is checked here; the packages that apply them read the words.
     void Opaque(int line, double t, const std::string& verb, const Args& a) {
         Event e;
         e.t = t;
