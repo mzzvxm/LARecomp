@@ -818,35 +818,22 @@ uint32_t CreateUIMenuState(const char* name) {
 
 // ── CVar access by name (uniform for larecomp AND SDK cvars) ───────────
 
-// ── Restart-only cvars: held here, never applied live ──────────────────
+// ── Held values: what the next save writes into larecomp.toml ──────────
 //
-// SetFlagByName changes a kRequiresRestart cvar's LIVE value -- the lifecycle
-// only marks it as pending a restart. The native runtime reads mcla_native_gfx
-// in every draw hook and bakes msaa/aniso into targets and samplers as they are
-// created, so flipping them mid-session would send the next draw down the other
-// path or mix sample counts. A menu change to one of these is therefore kept
-// in g_deferred, shown on the row, and only written into larecomp.toml when the
-// submenu saves; it takes effect on the next launch, as the (RESTART) suffix
-// says. RENDERER is four of them behind one row (kRendererChoices, below).
-const char* const kDeferredCvars[] = {
-    "mcla_native_gfx_msaa",
-    "mcla_native_gfx_aniso",
-    // The SDK's API switch, read at startup by the emulated GPU's plugin and by
-    // the Plume renderer alike.
-    "graphics_backend",
-    // The render scale (mcla_gpu_resolution_scale, mcla_gpu_fsr_preset) and the upscaler modes
-    // (mcla_gpu_fsr31_mode, _fsr4_mode, _dlss_mode) are not here: the renderer makes its targets
-    // again at the new size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
-};
-
+// A choice in g_deferred is not the live cvar's value: CvarGet answers with it,
+// and a save (SaveSettingsNow, WriteDeferredCvars) writes it. What is held today
+// is the ONLINE choice (SYSTEM LINK, below), which system_link.cpp applies
+// itself. The RENDERER and GRAPHICS API rows, which were held here too (a
+// restart-only cvar changes its live value with SetFlagByName), are not in the
+// pause menu any more (SETTINGS-REVIEW.md, SX-G5): the launcher's
+// Troubleshooting section sets them (the renderer is four cvars, mcla_gpu and
+// the mcla_native_gfx ones, written together; --graphics_backend works on the
+// command line). The render scale (mcla_gpu_resolution_scale,
+// mcla_gpu_fsr_preset) and the upscaler modes (mcla_gpu_fsr31_mode, _fsr4_mode,
+// _dlss_mode) were never held: the renderer makes its targets again at the new
+// size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
 std::mutex g_deferred_mutex;
 std::vector<std::pair<std::string, std::string>> g_deferred;
-
-bool IsDeferredCvar(std::string_view name) {
-    for (const char* d : kDeferredCvars)
-        if (name == d) return true;
-    return false;
-}
 
 void SetDeferred(const char* name, const char* value) {
     std::lock_guard<std::mutex> lock(g_deferred_mutex);
@@ -886,60 +873,7 @@ std::string TomlLineKey(const std::string& line) {
     return line.substr(p, e - p);
 }
 
-// RENDERER picks one of three renderers, and which one runs is four
-// restart-only cvars: mcla_gpu (the Plume renderer, src/gpu) and
-// mcla_native_gfx (the legacy native runtime) select, both need the
-// no-command-processor mode, and the legacy one renders continuously. The row's
-// cvar, "renderer", is not a cvar: CvarGet and CvarSet read and write the four
-// through it, held for the next launch like every restart-only row. NATIVE is
-// the Plume renderer; the legacy runtime stays reachable as LEGACY. A build
-// without the Plume renderer has no mcla_gpu and no NATIVE.
-constexpr const char* kRendererCvar = "renderer";
-struct RendererChoice {
-    const char* value;       // the row's value
-    const char* gpu;         // mcla_gpu, or null when the build has none
-    const char* native;      // mcla_native_gfx
-    const char* nocp;        // mcla_native_gfx_nocp
-    const char* continuous;  // mcla_native_gfx_continuous
-};
-#if defined(LARECOMP_HAS_GPU)
-constexpr const char* kNoGpu = "false";
-#else
-constexpr const char* kNoGpu = nullptr;
-#endif
-const RendererChoice kRendererChoices[] = {
-    {"xenia",  kNoGpu, "false", "false", "false"},
-#if defined(LARECOMP_HAS_GPU)
-    {"plume",  "true",  "false", "true",  "false"},
-#endif
-};
-
-std::string CvarGet(const char* name);
-
-std::string RendererGet() {
-#if defined(LARECOMP_HAS_GPU)
-    if (CvarGet("mcla_gpu") == "true") return "plume";
-#endif
-    // The legacy runtime is no longer offered; a toml that still asks for it
-    // shows up as XENIA, which is what the next save will write.
-    return "xenia";
-}
-
-void RendererSet(std::string_view value) {
-    for (const RendererChoice& c : kRendererChoices) {
-        if (value != c.value) continue;
-        MC_INFO("[pause-menu] renderer -> '{}' held for the next launch", value);
-        if (c.gpu) SetDeferred("mcla_gpu", c.gpu);
-        SetDeferred("mcla_native_gfx", c.native);
-        SetDeferred("mcla_native_gfx_nocp", c.nocp);
-        SetDeferred("mcla_native_gfx_continuous", c.continuous);
-        return;
-    }
-    MC_ERROR("[pause-menu] renderer '{}' is not one this build offers; nothing changed", value);
-}
-
 std::string CvarGet(const char* name) {
-    if (std::string_view(name) == kRendererCvar) return RendererGet();
     {
         std::lock_guard<std::mutex> lock(g_deferred_mutex);
         for (const auto& [k, v] : g_deferred)
@@ -970,17 +904,8 @@ void NoteMenuWrite(const char* name);
 
 void CvarSet(const char* name, const char* value) {
     NoteMenuWrite(name);
-    if (std::string_view(name) == kRendererCvar) {
-        RendererSet(value);
-        return;
-    }
     if (std::string_view(name) == kHdrTestPatternCvar)
         g_hdr_pattern_by_menu.store(std::string_view(value) == "true", std::memory_order_relaxed);
-    if (IsDeferredCvar(name)) {
-        MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
-        SetDeferred(name, value);
-        return;
-    }
     // Logged before the write, not after: a cvar's change callbacks run
     // synchronously on this (guest) thread with the cvar registry mutex held,
     // so an apply that hangs used to leave no trace at all -- the last line in
@@ -1402,26 +1327,9 @@ using mcla_menu::XeniaOnly;
 
 // ── Value tables ───────────────────────────────────────────────────────
 
-#if !defined(LARECOMP_HAS_GPU)
-// A build without the Plume renderer has no RENDER SCALE row (upscaling_menu.cpp): the emulated
-// renderer's own draw scale stays a row of the DISPLAY page.
-constexpr double kResScaleVals[]   = {1.0, 2.0, 3.0, 4.0};
-#endif
 constexpr const char* kGpuMsaaVals[]  = {"off", "2", "4", "8"};
 constexpr const char* kGpuMsaaNames[] = {"OFF", "2X", "4X", "8X"};
 
-constexpr const char* kEffectVals[]  = {"bilinear", "cas", "fsr", "fsr2", "fsr3"};
-constexpr const char* kEffectNames[] = {"BILINEAR", "CAS", "FSR 1", "FSR 2", "FSR 3"};
-constexpr const char* kFsrQVals[]  = {"auto", "nativeaa", "quality", "balanced",
-                                      "performance", "ultra_performance"};
-constexpr const char* kFsrQNames[] = {"AUTO", "NATIVE AA", "QUALITY", "BALANCED",
-                                      "PERFORMANCE", "ULTRA PERF"};
-constexpr double kCasSharpVals[] = {0.0, 0.25, 0.5, 0.75, 1.0};
-constexpr double kFsrSharpVals[] = {0.0, 0.2, 0.5, 1.0, 2.0};
-
-constexpr const char* kFreecamVals[]  = {"off", "free"};
-constexpr const char* kFreecamNames[] = {"OFF", "ON"};
-constexpr double kCamSpeedVals[] = {10.0, 20.0, 40.0, 80.0, 150.0, 300.0};
 constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
@@ -1432,7 +1340,7 @@ constexpr double kLodValues[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0};
 constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.0};
 
 // Performance. Traffic/ped/parked mirror the ranges the cvars declare; the
-// fragment-tune tables bracket the two values the engine itself uses — 250 is
+// fragment-tune table brackets the two values the engine itself uses — 250 is
 // the fragTuneStruct constructor default and 3000 is what the shipped tune file
 // loads. 0 is "leave the tune file alone" and renders as STOCK.
 constexpr double kUnspawnVals[]      = {100.0, 150.0, 200.0, 250.0, 300.0,
@@ -1440,21 +1348,6 @@ constexpr double kUnspawnVals[]      = {100.0, 150.0, 200.0, 250.0, 300.0,
 constexpr double kDensityVals[]      = {0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
 constexpr double kFragDrawDistVals[] = {0.0, 250.0, 500.0, 1000.0, 1500.0,
                                         2000.0, 3000.0, 4000.0};
-constexpr double kBreakFpsVals[]     = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
-
-// Which render phase bits SHADOWS clears.
-//
-// STOCK is what the game's own `noshadows` switch clears: the sun cascade
-// phases 0x20/0x40/0x80/0x100 plus 0x2000/0x4000. Measured at midnight those
-// are not even in renderer+364, so clearing them does nothing — the shadow that
-// is actually drawn comes from phase 0x400, which sub_823112C0 routes to the
-// shadowNight / shadowFastBlend technique group and which `noshadows` leaves
-// alone. Hence BLEND.
-//
-// ALL also takes 0x10/0x200/0x800, which are live passes unrelated to shadows;
-// it corrupts the frame and is only useful for narrowing a phase down.
-constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
-constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
 
 // Time of day. The four the game's own TodMenu uses (sunrise 6.0, afternoon
 // 16.75, sunset 17.4, night 23.5) plus round hours to fill the day out.
@@ -1586,13 +1479,13 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // to the running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list).
 // A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
 // comes back when the renderer is switched back.
-// CHECK: on XENIA (RENDERER set to XENIA, restarted) the DISPLAY page lists DISPLAY MODE, VSYNC,
-// RESOLUTION, DISPLAY GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, RENDER SCALE, MSAA and
-// ANISOTROPIC (10 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
+// CHECK: on XENIA (started with the XENIA renderer: the launcher's Troubleshooting section) the DISPLAY
+// page lists DISPLAY MODE, VSYNC, RESOLUTION, DISPLAY GAMMA, FPS LIMIT, SMOOTH UI, RENDER SCALE, MSAA and
+// ANISOTROPIC (9 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
 // disable_msaa, RENDER SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale;
 // leaving the menu after changing either of those two offers "Restart now?". ANISOTROPIC is live and
 // writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
-// GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
+// GAMMA, FPS LIMIT, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
 // ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes
 // mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
 // SETTINGS.
@@ -1647,14 +1540,14 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 //
 // The page is three runs of rows, in this order (the last two come from VideoExtraRows):
 //   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
-//      GAMMA, FPS LIMIT, PACE AT PRESENTATION, SMOOTH UI);
+//      GAMMA, FPS LIMIT, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
 //      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering
 //      and occlusion that used to sit on the RENDERER page);
 //   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 19 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
+// At most 18 rows (an RTX 50 series card, which has the frame generation multiplier row); a page over
 // kMaxRowsPerMenu (24) is refused whole.
-// CHECK: that a page of 18 or 19 rows scrolls in the pause menu like the 12 and 14 row ones do (the
+// CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
 // cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
 // drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
@@ -1669,9 +1562,6 @@ const ItemDef kVideoItems[] = {
 #endif
     WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
                  &mcla_menu::kResolutionDynamics),
-#if !defined(LARECOMP_HAS_GPU)
-    Dbl("PM_RxResScale", "resolution_scale", "RES SCALE: ", kResScaleVals, 4, "%gX", " (RESTART)"),
-#endif
 #if defined(LARECOMP_HAS_GPU)
     // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
     // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
@@ -1687,7 +1577,6 @@ const ItemDef kVideoItems[] = {
     WithDynamics(Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
                      "UNCAPPED"),
                  &mcla_menu::kFpsLimitDynamics),
-    Bool("PM_RxPaceAtSwap",  "pace_at_swap",             "PACE AT PRESENTATION: "),
     // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
     Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
@@ -1697,7 +1586,6 @@ const ItemDef kVideoItems[] = {
 // Width: the longest label is "ORIGINAL INTRO SPEED (NEXT START)" (33) and the values are ON / OFF (3),
 // 36 together, under the 41 characters a page can take ("Page width" above ItemRowLabel).
 const ItemDef kRecompItems[] = {
-    Bool("PM_RxRealDelta",   "real_frame_delta",         "REAL FRAME DELTA: "),
     Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
     // The legal screens and logos it paces have played before this menu can be opened, so a change
     // is seen at the next start. The word is NEXT START and not RESTART on purpose: nothing needs
@@ -1706,8 +1594,6 @@ const ItemDef kRecompItems[] = {
     // edge, and flipping the row then leaving the page does not offer "restart now?".
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: ", false,
          " (NEXT START)"),
-    // BadassBaboon's Recomp Adjustments: in-game pause menu options
-    Bool("PM_RxSmoothChassis", "smooth_chassis_depth",   "SUSPENSION FIX: "),
 };
 
 // CONTROLLER: everything about the pad, in three runs: the game's vibration, the trigger effects
@@ -1723,8 +1609,8 @@ const ItemDef kRecompItems[] = {
 // with QUIT now, one more than before): the cursor reaches every button including QUIT, nothing is cut
 // off the bottom of the tab's panel, and A opens a page of 8 rows in the order above with the line
 // "Vibration, triggers, sticks and buttons." under it (not cut at the right edge). RECOMP SETTINGS has
-// four rows (REAL FRAME DELTA, HIDE MOUSE POINTER, ORIGINAL INTRO SPEED, SUSPENSION FIX); INTERFACE >
-// UI has the three colour rows and SPEED UNITS, the colour swatches still lined up with their rows.
+// two rows (HIDE MOUSE POINTER, ORIGINAL INTRO SPEED); INTERFACE > UI has the three colour rows and
+// SPEED UNITS, the colour swatches still lined up with their rows.
 // Every row keeps the cvar it had (a value set on RECOMP SETTINGS before this change reads the same
 // here, and the page's rows write larecomp.toml as before), and with no pad connected the page lists
 // and steps as usual.
@@ -1752,66 +1638,35 @@ const ItemDef kControllerItems[] = {
 
 // Everything that trades image quality for framerate, in one place.
 //
-// CHEAP CAR SHADOW, TREE IMPOSTORS, FOLIAGE and SCREEN BLUR reactivate the game's
-// own dev switches (fastVehShadows, noimpostors, notrees, nofsblur). The game
-// reads them when a system is made, not every frame: the first, the second and
-// the last at the start (the fork measured it for the impostor targets and lists
-// the car shadow and full-screen blur with them), so those rows say "(RESTART)";
-// FOLIAGE's prop parse is "(ON RELOAD)" (render_phases.cpp, unmeasured). The
-// SHADOWS and FOLIAGE SHADOWS rows are live.
+// The developer switches that used to be here are not rows of the normal menus any more
+// (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, FOLIAGE, SINGLE TILE, FENCE SPIN YIELD,
+// BREAK FPS FLOOR and, on DISPLAY, PACE AT PRESENTATION) are on the DEBUG menu's PERFORMANCE page
+// (debug_menu_pages.cpp). CHEAP CAR SHADOW, TREE IMPOSTORS and SCREEN BLUR are read once at start, so
+// they are launch arguments (--perf_fast_vehicle_shadows, --perf_no_impostors,
+// --perf_no_fullscreen_blur) and rows of the launcher's Advanced tab. CITY AMBIENT CULLING
+// (enable_ambient_tuning), the master switch over TRAFFIC RANGE, PEDESTRIANS and PARKED CARS, is no
+// row either: those three stand alone and 400M / 1X / 1X is the stock game (the cvar stays, so an
+// old larecomp.toml that turns it off still acts).
 //
-// PROP DRAW DIST and BREAK FPS FLOOR patch rage::fragTuneStruct in place after
-// the game has parsed $/tune/types/fragments, so they apply live. "Prop" here
-// means a breakable fragment (pole, sign, fence, barrier), not the whole world.
-// PERFORMANCE is a hub over four menus of its eighteen rows, split by what the
-// rows touch.
+// PROP DRAW DIST patches rage::fragTuneStruct in place after the game has parsed
+// $/tune/types/fragments, so it applies live. "Prop" here means a breakable fragment
+// (pole, sign, fence, barrier), not the whole world.
+// PERFORMANCE is a hub over three menus, split by what the rows touch.
 const ItemDef kPerfItems[] = {
-    Submenu("PM_RxSubPerfShad", "SHADOWS",       "RxPerfShadMenu"),
     Submenu("PM_RxSubPerfRend", "RENDERING",     "RxPerfRendMenu"),
     Submenu("PM_RxSubPerfWorld", "WORLD DENSITY", "RxPerfWorldMenu"),
     Submenu("PM_RxSubPerfLod",  "LOD AND FOLIAGE", "RxPerfLodMenu"),
 };
 
-const ItemDef kPerfShadItems[] = {
-    Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
-    Str ("PM_RxShadowBits",  "perf_shadow_phase_bits",    "SHADOW PHASES: ",
-         kShadowBitVals, kShadowBitNames, 4),
-    Bool("PM_RxFastVehShad", "perf_fast_vehicle_shadows", "CHEAP CAR SHADOW: ", false, " (RESTART)"),
-    // Load-time switches: noimpostors skips allocating the impostor render
-    // targets, which the game makes once, with the world, at start-up (the fork
-    // measured it): a restart. notrees skips the prop parse; node+4 is kept in
-    // sync with the cvar every frame, so a change lands the next time that
-    // system loads.
-    // CHECK: whether the prop parse runs again after a district change or only
-    // at start-up; if only then, FOLIAGE says "(RESTART)" too.
-    Bool("PM_RxNoImpostors", "perf_no_impostors",         "TREE IMPOSTORS: ", true, " (RESTART)"),
-    Bool("PM_RxNoTrees",     "perf_no_trees",             "FOLIAGE: ", true, " (ON RELOAD)"),
-};
-
+// RENDERING: SHADOWS off is the biggest single FPS win and is live (render_phases.cpp); DEPTH OF
+// FIELD is a picture preference. The vendor's latency reducer row is appended after these
+// (LowLatencyMenuRows).
 const ItemDef kPerfRendItems[] = {
-    Bool("PM_RxNoFsBlur",    "perf_no_fullscreen_blur",   "SCREEN BLUR: ", true, " (RESTART)"),
+    Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
     Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
-    // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
-    // Patch_EdramLimit lets through only while this is on (graphics.cpp)? If a live ON
-    // misbehaves, this row says "(RESTART)" and the cvar is tagged for it.
-    Bool("PM_RxSingleTile",  "single_tile",               "SINGLE TILE: "),
-    // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so
-    // the next fence poll already sees a change made here. Worth a row rather
-    // than a toml line because whether it helps or hurts depends on the host
-    // CPU, not on the game. It replaces the guest's fence-poll pause with
-    // YieldProcessor plus a SwitchToThread every 16th call, and the guest
-    // reaches that poll about 271k times per frame. Measured on an 8C/16T with
-    // three threads near 100%: 644k SwitchToThread a second costing 10 ms/s in
-    // total, because with cores to spare each one returns without switching --
-    // no gain, no loss. On a machine with fewer cores those same calls switch
-    // for real and the poll thread pays microseconds each time, so ON can cost
-    // far more than it saves. Leave it ON, turn it OFF if the game stutters.
-    Bool("PM_RxFenceSpin",   "fence_spin_throttle",       "FENCE SPIN YIELD: "),
 };
 
 const ItemDef kPerfWorldItems[] = {
-    // BadassBaboon's Recomp Adjustments: city ambient density.
-    Bool("PM_RxAmbientTune", "enable_ambient_tuning",     "CITY AMBIENT CULLING: "),
     Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
          kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
     Dbl ("PM_RxPedDensity",  "ped_density_scale",    "PEDESTRIANS: ",
@@ -1821,9 +1676,6 @@ const ItemDef kPerfWorldItems[] = {
     Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
          kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
          "%gM", "", "STOCK"),
-    Dbl ("PM_RxBreakFps",    "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
-         kBreakFpsVals, int(sizeof(kBreakFpsVals) / sizeof(kBreakFpsVals[0])),
-         "%g", "", "STOCK"),
 };
 
 const ItemDef kPerfLodItems[] = {
@@ -1831,45 +1683,6 @@ const ItemDef kPerfLodItems[] = {
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
     Dbl ("PM_RxLodCity",     "lod_city_scale",    "CITY LOD: ",    kLodValues, 6, "%gX"),
-};
-
-// The SDK presenter builds its paint config from these four cvars once, when it is
-// made (BuildGuestOutputPaintConfigFromCVar in presenter.cpp, called only from
-// InitializeCommonSurfaceIndependent), and nothing calls its
-// SetGuestOutputPaintConfigFromUIThread, so a change here is seen at the next start.
-const ItemDef kFfxItems[] = {
-    XeniaOnly(Str("PM_RxUpscaler",   "present_effect", "UPSCALER: ",
-         kEffectVals, kEffectNames, 5, " (RESTART)")),
-    XeniaOnly(Str("PM_RxFsrQuality", "present_fsr_quality_mode", "FSR QUALITY: ",
-         kFsrQVals, kFsrQNames, 6, " (RESTART)")),
-    XeniaOnly(Dbl("PM_RxCasSharp",   "present_cas_additional_sharpness",
-         "CAS SHARPNESS: ", kCasSharpVals, 5, "%g", " (RESTART)")),
-    XeniaOnly(Dbl("PM_RxFsrSharp",   "present_fsr_sharpness_reduction",
-         "FSR SHARP REDUCE: ", kFsrSharpVals, 5, "%g", " (RESTART)")),
-};
-
-// Renderer. The RENDERER page is the renderer and nothing else: RENDERER picks the emulated path
-// (Xenia's command processor) or the Plume renderer (NATIVE), and brings the no-CP mode and continuous
-// rendering along (kRendererChoices), so neither has a row of its own; GRAPHICS API is the SDK's
-// graphics_backend, which both read. Both are restart-only. The picture settings that used to be here
-// (POST AA, ambient occlusion, anisotropic filtering) are on DISPLAY now, next to the upscaler and
-// MSAA (kPictureItems). The legacy runtime is no longer offered here.
-// Width: "GRAPHICS API (RESTART)" is 22 characters and "NATIVE" / "VULKAN" 6.
-const char* const kApiVals[]       = {"auto", "d3d12", "vulkan"};
-const char* const kApiNames[]      = {"AUTO", "D3D12", "VULKAN"};
-#if defined(LARECOMP_HAS_GPU)
-const char* const kRendererVals[]  = {"xenia", "plume"};
-const char* const kRendererNames[] = {"XENIA", "NATIVE"};
-constexpr int kNumRenderers = int(sizeof(kRendererVals) / sizeof(kRendererVals[0]));
-#endif
-
-const ItemDef kNativeItems[] = {
-#if defined(LARECOMP_HAS_GPU)
-    Str ("PM_RxRenderer",    kRendererCvar,           "RENDERER: ",
-         kRendererVals, kRendererNames, kNumRenderers, " (RESTART)"),
-#endif
-    Str ("PM_RxGfxApi",      "graphics_backend",      "GRAPHICS API: ",
-         kApiVals, kApiNames, 3, " (RESTART)"),
 };
 
 #if defined(LARECOMP_HAS_GPU)
@@ -1918,8 +1731,6 @@ const ItemDef kPictureItems[] = {
                             &mcla_menu::kPostAaDynamics)),
     NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
                     kNativeAnisoVals, kNativeAnisoNames, 6)),
-#else
-    Bool("PM_RxMsaa",        "disable_msaa",             "MSAA: ",  true, " (RESTART)"),
 #endif
     // CHECK: live on the emulated GPU (the SDK says kHotReload): a texture seen before the change
     // takes the new level when its sampler is made again.
@@ -2036,26 +1847,18 @@ constexpr const char* kRearViewPosNames[] = {"STOCK", "LEFT TOP", "MIDDLE TOP",
 const ItemDef kCamHubItems[] = {
     Submenu("PM_RxSubCamChase", "CHASE CAMERA", "RxCamChaseMenu"),
     Submenu("PM_RxSubCamFov",   "FOV",          "RxCamFovMenu"),
-    Submenu("PM_RxSubCamFree",  "FREECAM",      "RxCamFreeMenu"),
     Submenu("PM_RxSubCamRear",  "REAR VIEW",    "RxCamRearMenu"),
     Submenu("PM_RxSubCamLook",  "LOOK AROUND",  "RxCamLookMenu"),
     Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
 };
 
 const ItemDef kCamChaseItems[] = {
-    // BadassBaboon's Recomp Adjustments: in-game pause menu smooth chase camera toggle
-    Bool("PM_RxSmoothCam",    "smooth_chase_cam", "SMOOTH CHASE CAM: "),
     Dbl ("PM_RxSmoothFactor", "chase_cam_smoothing_factor", "CAM SMOOTH FACTOR: ", kCamSmoothVals, 7, "%.1fX"),
 };
 
 const ItemDef kCamFovItems[] = {
     Dbl ("PM_RxFov1P",        "fov_1p_scale", "1P FOV: ", kFovValues, 13, "%.1fX"),
     Dbl ("PM_RxFov3P",        "fov_3p_scale", "3P FOV: ", kFovValues, 13, "%.1fX"),
-};
-
-const ItemDef kCamFreeItems[] = {
-    Str ("PM_RxFreecam",      "debug_cam", "FREECAM: ", kFreecamVals, kFreecamNames, 2),
-    Dbl ("PM_RxCamSpeed",     "debug_cam_speed", "CAM SPEED: ", kCamSpeedVals, 6, "%g"),
 };
 
 // The rear view mirror the retail game shipped switched off (rear_view.cpp).
@@ -2197,8 +2000,6 @@ const ItemDef kUiItems[] = {
 // no button of its own (MenuIsNested).
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
-    Submenu("PM_RxSubNative", "RENDERER",    "RxNativeMenu"),
-    XeniaOnly(Submenu("PM_RxSubFfx", "FIDELITY FX", "RxFfxMenu")),
     Submenu("PM_RxSubPerf",   "PERFORMANCE", "RxPerfMenu"),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Submenu("PM_RxSubTex", "TEXTURE MODS", "RxTexMenu")),
@@ -2211,18 +2012,13 @@ const ItemDef kGameHubItems[] = {
     Submenu("PM_RxSubDiff",   "DIFFICULTY",      "RxDiffMenu"),
 };
 // The AI: one percent for the difficulty, then the rubberband taken apart so
-// each half can be moved alone. Every row but the on/off is live. Turning the
-// rubberband OFF removes the leash on a leading AI as well (MinThrottle), so the
-// scales below are the fairer way to soften it.
+// each half can be moved alone. Every row is live. (The on/off switch that
+// turned the rubberband off whole, and with it the leash on a leading AI
+// (MinThrottle), is not a row any more: the scales below soften it.)
 const ItemDef kDiffItems[] = {
     WithDynamics(Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
                      kAiDiffVals, int(sizeof(kAiDiffVals) / sizeof(kAiDiffVals[0])), "%g"),
                  &kAiDiffDynamics),
-    // CHECK: when the three manager hooks run (rubberband.cpp). They read the cvar on every
-    // call, so it may not need a restart, but whether a flip mid-race shows at once, at the
-    // next race or only at the next start is unmeasured (nothing in the code says). "(RESTART)"
-    // is true whichever it is; if a flip shows at once, drop the suffix and retag the cvar.
-    Bool("PM_RxRubber",      "disable_rubberbanding",    "AI RUBBERBAND: ",   true, " (RESTART)"),
     Dbl ("PM_RxRbCatchup",   "rubberband_catchup_scale", "CATCH-UP (AI BEHIND): ",
          kRbScaleVals, int(sizeof(kRbScaleVals) / sizeof(kRbScaleVals[0])), "%gX"),
     Dbl ("PM_RxRbHoldback",  "rubberband_holdback_scale", "HOLD-BACK (AI AHEAD): ",
@@ -2253,12 +2049,10 @@ const ItemDef kExtrasHubItems[] = {
          kStartGarageVals, kStartGarageNames, 4, " (RESTART)"),
 };
 #if defined(LARECOMP_HAS_GPU)
-// Texture mods on the Plume renderer: the frame's textures to
-// <mods>/textures_dump/, and the textures_replace/ folders read again.
+// Texture mods on the Plume renderer. The two modder actions (DUMP SCENE TEXTURES, RELOAD TEXTURE
+// MODS) are on the DEBUG menu's TOOLS page (debug_menu_pages.cpp).
 const ItemDef kTexItems[] = {
     Bool("PM_RxTexMods",     "texture_mods", "TEXTURE MODS: "),
-    Action("PM_RxTexDump",   kActionDumpTextures),
-    Action("PM_RxTexReload", kActionReloadTextures),
 };
 #endif
 // NO first: the cursor starts on the first row, so a stray A keeps the game.
@@ -2315,9 +2109,9 @@ struct MenuDef {
 bool MenuLocked(const MenuDef& md) { return md.debug_only && !larecomp::DebugMenuUnlocked(); }
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
-// restart-only choice (RendererSet only holds the new one), so it cannot change
-// under an open menu and the rows listed never move. Read from the live cvar,
-// not CvarGet, which would answer with the choice held for the next launch.
+// restart-only choice (the launcher's Troubleshooting section sets it), so it
+// cannot change under an open menu and the rows listed never move. Read from
+// the live cvar.
 uint8_t RunningRendererMask() {
     static const uint8_t mask = [] {
 #if defined(LARECOMP_HAS_GPU)
@@ -2378,7 +2172,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
      "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
-    {"PM_RxTabGfx", "GRAPHICS", "Display, renderer and performance.",
+    {"PM_RxTabGfx", "GRAPHICS", "Display, performance and texture mods.",
      "RxGfxMenu",
      kGfxHubItems, int(sizeof(kGfxHubItems) / sizeof(kGfxHubItems[0]))},
     {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
@@ -2402,10 +2196,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
-    {"PM_RxTabPerfShad", "SHADOWS", "Shadow passes and their cost.",
-     "RxPerfShadMenu",
-     kPerfShadItems, int(sizeof(kPerfShadItems) / sizeof(kPerfShadItems[0]))},
-    {"PM_RxTabPerfRend", "RENDERING", "Screen effects and frame pacing.",
+    {"PM_RxTabPerfRend", "RENDERING", "Shadows, depth of field and latency.",
      "RxPerfRendMenu",
      kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0])),
      LowLatencyMenuRows},
@@ -2416,16 +2207,10 @@ const MenuDef kMenus[] = {
      "RxPerfLodMenu",
      kPerfLodItems, int(sizeof(kPerfLodItems) / sizeof(kPerfLodItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabTex", "TEXTURE MODS", "Dump the game's textures, reload mods.",
+    {"PM_RxTabTex", "TEXTURE MODS", "Texture mods on or off.",
      "RxTexMenu",
      kTexItems, int(sizeof(kTexItems) / sizeof(kTexItems[0]))},
 #endif
-    {"PM_RxTabFfx", "FIDELITY FX", "Upscaling and sharpening of the image.",
-     "RxFfxMenu",
-     kFfxItems, int(sizeof(kFfxItems) / sizeof(kFfxItems[0]))},
-    {"PM_RxTabNative", "RENDERER", "Renderer and graphics API.",
-     "RxNativeMenu",
-     kNativeItems, int(sizeof(kNativeItems) / sizeof(kNativeItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
     // The paused world behind the menu shows the highlights too (the UI is a layer in the pause
     // view as well, gpu/frame_layers.h), so the HIGHLIGHTS row's change is seen at once. This line
@@ -2437,7 +2222,7 @@ const MenuDef kMenus[] = {
      "RxGpuHdrMenu",
      kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif
-    {"PM_RxTabCam", "CAMERA", "Chase camera, free camera and rear view.",
+    {"PM_RxTabCam", "CAMERA", "Chase camera, FOV, rear view, free look.",
      "RxCamMenu",
      kCamHubItems, int(sizeof(kCamHubItems) / sizeof(kCamHubItems[0]))},
     {"PM_RxTabCamChase", "CHASE CAMERA", "Smoothing of the chase camera.",
@@ -2446,9 +2231,6 @@ const MenuDef kMenus[] = {
     {"PM_RxTabCamFov", "FOV", "Field of view, cockpit and chase.",
      "RxCamFovMenu",
      kCamFovItems, int(sizeof(kCamFovItems) / sizeof(kCamFovItems[0]))},
-    {"PM_RxTabCamFree", "FREECAM", "Free camera and its speed.",
-     "RxCamFreeMenu",
-     kCamFreeItems, int(sizeof(kCamFreeItems) / sizeof(kCamFreeItems[0]))},
     {"PM_RxTabCamRear", "REAR VIEW", "The rear view mirror.",
      "RxCamRearMenu",
      kCamRearItems, int(sizeof(kCamRearItems) / sizeof(kCamRearItems[0]))},
@@ -2795,10 +2577,9 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT"). The
-// RENDERER page has two rows: "GRAPHICS API (RESTART)" 22 and "RENDERER (RESTART)" 18, values at most 6.
+// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
-// STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has four
+// STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
 //
 // The row's own text. Carbon rows say so when there is no car to edit, since

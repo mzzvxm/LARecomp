@@ -1615,11 +1615,8 @@ constexpr mcla_menu::ItemDef kCameraLookRows[] = {
     mcla_menu::Dbl ("PM_RxFlRate",     "cam_freelook_return_rate",  "RECENTER SPEED: ",
                     kLookRateVals,
                     int(sizeof(kLookRateVals) / sizeof(kLookRateVals[0])), "%gX"),
-    // Turns the camera at the camera state instead of at the finished matrix,
-    // so the game's own collision resolves it -- and the flip below covers the
-    // one thing the maths could not settle. Both explained on the cvars.
-    mcla_menu::Bool("PM_RxFlCollide",  "cam_freelook_collide",      "CAMERA COLLISION: "),
-    mcla_menu::Bool("PM_RxFlCollFlip", "cam_freelook_cs_invert",    "COLLISION FLIP: "),
+    // CAMERA COLLISION and COLLISION FLIP (cam_freelook_collide, cam_freelook_cs_invert) are not
+    // here: they are unproven switches, rows of the DEBUG menu's CAMERA page (debug_menu_pages.cpp).
 };
 
 }  // namespace

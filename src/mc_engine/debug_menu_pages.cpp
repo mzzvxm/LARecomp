@@ -63,8 +63,17 @@ constexpr SlotTable MakeSlotTable() {
 }
 constexpr SlotTable kMenuCamSlots = MakeSlotTable();
 
-// The same lists as the pause menu's SHADOWS and PROP rows (pause_menu.cpp kShadowBitVals, kBreakFpsVals):
-// ALL (BREAKS) takes passes that are not shadows and corrupts the frame; it is here to narrow a phase down.
+// Which render phase bits SHADOWS clears (SHADOW PHASES).
+//
+// STOCK is what the game's own `noshadows` switch clears: the sun cascade phases
+// 0x20/0x40/0x80/0x100 plus 0x2000/0x4000. Measured at midnight those are not even in
+// renderer+364, so clearing them does nothing: the shadow that is actually drawn comes from phase
+// 0x400, which sub_823112C0 routes to the shadowNight / shadowFastBlend technique group and which
+// `noshadows` leaves alone. Hence BLEND.
+//
+// ALL also takes 0x10/0x200/0x800, which are live passes unrelated to shadows; it corrupts the
+// frame and is only useful for narrowing a phase down. (These lists were rows of the normal
+// PERFORMANCE pages until SX-G5.)
 constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
 constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
 constexpr double kBreakFpsVals[]        = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
@@ -131,19 +140,30 @@ const ItemDef kDebugFixesItems[] = {
 };
 
 // PERFORMANCE: the switches that trade frame pacing, CPU time and picture for speed, and that have no row
-// in the normal menus once SX-G5 is done (owner's answer 3: debug for now; a switch comes back after it
-// is measured as a safe win on weak hardware). Not here: CHEAP CAR SHADOW, TREE IMPOSTORS and SCREEN BLUR
+// in the normal menus (SX-G5; owner's answer 3: debug for now; a switch comes back after it is
+// measured as a safe win on weak hardware). Not here: CHEAP CAR SHADOW, TREE IMPOSTORS and SCREEN BLUR
 // (perf_fast_vehicle_shadows, perf_no_impostors, perf_no_fullscreen_blur) are read once at start, so they
 // are launch arguments, not rows.
 const ItemDef kDebugPerformanceItems[] = {
     Bool("PM_RxDbgPaceSwap",   "pace_at_swap",           "PACE AT PRESENTATION: "),
+    // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so the next fence poll
+    // already sees a change made here. Whether it helps or hurts depends on the host CPU, not on the
+    // game. It replaces the guest's fence-poll pause with YieldProcessor plus a SwitchToThread every
+    // 16th call, and the guest reaches that poll about 271k times per frame. Measured on an 8C/16T with
+    // three threads near 100%: 644k SwitchToThread a second costing 10 ms/s in total, because with cores
+    // to spare each one returns without switching -- no gain, no loss. On a machine with fewer cores
+    // those same calls switch for real and the poll thread pays microseconds each time, so ON can cost
+    // far more than it saves. Leave it ON, turn it OFF if the game stutters.
     Bool("PM_RxDbgFenceSpin",  "fence_spin_throttle",    "FENCE SPIN YIELD: "),
     Bool("PM_RxDbgLimitSpin",  "frame_limit_spin",       "FPS LIMIT SPIN: "),
     Bool("PM_RxDbgPumpWake",   "pump_wake_on_demand",    "FRAME PACING WAKE: "),
+    // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
+    // Patch_EdramLimit lets through only while this is on (graphics.cpp)? A live ON may misbehave.
     Bool("PM_RxDbgSingleTile", "single_tile",            "SINGLE TILE: "),
     Str ("PM_RxDbgShadowBits", "perf_shadow_phase_bits", "SHADOW PHASES: ",
          kShadowBitVals, kShadowBitNames, Len(kShadowBitVals)),
     // The cvar is live; the prop parse it skips runs when a district loads.
+    // CHECK: whether that parse runs again after a district change or only at start-up (render_phases.cpp).
     Bool("PM_RxDbgNoTrees",    "perf_no_trees",          "FOLIAGE: ", true, " (ON RELOAD)"),
     Dbl ("PM_RxDbgBreakFps",   "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
          kBreakFpsVals, Len(kBreakFpsVals), "%g", "", "STOCK"),
