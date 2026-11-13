@@ -50,14 +50,14 @@ HostPrecache::~HostPrecache() {
   Stop();
 }
 
-void HostPrecache::Add(uint64_t key, std::string name, Make make) {
+bool HostPrecache::Add(uint64_t key, std::string name, Make make) {
   if (builder_.joinable()) {
     REXLOG_WARN("[gpu] host pipelines: '{}' listed after the builder started; its owner makes it",
                 name);
-    return;
+    return false;
   }
   if (by_key_.contains(key)) {
-    return;
+    return false;
   }
   auto entry = std::make_unique<Entry>();
   entry->key = key;
@@ -65,29 +65,70 @@ void HostPrecache::Add(uint64_t key, std::string name, Make make) {
   entry->make = std::move(make);
   by_key_.emplace(key, entry.get());
   entries_.push_back(std::move(entry));
+  return true;
+}
+
+void HostPrecache::Note(std::string text, uint32_t listed) {
+  notes_.push_back(Noted{std::move(text), listed});
 }
 
 void HostPrecache::Start() {
-  if (builder_.joinable() || entries_.empty()) {
+  if (builder_.joinable()) {
+    return;
+  }
+  // One line per start: what was listed, and for the passes the settings switch, why.
+  std::string by_setting;
+  uint32_t noted = 0;
+  for (const Noted& note : notes_) {
+    if (!by_setting.empty()) {
+      by_setting += "; ";
+    }
+    by_setting += note.listed != 0
+                      ? std::format("{}: {}", note.text, note.listed)
+                      : std::format("{}: none, made in the background if it is switched on", note.text);
+    noted += note.listed;
+  }
+  const size_t listed = entries_.size();
+  if (entries_.empty()) {
+    if (!notes_.empty()) {
+      REXLOG_INFO("[gpu] host pipelines at start: nothing listed ({})", by_setting);
+    }
     return;
   }
   stop_.store(false, std::memory_order_release);
   start_ = Clock::now();
   builder_ = std::thread([this] { Run(); });
-  REXLOG_INFO("[gpu] host pipelines: {} listed, made ahead on one builder thread",
-              entries_.size());
+  if (notes_.empty()) {
+    REXLOG_INFO("[gpu] host pipelines: {} listed, made ahead on one builder thread", listed);
+  } else {
+    REXLOG_INFO("[gpu] host pipelines at start: {} listed, made ahead on one builder thread; by the "
+                "settings: {}; the other {} are the resolve conversions' and the decode's, which "
+                "every start uses",
+                listed, by_setting, listed > noted ? listed - noted : 0u);
+  }
 }
 
 void HostPrecache::Stop() {
-  if (builder_.joinable()) {
+  if (builder_.joinable() || !live_builders_.empty()) {
     stop_.store(true, std::memory_order_release);
+  }
+  if (builder_.joinable()) {
     builder_.join();
   }
-  if (!entries_.empty() || stats_.unlisted != 0) {
+  for (std::thread& worker : live_builders_) {
+    if (worker.joinable()) {
+      worker.join();
+    }
+  }
+  live_builders_.clear();
+  if (!entries_.empty() || !live_entries_.empty() || stats_.unlisted != 0) {
     Summarize();
   }
   by_key_.clear();
   entries_.clear();  // the pipelines nobody took die here: the GPU is idle
+  live_entries_.clear();
+  notes_.clear();
+  render_logged_ = 0;
   unlisted_names_.clear();
   stats_ = Stats{};
   built_ = 0;
@@ -106,27 +147,99 @@ void HostPrecache::Run() {
     if (stop_.load(std::memory_order_acquire)) {
       return;
     }
-    uint8_t expected = kQueued;
-    if (!entry->state.compare_exchange_strong(expected, kBuilding)) {
+    if (BuildEntry(*entry) == Built::kClaimed) {
       ++skipped_;  // the render thread claimed it
-      continue;
     }
-    const Clock::time_point began = Clock::now();
-    std::unique_ptr<plume::RenderPipeline> pipeline = entry->make();
-    const bool made = pipeline != nullptr;
-    {
-      // The render thread may take it the moment the state says so.
-      std::lock_guard<std::mutex> lock(mutex_);
-      entry->build_ns = NsSince(began);
-      entry->pipeline = std::move(pipeline);
-      entry->state.store(made ? kReady : kFailed);
-    }
-    ++(made ? built_ : failed_);
-    done_.notify_all();
   }
   REXLOG_INFO("[gpu] host pipelines: {} made ahead in {:.1f} ms ({} failed, {} left to the render "
               "thread, which began them first)",
               built_.load(), Ms(NsSince(start_)), failed_.load(), skipped_.load());
+}
+
+HostPrecache::Built HostPrecache::BuildEntry(Entry& entry) {
+  uint8_t expected = kQueued;
+  if (!entry.state.compare_exchange_strong(expected, kBuilding)) {
+    return Built::kClaimed;
+  }
+  const Clock::time_point began = Clock::now();
+  std::unique_ptr<plume::RenderPipeline> pipeline = entry.make();
+  const bool made = pipeline != nullptr;
+  {
+    // The render thread may take it the moment the state says so.
+    std::lock_guard<std::mutex> lock(mutex_);
+    entry.build_ns = NsSince(began);
+    entry.pipeline = std::move(pipeline);
+    entry.state.store(made ? kReady : kFailed);
+  }
+  ++(made ? built_ : failed_);
+  done_.notify_all();
+  return made ? Built::kMade : Built::kFailed;
+}
+
+uint32_t HostPrecache::AddLive(std::string pass, std::vector<Item> items) {
+  std::vector<Entry*> fresh;
+  for (Item& item : items) {
+    if (by_key_.contains(item.key)) {
+      continue;
+    }
+    auto entry = std::make_unique<Entry>();
+    entry->key = item.key;
+    entry->name = std::move(item.name);
+    entry->make = std::move(item.make);
+    by_key_.emplace(entry->key, entry.get());
+    fresh.push_back(entry.get());
+    live_entries_.push_back(std::move(entry));
+  }
+  if (fresh.empty()) {
+    return 0;
+  }
+  const uint32_t count = uint32_t(fresh.size());
+  live_builders_.emplace_back(
+      [this, pass = std::move(pass), list = std::move(fresh), began = Clock::now()] {
+        RunLive(pass, list, began);
+      });
+  return count;
+}
+
+void HostPrecache::RunLive(const std::string& pass, const std::vector<Entry*>& list,
+                           Clock::time_point began) {
+#if defined(_WIN32)
+  // The game runs meanwhile; nothing waits for this worker (the owner draws without the pass until
+  // Ready), so there is no raising.
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+  uint32_t made = 0, failed = 0, left = 0;
+  for (Entry* entry : list) {
+    if (stop_.load(std::memory_order_acquire)) {
+      return;
+    }
+    switch (BuildEntry(*entry)) {
+      case Built::kMade: ++made; break;
+      case Built::kFailed: ++failed; break;
+      case Built::kClaimed: ++left; break;
+    }
+  }
+  REXLOG_INFO("[gpu] host pipelines: {}: {} made in the background in {:.1f} ms ({} failed, {} left to "
+              "the render thread, which began them first)",
+              pass, made, Ms(NsSince(began)), failed, left);
+}
+
+bool HostPrecache::Ready(uint64_t key) const {
+  const auto found = by_key_.find(key);
+  if (found == by_key_.end()) {
+    return true;  // nobody listed it: nothing is being made for it
+  }
+  const uint8_t state = found->second->state.load(std::memory_order_acquire);
+  return state != kQueued && state != kBuilding;
+}
+
+void HostPrecache::NoteRenderThread(const std::string& name, const char* why, uint64_t ns) {
+  if (render_logged_ >= kRenderLogMax) {
+    return;
+  }
+  ++render_logged_;
+  REXLOG_INFO("[gpu] host pipelines: '{}' made on the render thread ({}, {:.1f} ms)", name, why,
+              Ms(ns));
 }
 
 std::unique_ptr<plume::RenderPipeline> HostPrecache::Acquire(uint64_t key,
@@ -147,6 +260,7 @@ std::unique_ptr<plume::RenderPipeline> HostPrecache::Acquire(uint64_t key,
       if (!pipeline) {
         ++stats_.failed;
       }
+      NoteRenderThread(entry->name, "listed, not begun by the builder yet", entry->build_ns);
       return pipeline;
     }
     {
@@ -181,6 +295,7 @@ std::unique_ptr<plume::RenderPipeline> HostPrecache::Acquire(uint64_t key,
   std::unique_ptr<plume::RenderPipeline> pipeline = make_unlisted();
   ++stats_.unlisted;
   stats_.unlisted_ns += NsSince(began);
+  NoteRenderThread(name, "not listed", NsSince(began));
   if (!pipeline) {
     ++stats_.failed;
   }
@@ -194,30 +309,39 @@ void HostPrecache::Summarize() {
   std::vector<std::string> asked, never;
   uint32_t not_begun = 0;
   uint64_t off_ns = 0;  // compile time of the pipelines taken that the render thread did not spend
-  for (const auto& entry : entries_) {
-    const uint8_t state = entry->state.load();
-    if (entry->used) {
-      const char* where = state == kClaimed ? ", on the render thread" : "";
-      asked.push_back(entry->build_ns
-                          ? std::format("{} ({:.1f} ms{})", entry->name, Ms(entry->build_ns), where)
-                          : entry->name);
-    } else {
-      never.push_back(entry->name);
+  const auto scan = [&](const std::vector<std::unique_ptr<Entry>>& list) {
+    for (const auto& entry : list) {
+      const uint8_t state = entry->state.load();
+      if (entry->used) {
+        const char* where = state == kClaimed ? ", on the render thread" : "";
+        asked.push_back(entry->build_ns
+                            ? std::format("{} ({:.1f} ms{})", entry->name, Ms(entry->build_ns), where)
+                            : entry->name);
+      } else {
+        never.push_back(entry->name);
+      }
+      if (state == kTaken) {
+        off_ns += entry->build_ns;
+      }
+      if (state == kQueued) {
+        ++not_begun;
+      }
     }
-    if (state == kTaken) {
-      off_ns += entry->build_ns;
-    }
-    if (state == kQueued) {
-      ++not_begun;
-    }
-  }
+  };
+  scan(entries_);
+  scan(live_entries_);
   const uint32_t built = built_.load();
   const uint32_t here = stats_.claimed + stats_.unlisted;
-  REXLOG_INFO("[gpu] host pipelines: {} listed; {} made ahead by the builder thread, {} of them "
+  REXLOG_INFO("[gpu] host pipelines: {} listed{}; {} made ahead by the builder threads, {} of them "
               "asked for ({:.1f} ms of compiles kept off the render thread, {} waited for {:.1f} "
               "ms), {} never; {} made on the render thread at first use ({} listed but not begun "
               "by the builder, {:.1f} ms; {} not listed, {:.1f} ms); {} failed{}",
-              entries_.size(), built, stats_.taken, Ms(off_ns), stats_.waited, Ms(stats_.wait_ns),
+              entries_.size() + live_entries_.size(),
+              live_entries_.empty()
+                  ? std::string()
+                  : std::format(" ({} of them after the start, for a setting switched on)",
+                                live_entries_.size()),
+              built, stats_.taken, Ms(off_ns), stats_.waited, Ms(stats_.wait_ns),
               built > stats_.taken ? built - stats_.taken : 0u, here, stats_.claimed,
               Ms(stats_.claimed_ns), stats_.unlisted, Ms(stats_.unlisted_ns),
               failed_.load() + stats_.failed,
