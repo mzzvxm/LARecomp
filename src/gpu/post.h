@@ -72,9 +72,12 @@ class PostAa {
   void Shutdown();
 
   // mcla_gpu_aa, read once a frame at the composite record, off included: a
-  // change is logged and the summary names the mode of the last frame read.
+  // change is logged and the summary names the mode of the last frame read. A change also makes
+  // the pipelines that failed to be made in the background be tried again. A mode whose pipelines
+  // failed is returned as kOff until the setting changes.
   Mode FrameMode();
-  // mcla_gpu_aa as it is now, without FrameMode's note (the HDR scene asks at its tone map).
+  // mcla_gpu_aa as it is now, without FrameMode's note (the HDR scene asks at its tone map), with
+  // the same rule for a mode that cannot run (kOff, so it does not hold the HDR scene off).
   Mode CurrentMode() const;
 
   // The composed scene in `target`, `width` x `height` guest pixels from its
@@ -124,6 +127,8 @@ class PostAa {
   static uint32_t ModePieces(Mode mode);
   // The pieces `mode` needs that are not made yet.
   uint32_t Missing(Mode mode) const;
+  // No piece `mode` lacks failed to be made: the mode can run, now or when the build ends.
+  bool Runnable(Mode mode) const;
   // Makes `pieces` into `into`; the pieces that failed (Device logged why). Lifecycle thread at
   // Initialize, or the build's worker thread: reads only the shaders and `passes_`.
   uint32_t MakePieces(uint32_t pieces, Pipelines* into);
@@ -157,7 +162,7 @@ class PostAa {
   uint32_t build_pieces_ = 0;
   uint32_t build_failed_pieces_ = 0;
   uint64_t build_ns_ = 0;
-  uint32_t failed_pieces_ = 0;  // never tried again this session
+  uint32_t failed_pieces_ = 0;  // not tried again until mcla_gpu_aa changes (FrameMode)
 
   HostImage copy_;     // the scene, and for FXAA its luma in alpha
   HostImage edges_;    // SMAA

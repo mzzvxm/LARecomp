@@ -180,14 +180,17 @@ bool PresentPass::BuildOutput(plume::RenderFormat target_format, bool hdr) {
                                         "present front buffer");
   // The two that write the back buffer besides the present are the HDR10 variants when it is
   // HDR10; RCAS into an intermediate stays SDR. RCAS is FSR1's alone: made here only once FSR1 is
-  // wanted (fsr_wanted_), else by its background build (FsrPipelinesReady).
-  if (fsr_wanted_) {
+  // wanted (fsr_wanted_), else by its background build (FsrPipelinesReady). Not after that build
+  // failed (fsr_failed_): FSR1 is dead for the session, and a set that lacks its RCAS must not
+  // make the HDR/SDR switch fail for it.
+  const bool want_rcas = fsr_wanted_ && !fsr_failed_;
+  if (want_rcas) {
     made.rcas_pipeline = passes.CreatePipeline(hdr ? *made.rcas_hdr_shader : *rcas_shader_,
                                                target_format, "fsr1 rcas");
   }
   made.stretch_pipeline = passes.CreatePipeline(
       hdr ? *made.stretch_hdr_shader : *stretch_shader_, target_format, "fsr1 stretch");
-  if (!made.pipeline || (fsr_wanted_ && !made.rcas_pipeline) || !made.stretch_pipeline) {
+  if (!made.pipeline || (want_rcas && !made.rcas_pipeline) || !made.stretch_pipeline) {
     return false;
   }
   made.format = target_format;
@@ -711,7 +714,9 @@ bool PresentPass::FsrPipelinesReady() {
     return true;
   }
   const Output& out = outputs_[hdr_ ? 1 : 0];
-  if (fsr_failed_ || fsr_build_.Running() || !out.built) {
+  // Busy, not Running: a job that ended since Collect looked is collected next time, and what it
+  // made (or that it failed) must not be cleared by the staging below before then.
+  if (fsr_failed_ || fsr_build_.Busy() || !out.built) {
     return false;
   }
   // What the worker reads is taken here, on the render thread: the set in use's RCAS shader and

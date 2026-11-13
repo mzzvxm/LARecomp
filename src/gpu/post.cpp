@@ -81,13 +81,23 @@ PostAa::Mode PostAa::FrameMode() {
   const Mode mode = ReadMode();
   if (mode != reported_mode_) {
     reported_mode_ = mode;
+    // A changed setting is a new request: what failed to be made before is tried again.
+    failed_pieces_ = 0;
     REXLOG_INFO("[gpu] post: scene anti-aliasing {}", ModeName(mode));
   }
-  return mode;
+  // A mode whose pipelines could not be made is off (PipelinesReady logged it, once).
+  return Runnable(mode) ? mode : Mode::kOff;
 }
 
 PostAa::Mode PostAa::CurrentMode() const {
-  return ReadMode();
+  const Mode mode = ReadMode();
+  // The same answer as FrameMode's, so that an anti-aliasing that cannot run does not hold the HDR
+  // scene off (hdr_tonemap.h). A setting changed since FrameMode last ran counts as runnable: it
+  // forgets the failures at the next composite.
+  if (mode != reported_mode_) {
+    return mode;
+  }
+  return Runnable(mode) ? mode : Mode::kOff;
 }
 
 bool PostAa::Initialize(Device& device, BindlessHeap& heap, UploadRing& upload, HostPasses& passes,
@@ -210,6 +220,10 @@ uint32_t PostAa::Missing(Mode mode) const {
   return missing;
 }
 
+bool PostAa::Runnable(Mode mode) const {
+  return (Missing(mode) & failed_pieces_) == 0;
+}
+
 uint32_t PostAa::MakePieces(uint32_t pieces, Pipelines* into) {
   uint32_t failed = 0;
   if (pieces & kLuma) {
@@ -248,12 +262,14 @@ void PostAa::Adopt(Pipelines& made) {
 
 bool PostAa::PipelinesReady(Mode mode) {
   if (build_.Collect()) {
-    // The job ended: what it made joins the members, what it failed to make is not tried again.
+    // The job ended: what it made joins the members, what it failed to make is not tried again
+    // until mcla_gpu_aa changes (FrameMode), and the mode counts as off meanwhile.
     Adopt(build_made_);
     failed_pieces_ |= build_failed_pieces_;
     if (build_failed_pieces_ != 0) {
       REXLOG_ERROR("[gpu] post: the pipelines for scene anti-aliasing could not be made in the "
-                   "background (Device logged why): {} stays off this session",
+                   "background (Device logged why): {} is off until mcla_gpu_aa is changed "
+                   "(the HDR scene is not held off by it meanwhile)",
                    ModeName(mode));
     } else {
       REXLOG_INFO("[gpu] post: the background build made {} pipeline(s) for scene anti-aliasing "
@@ -265,7 +281,9 @@ bool PostAa::PipelinesReady(Mode mode) {
   if (missing == 0) {
     return true;
   }
-  if ((missing & failed_pieces_) != 0 || build_.Running()) {
+  // Busy, not Running: a job that ended since Collect looked is collected next time, and its
+  // staging (the pieces it made, what failed) must not be cleared before then.
+  if ((missing & failed_pieces_) != 0 || build_.Busy()) {
     return false;
   }
   build_pieces_ = missing;

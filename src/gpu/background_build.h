@@ -18,7 +18,7 @@
 // Join: HostPasses::CreatePipeline and CreateShader are the calls the host precache's builder
 // makes from its own thread too (host_precache.h).
 //
-// Threading: Start, Running, Collect on the render thread; Join on the lifecycle thread, in the
+// Threading: Start, Running, Busy, Collect on the render thread; Join on the lifecycle thread, in the
 // owner's Shutdown (the job names the owner's shaders: Join first, before anything is destroyed).
 //
 // CHECK: written without a build of the game (only the files' syntax and the hand-over rules'
@@ -48,6 +48,10 @@ class BackgroundBuild {
   bool Start(std::function<void()> work);
   // A job was started and has not ended.
   bool Running() const { return state_.load(std::memory_order_acquire) == kRunning; }
+  // A job is running, or ended and not collected yet: Start would refuse. The owner's gate before
+  // it stages anything for a new job: a job that ends between Collect and the test is not Running
+  // any more but is not collected either, and staging for a new one would overwrite its results.
+  bool Busy() const { return state_.load(std::memory_order_acquire) != kIdle; }
   // True once, when a started job has ended: the thread is joined and everything the work wrote is
   // visible. False while it runs, and when none was started.
   bool Collect();

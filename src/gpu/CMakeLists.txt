@@ -92,6 +92,9 @@ add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
 # The background build's hand-over rules (background_build.h) have one too: no renderer, no GPU.
 #   cmake --build <dir> --target larecomp_background_build_test, then run src/gpu/larecomp_background_build_test.
 add_executable(larecomp_background_build_test EXCLUDE_FROM_ALL background_build_test.cpp background_build.cpp)
+# std::thread: glibc before 2.34 needs libpthread named at the link.
+find_package(Threads REQUIRED)
+target_link_libraries(larecomp_background_build_test PRIVATE Threads::Threads)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
