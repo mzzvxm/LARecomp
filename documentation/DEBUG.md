@@ -160,6 +160,34 @@ The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`
 
 The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
 
+## The state log and take_diff (the trailer toolkit)
+
+A take is only as good as the proof that the next one matches. The state log writes one CSV row per game update: the player's car (the entity's world matrix and the speed), the scene's cars, the camera block the game publishes, the hour and weather, the engine's clocks, the scene's own clock and the state of the random number generator. `take_diff.py` reads two of them and says *identical*, *identical within tolerance*, or the first row, column and values where they part. Nothing is read or written while no log is open.
+
+Two ways to ask for it, both debug-only and live:
+
+```powershell
+larecomp.exe --debug_menu --mcla_scene=statelog-park --mcla_state_log=C:\takes\a.csv
+```
+
+- `mcla_state_log`: a `.csv` file, or a folder that gets `state.csv`. Set it and rows start with the next update that has a player car; clear it and the log is closed. A named file is overwritten; a folder that already holds `state.csv` gets `state-2.csv`, `state-3.csv`.
+- A scene's `statelog on [dir <folder>]` (no time: it is an option of the whole scene; `statelog off` is the default). The log opens when the scene starts and closes when it ends, and a scene that starts again (`mcla_scene_restart`, a reload) is a new file. It goes to `<folder>\state.csv`, else the take folder (`statelog::SetTakeFolder`, for the take package), else `statelogs\<scene>-<date>-<time>.csv` next to the game. `mcla_state_log` outranks it.
+
+Rows are only written while the player has a car (no menus, no loading screens); `tick` counts every update since the log opened, so a gap shows. A row is a few guest reads and one formatted line on the game thread; a writer thread takes them through a queue capped at 32 MiB. A stalled disk costs rows, never a wait: the next row's `lost` column says how many, and the log's last line, `#end rows=N written=N dropped=N`, closes a log that ended properly (a log open when the game exits has none). The columns, in order, are in the header of `src/mc_engine/cinematic/state_log_core.h`: `tick mark wall_ms lost`, `scene_state scene_t`, `dt dt_unscaled time_scale frame_ctr clock_total clock_game mode_timer`, `rng hour weather paused live`, `p_ok p_m0..p_m14 p_speed` (the matrix rows right, up, back, position; the fourth word of each row is padding and is left out), `cam_ok cam_m0..cam_m14`, `n_cars` and six slots `c<k>_id c<k>_ok c<k>_m0..c<k>_m14` for the scene's cars, and the hashes `h_player h_cars h_world h_cam hash chain` (exact bits; the generator, the clocks and the wall time are not in `hash`). Floats have 9 digits and read back exactly. The cars come from a car source (`statelog::RegisterCarSource`, which the cars package registers with its registry); with none registered `n_cars` is 0.
+
+```powershell
+python -I ports\scripts\take_diff.py A.csv B.csv                       # the scene's own start is the alignment; the scene's rows are compared
+python -I ports\scripts\take_diff.py A.csv B.csv --align mark=go       # a scene's `mark go`
+python -I ports\scripts\take_diff.py A.csv B.csv --tol pos=0.002,col:^cam_m12$=0.01
+python -I ports\scripts\take_diff.py A.csv B.csv --json                # one JSON line for a script
+python -I ports\scripts\take_diff.py --growth A.csv B.csv --at 1,5,10  # how far apart the player and the scene cars are over time
+python -I ports\scripts\take_diff.py --selftest [--exe state_log_test.exe]
+```
+
+The exit code is 0 identical (either kind), 1 diverges, 2 bad input. Each column has a tolerance by class, absolute and in the log's units: `pos` 1 mm (a car's position), `rot` 1e-5, `speed` 1 mm/s, `campos` 2 mm and `camrot` 1e-4 (the published camera), `hour` 1e-4; the weather, pause, scene state, which cars exist and their ids must be equal. `--tol CLASS=VALUE` or `--tol col:REGEX=VALUE` change them (0 means equal); `--strict` makes every column, the hashes and the generator bit for bit. The clocks (`dt`, `scene_t`, and the engine clocks as time elapsed since the first compared row) are compared only when both logs were taken under a fixed step (every `dt` the same, so the rows are at the same game times) or with `--clocks`; in real time only a still world compares row for row, and the clocks are listed outside the verdict. The generator (`rng`) is seeded from the clock and is outside the verdict unless `--rng`. The report names the first row (with the scene time), every column over its tolerance in it with both values, the difference and the tolerance, a table of the columns that go over (first row, largest difference, rows over), a one-line reading, and notes for dropped rows and a log the game did not close. The older bit-for-bit comparison of the experiment's logs (`--exact`, `--shift`, `--curve`) still works on both formats.
+
+What to expect (E1 and E1b): a parked or placed car stays within 8 micrometres to a millimetre, so a camera-only scene, a held world or a wipe on a parked car matches; a driven take does not repeat, and the report then names the first row and the car. `ports\scripts\scenes\statelog-park.scene` is the example, `perf\scripts\chain-m3a.ps1` the check. `cmake --build <dir> --target larecomp_state_log_test` builds the checks of the row, the hashes, the file's place, the queue and the writer (`larecomp_state_log_test --sample out.csv` writes a made-up log through the real writer, for `take_diff.py`); they need no game.
+
 ## Adding a debug setting
 
 A new cvar is one of three things, and the check below fails until it is:
