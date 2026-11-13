@@ -4,8 +4,7 @@
 // to any point, and back. See map_warp.cpp for the RE map.
 //
 //   console:  warp <point> | warp back | warp <x> <y> <z> [heading] | warp
-//   key:      bind_map_warp (F9) toggles the first point (or warp_spot) <-> back; only while
-//             the debug menu is unlocked (debug_menu.h)
+//   key:      bind_map_warp (F9) toggles the first point (or warp_spot) <-> back
 //
 
 // Once per frame on the game thread (Patch_DeltaTimePre): carries out a warp
