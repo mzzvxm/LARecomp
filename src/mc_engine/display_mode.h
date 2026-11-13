@@ -28,17 +28,39 @@
 //
 // What the SDK's window can and cannot do (LAR-RXSDK src/ui/window_sdl.cpp): it is an SDL window
 // whose only live change is SDL_SetWindowFullscreen(on/off) (borderless: no display mode is ever
-// given to SDL), it has no call to resize, and its SDL is not the one this executable carries (two
-// copies of SDL run: the window's is inside rexruntime.dll), so nothing here can call SDL on it.
-// Windows is therefore driven through the window's HWND (Window::GetNativeWindowHandle):
+// given to SDL), and it has no call to resize.
+//
+// Windows: its SDL is not the one this executable carries (two copies of SDL run: the window's is
+// inside rexruntime.dll), so nothing here can call SDL on it. Windows is therefore driven through the
+// window's HWND (Window::GetNativeWindowHandle):
 //   - WINDOWED <-> BORDERLESS: Window::SetFullscreen, live, as the old FULLSCREEN row did;
 //   - the window's size in WINDOWED: SetWindowPos on the HWND, live (SDL follows the size from the
 //     window messages and the renderers rebuild their swap chain as for any resize);
 //   - FULLSCREEN: SetFullscreen(true) for the frameless window, plus ChangeDisplaySettingsEx with the
 //     mode (CDS_FULLSCREEN: reverts by itself when the process ends), put back when the mode is left,
 //     when the window loses focus, and when the game closes.
-// Other platforms (Linux): WINDOWED and BORDERLESS only, live; the window's size is read at the next
-// start (a restart), and there is no FULLSCREEN.
+//
+// Linux (every platform that is not Windows): there is no HWND, but the renderer already reaches the
+// SDK's window through SDL itself (gpu/native_window.cpp hands Plume SDL_GetWindows()'s window for the
+// Vulkan surface), so this executable and the SDK share one SDL there and the window's size is changed
+// the same way, with SDL_SetWindowSize: no SDK method is needed. Initialize finds the window by its
+// title and says so in the log; when it is not found (a second copy of SDL after all) the size is read
+// at the next start and the row says (RESTART), as before.
+//   - WINDOWED <-> BORDERLESS: Window::SetFullscreen, live;
+//   - the window's size in WINDOWED: SDL_SetWindowSize once SDL has given the window back from
+//     fullscreen or maximised (SDL ignores a resize before that), looked at again every 100 ms until
+//     the window has the size. The size is physical pixels; SDL's window coordinates are those divided
+//     by the window's pixel density (Wayland and macOS scaling). The window is then centred on the
+//     display's usable area (X11; a Wayland client cannot place its window);
+//   - the sizes offered are the 16:9 steps that fit the display's usable area with the window's frame,
+//     as on Windows (SDL's own answers; the SDK presets when SDL gives none), and BORDERLESS shows the
+//     display's own size;
+//   - there is no FULLSCREEN: SDL switches a display's mode through XRandR on X11 only (Wayland scales
+//     instead) and the mode would have to be put back after a crash;
+//   - under gamescope (the Steam Deck's Game Mode, or run by hand) the compositor sets the window's
+//     size and puts back any other: WindowSizeFixed() is true, the RESOLUTION row is grey and shows
+//     the window's size, and nothing is asked of SDL. A compositor that is not recognised but keeps a
+//     window at another size than asked is told in the log once and the window is left where it is.
 //
 // Every change runs on the UI thread, queued from the setting's change callback (which runs with the
 // settings registry locked and must not touch the window).
@@ -80,10 +102,14 @@ void Shutdown();
 Mode WantedMode();
 
 // Whether FULLSCREEN can be offered here (Windows: a display mode can be changed), and whether the
-// window's size can change while the game runs (Windows). Elsewhere `resolution` is read at the
-// next start.
+// window's size can change while the game runs (Windows; elsewhere once Initialize has found the
+// SDK's SDL window, and the compositor does not set the size: WindowSizeFixed). When it cannot,
+// `resolution` is read at the next start. Any thread.
 bool ExclusiveSupported();
 bool LiveResize();
+// The compositor decides the size of the game's window (gamescope): the RESOLUTION row is grey and
+// shows the size the window has. Always false on Windows. Any thread.
+bool WindowSizeFixed();
 
 // The size a `resolution` text stands for. False for empty text ("default") and for text that is no
 // size.
@@ -94,7 +120,9 @@ std::string SizeLabel(Size size);
 
 // Any thread. Zero while the window is not there (or on a platform with no way to ask).
 // The window's own size (the output the picture is made at), and the display's: the desktop mode
-// the player set in Windows, which a FULLSCREEN mode this game switched to does not change.
+// the player set in Windows, which a FULLSCREEN mode this game switched to does not change. Off
+// Windows the display's size and the usable area are SDL's, read on the UI thread when the window
+// opened and again at most once a second while a menu asks (so up to a second old).
 Size OutputSize();
 Size DesktopSize();
 

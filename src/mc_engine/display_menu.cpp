@@ -152,8 +152,11 @@ void ResolutionSet(int i, CvarWriter write) {
 }
 
 // Grey in BORDERLESS, which has the display's own size: the label says it (the movie draws no value
-// for a grey row). The buffer is read by the caller at once (a label is built from it).
-bool ResolutionEnabled() { return mcla::display::WantedMode() != Mode::kBorderless; }
+// for a grey row). Grey too where the compositor sets the window's size (gamescope), with the size
+// the window has in the label. The buffer is read by the caller at once (a label is built from it).
+bool ResolutionEnabled() {
+  return mcla::display::WantedMode() != Mode::kBorderless && !mcla::display::WindowSizeFixed();
+}
 
 const char* ResolutionSuffix() {
   thread_local char buf[40];
@@ -164,9 +167,16 @@ const char* ResolutionSuffix() {
       std::snprintf(buf, sizeof(buf), " (%s)", mcla::display::SizeLabel(desktop).c_str());
       return buf;
     }
-    case Mode::kWindowed:
+    case Mode::kWindowed: {
+      if (mcla::display::WindowSizeFixed()) {
+        const Size output = mcla::display::OutputSize();
+        if (output.empty()) return " (FIXED)";
+        std::snprintf(buf, sizeof(buf), " (%s)", mcla::display::SizeLabel(output).c_str());
+        return buf;
+      }
       // Where the window cannot be sized while the game runs the choice is read at the next start.
       return mcla::display::LiveResize() ? "" : " (RESTART)";
+    }
     default:
       return "";
   }

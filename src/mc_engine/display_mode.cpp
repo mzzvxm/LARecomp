@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +30,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+// The SDK's window is SDL's; see display_mode.h (Linux).
+#include <SDL3/SDL.h>
 #endif
 
 REXCVAR_DEFINE_BOOL(fullscreen_exclusive, false, "UI/Window",
@@ -46,10 +51,25 @@ constexpr uint32_t kMinWidth = 1280;
 constexpr uint32_t kMinHeight = 720;
 
 std::atomic<rex::ui::Window*> g_window{nullptr};
-// Set once, on the UI thread, with the window.
+// Set once, on the UI thread, with the window: the HWND on Windows, the SDL_Window* elsewhere (null
+// when it was not found).
 std::atomic<void*> g_native{nullptr};
 // A change is queued for the UI thread (the settings that decide it are read when it runs).
 std::atomic<bool> g_pending{false};
+#if !defined(_WIN32)
+// The compositor decides the window's size (gamescope). Set once, with the window.
+std::atomic<bool> g_size_fixed{false};
+#endif
+
+// How many times after the first the settings are looked at again while the window is still catching
+// up (the passes stop at the first one that finds nothing to do). Windows: the next event loop turn;
+// elsewhere every kRetryMs, for the compositor answers later than that.
+#if defined(_WIN32)
+constexpr int kLastPass = 3;
+#else
+constexpr int kLastPass = 10;
+constexpr uint32_t kRetryMs = 100;
+#endif
 
 bool Flag(const char* name) { return rex::cvar::GetFlagByName(name) == "true"; }
 
@@ -73,7 +93,17 @@ bool LiveResize() {
 #if defined(_WIN32)
   return true;
 #else
+  // SDL_SetWindowSize needs the SDK's SDL window (Initialize found it), and a compositor that lets
+  // the window have a size.
+  return g_native.load(std::memory_order_acquire) != nullptr && !g_size_fixed.load();
+#endif
+}
+
+bool WindowSizeFixed() {
+#if defined(_WIN32)
   return false;
+#else
+  return g_size_fixed.load();
 #endif
 }
 
@@ -157,6 +187,22 @@ Size Nearest(const std::vector<Size>& sizes, Size want) {
     }
   }
   return best;
+}
+
+// The sizes a window can have: the 16:9 steps from 1280x720 up whose window (the client area plus
+// `frame`) fits `work`, the display's usable area. A display too small for the game's own screen still
+// gets the smallest window.
+std::vector<Size> WindowSteps(Size work, Size frame) {
+  constexpr Size kSteps[] = {{1280, 720},  {1600, 900},  {1920, 1080}, {2560, 1440},
+                             {3200, 1800}, {3840, 2160}, {5120, 2880}, {7680, 4320}};
+  std::vector<Size> sizes;
+  for (const Size& s : kSteps) {
+    if (s.width + frame.width <= work.width && s.height + frame.height <= work.height) {
+      sizes.push_back(s);
+    }
+  }
+  if (sizes.empty()) sizes.push_back(kSteps[0]);
+  return sizes;
 }
 
 }  // namespace
@@ -578,23 +624,10 @@ std::vector<Size> WindowedSizes() {
   const RECT& work = monitor.rcWork;
   const uint32_t work_width = own_work.empty() ? uint32_t(work.right - work.left) : own_work.width;
   const uint32_t work_height = own_work.empty() ? uint32_t(work.bottom - work.top) : own_work.height;
-  constexpr Size kSteps[] = {{1280, 720},  {1600, 900},  {1920, 1080}, {2560, 1440},
-                             {3200, 1800}, {3840, 2160}, {5120, 2880}, {7680, 4320}};
-  for (const Size& s : kSteps) {
-    if (s.width + frame.width <= work_width && s.height + frame.height <= work_height) {
-      sizes.push_back(s);
-    }
-  }
-  // A display too small for the game's own screen still gets the smallest window.
-  if (sizes.empty()) sizes.push_back(kSteps[0]);
-  return sizes;
+  return WindowSteps({work_width, work_height}, frame);
 }
 
 namespace {
-
-// How many times after the first the settings are looked at again while the window is still catching
-// up (the passes stop at the first one that finds nothing to do).
-constexpr int kLastPass = 3;
 
 // UI thread: makes the window what the settings say. Idempotent; reads the settings when it runs, so a
 // write that comes while one is queued is seen by it, and one that comes after it is queued again.
@@ -669,24 +702,271 @@ void OnFocusChanged(bool focused) {
 
 #else  // not Windows
 
-// ── Elsewhere: the window's own fullscreen switch only ─────────────────────────────────────────
+// ── Elsewhere: SDL (see display_mode.h, Linux) ─────────────────────────────────────────────────
+
+namespace {
+
+SDL_Window* SdlWindow() { return static_cast<SDL_Window*>(g_native.load(std::memory_order_acquire)); }
+
+// SDL's window coordinates times this are the window's pixels (1 on X11 and Windows; the display's
+// scale on Wayland and macOS).
+float PixelDensity(SDL_Window* sdl) {
+  const float density = SDL_GetWindowPixelDensity(sdl);
+  return density > 0.0f ? density : 1.0f;
+}
+
+uint32_t ToPixels(int coordinates, float density) {
+  return coordinates > 0 ? uint32_t(std::lround(double(coordinates) * double(density))) : 0u;
+}
+
+// The window's client area in pixels, as SDL has it this instant (the SDK's own copy of it follows
+// from SDL's events).
+Size PixelSizeOf(SDL_Window* sdl) {
+  int width = 0;
+  int height = 0;
+  if (!SDL_GetWindowSizeInPixels(sdl, &width, &height)) return {};
+  return {uint32_t(std::max(width, 0)), uint32_t(std::max(height, 0))};
+}
+
+// The SDK's window among SDL's. GetNativeWindowHandle is null off Windows and the SDK has no accessor,
+// so (as the renderer does for Plume, gpu/native_window.cpp) it is the one SDL lists; the title tells
+// it from a window of another SDL's, which would not be listed at all. Null when none matches.
+SDL_Window* FindSdlWindow(rex::ui::Window* window) {
+  int count = 0;
+  SDL_Window** windows = SDL_GetWindows(&count);
+  if (!windows) return nullptr;
+  SDL_Window* found = nullptr;
+  const std::string& title = window->GetTitle();
+  for (int i = 0; i < count && !found; ++i) {
+    const char* name = SDL_GetWindowTitle(windows[i]);
+    if (name && title == name) found = windows[i];
+  }
+  SDL_free(windows);
+  return found;
+}
+
+// What SDL says about the display the window is on. SDL's video calls belong to the UI thread and the
+// menu asks from another, so the answers are kept here, read on the UI thread (RefreshView).
+struct DisplayView {
+  Size desktop;  // the display's own mode
+  Size work;     // its usable area (the display less panels and docks; all of it where SDL has no idea)
+  Size frame;    // what the window's frame takes from it (nothing where the compositor draws the frame)
+};
+std::mutex g_view_mutex;
+DisplayView g_view;
+std::atomic<int64_t> g_view_asked_ms{0};
+
+DisplayView View() {
+  std::lock_guard lock(g_view_mutex);
+  return g_view;
+}
+
+// UI thread.
+void RefreshView() {
+  SDL_Window* sdl = SdlWindow();
+  if (!sdl) return;
+  DisplayView view;
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(sdl);
+  if (display) {
+    float density = 1.0f;
+    if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(display)) {
+      if (mode->pixel_density > 0.0f) density = mode->pixel_density;
+      view.desktop = {ToPixels(mode->w, density), ToPixels(mode->h, density)};
+    }
+    SDL_Rect area = {};
+    if (SDL_GetDisplayUsableBounds(display, &area)) {
+      view.work = {ToPixels(area.w, density), ToPixels(area.h, density)};
+    }
+  }
+  int top = 0;
+  int left = 0;
+  int bottom = 0;
+  int right = 0;
+  if (SDL_GetWindowBordersSize(sdl, &top, &left, &bottom, &right)) {
+    const float density = PixelDensity(sdl);
+    view.frame = {ToPixels(left + right, density), ToPixels(top + bottom, density)};
+  }
+  std::lock_guard lock(g_view_mutex);
+  g_view = view;
+}
+
+// Any thread: the menu asks every frame it is open; SDL is asked again at most once a second.
+void AskForFreshView() {
+  rex::ui::Window* window = g_window.load();
+  if (!window) return;
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  int64_t last = g_view_asked_ms.load();
+  if (now - last < 1000 || !g_view_asked_ms.compare_exchange_strong(last, now)) return;
+  window->app_context().CallInUIThreadDeferred([]() { RefreshView(); });
+}
+
+}  // namespace
 
 Size OutputSize() {
   rex::ui::Window* window = g_window.load();
   return window ? Size{window->GetActualPhysicalWidth(), window->GetActualPhysicalHeight()} : Size{};
 }
 
-Size DesktopSize() { return {}; }
+Size DesktopSize() {
+  AskForFreshView();
+  return View().desktop;
+}
+
 std::vector<Size> ExclusiveSizes() { return {}; }
-std::vector<Size> WindowedSizes() { return {}; }
+
+std::vector<Size> WindowedSizes() {
+  AskForFreshView();
+  const DisplayView view = View();
+  if (view.work.empty()) return {};  // SDL has not said: the menu offers its own steps
+  return WindowSteps(view.work, view.frame);
+}
 
 namespace {
 
-void ApplyNow(int) {
+// A size the window was asked and kept refusing (a compositor that decides, or a window larger than the
+// display allows), and the size it stayed at: the same ask is not made again while the window is at that
+// size. The last size SDL was asked for, so that a look that follows does not log it again. UI thread.
+Size g_refused_want;
+Size g_refused_got;
+Size g_asked;
+
+// The window of `want` physical pixels centred on the display's usable area, where the platform lets
+// a client place its window (X11; SDL says no on Wayland and nothing happens).
+void CentreWindow(SDL_Window* sdl, int client_width, int client_height) {
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(sdl);
+  SDL_Rect area = {};
+  if (!display || !SDL_GetDisplayUsableBounds(display, &area)) return;
+  int top = 0;
+  int left = 0;
+  int bottom = 0;
+  int right = 0;
+  SDL_GetWindowBordersSize(sdl, &top, &left, &bottom, &right);
+  const int x = area.x + std::max(0, (area.w - (client_width + left + right)) / 2) + left;
+  const int y = area.y + std::max(0, (area.h - (client_height + top + bottom)) / 2) + top;
+  SDL_SetWindowPosition(sdl, x, y);
+}
+
+// UI thread. Asks SDL for a window whose client area is `want` (physical pixels). SDL ignores a resize
+// while the window is fullscreen or maximised (the SDL_SetWindowSize documentation), and answers
+// after the compositor has: so this says whether the window should be looked at again, and on the
+// last look says what became of the ask. False: the window has the size, or there is nothing to do.
+// CHECK: SDL_SetWindowSize on X11 and Wayland (WSLg has both): the first run shows the window's size
+// following the RESOLUTION row, and its SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED reaching the renderer's
+// swap chain rebuild.
+bool ResizeWindow(SDL_Window* sdl, Size want, bool last_look) {
+  if (!sdl || want.empty()) return false;
+  const SDL_WindowFlags flags = SDL_GetWindowFlags(sdl);
+  if (flags & SDL_WINDOW_MINIMIZED) return false;
+  const Size have = PixelSizeOf(sdl);
+  const bool giving_back = (flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED)) != 0;
+  // SDL's coordinates are whole numbers: at a pixel density of 1.5 a size in pixels is reached to within
+  // a pixel or two, and that counts as reached.
+  const uint32_t slack = uint32_t(std::ceil(PixelDensity(sdl)));
+  const auto reached = [slack](uint32_t a, uint32_t b) { return (a > b ? a - b : b - a) <= slack; };
+  if (!giving_back && reached(have.width, want.width) && reached(have.height, want.height)) {
+    g_asked = {};
+    return false;
+  }
+  if (!giving_back && want == g_refused_want && have == g_refused_got) return false;
+  if (last_look) {
+    const char* driver = SDL_GetCurrentVideoDriver();
+    MC_WARN("[display] WINDOWED: asked for a client area of {}x{}, the window has {}x{} ({}: the "
+            "window manager or compositor keeps it there)",
+            want.width, want.height, have.width, have.height, driver ? driver : "no video driver");
+    g_refused_want = want;
+    g_refused_got = have;
+    return false;
+  }
+  if (flags & SDL_WINDOW_FULLSCREEN) return true;  // not given back yet
+  if (flags & SDL_WINDOW_MAXIMIZED) {
+    SDL_RestoreWindow(sdl);
+    return true;
+  }
+  const float density = PixelDensity(sdl);
+  const int width = std::max(1, int(std::lround(double(want.width) / double(density))));
+  const int height = std::max(1, int(std::lround(double(want.height) / double(density))));
+  if (!(g_asked == want)) {
+    g_asked = want;
+    const char* driver = SDL_GetCurrentVideoDriver();
+    MC_INFO("[display] WINDOWED: the window's client area is now {}x{} physical pixels (was {}x{}; "
+            "pixel density {:.2f}, SDL video driver {})",
+            want.width, want.height, have.width, have.height, density, driver ? driver : "none");
+  }
+  SDL_SetWindowSize(sdl, width, height);
+  CentreWindow(sdl, width, height);
+  return true;
+}
+
+void ApplyNow(int pass) {
   rex::ui::Window* window = g_window.load();
   if (!window) return;
-  const bool fullscreen = WantedMode() != Mode::kWindowed;
-  if (window->IsFullscreen() != fullscreen) window->SetFullscreen(fullscreen);
+  bool again = false;
+  if (WantedMode() == Mode::kWindowed) {
+    if (window->IsFullscreen()) {
+      window->SetFullscreen(false);
+      again = true;
+    }
+    // The size comes from `resolution` alone (see AskedWindowedSize). Not asked of a compositor that
+    // sets it (gamescope), nor when the SDK's SDL window was not found.
+    Size asked;
+    if (LiveResize() && AskedWindowedSize(&asked)) {
+      again |= ResizeWindow(SdlWindow(), asked, pass >= kLastPass);
+    }
+  } else if (!window->IsFullscreen()) {
+    window->SetFullscreen(true);
+  }
+  if (again && pass < kLastPass) ScheduleApply(pass + 1);
+}
+
+// The timer's thread only hands the pass to the UI thread, as the SDK's cursor auto-hide timer does.
+Uint32 SDLCALL RetryTimerCallback(void* userdata, SDL_TimerID, Uint32) {
+  const int pass = int(reinterpret_cast<intptr_t>(userdata));
+  rex::ui::Window* window = g_window.load();
+  const bool queued = window && window->app_context().CallInUIThreadDeferred([pass]() {
+    g_pending.store(false);
+    ApplyNow(pass);
+  });
+  if (!queued) g_pending.store(false);
+  return 0;  // one shot
+}
+
+// A look that follows another waits for the compositor, which answers an SDL call a few frames later
+// (kRetryMs). False when no timer could be made; the look is then queued at once.
+bool StartRetryTimer(int pass) {
+  return SDL_AddTimer(kRetryMs, RetryTimerCallback, reinterpret_cast<void*>(intptr_t(pass))) != 0;
+}
+
+// UI thread, from Initialize: finds the SDK's SDL window and what SDL says about its display.
+void InitSdl(rex::ui::Window* window) {
+  SDL_Window* sdl = FindSdlWindow(window);
+  g_native.store(sdl, std::memory_order_release);
+  // gamescope puts its own Wayland socket's name in this variable for the clients it starts (Steam in
+  // Game Mode, or a game run under it by hand); it sets the size of a client's window and answers
+  // any other with the size it wants.
+  // CHECK: the variable is set for the game under gamescope on a Steam Deck and a desktop (the log's
+  // "gamescope:" ending of the SDL window line); when it is not, the window manager's refusal is the
+  // log's "asked for a client area of ..., the window has ..." line and the row stays live.
+  const char* gamescope = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+  g_size_fixed.store(gamescope && *gamescope);
+  if (!sdl) {
+    MC_WARN("[display] the SDK's SDL window was not found (none of SDL_GetWindows' is titled \"{}\"): "
+            "the window's size is read at the next start",
+            window->GetTitle());
+    return;
+  }
+  RefreshView();
+  const DisplayView view = View();
+  const Size own = PixelSizeOf(sdl);
+  const char* driver = SDL_GetCurrentVideoDriver();
+  MC_INFO("[display] the SDK's SDL window found (video driver {}): {}x{} pixels at density {:.2f}; "
+          "display {}x{}, usable {}x{}, frame {}x{}{}",
+          driver ? driver : "none", own.width, own.height, PixelDensity(sdl), view.desktop.width,
+          view.desktop.height, view.work.width, view.work.height, view.frame.width,
+          view.frame.height,
+          g_size_fixed.load() ? "; gamescope: the compositor sets the window's size, RESOLUTION is grey"
+                              : "");
 }
 
 }  // namespace
@@ -702,6 +982,9 @@ void ScheduleApply(int pass) {
   rex::ui::Window* window = g_window.load();
   if (!window) return;
   if (g_pending.exchange(true)) return;  // one is queued: it reads the settings when it runs
+#if !defined(_WIN32)
+  if (pass > 0 && StartRetryTimer(pass)) return;
+#endif
   const bool queued = window->app_context().CallInUIThreadDeferred([pass]() {
     g_pending.store(false);
     ApplyNow(pass);
@@ -716,6 +999,8 @@ void Initialize(rex::ui::Window* window) {
   g_window.store(window);
 #if defined(_WIN32)
   g_native.store(window->GetNativeWindowHandle(), std::memory_order_release);
+#else
+  InitSdl(window);
 #endif
   // The SDK's callback for `fullscreen` (and the app's before this) calls Window::SetFullscreen on the
   // thread that set the setting, with the settings registry locked: the pause menu's thread then
