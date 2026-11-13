@@ -377,6 +377,15 @@ struct UpscalerAvailability {
 };
 UpscalerAvailability GetUpscalerAvailability();
 
+// The upscalers' libraries load when they are first needed (upscaler_load_policy.h): FidelityFX's
+// when an FSR is first asked for, NVIDIA's Streamline when DLSS is. The one thing that can be
+// ready ahead of the player is DLSS's warm-up (Streamline's start and NGX's first features, about
+// ten seconds of a worker thread), which begins once something says a live switch to DLSS may come:
+// the pause menu shows its UPSCALING row, or DLSS frame generation is chosen. Any thread, cheap
+// after the first call; `why` is for the log, once. Nothing happens without an RTX card on D3D12.
+void NoteUpscalerInterest(const char* why);
+bool UpscalerInterestNoted();
+
 // --- MSAA --------------------------------------------------------------------------------------
 // The native renderer never turns the game's own MSAA switch off (hooks/graphics.cpp MsaaOff): the
 // game always draws its 2 sample layout, and the host's MSAA level (EdramTargets::msaa_level: 1, 2,
