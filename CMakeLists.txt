@@ -150,6 +150,7 @@ set(LARECOMP_SOURCES
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
     src/mc_engine/cinematic/state_log_core.cpp
+    src/mc_engine/cinematic/state_log.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
     src/mc_engine/cinematic/native_call.cpp
 
