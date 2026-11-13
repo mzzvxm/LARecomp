@@ -45,6 +45,18 @@
 // may exceed 1, so the table is read as before up to 1 and goes on above 1 by the slope of its last
 // step (kHdrFlagExtendedCodes); FSR1's passes read that image in float16.
 //
+// Dither (mcla_gpu_present_dither): the last pass that writes the back buffer -- the present, the
+// stretch or RCAS, whichever the route ends with -- adds a threshold of -0.5 .. +0.5 of one code of
+// the back buffer (8-bit SDR, 10-bit HDR10) to the colour in its encoding, after the gamma table or
+// the PQ encode, just before the hardware rounds it (hlsl/output_dither.hlsli): a slow gradient
+// such as the sky at dusk shows less banding where the picture has more precision than the target.
+// The pattern is the same on every frame. The passes that write an intermediate, the flicker
+// probe's DrawUnscaled and a test's own pushes leave it out (the push's dither_lsb is 0), and so
+// does the HDR test pattern. Frame generation paints its present images through the same Draw, so
+// the real and the generated frames carry it; the pacer's copy is texel for texel. DLSS frame
+// generation's own interpolated frames come out of NVIDIA's pass, which is given the dithered back
+// buffer and picture without UI, and cannot be dithered after it.
+//
 // Threading: render thread only, after Initialize.
 // ===========================================================================
 
@@ -129,7 +141,7 @@ class PresentPass {
   // before the first guest present.
   void Draw(plume::RenderCommandList* list, uint32_t width, uint32_t height);
   // The same pass 1:1 into a target of source_width() x source_height()
-  // (the flicker probe); not counted in the summary.
+  // (the flicker probe); not counted in the summary, and without the dither.
   void DrawUnscaled(plume::RenderCommandList* list);
 
   // The same as Prepare for a picture the caller made: `image` (an image of code values that may
@@ -187,14 +199,20 @@ class PresentPass {
   // The tail of Prepare and PrepareImage: the letterbox, FSR1's passes or the table pass, for the
   // source bound.
   void PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height);
-  // Draw's body: false when there is nothing to draw. `aspect`: FitOf's.
-  bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height, double aspect);
+  // Draw's body: false when there is nothing to draw. `aspect`: FitOf's. `dither_lsb`: Push::dither_lsb.
+  bool RecordDraw(plume::RenderCommandList* list, uint32_t width, uint32_t height, double aspect,
+                  float dither_lsb);
   // The bilinear present of `source` (`width` x `height` texels) into `fit`,
   // with `pipeline` (the table applied, or not); inside a render pass.
-  // `gap`: Push::gap, for a source that is an image of the frame layers.
+  // `gap`: Push::gap, for a source that is an image of the frame layers. `dither_lsb`:
+  // Push::dither_lsb.
   void RecordFitted(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
                     uint32_t source, uint32_t source_width, uint32_t source_height,
-                    const Fit& fit, uint32_t gap);
+                    const Fit& fit, uint32_t gap, float dither_lsb);
+  // One code of the back buffer the passes in use write, in the encoding they write it in, for
+  // the dither (hlsl/output_dither.hlsli); 0 when mcla_gpu_present_dither is off or the target is
+  // not an 8- or 10-bit UNORM one.
+  float DitherLsb() const;
 
   struct Push {
     uint32_t source;
@@ -214,8 +232,11 @@ class PresentPass {
     // The source texels before this column and row are read at it (PrepareImage's gap); 0 for the
     // front buffer, a resolve product, and for an image the table was already applied to.
     uint32_t gap;
+    // One code of the back buffer in its encoding (1/255; HDR10 1/1023): the last pass's dither
+    // (hlsl/output_dither.hlsli). 0 for every pass that writes an intermediate.
+    float dither_lsb;
   };
-  static_assert(sizeof(Push) == 52 && sizeof(Push) <= HostPasses::kPushConstantBytes);
+  static_assert(sizeof(Push) == 56 && sizeof(Push) <= HostPasses::kPushConstantBytes);
 
   // FSR1 (M6c.1).
   struct EasuPush {  // hlsl/fsr_easu_ps.hlsl
@@ -240,6 +261,9 @@ class PresentPass {
     float hdr_peak;
     float hdr_knee;
     uint32_t hdr_flags;
+    // As Push::dither_lsb; 0 for RCAS into an intermediate.
+    // CHECK: lands at byte 40 of the HLSL cbuffer (the next 4-byte slot after hdr_flags).
+    float dither_lsb;
   };
   static_assert(sizeof(EasuPush) <= HostPasses::kPushConstantBytes &&
                 sizeof(RcasPush) <= HostPasses::kPushConstantBytes);

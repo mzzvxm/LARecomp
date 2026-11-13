@@ -10,8 +10,13 @@
 
 // RCAS_HDR (fsr_rcas_hdr_ps): the target is an HDR10 swap chain; the sharpened SDR code values
 // end with hdr_output.hlsli's HdrFromSdr, with the levels in the push constants.
+//
+// `dither_lsb` (push constant): one code of the back buffer, when this pass writes it (the last
+// pass of FSR1's chain): output_dither.hlsli's dither in the back buffer's encoding, after the PQ
+// encode with HDR10. 0 when it writes an intermediate image.
 
 #include "host_pass_common.hlsli"
+#include "output_dither.hlsli"
 #if RCAS_HDR
 #include "hdr_output.hlsli"
 #endif
@@ -25,6 +30,7 @@ struct RcasPush {
   float hdr_peak;
   float hdr_knee;
   uint hdr_flags;
+  float dither_lsb;    // one code of the back buffer in its encoding (1/255, HDR10 1/1023); 0: none
 };
 
 #ifdef __spirv__
@@ -73,8 +79,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   levels.peak = g_push.hdr_peak;
   levels.knee = g_push.hdr_knee;
   levels.flags = g_push.hdr_flags;
-  return float4(HdrFromSdr(color, levels), 1.0f);
+  return float4(OutputDither(HdrFromSdr(color, levels), float2(pixel), g_push.dither_lsb), 1.0f);
 #else
-  return float4(color, 1.0f);
+  return float4(OutputDither(color, float2(pixel), g_push.dither_lsb), 1.0f);
 #endif
 }

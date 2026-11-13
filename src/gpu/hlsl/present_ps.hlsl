@@ -22,8 +22,16 @@
 // PRESENT_HDR (present_hdr_ps, present_stretch_hdr_ps): the back buffer is an HDR10 swap
 // chain. The picture is made exactly as above, in SDR code values, and its last step is
 // hdr_output.hlsli's HdrFromSdr (or the test pattern) with the levels in the push constants.
+//
+// `dither_lsb` (push constant): one code of the back buffer, for the passes that write it (the
+// present itself and the stretch): the picture gets output_dither.hlsli's dither in the
+// back buffer's encoding, after the gamma table or the PQ encode. 0 for the passes that write an
+// intermediate (FSR1's table pass and the scaled present's table pass), whose values are not
+// rounded to a code, and for a draw that must not change the picture (the flicker probe); never
+// on the HDR test pattern.
 
 #include "host_pass_common.hlsli"
+#include "output_dither.hlsli"
 #if PRESENT_HDR
 #include "hdr_output.hlsli"
 #endif
@@ -42,6 +50,7 @@ struct PresentPush {
   float hdr_knee;
   uint hdr_flags;
   uint gap;            // the source's first columns and rows that hold no picture: read at `gap`
+  float dither_lsb;    // one code of the back buffer in its encoding (1/255, HDR10 1/1023); 0: none
 };
 
 #ifdef __spirv__
@@ -104,8 +113,9 @@ float3 Texel(int2 at) {
 #endif
 }
 
-// The pixel's colour: the picture's SDR code values, or HDR10 code values of them.
-float4 Finish(float3 color, float2 p) {
+// The pixel's colour: the picture's SDR code values, or HDR10 code values of them. `pixel`: the
+// back buffer pixel counted from the picture's corner (the dither's position).
+float4 Finish(float3 color, float2 p, float2 pixel) {
 #if PRESENT_HDR
   HdrLevels levels;
   levels.white = g_push.hdr_white;
@@ -118,16 +128,15 @@ float4 Finish(float3 color, float2 p) {
                                  levels),
                   1.0f);
   }
-  return float4(HdrFromSdr(color, levels), 1.0f);
+  return float4(OutputDither(HdrFromSdr(color, levels), pixel, g_push.dither_lsb), 1.0f);
 #else
-  return float4(color, 1.0f);
+  return float4(OutputDither(color, pixel, g_push.dither_lsb), 1.0f);
 #endif
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {
-  const float2 p = (position.xy - float2(g_push.origin_x, g_push.origin_y)) *
-                       float2(g_push.scale_x, g_push.scale_y) -
-                   0.5f;
+  const float2 pixel = position.xy - float2(g_push.origin_x, g_push.origin_y);
+  const float2 p = pixel * float2(g_push.scale_x, g_push.scale_y) - 0.5f;
   const float2 cell = floor(p);
   const float2 f = p - cell;
   const int2 at = int2(cell);
@@ -135,9 +144,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // texels add nothing (lerp(a, b, 0) is a exactly): one texel and its three table reads instead
   // of four and twelve, the same result. Every pixel of the draw takes the same branch then.
   if (all(f == 0.0f)) {
-    return Finish(Texel(at), p);
+    return Finish(Texel(at), p, pixel);
   }
   const float3 top = lerp(Texel(at), Texel(at + int2(1, 0)), f.x);
   const float3 bottom = lerp(Texel(at + int2(0, 1)), Texel(at + int2(1, 1)), f.x);
-  return Finish(lerp(top, bottom, f.y), p);
+  return Finish(lerp(top, bottom, f.y), p, pixel);
 }
