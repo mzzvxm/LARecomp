@@ -173,8 +173,11 @@ class ResolveCache {
 
   // Executes a resolve record into `list` (null: the device is lost; counted).
   // Records outside any render pass and leaves none open; it binds its own
-  // pipeline state, which the caller binds again.
-  Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list);
+  // pipeline state, which the caller binds again. `float_scene`: this frame can carry HDR's
+  // float scene (HdrToneMap::FloatSceneLikely), which wants the range of a 7e3 colour above the
+  // console's, so a 7e3 source is not clamped to it (kFlagSourceCeiling7e3).
+  Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list,
+                  bool float_scene);
 
   // Takes the write notifications (TextureCache::Sync calls it once per draw).
   void Sync() { DrainInvalidations(); }

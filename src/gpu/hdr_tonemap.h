@@ -161,6 +161,16 @@ class HdrToneMap : public SceneImageSource {
            shaders_->has_hdr_variants();
   }
 
+  // Whether a frame made now can carry the float scene: active(), and no FXAA or SMAA that would
+  // run at the marker (an upscaler that holds them off, `aa_held_off`, lets it through; this is
+  // Classify's kAa test). The scene's resolve comes before the tone map draw that starts the float
+  // scene, so this is the most the resolve can know: the draw's own checks (target, state,
+  // coverage, pipeline) can still refuse the frame afterwards. Render thread.
+  bool FloatSceneLikely(bool aa_held_off) const {
+    return active() && post_ != nullptr &&
+           (aa_held_off || post_->CurrentMode() == PostAa::Mode::kOff);
+  }
+
   // Once per present, before the frame's draws: the display's levels and the game's display gamma
   // table (the green channel, `ramp[256]`, 10-bit values over 1023; null: the identity), for the
   // viewing transfer the peak is inverted through.

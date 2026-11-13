@@ -36,7 +36,6 @@
 #include "pass_timing.h"
 #include "resolve_memory.h"
 #include "frame.h"
-#include "hdr.h"
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "temporal_backend.h"
@@ -68,7 +67,9 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_7e3_ceiling, true, "MCLA/GPU",
                     "is a colour of 1.99 at most. The host's float16 target holds far more, "
                     "and the tone map and the bloom then see lights the console never had: a "
                     "red underglow pool is white in the middle instead of pink. Off: no clamp. "
-                    "Not applied while the output is HDR10 (the HDR tone map wants the range). "
+                    "Not applied to a frame that can carry the HDR float scene (HDR output with "
+                    "the HDR pack loaded and no FXAA or SMAA running): its tone map wants the "
+                    "range. "
                     "A/B switch.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -1104,7 +1105,7 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
 // ---------------------------------------------------------------------------
 
 ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
-                                            plume::RenderCommandList* list) {
+                                            plume::RenderCommandList* list, bool float_scene) {
   Summary summary;
   ++stats_.resolves;
   if (!list) {
@@ -1305,10 +1306,15 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
           full_mode |= kFlagSourceNanToZero;
         }
         // The 7e3 target's range: 0 to 31.875 on the console, up to 65504 in the host's float16.
-        // Not with HDR output: its tone map (hdr_tonemap.h) exists to show what the neon signs,
-        // the headlights and the sun have above the console's white, so it keeps what the host
-        // holds.
-        if (src_format == 3 && REXCVAR_GET(mcla_gpu_resolve_7e3_ceiling) && !hdr::Active()) {
+        // Not for a frame that can carry HDR's float scene: its tone map (hdr_tonemap.h) exists to
+        // show what the neon signs, the headlights and the sun have above the console's white, so
+        // it keeps what the host holds. That is the frame's float scene, not the swap chain: with
+        // HDR output but FXAA or SMAA on (the float scene is off while they run) or no variant
+        // pack, the 8-bit picture is the one shown, and it is clamped like the SDR one.
+        // Blends the game draws after the overshoot (the fog quad, particles) were made against
+        // the unclamped colour; the clamp is only here, at the resolve, so a pool core can stay a
+        // little brighter than the console's (the console clamps every write). Small, left.
+        if (src_format == 3 && REXCVAR_GET(mcla_gpu_resolve_7e3_ceiling) && !float_scene) {
           full_mode |= kFlagSourceCeiling7e3;
         }
       } else if (src_format == uint32_t(xe::DepthRenderTargetFormat::kD24FS8)) {
