@@ -77,6 +77,7 @@ add_library(larecomp_gpu OBJECT
     thread_load.cpp
     timing.cpp
     topology.cpp
+    uma_budget.cpp
     upload.cpp
     upscaler_masks.cpp
     validation.cpp
@@ -88,6 +89,9 @@ add_library(larecomp_gpu OBJECT
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The video memory budget of a GPU that shares memory with the CPU (uma_budget.h) has one too:
+#   cmake --build <dir> --target larecomp_uma_budget_test, then run src/gpu/larecomp_uma_budget_test (exit 0 = passed).
+add_executable(larecomp_uma_budget_test EXCLUDE_FROM_ALL uma_budget_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
