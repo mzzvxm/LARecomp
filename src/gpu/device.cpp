@@ -3,6 +3,7 @@
 #include "device.h"
 
 #include "format.h"
+#include "gpu_class.h"
 #include "temporal_dlss.h"
 
 #include <rex/cvar.h>
@@ -206,6 +207,9 @@ bool Device::Open(const Options& options) {
       vram.budget ? std::to_string(vram.budget >> 20) + " MiB" : std::string("not reported"),
       caps.descriptorIndexing, caps.bufferDeviceAddress, caps.presentWait, caps.gpuUploadHeap,
       caps.uma);
+  // The class (low, mid, high) the graphics upgrades' `auto` values follow, from the facts above
+  // (gpu_class.h): its own "[gpu] class: ..." line says which and why.
+  gpu_class::Initialize(device_->getDescription(), caps);
 
   // A kD24S8 surface (the shadow atlas) is a D24_UNORM_S8_UINT target on the host. AMD's
   // Vulkan driver lists no 24-bit depth format, yet creates the image when asked; nothing

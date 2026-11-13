@@ -18,6 +18,7 @@
 #include "../ultrawide.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/gpu_class.h"
 #endif
 
 // Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
@@ -47,10 +48,17 @@ REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD",
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD",
-    "How far away buildings and other city scenery keep their detail. 1.0 is the original distance; "
-    "higher keeps the detail longer and costs speed, lower simplifies it sooner (0.1 to 10).")
-    .range(0.1, 10.0)
+// 0 is auto (gpu/gpu_class.h): 2.0 on a mid-range or high-end graphics card, the game's own 1.0 on
+// integrated graphics and until the card is known. A city sector is drawn in detail when it is loaded
+// and nearer than 300 m times this scale times a camera factor (up to 1.5), and the city is loaded up to
+// 600 m out, so 2.0 already shows every loaded sector in detail and more adds nothing.
+REXCVAR_DEFINE_DOUBLE(lod_city_scale, 0.0, "MCLA/LOD",
+    "How far away buildings and other city scenery keep their detail, as a multiple of the original "
+    "distance. 0 (auto, the default) is 2.0 on a mid-range or high-end graphics card and 1.0 (the "
+    "original) on integrated graphics. 2.0 shows every loaded part of the city in full detail, so "
+    "higher adds nothing and costs memory and speed; lower simplifies it sooner (0.1 to 10; the menu "
+    "has auto, 0.5, 1, 1.5 and 2).")
+    .range(0.0, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // "auto" is the window's own shape (mc_engine/ultrawide.h): wider than 16:9 widens the view and keeps
@@ -276,6 +284,18 @@ void Patch_ScaleTrafficLOD(PPCRegister& f0) {
     f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
 }
 
+// The scale in force for the cvar's value: the player's own when it is above 0, else what auto comes
+// to: 2.0 on a Mid or High GPU class, else 1.0, the game's own distance: on Low, while the class is not
+// known (before the renderer's device opens; always with the Xenia renderer, which never finds one) and
+// in a build without the native renderer. The pause row's label for it is gpu_class::CityLodLabel.
+static double CityLodInForce(double user_value) {
+#if defined(LARECOMP_HAS_GPU)
+    return mcla::gpu::gpu_class::CityLodScale(user_value);
+#else
+    return user_value > 0.0 ? user_value : 1.0;
+#endif
+}
+
 // CITY LOD works by writing the scale times 300 to 0x827E0DE0 every frame (called from frame_timing.cpp).
 // A second hook at 0x822D5BC4 (Patch_ScaleCityLOD) ran after the multiply it targets and changed
 // nothing; it is removed.
@@ -283,12 +303,31 @@ void UpdateCityLODMemory() {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
 
-    float scale = static_cast<float>(REXCVAR_GET(lod_city_scale));
+    const double user_value = REXCVAR_GET(lod_city_scale);
+    const float scale = static_cast<float>(CityLodInForce(user_value));
     float final_lod = scale * 300.0f;
 
     constexpr uint32_t city_lod_addr = 0x827E0DE0;
     if (ReadGuestF32(base, city_lod_addr) != final_lod) {
         WriteGuestF32(base, city_lod_addr, final_lod);
+    }
+
+    // One line each time the scale in force changes (the first frame, the class becoming known, a row or
+    // the class override changed), not one a frame.
+    static float logged_scale = -1.0f;
+    if (scale != logged_scale) {
+        logged_scale = scale;
+        std::string why = "set by lod_city_scale";
+        if (!(user_value > 0.0)) {
+#if defined(LARECOMP_HAS_GPU)
+            namespace gc = mcla::gpu::gpu_class;
+            why = gc::Known() ? "auto, GPU class " + std::string(gc::ClassName(gc::Current()))
+                              : std::string("auto, GPU class not known yet");
+#else
+            why = "auto, no GPU class in this build";
+#endif
+        }
+        LARECOMP_APP_INFO("[lod] city LOD scale {} ({} m), {}", scale, final_lod, why);
     }
 }
 #else // REXGLUE_HAS_XEO3_TARGET
