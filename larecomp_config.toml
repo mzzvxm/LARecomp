@@ -24996,6 +24996,19 @@ address = 0x821BDB90
 after_instruction = true
 registers = ["r3", "f11"]
 
+# A running scene's time scale (trailer toolkit, cinematic/scene_runtime.cpp). 0x821BDAB4 is the
+# `lbz r7, 56(r3)` right after the `subf r8, r10, r11` above; f13 holds the scale that
+# `lfs f13, 84(r3)` (0x821BDAAC) loaded from the timer's word, and is not used again until the
+# `fmuls f6, f13, f8` / `fmuls f0, f7, f13` that make timer + 0x60 and the scaled step (+ 0x08).
+# The word itself is only a copy: the main loop (sub_822C1FA8) rewrites it every frame from the
+# game's own global 0x827E1C34 (floor 0.1), so writing it from outside never reached the timer.
+# The hook is one atomic load unless a scene's time scale is on.
+[[midasm_hook]]
+name = "MCLATimeScaleOverride"
+address = 0x821BDAB4
+after_instruction = true
+registers = ["f13"]
+
 # Timer precision (hooks/timer_precision.cpp).
 #
 # The engine timer adds the frame time to two float clocks, [r3+0x14] and [r3+0x18], by

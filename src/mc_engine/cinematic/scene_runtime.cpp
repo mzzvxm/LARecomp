@@ -14,9 +14,11 @@
 // time at 0. Scene time is the engine timer's UNSCALED frame delta (timer + 0x58), so a time scale track slows the world and
 // leaves the scene's own clock alone; it holds while the game is paused. Every update, from Patch_DeltaTimePre on the game thread:
 //
-//   hour        TimeOfDay_RequestHour (time_of_day.cpp: the request outranks time_of_day_hold and the cvars; Hook_TimeOfDay
-//               pins the hour at the next lighting update). Released with a negative hour.
-//   weather     Weather_RequestIndex, the same contract. Released with a negative index.
+//   hour        TimeOfDay_SceneHour (time_of_day.cpp: the scene's own channel, which outranks a menu shot's request,
+//               time_of_day_realtime and time_of_day_hold, and which menu_camera.cpp never touches; Hook_TimeOfDay pins the
+//               hour at the next lighting update). Released with a negative hour. The shared TimeOfDay_RequestHour pair was
+//               what the first version used: menu_camera.cpp clears it on every gameplay frame, so no hour ever applied.
+//   weather     Weather_SceneIndex, the same contract. Released with a negative index.
 //   traffic, peds, parked cars
 //               AmbientMgr_SetTrafficEnable / SetPedsEnable / SetParkedCarsEnable, the game's own script natives, called through
 //               native_call.h: the native stores the enable byte (0x8282A7C8 + 0, 1, 2) and does what a script's call does. The
@@ -24,8 +26,16 @@
 //               E1b measured that the byte alone only stops NEW spawns; whether the native also clears what is on the road is
 //               what the first run says (CHECK).
 //   police      PoliceManager_SetAllPoliceActive (a native: no byte to read back).
-//   timescale   the engine timer's time scale word, 0x827D7554 (timer + 0x54), written every update; a read-back before each write
-//               tells when something else changed it (CHECK: the game's own slow-motion also writes it).
+//   timescale   MCLATimeScaleOverride (the global function at the end of this file, a midasm hook in larecomp_config.toml): after
+//               `lfs f13,84(r3)` in the engine timer sub_821BDA90 it puts the scene's scale into f13, the register the timer
+//               multiplies the frame's step by. The word at timer + 0x54 (0x827D7554) is NOT the control, it is a copy: the main
+//               loop (sub_822C1FA8) overwrites it every frame with the game's global 0x827E1C34 (floor 0.1 from the image
+//               0x82004288; forced back to 1.0 when sub_82387A18 is true, probably a network game [CHECK]; the time-warp
+//               effects of sub_82653920 and the replay camera sub_822A76B8 write that global), so a scene's write to the word
+//               was undone before the timer read it (the first run: "something else set the time scale" 100 times, engine
+//               step ratio 1.000). Overriding in the timer beats all of that and goes below 0.1 (the timer's own floor, 1e-4 s on the scaled step, is what is left).
+//               The state line says what the engine really did: the scaled step over the unscaled one (timer + 0x08 / + 0x58);
+//               "game" is the scale the game's own code gave the timer. Not applied while paused, in a menu or a load.
 //   set         a setting through larecomp::SetCvarForScene (SetFlagByName, and the old value and its origin are kept: the value comes back
 //               when the scene ends, and a save of the settings in the middle of the scene does not write the scene's value). Only live
 //               (hot reload) settings, and not the ones CvarRefusal (scene.h) names: a scene cannot start a program or write a file.
@@ -73,6 +83,8 @@
 #include "larecomp_log.h"
 #include "native_call.h"
 
+#include "../hooks/hooks.h"  // MCLATimeScaleOverride, defined at the end of this file
+
 // ---------------------------------------------------------------- cvars
 
 REXCVAR_DEFINE_STRING(mcla_scene, "", "MCLA/Cinematic",
@@ -102,7 +114,7 @@ namespace {
 
 constexpr uint32_t kGuestScaledDelta = 0x827D7508;    // timer + 0x08: the frame's delta after the time scale (hooks_internal.h)
 constexpr uint32_t kGuestUnscaledDelta = 0x827D7558;  // timer + 0x58: the frame's delta before the time scale
-constexpr uint32_t kGuestTimeScale = 0x827D7554;      // timer + 0x54
+constexpr uint32_t kGuestTimeScale = 0x827D7554;      // timer + 0x54: the scale the game's own code gave the timer (read only here)
 constexpr uint32_t kPauseStatePtr = 0x828CCEA0;       // +4 paused, +10 run-one-frame (map_warp.cpp, cutscene_gallery.cpp)
 constexpr uint32_t kAmbientMgrPtr = 0x8286D8E4;       // the ambient manager (world_tuning.cpp)
 constexpr uint32_t kPlayerMgrPtr = 0x82874374;
@@ -138,15 +150,6 @@ float RF(const uint8_t* base, uint32_t ea) {
     float f;
     std::memcpy(&f, &v, sizeof(f));
     return f;
-}
-
-void WF(uint8_t* base, uint32_t ea, float f) {
-    uint32_t v;
-    std::memcpy(&v, &f, sizeof(v));
-    base[ea + 0] = static_cast<uint8_t>(v >> 24);
-    base[ea + 1] = static_cast<uint8_t>(v >> 16);
-    base[ea + 2] = static_cast<uint8_t>(v >> 8);
-    base[ea + 3] = static_cast<uint8_t>(v);
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
@@ -266,6 +269,10 @@ constexpr size_t kMaxAppliers = 8;  // camera, capture, cars, hud, and room for 
 const TrackApplier* g_appliers[kMaxAppliers] = {};
 size_t g_applier_count = 0;
 
+// The scale the engine timer's hook hands the engine; negative = the game's own. Set on the game thread by the runner, read by the
+// hook on whichever thread calls the timer.
+std::atomic<float> g_timescale_override{-1.0f};
+
 struct Runner {
     bool armed = false;
     std::string requested;  // the value of mcla_scene this run was armed for
@@ -285,12 +292,17 @@ struct Runner {
     bool hour_active = false;
     bool weather_active = false;
     bool timescale_active = false;
-    float timescale_written = 1.0f;
-    int timescale_changed = 0;
+    bool paused = false;          // this update: the game is paused (the time scale override stands down)
+    double ts_used = -1.0;        // the scale the timer was given for the frame it just timed (the previous update's), -1 = none
+    int ts_unfollowed = 0;        // updates in a row in which the engine's step ratio was not that scale
+    bool ts_warned = false;
     ToggleState toggles[kToggleCount];
     std::vector<SavedCvar> saved;
     int unapplied[16] = {};  // keys of tracks nobody applies, by Track
     double next_state_log = 0.0;
+    bool state_pending = false;  // a state line queued by the last update, written by the next (see RunAt)
+    double state_t = 0.0;
+    WorldState state_w;
     int calls_this_tick = 0;
     int waiting_ticks = 0;
 };
@@ -371,43 +383,64 @@ void ApplyToggle(size_t i, int want, uint8_t* base, int budget) {
     }
 }
 
+// The time scale track. The scale itself is put into the engine timer by MCLATimeScaleOverride (the end of this file); here it is
+// decided what that hook hands over, and checked that the engine took it.
+void ApplyTimeScale(const WorldState& w, const uint8_t* base) {
+    // What the engine made of the scale it was given for the frame it just timed (the previous update's value, set below).
+    if (g.ts_used >= 0.0) {
+        const double ratio = EngineStepRatio(RF(base, kGuestScaledDelta), RF(base, kGuestUnscaledDelta));
+        if (TimeScaleFollowed(g.ts_used, ratio)) {
+            g.ts_unfollowed = 0;
+        } else if (++g.ts_unfollowed >= 120 && !g.ts_warned) {
+            g.ts_warned = true;
+            LARECOMP_APP_WARN("[scene] timescale: the engine's step ratio is {:.3f} and the scene asks for {:.3f}, {} updates in a row: "
+                              "the timer hook (MCLATimeScaleOverride) may not be in this build, or the engine's own floor of 1e-4 s "
+                              "under the scaled step holds a very small scale at this frame rate",
+                              ratio, g.ts_used, g.ts_unfollowed);
+        }
+    }
+    const double want = (w.timescale_set && !g.paused) ? TimeScaleForEngine(w.timescale) : -1.0;
+    g_timescale_override.store(static_cast<float>(want), std::memory_order_relaxed);
+    g.ts_used = want;
+    if (w.timescale_set) {
+        if (!g.timescale_active) {
+            g.timescale_active = true;
+            LARECOMP_APP_INFO("[scene] timescale: the scene's scale goes into the engine timer from now on (the game's own is {:.3f}); "
+                              "the word at 0x827D7554 is only a copy the main loop rewrites every frame", RF(base, kGuestTimeScale));
+        }
+    } else if (g.timescale_active) {
+        g.timescale_active = false;
+        g.ts_unfollowed = 0;
+        LARECOMP_APP_INFO("[scene] timescale: back to the game's own");
+    }
+}
+
+// Not running now (a menu, a load): the engine runs at its own scale until the next update that runs the scene.
+void StandDownTimeScale() {
+    g_timescale_override.store(-1.0f, std::memory_order_relaxed);
+    g.ts_used = -1.0;
+    g.ts_unfollowed = 0;
+}
+
 // The world tracks as they should be now. `w` all unset hands everything back. budget: natives to call this update.
 void ApplyWorld(const WorldState& w, uint8_t* base, int budget) {
     if (w.hour_set) {
-        TimeOfDay_RequestHour(static_cast<float>(w.hour));
+        TimeOfDay_SceneHour(static_cast<float>(w.hour));
         g.hour_active = true;
     } else if (g.hour_active) {
-        TimeOfDay_RequestHour(-1.0f);
+        TimeOfDay_SceneHour(-1.0f);
         g.hour_active = false;
         LARECOMP_APP_INFO("[scene] hour: the game's own day cycle again");
     }
     if (w.weather >= 0) {
-        Weather_RequestIndex(w.weather);
+        Weather_SceneIndex(w.weather);
         g.weather_active = true;
     } else if (g.weather_active) {
-        Weather_RequestIndex(-1);
+        Weather_SceneIndex(-1);
         g.weather_active = false;
         LARECOMP_APP_INFO("[scene] weather: the game's own again");
     }
-    if (w.timescale_set) {
-        const float now = RF(base, kGuestTimeScale);
-        if (g.timescale_active && std::fabs(now - g.timescale_written) > 1e-4f) {
-            ++g.timescale_changed;
-            if (g.timescale_changed <= 3 || g.timescale_changed % 100 == 0) {
-                LARECOMP_APP_WARN("[scene] timescale: something else set the time scale to {:.4f} since the scene wrote {:.4f} "
-                                  "(seen {} time(s)); writing the scene's value again",
-                                  now, g.timescale_written, g.timescale_changed);
-            }
-        }
-        const float want = static_cast<float>(w.timescale);
-        WF(base, kGuestTimeScale, want);
-        g.timescale_written = want;
-        g.timescale_active = true;
-    } else if (g.timescale_active) {
-        if (std::fabs(RF(base, kGuestTimeScale) - g.timescale_written) < 1e-4f) WF(base, kGuestTimeScale, 1.0f);
-        g.timescale_active = false;
-        LARECOMP_APP_INFO("[scene] timescale: back to the game's own");
-    }
+    ApplyTimeScale(w, base);
     for (size_t i = 0; i < kToggleCount; ++i) ApplyToggle(i, w.*(kToggles[i].field), base, budget);
 }
 
@@ -471,10 +504,14 @@ void LogUnapplied() {
     std::memset(g.unapplied, 0, sizeof(g.unapplied));
 }
 
+void FlushState(const uint8_t* base);  // below, with the state line
+
 // Everything the scene changed goes back: the world, the settings, the other packages' tracks.
 void ReleaseAll(const char* why) {
+    uint8_t* base = Membase();
+    if (base) FlushState(base);  // the last update's state line, before the hand-back line
     LARECOMP_APP_INFO("[scene] handing the game back ({})", why);
-    if (uint8_t* base = Membase()) {
+    if (base) {
         g.calls_this_tick = 0;
         ApplyWorld(WorldState{}, base, 8);
     }
@@ -493,6 +530,7 @@ void ReleaseEvents() {
 void BeginScene(const char* why) {
     g.cursor.Reset();
     g.next_state_log = 0.0;
+    g.state_pending = false;
     std::memset(g.unapplied, 0, sizeof(g.unapplied));
     LARECOMP_APP_INFO("[scene] start ({}): '{}', {}", why, g.scene.name, Summarize(g.scene));
     for (size_t i = 0; i < g_applier_count; ++i) {
@@ -502,13 +540,21 @@ void BeginScene(const char* why) {
 
 void LogState(double t, const uint8_t* base, const WorldState& w) {
     const float hour = TimeOfDay_GetHour();
-    const float unscaled = RF(base, kGuestUnscaledDelta);
-    const float ratio = unscaled > 0.0f ? RF(base, kGuestScaledDelta) / unscaled : 0.0f;  // what the engine really did with the time scale
+    // What the engine really did with the time scale: the frame's scaled step over its unscaled one. "game" is the scale the game's own
+    // code gave the timer (the scene's replaces it inside the timer, so the two differ while a scene's time scale runs).
+    const double ratio = EngineStepRatio(RF(base, kGuestScaledDelta), RF(base, kGuestUnscaledDelta));
     LARECOMP_APP_INFO("[scene] t={:.2f} state: hour {} (game {:.2f}), weather {} (game {}), timescale {} (game {:.3f}, engine step ratio {:.3f}), "
                       "traffic {} peds {} parked {} police {}",
                       t, w.hour_set ? Fmt(w.hour) : std::string("-"), hour, w.weather >= 0 ? w.weather : -1, Weather_GetIndex(),
                       w.timescale_set ? Fmt(w.timescale, "%.3f") : std::string("-"), RF(base, kGuestTimeScale), ratio, w.traffic, w.peds,
                       w.parked, w.police);
+}
+
+// Writes the state line the last update queued, if there is one.
+void FlushState(const uint8_t* base) {
+    if (!g.state_pending) return;
+    g.state_pending = false;
+    LogState(g.state_t, base, g.state_w);
 }
 
 // One update of a running scene (the world is there): the keys that came due, the world tracks, the other packages' tracks.
@@ -542,8 +588,14 @@ void RunAt(double t, uint8_t* base) {
     for (size_t i = 0; i < g_applier_count; ++i) {
         if (g_appliers[i]->apply) g_appliers[i]->apply(g.scene, t);
     }
+    // The state line goes out one update late. What the scene sets now (the hour, the sky, the time scale) reaches the game on its next
+    // lighting update and its next timer read, so a line written in this update would show the game one step behind at every key
+    // ("weather 1 (game 0)" at the very update the weather key came due).
+    FlushState(base);
     if (t >= g.next_state_log) {
-        LogState(t, base, w);
+        g.state_pending = true;
+        g.state_t = t;
+        g.state_w = w;
         g.next_state_log = std::floor(t / 2.0) * 2.0 + 2.0;
     }
 }
@@ -669,7 +721,9 @@ void Step(uint8_t* base) {
     if (st.started) BeginScene("a car on the road and the ambient manager up");
     if (g.state == SceneState::kFinished && !st.finished) return;  // already handed back
     g.state = SceneState::kRunning;
+    g.paused = paused;
     if (ready) RunAt(g.clock.time(), base);
+    else StandDownTimeScale();
     if (st.finished) {
         LARECOMP_APP_INFO("[scene] finished at t={:.2f}", g.clock.time());
         ReleaseAll("the scene's end");
@@ -787,9 +841,22 @@ bool RegisterTrackApplier(const TrackApplier* applier) {
 
 }  // namespace mc::cinematic
 
+// A running scene's time scale, put into the engine timer. Midasm hook after the instruction at 0x821BDAB4 (`lbz r7,56(r3)`, the one
+// after the `subf r8,r10,r11` that MCLAFrameDelta follows) in sub_821BDA90: f13 holds the scale loaded by `lfs f13,84(r3)` and is not
+// touched again until the `fmuls f6,f13,f8` that makes timer + 0x60 and the `fmuls f0,f7,f13` that makes the scaled step (timer + 0x08).
+// Without a scene's time scale it is one atomic load. The timer has callers on more than one thread; all of them get the scale.
+void MCLATimeScaleOverride(PPCRegister& f13) {
+    const float scale = mc::cinematic::g_timescale_override.load(std::memory_order_relaxed);
+    if (scale >= 0.0f) f13.f64 = static_cast<double>(scale);
+}
+
 #else  // REXGLUE_HAS_XEO3_TARGET
 
+#include <rex/ppc/context.h>
+
 #include "scene_runtime.h"
+
+void MCLATimeScaleOverride(PPCRegister& f13) {}
 
 namespace mc::cinematic {
 void TickScene() {}
