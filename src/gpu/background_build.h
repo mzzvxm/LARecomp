@@ -20,6 +20,13 @@
 //
 // Threading: Start, Running, Collect on the render thread; Join on the lifecycle thread, in the
 // owner's Shutdown (the job names the owner's shaders: Join first, before anything is destroyed).
+//
+// CHECK: written without a build of the game (only the files' syntax and the hand-over rules'
+// standalone test, background_build_test.cpp, were run): that the worker's graphics pipeline
+// creation runs beside the render thread's own creations (textures, framebuffers) on D3D12 and on
+// Vulkan as it does beside the host precache's builder at start; a live HDR/SDR switch while a build
+// runs (PresentPass::BuildOutput makes the other set on the render thread; the worker reads only the
+// set in use); the Vulkan, Linux and PS5 builds.
 // ===========================================================================
 
 #include <atomic>
