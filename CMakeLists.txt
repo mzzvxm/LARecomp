@@ -150,6 +150,7 @@ set(LARECOMP_SOURCES
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
+    src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/native_call.cpp
 
     src/mc_engine/map_warp.cpp
@@ -343,6 +344,13 @@ add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/scene_test.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_scene_test PRIVATE src/mc_engine/cinematic)
+# The camera rig's maths, track parser and evaluator (src/mc_engine/cinematic/camera.h) have one too:
+#   cmake --build <build dir> --target larecomp_camera_test, then run <build dir>/larecomp_camera_test (exit 0 = passed).
+add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/camera_test.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_camera_test PRIVATE src/mc_engine/cinematic)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
