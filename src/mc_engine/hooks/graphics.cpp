@@ -276,6 +276,9 @@ void Patch_ScaleTrafficLOD(PPCRegister& f0) {
     f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
 }
 
+// CITY LOD works by writing the scale times 300 to 0x827E0DE0 every frame (called from frame_timing.cpp).
+// A second hook at 0x822D5BC4 (Patch_ScaleCityLOD) ran after the multiply it targets and changed
+// nothing; it is removed.
 void UpdateCityLODMemory() {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
@@ -287,11 +290,6 @@ void UpdateCityLODMemory() {
     if (ReadGuestF32(base, city_lod_addr) != final_lod) {
         WriteGuestF32(base, city_lod_addr, final_lod);
     }
-}
-
-void Patch_ScaleCityLOD(PPCRegister& f13) {
-    // Multiplicamos o valor que a engine acabou de ler da memória pelo nosso slider
-    f13.f64 = f13.f64 * REXCVAR_GET(lod_city_scale);
 }
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
@@ -310,6 +308,5 @@ bool Patch_DisableDoF() { return false; }
 void Patch_DofComposite(PPCRegister& r3) {}
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {}
 void UpdateCityLODMemory() {}
-void Patch_ScaleCityLOD(PPCRegister& f13) {}
 bool Patch_DisableImposterShadows(PPCRegister& r11) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

@@ -25295,11 +25295,6 @@ address = 0x827903E0
 name = "Patch_ScaleTrafficLOD"
 registers = ["f0"]
 
-[[midasm_hook]]
-address = 0x822D5BC4
-name = "Patch_ScaleCityLOD"
-registers = ["f13"]
-
 # Audi R8 — hook no epílogo de sub_823964C0 (parser de veículos)
 [[midasm_hook]]
 address = 0x82396D10
