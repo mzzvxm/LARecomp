@@ -1220,6 +1220,14 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                               plume::RenderFormat::R16_FLOAT, "ao depth 1/2") &&
          passes_->EnsureImage(depth_[2], plan.level[1][0], plan.level[1][1],
                               plume::RenderFormat::R16_FLOAT, "ao depth 1/4");
+  } else if (!levels) {
+    // Only the contact shadows run: they read level 0. What an occlusion that has been turned off left
+    // (two coarser levels, about 5 MB at 4K) goes back, as the weight image does below.
+    for (uint32_t i = 1; i < 3; ++i) {
+      if (depth_[i].texture) {
+        passes_->ReleaseImage(depth_[i]);
+      }
+    }
   }
   if (ok && scratch) {
     ok = passes_->EnsureImage(raw_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
@@ -1232,6 +1240,17 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                               plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 1");
+  } else if (!plan.occlusion) {
+    // The history is the occlusion's alone (66 MB at 3840x2160): with the occlusion off and the contact
+    // shadows on it would stay until both were off. Its content is gone with it, so the next occlusion
+    // frame starts a history again (ChooseHistory: kFirst).
+    for (HostImage& image : history_) {
+      if (image.texture) {
+        passes_->ReleaseImage(image);
+      }
+    }
+    history_valid_ = false;
+    history_cut_ = false;
   }
   // The picture of debug view 6, made only while that view is shown.
   if (ok && plan.occlusion && plan.view == 6u) {
