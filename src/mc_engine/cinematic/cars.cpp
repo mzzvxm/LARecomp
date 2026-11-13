@@ -52,6 +52,11 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+#include <sys/uio.h>
+#include <unistd.h>
+
+#include <cerrno>
 #endif
 
 #include "car_spawn.h"
@@ -144,7 +149,21 @@ bool Mapped(uint32_t ea, uint32_t len) {
     }
     return true;
 #else
-    return ea < 0xC0000000u;
+    // No VirtualQuery: ask the kernel to read one byte of every page. process_vm_readv on this very process answers an
+    // unmapped or PROT_NONE page (guest memory that is reserved and not committed) with EFAULT, where reading it would
+    // fault the game.
+    constexpr uint64_t kPage = 0x1000;
+    const uint64_t end = uint64_t(ea) + len;
+    for (uint64_t page = uint64_t(ea) & ~(kPage - 1); page < end; page += kPage) {
+        const uint64_t at = std::max<uint64_t>(page, ea);
+        uint8_t probe = 0;
+        iovec local{&probe, 1};
+        iovec remote{b + at, 1};
+        const ssize_t n = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+        if (n < 0 && (errno == ENOSYS || errno == EPERM)) return ea < 0xC0000000u;  // the call is not allowed here: the plausible range only
+        if (n != 1) return false;
+    }
+    return true;
 #endif
 }
 
