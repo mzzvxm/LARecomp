@@ -100,6 +100,9 @@ add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_
 # Where the sun shafts are added and when they fall back (shafts_anchor.h) likewise:
 #   cmake --build <dir> --target larecomp_shafts_anchor_test, then run src/gpu/larecomp_shafts_anchor_test.
 add_executable(larecomp_shafts_anchor_test EXCLUDE_FROM_ALL shafts_anchor_test.cpp)
+# Where the sun is in the picture (shafts_sun.h: the sky's sun constant against the light, the placement and the fades) likewise:
+#   cmake --build <dir> --target larecomp_shafts_sun_test, then run src/gpu/larecomp_shafts_sun_test.
+add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

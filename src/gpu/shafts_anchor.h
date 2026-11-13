@@ -85,7 +85,8 @@ class Policy {
   uint32_t returns_ = 0;
 };
 
-// What one logging interval saw (the log line of shafts.cpp): sky == end_of_scene + mid_scene + lost.
+// What one logging interval saw (the log line of shafts.cpp): sky == end_of_scene + mid_scene + lost
+// == sun_by_sky + sun_by_light.
 struct Tally {
   uint32_t frames = 0;           // guest frames of the interval (the shafts on)
   uint32_t sky = 0;              // frames in which the sun gave shafts: the sky image was taken
@@ -93,8 +94,11 @@ struct Tally {
   uint32_t mid_scene = 0;        // ... and at the mid-scene depth copy
   uint32_t lost = 0;             // ... and were not added at all
   uint32_t copies_missing = 0;   // of the sky frames, those in which the end-of-scene copy never came
+  uint32_t sun_by_sky = 0;       // of the sky frames, those whose sun's place came from the sky's sun constant
+  uint32_t sun_by_light = 0;     // ... and from the light's direction (shafts_sun.h)
 
   void Frame() { ++frames; }
+  void SunPlacedBy(bool sky_constant) { ++(sky_constant ? sun_by_sky : sun_by_light); }
   void Sky(Anchor used, bool composited, bool copy_seen) {
     ++sky;
     if (!copy_seen) {

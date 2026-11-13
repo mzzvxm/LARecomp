@@ -160,8 +160,17 @@ void TallyAddsUp() {
   Check(tally.end_of_scene == 2 && tally.mid_scene == 2 && tally.lost == 2, "by place: 2, 2 and 2 lost");
   Check(tally.sky == tally.end_of_scene + tally.mid_scene + tally.lost, "sky = end + mid + lost");
   Check(tally.copies_missing == 2, "two frames never saw the copy");
+  // where the sun's place came from, once per sky frame (the sky's sun constant, else the light's direction)
+  for (int i = 0; i < 4; ++i) {
+    tally.SunPlacedBy(true);
+  }
+  tally.SunPlacedBy(false);
+  tally.SunPlacedBy(false);
+  Check(tally.sun_by_sky == 4 && tally.sun_by_light == 2, "the sun's place: 4 by the sky's constant, 2 by the light");
+  Check(tally.sky == tally.sun_by_sky + tally.sun_by_light, "sky = by the sky's constant + by the light");
   tally.Clear();
   Check(tally.frames == 0 && tally.sky == 0 && !tally.Worth(), "clear empties the tally");
+  Check(tally.sun_by_sky == 0 && tally.sun_by_light == 0, "clear empties the sun's place counts too");
 }
 
 void Names() {
